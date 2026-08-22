@@ -7,9 +7,11 @@
 //! makes a driver-run journey evidence about the product rather than about the
 //! driver.
 
+use std::collections::BTreeMap;
+
 use crate::frame::{PetrifiedFrame, Placement};
 use crate::geom::{Point, Size};
-use crate::tree::Interaction;
+use crate::tree::{InputPolicy, Interaction};
 
 /// A pointer button.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -300,11 +302,124 @@ pub fn route(frame: &PetrifiedFrame, focused: Option<&str>, event: &InputEvent) 
     }
 }
 
+/// [`route`]'s outcome, plus every dismissal a `DismissOutside` surface
+/// requests.
+///
+/// The engine is retained and the host owns the view tree
+/// (`overlay_surface.rs`'s module doc), so "dismiss" cannot mean the engine
+/// deleting a node — it can only mean *reporting* the request, the same way
+/// [`Route::Unrouted`] reports a drop instead of silently discarding the
+/// event. A host decides what closing the surface means.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RouteOutcome {
+    /// Where the event landed, or why it did not.
+    pub route: Route,
+    /// Canonical ids of every `DismissOutside` surface a `PointerPressed` in
+    /// this event landed outside of. Always empty for every other event
+    /// kind — only a press dismisses, matching [`activates`]'s convention
+    /// that the press, not the release, is where an action fires.
+    pub dismiss: Vec<String>,
+}
+
+/// [`route`], but aware of every `surface` node's declared [`InputPolicy`]
+/// (`surfaces`: the same map [`crate::layout::overlay_surface::surface_scopes`]
+/// builds, keyed by canonical placement id).
+///
+/// [`route`] alone has no notion of a surface's input policy at all — every
+/// placement is reached purely by z-order and its own declared interactions,
+/// which is exactly right for [`InputPolicy::Passthrough`] (nothing changes:
+/// a surface with no accepting content already lets input fall through to
+/// what is underneath, the same as any other non-accepting placement) but
+/// wrong for [`InputPolicy::Block`]: a modal is supposed to make the screen
+/// behind it inert, and nothing in [`hit_test`]'s z-order walk stops a click
+/// outside the modal from reaching a placement further back. This function
+/// adds exactly that: a positional event outside every currently-placed
+/// `Block` surface's bounds is swallowed here before [`route`] ever runs.
+///
+/// [`InputPolicy::DismissOutside`] behaves like `Passthrough` for routing —
+/// it places no swallow boundary — and additionally contributes to
+/// `RouteOutcome::dismiss`.
+#[must_use]
+pub fn route_with_surfaces(
+    frame: &PetrifiedFrame,
+    focused: Option<&str>,
+    event: &InputEvent,
+    surfaces: &BTreeMap<String, InputPolicy>,
+) -> RouteOutcome {
+    let dismiss = dismiss_requests(frame, event, surfaces);
+    if let Some(pos) = event.pointer_pos()
+        && outside_an_open_modal(frame, pos, surfaces)
+    {
+        return RouteOutcome {
+            route: Route::Unrouted {
+                reason: "outside every currently-open Block surface's bounds",
+            },
+            dismiss,
+        };
+    }
+    RouteOutcome {
+        route: route(frame, focused, event),
+        dismiss,
+    }
+}
+
+/// Every `DismissOutside` surface a `PointerPressed` in `event` lands outside
+/// the placed bounds of. Empty for any other event kind, and empty for a
+/// surface this frame did not place (nothing to be outside of).
+fn dismiss_requests(
+    frame: &PetrifiedFrame,
+    event: &InputEvent,
+    surfaces: &BTreeMap<String, InputPolicy>,
+) -> Vec<String> {
+    let InputEvent::PointerPressed { pos, .. } = event else {
+        return Vec::new();
+    };
+    surfaces
+        .iter()
+        .filter(|(_, policy)| **policy == InputPolicy::DismissOutside)
+        .filter_map(|(id, _)| frame.placement(id).map(|p| (id, p)))
+        .filter(|(_, placement)| !placement.rect.contains(*pos))
+        .map(|(id, _)| id.clone())
+        .collect()
+}
+
+/// Whether `pos` falls outside the bounds of any surface this frame placed
+/// whose policy [`blocks_positional_input`]. With more than one open (nested
+/// modals), `pos` must be inside every one of them, or the position counts
+/// as outside — a click cannot reach the screen behind either.
+fn outside_an_open_modal(
+    frame: &PetrifiedFrame,
+    pos: Point,
+    surfaces: &BTreeMap<String, InputPolicy>,
+) -> bool {
+    surfaces
+        .iter()
+        .filter(|(_, policy)| blocks_positional_input(**policy))
+        .filter_map(|(id, _)| frame.placement(id))
+        .any(|surface| !surface.rect.contains(pos))
+}
+
+/// Whether a surface declaring `policy` makes its bounds a swallow boundary
+/// for positional input.
+///
+/// Written as an exhaustive match rather than `policy == InputPolicy::Block`
+/// so that `Passthrough` and `DismissOutside` are each a named decision —
+/// "does not block" — instead of falling out of what `Block` is not; a
+/// fourth policy landing later would fail to compile here until someone
+/// decided which side of this line it falls on, rather than silently
+/// inheriting `false`.
+fn blocks_positional_input(policy: InputPolicy) -> bool {
+    match policy {
+        InputPolicy::Block => true,
+        InputPolicy::Passthrough | InputPolicy::DismissOutside => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         InputEvent, KeyCode, Modifiers, PointerButton, Route, activates, hit_test,
-        required_interaction, route,
+        required_interaction, route, route_with_surfaces,
     };
     use crate::frame::{
         FrameDigest, PaintState, PetrifiedFrame, Placement, PlacementSemantics, TransitionActivity,
@@ -312,7 +427,8 @@ mod tests {
     };
     use crate::geom::{Point, Rect, Size};
     use crate::token::ThemeMode;
-    use crate::tree::{Interaction, NodeKind};
+    use crate::tree::{InputPolicy, Interaction, NodeKind};
+    use std::collections::BTreeMap;
 
     fn node(id: &str, rect: Rect, z: i32, actions: &[Interaction]) -> Placement {
         Placement {
@@ -625,5 +741,166 @@ mod tests {
             Some(Interaction::Scroll)
         );
         assert_eq!(required_interaction(&InputEvent::WindowFocused), None);
+    }
+
+    // -- route_with_surfaces: the three input policies. --------------------
+
+    /// A frame with one plain clickable backdrop under one surface: the
+    /// surface itself carries no accepting interaction (the common shape —
+    /// its content, not the surface node, accepts clicks), so every case
+    /// below turns on whether `surfaces`' declared policy stops a click
+    /// outside the surface from reaching the backdrop underneath.
+    fn modal_scenario() -> PetrifiedFrame {
+        frame(vec![
+            node(
+                "/backdrop",
+                Rect::new(0.0, 0.0, 200.0, 200.0),
+                0,
+                &[Interaction::Click],
+            ),
+            node("/surface", Rect::new(50.0, 50.0, 50.0, 50.0), 5, &[]),
+        ])
+    }
+
+    fn press(pos: Point) -> InputEvent {
+        InputEvent::PointerPressed {
+            pos,
+            button: PointerButton::Primary,
+            modifiers: Modifiers::NONE,
+        }
+    }
+
+    fn policy_map(policy: InputPolicy) -> BTreeMap<String, InputPolicy> {
+        let mut m = BTreeMap::new();
+        m.insert("/surface".to_owned(), policy);
+        m
+    }
+
+    /// `Block` swallows a click landing outside the surface's own bounds:
+    /// without the swallow check, this click would fall through to
+    /// `/backdrop` exactly as [`route`] alone lets it. Deleting the swallow
+    /// check in `route_with_surfaces` turns this assertion false.
+    #[test]
+    fn block_swallows_a_click_outside_its_own_bounds() {
+        let f = modal_scenario();
+        let surfaces = policy_map(InputPolicy::Block);
+        let outcome = route_with_surfaces(&f, None, &press(Point::new(10.0, 10.0)), &surfaces);
+        assert!(
+            matches!(outcome.route, Route::Unrouted { .. }),
+            "a click outside the modal must not reach /backdrop, got {:?}",
+            outcome.route
+        );
+        assert!(outcome.dismiss.is_empty(), "Block never dismisses");
+    }
+
+    /// `Block` does not touch a click that lands inside the surface's own
+    /// bounds: it routes exactly as [`route`] would (here, through to
+    /// `/backdrop`, since `/surface` declares no accepting interaction of
+    /// its own). This is what distinguishes "swallow everything outside"
+    /// from a cruder "swallow everything under the surface's z-order".
+    #[test]
+    fn block_routes_normally_inside_its_own_bounds() {
+        let f = modal_scenario();
+        let surfaces = policy_map(InputPolicy::Block);
+        let outcome = route_with_surfaces(&f, None, &press(Point::new(60.0, 60.0)), &surfaces);
+        assert_eq!(
+            outcome.route,
+            Route::Pointer {
+                node: "/backdrop".into()
+            }
+        );
+    }
+
+    /// `Passthrough` places no swallow boundary at all: the same
+    /// outside-the-surface click that `Block` swallows reaches `/backdrop`
+    /// here. This is the behavioural inverse the finding named, proven by
+    /// the fact that this test and `block_swallows_a_click_outside_its_own_bounds`
+    /// disagree on the identical click.
+    #[test]
+    fn passthrough_lets_a_click_outside_its_bounds_reach_whats_underneath() {
+        let f = modal_scenario();
+        let surfaces = policy_map(InputPolicy::Passthrough);
+        let outcome = route_with_surfaces(&f, None, &press(Point::new(10.0, 10.0)), &surfaces);
+        assert_eq!(
+            outcome.route,
+            Route::Pointer {
+                node: "/backdrop".into()
+            }
+        );
+        assert!(outcome.dismiss.is_empty(), "Passthrough never dismisses");
+    }
+
+    /// `DismissOutside` routes exactly like `Passthrough` (no swallow
+    /// boundary) but additionally names the surface in `dismiss` when the
+    /// press lands outside its bounds.
+    #[test]
+    fn dismiss_outside_reports_a_press_outside_its_bounds_and_still_routes_through() {
+        let f = modal_scenario();
+        let surfaces = policy_map(InputPolicy::DismissOutside);
+        let outcome = route_with_surfaces(&f, None, &press(Point::new(10.0, 10.0)), &surfaces);
+        assert_eq!(
+            outcome.route,
+            Route::Pointer {
+                node: "/backdrop".into()
+            }
+        );
+        assert_eq!(outcome.dismiss, vec!["/surface".to_owned()]);
+    }
+
+    /// A press inside a `DismissOutside` surface's own bounds must not
+    /// report a dismissal — only an outside press does.
+    #[test]
+    fn dismiss_outside_does_not_fire_for_a_press_inside_its_bounds() {
+        let f = modal_scenario();
+        let surfaces = policy_map(InputPolicy::DismissOutside);
+        let outcome = route_with_surfaces(&f, None, &press(Point::new(60.0, 60.0)), &surfaces);
+        assert!(outcome.dismiss.is_empty());
+    }
+
+    /// Only a press dismisses: a pointer move outside a `DismissOutside`
+    /// surface must not report one, matching `activates`'s press-only
+    /// convention.
+    #[test]
+    fn dismiss_outside_does_not_fire_for_a_non_press_event() {
+        let f = modal_scenario();
+        let surfaces = policy_map(InputPolicy::DismissOutside);
+        let moved = InputEvent::PointerMoved {
+            pos: Point::new(10.0, 10.0),
+        };
+        let outcome = route_with_surfaces(&f, None, &moved, &surfaces);
+        assert!(outcome.dismiss.is_empty());
+    }
+
+    /// Two nested `Block` surfaces: a click must land inside *both* to
+    /// reach anything, since neither modal's screen may be reached through
+    /// the other.
+    #[test]
+    fn nested_block_surfaces_require_being_inside_both() {
+        let f = frame(vec![
+            node(
+                "/backdrop",
+                Rect::new(0.0, 0.0, 200.0, 200.0),
+                0,
+                &[Interaction::Click],
+            ),
+            node("/outer", Rect::new(20.0, 20.0, 150.0, 150.0), 5, &[]),
+            node("/inner", Rect::new(60.0, 60.0, 40.0, 40.0), 10, &[]),
+        ]);
+        let mut surfaces = BTreeMap::new();
+        surfaces.insert("/outer".to_owned(), InputPolicy::Block);
+        surfaces.insert("/inner".to_owned(), InputPolicy::Block);
+
+        // Inside /outer but outside /inner: still blocked.
+        let between = route_with_surfaces(&f, None, &press(Point::new(30.0, 30.0)), &surfaces);
+        assert!(matches!(between.route, Route::Unrouted { .. }));
+
+        // Inside both: routes through to /backdrop.
+        let inside = route_with_surfaces(&f, None, &press(Point::new(70.0, 70.0)), &surfaces);
+        assert_eq!(
+            inside.route,
+            Route::Pointer {
+                node: "/backdrop".into()
+            }
+        );
     }
 }
