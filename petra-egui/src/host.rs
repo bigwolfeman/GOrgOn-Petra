@@ -96,6 +96,18 @@ impl<A: App> Host<A> {
         }
     }
 
+    /// Bound the two caches this host keeps: measured sizes and shaped
+    /// galleys, in entries.
+    ///
+    /// Both default to a bound well above one frame's working set
+    /// ([`MeasureCache::DEFAULT_CAPACITY`], [`GalleyShaper::DEFAULT_CAPACITY`]);
+    /// a host with a denser tree than that raises them here. Shrinking evicts
+    /// at once.
+    pub fn set_cache_capacities(&mut self, measured_sizes: usize, galleys: usize) {
+        self.cache.set_capacity(measured_sizes);
+        self.shaper.set_capacity(galleys);
+    }
+
     /// The registry tree acceptance validates against — register custom kinds
     /// and transition names here before the first frame.
     pub fn registry_mut(&mut self) -> &mut Registry {

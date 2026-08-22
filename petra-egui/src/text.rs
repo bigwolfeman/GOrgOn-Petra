@@ -7,13 +7,12 @@
 //! alternative, measuring with one code path and painting with another, is how
 //! a toolkit ends up with text that overflows the box it was sized for.
 
-use std::collections::HashMap;
-use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use egui::text::LayoutJob;
 use egui::{Color32, Context, FontFamily, FontId, Galley};
+use gorgon_petra::cache::LruCache;
 use gorgon_petra::geom::Size;
 use gorgon_petra::layout::{ContentMeasure, SizeProposal, TextMeasurement, TextRequest};
 use gorgon_petra::tree::TextWrap;
@@ -93,6 +92,16 @@ struct GalleyKey {
     /// Bit pattern, not value: two wrap widths that differ in the last bit are
     /// two galleys, and comparing them as floats would return one for both.
     wrap_bits: u32,
+    /// Display scale, same bit-pattern reasoning as `wrap_bits`.
+    ///
+    /// Shaping is scale-dependent: glyph advances are measured at
+    /// `round(font_size * pixels_per_point)` physical pixels and row heights
+    /// are rounded to whole pixels, so one run answers different extents — and
+    /// wraps at different words — on two monitors of different scale. egui
+    /// keys its own galley cache by `(job, pixels_per_point)` for the same
+    /// reason. Leaving it out here served the old monitor's text after a
+    /// window was dragged to the new one.
+    scale_bits: u32,
     max_rows: usize,
     break_anywhere: bool,
     overflow: Option<char>,
@@ -102,7 +111,7 @@ struct GalleyKey {
 pub struct GalleyShaper {
     ctx: Context,
     typography: Typography,
-    galleys: HashMap<GalleyKey, Arc<Galley>>,
+    galleys: LruCache<GalleyKey, Arc<Galley>>,
     /// Image sources asked for but not loadable yet, recorded rather than
     /// silently sized to zero.
     unsupported_images: BTreeSet<String>,
@@ -113,6 +122,18 @@ pub struct GalleyShaper {
 }
 
 impl GalleyShaper {
+    /// Galleys a shaper from [`GalleyShaper::new`] keeps.
+    ///
+    /// The cache is keyed by the text itself, so it grows with every distinct
+    /// string ever shaped — a long list of distinct row labels would grow it
+    /// without limit, which is the same thing SC-008 forbids of the
+    /// measurement cache. The bound is lower than the measurement cache's
+    /// because a galley carries its glyph rows and is the heavier object; it
+    /// is still well above the number of distinct runs one screen holds.
+    /// Raise it with [`GalleyShaper::set_capacity`] and watch
+    /// [`GalleyShaper::evictions`] to find out whether you need to.
+    pub const DEFAULT_CAPACITY: usize = 2048;
+
     /// A shaper over `ctx` with the default typography.
     #[must_use]
     pub fn new(ctx: Context) -> Self {
@@ -125,12 +146,31 @@ impl GalleyShaper {
         Self {
             ctx,
             typography,
-            galleys: HashMap::new(),
+            galleys: LruCache::with_capacity(Self::DEFAULT_CAPACITY),
             unsupported_images: BTreeSet::new(),
             unsupported_customs: BTreeSet::new(),
             shaped: 0,
             reused: 0,
         }
+    }
+
+    /// The galley bound in force.
+    #[must_use]
+    pub fn capacity(&self) -> usize {
+        self.galleys.capacity()
+    }
+
+    /// Change the galley bound, evicting immediately if it shrank.
+    pub fn set_capacity(&mut self, capacity: usize) {
+        self.galleys.set_capacity(capacity);
+    }
+
+    /// Galleys dropped to stay inside the bound since construction. A number
+    /// that climbs every frame means one screen holds more distinct runs than
+    /// the bound, and the shaper is re-shaping text it just had.
+    #[must_use]
+    pub fn evictions(&self) -> u64 {
+        self.galleys.evictions()
     }
 
     /// The typography map, for the theme to rebind.
@@ -140,8 +180,10 @@ impl GalleyShaper {
 
     /// Drop every cached galley.
     ///
-    /// Call this when the font definitions, the theme's typography, or the
-    /// scale changes. Everything else that affects a galley is in the key.
+    /// Call this when the font definitions or the theme's typography change.
+    /// Everything else that affects a galley — the display scale included — is
+    /// in the key, so a scale change needs no call: the entries for the old
+    /// scale are simply never asked for again and age out.
     pub fn clear(&mut self) {
         self.galleys.clear();
     }
@@ -179,27 +221,24 @@ impl GalleyShaper {
             text: req.text.to_owned(),
             font: format!("{}:{:?}", font.size.to_bits(), font.family),
             wrap_bits: wrap_width.to_bits(),
+            scale_bits: self.ctx.pixels_per_point().to_bits(),
             max_rows,
             break_anywhere,
             overflow,
         };
-        match self.galleys.entry(key) {
-            Entry::Occupied(hit) => {
-                self.reused += 1;
-                Arc::clone(hit.get())
-            }
-            Entry::Vacant(slot) => {
-                self.shaped += 1;
-                let mut job =
-                    LayoutJob::simple(req.text.to_owned(), font, Color32::PLACEHOLDER, wrap_width);
-                job.wrap.max_rows = max_rows;
-                job.wrap.break_anywhere = break_anywhere;
-                job.wrap.overflow_character = overflow;
-                let galley = self.ctx.fonts_mut(|fonts| fonts.layout_job(job));
-                slot.insert(Arc::clone(&galley));
-                galley
-            }
+        if let Some(hit) = self.galleys.get(&key) {
+            self.reused += 1;
+            return Arc::clone(hit);
         }
+        self.shaped += 1;
+        let mut job =
+            LayoutJob::simple(req.text.to_owned(), font, Color32::PLACEHOLDER, wrap_width);
+        job.wrap.max_rows = max_rows;
+        job.wrap.break_anywhere = break_anywhere;
+        job.wrap.overflow_character = overflow;
+        let galley = self.ctx.fonts_mut(|fonts| fonts.layout_job(job));
+        self.galleys.insert(key, Arc::clone(&galley));
+        galley
     }
 }
 
@@ -282,6 +321,15 @@ mod tests {
 
         fn shaper_with(&self, typography: Typography) -> GalleyShaper {
             GalleyShaper::with_typography(self.0.clone(), typography)
+        }
+
+        /// Move this context to a different display scale, the way dragging a
+        /// window between two monitors does. egui applies the new factor at
+        /// the start of the next pass, so a pass is run here.
+        fn set_scale(&self, pixels_per_point: f32) {
+            self.0.set_pixels_per_point(pixels_per_point);
+            pass(&self.0);
+            assert_eq!(self.0.pixels_per_point(), pixels_per_point);
         }
     }
 
@@ -390,6 +438,73 @@ mod tests {
         let _third = s.galley(&r);
         assert_eq!(s.stats().0, 2, "clear() forces a fresh lookup");
         assert_eq!(s.stats().1, 2, "and it is not served from the local map");
+    }
+
+    /// A galley is shaped for a display scale: glyph advances are measured at
+    /// `round(font_size * pixels_per_point)` physical pixels and row heights
+    /// are rounded to whole pixels, so one run answers a different extent at
+    /// 1.0 and at 2.0. The key must carry the scale, or dragging a window
+    /// between two monitors of different scale paints the old monitor's text.
+    #[test]
+    fn a_scale_change_is_a_different_galley() {
+        let h = Headless::new();
+        let mut s = h.shaper();
+        let r = req(
+            "the quick brown fox jumps over the lazy dog",
+            Some(120.0),
+            TextWrap::Wrap,
+        );
+        let at_one = s.text(&r);
+
+        h.set_scale(2.0);
+        // A cold shaper is the ground truth at the new scale.
+        let mut cold = h.shaper();
+        let truth = cold.text(&r);
+        assert_ne!(
+            truth.size, at_one.size,
+            "this run must actually shape differently at the two scales, or \
+             the test cannot tell a stale galley from a fresh one"
+        );
+
+        let served = s.text(&r);
+        assert_eq!(
+            served.size, truth.size,
+            "the warm cache served the 1.0 galley at scale 2.0"
+        );
+        assert!(
+            std::sync::Arc::ptr_eq(&s.galley(&r), &cold.galley(&r)),
+            "the warm cache must hand back the same galley a cold shaper \
+             produces at this scale"
+        );
+    }
+
+    /// The galley cache is keyed by the text, so a list of distinct row labels
+    /// would grow it forever. SC-008's memory clause applies here exactly as
+    /// it does to the measurement cache.
+    #[test]
+    fn shaping_many_distinct_runs_stays_inside_the_bound() {
+        let h = Headless::new();
+        let mut s = h.shaper();
+        s.set_capacity(64);
+        for row in 0..5_000 {
+            let text = format!("fiber {row} — running");
+            s.galley(&req(&text, Some(200.0), TextWrap::Wrap));
+        }
+        assert_eq!(s.capacity(), 64);
+        assert!(
+            s.evictions() >= 5_000 - 64,
+            "evicted only {}, so the bound never bit",
+            s.evictions()
+        );
+        // The most recent run is still resident: eviction follows use.
+        let last = format!("fiber {} — running", 4_999);
+        let before = s.stats();
+        s.galley(&req(&last, Some(200.0), TextWrap::Wrap));
+        assert_eq!(
+            s.stats(),
+            (before.0, before.1 + 1),
+            "the newest run is a hit"
+        );
     }
 
     #[test]

@@ -368,7 +368,7 @@ fn axis_rect(
 mod tests {
     use crate::frame::placement::PlacementList;
     use crate::geom::{Axis, Rect, Size};
-    use crate::layout::{Proposal, SizeProposal, Slot};
+    use crate::layout::{MeasureCache, Proposal, SizeProposal, Slot};
     use crate::testing::{GeneratedRows, Harness, MonoContent};
     use crate::tree::{AxisConstraint, Constraints, KeyPath, NodeKind, Props, ViewNode};
 
@@ -915,6 +915,81 @@ mod tests {
             row_count, 21,
             "the enclosing scroll's overscan does not reach inside a surface"
         );
+    }
+
+    /// Scroll the whole 100 000-row list past the viewport and place every
+    /// frame of it, then read the measurement cache.
+    ///
+    /// Returns `(entries, hits, misses, evictions)`.
+    fn scroll_the_whole_list(capacity: usize) -> (usize, u64, u64, u64) {
+        let mut h = Harness::with(MonoContent::new(), GeneratedRows::new("fibers", 100_000));
+        h.cache.set_capacity(capacity);
+        let tree = scroll_with_collection(100_000, 24.0, 64.0);
+        let rect = Rect::new(0.0, 0.0, 200.0, 400.0);
+        // 5 000 frames a viewport apart covers 2 400 000 units, which is the
+        // full 100 000 rows at 24 units each: every row is measured once.
+        for frame in 0..5_000 {
+            h.set_scroll("/list", frame as f32 * 480.0);
+            let mut path = KeyPath::root();
+            let mut sink = PlacementList::new();
+            crate::layout::place(&tree, &mut h.ctx(), &mut path, Slot::new(rect), &mut sink);
+        }
+        let (hits, misses) = h.cache.stats();
+        (h.cache.len(), hits, misses, h.cache.evictions())
+    }
+
+    /// SC-008's memory clause: "memory that does not grow with total row
+    /// count". The measurement cache is keyed per node id, so before it was
+    /// bounded this run left one entry per row ever scrolled past — 100 001
+    /// entries for 100 000 rows, climbing by 20 every frame.
+    #[test]
+    fn scrolling_a_whole_collection_leaves_the_measure_cache_bounded() {
+        let capacity = MeasureCache::DEFAULT_CAPACITY;
+        let (entries, _, misses, evictions) = scroll_the_whole_list(capacity);
+        assert!(
+            entries <= capacity,
+            "cache holds {entries} entries, over its {capacity}-entry bound"
+        );
+        assert!(
+            misses > 100_000,
+            "the run must actually measure the whole list, not a corner of it: \
+             {misses} misses"
+        );
+        assert!(
+            evictions > 0,
+            "nothing was evicted, so this run never reached the bound and \
+             proves nothing"
+        );
+    }
+
+    /// Bounding the cache must not cost a hit: the working set of one frame,
+    /// and of the frame before it, is orders of magnitude below the default
+    /// bound, so the LRU only ever drops rows that have left the window.
+    ///
+    /// The control is the same run with the bound effectively removed. Equal
+    /// hit and miss counts is the strongest available statement — not "the
+    /// rate is still good", but "eviction changed nothing except memory".
+    #[test]
+    fn the_default_bound_costs_no_cache_hits() {
+        let bounded = scroll_the_whole_list(MeasureCache::DEFAULT_CAPACITY);
+        let unbounded = scroll_the_whole_list(usize::MAX);
+        assert_eq!(
+            (bounded.1, bounded.2),
+            (unbounded.1, unbounded.2),
+            "bounded (hits, misses) must equal unbounded's"
+        );
+        assert!(bounded.1 > 0, "a run with no hits would prove nothing");
+        assert!(
+            bounded.0 <= MeasureCache::DEFAULT_CAPACITY,
+            "bounded run holds {} entries",
+            bounded.0
+        );
+        assert!(
+            unbounded.0 > 100_000,
+            "the control must show the growth this bound removes: {} entries",
+            unbounded.0
+        );
+        assert_eq!(unbounded.3, 0, "the control must not have evicted anything");
     }
 
     #[test]

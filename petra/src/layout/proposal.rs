@@ -5,9 +5,9 @@
 //! makes that affordable, which is why it is part of the vocabulary module
 //! rather than an optimisation bolted on later.
 
-use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
+use crate::cache::LruCache;
 use crate::geom::{Axis, Scale, Size};
 
 /// One axis of a size offer.
@@ -172,18 +172,71 @@ pub struct MeasureKey {
 }
 
 /// Memoized responses for one layout pass family.
-#[derive(Debug, Default)]
+///
+/// Bounded, because the key names a node and a node id is unbounded: a
+/// 100 000-row virtualized collection would otherwise leave one entry per row
+/// ever scrolled past, which is the growth SC-008 forbids. Eviction is
+/// least-recently-used ([`LruCache`]), which keeps both the multi-probe
+/// entries of the frame in flight and the previous frame's window.
+#[derive(Debug)]
 pub struct MeasureCache {
-    entries: HashMap<MeasureKey, Size>,
+    entries: LruCache<MeasureKey, Size>,
     hits: u64,
     misses: u64,
 }
 
+impl Default for MeasureCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MeasureCache {
-    /// An empty cache.
+    /// Entries a cache from [`MeasureCache::new`] holds.
+    ///
+    /// One frame's working set is what has to fit: every (node, proposal) pair
+    /// the pass probes, which for a virtualized tree is the visible window
+    /// plus overscan times the probes each parent makes — tens to low
+    /// hundreds, not thousands. The default is far above that so the bound
+    /// never costs a hit in an ordinary frame, and small enough that a full
+    /// cache is on the order of a megabyte. A host with a denser tree raises
+    /// it with [`MeasureCache::with_capacity`]; a host that wants to know
+    /// whether it needs to reads [`MeasureCache::evictions`].
+    pub const DEFAULT_CAPACITY: usize = 8192;
+
+    /// An empty cache bounded to [`MeasureCache::DEFAULT_CAPACITY`] entries.
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        Self::with_capacity(Self::DEFAULT_CAPACITY)
+    }
+
+    /// An empty cache bounded to `capacity` entries.
+    #[must_use]
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            entries: LruCache::with_capacity(capacity),
+            hits: 0,
+            misses: 0,
+        }
+    }
+
+    /// The entry bound in force.
+    #[must_use]
+    pub fn capacity(&self) -> usize {
+        self.entries.capacity()
+    }
+
+    /// Change the entry bound, evicting immediately if it shrank.
+    pub fn set_capacity(&mut self, capacity: usize) {
+        self.entries.set_capacity(capacity);
+    }
+
+    /// Entries dropped to stay inside the bound since construction. A number
+    /// that climbs every frame means the bound is below this tree's working
+    /// set and the cache is thrashing.
+    #[must_use]
+    pub fn evictions(&self) -> u64 {
+        self.entries.evictions()
     }
 
     /// Look up a response without computing one, counting the hit or miss.
@@ -192,10 +245,10 @@ impl MeasureCache {
     /// `get_or_insert_with`: the compute step re-enters layout with the same
     /// context that owns this cache, and a closure would hold the borrow.
     pub fn peek(&mut self, key: &MeasureKey) -> Option<Size> {
-        match self.entries.get(key) {
+        match self.entries.get(key).copied() {
             Some(hit) => {
                 self.hits += 1;
-                Some(*hit)
+                Some(hit)
             }
             None => {
                 self.misses += 1;
