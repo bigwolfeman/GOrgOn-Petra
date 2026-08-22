@@ -211,6 +211,13 @@ const MAX_DEEP_EXPONENT: f64 = 2.1;
 /// bigger tree, and refuses anything carrying a per-node term.
 const MAX_CHANGE_EXPONENT: f64 = 0.35;
 
+/// Rows per panel in every H2 change-size experiment.
+const ROWS: usize = 32;
+/// Panel count for the H2 experiments that hold the tree fixed (H2a and
+/// Sabotage) and for the shipping cache bound below. H2c varies panel count
+/// itself and does not use this.
+const PANELS: usize = 128;
+
 // ---------------------------------------------------------------- tree shapes
 
 /// One text leaf. The character count is what the fake shaper turns into a
@@ -703,20 +710,20 @@ fn main() {
         .expect("bench thread");
 }
 
-#[allow(clippy::too_many_lines)]
-fn run() {
-    println!(
-        "petra layout negotiation: exponent e in cost ~ N^e. The exponent is the claim — it is \
-         dimensionless and survives a loaded machine. The absolute times are context and are not."
-    );
-
+/// H1: cold negotiation against node count, for the three tree shapes.
+/// Returns the three exponents `run` enforces bounds on below.
+fn h1_phase() -> (Option<f64>, Option<f64>, Option<f64>) {
     let e_wide = h1("wide stack", &[512, 1024, 2048, 4096, 8192], wide);
     let e_grid = h1("grid      ", &[24, 34, 48, 68, 96], grid);
     let e_deep = h1("deep chain", &[128, 256, 512, 1024], deep);
+    (e_wide, e_grid, e_deep)
+}
 
-    // H1d: the same node count at four depths. If the chain's exponent were
-    // recursion overhead, holding the node count fixed would hold the cost
-    // fixed too.
+/// H1d: the same node count at four depths. If the chain's exponent were
+/// recursion overhead, holding the node count fixed would hold the cost
+/// fixed too. Informational only — nothing here crosses into `run`'s bound
+/// checks.
+fn h1d_phase() {
     println!("\nH1d depth at a held node count: about 4 000 nodes, fan-out traded for depth");
     for (depth, fanout) in [(1usize, 4094usize), (2, 63), (5, 5), (11, 2)] {
         let tree = balanced(depth, fanout);
@@ -727,9 +734,12 @@ fn run() {
             elapsed.as_secs_f64() * 1e9 / nodes as f64
         );
     }
+}
 
-    // H1s: the severing. Key length is the only thing that changes, so a cost
-    // that follows it is a cost paid per character of `KeyPath::id()`.
+/// H1s: the severing. Key length is the only thing that changes, so a cost
+/// that follows it is a cost paid per character of `KeyPath::id()`.
+/// Informational only.
+fn h1s_phase() {
     println!("\nH1s severing the chain's depth term: the same shape with shorter keys");
     for key_len in [1usize, 6, 24] {
         let mut points: Vec<(usize, Duration)> = Vec::new();
@@ -754,10 +764,13 @@ fn run() {
         chain_id_len(1024, 6),
         chain_id_len(1024, 1)
     );
+}
 
-    // ---- H2: cost against change size, tree held fixed.
-    const ROWS: usize = 32;
-    const PANELS: usize = 128;
+/// H2a: cost against change size k, tree held fixed at `PANELS` x `ROWS`.
+/// Returns the unwitnessed leaf's post-change width from the `k=0` run, which
+/// [`sabotage_phase`] prints alongside its own staleness numbers rather than
+/// re-running the same measurement a second time.
+fn h2a_phase() -> f32 {
     let fixed_nodes = node_count(&panelled(PANELS, ROWS));
     println!(
         "\nH2a change size at a fixed tree: {PANELS} panels x {ROWS} rows = {fixed_nodes} nodes. \
@@ -795,8 +808,13 @@ fn run() {
         slope(&path_re),
         slope(&path_inv)
     );
+    floor.changed_width
+}
 
-    // ---- H2c: FR-035 stated exactly. One leaf changes; the tree grows.
+/// H2c: FR-035 stated exactly. One leaf changes; the tree grows around it.
+/// Returns the incremental column's exponent, which is the one `run` checks
+/// FR-035's bound against.
+fn h2c_phase() -> Option<f64> {
     println!("\nH2c FR-035 exactly: ONE leaf changes, the tree grows around it. Target: flat.");
     let mut one_global: Vec<(usize, Duration)> = Vec::new();
     let mut one_path: Vec<(usize, Duration)> = Vec::new();
@@ -851,9 +869,13 @@ fn run() {
         slope(&one_floor),
         slope(&one_incremental)
     );
-    let e_change = exponent(&one_incremental);
+    exponent(&one_incremental)
+}
 
-    // ---- Sabotage: sever a known cause; the number must move the way it must.
+/// Sabotage: sever a known cause and check the number moves the way it must.
+/// `floor_width` is the `k=0` leaf width [`h2a_phase`] already measured;
+/// threading it in keeps this from re-running that measurement.
+fn sabotage_phase(floor_width: f32) {
     println!("\nSabotage: sever a known cause and check the number moves.");
     let control = median(ROUNDS, Change::total, || {
         change(PANELS, ROWS, 1, Policy::Path)
@@ -877,7 +899,7 @@ fn run() {
     println!(
         "  staleness: path w={:.0} (correct), leaf-only w={:.0}, no invalidation w={:.0}, \
          before the edit w={:.0}.",
-        control.changed_width, leaf_only.changed_width, floor.changed_width, control.width_before
+        control.changed_width, leaf_only.changed_width, floor_width, control.width_before
     );
     assert!(
         control.changed_width > control.width_before,
@@ -889,10 +911,13 @@ fn run() {
         "invalidating only the leaf must leave the frame stale: its ancestors stay cached \
          and `measure` returns at the root"
     );
+}
 
-    // ---- The shipping cache bound, against the same tree. Every number
-    // above comes from a cache sized well past the working set, so it
-    // measures negotiation; this is what the shipped default does instead.
+/// The shipping cache bound, against the same tree. Every number above comes
+/// from a cache sized well past the working set, so it measures negotiation;
+/// this is what the shipped default does instead. Informational only.
+fn shipping_bound_phase() {
+    let fixed_nodes = node_count(&panelled(PANELS, ROWS));
     let tree = panelled(PANELS, ROWS);
     let unbounded_cold = median_dur(ROUNDS, || cold(&tree, fixed_nodes));
     let mut bounded = Harness::new();
@@ -913,6 +938,21 @@ fn run() {
          {at_default:.2?} at the default, on {} evictions.",
         bounded.cache.evictions()
     );
+}
+
+fn run() {
+    println!(
+        "petra layout negotiation: exponent e in cost ~ N^e. The exponent is the claim — it is \
+         dimensionless and survives a loaded machine. The absolute times are context and are not."
+    );
+
+    let (e_wide, e_grid, e_deep) = h1_phase();
+    h1d_phase();
+    h1s_phase();
+    let floor_width = h2a_phase();
+    let e_change = h2c_phase();
+    sabotage_phase(floor_width);
+    shipping_bound_phase();
 
     if cfg!(debug_assertions) {
         println!("\n(debug build: numbers printed, bounds enforced in release only)");

@@ -57,6 +57,26 @@ impl ColorSource for ThemeSnapshot {
     }
 }
 
+/// Resolve `token` to a colour, or record it unresolved and return `None`.
+///
+/// This is the "look up a token, or note that it did not resolve" idiom
+/// shared by the focus-ring bands and the background/border fills: all three
+/// skip drawing on a miss and none of them guess. Text does not use this —
+/// it draws [`Color32::PLACEHOLDER`] and keeps going, because a blank paint
+/// is worse than a visibly wrong one for text, and folding that fourth site
+/// in here would erase the difference on purpose.
+fn resolve_or_record(
+    colors: &dyn ColorSource,
+    token: &str,
+    report: &mut PaintReport,
+) -> Option<Color32> {
+    let color = colors.color(token);
+    if color.is_none() {
+        report.unresolved_tokens.insert(token.to_owned());
+    }
+    color
+}
+
 /// What one paint pass did, and what it could not do.
 ///
 /// The counts are the accounting that makes a missing panel visible. The
@@ -224,8 +244,7 @@ fn paint_focus_ring(
     let factor = scale.factor();
     let mut drawn = false;
     for band in FocusRing::STANDARD.bands(placement.rect) {
-        let Some(color) = colors.color(band.token) else {
-            report.unresolved_tokens.insert(band.token.to_owned());
+        let Some(color) = resolve_or_record(colors, band.token, report) else {
             continue;
         };
         let rect = to_egui_snapped(band.rect, scale);
@@ -270,28 +289,18 @@ fn paint_one(
         }
     }
 
-    if let Some(token) = content.tokens.get(BACKGROUND_SLOT) {
-        match colors.color(token) {
-            Some(color) => {
-                painter.rect_filled(rect, 0.0, color);
-                report.fills += 1;
-                shapes += 1;
-            }
-            None => {
-                report.unresolved_tokens.insert(token.clone());
-            }
-        }
+    if let Some(token) = content.tokens.get(BACKGROUND_SLOT)
+        && let Some(color) = resolve_or_record(colors, token, report)
+    {
+        painter.rect_filled(rect, 0.0, color);
+        report.fills += 1;
+        shapes += 1;
     }
-    if let Some(token) = content.tokens.get(BORDER_SLOT) {
-        match colors.color(token) {
-            Some(color) => {
-                painter.rect_stroke(rect, 0.0, Stroke::new(1.0, color), egui::StrokeKind::Inside);
-                shapes += 1;
-            }
-            None => {
-                report.unresolved_tokens.insert(token.clone());
-            }
-        }
+    if let Some(token) = content.tokens.get(BORDER_SLOT)
+        && let Some(color) = resolve_or_record(colors, token, report)
+    {
+        painter.rect_stroke(rect, 0.0, Stroke::new(1.0, color), egui::StrokeKind::Inside);
+        shapes += 1;
     }
 
     if let Some(text) = &content.text {
