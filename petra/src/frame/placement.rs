@@ -53,6 +53,17 @@ pub struct PlacementSemantics {
     pub label: Option<String>,
     /// Current value for inputs and status readouts.
     pub value: Option<String>,
+    /// Whether this node holds keyboard focus in the state snapshot this
+    /// frame was placed from.
+    ///
+    /// Unlike every other flag here this one **is** a digest input: the
+    /// painter draws a focus ring from it, so two frames differing only in
+    /// which node is focused are two different pictures
+    /// (`contracts/frame-identity.md`, §3). Projected from
+    /// [`crate::layout::LayoutState::focused`] by
+    /// [`crate::layout::semantics_of`]; the focus tree owns focus and this is
+    /// its per-placement projection, never a place to write.
+    pub focused: bool,
     /// Declared disabled state.
     pub disabled: bool,
     /// Declared selected state.

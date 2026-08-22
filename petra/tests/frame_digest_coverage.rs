@@ -21,7 +21,7 @@ use gorgon_petra::frame::{FrameDigest, PetrifiedFrame, TransitionActivity, Viewp
 use gorgon_petra::geom::Size;
 use gorgon_petra::testing::Harness;
 use gorgon_petra::token::ThemeMode;
-use gorgon_petra::tree::{NodeKind, Props, TextWrap, ViewNode};
+use gorgon_petra::tree::{Interaction, NodeKind, Props, Role, TextWrap, ViewNode};
 
 fn frame(tree: &ViewNode) -> PetrifiedFrame {
     let mut harness = Harness::new();
@@ -258,4 +258,111 @@ fn a_payload_carrying_tree_digests_identically_a_hundred_times() {
     for _ in 0..100 {
         assert_eq!(dig(&tree), first);
     }
+}
+
+// --- Keyboard focus -------------------------------------------------------
+//
+// `gorgon-petra-egui` paints a focus ring, so which node holds keyboard focus
+// decides the picture. It is the one member of `PlacementSemantics` the digest
+// covers, and covering it is why the frame prefix is `v3`. Before that, a
+// screenshot consumer verifying `(seq, digest)` would have accepted a capture
+// of the wrong node ringed.
+
+/// The same tree, placed from a state that focuses `id`.
+fn frame_focused(tree: &ViewNode, id: Option<&str>) -> PetrifiedFrame {
+    let mut harness = Harness::new();
+    harness.state.focused = id.map(str::to_owned);
+    petrify(
+        1,
+        tree,
+        &mut harness.ctx(),
+        Viewport::new(Size::new(400.0, 200.0), ThemeMode::Dark),
+        TransitionActivity::default(),
+    )
+}
+
+/// Two focusable siblings, laid out identically whatever holds focus.
+fn two_buttons() -> ViewNode {
+    let button = |key: &str, label: &'static str| {
+        ViewNode::new(NodeKind::Text, key)
+            .with_props(Props {
+                text: Some(label.into()),
+                ..Props::default()
+            })
+            .interactive(
+                Role::Button,
+                label,
+                &[Interaction::Click, Interaction::Focus],
+            )
+    };
+    ViewNode::new(NodeKind::Stack, "root")
+        .child(button("run", "Run"))
+        .child(button("stop", "Stop"))
+}
+
+/// Assert two focus states are two frames, and that only focus moved — a
+/// digest that separated them by noticing a moved rect would prove nothing.
+fn differs_on_focus_alone(what: &str, a: Option<&str>, b: Option<&str>) {
+    let tree = two_buttons();
+    let (fa, fb) = (frame_focused(&tree, a), frame_focused(&tree, b));
+    let rects = |f: &PetrifiedFrame| -> Vec<(String, gorgon_petra::geom::Rect)> {
+        f.placements
+            .iter()
+            .map(|p| (p.id.clone(), p.rect))
+            .collect()
+    };
+    assert_eq!(
+        rects(&fa),
+        rects(&fb),
+        "{what}: the two frames lay out differently, so this case cannot tell \
+         whether the digest sees focus or only geometry"
+    );
+    assert_ne!(
+        fa.digest, fb.digest,
+        "{what} decides the picture — a focus ring is painted from it — and \
+         the frame digest cannot see it"
+    );
+}
+
+#[test]
+fn focusing_a_node_moves_the_digest() {
+    differs_on_focus_alone("nothing focused vs /root/run", None, Some("/root/run"));
+}
+
+#[test]
+fn moving_focus_between_two_nodes_moves_the_digest() {
+    differs_on_focus_alone(
+        "/root/run vs /root/stop",
+        Some("/root/run"),
+        Some("/root/stop"),
+    );
+}
+
+/// The flag names one node. A focused frame that marked every placement would
+/// pass both tests above and ring the whole window.
+#[test]
+fn exactly_the_focused_placement_carries_the_flag() {
+    let frame = frame_focused(&two_buttons(), Some("/root/stop"));
+    let flagged: Vec<&str> = frame
+        .placements
+        .iter()
+        .filter(|p| p.semantics.focused)
+        .map(|p| p.id.as_str())
+        .collect();
+    assert_eq!(flagged, ["/root/stop"]);
+    assert_eq!(frame.placements.len(), 3, "root plus two buttons");
+
+    let none = frame_focused(&two_buttons(), None);
+    assert!(none.placements.iter().all(|p| !p.semantics.focused));
+}
+
+/// A focused id naming a node this frame does not contain leaves every
+/// placement unflagged — and leaves the digest equal to the unfocused frame,
+/// because the picture is the same one.
+#[test]
+fn a_focused_id_outside_the_frame_rings_nothing() {
+    let tree = two_buttons();
+    let stale = frame_focused(&tree, Some("/root/gone"));
+    assert!(stale.placements.iter().all(|p| !p.semantics.focused));
+    assert_eq!(stale.digest, frame_focused(&tree, None).digest);
 }

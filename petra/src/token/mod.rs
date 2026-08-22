@@ -3,10 +3,12 @@
 //! Feature code references token *names*; a theme resolves names to values,
 //! and exactly one immutable snapshot is in force for any one frame (FR-013,
 //! FR-014, FR-016). The status subset pairs every colour with a shape or text
-//! channel, so no state is conveyed by colour alone (FR-015).
+//! channel, so no state is conveyed by colour alone (FR-015); [`focus`] is the
+//! same rule applied to keyboard focus, which is a status too.
 
 use serde::{Deserialize, Serialize};
 
+pub mod focus;
 pub mod name;
 pub mod presenter;
 pub mod selection;
@@ -17,6 +19,7 @@ pub mod theme;
 pub mod value;
 pub mod vocabulary;
 
+pub use focus::{FocusBand, FocusRing};
 pub use name::{TokenName, TokenNameError};
 pub use presenter::Presenter;
 pub use selection::ThemeSelection;

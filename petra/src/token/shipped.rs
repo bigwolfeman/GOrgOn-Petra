@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 
 use crate::token::ThemeMode;
+use crate::token::focus::{HALO_TOKEN, RING_TOKEN};
 use crate::token::name::TokenName;
 use crate::token::status::{StatusShape, StatusToken};
 use crate::token::theme::Theme;
@@ -50,7 +51,14 @@ pub fn standard_vocabulary() -> Vocabulary {
         .declare(DesignToken::new(name("motion.fast"), TokenKind::Motion))
         .declare(DesignToken::new(name("motion.slow"), TokenKind::Motion))
         .declare(DesignToken::new(name("shape.corner-sm"), TokenKind::Shape))
-        .declare(DesignToken::new(name("shape.corner-lg"), TokenKind::Shape));
+        .declare(DesignToken::new(name("shape.corner-lg"), TokenKind::Shape))
+        // The keyboard focus ring (FR-015, FR-025). Two colours, because the
+        // ring is an ink band flanked by two paper halos: see
+        // `crate::token::focus` for why one band cannot be enough, and
+        // `the_focus_ring_is_visible_over_any_surface` below for the
+        // measurement that holds the pair to it.
+        .declare(DesignToken::new(name(RING_TOKEN), TokenKind::Color))
+        .declare(DesignToken::new(name(HALO_TOKEN), TokenKind::Color));
 
     // The status subset (FR-015): colour, shape, and text together. Shape
     // and text are mode-independent — only the colour painted into the
@@ -154,6 +162,21 @@ pub fn light() -> Theme {
     // between L* 0 and roughly L* 62 to clear 3:1 against the background;
     // the separation therefore comes from spreading them across that band
     // rather than from hue, which red-green colour blindness collapses.
+    // The focus ring, light mode: ink core, paper halos. Both are
+    // achromatic on purpose — the indicator must not depend on hue at all,
+    // and a grey pair is the one choice red-green colour blindness cannot
+    // touch. The two are ~18:1 apart, and between them they cover every
+    // possible background: see `the_focus_ring_is_visible_over_any_surface`,
+    // which sweeps the luminance range rather than trusting this comment.
+    values.insert(
+        name(RING_TOKEN),
+        TokenValue::Color(ColorValue::from_srgb8(0x14, 0x14, 0x14, 0xff)),
+    );
+    values.insert(
+        name(HALO_TOKEN),
+        TokenValue::Color(ColorValue::from_srgb8(0xff, 0xff, 0xff, 0xff)),
+    );
+
     values.insert(
         name("status.ok"),
         TokenValue::Color(ColorValue::from_srgb8(0x40, 0x96, 0x88, 0xff)),
@@ -236,6 +259,17 @@ pub fn dark() -> Theme {
         }),
     );
 
+    // The focus ring, dark mode: the ink/paper pair inverted, so the core
+    // still reads as the drawn line and the halos as the ground around it.
+    values.insert(
+        name(RING_TOKEN),
+        TokenValue::Color(ColorValue::from_srgb8(0xf2, 0xf2, 0xf2, 0xff)),
+    );
+    values.insert(
+        name(HALO_TOKEN),
+        TokenValue::Color(ColorValue::from_srgb8(0x05, 0x05, 0x05, 0xff)),
+    );
+
     values.insert(
         name("status.ok"),
         TokenValue::Color(ColorValue::from_srgb8(0x29, 0x8e, 0x86, 0xff)),
@@ -256,6 +290,7 @@ pub fn dark() -> Theme {
 mod tests {
     use super::{dark, light, standard_vocabulary};
     use crate::token::ThemeMode;
+    use crate::token::focus::{HALO_TOKEN, RING_TOKEN};
     use crate::token::name::TokenName;
     use crate::token::value::{ColorValue, TokenValue};
 
@@ -270,6 +305,12 @@ mod tests {
     /// on, as a WCAG contrast ratio. Without this a palette could win the
     /// separation test by being invisible in three different ways.
     const MIN_SURFACE_CONTRAST: f32 = 3.0;
+
+    /// The floor the focus ring's two bands must clear against *each other*.
+    /// Higher than [`MIN_SURFACE_CONTRAST`] on purpose: the pair is there to
+    /// cover the whole luminance range between them, and two bands only 3:1
+    /// apart leave a band of surface colours that hides both.
+    const MIN_RING_BAND_SEPARATION: f32 = 7.0;
 
     /// Viénot-Brettel-Mollon reduced matrices, applied to *linear* RGB.
     /// Deuteranopia (no green cone) and protanopia (no red cone) are both
@@ -383,6 +424,117 @@ mod tests {
                         );
                     }
                 }
+            }
+        }
+    }
+
+    /// FR-015 for keyboard focus: the ring must be legible over whatever it
+    /// lands on, and it must not need hue to be so.
+    ///
+    /// `crate::token::focus` arranges the ring as halo/core/halo, so each of
+    /// the two surfaces the ring can touch — the focused node's own fill
+    /// inside its edge, whatever is behind the node outside it — carries one
+    /// band of each colour. The claim this test measures is therefore about a
+    /// *single* surface: for any colour at all, at least one of the pair
+    /// clears [`MIN_SURFACE_CONTRAST`] against it.
+    ///
+    /// The sweep is over luminance rather than over the shipped palette,
+    /// because WCAG contrast is a function of luminance alone: covering
+    /// `0.0..=1.0` covers every colour that exists, including whatever a
+    /// feature author's own theme binds to a node's `background`. The shipped
+    /// palette is then checked as well, so a failure names a real token.
+    #[test]
+    fn the_focus_ring_is_visible_over_any_surface() {
+        for (label, theme) in [("light", light()), ("dark", dark())] {
+            let core = theme_color(&theme, RING_TOKEN);
+            let halo = theme_color(&theme, HALO_TOKEN);
+
+            // Every colour that exists, by luminance. `grey` is built in
+            // linear light directly, which is the space `relative_luminance`
+            // reads, so stepping it steps luminance uniformly.
+            for step in 0..=200 {
+                let y = step as f32 / 200.0;
+                let grey = ColorValue {
+                    r: y,
+                    g: y,
+                    b: y,
+                    a: 1.0,
+                };
+                let best = contrast(core, grey).max(contrast(halo, grey));
+                assert!(
+                    best >= MIN_SURFACE_CONTRAST,
+                    "{label}: a surface at luminance {y:.3} hides the whole \
+                     focus ring — core {:.2}:1, halo {:.2}:1, floor is \
+                     {MIN_SURFACE_CONTRAST}. The pair must straddle the \
+                     luminance range: one band light enough for dark ground, \
+                     one dark enough for light ground.",
+                    contrast(core, grey),
+                    contrast(halo, grey),
+                );
+            }
+
+            // Named surfaces, so a regression points at a token.
+            for token in [
+                "surface.base",
+                "surface.raised",
+                "text.primary",
+                "text.muted",
+                "status.ok",
+                "status.degraded",
+                "status.down",
+            ] {
+                let under = theme_color(&theme, token);
+                let best = contrast(core, under).max(contrast(halo, under));
+                assert!(
+                    best >= MIN_SURFACE_CONTRAST,
+                    "{label}: a node bound to {token} hides the focus ring \
+                     ({best:.2}:1, floor is {MIN_SURFACE_CONTRAST})"
+                );
+            }
+
+            // The two bands must also read against each other, or the ring is
+            // one thick band and the halos buy nothing.
+            assert!(
+                contrast(core, halo) >= MIN_RING_BAND_SEPARATION,
+                "{label}: the ring's core and halo are only {:.2}:1 apart",
+                contrast(core, halo)
+            );
+
+            // No hue, so no hue to lose. This is the strongest form of "not
+            // by colour alone" available: red-green colour blindness cannot
+            // move an achromatic pair at all, and the assertions below prove
+            // it by re-running the separation through both simulations.
+            for (what, c) in [("core", core), ("halo", halo)] {
+                assert!(
+                    (c.r - c.g).abs() < 1e-6 && (c.g - c.b).abs() < 1e-6,
+                    "{label}: the ring's {what} is not achromatic ({c:?}); a \
+                     focus indicator must not spend hue it may not have"
+                );
+            }
+            for (vision, matrix) in [("deuteranope", &DEUTERANOPE), ("protanope", &PROTANOPE)] {
+                let seen = |c: ColorValue| {
+                    let v = simulate(c, matrix);
+                    ColorValue {
+                        r: v[0],
+                        g: v[1],
+                        b: v[2],
+                        a: 1.0,
+                    }
+                };
+                let (c, h) = (seen(core), seen(halo));
+                assert!(
+                    contrast(c, h) >= MIN_RING_BAND_SEPARATION,
+                    "{label}: to a {vision} reader the ring's bands are only \
+                     {:.2}:1 apart",
+                    contrast(c, h)
+                );
+                assert!(
+                    delta_e(
+                        to_lab(simulate(core, matrix)),
+                        to_lab(simulate(halo, matrix))
+                    ) >= MIN_STATUS_SEPARATION,
+                    "{label}: the ring's bands collapse together for a {vision} reader"
+                );
             }
         }
     }

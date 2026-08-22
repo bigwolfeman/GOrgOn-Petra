@@ -12,7 +12,7 @@ use egui::{Color32, Painter, Rgba, Stroke};
 use gorgon_petra::frame::{PaintContent, PetrifiedFrame, Placement, round_rect};
 use gorgon_petra::geom::{Rect as PetraRect, Scale};
 use gorgon_petra::layout::TextRequest;
-use gorgon_petra::token::{ThemeSnapshot, TokenName, TokenValue};
+use gorgon_petra::token::{FocusRing, ThemeSnapshot, TokenName, TokenValue};
 
 use crate::text::GalleyShaper;
 
@@ -96,6 +96,13 @@ pub struct PaintReport {
     pub fills: usize,
     /// Text runs drawn.
     pub texts: usize,
+    /// Focus rings drawn: focused placements that got at least one band.
+    pub focus_rings: usize,
+    /// **Focused placements that got no ring at all.** Keyboard operation
+    /// nobody can see is the defect the ring exists to close, so this is a
+    /// failed pass and not a note in a set: it is the one way a frame can be
+    /// fully drawn and still leave the operator blind.
+    pub blind_focus: usize,
     /// Token names no colour could be found for, sorted.
     pub unresolved_tokens: BTreeSet<String>,
     /// Content kinds this pass has no painter for, sorted.
@@ -121,6 +128,7 @@ impl PaintReport {
     pub fn is_complete(&self) -> bool {
         !self.desynced
             && self.silent == 0
+            && self.blind_focus == 0
             && self.drawn + self.skipped_clipped + self.empty == self.placements
     }
 }
@@ -155,6 +163,11 @@ pub fn paint_frame(
         ..PaintReport::default()
     };
     let scale = frame.viewport.scale;
+    // At most one node holds focus, so this stays empty on almost every
+    // frame and allocates nothing. The rings are drawn after the loop rather
+    // than inside it because a ring reaches outside its node's rect, and a
+    // later sibling's fill would paint over one drawn in tree order.
+    let mut focused: Vec<&Placement> = Vec::new();
     for (placement, content) in frame.paint_pairs() {
         let clip = to_egui_snapped(placement.clip, scale);
         if !clip.is_positive() {
@@ -173,8 +186,67 @@ pub fn paint_frame(
             Outcome::Empty => report.empty += 1,
             Outcome::Silent => report.silent += 1,
         }
+        if placement.semantics.focused {
+            focused.push(placement);
+        }
+    }
+    for placement in focused {
+        let mut p = painter.with_clip_rect(to_egui_snapped(placement.clip, scale));
+        p.set_opacity(placement.opacity.clamp(0.0, 1.0));
+        if paint_focus_ring(&p, placement, colors, scale, &mut report) {
+            report.focus_rings += 1;
+        } else {
+            report.blind_focus += 1;
+        }
     }
     report
+}
+
+/// Draw the focus ring around one focused placement, and report whether any
+/// of it landed.
+///
+/// The geometry is [`FocusRing`]'s, in `gorgon-petra`: how thick the ring is
+/// and where it sits relative to the node is a design decision a second
+/// renderer has to reproduce, so it does not live in this crate (D-069). What
+/// lives here is three strokes.
+///
+/// The ring is clipped exactly as its node is. A node whose clip is its own
+/// rect — a frame root, or a child filling its scroll viewport — therefore
+/// keeps only the half of the ring inside its edge, which is why the core
+/// band straddles that edge rather than sitting outside it.
+fn paint_focus_ring(
+    painter: &Painter,
+    placement: &Placement,
+    colors: &dyn ColorSource,
+    scale: Scale,
+    report: &mut PaintReport,
+) -> bool {
+    let factor = scale.factor();
+    let mut drawn = false;
+    for band in FocusRing::STANDARD.bands(placement.rect) {
+        let Some(color) = colors.color(band.token) else {
+            report.unresolved_tokens.insert(band.token.to_owned());
+            continue;
+        };
+        let rect = to_egui_snapped(band.rect, scale);
+        if !rect.is_positive() {
+            // The inner halo collapses on a node thinner than the ring. The
+            // outer bands still draw, so this is not a blind focus.
+            continue;
+        }
+        // A whole number of device pixels, for the same reason the rects are
+        // snapped: a 2-unit stroke at scale 1.25 is 2.5 device pixels, and
+        // half a pixel of the indicator would be spread into grey.
+        let width = (band.width * factor).round().max(1.0) / factor;
+        painter.rect_stroke(
+            rect,
+            0.0,
+            Stroke::new(width, color),
+            egui::StrokeKind::Middle,
+        );
+        drawn = true;
+    }
+    drawn
 }
 
 fn paint_one(
@@ -656,6 +728,168 @@ mod tests {
         // The text still painted, so the placement is drawn, not silent — the
         // unknown slot is a gap in the painter, not a lost placement.
         assert_eq!(report.drawn, 1, "{report:?}");
+    }
+
+    // --- Focus ------------------------------------------------------------
+    //
+    // Keyboard focus that cannot be seen is not usable, and until this ring
+    // existed a focused node painted exactly the shapes an unfocused one did:
+    // `scratch_a_focused_node_paints_the_same_shapes` asserted that equality
+    // and passed. The tests below are that test inverted, and they count the
+    // shapes egui actually received rather than trusting the report.
+
+    /// A focusable node, so the state's focused id names something real.
+    fn button() -> ViewNode {
+        use gorgon_petra::tree::{Interaction, Role};
+        ViewNode::new(NodeKind::Text, "root")
+            .with_props(Props {
+                text: Some("Run".into()),
+                ..Props::default()
+            })
+            .interactive(
+                Role::Button,
+                "Run",
+                &[Interaction::Click, Interaction::Focus],
+            )
+    }
+
+    /// Paint `node` with `focused` in force, and report both what egui
+    /// received and what the pass said about itself.
+    fn paint_focused(
+        node: &ViewNode,
+        focused: Option<&str>,
+        colors: &dyn ColorSource,
+    ) -> (usize, super::PaintReport) {
+        let host = Headless::new();
+        let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
+        h.state.focused = focused.map(str::to_owned);
+        let frame = frame_of(node, &mut h);
+        let mut shaper = host.shaper();
+        let report = paint_frame(&host.painter(), &frame, &mut shaper, colors);
+        let out = host.0.run_ui(RawInput::default(), |_| {});
+        let shapes = out.shapes.len();
+        out.drop_without_applying_deltas();
+        (shapes, report)
+    }
+
+    /// The headline claim: focusing a node changes the picture, by three
+    /// strokes that were not there before.
+    #[test]
+    fn a_focused_node_paints_a_ring_an_unfocused_one_does_not() {
+        let (blind, unfocused) = paint_focused(&button(), None, &snapshot());
+        let (ringed, focused) = paint_focused(&button(), Some("/root"), &snapshot());
+
+        assert!(blind > 0, "the fixture must paint something at all");
+        assert_eq!(
+            ringed,
+            blind + 3,
+            "the ring is three bands — halo, core, halo — and every one of \
+             them must reach egui: {unfocused:?} then {focused:?}"
+        );
+        assert_eq!(focused.focus_rings, 1, "{focused:?}");
+        assert_eq!(focused.blind_focus, 0, "{focused:?}");
+        assert_eq!(unfocused.focus_rings, 0, "{unfocused:?}");
+        assert!(focused.is_complete(), "{focused:?}");
+        assert!(
+            focused.unresolved_tokens.is_empty(),
+            "the shipped theme defines the ring: {focused:?}"
+        );
+    }
+
+    /// FR-015: the indicator must not be a colour swap. Whatever the node
+    /// binds — including nothing at all — the ring is extra geometry on top,
+    /// so the two states differ in shape and not only in hue.
+    #[test]
+    fn the_ring_lands_on_a_node_whatever_background_it_binds() {
+        let plain = ViewNode::new(NodeKind::Text, "root").with_props(Props {
+            text: Some("Run".into()),
+            ..Props::default()
+        });
+        let mut dark_bg = Props {
+            text: Some("Run".into()),
+            ..Props::default()
+        };
+        dark_bg
+            .tokens
+            .insert("background".into(), "surface.base".into());
+        let mut light_bg = Props {
+            text: Some("Run".into()),
+            ..Props::default()
+        };
+        light_bg
+            .tokens
+            .insert("background".into(), "status.degraded".into());
+
+        for (what, node) in [
+            ("no background token", plain),
+            (
+                "a dark background",
+                ViewNode::new(NodeKind::Text, "root").with_props(dark_bg),
+            ),
+            (
+                "a light background",
+                ViewNode::new(NodeKind::Text, "root").with_props(light_bg),
+            ),
+        ] {
+            let (blind, _) = paint_focused(&node, None, &snapshot());
+            let (ringed, report) = paint_focused(&node, Some("/root"), &snapshot());
+            assert_eq!(
+                ringed,
+                blind + 3,
+                "{what}: the ring must be drawn on top of whatever the node \
+                 draws, not instead of it: {report:?}"
+            );
+            assert_eq!(report.focus_rings, 1, "{what}: {report:?}");
+        }
+    }
+
+    /// Only the focused node is ringed. A pass that ringed every placement
+    /// would pass the test above and box the whole window.
+    #[test]
+    fn exactly_one_ring_is_drawn_for_one_focused_node() {
+        let node = ViewNode::new(NodeKind::Stack, "root")
+            .child(button())
+            .child(ViewNode::new(NodeKind::Text, "other").with_props(Props {
+                text: Some("Stop".into()),
+                ..Props::default()
+            }));
+        let (_, report) = paint_focused(&node, Some("/root/root"), &snapshot());
+        assert_eq!(report.placements, 3);
+        assert_eq!(report.focus_rings, 1, "{report:?}");
+    }
+
+    /// A theme with no ring colours leaves keyboard operation blind, and that
+    /// is a failed pass rather than a note in a set. Without this the ring
+    /// could silently stop being drawn and every gate would stay green.
+    #[test]
+    fn a_theme_without_the_ring_tokens_reports_a_blind_focus() {
+        struct NoFocusColors;
+        impl ColorSource for NoFocusColors {
+            fn color(&self, token: &str) -> Option<Color32> {
+                if token.starts_with("focus.") {
+                    return None;
+                }
+                Some(Color32::from_rgb(0x80, 0x80, 0x80))
+            }
+        }
+
+        let (shapes, report) = paint_focused(&button(), Some("/root"), &NoFocusColors);
+        let (blind, _) = paint_focused(&button(), None, &NoFocusColors);
+        assert_eq!(shapes, blind, "no band was drawn: {report:?}");
+        assert_eq!(report.blind_focus, 1, "{report:?}");
+        assert_eq!(report.focus_rings, 0, "{report:?}");
+        assert!(
+            !report.is_complete(),
+            "a focused node with no ring is not a complete pass: {report:?}"
+        );
+        assert!(
+            report.unresolved_tokens.contains("focus.ring"),
+            "{report:?}"
+        );
+        assert!(
+            report.unresolved_tokens.contains("focus.ring-halo"),
+            "{report:?}"
+        );
     }
 
     /// The two arrays are public fields on `PetrifiedFrame`, they are zipped

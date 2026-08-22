@@ -15,7 +15,9 @@
 //! reconciles it with the frame just placed
 //! ([`FocusTree::update`] — the vanished-focus rule) and writes the result to
 //! `LayoutState::focused`, which is what [`gorgon_petra::input::route`] aims
-//! every keyboard event with. Tab and Shift+Tab are consumed here for
+//! every keyboard event with — and what
+//! [`gorgon_petra::frame::PlacementSemantics::focused`], and therefore the
+//! focus ring [`crate::paint`] draws, is projected from. Tab and Shift+Tab are consumed here for
 //! traversal rather than delivered to the application; everything else is
 //! routed. That is the whole of the wiring, and it is deliberately in the
 //! host: `gorgon-petra` decides *what* focus does, this crate decides *when*.
@@ -183,8 +185,9 @@ impl<A: App> Host<A> {
         self.deliver_input(ctx);
         // Input may have moved focus; the negotiation below reads
         // `LayoutState`, so publish it before the frame is measured rather
-        // than after it is painted.
-        self.publish_focus();
+        // than after it is painted. A move published here needs no repaint
+        // request: this pass's own frame is placed from it, ring and all.
+        let _ = self.publish_focus();
 
         // Theme and scale are global inputs to every measurement, so a change
         // to either invalidates wholesale; per-node content revisions are
@@ -250,7 +253,16 @@ impl<A: App> Host<A> {
         let scopes = surface_scopes(&tree);
         self.focus = self.focus.update(&frame.placements, &scopes);
         self.enter_open_modal(&frame, &scopes);
-        self.publish_focus();
+        if self.publish_focus() {
+            // The frame just painted was placed from the *previous* focus, so
+            // its ring is on the wrong node or on none at all. Both moves that
+            // reach here happen after petrify by necessity — the vanished-focus
+            // rule and a modal taking focus both need the new placements to
+            // decide — so the only honest fix is to ask for one more frame.
+            // Without this the indicator waits for the next unrelated event,
+            // which on an idle window is forever.
+            ctx.request_repaint();
+        }
 
         self.schedule(ctx, &frame);
         self.last_frame = Some(frame);
@@ -302,13 +314,20 @@ impl<A: App> Host<A> {
     }
 
     /// Copy the focus tree's current node into the state the engine reads and
-    /// the router aims with. The one direction the copy runs is deliberate:
-    /// [`FocusTree`] is the owner, `LayoutState::focused` is the projection.
-    fn publish_focus(&mut self) {
+    /// the router aims with, and report whether that moved it. The one
+    /// direction the copy runs is deliberate: [`FocusTree`] is the owner,
+    /// `LayoutState::focused` is the projection.
+    ///
+    /// The answer matters because the projection is also what the focus ring
+    /// is painted from: a move published *after* this pass petrified is a move
+    /// this pass's picture does not show.
+    fn publish_focus(&mut self) -> bool {
         let current = self.focus.current().map(str::to_owned);
-        if self.state.focused != current {
-            self.state.focused = current;
+        if self.state.focused == current {
+            return false;
         }
+        self.state.focused = current;
+        true
     }
 
     fn deliver_input(&mut self, ctx: &Context) {
@@ -377,8 +396,9 @@ impl<A: App> Host<A> {
             _ => return false,
         }
         // Later events in this same batch must aim at the node focus just
-        // moved to, not at the one it left.
-        self.publish_focus();
+        // moved to, not at the one it left. This one runs before petrify, so
+        // the frame about to be placed already shows it.
+        let _ = self.publish_focus();
         true
     }
 
@@ -611,13 +631,35 @@ mod tests {
         assert_eq!(seqs, [1, 2, 3]);
     }
 
-    /// The zero-idle contract on this side: with nothing moving, the host asks
-    /// for no repaint at all.
+    /// Step until the host stops asking for another frame, and answer how
+    /// many passes that took. Panics rather than looping forever, because an
+    /// unbounded stream of repaints is exactly what the zero-idle contract
+    /// forbids and what this helper exists to catch.
+    fn settle(ctx: &Context, host: &mut Host<Demo>, bound: usize) -> usize {
+        for pass in 1..=bound {
+            if !step(ctx, host, RawInput::default()).is_zero() {
+                return pass;
+            }
+        }
+        panic!("the host asked for {bound} frames in a row without settling");
+    }
+
+    /// The zero-idle contract on this side: with nothing moving, the host stops
+    /// asking for frames.
+    ///
+    /// It takes three passes rather than one, and both extra passes are
+    /// bounded and explained: the first pass seats focus *after* petrify (the
+    /// focus tree needs that frame's placements), so it asks for the frame
+    /// that will actually show the ring, and egui reports one further pass at
+    /// zero delay after an immediate request before it settles. What the
+    /// contract forbids is a host that never stops, which is what `settle`'s
+    /// bound catches.
     #[test]
     fn an_idle_pass_requests_no_repaint() {
         let ctx = headless();
         let mut host = Host::new(&ctx, Demo::default(), default_presenter());
-        step(&ctx, &mut host, RawInput::default());
+        let passes = settle(&ctx, &mut host, 4);
+        assert!(passes <= 3, "the host took {passes} passes to go idle");
         let delay = step(&ctx, &mut host, RawInput::default());
         assert!(
             !delay.is_zero(),
@@ -830,6 +872,124 @@ mod tests {
             "focus did not come back out of a closed modal"
         );
         assert_eq!(host.focus().active_scope(), None);
+    }
+
+    /// The frame the host paints must show where focus is. The ring is drawn
+    /// from `PlacementSemantics::focused`, which is projected at petrify from
+    /// `LayoutState::focused` — so this is the end-to-end check that the host's
+    /// focus tree, the engine's projection, and the painter's ring are one
+    /// chain and not three unconnected pieces.
+    #[test]
+    fn the_frame_the_host_paints_shows_where_focus_is() {
+        let ctx = headless();
+        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        // The first pass seats focus after petrify, so its own frame is
+        // ringless; the repaint it asks for is what produces the one below.
+        settle(&ctx, &mut host, 4);
+
+        assert_eq!(host.state().focused.as_deref(), Some("/root/filter"));
+        let frame = host.frame().expect("a frame");
+        let ringed: Vec<&str> = frame
+            .placements
+            .iter()
+            .filter(|p| p.semantics.focused)
+            .map(|p| p.id.as_str())
+            .collect();
+        assert_eq!(ringed, ["/root/filter"], "the frame marks no focused node");
+        assert_eq!(
+            host.report().expect("a report").focus_rings,
+            1,
+            "the focused node reached the painter without a ring"
+        );
+
+        step(&ctx, &mut host, key_press(Key::Tab, Modifiers::NONE));
+        assert_eq!(host.state().focused.as_deref(), Some("/root/run"));
+        let moved: Vec<&str> = host
+            .frame()
+            .unwrap()
+            .placements
+            .iter()
+            .filter(|p| p.semantics.focused)
+            .map(|p| p.id.as_str())
+            .collect();
+        assert_eq!(
+            moved,
+            ["/root/run"],
+            "Tab moved focus but the ring stayed behind — a traversal move is \
+             published before petrify precisely so this pass shows it"
+        );
+    }
+
+    /// Focus that moves *after* the frame is placed — the vanished-focus rule
+    /// and a modal taking focus both do — leaves that frame's ring on the
+    /// wrong node. The host must ask for one more frame, or on an idle window
+    /// the indicator never appears at all.
+    #[test]
+    fn focus_moving_after_petrify_asks_for_another_frame() {
+        let ctx = headless();
+        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+
+        // Pass 1: nothing was focused when the frame was placed, and `update`
+        // seats focus on the first focusable afterwards.
+        //
+        // Deliberately *not* asserted here: that this pass asked for a
+        // repaint. egui's own first pass requests one for its own reasons
+        // (font atlas, initial sizing), so the assertion would pass with this
+        // host's request deleted — a test that cannot fail is worse than no
+        // test. The modal below is the steady-state case, and it does fail.
+        step(&ctx, &mut host, RawInput::default());
+        assert_eq!(host.state().focused.as_deref(), Some("/root/filter"));
+        assert!(
+            host.frame()
+                .unwrap()
+                .placements
+                .iter()
+                .all(|p| !p.semantics.focused),
+            "this frame was placed before focus existed"
+        );
+
+        // The frame that request produced shows the ring, and then the host
+        // goes idle again rather than repainting forever.
+        settle(&ctx, &mut host, 4);
+        assert_eq!(
+            host.report().unwrap().focus_rings,
+            1,
+            "the repaint arrived and still nothing is ringed"
+        );
+
+        // A modal opening takes focus after petrify too.
+        host.app_mut().modal = true;
+        host.app_mut().rev += 1;
+        let opened = step(&ctx, &mut host, RawInput::default());
+        assert_eq!(host.state().focused.as_deref(), Some("/root/modal/yes"));
+        assert!(
+            opened.is_zero(),
+            "a modal took focus and the ring was left on the page behind it \
+             until the next unrelated event (delay {opened:?})"
+        );
+        assert!(
+            host.frame()
+                .unwrap()
+                .placements
+                .iter()
+                .all(|p| p.semantics.focused == (p.id == "/root/filter")),
+            "this frame still rings the field behind the modal"
+        );
+        settle(&ctx, &mut host, 4);
+        assert_eq!(
+            host.report().unwrap().focus_rings,
+            1,
+            "the modal's focused button is unringed"
+        );
+        let ringed: Vec<&str> = host
+            .frame()
+            .unwrap()
+            .placements
+            .iter()
+            .filter(|p| p.semantics.focused)
+            .map(|p| p.id.as_str())
+            .collect();
+        assert_eq!(ringed, ["/root/modal/yes"]);
     }
 
     /// A refused tree is shown, not swallowed and not fatal.

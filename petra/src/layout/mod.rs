@@ -436,8 +436,17 @@ fn place_kind(
 }
 
 /// The semantic payload for one node, built the same way by every container.
+///
+/// `id` is the node's canonical key path — the same string its
+/// [`Placement`](crate::frame::Placement) carries — and `state` is the
+/// snapshot this frame is placed from. The two are here for one flag:
+/// [`PlacementSemantics::focused`] is the projection of
+/// [`LayoutState::focused`] onto the node it names, and this is the single
+/// place it is computed so that the twelve node kinds cannot each get it
+/// differently. Every container already has both values in hand at the point
+/// it builds its placement.
 #[must_use]
-pub fn semantics_of(node: &ViewNode) -> PlacementSemantics {
+pub fn semantics_of(node: &ViewNode, id: &str, state: &LayoutState) -> PlacementSemantics {
     PlacementSemantics {
         role: node
             .semantics
@@ -446,6 +455,7 @@ pub fn semantics_of(node: &ViewNode) -> PlacementSemantics {
             .or_else(|| default_role(node.kind)),
         label: node.semantics.label.clone(),
         value: node.semantics.value.clone(),
+        focused: state.focused.as_deref() == Some(id),
         disabled: node.semantics.disabled,
         selected: node.semantics.selected,
         expanded: node.semantics.expanded,
@@ -507,10 +517,26 @@ mod tests {
             "Reload",
             &[Interaction::Click],
         );
-        let sem = semantics_of(&node);
+        let sem = semantics_of(&node, "/t", &LayoutState::default());
         assert_eq!(sem.role, Some(Role::Button));
         assert_eq!(sem.label.as_deref(), Some("Reload"));
         assert_eq!(sem.actions, vec![Interaction::Click]);
+    }
+
+    /// The focus flag is a projection of one id, not of "something is
+    /// focused": a frame with a focused node must not mark every placement.
+    #[test]
+    fn only_the_node_the_state_names_is_focused() {
+        let node = ViewNode::new(NodeKind::Text, "t");
+        let state = LayoutState {
+            focused: Some("/panel/t".into()),
+            ..LayoutState::default()
+        };
+        assert!(semantics_of(&node, "/panel/t", &state).focused);
+        assert!(!semantics_of(&node, "/panel/other", &state).focused);
+        assert!(!semantics_of(&node, "/panel/t", &LayoutState::default()).focused);
+        // A prefix of the focused path is a different node.
+        assert!(!semantics_of(&node, "/panel", &state).focused);
     }
 
     #[test]

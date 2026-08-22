@@ -185,6 +185,21 @@ impl Rect {
     pub fn translate(self, dx: f32, dy: f32) -> Self {
         Self::new(self.x + dx, self.y + dy, self.w, self.h)
     }
+
+    /// Pull every edge inward by `by`, or outward when `by` is negative.
+    ///
+    /// Extent never goes below zero: insetting a rect narrower than `2 * by`
+    /// collapses it rather than turning it inside out, which is what keeps a
+    /// caller from drawing a negative-width band on a one-pixel node.
+    #[must_use]
+    pub fn inset(self, by: f32) -> Self {
+        Self::new(
+            self.x + by,
+            self.y + by,
+            (self.w - 2.0 * by).max(0.0),
+            (self.h - 2.0 * by).max(0.0),
+        )
+    }
 }
 
 /// A layout axis.

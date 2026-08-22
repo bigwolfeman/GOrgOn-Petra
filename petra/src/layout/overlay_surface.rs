@@ -55,7 +55,7 @@ use std::collections::BTreeMap;
 
 use crate::frame::placement::{PaintState, Placement, PlacementSink};
 use crate::geom::{Rect, Size};
-use crate::layout::{LayoutCtx, SizeProposal, Slot};
+use crate::layout::{LayoutCtx, SizeProposal, Slot, semantics_of};
 use crate::tree::{Anchor, ClampRule, InputPolicy, KeyPath, ViewNode};
 
 /// Measure this container under `proposal`.
@@ -126,8 +126,10 @@ pub fn place(
 
     let z_slot = slot.above(surface.layer.base_z());
 
+    let id = path.id();
+    let semantics = semantics_of(node, &id, ctx.state);
     let me = sink.push(Placement {
-        id: path.id(),
+        id,
         kind: node.kind,
         rect,
         z: z_slot.z,
@@ -145,7 +147,7 @@ pub fn place(
             // has the payload; no container owns this.
             paint_hash: 0,
         },
-        semantics: crate::layout::semantics_of(node),
+        semantics,
         parent: None,
     });
 

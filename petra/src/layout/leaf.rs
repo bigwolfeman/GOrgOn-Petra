@@ -57,8 +57,10 @@ pub fn place(
         }
         _ => 0,
     };
+    let id = path.id();
+    let semantics = semantics_of(node, &id, ctx.state);
     sink.push(Placement {
-        id: path.id(),
+        id,
         kind: node.kind,
         rect: slot.rect,
         z: slot.z,
@@ -72,7 +74,7 @@ pub fn place(
             // has the payload; no container owns this.
             paint_hash: 0,
         },
-        semantics: semantics_of(node),
+        semantics,
         parent: None,
     });
 }

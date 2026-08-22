@@ -5,7 +5,7 @@
 //! runs of the same inputs — no clock, no timing, no address, no iteration
 //! order of a hash map.
 
-use crate::frame::placement::{PaintContent, PaintState, Placement, TextPaint};
+use crate::frame::placement::{PaintContent, PaintState, Placement, PlacementSemantics, TextPaint};
 use crate::frame::rounding::round_rect;
 use crate::frame::viewport::Viewport;
 
@@ -13,20 +13,33 @@ use crate::frame::viewport::Viewport;
 /// collide with one computed under this prefix, so the version bump that a
 /// serialization change requires cannot be forgotten quietly.
 ///
-/// `v2` covers the paint payload — token bindings, typography, wrap policy,
-/// line cap, image source, custom painter name — through
-/// [`PaintState::paint_hash`]. `v1` covered only the text content hash, the
-/// truncation flag, and the theme revision, so two frames that bound the same
-/// node's `background` to two different colours shared one digest.
-pub const DOMAIN: &[u8] = b"gorgon-petra-frame-v2";
+/// `v3` covers [`PlacementSemantics::focused`]: `gorgon-petra-egui` paints a
+/// focus ring, so two frames differing only in which node holds keyboard focus
+/// are two different pictures, and a screenshot consumer verifying
+/// `(seq, digest)` would otherwise accept the wrong image. `v2` covered the
+/// paint payload — token bindings, typography, wrap policy, line cap, image
+/// source, custom painter name — through [`PaintState::paint_hash`]. `v1`
+/// covered only the text content hash, the truncation flag, and the theme
+/// revision, so two frames that bound the same node's `background` to two
+/// different colours shared one digest.
+pub const DOMAIN: &[u8] = b"gorgon-petra-frame-v3";
 
 /// Domain separation for the nested paint-payload hash.
 ///
 /// A separate prefix rather than none: [`hash_paint_content`] is a public
 /// function whose output stands alone in [`PaintState::paint_hash`], and a
 /// consumer reimplementing it needs to know its stream is not the frame
-/// stream. Bump this with [`DOMAIN`] — a change to either byte stream is a
-/// change to every frame digest.
+/// stream.
+///
+/// The two prefixes version two streams, and they are **not** locked to one
+/// number. [`DOMAIN`] versions the frame's identity as a whole, so it moves
+/// whenever either stream changes — a paint-stream change moves every frame
+/// digest through [`PaintState::paint_hash`] and must be announced. This one
+/// versions only the payload stream, so it stays put while that stream is
+/// unchanged: `v3` of the frame stream added a field to the *placement*, and
+/// bumping this alongside it would restate every paint hash under a version
+/// whose definition never moved, which is exactly the false signal a second
+/// implementation reads these prefixes to avoid.
 pub const PAINT_DOMAIN: &[u8] = b"gorgon-petra-paint-v2";
 
 /// A frame's content fingerprint.
@@ -188,10 +201,30 @@ pub fn canonical_bytes(viewport: &Viewport, placements: &[Placement]) -> Vec<u8>
                     token_revision,
                     paint_hash,
                 },
-            // Accessibility payload, not paint: no shipped painter reads it,
-            // and the semantic tree carries its own `frame_seq` binding
-            // (`contracts/semantic-tree.md`).
-            semantics: _,
+            // Destructured with no rest pattern for the same reason as the
+            // two structs above. `focused` is the one member that decides a
+            // picture: `gorgon-petra-egui` paints a focus ring from it, so
+            // two frames that differ only in which node is focused are two
+            // different pictures. The rest is accessibility payload no
+            // shipped painter reads, and the semantic tree carries its own
+            // `frame_seq` binding (`contracts/semantic-tree.md`). A renderer
+            // that styles from `disabled` or `selected` makes one of those a
+            // defect, and the fix is the shape of this one: hash it and bump
+            // `DOMAIN`.
+            semantics:
+                PlacementSemantics {
+                    focused,
+                    role: _,
+                    label: _,
+                    value: _,
+                    disabled: _,
+                    selected: _,
+                    expanded: _,
+                    stale: _,
+                    ambient: _,
+                    actions: _,
+                    total_count: _,
+                },
             // Redundant with `id`, which is the full key path.
             parent: _,
         } = p;
@@ -214,6 +247,7 @@ pub fn canonical_bytes(viewport: &Viewport, placements: &[Placement]) -> Vec<u8>
         w.bool(*truncated);
         w.u64(*token_revision);
         w.u64(*paint_hash);
+        w.bool(*focused);
     }
     w.finish()
 }
@@ -380,6 +414,7 @@ mod tests {
                 role: Some(Role::Button),
                 label: Some("Fibers".into()),
                 value: Some("3".into()),
+                focused: true,
                 disabled: false,
                 selected: false,
                 expanded: Some(true),
@@ -443,6 +478,14 @@ mod tests {
             }),
             ("paint.token_revision", |p| p.paint.token_revision += 1),
             ("paint.paint_hash", |p| p.paint.paint_hash ^= 1),
+            // The one semantic flag the digest covers, and the reason `v3`
+            // exists: a focus ring is painted from it, so the two states are
+            // two pictures. Its neighbours in `PlacementSemantics` are the
+            // other half of this claim, in
+            // `the_excluded_fields_are_excluded_on_purpose`.
+            ("semantics.focused", |p| {
+                p.semantics.focused = !p.semantics.focused;
+            }),
         ];
 
         for (field, mutate) in table {
@@ -462,9 +505,11 @@ mod tests {
     /// oversight nobody notices.
     ///
     /// Both entries are listed under "Not covered" in
-    /// `contracts/frame-identity.md`. `semantics` is the accessibility
-    /// payload — no shipped painter reads it — and `parent` is redundant with
-    /// `id`, which is the full key path.
+    /// `contracts/frame-identity.md`. The semantic payload is accessibility
+    /// data no shipped painter reads — every member of it *except*
+    /// [`PlacementSemantics::focused`], which paints a focus ring and is
+    /// covered — and `parent` is redundant with `id`, which is the full key
+    /// path.
     #[test]
     fn the_excluded_fields_are_excluded_on_purpose() {
         let vp = viewport();
@@ -474,12 +519,20 @@ mod tests {
         let mut resemanticked = base.clone();
         resemanticked.semantics.label = Some("Something else entirely".into());
         resemanticked.semantics.disabled = true;
+        resemanticked.semantics.selected = true;
+        resemanticked.semantics.expanded = Some(false);
+        resemanticked.semantics.stale = true;
+        resemanticked.semantics.ambient = true;
+        resemanticked.semantics.value = Some("41".into());
+        resemanticked.semantics.actions = vec![Interaction::Scroll];
+        resemanticked.semantics.total_count = Some(4);
         resemanticked.semantics.role = Some(Role::Label);
         assert_ne!(resemanticked, base);
         assert_eq!(
             digest(&vp, &[resemanticked]),
             baseline,
-            "semantics are not paint; see contracts/frame-identity.md"
+            "every semantic member but `focused` is accessibility payload, not \
+             paint; see contracts/frame-identity.md"
         );
 
         let mut reparented = base.clone();
@@ -727,7 +780,7 @@ mod tests {
     fn the_canonical_stream_matches_its_pinned_vectors() {
         assert_eq!(
             super::DOMAIN,
-            b"gorgon-petra-frame-v2",
+            b"gorgon-petra-frame-v3",
             "the frame prefix moved without the vectors below moving with it"
         );
         assert_eq!(super::PAINT_DOMAIN, b"gorgon-petra-paint-v2");
@@ -741,12 +794,12 @@ mod tests {
         let vp = viewport();
         assert_eq!(
             digest(&vp, &[]).hex(),
-            "eb2d298d4f3e3d4cf9eed849bbea6510eb7129dec833649cd87334356a7b54e0",
+            "bc57d6803ce15c12fd2fe790b3e96151cbe9120524d3c07ea3e35355fb9a1261",
             "the empty-frame stream changed; see this test's doc comment"
         );
         assert_eq!(
             digest(&vp, &[rich_placement()]).hex(),
-            "b11d174445f17bebf1999e60fdd2bd2dccd67793fef8a6c9e04b3ce1b33778a8",
+            "23a2ce997c5b62c503e28b42b027dd9feb2571ad28ada482e12e0aee67f51da0",
             "the placement stream changed; see this test's doc comment"
         );
     }
