@@ -155,8 +155,10 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use gorgon_petra::frame::petrify_with_memo;
 use gorgon_petra::frame::{TransitionActivity, Viewport};
 use gorgon_petra::geom::Size;
+use gorgon_petra::layout::reuse::{FrameMemo, ReuseStats};
 use gorgon_petra::layout::{ChangeSet, MeasureCache};
 use gorgon_petra::petrify;
 use gorgon_petra::testing::{Harness, MonoContent, NoRows};
@@ -545,6 +547,98 @@ const ROUNDS: usize = if cfg!(debug_assertions) { 1 } else { 3 };
 /// `provide_scaling.rs` gives: the small rungs carry a fixed setup cost that
 /// biases a fit downward, and a biased-down exponent is the one that lets a
 /// regression through.
+/// One incremental re-negotiation of a `panelled` tree after one leaf's text
+/// widens, with every untouched panel handed back as the same allocation.
+///
+/// This is what a host that shares its subtrees actually pays, and it is the
+/// number FR-035 is a claim about. `change` above measures the same edit under
+/// a full negotiation; the difference between them is what reuse buys.
+///
+/// The tree is rebuilt the way an incremental application rebuilds one: a new
+/// root, a new panel 0 holding a new row 0, and `Arc::clone` for every other
+/// panel. Cloning an `Arc` is a refcount bump, so nothing under those panels
+/// is touched, allocated, or copied.
+fn change_incremental(panels: usize, rows: usize) -> (Duration, ReuseStats, f32) {
+    let before_panels: Vec<Arc<ViewNode>> = (0..panels)
+        .map(|p| {
+            let mut panel = ViewNode::new(NodeKind::Stack, Key::new(format!("panel-{p}")));
+            panel.children = (0..rows)
+                .map(|r| Arc::new(leaf(format!("row-{r}"), 8)))
+                .collect();
+            Arc::new(panel)
+        })
+        .collect();
+    let root_of = |ps: &[Arc<ViewNode>]| {
+        let mut root = ViewNode::new(NodeKind::Stack, "root");
+        root.children = ps.to_vec();
+        Arc::new(root)
+    };
+    let before = root_of(&before_panels);
+    let nodes = node_count(&before);
+    let mut h = harness(nodes);
+
+    let warm = petrify(
+        1,
+        &before,
+        &mut h.ctx(),
+        viewport(),
+        TransitionActivity::default(),
+    );
+    let memo = FrameMemo::adopt(
+        Arc::clone(&before),
+        warm,
+        h.state.clone(),
+        h.theme_rev,
+        h.scale,
+    );
+
+    // Panel 0 rebuilt with a wider row 0; every other panel handed straight
+    // back.
+    let mut after_panels = before_panels.clone();
+    let mut panel0 = ViewNode::new(NodeKind::Stack, Key::new("panel-0"));
+    panel0.children = (0..rows)
+        .map(|r| {
+            Arc::new(leaf(
+                format!("row-{r}"),
+                if r == 0 { CHANGED_TEXT_CHARS } else { 8 },
+            ))
+        })
+        .collect();
+    after_panels[0] = Arc::new(panel0);
+    let after = root_of(&after_panels);
+
+    let target = "/root/panel-0/row-0";
+    let changes = ChangeSet::Nodes(BTreeSet::from([target.to_owned()]));
+
+    let t = Instant::now();
+    h.cache.apply(&changes);
+    let dirty = memo
+        .dirty_ids(&changes, &h.state)
+        .expect("ChangeSet::Nodes has a dirty set");
+    let (frame, stats) = petrify_with_memo(
+        2,
+        &after,
+        &mut h.ctx(),
+        &memo,
+        &dirty,
+        viewport(),
+        TransitionActivity::default(),
+    );
+    let elapsed = t.elapsed();
+
+    let width = frame
+        .placement(target)
+        .expect("the changed leaf is placed")
+        .rect
+        .w;
+    assert_eq!(
+        frame.placements.len(),
+        nodes,
+        "an incremental frame must still place every node"
+    );
+    (elapsed, stats, width)
+}
+
 fn exponent(points: &[(usize, Duration)]) -> Option<f64> {
     let (n0, t0) = *points.first()?;
     let (n1, t1) = *points.last()?;
@@ -707,6 +801,7 @@ fn run() {
     let mut one_global: Vec<(usize, Duration)> = Vec::new();
     let mut one_path: Vec<(usize, Duration)> = Vec::new();
     let mut one_floor: Vec<(usize, Duration)> = Vec::new();
+    let mut one_incremental: Vec<(usize, Duration)> = Vec::new();
     for panels in [16usize, 32, 64, 128, 256] {
         let nodes = node_count(&panelled(panels, ROWS));
         let g = median(ROUNDS, Change::total, || {
@@ -723,9 +818,26 @@ fn run() {
              warm-walk floor {:>9.2?} ({} misses)",
             g.renegotiate, g.misses, p.renegotiate, p.misses, f.renegotiate, f.misses
         );
+        // The same edit, but the host hands back the panels it did not touch.
+        let (inc, stats, w) = change_incremental(panels, ROWS);
+        assert!(
+            w > 64.0,
+            "the incremental pass must produce the post-change layout, not a stale one: \
+             the changed leaf is {w:.0} wide and was 64 before the edit"
+        );
+        assert_eq!(
+            stats.reused_subtrees,
+            panels - 1,
+            "every panel but the changed one should have been carried over"
+        );
+        println!(
+            "  nodes={nodes:6}  incremental {inc:>9.2?}  ({} of {nodes} nodes carried over, {} rebuilt)",
+            stats.reused_nodes, stats.replaced_nodes
+        );
         one_global.push((nodes, g.renegotiate));
         one_path.push((nodes, p.renegotiate));
         one_floor.push((nodes, f.renegotiate));
+        one_incremental.push((nodes, inc));
         if p.renegotiate > POINT_BUDGET {
             println!("  ladder stopped after nodes={nodes}: over the {POINT_BUDGET:.0?} budget.");
             break;
@@ -733,12 +845,13 @@ fn run() {
     }
     println!(
         "  one-leaf change ~ N^{:.2} (global rev), N^{:.2} (path invalidate), \
-         N^{:.2} (warm-walk floor)",
+         N^{:.2} (warm-walk floor), N^{:.2} (incremental)",
         slope(&one_global),
         slope(&one_path),
-        slope(&one_floor)
+        slope(&one_floor),
+        slope(&one_incremental)
     );
-    let e_change = exponent(&one_path);
+    let e_change = exponent(&one_incremental);
 
     // ---- Sabotage: sever a known cause; the number must move the way it must.
     println!("\nSabotage: sever a known cause and check the number moves.");
@@ -823,16 +936,18 @@ fn run() {
         Some(e) if e <= MAX_CHANGE_EXPONENT => println!("\nFR-035: within bound"),
         Some(e) => panic!(
             "FR-035 is not met: one leaf's edit costs N^{e:.2} in the size of the tree around \
-             it, over the N^{MAX_CHANGE_EXPONENT} bound, against a target of flat. Two \
-             unconditional full walks are why, and the measured floor above is their sum. \
-             `frame::petrify` calls `layout::place`, which recurses into every node, builds \
-             every node's id, and pushes one `Placement` for each; nothing there consults the \
-             cache, and the digest then hashes every placement it produced. The measure half was \
-             unconditional too until 2026-08-22, when `App::take_changes` and \
-             `MeasureCache::apply` replaced the global content revision; that half is fixed \
-             and this bound still fails, which is the point. Making it hold needs a `place` \
-             that can reuse an unchanged subtree's placements and a digest that can be \
-             updated rather than recomputed, not a cache tuning"
+             it, over the N^{MAX_CHANGE_EXPONENT} bound, against a target of flat. This is the \
+             *incremental* column: the measurement cache is invalidated by path, unchanged \
+             subtrees are carried over from the previous frame, and their subtree hashes are \
+             reused instead of refolded. Only 34 of these nodes are rebuilt at any tree size. \
+             What is left is not a walk that can be skipped: the container above the change \
+             must re-run its arrangement, because a resized child moves its siblings, and that \
+             arrangement is O(children). The bench grows panels, so that term grows with the \
+             tree. Making this bound hold needs a container that can update one child's slot \
+             without re-running the whole arrangement when every sibling's main-axis extent is \
+             untouched -- a per-container incremental arrangement, which is a larger piece of \
+             work than subtree reuse and should be measured against these numbers before \
+             anyone decides it is worth building"
         ),
         None => panic!("FR-035 exponent unmeasurable; too few rungs ran to report a slope"),
     }
