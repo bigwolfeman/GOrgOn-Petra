@@ -85,7 +85,8 @@ fn cold_pass(capacity: usize) -> (usize, u64) {
 fn the_shipped_bound_fits_one_dense_screen() {
     let (entries, evictions) = cold_pass(MeasureCache::DEFAULT_CAPACITY);
     assert_eq!(
-        evictions, 0,
+        evictions,
+        0,
         "a {NODES}-node screen evicted {evictions} entries at the shipped bound of {}; \
          it holds {entries}",
         MeasureCache::DEFAULT_CAPACITY

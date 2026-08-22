@@ -956,7 +956,15 @@ fn the_action_wire_names_are_the_contract_set() {
         .collect();
     assert_eq!(
         printed,
-        ["click", "drag", "hover", "focus", "text-edit", "scroll", "key"],
+        [
+            "click",
+            "drag",
+            "hover",
+            "focus",
+            "text-edit",
+            "scroll",
+            "key"
+        ],
         "the contract's action vocabulary and Interaction's wire form must agree"
     );
 }
