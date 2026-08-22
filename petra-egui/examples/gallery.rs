@@ -25,10 +25,9 @@ use std::sync::Arc;
 use gorgon_petra::geom::{Align, Axis};
 use gorgon_petra::input::{InputEvent, Route, activates};
 use gorgon_petra::layout::{ChangeSet, RowSource};
-use gorgon_petra::token::StatusShape;
 use gorgon_petra::tree::{
     Anchor, AxisConstraint, ClampRule, Constraints, InputPolicy, Interaction, Layer, NodeKind,
-    Props, Role, TextWrap, TrackSize, ViewNode,
+    Props, Role, Semantics, TextWrap, TrackSize, ViewNode,
 };
 use gorgon_petra_egui::host::{App, Host, default_presenter};
 
@@ -51,10 +50,25 @@ const TOTAL_ROWS: usize = 100_000;
 /// and `text()` beside its colour token precisely so a reader who cannot
 /// separate the hues still gets the state. Showing all three channels at
 /// once is how you check that claim is still true.
-const STATUSES: [(&str, &str); 3] = [
-    ("status.ok", "Ok"),
-    ("status.degraded", "Degraded"),
-    ("status.down", "Down"),
+const STATUSES: [(&str, &str, &str, &str); 3] = [
+    (
+        "supervisor/root",
+        "status.ok",
+        "Ok",
+        "12 children, 0 restarts",
+    ),
+    (
+        "worker/indexer",
+        "status.degraded",
+        "Degraded",
+        "retry 3 of 5, last error 40s ago",
+    ),
+    (
+        "worker/shaper",
+        "status.down",
+        "Down",
+        "disposer deadline exceeded",
+    ),
 ];
 
 /// The previous frame's counters, read back off the host after each pass.
@@ -97,7 +111,6 @@ impl Counters {
     }
 }
 
-#[derive(Default)]
 struct Gallery {
     counters: Counters,
     /// What the last routed event did, echoed on screen so the input path is
@@ -114,6 +127,31 @@ struct Gallery {
     /// through the real host rather than through a second fixture that
     /// drifts from this one.
     probe: Option<ViewNode>,
+    /// Which tab the tab strip has selected.
+    tab: usize,
+    /// How full the progress bar is, 0..=1.
+    progress: f32,
+    /// Which row of the virtualized list is selected.
+    selected_row: Option<usize>,
+}
+
+impl Default for Gallery {
+    fn default() -> Self {
+        Self {
+            counters: Counters::default(),
+            last_event: String::new(),
+            modal: false,
+            menu: false,
+            passthrough: false,
+            dismissals: 0,
+            probe: None,
+            tab: 0,
+            // Not zero and not one: a bar pinned to either end demonstrates
+            // nothing about how the two weighted tracks split.
+            progress: 0.62,
+            selected_row: Some(3),
+        }
+    }
 }
 
 impl Gallery {
@@ -184,44 +222,301 @@ impl Gallery {
             .with_children(children)
     }
 
-    /// Every shipped status, shown through all three of its channels at once.
-    fn status_section() -> ViewNode {
-        let cells = STATUSES
+    /// A titled block, so every section on the page has the same shape.
+    fn section(key: &str, title: &str, children: Vec<ViewNode>) -> ViewNode {
+        let mut rows = vec![Self::heading(&format!("{key}-h"), title)];
+        rows.extend(children);
+        Self::column(key, 8.0, rows)
+    }
+
+    /// Buttons in the three states a real one has.
+    fn buttons_row(&self) -> ViewNode {
+        Self::row(
+            "buttons",
+            10.0,
+            vec![
+                // Primary is the inverted pair rather than a coloured accent:
+                // the palette has no accent that is not a *status*, and
+                // spending `status.ok` on "this button matters" would make
+                // green mean two different things.
+                Self::control(
+                    "primary",
+                    "Save",
+                    Some("text.primary"),
+                    "surface.base",
+                    None,
+                ),
+                Self::control(
+                    "secondary",
+                    "Cancel",
+                    Some("surface.raised"),
+                    "text.primary",
+                    Some("text.muted"),
+                ),
+                // No `Click`, and `disabled` in its semantics: the tree says
+                // it is unavailable rather than the colour implying it.
+                Self::chip(
+                    "disabled",
+                    "Disabled",
+                    Some("surface.base"),
+                    "text.muted",
+                    Some("text.muted"),
+                )
+                .with_semantics(Semantics {
+                    role: Some(Role::Button),
+                    label: Some("Disabled".to_owned()),
+                    disabled: true,
+                    ..Semantics::default()
+                }),
+            ],
+        )
+    }
+
+    /// A checkbox, a radio and a toggle — each a box inside a box.
+    fn controls_row(&self) -> ViewNode {
+        let check = |key: &str, label: &str, on: bool| {
+            Self::row(
+                key,
+                6.0,
+                vec![
+                    Self::swatch(
+                        "box",
+                        12.0,
+                        12.0,
+                        on.then_some("text.primary"),
+                        Some("text.muted"),
+                    ),
+                    Self::body("label", label, "text.primary"),
+                ],
+            )
+            .interactive(
+                Role::Button,
+                label.to_owned(),
+                &[Interaction::Focus, Interaction::Click],
+            )
+        };
+        let toggle = |key: &str, label: &str, on: bool| {
+            let mut track = vec![];
+            if on {
+                track.push(Self::swatch("pad", 14.0, 12.0, None, None));
+            }
+            track.push(Self::swatch("knob", 12.0, 12.0, Some("text.primary"), None));
+            if !on {
+                track.push(Self::swatch("pad", 14.0, 12.0, None, None));
+            }
+            Self::row(
+                key,
+                6.0,
+                vec![
+                    Self::row("track", 0.0, track).with_props({
+                        let mut p = Props {
+                            axis: Some(Axis::Horizontal),
+                            ..Props::default()
+                        };
+                        p.tokens
+                            .insert("background".into(), "surface.raised".into());
+                        p.tokens.insert("border".into(), "text.muted".into());
+                        p
+                    }),
+                    Self::body("label", label, "text.primary"),
+                ],
+            )
+            .interactive(
+                Role::Button,
+                label.to_owned(),
+                &[Interaction::Focus, Interaction::Click],
+            )
+        };
+        Self::row(
+            "controls",
+            22.0,
+            vec![
+                check("check-on", "Checked", true),
+                check("check-off", "Unchecked", false),
+                toggle("toggle-on", "Toggle on", true),
+                toggle("toggle-off", "Toggle off", false),
+            ],
+        )
+    }
+
+    /// A tab strip: the selected tab is a different fill *and* carries
+    /// `selected` in its semantics, so the state is not only a colour.
+    fn tabs_row(&self) -> ViewNode {
+        let names = ["Fibers", "Trace", "Capabilities"];
+        let tabs = names
             .iter()
-            .map(|(token, words)| {
-                let shape = match *token {
-                    "status.ok" => StatusShape::Circle,
-                    "status.degraded" => StatusShape::Triangle,
-                    _ => StatusShape::Square,
-                };
-                let glyph = match shape {
-                    StatusShape::Circle => "●",
-                    StatusShape::Triangle => "▲",
-                    StatusShape::Square => "■",
-                    StatusShape::Diamond => "◆",
-                };
-                let mut props = Props {
-                    text: Some(format!("{glyph}  {words}")),
-                    style: Some("typography.body".into()),
-                    ..Props::default()
-                };
-                props.tokens.insert("foreground".into(), (*token).into());
-                ViewNode::new(NodeKind::Text, *token).with_props(props)
+            .enumerate()
+            .map(|(i, name)| {
+                let on = i == self.tab;
+                Self::chip(
+                    name,
+                    name,
+                    Some(if on { "surface.raised" } else { "surface.base" }),
+                    if on { "text.primary" } else { "text.muted" },
+                    on.then_some("text.primary"),
+                )
+                .with_semantics(Semantics {
+                    role: Some(Role::Tab),
+                    label: Some((*name).to_owned()),
+                    selected: on,
+                    ..Semantics::default()
+                })
+                .interactive(
+                    Role::Tab,
+                    (*name).to_owned(),
+                    &[Interaction::Focus, Interaction::Click],
+                )
             })
             .collect();
         Self::column(
-            "status",
-            6.0,
+            "tabs",
+            0.0,
             vec![
-                Self::heading("status-h", "Status tokens"),
+                Self::row("tablist", 4.0, tabs).with_semantics(Semantics {
+                    role: Some(Role::TabList),
+                    ..Semantics::default()
+                }),
+                ViewNode::new(NodeKind::Separator, "tab-rule"),
+            ],
+        )
+    }
+
+    /// A progress bar: a filled box inside a wider one, sized by weight.
+    fn progress_row(&self) -> ViewNode {
+        let done = self.progress.clamp(0.0, 1.0);
+        let rest = (1.0 - done).max(0.001);
+        let bar = ViewNode::new(NodeKind::Grid, "bar")
+            .with_props({
+                let mut p = Props {
+                    columns: vec![
+                        TrackSize::Weight {
+                            weight: done.max(0.001),
+                        },
+                        TrackSize::Weight { weight: rest },
+                    ],
+                    ..Props::default()
+                };
+                p.tokens.insert("border".into(), "text.muted".into());
+                p
+            })
+            .child(Self::swatch("done", 0.0, 10.0, Some("status.ok"), None))
+            .child(Self::swatch("todo", 0.0, 10.0, None, None))
+            .with_constraints(Self::width(260.0))
+            .with_semantics(Semantics {
+                role: Some(Role::Progress),
+                label: Some("Rebuild".to_owned()),
+                value: Some(format!("{:.0}%", done * 100.0)),
+                ..Semantics::default()
+            });
+        Self::row(
+            "progress",
+            12.0,
+            vec![
+                Self::body("progress-l", "Rebuild", "text.muted"),
+                bar,
+                Self::body(
+                    "progress-v",
+                    &format!("{:.0}%", done * 100.0),
+                    "text.primary",
+                ),
+            ],
+        )
+    }
+
+    /// A two-column form: label beside field.
+    fn form_grid() -> ViewNode {
+        let field = |key: &str, placeholder: &str| {
+            let mut props = Props {
+                placeholder: Some(placeholder.to_owned()),
+                style: Some("typography.body".into()),
+                ..Props::default()
+            };
+            props
+                .tokens
+                .insert("background".into(), "surface.raised".into());
+            props
+                .tokens
+                .insert("foreground".into(), "text.muted".into());
+            props.tokens.insert("border".into(), "text.muted".into());
+            ViewNode::new(NodeKind::Input, key)
+                .with_props(props)
+                .with_constraints(Self::width(220.0))
+                .interactive(
+                    Role::TextInput,
+                    placeholder.to_owned(),
+                    &[Interaction::Focus, Interaction::Key, Interaction::TextEdit],
+                )
+        };
+        ViewNode::new(NodeKind::Grid, "form")
+            .with_props(Props {
+                columns: vec![TrackSize::Fixed { value: 110.0 }, TrackSize::FitContent],
+                column_spacing: Some(12.0),
+                row_spacing: Some(6.0),
+                ..Props::default()
+            })
+            .child(Self::body("f-l1", "Fiber name", "text.muted"))
+            .child(field("f-name", "supervisor/root"))
+            .child(Self::body("f-l2", "Capability", "text.muted"))
+            .child(field("f-cap", "fs.read"))
+    }
+
+    /// A table whose status column is a drawn swatch beside the word.
+    ///
+    /// The swatch is a real rectangle rather than a glyph on purpose: two of
+    /// the three shapes `StatusToken` declares render as tofu in the shipped
+    /// font, and nothing in the painter consumes [`StatusShape`] at all, so a
+    /// drawn box is the only shape channel that actually reaches the screen
+    /// today.
+    fn status_table() -> ViewNode {
+        let mut grid = ViewNode::new(NodeKind::Grid, "table")
+            .with_props(Props {
+                columns: vec![
+                    TrackSize::Fixed { value: 150.0 },
+                    TrackSize::Fixed { value: 110.0 },
+                    TrackSize::FitContent,
+                ],
+                column_spacing: Some(14.0),
+                row_spacing: Some(5.0),
+                ..Props::default()
+            })
+            .with_semantics(Semantics {
+                role: Some(Role::Table),
+                ..Semantics::default()
+            })
+            .child(Self::body("h1", "FIBER", "text.muted"))
+            .child(Self::body("h2", "STATE", "text.muted"))
+            .child(Self::body("h3", "DETAIL", "text.muted"));
+        for (key, token, word, detail) in STATUSES {
+            grid = grid
+                .child(Self::body(key, key, "text.primary"))
+                .child(Self::row(
+                    &format!("{key}-state"),
+                    6.0,
+                    vec![
+                        Self::swatch("dot", 10.0, 10.0, Some(token), None),
+                        Self::body("word", word, "text.primary"),
+                    ],
+                ))
+                .child(Self::body(&format!("{key}-detail"), detail, "text.muted"));
+        }
+        grid
+    }
+
+    /// Every shipped status, through colour, a drawn swatch and the word.
+    fn status_section() -> ViewNode {
+        Self::column(
+            "status",
+            8.0,
+            vec![
+                Self::heading("status-h", "Status"),
                 Self::body(
                     "status-note",
-                    "the design gives each status a shape and a word so hue is never \
-                     the only channel — but two of the three shapes are tofu in the \
-                     shipped font, so today only the word survives",
+                    "colour is never the only channel: each state carries a word, and \
+                     the swatch is drawn rather than typed because two of the three \
+                     shapes StatusToken declares are tofu in the shipped font",
                     "text.muted",
                 ),
-                Self::row("status-row", 24.0, cells),
+                Self::status_table(),
             ],
         )
     }
@@ -412,6 +707,14 @@ impl Gallery {
                         overscan: Some(64.0),
                         ..Props::default()
                     })
+                    .with_constraints(Constraints {
+                        vertical: AxisConstraint {
+                            min: Some(220.0),
+                            max: Some(220.0),
+                            priority: 0,
+                        },
+                        ..Constraints::default()
+                    })
                     .child(list),
             ],
         )
@@ -435,9 +738,27 @@ impl Gallery {
                     "surf-row",
                     12.0,
                     vec![
-                        Self::button("open-modal", "Open Block modal"),
-                        Self::button("open-menu", "Open DismissOutside popup"),
-                        Self::button("open-pass", "Open Passthrough panel"),
+                        Self::control(
+                            "open-modal",
+                            "Open Block modal",
+                            Some("surface.raised"),
+                            "text.primary",
+                            Some("text.muted"),
+                        ),
+                        Self::control(
+                            "open-menu",
+                            "Open DismissOutside popup",
+                            Some("surface.raised"),
+                            "text.primary",
+                            Some("text.muted"),
+                        ),
+                        Self::control(
+                            "open-pass",
+                            "Open Passthrough panel",
+                            Some("surface.raised"),
+                            "text.primary",
+                            Some("text.muted"),
+                        ),
                     ],
                 ),
             ],
@@ -480,6 +801,84 @@ impl Gallery {
                     ],
                 ),
             ],
+        )
+    }
+
+    /// A filled rectangle of an exact size.
+    ///
+    /// The painter knows exactly three token slots — `background`, `border`
+    /// and `foreground` — so every piece of widget chrome in this file is
+    /// this function: a coloured box, sometimes with an edge. There is no
+    /// corner radius, no shadow, no icon set. A checkbox is a box inside a
+    /// box; a toggle is a box that moves; a progress bar is a box inside a
+    /// wider box. Saying so plainly is more useful than making it look like
+    /// there is more vocabulary than there is.
+    fn swatch(key: &str, w: f32, h: f32, fill: Option<&str>, edge: Option<&str>) -> ViewNode {
+        let mut props = Props::default();
+        if let Some(fill) = fill {
+            props.tokens.insert("background".into(), fill.into());
+        }
+        if let Some(edge) = edge {
+            props.tokens.insert("border".into(), edge.into());
+        }
+        ViewNode::new(NodeKind::Spacer, key)
+            .with_props(props)
+            .with_constraints(Constraints {
+                horizontal: AxisConstraint {
+                    min: Some(w),
+                    max: Some(w),
+                    priority: 0,
+                },
+                vertical: AxisConstraint {
+                    min: Some(h),
+                    max: Some(h),
+                    priority: 0,
+                },
+            })
+    }
+
+    /// Text on a filled, optionally bordered box — the shape every control
+    /// here has.
+    fn chip(key: &str, label: &str, fill: Option<&str>, fg: &str, edge: Option<&str>) -> ViewNode {
+        let mut props = Props {
+            text: Some(label.to_owned()),
+            style: Some("typography.body".into()),
+            ..Props::default()
+        };
+        props.tokens.insert("foreground".into(), fg.into());
+        if let Some(fill) = fill {
+            props.tokens.insert("background".into(), fill.into());
+        }
+        if let Some(edge) = edge {
+            props.tokens.insert("border".into(), edge.into());
+        }
+        ViewNode::new(NodeKind::Text, key).with_props(props)
+    }
+
+    /// A focusable, clickable control.
+    ///
+    /// Flush against its own edge, because padding cannot be composed here.
+    /// `Props` has no padding field, and the obvious workaround — spacers
+    /// above and below the label inside the fill — does not survive layout: a
+    /// vertical `Stack` divides the height it is offered equally among its
+    /// children instead of sizing to content, so a three-child column offered
+    /// 15.1pt hands the label 5.0pt for a run that needs 14 and the glyphs
+    /// spill out of the box. Measured, both with inflexible pads and with
+    /// pads declared `min: 0, max: pad`; the split was 5/5/5 either way.
+    ///
+    /// So: a `padding` prop is not a nicety here, it is the difference
+    /// between being able to draw a button and not.
+    fn control(
+        key: &str,
+        label: &str,
+        fill: Option<&str>,
+        fg: &str,
+        edge: Option<&str>,
+    ) -> ViewNode {
+        Self::chip(key, label, fill, fg, edge).interactive(
+            Role::Button,
+            label.to_owned(),
+            &[Interaction::Focus, Interaction::Click],
         )
     }
 
@@ -532,12 +931,49 @@ impl Gallery {
             return Some(
                 ViewNode::new(NodeKind::Surface, "modal")
                     .with_props(props)
+                    .with_semantics(Semantics {
+                        role: Some(Role::Dialog),
+                        label: Some("Retire fiber".to_owned()),
+                        ..Semantics::default()
+                    })
+                    .child(Self::heading("modal-t", "Retire worker/indexer?"))
+                    .child(ViewNode::new(NodeKind::Separator, "modal-rule"))
                     .child(Self::body(
-                        "modal-t",
-                        "Block: a click outside this panel is swallowed",
-                        "text.primary",
+                        "modal-b",
+                        "Its three children are retired with it. A click outside \
+                         this dialog is swallowed — that is what Block means.",
+                        "text.muted",
                     ))
-                    .child(Self::button("modal-close", "Close")),
+                    .child(Self::row(
+                        "modal-actions",
+                        10.0,
+                        vec![
+                            ViewNode::new(NodeKind::Spacer, "modal-push").with_constraints(
+                                Constraints {
+                                    vertical: AxisConstraint {
+                                        min: Some(0.0),
+                                        max: Some(0.0),
+                                        priority: 0,
+                                    },
+                                    ..Constraints::default()
+                                },
+                            ),
+                            Self::control(
+                                "modal-close",
+                                "Cancel",
+                                Some("surface.base"),
+                                "text.primary",
+                                Some("text.muted"),
+                            ),
+                            Self::control(
+                                "modal-confirm",
+                                "Retire",
+                                Some("text.primary"),
+                                "surface.base",
+                                None,
+                            ),
+                        ],
+                    )),
             );
         }
         if self.menu {
@@ -553,15 +989,22 @@ impl Gallery {
             props
                 .tokens
                 .insert("background".into(), "surface.raised".into());
+            let item = |key: &str, label: &str, fg: &str| {
+                Self::control(key, label, Some("surface.raised"), fg, None)
+            };
             return Some(
                 ViewNode::new(NodeKind::Surface, "menu")
                     .with_props(props)
-                    .child(Self::body(
-                        "menu-t",
-                        "DismissOutside: click anywhere outside to close",
-                        "text.primary",
-                    ))
-                    .child(Self::button("menu-item", "An item")),
+                    .with_semantics(Semantics {
+                        role: Some(Role::List),
+                        label: Some("Fiber actions".to_owned()),
+                        ..Semantics::default()
+                    })
+                    .child(Self::body("menu-t", "Fiber actions", "text.muted"))
+                    .child(item("menu-item", "Inspect", "text.primary"))
+                    .child(item("menu-trace", "Follow trace", "text.primary"))
+                    .child(ViewNode::new(NodeKind::Separator, "menu-rule"))
+                    .child(item("menu-kill", "Kill", "status.down")),
             );
         }
         if self.passthrough {
@@ -602,15 +1045,26 @@ impl RowSource for Gallery {
             .map(|i| {
                 // Keyed by the row's own index, not by its position in this
                 // window, so scrolling does not renumber what is on screen.
-                Arc::new(Gallery::body(
-                    &format!("row-{i}"),
-                    &format!("row {i:>6}  ·  a virtualized entry"),
-                    if i % 2 == 0 {
-                        "text.primary"
-                    } else {
-                        "text.muted"
-                    },
-                ))
+                // Uniform, deliberately. An earlier version alternated
+                // `text.primary`/`text.muted` per row, which read as a
+                // rendering fault rather than as zebra striping — the engine
+                // does nothing of the kind on its own.
+                let selected = self.selected_row == Some(i);
+                Arc::new(
+                    Gallery::chip(
+                        &format!("row-{i}"),
+                        &format!("row {i:>6}  ·  a virtualized entry"),
+                        selected.then_some("surface.raised"),
+                        "text.primary",
+                        None,
+                    )
+                    .with_semantics(Semantics {
+                        role: Some(Role::ListItem),
+                        label: Some(format!("row {i}")),
+                        selected,
+                        ..Semantics::default()
+                    }),
+                )
             })
             .collect()
     }
@@ -647,6 +1101,21 @@ impl App for Gallery {
                 ),
                 "text.muted",
             ))
+            .child(Gallery::section(
+                "widgets",
+                "Controls",
+                vec![
+                    self.buttons_row(),
+                    self.controls_row(),
+                    self.tabs_row(),
+                    self.progress_row(),
+                ],
+            ))
+            .child(Gallery::section(
+                "forms",
+                "Form",
+                vec![Gallery::form_grid()],
+            ))
             .child(Gallery::layout_section())
             .child(Gallery::text_section())
             .child(Gallery::status_section())
@@ -657,10 +1126,31 @@ impl App for Gallery {
         if let Some(probe) = self.probe.clone() {
             root = root.child(probe);
         }
+        // The page scrolls. Without this the root stack is offered exactly the
+        // window's height and divides it among its sections, so adding a
+        // section does not make the page longer — it makes every existing
+        // section shorter, down to text squeezed to a few points tall. A
+        // vertical stack distributes the height it is given; something has to
+        // give it an unbounded one, and a scroll is that something.
+        let page = ViewNode::new(NodeKind::Scroll, "page")
+            .with_props(Props {
+                axis: Some(Axis::Vertical),
+                overscan: Some(64.0),
+                ..Props::default()
+            })
+            .child(root);
+
+        // Surfaces sit beside the page, not inside it. They are anchored to
+        // the viewport, and a viewport-anchored thing inside scrolling content
+        // is placed in the wrong coordinate space — a popup that moves when
+        // the page moves, and hit-testing that disagrees with what is on
+        // screen. `Overlay` is the container for this: every child gets the
+        // container's own proposal, z-order by child order.
+        let mut shell = ViewNode::new(NodeKind::Overlay, "shell").child(page);
         if let Some(overlay) = self.overlay() {
-            root = root.child(overlay);
+            shell = shell.child(overlay);
         }
-        root
+        shell
     }
 
     fn handle(&mut self, event: &InputEvent, route: &Route) {
@@ -678,13 +1168,22 @@ impl App for Gallery {
         self.last_event = format!("activated {node}");
         // Ids are canonical key paths, so match on the tail rather than
         // rebuilding the whole path here.
-        match node.rsplit('/').next().unwrap_or_default() {
+        let tail = node.rsplit('/').next().unwrap_or_default().to_owned();
+        match tail.as_str() {
             "open-modal" => self.modal = true,
             "open-menu" => self.menu = true,
             "open-pass" => self.passthrough = true,
-            "modal-close" => self.modal = false,
+            "modal-close" | "modal-confirm" => self.modal = false,
             "toast-close" => self.passthrough = false,
-            _ => {}
+            "menu-item" | "menu-trace" | "menu-kill" => self.menu = false,
+            "Fibers" => self.tab = 0,
+            "Trace" => self.tab = 1,
+            "Capabilities" => self.tab = 2,
+            _ => {
+                if let Some(i) = tail.strip_prefix("row-").and_then(|n| n.parse().ok()) {
+                    self.selected_row = Some(i);
+                }
+            }
         }
     }
 
@@ -1009,10 +1508,12 @@ mod tests {
         let mut tall: Vec<(String, f32)> = frame
             .placements
             .iter()
-            // A collection's own box is the whole store's extent by design —
-            // that is what the scroll above it scrolls through — so it is the
-            // one thing here allowed to dwarf the viewport.
-            .filter(|p| !p.id.ends_with("/rows"))
+            // Scroll *content* is allowed to dwarf the viewport — that is
+            // what the scroll above it exists to move through. Two things
+            // qualify: the collection's own box, which is the whole store's
+            // extent, and the page itself, which is as long as its sections
+            // need. Everything else is a layout fault.
+            .filter(|p| !p.id.ends_with("/page/root") && !p.id.ends_with("/rows"))
             .map(|p| (p.id.clone(), p.rect.h))
             .filter(|(_, h)| *h > viewport_h)
             .collect();

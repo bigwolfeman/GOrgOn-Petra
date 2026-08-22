@@ -183,7 +183,7 @@ pub fn light() -> Theme {
     );
     values.insert(
         name("status.degraded"),
-        TokenValue::Color(ColorValue::from_srgb8(0xb8, 0x81, 0x00, 0xff)),
+        TokenValue::Color(ColorValue::from_srgb8(0xb5, 0x54, 0x1a, 0xff)),
     );
     values.insert(
         name("status.down"),
@@ -276,7 +276,7 @@ pub fn dark() -> Theme {
     );
     values.insert(
         name("status.degraded"),
-        TokenValue::Color(ColorValue::from_srgb8(0xff, 0xed, 0xa3, 0xff)),
+        TokenValue::Color(ColorValue::from_srgb8(0xff, 0xc4, 0x7a, 0xff)),
     );
     values.insert(
         name("status.down"),
