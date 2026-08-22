@@ -131,9 +131,32 @@
 //! **Verdict: FR-035 is not met, by a factor of the tree.** The bound below
 //! enforces it and this bench therefore fails, deliberately, in the way
 //! `provide_scaling.rs` failed until the kernel's provide path was fixed.
-//! Meeting it needs a `place` that can reuse an unchanged subtree's
-//! placements, a digest that can be updated rather than recomputed, and a
-//! per-node content revision. It is not a cache tuning.
+//!
+//! The first prescription written here was a `place` that can reuse an
+//! unchanged subtree's placements, a digest that can be updated rather than
+//! recomputed, and a per-node content revision. All three shipped. **FR-035
+//! still fails**, at about N^1, with 3 of N nodes rebuilt at every tree size
+//! -- so the prescription was incomplete, not wrong. What is left is the
+//! container arrangement above the change: a resized child moves its
+//! siblings, so the panel re-runs an O(children) arrangement, and this bench
+//! grows panels. The panic below carries the current diagnosis; read it
+//! rather than this paragraph, because it is printed from the measurement.
+//!
+//! "About N^1" and not a figure, because the incremental exponent read 0.92
+//! and 1.08 on two consecutive runs of this machine. Those two runs are not a
+//! disagreement about the code: every other exponent moved with it in the
+//! same direction and by a similar amount (global rev 0.98 to 1.10, path 1.03
+//! to 1.04, warm-walk floor 1.06 to 1.09), which is what concurrent load
+//! looks like and not what a code effect looks like. Read the spread, not the
+//! digits. The verdict is robust across it either way: the bound is 0.35.
+//!
+//! A note on that exponent: it read **N^0.74 until 2026-08-22**, and the
+//! better number was an artefact. `change_incremental` minted fresh `Arc`s
+//! for the 31 untouched rows inside the changed panel, so every run paid a
+//! tree-size-independent 34-node rebuild that flattened the slope -- and
+//! under-declared them, which `ReuseState::verify_declaration` now panics on.
+//! Sharing those rows, as a real incremental host does, costs nothing per
+//! frame and moved the measured exponent up to where it always was.
 //!
 //! # What this does not measure
 //!
@@ -600,15 +623,30 @@ fn change_incremental(panels: usize, rows: usize) -> (Duration, ReuseStats, f32)
     );
 
     // Panel 0 rebuilt with a wider row 0; every other panel handed straight
-    // back.
+    // back, and inside panel 0 every row but the changed one handed straight
+    // back too.
+    //
+    // Sharing those sibling rows is not a tidiness choice, it is the contract.
+    // A moved `Arc` is the only signal the engine has that a node was rebuilt,
+    // so minting fresh rows for `row-1..` would declare `rows - 1` changes
+    // this change set does not name — which is exactly what
+    // `ReuseState::verify_declaration` panics on in a debug build, and what a
+    // release build would silently serve a stale frame for. It also makes the
+    // measurement honest: an incremental host hands back what it did not
+    // touch, and a bench that rebuilds the untouched rows is timing work no
+    // real host does.
     let mut after_panels = before_panels.clone();
     let mut panel0 = ViewNode::new(NodeKind::Stack, Key::new("panel-0"));
-    panel0.children = (0..rows)
-        .map(|r| {
-            Arc::new(leaf(
-                format!("row-{r}"),
-                if r == 0 { CHANGED_TEXT_CHARS } else { 8 },
-            ))
+    panel0.children = before_panels[0]
+        .children
+        .iter()
+        .enumerate()
+        .map(|(r, row)| {
+            if r == 0 {
+                Arc::new(leaf("row-0".to_owned(), CHANGED_TEXT_CHARS))
+            } else {
+                Arc::clone(row)
+            }
         })
         .collect();
     after_panels[0] = Arc::new(panel0);
@@ -845,8 +883,9 @@ fn h2c_phase() -> Option<f64> {
         );
         assert_eq!(
             stats.reused_subtrees,
-            panels - 1,
-            "every panel but the changed one should have been carried over"
+            (panels - 1) + (ROWS - 1),
+            "every panel but the changed one, and every row in the changed \
+             panel but the changed row, should have been carried over"
         );
         println!(
             "  nodes={nodes:6}  incremental {inc:>9.2?}  ({} of {nodes} nodes carried over, {} rebuilt)",
@@ -979,7 +1018,8 @@ fn run() {
              it, over the N^{MAX_CHANGE_EXPONENT} bound, against a target of flat. This is the \
              *incremental* column: the measurement cache is invalidated by path, unchanged \
              subtrees are carried over from the previous frame, and their subtree hashes are \
-             reused instead of refolded. Only 34 of these nodes are rebuilt at any tree size. \
+             reused instead of refolded. Only 3 of these nodes are rebuilt at any tree \
+             size -- the root, the panel above the change, and the changed leaf. \
              What is left is not a walk that can be skipped: the container above the change \
              must re-run its arrangement, because a resized child moves its siblings, and that \
              arrangement is O(children). The bench grows panels, so that term grows with the \
