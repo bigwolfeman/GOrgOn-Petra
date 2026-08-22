@@ -17,6 +17,8 @@ use crate::semantic::node::SemanticNode;
 /// matched nothing would be a filter that lies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum StateFlag {
+    /// [`crate::semantic::NodeState::focused`].
+    Focused,
     /// [`crate::semantic::NodeState::disabled`].
     Disabled,
     /// [`crate::semantic::NodeState::selected`].
@@ -37,6 +39,7 @@ impl StateFlag {
     pub fn holds(self, node: &SemanticNode) -> bool {
         let state = &node.state;
         match self {
+            Self::Focused => state.focused,
             Self::Disabled => state.disabled,
             Self::Selected => state.selected,
             Self::Expanded => state.expanded == Some(true),

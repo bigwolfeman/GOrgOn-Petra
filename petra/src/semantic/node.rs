@@ -52,7 +52,13 @@ fn is_false(v: &bool) -> bool {
 /// have shipped a flag that is a lie on every focused node.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct NodeState {
-    // focused: bool — see the type doc. Added with the focus-ring change.
+    /// The one node holding keyboard focus this frame.
+    ///
+    /// Sourced from the placement, not from a side channel: the focus ring is
+    /// painted from the same flag, so a tree that disagreed with the picture
+    /// would be the exact divergence FR-027 bans.
+    #[serde(skip_serializing_if = "is_false")]
+    pub focused: bool,
     /// The node refuses interaction this frame.
     #[serde(skip_serializing_if = "is_false")]
     pub disabled: bool,

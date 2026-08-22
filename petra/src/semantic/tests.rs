@@ -849,3 +849,114 @@ fn a_subtree_is_a_tree() {
     assert_eq!(json(&panel), json(projected.find("/root/panel").unwrap()));
     assert!(projected.subtree("/root/nowhere").is_none());
 }
+
+// ------------------------------------------------------------------- focused
+
+/// `state.focused` reaches the tree from the placement, and names exactly one
+/// node.
+///
+/// This is the seam between two changes made in different branches: the focus
+/// ring is painted from `PlacementSemantics::focused`, and the tree reports
+/// the same flag. `contracts/semantic-tree.md` puts `focused` in `state`, and
+/// FR-027 makes a disagreement between what a screen reader hears and what a
+/// test asserts a bug by definition — so the projection must read the flag the
+/// painter reads, never a second source.
+#[test]
+fn the_focused_flag_reaches_the_tree_and_names_one_node() {
+    let tree = app(&["a", "b", "c"]);
+    let mut harness = Harness::new();
+    harness.state.focused = Some("/root/b".into());
+    let frame = petrify(
+        1,
+        &tree,
+        &mut harness.ctx(),
+        Viewport::new(VIEWPORT, ThemeMode::Dark),
+        TransitionActivity::default(),
+    );
+    let projected = project(&frame).expect("the fixture places a root");
+
+    let focused: Vec<&str> = projected
+        .iter()
+        .filter(|node| node.state.focused)
+        .map(|node| node.id.as_str())
+        .collect();
+    assert_eq!(
+        focused,
+        ["/root/b"],
+        "exactly the node the layout state names carries the flag"
+    );
+}
+
+/// A consumer can select the focused node by filter, which is how a driver
+/// answers "what has focus" without walking the whole tree itself.
+#[test]
+fn the_focused_flag_is_queryable() {
+    let tree = app(&["a", "b", "c"]);
+    let mut harness = Harness::new();
+    harness.state.focused = Some("/root/c".into());
+    let frame = petrify(
+        1,
+        &tree,
+        &mut harness.ctx(),
+        Viewport::new(VIEWPORT, ThemeMode::Dark),
+        TransitionActivity::default(),
+    );
+    let projected = project(&frame).expect("the fixture places a root");
+
+    let query = TreeQuery {
+        state: Some(StateFlag::Focused),
+        ..TreeQuery::new()
+    };
+    let hits: Vec<&str> = projected
+        .iter()
+        .filter(|node| query.matches(node))
+        .map(|node| node.id.as_str())
+        .collect();
+    assert_eq!(hits, ["/root/c"]);
+}
+
+/// A frame with nothing focused says so, rather than defaulting to its first
+/// node or to every node.
+#[test]
+fn a_frame_with_no_focus_marks_nothing() {
+    let frame = frame_of(1, &app(&["a", "b"]));
+    let projected = project(&frame).expect("the fixture places a root");
+    assert!(
+        projected.iter().all(|node| !node.state.focused),
+        "no layout state means no focused node"
+    );
+}
+
+/// The action names the tree advertises are the contract's closed set, spelled
+/// exactly as `contracts/semantic-tree.md` prints them.
+///
+/// This is the FR-027 seam in one assertion. A driver reads the contract and
+/// sends `text-edit`; the tree advertises whatever `Interaction` serializes to.
+/// If those two ever drift — someone renames the variant, or the contract is
+/// tidied to `text` — a driver would ask for an action the tree says it
+/// accepts and be refused. The contract's list is duplicated here on purpose:
+/// that is what makes this a test rather than a tautology over one source.
+#[test]
+fn the_action_wire_names_are_the_contract_set() {
+    let all = [
+        Interaction::Click,
+        Interaction::Drag,
+        Interaction::Hover,
+        Interaction::Focus,
+        Interaction::TextEdit,
+        Interaction::Scroll,
+        Interaction::Key,
+    ];
+    let printed: Vec<String> = all
+        .iter()
+        .map(|action| {
+            let wire = json(action);
+            wire.trim_matches('"').to_owned()
+        })
+        .collect();
+    assert_eq!(
+        printed,
+        ["click", "drag", "hover", "focus", "text-edit", "scroll", "key"],
+        "the contract's action vocabulary and Interaction's wire form must agree"
+    );
+}

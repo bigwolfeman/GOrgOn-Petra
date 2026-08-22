@@ -50,14 +50,15 @@ pub fn project(frame: &PetrifiedFrame) -> Option<SemanticTree> {
 /// Build one node from placement `index` and its finished children.
 fn node_at(frame: &PetrifiedFrame, index: usize, children: Vec<SemanticNode>) -> SemanticNode {
     let placement = &frame.placements[index];
-    // Destructured with no rest pattern on purpose. `PlacementSemantics` is
-    // about to grow a `focused` field (the focus-ring change, in flight in
-    // another branch); when it lands this pattern stops compiling and the
-    // compiler points here, at the one place `NodeState::focused` has to be
-    // filled from. A `..` here would have made that change silently produce a
-    // tree whose `focused` flag is false on every node.
+    // Destructured with no rest pattern on purpose. When `PlacementSemantics`
+    // grows a member, this pattern stops compiling and the compiler points
+    // here, at the one place the new flag has to be projected from. A `..`
+    // would instead have produced a tree silently missing it — which is how
+    // `focused` arrived: it landed in a sibling branch, this line failed to
+    // compile, and the flag was wired in rather than defaulted to false.
     let PlacementSemantics {
         role,
+        focused,
         label,
         value,
         disabled,
@@ -79,7 +80,7 @@ fn node_at(frame: &PetrifiedFrame, index: usize, children: Vec<SemanticNode>) ->
         label: label.clone().unwrap_or_default(),
         value: value.clone(),
         state: NodeState {
-            // focused: filled by the focus-ring change; see above.
+            focused: *focused,
             disabled: *disabled,
             selected: *selected,
             expanded: *expanded,
