@@ -1389,24 +1389,19 @@ proptest! {
 // A finding, pinned so it cannot change without someone deciding to
 // ---------------------------------------------------------------------------
 
-/// `Align::Stretch` places a child at the container's full cross extent even
-/// when the child declared a smaller `max` on that axis.
+/// `Align::Stretch` stops at a child's declared cross-axis `max` exactly the
+/// way the other three alignments already do.
 ///
-/// This is not an accident — `layout/stack.rs` says "Stretch was offered the
-/// full cross extent and fills it whatever it answered", and
-/// `layout/grid.rs`'s `place_in_cell` does the same for a stretched cell — but
-/// it is a reading of the contract, not a consequence of it.
-/// `contracts/view-tree.md` says constraints "clamp responses", and the
-/// *response* is clamped: the violation is in the placement, which the
-/// contract leaves to the parent. FR-005's "constraints that negotiation
-/// honors" reads the other way.
-///
-/// The behaviour is pinned here rather than fixed because the fix is a
-/// contract decision, not a bug fix: capping a stretched child would change
-/// every stretched layout in the engine. A reader who changes it must delete
-/// this test on purpose.
+/// Decided 2026-08-22 (`Ai-notes/QUESTIONS.md` Round 3 item 2): a declared
+/// constraint beats `Align::Stretch`. This test replaces
+/// `stretch_fills_past_a_declared_cross_axis_maximum`, which pinned the
+/// opposite reading — Stretch filling the container's full cross extent
+/// regardless of a smaller declared `max` — specifically so that reversing it
+/// had to be a deliberate act, not a drive-by. It was; see
+/// `.agents/notes/implemented/bug-fix/2026-08-22-petra-stretch-honours-constraints.md`
+/// for the decision and `layout/stack.rs` / `layout/grid.rs` for the fix.
 #[test]
-fn stretch_fills_past_a_declared_cross_axis_maximum() {
+fn stretch_stops_at_a_declared_cross_axis_maximum() {
     let capped =
         ViewNode::new(NodeKind::Spacer, "capped").with_constraints(max_on(Axis::Horizontal, 30.0));
     let column = stack_node("col", Axis::Vertical, 0.0, Align::Stretch).child(capped);
@@ -1421,14 +1416,13 @@ fn stretch_fills_past_a_declared_cross_axis_maximum() {
     );
     assert_eq!(
         frame.placement("/col/capped").unwrap().rect.w,
-        200.0,
-        "Stretch is documented as filling the cross axis whatever the child \
-         answered; if this now reports 30 the reading changed and the \
-         constraint contract needs an Agent Note, not a green test"
+        30.0,
+        "a declared max-30 constraint must win over Stretch filling the \
+         200-unit column; if this now reports 200 the fix regressed"
     );
 
-    // Every other alignment does honour the maximum, which is what makes the
-    // Stretch case a decision rather than a missing clamp.
+    // Every other alignment already honours the maximum; Stretch now agrees
+    // with all three rather than being the one exception.
     for align in [Align::Start, Align::Center, Align::End] {
         let column = stack_node("col", Axis::Vertical, 0.0, align).child(
             ViewNode::new(NodeKind::Spacer, "capped")

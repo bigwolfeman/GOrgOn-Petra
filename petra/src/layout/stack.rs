@@ -180,9 +180,27 @@ pub fn place(
     for (i, child) in node.children.iter().enumerate() {
         let extent = extents[i];
         let across = match props.align {
-            // Stretch was offered the full cross extent and fills it whatever
-            // it answered; every other alignment gets the room it asked for.
-            Align::Stretch => cross_extent,
+            // Stretch fills the cross extent, but a declared maximum on the
+            // child's own cross axis still wins (2026-08-22: constraints beat
+            // Stretch, see `Ai-notes/QUESTIONS.md` Round 3 item 2 and
+            // `.agents/notes/implemented/bug-fix/2026-08-22-petra-stretch-honours-constraints.md`).
+            // This routes through `AxisConstraint::clamp` — the crate's one
+            // clamp function, also reached via `Constraints::clamp_size` from
+            // `crate::layout::measure` — rather than a second, hand-rolled
+            // `.min(max)` here that could drift from it. `plan.taken[i]` is
+            // not the right input: an intrinsically-sized child (an `Image`)
+            // answers its own size regardless of the cross offer, and Stretch
+            // must override that, not read it back.
+            Align::Stretch => child
+                .constraints
+                .axis(main.cross())
+                .clamp(cross_extent)
+                // A declared minimum bigger than the cross extent is honoured
+                // in the response (the clamp above), but placement never
+                // grows past what the parent actually has — same rule the
+                // non-Stretch arm already applies below, and `plan.taken`
+                // already flagged the loss as `truncated`.
+                .min(cross_extent),
             _ => plan.taken[i].across(main).min(cross_extent),
         };
         let offset = props.align.offset(cross_extent, across);
@@ -648,11 +666,48 @@ mod tests {
             )
         };
         let rect = Rect::new(0.0, 0.0, 200.0, 64.0);
+        // `icon` declares no `constraints` at all (`Constraints::default()`),
+        // so the 2026-08-22 rule ("a declared maximum beats Stretch") does
+        // not apply to this fixture and 200.0 is still the right answer —
+        // Stretch fills the whole cross extent when nothing caps it.
         assert_eq!(placements(&tree(Align::Stretch), rect)[1].rect.w, 200.0);
         assert_eq!(placements(&tree(Align::Start), rect)[1].rect.x, 0.0);
         assert_eq!(placements(&tree(Align::Center), rect)[1].rect.x, 68.0);
         assert_eq!(placements(&tree(Align::End), rect)[1].rect.x, 136.0);
         assert_eq!(placements(&tree(Align::Center), rect)[1].rect.w, 64.0);
+    }
+
+    /// The 2026-08-22 decision (`Ai-notes/QUESTIONS.md` Round 3 item 2): a
+    /// declared cross-axis maximum beats `Align::Stretch`. Same fixture shape
+    /// as the test above, but the child now declares `max: 30.0` on the
+    /// cross axis, so Stretch must stop at 30, not fill the 200-unit column.
+    #[test]
+    fn stretch_stops_at_a_declared_cross_axis_maximum() {
+        let capped = flexible("capped", Axis::Horizontal, 0.0, 30.0, 0);
+        let tree = stack(Axis::Vertical, 0.0, Align::Stretch, vec![capped]);
+        let rect = Rect::new(0.0, 0.0, 200.0, 64.0);
+        let out = placements(&tree, rect);
+        assert_eq!(
+            out[1].rect.w, 30.0,
+            "Stretch must stop at the child's declared max, not fill the \
+             200-unit column"
+        );
+        // A declared minimum bigger than the cross extent still wins in the
+        // response, but placement never grows past what the parent actually
+        // has to give — the same rule the non-Stretch alignments already
+        // follow via `.min(cross_extent)`.
+        let oversized = flexible("oversized", Axis::Horizontal, 300.0, 300.0, 0);
+        let tree = stack(Axis::Vertical, 0.0, Align::Stretch, vec![oversized]);
+        let out = placements(&tree, rect);
+        assert_eq!(
+            out[1].rect.w, 200.0,
+            "a declared min bigger than the cross extent must not place the \
+             child wider than the stack itself"
+        );
+        assert!(
+            out[0].paint.truncated,
+            "the oversized minimum must still be flagged as lost room"
+        );
     }
 
     #[derive(Clone, Copy, Debug)]

@@ -471,9 +471,15 @@ fn cumulative_offsets(origin: f32, sizes: &[f32], spacing: f32) -> Vec<f32> {
 /// A cell is a box the child may be smaller than: every non-`Stretch`
 /// alignment measures the child against the cell size (it may answer
 /// smaller — a parent places, it does not force) and offsets the answer
-/// inside the box with [`Align::offset`]. `Stretch` skips the measurement
-/// and fills the cell outright, which is what "offers `Proposal::Exact` on
-/// that axis" means for the one alignment that never leaves slack to offset.
+/// inside the box with [`Align::offset`]. `Stretch` skips the measurement and
+/// fills the cell on both axes, but a declared maximum on either axis still
+/// wins (2026-08-22: constraints beat Stretch, see `Ai-notes/QUESTIONS.md`
+/// Round 3 item 2 and
+/// `.agents/notes/implemented/bug-fix/2026-08-22-petra-stretch-honours-constraints.md`).
+/// That fill is routed through `AxisConstraint::clamp` directly rather than
+/// through a `crate::layout::measure` call: Stretch has no natural size to
+/// ask for, only a declared clamp to respect, and `AxisConstraint::clamp` is
+/// the crate's one definition of that.
 fn place_in_cell(
     child: &ViewNode,
     ctx: &mut LayoutCtx<'_>,
@@ -484,7 +490,23 @@ fn place_in_cell(
     sink: &mut dyn PlacementSink,
 ) {
     if align == Align::Stretch {
-        crate::layout::place(child, ctx, path, slot.with_rect(cell), sink);
+        // A declared minimum bigger than the cell still wins in the clamp
+        // (`AxisConstraint::clamp`: min wins over max), but placement never
+        // grows past the cell the grid actually has to give — the same rule
+        // the non-Stretch arm below applies via `.min(cell.w)` /
+        // `.min(cell.h)`.
+        let w = child.constraints.horizontal.clamp(cell.w).min(cell.w);
+        let h = child.constraints.vertical.clamp(cell.h).min(cell.h);
+        let dx = align.offset(cell.w, w);
+        let dy = align.offset(cell.h, h);
+        let rect = Rect::new(cell.x + dx, cell.y + dy, w, h);
+        crate::layout::place(
+            child,
+            ctx,
+            path,
+            slot.with_rect(rect).clipped_to(cell),
+            sink,
+        );
         return;
     }
     let response = crate::layout::measure(child, ctx, path, SizeProposal::exact(cell.size()));
@@ -514,8 +536,9 @@ fn place_in_cell(
 mod tests {
     use super::*;
     use crate::frame::placement::PlacementList;
+    use crate::geom::Axis;
     use crate::testing::{Harness, MonoContent, NoRows};
-    use crate::tree::{NodeKind, Props};
+    use crate::tree::{AxisConstraint, Constraints, NodeKind, Props};
     use proptest::prelude::*;
 
     fn spacer(key: &str) -> ViewNode {
@@ -800,6 +823,112 @@ mod tests {
             placed[0].paint.truncated,
             "the grid clamped a child and must say so: {:?}",
             placed[0].paint
+        );
+    }
+
+    fn max_on(axis: Axis, max: f32) -> Constraints {
+        let c = AxisConstraint {
+            min: None,
+            max: Some(max),
+            priority: 0,
+        };
+        match axis {
+            Axis::Horizontal => Constraints {
+                horizontal: c,
+                ..Constraints::default()
+            },
+            Axis::Vertical => Constraints {
+                vertical: c,
+                ..Constraints::default()
+            },
+        }
+    }
+
+    /// The 2026-08-22 decision (`Ai-notes/QUESTIONS.md` Round 3 item 2): a
+    /// declared cross-axis maximum beats `Align::Stretch`, in a grid cell
+    /// exactly as it does in a stack. Before the fix, `place_in_cell` skipped
+    /// measuring a `Stretch` child entirely and placed it at the raw cell
+    /// size, so a 30-unit-max spacer in a 200-unit column landed at 200.
+    #[test]
+    fn a_stretched_cell_stops_at_the_childs_declared_maximum() {
+        let g = ViewNode::new(NodeKind::Grid, "g")
+            .with_props(Props {
+                columns: vec![TrackSize::Fixed { value: 200.0 }],
+                align: Some(Align::Stretch),
+                ..Props::default()
+            })
+            .with_children(vec![
+                spacer("capped").with_constraints(max_on(Axis::Horizontal, 30.0)),
+            ]);
+        let mut h = Harness::new();
+        let mut path = path_at(&g);
+        let mut sink = PlacementList::new();
+        place(
+            &g,
+            &mut h.ctx(),
+            &mut path,
+            Slot::new(Rect::new(0.0, 0.0, 200.0, 50.0)),
+            &mut sink,
+        );
+        let placed = sink.as_slice();
+        assert_eq!(
+            placed[1].rect.w, 30.0,
+            "Stretch must stop at the child's declared max, not fill the \
+             200-unit cell"
+        );
+    }
+
+    /// A declared minimum bigger than the cell still must not place the
+    /// child wider than the cell it was given — the same rule the non-Stretch
+    /// arm of `place_in_cell` already applies via `.min(cell.w)`. Known gap,
+    /// named rather than silently left: the pre-placement truncation pass a
+    /// few lines up in `place` is gated on `props.align != Align::Stretch`
+    /// and so does not see this case, and `placed[0].paint.truncated` is
+    /// `false` here even though the geometry was clamped down.
+    #[test]
+    fn a_stretched_cell_never_places_wider_than_the_cell_even_with_a_big_minimum() {
+        let oversized = AxisConstraint {
+            min: Some(300.0),
+            max: Some(300.0),
+            priority: 0,
+        };
+        let g = ViewNode::new(NodeKind::Grid, "g")
+            .with_props(Props {
+                columns: vec![
+                    TrackSize::Fixed { value: 100.0 },
+                    TrackSize::Fixed { value: 100.0 },
+                ],
+                align: Some(Align::Stretch),
+                ..Props::default()
+            })
+            .with_children(vec![
+                spacer("oversized").with_constraints(Constraints {
+                    horizontal: oversized,
+                    ..Constraints::default()
+                }),
+                spacer("next"),
+            ]);
+        let mut h = Harness::new();
+        let mut path = path_at(&g);
+        let mut sink = PlacementList::new();
+        place(
+            &g,
+            &mut h.ctx(),
+            &mut path,
+            Slot::new(Rect::new(0.0, 0.0, 200.0, 50.0)),
+            &mut sink,
+        );
+        let placed = sink.as_slice();
+        assert_eq!(
+            placed[1].rect.w, 100.0,
+            "a declared min bigger than the cell must not place the child \
+             wider than the 100-unit cell"
+        );
+        assert!(
+            !placed[1].rect.overlaps(placed[2].rect),
+            "{:?} overlaps {:?}",
+            placed[1].rect,
+            placed[2].rect
         );
     }
 
