@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::geom::{Align, Axis};
+use crate::geom::{Align, Axis, Insets};
 
 /// How a text node handles content it cannot fit.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -243,6 +243,13 @@ pub struct Props {
     /// Paint opacity in `[0, 1]`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub opacity: Option<f32>,
+    /// Content insets from this node's own edges. Honoured only by container
+    /// kinds (`NodeKind::is_container`) — a leaf has no children to inset,
+    /// and `padding` on a leaf is a tree-acceptance violation rather than a
+    /// silently ignored declaration
+    /// ([`crate::tree::Violation::PaddingOnLeafKind`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub padding: Option<Insets>,
     /// Token references by role name (`background`, `foreground`, `border`, …).
     ///
     /// Values are token names, never literal styles: FR-013's gate reads this
@@ -377,6 +384,14 @@ impl Props {
         }
     }
 
+    /// Resolved content insets. Absent declares no padding, which resolves to
+    /// `Insets::NONE` — the same "absence is the documented default" rule
+    /// every other resolver here follows (`DEFAULT_SPACING`, `DEFAULT_OVERSCAN`).
+    #[must_use]
+    pub fn padding(&self) -> Insets {
+        self.padding.unwrap_or(Insets::NONE)
+    }
+
     /// Resolved `collection` parameters, or `None` when the node is not a
     /// collection that passed acceptance.
     #[must_use]
@@ -414,7 +429,7 @@ impl Props {
 #[cfg(test)]
 mod tests {
     use super::{Layer, Props, TextWrap, TrackSize};
-    use crate::geom::Axis;
+    use crate::geom::{Axis, Insets};
 
     /// One vocabulary for one enum. The digest hashes
     /// [`TextWrap::as_str`] and the wire form uses serde's name; if the two
@@ -453,6 +468,7 @@ mod tests {
             ],
             wrap: Some(TextWrap::Ellipsis),
             layer: Some(Layer::Modal),
+            padding: Some(Insets::symmetric(4.0, 8.0)),
             ..Props::default()
         };
         props
@@ -485,6 +501,30 @@ mod tests {
         assert!(props.collection().is_none());
         assert!(props.surface().is_none());
         assert_eq!(props.text().text, "");
+        assert_eq!(props.padding(), Insets::NONE);
+    }
+
+    /// `Props.padding` round-trips through serde the same way every other
+    /// declared field does — pinned separately from `declared_fields_round_trip`
+    /// because the field is new and its serde shape (an `Insets` struct, not a
+    /// plain scalar) is worth checking on its own.
+    #[test]
+    fn padding_round_trips_through_serde() {
+        let props = Props {
+            padding: Some(Insets::symmetric(4.0, 8.0)),
+            ..Props::default()
+        };
+        let json = serde_json::to_string(&props).unwrap();
+        assert!(json.contains("\"padding\""), "{json}");
+        let back: Props = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, props);
+        assert_eq!(back.padding(), Insets::symmetric(4.0, 8.0));
+
+        // Absent padding serializes away entirely, and resolves to NONE.
+        let bare = Props::default();
+        let bare_json = serde_json::to_string(&bare).unwrap();
+        assert!(!bare_json.contains("padding"), "{bare_json}");
+        assert_eq!(bare.padding(), Insets::NONE);
     }
 
     #[test]

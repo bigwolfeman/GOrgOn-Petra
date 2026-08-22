@@ -241,7 +241,6 @@ fn paint_focus_ring(
     scale: Scale,
     report: &mut PaintReport,
 ) -> bool {
-    let factor = scale.factor();
     let mut drawn = false;
     for band in FocusRing::STANDARD.bands(placement.rect) {
         let Some(color) = resolve_or_record(colors, band.token, report) else {
@@ -253,10 +252,7 @@ fn paint_focus_ring(
             // outer bands still draw, so this is not a blind focus.
             continue;
         }
-        // A whole number of device pixels, for the same reason the rects are
-        // snapped: a 2-unit stroke at scale 1.25 is 2.5 device pixels, and
-        // half a pixel of the indicator would be spread into grey.
-        let width = (band.width * factor).round().max(1.0) / factor;
+        let width = device_snapped_width(band.width, scale);
         painter.rect_stroke(
             rect,
             0.0,
@@ -266,6 +262,22 @@ fn paint_focus_ring(
         drawn = true;
     }
     drawn
+}
+
+/// A stroke width snapped to a whole number of device pixels, then converted
+/// back to logical units.
+///
+/// A stroke's width is a separate number from the rect it strokes, and
+/// `to_egui_snapped` only snaps the rect. At any fractional device scale — a
+/// panel border at 1.25x, say — a logical-unit width lands on a non-integer
+/// number of device pixels, and egui's tessellator anti-aliases the leftover
+/// half-pixel into a soft grey band instead of a crisp line: exactly the
+/// artefact CSSWG issue #3720 describes for sub-pixel hairlines. The focus
+/// ring worked this out first; this is that fix, named and shared so a third
+/// stroke does not have to rediscover it.
+fn device_snapped_width(width: f32, scale: Scale) -> f32 {
+    let factor = scale.factor();
+    (width * factor).round().max(1.0) / factor
 }
 
 fn paint_one(
@@ -299,7 +311,13 @@ fn paint_one(
     if let Some(token) = content.tokens.get(BORDER_SLOT)
         && let Some(color) = resolve_or_record(colors, token, report)
     {
-        painter.rect_stroke(rect, 0.0, Stroke::new(1.0, color), egui::StrokeKind::Inside);
+        let width = device_snapped_width(1.0, scale);
+        painter.rect_stroke(
+            rect,
+            0.0,
+            Stroke::new(width, color),
+            egui::StrokeKind::Inside,
+        );
         shapes += 1;
     }
 
@@ -460,8 +478,10 @@ pub fn verify_paint_accounting() {
 
 #[cfg(test)]
 mod tests {
-    use super::{ColorSource, paint_frame, to_egui_snapped, verify_paint_accounting};
-    use egui::{Color32, Context, Id, LayerId, Order, RawInput};
+    use super::{
+        ColorSource, device_snapped_width, paint_frame, to_egui_snapped, verify_paint_accounting,
+    };
+    use egui::{Color32, Context, Id, LayerId, Order, RawInput, Shape};
     use gorgon_petra::frame::round_rect;
     use gorgon_petra::frame::{TransitionActivity, Viewport, petrify};
     use gorgon_petra::geom::Size;
@@ -679,6 +699,73 @@ mod tests {
                 }
                 previous_bottom = Some(painted.max.y);
             }
+        }
+    }
+
+    /// The border stroke's *width*, not just the rect it strokes, must land
+    /// on a whole number of device pixels — otherwise the leftover
+    /// half-pixel anti-aliases into a grey smear at any scale that is not a
+    /// whole number, per `canon/type-and-render-craft.md` §6. The focus
+    /// ring's band width already did this correction; the border slot did
+    /// not, until now.
+    #[test]
+    fn a_border_stroke_is_a_whole_number_of_device_pixels() {
+        for factor in [1.25_f32, 1.5] {
+            let scale = Scale::new(factor).unwrap();
+
+            // The helper in isolation: the snapped width, scaled back up to
+            // device pixels, must be within rounding error of a whole
+            // number. At scale 1.0 this holds trivially for any width, which
+            // is exactly why the interesting scales are fractional ones.
+            let width = device_snapped_width(1.0, scale);
+            let device = width * factor;
+            assert!(
+                (device - device.round()).abs() < 1e-4,
+                "scale {factor}: snapped width {width} is {device} device \
+                 pixels, not a whole number"
+            );
+
+            // And the painter actually uses it: paint a bordered node and
+            // read the stroke width egui received, not just what the helper
+            // returns in isolation.
+            let host = Headless::new();
+            let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
+            let mut props = Props::default();
+            props
+                .tokens
+                .insert("border".into(), "surface.raised".into());
+            let node = ViewNode::new(NodeKind::Stack, "root").with_props(props);
+            let frame = petrify(
+                1,
+                validated(&node),
+                &mut h.ctx(),
+                Viewport::new(Size::new(240.0, 120.0), ThemeMode::Dark).with_scale(scale),
+                TransitionActivity::default(),
+            );
+            let mut shaper = host.shaper();
+            paint_frame(&host.painter(), &frame, &mut shaper, &snapshot());
+            let out = host.0.run_ui(RawInput::default(), |_| {});
+            let painted_width = out
+                .shapes
+                .iter()
+                .find_map(|cs| match &cs.shape {
+                    Shape::Rect(r) if r.stroke.width > 0.0 => Some(r.stroke.width),
+                    _ => None,
+                })
+                .expect("the border must have painted a stroke");
+            out.drop_without_applying_deltas();
+
+            assert_eq!(
+                painted_width, width,
+                "scale {factor}: the painter must use the same snapped \
+                 width the helper computes"
+            );
+            let painted_device = painted_width * factor;
+            assert!(
+                (painted_device - painted_device.round()).abs() < 1e-4,
+                "scale {factor}: the painted border width {painted_width} \
+                 is {painted_device} device pixels, not a whole number"
+            );
         }
     }
 

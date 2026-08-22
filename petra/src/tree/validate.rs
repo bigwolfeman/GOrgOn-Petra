@@ -155,6 +155,19 @@ pub enum Violation {
         /// The literal that was found.
         value: String,
     },
+    /// A leaf kind declares `padding`.
+    ///
+    /// A leaf has no children to offer an inset rect to, and `Placement`
+    /// carries exactly one `Rect` per node — there is no second "content
+    /// rect" a leaf's own drawn content could sit inside while its outer
+    /// rect stays put for a bound `background` token to paint. Refused for
+    /// the same reason `ScrollParamOwnedByAncestor` is refused rather than
+    /// silently ignored: a declaration here would be dead, and a dead
+    /// declaration is worse than a refused one.
+    PaddingOnLeafKind {
+        /// The leaf kind that declared it.
+        kind: NodeKind,
+    },
 }
 
 impl fmt::Display for Violation {
@@ -232,6 +245,11 @@ impl fmt::Display for Violation {
             Self::LiteralStyleValue { slot, value } => write!(
                 f,
                 "tokens.{slot} is the literal {value:?}; features reference token names, never values"
+            ),
+            Self::PaddingOnLeafKind { kind } => write!(
+                f,
+                "kind `{}` is a leaf and declares props.padding; a leaf has no children to inset, so the declaration would be ignored — declare padding on a container ancestor instead",
+                kind.as_str()
             ),
         }
     }
@@ -540,6 +558,27 @@ fn check_node(
         });
     }
 
+    if let Some(padding) = node.props.padding {
+        if !node.kind.is_container() {
+            push(Violation::PaddingOnLeafKind { kind: node.kind });
+        } else {
+            for (prop, value) in [
+                ("padding.top", padding.top),
+                ("padding.right", padding.right),
+                ("padding.bottom", padding.bottom),
+                ("padding.left", padding.left),
+            ] {
+                if !(value.is_finite() && value >= 0.0) {
+                    push(Violation::ValueOutOfRange {
+                        prop,
+                        value: format!("{value}"),
+                        expected: "a finite value of zero or more",
+                    });
+                }
+            }
+        }
+    }
+
     if let Some(name) = node.transition.as_ref().map(|t| t.name().to_owned())
         && !registry.has_transition(&name)
     {
@@ -588,7 +627,7 @@ fn is_style_literal(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{Registry, TreeError, Violation, validate};
-    use crate::geom::Axis;
+    use crate::geom::{Axis, Insets};
     use crate::tree::node::{Interaction, NodeKind, Role, Semantics, ViewNode};
     use crate::tree::props::{Anchor, Edge, Layer, Props, TrackSize};
 
@@ -743,6 +782,42 @@ mod tests {
             validate(&in_a_popup, &Registry::new()).is_ok(),
             "a surface is anchored, not scrolled, so it starts a fresh chain"
         );
+    }
+
+    /// A leaf has no children to offer an inset rect to, so `padding` there
+    /// is refused rather than silently ignored — the same policy
+    /// `ScrollParamOwnedByAncestor` already applies to a `collection` that
+    /// declares a parameter its `scroll` ancestor owns.
+    #[test]
+    fn a_leaf_kind_refuses_padding() {
+        let node = ViewNode::new(NodeKind::Text, "t").with_props(Props {
+            padding: Some(Insets::all(4.0)),
+            ..Props::default()
+        });
+        let err = validate(&node, &Registry::new()).unwrap_err();
+        assert_eq!(err.len(), 1, "{err}");
+        assert_eq!(err.as_slice()[0].path, "/t");
+        assert_eq!(
+            err.as_slice()[0].violation,
+            Violation::PaddingOnLeafKind {
+                kind: NodeKind::Text,
+            }
+        );
+        assert!(
+            err.to_string().contains("has no children to inset"),
+            "{err}"
+        );
+    }
+
+    /// A container kind is exactly where `padding` is meaningful, and it must
+    /// be accepted there with no violation.
+    #[test]
+    fn a_container_kind_may_declare_padding() {
+        let tree = stack("root").with_props(Props {
+            padding: Some(Insets::symmetric(4.0, 8.0)),
+            ..Props::default()
+        });
+        assert!(validate(&tree, &Registry::new()).is_ok());
     }
 
     #[test]
@@ -902,6 +977,41 @@ mod tests {
             err.as_slice()[0].violation,
             Violation::ValueOutOfRange { .. }
         ));
+    }
+
+    /// Every one of `padding`'s four edges is range-checked independently,
+    /// the same way `spacing: Some(-1.0)` is checked above — a container
+    /// that declares `padding` with a NaN or negative edge is refused, named
+    /// by that edge, not silently clamped.
+    #[test]
+    fn out_of_range_padding_edges_are_named() {
+        let node = stack("root").with_props(Props {
+            padding: Some(Insets {
+                top: -1.0,
+                right: f32::NAN,
+                bottom: 0.0,
+                left: 3.0,
+            }),
+            ..Props::default()
+        });
+        let err = validate(&node, &Registry::new()).unwrap_err();
+        assert_eq!(err.len(), 2, "{err}");
+        assert_eq!(
+            err.as_slice()[0].violation,
+            Violation::ValueOutOfRange {
+                prop: "padding.top",
+                value: "-1".into(),
+                expected: "a finite value of zero or more",
+            }
+        );
+        assert_eq!(
+            err.as_slice()[1].violation,
+            Violation::ValueOutOfRange {
+                prop: "padding.right",
+                value: "NaN".into(),
+                expected: "a finite value of zero or more",
+            }
+        );
     }
 
     #[test]
