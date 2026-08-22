@@ -7,10 +7,10 @@ use crate::tree::{Interaction, NodeKind, Role, TextWrap};
 
 /// Paint-relevant state that is not geometry but does change the picture.
 ///
-/// Every field here is a digest input (`contracts/frame-identity.md` §3).
-/// Adding one is a serialization change: it needs a line in
-/// [`crate::frame::digest::canonical_bytes`], which destructures this struct
-/// with no rest pattern so the compiler asks, and a bump of
+/// Every field here is a digest input (`contracts/frame-identity.md` §2).
+/// Adding one is a serialization change: it needs a line in the leaf-hash
+/// stream built by [`crate::frame::digest::leaf_hash`], which destructures
+/// this struct with no rest pattern so the compiler asks, and a bump of
 /// [`crate::frame::digest::DOMAIN`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PaintState {
@@ -59,7 +59,7 @@ pub struct PlacementSemantics {
     /// Unlike every other flag here this one **is** a digest input: the
     /// painter draws a focus ring from it, so two frames differing only in
     /// which node is focused are two different pictures
-    /// (`contracts/frame-identity.md`, §3). Projected from
+    /// (`contracts/frame-identity.md`, §2). Projected from
     /// [`crate::layout::LayoutState::focused`] by
     /// [`crate::layout::semantics_of`]; the focus tree owns focus and this is
     /// its per-placement projection, never a place to write.

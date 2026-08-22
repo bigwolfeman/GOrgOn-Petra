@@ -643,9 +643,9 @@ mod tests {
     ///
     /// Every entry is a claim `contracts/frame-identity.md` makes. The list is
     /// kept honest from two directions: [`rich_placement`] does not compile
-    /// when a field appears, and `canonical_bytes` destructures `Placement`
-    /// and `PaintState` with no rest pattern, so an unhashed new field does
-    /// not compile either.
+    /// when a field appears, and `leaf_bytes` destructures `Placement` and
+    /// `PaintState` with no rest pattern, so an unhashed new field does not
+    /// compile either.
     #[test]
     fn every_covered_field_moves_the_digest() {
         let vp = viewport();

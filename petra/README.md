@@ -53,6 +53,7 @@ sentences rather than with pictures.
   what is wrong with it. One run of the check names every fix.
 - Node ids are derived from key paths, not allocated, so an id an agent reads in
   one frame means the same node in the next one and is never recycled.
-- `frame::digest::canonical_bytes` is public: when two frames that should match
-  do not, the byte stream that produced each digest can be diffed directly
-  instead of guessing at the hash.
+- `frame::digest::frame_bytes` and `frame::digest::leaf_hash` are public: when
+  two frames that should match do not, the viewport stream and each
+  placement's own leaf hash can be diffed directly instead of guessing at the
+  digest.
