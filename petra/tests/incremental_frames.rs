@@ -159,13 +159,19 @@ fn untouched_siblings_are_not_rebuilt() {
     let before = root_of(&panels);
 
     // The host rebuilds panel 0 with different text and hands back the other
-    // three unchanged — exactly what an incremental application does.
+    // three unchanged — exactly what an incremental application does. Rows
+    // `b` and `c` are handed back as the same allocation too: only `a`
+    // actually changed, and `change_set` below names only `a`. Rebuilding
+    // `b`/`c` fresh here would be under-declaring by
+    // `ReuseState::verify_declaration`'s own rule (F1) even though their
+    // content is unchanged — that exact scenario is what
+    // `an_undeclared_rebuild_panics_naming_the_node` below exists to prove.
     let mut after_panels = panels.clone();
     after_panels[0] = Arc::new(
         ViewNode::new(NodeKind::Stack, Key::new("p0"))
             .child_shared(row("a", "changed a"))
-            .child_shared(row("b", "x b"))
-            .child_shared(row("c", "x c")),
+            .child_shared(Arc::clone(&panels[0].children[1]))
+            .child_shared(Arc::clone(&panels[0].children[2])),
     );
     let after = root_of(&after_panels);
 
@@ -173,12 +179,14 @@ fn untouched_siblings_are_not_rebuilt() {
     let (frame, stats) = incremental(&before, &after, &changes);
     assert_same_frame(&frame, &full(&after));
 
-    // The three untouched panels are carried over whole: 3 subtrees of 4
-    // nodes each. Everything else — the root, panel 0, its three rows — is
-    // rebuilt.
-    assert_eq!(stats.reused_subtrees, 3, "{stats:?}");
-    assert_eq!(stats.reused_nodes, 12, "{stats:?}");
-    assert_eq!(stats.replaced_nodes, 5, "{stats:?}");
+    // The three untouched panels are carried over whole (3 subtrees of 4
+    // nodes each), and now that rows `b` and `c` are properly declared by
+    // sharing their `Arc`, they are carried over individually too (2
+    // subtrees of 1 node each) — 5 subtrees, 14 nodes in total. Only the
+    // root, panel 0, and row `a` are rebuilt.
+    assert_eq!(stats.reused_subtrees, 5, "{stats:?}");
+    assert_eq!(stats.reused_nodes, 14, "{stats:?}");
+    assert_eq!(stats.replaced_nodes, 3, "{stats:?}");
 }
 
 /// A declared change under a subtree stops it being carried over even when
@@ -330,6 +338,88 @@ fn a_resized_sibling_moves_the_ones_after_it() {
     assert_ne!(
         p1.rect.y, p1_before.rect.y,
         "the fixture must actually move p1, or this test proves nothing"
+    );
+}
+
+/// F1: the debug verifier must panic, naming the node, when a change set
+/// omits a node whose `Arc` moved.
+///
+/// Panel 0 is rebuilt in full, including row `b`, whose text content did not
+/// change — but the change set names only row `a`. Row `b`'s Arc is a fresh
+/// allocation that is neither `/root/p0/a` itself, an ancestor of it, nor a
+/// descendant of it, so `ReuseState::verify_declaration` must catch it. This
+/// is exactly the sloppiness `untouched_siblings_are_not_rebuilt` avoids by
+/// sharing `b` and `c`'s `Arc` instead of rebuilding them.
+#[test]
+#[should_panic(expected = "/root/p0/b")]
+fn an_undeclared_rebuild_panics_naming_the_node() {
+    let panels: Vec<_> = (0..2).map(|i| panel(&format!("p{i}"), "x")).collect();
+    let before = root_of(&panels);
+
+    let mut after_panels = panels.clone();
+    after_panels[0] = Arc::new(
+        ViewNode::new(NodeKind::Stack, Key::new("p0"))
+            .child_shared(row("a", "changed a"))
+            .child_shared(row("b", "x b"))
+            .child_shared(row("c", "x c")),
+    );
+    let after = root_of(&after_panels);
+
+    let changes = ChangeSet::Nodes(BTreeSet::from(["/root/p0/a".to_owned()]));
+    let _ = incremental(&before, &after, &changes);
+}
+
+/// F8: `FrameMemo` is `pub` with every field `pub`, so a caller from outside
+/// this crate can build (or corrupt) one whose arrays disagree in length.
+/// `ReuseState::reusable` must refuse such a memo — falling back to a full
+/// negotiation — rather than let `ReuseState::subtree` slice past the end of
+/// the shorter array.
+///
+/// Before the fix, `reusable` bounds-checked only `placements.len()`, which
+/// this corruption leaves untouched, so it would have answered `true` for
+/// the root and `subtree` would have sliced `memo.content[0..9]` against a
+/// one-element `Vec` — an out-of-bounds panic, not a refusal.
+#[test]
+fn a_memo_with_mismatched_array_lengths_is_refused_not_panicked() {
+    let panels: Vec<_> = (0..2).map(|i| panel(&format!("p{i}"), "x")).collect();
+    let tree = root_of(&panels);
+
+    let mut h = Harness::new();
+    let first = petrify(
+        1,
+        &tree,
+        &mut h.ctx(),
+        viewport(),
+        TransitionActivity::default(),
+    );
+    let mut memo = FrameMemo::adopt(
+        Arc::clone(&tree),
+        first,
+        h.state.clone(),
+        h.theme_rev,
+        h.scale,
+    );
+
+    assert!(
+        memo.content.len() > 1,
+        "fixture must produce more than one placement for this to prove anything"
+    );
+    memo.content.truncate(1);
+
+    let dirty = BTreeSet::new();
+    let (frame, stats) = petrify_with_memo(
+        2,
+        &tree,
+        &mut h.ctx(),
+        &memo,
+        &dirty,
+        viewport(),
+        TransitionActivity::default(),
+    );
+    assert_same_frame(&frame, &full(&tree));
+    assert_eq!(
+        stats.reused_subtrees, 0,
+        "a memo whose arrays disagree must be refused wholesale, not reused: {stats:?}"
     );
 }
 

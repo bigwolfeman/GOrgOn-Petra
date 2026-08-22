@@ -447,7 +447,15 @@ impl PlacementSink for PlacementList {
                 let old = placement
                     .parent
                     .expect("a non-root placement in a reused subtree must name a parent");
-                debug_assert!(
+                // A real `assert!`, not `debug_assert!`: `digest.rs:401` already
+                // enforces the analogous pre-order invariant (`parent` names a
+                // strictly earlier index) in release, and this is the same class
+                // of check — one comparison per reused placement — on the same
+                // caller-suppliable data (`SubtreeCopy` has no sealed
+                // constructor). Leaving it compiled out in release would let a
+                // malformed subtree rebase silently in the one build the checked
+                // path is supposed to protect.
+                assert!(
                     old >= sub.base && old < sub.base + sub.placements.len(),
                     "reused subtree is not self-contained: a placement names parent {old}, \
                      outside [{}, {})",
