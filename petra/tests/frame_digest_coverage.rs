@@ -19,15 +19,26 @@
 
 use gorgon_petra::frame::{FrameDigest, PetrifiedFrame, TransitionActivity, Viewport, petrify};
 use gorgon_petra::geom::Size;
-use gorgon_petra::testing::Harness;
+use gorgon_petra::testing::{Harness, validated_with};
 use gorgon_petra::token::ThemeMode;
-use gorgon_petra::tree::{Interaction, NodeKind, Props, Role, TextWrap, ViewNode};
+use gorgon_petra::tree::{Interaction, NodeKind, Props, Registry, Role, TextWrap, ViewNode};
+
+/// Every custom kind name a tree in this file declares. The digest tests
+/// exercise custom-painter naming, not acceptance, so the registry has to
+/// know both names or `frame`/`dig` would refuse trees this file's own tests
+/// build on purpose.
+fn registry() -> Registry {
+    let mut registry = Registry::new();
+    registry.register_custom_kind("sparkline");
+    registry.register_custom_kind("gauge");
+    registry
+}
 
 fn frame(tree: &ViewNode) -> PetrifiedFrame {
     let mut harness = Harness::new();
     petrify(
         1,
-        tree,
+        validated_with(tree, &registry()),
         &mut harness.ctx(),
         Viewport::new(Size::new(400.0, 200.0), ThemeMode::Dark),
         TransitionActivity::default(),
@@ -274,7 +285,7 @@ fn frame_focused(tree: &ViewNode, id: Option<&str>) -> PetrifiedFrame {
     harness.state.focused = id.map(str::to_owned);
     petrify(
         1,
-        tree,
+        validated_with(tree, &registry()),
         &mut harness.ctx(),
         Viewport::new(Size::new(400.0, 200.0), ThemeMode::Dark),
         TransitionActivity::default(),

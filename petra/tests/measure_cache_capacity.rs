@@ -24,7 +24,7 @@
 use gorgon_petra::frame::{TransitionActivity, Viewport, petrify};
 use gorgon_petra::geom::{Axis, Size};
 use gorgon_petra::layout::MeasureCache;
-use gorgon_petra::testing::Harness;
+use gorgon_petra::testing::{Harness, validated};
 use gorgon_petra::token::ThemeMode;
 use gorgon_petra::tree::{NodeKind, Props, ViewNode};
 
@@ -67,7 +67,7 @@ fn cold_pass(capacity: usize) -> (usize, u64) {
     let tree = dense_tree();
     let _ = petrify(
         1,
-        &tree,
+        validated(&tree),
         &mut harness.ctx(),
         Viewport::new(Size::new(900.0, 700.0), ThemeMode::Dark),
         TransitionActivity::default(),

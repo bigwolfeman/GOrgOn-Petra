@@ -83,8 +83,12 @@ pub fn place(
     slot: Slot,
     sink: &mut dyn PlacementSink,
 ) {
-    // Tree acceptance (`crate::tree::validate`) refuses a `surface` node
-    // missing `layer` or `anchor` before layout ever runs, so this is a
+    // `crate::frame::petrify` and `petrify_with_memo` — the only entry
+    // points that reach this walk — accept a `crate::tree::ValidatedTree`,
+    // which only `crate::tree::validate` can mint, and `validate` refuses a
+    // `surface` node missing `layer` or `anchor`. So this is enforced by the
+    // type system, not merely by a caller remembering to check first: a
+    // tree that reaches this line already passed acceptance, and this is a
     // guarantee this module gets to lean on, not a value it must default.
     let surface = node
         .props

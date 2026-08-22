@@ -161,7 +161,7 @@ use gorgon_petra::geom::Size;
 use gorgon_petra::layout::reuse::{FrameMemo, ReuseStats};
 use gorgon_petra::layout::{ChangeSet, MeasureCache};
 use gorgon_petra::petrify;
-use gorgon_petra::testing::{Harness, MonoContent, NoRows};
+use gorgon_petra::testing::{Harness, MonoContent, NoRows, validated};
 use gorgon_petra::token::ThemeMode;
 use gorgon_petra::tree::{Key, KeyPath, NodeKind, Props, TrackSize, ViewNode};
 
@@ -357,10 +357,14 @@ fn viewport() -> Viewport {
 /// allocator's slope as the layout engine's.
 fn cold(tree: &ViewNode, nodes: usize) -> Duration {
     let mut h = harness(nodes);
+    // Minted before the timer starts: acceptance is a one-time cost a host
+    // pays once per tree build, not once per negotiation, and folding it in
+    // here would report `validate`'s cost as the layout engine's.
+    let validated = validated(tree);
     let t = Instant::now();
     let frame = petrify(
         1,
-        tree,
+        validated,
         &mut h.ctx(),
         viewport(),
         TransitionActivity::default(),
@@ -445,7 +449,7 @@ fn change(panels: usize, rows: usize, k: usize, policy: Policy) -> Change {
     // already measures those.
     let warm = petrify(
         1,
-        &tree,
+        validated(&tree),
         &mut h.ctx(),
         viewport(),
         TransitionActivity::default(),
@@ -469,6 +473,10 @@ fn change(panels: usize, rows: usize, k: usize, policy: Policy) -> Change {
         Arc::make_mut(&mut panel.children[index % rows]).props.text =
             Some("x".repeat(CHANGED_TEXT_CHARS));
     }
+
+    // Minted here, after every mutation and before either timer: acceptance
+    // is not part of what `invalidate` or `renegotiate` measures.
+    let validated_tree = validated(&tree);
 
     let (h0, m0) = h.cache.stats();
     let e0 = h.cache.evictions();
@@ -499,7 +507,7 @@ fn change(panels: usize, rows: usize, k: usize, policy: Policy) -> Change {
     let t = Instant::now();
     let frame = petrify(
         2,
-        &tree,
+        validated_tree,
         &mut h.ctx(),
         viewport(),
         TransitionActivity::default(),
@@ -586,7 +594,7 @@ fn change_incremental(panels: usize, rows: usize) -> (Duration, ReuseStats, f32)
 
     let warm = petrify(
         1,
-        &before,
+        validated(&before),
         &mut h.ctx(),
         viewport(),
         TransitionActivity::default(),
@@ -599,20 +607,29 @@ fn change_incremental(panels: usize, rows: usize) -> (Duration, ReuseStats, f32)
         h.scale,
     );
 
-    // Panel 0 rebuilt with a wider row 0; every other panel handed straight
-    // back.
+    // Panel 0 rebuilt with a wider row 0; every other row of panel 0, and
+    // every other panel, handed straight back as the same allocation. Rows
+    // 1.. used to be rebuilt with `Arc::new` too — identical content, a new
+    // address — which is exactly the "rebuilt but not declared" case
+    // `ReuseState::verify_declaration` exists to catch: the change set below
+    // names only row 0, so any other row whose `Arc` moved panicked the
+    // verifier under `debug_assertions`, which is every profile `cargo test`
+    // builds in.
     let mut after_panels = before_panels.clone();
     let mut panel0 = ViewNode::new(NodeKind::Stack, Key::new("panel-0"));
     panel0.children = (0..rows)
         .map(|r| {
-            Arc::new(leaf(
-                format!("row-{r}"),
-                if r == 0 { CHANGED_TEXT_CHARS } else { 8 },
-            ))
+            if r == 0 {
+                Arc::new(leaf(format!("row-{r}"), CHANGED_TEXT_CHARS))
+            } else {
+                Arc::clone(&before_panels[0].children[r])
+            }
         })
         .collect();
     after_panels[0] = Arc::new(panel0);
     let after = root_of(&after_panels);
+    // Minted before the timer starts, same reason as `cold` and `change`.
+    let after_validated = validated(&after);
 
     let target = "/root/panel-0/row-0";
     let changes = ChangeSet::Nodes(BTreeSet::from([target.to_owned()]));
@@ -624,7 +641,7 @@ fn change_incremental(panels: usize, rows: usize) -> (Duration, ReuseStats, f32)
         .expect("ChangeSet::Nodes has a dirty set");
     let (frame, stats) = petrify_with_memo(
         2,
-        &after,
+        after_validated,
         &mut h.ctx(),
         &memo,
         &dirty,
@@ -843,10 +860,18 @@ fn h2c_phase() -> Option<f64> {
             "the incremental pass must produce the post-change layout, not a stale one: \
              the changed leaf is {w:.0} wide and was 64 before the edit"
         );
+        // `panels - 1` whole sibling panels, plus `ROWS - 1` individual rows
+        // of the changed panel — every row but row 0, which is the only node
+        // `change_incremental` actually rebuilds. Before the fixture bug fix
+        // (2026-08-22, F2 wave), *every* row of the changed panel was
+        // rebuilt with a fresh `Arc` regardless of whether its content
+        // moved, so nothing inside that panel could ever be recognized as
+        // reused and this assertion undercounted by exactly `ROWS - 1`.
         assert_eq!(
             stats.reused_subtrees,
-            panels - 1,
-            "every panel but the changed one should have been carried over"
+            (panels - 1) + (ROWS - 1),
+            "every panel but the changed one, and every row but the changed \
+             row within it, should have been carried over"
         );
         println!(
             "  nodes={nodes:6}  incremental {inc:>9.2?}  ({} of {nodes} nodes carried over, {} rebuilt)",
@@ -922,10 +947,11 @@ fn shipping_bound_phase() {
     let unbounded_cold = median_dur(ROUNDS, || cold(&tree, fixed_nodes));
     let mut bounded = Harness::new();
     let capacity = bounded.cache.capacity();
+    let validated_tree = validated(&tree);
     let t = Instant::now();
     let frame = petrify(
         1,
-        &tree,
+        validated_tree,
         &mut bounded.ctx(),
         viewport(),
         TransitionActivity::default(),

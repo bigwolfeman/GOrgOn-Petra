@@ -22,7 +22,7 @@ use std::sync::Arc;
 use gorgon_petra::frame::{FrameDigest, PetrifiedFrame, TransitionActivity, Viewport, petrify};
 use gorgon_petra::geom::Size;
 use gorgon_petra::layout::RowSource;
-use gorgon_petra::testing::{Harness, MonoContent};
+use gorgon_petra::testing::{Harness, MonoContent, validated};
 use gorgon_petra::token::ThemeMode;
 use gorgon_petra::tree::{Key, NodeKind, Props, ViewNode};
 
@@ -87,7 +87,7 @@ fn frame_at(offset: f32, background: &'static str) -> PetrifiedFrame {
     harness.set_scroll("/list", offset);
     petrify(
         1,
-        &list(),
+        validated(&list()),
         &mut harness.ctx(),
         Viewport::new(VIEWPORT, ThemeMode::Dark),
         TransitionActivity::default(),
@@ -328,7 +328,7 @@ fn a_row_keeps_its_id_and_content_across_a_prepend() {
         harness.set_scroll("/list", 0.0);
         petrify(
             1,
-            &prependable_list(TOTAL_ROWS),
+            validated(&prependable_list(TOTAL_ROWS)),
             &mut harness.ctx(),
             Viewport::new(VIEWPORT, ThemeMode::Dark),
             TransitionActivity::default(),
@@ -343,7 +343,7 @@ fn a_row_keeps_its_id_and_content_across_a_prepend() {
         harness.set_scroll("/list", 0.0);
         petrify(
             2,
-            &prependable_list(after_total),
+            validated(&prependable_list(after_total)),
             &mut harness.ctx(),
             Viewport::new(VIEWPORT, ThemeMode::Dark),
             TransitionActivity::default(),

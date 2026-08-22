@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify, round_rect};
 use crate::geom::{Scale, Size};
 use crate::semantic::{AuditRule, StateFlag, TreeQuery, audit, project};
-use crate::testing::{GeneratedRows, Harness, MonoContent};
+use crate::testing::{GeneratedRows, Harness, MonoContent, validated};
 use crate::token::ThemeMode;
 use crate::tree::{Interaction, NodeKind, Props, Role, Semantics, ViewNode};
 
@@ -28,7 +28,7 @@ fn frame_in(seq: u64, tree: &ViewNode, viewport: Viewport) -> PetrifiedFrame {
     harness.scale = viewport.scale;
     petrify(
         seq,
-        tree,
+        validated(tree),
         &mut harness.ctx(),
         viewport,
         TransitionActivity::default(),
@@ -174,15 +174,20 @@ fn absent_state_flags_and_absent_values_stay_off_the_wire() {
 /// nodes accepting the same kinds would serialize differently.
 #[test]
 fn actions_are_sorted_and_deduplicated() {
-    let node = ViewNode {
-        interactions: vec![
+    // `.interactive` also sets `semantics.role` and `.label`: acceptance
+    // refuses an interactive node that carries neither, and this fixture's
+    // whole point is the `interactions` list, not a violation of a rule
+    // this file's `validate.rs` tests already cover.
+    let node = ViewNode::new(NodeKind::Stack, "root").interactive(
+        Role::Button,
+        "Actions",
+        &[
             Interaction::Scroll,
             Interaction::Click,
             Interaction::Click,
             Interaction::Focus,
         ],
-        ..ViewNode::new(NodeKind::Stack, "root")
-    };
+    );
     let frame = frame_of(1, &node);
     let projected = project(&frame).expect("root");
     assert_eq!(
@@ -229,7 +234,7 @@ fn a_row_keeps_its_id_across_a_scroll() {
         harness.set_scroll("/list", offset);
         let frame = petrify(
             1,
-            &virtual_list(),
+            validated(&virtual_list()),
             &mut harness.ctx(),
             Viewport::new(VIEWPORT, ThemeMode::Dark),
             TransitionActivity::default(),
@@ -421,7 +426,7 @@ fn a_virtualized_collection_counts_what_it_did_not_materialize() {
     harness.set_scroll("/list", 480.0);
     let frame = petrify(
         1,
-        &virtual_list(),
+        validated(&virtual_list()),
         &mut harness.ctx(),
         Viewport::new(VIEWPORT, ThemeMode::Dark),
         TransitionActivity::default(),
@@ -567,14 +572,22 @@ fn an_actionable_node_without_a_label_is_reported() {
 /// colour as its only channel.
 #[test]
 fn a_status_without_a_label_is_reported() {
+    // Acceptance refuses a status role with no label
+    // (`Violation::StatusRoleWithoutLabel`), so the fixture starts labelled
+    // and the label is stripped from the *projection* afterward — the same
+    // move `an_actionable_node_without_a_role_is_reported` makes for
+    // Obligation 1 — to reach the state this audit rule exists to catch.
     let tree = ViewNode::new(NodeKind::Stack, "root").child(
         ViewNode::new(NodeKind::Text, "state").with_semantics(Semantics {
             role: Some(Role::Status),
+            label: Some("placeholder".into()),
             ..Semantics::default()
         }),
     );
     let frame = frame_of(5, &tree);
-    let projected = project(&frame).expect("root");
+    let mut root = project(&frame).expect("root").root().clone();
+    root.children[0].label = String::new();
+    let projected = crate::semantic::SemanticTree::new(root);
     assert_eq!(
         rules_for(&projected, &frame, "/root/state"),
         [AuditRule::StatusNeedsLabel]
@@ -868,7 +881,7 @@ fn the_focused_flag_reaches_the_tree_and_names_one_node() {
     harness.state.focused = Some("/root/b".into());
     let frame = petrify(
         1,
-        &tree,
+        validated(&tree),
         &mut harness.ctx(),
         Viewport::new(VIEWPORT, ThemeMode::Dark),
         TransitionActivity::default(),
@@ -896,7 +909,7 @@ fn the_focused_flag_is_queryable() {
     harness.state.focused = Some("/root/c".into());
     let frame = petrify(
         1,
-        &tree,
+        validated(&tree),
         &mut harness.ctx(),
         Viewport::new(VIEWPORT, ThemeMode::Dark),
         TransitionActivity::default(),
