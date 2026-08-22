@@ -54,7 +54,7 @@
 use std::collections::BTreeMap;
 
 use crate::frame::placement::{PaintState, Placement, PlacementSink};
-use crate::geom::{Rect, Size};
+use crate::geom::{Axis, Rect, Size};
 use crate::layout::{LayoutCtx, SizeProposal, Slot, semantics_of};
 use crate::tree::{Anchor, ClampRule, InputPolicy, KeyPath, ViewNode};
 
@@ -65,6 +65,10 @@ use crate::tree::{Anchor, ClampRule, InputPolicy, KeyPath, ViewNode};
 ///
 /// The incoming `proposal` is deliberately not read: see the module doc for
 /// why a surface's size never depends on what its parent offers.
+///
+/// Padding grows this container's own natural size, exactly as it grows any
+/// other container's reported size — a surface's own placed rect is what
+/// carries the padding, never its children's (`layout-insets.md` §8 step 6).
 pub fn measure(
     node: &ViewNode,
     ctx: &mut LayoutCtx<'_>,
@@ -72,7 +76,12 @@ pub fn measure(
     proposal: SizeProposal,
 ) -> Size {
     let _ = proposal;
-    natural_size(node, ctx, path)
+    let natural = natural_size(node, ctx, path);
+    let padding = node.props.padding();
+    Size::new(
+        natural.w + padding.along(Axis::Horizontal),
+        natural.h + padding.along(Axis::Vertical),
+    )
 }
 
 /// Place this container and everything under it into `slot`.
@@ -98,10 +107,21 @@ pub fn place(
     // Same order the dispatcher uses in `crate::layout::measure`: clamp to
     // this node's own declared constraints, then sanitize — so a surface's
     // placed size is bound by the same rule every other node's is.
-    let natural = node
+    let mut natural = node
         .constraints
         .clamp_size(natural_size(node, ctx, path))
         .sane();
+
+    // "Add before clamp, inset content_rect after" (`layout-insets.md` §8
+    // step 6): padding grows the surface's own natural size here, before the
+    // `ClampRule`/anchor math below, so padding participates in whether the
+    // surface needs to shrink, flip, or scroll against the window edge —
+    // exactly like the rest of its natural size. `content_rect` is inset
+    // back out of the *clamped* `rect` afterwards, not built from this
+    // padded `natural` directly.
+    let padding = node.props.padding();
+    natural.w += padding.along(Axis::Horizontal);
+    natural.h += padding.along(Axis::Vertical);
 
     // See the module doc: the intersection is "the window" a surface must
     // never render outside of.
@@ -109,14 +129,14 @@ pub fn place(
 
     let anchor_origin = anchor_origin(surface.anchor, viewport, natural);
 
-    let (x, rect_w, content_w, scroll_x) = clamp_axis(
+    let (x, rect_w, _content_w, scroll_x) = clamp_axis(
         anchor_origin.0,
         natural.w,
         viewport.x,
         viewport.w,
         surface.clamp,
     );
-    let (y, rect_h, content_h, scroll_y) = clamp_axis(
+    let (y, rect_h, _content_h, scroll_y) = clamp_axis(
         anchor_origin.1,
         natural.h,
         viewport.y,
@@ -125,7 +145,13 @@ pub fn place(
     );
 
     let rect = Rect::new(x, y, rect_w, rect_h);
-    let content_rect = Rect::new(x, y, content_w, content_h);
+    // Padding is inside the box: children are offered the placed, clamped
+    // rect minus the surface's own padding — never the wider unclamped
+    // extent `clamp_axis` tracked for the scroll affordance (`_content_w`/
+    // `_content_h`, now unused for this) — the same "container's own placed
+    // rect never shrinks for its own padding; only what it offers its
+    // children does" rule every other container in this change follows.
+    let content_rect = rect.inset_edges(padding);
     let needs_scroll = scroll_x || scroll_y;
 
     let z_slot = slot.above(surface.layer.base_z());
@@ -155,10 +181,15 @@ pub fn place(
         parent: None,
     });
 
-    // The content slot keeps the surface's natural size (so children never
-    // reflow just because the window was small) but is clipped to the
-    // placed rect — the scroll affordance the `Scroll` rule promises, and a
-    // no-op narrowing for `Flip`/`Shrink`, where `content_rect == rect`.
+    // The content slot is the placed, clamped rect's own padded interior,
+    // clipped to that same placed rect — a no-op narrowing except that
+    // `content_rect` is always `rect` minus the padding, at every
+    // `ClampRule`, including `Scroll`: an overflowing surface's content no
+    // longer gets the wider unclamped natural extent to lay out into before
+    // clipping (what this slot did pre-padding); it is offered exactly the
+    // clamped, padded interior, the same "children are offered the box minus
+    // padding, never more" rule this module's padding support follows
+    // throughout.
     let content_slot = z_slot.with_rect(content_rect).clipped_to(rect);
 
     sink.enter(me);
@@ -344,7 +375,7 @@ fn collect_surface_scopes(
 mod tests {
     use super::{AnchorResolution, clamp_axis, resolve_anchor_kind, surface_scopes};
     use crate::frame::placement::PlacementList;
-    use crate::geom::{Point, Rect, Size};
+    use crate::geom::{Axis, Insets, Point, Rect, Size};
     use crate::layout::{SizeProposal, Slot};
     use crate::testing::Harness;
     use crate::tree::{
@@ -391,6 +422,148 @@ mod tests {
             .into_iter()
             .next()
             .expect("surface pushes its own placement first")
+    }
+
+    /// Same as [`place_surface`], but also returns the placed content
+    /// child's own placement — needed to see `content_rect`, which never
+    /// reaches the surface's own `Placement.rect`.
+    fn place_surface_and_content(
+        node: &ViewNode,
+        viewport: Rect,
+    ) -> (
+        crate::frame::placement::Placement,
+        crate::frame::placement::Placement,
+    ) {
+        let mut h = Harness::new();
+        let mut path = KeyPath::root();
+        let mut sink = PlacementList::new();
+        crate::layout::place(
+            node,
+            &mut h.ctx(),
+            &mut path,
+            Slot::new(viewport),
+            &mut sink,
+        );
+        let mut all = sink.into_vec().into_iter();
+        let surface = all.next().expect("surface pushes its own placement first");
+        let content = all.next().expect("the surface's content is placed too");
+        (surface, content)
+    }
+
+    /// Same shape as [`surface`], with declared `padding`.
+    fn padded_surface(anchor: Anchor, clamp: ClampRule, size: Size, padding: Insets) -> ViewNode {
+        let mut content = ViewNode::new(NodeKind::Spacer, "content");
+        content.constraints.horizontal.min = Some(size.w);
+        content.constraints.horizontal.max = Some(size.w);
+        content.constraints.vertical.min = Some(size.h);
+        content.constraints.vertical.max = Some(size.h);
+        ViewNode::new(NodeKind::Surface, "popup")
+            .with_props(Props {
+                layer: Some(Layer::Popup),
+                anchor: Some(anchor),
+                clamp: Some(clamp),
+                input_policy: Some(InputPolicy::Block),
+                padding: Some(padding),
+                ..Props::default()
+            })
+            .child(content)
+    }
+
+    // -- Padding: inside the clamped rect, added before the clamp runs. ----
+
+    /// The behaviour this leaf exists to add, pinned by name (gate G4).
+    ///
+    /// The surface's own placed rect grows by the padding (content 40x20 plus
+    /// 8.0 on every edge is 56x36); the content it hands its one child is the
+    /// *clamped* rect's interior, inset back down by that same padding —
+    /// landing exactly on the child's own 40x20 natural size, round-tripped
+    /// through "add before clamp, inset content_rect after"
+    /// (`layout-insets.md` §8 step 6).
+    #[test]
+    fn a_padded_surface_pads_inside_its_clamped_rect() {
+        let node = padded_surface(
+            Anchor::Point { x: 100.0, y: 100.0 },
+            ClampRule::Shrink,
+            Size::new(40.0, 20.0),
+            Insets::all(8.0),
+        );
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let (surface, content) = place_surface_and_content(&node, viewport);
+
+        assert_eq!(
+            surface.rect,
+            Rect::new(100.0, 100.0, 56.0, 36.0),
+            "the surface's own placed rect includes its padding (40+16, 20+16), \
+             with the anchor point unmoved: padding is inside the box"
+        );
+        assert_eq!(
+            content.rect,
+            Rect::new(108.0, 108.0, 40.0, 20.0),
+            "the child is offered the surface's clamped rect minus its padding \
+             — exactly its own declared 40x20, from the padded (108, 108) origin"
+        );
+    }
+
+    /// The clamp-order decision, proven to matter, not merely asserted.
+    ///
+    /// `place` adds padding to the natural size *before* `clamp_axis` runs,
+    /// so a padded box that does not fit is shrunk (or flipped) accounting
+    /// for the padding, staying inside the viewport. The other order —
+    /// clamp the *un-padded* content first, then add the padding to
+    /// whatever came back — would let the padding push the box back out
+    /// past the edge `clamp_axis` had just pulled it inside of, since
+    /// nothing re-checks the viewport after the addition. This test computes
+    /// both orders (the real one through `place`, the wrong one by calling
+    /// the same `clamp_axis` this module uses, by hand, in the other
+    /// sequence) and shows only one of them keeps the surface on-screen.
+    #[test]
+    fn add_before_clamp_keeps_the_padded_surface_on_screen_the_other_order_would_not() {
+        let viewport = Rect::new(0.0, 0.0, 100.0, 100.0);
+        let content_size = Size::new(40.0, 20.0);
+        let padding = Insets::all(10.0);
+        // Anchored close enough to the right edge that the un-padded 40.0
+        // width fits (70 + 40 = 110 > 100, so even the un-padded box needs
+        // *some* shrink — chosen so both orders engage `ClampRule::Shrink`,
+        // and the only variable left is where the padding addition happens).
+        let anchor_x = 70.0_f32;
+
+        // The real pipeline: padding is added to `natural` before
+        // `clamp_axis` runs (this module's own rule, exercised end-to-end).
+        let node = padded_surface(
+            Anchor::Point {
+                x: anchor_x,
+                y: 0.0,
+            },
+            ClampRule::Shrink,
+            content_size,
+            padding,
+        );
+        let placed = place_surface(&node, viewport);
+        assert!(
+            placed.rect.x + placed.rect.w <= viewport.right() + 0.001,
+            "add-before-clamp: the padded box stays inside the viewport, rect={:?}",
+            placed.rect
+        );
+
+        // The other order: clamp the un-padded 40.0-wide content first (the
+        // same `clamp_axis` call `place` makes, just fed the un-padded
+        // extent), then add the padding to the result afterwards, the way a
+        // "pad after clamp" implementation would.
+        let (wrong_x, clamped_w, _content_w, _scrolls) = clamp_axis(
+            anchor_x,
+            content_size.w,
+            viewport.x,
+            viewport.w,
+            ClampRule::Shrink,
+        );
+        let wrong_w = clamped_w + padding.along(Axis::Horizontal);
+        assert!(
+            wrong_x + wrong_w > viewport.right() + 0.001,
+            "clamp-then-add: adding padding after the clamp pushes the box \
+             back past the edge clamp_axis just pulled it inside of \
+             (x={wrong_x}, w={wrong_w}, viewport right={})",
+            viewport.right()
+        );
     }
 
     #[test]

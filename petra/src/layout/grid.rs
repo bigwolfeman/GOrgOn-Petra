@@ -10,7 +10,7 @@
 //! go through, so the closed-budget and open-probe cases are written once.
 
 use crate::frame::placement::{PaintState, Placement, PlacementSink};
-use crate::geom::{Align, Rect, Size};
+use crate::geom::{Align, Axis, Rect, Size};
 use crate::layout::constraints::FIT_EPSILON;
 use crate::layout::{LayoutCtx, Proposal, SizeProposal, Slot, semantics_of};
 use crate::tree::{KeyPath, TrackSize, ViewNode};
@@ -34,6 +34,12 @@ pub fn measure(
         // describes.
         return Size::ZERO;
     }
+    // Padding is reserved before track sizing, the same way `column_spacing`/
+    // `row_spacing` already are: a `Weight` track must never see budget the
+    // padding already spent. Added back onto the reported size afterward, so
+    // the grid's own measured extent already accounts for its padding —
+    // exactly parallel to how it already accounts for spacing.
+    let padding = node.props.padding();
     let row_tracks = effective_row_tracks(&props.rows, node.children.len(), ncols);
     let col_widths = resolve_columns(
         node,
@@ -41,7 +47,7 @@ pub fn measure(
         path,
         &props.columns,
         props.column_spacing,
-        proposal.horizontal,
+        proposal.horizontal.shrink(padding.along(Axis::Horizontal)),
         ncols,
     );
     let row_heights = resolve_rows(
@@ -50,12 +56,15 @@ pub fn measure(
         path,
         &row_tracks,
         props.row_spacing,
-        proposal.vertical,
+        proposal.vertical.shrink(padding.along(Axis::Vertical)),
         (ncols, &col_widths.extents),
     );
-    let w = col_widths.extents.iter().sum::<f32>() + reserved(col_widths.spacing, ncols);
-    let h =
-        row_heights.extents.iter().sum::<f32>() + reserved(row_heights.spacing, row_tracks.len());
+    let w = col_widths.extents.iter().sum::<f32>()
+        + reserved(col_widths.spacing, ncols)
+        + padding.along(Axis::Horizontal);
+    let h = row_heights.extents.iter().sum::<f32>()
+        + reserved(row_heights.spacing, row_tracks.len())
+        + padding.along(Axis::Vertical);
     Size::new(w, h)
 }
 
@@ -69,6 +78,11 @@ pub fn place(
 ) {
     let props = node.props.grid();
     let ncols = props.columns.len();
+    // Padding insets what the grid offers its children; the grid's own
+    // placed rect below stays `slot.rect`, unmodified by its own padding
+    // (padding is inside the box, not around it).
+    let padding = node.props.padding();
+    let content = slot.rect.inset_edges(padding);
 
     // Resolve the tracks before pushing this container's own placement. The
     // dispatcher requires a container to push itself before any child, and
@@ -83,8 +97,9 @@ pub fn place(
         // Re-resolve against the rect this call actually received, the same
         // way `text::place` re-measures rather than trusting an earlier
         // probe: a parent may have probed several proposals before
-        // committing this one.
-        let offer = SizeProposal::exact(slot.rect.size());
+        // committing this one. `content`, not `slot.rect`: track sizing must
+        // never see the budget the padding already spent.
+        let offer = SizeProposal::exact(content.size());
         let row_tracks = effective_row_tracks(&props.rows, node.children.len(), ncols);
         let col_widths = resolve_columns(
             node,
@@ -106,10 +121,10 @@ pub fn place(
         );
         truncated = col_widths.truncated || row_heights.truncated;
 
-        // Absolute coordinates, seeded from the slot, not offsets added to it
-        // later: see `cumulative_offsets`.
-        let col_x = cumulative_offsets(slot.rect.x, &col_widths.extents, col_widths.spacing);
-        let row_y = cumulative_offsets(slot.rect.y, &row_heights.extents, row_heights.spacing);
+        // Absolute coordinates, seeded from the inset content rect, not the
+        // grid's own outer rect: see `cumulative_offsets`.
+        let col_x = cumulative_offsets(content.x, &col_widths.extents, col_widths.spacing);
+        let row_y = cumulative_offsets(content.y, &row_heights.extents, row_heights.spacing);
 
         // A child that answers larger than its cell is clamped into it by
         // `place_in_cell`. Ask now, so the container can report the clamp;
@@ -556,7 +571,7 @@ fn place_in_cell(
 mod tests {
     use super::*;
     use crate::frame::placement::PlacementList;
-    use crate::geom::Axis;
+    use crate::geom::{Axis, Insets};
     use crate::testing::{Harness, MonoContent, NoRows};
     use crate::tree::{AxisConstraint, Constraints, NodeKind, Props};
     use proptest::prelude::*;
@@ -722,6 +737,134 @@ mod tests {
                 Rect::new(0.0, 22.0, 50.0, 40.0),  // c: col 0, row 1
                 Rect::new(55.0, 22.0, 30.0, 40.0), // d: col 1, row 1
             ]
+        );
+    }
+
+    /// The padding-inclusive counterpart to
+    /// `children_fill_cells_row_major_at_the_declared_track_rects`: the same
+    /// 2x2 fixed grid, now with 10 units of padding on every edge. Every
+    /// track lands exactly where it did in the unpadded case, shifted by the
+    /// padding's top-left origin — and the grid's own placed rect is still
+    /// the full box it was offered, untouched by its own padding.
+    #[test]
+    fn a_padded_grid_insets_its_tracks() {
+        let g = ViewNode::new(NodeKind::Grid, "g")
+            .with_props(Props {
+                columns: vec![
+                    TrackSize::Fixed { value: 50.0 },
+                    TrackSize::Fixed { value: 30.0 },
+                ],
+                rows: vec![
+                    TrackSize::Fixed { value: 20.0 },
+                    TrackSize::Fixed { value: 40.0 },
+                ],
+                column_spacing: Some(5.0),
+                row_spacing: Some(2.0),
+                padding: Some(Insets::all(10.0)),
+                ..Props::default()
+            })
+            .with_children(vec![spacer("a"), spacer("b"), spacer("c"), spacer("d")]);
+        let mut h = Harness::new();
+        let mut path = path_at(&g);
+        let mut sink = PlacementList::new();
+        // 85x62 content (same as the unpadded case) plus 10 units of padding
+        // on every edge: 105x82.
+        let outer = Rect::new(0.0, 0.0, 105.0, 82.0);
+        place(&g, &mut h.ctx(), &mut path, Slot::new(outer), &mut sink);
+
+        assert_eq!(
+            sink.as_slice()[0].rect,
+            outer,
+            "the grid's own placed rect is unaffected by its own padding"
+        );
+        let rects: Vec<Rect> = sink.as_slice()[1..].iter().map(|p| p.rect).collect();
+        assert_eq!(
+            rects,
+            vec![
+                Rect::new(10.0, 10.0, 50.0, 20.0), // a: col 0, row 0
+                Rect::new(65.0, 10.0, 30.0, 20.0), // b: col 1, row 0
+                Rect::new(10.0, 32.0, 50.0, 40.0), // c: col 0, row 1
+                Rect::new(65.0, 32.0, 30.0, 40.0), // d: col 1, row 1
+            ],
+            "every track shifts by exactly the padding's (10, 10) origin \
+             relative to the unpadded case"
+        );
+    }
+
+    /// The padding-inclusive counterpart to `the_pinned_widths_also_come_out_of_measure`:
+    /// padding is reserved before the same fixed/weight distribution runs,
+    /// and added back onto the measured size afterward.
+    #[test]
+    fn a_padded_grid_adds_its_padding_to_the_measured_size() {
+        let mut g = grid(
+            vec![
+                TrackSize::Fixed { value: 100.0 },
+                TrackSize::Weight { weight: 1.0 },
+                TrackSize::Weight { weight: 2.0 },
+            ],
+            vec![spacer("a"), spacer("b"), spacer("c")],
+        );
+        g.props.column_spacing = Some(10.0);
+        // 30 units horizontal total (15 + 15), 10 vertical total (5 + 5).
+        g.props.padding = Some(Insets::symmetric(15.0, 5.0));
+        let mut h = Harness::new();
+        let mut path = path_at(&g);
+        let size = measure(
+            &g,
+            &mut h.ctx(),
+            &mut path,
+            SizeProposal::exact(Size::new(420.0, 500.0)),
+        );
+        // Same 420-wide answer as the unpadded case (100 + 20 gap + 300 split
+        // 1:2 = 390, plus the 30 units of horizontal padding = 420); height
+        // is 0 (every spacer) plus the 10 units of vertical padding.
+        assert_eq!(size, Size::new(420.0, 10.0));
+    }
+
+    /// The degenerate case symmetric to `stack.rs`'s
+    /// `a_stack_too_small_for_its_own_gaps_keeps_its_children_inside`: a grid
+    /// offered less room than its own declared padding needs collapses its
+    /// content rect to zero (the same floor `Rect::inset_edges` already
+    /// applies), reports the truncation, and never places a child with a
+    /// negative size or outside its own rect — which is still exactly what
+    /// it was offered.
+    #[test]
+    fn a_grid_too_small_for_its_own_padding_collapses_but_never_goes_negative() {
+        let g = ViewNode::new(NodeKind::Grid, "g")
+            .with_props(Props {
+                columns: vec![TrackSize::Fixed { value: 50.0 }],
+                rows: vec![TrackSize::Fixed { value: 40.0 }],
+                padding: Some(Insets::all(20.0)),
+                ..Props::default()
+            })
+            .with_children(vec![spacer("a")]);
+        let mut h = Harness::new();
+        let mut path = path_at(&g);
+        let mut sink = PlacementList::new();
+        let outer = Rect::new(0.0, 0.0, 30.0, 30.0);
+        place(&g, &mut h.ctx(), &mut path, Slot::new(outer), &mut sink);
+
+        let placed = sink.as_slice();
+        assert_eq!(
+            placed[0].rect, outer,
+            "the grid's own rect is unaffected by its own padding"
+        );
+        assert!(
+            placed[0].paint.truncated,
+            "a declared 50x40 track cannot fit in a 30x30 box once 20 units \
+             of padding are reserved from every edge"
+        );
+        let child = placed[1].rect;
+        assert!(
+            child.w >= 0.0 && child.h >= 0.0,
+            "collapsed to {child:?}, went negative"
+        );
+        assert!(
+            child.x >= outer.x
+                && child.y >= outer.y
+                && child.right() <= outer.right() + 1e-3
+                && child.bottom() <= outer.bottom() + 1e-3,
+            "child at {child:?} outside the {outer:?} grid"
         );
     }
 
@@ -984,6 +1127,7 @@ mod tests {
             spacing in 0.0f32..24.0,
             offer_w in 40.0f32..1500.0,
             image_every in 1usize..=3,
+            padding_amt in 0.0f32..40.0,
         ) {
             let columns = build_tracks(&kinds[..ncols], &fixed_vals, &weight_vals);
             let children: Vec<ViewNode> = (0..nchildren)
@@ -1014,6 +1158,20 @@ mod tests {
             );
             prop_assert!(measured.w <= offer_w + 1e-3, "grid reported {} wider than the {} offer", measured.w, offer_w);
             prop_assert!(measured.h <= 800.0 + 1e-3);
+
+            // Padding is applied only from here on: `place()` re-resolves
+            // independently of the `measure()` call above (it does not trust
+            // a cached answer, per its own doc comment), so this is the
+            // no-op-to-`measure` way to prove `place`'s own invariants below
+            // — no child outside its parent, no overlap — still hold once
+            // padding is threaded through track sizing. `padding_amt` is
+            // always strictly less than `offer_w` (40.0..1500.0 vs
+            // 0.0..40.0), so the inset content rect is always inside the
+            // offer with room to spare; this generator is not meant to
+            // exercise the separate degenerate-collapse case, which
+            // `a_grid_too_small_for_its_own_padding_collapses_but_never_goes_negative`
+            // already pins by hand.
+            g.props.padding = Some(Insets::all(padding_amt));
 
             let mut ppath = path_at(&g);
             let mut sink = PlacementList::new();

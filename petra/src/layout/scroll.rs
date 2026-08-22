@@ -60,6 +60,16 @@ use crate::tree::{KeyPath, ViewNode};
 ///
 /// `path` already names this node: the dispatcher pushed it. Child measurement
 /// goes through [`crate::layout::measure`], which pushes the child's own key.
+///
+/// Padding insets the *viewport* this container reports, exactly as it insets
+/// the actual clip region at `place` time (see `place`'s doc): the padded
+/// space is never available to the scrolling content, on either axis, so a
+/// shorter viewport is what a parent negotiates against. The proposal is
+/// shrunk by the padding first — the same reserve-before-distribute shape
+/// `stack.rs`'s `spacing` already uses (`layout-insets.md` §4) — and the
+/// padding is added back to whatever this container ends up reporting, so an
+/// offer smaller than the padding itself still answers at least the padding
+/// (a scroll container can never be smaller than its own padding).
 pub fn measure(
     node: &ViewNode,
     ctx: &mut LayoutCtx<'_>,
@@ -68,17 +78,35 @@ pub fn measure(
 ) -> Size {
     let scroll = node.props.scroll();
     let axis = scroll.axis;
+    let padding = node.props.padding();
     let Some(child) = node.children.first() else {
-        return Size::ZERO;
+        // No content: nothing to negotiate against, and this container's
+        // own declared `constraints` (applied centrally by the dispatcher
+        // after this returns) are the only size signal left — never an echo
+        // of whatever the parent offered. Echoing the proposal here (the
+        // same shape the viewport axis uses below, once there *is* a child)
+        // would turn a childless scroll into an elastic spacer that takes
+        // whatever budget `distribute` offers it, which defeats the point
+        // of a scroll region declaring its own minimum in a negotiation
+        // (`layout_matrix.rs`'s `the_concession_order_is_slack_then_...`
+        // fixture uses exactly this shape: an empty `Scroll` standing in
+        // for not-yet-materialized content, relying on its own `min`, not
+        // on echoing its offer, to hold a floor during `concede`).
+        return Size::from_axes(axis, padding.along(axis), padding.along(axis.cross()));
+    };
+
+    let padded_proposal = SizeProposal {
+        horizontal: proposal.horizontal.shrink(padding.along(Axis::Horizontal)),
+        vertical: proposal.vertical.shrink(padding.along(Axis::Vertical)),
     };
 
     // The scrolling axis always probes the content's maximum useful extent,
     // regardless of what this container was itself offered on that axis —
     // that is the number a `Zero`/`Unbounded`/`Unspecified` proposal needs
     // below, and it is also how `place` later learns the content extent for
-    // offset clamping. The cross axis passes the incoming offer straight
-    // through, unchanged.
-    let child_proposal = proposal.with_axis(axis, Proposal::Unbounded);
+    // offset clamping. The cross axis passes the incoming (padded) offer
+    // straight through, unchanged.
+    let child_proposal = padded_proposal.with_axis(axis, Proposal::Unbounded);
     // Measured inside this container's own scroll frame: a `collection`
     // below answers a different size depending on which axis scrolls, and
     // that axis is this node's.
@@ -90,12 +118,16 @@ pub fn measure(
     // takes, not what its content takes: an `Exact` offer is honoured
     // exactly, `Zero` is the minimum, and only the two open probes reach for
     // the content extent just measured.
-    let viewport_extent = match proposal.axis(axis) {
+    let viewport_extent = match padded_proposal.axis(axis) {
         Proposal::Exact(v) => v.max(0.0),
         Proposal::Zero => 0.0,
         Proposal::Unbounded | Proposal::Unspecified => child_size.along(axis),
     };
-    Size::from_axes(axis, viewport_extent, child_size.across(axis))
+    Size::from_axes(
+        axis,
+        viewport_extent + padding.along(axis),
+        child_size.across(axis) + padding.along(axis.cross()),
+    )
 }
 
 /// Place this container and everything under it into `slot`.
@@ -131,12 +163,21 @@ pub fn place(
     if let Some(child) = node.children.first() {
         let scroll = node.props.scroll();
         let axis = scroll.axis;
-        let viewport_size = slot.rect.size();
+        // The padded interior: this container's own placed rect (`slot.rect`,
+        // pushed above, unmodified) never moves or shrinks for its own
+        // padding — only what it offers its child does. Padding insets the
+        // *viewport* here (`layout-insets.md` §3, §8 step 5), so `content`,
+        // not `slot.rect`, is what every offset/clip computation below is
+        // relative to: the padded strip is a permanent gutter the content
+        // never enters, at either scroll extreme.
+        let padding = node.props.padding();
+        let content = slot.rect.inset_edges(padding);
+        let viewport_size = content.size();
 
         // Same child-proposal shape as `measure`, but the cross axis is now
-        // an `Exact` offer taken from the settled viewport rather than
-        // whatever this container's own incoming proposal happened to be:
-        // by `place` time negotiation is over and the viewport size is a
+        // an `Exact` offer taken from the settled (padded) viewport rather
+        // than whatever this container's own incoming proposal happened to
+        // be: by `place` time negotiation is over and the viewport size is a
         // fact, not one of several offers being probed.
         let child_proposal =
             SizeProposal::exact(viewport_size).with_axis(axis, Proposal::Unbounded);
@@ -157,9 +198,9 @@ pub fn place(
         let raw_offset = ctx.state.scroll_offset(&path.id());
         let offset = raw_offset.clamp(0.0, max_offset);
 
-        let main_origin = origin_along(slot.rect, axis) - offset;
+        let main_origin = origin_along(content, axis) - offset;
         let child_rect = axis_rect(
-            slot.rect,
+            content,
             axis,
             main_origin,
             content_extent,
@@ -167,15 +208,17 @@ pub fn place(
         );
         // The child is placed at its full content size so ordinary children
         // (a stack of rows, say) lay out naturally; only the *paint* clip is
-        // narrowed to this container's own rect, which is what makes
-        // overflow reachable-but-hidden rather than painted outside.
+        // narrowed to this container's padded interior, which is what makes
+        // overflow reachable-but-hidden rather than painted outside — and
+        // keeps content from ever drawing over the padding gutter, at either
+        // scroll extreme.
         let child_slot = Slot {
             rect: child_rect,
             z: slot.z,
             clip: slot.clip,
             opacity: slot.opacity,
         }
-        .clipped_to(slot.rect);
+        .clipped_to(content);
 
         ctx.within_scroll(frame, |ctx| {
             crate::layout::place(child, ctx, path, child_slot, sink);
@@ -377,7 +420,7 @@ fn axis_rect(
 #[cfg(test)]
 mod tests {
     use crate::frame::placement::PlacementList;
-    use crate::geom::{Axis, Rect, Size};
+    use crate::geom::{Axis, Insets, Rect, Size};
     use crate::layout::{MeasureCache, Proposal, SizeProposal, Slot};
     use crate::testing::{GeneratedRows, Harness, MonoContent};
     use crate::tree::{AxisConstraint, Constraints, KeyPath, NodeKind, Props, ViewNode};
@@ -507,6 +550,142 @@ mod tests {
             child.clip,
             Rect::new(0.0, 0.0, 120.0, 100.0),
             "clipped to the container's own viewport rect"
+        );
+    }
+
+    /// The behaviour this leaf exists to add, pinned by name (gate G4).
+    ///
+    /// Padding insets the *viewport* a scroll offers/clips its content to —
+    /// the content's own extent (the child's fixed 400.0) is untouched, and
+    /// so is the scroll's own placed rect (padding is inside the box). Only
+    /// what the scroll offers its child — the origin the content starts at,
+    /// and the clip it is bounded by — shrinks to the padded interior.
+    #[test]
+    fn a_padded_scroll_insets_the_viewport_not_the_content_extent() {
+        let mut h = Harness::new();
+        let tree = ViewNode::new(NodeKind::Scroll, "list")
+            .with_props(Props {
+                padding: Some(Insets::all(10.0)),
+                ..Props::default()
+            })
+            .child(fixed_extent_child(400.0));
+        let mut path = KeyPath::root();
+        let mut sink = PlacementList::new();
+        crate::layout::place(
+            &tree,
+            &mut h.ctx(),
+            &mut path,
+            Slot::new(Rect::new(0.0, 0.0, 120.0, 100.0)),
+            &mut sink,
+        );
+
+        let placements = sink.as_slice();
+        assert_eq!(placements.len(), 2);
+        let scroll = &placements[0];
+        let child = &placements[1];
+
+        assert_eq!(
+            scroll.rect,
+            Rect::new(0.0, 0.0, 120.0, 100.0),
+            "padding is inside the box: the scroll's own placed rect never \
+             moves or shrinks for its own padding"
+        );
+        assert_eq!(
+            child.rect,
+            Rect::new(10.0, 10.0, 100.0, 400.0),
+            "content keeps its full, unshrunk 400.0 extent, placed from the \
+             padded (10.0, 10.0) origin — not the outer (0.0, 0.0) one"
+        );
+        assert_eq!(
+            child.clip,
+            Rect::new(10.0, 10.0, 100.0, 80.0),
+            "the clip is the padded 100x80 viewport, not the outer 120x100 rect"
+        );
+    }
+
+    /// The scroll gutter decision, both extremes: padding never scrolls away
+    /// and never becomes visible content — the clip is identical whether the
+    /// list is scrolled to the top or all the way to the bottom, and the
+    /// content's near edge always sits flush with the padded rect's edge on
+    /// that side. This is the case the module doc warns a wrong design "looks
+    /// fine until content is longer than the viewport": a design that instead
+    /// clipped to the *outer* rect would let the last row's bottom edge run
+    /// past the padded interior and into the bottom gutter once scrolled all
+    /// the way down, which this test would catch.
+    #[test]
+    fn a_padded_scroll_keeps_its_gutter_unbroken_at_both_scroll_extremes() {
+        let place_at = |offset: f32| -> (Rect, Rect) {
+            let mut h = Harness::new();
+            h.set_scroll("/list", offset);
+            let tree = ViewNode::new(NodeKind::Scroll, "list")
+                .with_props(Props {
+                    padding: Some(Insets::all(10.0)),
+                    ..Props::default()
+                })
+                .child(fixed_extent_child(400.0));
+            let mut path = KeyPath::root();
+            let mut sink = PlacementList::new();
+            crate::layout::place(
+                &tree,
+                &mut h.ctx(),
+                &mut path,
+                Slot::new(Rect::new(0.0, 0.0, 120.0, 100.0)),
+                &mut sink,
+            );
+            let child = &sink.as_slice()[1];
+            (child.rect, child.clip)
+        };
+
+        // Scrolled to the top (offset 0.0): the content's leading edge sits
+        // exactly at the padded origin.
+        let (top_rect, top_clip) = place_at(0.0);
+        assert_eq!(
+            top_rect.y, 10.0,
+            "top gutter: content starts at the padded origin"
+        );
+        assert_eq!(top_clip, Rect::new(10.0, 10.0, 100.0, 80.0));
+
+        // Scrolled to the bottom: max_offset = content 400.0 - viewport 80.0
+        // = 320.0. The content's trailing edge lands exactly on the padded
+        // rect's bottom edge (10.0 + 80.0 = 90.0), not the outer rect's
+        // (100.0) — the bottom gutter is 10.0 wide, same as the top.
+        let (bottom_rect, bottom_clip) = place_at(320.0);
+        assert_eq!(bottom_rect.y, 10.0 - 320.0);
+        assert_eq!(
+            bottom_rect.y + bottom_rect.h,
+            90.0,
+            "content's trailing edge is flush with the padded rect's bottom \
+             edge, not the outer rect's"
+        );
+        assert_eq!(
+            bottom_clip, top_clip,
+            "the clip never changes with scroll position: the gutter is a \
+             fixed strip, not something the content can scroll into"
+        );
+    }
+
+    /// `measure`'s open-probe (natural size) answer includes the padding,
+    /// symmetrically on both axes, on top of whatever the content itself
+    /// needs.
+    #[test]
+    fn a_padded_scrolls_natural_size_includes_its_own_padding() {
+        let mut h = Harness::new();
+        let tree = ViewNode::new(NodeKind::Scroll, "list")
+            .with_props(Props {
+                padding: Some(Insets::all(10.0)),
+                ..Props::default()
+            })
+            .child(fixed_extent_child(400.0));
+        let mut path = KeyPath::root();
+        let size =
+            crate::layout::measure(&tree, &mut h.ctx(), &mut path, SizeProposal::unspecified());
+        // Content is 400.0 tall (fixed), 0.0 wide (an unconstrained spacer's
+        // ideal is nothing) — plus 10.0 padding on every edge: 20.0 added to
+        // each axis.
+        assert_eq!(
+            size,
+            Size::new(20.0, 420.0),
+            "the scroll's natural size is its content's extent plus its own padding"
         );
     }
 

@@ -36,15 +36,26 @@ pub fn measure(
     if node.children.is_empty() {
         return Size::ZERO;
     }
+    // Padding is reserved before anything is distributed, the same way
+    // `spacing` already is (`contracts/view-tree.md` negotiation item 3.d,
+    // extended one level up by `.agents/research/08-22-2026/Petra-Visual-Design/
+    // engine/layout-insets.md` §4): it is pure arithmetic on the proposal here,
+    // never a `Give` `concede` can raid. `Proposal::shrink` passes an open
+    // probe through unchanged, so `Zero`/`Unbounded` measurement still answers
+    // truthfully about the padded budget, not the whole rect.
+    let padding = node.props.padding();
     let spacing = reserved_spacing(props.spacing, node.children.len());
-    let cross = proposal.axis(main.cross());
+    let cross = proposal
+        .axis(main.cross())
+        .shrink(padding.along(main.cross()));
+    let main_proposal = proposal.axis(main).shrink(padding.along(main));
 
-    let Some(budget) = proposal.axis(main).exact() else {
+    let Some(budget) = main_proposal.exact() else {
         // An open or minimum probe is answered by asking every child the same
         // question. There is nothing to distribute: the parent has not said
         // how much room there is, so the stack reports the sum of the answers
         // and lets the parent decide.
-        let probe = proposal.axis(main);
+        let probe = main_proposal;
         let mut total = spacing;
         let mut widest = 0.0f32;
         for child in &node.children {
@@ -52,7 +63,11 @@ pub fn measure(
             total += got.along(main);
             widest = widest.max(got.across(main));
         }
-        return Size::from_axes(main, total, widest);
+        return Size::from_axes(
+            main,
+            total + padding.along(main),
+            widest + padding.along(main.cross()),
+        );
     };
 
     let taken = distribute(node, ctx, path, main, (budget - spacing).max(0.0), cross).taken;
@@ -61,7 +76,11 @@ pub fn measure(
     // it here would hide the overflow from the flag the contract requires.
     let total = spacing + taken.iter().map(|s| s.along(main)).sum::<f32>();
     let widest = taken.iter().fold(0.0f32, |acc, s| acc.max(s.across(main)));
-    Size::from_axes(main, total, widest)
+    Size::from_axes(
+        main,
+        total + padding.along(main),
+        widest + padding.along(main.cross()),
+    )
 }
 
 /// Place this container and everything under it into `slot`.
@@ -74,8 +93,19 @@ pub fn place(
 ) {
     let props = node.props.stack();
     let main = props.axis;
-    let main_extent = slot.rect.size().along(main).max(0.0);
-    let cross_extent = slot.rect.size().across(main).max(0.0);
+    // Padding is inside the box: the stack's own placed rect (pushed below,
+    // `rect: slot.rect`) never moves or shrinks because of its own padding —
+    // only what it offers its children does. `content` floors at zero rather
+    // than going negative (`Rect::inset_edges`), the same floor `spacing`
+    // already applies to itself a few lines down, and a genuine collapse
+    // (the box smaller than its own declared insets) is flagged exactly the
+    // way a spacing collapse already is, via `padding_collapsed` below.
+    let padding = node.props.padding();
+    let padding_collapsed = (slot.rect.w - padding.left - padding.right) < -FIT_EPSILON
+        || (slot.rect.h - padding.top - padding.bottom) < -FIT_EPSILON;
+    let content = slot.rect.inset_edges(padding);
+    let main_extent = content.size().along(main).max(0.0);
+    let cross_extent = content.size().across(main).max(0.0);
     let gaps = node.children.len().saturating_sub(1) as f32;
     let declared = props.spacing.max(0.0);
     // Spacing is reserved before distribution, but it cannot reserve room the
@@ -105,7 +135,8 @@ pub fn place(
 
     let mut extents: Vec<f32> = plan.taken.iter().map(|s| s.along(main)).collect();
     let wanted = spacing + extents.iter().sum::<f32>();
-    let mut lost = gap < declared - FIT_EPSILON
+    let mut lost = padding_collapsed
+        || gap < declared - FIT_EPSILON
         || plan
             .taken
             .iter()
@@ -174,8 +205,8 @@ pub fn place(
     // seam to close. `gorgon/petra/tests/layout_matrix.rs`'s
     // `abutting_rows_share_a_device_edge_from_a_shifted_origin` pins it.
     let mut cursor = match main {
-        Axis::Horizontal => slot.rect.x,
-        Axis::Vertical => slot.rect.y,
+        Axis::Horizontal => content.x,
+        Axis::Vertical => content.y,
     };
     for (i, child) in node.children.iter().enumerate() {
         let extent = extents[i];
@@ -205,8 +236,8 @@ pub fn place(
         };
         let offset = props.align.offset(cross_extent, across);
         let rect = match main {
-            Axis::Horizontal => Rect::new(cursor, slot.rect.y + offset, extent, across),
-            Axis::Vertical => Rect::new(slot.rect.x + offset, cursor, across, extent),
+            Axis::Horizontal => Rect::new(cursor, content.y + offset, extent, across),
+            Axis::Vertical => Rect::new(content.x + offset, cursor, across, extent),
         };
         crate::layout::place(child, ctx, path, slot.with_rect(rect), sink);
         cursor += extent + gap;
@@ -334,7 +365,7 @@ mod tests {
     use proptest::prelude::*;
 
     use crate::frame::placement::{Placement, PlacementList};
-    use crate::geom::{Align, Axis, Rect, Size};
+    use crate::geom::{Align, Axis, Insets, Rect, Size};
     use crate::layout::{SizeProposal, Slot};
     use crate::testing::Harness;
     use crate::tree::{AxisConstraint, Constraints, Key, KeyPath, NodeKind, Props, ViewNode};
@@ -383,6 +414,25 @@ mod tests {
                 axis: Some(axis),
                 spacing: Some(spacing),
                 align: Some(align),
+                ..Props::default()
+            })
+            .with_children(children)
+    }
+
+    /// Same as [`stack`], with `padding` declared — its own dimension, kept
+    /// out of `stack()` so every existing test above stays exactly the
+    /// zero-padding fixture it always was.
+    fn stack_with_padding(
+        axis: Axis,
+        padding: Insets,
+        align: Align,
+        children: Vec<ViewNode>,
+    ) -> ViewNode {
+        ViewNode::new(NodeKind::Stack, Key::new("stack"))
+            .with_props(Props {
+                axis: Some(axis),
+                align: Some(align),
+                padding: Some(padding),
                 ..Props::default()
             })
             .with_children(children)
@@ -579,6 +629,89 @@ mod tests {
         assert!((out[2].rect.x - out[1].rect.right() - 12.0).abs() < 1e-3);
         assert!((out[3].rect.x - out[2].rect.right() - 12.0).abs() < 1e-3);
         assert!(out[3].rect.right() <= 100.0 + 1e-3);
+    }
+
+    /// Padding is reserved before anything is distributed, the same way
+    /// `spacing` already is — §4 of `layout-insets.md`. A 100×50 rect with
+    /// 10pt insets on every edge offers its children an 80×30 content region,
+    /// not the rect's own 100×50; three equal children split the 80, and
+    /// `Align::Stretch` fills the padded 30, not the outer 50.
+    #[test]
+    fn padding_is_reserved_before_anything_is_distributed() {
+        let axis = Axis::Horizontal;
+        let tree = stack_with_padding(
+            axis,
+            Insets::all(10.0),
+            Align::Stretch,
+            vec![
+                flexible("a", axis, 0.0, 500.0, 0),
+                flexible("b", axis, 0.0, 500.0, 0),
+                flexible("c", axis, 0.0, 500.0, 0),
+            ],
+        );
+        let out = placements(&tree, Rect::new(0.0, 0.0, 100.0, 50.0));
+        // 100 minus 10pt of left and right padding is 80, split three ways.
+        for p in &out[1..] {
+            assert!((p.rect.w - 80.0 / 3.0).abs() < 1e-3, "{:?}", p.rect);
+            // The cross axis is inset too: Stretch fills the padded 30-unit
+            // height (50 minus 10pt top and bottom), not the stack's own 50.
+            assert!((p.rect.h - 30.0).abs() < 1e-3, "{:?}", p.rect);
+            assert!((p.rect.y - 10.0).abs() < 1e-3, "{:?}", p.rect);
+        }
+        assert!((out[1].rect.x - 10.0).abs() < 1e-3, "{:?}", out[1].rect);
+        // The stack's own placed rect never moves or shrinks because of its
+        // own padding — only what it offers its children does.
+        assert_eq!(out[0].rect, Rect::new(0.0, 0.0, 100.0, 50.0));
+        assert!(!out[0].paint.truncated);
+        assert_eq!(
+            measured(&tree, SizeProposal::exact(Size::new(100.0, 50.0))).w,
+            100.0,
+            "measure adds its own padding back onto what it reports: the \
+             children take the full 80-unit content budget between them, and \
+             the stack answers 80 plus the 20 units of padding it reserved \
+             before ever offering them anything"
+        );
+    }
+
+    /// §4's worked example, reproduced exactly: a 15.1pt column with 3pt
+    /// insets on every edge, containing one child that needs 14pt. Padding is
+    /// never a participant in the deficit, so the label — not the padding —
+    /// absorbs the shortfall: truncated to the 9.1pt (15.1 - 2×3.0) the
+    /// padding leaves behind, flagged, and never overlapping the inset band
+    /// on either edge. This is the case the old spacer-composed padding got
+    /// backwards: it handed the label 5.0pt instead of 9.1, because the label
+    /// out-flexed the padding spacers in `concede`. Reserving padding before
+    /// distribution removes it from `concede`'s pool entirely.
+    #[test]
+    fn a_padded_stack_too_small_for_its_content_truncates_without_overlapping() {
+        let axis = Axis::Vertical;
+        let label = flexible("label", axis, 14.0, 14.0, 0);
+        let tree = stack_with_padding(axis, Insets::all(3.0), Align::Start, vec![label]);
+        let out = placements(&tree, Rect::new(0.0, 0.0, 50.0, 15.1));
+
+        assert_eq!(out.len(), 2, "the stack and the one label");
+        assert!(
+            (out[1].rect.h - 9.1).abs() < 1e-3,
+            "expected the label truncated to 15.1 - 2*3.0 = 9.1, got {:?}",
+            out[1].rect
+        );
+        assert!(
+            (out[1].rect.y - 3.0).abs() < 1e-3,
+            "the label starts after the top inset, not at the stack's own edge"
+        );
+        assert!(
+            out[1].rect.bottom() <= 15.1 - 3.0 + 1e-3,
+            "{:?} overlaps the bottom inset — the glyphs left the box",
+            out[1].rect
+        );
+        // The stack's own placed rect never moves or shrinks because of its
+        // own padding.
+        assert_eq!(out[0].rect, Rect::new(0.0, 0.0, 50.0, 15.1));
+        assert!(
+            out[0].paint.truncated,
+            "a box too small for its content, even after padding is \
+             honoured, must say so"
+        );
     }
 
     #[test]
