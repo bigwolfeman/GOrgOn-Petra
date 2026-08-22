@@ -30,7 +30,9 @@ use gorgon_petra::frame::{FrameCounter, PetrifiedFrame, TransitionActivity, View
 use gorgon_petra::geom::{Scale, Size};
 use gorgon_petra::input::{InputEvent, KeyCode, Route, route};
 use gorgon_petra::layout::overlay_surface::surface_scopes;
-use gorgon_petra::layout::{LayoutCtx, LayoutState, MeasureCache, RowSource, ScrollStack};
+use gorgon_petra::layout::{
+    ChangeSet, LayoutCtx, LayoutState, MeasureCache, RowSource, ScrollStack,
+};
 use gorgon_petra::token::Presenter;
 use gorgon_petra::tree::{InputPolicy, Interaction, NodeKind, Props, Registry, ViewNode, validate};
 
@@ -50,19 +52,26 @@ pub fn petra_layer() -> LayerId {
 
 /// What a Petra application supplies to the host.
 ///
-/// Deliberately three methods. State lives in the application (D-075), the view
-/// tree is plain data, and the host neither owns nor inspects the state — it
-/// only needs to know when the state changed, which is what `content_rev` is
-/// for: it is part of the measurement cache key, so a stale revision shows up
-/// as a stale layout rather than as a silently wrong one.
+/// Deliberately three methods. State lives in the application (D-075), the
+/// view tree is plain data, and the host neither owns nor inspects the state
+/// — it only needs to know what changed, which is what `take_changes` is
+/// for: [`Host::pass`] hands the answer straight to
+/// [`gorgon_petra::layout::MeasureCache::apply`], which invalidates exactly
+/// what the [`ChangeSet`] names, and every ancestor of it — an application
+/// that returns [`ChangeSet::All`] because it has not been taught to track
+/// ids is exactly as correct as, and exactly as slow as, invalidating
+/// wholesale every frame. The method *takes* rather than reads: a change set
+/// is drained by the frame that consumes it, so an application that reports
+/// the same change twice pays twice, not that it goes unnoticed.
 pub trait App: RowSource {
     /// The view tree for this frame.
     fn view(&mut self) -> ViewNode;
     /// Handle one routed input event.
     fn handle(&mut self, event: &InputEvent, route: &Route);
-    /// Revision of the content behind [`App::view`]. Must change whenever a
-    /// mutation would change the tree.
-    fn content_rev(&self) -> u64;
+    /// What changed behind [`App::view`] since the last call, draining it in
+    /// the same motion. Must name (directly or via [`ChangeSet::All`]) every
+    /// node whose measured content this frame would answer differently for.
+    fn take_changes(&mut self) -> ChangeSet;
 }
 
 /// Drives one Petra application inside an `eframe` window.
@@ -190,11 +199,12 @@ impl<A: App> Host<A> {
         let _ = self.publish_focus();
 
         // Theme and scale are global inputs to every measurement, so a change
-        // to either invalidates wholesale; per-node content revisions are
-        // handled by the cache key itself.
+        // to either invalidates wholesale; content changes are the
+        // application's change set, applied here so no host wiring can skip
+        // the ancestor walk it requires.
         self.cache
             .retain_theme_and_scale(viewport.theme_rev, viewport.scale);
-        self.state.content_rev = self.app.content_rev();
+        self.cache.apply(&self.app.take_changes());
 
         let tree = self.app.view();
         let tree = match validate(&tree, &self.registry) {
@@ -470,7 +480,7 @@ pub fn default_presenter() -> Presenter {
 
 #[cfg(test)]
 mod tests {
-    use super::{App, Host, default_presenter, petra_layer, refusal_view};
+    use super::{App, ChangeSet, Host, default_presenter, petra_layer, refusal_view};
     use egui::{Context, Event, Key, Modifiers, RawInput};
     use gorgon_petra::input::{InputEvent, Route};
     use gorgon_petra::layout::RowSource;
@@ -481,7 +491,6 @@ mod tests {
 
     #[derive(Default)]
     struct Demo {
-        rev: u64,
         seen: Vec<(String, String)>,
         bad_tree: bool,
         modal: bool,
@@ -573,8 +582,11 @@ mod tests {
             self.seen.push((kind, where_));
         }
 
-        fn content_rev(&self) -> u64 {
-            self.rev
+        fn take_changes(&mut self) -> ChangeSet {
+            // The fixture does not track which nodes moved; `All` is the
+            // honest conservative answer and is what every test below relies
+            // on when it mutates a field and expects the next pass to see it.
+            ChangeSet::All
         }
     }
 
@@ -820,7 +832,6 @@ mod tests {
         assert_eq!(host.state().focused.as_deref(), Some("/root/run"));
 
         host.app_mut().hide_run = true;
-        host.app_mut().rev += 1;
         step(&ctx, &mut host, RawInput::default());
 
         let focused = host.state().focused.clone().expect("focus went nowhere");
@@ -843,7 +854,6 @@ mod tests {
         assert_eq!(host.state().focused.as_deref(), Some("/root/filter"));
 
         host.app_mut().modal = true;
-        host.app_mut().rev += 1;
         step(&ctx, &mut host, RawInput::default());
         assert_eq!(
             host.state().focused.as_deref(),
@@ -864,7 +874,6 @@ mod tests {
         assert_eq!(host.state().focused.as_deref(), Some("/root/modal/no"));
 
         host.app_mut().modal = false;
-        host.app_mut().rev += 1;
         step(&ctx, &mut host, RawInput::default());
         assert_eq!(
             host.state().focused.as_deref(),
@@ -959,7 +968,6 @@ mod tests {
 
         // A modal opening takes focus after petrify too.
         host.app_mut().modal = true;
-        host.app_mut().rev += 1;
         let opened = step(&ctx, &mut host, RawInput::default());
         assert_eq!(host.state().focused.as_deref(), Some("/root/modal/yes"));
         assert!(

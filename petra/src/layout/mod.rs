@@ -26,7 +26,7 @@ use crate::geom::{Rect, Scale, Size};
 use crate::tree::props::ScrollProps;
 use crate::tree::{KeyPath, NodeKind, Role, TextWrap, ViewNode};
 
-pub use proposal::{MeasureCache, MeasureKey, Proposal, SizeProposal};
+pub use proposal::{ChangeSet, MeasureCache, MeasureKey, Proposal, SizeProposal};
 
 /// What a text node needs measured.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -87,8 +87,6 @@ pub struct LayoutState {
     pub scroll_offsets: BTreeMap<String, f32>,
     /// The focused node id, if any.
     pub focused: Option<String>,
-    /// Revision of the content behind this snapshot. Part of the cache key.
-    pub content_rev: u64,
 }
 
 impl LayoutState {
@@ -183,12 +181,14 @@ impl LayoutCtx<'_> {
     /// The scroll context is deliberately not part of the key: a node's key
     /// path already determines its ancestry, so two entries under the same
     /// `path` cannot have been measured under two different scroll frames.
+    /// Content is not part of the key either — a changed node is invalidated
+    /// by [`MeasureCache::apply`] once per frame rather than compared here on
+    /// every lookup ([`ChangeSet`]).
     #[must_use]
     pub fn key(&self, path: &KeyPath, proposal: SizeProposal) -> MeasureKey {
         MeasureKey {
             node: path.id(),
             proposal,
-            content_rev: self.state.content_rev,
             theme_rev: self.theme_rev,
             scale: self.scale,
         }

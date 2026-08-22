@@ -126,6 +126,56 @@ impl KeyPath {
         }
         out
     }
+
+    /// The ids of every ancestor of the canonical id `id`, nearest parent
+    /// first and the tree's top-level node last, not including `id` itself.
+    ///
+    /// This is byte-address arithmetic over [`KeyPath::id`]'s own output, not
+    /// a general parser: an id is `/` followed by escaped segments
+    /// (`Key::escaped` doubles every literal `\` and prefixes every literal
+    /// `/` with `\`), so a `/` byte reached while not consuming the second
+    /// half of a `\`-escape is always a real separator. Escaped bytes are
+    /// skipped in pairs, so a key containing its own `/` or `\` cannot be
+    /// mistaken for a path boundary — the tree the id was built from
+    /// (`ViewNode`) is not needed to tell the two apart. `\`, `/`, and every
+    /// separator byte this scans for are ASCII, and no UTF-8 continuation or
+    /// lead byte can equal one, so slicing at a found boundary is always a
+    /// valid `char` boundary regardless of what the keys otherwise contain.
+    ///
+    /// A malformed id — empty, or missing the leading `/` every id
+    /// [`KeyPath::id`] produces carries — has no ancestors: there is no
+    /// ancestry to recover from a string that was never one of `id`'s
+    /// outputs, so this returns an empty list rather than guessing or
+    /// panicking. The tree's own top-level node (an id with one segment, e.g.
+    /// `/root`) likewise has no ancestors above it — `KeyPath::root()`, the
+    /// empty path, names no real node and is never returned here.
+    #[must_use]
+    pub fn ancestor_ids(id: &str) -> Vec<String> {
+        if !id.starts_with('/') {
+            return Vec::new();
+        }
+        let bytes = id.as_bytes();
+        let mut boundaries = Vec::new();
+        let mut i = 1; // the leading '/' is not itself a boundary
+        while i < bytes.len() {
+            match bytes[i] {
+                // A lone trailing backslash is a malformed escape; treat it
+                // as one byte rather than reading past the end.
+                b'\\' if i + 1 < bytes.len() => i += 2,
+                b'\\' => i += 1,
+                b'/' => {
+                    boundaries.push(i);
+                    i += 1;
+                }
+                _ => i += 1,
+            }
+        }
+        boundaries
+            .into_iter()
+            .rev()
+            .map(|b| id[..b].to_owned())
+            .collect()
+    }
 }
 
 impl fmt::Display for KeyPath {
@@ -165,6 +215,43 @@ mod tests {
     #[test]
     fn backslashes_escape_too() {
         assert_eq!(KeyPath::root().child(&Key::new("a\\b")).id(), "/a\\\\b");
+    }
+
+    #[test]
+    fn ancestor_ids_are_the_successive_prefixes_root_last() {
+        assert_eq!(
+            KeyPath::ancestor_ids("/root/panel-0/row-0"),
+            vec!["/root/panel-0".to_owned(), "/root".to_owned()]
+        );
+    }
+
+    /// The tree's top-level node has no ancestor above it, and neither does
+    /// the empty root path — `KeyPath::root()` names no real node.
+    #[test]
+    fn a_top_level_id_and_the_root_path_have_no_ancestors() {
+        assert!(KeyPath::ancestor_ids("/root").is_empty());
+        assert!(KeyPath::ancestor_ids(&KeyPath::root().id()).is_empty());
+    }
+
+    /// Neither an empty string nor an id missing its leading `/` is a
+    /// canonical id; both are handled without panicking and both come back
+    /// with no ancestors, because there is no ancestry to recover from text
+    /// that was never one of `KeyPath::id`'s outputs.
+    #[test]
+    fn a_malformed_id_has_no_ancestors_and_does_not_panic() {
+        assert!(KeyPath::ancestor_ids("").is_empty());
+        assert!(KeyPath::ancestor_ids("root/panel-0").is_empty());
+    }
+
+    /// An escaped `/` inside a key must not be read as a path boundary: the
+    /// only real boundary here is the one before `c`.
+    #[test]
+    fn an_escaped_separator_inside_a_key_is_not_a_boundary() {
+        let path = KeyPath::root()
+            .child(&Key::new("a/b"))
+            .child(&Key::new("c"));
+        assert_eq!(path.id(), "/a\\/b/c");
+        assert_eq!(KeyPath::ancestor_ids(&path.id()), vec!["/a\\/b".to_owned()]);
     }
 
     #[test]

@@ -146,11 +146,12 @@
 //! the default — so a host with a dense tree pays 1.7x until it calls
 //! `with_capacity`.
 
+use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 use gorgon_petra::frame::{TransitionActivity, Viewport};
 use gorgon_petra::geom::Size;
-use gorgon_petra::layout::MeasureCache;
+use gorgon_petra::layout::{ChangeSet, MeasureCache};
 use gorgon_petra::petrify;
 use gorgon_petra::testing::{Harness, MonoContent, NoRows};
 use gorgon_petra::token::ThemeMode;
@@ -300,15 +301,14 @@ fn node_count(tree: &ViewNode) -> usize {
 }
 
 /// The canonical id of leaf `index` in a [`panelled`] tree with `rows` rows
-/// per panel, and every ancestor id above it, root last.
-fn path_ids(rows: usize, index: usize) -> [String; 3] {
-    let p = index / rows;
-    let r = index % rows;
-    [
-        format!("/root/panel-{p}/row-{r}"),
-        format!("/root/panel-{p}"),
-        "/root".to_owned(),
-    ]
+/// per panel.
+///
+/// Its ancestors are no longer derived here: `MeasureCache::apply` walks them
+/// (`KeyPath::ancestor_ids`), which is the change this bench exists to
+/// exercise. `Policy::LeafOnly` names only this id, on purpose, to show what
+/// happens without that walk.
+fn leaf_id(rows: usize, index: usize) -> String {
+    format!("/root/panel-{}/row-{}", index / rows, index % rows)
 }
 
 // ----------------------------------------------------------------- instrument
@@ -358,15 +358,17 @@ fn cold(tree: &ViewNode, nodes: usize) -> Duration {
 /// How a host tells the cache that content moved.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Policy {
-    /// What `gorgon-petra-egui`'s `Host::update` actually does: read
-    /// `App::content_rev` into `LayoutState` and let the cache key do the
-    /// rest. That revision is one global number and it is in every
-    /// `MeasureKey`, so one leaf's edit misses every entry in the cache.
+    /// `ChangeSet::All`, applied through `MeasureCache::apply`. This used to
+    /// be what `gorgon-petra-egui`'s `Host::pass` actually did — write one
+    /// global `App::content_rev` into every `MeasureKey` — before the change
+    /// set replaced it; `apply` reproduces that cost exactly for a host that
+    /// cannot yet name what moved.
     GlobalRev,
-    /// Invalidate the changed leaf **and every ancestor above it**. The crate
-    /// ships `MeasureCache::invalidate_node`, which does the leaf; the
-    /// ancestor walk is written here because nothing in the crate does it,
-    /// and without it the change never reaches the frame (see `LeafOnly`).
+    /// `ChangeSet::Nodes` naming only the changed leaves, applied through
+    /// `MeasureCache::apply`. The crate walks each named id's ancestors
+    /// itself (`KeyPath::ancestor_ids`) — nothing here writes that loop by
+    /// hand any more, which is the fix `LeafOnly` exists to show is
+    /// necessary.
     Path,
     /// Invalidate only the changed leaf. Its ancestors stay cached, so
     /// `measure` hits at the root and returns before it ever reaches the leaf.
@@ -454,17 +456,20 @@ fn change(panels: usize, rows: usize, k: usize, policy: Policy) -> Change {
 
     let t = Instant::now();
     match policy {
-        Policy::GlobalRev => h.state.content_rev += 1,
+        Policy::GlobalRev => h.cache.apply(&ChangeSet::All),
         Policy::Path => {
-            for &index in &touched {
-                for id in path_ids(rows, index) {
-                    h.cache.invalidate_node(&id);
-                }
-            }
+            let ids: BTreeSet<String> = touched.iter().map(|&index| leaf_id(rows, index)).collect();
+            // The ancestor walk is not written here: `apply` owns it, which
+            // is the whole point of the change set replacing the global
+            // revision.
+            h.cache.apply(&ChangeSet::Nodes(ids));
         }
         Policy::LeafOnly => {
+            // Deliberately bypasses `apply`: this is the stale-result
+            // control, and going through `apply` would walk the ancestors
+            // `apply` is supposed to and stop being a control at all.
             for &index in &touched {
-                h.cache.invalidate_node(&path_ids(rows, index)[0]);
+                h.cache.invalidate_node(&leaf_id(rows, index));
             }
         }
         Policy::None => {}
