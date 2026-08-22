@@ -110,13 +110,18 @@
 //! The warm-walk floor column is those two alone, and it is 98% of the best
 //! achievable re-negotiation at every size.
 //!
-//! Under the host that actually ships there is a third: `petra-egui`'s
-//! `Host::update` writes one global `App::content_rev` into `LayoutState`, and
-//! that number is a field of every `MeasureKey` — so one leaf's edit misses
-//! every entry in the cache and re-measures the whole tree. That is the 2.5x
-//! between the two cost columns. `MeasureCache::invalidate_node` exists and
-//! would avoid it, and nothing outside a unit test calls it. Two reasons why
-//! not, and the table has both: it invalidates the leaf but not the leaf's
+//! Under the host that shipped when this was measured there was a third, and
+//! it is **fixed as of 2026-08-22**: `petra-egui`'s host wrote one global
+//! `App::content_rev` into `LayoutState`, and that number was a field of every
+//! `MeasureKey` — so one leaf's edit missed every entry in the cache and
+//! re-measured the whole tree. That is the 2.5x between the two cost columns.
+//! `App::take_changes` and `MeasureCache::apply` replace it, and the ancestor
+//! walk now lives in the crate rather than in this file. The `ChangeSet::All`
+//! column below is what that old behaviour cost and is kept as the honest
+//! baseline: an application that has not been taught to name what it touched
+//! still pays it. `MeasureCache::invalidate_node` existed and
+//! would have avoided it, and nothing outside a unit test called it. Two
+//! reasons why not, and the table has both: it invalidates the leaf but not the leaf's
 //! ancestors, so on its own it produces a **stale frame** — `measure` hits at
 //! the root and returns before it ever reaches the change — and it is a
 //! `retain` over the whole cache per call, so k of them cost k · entries,
@@ -817,12 +822,12 @@ fn run() {
              unconditional full walks are why, and the measured floor above is their sum. \
              `frame::petrify` calls `layout::place`, which recurses into every node, builds \
              every node's id, and pushes one `Placement` for each; nothing there consults the \
-             cache, and the digest then hashes every placement it produced. Under the shipping \
-             host the measure half is unconditional as well: `petra-egui`'s `Host::update` \
-             writes one global `App::content_rev` into `LayoutState`, and that number is in \
-             every `MeasureKey`, so one leaf's edit misses every entry in the cache. Making \
-             this bound hold needs a `place` that can reuse an unchanged subtree's placements \
-             and a per-node content revision, not a cache tuning"
+             cache, and the digest then hashes every placement it produced. The measure half was \
+             unconditional too until 2026-08-22, when `App::take_changes` and \
+             `MeasureCache::apply` replaced the global content revision; that half is fixed \
+             and this bound still fails, which is the point. Making it hold needs a `place` \
+             that can reuse an unchanged subtree's placements and a digest that can be \
+             updated rather than recomputed, not a cache tuning"
         ),
         None => panic!("FR-035 exponent unmeasurable; too few rungs ran to report a slope"),
     }
