@@ -334,12 +334,20 @@ mod tests {
     fn frame(placements: Vec<Placement>) -> PetrifiedFrame {
         let viewport = Viewport::new(Size::new(200.0, 200.0), ThemeMode::Dark);
         let digest: FrameDigest = digest::digest(&viewport, &placements);
+        // These fixtures are independent, overlapping hit-test regions, not a
+        // real placed tree — every one carries `parent: None`. `subtree_len`
+        // of `1` each is the honest reflection of that: none of them has a
+        // real child.
+        let subtree_hashes = digest::subtree_hashes(viewport.scale, &placements);
+        let subtree_len = vec![1; placements.len()];
         let content = vec![crate::frame::PaintContent::default(); placements.len()];
         PetrifiedFrame {
             seq: 1,
             digest,
             placements,
             content,
+            subtree_hashes,
+            subtree_len,
             viewport,
             transitions: TransitionActivity::default(),
         }

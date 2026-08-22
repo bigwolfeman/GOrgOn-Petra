@@ -59,6 +59,24 @@ pub struct PetrifiedFrame {
     /// was attached. [`PetrifiedFrame::paint_hashes_agree`] is what checks the
     /// two have not drifted.
     pub content: Vec<PaintContent>,
+    /// Every placement's Merkle subtree hash, at the same index and the same
+    /// length as [`PetrifiedFrame::placements`].
+    ///
+    /// `subtree_hashes[0]` — the root's — is the value
+    /// [`PetrifiedFrame::digest`] was built from
+    /// (`digest::root_hash_from`). This is what a reused subtree hands back
+    /// to its parent: the incremental placement path this crate does not yet
+    /// have can copy a subtree from the previous frame and reuse the hash
+    /// recorded here instead of re-walking it
+    /// (`.agents/notes/proposed/architecture/2026-08-22-petra-incremental-frames.md`).
+    pub subtree_hashes: Vec<[u8; 32]>,
+    /// How many placements each index's subtree occupies, itself included —
+    /// see [`crate::frame::placement::PlacementList`] — at the same index
+    /// and the same length as [`PetrifiedFrame::placements`].
+    ///
+    /// This is the range a reuse pass copies: placement `i`'s subtree is
+    /// `placements[i..i + subtree_len[i]]`.
+    pub subtree_len: Vec<usize>,
     /// What the frame was negotiated against.
     pub viewport: Viewport,
     /// Motion in force at petrify time.
@@ -195,13 +213,19 @@ pub fn petrify(
         path.is_empty(),
         "the walk must leave the path as it found it"
     );
-    let (placements, content) = sink.into_parts();
-    let digest = digest::digest(&viewport, &placements);
+    let (placements, content, subtree_len) = sink.into_parts();
+    // Computed once: the array is what a reuse pass needs, and the root
+    // entry is what the frame digest is built from — no reason to walk the
+    // Merkle tree a second time to get the same root hash.
+    let subtree_hashes = digest::subtree_hashes(viewport.scale, &placements);
+    let digest = digest::digest_from_root(&viewport, digest::root_hash_from(&subtree_hashes));
     let frame = PetrifiedFrame {
         seq,
         digest,
         placements,
         content,
+        subtree_hashes,
+        subtree_len,
         viewport,
         transitions,
     };

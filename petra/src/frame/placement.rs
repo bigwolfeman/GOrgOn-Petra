@@ -209,6 +209,11 @@ pub trait PlacementSink {
 pub struct PlacementList {
     placements: Vec<Placement>,
     content: Vec<PaintContent>,
+    /// How many placements each index's subtree occupies, itself included:
+    /// placement `i`'s subtree is the contiguous range
+    /// `[i, i + subtree_len[i])`. See [`PlacementList::into_parts`] for why
+    /// this is a parallel array rather than a field on [`Placement`].
+    subtree_len: Vec<usize>,
     stack: Vec<usize>,
 }
 
@@ -231,18 +236,37 @@ impl PlacementList {
         self.placements
     }
 
-    /// Take the collected placements and their paint payloads, in the same
-    /// order and at equal length.
+    /// Take the collected placements, their paint payloads, and their
+    /// subtree extents, in the same order and at equal length.
+    ///
+    /// In debug builds, checks the extents against a second, independent
+    /// derivation of the same tree — a walk of `Placement::parent` — and
+    /// panics naming the first placement where the two disagree. Two
+    /// derivations of one tree that can silently drift apart is exactly the
+    /// kind of defect that later shows up as a wrong subtree copied by the
+    /// incremental placement path.
     #[must_use]
-    pub fn into_parts(self) -> (Vec<Placement>, Vec<PaintContent>) {
+    pub fn into_parts(self) -> (Vec<Placement>, Vec<PaintContent>, Vec<usize>) {
         debug_assert_eq!(self.placements.len(), self.content.len());
-        (self.placements, self.content)
+        debug_assert_eq!(self.placements.len(), self.subtree_len.len());
+        debug_assert!(
+            extents_match_parents(&self.placements, &self.subtree_len),
+            "subtree_len disagrees with Placement::parent"
+        );
+        (self.placements, self.content, self.subtree_len)
     }
 
     /// The paint payloads, indexed alongside [`PlacementList::as_slice`].
     #[must_use]
     pub fn content(&self) -> &[PaintContent] {
         &self.content
+    }
+
+    /// The subtree extents, indexed alongside [`PlacementList::as_slice`].
+    /// See [`PlacementList::into_parts`].
+    #[must_use]
+    pub fn subtree_len(&self) -> &[usize] {
+        &self.subtree_len
     }
 
     /// How many placements were collected.
@@ -263,6 +287,9 @@ impl PlacementSink for PlacementList {
         placement.parent = self.stack.last().copied();
         self.placements.push(placement);
         self.content.push(PaintContent::default());
+        // A leaf until proven otherwise: `leave` grows this to the full
+        // subtree size once every descendant has been pushed.
+        self.subtree_len.push(1);
         self.placements.len() - 1
     }
 
@@ -293,8 +320,34 @@ impl PlacementSink for PlacementList {
     }
 
     fn leave(&mut self) {
-        self.stack.pop();
+        // Placements arrive in strict pre-order and every container brackets
+        // its children with `enter`/`leave` — no container defers — so by the
+        // time the matching `leave` runs, every descendant this node will
+        // ever have has already been pushed, and the subtree is exactly the
+        // contiguous range from this index to the current length.
+        if let Some(parent_idx) = self.stack.pop() {
+            self.subtree_len[parent_idx] = self.placements.len() - parent_idx;
+        }
     }
+}
+
+/// Recompute each placement's subtree size from [`Placement::parent`] alone,
+/// and compare it against `subtree_len`. Two independent derivations of the
+/// same tree; used only to check they agree.
+fn extents_match_parents(placements: &[Placement], subtree_len: &[usize]) -> bool {
+    let n = placements.len();
+    let mut children: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (child_idx, p) in placements.iter().enumerate() {
+        if let Some(parent_idx) = p.parent {
+            children[parent_idx].push(child_idx);
+        }
+    }
+    let mut computed = vec![1usize; n];
+    for i in (0..n).rev() {
+        let sum: usize = children[i].iter().map(|&c| computed[c]).sum();
+        computed[i] = 1 + sum;
+    }
+    computed == subtree_len
 }
 
 #[cfg(test)]
@@ -349,5 +402,75 @@ mod tests {
         list.push(lying);
         assert_eq!(list.as_slice()[1].parent, Some(0));
         assert_eq!(list.current_parent(), Some(0));
+    }
+
+    /// The same tree as `the_sink_wires_parents_from_the_walk`: `/root` has
+    /// two children, `/root/a` has one. Each subtree's length is itself plus
+    /// every descendant, and the whole tree occupies one contiguous range
+    /// from the root.
+    #[test]
+    fn subtree_len_covers_exactly_each_nodes_descendants() {
+        let mut list = PlacementList::new();
+        let root = list.push(placement("/root"));
+        list.enter(root);
+        let a = list.push(placement("/root/a"));
+        list.enter(a);
+        list.push(placement("/root/a/x"));
+        list.leave();
+        list.push(placement("/root/b"));
+        list.leave();
+
+        assert_eq!(list.subtree_len(), &[4, 2, 1, 1]);
+    }
+
+    /// A leaf that never calls `enter`/`leave` keeps the length `push` gave
+    /// it: one, itself alone.
+    #[test]
+    fn a_childless_placement_has_subtree_len_one() {
+        let mut list = PlacementList::new();
+        list.push(placement("/root"));
+        assert_eq!(list.subtree_len(), &[1]);
+    }
+
+    /// `into_parts` hands back the same lengths `subtree_len` exposed before
+    /// consuming the list, alongside the placements and payloads at equal
+    /// length.
+    #[test]
+    fn into_parts_carries_the_same_extents() {
+        let mut list = PlacementList::new();
+        let root = list.push(placement("/root"));
+        list.enter(root);
+        list.push(placement("/root/a"));
+        list.leave();
+
+        let (placements, content, subtree_len) = list.into_parts();
+        assert_eq!(placements.len(), 2);
+        assert_eq!(content.len(), 2);
+        assert_eq!(subtree_len, vec![2, 1]);
+    }
+
+    /// The sabotage proof for the debug assertion in `into_parts`: build a
+    /// `subtree_len` that disagrees with `Placement::parent` and show
+    /// [`extents_match_parents`] says so. `into_parts` itself cannot be
+    /// sabotaged from outside the module — its `subtree_len` is always the
+    /// one the walk built — so this drives the checking function directly,
+    /// the same way `into_parts`'s `debug_assert!` does.
+    #[test]
+    fn extents_match_parents_catches_a_disagreement() {
+        let mut list = PlacementList::new();
+        let root = list.push(placement("/root"));
+        list.enter(root);
+        list.push(placement("/root/a"));
+        list.leave();
+        let (placements, _content, subtree_len) = list.into_parts();
+
+        assert!(super::extents_match_parents(&placements, &subtree_len));
+
+        let mut wrong = subtree_len.clone();
+        wrong[0] = 1; // claims the root has no children; `parent` says it does
+        assert!(
+            !super::extents_match_parents(&placements, &wrong),
+            "a subtree_len that ignores a real child must be caught"
+        );
     }
 }

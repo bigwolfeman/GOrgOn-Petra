@@ -8,12 +8,28 @@
 use crate::frame::placement::{PaintContent, PaintState, Placement, PlacementSemantics, TextPaint};
 use crate::frame::rounding::round_rect;
 use crate::frame::viewport::Viewport;
+use crate::geom::Scale;
 
-/// Domain separation. A digest computed under a different prefix can never
-/// collide with one computed under this prefix, so the version bump that a
-/// serialization change requires cannot be forgotten quietly.
+/// Domain separation for the frame as a whole. A digest computed under a
+/// different prefix can never collide with one computed under this prefix, so
+/// the version bump that a serialization change requires cannot be forgotten
+/// quietly.
 ///
-/// `v3` covers [`PlacementSemantics::focused`]: `gorgon-petra-egui` paints a
+/// `v4` restructures the digest from one flat BLAKE3 stream over every
+/// placement into a Merkle tree over the placement tree — see [`NODE_DOMAIN`]
+/// and [`SUBTREE_DOMAIN`]. The flat form hashed a pre-order *flattening* of
+/// the tree, so two differently-shaped trees that flattened to the same
+/// sequence of fields shared one digest; nothing in this crate has ever been
+/// shown able to produce such a pair (see
+/// `the_merkle_form_is_at_least_as_strict_as_the_flat_form_would_have_been`
+/// in this module's tests), but the Merkle form hashes the *shape*, closing
+/// the gap regardless. It also gives an unchanged subtree a hash that does
+/// not depend on re-walking it, which is what a reuse pass needs
+/// (`.agents/notes/proposed/architecture/2026-08-22-petra-incremental-frames.md`).
+/// No per-placement field moved: the leaf stream below is byte-for-byte what
+/// `v3`'s shared stream wrote per placement, just framed differently.
+///
+/// `v3` covered [`PlacementSemantics::focused`]: `gorgon-petra-egui` paints a
 /// focus ring, so two frames differing only in which node holds keyboard focus
 /// are two different pictures, and a screenshot consumer verifying
 /// `(seq, digest)` would otherwise accept the wrong image. `v2` covered the
@@ -22,7 +38,25 @@ use crate::frame::viewport::Viewport;
 /// covered only the text content hash, the truncation flag, and the theme
 /// revision, so two frames that bound the same node's `background` to two
 /// different colours shared one digest.
-pub const DOMAIN: &[u8] = b"gorgon-petra-frame-v3";
+pub const DOMAIN: &[u8] = b"gorgon-petra-frame-v4";
+
+/// Domain separation for one placement's leaf hash.
+///
+/// Every placement hashes alone under this prefix — the exact field stream
+/// the flat `v3` digest used to append to one shared buffer — and the result
+/// feeds [`combine_subtree_hash`] as that placement's own contribution. A
+/// leaf's hash is a function of that one placement only, never of its
+/// position in the tree or of any sibling; position and shape are what
+/// [`SUBTREE_DOMAIN`] adds on top.
+pub const NODE_DOMAIN: &[u8] = b"gorgon-petra-node-v1";
+
+/// Domain separation for a subtree hash.
+///
+/// [`combine_subtree_hash`] is the one function that reads this prefix, and
+/// it is used for every subtree in a frame — the full walk in [`digest`] and,
+/// later, the incremental path both call it, so there is exactly one
+/// definition of what combining a node with its children means.
+pub const SUBTREE_DOMAIN: &[u8] = b"gorgon-petra-subtree-v1";
 
 /// Domain separation for the nested paint-payload hash.
 ///
@@ -37,7 +71,9 @@ pub const DOMAIN: &[u8] = b"gorgon-petra-frame-v3";
 /// digest through [`PaintState::paint_hash`] and must be announced. This one
 /// versions only the payload stream, so it stays put while that stream is
 /// unchanged: `v3` of the frame stream added a field to the *placement*, and
-/// bumping this alongside it would restate every paint hash under a version
+/// `v4` changed only the *framing* around placements, from a flat stream to a
+/// Merkle tree — the payload stream itself is untouched by either. Bumping
+/// this alongside either would restate every paint hash under a version
 /// whose definition never moved, which is exactly the false signal a second
 /// implementation reads these prefixes to avoid.
 pub const PAINT_DOMAIN: &[u8] = b"gorgon-petra-paint-v2";
@@ -161,101 +197,245 @@ pub fn hash_paint_content(content: &PaintContent) -> u64 {
     truncate64(&blake3::hash(&w.finish()))
 }
 
-/// The byte stream the digest hashes.
+/// One placement's own byte stream — the leaf input to [`leaf_hash`].
 ///
 /// Every field is length-prefixed, so no value can impersonate a field
 /// boundary. A node id contains `/` and a label can contain anything at all;
 /// a separator-delimited form would let one label forge a whole placement.
+///
+/// This is byte-for-byte what the flat `v3` digest wrote per placement into
+/// its one shared stream — the field list, the ordering, the length
+/// prefixes, the device rounding, and the shortest-round-trip decimals are
+/// unchanged. Only the framing moved: each placement now hashes alone, under
+/// its own [`NODE_DOMAIN`] prefix, instead of appending to a stream shared
+/// with every other placement in the frame.
+fn leaf_bytes(scale: Scale, p: &Placement) -> Vec<u8> {
+    let mut w = Canonical::new();
+    w.bytes(NODE_DOMAIN);
+
+    // Destructured with no rest pattern, on purpose: a new field on
+    // `Placement` or on `PaintState` stops compiling here until someone
+    // decides whether it belongs in the frame's identity. The two fields
+    // held out are named rather than swept up by `..`, so holding them out
+    // stays a decision rather than an oversight — see
+    // `contracts/frame-identity.md`, "Not covered".
+    let Placement {
+        id,
+        kind,
+        rect,
+        z,
+        clip,
+        opacity,
+        paint:
+            PaintState {
+                content_hash,
+                truncated,
+                token_revision,
+                paint_hash,
+            },
+        // Destructured with no rest pattern for the same reason as the two
+        // structs above. `focused` is the one member that decides a picture:
+        // `gorgon-petra-egui` paints a focus ring from it, so two frames that
+        // differ only in which node is focused are two different pictures.
+        // The rest is accessibility payload no shipped painter reads, and the
+        // semantic tree carries its own `frame_seq` binding
+        // (`contracts/semantic-tree.md`). A renderer that styles from
+        // `disabled` or `selected` makes one of those a defect, and the fix
+        // is the shape of this one: hash it and bump `DOMAIN`.
+        semantics:
+            PlacementSemantics {
+                focused,
+                role: _,
+                label: _,
+                value: _,
+                disabled: _,
+                selected: _,
+                expanded: _,
+                stale: _,
+                ambient: _,
+                actions: _,
+                total_count: _,
+            },
+        // Rewritable, not merely redundant: a subtree a reuse pass copies
+        // from the previous frame is rebased onto its new position, and
+        // `parent` is the field that rebasing rewrites
+        // (`.agents/notes/proposed/architecture/2026-08-22-petra-incremental-frames.md`,
+        // "Placements copy; `parent` rebases"). It was already excluded from
+        // the digest before that was true — redundant with `id`, which is
+        // the full key path — and it stays excluded now that it is also
+        // load-bearing for a different reason: hashing it would make a
+        // legitimately-copied subtree's leaf hash change for no picture
+        // reason at all.
+        parent: _,
+    } = p;
+
+    w.text(id);
+    w.text(kind.as_str());
+    let rect = round_rect(*rect, scale);
+    w.i32(rect.x);
+    w.i32(rect.y);
+    w.i32(rect.w);
+    w.i32(rect.h);
+    w.i32(*z);
+    let clip = round_rect(*clip, scale);
+    w.i32(clip.x);
+    w.i32(clip.y);
+    w.i32(clip.w);
+    w.i32(clip.h);
+    w.text(&canonical_decimal(*opacity));
+    w.u64(*content_hash);
+    w.bool(*truncated);
+    w.u64(*token_revision);
+    w.u64(*paint_hash);
+    w.bool(*focused);
+    w.finish()
+}
+
+/// One placement's leaf hash: `blake3(NODE_DOMAIN || leaf_bytes(scale, p))`.
+///
+/// A function of that one placement alone — never of where it sits in the
+/// tree or what its siblings are. [`combine_subtree_hash`] is what folds
+/// position and shape in on top.
 #[must_use]
-pub fn canonical_bytes(viewport: &Viewport, placements: &[Placement]) -> Vec<u8> {
+pub fn leaf_hash(scale: Scale, p: &Placement) -> [u8; 32] {
+    *blake3::hash(&leaf_bytes(scale, p)).as_bytes()
+}
+
+/// Combine one node's leaf hash with its children's subtree hashes into that
+/// node's own subtree hash.
+///
+/// `children` is direct children only, each already reduced to its own
+/// subtree hash by a prior call to this same function, in left-to-right
+/// (tree pre-order) order — a swap of two children's order is a different
+/// tree and must produce a different hash.
+///
+/// This is the ONE place the Merkle combination rule is defined. [`digest`]
+/// calls it for every subtree in a full walk; the incremental placement path
+/// this crate does not yet have will call it again for exactly the subtrees
+/// that changed, and reuse everything else's hash as already computed. Two
+/// definitions of "how a node combines with its children" is how the two
+/// paths would quietly stop agreeing; there being only one function makes
+/// that impossible.
+#[must_use]
+pub fn combine_subtree_hash(leaf: [u8; 32], children: &[[u8; 32]]) -> [u8; 32] {
+    let mut w = Canonical::new();
+    w.bytes(SUBTREE_DOMAIN);
+    w.bytes(&leaf);
+    w.u64(children.len() as u64);
+    for child in children {
+        w.bytes(child);
+    }
+    *blake3::hash(&w.finish()).as_bytes()
+}
+
+/// The subtree hash a frame with zero placements digests against.
+///
+/// There is no leaf to combine, but the digest must still be a deterministic
+/// function of the (empty) input: this is [`combine_subtree_hash`]'s rule
+/// applied to "no leaf, no children" — [`SUBTREE_DOMAIN`] and a child count
+/// of zero, nothing else — rather than a special-cased constant unrelated to
+/// the rule every other subtree hash follows.
+#[must_use]
+pub fn empty_root_hash() -> [u8; 32] {
+    let mut w = Canonical::new();
+    w.bytes(SUBTREE_DOMAIN);
+    w.u64(0);
+    *blake3::hash(&w.finish()).as_bytes()
+}
+
+/// Every placement's subtree hash, indexed alongside `placements`.
+///
+/// `placements` must be in tree pre-order with `Placement::parent` set, which
+/// is what every `PlacementSink` implementation guarantees
+/// (`crate::frame::placement::PlacementSink`). Children are read from
+/// `parent` rather than from a separately-passed `subtree_len`: the two are
+/// checked against each other once, in
+/// `crate::frame::placement::PlacementList::into_parts`, and this function
+/// only needs one of them to walk the tree.
+///
+/// Processes placements from the last index to the first: `parent` always
+/// names an earlier index than its child (pre-order), so by the time a node
+/// is reached every one of its children has already been reduced to a hash.
+///
+/// # Panics
+///
+/// If any placement names a `parent` that is not a strictly earlier index —
+/// self-referencing, pointing forward, or out of range. A well-formed
+/// pre-order placement list can never do this; a placement list that does is
+/// a caller bug, and the two are told apart here rather than left to surface
+/// later as an out-of-bounds panic with no context.
+#[must_use]
+pub fn subtree_hashes(scale: Scale, placements: &[Placement]) -> Vec<[u8; 32]> {
+    let n = placements.len();
+    let mut children: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (child_idx, p) in placements.iter().enumerate() {
+        if let Some(parent_idx) = p.parent {
+            assert!(
+                parent_idx < child_idx,
+                "placement {child_idx} ({}) names parent {parent_idx}, which must \
+                 be a strictly earlier index in a pre-order placement list",
+                p.id
+            );
+            children[parent_idx].push(child_idx);
+        }
+    }
+    let mut hashes = vec![[0u8; 32]; n];
+    for i in (0..n).rev() {
+        let leaf = leaf_hash(scale, &placements[i]);
+        let child_hashes: Vec<[u8; 32]> = children[i].iter().map(|&c| hashes[c]).collect();
+        hashes[i] = combine_subtree_hash(leaf, &child_hashes);
+    }
+    hashes
+}
+
+/// The frame's root subtree hash, given every placement's subtree hash.
+///
+/// The root is placement `0`: `petrify` places exactly one top-level node
+/// (`crate::frame::petrify`), so every other placement is a descendant of it,
+/// and it is always the first one pushed. A frame with no placements at all
+/// has no index `0`, so it falls back to [`empty_root_hash`].
+#[must_use]
+pub fn root_hash_from(subtree_hashes: &[[u8; 32]]) -> [u8; 32] {
+    subtree_hashes
+        .first()
+        .copied()
+        .unwrap_or_else(empty_root_hash)
+}
+
+/// The frame stream: domain, viewport, then the root subtree hash.
+///
+/// The viewport fields are exactly what `v3`'s shared stream wrote first;
+/// what follows them changed from every placement's fields, flattened, to
+/// one 32-byte root hash that already summarizes the whole placement tree.
+#[must_use]
+pub fn frame_bytes(viewport: &Viewport, root_hash: [u8; 32]) -> Vec<u8> {
     let mut w = Canonical::new();
     w.bytes(DOMAIN);
-
-    // 1. Viewport.
     w.text(&canonical_decimal(viewport.size.w));
     w.text(&canonical_decimal(viewport.size.h));
     w.text(&canonical_decimal(viewport.scale.factor()));
     w.u64(viewport.theme_rev);
     w.text(viewport.theme_mode.as_str());
-
-    // 2 and 3. Placements in tree pre-order, geometry then paint state.
-    w.u64(placements.len() as u64);
-    for p in placements {
-        // Destructured with no rest pattern, on purpose: a new field on
-        // `Placement` or on `PaintState` stops compiling here until someone
-        // decides whether it belongs in the frame's identity. The two fields
-        // held out are named rather than swept up by `..`, so holding them out
-        // stays a decision rather than an oversight — see
-        // `contracts/frame-identity.md`, "Not covered".
-        let Placement {
-            id,
-            kind,
-            rect,
-            z,
-            clip,
-            opacity,
-            paint:
-                PaintState {
-                    content_hash,
-                    truncated,
-                    token_revision,
-                    paint_hash,
-                },
-            // Destructured with no rest pattern for the same reason as the
-            // two structs above. `focused` is the one member that decides a
-            // picture: `gorgon-petra-egui` paints a focus ring from it, so
-            // two frames that differ only in which node is focused are two
-            // different pictures. The rest is accessibility payload no
-            // shipped painter reads, and the semantic tree carries its own
-            // `frame_seq` binding (`contracts/semantic-tree.md`). A renderer
-            // that styles from `disabled` or `selected` makes one of those a
-            // defect, and the fix is the shape of this one: hash it and bump
-            // `DOMAIN`.
-            semantics:
-                PlacementSemantics {
-                    focused,
-                    role: _,
-                    label: _,
-                    value: _,
-                    disabled: _,
-                    selected: _,
-                    expanded: _,
-                    stale: _,
-                    ambient: _,
-                    actions: _,
-                    total_count: _,
-                },
-            // Redundant with `id`, which is the full key path.
-            parent: _,
-        } = p;
-
-        w.text(id);
-        w.text(kind.as_str());
-        let rect = round_rect(*rect, viewport.scale);
-        w.i32(rect.x);
-        w.i32(rect.y);
-        w.i32(rect.w);
-        w.i32(rect.h);
-        w.i32(*z);
-        let clip = round_rect(*clip, viewport.scale);
-        w.i32(clip.x);
-        w.i32(clip.y);
-        w.i32(clip.w);
-        w.i32(clip.h);
-        w.text(&canonical_decimal(*opacity));
-        w.u64(*content_hash);
-        w.bool(*truncated);
-        w.u64(*token_revision);
-        w.u64(*paint_hash);
-        w.bool(*focused);
-    }
+    w.bytes(&root_hash);
     w.finish()
+}
+
+/// The frame digest, given an already-computed root subtree hash.
+///
+/// Split out from [`digest`] so `crate::frame::petrify` can compute
+/// [`subtree_hashes`] once, keep the full array for [`crate::frame::PetrifiedFrame`],
+/// and derive the digest from the same root hash rather than recomputing the
+/// whole Merkle tree a second time.
+#[must_use]
+pub fn digest_from_root(viewport: &Viewport, root_hash: [u8; 32]) -> FrameDigest {
+    FrameDigest(*blake3::hash(&frame_bytes(viewport, root_hash)).as_bytes())
 }
 
 /// The digest of one petrified frame.
 #[must_use]
 pub fn digest(viewport: &Viewport, placements: &[Placement]) -> FrameDigest {
-    FrameDigest(*blake3::hash(&canonical_bytes(viewport, placements)).as_bytes())
+    let hashes = subtree_hashes(viewport.scale, placements);
+    digest_from_root(viewport, root_hash_from(&hashes))
 }
 
 struct Canonical {
@@ -327,7 +507,10 @@ impl Canonical {
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::{canonical_bytes, canonical_decimal, digest, hash_paint_content, hash_text};
+    use super::{
+        Canonical, canonical_decimal, combine_subtree_hash, digest, empty_root_hash, frame_bytes,
+        hash_paint_content, hash_text, leaf_hash, root_hash_from, subtree_hashes,
+    };
     use crate::frame::placement::{
         PaintContent, PaintState, Placement, PlacementSemantics, TextPaint,
     };
@@ -368,9 +551,11 @@ mod tests {
     #[test]
     fn identical_inputs_give_one_digest_a_hundred_times() {
         let vp = viewport();
+        let mut title = placement("/root/title", Rect::new(8.0, 8.0, 200.0, 24.0));
+        title.parent = Some(0);
         let ps = vec![
             placement("/root", Rect::new(0.0, 0.0, 1280.0, 800.0)),
-            placement("/root/title", Rect::new(8.0, 8.0, 200.0, 24.0)),
+            title,
         ];
         let first = digest(&vp, &ps);
         for _ in 0..100 {
@@ -423,7 +608,16 @@ mod tests {
                 actions: vec![Interaction::Click],
                 total_count: Some(9),
             },
-            parent: Some(0),
+            // Used as the sole placement in every fixture below, so it is
+            // its own tree's root. `Some(0)` here — a self-referencing
+            // parent — used to be harmless filler when `parent` was pure
+            // metadata excluded from the digest; under the Merkle framing a
+            // placement's `parent` decides which other placement's subtree
+            // it joins, and self-reference would corrupt that placement's
+            // own children list. `None` is the value that means "not
+            // anyone's child" under the new rule too, so it stays the
+            // correct choice for a solitary root either way.
+            parent: None,
         }
     }
 
@@ -535,9 +729,22 @@ mod tests {
              paint; see contracts/frame-identity.md"
         );
 
+        // `parent` is excluded from the *leaf* stream unconditionally — this
+        // is what makes rebasing a copied subtree's `parent` safe
+        // (`.agents/notes/proposed/architecture/2026-08-22-petra-incremental-frames.md`,
+        // "Placements copy; `parent` rebases"). It is not the same claim as
+        // "any parent value leaves the frame digest unchanged": under the
+        // Merkle framing a placement's `parent` says which other subtree it
+        // joins, so reparenting within a multi-node tree can move which
+        // subtree hash it contributes to. `leaf_hash` is where the claim
+        // this test title makes actually lives.
         let mut reparented = base.clone();
         reparented.parent = Some(41);
-        assert_eq!(digest(&vp, &[reparented]), baseline);
+        assert_eq!(
+            leaf_hash(vp.scale, &reparented),
+            leaf_hash(vp.scale, &base),
+            "parent must not be able to move a placement's own leaf hash"
+        );
     }
 
     /// The paint-payload table: change exactly one field of `PaintContent` and
@@ -708,11 +915,17 @@ mod tests {
     /// Length prefixes exist so a label or an id cannot forge a field
     /// boundary. Two different trees that concatenate to the same text must
     /// still differ.
+    fn parented_pair(root_id: &str, child_id: &str) -> Vec<Placement> {
+        let mut child = placement(child_id, Rect::ZERO);
+        child.parent = Some(0);
+        vec![placement(root_id, Rect::ZERO), child]
+    }
+
     #[test]
     fn field_boundaries_cannot_be_forged() {
         let vp = viewport();
-        let a = vec![placement("/a", Rect::ZERO), placement("/bc", Rect::ZERO)];
-        let b = vec![placement("/ab", Rect::ZERO), placement("/c", Rect::ZERO)];
+        let a = parented_pair("/a", "/bc");
+        let b = parented_pair("/ab", "/c");
         assert_ne!(digest(&vp, &a), digest(&vp, &b));
     }
 
@@ -755,7 +968,7 @@ mod tests {
 
     #[test]
     fn the_canonical_stream_starts_with_its_domain() {
-        let bytes = canonical_bytes(&viewport(), &[]);
+        let bytes = frame_bytes(&viewport(), empty_root_hash());
         assert_eq!(&bytes[..8], &(super::DOMAIN.len() as u64).to_le_bytes());
         assert_eq!(&bytes[8..8 + super::DOMAIN.len()], super::DOMAIN);
     }
@@ -780,11 +993,15 @@ mod tests {
     fn the_canonical_stream_matches_its_pinned_vectors() {
         assert_eq!(
             super::DOMAIN,
-            b"gorgon-petra-frame-v3",
+            b"gorgon-petra-frame-v4",
             "the frame prefix moved without the vectors below moving with it"
         );
         assert_eq!(super::PAINT_DOMAIN, b"gorgon-petra-paint-v2");
+        assert_eq!(super::NODE_DOMAIN, b"gorgon-petra-node-v1");
+        assert_eq!(super::SUBTREE_DOMAIN, b"gorgon-petra-subtree-v1");
 
+        // Unmoved by v4: v4 changed only the framing around placements, not
+        // the payload stream.
         assert_eq!(
             hash_paint_content(&rich_content()),
             0xca56_af4f_9537_82db,
@@ -794,13 +1011,192 @@ mod tests {
         let vp = viewport();
         assert_eq!(
             digest(&vp, &[]).hex(),
-            "bc57d6803ce15c12fd2fe790b3e96151cbe9120524d3c07ea3e35355fb9a1261",
+            "912c3c245f1b43ecdc1676719424d9cffcb116e550caf2fd8fbb590829f67a52",
             "the empty-frame stream changed; see this test's doc comment"
         );
         assert_eq!(
             digest(&vp, &[rich_placement()]).hex(),
-            "23a2ce997c5b62c503e28b42b027dd9feb2571ad28ada482e12e0aee67f51da0",
+            "330c8dbbe78078d09efd3fb96ab4067a362b5334a7971682db8def2c3efb4cdb",
             "the placement stream changed; see this test's doc comment"
+        );
+    }
+
+    /// The strengthening the Merkle framing buys over the flat `v3` form,
+    /// proved rather than asserted.
+    ///
+    /// The flat digest hashed `placements.len()` followed by every
+    /// placement's fields in pre-order — a flattening of the tree that
+    /// dropped `parent` entirely. Two trees with the same fields in the same
+    /// pre-order sequence but different parent structure therefore shared
+    /// one flat digest. This reconstructs that old rule exactly (length
+    /// prefix, then each placement's fields, with no reference to `parent`
+    /// at all — literally the body `leaf_bytes` had before this change,
+    /// minus its own domain separation, run once over the whole list) and
+    /// shows two structurally different trees collide under it while the
+    /// real Merkle [`digest`] tells them apart.
+    ///
+    /// Whether the *real* containers in this crate can ever produce two
+    /// placement lists with identical fields in identical pre-order but
+    /// different `parent` values is a separate question — nothing in
+    /// `layout/` was found able to (see this module's doc comment on
+    /// [`super::DOMAIN`]) — but the flat rule's blindness to shape is a
+    /// property of the rule itself, demonstrable without needing a real
+    /// container to produce the input.
+    #[test]
+    fn the_merkle_form_is_at_least_as_strict_as_the_flat_form_would_have_been() {
+        fn flat_v3_style_digest(placements: &[Placement]) -> [u8; 32] {
+            let mut w = Canonical::new();
+            w.bytes(b"scratch-flat-v3-reconstruction");
+            w.u64(placements.len() as u64);
+            for p in placements {
+                // The same field list `leaf_bytes` still writes, minus its
+                // own domain prefix — this is a reconstruction of the old
+                // rule, not a live one anything ships.
+                w.text(&p.id);
+                w.text(p.kind.as_str());
+                w.i32(p.rect.x as i32);
+                w.i32(p.rect.y as i32);
+                w.i32(p.z);
+                w.bool(p.semantics.focused);
+            }
+            *blake3::hash(&w.finish()).as_bytes()
+        }
+
+        let leaf = |id: &str, parent: Option<usize>| Placement {
+            id: id.into(),
+            kind: NodeKind::Text,
+            rect: Rect::ZERO,
+            z: 0,
+            clip: Rect::ZERO,
+            opacity: 1.0,
+            paint: PaintState::default(),
+            semantics: PlacementSemantics::default(),
+            parent,
+        };
+
+        // Tree A: /root has two children, /a and /b, each a leaf.
+        // Tree B: /root has one child /a, which itself has one child /b.
+        // Same three ids, same fields, same pre-order sequence — only the
+        // parent structure differs.
+        let flat = |id: &str| leaf(id, None); // parent excluded from flat_v3_style_digest's stream anyway
+        let wide = vec![
+            Placement {
+                parent: None,
+                ..flat("/root")
+            },
+            Placement {
+                parent: Some(0),
+                ..flat("/root/a")
+            },
+            Placement {
+                parent: Some(0),
+                ..flat("/root/b")
+            },
+        ];
+        let deep = vec![
+            Placement {
+                parent: None,
+                ..flat("/root")
+            },
+            Placement {
+                parent: Some(0),
+                ..flat("/root/a")
+            },
+            Placement {
+                parent: Some(1),
+                ..flat("/root/b")
+            },
+        ];
+
+        assert_eq!(
+            flat_v3_style_digest(&wide),
+            flat_v3_style_digest(&deep),
+            "the flat rule ignores parent entirely, so same fields in the same \
+             pre-order sequence must collide regardless of shape"
+        );
+
+        let vp = viewport();
+        assert_ne!(
+            digest(&vp, &wide),
+            digest(&vp, &deep),
+            "the Merkle digest hashes the shape and must tell these two trees apart"
+        );
+    }
+
+    /// The one function that combines a node with its children is used for
+    /// the full walk and is exposed for the incremental path — this pins
+    /// that it behaves as the contract describes: order-sensitive, and
+    /// sensitive to how many children there are even when their hashes
+    /// coincidentally repeat.
+    #[test]
+    fn combine_subtree_hash_is_order_and_count_sensitive() {
+        let leaf = [7u8; 32];
+        let a = [1u8; 32];
+        let b = [2u8; 32];
+
+        assert_ne!(
+            combine_subtree_hash(leaf, &[a, b]),
+            combine_subtree_hash(leaf, &[b, a]),
+            "two children in a different order is a different tree"
+        );
+        assert_ne!(
+            combine_subtree_hash(leaf, &[a]),
+            combine_subtree_hash(leaf, &[a, a]),
+            "repeating the same child hash is still a different child count"
+        );
+        assert_ne!(
+            combine_subtree_hash(leaf, &[]),
+            combine_subtree_hash(leaf, &[a]),
+            "no children and one child must differ even when nothing else does"
+        );
+    }
+
+    /// A frame with no placements still digests deterministically, and that
+    /// digest is distinct from every populated frame this module builds —
+    /// nothing collapses "nothing was placed" onto "something was placed".
+    #[test]
+    fn an_empty_frame_digests_deterministically_and_distinctly() {
+        let vp = viewport();
+        let first = digest(&vp, &[]);
+        for _ in 0..10 {
+            assert_eq!(digest(&vp, &[]), first);
+        }
+        let populated = digest(&vp, &[rich_placement()]);
+        assert_ne!(first, populated);
+
+        assert_eq!(
+            root_hash_from(&subtree_hashes(vp.scale, &[])),
+            empty_root_hash(),
+            "root_hash_from must fall back to empty_root_hash with no placements"
+        );
+    }
+
+    /// The per-placement hash array [`subtree_hashes`] exposes is what a
+    /// reused subtree hands back to its parent (the incremental path this
+    /// crate does not yet have). Pinned here at unit scale: the root's own
+    /// entry is the frame's root hash, a leaf with no children combines with
+    /// an empty child list, and the count matches the placement count.
+    #[test]
+    fn subtree_hashes_root_entry_is_the_frame_root_hash() {
+        let vp = viewport();
+        let mut child = placement("/root/a", Rect::ZERO);
+        child.parent = Some(0);
+        let placements = vec![placement("/root", Rect::ZERO), child];
+
+        let hashes = subtree_hashes(vp.scale, &placements);
+        assert_eq!(hashes.len(), 2);
+        assert_eq!(root_hash_from(&hashes), hashes[0]);
+
+        // The leaf's own subtree hash is its leaf hash combined with no
+        // children — it has none.
+        assert_eq!(
+            hashes[1],
+            combine_subtree_hash(leaf_hash(vp.scale, &placements[1]), &[])
+        );
+        // The root's subtree hash folds in the child's subtree hash.
+        assert_eq!(
+            hashes[0],
+            combine_subtree_hash(leaf_hash(vp.scale, &placements[0]), &[hashes[1]])
         );
     }
 }
