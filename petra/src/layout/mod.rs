@@ -598,7 +598,7 @@ mod tests {
     fn the_dispatcher_pairs_every_placement_with_what_it_draws() {
         use crate::frame::{PlacementList, TransitionActivity, Viewport, petrify};
         use crate::geom::Size;
-        use crate::testing::Harness;
+        use crate::testing::{Harness, validated};
         use crate::token::ThemeMode;
         use crate::tree::Props;
 
@@ -613,7 +613,7 @@ mod tests {
         let mut h = Harness::new();
         let frame = petrify(
             1,
-            &tree,
+            validated(&tree),
             &mut h.ctx(),
             Viewport::new(Size::new(200.0, 100.0), ThemeMode::Dark),
             TransitionActivity::default(),

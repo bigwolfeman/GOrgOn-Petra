@@ -613,6 +613,20 @@ mod tests {
         assert!(err.to_string().contains("kids"), "{err}");
     }
 
+    /// `NodeKind` is a closed twelve-variant enum with
+    /// `#[serde(rename_all = "lowercase")]`, so a kind name outside the
+    /// twelve is unrepresentable in Rust and is refused here, at the
+    /// deserialization boundary, before a tree exists for
+    /// `crate::tree::validate` to walk. That is why `Violation` carries no
+    /// `UnknownKind` variant: one would be dead code, since nothing can ever
+    /// construct a `ViewNode` whose `kind` holds such a value for `validate`
+    /// to see (`specs/003-petra-layout-engine/tasks.md`, T009).
+    #[test]
+    fn an_unknown_node_kind_is_refused_at_deserialization() {
+        let err = serde_json::from_str::<ViewNode>(r#"{"kind":"widget","key":"a"}"#).unwrap_err();
+        assert!(err.to_string().contains("widget"), "{err}");
+    }
+
     #[test]
     fn custom_roles_carry_their_name() {
         assert_eq!(Role::Button.as_wire(), "button");

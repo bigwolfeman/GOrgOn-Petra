@@ -18,4 +18,4 @@ pub use props::{
     Anchor, ClampRule, CollectionProps, Edge, GridProps, InputPolicy, Layer, Props, ScrollProps,
     StackProps, SurfaceProps, TextProps, TextWrap, TrackSize,
 };
-pub use validate::{Registry, TreeError, TreeErrors, Violation, validate};
+pub use validate::{Registry, TreeError, TreeErrors, ValidatedTree, Violation, validate};

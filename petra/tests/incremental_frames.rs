@@ -15,7 +15,7 @@ use gorgon_petra::frame::{TransitionActivity, Viewport, petrify, petrify_with_me
 use gorgon_petra::geom::Size;
 use gorgon_petra::layout::ChangeSet;
 use gorgon_petra::layout::reuse::{FrameMemo, ReuseStats};
-use gorgon_petra::testing::Harness;
+use gorgon_petra::testing::{Harness, validated};
 use gorgon_petra::token::ThemeMode;
 use gorgon_petra::tree::{Key, NodeKind, Props, ViewNode};
 
@@ -58,7 +58,7 @@ fn full(tree: &Arc<ViewNode>) -> gorgon_petra::frame::PetrifiedFrame {
     let mut h = Harness::new();
     petrify(
         1,
-        tree,
+        validated(tree),
         &mut h.ctx(),
         viewport(),
         TransitionActivity::default(),
@@ -74,7 +74,7 @@ fn incremental(
     let mut h = Harness::new();
     let first = petrify(
         1,
-        before,
+        validated(before),
         &mut h.ctx(),
         viewport(),
         TransitionActivity::default(),
@@ -95,7 +95,7 @@ fn incremental(
         .expect("ChangeSet::All has no dirty set");
     petrify_with_memo(
         2,
-        after,
+        validated(after),
         &mut h.ctx(),
         &memo,
         &dirty,
@@ -387,7 +387,7 @@ fn a_memo_with_mismatched_array_lengths_is_refused_not_panicked() {
     let mut h = Harness::new();
     let first = petrify(
         1,
-        &tree,
+        validated(&tree),
         &mut h.ctx(),
         viewport(),
         TransitionActivity::default(),
@@ -409,7 +409,7 @@ fn a_memo_with_mismatched_array_lengths_is_refused_not_panicked() {
     let dirty = BTreeSet::new();
     let (frame, stats) = petrify_with_memo(
         2,
-        &tree,
+        validated(&tree),
         &mut h.ctx(),
         &memo,
         &dirty,
@@ -434,7 +434,7 @@ fn a_theme_change_refuses_every_reuse() {
     let mut h = Harness::new();
     let first = petrify(
         1,
-        &tree,
+        validated(&tree),
         &mut h.ctx(),
         viewport(),
         TransitionActivity::default(),
@@ -455,7 +455,7 @@ fn a_theme_change_refuses_every_reuse() {
     let dirty = BTreeSet::new();
     let (frame, stats) = petrify_with_memo(
         2,
-        &tree,
+        validated(&tree),
         &mut h.ctx(),
         &memo,
         &dirty,

@@ -224,13 +224,29 @@ impl<A: App> Host<A> {
             .retain_theme_and_scale(viewport.theme_rev, viewport.scale);
         self.cache.apply(&self.app.take_changes());
 
-        let tree = self.app.view();
-        let tree = match validate(&tree, &self.registry) {
-            Ok(()) => tree,
-            // A refused tree is a bug in the application, and the operator has
-            // to be able to see which node. Painting the violations is louder
-            // than a log line and does not take the window down.
-            Err(errors) => refusal_view(&errors.to_string()),
+        let app_tree = self.app.view();
+        // `refusal_view` only exists to be assigned into on the error arm
+        // below; the `let` with no initializer is what lets the borrow
+        // minted there outlive the `match` (a binding declared outside the
+        // arm that assigns it). Both arms mint through the same `validate`
+        // call that decided Ok/Err — the happy path pays for exactly one
+        // walk of the tree, not two.
+        let refusal_tree;
+        let tree = match validate(&app_tree, &self.registry) {
+            Ok(validated) => validated,
+            // A refused tree is a bug in the application, and the operator
+            // has to be able to see which node. Painting the violations is
+            // louder than a log line and does not take the window down.
+            // `refusal_view` is authored by this crate, not the application,
+            // so it is expected to validate; a violation in the view built to
+            // report violations would be this crate's own bug, and the
+            // `expect` says so by name rather than laying out a tree nothing
+            // ever accepted.
+            Err(errors) => {
+                refusal_tree = refusal_view(&errors.to_string());
+                validate(&refusal_tree, &self.registry)
+                    .expect("gorgon-petra-egui's own refusal_view must validate")
+            }
         };
 
         let frame = {
@@ -246,7 +262,7 @@ impl<A: App> Host<A> {
             };
             petrify(
                 self.counter.take(),
-                &tree,
+                tree,
                 &mut ctx_layout,
                 viewport,
                 // Transitions land in US4. Until then every frame is settled,

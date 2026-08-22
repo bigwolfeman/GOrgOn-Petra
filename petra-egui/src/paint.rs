@@ -387,7 +387,7 @@ fn to_egui_snapped(rect: PetraRect, scale: Scale) -> egui::Rect {
 pub fn verify_paint_accounting() {
     use gorgon_petra::frame::{TransitionActivity, Viewport, petrify};
     use gorgon_petra::geom::Size;
-    use gorgon_petra::testing::{Harness, NoRows};
+    use gorgon_petra::testing::{Harness, NoRows, validated};
     use gorgon_petra::token::{ThemeMode, ThemeSnapshot, dark};
     use gorgon_petra::tree::{NodeKind, Props, ViewNode};
 
@@ -414,7 +414,7 @@ pub fn verify_paint_accounting() {
     let mut harness = Harness::with(GalleyShaper::new(ctx.clone()), NoRows);
     let frame = petrify(
         1,
-        &tree,
+        validated(&tree),
         &mut harness.ctx(),
         viewport,
         TransitionActivity::default(),
@@ -442,7 +442,7 @@ pub fn verify_paint_accounting() {
     });
     let frame = petrify(
         2,
-        &drawn,
+        validated(&drawn),
         &mut harness.ctx(),
         viewport,
         TransitionActivity::default(),
@@ -466,7 +466,7 @@ mod tests {
     use gorgon_petra::frame::{TransitionActivity, Viewport, petrify};
     use gorgon_petra::geom::Size;
     use gorgon_petra::geom::{Rect as PetraRect, Scale};
-    use gorgon_petra::testing::Harness;
+    use gorgon_petra::testing::{Harness, validated};
     use gorgon_petra::token::{ThemeMode, ThemeSnapshot, dark};
     use gorgon_petra::tree::{NodeKind, Props, ViewNode};
 
@@ -527,7 +527,7 @@ mod tests {
     ) -> gorgon_petra::frame::PetrifiedFrame {
         petrify(
             1,
-            node,
+            validated(node),
             &mut h.ctx(),
             Viewport::new(Size::new(240.0, 120.0), ThemeMode::Dark),
             TransitionActivity::default(),

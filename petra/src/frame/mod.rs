@@ -11,12 +11,11 @@ pub mod rounding;
 pub mod viewport;
 
 use std::collections::BTreeSet;
-use std::sync::Arc;
 
 use crate::geom::Rect;
 use crate::layout::reuse::{FrameMemo, ReuseState, ReuseStats};
 use crate::layout::{LayoutCtx, Proposal, SizeProposal, Slot};
-use crate::tree::{KeyPath, ViewNode};
+use crate::tree::{KeyPath, ValidatedTree};
 
 pub use digest::{FrameDigest, canonical_decimal, hash_text};
 pub use placement::{
@@ -205,7 +204,7 @@ impl FrameCounter {
 /// mode is a correct frame at full price.
 pub fn petrify_with_memo<'a>(
     seq: u64,
-    tree: &'a Arc<ViewNode>,
+    tree: ValidatedTree<'a>,
     ctx: &mut LayoutCtx<'a>,
     memo: &'a FrameMemo,
     dirty: &'a BTreeSet<String>,
@@ -233,7 +232,7 @@ pub fn petrify_with_memo<'a>(
     // needing to see the original `ChangeSet` itself.
     #[cfg(debug_assertions)]
     if let Some(state) = ctx.reuse.as_ref() {
-        state.verify_declaration(tree);
+        state.verify_declaration(&tree);
     }
     let stats = ctx
         .reuse
@@ -262,11 +261,12 @@ pub fn petrify_with_memo<'a>(
 /// short label rendered as a narrow column against the left edge.
 pub fn petrify(
     seq: u64,
-    tree: &ViewNode,
+    tree: ValidatedTree<'_>,
     ctx: &mut LayoutCtx<'_>,
     viewport: Viewport,
     transitions: TransitionActivity,
 ) -> PetrifiedFrame {
+    let tree = &*tree;
     let mut path = KeyPath::root();
     let offer = SizeProposal {
         horizontal: Proposal::Exact(viewport.size.w),
@@ -325,7 +325,7 @@ pub fn petrify(
 mod tests {
     use super::{FrameCounter, TransitionActivity, Viewport, petrify};
     use crate::geom::Size;
-    use crate::testing::{Harness, MonoContent, NoRows};
+    use crate::testing::{Harness, MonoContent, NoRows, validated};
     use crate::token::ThemeMode;
     use crate::tree::{AxisConstraint, Constraints, NodeKind, Props, ViewNode};
 
@@ -333,7 +333,7 @@ mod tests {
         let mut harness = Harness::with(MonoContent::default(), NoRows);
         petrify(
             1,
-            tree,
+            validated(tree),
             &mut harness.ctx(),
             Viewport::new(Size::new(w, h), ThemeMode::Dark),
             TransitionActivity::default(),
