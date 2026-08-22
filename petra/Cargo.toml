@@ -18,3 +18,8 @@ serde_json.workspace = true
 
 [lints]
 workspace = true
+
+[[bench]]
+name = "negotiate"
+path = "benches/negotiate.rs"
+harness = false
