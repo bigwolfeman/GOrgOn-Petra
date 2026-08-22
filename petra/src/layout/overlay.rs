@@ -61,6 +61,9 @@ pub fn place(
             content_hash: 0,
             truncated: false,
             token_revision: ctx.theme_rev,
+            // Filled by `PlacementSink::attach` once the dispatcher
+            // has the payload; no container owns this.
+            paint_hash: 0,
         },
         semantics: crate::layout::semantics_of(node),
         parent: None,

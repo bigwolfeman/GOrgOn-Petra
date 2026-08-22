@@ -602,7 +602,15 @@ mod tests {
     }
 
     /// Token references reach the renderer through the payload, not through
-    /// the placement: the digest hashes the theme revision, not the names.
+    /// the placement — but they still reach the digest, hashed into
+    /// `PaintState::paint_hash` when the payload is attached.
+    ///
+    /// This comment used to end "the digest hashes the theme revision, not the
+    /// names", and stated a defect as though it were a design: the theme
+    /// revision is one global number, so rebinding this node's `background`
+    /// from `surface.raised` to `status.down` repainted the panel and moved no
+    /// digest. `gorgon/petra/tests/frame_digest_coverage.rs` is where the two
+    /// bindings are now proven to differ.
     #[test]
     fn token_references_reach_the_payload() {
         use crate::tree::Props;
@@ -617,6 +625,12 @@ mod tests {
             Some("surface.raised")
         );
         assert!(!content.is_empty());
+        assert_ne!(
+            crate::frame::digest::hash_paint_content(&content),
+            0,
+            "a node that binds a token draws something, so its payload hash \
+             must not be the zero a bare container carries"
+        );
     }
 
     /// The scroll context is a stack: the innermost frame answers, the

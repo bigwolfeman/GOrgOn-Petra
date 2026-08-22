@@ -51,8 +51,13 @@ pub struct PetrifiedFrame {
     /// Every node's final geometry, in tree pre-order.
     pub placements: Vec<Placement>,
     /// What each placement draws, at the same index and the same length.
-    /// Not a digest input: the digest hashes `paint.content_hash`, not the
-    /// string it was taken from.
+    ///
+    /// Not hashed *directly* — the digest must be recomputable from
+    /// `(viewport, placements)` alone, because that is all a driver `frame`
+    /// response carries (`contracts/driver-protocol.md`). It reaches the
+    /// digest as `placements[i].paint.paint_hash`, written when the payload
+    /// was attached. [`PetrifiedFrame::paint_hashes_agree`] is what checks the
+    /// two have not drifted.
     pub content: Vec<PaintContent>,
     /// What the frame was negotiated against.
     pub viewport: Viewport,
@@ -80,6 +85,23 @@ impl PetrifiedFrame {
         let mut out: Vec<(&Placement, &PaintContent)> = self.drawn().collect();
         out.sort_by_key(|(p, _)| p.z);
         out
+    }
+
+    /// Whether every placement's paint hash still describes the payload at the
+    /// same index.
+    ///
+    /// The digest hashes `paint.paint_hash`; the renderer draws `content`.
+    /// Both are public fields, so the two can be made to disagree — and a
+    /// frame whose payload was edited after petrify would keep the digest of
+    /// the picture it no longer draws. This is the check that says so; a
+    /// length mismatch is a disagreement too, since the tail has no hash to
+    /// compare against.
+    #[must_use]
+    pub fn paint_hashes_agree(&self) -> bool {
+        self.placements.len() == self.content.len()
+            && self
+                .drawn()
+                .all(|(p, c)| p.paint.paint_hash == digest::hash_paint_content(c))
     }
 
     /// Placements in paint order: ascending `z`, then placement order.
@@ -175,14 +197,20 @@ pub fn petrify(
     );
     let (placements, content) = sink.into_parts();
     let digest = digest::digest(&viewport, &placements);
-    PetrifiedFrame {
+    let frame = PetrifiedFrame {
         seq,
         digest,
         placements,
         content,
         viewport,
         transitions,
-    }
+    };
+    debug_assert!(
+        frame.paint_hashes_agree(),
+        "a sink attached a paint payload without hashing it into the \
+         placement: the digest of this frame is blind to what it draws"
+    );
+    frame
 }
 
 #[cfg(test)]

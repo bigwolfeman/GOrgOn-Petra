@@ -141,6 +141,9 @@ pub fn place(
             // that has no text run of its own to truncate.
             truncated: needs_scroll,
             token_revision: ctx.theme_rev,
+            // Filled by `PlacementSink::attach` once the dispatcher
+            // has the payload; no container owns this.
+            paint_hash: 0,
         },
         semantics: crate::layout::semantics_of(node),
         parent: None,

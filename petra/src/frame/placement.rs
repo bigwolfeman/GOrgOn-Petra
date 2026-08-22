@@ -7,7 +7,11 @@ use crate::tree::{Interaction, NodeKind, Role, TextWrap};
 
 /// Paint-relevant state that is not geometry but does change the picture.
 ///
-/// These three fields are digest inputs (`contracts/frame-identity.md` §3).
+/// Every field here is a digest input (`contracts/frame-identity.md` §3).
+/// Adding one is a serialization change: it needs a line in
+/// [`crate::frame::digest::canonical_bytes`], which destructures this struct
+/// with no rest pattern so the compiler asks, and a bump of
+/// [`crate::frame::digest::DOMAIN`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PaintState {
     /// Hash of the node's rendered text, or zero when it renders none.
@@ -15,7 +19,24 @@ pub struct PaintState {
     /// Whether content was hidden by a truncation rule this frame.
     pub truncated: bool,
     /// Revision of the theme snapshot this node's tokens resolved against.
+    ///
+    /// This is the *global* snapshot revision, never which token this node
+    /// asked for. Rebinding one node's `background` from `surface.raised` to
+    /// `status.down` moves no revision anywhere; [`PaintState::paint_hash`] is
+    /// what sees that.
     pub token_revision: u64,
+    /// Hash of this node's [`PaintContent`] — its token bindings, its text
+    /// run's typography and truncation policy, its image source, and its
+    /// custom painter name. Zero when the node draws nothing of its own.
+    ///
+    /// The payload itself lives in a parallel array on
+    /// [`crate::frame::PetrifiedFrame`], not in the placement, but the digest
+    /// must be recomputable from `(viewport, placements)` alone: the driver's
+    /// `frame` response carries exactly those two and no payload array
+    /// (`contracts/driver-protocol.md`). So the hash rides here, written by
+    /// [`PlacementSink::attach`] rather than by any container — one place, so
+    /// the twelve node kinds cannot each forget it differently.
+    pub paint_hash: u64,
 }
 
 /// The semantic payload a placement carries into the projection.
@@ -73,6 +94,11 @@ pub struct Placement {
 
 /// A text run a placement draws, in the form the shaper needs to reproduce
 /// exactly the galley the layout was measured against.
+///
+/// Every field here reaches the digest through
+/// [`crate::frame::digest::hash_paint_content`], which destructures this
+/// struct with no rest pattern: a new field will not compile until someone
+/// decides whether it changes the picture.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TextPaint {
     /// The content.
@@ -87,13 +113,19 @@ pub struct TextPaint {
 
 /// What a placement draws, beyond its rect.
 ///
-/// Kept beside the placements rather than inside them. A [`Placement`] is
-/// geometry and semantics — exactly what the frame digest hashes
-/// (`contracts/frame-identity.md`) — and folding the text of every label into
-/// it would put a string in the hash input twice, once as itself and once as
-/// its `content_hash`. The renderer needs the string; the digest needs the
-/// hash. They are different jobs, so they are different arrays, and
-/// `PetrifiedFrame` holds the two at equal length with the same index.
+/// Kept beside the placements rather than inside them: the renderer needs the
+/// strings, the digest needs a hash, and a driver `frame` response ships the
+/// placements without the payload at all. They are different jobs, so they are
+/// different arrays, and `PetrifiedFrame` holds the two at equal length with
+/// the same index.
+///
+/// This is **not** the same as being outside the digest, which is what it used
+/// to mean. Every field below decides the picture — `gorgon-petra-egui`'s
+/// painter reads `tokens` for the fill, the outline, and the text colour, and
+/// reads `text` for the galley — so all of it enters the frame digest through
+/// [`PaintState::paint_hash`], written by [`PlacementSink::attach`]. What the
+/// placement never carries is the *string*; what it always carries is a hash
+/// that moves when the string does.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PaintContent {
     /// The text run to draw, if this node draws one.
@@ -139,6 +171,15 @@ pub trait PlacementSink {
     /// Called by the dispatcher, not by containers: every container pushes its
     /// own placement first, so the dispatcher knows the index without the
     /// container having to hand it back.
+    ///
+    /// An implementation MUST also set the placement's
+    /// [`PaintState::paint_hash`] to
+    /// [`crate::frame::digest::hash_paint_content`] of `content`. A sink that
+    /// stores the payload and leaves the hash at zero produces frames whose
+    /// digest is blind to every token binding and every typography choice in
+    /// them — the exact defect this field exists to close.
+    /// [`crate::frame::PetrifiedFrame::paint_hashes_agree`] is the check that
+    /// catches a sink that skipped it.
     fn attach(&mut self, index: usize, content: PaintContent);
 
     /// How many placements have been recorded.
@@ -219,8 +260,16 @@ impl PlacementSink for PlacementList {
     }
 
     fn attach(&mut self, index: usize, content: PaintContent) {
-        if let Some(slot) = self.content.get_mut(index) {
-            *slot = content;
+        let hash = crate::frame::digest::hash_paint_content(&content);
+        let Some(slot) = self.content.get_mut(index) else {
+            // No payload slot means no placement either — the two vectors are
+            // pushed together. Nothing landed, so nothing is hashed; leaving
+            // the placement's hash alone keeps the two in agreement.
+            return;
+        };
+        *slot = content;
+        if let Some(placement) = self.placements.get_mut(index) {
+            placement.paint.paint_hash = hash;
         }
     }
 

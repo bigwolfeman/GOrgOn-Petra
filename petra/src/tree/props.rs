@@ -26,6 +26,24 @@ pub enum TextWrap {
     Clip,
 }
 
+impl TextWrap {
+    /// The policy's wire name.
+    ///
+    /// The frame digest hashes this string (`contracts/frame-identity.md` §3),
+    /// so it is part of a serialization format, not a debug label: changing a
+    /// name here changes every digest and needs the domain-prefix bump that
+    /// [`crate::frame::digest::DOMAIN`] documents. The names are the same ones
+    /// serde emits, and a test below pins that.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Wrap => "wrap",
+            Self::Ellipsis => "ellipsis",
+            Self::Clip => "clip",
+        }
+    }
+}
+
 /// How one grid track is sized.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", tag = "type")]
@@ -397,6 +415,26 @@ impl Props {
 mod tests {
     use super::{Layer, Props, TextWrap, TrackSize};
     use crate::geom::Axis;
+
+    /// One vocabulary for one enum. The digest hashes
+    /// [`TextWrap::as_str`] and the wire form uses serde's name; if the two
+    /// drift, a frame received over the driver protocol and a frame petrified
+    /// locally would hash the same policy to two different strings and the
+    /// SC-004 cross-target claim would be false with nothing to show for it.
+    #[test]
+    fn the_wrap_policy_has_one_name_in_the_digest_and_on_the_wire() {
+        for wrap in [TextWrap::Wrap, TextWrap::Ellipsis, TextWrap::Clip] {
+            let json = serde_json::to_string(&wrap).unwrap();
+            assert_eq!(
+                json,
+                format!("\"{}\"", wrap.as_str()),
+                "{wrap:?} serializes as {json} but digests as {:?}",
+                wrap.as_str()
+            );
+            let back: TextWrap = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, wrap);
+        }
+    }
 
     #[test]
     fn an_empty_props_serializes_to_an_empty_table() {
