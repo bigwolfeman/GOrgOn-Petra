@@ -6,9 +6,16 @@
 //! every status entry pairs its colour with a [`StatusShape`] (a
 //! distinguishable outline, not just a colour swatch) and a text label.
 //! [`StatusToken::new`] takes all three as required, non-optional
-//! constructor arguments — there is no builder, no `Default`, and no
-//! setter, so a `StatusToken` value missing its shape or its text cannot be
-//! named: the type has no such state to be in.
+//! constructor arguments — there is no builder, no `Default`, and no setter.
+//!
+//! A constructor is not by itself a guarantee, and this module learned that
+//! the hard way: it originally derived [`Deserialize`], which builds a struct
+//! field by field and never calls `new`, so `{"text": "   "}` produced exactly
+//! the colour-and-shape-but-no-label status the constructor refuses — while
+//! three comments in this file said that state was unrepresentable. The
+//! deserializer below is hand-written and funnels through `new`, the same way
+//! [`crate::token::name::TokenName`] does, so *every* way into the type
+//! enforces FR-015 and not just the one a Rust caller happens to use.
 
 use std::fmt;
 
@@ -36,7 +43,7 @@ pub enum StatusShape {
 /// (FR-015). `name` is the same [`TokenName`] used to look up the status's
 /// colour value in a resolved theme (`Theme::value`); shape and text do not
 /// vary by theme mode, only the colour painted into the shape does.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct StatusToken {
     name: TokenName,
     shape: StatusShape,
@@ -79,6 +86,32 @@ impl StatusToken {
     #[must_use]
     pub fn text(&self) -> &str {
         &self.text
+    }
+}
+
+impl<'de> Deserialize<'de> for StatusToken {
+    /// Deserialize through [`StatusToken::new`], so a serialized status that
+    /// omits its text channel is refused on the way in rather than becoming a
+    /// value the rest of the engine trusts.
+    ///
+    /// The private `Raw` mirror exists only to borrow the derive's field
+    /// parsing; it is never handed out. `deny_unknown_fields` is on it for the
+    /// same reason it is on the tree types: a misspelled `shpae` should be an
+    /// error an author sees, not a silent fall back to some default — and
+    /// there is no default here to fall back to.
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Raw {
+            name: TokenName,
+            shape: StatusShape,
+            text: String,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        Self::new(raw.name, raw.shape, raw.text).map_err(serde::de::Error::custom)
     }
 }
 
@@ -143,10 +176,53 @@ mod tests {
         );
     }
 
-    // There is no test for "a status token without a shape" or "without a
-    // text field": `StatusToken::new`'s signature is
-    // `(TokenName, StatusShape, impl Into<String>)` with no `Option`, no
-    // `Default` derive, and no setters — the compiler refuses any call site
-    // missing an argument before a test could ever run. The struct's private
-    // fields mean the only way to build one at all is through `new`.
+    // The Rust call path is closed by the compiler: `StatusToken::new`'s
+    // signature is `(TokenName, StatusShape, impl Into<String>)` with no
+    // `Option`, no `Default` derive, and no setters, and the fields are
+    // private. The *serde* path is not closed by the compiler, which is why
+    // these two tests exist — an earlier version of this file derived
+    // `Deserialize` and let exactly this value through while the module doc
+    // said it could not exist.
+
+    #[test]
+    fn deserializing_a_status_with_a_blank_text_channel_is_refused() {
+        let err = serde_json::from_str::<StatusToken>(
+            r#"{"name":"status.down","shape":"square","text":"   "}"#,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("colour, shape, and text together"),
+            "the serde path must fail with the FR-015 reason, not a type \
+             error: {err}"
+        );
+        let err = serde_json::from_str::<StatusToken>(
+            r#"{"name":"status.down","shape":"square","text":""}"#,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("colour, shape, and text together"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_well_formed_status_still_round_trips_through_serde() {
+        let status = StatusToken::new(
+            TokenName::new("status.ok").unwrap(),
+            StatusShape::Circle,
+            "OK",
+        )
+        .unwrap();
+        let json = serde_json::to_string(&status).unwrap();
+        assert_eq!(serde_json::from_str::<StatusToken>(&json).unwrap(), status);
+    }
+
+    #[test]
+    fn a_misspelled_field_is_refused_rather_than_defaulted() {
+        let err = serde_json::from_str::<StatusToken>(
+            r#"{"name":"status.ok","shpae":"circle","text":"OK"}"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("shpae"), "{err}");
+    }
 }

@@ -388,17 +388,21 @@ mod tests {
         estimated_extent: f32,
         overscan: f32,
     ) -> ViewNode {
+        // `overscan` is declared on the collection, which is the node that
+        // reads it. It used to be declared on the `scroll` — where nothing
+        // reads it — and every caller passed 64.0, which is exactly
+        // `DEFAULT_OVERSCAN`. So the collection fell through to the default,
+        // got the same answer, and every assertion below passed whether the
+        // parameter was honoured or deleted outright.
         let collection = ViewNode::new(NodeKind::Collection, "rows").with_props(Props {
             total_count: Some(total_count),
             source: Some("fibers".into()),
             estimated_extent: Some(estimated_extent),
+            overscan: Some(overscan),
             ..Props::default()
         });
         ViewNode::new(NodeKind::Scroll, "list")
-            .with_props(Props {
-                overscan: Some(overscan),
-                ..Props::default()
-            })
+            .with_props(Props::default())
             .child(collection)
     }
 
@@ -563,11 +567,20 @@ mod tests {
         );
     }
 
+    /// The window is the viewport plus the *declared* overscan, not the
+    /// default one.
+    ///
+    /// The overscan here is deliberately 120.0 rather than 64.0. Every caller
+    /// of this fixture used to pass 64.0, which is `DEFAULT_OVERSCAN` — so the
+    /// row count came out the same whether the declaration was read or
+    /// ignored, and deleting the parameter left every scroll test green.
+    /// Verified by sabotage: replacing the props read with `DEFAULT_OVERSCAN`
+    /// fails this assertion.
     #[test]
     fn total_count_reaches_semantics_while_placement_count_is_only_the_window() {
         let mut h = Harness::with(MonoContent::new(), GeneratedRows::new("fibers", 100_000));
         h.set_scroll("/list", 0.0);
-        let tree = scroll_with_collection(100_000, 24.0, 64.0);
+        let tree = scroll_with_collection(100_000, 24.0, 120.0);
         let mut path = KeyPath::root();
         let mut sink = PlacementList::new();
         crate::layout::place(
@@ -586,10 +599,12 @@ mod tests {
         assert_eq!(collection.semantics.total_count, Some(100_000));
 
         // scroll (1) + collection (1) + materialized rows. At offset 0 with a
-        // 400-unit viewport, 64-unit overscan, and 24-unit rows the window is
-        // ceil((400 + 64) / 24) = 20 rows.
+        // 400-unit viewport, the declared 120-unit overscan, and 24-unit rows
+        // the window is ceil((400 + 120) / 24) = 22 rows. With the default
+        // 64-unit overscan it would be 20, which is what makes this assertion
+        // able to tell the two apart.
         let row_count = placements.len() - 2;
-        assert_eq!(row_count, 20);
+        assert_eq!(row_count, 22);
         assert!(row_count < 100_000);
     }
 

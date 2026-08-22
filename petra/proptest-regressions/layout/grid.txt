@@ -5,3 +5,5 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 3a5c26790a7e43818298048a656dcd7e4eae45fbc766eddc5101b3ae2b3618c1 # shrinks to ncols = 1, nchildren = 1, kinds = [0, 0, 0, 0], fixed_vals = [1.0, 1.0, 1.0, 1.0], weight_vals = [1.0, 1.0, 1.0, 1.0], spacing = 0.0, offer_w = 400.0
+cc d267334c568a9931ecaeab095ab7cbb1cc0d49d46dc8eea278df036c52a4ed1c # shrinks to ncols = 4, nchildren = 0, kinds = [0, 0, 0, 0], fixed_vals = [1.0, 1.0, 1.0, 1.0], weight_vals = [1.0, 1.0, 1.0, 1.0], spacing = 16.365301, offer_w = 40.0, image_every = 1
+cc c629c5e329a6f7a9f086f6f55ad70a759713465cf944b7220ee71a7e0d0ccdbe # shrinks to ncols = 2, nchildren = 0, kinds = [0, 0, 0, 0], fixed_vals = [1.0, 591.449, 1.0, 1.0], weight_vals = [1.0, 1.0, 1.0, 1.0], spacing = 0.0, offer_w = 40.0, image_every = 1

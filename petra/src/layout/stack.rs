@@ -999,10 +999,62 @@ mod tests {
         assert!(out[0].paint.truncated, "the declared spacing was cut");
     }
 
-    /// Which children may absorb rather than truncate. The end-to-end path
-    /// cannot be exercised until the scroll container itself lands (T019), so
-    /// the classification is asserted here and the absorption itself in
-    /// `layout::constraints`.
+    /// The end-to-end concession into a scroll child: overflow is absorbed by
+    /// the scroll region rather than truncating anything.
+    ///
+    /// This test's absence used to be excused by a comment saying the path
+    /// "cannot be exercised until the scroll container itself lands (T019)".
+    /// T019 landed and the comment stayed, so the gap outlived its reason.
+    ///
+    /// The shape matters: `Concession::ScrollRegion` is only reachable when the
+    /// scroll region declares a minimum. Without one its floor is zero, step
+    /// one of the order already takes it to zero, and step two finds nothing
+    /// left to give — so a scroll child with no declared `min` never exercises
+    /// the branch at all, whatever the overflow.
+    #[test]
+    fn a_stack_concedes_into_a_scroll_child_instead_of_truncating() {
+        let axis = Axis::Vertical;
+        let rigid_child = flexible("head", axis, 70.0, 70.0, 0);
+        let scroller = ViewNode::new(NodeKind::Scroll, Key::new("log"))
+            .with_props(Props {
+                axis: Some(axis),
+                ..Props::default()
+            })
+            .with_constraints(on(
+                axis,
+                AxisConstraint {
+                    min: Some(50.0),
+                    max: None,
+                    priority: 0,
+                },
+            ));
+        let tree = stack(axis, 0.0, Align::Start, vec![rigid_child, scroller]);
+
+        // 70 + 50 declared into 100 available: 20 units of overflow, and the
+        // rigid child is already at both its bounds.
+        let out = placements(&tree, Rect::new(0.0, 0.0, 40.0, 100.0));
+        assert_eq!(out.len(), 3, "the stack, the head, and the scroll region");
+        assert_eq!(out[1].rect.h, 70.0, "the rigid child keeps its declaration");
+        assert_eq!(
+            out[2].rect.h, 30.0,
+            "the scroll region absorbs all 20 units of overflow by shrinking \
+             past its own minimum: it grows a scroll range rather than losing \
+             content"
+        );
+        assert!(
+            !out[0].paint.truncated,
+            "nothing was truncated — absorption is the whole point of putting \
+             ScrollRegion before Truncate in FR-005's order: {:?}",
+            out[0].paint
+        );
+        assert!(
+            out[2].rect.bottom() <= 100.0 + 1e-3,
+            "{:?} is outside the stack",
+            out[2].rect
+        );
+    }
+
+    /// Which children may absorb rather than truncate.
     #[test]
     fn only_a_scroll_child_along_the_main_axis_absorbs_overflow() {
         let scroller = |axis| {

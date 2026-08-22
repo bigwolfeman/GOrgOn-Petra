@@ -9,7 +9,7 @@ use std::collections::{BTreeSet, HashSet};
 use std::fmt;
 
 use crate::tree::key::{Key, KeyPath};
-use crate::tree::node::{NodeKind, ViewNode};
+use crate::tree::node::{NodeKind, Role, ViewNode};
 use crate::tree::props::TrackSize;
 
 /// Names the host has registered: custom node kinds and transition
@@ -78,6 +78,17 @@ pub enum Violation {
         /// Whether `semantics.label` is present.
         has_label: bool,
     },
+    /// A node carries a status-bearing role with no text channel.
+    ///
+    /// Separate from [`Violation::InteractiveWithoutSemantics`] because it
+    /// catches the *non*-interactive case that one deliberately skips: a
+    /// status readout is usually not clickable, so nothing else in this
+    /// module ever looked at it, and a red dot with no label validated clean.
+    StatusRoleWithoutLabel {
+        /// The role that requires a label. Named in the message so the author
+        /// knows which of the status-bearing roles tripped it.
+        role: String,
+    },
     /// A `custom` node names no painter, or names one that is not registered.
     UnregisteredCustomKind {
         /// The declared name, or `None` when `props.custom_kind` is absent.
@@ -145,6 +156,12 @@ impl fmt::Display for Violation {
                 write!(
                     f,
                     "declares interactions but no {missing}; an interactive node that cannot be named cannot be driven or heard"
+                )
+            }
+            Self::StatusRoleWithoutLabel { role } => {
+                write!(
+                    f,
+                    "role `{role}` carries no semantics.label; a status conveys its state through colour, shape, and text together (FR-015), and without a label colour is the only channel left"
                 )
             }
             Self::UnregisteredCustomKind { name, registered } => match name {
@@ -287,19 +304,35 @@ fn check_node(node: &ViewNode, registry: &Registry, path: &KeyPath, errors: &mut
         });
     };
 
+    let has_label = node
+        .semantics
+        .label
+        .as_ref()
+        .is_some_and(|l| !l.trim().is_empty());
+
     if node.is_interactive() {
         let has_role = node.semantics.role.is_some();
-        let has_label = node
-            .semantics
-            .label
-            .as_ref()
-            .is_some_and(|l| !l.trim().is_empty());
         if !has_role || !has_label {
             push(Violation::InteractiveWithoutSemantics {
                 has_role,
                 has_label,
             });
         }
+    }
+
+    // A status-bearing role must carry its text channel, whether or not the
+    // node is interactive. The interactive check above deliberately does not
+    // cover this: a health dot or a progress bar is usually not clickable, so
+    // before this check existed a `Text` node with `role: status` and a
+    // `status.down` colour token validated clean — colour as the only channel,
+    // which is the one thing FR-015 exists to prevent.
+    if !has_label
+        && let Some(role) = &node.semantics.role
+        && matches!(role, Role::Status | Role::Progress)
+    {
+        push(Violation::StatusRoleWithoutLabel {
+            role: role.as_wire(),
+        });
     }
 
     if !node.kind.is_container() && !node.children.is_empty() {
@@ -438,8 +471,8 @@ fn is_style_literal(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Registry, Violation, validate};
-    use crate::tree::node::{Interaction, NodeKind, Role, ViewNode};
+    use super::{Registry, TreeError, Violation, validate};
+    use crate::tree::node::{Interaction, NodeKind, Role, Semantics, ViewNode};
     use crate::tree::props::{Anchor, Edge, Layer, Props, TrackSize};
 
     fn stack(key: &str) -> ViewNode {
@@ -635,6 +668,103 @@ mod tests {
 
     /// Violations are reported for the whole tree, not just the first one, so
     /// one run of the gate names every fix.
+    /// The hole FR-015 had. A status readout is not interactive, so the
+    /// role-and-label check above skipped it entirely, and a node whose only
+    /// state channel was a `status.down` colour token passed acceptance.
+    #[test]
+    fn a_status_role_without_a_label_is_refused_even_though_it_is_not_interactive() {
+        let node = ViewNode::new(NodeKind::Text, "health").with_semantics(Semantics {
+            role: Some(Role::Status),
+            ..Semantics::default()
+        });
+        assert!(
+            !node.is_interactive(),
+            "the test is only meaningful if the interactive check does not \
+             already cover this node"
+        );
+        let errors = validate(&node, &Registry::default()).unwrap_err();
+        assert_eq!(
+            errors.0,
+            vec![TreeError {
+                path: "/health".to_string(),
+                violation: Violation::StatusRoleWithoutLabel {
+                    role: "status".to_string()
+                },
+            }]
+        );
+        assert!(
+            errors
+                .to_string()
+                .contains("colour is the only channel left"),
+            "the message must say why, not just what: {errors}"
+        );
+    }
+
+    /// Whitespace is not a text channel, the same way it is not a label for an
+    /// interactive node.
+    #[test]
+    fn a_whitespace_only_status_label_does_not_count() {
+        let node = ViewNode::new(NodeKind::Text, "health").with_semantics(Semantics {
+            role: Some(Role::Status),
+            label: Some("  \t ".to_string()),
+            ..Semantics::default()
+        });
+        let errors = validate(&node, &Registry::default()).unwrap_err();
+        assert_eq!(
+            errors.0[0].violation,
+            Violation::StatusRoleWithoutLabel {
+                role: "status".to_string()
+            }
+        );
+    }
+
+    /// `progress` carries the same obligation for the same reason: a bar whose
+    /// only signal is how much of it is painted a particular colour.
+    #[test]
+    fn progress_carries_the_same_obligation_as_status() {
+        let node = ViewNode::new(NodeKind::Custom, "bar")
+            .with_props(Props {
+                custom_kind: Some("bar".to_string()),
+                ..Props::default()
+            })
+            .with_semantics(Semantics {
+                role: Some(Role::Progress),
+                ..Semantics::default()
+            });
+        let mut registry = Registry::default();
+        registry.register_custom_kind("bar");
+        let errors = validate(&node, &registry).unwrap_err();
+        assert_eq!(
+            errors.0[0].violation,
+            Violation::StatusRoleWithoutLabel {
+                role: "progress".to_string()
+            }
+        );
+    }
+
+    /// The accepting case, so the check cannot be satisfied by refusing
+    /// everything.
+    #[test]
+    fn a_labelled_status_is_accepted() {
+        let node = ViewNode::new(NodeKind::Text, "health").with_semantics(Semantics {
+            role: Some(Role::Status),
+            label: Some("Down".to_string()),
+            ..Semantics::default()
+        });
+        validate(&node, &Registry::default()).unwrap();
+    }
+
+    /// Roles that are not status-bearing keep working without a label — the
+    /// check must not quietly become "every node needs a label".
+    #[test]
+    fn a_non_status_role_still_needs_no_label() {
+        let node = ViewNode::new(NodeKind::Text, "heading").with_semantics(Semantics {
+            role: Some(Role::Label),
+            ..Semantics::default()
+        });
+        validate(&node, &Registry::default()).unwrap();
+    }
+
     #[test]
     fn every_violation_is_reported_in_pre_order() {
         let mut bad_a = ViewNode::new(NodeKind::Input, "a");

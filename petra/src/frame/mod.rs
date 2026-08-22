@@ -130,10 +130,20 @@ impl FrameCounter {
 
 /// Negotiate `tree` against `viewport` and produce a frame with an identity.
 ///
-/// The root is offered the viewport exactly; what it answers is what it takes,
-/// and it is placed at the origin. A root that asks for more than the viewport
-/// is placed at its own size and clipped — the overflow is visible in the
-/// placements rather than silently absorbed.
+/// The root is offered the viewport exactly and **placed into the viewport**,
+/// whatever it answers. `measure` stays honest — a root whose minimums do not
+/// fit answers with what it actually needs, and `crate::layout::stack` has a
+/// test pinning that it does not clamp — but placement is where the budget is
+/// enforced, so the root is handed the real window and concedes into it.
+///
+/// This was the other way round at first: the slot was built from the root's
+/// own response. Two things followed, and both were wrong. A root asking for
+/// more than the window was placed oversized and clipped, so
+/// `place` saw `wanted == available`, never called `concede`, and the whole
+/// FR-005 concession order was unreachable at the top level — the one place a
+/// window is guaranteed to be a hard budget. And a root answering *smaller*
+/// than the window did not fill it: an app whose root is a stack around one
+/// short label rendered as a narrow column against the left edge.
 pub fn petrify(
     seq: u64,
     tree: &ViewNode,
@@ -146,10 +156,13 @@ pub fn petrify(
         horizontal: Proposal::Exact(viewport.size.w),
         vertical: Proposal::Exact(viewport.size.h),
     };
-    let taken = crate::layout::measure(tree, ctx, &mut path, offer);
+    // The measure pass still runs: it populates the measurement cache that
+    // `place` reads back, and skipping it would make every container
+    // re-negotiate from scratch during placement.
+    let _ = crate::layout::measure(tree, ctx, &mut path, offer);
     let viewport_rect = Rect::new(0.0, 0.0, viewport.size.w, viewport.size.h);
     let slot = Slot {
-        rect: Rect::new(0.0, 0.0, taken.w, taken.h),
+        rect: viewport_rect,
         z: 0,
         clip: viewport_rect,
         opacity: 1.0,
@@ -174,7 +187,95 @@ pub fn petrify(
 
 #[cfg(test)]
 mod tests {
-    use super::{FrameCounter, TransitionActivity};
+    use super::{FrameCounter, TransitionActivity, Viewport, petrify};
+    use crate::geom::Size;
+    use crate::testing::{Harness, MonoContent, NoRows};
+    use crate::token::ThemeMode;
+    use crate::tree::{AxisConstraint, Constraints, NodeKind, Props, ViewNode};
+
+    fn frame_of(tree: &ViewNode, w: f32, h: f32) -> super::PetrifiedFrame {
+        let mut harness = Harness::with(MonoContent::default(), NoRows);
+        petrify(
+            1,
+            tree,
+            &mut harness.ctx(),
+            Viewport::new(Size::new(w, h), ThemeMode::Dark),
+            TransitionActivity::default(),
+        )
+    }
+
+    fn text(key: &str, body: &str) -> ViewNode {
+        ViewNode::new(NodeKind::Text, key).with_props(Props {
+            text: Some(body.to_string()),
+            ..Props::default()
+        })
+    }
+
+    /// A root that wants less than the window still gets the window.
+    ///
+    /// The slot used to be built from the root's own response, so an app whose
+    /// root was a stack around one short label rendered in a column as wide as
+    /// that label, hard against the left edge, with the rest of the window
+    /// blank. Nothing asserted the root rect, so nothing noticed.
+    #[test]
+    fn a_root_smaller_than_the_window_still_fills_it() {
+        let tree = ViewNode::new(NodeKind::Stack, "root").child(text("t", "hi"));
+        let frame = frame_of(&tree, 800.0, 600.0);
+        let root = &frame.placements[0];
+        assert_eq!(root.id, "/root");
+        assert_eq!(
+            (root.rect.x, root.rect.y, root.rect.w, root.rect.h),
+            (0.0, 0.0, 800.0, 600.0),
+            "the root is the window, not its own preferred size"
+        );
+    }
+
+    /// A root that wants more than the window concedes into it.
+    ///
+    /// With the slot taken from the root's response, `place` saw
+    /// `wanted == available`, so `concede` never ran and the overflow was
+    /// clipped with no truncation flag anywhere — FR-005's concession order was
+    /// unreachable at the top level, which is the one place the budget is
+    /// genuinely hard.
+    #[test]
+    fn a_root_larger_than_the_window_concedes_into_it_and_says_so() {
+        let tall = Constraints {
+            vertical: AxisConstraint {
+                min: Some(400.0),
+                ..AxisConstraint::default()
+            },
+            ..Constraints::default()
+        };
+        let tree = ViewNode::new(NodeKind::Stack, "root")
+            .with_props(Props {
+                axis: Some(crate::geom::Axis::Vertical),
+                ..Props::default()
+            })
+            .child(ViewNode::new(NodeKind::Spacer, "a").with_constraints(tall))
+            .child(ViewNode::new(NodeKind::Spacer, "b").with_constraints(tall));
+
+        let frame = frame_of(&tree, 300.0, 200.0);
+        let root = &frame.placements[0];
+        assert_eq!(
+            (root.rect.w, root.rect.h),
+            (300.0, 200.0),
+            "the root is clamped to the window it was given"
+        );
+        assert!(
+            root.paint.truncated,
+            "800 units of declared minimum in a 200-unit window must be \
+             reported as truncated, not clipped in silence: {:?}",
+            root.paint
+        );
+        for p in &frame.placements {
+            assert!(
+                p.rect.bottom() <= 200.0 + 1e-3,
+                "{} runs to {} in a 200-unit window",
+                p.id,
+                p.rect.bottom()
+            );
+        }
+    }
 
     #[test]
     fn sequence_numbers_start_at_one_and_never_repeat() {

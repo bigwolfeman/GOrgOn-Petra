@@ -9,8 +9,8 @@
 use std::collections::BTreeSet;
 
 use egui::{Color32, Painter, Rgba, Stroke};
-use gorgon_petra::frame::{PaintContent, PetrifiedFrame, Placement};
-use gorgon_petra::geom::Rect as PetraRect;
+use gorgon_petra::frame::{PaintContent, PetrifiedFrame, Placement, round_rect};
+use gorgon_petra::geom::{Rect as PetraRect, Scale};
 use gorgon_petra::layout::TextRequest;
 use gorgon_petra::token::{ThemeSnapshot, TokenName, TokenValue};
 
@@ -22,6 +22,12 @@ pub const BACKGROUND_SLOT: &str = "background";
 pub const BORDER_SLOT: &str = "border";
 /// Token slot used for a node's text.
 pub const FOREGROUND_SLOT: &str = "foreground";
+
+/// Every token slot this painter knows how to use. Anything else a node binds
+/// lands in [`PaintReport::unknown_slots`] rather than being dropped on the
+/// floor — the shipped vocabulary already declares `shape.*` tokens that
+/// nothing here consumes.
+const KNOWN_SLOTS: &[&str] = &[BACKGROUND_SLOT, BORDER_SLOT, FOREGROUND_SLOT];
 /// Token consulted for text with no declared `foreground`.
 pub const DEFAULT_TEXT_TOKEN: &str = "text.primary";
 
@@ -57,12 +63,35 @@ impl ColorSource for ThemeSnapshot {
 /// digest hashes placements, not pixels, so a placement that never reached a
 /// painter leaves every gate green and the picture wrong; this report is how
 /// the host notices.
+///
+/// The first version of this struct counted `visited`, incremented
+/// unconditionally at the top of the paint loop over a list zipped from two
+/// vectors that are always pushed together — so `is_complete()` returned
+/// `true` in every reachable pass, while this doc comment, the crate's
+/// invariant companion, and an Agent Note all said it detected an undrawn
+/// panel. The categories below exist so the question "did this placement
+/// actually produce anything?" has an answer that can be *no*:
+///
+/// * `drawn` — emitted at least one shape.
+/// * `skipped_clipped` — clipped to nothing, which is the correct outcome for
+///   a node scrolled out of view or behind a closed surface.
+/// * `empty` — declared no paint content at all. A bare `Stack` is a position
+///   for its children and nothing else; it is not a failure.
+/// * `silent` — **declared content and emitted nothing**. This is the failure
+///   the accounting is for: an image with no loader, a custom kind with no
+///   painter, or a fill whose token did not resolve.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PaintReport {
     /// Placements in the frame.
     pub placements: usize,
-    /// Placements the pass visited.
-    pub visited: usize,
+    /// Placements that emitted at least one shape.
+    pub drawn: usize,
+    /// Placements clipped to nothing, deliberately not drawn.
+    pub skipped_clipped: usize,
+    /// Placements that declared nothing to paint.
+    pub empty: usize,
+    /// Placements that declared content and emitted nothing.
+    pub silent: usize,
     /// Filled rects drawn.
     pub fills: usize,
     /// Text runs drawn.
@@ -71,14 +100,40 @@ pub struct PaintReport {
     pub unresolved_tokens: BTreeSet<String>,
     /// Content kinds this pass has no painter for, sorted.
     pub undrawn: BTreeSet<String>,
+    /// Token slots this pass does not know how to use, sorted. A node binding
+    /// `radius` gets square corners today; without this set it would get them
+    /// silently, and the report would read clean.
+    pub unknown_slots: BTreeSet<String>,
+    /// The frame's placement and content arrays disagreed in length. They are
+    /// public fields on [`gorgon_petra::frame::PetrifiedFrame`] and are zipped
+    /// to pair them, and a zip silently truncates to the shorter of the two —
+    /// so the tail would vanish from the picture with nothing to show for it.
+    pub desynced: bool,
 }
 
 impl PaintReport {
-    /// Whether every placement in the frame was visited.
+    /// Whether the pass accounted for every placement and left none silent.
+    ///
+    /// Note what this deliberately is *not*: a count of placements the loop
+    /// touched. That number is a function of the loop, not of the drawing, and
+    /// asserting on it proved exactly nothing.
     #[must_use]
     pub fn is_complete(&self) -> bool {
-        self.visited == self.placements
+        !self.desynced
+            && self.silent == 0
+            && self.drawn + self.skipped_clipped + self.empty == self.placements
     }
+}
+
+/// What one placement produced.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Outcome {
+    /// Emitted at least one shape.
+    Drawn,
+    /// Declared nothing to paint.
+    Empty,
+    /// Declared content and emitted nothing.
+    Silent,
 }
 
 /// Draw `frame` into `painter`.
@@ -94,20 +149,30 @@ pub fn paint_frame(
 ) -> PaintReport {
     let mut report = PaintReport {
         placements: frame.placements.len(),
+        // `paint_pairs` zips, and a zip truncates rather than complaining, so
+        // the mismatch has to be caught here or it is never caught at all.
+        desynced: frame.placements.len() != frame.content.len(),
         ..PaintReport::default()
     };
+    let scale = frame.viewport.scale;
     for (placement, content) in frame.paint_pairs() {
-        report.visited += 1;
-        let clip = to_egui(placement.clip);
+        let clip = to_egui_snapped(placement.clip, scale);
         if !clip.is_positive() {
             // Clipped to nothing: the node is scrolled out or behind a closed
-            // surface. Counted as visited — it was considered, and skipping the
-            // draw is the correct outcome, not a lost placement.
+            // surface. Skipping the draw is the correct outcome here, not a
+            // lost placement — but it is counted in its own bucket rather than
+            // folded in with the drawn ones, so "nothing was painted this
+            // frame because everything was clipped" stays visible.
+            report.skipped_clipped += 1;
             continue;
         }
         let mut p = painter.with_clip_rect(clip);
         p.set_opacity(placement.opacity.clamp(0.0, 1.0));
-        paint_one(&p, placement, content, shaper, colors, &mut report);
+        match paint_one(&p, placement, content, shaper, colors, scale, &mut report) {
+            Outcome::Drawn => report.drawn += 1,
+            Outcome::Empty => report.empty += 1,
+            Outcome::Silent => report.silent += 1,
+        }
     }
     report
 }
@@ -118,15 +183,27 @@ fn paint_one(
     content: &PaintContent,
     shaper: &mut GalleyShaper,
     colors: &dyn ColorSource,
+    scale: Scale,
     report: &mut PaintReport,
-) {
-    let rect = to_egui(placement.rect);
+) -> Outcome {
+    let rect = to_egui_snapped(placement.rect, scale);
+    let mut shapes = 0_usize;
+
+    // Every slot this painter does not understand is recorded by name. A node
+    // binding `radius` to `shape.corner-lg` gets square corners today; the
+    // point of the set is that it does not get them silently.
+    for slot in content.tokens.keys() {
+        if !KNOWN_SLOTS.contains(&slot.as_str()) {
+            report.unknown_slots.insert(slot.clone());
+        }
+    }
 
     if let Some(token) = content.tokens.get(BACKGROUND_SLOT) {
         match colors.color(token) {
             Some(color) => {
                 painter.rect_filled(rect, 0.0, color);
                 report.fills += 1;
+                shapes += 1;
             }
             None => {
                 report.unresolved_tokens.insert(token.clone());
@@ -137,6 +214,7 @@ fn paint_one(
         match colors.color(token) {
             Some(color) => {
                 painter.rect_stroke(rect, 0.0, Stroke::new(1.0, color), egui::StrokeKind::Inside);
+                shapes += 1;
             }
             None => {
                 report.unresolved_tokens.insert(token.clone());
@@ -165,6 +243,7 @@ fn paint_one(
         });
         painter.galley(rect.min, galley, color);
         report.texts += 1;
+        shapes += 1;
     }
 
     if content.image.is_some() {
@@ -173,48 +252,139 @@ fn paint_one(
     if let Some(name) = &content.custom {
         report.undrawn.insert(format!("custom:{name}"));
     }
+
+    if content.is_empty() {
+        // Nothing was declared, so nothing missing. A `Stack` is a position
+        // for its children; it is not supposed to paint.
+        Outcome::Empty
+    } else if shapes > 0 {
+        Outcome::Drawn
+    } else {
+        // Content was declared and the pass emitted nothing for it. This is
+        // the state the accounting exists to name.
+        Outcome::Silent
+    }
 }
 
-fn to_egui(rect: PetraRect) -> egui::Rect {
+/// A logical rect snapped to the same device-pixel grid the digest hashes.
+///
+/// This is the function that makes `contracts/frame-identity.md`'s "the SAME
+/// rounding the renderer uses" true. It was not true before: the digest called
+/// [`round_rect`] and the painter handed egui the raw logical rect, letting
+/// egui's tessellator round it its own way at its own time. The two agree at
+/// scale 1.0 and were never checked anywhere else, so the digest described a
+/// device-pixel frame that nothing had painted.
+///
+/// The snap happens here rather than in the engine because the engine has no
+/// business knowing about pixels: `Placement::rect` stays logical, one rounding
+/// rule is applied to it in exactly two places, and both places call the same
+/// function. Converting back to logical (`device / scale`) hands egui a value
+/// that is already on the grid, so its own rounding is a no-op rather than a
+/// second, different opinion.
+fn to_egui_snapped(rect: PetraRect, scale: Scale) -> egui::Rect {
+    let d = round_rect(rect, scale);
+    let f = scale.factor();
+    #[allow(clippy::cast_precision_loss)]
     egui::Rect::from_min_size(
-        egui::pos2(rect.x, rect.y),
-        egui::vec2(rect.w.max(0.0), rect.h.max(0.0)),
+        egui::pos2(d.x as f32 / f, d.y as f32 / f),
+        egui::vec2(d.w as f32 / f, d.h as f32 / f),
     )
 }
 
-/// Prove the paint accounting can detect a skipped placement.
+/// Prove the paint accounting can detect a placement that painted nothing.
 ///
-/// Called by this crate's invariant companion. The accounting only earns its
-/// keep if an incomplete pass reports incomplete, so that is what is asserted
-/// rather than that a complete one reports complete.
+/// Called by this crate's invariant companion. This runs a **real**
+/// [`paint_frame`] over a real petrified frame, which is the whole point: the
+/// version this replaced asserted on two hand-written `PaintReport` literals,
+/// so it proved that `2 != 3` and nothing whatsoever about the paint pass. The
+/// accounting only earns its keep if a pass that drops content reports it, so
+/// that is what is exercised here.
+///
+/// # Panics
+/// Panics when a frame whose only content is an image — which this crate has
+/// no loader for — still reports as a complete pass.
 pub fn verify_paint_accounting() {
-    let complete = PaintReport {
-        placements: 3,
-        visited: 3,
-        ..PaintReport::default()
-    };
-    assert!(
-        complete.is_complete(),
-        "gorgon-petra-egui: a pass that visited every placement must read as complete"
+    use gorgon_petra::frame::{TransitionActivity, Viewport, petrify};
+    use gorgon_petra::geom::Size;
+    use gorgon_petra::testing::{Harness, NoRows};
+    use gorgon_petra::token::{ThemeMode, ThemeSnapshot, dark};
+    use gorgon_petra::tree::{NodeKind, Props, ViewNode};
+
+    let ctx = egui::Context::default();
+    // egui accumulates font-atlas deltas that something is expected to
+    // consume. Nothing here presents a frame, so each pass is explicitly
+    // dropped without applying them; otherwise egui panics on teardown.
+    ctx.run_ui(egui::RawInput::default(), |_| {})
+        .drop_without_applying_deltas();
+
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Background,
+        egui::Id::new("petra-invariant"),
+    ));
+    let viewport = Viewport::new(Size::new(120.0, 60.0), ThemeMode::Dark);
+    let theme = ThemeSnapshot::new(dark(), 1);
+
+    // An image node declares content and this crate has no image loader, so
+    // the pass must emit nothing for it and must say so.
+    let tree = ViewNode::new(NodeKind::Image, "logo").with_props(Props {
+        image: Some("logo.png".into()),
+        ..Props::default()
+    });
+    let mut harness = Harness::with(GalleyShaper::new(ctx.clone()), NoRows);
+    let frame = petrify(
+        1,
+        &tree,
+        &mut harness.ctx(),
+        viewport,
+        TransitionActivity::default(),
     );
-    let dropped = PaintReport {
-        placements: 3,
-        visited: 2,
-        ..PaintReport::default()
-    };
-    assert!(
-        !dropped.is_complete(),
-        "gorgon-petra-egui: a pass that dropped a placement must not read as complete; \
-         the digest cannot see a missing panel, so this accounting is what does"
+    let mut shaper = GalleyShaper::new(ctx.clone());
+    let report = paint_frame(&painter, &frame, &mut shaper, &theme);
+
+    assert_eq!(
+        report.silent, 1,
+        "gorgon-petra-egui: a placement that declared content and painted \
+         nothing must be counted as silent, not as visited: {report:?}"
     );
+    assert!(
+        !report.is_complete(),
+        "gorgon-petra-egui: a pass that dropped a placement must not read as \
+         complete; the digest cannot see a missing panel, so this accounting \
+         is what does: {report:?}"
+    );
+
+    // And the other direction, so the accounting cannot earn a pass by
+    // calling every frame incomplete.
+    let drawn = ViewNode::new(NodeKind::Text, "label").with_props(Props {
+        text: Some("ok".into()),
+        ..Props::default()
+    });
+    let frame = petrify(
+        2,
+        &drawn,
+        &mut harness.ctx(),
+        viewport,
+        TransitionActivity::default(),
+    );
+    let report = paint_frame(&painter, &frame, &mut shaper, &theme);
+    assert!(
+        report.is_complete() && report.drawn == 1,
+        "gorgon-petra-egui: a frame whose text was painted must read as \
+         complete: {report:?}"
+    );
+
+    ctx.run_ui(egui::RawInput::default(), |_| {})
+        .drop_without_applying_deltas();
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ColorSource, PaintReport, paint_frame, verify_paint_accounting};
+    use super::{ColorSource, paint_frame, to_egui_snapped, verify_paint_accounting};
     use egui::{Color32, Context, Id, LayerId, Order, RawInput};
+    use gorgon_petra::frame::round_rect;
     use gorgon_petra::frame::{TransitionActivity, Viewport, petrify};
     use gorgon_petra::geom::Size;
+    use gorgon_petra::geom::{Rect as PetraRect, Scale};
     use gorgon_petra::testing::Harness;
     use gorgon_petra::token::{ThemeMode, ThemeSnapshot, dark};
     use gorgon_petra::tree::{NodeKind, Props, ViewNode};
@@ -322,6 +492,12 @@ mod tests {
 
     /// Content this crate cannot draw yet is named rather than left as an
     /// unexplained blank.
+    ///
+    /// This test used to assert `report.is_complete()` on exactly this frame —
+    /// it encoded the bug it was standing next to, since a frame whose only
+    /// content could not be drawn is the definition of an incomplete pass. The
+    /// assertion is inverted now; `undrawn` still names what was missing, which
+    /// was the half it always got right.
     #[test]
     fn undrawable_content_is_named() {
         let host = Headless::new();
@@ -335,7 +511,11 @@ mod tests {
         let frame = frame_of(&node, &mut h);
         let mut shaper = host.shaper();
         let report = paint_frame(&host.painter(), &frame, &mut shaper, &snapshot());
-        assert!(report.is_complete());
+        assert!(
+            !report.is_complete(),
+            "a frame whose only content could not be drawn is not a complete \
+             pass: {report:?}"
+        );
         assert_eq!(
             report
                 .undrawn
@@ -367,16 +547,130 @@ mod tests {
         assert_ne!(snap.color("surface.base"), Some(Color32::PLACEHOLDER));
     }
 
+    /// The claim `contracts/frame-identity.md` makes about rounding, checked
+    /// rather than asserted: what the painter hands egui must land on exactly
+    /// the device-pixel grid the digest hashed. Before this, the digest called
+    /// `round_rect` and the painter did not call anything — the two agreed at
+    /// scale 1.0 and were unverified everywhere else.
+    #[test]
+    fn the_painter_lands_on_the_same_device_grid_the_digest_hashes() {
+        for factor in [1.0_f32, 1.25, 1.5, 2.0] {
+            let scale = Scale::new(factor).unwrap();
+            for rect in [
+                PetraRect::new(0.0, 0.0, 100.0, 24.0),
+                PetraRect::new(0.4, 12.3, 33.7, 9.9),
+                PetraRect::new(-8.5, -0.5, 17.0, 1.0),
+            ] {
+                let device = round_rect(rect, scale);
+                let painted = to_egui_snapped(rect, scale);
+                assert_eq!(
+                    (
+                        (painted.min.x * factor).round() as i32,
+                        (painted.min.y * factor).round() as i32,
+                        (painted.width() * factor).round() as i32,
+                        (painted.height() * factor).round() as i32,
+                    ),
+                    (device.x, device.y, device.w, device.h),
+                    "scale {factor} rect {rect:?}"
+                );
+            }
+        }
+    }
+
+    /// Adjacent rows must still tile after the painter's conversion back to
+    /// logical units. This is the property edge-rounding exists for, checked on
+    /// the values the painter actually emits rather than on `round_rect` alone.
+    #[test]
+    fn adjacent_painted_rows_share_an_edge_at_fractional_scale() {
+        for factor in [1.25_f32, 1.5, 1.75] {
+            let scale = Scale::new(factor).unwrap();
+            let mut previous_bottom: Option<f32> = None;
+            for i in 0..8_u8 {
+                let row = PetraRect::new(0.0, f32::from(i) * 20.5, 80.0, 20.5);
+                let painted = to_egui_snapped(row, scale);
+                if let Some(bottom) = previous_bottom {
+                    assert!(
+                        (painted.min.y - bottom).abs() < 1e-4,
+                        "row {i} at scale {factor} starts at {} but the row \
+                         above ended at {bottom}: that gap is a visible seam",
+                        painted.min.y
+                    );
+                }
+                previous_bottom = Some(painted.max.y);
+            }
+        }
+    }
+
     #[test]
     fn the_accounting_detects_a_dropped_placement() {
         verify_paint_accounting();
-        assert!(
-            !PaintReport {
-                placements: 1,
-                visited: 0,
-                ..PaintReport::default()
-            }
-            .is_complete()
+    }
+
+    /// A node that declares content this crate cannot draw must be counted as
+    /// silent, and the frame must read as incomplete. Before this, an image
+    /// landed in `undrawn` while the pass still reported every placement
+    /// visited and complete.
+    #[test]
+    fn a_placement_that_declares_content_and_paints_nothing_is_not_complete() {
+        let host = Headless::new();
+        let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
+        let tree = ViewNode::new(NodeKind::Stack, "root").child(
+            ViewNode::new(NodeKind::Image, "logo").with_props(Props {
+                image: Some("logo.png".into()),
+                ..Props::default()
+            }),
         );
+        let frame = frame_of(&tree, &mut h);
+        let mut shaper = host.shaper();
+        let report = paint_frame(&host.painter(), &frame, &mut shaper, &snapshot());
+
+        assert_eq!(report.silent, 1, "the image painted nothing: {report:?}");
+        assert_eq!(report.empty, 1, "the bare stack declares nothing to paint");
+        assert!(!report.is_complete(), "{report:?}");
+        assert!(report.undrawn.contains("image"), "{report:?}");
+    }
+
+    /// A token slot no painter consumes is named rather than dropped. The
+    /// shipped vocabulary declares `shape.*` tokens and nothing here reads
+    /// them, so a node asking for rounded corners gets square ones — that is
+    /// allowed to be true, and not allowed to be silent.
+    #[test]
+    fn a_token_slot_this_painter_does_not_know_is_recorded() {
+        let host = Headless::new();
+        let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
+        let mut props = Props {
+            text: Some("hi".into()),
+            ..Props::default()
+        };
+        props
+            .tokens
+            .insert("radius".into(), "shape.corner-lg".into());
+        let frame = frame_of(
+            &ViewNode::new(NodeKind::Text, "t").with_props(props),
+            &mut h,
+        );
+        let mut shaper = host.shaper();
+        let report = paint_frame(&host.painter(), &frame, &mut shaper, &snapshot());
+
+        assert!(report.unknown_slots.contains("radius"), "{report:?}");
+        // The text still painted, so the placement is drawn, not silent — the
+        // unknown slot is a gap in the painter, not a lost placement.
+        assert_eq!(report.drawn, 1, "{report:?}");
+    }
+
+    /// The two arrays are public fields on `PetrifiedFrame`, they are zipped
+    /// to pair them, and a zip truncates in silence. A frame whose tail has no
+    /// content would simply stop being painted.
+    #[test]
+    fn a_frame_whose_arrays_disagree_in_length_is_not_complete() {
+        let host = Headless::new();
+        let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
+        let mut frame = frame_of(&tree(), &mut h);
+        frame.content.pop();
+        let mut shaper = host.shaper();
+        let report = paint_frame(&host.painter(), &frame, &mut shaper, &snapshot());
+
+        assert!(report.desynced, "{report:?}");
+        assert!(!report.is_complete(), "{report:?}");
     }
 }

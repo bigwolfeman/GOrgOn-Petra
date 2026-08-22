@@ -17,14 +17,16 @@ crate and a contract disagree, the contract wins.
 
 ## Known Limitations and Deferred Work
 
-- The container modules under `src/layout/` are signatures only at the moment
-  the scaffold landed: `stack`, `grid`, `overlay`, `scroll`, `overlay_surface`,
-  `text`, and `constraints` panic with a `PETRA_UNIMPLEMENTED` marker naming
-  their task. Nothing calls them successfully until those tasks land, and the
-  marker is what a grep finds.
-- `src/anim/`, `src/focus/`, and `src/semantic/` are module headers with no
-  code (tasks T022, T027, T048-T055). Transitions, focus traversal, and the
-  semantic projection do not exist yet.
+- `src/anim/` and `src/semantic/` are module headers with no code (tasks
+  T027, T048-T055). Transitions and the semantic projection do not exist yet.
+- `src/focus/` is implemented but **not wired to any host**. Nothing outside
+  the module constructs a `FocusTree`, and `LayoutState::focused` is written
+  only by tests, so keyboard traversal does not happen in a running
+  application yet (tasks T030, T041). FR-025 should not be read as met.
+- `Anchor::Node` resolves the same way `Anchor::Viewport` does. The surface is
+  anchored to the viewport rather than to the named node, and
+  `overlay_surface::resolve_anchor_kind` says so rather than pretending
+  otherwise.
 - The digest covers placements and paint state, never pixels. Pixel-level
   agreement between desktop and web is the parity lane's job (SC-006), with a
   declared tolerance, and is not asserted here.

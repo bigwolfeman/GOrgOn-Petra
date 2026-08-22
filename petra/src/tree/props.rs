@@ -164,6 +164,13 @@ pub struct Props {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub row_spacing: Option<f32>,
     /// Extra logical extent materialized past each end of a scroll viewport.
+    ///
+    /// Declared on the **`collection`**, not on the `scroll` around it. The
+    /// collection is what decides which rows to materialize, and nothing in
+    /// the layout signature hands it its ancestor's props — so putting the
+    /// value here is the honest place for it until a scroll context is
+    /// threaded down (see `layout::scroll`). Declaring it on the `scroll` has
+    /// no effect.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overscan: Option<f32>,
     /// Total row count of a `collection`, including unmaterialized rows.
@@ -255,8 +262,6 @@ pub struct ScrollProps {
     /// The axis that scrolls. The other axis passes the parent's proposal
     /// through unchanged.
     pub axis: Axis,
-    /// Extra extent materialized past each end of the viewport.
-    pub overscan: f32,
 }
 
 /// Resolved `collection` parameters.
@@ -333,7 +338,6 @@ impl Props {
     pub fn scroll(&self) -> ScrollProps {
         ScrollProps {
             axis: self.axis.unwrap_or(Axis::Vertical),
-            overscan: self.overscan.unwrap_or(DEFAULT_OVERSCAN),
         }
     }
 
@@ -421,7 +425,7 @@ mod tests {
         let props = Props::default();
         assert_eq!(props.stack().axis, Axis::Vertical);
         assert_eq!(props.stack().spacing, 0.0);
-        assert_eq!(props.scroll().overscan, super::DEFAULT_OVERSCAN);
+        assert_eq!(props.scroll().axis, Axis::Vertical);
         assert!(props.collection().is_none());
         assert!(props.surface().is_none());
         assert_eq!(props.text().text, "");

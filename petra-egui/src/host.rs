@@ -180,9 +180,15 @@ impl<A: App> Host<A> {
         );
         debug_assert!(
             report.is_complete(),
-            "gorgon-petra-egui: {} of {} placements reached a painter",
-            report.visited,
-            report.placements
+            "a paint pass must account for every placement and leave none \
+             silent: {} drawn + {} clipped + {} empty + {} silent of {} \
+             placement(s), desynced={}",
+            report.drawn,
+            report.skipped_clipped,
+            report.empty,
+            report.silent,
+            report.placements,
+            report.desynced
         );
 
         self.schedule(ctx, &frame);

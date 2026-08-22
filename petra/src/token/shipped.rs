@@ -141,20 +141,30 @@ pub fn light() -> Theme {
         }),
     );
 
-    // Status colours: distinguishable in hue *and* lightness, on top of the
-    // shape/text channels the vocabulary already pairs them with — a
-    // colourblind reader is never left with hue as the only signal.
+    // Status colours. The values are chosen by measurement, not by taste:
+    // `status_colours_stay_apart_under_red_green_colour_blindness` simulates
+    // deuteranopia and protanopia and asserts a floor on the perceptual
+    // distance between every pair. Read that test before changing any of
+    // these three, because the constraint is not obvious — the pair that
+    // actually breaks is `degraded` vs `down`, not `ok` vs `down`, and the
+    // previous palette scored ΔE*ab 8.8 on it (indistinguishable) while a
+    // comment here claimed the colours were separated in lightness.
+    //
+    // Both are dark against a near-white surface, so all three have to fit
+    // between L* 0 and roughly L* 62 to clear 3:1 against the background;
+    // the separation therefore comes from spreading them across that band
+    // rather than from hue, which red-green colour blindness collapses.
     values.insert(
         name("status.ok"),
-        TokenValue::Color(ColorValue::from_srgb8(0x1e, 0x7d, 0x32, 0xff)),
+        TokenValue::Color(ColorValue::from_srgb8(0x40, 0x96, 0x88, 0xff)),
     );
     values.insert(
         name("status.degraded"),
-        TokenValue::Color(ColorValue::from_srgb8(0xb2, 0x6a, 0x00, 0xff)),
+        TokenValue::Color(ColorValue::from_srgb8(0xb8, 0x81, 0x00, 0xff)),
     );
     values.insert(
         name("status.down"),
-        TokenValue::Color(ColorValue::from_srgb8(0xb0, 0x00, 0x20, 0xff)),
+        TokenValue::Color(ColorValue::from_srgb8(0x49, 0x12, 0x15, 0xff)),
     );
 
     Theme::build(ThemeMode::Light, &vocab, values).expect("shipped light theme must be complete")
@@ -228,15 +238,15 @@ pub fn dark() -> Theme {
 
     values.insert(
         name("status.ok"),
-        TokenValue::Color(ColorValue::from_srgb8(0x4c, 0xaf, 0x50, 0xff)),
+        TokenValue::Color(ColorValue::from_srgb8(0x29, 0x8e, 0x86, 0xff)),
     );
     values.insert(
         name("status.degraded"),
-        TokenValue::Color(ColorValue::from_srgb8(0xff, 0xa7, 0x26, 0xff)),
+        TokenValue::Color(ColorValue::from_srgb8(0xff, 0xed, 0xa3, 0xff)),
     );
     values.insert(
         name("status.down"),
-        TokenValue::Color(ColorValue::from_srgb8(0xff, 0x52, 0x52, 0xff)),
+        TokenValue::Color(ColorValue::from_srgb8(0xf2, 0x1c, 0x0d, 0xff)),
     );
 
     Theme::build(ThemeMode::Dark, &vocab, values).expect("shipped dark theme must be complete")
@@ -246,6 +256,136 @@ pub fn dark() -> Theme {
 mod tests {
     use super::{dark, light, standard_vocabulary};
     use crate::token::ThemeMode;
+    use crate::token::name::TokenName;
+    use crate::token::value::{ColorValue, TokenValue};
+
+    /// The floor every pair of shipped status colours must clear, in CIE
+    /// ΔE*ab, after the frame is simulated through red-green colour
+    /// blindness. 30 is chosen as "two colours a reader will not confuse at a
+    /// glance"; for scale, the palette this replaced scored 5.5 in dark mode
+    /// and 8.8 in light, which is the same colour twice.
+    const MIN_STATUS_SEPARATION: f32 = 30.0;
+
+    /// The floor a status colour must clear against the surface it is painted
+    /// on, as a WCAG contrast ratio. Without this a palette could win the
+    /// separation test by being invisible in three different ways.
+    const MIN_SURFACE_CONTRAST: f32 = 3.0;
+
+    /// Viénot-Brettel-Mollon reduced matrices, applied to *linear* RGB.
+    /// Deuteranopia (no green cone) and protanopia (no red cone) are both
+    /// simulated because "red-green colour blind" covers both and they do not
+    /// collapse the same pairs.
+    const DEUTERANOPE: [[f32; 3]; 3] = [
+        [0.625, 0.375, 0.0],
+        [0.700, 0.300, 0.0],
+        [0.0, 0.300, 0.700],
+    ];
+    const PROTANOPE: [[f32; 3]; 3] = [
+        [0.1667, 0.8333, 0.0],
+        [0.1667, 0.8333, 0.0],
+        [0.0, 0.1667, 0.8333],
+    ];
+
+    fn simulate(c: ColorValue, m: &[[f32; 3]; 3]) -> [f32; 3] {
+        let v = [c.r, c.g, c.b];
+        std::array::from_fn(|i| (m[i][0] * v[0] + m[i][1] * v[1] + m[i][2] * v[2]).clamp(0.0, 1.0))
+    }
+
+    /// Linear sRGB to CIE L\*a\*b\* under D65, the space ΔE\*ab is defined in.
+    fn to_lab(v: [f32; 3]) -> [f32; 3] {
+        const M: [[f32; 3]; 3] = [
+            [0.412_456_4, 0.357_576_1, 0.180_437_5],
+            [0.212_672_9, 0.715_152_2, 0.072_175],
+            [0.019_333_9, 0.119_192, 0.950_304_1],
+        ];
+        const WHITE: [f32; 3] = [0.950_47, 1.0, 1.088_83];
+        let f: [f32; 3] = std::array::from_fn(|i| {
+            let t = (M[i][0] * v[0] + M[i][1] * v[1] + M[i][2] * v[2]) / WHITE[i];
+            if t > 0.008_856 {
+                t.cbrt()
+            } else {
+                7.787 * t + 16.0 / 116.0
+            }
+        });
+        [
+            116.0 * f[1] - 16.0,
+            500.0 * (f[0] - f[1]),
+            200.0 * (f[1] - f[2]),
+        ]
+    }
+
+    fn delta_e(a: [f32; 3], b: [f32; 3]) -> f32 {
+        let d: [f32; 3] = std::array::from_fn(|i| a[i] - b[i]);
+        (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+    }
+
+    fn relative_luminance(c: ColorValue) -> f32 {
+        0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b
+    }
+
+    fn contrast(a: ColorValue, b: ColorValue) -> f32 {
+        let (x, y) = (relative_luminance(a), relative_luminance(b));
+        (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    }
+
+    fn theme_color(theme: &crate::token::Theme, token: &str) -> ColorValue {
+        match theme.value(&TokenName::new(token).unwrap()).unwrap() {
+            TokenValue::Color(c) => *c,
+            other => panic!("{token} is not a colour: {other:?}"),
+        }
+    }
+
+    /// FR-015's colour channel, measured rather than asserted.
+    ///
+    /// This is the test the previous palette did not have, and its absence is
+    /// why a comment claiming the status colours were "distinguishable in hue
+    /// *and* lightness" survived while `degraded` and `down` were ΔE 5.5 apart
+    /// under deuteranopia — the same colour to the person this project is
+    /// built for.
+    ///
+    /// The shape and text channels are what actually carry status meaning
+    /// (see [`crate::token::status`]); this test does not make colour
+    /// sufficient on its own and is not trying to. It keeps colour from being
+    /// actively misleading, which is a lower bar and a real one.
+    #[test]
+    fn status_colours_stay_apart_under_red_green_colour_blindness() {
+        const STATUSES: [&str; 3] = ["status.ok", "status.degraded", "status.down"];
+        for (label, theme) in [("light", light()), ("dark", dark())] {
+            let surface = theme_color(&theme, "surface.raised");
+            let colors: Vec<ColorValue> = STATUSES.iter().map(|s| theme_color(&theme, s)).collect();
+
+            for (name, c) in STATUSES.iter().zip(&colors) {
+                let ratio = contrast(*c, surface);
+                assert!(
+                    ratio >= MIN_SURFACE_CONTRAST,
+                    "{label}/{name} is only {ratio:.2}:1 against surface.raised; \
+                     a status nobody can see is not a channel"
+                );
+            }
+
+            for (vision, matrix) in [("deuteranope", &DEUTERANOPE), ("protanope", &PROTANOPE)] {
+                let seen: Vec<[f32; 3]> = colors
+                    .iter()
+                    .map(|c| to_lab(simulate(*c, matrix)))
+                    .collect();
+                for i in 0..STATUSES.len() {
+                    for j in (i + 1)..STATUSES.len() {
+                        let d = delta_e(seen[i], seen[j]);
+                        assert!(
+                            d >= MIN_STATUS_SEPARATION,
+                            "{label}: {} and {} are only ΔE*ab {d:.1} apart to a \
+                             {vision} reader (floor is {MIN_STATUS_SEPARATION}); \
+                             the pair that breaks first is usually degraded/down, \
+                             because red-green colour blindness maps amber and red \
+                             onto each other — separate them in lightness, not hue",
+                            STATUSES[i],
+                            STATUSES[j],
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn the_shipped_light_theme_is_complete() {
