@@ -243,6 +243,7 @@ impl<C: ContentMeasure, R: RowSource> Harness<C, R> {
             theme_rev: self.theme_rev,
             scale: self.scale,
             scroll: ScrollStack::new(),
+            reuse: None,
         }
     }
 

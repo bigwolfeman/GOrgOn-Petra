@@ -14,6 +14,7 @@ pub mod leaf;
 pub mod overlay;
 pub mod overlay_surface;
 pub mod proposal;
+pub mod reuse;
 pub mod scroll;
 pub mod stack;
 pub mod text;
@@ -181,6 +182,10 @@ pub struct LayoutCtx<'a> {
     /// The `scroll` ancestors of wherever the walk currently is. Start it
     /// empty; the walk maintains it.
     pub scroll: ScrollStack,
+    /// The previous frame, when this pass is allowed to carry subtrees over
+    /// from it. `None` is a full negotiation, which is what every caller
+    /// outside [`crate::frame::petrify_with_memo`] wants.
+    pub reuse: Option<reuse::ReuseState<'a>>,
 }
 
 impl LayoutCtx<'_> {
@@ -340,13 +345,42 @@ pub fn place(
         Some(z) => slot.above(z),
         None => slot,
     };
+
+    // Can this whole subtree be carried over from the previous frame? The
+    // tests run cheapest-first, and the dirty scan runs last because it is
+    // the only one that has to build this node's id, which allocates. A pass
+    // with no memo skips all of it.
+    let counterpart = ctx
+        .reuse
+        .as_mut()
+        .and_then(|state| state.counterpart(&node.key));
+    if let (Some(state), Some((old_node, old_index))) = (ctx.reuse.as_ref(), counterpart)
+        && state.reusable(node, old_node, old_index, slot)
+        && !state.dirty(&path.id())
+    {
+        let sub = state.subtree(old_index);
+        let len = sub.placements.len();
+        sink.reuse_subtree(sub);
+        if let Some(state) = ctx.reuse.as_mut() {
+            state.note_reuse(len);
+        }
+        path.pop();
+        return;
+    }
     // Every container pushes its own placement before any child's, so the
     // index the dispatcher noted before the call is this node's. Attaching
     // here rather than inside each container means no container has to
     // remember to carry paint content, and the twelve kinds cannot drift
     // apart on what "carrying" means.
     let index = sink.len();
+    if let Some(state) = ctx.reuse.as_mut() {
+        state.note_replaced();
+        state.enter(counterpart);
+    }
     place_kind(node, ctx, path, slot, sink);
+    if let Some(state) = ctx.reuse.as_mut() {
+        state.leave();
+    }
     if sink.len() > index {
         debug_assert_eq!(
             sink.placed()[index].id,

@@ -178,6 +178,19 @@ pub trait PlacementSink {
     fn leave(&mut self);
     /// Placements recorded so far, in pre-order.
     fn placed(&self) -> &[Placement];
+    /// Re-emit a subtree taken unchanged from a previous frame, returning
+    /// the index its root landed at.
+    ///
+    /// The copy is byte-identical except for [`Placement::parent`], which
+    /// holds absolute indices and is rebased by the difference between where
+    /// the subtree sat and where it now sits. Rebasing is safe precisely
+    /// because `parent` is not hashed: it is redundant with `id`, which is
+    /// the full key path. Every other field — including the rect — carries
+    /// over untouched, which is sound only because placements hold *absolute*
+    /// geometry and the caller has already established that the slot offered
+    /// to this subtree is the same one it had.
+    fn reuse_subtree(&mut self, sub: SubtreeCopy<'_>) -> usize;
+
     /// Record the [`Slot`] the placement at `index` was offered.
     ///
     /// Called by the dispatcher once the node's whole subtree has been
@@ -238,6 +251,12 @@ pub struct PlacementList {
     /// rather than substituting a default, because a wrong slot in the memo
     /// is a stale subtree in some later frame.
     slots: Vec<Option<Slot>>,
+    /// The Merkle subtree hash for any placement that came in through
+    /// [`PlacementSink::reuse_subtree`], at the same index. `None` for a
+    /// placement this walk built, which must be hashed. Skipping the fold for
+    /// a reused subtree is the second half of what reuse buys: the first is
+    /// not building the placements, and this is not re-hashing them.
+    reused_hashes: Vec<Option<[u8; 32]>>,
     stack: Vec<usize>,
 }
 
@@ -321,6 +340,14 @@ impl PlacementList {
         &self.subtree_len
     }
 
+    /// Per-placement Merkle hashes already known from a previous frame, at
+    /// the same index as [`PlacementList::as_slice`]. `None` means "this walk
+    /// built it, hash it".
+    #[must_use]
+    pub fn reused_hashes(&self) -> &[Option<[u8; 32]>] {
+        &self.reused_hashes
+    }
+
     /// The slot noted for `index`, or `None` if the dispatcher has not
     /// reached it yet. Mid-walk this is genuinely `None` for every ancestor
     /// still on the stack, which is why it is not a `&[Slot]`.
@@ -340,6 +367,28 @@ impl PlacementList {
     pub fn is_empty(&self) -> bool {
         self.placements.is_empty()
     }
+}
+
+/// One subtree lifted from a previous frame, ready to be re-emitted.
+///
+/// Every slice is the same length and covers the same contiguous placement
+/// range, and `base` is the index that range started at in the frame it came
+/// from — needed because [`Placement::parent`] holds absolute indices and a
+/// copied subtree almost never lands at the same absolute position.
+#[derive(Clone, Copy, Debug)]
+pub struct SubtreeCopy<'a> {
+    /// The subtree's placements, in pre-order, root first.
+    pub placements: &'a [Placement],
+    /// Their paint payloads.
+    pub content: &'a [PaintContent],
+    /// Their subtree extents.
+    pub subtree_len: &'a [usize],
+    /// The slots they were offered.
+    pub slots: &'a [Slot],
+    /// Their Merkle subtree hashes.
+    pub hashes: &'a [[u8; 32]],
+    /// The index `placements[0]` sat at in the frame this came from.
+    pub base: usize,
 }
 
 /// Everything one placement walk produced, at equal length and equal index.
@@ -371,11 +420,50 @@ impl PlacementSink for PlacementList {
         self.subtree_len.push(1);
         // Noted by the dispatcher once this node's subtree is complete.
         self.slots.push(None);
+        // Built by this walk, so it has no inherited hash.
+        self.reused_hashes.push(None);
         self.placements.len() - 1
     }
 
     fn placed(&self) -> &[Placement] {
         &self.placements
+    }
+
+    fn reuse_subtree(&mut self, sub: SubtreeCopy<'_>) -> usize {
+        debug_assert_eq!(sub.placements.len(), sub.content.len());
+        debug_assert_eq!(sub.placements.len(), sub.subtree_len.len());
+        debug_assert_eq!(sub.placements.len(), sub.slots.len());
+        debug_assert_eq!(sub.placements.len(), sub.hashes.len());
+        let root = self.placements.len();
+        let parent_of_root = self.stack.last().copied();
+        for (offset, placement) in sub.placements.iter().enumerate() {
+            let mut copy = placement.clone();
+            copy.parent = if offset == 0 {
+                parent_of_root
+            } else {
+                // Inside the copied range every parent is also inside it, so
+                // the rebase is one shift. A parent outside the range would
+                // mean the caller handed over something that is not a subtree.
+                let old = placement
+                    .parent
+                    .expect("a non-root placement in a reused subtree must name a parent");
+                debug_assert!(
+                    old >= sub.base && old < sub.base + sub.placements.len(),
+                    "reused subtree is not self-contained: a placement names parent {old}, \
+                     outside [{}, {})",
+                    sub.base,
+                    sub.base + sub.placements.len()
+                );
+                Some(old - sub.base + root)
+            };
+            self.placements.push(copy);
+        }
+        self.content.extend_from_slice(sub.content);
+        self.subtree_len.extend_from_slice(sub.subtree_len);
+        self.slots.extend(sub.slots.iter().copied().map(Some));
+        self.reused_hashes
+            .extend(sub.hashes.iter().copied().map(Some));
+        root
     }
 
     fn note_slot(&mut self, index: usize, slot: Slot) {

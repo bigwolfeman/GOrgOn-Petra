@@ -366,6 +366,34 @@ pub fn empty_root_hash() -> [u8; 32] {
 /// later as an out-of-bounds panic with no context.
 #[must_use]
 pub fn subtree_hashes(scale: Scale, placements: &[Placement]) -> Vec<[u8; 32]> {
+    subtree_hashes_with(scale, placements, &[])
+}
+
+/// The same walk, but taking the hashes of subtrees carried over unchanged
+/// from a previous frame instead of recomputing them.
+///
+/// `known[i]`, when `Some`, is the subtree hash for placement `i`, already
+/// computed by the frame this subtree came from. The walk then skips both the
+/// leaf hash and the fold for that whole subtree, which is what makes the
+/// digest cost scale with the change rather than with the tree.
+///
+/// `known` may be shorter than `placements`, or empty: a missing entry means
+/// "not known", so a full walk passes `&[]`.
+///
+/// # Correctness
+/// A known hash is trusted, not checked, and that is the point — checking it
+/// would mean recomputing it. It is only ever `Some` for a subtree that
+/// [`crate::frame::placement::PlacementSink::reuse_subtree`] copied
+/// wholesale, and the copy is byte-identical in every hashed field, so the
+/// hash it came with is the hash this walk would have produced. The debug
+/// assertion in `petrify_with_memo` is what proves that claim rather than
+/// assuming it.
+#[must_use]
+pub fn subtree_hashes_with(
+    scale: Scale,
+    placements: &[Placement],
+    known: &[Option<[u8; 32]>],
+) -> Vec<[u8; 32]> {
     let n = placements.len();
     let mut children: Vec<Vec<usize>> = vec![Vec::new(); n];
     for (child_idx, p) in placements.iter().enumerate() {
@@ -381,6 +409,10 @@ pub fn subtree_hashes(scale: Scale, placements: &[Placement]) -> Vec<[u8; 32]> {
     }
     let mut hashes = vec![[0u8; 32]; n];
     for i in (0..n).rev() {
+        if let Some(known) = known.get(i).copied().flatten() {
+            hashes[i] = known;
+            continue;
+        }
         let leaf = leaf_hash(scale, &placements[i]);
         let child_hashes: Vec<[u8; 32]> = children[i].iter().map(|&c| hashes[c]).collect();
         hashes[i] = combine_subtree_hash(leaf, &child_hashes);

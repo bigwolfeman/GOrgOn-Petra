@@ -224,6 +224,7 @@ impl<A: App> Host<A> {
                 theme_rev: viewport.theme_rev,
                 scale: viewport.scale,
                 scroll: ScrollStack::new(),
+                reuse: None,
             };
             petrify(
                 self.counter.take(),

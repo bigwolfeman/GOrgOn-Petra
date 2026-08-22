@@ -10,7 +10,11 @@ pub mod placement;
 pub mod rounding;
 pub mod viewport;
 
+use std::collections::BTreeSet;
+use std::sync::Arc;
+
 use crate::geom::Rect;
+use crate::layout::reuse::{FrameMemo, ReuseState, ReuseStats};
 use crate::layout::{LayoutCtx, Proposal, SizeProposal, Slot};
 use crate::tree::{KeyPath, ViewNode};
 
@@ -179,6 +183,57 @@ impl FrameCounter {
     }
 }
 
+/// Negotiate `tree` against `viewport`, carrying over from `memo` every
+/// subtree that provably did not change, and report what was carried.
+///
+/// This is [`petrify`] with a previous frame to compare against. `dirty` is
+/// the set [`FrameMemo::dirty_ids`] derives from the host's [`ChangeSet`] and
+/// from the state the engine can diff for itself; it says *where* to look,
+/// and pointer identity then decides what may actually be kept. The design,
+/// including why both are needed, is
+/// `.agents/notes/proposed/architecture/2026-08-22-petra-incremental-frames.md`.
+///
+/// The frame this returns is byte-for-byte what [`petrify`] would have
+/// produced from the same tree — placements, paint payloads, subtree hashes
+/// and digest alike. `gorgon/petra/tests/incremental_frames.rs` asserts that
+/// equality directly rather than comparing digests, because a pass that
+/// reused nothing would match on the digest too.
+///
+/// A memo that cannot be used at all — a theme or scale change, or an empty
+/// previous frame — costs one comparison and then a full negotiation. There
+/// is no failure mode here that produces a wrong frame slowly; the failure
+/// mode is a correct frame at full price.
+pub fn petrify_with_memo<'a>(
+    seq: u64,
+    tree: &'a Arc<ViewNode>,
+    ctx: &mut LayoutCtx<'a>,
+    memo: &'a FrameMemo,
+    dirty: &'a BTreeSet<String>,
+    viewport: Viewport,
+    transitions: TransitionActivity,
+) -> (PetrifiedFrame, ReuseStats) {
+    // Theme and scale are inputs to every placement this crate produces:
+    // `PaintState::token_revision` carries the theme snapshot, and the scale
+    // decides the device rounding the digest hashes. Neither is visible in a
+    // node's identity or its slot, so a subtree can be pointer-identical and
+    // identically offered and still owe a different placement when either
+    // moves. There is no partial answer here — every placement is affected —
+    // so the whole memo is set aside and the frame is negotiated in full.
+    let reusable_at_all =
+        memo.theme_rev == ctx.theme_rev && memo.scale == ctx.scale && !memo.placements.is_empty();
+    if reusable_at_all {
+        ctx.reuse = Some(ReuseState::new(memo, dirty));
+    }
+    let frame = petrify(seq, tree, ctx, viewport, transitions);
+    let stats = ctx
+        .reuse
+        .as_ref()
+        .map(ReuseState::stats)
+        .unwrap_or_default();
+    ctx.reuse = None;
+    (frame, stats)
+}
+
 /// Negotiate `tree` against `viewport` and produce a frame with an identity.
 ///
 /// The root is offered the viewport exactly and **placed into the viewport**,
@@ -224,6 +279,7 @@ pub fn petrify(
         path.is_empty(),
         "the walk must leave the path as it found it"
     );
+    let reused_hashes = sink.reused_hashes().to_vec();
     let placed = sink.into_parts();
     let (placements, content, subtree_len, slots) = (
         placed.placements,
@@ -234,7 +290,7 @@ pub fn petrify(
     // Computed once: the array is what a reuse pass needs, and the root
     // entry is what the frame digest is built from — no reason to walk the
     // Merkle tree a second time to get the same root hash.
-    let subtree_hashes = digest::subtree_hashes(viewport.scale, &placements);
+    let subtree_hashes = digest::subtree_hashes_with(viewport.scale, &placements, &reused_hashes);
     let digest = digest::digest_from_root(&viewport, digest::root_hash_from(&subtree_hashes));
     let frame = PetrifiedFrame {
         seq,
