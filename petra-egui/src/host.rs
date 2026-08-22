@@ -28,7 +28,7 @@ use gorgon_petra::frame::{FrameCounter, PetrifiedFrame, TransitionActivity, View
 use gorgon_petra::geom::{Scale, Size};
 use gorgon_petra::input::{InputEvent, KeyCode, Route, route};
 use gorgon_petra::layout::overlay_surface::surface_scopes;
-use gorgon_petra::layout::{LayoutCtx, LayoutState, MeasureCache, RowSource};
+use gorgon_petra::layout::{LayoutCtx, LayoutState, MeasureCache, RowSource, ScrollStack};
 use gorgon_petra::token::Presenter;
 use gorgon_petra::tree::{InputPolicy, Interaction, NodeKind, Props, Registry, ViewNode, validate};
 
@@ -198,6 +198,7 @@ impl<A: App> Host<A> {
                 state: &self.state,
                 theme_rev: viewport.theme_rev,
                 scale: viewport.scale,
+                scroll: ScrollStack::new(),
             };
             petrify(
                 self.counter.take(),

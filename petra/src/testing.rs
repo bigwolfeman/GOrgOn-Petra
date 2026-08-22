@@ -16,8 +16,8 @@ use std::ops::Range;
 
 use crate::geom::{Scale, Size};
 use crate::layout::{
-    ContentMeasure, LayoutCtx, LayoutState, MeasureCache, RowSource, SizeProposal, TextMeasurement,
-    TextRequest,
+    ContentMeasure, LayoutCtx, LayoutState, MeasureCache, RowSource, ScrollStack, SizeProposal,
+    TextMeasurement, TextRequest,
 };
 use crate::tree::{Key, NodeKind, Props, TextWrap, ViewNode};
 
@@ -241,6 +241,7 @@ impl<C: ContentMeasure, R: RowSource> Harness<C, R> {
             state: &self.state,
             theme_rev: self.theme_rev,
             scale: self.scale,
+            scroll: ScrollStack::new(),
         }
     }
 

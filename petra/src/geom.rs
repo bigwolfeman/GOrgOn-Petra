@@ -198,6 +198,15 @@ pub enum Axis {
 }
 
 impl Axis {
+    /// This axis's wire name, the same spelling `serde` reads and writes.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Horizontal => "horizontal",
+            Self::Vertical => "vertical",
+        }
+    }
+
     /// The other axis.
     #[must_use]
     pub fn cross(self) -> Self {
@@ -282,6 +291,18 @@ impl std::hash::Hash for Scale {
 #[cfg(test)]
 mod tests {
     use super::{Align, Axis, Point, Rect, Scale, Size};
+
+    /// The hand-written name and the serde name are one fact, so a rename of
+    /// either without the other fails here rather than in a wire consumer.
+    #[test]
+    fn an_axis_spells_itself_the_same_way_serde_does() {
+        for axis in [Axis::Horizontal, Axis::Vertical] {
+            assert_eq!(
+                serde_json::to_string(&axis).unwrap(),
+                format!("\"{}\"", axis.as_str())
+            );
+        }
+    }
 
     #[test]
     fn sane_collapses_nan_and_negatives() {

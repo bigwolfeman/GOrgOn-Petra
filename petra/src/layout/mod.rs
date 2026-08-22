@@ -23,6 +23,7 @@ use std::ops::Range;
 
 use crate::frame::placement::{PaintContent, PlacementSemantics, PlacementSink, TextPaint};
 use crate::geom::{Rect, Scale, Size};
+use crate::tree::props::ScrollProps;
 use crate::tree::{KeyPath, NodeKind, Role, TextWrap, ViewNode};
 
 pub use proposal::{MeasureCache, MeasureKey, Proposal, SizeProposal};
@@ -103,6 +104,60 @@ impl LayoutState {
     }
 }
 
+/// One enclosing `scroll` container, as the subtree inside it sees it.
+///
+/// A `collection` is virtualized against the `scroll` that carries it, and
+/// the scrolling parameters belong to that ancestor rather than to the list
+/// (`contracts/view-tree.md` §"Virtualized collections": "a `scroll`
+/// container with a collection child materializes only the visible window
+/// plus declared overscan"). The walk is what knows the ancestry, so the walk
+/// is what carries it: [`scroll::place`] and [`scroll::measure`] push a frame
+/// around their child, and [`scroll::place_collection`] reads the innermost
+/// one back off [`LayoutCtx::enclosing_scroll`].
+///
+/// The frame deliberately carries no offset and no viewport rect. The offset
+/// is already in the geometry — a `scroll` places its child at `-offset`, so
+/// the distance from a descendant's own rect to the clip in force *is* the
+/// offset that reached it, composed across however many containers and
+/// however many nested scrolls sit between them. Copying the number in here
+/// as well would be a second source for one fact.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScrollFrame {
+    /// Canonical id of the `scroll` node this frame belongs to.
+    pub id: String,
+    /// That node's resolved scrolling parameters.
+    pub props: ScrollProps,
+}
+
+/// The chain of `scroll` ancestors in force at one point in the walk,
+/// innermost last.
+///
+/// Constructed empty and mutated only by [`LayoutCtx::within_scroll`] and
+/// [`LayoutCtx::outside_scroll`], which bracket exactly one call each: no
+/// container can push without popping.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ScrollStack(Vec<ScrollFrame>);
+
+impl ScrollStack {
+    /// An empty stack: the walk starts outside every scroll container.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The innermost enclosing `scroll`, or `None` outside every scroll.
+    #[must_use]
+    pub fn innermost(&self) -> Option<&ScrollFrame> {
+        self.0.last()
+    }
+
+    /// How many `scroll` containers enclose this point in the walk.
+    #[must_use]
+    pub fn depth(&self) -> usize {
+        self.0.len()
+    }
+}
+
 /// Everything a negotiation pass carries.
 pub struct LayoutCtx<'a> {
     /// Content measurement boundary.
@@ -117,10 +172,17 @@ pub struct LayoutCtx<'a> {
     pub theme_rev: u64,
     /// Display scale.
     pub scale: Scale,
+    /// The `scroll` ancestors of wherever the walk currently is. Start it
+    /// empty; the walk maintains it.
+    pub scroll: ScrollStack,
 }
 
 impl LayoutCtx<'_> {
     /// The cache key for `path` under `proposal`.
+    ///
+    /// The scroll context is deliberately not part of the key: a node's key
+    /// path already determines its ancestry, so two entries under the same
+    /// `path` cannot have been measured under two different scroll frames.
     #[must_use]
     pub fn key(&self, path: &KeyPath, proposal: SizeProposal) -> MeasureKey {
         MeasureKey {
@@ -130,6 +192,41 @@ impl LayoutCtx<'_> {
             theme_rev: self.theme_rev,
             scale: self.scale,
         }
+    }
+
+    /// The innermost enclosing `scroll`, or `None` outside every scroll.
+    #[must_use]
+    pub fn enclosing_scroll(&self) -> Option<&ScrollFrame> {
+        self.scroll.innermost()
+    }
+
+    /// Run `f` with `frame` as the innermost enclosing scroll.
+    ///
+    /// The push and the pop bracket one call with nothing between them, so
+    /// there is no early return, no `?`, and no conditional that can leave
+    /// the stack unbalanced. (A panic escaping `f` unwinds out of the whole
+    /// negotiation pass, which drops the context, so an unbalanced stack is
+    /// not observable there either.)
+    pub fn within_scroll<R>(&mut self, frame: ScrollFrame, f: impl FnOnce(&mut Self) -> R) -> R {
+        self.scroll.0.push(frame);
+        let answer = f(self);
+        self.scroll.0.pop();
+        answer
+    }
+
+    /// Run `f` with no enclosing scroll at all.
+    ///
+    /// A `surface` floats free of its ancestors' flow, and that includes
+    /// their scrolling: it is anchored in viewport coordinates and is not
+    /// moved by an ancestor `scroll`'s offset (`layout::overlay_surface`).
+    /// A list inside a popup is therefore not virtualized against the panel
+    /// the popup was declared in. Bracketed the same way as
+    /// [`LayoutCtx::within_scroll`].
+    pub fn outside_scroll<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        let saved = std::mem::take(&mut self.scroll);
+        let answer = f(self);
+        self.scroll = saved;
+        answer
     }
 }
 
@@ -520,6 +617,94 @@ mod tests {
             Some("surface.raised")
         );
         assert!(!content.is_empty());
+    }
+
+    /// The scroll context is a stack: the innermost frame answers, the
+    /// bracket restores what it found, and a `surface`-style reset restores
+    /// too.
+    #[test]
+    fn the_scroll_context_nests_and_unwinds() {
+        use super::{ScrollFrame, ScrollStack};
+        use crate::geom::Axis;
+        use crate::testing::Harness;
+        use crate::tree::props::{DEFAULT_OVERSCAN, ScrollProps};
+
+        let frame = |id: &str, overscan: f32| ScrollFrame {
+            id: id.to_owned(),
+            props: ScrollProps {
+                axis: Axis::Vertical,
+                overscan,
+            },
+        };
+
+        let mut h = Harness::new();
+        let mut ctx = h.ctx();
+        assert_eq!(ctx.scroll, ScrollStack::new());
+        assert!(
+            ctx.enclosing_scroll().is_none(),
+            "the walk starts outside every scroll"
+        );
+
+        ctx.within_scroll(frame("/outer", 200.0), |ctx| {
+            assert_eq!(
+                ctx.enclosing_scroll().map(|f| f.id.as_str()),
+                Some("/outer")
+            );
+            ctx.within_scroll(frame("/outer/inner", DEFAULT_OVERSCAN), |ctx| {
+                let inner = ctx.enclosing_scroll().expect("inside two scrolls");
+                assert_eq!(inner.id, "/outer/inner", "the innermost frame answers");
+                assert_eq!(inner.props.overscan, DEFAULT_OVERSCAN);
+                assert_eq!(ctx.scroll.depth(), 2);
+
+                ctx.outside_scroll(|ctx| {
+                    assert!(
+                        ctx.enclosing_scroll().is_none(),
+                        "a surface clears the chain"
+                    );
+                    assert_eq!(ctx.scroll.depth(), 0);
+                });
+                assert_eq!(ctx.scroll.depth(), 2, "the chain is restored");
+            });
+            assert_eq!(
+                ctx.enclosing_scroll().map(|f| f.id.as_str()),
+                Some("/outer")
+            );
+        });
+        assert_eq!(ctx.scroll.depth(), 0, "every push is popped");
+    }
+
+    /// The walk leaves the stack the way it found it, whatever the tree.
+    #[test]
+    fn placing_a_tree_of_scrolls_leaves_the_context_empty() {
+        use crate::frame::PlacementList;
+        use crate::testing::Harness;
+        use crate::tree::Props;
+
+        let tree = ViewNode::new(NodeKind::Scroll, "outer").child(
+            ViewNode::new(NodeKind::Stack, "body")
+                .child(ViewNode::new(NodeKind::Scroll, "inner").child(
+                    ViewNode::new(NodeKind::Collection, "rows").with_props(Props {
+                        total_count: Some(4),
+                        source: Some("fibers".into()),
+                        ..Props::default()
+                    }),
+                ))
+                .child(ViewNode::new(NodeKind::Text, "footer")),
+        );
+
+        let mut h = Harness::new();
+        let mut ctx = h.ctx();
+        let mut path = crate::tree::KeyPath::root();
+        let mut sink = PlacementList::new();
+        super::place(
+            &tree,
+            &mut ctx,
+            &mut path,
+            Slot::new(Rect::new(0.0, 0.0, 200.0, 100.0)),
+            &mut sink,
+        );
+        assert_eq!(ctx.scroll.depth(), 0);
+        assert!(ctx.enclosing_scroll().is_none());
     }
 
     #[test]

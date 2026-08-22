@@ -153,9 +153,14 @@ pub fn place(
     let content_slot = z_slot.with_rect(content_rect).clipped_to(rect);
 
     sink.enter(me);
-    for child in &node.children {
-        crate::layout::place(child, ctx, path, content_slot, sink);
-    }
+    // A surface is anchored in viewport coordinates: no ancestor `scroll`
+    // has moved `content_slot`, so no ancestor `scroll` may claim to be the
+    // scroll context of what is inside it either (`LayoutCtx::outside_scroll`).
+    ctx.outside_scroll(|ctx| {
+        for child in &node.children {
+            crate::layout::place(child, ctx, path, content_slot, sink);
+        }
+    });
     sink.leave();
 }
 
@@ -163,12 +168,16 @@ pub fn place(
 /// (`Unspecified`) extent. A surface with no children is a zero-size point at
 /// its anchor.
 fn natural_size(node: &ViewNode, ctx: &mut LayoutCtx<'_>, path: &mut KeyPath) -> Size {
-    let mut size = Size::ZERO;
-    for child in &node.children {
-        let child_size = crate::layout::measure(child, ctx, path, SizeProposal::unspecified());
-        size = size.max(child_size);
-    }
-    size
+    // Measured under the same empty scroll context `place` uses, so a
+    // surface's natural size and its placement agree about what encloses it.
+    ctx.outside_scroll(|ctx| {
+        let mut size = Size::ZERO;
+        for child in &node.children {
+            let child_size = crate::layout::measure(child, ctx, path, SizeProposal::unspecified());
+            size = size.max(child_size);
+        }
+        size
+    })
 }
 
 /// How [`place`] resolves one [`Anchor`] variant.

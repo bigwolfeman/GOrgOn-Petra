@@ -17,16 +17,28 @@
 //! invents or renumbers an id, so the same content index always produces the
 //! same id no matter where the scroll window currently sits.
 //!
-//! # A `collection`'s axis and overscan are its own
-//! `measure`/`place` only ever see (node, ctx, path, proposal/slot) — there
-//! is no way to reach a `collection`'s *scroll ancestor's* `ViewNode` from
-//! here to read its declared axis or overscan off it. `Props` is a flat bag
-//! shared by every kind (`contracts/view-tree.md` §"Tree shape"), so a
-//! `collection` reads `axis` and `overscan` off its own props, the same way
-//! a `scroll` does. An author who nests a `collection` in a `scroll` is
-//! expected to declare the same axis on both (both default to `Vertical`,
-//! so the common case agrees for free); nothing here checks that agreement,
-//! because there is nothing here to check it against.
+//! # The scroll ancestor owns the axis and the overscan
+//! Both belong to the container that has a viewport and an offset, so both
+//! are read off the `scroll`, never off the `collection`. [`place`] and
+//! [`measure`] push a [`crate::layout::ScrollFrame`] around their child, and
+//! [`place_collection`]/[`measure_collection`] read the innermost frame back
+//! off the context. Tree acceptance refuses a `collection` that declares
+//! `overscan`, or an `axis` that disagrees with its scroll's, so a
+//! declaration is never silently overridden
+//! (`crate::tree::Violation::ScrollParamOwnedByAncestor`).
+//!
+//! A `collection` with *no* `scroll` ancestor is legal and keeps its own
+//! `axis` and `overscan`: nothing can scroll it, so nothing else can own
+//! those values, and its window is simply whatever its clip shows.
+//!
+//! # Where the offset comes from
+//! Nowhere, as a number. A `scroll` places its child at `-offset`, so by the
+//! time a `collection` is placed the offset is already in its rect: the
+//! distance from the collection's own rect to the clip in force is the
+//! offset that reached it, composed across every container and every nested
+//! scroll in between. That is why this module never looks an offset up by
+//! id for anything but the `scroll`'s own placement, and why a stale entry
+//! under a `stack`'s id cannot be mistaken for one.
 //!
 //! # Known approximation
 //! Row *positions* come from a uniform `index * estimated_extent` grid; row
@@ -40,8 +52,8 @@
 
 use crate::frame::placement::{PaintState, Placement, PlacementSink};
 use crate::geom::{Axis, Rect, Size};
-use crate::layout::{LayoutCtx, Proposal, SizeProposal, Slot, semantics_of};
-use crate::tree::props::{DEFAULT_OVERSCAN, DEFAULT_ROW_EXTENT};
+use crate::layout::{LayoutCtx, Proposal, ScrollFrame, SizeProposal, Slot, semantics_of};
+use crate::tree::props::{DEFAULT_ROW_EXTENT, ScrollProps};
 use crate::tree::{KeyPath, ViewNode};
 
 /// Measure this container under `proposal`.
@@ -67,7 +79,12 @@ pub fn measure(
     // offset clamping. The cross axis passes the incoming offer straight
     // through, unchanged.
     let child_proposal = proposal.with_axis(axis, Proposal::Unbounded);
-    let child_size = crate::layout::measure(child, ctx, path, child_proposal);
+    // Measured inside this container's own scroll frame: a `collection`
+    // below answers a different size depending on which axis scrolls, and
+    // that axis is this node's.
+    let child_size = ctx.within_scroll(frame_for(node, path), |ctx| {
+        crate::layout::measure(child, ctx, path, child_proposal)
+    });
 
     // On the scrolling axis this container answers what its *viewport*
     // takes, not what its content takes: an `Exact` offer is honoured
@@ -118,7 +135,10 @@ pub fn place(
         // fact, not one of several offers being probed.
         let child_proposal =
             SizeProposal::exact(viewport_size).with_axis(axis, Proposal::Unbounded);
-        let content_size = crate::layout::measure(child, ctx, path, child_proposal);
+        let frame = frame_for(node, path);
+        let content_size = ctx.within_scroll(frame.clone(), |ctx| {
+            crate::layout::measure(child, ctx, path, child_proposal)
+        });
 
         let viewport_extent = viewport_size.along(axis);
         let content_extent = content_size.along(axis);
@@ -152,24 +172,46 @@ pub fn place(
         }
         .clipped_to(slot.rect);
 
-        crate::layout::place(child, ctx, path, child_slot, sink);
+        ctx.within_scroll(frame, |ctx| {
+            crate::layout::place(child, ctx, path, child_slot, sink);
+        });
     }
 
     sink.leave();
+}
+
+/// The scroll context this `scroll` node imposes on everything under it.
+fn frame_for(node: &ViewNode, path: &KeyPath) -> ScrollFrame {
+    ScrollFrame {
+        id: path.id(),
+        props: node.props.scroll(),
+    }
+}
+
+/// The scrolling parameters in force for a `collection`.
+///
+/// The nearest enclosing `scroll` owns them. A `collection` outside every
+/// scroll owns its own, and resolves them exactly as a `scroll` would.
+fn collection_scroll(node: &ViewNode, ctx: &LayoutCtx<'_>) -> ScrollProps {
+    ctx.enclosing_scroll()
+        .map_or_else(|| node.props.scroll(), |frame| frame.props)
 }
 
 /// Measure a `collection` node: a virtualized row range read from a store-side
 /// source through [`crate::layout::RowSource`].
 pub fn measure_collection(
     node: &ViewNode,
-    _ctx: &mut LayoutCtx<'_>,
+    ctx: &mut LayoutCtx<'_>,
     _path: &mut KeyPath,
     proposal: SizeProposal,
 ) -> Size {
     let Some(collection) = node.props.collection() else {
         return Size::ZERO;
     };
-    let axis = node.props.axis.unwrap_or(Axis::Vertical);
+    // The scrolling axis decides which axis carries the row total and which
+    // passes the offer through, so it has to be the same axis `place` will
+    // lay the rows out along — the ancestor's, not this node's.
+    let axis = collection_scroll(node, ctx).axis;
     let row_extent = sane_row_extent(collection.estimated_extent);
 
     // Rows are never fetched to answer a measurement (FR-009): the content
@@ -209,33 +251,31 @@ pub fn place_collection(
     sink.enter(me);
 
     if let Some(collection) = node.props.collection() {
-        let axis = node.props.axis.unwrap_or(Axis::Vertical);
+        let scroll = collection_scroll(node, ctx);
+        let axis = scroll.axis;
         let row_extent = sane_row_extent(collection.estimated_extent);
         let total_extent = collection.total_count as f32 * row_extent;
 
         // `slot.rect` is this node's own placement: for a collection that is
         // the content-sized rect `measure_collection` answered (`place`
         // above positions a child at `-offset` and only narrows `clip` to
-        // the viewport). The viewport is therefore `slot.clip`'s extent —
-        // the narrowest region an ancestor scroll has clipped this subtree
-        // to — never `slot.rect`'s.
+        // the viewport). The viewport is therefore `slot.clip` — the
+        // narrowest region an ancestor has clipped this subtree to, which is
+        // exactly the region a row can be seen in — never `slot.rect`.
         let viewport_extent = slot.clip.size().along(axis).max(0.0);
 
-        let overscan = node
-            .props
-            .overscan
-            .filter(|v| v.is_finite() && *v >= 0.0)
-            .unwrap_or(DEFAULT_OVERSCAN);
+        // How far this list's own leading edge has been scrolled past the
+        // visible region. Every enclosing scroll already moved `slot.rect`
+        // by its offset, and every container in between already added its
+        // own leading content, so this one subtraction is the composed
+        // answer — see the module doc's "Where the offset comes from".
+        let offset = origin_along(slot.clip, axis) - origin_along(slot.rect, axis);
 
-        // The offset lives on the *scroll container's* id, not this node's.
-        // `enclosing_scroll_offset` walks the path this call arrived on to
-        // find it — documented at its own definition.
-        let raw_offset = enclosing_scroll_offset(ctx, path);
-        let max_offset = (total_extent - viewport_extent).max(0.0);
-        let offset = raw_offset.clamp(0.0, max_offset);
-
-        let window_start = (offset - overscan).max(0.0);
-        let window_end = (offset + viewport_extent + overscan).min(total_extent);
+        // A list scrolled entirely out of the visible region gets an empty
+        // window (`window_end <= window_start`) and materializes nothing,
+        // which is the honest answer: none of its rows can be seen.
+        let window_start = (offset - scroll.overscan).max(0.0);
+        let window_end = (offset + viewport_extent + scroll.overscan).min(total_extent);
 
         if collection.total_count > 0 && window_end > window_start {
             let start_index =
@@ -281,41 +321,6 @@ pub fn place_collection(
     }
 
     sink.leave();
-}
-
-/// The scroll offset of the nearest enclosing scroll container, or `0.0` when
-/// none is found.
-///
-/// A `collection` does not carry a scroll offset itself — only a `scroll`
-/// container's id is a key in `ctx.state.scroll_offsets`. This node's `path`
-/// is the only handle back to that id, so this rebuilds each ancestor's
-/// canonical id from a shrinking prefix of `path.segments()` (nearest parent
-/// first) and returns the offset of the first one present in the map.
-///
-/// This is a best-effort match, not a tree walk: nothing here can tell a
-/// `scroll` ancestor's id from a plain `stack`'s, so an ancestor that has
-/// never been scrolled (and so has no entry in the map at all) is
-/// indistinguishable from "not a scroll container" and this keeps walking
-/// past it. In the common case — a `collection` as the direct child of the
-/// `scroll` it belongs to — the first candidate checked is that scroll's own
-/// id, which is what every test in this module relies on.
-fn enclosing_scroll_offset(ctx: &LayoutCtx<'_>, path: &KeyPath) -> f32 {
-    let segments = path.segments();
-    let parent_len = segments.len().saturating_sub(1); // exclude this node itself
-    for len in (0..=parent_len).rev() {
-        let mut ancestor = KeyPath::root();
-        for key in &segments[..len] {
-            ancestor.push(key.clone());
-        }
-        if let Some(&offset) = ctx.state.scroll_offsets.get(&ancestor.id()) {
-            return if offset.is_finite() {
-                offset.max(0.0)
-            } else {
-                0.0
-            };
-        }
-    }
-    0.0
 }
 
 /// A declared `estimated_extent`, or the shared default when the declared
@@ -383,27 +388,46 @@ mod tests {
         })
     }
 
+    /// A `scroll` named `key` carrying `props`, wrapping a `collection` named
+    /// `rows` that declares nothing about scrolling itself.
+    fn collection_in_scroll(
+        key: &str,
+        props: Props,
+        total_count: usize,
+        estimated_extent: f32,
+    ) -> ViewNode {
+        let collection = ViewNode::new(NodeKind::Collection, "rows").with_props(Props {
+            total_count: Some(total_count),
+            source: Some("fibers".into()),
+            estimated_extent: Some(estimated_extent),
+            ..Props::default()
+        });
+        ViewNode::new(NodeKind::Scroll, key)
+            .with_props(props)
+            .child(collection)
+    }
+
+    /// The `scroll`/`collection` pair every virtualization test drives.
+    ///
+    /// `overscan` is declared on the **`scroll`**, which owns it; tree
+    /// acceptance refuses it on the collection. It is also never
+    /// `DEFAULT_OVERSCAN` in a caller that asserts a row count: it used to
+    /// be 64.0 everywhere, which *is* the default, so the count came out the
+    /// same whether the declaration travelled or not.
     fn scroll_with_collection(
         total_count: usize,
         estimated_extent: f32,
         overscan: f32,
     ) -> ViewNode {
-        // `overscan` is declared on the collection, which is the node that
-        // reads it. It used to be declared on the `scroll` — where nothing
-        // reads it — and every caller passed 64.0, which is exactly
-        // `DEFAULT_OVERSCAN`. So the collection fell through to the default,
-        // got the same answer, and every assertion below passed whether the
-        // parameter was honoured or deleted outright.
-        let collection = ViewNode::new(NodeKind::Collection, "rows").with_props(Props {
-            total_count: Some(total_count),
-            source: Some("fibers".into()),
-            estimated_extent: Some(estimated_extent),
-            overscan: Some(overscan),
-            ..Props::default()
-        });
-        ViewNode::new(NodeKind::Scroll, "list")
-            .with_props(Props::default())
-            .child(collection)
+        collection_in_scroll(
+            "list",
+            Props {
+                overscan: Some(overscan),
+                ..Props::default()
+            },
+            total_count,
+            estimated_extent,
+        )
     }
 
     #[test]
@@ -504,9 +528,18 @@ mod tests {
     /// SC-008 seed: a 100 000-row collection in a 400-unit viewport with
     /// 24-unit rows must never materialize more than a small, bounded window
     /// of rows, at any scroll position — including deep into the list.
+    ///
+    /// The window must also *be* at that scroll position. Counting rows is
+    /// not enough on its own: a build that ignored the offset entirely and
+    /// always drew the first screenful satisfied every bound below, so the
+    /// first materialized index is asserted too.
     #[test]
     fn bounded_materialization_holds_at_every_scroll_offset() {
-        for offset in [0.0_f32, 5_000.0, 2_000_000.0] {
+        // (offset, first row index). window_start = offset - 64 overscan,
+        // floored into 24-unit rows: 0, floor(4936 / 24) = 205,
+        // floor(1_999_936 / 24) = 83_330. The largest offset is still short
+        // of the 2_399_600 the content allows, so none of them is clamped.
+        for (offset, first_index) in [(0.0_f32, 0_usize), (5_000.0, 205), (2_000_000.0, 83_330)] {
             let mut h = Harness::with(MonoContent::new(), GeneratedRows::new("fibers", 100_000));
             h.set_scroll("/list", offset);
             let tree = scroll_with_collection(100_000, 24.0, 64.0);
@@ -529,6 +562,16 @@ mod tests {
                 h.rows.max_index_seen < 100_000,
                 "offset {offset}: touched index {}, which is out of range",
                 h.rows.max_index_seen
+            );
+            let placed: Vec<&str> = sink
+                .as_slice()
+                .iter()
+                .filter_map(|p| p.id.strip_prefix("/list/rows/row-"))
+                .collect();
+            assert_eq!(
+                placed.first().copied(),
+                Some(first_index.to_string().as_str()),
+                "offset {offset}: the window must sit at the offset, not at the top"
             );
         }
     }
@@ -574,8 +617,8 @@ mod tests {
     /// of this fixture used to pass 64.0, which is `DEFAULT_OVERSCAN` — so the
     /// row count came out the same whether the declaration was read or
     /// ignored, and deleting the parameter left every scroll test green.
-    /// Verified by sabotage: replacing the props read with `DEFAULT_OVERSCAN`
-    /// fails this assertion.
+    /// Verified by sabotage: making `collection_scroll` ignore the enclosing
+    /// frame's overscan fails this assertion.
     #[test]
     fn total_count_reaches_semantics_while_placement_count_is_only_the_window() {
         let mut h = Harness::with(MonoContent::new(), GeneratedRows::new("fibers", 100_000));
@@ -629,6 +672,249 @@ mod tests {
             assert!(placement.rect.w.is_finite());
             assert!(placement.rect.h.is_finite());
         }
+    }
+
+    /// A `collection` with no `overscan` of its own must take the one its
+    /// `scroll` ancestor declares. The window is the viewport plus that
+    /// overscan at both ends.
+    #[test]
+    fn the_scrolls_declared_overscan_reaches_its_collection() {
+        let mut h = Harness::with(MonoContent::new(), GeneratedRows::new("fibers", 100_000));
+        h.set_scroll("/list", 0.0);
+        let tree = collection_in_scroll(
+            "list",
+            Props {
+                overscan: Some(120.0),
+                ..Props::default()
+            },
+            100_000,
+            24.0,
+        );
+        let mut path = KeyPath::root();
+        let mut sink = PlacementList::new();
+        crate::layout::place(
+            &tree,
+            &mut h.ctx(),
+            &mut path,
+            Slot::new(Rect::new(0.0, 0.0, 200.0, 400.0)),
+            &mut sink,
+        );
+
+        // scroll (1) + collection (1) + rows. ceil((400 + 120) / 24) = 22
+        // with the declared overscan; 20 with the 64-unit default.
+        let row_count = sink.as_slice().len() - 2;
+        assert_eq!(
+            row_count, 22,
+            "the window is the viewport plus the scroll's declared overscan, not the default"
+        );
+    }
+
+    /// The offset that drives a collection is its `scroll` ancestor's, not
+    /// whichever ancestor id happens to have an entry in the offset map.
+    #[test]
+    fn a_stale_offset_on_a_plain_ancestor_does_not_drive_the_collection() {
+        let mut h = Harness::with(MonoContent::new(), GeneratedRows::new("fibers", 100_000));
+        // `/root` is a `stack`. It is not a scroll container, and this entry
+        // is stale. The `scroll` between it and the collection has never been
+        // scrolled, so it has no entry at all.
+        h.set_scroll("/root", 5_000.0);
+        let tree = ViewNode::new(NodeKind::Stack, "root").child(collection_in_scroll(
+            "list",
+            Props::default(),
+            100_000,
+            24.0,
+        ));
+        let mut path = KeyPath::root();
+        let mut sink = PlacementList::new();
+        crate::layout::place(
+            &tree,
+            &mut h.ctx(),
+            &mut path,
+            Slot::new(Rect::new(0.0, 0.0, 200.0, 400.0)),
+            &mut sink,
+        );
+
+        let ids: Vec<&str> = sink.as_slice().iter().map(|p| p.id.as_str()).collect();
+        assert!(
+            ids.contains(&"/root/list/rows/row-0"),
+            "an unscrolled scroll shows its first row; placed: {ids:?}"
+        );
+        assert!(
+            !ids.iter().any(|id| id.starts_with("/root/list/rows/row-2")
+                && id.len() > "/root/list/rows/row-2".len()),
+            "no row from the stale 5000-unit window is materialized; placed: {ids:?}"
+        );
+    }
+
+    /// A `collection` lays its rows out along its `scroll` ancestor's axis.
+    #[test]
+    fn the_scrolls_axis_reaches_its_collection() {
+        let mut h = Harness::with(MonoContent::new(), GeneratedRows::new("fibers", 1_000));
+        h.set_scroll("/strip", 0.0);
+        let tree = collection_in_scroll(
+            "strip",
+            Props {
+                axis: Some(Axis::Horizontal),
+                ..Props::default()
+            },
+            1_000,
+            24.0,
+        );
+        let mut path = KeyPath::root();
+        let mut sink = PlacementList::new();
+        crate::layout::place(
+            &tree,
+            &mut h.ctx(),
+            &mut path,
+            Slot::new(Rect::new(0.0, 0.0, 400.0, 200.0)),
+            &mut sink,
+        );
+
+        let rows: Vec<Rect> = sink
+            .as_slice()
+            .iter()
+            .filter(|p| p.id.starts_with("/strip/rows/row-"))
+            .map(|p| p.rect)
+            .collect();
+        assert!(rows.len() >= 2, "at least two rows are materialized");
+        assert_eq!(rows[0].x, 0.0);
+        assert_eq!(
+            rows[1].x, 24.0,
+            "rows advance along the scroll's horizontal axis"
+        );
+        assert_eq!(rows[0].y, rows[1].y, "rows share the cross-axis origin");
+    }
+
+    /// Nested scrolls: the *nearest* one drives the list, not the outermost
+    /// one that happens to have an entry in the offset map.
+    #[test]
+    fn the_nearest_scroll_ancestor_wins_over_a_farther_one() {
+        let mut h = Harness::with(MonoContent::new(), GeneratedRows::new("fibers", 100_000));
+        h.set_scroll("/outer", 0.0);
+        let inner = collection_in_scroll(
+            "inner",
+            Props {
+                overscan: Some(0.0),
+                ..Props::default()
+            },
+            100_000,
+            24.0,
+        );
+        let tree = ViewNode::new(NodeKind::Scroll, "outer")
+            .with_props(Props {
+                overscan: Some(200.0),
+                ..Props::default()
+            })
+            .child(inner);
+        let mut path = KeyPath::root();
+        let mut sink = PlacementList::new();
+        crate::layout::place(
+            &tree,
+            &mut h.ctx(),
+            &mut path,
+            Slot::new(Rect::new(0.0, 0.0, 200.0, 400.0)),
+            &mut sink,
+        );
+
+        // outer (1) + inner (1) + collection (1) + rows. The inner scroll
+        // declares no overscan at all, so the window is exactly the 400-unit
+        // visible region: ceil(400 / 24) = 17 rows. The outer scroll's
+        // 200-unit overscan would make it 25.
+        let row_count = sink.as_slice().len() - 3;
+        assert_eq!(
+            row_count, 17,
+            "the inner scroll's overscan is the one in force"
+        );
+    }
+
+    /// A `collection` outside every `scroll` is legal, and keeps its own
+    /// axis and overscan: nothing can scroll it, so nothing else owns them.
+    #[test]
+    fn a_collection_with_no_scroll_ancestor_keeps_its_own_axis_and_overscan() {
+        let mut h = Harness::with(MonoContent::new(), GeneratedRows::new("fibers", 1_000));
+        let tree = ViewNode::new(NodeKind::Collection, "rows").with_props(Props {
+            total_count: Some(1_000),
+            source: Some("fibers".into()),
+            estimated_extent: Some(24.0),
+            axis: Some(Axis::Horizontal),
+            overscan: Some(96.0),
+            ..Props::default()
+        });
+        let mut path = KeyPath::root();
+        let mut sink = PlacementList::new();
+        crate::layout::place(
+            &tree,
+            &mut h.ctx(),
+            &mut path,
+            Slot::new(Rect::new(0.0, 0.0, 400.0, 200.0)),
+            &mut sink,
+        );
+
+        let rows: Vec<Rect> = sink
+            .as_slice()
+            .iter()
+            .filter(|p| p.id.starts_with("/rows/row-"))
+            .map(|p| p.rect)
+            .collect();
+        // ceil((400 + 96) / 24) = 21 rows; the 64-unit default would give 20.
+        assert_eq!(rows.len(), 21, "its own overscan is honoured");
+        assert_eq!(rows[1].x, 24.0, "its own axis is honoured");
+        assert_eq!(rows[0].y, rows[1].y);
+    }
+
+    /// A `surface` is anchored in viewport coordinates, so an ancestor
+    /// `scroll` is not the scroll context of what is inside it.
+    #[test]
+    fn a_surface_starts_a_fresh_scroll_context() {
+        use crate::tree::{Anchor, Layer};
+
+        let mut h = Harness::with(MonoContent::new(), GeneratedRows::new("fibers", 30));
+        h.set_scroll("/list", 240.0);
+        let collection = ViewNode::new(NodeKind::Collection, "rows").with_props(Props {
+            total_count: Some(30),
+            source: Some("fibers".into()),
+            estimated_extent: Some(24.0),
+            overscan: Some(96.0),
+            ..Props::default()
+        });
+        let tree = ViewNode::new(NodeKind::Scroll, "list")
+            .with_props(Props {
+                overscan: Some(200.0),
+                ..Props::default()
+            })
+            .child(
+                ViewNode::new(NodeKind::Surface, "popup")
+                    .with_props(Props {
+                        layer: Some(Layer::Popup),
+                        anchor: Some(Anchor::Viewport),
+                        ..Props::default()
+                    })
+                    .child(collection),
+            );
+        let mut path = KeyPath::root();
+        let mut sink = PlacementList::new();
+        crate::layout::place(
+            &tree,
+            &mut h.ctx(),
+            &mut path,
+            Slot::new(Rect::new(0.0, 0.0, 200.0, 400.0)),
+            &mut sink,
+        );
+
+        let ids: Vec<&str> = sink.as_slice().iter().map(|p| p.id.as_str()).collect();
+        assert!(
+            ids.contains(&"/list/popup/rows/row-0"),
+            "the popup is anchored, not scrolled by /list; placed: {ids:?}"
+        );
+        // scroll (1) + surface (1) + collection (1) + rows. The popup is
+        // clamped to the 400-unit window, and the collection keeps its own
+        // 96-unit overscan: ceil((400 + 96) / 24) = 21 rows. The enclosing
+        // scroll's 200-unit overscan would give 25.
+        let row_count = sink.as_slice().len() - 3;
+        assert_eq!(
+            row_count, 21,
+            "the enclosing scroll's overscan does not reach inside a surface"
+        );
     }
 
     #[test]

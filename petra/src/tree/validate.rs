@@ -8,9 +8,10 @@
 use std::collections::{BTreeSet, HashSet};
 use std::fmt;
 
+use crate::geom::Axis;
 use crate::tree::key::{Key, KeyPath};
 use crate::tree::node::{NodeKind, Role, ViewNode};
-use crate::tree::props::TrackSize;
+use crate::tree::props::{ScrollProps, TrackSize};
 
 /// Names the host has registered: custom node kinds and transition
 /// definitions. Both are populated by the host before the first tree is
@@ -126,6 +127,27 @@ pub enum Violation {
         /// The legal range, as text.
         expected: &'static str,
     },
+    /// A `collection` declares a scrolling parameter its `scroll` ancestor
+    /// owns.
+    ///
+    /// The axis and the overscan belong to the container that has a viewport
+    /// and an offset, and the layout walk reads both off the nearest
+    /// enclosing `scroll` (`crate::layout::ScrollFrame`). A declaration here
+    /// would be ignored, and an ignored declaration is worse than a refused
+    /// one: the author sees a list that scrolls the wrong way, or
+    /// materializes the wrong window, with a prop in the tree that says
+    /// otherwise. A `collection` outside every `scroll` keeps its own values
+    /// and is never refused.
+    ScrollParamOwnedByAncestor {
+        /// The `props` field name.
+        prop: &'static str,
+        /// What the `collection` declared, as text.
+        declared: String,
+        /// Canonical id of the `scroll` that owns the parameter.
+        scroll: String,
+        /// What that `scroll` resolves the parameter to, as text.
+        owner: String,
+    },
     /// A style literal appears where a token name is required (FR-013).
     LiteralStyleValue {
         /// The token slot.
@@ -198,6 +220,15 @@ impl fmt::Display for Violation {
                 value,
                 expected,
             } => write!(f, "props.{prop} is {value}; expected {expected}"),
+            Self::ScrollParamOwnedByAncestor {
+                prop,
+                declared,
+                scroll,
+                owner,
+            } => write!(
+                f,
+                "props.{prop} is {declared} on a `collection`, but its scroll ancestor `{scroll}` owns that parameter and resolves it to {owner}; declare it on the scroll (a collection outside every scroll keeps its own)"
+            ),
             Self::LiteralStyleValue { slot, value } => write!(
                 f,
                 "tokens.{slot} is the literal {value:?}; features reference token names, never values"
@@ -267,7 +298,7 @@ impl std::error::Error for TreeErrors {}
 pub fn validate(root: &ViewNode, registry: &Registry) -> Result<(), TreeErrors> {
     let mut errors = Vec::new();
     let mut path = KeyPath::root();
-    walk(root, registry, &mut path, &mut errors);
+    walk(root, registry, &mut path, None, &mut errors);
     if errors.is_empty() {
         Ok(())
     } else {
@@ -275,9 +306,21 @@ pub fn validate(root: &ViewNode, registry: &Registry) -> Result<(), TreeErrors> 
     }
 }
 
-fn walk(node: &ViewNode, registry: &Registry, path: &mut KeyPath, errors: &mut Vec<TreeError>) {
+/// The nearest enclosing `scroll`: its canonical id and its resolved
+/// parameters. `None` outside every scroll, and inside a `surface`, which is
+/// anchored in viewport coordinates and so is not scrolled by anything it was
+/// declared inside (`crate::layout::LayoutCtx::outside_scroll`).
+type ScrollAncestor<'a> = Option<(&'a str, ScrollProps)>;
+
+fn walk(
+    node: &ViewNode,
+    registry: &Registry,
+    path: &mut KeyPath,
+    scroll: ScrollAncestor<'_>,
+    errors: &mut Vec<TreeError>,
+) {
     path.push(node.key.clone());
-    check_node(node, registry, path, errors);
+    check_node(node, registry, path, scroll, errors);
     let mut seen: HashSet<&Key> = HashSet::with_capacity(node.children.len());
     for child in &node.children {
         if !seen.insert(&child.key) {
@@ -289,13 +332,28 @@ fn walk(node: &ViewNode, registry: &Registry, path: &mut KeyPath, errors: &mut V
             });
         }
     }
+    // The same rule the layout walk follows: a `scroll` becomes the context
+    // for everything under it, a `surface` clears it, everything else passes
+    // its own context through.
+    let entered = (node.kind == NodeKind::Scroll).then(|| path.id());
+    let child_scroll = match (&entered, node.kind) {
+        (Some(id), _) => Some((id.as_str(), node.props.scroll())),
+        (None, NodeKind::Surface) => None,
+        (None, _) => scroll,
+    };
     for child in &node.children {
-        walk(child, registry, path, errors);
+        walk(child, registry, path, child_scroll, errors);
     }
     path.pop();
 }
 
-fn check_node(node: &ViewNode, registry: &Registry, path: &KeyPath, errors: &mut Vec<TreeError>) {
+fn check_node(
+    node: &ViewNode,
+    registry: &Registry,
+    path: &KeyPath,
+    scroll: ScrollAncestor<'_>,
+    errors: &mut Vec<TreeError>,
+) {
     let id = path.id();
     let mut push = |violation| {
         errors.push(TreeError {
@@ -386,6 +444,29 @@ fn check_node(node: &ViewNode, registry: &Registry, path: &KeyPath, errors: &mut
                     prop: "source",
                 });
             }
+            if let Some((scroll_id, scroll)) = scroll {
+                if let Some(overscan) = node.props.overscan {
+                    push(Violation::ScrollParamOwnedByAncestor {
+                        prop: "overscan",
+                        declared: format!("{overscan}"),
+                        scroll: scroll_id.to_owned(),
+                        owner: format!("{}", scroll.overscan),
+                    });
+                }
+                // An agreeing declaration is allowed: an author may spell out
+                // the axis a list runs along. Only a disagreement is refused,
+                // because only a disagreement would be overridden.
+                if let Some(axis) = node.props.axis
+                    && axis != scroll.axis
+                {
+                    push(Violation::ScrollParamOwnedByAncestor {
+                        prop: "axis",
+                        declared: Axis::as_str(axis).to_owned(),
+                        scroll: scroll_id.to_owned(),
+                        owner: scroll.axis.as_str().to_owned(),
+                    });
+                }
+            }
         }
         NodeKind::Surface => {
             if node.props.layer.is_none() {
@@ -472,11 +553,161 @@ fn is_style_literal(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{Registry, TreeError, Violation, validate};
+    use crate::geom::Axis;
     use crate::tree::node::{Interaction, NodeKind, Role, Semantics, ViewNode};
     use crate::tree::props::{Anchor, Edge, Layer, Props, TrackSize};
 
     fn stack(key: &str) -> ViewNode {
         ViewNode::new(NodeKind::Stack, key)
+    }
+
+    /// A `collection` that declares nothing about scrolling, for the
+    /// scroll-ownership tests below.
+    fn rows(props: Props) -> ViewNode {
+        ViewNode::new(NodeKind::Collection, "rows").with_props(Props {
+            total_count: Some(10),
+            source: Some("fibers".into()),
+            ..props
+        })
+    }
+
+    fn scroll(key: &str, props: Props) -> ViewNode {
+        ViewNode::new(NodeKind::Scroll, key).with_props(props)
+    }
+
+    /// Overscan belongs to the `scroll`. Declaring it on the list inside
+    /// would be silently ignored by layout, so it is refused here instead.
+    #[test]
+    fn a_collection_may_not_declare_the_overscan_its_scroll_owns() {
+        let tree = scroll(
+            "list",
+            Props {
+                overscan: Some(200.0),
+                ..Props::default()
+            },
+        )
+        .child(rows(Props {
+            overscan: Some(96.0),
+            ..Props::default()
+        }));
+        let err = validate(&tree, &Registry::new()).unwrap_err();
+        assert_eq!(err.len(), 1);
+        assert_eq!(err.as_slice()[0].path, "/list/rows");
+        assert_eq!(
+            err.as_slice()[0].violation,
+            Violation::ScrollParamOwnedByAncestor {
+                prop: "overscan",
+                declared: "96".into(),
+                scroll: "/list".into(),
+                owner: "200".into(),
+            }
+        );
+        assert!(
+            err.to_string().contains("declare it on the scroll"),
+            "{err}"
+        );
+    }
+
+    /// An axis that agrees is a legal restatement; one that disagrees is not,
+    /// because the scroll's is the one the rows are laid out along.
+    #[test]
+    fn a_collection_may_restate_its_scrolls_axis_but_not_contradict_it() {
+        let agreeing = scroll(
+            "list",
+            Props {
+                axis: Some(Axis::Horizontal),
+                ..Props::default()
+            },
+        )
+        .child(rows(Props {
+            axis: Some(Axis::Horizontal),
+            ..Props::default()
+        }));
+        assert!(validate(&agreeing, &Registry::new()).is_ok());
+
+        let contradicting = scroll(
+            "list",
+            Props {
+                axis: Some(Axis::Horizontal),
+                ..Props::default()
+            },
+        )
+        .child(rows(Props {
+            axis: Some(Axis::Vertical),
+            ..Props::default()
+        }));
+        let err = validate(&contradicting, &Registry::new()).unwrap_err();
+        assert_eq!(
+            err.as_slice()[0].violation,
+            Violation::ScrollParamOwnedByAncestor {
+                prop: "axis",
+                declared: "vertical".into(),
+                scroll: "/list".into(),
+                owner: "horizontal".into(),
+            }
+        );
+    }
+
+    /// The ancestor chain is a chain, not a parent check: a list two
+    /// containers below its scroll is still the scroll's.
+    #[test]
+    fn the_scroll_ancestor_is_found_through_intervening_containers() {
+        let tree = scroll("list", Props::default()).child(stack("body").child(
+            stack("inner").child(rows(Props {
+                overscan: Some(96.0),
+                ..Props::default()
+            })),
+        ));
+        let err = validate(&tree, &Registry::new()).unwrap_err();
+        assert_eq!(err.as_slice()[0].path, "/list/body/inner/rows");
+        assert_eq!(
+            err.as_slice()[0].violation,
+            Violation::ScrollParamOwnedByAncestor {
+                prop: "overscan",
+                declared: "96".into(),
+                scroll: "/list".into(),
+                // The scroll declares none, so it resolves to the default,
+                // and that default is what would have won.
+                owner: "64".into(),
+            }
+        );
+    }
+
+    /// Outside every scroll a `collection` owns its own scrolling
+    /// parameters, and a `surface` puts it outside every scroll.
+    #[test]
+    fn a_collection_outside_every_scroll_keeps_its_own_parameters() {
+        let bare = stack("root").child(rows(Props {
+            overscan: Some(96.0),
+            axis: Some(Axis::Horizontal),
+            ..Props::default()
+        }));
+        assert!(validate(&bare, &Registry::new()).is_ok());
+
+        let in_a_popup = scroll(
+            "list",
+            Props {
+                axis: Some(Axis::Vertical),
+                ..Props::default()
+            },
+        )
+        .child(
+            ViewNode::new(NodeKind::Surface, "popup")
+                .with_props(Props {
+                    layer: Some(Layer::Popup),
+                    anchor: Some(Anchor::Viewport),
+                    ..Props::default()
+                })
+                .child(rows(Props {
+                    overscan: Some(96.0),
+                    axis: Some(Axis::Horizontal),
+                    ..Props::default()
+                })),
+        );
+        assert!(
+            validate(&in_a_popup, &Registry::new()).is_ok(),
+            "a surface is anchored, not scrolled, so it starts a fresh chain"
+        );
     }
 
     #[test]

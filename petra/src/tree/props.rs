@@ -165,12 +165,15 @@ pub struct Props {
     pub row_spacing: Option<f32>,
     /// Extra logical extent materialized past each end of a scroll viewport.
     ///
-    /// Declared on the **`collection`**, not on the `scroll` around it. The
-    /// collection is what decides which rows to materialize, and nothing in
-    /// the layout signature hands it its ancestor's props — so putting the
-    /// value here is the honest place for it until a scroll context is
-    /// threaded down (see `layout::scroll`). Declaring it on the `scroll` has
-    /// no effect.
+    /// Declared on the **`scroll`**, which is what has a viewport and an
+    /// offset. A `collection` inside one reads its ancestor's value off the
+    /// scroll context the walk carries (`layout::ScrollFrame`), and tree
+    /// acceptance refuses `overscan` on a `collection` that has a `scroll`
+    /// ancestor rather than silently ignoring it
+    /// ([`crate::tree::Violation::ScrollParamOwnedByAncestor`]).
+    ///
+    /// A `collection` with no `scroll` ancestor keeps its own: nothing can
+    /// scroll it, so nothing else can own the value.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overscan: Option<f32>,
     /// Total row count of a `collection`, including unmaterialized rows.
@@ -257,11 +260,17 @@ pub struct GridProps {
 }
 
 /// Resolved `scroll` parameters.
+///
+/// Read by the `scroll` itself and, through the scroll context the layout
+/// walk carries, by any `collection` inside it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ScrollProps {
     /// The axis that scrolls. The other axis passes the parent's proposal
     /// through unchanged.
     pub axis: Axis,
+    /// Extra logical extent a virtualized child materializes past each end
+    /// of the viewport.
+    pub overscan: f32,
 }
 
 /// Resolved `collection` parameters.
@@ -334,9 +343,18 @@ impl Props {
     }
 
     /// Resolved `scroll` parameters.
+    ///
+    /// `overscan` falls back to [`DEFAULT_OVERSCAN`] for an absent value and
+    /// for a present-but-unusable one (negative or non-finite): it widens a
+    /// materialization window below, and a stray author input must not be
+    /// able to turn that window inside out.
     #[must_use]
     pub fn scroll(&self) -> ScrollProps {
         ScrollProps {
+            overscan: self
+                .overscan
+                .filter(|v| v.is_finite() && *v >= 0.0)
+                .unwrap_or(DEFAULT_OVERSCAN),
             axis: self.axis.unwrap_or(Axis::Vertical),
         }
     }
