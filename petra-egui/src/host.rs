@@ -28,7 +28,7 @@ use egui::{Context, Id, LayerId, Order};
 use gorgon_petra::focus::FocusTree;
 use gorgon_petra::frame::{FrameCounter, PetrifiedFrame, TransitionActivity, Viewport, petrify};
 use gorgon_petra::geom::{Scale, Size};
-use gorgon_petra::input::{InputEvent, KeyCode, Route, route};
+use gorgon_petra::input::{InputEvent, KeyCode, Route, RouteOutcome, route_with_surfaces};
 use gorgon_petra::layout::overlay_surface::surface_scopes;
 use gorgon_petra::layout::{
     ChangeSet, LayoutCtx, LayoutState, MeasureCache, RowSource, ScrollStack,
@@ -72,6 +72,22 @@ pub trait App: RowSource {
     /// the same motion. Must name (directly or via [`ChangeSet::All`]) every
     /// node whose measured content this frame would answer differently for.
     fn take_changes(&mut self) -> ChangeSet;
+    /// Close every surface named in `ids`, each an
+    /// [`InputPolicy::DismissOutside`] surface a press landed outside of.
+    ///
+    /// The engine is retained and the application owns the view tree, so the
+    /// host cannot close anything itself — it can only report the request and
+    /// let the next [`App::view`] answer differently. Called before
+    /// [`App::handle`] sees the press that caused it, which is the order a
+    /// user perceives: the menu shuts, then the click lands on whatever was
+    /// behind it.
+    ///
+    /// The default is to ignore dismissals, for the applications that declare
+    /// no `DismissOutside` surface and would otherwise be made to write an
+    /// empty method.
+    fn dismissed(&mut self, ids: &[String]) {
+        let _ = ids;
+    }
 }
 
 /// Drives one Petra application inside an `eframe` window.
@@ -85,6 +101,7 @@ pub struct Host<A: App> {
     presenter: Presenter,
     registry: Registry,
     last_frame: Option<PetrifiedFrame>,
+    last_scopes: BTreeMap<String, InputPolicy>,
     last_report: Option<PaintReport>,
     focus: FocusTree,
 }
@@ -102,6 +119,7 @@ impl<A: App> Host<A> {
             presenter,
             registry: Registry::new(),
             last_frame: None,
+            last_scopes: BTreeMap::new(),
             last_report: None,
             focus: FocusTree::default(),
         }
@@ -277,6 +295,12 @@ impl<A: App> Host<A> {
 
         self.schedule(ctx, &frame);
         self.last_frame = Some(frame);
+        // Input for the *next* pass is routed against this frame, so the
+        // policies it was placed with have to survive with it. Recomputing
+        // `surface_scopes` at input time would read the tree the application
+        // has since changed, and hit-test the frame on screen against scopes
+        // that no longer describe it.
+        self.last_scopes = scopes;
         self.last_report = Some(report);
     }
 
@@ -355,13 +379,24 @@ impl<A: App> Host<A> {
             if self.traverse(event) {
                 continue;
             }
-            let route = match &self.last_frame {
-                Some(frame) => route(frame, self.state.focused.as_deref(), event),
-                None => Route::Unrouted {
-                    reason: "no frame has been placed yet",
+            let outcome = match &self.last_frame {
+                Some(frame) => route_with_surfaces(
+                    frame,
+                    self.state.focused.as_deref(),
+                    event,
+                    &self.last_scopes,
+                ),
+                None => RouteOutcome {
+                    route: Route::Unrouted {
+                        reason: "no frame has been placed yet",
+                    },
+                    dismiss: Vec::new(),
                 },
             };
-            self.app.handle(event, &route);
+            if !outcome.dismiss.is_empty() {
+                self.app.dismissed(&outcome.dismiss);
+            }
+            self.app.handle(event, &outcome.route);
         }
     }
 
@@ -483,6 +518,7 @@ pub fn default_presenter() -> Presenter {
 mod tests {
     use super::{App, ChangeSet, Host, default_presenter, petra_layer, refusal_view};
     use egui::{Context, Event, Key, Modifiers, RawInput};
+    use gorgon_petra::geom::{Point, Rect};
     use gorgon_petra::input::{InputEvent, Route};
     use gorgon_petra::layout::RowSource;
     use gorgon_petra::tree::{
@@ -493,8 +529,10 @@ mod tests {
     #[derive(Default)]
     struct Demo {
         seen: Vec<(String, String)>,
+        dismissed: Vec<String>,
         bad_tree: bool,
         modal: bool,
+        menu: bool,
         hide_run: bool,
     }
 
@@ -531,7 +569,7 @@ mod tests {
             panel
                 .tokens
                 .insert("background".into(), "surface.base".into());
-            ViewNode::new(NodeKind::Stack, "root")
+            let mut root = ViewNode::new(NodeKind::Stack, "root")
                 .with_props(panel)
                 .child(ViewNode::new(NodeKind::Text, "title").with_props(Props {
                     text: Some("Fibers".into()),
@@ -567,7 +605,24 @@ mod tests {
                         .child(button("no", "No"))
                 } else {
                     ViewNode::new(NodeKind::Spacer, "no-modal")
-                })
+                });
+            // Appended only when open, unlike `modal`'s placeholder spacer:
+            // the menu is the last child, so its absence shifts nothing, and
+            // every test written before it must keep seeing the same tree.
+            if self.menu {
+                root = root.child(
+                    ViewNode::new(NodeKind::Surface, "menu")
+                        .with_props(Props {
+                            layer: Some(Layer::Popup),
+                            anchor: Some(Anchor::Viewport),
+                            clamp: Some(ClampRule::Shrink),
+                            input_policy: Some(InputPolicy::DismissOutside),
+                            ..Props::default()
+                        })
+                        .child(button("open", "Open")),
+                );
+            }
+            root
         }
 
         fn handle(&mut self, event: &InputEvent, route: &Route) {
@@ -583,12 +638,128 @@ mod tests {
             self.seen.push((kind, where_));
         }
 
+        fn dismissed(&mut self, ids: &[String]) {
+            self.dismissed.extend(ids.iter().cloned());
+        }
+
         fn take_changes(&mut self) -> ChangeSet {
             // The fixture does not track which nodes moved; `All` is the
             // honest conservative answer and is what every test below relies
             // on when it mutates a field and expects the next pass to see it.
             ChangeSet::All
         }
+    }
+
+    /// One primary press at `pos`, the way egui reports a click.
+    fn press_at(pos: egui::Pos2) -> RawInput {
+        let mut input = RawInput::default();
+        input.events.push(Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::default(),
+        });
+        input
+    }
+
+    /// The placed rectangle of the one placement whose canonical id ends with
+    /// `suffix`, and a point outside it.
+    ///
+    /// Derived from the frame rather than written as a constant, so the test
+    /// keeps meaning "outside" when the layout moves the surface.
+    fn placed_and_outside(host: &Host<Demo>, suffix: &str) -> (Rect, egui::Pos2) {
+        let rect = host
+            .frame()
+            .expect("a frame")
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with(suffix))
+            .unwrap_or_else(|| panic!("no placement id ends with {suffix}"))
+            .rect;
+        let outside = egui::Pos2::new(rect.x + rect.w + 20.0, rect.y + rect.h + 20.0);
+        assert!(
+            !rect.contains(Point::new(outside.x, outside.y)),
+            "the fixture's 'outside' point is inside {rect:?}"
+        );
+        (rect, outside)
+    }
+
+    /// `InputPolicy::Block` reaching the host: a press outside an open modal
+    /// never gets to the page behind it.
+    ///
+    /// The z-order walk alone would have delivered this press to whatever it
+    /// hit, because a modal is not obliged to cover the screen. Swallowing it
+    /// is the whole difference between a modal and a floating panel.
+    #[test]
+    fn a_press_outside_an_open_modal_is_swallowed() {
+        let ctx = headless();
+        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        host.app_mut().modal = true;
+        step(&ctx, &mut host, RawInput::default());
+        let (_, outside) = placed_and_outside(&host, "/modal");
+
+        host.app_mut().seen.clear();
+        step(&ctx, &mut host, press_at(outside));
+
+        assert_eq!(
+            host.app().seen,
+            vec![(
+                "other".to_owned(),
+                "unrouted: outside every currently-open Block surface's bounds".to_owned()
+            )],
+            "the press must reach the application as an explicit drop, not vanish"
+        );
+        assert!(
+            host.app().dismissed.is_empty(),
+            "a Block surface asks for no dismissal"
+        );
+    }
+
+    /// `InputPolicy::DismissOutside` reaching the host: the application is
+    /// told which surface to close, and the press still routes.
+    #[test]
+    fn a_press_outside_a_dismiss_surface_is_reported_and_still_routes() {
+        let ctx = headless();
+        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        host.app_mut().menu = true;
+        step(&ctx, &mut host, RawInput::default());
+        let (_, outside) = placed_and_outside(&host, "/menu");
+
+        host.app_mut().seen.clear();
+        step(&ctx, &mut host, press_at(outside));
+
+        let dismissed = &host.app().dismissed;
+        assert_eq!(dismissed.len(), 1, "{dismissed:?}");
+        assert!(dismissed[0].ends_with("/menu"), "{dismissed:?}");
+        assert!(
+            !host
+                .app()
+                .seen
+                .iter()
+                .any(|(_, w)| w == "unrouted: outside every currently-open Block surface's bounds"),
+            "DismissOutside places no swallow boundary: {:?}",
+            host.app().seen
+        );
+    }
+
+    /// The other half of the contract, so the test above cannot pass by
+    /// reporting every press: inside the surface, nothing is dismissed.
+    #[test]
+    fn a_press_inside_a_dismiss_surface_dismisses_nothing() {
+        let ctx = headless();
+        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        host.app_mut().menu = true;
+        step(&ctx, &mut host, RawInput::default());
+        let (rect, _) = placed_and_outside(&host, "/menu");
+        let inside = egui::Pos2::new(rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
+
+        step(&ctx, &mut host, press_at(inside));
+
+        assert!(
+            host.app().dismissed.is_empty(),
+            "{:?}",
+            host.app().dismissed
+        );
     }
 
     fn headless() -> Context {
