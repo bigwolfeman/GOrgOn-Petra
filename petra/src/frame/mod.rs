@@ -77,6 +77,17 @@ pub struct PetrifiedFrame {
     /// This is the range a reuse pass copies: placement `i`'s subtree is
     /// `placements[i..i + subtree_len[i]]`.
     pub subtree_len: Vec<usize>,
+    /// The [`Slot`] each placement was *offered*, at the same index and the
+    /// same length.
+    ///
+    /// Not part of the frame's identity and not on the wire: a driver
+    /// `frame` response carries placements, and the digest is recomputable
+    /// from `(viewport, placements)` alone. This array exists for the
+    /// incremental path, which cannot decide whether re-placing a subtree
+    /// would change anything by looking at the rect the node *took* — a
+    /// container may hand a child less than it asked for, and two different
+    /// offers can produce the same taken rect.
+    pub slots: Vec<Slot>,
     /// What the frame was negotiated against.
     pub viewport: Viewport,
     /// Motion in force at petrify time.
@@ -213,7 +224,13 @@ pub fn petrify(
         path.is_empty(),
         "the walk must leave the path as it found it"
     );
-    let (placements, content, subtree_len) = sink.into_parts();
+    let placed = sink.into_parts();
+    let (placements, content, subtree_len, slots) = (
+        placed.placements,
+        placed.content,
+        placed.subtree_len,
+        placed.slots,
+    );
     // Computed once: the array is what a reuse pass needs, and the root
     // entry is what the frame digest is built from — no reason to walk the
     // Merkle tree a second time to get the same root hash.
@@ -226,6 +243,7 @@ pub fn petrify(
         content,
         subtree_hashes,
         subtree_len,
+        slots,
         viewport,
         transitions,
     };

@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 
 use crate::geom::Rect;
+use crate::layout::Slot;
 use crate::tree::{Interaction, NodeKind, Role, TextWrap};
 
 /// Paint-relevant state that is not geometry but does change the picture.
@@ -177,6 +178,23 @@ pub trait PlacementSink {
     fn leave(&mut self);
     /// Placements recorded so far, in pre-order.
     fn placed(&self) -> &[Placement];
+    /// Record the [`Slot`] the placement at `index` was offered.
+    ///
+    /// Called by the dispatcher once the node's whole subtree has been
+    /// placed, for the same reason [`PlacementSink::attach`] is: the
+    /// dispatcher holds the effective slot (after this node's own opacity
+    /// and z have been folded in) and the index, so no container has to
+    /// remember to hand either back.
+    ///
+    /// This is the input an incremental pass compares against. A placement
+    /// carries the rect the node *took*, which a container may make smaller
+    /// than what it was *given*; only the offer decides whether re-placing
+    /// the subtree would produce the same answer
+    /// (`.agents/notes/proposed/architecture/2026-08-22-petra-incremental-frames.md`,
+    /// condition 2). Storing the taken rect instead would silently accept a
+    /// subtree whose parent moved the box around it.
+    fn note_slot(&mut self, index: usize, slot: Slot);
+
     /// Attach the paint payload for the placement at `index`.
     ///
     /// Called by the dispatcher, not by containers: every container pushes its
@@ -214,6 +232,12 @@ pub struct PlacementList {
     /// `[i, i + subtree_len[i])`. See [`PlacementList::into_parts`] for why
     /// this is a parallel array rather than a field on [`Placement`].
     subtree_len: Vec<usize>,
+    /// The slot each placement was offered, at the same index. `None` until
+    /// the dispatcher notes it, which it does for every node it places —
+    /// [`PlacementList::into_parts`] refuses a list where one is missing
+    /// rather than substituting a default, because a wrong slot in the memo
+    /// is a stale subtree in some later frame.
+    slots: Vec<Option<Slot>>,
     stack: Vec<usize>,
 }
 
@@ -245,15 +269,43 @@ impl PlacementList {
     /// derivations of one tree that can silently drift apart is exactly the
     /// kind of defect that later shows up as a wrong subtree copied by the
     /// incremental placement path.
+    ///
+    /// # Panics
+    /// If any placement's slot was never noted. That is a dispatcher bug, not
+    /// an input error, and it is fatal rather than defaulted: a missing slot
+    /// would be silently filled with a rect no node was offered, and the
+    /// first incremental frame to compare against it would reuse a subtree
+    /// whose parent had moved.
     #[must_use]
-    pub fn into_parts(self) -> (Vec<Placement>, Vec<PaintContent>, Vec<usize>) {
+    pub fn into_parts(self) -> PlacedTree {
         debug_assert_eq!(self.placements.len(), self.content.len());
         debug_assert_eq!(self.placements.len(), self.subtree_len.len());
+        debug_assert_eq!(self.placements.len(), self.slots.len());
         debug_assert!(
             extents_match_parents(&self.placements, &self.subtree_len),
             "subtree_len disagrees with Placement::parent"
         );
-        (self.placements, self.content, self.subtree_len)
+        let slots = self
+            .slots
+            .iter()
+            .enumerate()
+            .map(|(i, slot)| {
+                slot.unwrap_or_else(|| {
+                    panic!(
+                        "placement {i} ({}) was pushed without its slot ever \
+                         being noted; every node the dispatcher places must \
+                         reach `PlacementSink::note_slot`",
+                        self.placements[i].id
+                    )
+                })
+            })
+            .collect();
+        PlacedTree {
+            placements: self.placements,
+            content: self.content,
+            subtree_len: self.subtree_len,
+            slots,
+        }
     }
 
     /// The paint payloads, indexed alongside [`PlacementList::as_slice`].
@@ -269,6 +321,14 @@ impl PlacementList {
         &self.subtree_len
     }
 
+    /// The slot noted for `index`, or `None` if the dispatcher has not
+    /// reached it yet. Mid-walk this is genuinely `None` for every ancestor
+    /// still on the stack, which is why it is not a `&[Slot]`.
+    #[must_use]
+    pub fn slot(&self, index: usize) -> Option<Slot> {
+        self.slots.get(index).copied().flatten()
+    }
+
     /// How many placements were collected.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -282,6 +342,25 @@ impl PlacementList {
     }
 }
 
+/// Everything one placement walk produced, at equal length and equal index.
+///
+/// A named struct rather than a tuple because there are now four arrays and
+/// three of them are `Vec`s of the same shape: `(placements, content,
+/// subtree_len, slots)` is exactly the kind of signature where two get
+/// swapped at a call site and nothing complains.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlacedTree {
+    /// Every node's final geometry, in tree pre-order.
+    pub placements: Vec<Placement>,
+    /// What each placement draws.
+    pub content: Vec<PaintContent>,
+    /// How many placements each index's subtree occupies, itself included.
+    pub subtree_len: Vec<usize>,
+    /// The slot each placement was offered — what an incremental pass
+    /// compares to decide whether re-placing would change anything.
+    pub slots: Vec<Slot>,
+}
+
 impl PlacementSink for PlacementList {
     fn push(&mut self, mut placement: Placement) -> usize {
         placement.parent = self.stack.last().copied();
@@ -290,11 +369,17 @@ impl PlacementSink for PlacementList {
         // A leaf until proven otherwise: `leave` grows this to the full
         // subtree size once every descendant has been pushed.
         self.subtree_len.push(1);
+        // Noted by the dispatcher once this node's subtree is complete.
+        self.slots.push(None);
         self.placements.len() - 1
     }
 
     fn placed(&self) -> &[Placement] {
         &self.placements
+    }
+
+    fn note_slot(&mut self, index: usize, slot: Slot) {
+        self.slots[index] = Some(slot);
     }
 
     fn attach(&mut self, index: usize, content: PaintContent) {
@@ -354,6 +439,7 @@ fn extents_match_parents(placements: &[Placement], subtree_len: &[usize]) -> boo
 mod tests {
     use super::{PaintState, Placement, PlacementList, PlacementSemantics, PlacementSink};
     use crate::geom::Rect;
+    use crate::layout::Slot;
     use crate::tree::NodeKind;
 
     fn placement(id: &str) -> Placement {
@@ -440,13 +526,19 @@ mod tests {
         let mut list = PlacementList::new();
         let root = list.push(placement("/root"));
         list.enter(root);
-        list.push(placement("/root/a"));
+        let a = list.push(placement("/root/a"));
         list.leave();
+        // The dispatcher notes these during a real walk; this test drives the
+        // sink directly, so it stands in for the dispatcher.
+        list.note_slot(a, Slot::new(Rect::new(0.0, 0.0, 5.0, 5.0)));
+        list.note_slot(root, Slot::new(Rect::new(0.0, 0.0, 10.0, 10.0)));
 
-        let (placements, content, subtree_len) = list.into_parts();
-        assert_eq!(placements.len(), 2);
-        assert_eq!(content.len(), 2);
-        assert_eq!(subtree_len, vec![2, 1]);
+        let placed = list.into_parts();
+        assert_eq!(placed.placements.len(), 2);
+        assert_eq!(placed.content.len(), 2);
+        assert_eq!(placed.subtree_len, vec![2, 1]);
+        assert_eq!(placed.slots.len(), 2);
+        assert_eq!(placed.slots[1].rect, Rect::new(0.0, 0.0, 5.0, 5.0));
     }
 
     /// The sabotage proof for the debug assertion in `into_parts`: build a
@@ -460,9 +552,12 @@ mod tests {
         let mut list = PlacementList::new();
         let root = list.push(placement("/root"));
         list.enter(root);
-        list.push(placement("/root/a"));
+        let a = list.push(placement("/root/a"));
         list.leave();
-        let (placements, _content, subtree_len) = list.into_parts();
+        list.note_slot(a, Slot::new(Rect::new(0.0, 0.0, 5.0, 5.0)));
+        list.note_slot(root, Slot::new(Rect::new(0.0, 0.0, 10.0, 10.0)));
+        let placed = list.into_parts();
+        let (placements, subtree_len) = (placed.placements, placed.subtree_len);
 
         assert!(super::extents_match_parents(&placements, &subtree_len));
 

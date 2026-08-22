@@ -340,6 +340,13 @@ mod tests {
         // real child.
         let subtree_hashes = digest::subtree_hashes(viewport.scale, &placements);
         let subtree_len = vec![1; placements.len()];
+        // Likewise for the slots: these fixtures were never offered anything
+        // by a parent, so each stands in as its own offer. Nothing in
+        // hit-testing reads them.
+        let slots: Vec<crate::layout::Slot> = placements
+            .iter()
+            .map(|p| crate::layout::Slot::new(p.rect))
+            .collect();
         let content = vec![crate::frame::PaintContent::default(); placements.len()];
         PetrifiedFrame {
             seq: 1,
@@ -348,6 +355,7 @@ mod tests {
             content,
             subtree_hashes,
             subtree_len,
+            slots,
             viewport,
             transitions: TransitionActivity::default(),
         }

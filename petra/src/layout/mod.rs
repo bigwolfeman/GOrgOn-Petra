@@ -357,6 +357,11 @@ pub fn place(
         if !content.is_empty() {
             sink.attach(index, content);
         }
+        // The offer, not the answer. Noted after the subtree is complete so
+        // that a container cannot forget it, and noted here rather than in
+        // `place_kind` so the twelve kinds cannot disagree about whether
+        // "the slot" means before or after this node's own opacity and z.
+        sink.note_slot(index, slot);
     }
     path.pop();
 }
