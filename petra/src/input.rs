@@ -213,6 +213,33 @@ pub fn required_interaction(event: &InputEvent) -> Option<Interaction> {
     }
 }
 
+/// Whether this event is a keyboard activation — the keystroke that stands in
+/// for a primary click on the focused node.
+///
+/// FR-025 asks for every interactive node to be "reachable **and operable** by
+/// keyboard alone". A button declares [`Interaction::Click`] and
+/// [`Interaction::Focus`] and has no reason to declare [`Interaction::Key`], so
+/// without this rule Tab reaches it and Enter does nothing at all: the node is
+/// reachable and inert. Enter and Space are the desktop convention for that
+/// stand-in, and only on the press — a release activating a second time would
+/// fire every handler twice.
+///
+/// This widens [`route`] rather than [`required_interaction`], because the
+/// interaction a node must declare does not change: an activation key is
+/// accepted by a node declaring *either* `Key` (which takes precedence, so a
+/// text field still sees its own Enter) *or* `Click`.
+#[must_use]
+pub fn activates(event: &InputEvent) -> bool {
+    matches!(
+        event,
+        InputEvent::Key {
+            key: KeyCode::Enter | KeyCode::Space,
+            pressed: true,
+            ..
+        }
+    )
+}
+
 /// The topmost placement at `pos` that accepts `interaction`.
 ///
 /// "Topmost" is the frame's own paint order read backwards, so what the user
@@ -261,7 +288,9 @@ pub fn route(frame: &PetrifiedFrame, focused: Option<&str>, event: &InputEvent) 
             reason: "the focused node is not in this frame",
         };
     };
-    if target.semantics.disabled || !target.semantics.actions.contains(&interaction) {
+    let accepted = target.semantics.actions.contains(&interaction)
+        || (activates(event) && target.semantics.actions.contains(&Interaction::Click));
+    if target.semantics.disabled || !accepted {
         return Route::Unrouted {
             reason: "the focused node does not accept this event",
         };
@@ -274,7 +303,8 @@ pub fn route(frame: &PetrifiedFrame, focused: Option<&str>, event: &InputEvent) 
 #[cfg(test)]
 mod tests {
     use super::{
-        InputEvent, KeyCode, Modifiers, PointerButton, Route, hit_test, required_interaction, route,
+        InputEvent, KeyCode, Modifiers, PointerButton, Route, activates, hit_test,
+        required_interaction, route,
     };
     use crate::frame::{
         FrameDigest, PaintState, PetrifiedFrame, Placement, PlacementSemantics, TransitionActivity,
@@ -437,10 +467,18 @@ mod tests {
             repeat: false,
             modifiers: Modifiers::NONE,
         };
+        // Not an activation key: `/btn` declares `Click` alone, and only
+        // Enter/Space reach a click-only node.
+        let typing = InputEvent::Key {
+            key: KeyCode::Char('x'),
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
         let reasons: Vec<&str> = [
             route(&f, None, &key),
             route(&f, Some("/gone"), &key),
-            route(&f, Some("/btn"), &key),
+            route(&f, Some("/btn"), &typing),
             route(
                 &f,
                 None,
@@ -464,6 +502,97 @@ mod tests {
         sorted.sort_unstable();
         sorted.dedup();
         assert_eq!(sorted.len(), 5, "{reasons:?}");
+    }
+
+    /// FR-025's "operable": Tab reaches a button, and Enter or Space then
+    /// works it, even though a button declares `Click` and never `Key`.
+    #[test]
+    fn enter_and_space_work_a_focused_node_that_only_declares_click() {
+        let f = frame(vec![node(
+            "/btn",
+            Rect::new(0.0, 0.0, 100.0, 100.0),
+            0,
+            &[Interaction::Click, Interaction::Focus],
+        )]);
+        for key in [KeyCode::Enter, KeyCode::Space] {
+            let press = InputEvent::Key {
+                key,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            };
+            assert!(activates(&press), "{key:?} should activate");
+            assert_eq!(
+                route(&f, Some("/btn"), &press),
+                Route::Keyboard {
+                    node: "/btn".into()
+                },
+                "{key:?} on a focused button must land on it"
+            );
+        }
+    }
+
+    /// The widening is exactly two keys on press. Anything else still needs
+    /// the `Key` interaction, so a click-only node does not become a keyboard
+    /// sink.
+    #[test]
+    fn only_the_activation_keys_reach_a_click_only_node() {
+        let f = frame(vec![node(
+            "/btn",
+            Rect::new(0.0, 0.0, 100.0, 100.0),
+            0,
+            &[Interaction::Click, Interaction::Focus],
+        )]);
+        let cases = [
+            KeyCode::Char('x'),
+            KeyCode::Tab,
+            KeyCode::Escape,
+            KeyCode::Down,
+        ];
+        for key in cases {
+            let press = InputEvent::Key {
+                key,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            };
+            assert!(!activates(&press), "{key:?} must not activate");
+            assert!(
+                matches!(route(&f, Some("/btn"), &press), Route::Unrouted { .. }),
+                "{key:?} reached a node that never declared Key"
+            );
+        }
+        let release = InputEvent::Key {
+            key: KeyCode::Enter,
+            pressed: false,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        assert!(!activates(&release), "only the press activates");
+    }
+
+    /// A disabled node is not operable by keyboard either, activation key or
+    /// not.
+    #[test]
+    fn a_disabled_node_is_not_activated_by_a_key() {
+        let mut disabled = node(
+            "/btn",
+            Rect::new(0.0, 0.0, 100.0, 100.0),
+            0,
+            &[Interaction::Click, Interaction::Focus],
+        );
+        disabled.semantics.disabled = true;
+        let f = frame(vec![disabled]);
+        let press = InputEvent::Key {
+            key: KeyCode::Enter,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        assert!(matches!(
+            route(&f, Some("/btn"), &press),
+            Route::Unrouted { .. }
+        ));
     }
 
     #[test]

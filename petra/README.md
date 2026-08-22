@@ -19,10 +19,17 @@ crate and a contract disagree, the contract wins.
 
 - `src/anim/` and `src/semantic/` are module headers with no code (tasks
   T027, T048-T055). Transitions and the semantic projection do not exist yet.
-- `src/focus/` is implemented but **not wired to any host**. Nothing outside
-  the module constructs a `FocusTree`, and `LayoutState::focused` is written
-  only by tests, so keyboard traversal does not happen in a running
-  application yet (tasks T030, T041). FR-025 should not be read as met.
+- `src/focus/` is wired: `gorgon-petra-egui`'s `Host` owns one `FocusTree`,
+  reconciles it with every placed frame, and publishes the result to
+  `LayoutState::focused`. Tab and Shift+Tab traverse, Home and End jump to the
+  first and last focusable when the focused node declares no `Key` interaction,
+  and Enter or Space works a focused node that declares `Click`. What is
+  **not** done: nothing *shows* focus. `PlacementSemantics` carries no
+  `focused` flag, no container reads `LayoutState::focused` during
+  negotiation, and no painter draws a focus ring — so a keyboard user can
+  reach and operate a node without seeing which one it is (tasks T027,
+  T048-T055). A node that declares `Click` without `Focus` is still
+  unreachable by keyboard; nothing in tree acceptance requires the pair yet.
 - `Anchor::Node` resolves the same way `Anchor::Viewport` does. The surface is
   anchored to the viewport rather than to the named node, and
   `overlay_surface::resolve_anchor_kind` says so rather than pretending

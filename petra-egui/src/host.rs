@@ -8,14 +8,29 @@
 //! egui's `Ui` is never constructed. The only egui surfaces used are a raw
 //! layer painter, the font stack behind [`crate::text::GalleyShaper`], and the
 //! event stream.
+//!
+//! # Where keyboard reachability lives (FR-025)
+//!
+//! [`Host`] owns the one [`FocusTree`] a running window has. Each pass
+//! reconciles it with the frame just placed
+//! ([`FocusTree::update`] — the vanished-focus rule) and writes the result to
+//! `LayoutState::focused`, which is what [`gorgon_petra::input::route`] aims
+//! every keyboard event with. Tab and Shift+Tab are consumed here for
+//! traversal rather than delivered to the application; everything else is
+//! routed. That is the whole of the wiring, and it is deliberately in the
+//! host: `gorgon-petra` decides *what* focus does, this crate decides *when*.
+
+use std::collections::BTreeMap;
 
 use egui::{Context, Id, LayerId, Order};
+use gorgon_petra::focus::FocusTree;
 use gorgon_petra::frame::{FrameCounter, PetrifiedFrame, TransitionActivity, Viewport, petrify};
 use gorgon_petra::geom::{Scale, Size};
-use gorgon_petra::input::{InputEvent, Route, route};
+use gorgon_petra::input::{InputEvent, KeyCode, Route, route};
+use gorgon_petra::layout::overlay_surface::surface_scopes;
 use gorgon_petra::layout::{LayoutCtx, LayoutState, MeasureCache, RowSource};
 use gorgon_petra::token::Presenter;
-use gorgon_petra::tree::{NodeKind, Props, Registry, ViewNode, validate};
+use gorgon_petra::tree::{InputPolicy, Interaction, NodeKind, Props, Registry, ViewNode, validate};
 
 use crate::input::EventTranslator;
 use crate::paint::{PaintReport, paint_frame};
@@ -60,6 +75,7 @@ pub struct Host<A: App> {
     registry: Registry,
     last_frame: Option<PetrifiedFrame>,
     last_report: Option<PaintReport>,
+    focus: FocusTree,
 }
 
 impl<A: App> Host<A> {
@@ -76,6 +92,7 @@ impl<A: App> Host<A> {
             registry: Registry::new(),
             last_frame: None,
             last_report: None,
+            focus: FocusTree::default(),
         }
     }
 
@@ -97,11 +114,28 @@ impl<A: App> Host<A> {
 
     /// The layout state this host negotiates against: focus and scroll offsets.
     ///
-    /// Public because focus and scrolling are driven from outside the engine —
-    /// by the focus tree, by the scroll gesture handler, and by the driver's
-    /// synthetic input — and none of those live here.
+    /// Public because scrolling is driven from outside the engine — by the
+    /// scroll gesture handler and by the driver's synthetic input — and
+    /// neither lives here. `focused` is **not** a field to write through this
+    /// handle: [`Host::pass`] overwrites it from [`Host::focus`] every frame,
+    /// so a value poked in here survives only until the next pass. Move focus
+    /// with [`Host::focus_mut`] instead, which goes through the focus tree and
+    /// therefore respects a modal's scope.
     pub fn state_mut(&mut self) -> &mut LayoutState {
         &mut self.state
+    }
+
+    /// The focus tree this host traverses: order, current focus, active scope.
+    pub fn focus(&self) -> &FocusTree {
+        &self.focus
+    }
+
+    /// The focus tree, mutably — the way a driver or an application moves
+    /// focus programmatically ([`FocusTree::focus`] refuses a move that would
+    /// leave an open modal). The move reaches `LayoutState::focused` at the
+    /// start of the next [`Host::pass`].
+    pub fn focus_mut(&mut self) -> &mut FocusTree {
+        &mut self.focus
     }
 
     /// The layout state this host negotiates against.
@@ -135,6 +169,10 @@ impl<A: App> Host<A> {
         };
 
         self.deliver_input(ctx);
+        // Input may have moved focus; the negotiation below reads
+        // `LayoutState`, so publish it before the frame is measured rather
+        // than after it is painted.
+        self.publish_focus();
 
         // Theme and scale are global inputs to every measurement, so a change
         // to either invalidates wholesale; per-node content revisions are
@@ -191,9 +229,73 @@ impl<A: App> Host<A> {
             report.desynced
         );
 
+        // The frame is placed, so this is the first moment the new placements
+        // exist to reconcile focus against: `update` carries the focused node
+        // forward, or applies the vanished-focus rule when it is gone. Doing
+        // it here rather than at the top of the next pass is what keeps an
+        // event arriving between two frames aimed at a node that still exists.
+        let scopes = surface_scopes(&tree);
+        self.focus = self.focus.update(&frame.placements, &scopes);
+        self.enter_open_modal(&frame, &scopes);
+        self.publish_focus();
+
         self.schedule(ctx, &frame);
         self.last_frame = Some(frame);
         self.last_report = Some(report);
+    }
+
+    /// Seat focus inside the frontmost blocking surface when it is outside
+    /// every one of them.
+    ///
+    /// [`FocusTree`] traps traversal inside a modal's scope, but only once
+    /// focus is *in* it: `next`/`previous` cycle within the current scope, so
+    /// a modal that opens while focus sits on the page behind it would never
+    /// be reached by Tab at all. Deciding that a modal takes focus when it
+    /// opens is a host policy, which is why it lives here and not in the focus
+    /// module.
+    ///
+    /// Two deliberate no-ops: focus already inside *some* blocking scope is
+    /// left alone (a second modal opening over an open one does not steal it —
+    /// stacked modals need a rule this spec does not have yet), and a modal
+    /// with nothing focusable in it does not empty the focus tree.
+    fn enter_open_modal(&mut self, frame: &PetrifiedFrame, scopes: &BTreeMap<String, InputPolicy>) {
+        if self.focus.active_scope().is_some() {
+            return;
+        }
+        let Some(modal) = frame
+            .paint_order()
+            .into_iter()
+            .rev()
+            .find(|p| scopes.get(&p.id) == Some(&InputPolicy::Block))
+            .map(|p| p.id.clone())
+        else {
+            return;
+        };
+        let Some(target) = self
+            .focus
+            .order()
+            .iter()
+            .find(|id| self.focus.scope_of(id) == Some(modal.as_str()))
+            .cloned()
+        else {
+            return;
+        };
+        if let Err(err) = self.focus.focus(&target) {
+            debug_assert!(
+                false,
+                "a node this frame's own focus order lists was refused focus: {err}"
+            );
+        }
+    }
+
+    /// Copy the focus tree's current node into the state the engine reads and
+    /// the router aims with. The one direction the copy runs is deliberate:
+    /// [`FocusTree`] is the owner, `LayoutState::focused` is the projection.
+    fn publish_focus(&mut self) {
+        let current = self.focus.current().map(str::to_owned);
+        if self.state.focused != current {
+            self.state.focused = current;
+        }
     }
 
     fn deliver_input(&mut self, ctx: &Context) {
@@ -207,6 +309,9 @@ impl<A: App> Host<A> {
         // application is told, through an `Unrouted` route, instead of the
         // event just vanishing.
         for event in &translated {
+            if self.traverse(event) {
+                continue;
+            }
             let route = match &self.last_frame {
                 Some(frame) => route(frame, self.state.focused.as_deref(), event),
                 None => Route::Unrouted {
@@ -215,6 +320,68 @@ impl<A: App> Host<A> {
             };
             self.app.handle(event, &route);
         }
+    }
+
+    /// Move focus if `event` is a traversal keystroke, and report whether it
+    /// was consumed.
+    ///
+    /// **Tab and Shift+Tab always traverse**, whatever the focused node
+    /// declares, and never reach [`App::handle`]. FR-025 makes every
+    /// interactive node reachable by keyboard; if a focused node could swallow
+    /// Tab, reachability would depend on every application getting that right,
+    /// and the authoring vocabulary has no "this node wants a literal Tab"
+    /// opt-in to make swallowing safe. A node that needs one needs that flag
+    /// first — see this crate's README.
+    ///
+    /// **Home and End traverse only when the focused node cannot use them**,
+    /// i.e. when it does not declare [`Interaction::Key`]. Unlike Tab they
+    /// have an older meaning inside a node (start and end of a line), and a
+    /// text field must keep it. Nothing in `specs/003-petra-layout-engine`
+    /// binds these two keys; this is the host's choice, recorded here.
+    ///
+    /// Arrow keys are *not* traversal: they route to the focused node like any
+    /// other key. Directional movement inside a collection needs a rule the
+    /// spec does not define yet and a focus tree that knows about geometry.
+    fn traverse(&mut self, event: &InputEvent) -> bool {
+        let InputEvent::Key {
+            key,
+            pressed: true,
+            modifiers,
+            ..
+        } = event
+        else {
+            return false;
+        };
+        if modifiers.ctrl || modifiers.alt || modifiers.meta {
+            return false;
+        }
+        match key {
+            KeyCode::Tab if modifiers.shift => self.focus.previous(),
+            KeyCode::Tab => self.focus.next(),
+            KeyCode::Home | KeyCode::End if modifiers.shift => return false,
+            KeyCode::Home if !self.focus_accepts(Interaction::Key) => self.focus.first(),
+            KeyCode::End if !self.focus_accepts(Interaction::Key) => self.focus.last(),
+            _ => return false,
+        }
+        // Later events in this same batch must aim at the node focus just
+        // moved to, not at the one it left.
+        self.publish_focus();
+        true
+    }
+
+    /// Whether the focused node in the last placed frame declares
+    /// `interaction`. `false` when nothing is focused, when the focused node
+    /// is not in that frame, or before the first frame exists.
+    fn focus_accepts(&self, interaction: Interaction) -> bool {
+        let Some(frame) = &self.last_frame else {
+            return false;
+        };
+        let Some(id) = self.focus.current() else {
+            return false;
+        };
+        frame
+            .placement(id)
+            .is_some_and(|p| !p.semantics.disabled && p.semantics.actions.contains(&interaction))
     }
 
     /// Ask for another frame only when something is still moving.
@@ -274,7 +441,9 @@ mod tests {
     use egui::{Context, Event, Key, Modifiers, RawInput};
     use gorgon_petra::input::{InputEvent, Route};
     use gorgon_petra::layout::RowSource;
-    use gorgon_petra::tree::{Interaction, NodeKind, Props, Role, ViewNode};
+    use gorgon_petra::tree::{
+        Anchor, ClampRule, InputPolicy, Interaction, Layer, NodeKind, Props, Role, ViewNode,
+    };
     use std::ops::Range;
 
     #[derive(Default)]
@@ -282,6 +451,23 @@ mod tests {
         rev: u64,
         seen: Vec<(String, String)>,
         bad_tree: bool,
+        modal: bool,
+        hide_run: bool,
+    }
+
+    /// A focusable, clickable text button — a `Role::Button` node declaring
+    /// exactly what a real one does: `Click` and `Focus`, never `Key`.
+    fn button(key: &str, label: &str) -> ViewNode {
+        ViewNode::new(NodeKind::Text, key)
+            .with_props(Props {
+                text: Some(label.to_owned()),
+                ..Props::default()
+            })
+            .interactive(
+                Role::Button,
+                label.to_owned(),
+                &[Interaction::Focus, Interaction::Click],
+            )
     }
 
     impl RowSource for Demo {
@@ -314,21 +500,44 @@ mod tests {
                             placeholder: Some("Filter".into()),
                             ..Props::default()
                         })
-                        .interactive(Role::TextInput, "Filter fibers", &[Interaction::Key]),
+                        .interactive(
+                            Role::TextInput,
+                            "Filter fibers",
+                            &[Interaction::Focus, Interaction::Key, Interaction::TextEdit],
+                        ),
                 )
+                .child(if self.hide_run {
+                    ViewNode::new(NodeKind::Spacer, "gap")
+                } else {
+                    button("run", "Run")
+                })
+                .child(if self.modal {
+                    ViewNode::new(NodeKind::Surface, "modal")
+                        .with_props(Props {
+                            layer: Some(Layer::Modal),
+                            anchor: Some(Anchor::Viewport),
+                            clamp: Some(ClampRule::Shrink),
+                            input_policy: Some(InputPolicy::Block),
+                            ..Props::default()
+                        })
+                        .child(button("yes", "Yes"))
+                        .child(button("no", "No"))
+                } else {
+                    ViewNode::new(NodeKind::Spacer, "no-modal")
+                })
         }
 
         fn handle(&mut self, event: &InputEvent, route: &Route) {
             let kind = match event {
-                InputEvent::Key { .. } => "key",
-                InputEvent::Text(_) => "text",
-                _ => "other",
+                InputEvent::Key { key, .. } => format!("key:{key:?}"),
+                InputEvent::Text(_) => "text".to_owned(),
+                _ => "other".to_owned(),
             };
             let where_ = match route {
                 Route::Pointer { node } | Route::Keyboard { node } => node.clone(),
                 Route::Unrouted { reason } => format!("unrouted: {reason}"),
             };
-            self.seen.push((kind.into(), where_));
+            self.seen.push((kind, where_));
         }
 
         fn content_rev(&self) -> u64 {
@@ -366,10 +575,13 @@ mod tests {
 
         let frame = host.frame().expect("a frame");
         assert_eq!(frame.seq, 1);
-        assert_eq!(frame.placements.len(), 3);
+        assert_eq!(frame.placements.len(), 5);
         let report = host.report().expect("a report");
         assert!(report.is_complete(), "{report:?}");
-        assert_eq!(report.texts, 2, "the title and the field's placeholder");
+        assert_eq!(
+            report.texts, 3,
+            "the title, the field's placeholder, and the button"
+        );
         assert!(report.unresolved_tokens.is_empty(), "{report:?}");
     }
 
@@ -416,6 +628,19 @@ mod tests {
         assert!(seen[0].1.starts_with("unrouted:"), "{seen:?}");
     }
 
+    /// One key press, as the platform reports it.
+    fn key_press(key: Key, modifiers: Modifiers) -> RawInput {
+        let mut input = RawInput::default();
+        input.events.push(Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        });
+        input
+    }
+
     /// Once a frame exists, a keystroke routes to the focused node through the
     /// real router — the same path a driver's synthetic key will take.
     #[test]
@@ -423,23 +648,175 @@ mod tests {
         let ctx = headless();
         let mut host = Host::new(&ctx, Demo::default(), default_presenter());
         step(&ctx, &mut host, RawInput::default());
-        host.state_mut().focused = Some("/root/filter".into());
+        assert_eq!(host.state().focused.as_deref(), Some("/root/filter"));
 
-        let mut input = RawInput::default();
-        input.events.push(Event::Key {
-            key: Key::A,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers: Modifiers::NONE,
-        });
-        step(&ctx, &mut host, input);
+        step(&ctx, &mut host, key_press(Key::A, Modifiers::NONE));
 
         let seen = &host.app().seen;
         assert!(
-            seen.iter().any(|(k, w)| k == "key" && w == "/root/filter"),
+            seen.iter()
+                .any(|(k, w)| k.starts_with("key:") && w == "/root/filter"),
             "{seen:?}"
         );
+    }
+
+    /// FR-025, the half that decides whether a window is operable at all:
+    /// pressing Tab moves focus, and Shift+Tab moves it back. This is the test
+    /// that fails when the host holds no focus tree — `state().focused` then
+    /// stays `None` for every frame and every key press lands nowhere.
+    #[test]
+    fn tab_walks_focus_forward_and_shift_tab_walks_it_back() {
+        let ctx = headless();
+        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        step(&ctx, &mut host, RawInput::default());
+        assert_eq!(
+            host.state().focused.as_deref(),
+            Some("/root/filter"),
+            "the first focusable in visual order is seated by the first frame"
+        );
+
+        step(&ctx, &mut host, key_press(Key::Tab, Modifiers::NONE));
+        assert_eq!(
+            host.state().focused.as_deref(),
+            Some("/root/run"),
+            "Tab moves to the next focusable in visual order"
+        );
+
+        step(&ctx, &mut host, key_press(Key::Tab, Modifiers::SHIFT));
+        assert_eq!(
+            host.state().focused.as_deref(),
+            Some("/root/filter"),
+            "Shift+Tab moves back"
+        );
+    }
+
+    /// FR-025's other half. Tab *reaches* the button; Enter has to *work* it.
+    /// A button declares `Click` and `Focus` and never `Key`, so this is the
+    /// case that used to route nowhere.
+    #[test]
+    fn enter_works_the_focused_button_the_way_a_click_would() {
+        let ctx = headless();
+        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        step(&ctx, &mut host, RawInput::default());
+        step(&ctx, &mut host, key_press(Key::Tab, Modifiers::NONE));
+        assert_eq!(host.state().focused.as_deref(), Some("/root/run"));
+
+        step(&ctx, &mut host, key_press(Key::Enter, Modifiers::NONE));
+        let seen = &host.app().seen;
+        assert!(
+            seen.iter()
+                .any(|(k, w)| k == "key:Enter" && w == "/root/run"),
+            "Enter did not land on the focused button: {seen:?}"
+        );
+    }
+
+    /// Home traverses only when the focused node has no use for it. A text
+    /// field declares `Key`, so it keeps its own Home; a button does not, so
+    /// Home jumps to the first focusable.
+    #[test]
+    fn home_traverses_only_when_the_focused_node_cannot_use_it() {
+        let ctx = headless();
+        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        step(&ctx, &mut host, RawInput::default());
+        assert_eq!(host.state().focused.as_deref(), Some("/root/filter"));
+
+        step(&ctx, &mut host, key_press(Key::Home, Modifiers::NONE));
+        assert_eq!(
+            host.state().focused.as_deref(),
+            Some("/root/filter"),
+            "Home was stolen from a node that declares Key"
+        );
+        assert!(
+            host.app()
+                .seen
+                .iter()
+                .any(|(k, w)| k == "key:Home" && w == "/root/filter"),
+            "{:?}",
+            host.app().seen
+        );
+
+        step(&ctx, &mut host, key_press(Key::Tab, Modifiers::NONE));
+        step(&ctx, &mut host, key_press(Key::Home, Modifiers::NONE));
+        assert_eq!(
+            host.state().focused.as_deref(),
+            Some("/root/filter"),
+            "Home on a button must move focus to the first focusable"
+        );
+        assert!(
+            !host
+                .app()
+                .seen
+                .iter()
+                .any(|(k, w)| k == "key:Home" && w == "/root/run"),
+            "a consumed traversal key was also delivered: {:?}",
+            host.app().seen
+        );
+    }
+
+    /// The vanished-focus rule, through the host rather than in isolation:
+    /// the application stops emitting the focused node, and focus lands on a
+    /// node that is really in the new frame.
+    #[test]
+    fn focus_survives_the_focused_node_leaving_the_tree() {
+        let ctx = headless();
+        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        step(&ctx, &mut host, RawInput::default());
+        step(&ctx, &mut host, key_press(Key::Tab, Modifiers::NONE));
+        assert_eq!(host.state().focused.as_deref(), Some("/root/run"));
+
+        host.app_mut().hide_run = true;
+        host.app_mut().rev += 1;
+        step(&ctx, &mut host, RawInput::default());
+
+        let focused = host.state().focused.clone().expect("focus went nowhere");
+        assert_eq!(focused, "/root/filter");
+        assert!(
+            host.frame().unwrap().placement(&focused).is_some(),
+            "focus points at a node that is not in the frame"
+        );
+    }
+
+    /// A blocking surface takes focus when it opens, keeps Tab inside itself
+    /// while it is open, and gives focus back to the page when it closes.
+    /// This is the whole overlay-scope path: `surface_scopes` of the same tree
+    /// that produced the placements, folded into the focus tree.
+    #[test]
+    fn a_blocking_surface_takes_focus_traps_tab_and_gives_it_back() {
+        let ctx = headless();
+        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        step(&ctx, &mut host, RawInput::default());
+        assert_eq!(host.state().focused.as_deref(), Some("/root/filter"));
+
+        host.app_mut().modal = true;
+        host.app_mut().rev += 1;
+        step(&ctx, &mut host, RawInput::default());
+        assert_eq!(
+            host.state().focused.as_deref(),
+            Some("/root/modal/yes"),
+            "an open modal left focus on the page behind it"
+        );
+        assert_eq!(host.focus().active_scope(), Some("/root/modal"));
+
+        step(&ctx, &mut host, key_press(Key::Tab, Modifiers::NONE));
+        assert_eq!(host.state().focused.as_deref(), Some("/root/modal/no"));
+        step(&ctx, &mut host, key_press(Key::Tab, Modifiers::NONE));
+        assert_eq!(
+            host.state().focused.as_deref(),
+            Some("/root/modal/yes"),
+            "Tab escaped the modal instead of wrapping inside it"
+        );
+        step(&ctx, &mut host, key_press(Key::Tab, Modifiers::SHIFT));
+        assert_eq!(host.state().focused.as_deref(), Some("/root/modal/no"));
+
+        host.app_mut().modal = false;
+        host.app_mut().rev += 1;
+        step(&ctx, &mut host, RawInput::default());
+        assert_eq!(
+            host.state().focused.as_deref(),
+            Some("/root/run"),
+            "focus did not come back out of a closed modal"
+        );
+        assert_eq!(host.focus().active_scope(), None);
     }
 
     /// A refused tree is shown, not swallowed and not fatal.

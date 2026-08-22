@@ -15,6 +15,17 @@ mentions an egui type.
   test in this crate drives it headless, through an `egui::Context` with no
   event loop, no GPU, and no compositor. Layout, painting, shaping, and input
   translation are exercised; `eframe`'s native run path is not.
+- **Keyboard traversal is wired; a focus indicator is not.** `Host` owns the
+  window's `FocusTree`, updates it from each frame's placements, and writes
+  `LayoutState::focused`, so Tab and Shift+Tab move focus, Enter and Space work
+  a focused `Click` node, and an open `InputPolicy::Block` surface takes focus
+  and keeps Tab inside itself. Nothing paints a focus ring — see
+  `gorgon-petra`'s README — so keyboard operation currently works blind.
+  Traversal keys are consumed by the host and never reach `App::handle`: there
+  is no "this node wants a literal Tab" opt-in in the authoring vocabulary, so
+  a code editor cannot yet claim Tab for indentation. Stacked modals are also
+  unruled: a second blocking surface opening over an open one does not take
+  focus from it.
 - **AccessKit nodes are not pushed.** The crate has no `accesskit` dependency
   and the semantic tree does not reach the platform; incoming
   `AccessKitActionRequest` events are counted in

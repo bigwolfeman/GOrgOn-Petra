@@ -23,10 +23,13 @@
 //! # Overlay scopes
 //!
 //! A `surface` placement declaring [`InputPolicy::Block`] (a modal) opens a
-//! scope containing only its own subtree: while the focused node is inside
-//! that subtree, [`FocusTree::next`]/[`FocusTree::previous`] cycle only
-//! among focusables in the subtree, and [`FocusTree::focus`] refuses to move
-//! focus to anything outside it (`FocusError::OutsideActiveScope`).
+//! scope containing itself and its own subtree: while the focused node is
+//! inside that scope, [`FocusTree::next`]/[`FocusTree::previous`] cycle only
+//! among focusables in it, and [`FocusTree::focus`] refuses to move focus to
+//! anything outside it (`FocusError::OutsideActiveScope`). The surface is in
+//! its own scope, not merely above it — a modal that is itself focusable
+//! would otherwise be the one node from which traversal walks straight out
+//! of the trap.
 //! `Passthrough` and `DismissOutside` surfaces declare no scope at all —
 //! they are geometry and input routing only, and never trap focus.
 //!
@@ -47,6 +50,16 @@
 //! see [`successor`] — and `never_silently_empty_while_focusables_exist` is
 //! the test that pins it down: the only way [`FocusTree::current`] reads
 //! `None` is that the new frame has no focusable placement at all.
+//!
+//! That search runs **inside the blocking scope focus was trapped in**, when
+//! that scope still holds a focusable node in the new frame (see
+//! [`scoped_successor`]). Without that restriction a node vanishing from an
+//! open modal hands focus to whatever comes next globally — outside the
+//! modal, which is still blocking — and the trap becomes decorative exactly
+//! when it matters. The single case where the trap yields is a surviving
+//! modal with nothing focusable left inside it: trapping focus on nothing
+//! would drop every keystroke, so the unrestricted rule applies there and
+//! the never-silently-empty promise above holds unchanged.
 
 use std::collections::BTreeMap;
 
@@ -135,7 +148,14 @@ impl FocusTree {
         {
             self.current.clone()
         } else {
-            successor(&self.order, self.current.as_deref(), &order)
+            scoped_successor(
+                &self.order,
+                &self.scope_chain,
+                self.current.as_deref(),
+                self.active_scope(),
+                &order,
+                &scope_chain,
+            )
         };
         Self {
             order,
@@ -156,12 +176,23 @@ impl FocusTree {
         &self.order
     }
 
-    /// The blocking surface `current` is trapped inside, nearest first, or
-    /// `None` when focus is not inside any `Block` surface.
+    /// The blocking surface `current` is trapped inside, or `None` when focus
+    /// is not inside any `Block` surface.
     #[must_use]
     pub fn active_scope(&self) -> Option<&str> {
-        let current = self.current.as_deref()?;
-        self.scope_chain.get(current)?.first().map(String::as_str)
+        self.scope_of(self.current.as_deref()?)
+    }
+
+    /// The nearest blocking surface `id` is inside, or `None` when it is
+    /// inside none — or is not a focusable node this frame.
+    ///
+    /// [`FocusTree::active_scope`] is this question asked about `current`. A
+    /// host needs it asked about other ids too: "is the frontmost open modal
+    /// the one focus is in, and if not, which node inside it should focus
+    /// move to" is not answerable from `current` alone.
+    #[must_use]
+    pub fn scope_of(&self, id: &str) -> Option<&str> {
+        self.scope_chain.get(id)?.first().map(String::as_str)
     }
 
     /// Move focus to `id`.
@@ -278,30 +309,77 @@ fn index(
         order.push(placement.id.clone());
         scope_chain.insert(
             placement.id.clone(),
-            blocking_ancestors(idx, placements, surface_scopes),
+            blocking_scopes(idx, placements, surface_scopes),
         );
     }
     (order, scope_chain)
 }
 
-/// Every `Block`-policy surface ancestor of `placements[idx]`, nearest
+/// Every `Block`-policy surface scope `placements[idx]` is inside, nearest
 /// first, found by walking `Placement::parent` — the same index chain
 /// `crate::frame::placement::PlacementList` builds from `enter`/`leave`.
-fn blocking_ancestors(
+///
+/// The walk starts at the node itself, not at its parent: a focusable
+/// blocking surface is inside the scope it opens. Starting at the parent
+/// left that one node reporting no active scope, so traversal from it
+/// escaped the modal it *is*.
+fn blocking_scopes(
     idx: usize,
     placements: &[Placement],
     surface_scopes: &BTreeMap<String, InputPolicy>,
 ) -> Vec<String> {
     let mut out = Vec::new();
-    let mut cursor = placements[idx].parent;
+    let mut cursor = Some(idx);
     while let Some(p) = cursor {
-        let ancestor = &placements[p];
-        if surface_scopes.get(&ancestor.id) == Some(&InputPolicy::Block) {
-            out.push(ancestor.id.clone());
+        let step = &placements[p];
+        if surface_scopes.get(&step.id) == Some(&InputPolicy::Block) {
+            out.push(step.id.clone());
         }
-        cursor = ancestor.parent;
+        cursor = step.parent;
     }
     out
+}
+
+/// The vanished-focus successor, restricted to the blocking `scope` focus was
+/// trapped in whenever that scope still holds a focusable node in the new
+/// frame. See the module doc's "vanished-focus rule".
+///
+/// Both orders are filtered by the same scope before [`successor`] runs, so
+/// the rule itself keeps exactly one definition and this function only
+/// decides which nodes it is allowed to choose between.
+fn scoped_successor(
+    previous_order: &[String],
+    previous_chain: &BTreeMap<String, Vec<String>>,
+    previous_current: Option<&str>,
+    scope: Option<&str>,
+    new_order: &[String],
+    new_chain: &BTreeMap<String, Vec<String>>,
+) -> Option<String> {
+    let Some(scope) = scope else {
+        return successor(previous_order, previous_current, new_order);
+    };
+    let inside = |chain: &BTreeMap<String, Vec<String>>, id: &String| {
+        chain
+            .get(id)
+            .is_some_and(|c| c.iter().any(|s| s.as_str() == scope))
+    };
+    let new_inside: Vec<String> = new_order
+        .iter()
+        .filter(|id| inside(new_chain, id))
+        .cloned()
+        .collect();
+    if new_inside.is_empty() {
+        // The modal outlived every focusable it contained. Keeping focus
+        // inside it would mean the none-state with focusables on screen and
+        // every keystroke dropped; the unrestricted rule wins here.
+        return successor(previous_order, previous_current, new_order);
+    }
+    let previous_inside: Vec<String> = previous_order
+        .iter()
+        .filter(|id| inside(previous_chain, id))
+        .cloned()
+        .collect();
+    successor(&previous_inside, previous_current, &new_inside)
 }
 
 /// The vanished-focus successor: the next id in `previous_order` after
@@ -635,6 +713,95 @@ mod tests {
             tree.current(),
             Some("/b"),
             "a still-focusable current is left alone by update"
+        );
+    }
+
+    /// A modal that outlives one of its own focusables keeps focus inside
+    /// itself. The scenario is built so the *global* rule would escape:
+    /// `/outside` follows the modal in visual order, so "the next survivor in
+    /// the previous order" is outside a modal that still blocks.
+    #[test]
+    fn a_vanished_focus_inside_an_open_modal_stays_inside_it() {
+        let before = vec![
+            placement("/modal", None, false, false),          // 0
+            placement("/modal/first", Some(0), true, false),  // 1
+            placement("/modal/second", Some(0), true, false), // 2
+            placement("/outside", None, true, false),         // 3
+        ];
+        let mut scopes = BTreeMap::new();
+        scopes.insert("/modal".to_owned(), InputPolicy::Block);
+        let mut tree = FocusTree::from_placements(&before, &scopes);
+        tree.focus("/modal/second").unwrap();
+
+        let after = vec![
+            placement("/modal", None, false, false),
+            placement("/modal/first", Some(0), true, false),
+            placement("/outside", None, true, false),
+        ];
+        let tree = tree.update(&after, &scopes);
+        assert_eq!(
+            tree.current(),
+            Some("/modal/first"),
+            "focus left a modal that is still blocking"
+        );
+        assert_eq!(tree.active_scope(), Some("/modal"));
+    }
+
+    /// The one case where the trap yields: the modal survives with nothing
+    /// focusable left in it. Trapping focus on nothing would drop every
+    /// keystroke, so the unrestricted rule applies and says so.
+    #[test]
+    fn a_modal_with_no_focusables_left_yields_rather_than_trapping_nothing() {
+        let before = vec![
+            placement("/modal", None, false, false),
+            placement("/modal/only", Some(0), true, false),
+            placement("/outside", None, true, false),
+        ];
+        let mut scopes = BTreeMap::new();
+        scopes.insert("/modal".to_owned(), InputPolicy::Block);
+        let mut tree = FocusTree::from_placements(&before, &scopes);
+        tree.focus("/modal/only").unwrap();
+
+        let after = vec![
+            placement("/modal", None, false, false),
+            placement("/outside", None, true, false),
+        ];
+        let tree = tree.update(&after, &scopes);
+        assert_eq!(tree.current(), Some("/outside"));
+    }
+
+    /// A blocking surface that is itself focusable is inside its own scope,
+    /// so traversal from it cycles within the modal instead of walking out.
+    #[test]
+    fn a_focusable_modal_surface_is_inside_its_own_scope() {
+        let placements = vec![
+            placement("/modal", None, true, false),
+            placement("/modal/first", Some(0), true, false),
+            placement("/outside", None, true, false),
+        ];
+        let mut scopes = BTreeMap::new();
+        scopes.insert("/modal".to_owned(), InputPolicy::Block);
+        let mut tree = FocusTree::from_placements(&placements, &scopes);
+        tree.focus("/modal").unwrap();
+        assert_eq!(
+            tree.active_scope(),
+            Some("/modal"),
+            "the surface reported no scope, so it was outside the trap it opens"
+        );
+        tree.next();
+        assert_eq!(tree.current(), Some("/modal/first"));
+        tree.next();
+        assert_eq!(
+            tree.current(),
+            Some("/modal"),
+            "traversal wrapped out of the modal instead of back to it"
+        );
+        assert_eq!(
+            tree.focus("/outside").unwrap_err(),
+            FocusError::OutsideActiveScope {
+                id: "/outside".into(),
+                scope: "/modal".into(),
+            }
         );
     }
 
