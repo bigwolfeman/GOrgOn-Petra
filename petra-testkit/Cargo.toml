@@ -1,0 +1,20 @@
+[package]
+name = "gorgon-petra-testkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Petra UI driver: semantic-tree query server, settle-blocking actions, identity-verified screenshots."
+publish = false
+
+[dependencies]
+
+[features]
+# The driver endpoint exists only when this feature is on. Production binaries
+# must not enable it: contracts/driver-protocol.md forbids a runtime switch.
+default = []
+testkit = []
+
+[lints]
+workspace = true

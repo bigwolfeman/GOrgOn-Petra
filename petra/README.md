@@ -1,0 +1,49 @@
+# gorgon-petra
+
+Petra is GOrgOn's retained layout engine. A view tree is plain nested data;
+layout is a proposal/response negotiation that runs top-down and answers
+bottom-up; the output is a *petrified frame* — one placement per node, plus a
+sequence number and a BLAKE3 content digest that make the frame verifiable by a
+gate, an agent, or a screenshot consumer.
+
+This crate has no GUI-toolkit dependency and never will. Content measurement
+enters through `layout::ContentMeasure` and virtualized rows through
+`layout::RowSource`; `gorgon-petra-egui` is the only crate that implements them.
+The `petra-boundary` gate reads this crate's manifest and fails if an
+egui-family dependency ever appears in it.
+
+The binding documents are `specs/003-petra-layout-engine/contracts/`. Where this
+crate and a contract disagree, the contract wins.
+
+## Known Limitations and Deferred Work
+
+- The container modules under `src/layout/` are signatures only at the moment
+  the scaffold landed: `stack`, `grid`, `overlay`, `scroll`, `overlay_surface`,
+  `text`, and `constraints` panic with a `PETRA_UNIMPLEMENTED` marker naming
+  their task. Nothing calls them successfully until those tasks land, and the
+  marker is what a grep finds.
+- `src/anim/`, `src/focus/`, and `src/semantic/` are module headers with no
+  code (tasks T022, T027, T048-T055). Transitions, focus traversal, and the
+  semantic projection do not exist yet.
+- The digest covers placements and paint state, never pixels. Pixel-level
+  agreement between desktop and web is the parity lane's job (SC-006), with a
+  declared tolerance, and is not asserted here.
+- A spacer answers an `Unbounded` probe with a large finite constant
+  (`layout::leaf::SPACER_MAX_EXTENT`) rather than an infinity. That keeps
+  responses finite as the contract requires, at the cost of a spacer inside a
+  container larger than 65 535 logical units no longer being the most flexible
+  child.
+
+## Agent Experience
+
+The engine is the surface an agent authors against, so it is built to fail with
+sentences rather than with pictures.
+
+- `tree::validate` refuses a whole tree and returns *every* violation in
+  pre-order, each naming the offending node's key path (`/root/list/row-3`) and
+  what is wrong with it. One run of the check names every fix.
+- Node ids are derived from key paths, not allocated, so an id an agent reads in
+  one frame means the same node in the next one and is never recycled.
+- `frame::digest::canonical_bytes` is public: when two frames that should match
+  do not, the byte stream that produced each digest can be diffed directly
+  instead of guessing at the hash.
