@@ -195,14 +195,29 @@ impl MeasureCache {
     /// Entries a cache from [`MeasureCache::new`] holds.
     ///
     /// One frame's working set is what has to fit: every (node, proposal) pair
-    /// the pass probes, which for a virtualized tree is the visible window
+    /// the pass probes. For a *virtualized* tree that is the visible window
     /// plus overscan times the probes each parent makes — tens to low
-    /// hundreds, not thousands. The default is far above that so the bound
-    /// never costs a hit in an ordinary frame, and small enough that a full
-    /// cache is on the order of a megabyte. A host with a denser tree raises
-    /// it with [`MeasureCache::with_capacity`]; a host that wants to know
-    /// whether it needs to reads [`MeasureCache::evictions`].
-    pub const DEFAULT_CAPACITY: usize = 8192;
+    /// hundreds. For a *dense* one it is a multiple of the node count, and
+    /// spec 003's acceptance application is dense: the fiber inspector puts an
+    /// identity bar, a fiber list, an effects tree and several tables on screen
+    /// at once, none of them virtualized.
+    ///
+    /// This default was first set at 8192 from the virtualized reading alone,
+    /// and `benches/negotiate.rs` measured what that costs on the other shape:
+    /// a 4225-node screen needs about 25 000 entries, so it thrashed at 45 825
+    /// evictions and ran 73% slower (16.16 ms against 9.35 ms) while still
+    /// reporting a healthy hit rate on the scroll workload the bound was tuned
+    /// for. The measured ratio is close to six entries per node, so this value
+    /// covers a screen of roughly eleven thousand nodes.
+    ///
+    /// A full cache is on the order of ten megabytes. That is a bound on
+    /// *entries*, not on bytes — nothing here instruments the allocator, and a
+    /// host that cares reads [`MeasureCache::evictions`], which is non-zero
+    /// exactly when the bound is costing it work. A host with a denser tree
+    /// still raises it with [`MeasureCache::with_capacity`].
+    ///
+    /// `tests/measure_cache_capacity.rs` fails if a dense screen stops fitting.
+    pub const DEFAULT_CAPACITY: usize = 65_536;
 
     /// An empty cache bounded to [`MeasureCache::DEFAULT_CAPACITY`] entries.
     #[must_use]
