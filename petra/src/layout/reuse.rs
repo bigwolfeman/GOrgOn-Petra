@@ -29,14 +29,27 @@
 //! renders a stale picture under a digest that says it is current, which no
 //! test in this crate would catch, because the engine would be agreeing with
 //! itself. Every condition below is therefore written to fail closed, and
-//! [`ReuseState::verify_declaration`] exists to catch a host that
-//! under-declares before that host reaches an operator.
+//! behind `debug_assertions`, [`ReuseState::verify_declaration`] walks the
+//! previous and current trees and panics naming the first node whose `Arc`
+//! moved without being covered by the declared change set.
+//!
+//! **What that verifier does not catch.** It is an `Arc`-identity check, so
+//! it can only ever see a node the host silently rebuilt — a new allocation
+//! in place of the old one. A host that mutates the store behind a
+//! `collection`'s `RowSource` and reports `ChangeSet::None` (or omits the
+//! collection's id) leaves the tree genuinely unchanged: no `Arc` diverges
+//! anywhere, so this walk sees nothing wrong and the rows go stale in
+//! silence. That case is the host obligation this note's §2 item 5 states
+//! directly, not something an `Arc`-comparison walk can discharge — see
+//! `.agents/notes/proposed/architecture/2026-08-22-petra-incremental-frames.md`.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use crate::frame::placement::{PaintContent, Placement, SubtreeCopy};
 use crate::layout::{ChangeSet, LayoutState, Slot};
+#[cfg(debug_assertions)]
+use crate::tree::KeyPath;
 use crate::tree::{Key, ViewNode};
 
 /// Everything the previous frame left behind for the next one to compare
@@ -251,12 +264,6 @@ impl<'a> ReuseState<'a> {
         }
     }
 
-    /// The memo this cursor reads.
-    #[must_use]
-    pub fn memo(&self) -> &'a FrameMemo {
-        self.memo
-    }
-
     /// The previous frame's counterpart for the child named `key` at the
     /// current position, if it had one.
     ///
@@ -293,10 +300,13 @@ impl<'a> ReuseState<'a> {
 
     /// Whether the subtree at `old_index` may be carried over whole.
     ///
-    /// All three conditions must hold, and each is cheap before the one after
-    /// it: an address comparison, then a slot comparison, then a range scan of
-    /// the dirty set. `path_id` is built by the caller only if the first two
-    /// pass, because building it allocates.
+    /// Conditions are checked cheapest first: an address comparison, then a
+    /// slot comparison, then the bounds every array [`ReuseState::subtree`]
+    /// slices must satisfy. `FrameMemo` is `pub` with every field `pub`, so a
+    /// caller from outside this crate can build one whose arrays disagree in
+    /// length; the four checks below are what stop such a memo from reaching
+    /// an out-of-bounds slice in `subtree` rather than being refused here, by
+    /// name, at the point that would have sliced out of range.
     #[must_use]
     pub fn reusable(
         &self,
@@ -305,9 +315,15 @@ impl<'a> ReuseState<'a> {
         old_index: usize,
         slot: Slot,
     ) -> bool {
-        std::ptr::eq(node, old_node)
-            && self.memo.slots.get(old_index) == Some(&slot)
-            && old_index + memo_len(&self.memo.subtree_len, old_index) <= self.memo.placements.len()
+        if !std::ptr::eq(node, old_node) || self.memo.slots.get(old_index) != Some(&slot) {
+            return false;
+        }
+        let end = old_index + memo_len(&self.memo.subtree_len, old_index);
+        end <= self.memo.placements.len()
+            && end <= self.memo.content.len()
+            && end <= self.memo.subtree_len.len()
+            && end <= self.memo.subtree_hashes.len()
+            && end <= self.memo.slots.len()
     }
 
     /// The subtree at `old_index`, as the sink wants it.
@@ -352,6 +368,91 @@ impl<'a> ReuseState<'a> {
         }
     }
 
+    /// Behind `debug_assertions`: walk the previous tree ([`FrameMemo::tree`])
+    /// and `tree`, the one this frame was just placed from, together — and
+    /// panic naming the first node whose `Arc` moved without being covered by
+    /// the declared change set.
+    ///
+    /// Call after placing a frame from a `Nodes`- or `None`-derived dirty
+    /// set (never from `ChangeSet::All`, which has no dirty set to check
+    /// against — see [`FrameMemo::dirty_ids`]). The walk is O(N) in the new
+    /// tree: exactly the cost the release path refuses to pay, which is why
+    /// this only exists behind `debug_assertions`.
+    ///
+    /// "Covered" is not plain set membership, because the tree this crate
+    /// works with is immutable behind `Arc`: rebuilding any one node forces
+    /// a fresh `Arc` for every ancestor up to the root too (there is no way
+    /// to change what a `Vec<Arc<ViewNode>>` holds without a new `Vec`, and
+    /// so a new `ViewNode`, and so a new `Arc`). A host that declares one
+    /// leaf therefore has every ancestor of that leaf differ honestly, and
+    /// declaring a container is naturally read as covering its whole
+    /// subtree, the way `a_subtree_that_grows_still_produces_the_full_frame`
+    /// in `tests/incremental_frames.rs` declares only the container. So a
+    /// node counts as covered when it is an ancestor of a declared id
+    /// ([`dirty_at_or_under`], the same predicate the placement walk uses to
+    /// decide whether to descend) or a descendant of one. What it does not
+    /// cover is a sibling of a declared id whose `Arc` moved anyway — that is
+    /// exactly what the under-declaring test in `tests/incremental_frames.rs`
+    /// proves this walk catches.
+    ///
+    /// See the module doc for what this check does **not** prove.
+    #[cfg(debug_assertions)]
+    pub fn verify_declaration(&self, tree: &ViewNode) {
+        let mut path = KeyPath::root();
+        let old = (self.memo.tree.key == tree.key).then(|| self.memo.tree.as_ref());
+        Self::verify_node(old, tree, &mut path, self.dirty, false);
+    }
+
+    /// One level of [`ReuseState::verify_declaration`]'s walk.
+    ///
+    /// `declared_ancestor` is `true` once any ancestor on this path was
+    /// itself an exact member of `dirty` — inherited downward so a
+    /// declared container's whole subtree is covered without every node in
+    /// it needing its own entry.
+    #[cfg(debug_assertions)]
+    fn verify_node(
+        old: Option<&ViewNode>,
+        new: &ViewNode,
+        path: &mut KeyPath,
+        dirty: &BTreeSet<String>,
+        declared_ancestor: bool,
+    ) {
+        path.push(new.key.clone());
+        let id = path.id();
+        let named = dirty.contains(&id);
+        if let Some(old) = old
+            && old.key == new.key
+            && !std::ptr::eq(old, new)
+            && !declared_ancestor
+            && !named
+            && !dirty_at_or_under(dirty, &id)
+        {
+            panic!(
+                "petrify_with_memo: {id} was rebuilt between frames (its Arc \
+                 moved) but the change set does not cover it — name it, name \
+                 an ancestor of it, or name a descendant of it, in \
+                 ChangeSet::Nodes"
+            );
+        }
+        let child_declared = declared_ancestor || named;
+        for child in &new.children {
+            // `old`, whenever `Some`, is already the counterpart of `new`
+            // (guaranteed by this same `find` one level up, or by the
+            // top-level key check in `verify_declaration`), so finding
+            // `child`'s counterpart among `old`'s children is a plain
+            // key lookup with no re-check needed.
+            let old_child = old.and_then(|o| o.children.iter().find(|c| c.key == child.key));
+            Self::verify_node(
+                old_child.map(Arc::as_ref),
+                child,
+                path,
+                dirty,
+                child_declared,
+            );
+        }
+        path.pop();
+    }
+
     /// Descend into a node that is being re-placed, remembering its
     /// counterpart so its children can find theirs.
     pub fn enter(&mut self, counterpart: Option<(&'a ViewNode, usize)>) {
@@ -377,10 +478,14 @@ impl<'a> ReuseState<'a> {
 
 /// The subtree length recorded for `index`, or `1` if the memo is too short.
 ///
-/// Falling back to `1` rather than indexing keeps a malformed memo from
-/// panicking deep inside a walk; the reuse test above rejects the subtree
-/// anyway, because a memo whose arrays disagree cannot satisfy the bounds
-/// check in [`ReuseState::reusable`].
+/// Falling back to `1` rather than indexing keeps this function itself from
+/// panicking on a malformed memo. [`ReuseState::reusable`] is what actually
+/// keeps a memo whose arrays disagree from reaching [`ReuseState::subtree`]:
+/// it checks `old_index + len` against the length of every array `subtree`
+/// slices — `placements`, `content`, `subtree_len`, `subtree_hashes`, and
+/// `slots` — not only `placements.len()`, so a memo assembled with
+/// mismatched array lengths fails `reusable` rather than panicking on an
+/// out-of-bounds slice.
 fn memo_len(subtree_len: &[usize], index: usize) -> usize {
     subtree_len.get(index).copied().unwrap_or(1)
 }

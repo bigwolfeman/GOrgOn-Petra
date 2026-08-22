@@ -69,9 +69,9 @@ pub struct PetrifiedFrame {
     /// `subtree_hashes[0]` — the root's — is the value
     /// [`PetrifiedFrame::digest`] was built from
     /// (`digest::root_hash_from`). This is what a reused subtree hands back
-    /// to its parent: the incremental placement path this crate does not yet
-    /// have can copy a subtree from the previous frame and reuse the hash
-    /// recorded here instead of re-walking it
+    /// to its parent: [`petrify_with_memo`] copies a subtree from the
+    /// previous frame and reuses the hash recorded here instead of
+    /// re-walking it
     /// (`.agents/notes/proposed/architecture/2026-08-22-petra-incremental-frames.md`).
     pub subtree_hashes: Vec<[u8; 32]>,
     /// How many placements each index's subtree occupies, itself included —
@@ -225,6 +225,16 @@ pub fn petrify_with_memo<'a>(
         ctx.reuse = Some(ReuseState::new(memo, dirty));
     }
     let frame = petrify(seq, tree, ctx, viewport, transitions);
+    // Behind `debug_assertions` only: every caller of this function already
+    // holds a dirty set derived from `FrameMemo::dirty_ids`, which is `None`
+    // (and so unreachable here — see that function) for `ChangeSet::All`.
+    // So whenever `ctx.reuse` was set up at all, `dirty` came from `Nodes` or
+    // `None`, and the verifier's precondition holds without this function
+    // needing to see the original `ChangeSet` itself.
+    #[cfg(debug_assertions)]
+    if let Some(state) = ctx.reuse.as_ref() {
+        state.verify_declaration(tree);
+    }
     let stats = ctx
         .reuse
         .as_ref()
