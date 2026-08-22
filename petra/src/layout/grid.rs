@@ -113,17 +113,37 @@ pub fn place(
 
         // A child that answers larger than its cell is clamped into it by
         // `place_in_cell`. Ask now, so the container can report the clamp;
-        // the answer is memoized, so `place_in_cell` re-reads it rather than
-        // re-negotiating.
-        if props.align != Align::Stretch {
-            for (i, child) in node.children.iter().enumerate() {
-                let (Some(&w), Some(&h)) = (
-                    col_widths.extents.get(i % ncols),
-                    row_heights.extents.get(i / ncols),
-                ) else {
-                    continue;
-                };
-                let cell = Size::new(w, h);
+        // the answer is memoized (for the non-Stretch arm), so
+        // `place_in_cell` re-reads it rather than re-negotiating.
+        //
+        // The two arms use different evidence because they place
+        // differently. Non-Stretch alignments *measure* the child (they ask
+        // what it wants and may get back more than the cell) and clamp the
+        // response down; the loss is the gap between what was asked for and
+        // what fits. Stretch never measures — `place_in_cell` imposes the
+        // cell outright and never asks the child's natural size — so a
+        // `measure` call here would cost a cache slot to answer a question
+        // Stretch itself never asks. The loss for Stretch is visible from
+        // the declared constraint alone: `AxisConstraint::clamp` returns
+        // more than the cell exactly when a declared minimum exceeds it
+        // (min wins over max), which is the one way a Stretch child can
+        // still lose room to `place_in_cell`'s `.min(cell.w)` / `.min(cell.h)`
+        // floor.
+        for (i, child) in node.children.iter().enumerate() {
+            let (Some(&w), Some(&h)) = (
+                col_widths.extents.get(i % ncols),
+                row_heights.extents.get(i / ncols),
+            ) else {
+                continue;
+            };
+            let cell = Size::new(w, h);
+            if props.align == Align::Stretch {
+                if child.constraints.horizontal.clamp(cell.w) > cell.w + FIT_EPSILON
+                    || child.constraints.vertical.clamp(cell.h) > cell.h + FIT_EPSILON
+                {
+                    truncated = true;
+                }
+            } else {
                 path.push(child.key.clone());
                 let response = crate::layout::measure(child, ctx, path, SizeProposal::exact(cell));
                 path.pop();
@@ -880,11 +900,13 @@ mod tests {
 
     /// A declared minimum bigger than the cell still must not place the
     /// child wider than the cell it was given — the same rule the non-Stretch
-    /// arm of `place_in_cell` already applies via `.min(cell.w)`. Known gap,
-    /// named rather than silently left: the pre-placement truncation pass a
-    /// few lines up in `place` is gated on `props.align != Align::Stretch`
-    /// and so does not see this case, and `placed[0].paint.truncated` is
-    /// `false` here even though the geometry was clamped down.
+    /// arm of `place_in_cell` already applies via `.min(cell.w)` — and the
+    /// grid must say so. `place`'s pre-placement truncation pass detects
+    /// this for Stretch from the constraint alone, comparing
+    /// `AxisConstraint::clamp` of the cell size against the cell size,
+    /// without measuring the child, so `placed[0].paint.truncated` is
+    /// `true` here exactly as it would be for any other alignment that lost
+    /// the same room.
     #[test]
     fn a_stretched_cell_never_places_wider_than_the_cell_even_with_a_big_minimum() {
         let oversized = AxisConstraint {
@@ -929,6 +951,12 @@ mod tests {
             "{:?} overlaps {:?}",
             placed[1].rect,
             placed[2].rect
+        );
+        assert!(
+            placed[0].paint.truncated,
+            "a Stretch child clamped down by its own declared minimum is \
+             still lost room, and the grid must report it: {:?}",
+            placed[0].paint
         );
     }
 
