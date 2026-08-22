@@ -21,7 +21,7 @@ pub mod text;
 use std::collections::BTreeMap;
 use std::ops::Range;
 
-use crate::frame::placement::{PlacementSemantics, PlacementSink};
+use crate::frame::placement::{PaintContent, PlacementSemantics, PlacementSink, TextPaint};
 use crate::geom::{Rect, Scale, Size};
 use crate::tree::{KeyPath, NodeKind, Role, TextWrap, ViewNode};
 
@@ -235,8 +235,62 @@ pub fn place(
         Some(z) => slot.above(z),
         None => slot,
     };
+    // Every container pushes its own placement before any child's, so the
+    // index the dispatcher noted before the call is this node's. Attaching
+    // here rather than inside each container means no container has to
+    // remember to carry paint content, and the twelve kinds cannot drift
+    // apart on what "carrying" means.
+    let index = sink.len();
     place_kind(node, ctx, path, slot, sink);
+    if sink.len() > index {
+        debug_assert_eq!(
+            sink.placed()[index].id,
+            path.id(),
+            "a container must push its own placement before its children's"
+        );
+        let content = paint_content_of(node);
+        if !content.is_empty() {
+            sink.attach(index, content);
+        }
+    }
     path.pop();
+}
+
+/// What this node draws, beyond its rect.
+///
+/// Derived from the tree rather than from the placement, because the placement
+/// deliberately holds only what the digest hashes
+/// (`contracts/frame-identity.md`).
+#[must_use]
+pub fn paint_content_of(node: &ViewNode) -> PaintContent {
+    let props = &node.props;
+    let text = match node.kind {
+        NodeKind::Text => Some(props.text.clone().unwrap_or_default()),
+        // An empty field draws its placeholder, which is why the placeholder
+        // is what gets painted rather than the empty string.
+        NodeKind::Input => Some(match props.text.as_deref() {
+            Some(t) if !t.is_empty() => t.to_owned(),
+            _ => props.placeholder.clone().unwrap_or_default(),
+        }),
+        _ => None,
+    };
+    PaintContent {
+        text: text.map(|text| TextPaint {
+            text,
+            style: props.style.clone(),
+            wrap: props.wrap.unwrap_or_default(),
+            max_lines: props.max_lines,
+        }),
+        image: match node.kind {
+            NodeKind::Image => props.image.clone(),
+            _ => None,
+        },
+        custom: match node.kind {
+            NodeKind::Custom => props.custom_kind.clone(),
+            _ => None,
+        },
+        tokens: props.tokens.clone(),
+    }
 }
 
 fn measure_kind(
@@ -253,7 +307,10 @@ fn measure_kind(
         NodeKind::Collection => scroll::measure_collection(node, ctx, path, proposal),
         NodeKind::Surface => overlay_surface::measure(node, ctx, path, proposal),
         NodeKind::Text => text::measure(node, ctx, proposal),
-        NodeKind::Image | NodeKind::Input | NodeKind::Spacer | NodeKind::Separator
+        NodeKind::Image
+        | NodeKind::Input
+        | NodeKind::Spacer
+        | NodeKind::Separator
         | NodeKind::Custom => leaf::measure(node, ctx, proposal),
     }
 }
@@ -273,7 +330,10 @@ fn place_kind(
         NodeKind::Collection => scroll::place_collection(node, ctx, path, slot, sink),
         NodeKind::Surface => overlay_surface::place(node, ctx, path, slot, sink),
         NodeKind::Text => text::place(node, ctx, path, slot, sink),
-        NodeKind::Image | NodeKind::Input | NodeKind::Spacer | NodeKind::Separator
+        NodeKind::Image
+        | NodeKind::Input
+        | NodeKind::Spacer
+        | NodeKind::Separator
         | NodeKind::Custom => leaf::place(node, ctx, path, slot, sink),
     }
 }
@@ -282,7 +342,11 @@ fn place_kind(
 #[must_use]
 pub fn semantics_of(node: &ViewNode) -> PlacementSemantics {
     PlacementSemantics {
-        role: node.semantics.role.clone().or_else(|| default_role(node.kind)),
+        role: node
+            .semantics
+            .role
+            .clone()
+            .or_else(|| default_role(node.kind)),
         label: node.semantics.label.clone(),
         value: node.semantics.value.clone(),
         disabled: node.semantics.disabled,
@@ -357,6 +421,105 @@ mod tests {
         assert_eq!(default_role(NodeKind::Spacer), None);
         assert_eq!(default_role(NodeKind::Custom), None);
         assert_eq!(default_role(NodeKind::Scroll), Some(Role::Scroll));
+    }
+
+    /// The dispatcher attaches paint content; containers never have to.
+    #[test]
+    fn the_dispatcher_pairs_every_placement_with_what_it_draws() {
+        use crate::frame::{PlacementList, TransitionActivity, Viewport, petrify};
+        use crate::geom::Size;
+        use crate::testing::Harness;
+        use crate::token::ThemeMode;
+        use crate::tree::Props;
+
+        let tree = ViewNode::new(NodeKind::Stack, "root")
+            .child(ViewNode::new(NodeKind::Text, "title").with_props(Props {
+                text: Some("Fibers".into()),
+                style: Some("heading".into()),
+                ..Props::default()
+            }))
+            .child(ViewNode::new(NodeKind::Spacer, "gap"));
+
+        let mut h = Harness::new();
+        let frame = petrify(
+            1,
+            &tree,
+            &mut h.ctx(),
+            Viewport::new(Size::new(200.0, 100.0), ThemeMode::Dark),
+            TransitionActivity::default(),
+        );
+
+        assert_eq!(frame.placements.len(), frame.content.len());
+        let drawn: Vec<(&str, Option<&str>)> = frame
+            .drawn()
+            .map(|(p, c)| (p.id.as_str(), c.text.as_ref().map(|t| t.text.as_str())))
+            .collect();
+        assert_eq!(
+            drawn,
+            [
+                ("/root", None),
+                ("/root/title", Some("Fibers")),
+                ("/root/gap", None),
+            ]
+        );
+        let title = frame.content[1].text.as_ref().unwrap();
+        assert_eq!(title.style.as_deref(), Some("heading"));
+        assert!(
+            frame.content[0].is_empty(),
+            "a bare stack draws nothing of its own"
+        );
+
+        // The sink is what pairs them, so a hand-driven walk agrees.
+        let mut sink = PlacementList::new();
+        assert_eq!(sink.len(), 0);
+        assert!(sink.is_empty());
+        let mut path = crate::tree::KeyPath::root();
+        super::place(
+            &tree,
+            &mut h.ctx(),
+            &mut path,
+            Slot::new(Rect::new(0.0, 0.0, 200.0, 100.0)),
+            &mut sink,
+        );
+        assert_eq!(sink.content().len(), sink.as_slice().len());
+    }
+
+    /// An empty field paints its placeholder; a filled one paints its content.
+    #[test]
+    fn an_empty_field_draws_its_placeholder() {
+        use crate::tree::Props;
+        let empty = ViewNode::new(NodeKind::Input, "f").with_props(Props {
+            placeholder: Some("Filter…".into()),
+            ..Props::default()
+        });
+        assert_eq!(
+            super::paint_content_of(&empty).text.unwrap().text,
+            "Filter…"
+        );
+        let filled = ViewNode::new(NodeKind::Input, "f").with_props(Props {
+            text: Some("fiber".into()),
+            placeholder: Some("Filter…".into()),
+            ..Props::default()
+        });
+        assert_eq!(super::paint_content_of(&filled).text.unwrap().text, "fiber");
+    }
+
+    /// Token references reach the renderer through the payload, not through
+    /// the placement: the digest hashes the theme revision, not the names.
+    #[test]
+    fn token_references_reach_the_payload() {
+        use crate::tree::Props;
+        let mut props = Props::default();
+        props
+            .tokens
+            .insert("background".into(), "surface.raised".into());
+        let node = ViewNode::new(NodeKind::Stack, "panel").with_props(props);
+        let content = super::paint_content_of(&node);
+        assert_eq!(
+            content.tokens.get("background").map(String::as_str),
+            Some("surface.raised")
+        );
+        assert!(!content.is_empty());
     }
 
     #[test]

@@ -1,7 +1,9 @@
 //! Placements: exactly one final rect per node per frame.
 
+use std::collections::BTreeMap;
+
 use crate::geom::Rect;
-use crate::tree::{Interaction, NodeKind, Role};
+use crate::tree::{Interaction, NodeKind, Role, TextWrap};
 
 /// Paint-relevant state that is not geometry but does change the picture.
 ///
@@ -69,6 +71,53 @@ pub struct Placement {
     pub parent: Option<usize>,
 }
 
+/// A text run a placement draws, in the form the shaper needs to reproduce
+/// exactly the galley the layout was measured against.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextPaint {
+    /// The content.
+    pub text: String,
+    /// Typography token name, or `None` for the theme's body style.
+    pub style: Option<String>,
+    /// Truncation policy.
+    pub wrap: TextWrap,
+    /// Line cap, or `None` for unlimited.
+    pub max_lines: Option<usize>,
+}
+
+/// What a placement draws, beyond its rect.
+///
+/// Kept beside the placements rather than inside them. A [`Placement`] is
+/// geometry and semantics — exactly what the frame digest hashes
+/// (`contracts/frame-identity.md`) — and folding the text of every label into
+/// it would put a string in the hash input twice, once as itself and once as
+/// its `content_hash`. The renderer needs the string; the digest needs the
+/// hash. They are different jobs, so they are different arrays, and
+/// `PetrifiedFrame` holds the two at equal length with the same index.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PaintContent {
+    /// The text run to draw, if this node draws one.
+    pub text: Option<TextPaint>,
+    /// Image source, if this node draws one.
+    pub image: Option<String>,
+    /// Registered painter name, if this node is a custom kind.
+    pub custom: Option<String>,
+    /// Token references by role name, resolved against the frame's theme
+    /// snapshot at paint time.
+    pub tokens: BTreeMap<String, String>,
+}
+
+impl PaintContent {
+    /// Whether this node draws nothing of its own — a bare container.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.text.is_none()
+            && self.image.is_none()
+            && self.custom.is_none()
+            && self.tokens.is_empty()
+    }
+}
+
 /// Where a container sends the placements it produces.
 ///
 /// Placements arrive in tree pre-order; the sink assigns indices and is what
@@ -83,12 +132,31 @@ pub trait PlacementSink {
     fn enter(&mut self, index: usize);
     /// Restore the previous parent.
     fn leave(&mut self);
+    /// Placements recorded so far, in pre-order.
+    fn placed(&self) -> &[Placement];
+    /// Attach the paint payload for the placement at `index`.
+    ///
+    /// Called by the dispatcher, not by containers: every container pushes its
+    /// own placement first, so the dispatcher knows the index without the
+    /// container having to hand it back.
+    fn attach(&mut self, index: usize, content: PaintContent);
+
+    /// How many placements have been recorded.
+    fn len(&self) -> usize {
+        self.placed().len()
+    }
+
+    /// Whether nothing has been placed yet.
+    fn is_empty(&self) -> bool {
+        self.placed().is_empty()
+    }
 }
 
 /// A sink that collects placements into a vector in pre-order.
 #[derive(Debug, Default)]
 pub struct PlacementList {
     placements: Vec<Placement>,
+    content: Vec<PaintContent>,
     stack: Vec<usize>,
 }
 
@@ -105,10 +173,24 @@ impl PlacementList {
         &self.placements
     }
 
-    /// Take the collected placements.
+    /// Take just the collected placements.
     #[must_use]
     pub fn into_vec(self) -> Vec<Placement> {
         self.placements
+    }
+
+    /// Take the collected placements and their paint payloads, in the same
+    /// order and at equal length.
+    #[must_use]
+    pub fn into_parts(self) -> (Vec<Placement>, Vec<PaintContent>) {
+        debug_assert_eq!(self.placements.len(), self.content.len());
+        (self.placements, self.content)
+    }
+
+    /// The paint payloads, indexed alongside [`PlacementList::as_slice`].
+    #[must_use]
+    pub fn content(&self) -> &[PaintContent] {
+        &self.content
     }
 
     /// How many placements were collected.
@@ -128,7 +210,18 @@ impl PlacementSink for PlacementList {
     fn push(&mut self, mut placement: Placement) -> usize {
         placement.parent = self.stack.last().copied();
         self.placements.push(placement);
+        self.content.push(PaintContent::default());
         self.placements.len() - 1
+    }
+
+    fn placed(&self) -> &[Placement] {
+        &self.placements
+    }
+
+    fn attach(&mut self, index: usize, content: PaintContent) {
+        if let Some(slot) = self.content.get_mut(index) {
+            *slot = content;
+        }
     }
 
     fn current_parent(&self) -> Option<usize> {

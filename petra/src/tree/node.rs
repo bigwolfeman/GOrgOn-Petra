@@ -45,7 +45,12 @@ impl NodeKind {
     pub fn is_container(self) -> bool {
         matches!(
             self,
-            Self::Stack | Self::Grid | Self::Overlay | Self::Scroll | Self::Collection | Self::Surface
+            Self::Stack
+                | Self::Grid
+                | Self::Overlay
+                | Self::Scroll
+                | Self::Collection
+                | Self::Surface
         )
     }
 
@@ -479,7 +484,12 @@ impl ViewNode {
 
     /// Declare interactions and the semantics they require.
     #[must_use]
-    pub fn interactive(mut self, role: Role, label: impl Into<String>, intents: &[Interaction]) -> Self {
+    pub fn interactive(
+        mut self,
+        role: Role,
+        label: impl Into<String>,
+        intents: &[Interaction],
+    ) -> Self {
         self.semantics.role = Some(role);
         self.semantics.label = Some(label.into());
         self.interactions = intents.to_vec();
@@ -534,19 +544,15 @@ mod tests {
                 spacing: Some(8.0),
                 ..Props::default()
             })
-            .child(
-                ViewNode::new(NodeKind::Text, "title").with_props(Props {
-                    text: Some("Fibers".into()),
-                    ..Props::default()
-                }),
-            )
-            .child(
-                ViewNode::new(NodeKind::Input, "filter").interactive(
-                    Role::TextInput,
-                    "Filter fibers",
-                    &[Interaction::Focus, Interaction::TextEdit],
-                ),
-            );
+            .child(ViewNode::new(NodeKind::Text, "title").with_props(Props {
+                text: Some("Fibers".into()),
+                ..Props::default()
+            }))
+            .child(ViewNode::new(NodeKind::Input, "filter").interactive(
+                Role::TextInput,
+                "Filter fibers",
+                &[Interaction::Focus, Interaction::TextEdit],
+            ));
         let json = serde_json::to_string(&tree).unwrap();
         let back: ViewNode = serde_json::from_str(&json).unwrap();
         assert_eq!(back, tree);
@@ -563,7 +569,10 @@ mod tests {
     fn custom_roles_carry_their_name() {
         assert_eq!(Role::Button.as_wire(), "button");
         assert_eq!(Role::Custom("gutter".into()).as_wire(), "custom:gutter");
-        assert_eq!(Role::parse("custom:gutter"), Ok(Role::Custom("gutter".into())));
+        assert_eq!(
+            Role::parse("custom:gutter"),
+            Ok(Role::Custom("gutter".into()))
+        );
         assert!(Role::parse("custom:").is_err());
         assert!(Role::parse("widget").is_err());
     }
@@ -617,7 +626,14 @@ mod tests {
         .collect();
         assert_eq!(
             containers,
-            ["stack", "grid", "overlay", "scroll", "collection", "surface"]
+            [
+                "stack",
+                "grid",
+                "overlay",
+                "scroll",
+                "collection",
+                "surface"
+            ]
         );
     }
 }

@@ -145,7 +145,9 @@ mod tests {
 
     #[test]
     fn ids_nest() {
-        let path = KeyPath::root().child(&Key::new("app")).child(&Key::new("list"));
+        let path = KeyPath::root()
+            .child(&Key::new("app"))
+            .child(&Key::new("list"));
         assert_eq!(path.id(), "/app/list");
         assert_eq!(path.len(), 2);
     }

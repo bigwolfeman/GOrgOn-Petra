@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 3a60717a46ae91b8e117c1a942b131d94a548fef8d292ccaaf49cbdb4931248a # shrinks to spec = Spec { axis: Horizontal, align: Start, spacing: 14.189328, main: 0.0, cross: 0.0, children: [Flexible { min: 0.0, span: 0.0, priority: 0 }, Flexible { min: 0.0, span: 0.0, priority: 0 }] }

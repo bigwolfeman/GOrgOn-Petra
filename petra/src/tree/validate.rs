@@ -128,7 +128,10 @@ impl fmt::Display for Violation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::DuplicateSiblingKey { key } => {
-                write!(f, "two children share the key {key:?}; keys identify a node inside its parent and must be unique there")
+                write!(
+                    f,
+                    "two children share the key {key:?}; keys identify a node inside its parent and must be unique there"
+                )
             }
             Self::InteractiveWithoutSemantics {
                 has_role,
@@ -139,17 +142,36 @@ impl fmt::Display for Violation {
                     (false, true) => "semantics.role",
                     _ => "semantics.label",
                 };
-                write!(f, "declares interactions but no {missing}; an interactive node that cannot be named cannot be driven or heard")
+                write!(
+                    f,
+                    "declares interactions but no {missing}; an interactive node that cannot be named cannot be driven or heard"
+                )
             }
             Self::UnregisteredCustomKind { name, registered } => match name {
-                None => write!(f, "kind `custom` without props.custom_kind; registered: [{}]", registered.join(", ")),
-                Some(name) => write!(f, "custom kind {name:?} is not registered; registered: [{}]", registered.join(", ")),
+                None => write!(
+                    f,
+                    "kind `custom` without props.custom_kind; registered: [{}]",
+                    registered.join(", ")
+                ),
+                Some(name) => write!(
+                    f,
+                    "custom kind {name:?} is not registered; registered: [{}]",
+                    registered.join(", ")
+                ),
             },
             Self::UnregisteredTransition { name, registered } => {
-                write!(f, "transition {name:?} is not registered; registered: [{}]", registered.join(", "))
+                write!(
+                    f,
+                    "transition {name:?} is not registered; registered: [{}]",
+                    registered.join(", ")
+                )
             }
             Self::LeafWithChildren { kind, count } => {
-                write!(f, "kind `{}` is a leaf but declares {count} child(ren)", kind.as_str())
+                write!(
+                    f,
+                    "kind `{}` is a leaf but declares {count} child(ren)",
+                    kind.as_str()
+                )
             }
             Self::MissingRequiredProp { kind, prop } => {
                 write!(f, "kind `{}` requires props.{prop}", kind.as_str())
@@ -292,7 +314,11 @@ fn check_node(node: &ViewNode, registry: &Registry, path: &KeyPath, errors: &mut
             Some(name) if registry.has_custom_kind(name) => {}
             other => push(Violation::UnregisteredCustomKind {
                 name: other.map(str::to_owned),
-                registered: registry.custom_kinds().into_iter().map(str::to_owned).collect(),
+                registered: registry
+                    .custom_kinds()
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
             }),
         },
         NodeKind::Grid => {
@@ -370,7 +396,11 @@ fn check_node(node: &ViewNode, registry: &Registry, path: &KeyPath, errors: &mut
     {
         push(Violation::UnregisteredTransition {
             name,
-            registered: registry.transitions().into_iter().map(str::to_owned).collect(),
+            registered: registry
+                .transitions()
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
         });
     }
 
@@ -457,8 +487,11 @@ mod tests {
     /// check and still leave a button nameless to a screen reader.
     #[test]
     fn a_blank_label_does_not_count_as_a_label() {
-        let node = ViewNode::new(NodeKind::Input, "field")
-            .interactive(Role::Button, "   ", &[Interaction::Click]);
+        let node = ViewNode::new(NodeKind::Input, "field").interactive(
+            Role::Button,
+            "   ",
+            &[Interaction::Click],
+        );
         let err = validate(&stack("root").child(node), &Registry::new()).unwrap_err();
         assert_eq!(
             err.as_slice()[0].violation,
@@ -580,13 +613,24 @@ mod tests {
             let node = ViewNode::new(NodeKind::Text, "t").with_props(props);
             let err = validate(&node, &Registry::new()).unwrap_err();
             assert!(
-                matches!(err.as_slice()[0].violation, Violation::LiteralStyleValue { .. }),
+                matches!(
+                    err.as_slice()[0].violation,
+                    Violation::LiteralStyleValue { .. }
+                ),
                 "{literal:?} was accepted"
             );
         }
         let mut props = Props::default();
-        props.tokens.insert("background".into(), "surface.raised".into());
-        assert!(validate(&ViewNode::new(NodeKind::Text, "t").with_props(props), &Registry::new()).is_ok());
+        props
+            .tokens
+            .insert("background".into(), "surface.raised".into());
+        assert!(
+            validate(
+                &ViewNode::new(NodeKind::Text, "t").with_props(props),
+                &Registry::new()
+            )
+            .is_ok()
+        );
     }
 
     /// Violations are reported for the whole tree, not just the first one, so

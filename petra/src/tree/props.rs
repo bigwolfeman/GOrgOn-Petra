@@ -387,17 +387,25 @@ mod tests {
         let mut props = Props {
             axis: Some(Axis::Horizontal),
             spacing: Some(8.0),
-            columns: vec![TrackSize::Fixed { value: 100.0 }, TrackSize::Weight { weight: 1.0 }],
+            columns: vec![
+                TrackSize::Fixed { value: 100.0 },
+                TrackSize::Weight { weight: 1.0 },
+            ],
             wrap: Some(TextWrap::Ellipsis),
             layer: Some(Layer::Modal),
             ..Props::default()
         };
-        props.tokens.insert("background".into(), "surface.raised".into());
+        props
+            .tokens
+            .insert("background".into(), "surface.raised".into());
         let json = serde_json::to_string(&props).unwrap();
         let back: Props = serde_json::from_str(&json).unwrap();
         assert_eq!(back, props);
         assert!(json.contains("\"axis\":\"horizontal\""), "{json}");
-        assert!(json.contains("\"type\":\"fit-content\"") || json.contains("\"weight\""), "{json}");
+        assert!(
+            json.contains("\"type\":\"fit-content\"") || json.contains("\"weight\""),
+            "{json}"
+        );
     }
 
     /// A misspelled prop is a typo the author wants to hear about, not a

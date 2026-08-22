@@ -221,7 +221,10 @@ mod tests {
         truncated.paint.truncated = true;
         let mut retokened = base.clone();
         retokened.paint.token_revision = 8;
-        assert_ne!(digest(&vp, std::slice::from_ref(&base)), digest(&vp, &[truncated]));
+        assert_ne!(
+            digest(&vp, std::slice::from_ref(&base)),
+            digest(&vp, &[truncated])
+        );
         assert_ne!(digest(&vp, &[base]), digest(&vp, &[retokened]));
     }
 

@@ -18,6 +18,7 @@ pub mod anim;
 pub mod focus;
 pub mod frame;
 pub mod geom;
+pub mod input;
 pub mod layout;
 pub mod semantic;
 pub mod testing;
@@ -26,5 +27,6 @@ pub mod tree;
 
 pub use frame::{PetrifiedFrame, Viewport, petrify};
 pub use geom::{Align, Axis, Point, Rect, Scale, Size};
+pub use input::{InputEvent, KeyCode, Modifiers, PointerButton, Route};
 pub use layout::{LayoutCtx, LayoutState, Proposal, SizeProposal};
 pub use tree::{NodeKind, Registry, ViewNode, validate};

@@ -49,8 +49,12 @@ pub fn place(
     sink: &mut dyn PlacementSink,
 ) {
     let content_hash = match node.kind {
-        NodeKind::Input => crate::frame::digest::hash_text(node.props.text.as_deref().unwrap_or("")),
-        NodeKind::Image => crate::frame::digest::hash_text(node.props.image.as_deref().unwrap_or("")),
+        NodeKind::Input => {
+            crate::frame::digest::hash_text(node.props.text.as_deref().unwrap_or(""))
+        }
+        NodeKind::Image => {
+            crate::frame::digest::hash_text(node.props.image.as_deref().unwrap_or(""))
+        }
         _ => 0,
     };
     sink.push(Placement {

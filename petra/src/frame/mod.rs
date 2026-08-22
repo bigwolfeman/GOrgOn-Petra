@@ -11,11 +11,14 @@ pub mod rounding;
 pub mod viewport;
 
 use crate::geom::Rect;
-use crate::layout::{LayoutCtx, Slot, SizeProposal, Proposal};
+use crate::layout::{LayoutCtx, Proposal, SizeProposal, Slot};
 use crate::tree::{KeyPath, ViewNode};
 
 pub use digest::{FrameDigest, canonical_decimal, hash_text};
-pub use placement::{PaintState, Placement, PlacementList, PlacementSemantics, PlacementSink};
+pub use placement::{
+    PaintContent, PaintState, Placement, PlacementList, PlacementSemantics, PlacementSink,
+    TextPaint,
+};
 pub use rounding::{DeviceRect, round_coord, round_rect};
 pub use viewport::Viewport;
 
@@ -47,6 +50,10 @@ pub struct PetrifiedFrame {
     pub digest: FrameDigest,
     /// Every node's final geometry, in tree pre-order.
     pub placements: Vec<Placement>,
+    /// What each placement draws, at the same index and the same length.
+    /// Not a digest input: the digest hashes `paint.content_hash`, not the
+    /// string it was taken from.
+    pub content: Vec<PaintContent>,
     /// What the frame was negotiated against.
     pub viewport: Viewport,
     /// Motion in force at petrify time.
@@ -58,6 +65,21 @@ impl PetrifiedFrame {
     #[must_use]
     pub fn placement(&self, id: &str) -> Option<&Placement> {
         self.placements.iter().find(|p| p.id == id)
+    }
+
+    /// Every placement paired with what it draws, in tree pre-order.
+    pub fn drawn(&self) -> impl Iterator<Item = (&Placement, &PaintContent)> {
+        self.placements.iter().zip(self.content.iter())
+    }
+
+    /// Every placement paired with what it draws, in paint order: ascending
+    /// `z`, then tree order. The sort is stable, so two frames with identical
+    /// input paint in identical order.
+    #[must_use]
+    pub fn paint_pairs(&self) -> Vec<(&Placement, &PaintContent)> {
+        let mut out: Vec<(&Placement, &PaintContent)> = self.drawn().collect();
+        out.sort_by_key(|(p, _)| p.z);
+        out
     }
 
     /// Placements in paint order: ascending `z`, then placement order.
@@ -134,13 +156,17 @@ pub fn petrify(
     };
     let mut sink = PlacementList::new();
     crate::layout::place(tree, ctx, &mut path, slot, &mut sink);
-    debug_assert!(path.is_empty(), "the walk must leave the path as it found it");
-    let placements = sink.into_vec();
+    debug_assert!(
+        path.is_empty(),
+        "the walk must leave the path as it found it"
+    );
+    let (placements, content) = sink.into_parts();
     let digest = digest::digest(&viewport, &placements);
     PetrifiedFrame {
         seq,
         digest,
         placements,
+        content,
         viewport,
         transitions,
     }
@@ -163,15 +189,19 @@ mod tests {
     /// ambient motion is settled. The driver's settle wait depends on this.
     #[test]
     fn ambient_motion_does_not_block_settle() {
-        assert!(TransitionActivity {
-            running: 0,
-            ambient: 3
-        }
-        .is_settled());
-        assert!(!TransitionActivity {
-            running: 1,
-            ambient: 0
-        }
-        .is_settled());
+        assert!(
+            TransitionActivity {
+                running: 0,
+                ambient: 3
+            }
+            .is_settled()
+        );
+        assert!(
+            !TransitionActivity {
+                running: 1,
+                ambient: 0
+            }
+            .is_settled()
+        );
     }
 }
