@@ -13,7 +13,7 @@
 use gorgon_petra::frame::{TransitionActivity, Viewport, petrify};
 use gorgon_petra::geom::Size;
 use gorgon_petra::layout::ChangeSet;
-use gorgon_petra::testing::Harness;
+use gorgon_petra::testing::{Harness, validated};
 use gorgon_petra::token::ThemeMode;
 use gorgon_petra::tree::{Key, NodeKind, Props, ViewNode};
 
@@ -47,7 +47,7 @@ fn a_named_change_moves_the_leafs_placement() {
     let mut h = Harness::new();
     let warm = petrify(
         1,
-        &tree("x"),
+        validated(&tree("x")),
         &mut h.ctx(),
         viewport(),
         TransitionActivity::default(),
@@ -57,7 +57,7 @@ fn a_named_change_moves_the_leafs_placement() {
     h.cache.apply(&ChangeSet::node(LEAF_ID));
     let after = petrify(
         2,
-        &tree("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"), // 42 chars, 8 up from 1
+        validated(&tree("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")), // 42 chars, 8 up from 1
         &mut h.ctx(),
         viewport(),
         TransitionActivity::default(),
@@ -81,7 +81,7 @@ fn an_unreported_change_leaves_the_frame_stale() {
     let mut h = Harness::new();
     let warm = petrify(
         1,
-        &tree("x"),
+        validated(&tree("x")),
         &mut h.ctx(),
         viewport(),
         TransitionActivity::default(),
@@ -91,7 +91,7 @@ fn an_unreported_change_leaves_the_frame_stale() {
     h.cache.apply(&ChangeSet::None);
     let after = petrify(
         2,
-        &tree("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"),
+        validated(&tree("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")),
         &mut h.ctx(),
         viewport(),
         TransitionActivity::default(),

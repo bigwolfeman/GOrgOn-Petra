@@ -323,6 +323,19 @@ fn index(
 /// blocking surface is inside the scope it opens. Starting at the parent
 /// left that one node reporting no active scope, so traversal from it
 /// escaped the modal it *is*.
+///
+/// `Placement` is a public struct with public fields and no sealed
+/// constructor, so `parent` cannot be trusted to be well-formed: this walks
+/// defensively rather than indexing the slice directly by an unchecked
+/// `parent` value, and stops with whatever scope chain it has found so far
+/// on either kind of malformed input, the same "refuse gracefully, do not
+/// guess" choice
+/// `crate::semantic::project::project` makes for the identical class of
+/// problem (an index that cannot be hung anywhere sound is left out rather
+/// than trusted). A `parent` pointing past the end of `placements` stops the
+/// walk immediately; a `parent` chain that cycles back on itself — which
+/// would otherwise spin this loop forever — is bounded by the list's own
+/// length, since no well-formed chain can be longer than that.
 fn blocking_scopes(
     idx: usize,
     placements: &[Placement],
@@ -330,12 +343,19 @@ fn blocking_scopes(
 ) -> Vec<String> {
     let mut out = Vec::new();
     let mut cursor = Some(idx);
+    let mut steps = 0usize;
     while let Some(p) = cursor {
-        let step = &placements[p];
+        let Some(step) = placements.get(p) else {
+            break;
+        };
         if surface_scopes.get(&step.id) == Some(&InputPolicy::Block) {
             out.push(step.id.clone());
         }
         cursor = step.parent;
+        steps += 1;
+        if steps > placements.len() {
+            break;
+        }
     }
     out
 }
@@ -569,6 +589,28 @@ mod tests {
         assert_eq!(tree.current(), Some("/outside"));
         tree.focus("/modal/first").unwrap();
         assert_eq!(tree.current(), Some("/modal/first"));
+    }
+
+    /// A malformed `parent` pointing past the end of the placement list (the
+    /// case a caller who hand-builds `Placement` values can trigger) must not
+    /// panic: `blocking_scopes` stops the walk rather than indexing out of
+    /// bounds. Deleting the bounds check turns this into a panic.
+    #[test]
+    fn a_parent_index_past_the_end_of_the_list_does_not_panic() {
+        let placements = vec![placement("/a", Some(99), true, false)];
+        let tree = FocusTree::from_placements(&placements, &no_scopes());
+        assert_eq!(tree.order(), ["/a"]);
+    }
+
+    /// A `parent` chain that cycles back on itself must not hang: without
+    /// the step bound, `blocking_scopes`'s `while let` loop spins forever on
+    /// this input. This test relies on the surrounding test binary's own
+    /// timeout to turn a reintroduced hang into a visible failure.
+    #[test]
+    fn a_cyclic_parent_chain_does_not_hang() {
+        let placements = vec![placement("/a", Some(0), true, false)];
+        let tree = FocusTree::from_placements(&placements, &no_scopes());
+        assert_eq!(tree.order(), ["/a"]);
     }
 
     #[test]

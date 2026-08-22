@@ -131,9 +131,32 @@
 //! **Verdict: FR-035 is not met, by a factor of the tree.** The bound below
 //! enforces it and this bench therefore fails, deliberately, in the way
 //! `provide_scaling.rs` failed until the kernel's provide path was fixed.
-//! Meeting it needs a `place` that can reuse an unchanged subtree's
-//! placements, a digest that can be updated rather than recomputed, and a
-//! per-node content revision. It is not a cache tuning.
+//!
+//! The first prescription written here was a `place` that can reuse an
+//! unchanged subtree's placements, a digest that can be updated rather than
+//! recomputed, and a per-node content revision. All three shipped. **FR-035
+//! still fails**, at about N^1, with 3 of N nodes rebuilt at every tree size
+//! -- so the prescription was incomplete, not wrong. What is left is the
+//! container arrangement above the change: a resized child moves its
+//! siblings, so the panel re-runs an O(children) arrangement, and this bench
+//! grows panels. The panic below carries the current diagnosis; read it
+//! rather than this paragraph, because it is printed from the measurement.
+//!
+//! "About N^1" and not a figure, because the incremental exponent read 0.92
+//! and 1.08 on two consecutive runs of this machine. Those two runs are not a
+//! disagreement about the code: every other exponent moved with it in the
+//! same direction and by a similar amount (global rev 0.98 to 1.10, path 1.03
+//! to 1.04, warm-walk floor 1.06 to 1.09), which is what concurrent load
+//! looks like and not what a code effect looks like. Read the spread, not the
+//! digits. The verdict is robust across it either way: the bound is 0.35.
+//!
+//! A note on that exponent: it read **N^0.74 until 2026-08-22**, and the
+//! better number was an artefact. `change_incremental` minted fresh `Arc`s
+//! for the 31 untouched rows inside the changed panel, so every run paid a
+//! tree-size-independent 34-node rebuild that flattened the slope -- and
+//! under-declared them, which `ReuseState::verify_declaration` now panics on.
+//! Sharing those rows, as a real incremental host does, costs nothing per
+//! frame and moved the measured exponent up to where it always was.
 //!
 //! # What this does not measure
 //!
@@ -161,7 +184,7 @@ use gorgon_petra::geom::Size;
 use gorgon_petra::layout::reuse::{FrameMemo, ReuseStats};
 use gorgon_petra::layout::{ChangeSet, MeasureCache};
 use gorgon_petra::petrify;
-use gorgon_petra::testing::{Harness, MonoContent, NoRows};
+use gorgon_petra::testing::{Harness, MonoContent, NoRows, validated};
 use gorgon_petra::token::ThemeMode;
 use gorgon_petra::tree::{Key, KeyPath, NodeKind, Props, TrackSize, ViewNode};
 
@@ -210,6 +233,13 @@ const MAX_DEEP_EXPONENT: f64 = 2.1;
 /// an eightfold N to cost twice as much, which covers allocator drift in a
 /// bigger tree, and refuses anything carrying a per-node term.
 const MAX_CHANGE_EXPONENT: f64 = 0.35;
+
+/// Rows per panel in every H2 change-size experiment.
+const ROWS: usize = 32;
+/// Panel count for the H2 experiments that hold the tree fixed (H2a and
+/// Sabotage) and for the shipping cache bound below. H2c varies panel count
+/// itself and does not use this.
+const PANELS: usize = 128;
 
 // ---------------------------------------------------------------- tree shapes
 
@@ -350,10 +380,14 @@ fn viewport() -> Viewport {
 /// allocator's slope as the layout engine's.
 fn cold(tree: &ViewNode, nodes: usize) -> Duration {
     let mut h = harness(nodes);
+    // Minted before the timer starts: acceptance is a one-time cost a host
+    // pays once per tree build, not once per negotiation, and folding it in
+    // here would report `validate`'s cost as the layout engine's.
+    let validated = validated(tree);
     let t = Instant::now();
     let frame = petrify(
         1,
-        tree,
+        validated,
         &mut h.ctx(),
         viewport(),
         TransitionActivity::default(),
@@ -438,7 +472,7 @@ fn change(panels: usize, rows: usize, k: usize, policy: Policy) -> Change {
     // already measures those.
     let warm = petrify(
         1,
-        &tree,
+        validated(&tree),
         &mut h.ctx(),
         viewport(),
         TransitionActivity::default(),
@@ -462,6 +496,10 @@ fn change(panels: usize, rows: usize, k: usize, policy: Policy) -> Change {
         Arc::make_mut(&mut panel.children[index % rows]).props.text =
             Some("x".repeat(CHANGED_TEXT_CHARS));
     }
+
+    // Minted here, after every mutation and before either timer: acceptance
+    // is not part of what `invalidate` or `renegotiate` measures.
+    let validated_tree = validated(&tree);
 
     let (h0, m0) = h.cache.stats();
     let e0 = h.cache.evictions();
@@ -492,7 +530,7 @@ fn change(panels: usize, rows: usize, k: usize, policy: Policy) -> Change {
     let t = Instant::now();
     let frame = petrify(
         2,
-        &tree,
+        validated_tree,
         &mut h.ctx(),
         viewport(),
         TransitionActivity::default(),
@@ -579,7 +617,7 @@ fn change_incremental(panels: usize, rows: usize) -> (Duration, ReuseStats, f32)
 
     let warm = petrify(
         1,
-        &before,
+        validated(&before),
         &mut h.ctx(),
         viewport(),
         TransitionActivity::default(),
@@ -592,20 +630,39 @@ fn change_incremental(panels: usize, rows: usize) -> (Duration, ReuseStats, f32)
         h.scale,
     );
 
-    // Panel 0 rebuilt with a wider row 0; every other panel handed straight
-    // back.
+    // Panel 0 rebuilt with a wider row 0; every other row of panel 0, and every
+    // other panel, handed straight back as the same allocation.
+    //
+    // Sharing those sibling rows is not a tidiness choice, it is the contract.
+    // A moved `Arc` is the only signal the engine has that a node was rebuilt.
+    // Rows 1.. used to be minted with `Arc::new` — identical content, a new
+    // address — so they were rebuilt-but-undeclared, the exact case
+    // `ReuseState::verify_declaration` exists to catch. That fires under
+    // `debug_assertions`, which is every profile `cargo test` builds in, and a
+    // release build would have served a stale frame in silence instead. It
+    // also makes the measurement honest: an incremental host hands back what
+    // it did not touch, and a bench that rebuilds the untouched rows is timing
+    // work no real host does.
     let mut after_panels = before_panels.clone();
     let mut panel0 = ViewNode::new(NodeKind::Stack, Key::new("panel-0"));
-    panel0.children = (0..rows)
-        .map(|r| {
-            Arc::new(leaf(
-                format!("row-{r}"),
-                if r == 0 { CHANGED_TEXT_CHARS } else { 8 },
-            ))
+    // Iterating the previous panel's own children rather than `0..rows`: the
+    // rows being handed back are the source of truth for how many there are.
+    panel0.children = before_panels[0]
+        .children
+        .iter()
+        .enumerate()
+        .map(|(r, row)| {
+            if r == 0 {
+                Arc::new(leaf("row-0".to_owned(), CHANGED_TEXT_CHARS))
+            } else {
+                Arc::clone(row)
+            }
         })
         .collect();
     after_panels[0] = Arc::new(panel0);
     let after = root_of(&after_panels);
+    // Minted before the timer starts, same reason as `cold` and `change`.
+    let after_validated = validated(&after);
 
     let target = "/root/panel-0/row-0";
     let changes = ChangeSet::Nodes(BTreeSet::from([target.to_owned()]));
@@ -617,7 +674,7 @@ fn change_incremental(panels: usize, rows: usize) -> (Duration, ReuseStats, f32)
         .expect("ChangeSet::Nodes has a dirty set");
     let (frame, stats) = petrify_with_memo(
         2,
-        &after,
+        after_validated,
         &mut h.ctx(),
         &memo,
         &dirty,
@@ -703,20 +760,20 @@ fn main() {
         .expect("bench thread");
 }
 
-#[allow(clippy::too_many_lines)]
-fn run() {
-    println!(
-        "petra layout negotiation: exponent e in cost ~ N^e. The exponent is the claim — it is \
-         dimensionless and survives a loaded machine. The absolute times are context and are not."
-    );
-
+/// H1: cold negotiation against node count, for the three tree shapes.
+/// Returns the three exponents `run` enforces bounds on below.
+fn h1_phase() -> (Option<f64>, Option<f64>, Option<f64>) {
     let e_wide = h1("wide stack", &[512, 1024, 2048, 4096, 8192], wide);
     let e_grid = h1("grid      ", &[24, 34, 48, 68, 96], grid);
     let e_deep = h1("deep chain", &[128, 256, 512, 1024], deep);
+    (e_wide, e_grid, e_deep)
+}
 
-    // H1d: the same node count at four depths. If the chain's exponent were
-    // recursion overhead, holding the node count fixed would hold the cost
-    // fixed too.
+/// H1d: the same node count at four depths. If the chain's exponent were
+/// recursion overhead, holding the node count fixed would hold the cost
+/// fixed too. Informational only — nothing here crosses into `run`'s bound
+/// checks.
+fn h1d_phase() {
     println!("\nH1d depth at a held node count: about 4 000 nodes, fan-out traded for depth");
     for (depth, fanout) in [(1usize, 4094usize), (2, 63), (5, 5), (11, 2)] {
         let tree = balanced(depth, fanout);
@@ -727,9 +784,12 @@ fn run() {
             elapsed.as_secs_f64() * 1e9 / nodes as f64
         );
     }
+}
 
-    // H1s: the severing. Key length is the only thing that changes, so a cost
-    // that follows it is a cost paid per character of `KeyPath::id()`.
+/// H1s: the severing. Key length is the only thing that changes, so a cost
+/// that follows it is a cost paid per character of `KeyPath::id()`.
+/// Informational only.
+fn h1s_phase() {
     println!("\nH1s severing the chain's depth term: the same shape with shorter keys");
     for key_len in [1usize, 6, 24] {
         let mut points: Vec<(usize, Duration)> = Vec::new();
@@ -754,10 +814,13 @@ fn run() {
         chain_id_len(1024, 6),
         chain_id_len(1024, 1)
     );
+}
 
-    // ---- H2: cost against change size, tree held fixed.
-    const ROWS: usize = 32;
-    const PANELS: usize = 128;
+/// H2a: cost against change size k, tree held fixed at `PANELS` x `ROWS`.
+/// Returns the unwitnessed leaf's post-change width from the `k=0` run, which
+/// [`sabotage_phase`] prints alongside its own staleness numbers rather than
+/// re-running the same measurement a second time.
+fn h2a_phase() -> f32 {
     let fixed_nodes = node_count(&panelled(PANELS, ROWS));
     println!(
         "\nH2a change size at a fixed tree: {PANELS} panels x {ROWS} rows = {fixed_nodes} nodes. \
@@ -795,8 +858,13 @@ fn run() {
         slope(&path_re),
         slope(&path_inv)
     );
+    floor.changed_width
+}
 
-    // ---- H2c: FR-035 stated exactly. One leaf changes; the tree grows.
+/// H2c: FR-035 stated exactly. One leaf changes; the tree grows around it.
+/// Returns the incremental column's exponent, which is the one `run` checks
+/// FR-035's bound against.
+fn h2c_phase() -> Option<f64> {
     println!("\nH2c FR-035 exactly: ONE leaf changes, the tree grows around it. Target: flat.");
     let mut one_global: Vec<(usize, Duration)> = Vec::new();
     let mut one_path: Vec<(usize, Duration)> = Vec::new();
@@ -825,10 +893,18 @@ fn run() {
             "the incremental pass must produce the post-change layout, not a stale one: \
              the changed leaf is {w:.0} wide and was 64 before the edit"
         );
+        // `panels - 1` whole sibling panels, plus `ROWS - 1` individual rows
+        // of the changed panel — every row but row 0, which is the only node
+        // `change_incremental` actually rebuilds. Before the fixture bug fix
+        // (2026-08-22, F2 wave), *every* row of the changed panel was
+        // rebuilt with a fresh `Arc` regardless of whether its content
+        // moved, so nothing inside that panel could ever be recognized as
+        // reused and this assertion undercounted by exactly `ROWS - 1`.
         assert_eq!(
             stats.reused_subtrees,
-            panels - 1,
-            "every panel but the changed one should have been carried over"
+            (panels - 1) + (ROWS - 1),
+            "every panel but the changed one, and every row in the changed \
+             panel but the changed row, should have been carried over"
         );
         println!(
             "  nodes={nodes:6}  incremental {inc:>9.2?}  ({} of {nodes} nodes carried over, {} rebuilt)",
@@ -851,9 +927,13 @@ fn run() {
         slope(&one_floor),
         slope(&one_incremental)
     );
-    let e_change = exponent(&one_incremental);
+    exponent(&one_incremental)
+}
 
-    // ---- Sabotage: sever a known cause; the number must move the way it must.
+/// Sabotage: sever a known cause and check the number moves the way it must.
+/// `floor_width` is the `k=0` leaf width [`h2a_phase`] already measured;
+/// threading it in keeps this from re-running that measurement.
+fn sabotage_phase(floor_width: f32) {
     println!("\nSabotage: sever a known cause and check the number moves.");
     let control = median(ROUNDS, Change::total, || {
         change(PANELS, ROWS, 1, Policy::Path)
@@ -877,7 +957,7 @@ fn run() {
     println!(
         "  staleness: path w={:.0} (correct), leaf-only w={:.0}, no invalidation w={:.0}, \
          before the edit w={:.0}.",
-        control.changed_width, leaf_only.changed_width, floor.changed_width, control.width_before
+        control.changed_width, leaf_only.changed_width, floor_width, control.width_before
     );
     assert!(
         control.changed_width > control.width_before,
@@ -889,18 +969,22 @@ fn run() {
         "invalidating only the leaf must leave the frame stale: its ancestors stay cached \
          and `measure` returns at the root"
     );
+}
 
-    // ---- The shipping cache bound, against the same tree. Every number
-    // above comes from a cache sized well past the working set, so it
-    // measures negotiation; this is what the shipped default does instead.
+/// The shipping cache bound, against the same tree. Every number above comes
+/// from a cache sized well past the working set, so it measures negotiation;
+/// this is what the shipped default does instead. Informational only.
+fn shipping_bound_phase() {
+    let fixed_nodes = node_count(&panelled(PANELS, ROWS));
     let tree = panelled(PANELS, ROWS);
     let unbounded_cold = median_dur(ROUNDS, || cold(&tree, fixed_nodes));
     let mut bounded = Harness::new();
     let capacity = bounded.cache.capacity();
+    let validated_tree = validated(&tree);
     let t = Instant::now();
     let frame = petrify(
         1,
-        &tree,
+        validated_tree,
         &mut bounded.ctx(),
         viewport(),
         TransitionActivity::default(),
@@ -913,6 +997,21 @@ fn run() {
          {at_default:.2?} at the default, on {} evictions.",
         bounded.cache.evictions()
     );
+}
+
+fn run() {
+    println!(
+        "petra layout negotiation: exponent e in cost ~ N^e. The exponent is the claim — it is \
+         dimensionless and survives a loaded machine. The absolute times are context and are not."
+    );
+
+    let (e_wide, e_grid, e_deep) = h1_phase();
+    h1d_phase();
+    h1s_phase();
+    let floor_width = h2a_phase();
+    let e_change = h2c_phase();
+    sabotage_phase(floor_width);
+    shipping_bound_phase();
 
     if cfg!(debug_assertions) {
         println!("\n(debug build: numbers printed, bounds enforced in release only)");
@@ -939,7 +1038,8 @@ fn run() {
              it, over the N^{MAX_CHANGE_EXPONENT} bound, against a target of flat. This is the \
              *incremental* column: the measurement cache is invalidated by path, unchanged \
              subtrees are carried over from the previous frame, and their subtree hashes are \
-             reused instead of refolded. Only 34 of these nodes are rebuilt at any tree size. \
+             reused instead of refolded. Only 3 of these nodes are rebuilt at any tree \
+             size -- the root, the panel above the change, and the changed leaf. \
              What is left is not a walk that can be skipped: the container above the change \
              must re-run its arrangement, because a resized child moves its siblings, and that \
              arrangement is O(children). The bench grows panels, so that term grows with the \

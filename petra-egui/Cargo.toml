@@ -29,3 +29,11 @@ eframe = { version = "0.36.1", default-features = false, features = [
 
 [lints]
 workspace = true
+
+# `test = true` so the assertions at the bottom of the gallery run under
+# `cargo test --all-targets`, which is what the default gate lane executes.
+# Without it an example is only ever type-checked, and a harness nothing runs
+# is a harness that rots.
+[[example]]
+name = "gallery"
+test = true

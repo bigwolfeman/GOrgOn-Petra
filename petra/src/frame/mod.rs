@@ -11,12 +11,11 @@ pub mod rounding;
 pub mod viewport;
 
 use std::collections::BTreeSet;
-use std::sync::Arc;
 
 use crate::geom::Rect;
 use crate::layout::reuse::{FrameMemo, ReuseState, ReuseStats};
 use crate::layout::{LayoutCtx, Proposal, SizeProposal, Slot};
-use crate::tree::{KeyPath, ViewNode};
+use crate::tree::{KeyPath, ValidatedTree};
 
 pub use digest::{FrameDigest, canonical_decimal, hash_text};
 pub use placement::{
@@ -69,9 +68,9 @@ pub struct PetrifiedFrame {
     /// `subtree_hashes[0]` — the root's — is the value
     /// [`PetrifiedFrame::digest`] was built from
     /// (`digest::root_hash_from`). This is what a reused subtree hands back
-    /// to its parent: the incremental placement path this crate does not yet
-    /// have can copy a subtree from the previous frame and reuse the hash
-    /// recorded here instead of re-walking it
+    /// to its parent: [`petrify_with_memo`] copies a subtree from the
+    /// previous frame and reuses the hash recorded here instead of
+    /// re-walking it
     /// (`.agents/notes/proposed/architecture/2026-08-22-petra-incremental-frames.md`).
     pub subtree_hashes: Vec<[u8; 32]>,
     /// How many placements each index's subtree occupies, itself included —
@@ -205,7 +204,7 @@ impl FrameCounter {
 /// mode is a correct frame at full price.
 pub fn petrify_with_memo<'a>(
     seq: u64,
-    tree: &'a Arc<ViewNode>,
+    tree: ValidatedTree<'a>,
     ctx: &mut LayoutCtx<'a>,
     memo: &'a FrameMemo,
     dirty: &'a BTreeSet<String>,
@@ -225,6 +224,16 @@ pub fn petrify_with_memo<'a>(
         ctx.reuse = Some(ReuseState::new(memo, dirty));
     }
     let frame = petrify(seq, tree, ctx, viewport, transitions);
+    // Behind `debug_assertions` only: every caller of this function already
+    // holds a dirty set derived from `FrameMemo::dirty_ids`, which is `None`
+    // (and so unreachable here — see that function) for `ChangeSet::All`.
+    // So whenever `ctx.reuse` was set up at all, `dirty` came from `Nodes` or
+    // `None`, and the verifier's precondition holds without this function
+    // needing to see the original `ChangeSet` itself.
+    #[cfg(debug_assertions)]
+    if let Some(state) = ctx.reuse.as_ref() {
+        state.verify_declaration(&tree);
+    }
     let stats = ctx
         .reuse
         .as_ref()
@@ -252,11 +261,12 @@ pub fn petrify_with_memo<'a>(
 /// short label rendered as a narrow column against the left edge.
 pub fn petrify(
     seq: u64,
-    tree: &ViewNode,
+    tree: ValidatedTree<'_>,
     ctx: &mut LayoutCtx<'_>,
     viewport: Viewport,
     transitions: TransitionActivity,
 ) -> PetrifiedFrame {
+    let tree = &*tree;
     let mut path = KeyPath::root();
     let offer = SizeProposal {
         horizontal: Proposal::Exact(viewport.size.w),
@@ -315,7 +325,7 @@ pub fn petrify(
 mod tests {
     use super::{FrameCounter, TransitionActivity, Viewport, petrify};
     use crate::geom::Size;
-    use crate::testing::{Harness, MonoContent, NoRows};
+    use crate::testing::{Harness, MonoContent, NoRows, validated};
     use crate::token::ThemeMode;
     use crate::tree::{AxisConstraint, Constraints, NodeKind, Props, ViewNode};
 
@@ -323,7 +333,7 @@ mod tests {
         let mut harness = Harness::with(MonoContent::default(), NoRows);
         petrify(
             1,
-            tree,
+            validated(tree),
             &mut harness.ctx(),
             Viewport::new(Size::new(w, h), ThemeMode::Dark),
             TransitionActivity::default(),

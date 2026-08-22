@@ -22,7 +22,7 @@ use std::sync::Arc;
 use gorgon_petra::frame::{FrameDigest, PetrifiedFrame, TransitionActivity, Viewport, petrify};
 use gorgon_petra::geom::Size;
 use gorgon_petra::layout::RowSource;
-use gorgon_petra::testing::{Harness, MonoContent};
+use gorgon_petra::testing::{Harness, MonoContent, validated};
 use gorgon_petra::token::ThemeMode;
 use gorgon_petra::tree::{Key, NodeKind, Props, ViewNode};
 
@@ -87,7 +87,7 @@ fn frame_at(offset: f32, background: &'static str) -> PetrifiedFrame {
     harness.set_scroll("/list", offset);
     petrify(
         1,
-        &list(),
+        validated(&list()),
         &mut harness.ctx(),
         Viewport::new(VIEWPORT, ThemeMode::Dark),
         TransitionActivity::default(),
@@ -211,5 +211,192 @@ fn a_row_token_binding_changes_a_virtualized_frame_digest() {
     assert_ne!(
         raised.digest, sunken.digest,
         "a materialized row's token binding decides the picture and must reach the digest"
+    );
+}
+
+// ------------------------------------------------------------------ prepend
+
+/// A row source whose rows carry an identity independent of their current
+/// position in the list — the shape a real backing store has when items are
+/// inserted at the front and the rows after it shift down without losing who
+/// they are.
+///
+/// `TokenRows` above derives a row's key from the range index the engine
+/// asks for, which *is* the row's current position: correct for a source
+/// that never mutates, but unable to express a prepend at all, because
+/// inserting at the front changes every existing row's position and a
+/// position-derived key would rename every one of them by construction of
+/// the fixture, not by a bug the engine could have. `PrependableRows`
+/// instead holds one id per row in list order and answers by indexing into
+/// that record, so a prepend moves existing rows to a higher index without
+/// touching what they are called.
+struct PrependableRows {
+    ids: Vec<String>,
+}
+
+impl PrependableRows {
+    fn new(count: usize) -> Self {
+        Self {
+            ids: (0..count).map(|i| format!("row-{i}")).collect(),
+        }
+    }
+
+    /// Insert `n` new, never-before-used rows at the front. Every existing
+    /// row keeps its id and moves `n` positions later in the list.
+    fn prepend(&mut self, n: usize) {
+        let mut front: Vec<String> = (0..n).map(|i| format!("new-{i}")).collect();
+        front.append(&mut self.ids);
+        self.ids = front;
+    }
+
+    fn len(&self) -> usize {
+        self.ids.len()
+    }
+}
+
+impl RowSource for PrependableRows {
+    fn rows(&mut self, _source: &str, range: Range<usize>) -> Vec<Arc<ViewNode>> {
+        let end = range.end.min(self.ids.len());
+        if range.start >= end {
+            return Vec::new();
+        }
+        (range.start..end)
+            .map(|i| {
+                let id = self.ids[i].clone();
+                Arc::new(
+                    ViewNode::new(NodeKind::Text, Key::new(id.clone())).with_props(Props {
+                        text: Some(id),
+                        ..Props::default()
+                    }),
+                )
+            })
+            .collect()
+    }
+}
+
+/// A `scroll` over a virtualized `collection`, with an explicit row count so
+/// a prepend can grow it between two frames.
+fn prependable_list(total_count: usize) -> ViewNode {
+    let collection = ViewNode::new(NodeKind::Collection, "rows").with_props(Props {
+        total_count: Some(total_count),
+        source: Some("fibers".into()),
+        estimated_extent: Some(ROW_EXTENT),
+        ..Props::default()
+    });
+    ViewNode::new(NodeKind::Scroll, "list")
+        .with_props(Props {
+            overscan: Some(120.0),
+            ..Props::default()
+        })
+        .child(collection)
+}
+
+/// The text `id`'s placement painted, or `None` if `id` was not placed.
+fn text_of<'a>(frame: &'a PetrifiedFrame, id: &str) -> Option<&'a str> {
+    frame
+        .placements
+        .iter()
+        .position(|p| p.id == id)
+        .and_then(|i| frame.content[i].text.as_ref())
+        .map(|t| t.text.as_str())
+}
+
+/// T019 claims "stable key-derived identity across scroll/prepend"; only the
+/// scroll half had a test (`a_row_keeps_its_id_across_a_scroll`, in
+/// `semantic/tests.rs`). Prepend is the harder half by design: inserting new
+/// siblings at the front is exactly what breaks a *positional* id scheme,
+/// which is the entire reason the identity is supposed to be key-derived
+/// instead — the SC-008 review that asked for this test could not find it.
+///
+/// `place_collection` (`layout/scroll.rs:305-327`) uses `row_index` only to
+/// compute a row's rect; the id it places comes from `row_node.key`,
+/// untouched from whatever `RowSource::rows` handed back. A bug that derived
+/// the id from `row_index` instead would still print the string
+/// `/list/rows/row-0` at window position 0 after the prepend below — that
+/// position now holds a *different* row's content — so this test checks the
+/// painted text behind each id and not just whether the id string
+/// reappears. (Verifying this against a genuinely mislabelled engine would
+/// need sabotaging `layout/scroll.rs`, which is out of scope here — see this
+/// change's Agent Note for how the id-vs-position code path was instead
+/// traced statically.)
+#[test]
+fn a_row_keeps_its_id_and_content_across_a_prepend() {
+    const PREPENDED: usize = 3;
+
+    let before = {
+        let mut harness = Harness::with(MonoContent::new(), PrependableRows::new(TOTAL_ROWS));
+        harness.set_scroll("/list", 0.0);
+        petrify(
+            1,
+            validated(&prependable_list(TOTAL_ROWS)),
+            &mut harness.ctx(),
+            Viewport::new(VIEWPORT, ThemeMode::Dark),
+            TransitionActivity::default(),
+        )
+    };
+
+    let mut source = PrependableRows::new(TOTAL_ROWS);
+    source.prepend(PREPENDED);
+    let after_total = source.len();
+    let after = {
+        let mut harness = Harness::with(MonoContent::new(), source);
+        harness.set_scroll("/list", 0.0);
+        petrify(
+            2,
+            validated(&prependable_list(after_total)),
+            &mut harness.ctx(),
+            Viewport::new(VIEWPORT, ThemeMode::Dark),
+            TransitionActivity::default(),
+        )
+    };
+
+    // Sanity: the prepend actually grew the list and row-0 was really on
+    // screen before it, or nothing below proves anything about identity.
+    assert_eq!(after_total, TOTAL_ROWS + PREPENDED);
+    assert_eq!(
+        text_of(&before, "/list/rows/row-0"),
+        Some("row-0"),
+        "row-0 must be on screen before the prepend, or this test proves nothing"
+    );
+
+    // The row that used to be first keeps its id *and* its content: same
+    // string names the same text, just further down the list.
+    assert_eq!(
+        text_of(&after, "/list/rows/row-0"),
+        Some("row-0"),
+        "the id row-0 must still name the row whose content is \"row-0\" after the prepend"
+    );
+
+    // It really moved: row-0's rect is no longer at the top of the list.
+    let rect_of = |frame: &PetrifiedFrame, id: &str| {
+        frame
+            .placements
+            .iter()
+            .find(|p| p.id == id)
+            .unwrap_or_else(|| panic!("{id} placed"))
+            .rect
+    };
+    assert_eq!(
+        rect_of(&before, "/list/rows/row-0").y,
+        0.0,
+        "row-0 starts at the top of an unscrolled list"
+    );
+    assert_eq!(
+        rect_of(&after, "/list/rows/row-0").y,
+        PREPENDED as f32 * ROW_EXTENT,
+        "row-0 must sit exactly PREPENDED rows lower, pushed down by the new rows in front of it"
+    );
+
+    // The new rows are real, distinguishable content, not a renaming of the
+    // rows that were already there.
+    assert_eq!(
+        text_of(&after, "/list/rows/new-0"),
+        Some("new-0"),
+        "a prepended row must be placed under its own id with its own content"
+    );
+    assert_eq!(
+        text_of(&before, "/list/rows/new-0"),
+        None,
+        "the prepended row did not exist before the prepend"
     );
 }

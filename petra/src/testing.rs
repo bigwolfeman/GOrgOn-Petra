@@ -20,7 +20,38 @@ use crate::layout::{
     ContentMeasure, LayoutCtx, LayoutState, MeasureCache, RowSource, ScrollStack, SizeProposal,
     TextMeasurement, TextRequest,
 };
-use crate::tree::{Key, NodeKind, Props, TextWrap, ViewNode};
+use crate::tree::{Key, NodeKind, Props, Registry, TextWrap, ValidatedTree, ViewNode, validate};
+
+/// Accept `tree` against an empty [`Registry`] and mint the token
+/// [`crate::frame::petrify`] requires, panicking with the named violations if
+/// it does not validate.
+///
+/// This is the one helper every test and bench in the workspace mints a
+/// [`ValidatedTree`] through, rather than each of dozens of call sites
+/// repeating its own `validate(...).expect("valid")` — see the project's
+/// util rule. Reach for [`validated_with`] instead when the tree under test
+/// declares a custom kind or a transition name that a real registry would
+/// need to know about.
+///
+/// # Panics
+/// Panics naming the violations when `tree` does not accept.
+#[must_use]
+pub fn validated(tree: &ViewNode) -> ValidatedTree<'_> {
+    validated_with(tree, &Registry::new())
+}
+
+/// [`validated`], against a caller-supplied [`Registry`] rather than an empty
+/// one.
+///
+/// # Panics
+/// Panics naming the violations when `tree` does not accept.
+#[must_use]
+pub fn validated_with<'a>(tree: &'a ViewNode, registry: &Registry) -> ValidatedTree<'a> {
+    match validate(tree, registry) {
+        Ok(v) => v,
+        Err(errors) => panic!("tree used in a test did not pass acceptance:\n{errors}"),
+    }
+}
 
 /// A fixed-pitch text measurer: every character is [`MonoContent::char_w`]
 /// wide, every line is [`MonoContent::line_h`] tall.

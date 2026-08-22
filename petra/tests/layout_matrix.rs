@@ -56,7 +56,7 @@ use gorgon_petra::frame::{
 };
 use gorgon_petra::geom::{Align, Axis, Rect, Scale, Size};
 use gorgon_petra::layout::LayoutState;
-use gorgon_petra::testing::{GeneratedRows, Harness, MonoContent};
+use gorgon_petra::testing::{GeneratedRows, Harness, MonoContent, validated};
 use gorgon_petra::token::ThemeMode;
 use gorgon_petra::tree::{
     Anchor, AxisConstraint, ClampRule, Constraints, Key, KeyPath, Layer, NodeKind, Props, Registry,
@@ -370,7 +370,7 @@ fn petrify_with(harness: &mut Harness<MonoContent, GeneratedRows>, cfg: &Config)
     let tree = panel(cfg);
     petrify(
         1,
-        &tree,
+        validated(&tree),
         &mut harness.ctx(),
         Viewport::new(cfg.viewport, ThemeMode::Dark).with_scale(cfg.scale()),
         TransitionActivity::default(),
@@ -1055,7 +1055,7 @@ fn concede_at(height: f32) -> PetrifiedFrame {
     let mut harness = Harness::new();
     petrify(
         1,
-        &tree,
+        validated(&tree),
         &mut harness.ctx(),
         Viewport::new(Size::new(64.0, height), ThemeMode::Dark),
         TransitionActivity::default(),
@@ -1217,6 +1217,7 @@ fn grid_cells_tile_in_device_pixels_at_every_scale() {
         .child(cell("d"))
         .child(cell("e"))
         .child(cell("f"));
+    let grid = validated(&grid);
 
     for &scale in SCALES {
         for width in [100.0_f32, 137.0, 251.5, 400.0] {
@@ -1224,7 +1225,7 @@ fn grid_cells_tile_in_device_pixels_at_every_scale() {
             harness.scale = Scale::new(scale).unwrap();
             let frame = petrify(
                 1,
-                &grid,
+                grid,
                 &mut harness.ctx(),
                 Viewport::new(Size::new(width, 40.0), ThemeMode::Dark)
                     .with_scale(Scale::new(scale).unwrap()),
@@ -1353,7 +1354,7 @@ proptest! {
         harness.scale = scale;
         let frame = petrify(
             1,
-            &tree,
+            validated(&tree),
             &mut harness.ctx(),
             Viewport::new(Size::new(64.0, height), ThemeMode::Dark).with_scale(scale),
             TransitionActivity::default(),
@@ -1409,7 +1410,7 @@ fn stretch_stops_at_a_declared_cross_axis_maximum() {
     let mut harness = Harness::new();
     let frame = petrify(
         1,
-        &column,
+        validated(&column),
         &mut harness.ctx(),
         Viewport::new(Size::new(200.0, 50.0), ThemeMode::Dark),
         TransitionActivity::default(),
@@ -1431,7 +1432,7 @@ fn stretch_stops_at_a_declared_cross_axis_maximum() {
         let mut harness = Harness::new();
         let frame = petrify(
             1,
-            &column,
+            validated(&column),
             &mut harness.ctx(),
             Viewport::new(Size::new(200.0, 50.0), ThemeMode::Dark),
             TransitionActivity::default(),
@@ -1512,7 +1513,7 @@ fn abutting_rows_share_a_device_edge_from_a_shifted_origin() {
         harness.scale = scale;
         let frame = petrify(
             1,
-            &tree,
+            validated(&tree),
             &mut harness.ctx(),
             Viewport::new(Size::new(64.0, height), ThemeMode::Dark).with_scale(scale),
             TransitionActivity::default(),
@@ -1589,7 +1590,7 @@ fn abutting_grid_cells_share_a_device_edge_from_a_shifted_origin() {
         harness.scale = scale;
         let frame = petrify(
             1,
-            &tree,
+            validated(&tree),
             &mut harness.ctx(),
             Viewport::new(Size::new(width, 40.0), ThemeMode::Dark).with_scale(scale),
             TransitionActivity::default(),

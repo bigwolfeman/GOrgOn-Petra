@@ -288,19 +288,54 @@ impl fmt::Display for TreeErrors {
 
 impl std::error::Error for TreeErrors {}
 
+/// A tree that has passed [`validate`].
+///
+/// The only way to get one of these is `validate` returning `Ok`: the field
+/// is private to this module, there is no public constructor, and there is
+/// no `From` impl. [`crate::frame::petrify`] and
+/// [`crate::frame::petrify_with_memo`] accept only this type, so a host
+/// cannot reach layout with a tree that skipped acceptance by forgetting a
+/// call — the compiler refuses the program, not a debug assertion that
+/// might not be compiled in. `gorgon-petra-egui` is a separate crate, so
+/// module privacy alone would not be enough; the field is private to this
+/// crate and stays that way.
+///
+/// Borrows rather than owns: every caller already has a `&ViewNode` it keeps
+/// alive for the pass (the host holds its tree locally for the duration of
+/// one frame), so borrowing costs nothing and avoids a clone of a tree that
+/// can be large. [`std::ops::Deref`] to [`ViewNode`] means existing code that
+/// takes `&ViewNode` — `surface_scopes`, the reuse verifier — keeps working
+/// unchanged against `&validated_tree`.
+#[derive(Clone, Copy, Debug)]
+pub struct ValidatedTree<'a>(&'a ViewNode);
+
+impl<'a> std::ops::Deref for ValidatedTree<'a> {
+    type Target = ViewNode;
+
+    fn deref(&self) -> &ViewNode {
+        self.0
+    }
+}
+
 /// Accept a tree, or refuse it with every violation it carries.
 ///
 /// The whole tree is refused, not the offending subtree: a panel missing one
 /// label is a bug to fix, and rendering the rest would hide it.
 ///
+/// On success, mints a [`ValidatedTree`]: the token [`crate::frame::petrify`]
+/// requires, and the only way to produce one.
+///
 /// # Errors
 /// Returns every violation found, in tree pre-order.
-pub fn validate(root: &ViewNode, registry: &Registry) -> Result<(), TreeErrors> {
+pub fn validate<'a>(
+    root: &'a ViewNode,
+    registry: &Registry,
+) -> Result<ValidatedTree<'a>, TreeErrors> {
     let mut errors = Vec::new();
     let mut path = KeyPath::root();
     walk(root, registry, &mut path, None, &mut errors);
     if errors.is_empty() {
-        Ok(())
+        Ok(ValidatedTree(root))
     } else {
         Err(TreeErrors(errors))
     }

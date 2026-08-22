@@ -310,9 +310,9 @@ pub fn leaf_hash(scale: Scale, p: &Placement) -> [u8; 32] {
 /// tree and must produce a different hash.
 ///
 /// This is the ONE place the Merkle combination rule is defined. [`digest`]
-/// calls it for every subtree in a full walk; the incremental placement path
-/// this crate does not yet have will call it again for exactly the subtrees
-/// that changed, and reuse everything else's hash as already computed. Two
+/// calls it for every subtree in a full walk; [`crate::frame::petrify_with_memo`]'s
+/// incremental placement path calls it again for exactly the subtrees that
+/// changed, and reuses everything else's hash as already computed. Two
 /// definitions of "how a node combines with its children" is how the two
 /// paths would quietly stop agreeing; there being only one function makes
 /// that impossible.
@@ -385,25 +385,108 @@ pub fn subtree_hashes(scale: Scale, placements: &[Placement]) -> Vec<[u8; 32]> {
 /// would mean recomputing it. It is only ever `Some` for a subtree that
 /// [`crate::frame::placement::PlacementSink::reuse_subtree`] copied
 /// wholesale, and the copy is byte-identical in every hashed field, so the
-/// hash it came with is the hash this walk would have produced. The debug
-/// assertion in `petrify_with_memo` is what proves that claim rather than
-/// assuming it.
+/// hash it came with is the hash this walk would have produced *if the copy
+/// really is byte-identical*.
+///
+/// Behind `debug_assertions`,
+/// [`crate::layout::reuse::ReuseState::verify_declaration`] is what checks
+/// that claim rather than assuming it — but only the half of it that `Arc`
+/// identity can see: a node the host rebuilt without declaring the change.
+/// It cannot see a `collection` whose rows changed behind an unchanged tree;
+/// that half is the host obligation this crate's incremental-frames note
+/// states directly, not something checkable by walking `Arc`s.
+///
+/// # Panics
+///
+/// Delegates to [`try_subtree_hashes_with`] and panics on its error, with the
+/// same message [`MalformedParentChain`] displays. See that function's
+/// `# Errors` section for exactly when.
 #[must_use]
 pub fn subtree_hashes_with(
     scale: Scale,
     placements: &[Placement],
     known: &[Option<[u8; 32]>],
 ) -> Vec<[u8; 32]> {
+    match try_subtree_hashes_with(scale, placements, known) {
+        Ok(hashes) => hashes,
+        Err(err) => panic!("{err}"),
+    }
+}
+
+/// Why [`try_subtree_hashes`] or [`try_subtree_hashes_with`] refused a
+/// placement list.
+///
+/// [`Placement`] is a public struct with public fields and no sealed
+/// constructor (the same root cause tracked for `FocusTree` in finding F3),
+/// so a caller assembling one outside `PlacementSink` cannot be relied on to
+/// keep `parent` a strictly earlier index. [`subtree_hashes`] and
+/// [`subtree_hashes_with`] keep asserting for every caller inside this
+/// crate, where the invariant is a `PlacementSink` guarantee and a violation
+/// is this crate's own bug; this type is what a caller that cannot make that
+/// guarantee gets back instead of a panic.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MalformedParentChain {
+    /// Index of the placement whose `parent` does not name a strictly
+    /// earlier index.
+    pub child_index: usize,
+    /// That placement's id.
+    pub child_id: String,
+    /// The `parent` value it named.
+    pub parent_index: usize,
+}
+
+impl std::fmt::Display for MalformedParentChain {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "placement {} ({}) names parent {}, which must be a strictly \
+             earlier index in a pre-order placement list",
+            self.child_index, self.child_id, self.parent_index
+        )
+    }
+}
+
+impl std::error::Error for MalformedParentChain {}
+
+/// The non-panicking half of [`subtree_hashes`].
+///
+/// # Errors
+///
+/// If any placement names a `parent` that is not a strictly earlier index —
+/// self-referencing, pointing forward, or out of range.
+pub fn try_subtree_hashes(
+    scale: Scale,
+    placements: &[Placement],
+) -> Result<Vec<[u8; 32]>, MalformedParentChain> {
+    try_subtree_hashes_with(scale, placements, &[])
+}
+
+/// The non-panicking half of [`subtree_hashes_with`]: the same walk, the
+/// same reuse of `known` hashes, but a caller that cannot guarantee
+/// `placements` is a well-formed pre-order list gets a named [`Result::Err`]
+/// instead of a panic.
+///
+/// # Errors
+///
+/// If any placement names a `parent` that is not a strictly earlier index —
+/// self-referencing, pointing forward, or out of range. A well-formed
+/// pre-order placement list can never do this.
+pub fn try_subtree_hashes_with(
+    scale: Scale,
+    placements: &[Placement],
+    known: &[Option<[u8; 32]>],
+) -> Result<Vec<[u8; 32]>, MalformedParentChain> {
     let n = placements.len();
     let mut children: Vec<Vec<usize>> = vec![Vec::new(); n];
     for (child_idx, p) in placements.iter().enumerate() {
         if let Some(parent_idx) = p.parent {
-            assert!(
-                parent_idx < child_idx,
-                "placement {child_idx} ({}) names parent {parent_idx}, which must \
-                 be a strictly earlier index in a pre-order placement list",
-                p.id
-            );
+            if parent_idx >= child_idx {
+                return Err(MalformedParentChain {
+                    child_index: child_idx,
+                    child_id: p.id.clone(),
+                    parent_index: parent_idx,
+                });
+            }
             children[parent_idx].push(child_idx);
         }
     }
@@ -417,7 +500,7 @@ pub fn subtree_hashes_with(
         let child_hashes: Vec<[u8; 32]> = children[i].iter().map(|&c| hashes[c]).collect();
         hashes[i] = combine_subtree_hash(leaf, &child_hashes);
     }
-    hashes
+    Ok(hashes)
 }
 
 /// The frame's root subtree hash, given every placement's subtree hash.
@@ -542,6 +625,7 @@ mod tests {
     use super::{
         Canonical, canonical_decimal, combine_subtree_hash, digest, empty_root_hash, frame_bytes,
         hash_paint_content, hash_text, leaf_hash, root_hash_from, subtree_hashes,
+        try_subtree_hashes,
     };
     use crate::frame::placement::{
         PaintContent, PaintState, Placement, PlacementSemantics, TextPaint,
@@ -1204,8 +1288,9 @@ mod tests {
     }
 
     /// The per-placement hash array [`subtree_hashes`] exposes is what a
-    /// reused subtree hands back to its parent (the incremental path this
-    /// crate does not yet have). Pinned here at unit scale: the root's own
+    /// reused subtree hands back to its parent
+    /// (`crate::frame::petrify_with_memo`'s incremental path). Pinned here at
+    /// unit scale: the root's own
     /// entry is the frame's root hash, a leaf with no children combines with
     /// an empty child list, and the count matches the placement count.
     #[test]
@@ -1230,5 +1315,58 @@ mod tests {
             hashes[0],
             combine_subtree_hash(leaf_hash(vp.scale, &placements[0]), &[hashes[1]])
         );
+    }
+
+    /// F5: `subtree_hashes` panics on a malformed parent chain (`Placement`
+    /// has no sealed constructor, so a caller can build one); a caller that
+    /// cannot guarantee pre-order needs a path that does not panic.
+    #[test]
+    fn subtree_hashes_panics_on_a_malformed_parent_chain() {
+        let vp = viewport();
+        let mut child = placement("/root/a", Rect::ZERO);
+        // Points at itself: never a strictly earlier index.
+        child.parent = Some(0);
+        let placements = vec![child];
+        let result = std::panic::catch_unwind(|| subtree_hashes(vp.scale, &placements));
+        assert!(
+            result.is_err(),
+            "a self-referencing parent must panic, not silently hash wrong"
+        );
+    }
+
+    /// The non-panicking counterpart: the same malformed chain refused by
+    /// name instead of by panic.
+    #[test]
+    fn try_subtree_hashes_refuses_the_same_chain_without_panicking() {
+        let vp = viewport();
+        let mut child = placement("/root/a", Rect::ZERO);
+        child.parent = Some(0);
+        let placements = vec![child];
+
+        let err = try_subtree_hashes(vp.scale, &placements)
+            .expect_err("a self-referencing parent must be refused");
+        assert_eq!(err.child_index, 0);
+        assert_eq!(err.child_id, "/root/a");
+        assert_eq!(err.parent_index, 0);
+        assert_eq!(
+            err.to_string(),
+            "placement 0 (/root/a) names parent 0, which must be a strictly \
+             earlier index in a pre-order placement list"
+        );
+    }
+
+    /// A well-formed chain succeeds through the non-panicking path too, and
+    /// agrees with the panicking one byte-for-byte.
+    #[test]
+    fn try_subtree_hashes_agrees_with_subtree_hashes_when_well_formed() {
+        let vp = viewport();
+        let mut child = placement("/root/a", Rect::ZERO);
+        child.parent = Some(0);
+        let placements = vec![placement("/root", Rect::ZERO), child];
+
+        let via_panicking = subtree_hashes(vp.scale, &placements);
+        let via_result =
+            try_subtree_hashes(vp.scale, &placements).expect("a well-formed chain must succeed");
+        assert_eq!(via_panicking, via_result);
     }
 }
