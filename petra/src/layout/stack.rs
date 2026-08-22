@@ -156,7 +156,27 @@ pub fn place(
 
     // Declaration order, always. `plan` was negotiated in another order
     // entirely and indexes back into this one.
-    let mut cursor = 0.0f32;
+    //
+    // The cursor is an **absolute** coordinate on the main axis, not an offset
+    // from the slot. That is load-bearing, not a style choice. A relative
+    // cursor makes child `i`'s trailing edge `(slot.origin + cursor) + extent`
+    // while child `i + 1`'s leading edge is `slot.origin + (cursor + extent)`.
+    // Those are one number in exact arithmetic and two `f32` values about one
+    // adjacent pair in twenty thousand — and `crate::frame::rounding` then
+    // rounds the two sides of one seam to two different device pixels, which
+    // is a one-pixel gap or a one-pixel overlap between rows that touch. It
+    // defeats the whole reason `round_rect` rounds four edges rather than an
+    // origin and a size, and it is not a fractional-scale-only defect: a
+    // six-row column at 1.0 scale inside a container starting at y = 1.0
+    // shows it. Accumulating absolutely makes the next leading edge the same
+    // expression as this trailing edge, bit for bit, whenever the gap is zero
+    // — and where the gap is not zero the rects do not abut, so there is no
+    // seam to close. `gorgon/petra/tests/layout_matrix.rs`'s
+    // `abutting_rows_share_a_device_edge_from_a_shifted_origin` pins it.
+    let mut cursor = match main {
+        Axis::Horizontal => slot.rect.x,
+        Axis::Vertical => slot.rect.y,
+    };
     for (i, child) in node.children.iter().enumerate() {
         let extent = extents[i];
         let across = match props.align {
@@ -167,10 +187,8 @@ pub fn place(
         };
         let offset = props.align.offset(cross_extent, across);
         let rect = match main {
-            Axis::Horizontal => {
-                Rect::new(slot.rect.x + cursor, slot.rect.y + offset, extent, across)
-            }
-            Axis::Vertical => Rect::new(slot.rect.x + offset, slot.rect.y + cursor, across, extent),
+            Axis::Horizontal => Rect::new(cursor, slot.rect.y + offset, extent, across),
+            Axis::Vertical => Rect::new(slot.rect.x + offset, cursor, across, extent),
         };
         crate::layout::place(child, ctx, path, slot.with_rect(rect), sink);
         cursor += extent + gap;

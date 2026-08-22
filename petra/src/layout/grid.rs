@@ -106,8 +106,10 @@ pub fn place(
         );
         truncated = col_widths.truncated || row_heights.truncated;
 
-        let col_x = cumulative_offsets(&col_widths.extents, col_widths.spacing);
-        let row_y = cumulative_offsets(&row_heights.extents, row_heights.spacing);
+        // Absolute coordinates, seeded from the slot, not offsets added to it
+        // later: see `cumulative_offsets`.
+        let col_x = cumulative_offsets(slot.rect.x, &col_widths.extents, col_widths.spacing);
+        let row_y = cumulative_offsets(slot.rect.y, &row_heights.extents, row_heights.spacing);
 
         // A child that answers larger than its cell is clamped into it by
         // `place_in_cell`. Ask now, so the container can report the clamp;
@@ -170,7 +172,7 @@ pub fn place(
             ) else {
                 continue;
             };
-            let cell = Rect::new(slot.rect.x + x, slot.rect.y + y, w, h);
+            let cell = Rect::new(x, y, w, h);
             place_in_cell(child, ctx, path, cell, props.align, slot, sink);
         }
     }
@@ -441,11 +443,22 @@ fn row_natural_height(
     tallest
 }
 
-/// Leading offsets for a run of track sizes plus fixed spacing between them.
-fn cumulative_offsets(sizes: &[f32], spacing: f32) -> Vec<f32> {
+/// Leading **absolute** coordinates for a run of track sizes plus fixed
+/// spacing between them, starting at `origin`.
+///
+/// Absolute, not relative, for the same reason `layout/stack.rs` accumulates
+/// an absolute cursor: a relative offset makes track `i`'s trailing edge
+/// `(origin + offset) + extent` while track `i + 1`'s leading edge is
+/// `origin + (offset + extent)`. Exact arithmetic calls those one number;
+/// `f32` disagrees often enough that `crate::frame::rounding` rounds the two
+/// sides of one seam to two different device pixels, leaving a one-pixel gap
+/// or overlap between columns that share an edge.
+/// `gorgon/petra/tests/layout_matrix.rs`'s
+/// `abutting_grid_cells_share_a_device_edge_from_a_shifted_origin` pins it.
+fn cumulative_offsets(origin: f32, sizes: &[f32], spacing: f32) -> Vec<f32> {
     let spacing = spacing.max(0.0);
     let mut offsets = Vec::with_capacity(sizes.len());
-    let mut acc = 0.0_f32;
+    let mut acc = origin;
     for &size in sizes {
         offsets.push(acc);
         acc += size.max(0.0) + spacing;
