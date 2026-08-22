@@ -13,6 +13,7 @@
 
 use std::collections::BTreeMap;
 use std::ops::Range;
+use std::sync::Arc;
 
 use crate::geom::{Scale, Size};
 use crate::layout::{
@@ -132,7 +133,7 @@ impl ContentMeasure for MonoContent {
 pub struct NoRows;
 
 impl RowSource for NoRows {
-    fn rows(&mut self, _source: &str, _range: Range<usize>) -> Vec<ViewNode> {
+    fn rows(&mut self, _source: &str, _range: Range<usize>) -> Vec<Arc<ViewNode>> {
         Vec::new()
     }
 }
@@ -175,7 +176,7 @@ impl GeneratedRows {
 }
 
 impl RowSource for GeneratedRows {
-    fn rows(&mut self, source: &str, range: Range<usize>) -> Vec<ViewNode> {
+    fn rows(&mut self, source: &str, range: Range<usize>) -> Vec<Arc<ViewNode>> {
         let total = self.totals.get(source).copied().unwrap_or(0);
         let end = range.end.min(total);
         if range.start >= end {
@@ -183,7 +184,7 @@ impl RowSource for GeneratedRows {
         }
         self.max_index_seen = self.max_index_seen.max(end.saturating_sub(1));
         self.served += end - range.start;
-        (range.start..end).map(Self::row).collect()
+        (range.start..end).map(|i| Arc::new(Self::row(i))).collect()
     }
 }
 

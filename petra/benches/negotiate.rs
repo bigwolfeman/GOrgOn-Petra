@@ -152,6 +152,7 @@
 //! `with_capacity`.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gorgon_petra::frame::{TransitionActivity, Viewport};
@@ -223,7 +224,9 @@ fn leaf(key: String, chars: usize) -> ViewNode {
 /// A vertical stack with `n` text children: maximum fan-out, depth 2.
 fn wide(n: usize) -> ViewNode {
     let mut root = ViewNode::new(NodeKind::Stack, "root");
-    root.children = (0..n).map(|i| leaf(format!("leaf-{i}"), 8)).collect();
+    root.children = (0..n)
+        .map(|i| Arc::new(leaf(format!("leaf-{i}"), 8)))
+        .collect();
     root
 }
 
@@ -238,7 +241,7 @@ fn deep_with(n: usize, key_len: usize) -> ViewNode {
     let mut node = leaf("leaf".into(), 8);
     for _ in 0..n {
         let mut parent = ViewNode::new(NodeKind::Stack, Key::new(key.clone()));
-        parent.children = vec![node];
+        parent.children = vec![Arc::new(node)];
         node = parent;
     }
     node
@@ -257,7 +260,7 @@ fn grid(side: usize) -> ViewNode {
         ..Props::default()
     });
     root.children = (0..side * side)
-        .map(|i| leaf(format!("cell-{i}"), 4))
+        .map(|i| Arc::new(leaf(format!("cell-{i}"), 4)))
         .collect();
     root
 }
@@ -274,7 +277,7 @@ fn balanced(depth: usize, fanout: usize) -> ViewNode {
             .map(|i| {
                 let mut child = build(level + 1, depth, fanout);
                 child.key = Key::new(format!("{}-{i}", child.key.as_str()));
-                child
+                Arc::new(child)
             })
             .collect();
         node
@@ -292,8 +295,10 @@ fn panelled(panels: usize, rows: usize) -> ViewNode {
     root.children = (0..panels)
         .map(|p| {
             let mut panel = ViewNode::new(NodeKind::Stack, Key::new(format!("panel-{p}")));
-            panel.children = (0..rows).map(|r| leaf(format!("row-{r}"), 8)).collect();
-            panel
+            panel.children = (0..rows)
+                .map(|r| Arc::new(leaf(format!("row-{r}"), 8)))
+                .collect();
+            Arc::new(panel)
         })
         .collect();
     root
@@ -302,7 +307,7 @@ fn panelled(panels: usize, rows: usize) -> ViewNode {
 /// Node count, counted the same way for every shape: every exponent below is
 /// against this number, not against a per-shape parameter.
 fn node_count(tree: &ViewNode) -> usize {
-    1 + tree.children.iter().map(node_count).sum::<usize>()
+    1 + tree.children.iter().map(|c| node_count(c)).sum::<usize>()
 }
 
 /// The canonical id of leaf `index` in a [`panelled`] tree with `rows` rows
@@ -451,9 +456,9 @@ fn change(panels: usize, rows: usize, k: usize, policy: Policy) -> Change {
         "the probed leaf must be one of the changed"
     );
     for &index in &touched {
-        tree.children[index / rows].children[index % rows]
-            .props
-            .text = Some("x".repeat(CHANGED_TEXT_CHARS));
+        let panel = Arc::make_mut(&mut tree.children[index / rows]);
+        Arc::make_mut(&mut panel.children[index % rows]).props.text =
+            Some("x".repeat(CHANGED_TEXT_CHARS));
     }
 
     let (h0, m0) = h.cache.stats();

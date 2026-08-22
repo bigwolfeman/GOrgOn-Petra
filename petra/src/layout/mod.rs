@@ -20,6 +20,7 @@ pub mod text;
 
 use std::collections::BTreeMap;
 use std::ops::Range;
+use std::sync::Arc;
 
 use crate::frame::placement::{PaintContent, PlacementSemantics, PlacementSink, TextPaint};
 use crate::geom::{Rect, Scale, Size};
@@ -77,7 +78,14 @@ pub trait RowSource {
     /// The rows in `range` of `source`, in order. A source that cannot answer
     /// returns fewer rows; the caller reports the shortfall rather than
     /// fabricating nodes.
-    fn rows(&mut self, source: &str, range: Range<usize>) -> Vec<ViewNode>;
+    ///
+    /// A `collection` re-fetches its rows every frame, so a row that is not
+    /// shared can never be pointer-equal to what a previous frame placed and
+    /// its subtree can never be reused. Returning the same `Arc` a previous
+    /// frame handed back for an unchanged row is what makes a caching
+    /// implementation's subtree reusable; returning a fresh `Arc` each time
+    /// is correct, only slower.
+    fn rows(&mut self, source: &str, range: Range<usize>) -> Vec<Arc<ViewNode>>;
 }
 
 /// The read-only state one frame negotiates against.

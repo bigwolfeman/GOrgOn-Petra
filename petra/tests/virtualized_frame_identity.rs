@@ -17,6 +17,7 @@
 //! would prove nothing about the payload.
 
 use std::ops::Range;
+use std::sync::Arc;
 
 use gorgon_petra::frame::{FrameDigest, PetrifiedFrame, TransitionActivity, Viewport, petrify};
 use gorgon_petra::geom::Size;
@@ -37,7 +38,7 @@ struct TokenRows {
 }
 
 impl RowSource for TokenRows {
-    fn rows(&mut self, _source: &str, range: Range<usize>) -> Vec<ViewNode> {
+    fn rows(&mut self, _source: &str, range: Range<usize>) -> Vec<Arc<ViewNode>> {
         let end = range.end.min(TOTAL_ROWS);
         if range.start >= end {
             return Vec::new();
@@ -54,7 +55,10 @@ impl RowSource for TokenRows {
                 props
                     .tokens
                     .insert("background".into(), self.background.into());
-                ViewNode::new(NodeKind::Text, Key::new(format!("row-{index}"))).with_props(props)
+                Arc::new(
+                    ViewNode::new(NodeKind::Text, Key::new(format!("row-{index}")))
+                        .with_props(props),
+                )
             })
             .collect()
     }

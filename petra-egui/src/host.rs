@@ -513,7 +513,7 @@ mod tests {
     }
 
     impl RowSource for Demo {
-        fn rows(&mut self, _source: &str, _range: Range<usize>) -> Vec<ViewNode> {
+        fn rows(&mut self, _source: &str, _range: Range<usize>) -> Vec<std::sync::Arc<ViewNode>> {
             Vec::new()
         }
     }

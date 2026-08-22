@@ -1,5 +1,7 @@
 //! The view node: plain nested data, no closures, no state, no toolkit types.
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
 use crate::tree::key::Key;
@@ -422,8 +424,16 @@ pub struct ViewNode {
     #[serde(default, skip_serializing_if = "is_false")]
     pub ambient: bool,
     /// Ordered children. Container kinds only.
+    ///
+    /// Shared via `Arc` so a host can hand back the exact allocation a
+    /// previous frame placed and let the engine skip re-placing that
+    /// subtree (`Arc::ptr_eq` is the proof of "unchanged" —
+    /// `.agents/notes/proposed/architecture/2026-08-22-petra-incremental-frames.md`).
+    /// Serde's `rc` feature serializes each `Arc` independently: a
+    /// round-tripped tree does **not** preserve sharing, and that is fine —
+    /// a deserialized tree has no previous frame to be shared with.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub children: Vec<ViewNode>,
+    pub children: Vec<Arc<ViewNode>>,
 }
 
 fn is_default_props(v: &Props) -> bool {
@@ -468,16 +478,52 @@ impl ViewNode {
         self
     }
 
-    /// Replace the children.
+    /// Replace the children, building a fresh `Arc` for each.
+    ///
+    /// Correct but slower than [`ViewNode::with_shared_children`] when the
+    /// caller already holds an `Arc` a previous frame used: rebuilding an
+    /// identical subtree here always yields a new allocation, so it can
+    /// never be pointer-equal to what the engine cached, and the subtree is
+    /// re-placed rather than reused.
     #[must_use]
     pub fn with_children(mut self, children: Vec<ViewNode>) -> Self {
+        self.children = children.into_iter().map(Arc::new).collect();
+        self
+    }
+
+    /// Append one child, wrapping it in a fresh `Arc`.
+    ///
+    /// Correct but slower than [`ViewNode::child_shared`] when the caller
+    /// already holds an `Arc` a previous frame used: rebuilding an
+    /// identical subtree here always yields a new allocation, so it can
+    /// never be pointer-equal to what the engine cached, and the subtree is
+    /// re-placed rather than reused.
+    #[must_use]
+    pub fn child(mut self, child: ViewNode) -> Self {
+        self.children.push(Arc::new(child));
+        self
+    }
+
+    /// Replace the children with subtrees the caller already holds.
+    ///
+    /// Handing back the same `Arc` a previous frame used is what lets the
+    /// engine skip re-placing that subtree (`Arc::ptr_eq` proves it is
+    /// unchanged). Rebuilding an identical subtree with
+    /// [`ViewNode::with_children`] instead is always correct, only slower.
+    #[must_use]
+    pub fn with_shared_children(mut self, children: Vec<Arc<ViewNode>>) -> Self {
         self.children = children;
         self
     }
 
-    /// Append one child.
+    /// Append one child subtree the caller already holds.
+    ///
+    /// Handing back the same `Arc` a previous frame used is what lets the
+    /// engine skip re-placing that subtree (`Arc::ptr_eq` proves it is
+    /// unchanged). Rebuilding an identical subtree with [`ViewNode::child`]
+    /// instead is always correct, only slower.
     #[must_use]
-    pub fn child(mut self, child: ViewNode) -> Self {
+    pub fn child_shared(mut self, child: Arc<ViewNode>) -> Self {
         self.children.push(child);
         self
     }
@@ -526,6 +572,8 @@ impl ViewNode {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::{Constraints, Interaction, NodeKind, Role, ViewNode};
     use crate::tree::props::Props;
 
@@ -635,5 +683,28 @@ mod tests {
                 "surface"
             ]
         );
+    }
+
+    /// `child_shared` attaches the caller's own allocation, not a copy of it
+    /// — that identity is what lets the engine skip re-placing an unchanged
+    /// subtree (`Arc::ptr_eq` against what the previous frame placed).
+    #[test]
+    fn child_shared_attaches_the_same_allocation() {
+        let shared = Arc::new(ViewNode::new(NodeKind::Text, "title"));
+        let node = ViewNode::new(NodeKind::Stack, "root").child_shared(Arc::clone(&shared));
+        assert!(Arc::ptr_eq(&shared, &node.children[0]));
+    }
+
+    /// `child` always builds a fresh `Arc`, even for an identical subtree.
+    /// This pins the false-negative behaviour as intended: a host that does
+    /// not opt into sharing gets a correct but non-reusable subtree, never a
+    /// wrongly-reused one.
+    #[test]
+    fn child_does_not_share_across_two_builds() {
+        let a =
+            ViewNode::new(NodeKind::Stack, "root").child(ViewNode::new(NodeKind::Text, "title"));
+        let b =
+            ViewNode::new(NodeKind::Stack, "root").child(ViewNode::new(NodeKind::Text, "title"));
+        assert!(!Arc::ptr_eq(&a.children[0], &b.children[0]));
     }
 }
