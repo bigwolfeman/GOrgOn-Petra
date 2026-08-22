@@ -493,7 +493,7 @@ fn cumulative_offsets(origin: f32, sizes: &[f32], spacing: f32) -> Vec<f32> {
 /// smaller — a parent places, it does not force) and offsets the answer
 /// inside the box with [`Align::offset`]. `Stretch` skips the measurement and
 /// fills the cell on both axes, but a declared maximum on either axis still
-/// wins (2026-08-22: constraints beat Stretch, see `Ai-notes/QUESTIONS.md`
+/// wins (2026-08-22: constraints beat Stretch, see `.agents/tallies/QUESTIONS.md`
 /// Round 3 item 2 and
 /// `.agents/notes/implemented/bug-fix/2026-08-22-petra-stretch-honours-constraints.md`).
 /// That fill is routed through `AxisConstraint::clamp` directly rather than
@@ -864,7 +864,7 @@ mod tests {
         }
     }
 
-    /// The 2026-08-22 decision (`Ai-notes/QUESTIONS.md` Round 3 item 2): a
+    /// The 2026-08-22 decision (`.agents/tallies/QUESTIONS.md` Round 3 item 2): a
     /// declared cross-axis maximum beats `Align::Stretch`, in a grid cell
     /// exactly as it does in a stack. Before the fix, `place_in_cell` skipped
     /// measuring a `Stretch` child entirely and placed it at the raw cell

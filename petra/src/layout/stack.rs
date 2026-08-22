@@ -182,7 +182,7 @@ pub fn place(
         let across = match props.align {
             // Stretch fills the cross extent, but a declared maximum on the
             // child's own cross axis still wins (2026-08-22: constraints beat
-            // Stretch, see `Ai-notes/QUESTIONS.md` Round 3 item 2 and
+            // Stretch, see `.agents/tallies/QUESTIONS.md` Round 3 item 2 and
             // `.agents/notes/implemented/bug-fix/2026-08-22-petra-stretch-honours-constraints.md`).
             // This routes through `AxisConstraint::clamp` — the crate's one
             // clamp function, also reached via `Constraints::clamp_size` from
@@ -677,7 +677,7 @@ mod tests {
         assert_eq!(placements(&tree(Align::Center), rect)[1].rect.w, 64.0);
     }
 
-    /// The 2026-08-22 decision (`Ai-notes/QUESTIONS.md` Round 3 item 2): a
+    /// The 2026-08-22 decision (`.agents/tallies/QUESTIONS.md` Round 3 item 2): a
     /// declared cross-axis maximum beats `Align::Stretch`. Same fixture shape
     /// as the test above, but the child now declares `max: 30.0` on the
     /// cross axis, so Stretch must stop at 30, not fill the 200-unit column.

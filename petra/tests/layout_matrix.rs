@@ -1392,7 +1392,7 @@ proptest! {
 /// `Align::Stretch` stops at a child's declared cross-axis `max` exactly the
 /// way the other three alignments already do.
 ///
-/// Decided 2026-08-22 (`Ai-notes/QUESTIONS.md` Round 3 item 2): a declared
+/// Decided 2026-08-22 (`.agents/tallies/QUESTIONS.md` Round 3 item 2): a declared
 /// constraint beats `Align::Stretch`. This test replaces
 /// `stretch_fills_past_a_declared_cross_axis_maximum`, which pinned the
 /// opposite reading — Stretch filling the container's full cross extent
