@@ -184,7 +184,12 @@ pub struct PaintReport {
     /// failed pass and not a note in a set: it is the one way a frame can be
     /// fully drawn and still leave the operator blind.
     pub blind_focus: usize,
-    /// Token names no colour could be found for, sorted.
+    /// Token names this pass asked for and could not resolve, sorted: a
+    /// colour, a corner radius, or a typography style. Not only colours —
+    /// the typography half was added because a style name that resolved to
+    /// nothing used to fall back to the default size in silence, which is
+    /// how a whole declared type ramp painted at one size with this set
+    /// empty and every gate green.
     pub unresolved_tokens: BTreeSet<String>,
     /// Content kinds this pass has no painter for, sorted.
     pub undrawn: BTreeSet<String>,
@@ -533,6 +538,19 @@ fn paint_one(
             // report either way.
             Color32::PLACEHOLDER
         });
+        // A style token the shaper has no binding for still shapes — at the
+        // theme's body style, because blank text is worse on screen than
+        // text at the wrong size — so the only way it can be noticed is for
+        // the name to be reported here, the same as an unresolved colour.
+        if let Some(unresolved) = env
+            .shaper
+            .typography()
+            .resolve(text.style.as_deref())
+            .1
+            .map(str::to_owned)
+        {
+            report.unresolved_tokens.insert(unresolved);
+        }
         let galley = env.shaper.galley(&TextRequest {
             text: &text.text,
             style: text.style.as_deref(),
@@ -798,6 +816,97 @@ mod tests {
         )
     }
 
+    /// The declared type ramp has to survive all the way to the screen.
+    ///
+    /// `component::heading` binds `typography.heading` (20 units) and
+    /// `component::text` binds `typography.body` (14). The size is read off
+    /// the shapes egui actually received, because that is the only place the
+    /// failure this guards was visible: the shaper's style map was keyed on
+    /// a private vocabulary (`body`, `heading`, `small`, `mono`) that no
+    /// theme and no component ever used, so every lookup missed, every miss
+    /// fell back to one size, and every gate stayed green.
+    #[test]
+    fn a_heading_paints_larger_than_body_text() {
+        use gorgon_petra::component::{heading, text as body_text};
+
+        let host = Headless::new();
+        let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
+        let tree = ViewNode::new(NodeKind::Stack, "root")
+            .child(heading("h", "Heading"))
+            .child(body_text("b", "Body"));
+        let frame = frame_of(&tree, &mut h);
+        let mut shaper = host.shaper();
+        let report = paint_frame(&host.painter(), &frame, &mut shaper, &snapshot());
+        assert!(report.unresolved_tokens.is_empty(), "{report:?}");
+        assert_eq!(report.texts, 2, "{report:?}");
+
+        let out = host.0.run_ui(RawInput::default(), |_| {});
+        let sizes: Vec<f32> = out
+            .shapes
+            .iter()
+            .filter_map(|cs| match &cs.shape {
+                Shape::Text(t) => Some(t.galley.job.sections[0].format.font_id.size),
+                _ => None,
+            })
+            .collect();
+        out.drop_without_applying_deltas();
+
+        assert_eq!(
+            sizes.len(),
+            2,
+            "one heading run and one body run must reach egui: {sizes:?}"
+        );
+        assert!(
+            sizes[0] > sizes[1],
+            "typography.heading painted at {} and typography.body at {} — the \
+             declared ramp collapsed to one size on the way to the screen",
+            sizes[0],
+            sizes[1]
+        );
+        assert_eq!(
+            sizes,
+            vec![20.0, 14.0],
+            "and at the sizes the shipped ramp declares: {sizes:?}"
+        );
+    }
+
+    /// A style token nothing is bound to must be named in the report. The
+    /// run still paints — blank text is worse on screen than text at the
+    /// wrong size — so the report is the only place the miss can show.
+    #[test]
+    fn an_unresolved_style_token_is_reported_rather_than_shaped_in_silence() {
+        let host = Headless::new();
+        let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
+        let tree = ViewNode::new(NodeKind::Text, "label").with_props(Props {
+            text: Some("Fibers".into()),
+            style: Some(tok("typography.heading")),
+            ..Props::default()
+        });
+        let frame = frame_of(&tree, &mut h);
+
+        // A shaper whose map knows nothing, standing in for a host that
+        // never bound the theme to it.
+        let mut blind = crate::text::GalleyShaper::with_typography(
+            host.0.clone(),
+            crate::text::Typography::new(crate::text::TextStyle::new(egui::FontId::new(
+                14.0,
+                egui::FontFamily::Proportional,
+            ))),
+        );
+        let report = paint_frame(&host.painter(), &frame, &mut blind, &snapshot());
+        assert_eq!(report.texts, 1, "the run still paints: {report:?}");
+        assert!(
+            report.unresolved_tokens.contains("typography.heading"),
+            "the style token that resolved to nothing must be named: {report:?}"
+        );
+
+        // And the opposite direction, so the report cannot earn a pass by
+        // naming every style token: a bound one is not reported.
+        let mut bound = host.shaper();
+        let report = paint_frame(&host.painter(), &frame, &mut bound, &snapshot());
+        assert!(report.unresolved_tokens.is_empty(), "{report:?}");
+    }
+
     #[test]
     fn every_placement_is_visited_and_content_is_drawn() {
         let host = Headless::new();
@@ -1047,19 +1156,42 @@ mod tests {
         assert!(report.undrawn.contains("image:logo.png"), "{report:?}");
     }
 
-    /// A token slot no painter consumes is still named rather than dropped.
-    /// `radius` used to be the example fixture here — the shipped vocabulary
-    /// declared `shape.*` tokens and nothing read them — but it is a known
-    /// slot now (FR-053, C17), so an invented name stands in for it.
+    /// A token slot this painter does not consume is still named rather than
+    /// dropped, by both routes into `unknown_slots`.
+    ///
+    /// `radius` used to be the fixture here and is a known slot now (FR-053,
+    /// C17). The two remaining routes are genuinely different and both are
+    /// exercised, because a fixture covering one while its doc claims the
+    /// other is how this test drifted the first time:
+    ///
+    /// * `shadow` — declared by `standard_slots()`, so a tree binding it is
+    ///   accepted, and absent from this painter's `KNOWN_SLOTS`, so nothing
+    ///   draws it. The token has to be a colour, which is the kind the
+    ///   schema declares for it; tree acceptance checks that pairing now.
+    /// * `glow` — declared by nobody. A host painter's invented slot name
+    ///   takes this path, and acceptance checks only that the token exists.
     #[test]
     fn a_genuinely_unknown_token_slot_is_recorded() {
+        use gorgon_petra::token::standard_slots;
+        assert!(
+            standard_slots().contains("shadow"),
+            "the declared-but-undrawn half of this test needs a slot the \
+             shipped schema declares"
+        );
+        assert!(
+            !standard_slots().contains("glow"),
+            "the invented half needs a slot nothing declares, or the fixture \
+             is testing one route twice"
+        );
+
         let host = Headless::new();
         let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
         let mut props = Props {
             text: Some("hi".into()),
             ..Props::default()
         };
-        props.tokens.insert("shadow".into(), tok("shape.corner-lg"));
+        props.tokens.insert("shadow".into(), tok("surface.raised"));
+        props.tokens.insert("glow".into(), tok("text.muted"));
         let frame = frame_of(
             &ViewNode::new(NodeKind::Text, "t").with_props(props),
             &mut h,
@@ -1068,6 +1200,7 @@ mod tests {
         let report = paint_frame(&host.painter(), &frame, &mut shaper, &snapshot());
 
         assert!(report.unknown_slots.contains("shadow"), "{report:?}");
+        assert!(report.unknown_slots.contains("glow"), "{report:?}");
         assert!(
             !report.unknown_slots.contains("radius"),
             "radius is a known slot now (C17): {report:?}"

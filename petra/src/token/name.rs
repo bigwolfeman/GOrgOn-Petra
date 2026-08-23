@@ -3,7 +3,8 @@
 //! A token name identifies a *role* (`surface.raised`, `text.muted`,
 //! `status.degraded`), never a value (`grey700`, `#3a3a3a`) — FR-013:
 //! feature code references names, and a gate refuses a literal reaching a
-//! token slot (`tree::validate::is_style_literal`, the sibling check on the
+//! token slot (`looks_like_style_literal` below, which absorbed the check
+//! `tree::validate` used to run; the sibling check on the
 //! consumption side). This module is the production side of the same idea:
 //! a name that could not survive that gate should never be constructible as
 //! a `TokenName` in the first place.
@@ -11,13 +12,13 @@
 //! Two rules, both structural rather than a banned-word list:
 //!
 //! 1. the candidate must not *look like* a style literal — the same shapes
-//!    `is_style_literal` refuses (hex colour, bare number, `rgb(...)` /
+//!    `looks_like_style_literal` refuses (hex colour, bare number, `rgb(...)` /
 //!    `hsl(...)` function calls);
 //! 2. the candidate must be namespaced: two or more role segments joined by
 //!    `.`, `-`, or `_`, each segment lowercase letters, optionally *preceded*
 //!    by digits. This is what rejects `grey700` and `red` without
 //!    hand-maintaining a colour-word list, while still accepting `text-muted`
-//!    — the hyphenated form `is_style_literal`'s own doc comment gives as a
+//!    — the hyphenated form `looks_like_style_literal`'s own doc comment gives as a
 //!    valid token name alongside `surface.raised` — and `spacing.2xs`, the
 //!    shipped ramp's smallest step.
 //!
@@ -122,7 +123,7 @@ impl fmt::Display for TokenNameError {
 impl std::error::Error for TokenNameError {}
 
 /// Whether `candidate` parses as one of the literal shapes
-/// `tree::validate::is_style_literal` refuses: a hex colour, a bare number,
+/// this function refuses: a hex colour, a bare number,
 /// or an `rgb(...)`/`hsl(...)`-style function call. Kept in step with that
 /// function by construction (both read the same shapes) even though the two
 /// live in different modules owned by different agents in this wave.

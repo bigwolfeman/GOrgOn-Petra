@@ -49,6 +49,10 @@ impl Theme {
         let mut missing = Vec::new();
         let mut mismatched = Vec::new();
         let mut unusable = Vec::new();
+        // Completeness is asked of the vocabulary: every declared name must be
+        // assigned, at its declared kind. A name `values` carries that the
+        // vocabulary does not declare cannot be asked either question -- there
+        // is no declared kind to compare against -- so it is not an error here.
         for name in vocabulary.names() {
             let declared = vocabulary
                 .kind_of(name)
@@ -62,14 +66,32 @@ impl Theme {
                         found: value.kind(),
                     });
                 }
-                Some(value) => {
-                    if let Some(why) = unusable_extent(value) {
-                        unusable.push(ThemeUnusable {
-                            name: name.clone(),
-                            why,
-                        });
-                    }
-                }
+                Some(_) => {}
+            }
+        }
+        // Usability is asked of `values`, and this loop is deliberately not
+        // folded into the one above.
+        //
+        // Walking `vocabulary.names()` for the extent check is what let a
+        // negative or NaN gap through: a value under a name the vocabulary did
+        // not declare was never inspected, and `Vocabulary::from_theme` --
+        // which walks `values`, not the vocabulary -- then declared it anyway.
+        // A host that built a theme against `standard_vocabulary()` with extra
+        // names in `values` got those names declared, unchecked, and
+        // `resolve_spacing` placed a child at `x=-500` for a `-500` gap and at
+        // `x=NaN` for a NaN one, with nothing reported.
+        //
+        // So the rule is: every extent this theme can hand to layout is proved
+        // finite and non-negative, whether or not a vocabulary declared it.
+        // That is the claim `tree::validate` gave up when styling props became
+        // token references, and it is only true if it covers the same set of
+        // numbers layout can reach.
+        for (name, value) in &values {
+            if let Some(why) = unusable_extent(value) {
+                unusable.push(ThemeUnusable {
+                    name: name.clone(),
+                    why,
+                });
             }
         }
         if missing.is_empty() && mismatched.is_empty() && unusable.is_empty() {
@@ -282,6 +304,86 @@ mod tests {
             crate::token::value::TokenKind::Shape,
         ));
         vocab
+    }
+
+    /// The same check, on a name the vocabulary does **not** declare.
+    ///
+    /// This is the case that shipped broken. `Theme::build` walked
+    /// `vocabulary.names()` to decide what to inspect, so a value under an
+    /// undeclared name was skipped entirely — and
+    /// [`Vocabulary::from_theme`], which walks `values` rather than the
+    /// vocabulary, then declared it. A host building against
+    /// `standard_vocabulary()` with an extra name in `values` got that name
+    /// declared with its extent never checked, and layout placed a child at
+    /// `x=-500` for a `-500` gap.
+    ///
+    /// The pair of assertions is the point: the theme is refused **and**
+    /// `from_theme` would have declared the name, so skipping it was not
+    /// harmless.
+    #[test]
+    fn an_extent_under_a_name_the_vocabulary_never_declared_is_checked_too() {
+        for bad in [
+            TokenValue::Spacing(-500.0),
+            TokenValue::Spacing(f32::NAN),
+            TokenValue::Shape(crate::token::value::ShapeValue {
+                corner_radius: f32::NEG_INFINITY,
+            }),
+        ] {
+            let undeclared = TokenName::new("spacing.app-gutter").unwrap();
+            assert!(
+                gap_vocabulary().kind_of(&undeclared).is_none(),
+                "the fixture must not declare the name this test is about"
+            );
+
+            let mut values = BTreeMap::new();
+            values.insert(
+                TokenName::new("spacing.md").unwrap(),
+                TokenValue::Spacing(12.0),
+            );
+            values.insert(
+                TokenName::new("shape.corner-sm").unwrap(),
+                TokenValue::Shape(crate::token::value::ShapeValue { corner_radius: 4.0 }),
+            );
+            values.insert(undeclared.clone(), bad);
+
+            let err = Theme::build(ThemeMode::Light, &gap_vocabulary(), values)
+                .expect_err("an unusable extent is refused whoever declared the name");
+            assert!(
+                err.unusable.iter().any(|u| u.name == undeclared),
+                "{undeclared:?} carrying {bad:?} was not named unusable: {err:?}"
+            );
+            assert!(
+                err.missing.is_empty() && err.mismatched.is_empty(),
+                "the theme is complete; only the extent is wrong: {err:?}"
+            );
+        }
+    }
+
+    /// The reason the test above matters: `from_theme` declares every name in
+    /// `values`, so any name `Theme::build` declines to inspect becomes a
+    /// declared token that layout will resolve.
+    #[test]
+    fn from_theme_declares_names_build_was_never_asked_about() {
+        let undeclared = TokenName::new("spacing.app-gutter").unwrap();
+        let mut values = BTreeMap::new();
+        values.insert(
+            TokenName::new("spacing.md").unwrap(),
+            TokenValue::Spacing(12.0),
+        );
+        values.insert(
+            TokenName::new("shape.corner-sm").unwrap(),
+            TokenValue::Shape(crate::token::value::ShapeValue { corner_radius: 4.0 }),
+        );
+        values.insert(undeclared.clone(), TokenValue::Spacing(20.0));
+
+        let theme = Theme::build(ThemeMode::Light, &gap_vocabulary(), values)
+            .expect("a usable extent under an extra name is fine");
+        let rebuilt = Vocabulary::from_theme(&theme);
+        assert!(
+            rebuilt.kind_of(&undeclared).is_some(),
+            "from_theme did not declare the extra name, so this test no longer \
+             guards what it was written for"
+        );
     }
 
     /// The check `tree::validate` used to run on `Props.spacing` and every

@@ -9,7 +9,7 @@ use std::collections::{BTreeSet, HashSet};
 use std::fmt;
 
 use crate::geom::Axis;
-use crate::token::{TokenKind, TokenName, Vocabulary};
+use crate::token::{SlotSchema, TokenKind, TokenName, Vocabulary, standard_slots};
 use crate::tree::key::{Key, KeyPath};
 use crate::tree::node::{NodeKind, Role, ViewNode};
 use crate::tree::props::{ScrollProps, TrackSize, max_row_tracks};
@@ -24,11 +24,32 @@ use crate::tree::props::{ScrollProps, TrackSize, max_row_tracks};
 /// `ThemeSnapshot` — a tree accepted against this registry is accepted
 /// under every theme built complete against the same vocabulary
 /// (`token::Theme::build`).
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Registry {
     custom_kinds: BTreeSet<String>,
     transitions: BTreeSet<String>,
     vocabulary: Vocabulary,
+    slots: SlotSchema,
+}
+
+impl Default for Registry {
+    /// Empty on every host-configured axis, but carrying the **shipped** slot
+    /// schema.
+    ///
+    /// The asymmetry is deliberate. Custom kinds, transitions and the
+    /// vocabulary are things a particular host declares, so declaring none is
+    /// the honest empty state. Which `TokenKind` the `background` slot takes
+    /// is not host configuration — it is a fact about the design system, true
+    /// of every host that uses the shipped painter. A host with its own
+    /// painter replaces it through [`Registry::with_slots`].
+    fn default() -> Self {
+        Self {
+            custom_kinds: BTreeSet::new(),
+            transitions: BTreeSet::new(),
+            vocabulary: Vocabulary::default(),
+            slots: standard_slots(),
+        }
+    }
 }
 
 impl Registry {
@@ -52,6 +73,23 @@ impl Registry {
             vocabulary,
             ..Self::default()
         }
+    }
+
+    /// Replace the slot schema, for a host whose painter draws slots the
+    /// shipped one does not.
+    ///
+    /// An empty schema turns the slot kind check off entirely: a slot the
+    /// schema does not declare carries a token of any kind, by design.
+    #[must_use]
+    pub fn with_slots(mut self, slots: SlotSchema) -> Self {
+        self.slots = slots;
+        self
+    }
+
+    /// The slot schema this registry accepts trees against.
+    #[must_use]
+    pub fn slots(&self) -> &SlotSchema {
+        &self.slots
     }
 
     /// Register a custom node kind name.
@@ -793,7 +831,16 @@ fn check_node(
     // and serde refuses a bare number in the slot before acceptance ever
     // runs. The check did not disappear — it moved to where the number is now
     // written, which is `token::Theme::build`, and it refuses a theme that
-    // assigns a negative or non-finite extent to any name.
+    // assigns a negative or non-finite extent to any name in `values`.
+    //
+    // "In `values`" is load-bearing and was got wrong once. This note used to
+    // say "any name", while `Theme::build` walked `vocabulary.names()` to
+    // decide what to inspect — so a value under an undeclared name was never
+    // checked, and `Vocabulary::from_theme` declared it anyway. The
+    // replacement was narrower than the note claimed, which is the one way a
+    // deletion note can be worse than no note. `Theme::build` now walks
+    // `values`, and `an_extent_under_a_name_the_vocabulary_never_declared_is_checked_too`
+    // pins it.
     if node.props.padding.is_some() && !node.kind.is_container() {
         push(Violation::PaddingOnLeafKind { kind: node.kind });
     }
@@ -865,25 +912,51 @@ fn check_node(
     // `props.tokens`'s keys are paint slots, not design-token kinds
     // (`tree::props`'s own doc comment on the field: the slot is "decided by
     // the painter", e.g. `gorgon_petra_egui::paint::KNOWN_SLOTS`). This
-    // module does not — and must not — hardcode which slot wants which
-    // `TokenKind`: `radius` happens to pair with `TokenKind::Shape` today
-    // and `background`/`foreground`/`border` with `TokenKind::Color`, but a
-    // host can register a painter with slots this crate has never heard of,
-    // and a slot a *shipped* painter does not know yet (an invented name,
-    // proven live by
+    // module does not — and must not — **hardcode** which slot wants which
+    // `TokenKind`, because a host can register a painter with slots this
+    // crate has never heard of, and a slot a *shipped* painter does not know
+    // yet (an invented name, proven live by
     // `gorgon_petra_egui::paint::tests::a_genuinely_unknown_token_slot_is_recorded`)
     // can legitimately carry a token of any kind — that mismatch is the
-    // painter's `unknown_slots` report to make, not tree acceptance's. So
-    // only existence is checked here: the name must be a real, declared
-    // token, whichever kind it was declared at.
+    // painter's `unknown_slots` report to make, not tree acceptance's.
+    //
+    // It reads the pairing from `registry.slots()` instead, which is the
+    // whole reason `token::SlotSchema` exists and is the difference between
+    // "must not hardcode" and "must not check". A slot the schema declares is
+    // checked against its declared kind; a slot the schema does not declare
+    // is checked for existence only, exactly as before, so a host painter's
+    // invented slot is unaffected.
+    //
+    // Existence-only was the shipped behaviour and it let a `Spacing` token
+    // bind to the `background` colour slot: the tree was accepted,
+    // `semantic::audit` reported nothing, and the marker painted no colour at
+    // all. For a status indicator that is the inverse of the FR-015 incident
+    // — not colour carrying meaning alone, but the colour channel silently
+    // going missing while the shape and word channels stay.
     for (slot, name) in &node.props.tokens {
         match vocabulary.kind_of(name) {
-            Some(_) => {}
             None => push(Violation::UnknownTokenRef {
                 prop: format!("tokens.{slot}"),
                 name: name.clone(),
                 legal: vocabulary.names().cloned().collect(),
             }),
+            Some(found) => {
+                if let Some(spec) = registry.slots().get(slot.as_str())
+                    && spec.kind() != found
+                {
+                    push(Violation::TokenKindMismatch {
+                        prop: format!("tokens.{slot}"),
+                        name: name.clone(),
+                        expected: spec.kind(),
+                        found,
+                        legal: vocabulary
+                            .names()
+                            .filter(|n| vocabulary.kind_of(n) == Some(spec.kind()))
+                            .cloned()
+                            .collect(),
+                    });
+                }
+            }
         }
     }
 }
@@ -931,7 +1004,10 @@ mod tests {
     use super::{Registry, TreeError, Violation, validate};
     use crate::geom::Axis;
     use crate::testing::gap_token;
-    use crate::token::{DesignToken, TokenKind, TokenName, Vocabulary, light, standard_vocabulary};
+    use crate::token::{
+        DesignToken, SlotSchema, TokenKind, TokenName, Vocabulary, light, standard_slots,
+        standard_vocabulary,
+    };
     use crate::tree::node::{Interaction, NodeKind, Role, Semantics, ViewNode};
     use crate::tree::props::{Anchor, Edge, GridSpan, InsetRefs, Layer, Props, TrackSize};
 
@@ -1810,19 +1886,21 @@ mod tests {
         );
     }
 
-    /// `props.tokens`'s value is checked for existence only, never for
-    /// kind — the map's keys are paint slots the painter defines
-    /// (`tree::props::Props::tokens`'s own doc comment names
-    /// `gorgon_petra_egui::paint::KNOWN_SLOTS`), and this module does not
-    /// know, and must not guess, which [`TokenKind`] a given slot wants. A
-    /// shape token under an invented slot name is exactly the case
-    /// `gorgon_petra_egui::paint::tests::a_genuinely_unknown_token_slot_is_recorded`
-    /// exercises downstream (a `shadow` slot the shipped painter does not
-    /// recognise, carrying `shape.corner-lg`), and it must still validate
-    /// here — the mismatch, if any, is the painter's `unknown_slots` report
-    /// to make, not tree acceptance's.
+    /// A slot the schema does **not** declare is checked for existence only.
+    ///
+    /// This module does not know, and must not guess, which [`TokenKind`] an
+    /// invented slot wants: a host can register a painter with slots this
+    /// crate has never heard of, and the mismatch — if any — is that
+    /// painter's `unknown_slots` report to make, not tree acceptance's.
+    ///
+    /// This test used to name the slot `shadow` while its own doc called that
+    /// "an invented slot name". `shadow` is declared in
+    /// [`crate::token::standard_slots`], so the example contradicted the
+    /// sentence explaining it, and the test passed only because nothing
+    /// consulted the schema at all. It now uses a slot name that really is
+    /// invented, which is what it always meant to say.
     #[test]
-    fn a_tokens_map_entry_is_checked_for_existence_only_not_kind() {
+    fn a_tokens_map_entry_under_an_undeclared_slot_is_checked_for_existence_only() {
         let mut vocab = Vocabulary::new();
         vocab.declare(DesignToken::new(
             TokenName::new("shape.corner-lg").unwrap(),
@@ -1830,7 +1908,7 @@ mod tests {
         ));
         let node = ViewNode::new(NodeKind::Text, "t").with_props(Props {
             tokens: [(
-                "shadow".to_owned(),
+                "aurora-wash".to_owned(),
                 TokenName::new("shape.corner-lg").unwrap(),
             )]
             .into_iter()
@@ -1838,10 +1916,61 @@ mod tests {
             ..Props::default()
         });
         assert!(
+            standard_slots().get("aurora-wash").is_none(),
+            "the fixture slot must be one the shipped schema does not declare"
+        );
+        assert!(
             validate(&node, &Registry::with_vocabulary(vocab)).is_ok(),
             "a declared token under an unrecognised slot name is still a \
              real, declared token"
         );
+    }
+
+    /// A slot the schema **does** declare is checked against its declared
+    /// kind, and this is the hole that shipped.
+    ///
+    /// A `Spacing` token bound to the `background` colour slot was accepted,
+    /// `semantic::audit` reported nothing, and the marker painted no colour.
+    /// For a status indicator that is the inverse of the incident FR-015
+    /// exists to prevent: not colour carrying meaning alone, but the colour
+    /// channel silently going missing while the shape and word channels stay.
+    #[test]
+    fn a_spacing_token_in_the_background_colour_slot_is_refused() {
+        let node = ViewNode::new(NodeKind::Text, "t").with_props(Props {
+            tokens: [(
+                "background".to_owned(),
+                TokenName::new("spacing.md").unwrap(),
+            )]
+            .into_iter()
+            .collect(),
+            ..Props::default()
+        });
+        let err = validate(&node, &Registry::with_vocabulary(standard_vocabulary()))
+            .expect_err("a Spacing token in a Color slot is not a paintable binding");
+        assert!(
+            err.as_slice()
+                .iter()
+                .any(|e| matches!(e.violation, Violation::TokenKindMismatch { .. })),
+            "expected a kind mismatch on tokens.background, got: {err}"
+        );
+    }
+
+    /// Turning the schema off turns the check off, so a host with its own
+    /// painter is never fought by a schema written for a different one.
+    #[test]
+    fn an_empty_slot_schema_accepts_any_kind_in_any_slot() {
+        let node = ViewNode::new(NodeKind::Text, "t").with_props(Props {
+            tokens: [(
+                "background".to_owned(),
+                TokenName::new("spacing.md").unwrap(),
+            )]
+            .into_iter()
+            .collect(),
+            ..Props::default()
+        });
+        let registry =
+            Registry::with_vocabulary(standard_vocabulary()).with_slots(SlotSchema::new());
+        assert!(validate(&node, &registry).is_ok());
     }
 
     /// The other half of the same coin: a `tokens` map entry naming

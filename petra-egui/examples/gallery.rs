@@ -53,24 +53,23 @@
 //! two columns into one, and inventing one here would be a layout feature
 //! wearing a gallery's clothes.
 //!
-//! # Two things on this page are still wrong, and are not this file's to fix
+//! # One thing on this page is still wrong, and is not this file's to fix
 //!
-//! * **The type ramp does not reach the screen.**
-//!   `gorgon_petra_egui::text::Typography::default` is keyed on `body`,
-//!   `heading`, `small`, `mono` — the pre-vocabulary names — while the
-//!   shipped vocabulary declares `typography.body`, `typography.heading-sm`,
-//!   `typography.heading` and `typography.heading-lg`, and `Host::new`
-//!   never binds the two together. Every lookup misses and every run on this
-//!   page renders at the 14-unit default, masthead included. The tokens in
-//!   the tree are right; the renderer flattens them. So the hierarchy you
-//!   can actually see here is carried by space, by capitals and by the
-//!   cards — not by size.
 //! * **A `progress` bar draws no fill.** `petra/src/component/progress.rs`
 //!   builds both of its cells with `swatch(_, 0.0, 10.0, …)`, and `swatch`
 //!   clamps width to exactly its first argument — so the fill and the track
 //!   are both zero units wide whatever the grid's column weights say, and
 //!   the bar is an empty outline. The percentage beside it is text this
 //!   file adds, which is why the value is still legible.
+//!
+//! The type ramp used to be the other entry here: the shaper's style map was
+//! keyed on `body`/`heading`/`small`/`mono` while the vocabulary declared
+//! `typography.body`/`typography.heading`/…, so every run on this page
+//! painted at 14 units. `Typography::from_theme` now reads the map off the
+//! theme and `Host` binds it, so the sizes in the tree are the sizes on
+//! screen. Weight is still flat: egui's default fonts install one
+//! proportional face, so a `Bold` token paints at regular weight until a host
+//! installs a bold face and names it through `Host::set_font_faces`.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;

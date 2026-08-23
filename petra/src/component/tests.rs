@@ -220,3 +220,156 @@ fn the_fixture_status_tokens_are_shaped_differently() {
     .unwrap();
     assert_ne!(a.shape(), b.shape());
 }
+
+/// Petrify a lone [`progress`] at `value` and return the widths the frame
+/// actually drew: `(bar, fill, track)`.
+///
+/// The tests above read `ViewNode` props, which is exactly how a zero-width
+/// fill shipped: the column weights were right, the two cells were pinned to
+/// zero extent, and nothing in this file looked at a rect. This helper is the
+/// geometry channel — it runs the same `petrify` the acceptance test above
+/// runs and reports placed rects, not declarations.
+fn bar_widths(value: f32) -> (f32, f32, f32) {
+    let root = ViewNode::new(NodeKind::Stack, "root")
+        .with_props(Props {
+            axis: Some(Axis::Vertical),
+            ..Props::default()
+        })
+        .child(progress("bar", "Rebuild", value));
+    let registry = Registry::with_vocabulary(standard_vocabulary());
+    let mut harness = Harness::new();
+    let viewport = Viewport::new(VIEWPORT, ThemeMode::Dark);
+    harness.scale = viewport.scale;
+    let frame = petrify(
+        1,
+        validated_with(&root, &registry),
+        &mut harness.ctx(),
+        viewport,
+        TransitionActivity::default(),
+    );
+    let width_of = |suffix: &str| {
+        frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with(suffix))
+            .unwrap_or_else(|| panic!("{suffix} is missing from the petrified frame"))
+            .rect
+            .w
+    };
+    (
+        width_of("/root/bar"),
+        width_of("/root/bar/fill"),
+        width_of("/root/bar/track"),
+    )
+}
+
+/// The percentage [`progress`] announces to a screen reader, as a number.
+fn announced_percent(value: f32) -> f32 {
+    let reported = progress("bar", "Rebuild", value)
+        .semantics
+        .value
+        .expect("progress always reports a value");
+    reported
+        .strip_suffix('%')
+        .unwrap_or_else(|| panic!("{reported:?} is not a percentage"))
+        .parse()
+        .unwrap_or_else(|e| panic!("{reported:?} does not parse as a percentage: {e}"))
+}
+
+/// The fraction of the bar the fill actually covers, in percent.
+fn drawn_percent(value: f32) -> f32 {
+    let (bar, fill, _) = bar_widths(value);
+    assert!(bar > 0.0, "the bar itself was drawn at zero width");
+    fill / bar * 100.0
+}
+
+/// A 62% bar is drawn 62% full, and the two cells tile the bar exactly.
+///
+/// Both halves matter. The weights alone were already right when the fill
+/// was zero pixels wide, so the claim under test is the placed rect: the
+/// fill occupies its track rather than declining it.
+#[test]
+fn the_fill_is_drawn_at_the_width_its_value_asks_for() {
+    let (bar, fill, track) = bar_widths(0.62);
+    assert!(fill > 0.0, "the fill of a 62% bar was drawn {fill} wide");
+    assert!(
+        (fill / bar - 0.62).abs() < 0.005,
+        "a 0.62 value drew {fill} of {bar} ({:.1}%), not ~62%",
+        fill / bar * 100.0
+    );
+    assert!(
+        (fill + track - bar).abs() < 0.5,
+        "fill {fill} + track {track} does not tile the {bar}-wide bar"
+    );
+}
+
+/// The ends: an empty bar draws no meaningful fill, a complete one draws
+/// almost nothing but fill, and the fill grows with the value in between.
+///
+/// Neither end lands on exactly 0 or exactly `bar`: tree acceptance refuses
+/// a `Weight` track of zero, so the empty side of the bar carries
+/// `MIN_WEIGHT` (0.001) instead — a tenth of a percent, which rounds away on
+/// screen and in the announced percentage alike.
+#[test]
+fn an_empty_bar_and_a_complete_bar_are_both_drawn() {
+    let (bar_0, fill_0, track_0) = bar_widths(0.0);
+    assert!(
+        fill_0 / bar_0 < 0.01,
+        "a 0.0 value drew {fill_0} of {bar_0} — an empty bar must read empty"
+    );
+    assert!(
+        track_0 / bar_0 > 0.99,
+        "a 0.0 value left only {track_0} of {bar_0} for the track"
+    );
+
+    let (bar_1, fill_1, track_1) = bar_widths(1.0);
+    assert!(
+        fill_1 / bar_1 > 0.99,
+        "a 1.0 value drew {fill_1} of {bar_1} — a complete bar must read full"
+    );
+    assert!(
+        track_1 / bar_1 < 0.01,
+        "a 1.0 value left {track_1} of {bar_1} still unfilled"
+    );
+
+    let fill_62 = bar_widths(0.62).1;
+    assert!(
+        fill_0 < fill_62 && fill_62 < fill_1,
+        "fill is not monotone in value: {fill_0} / {fill_62} / {fill_1}"
+    );
+}
+
+/// The label and the bar are two readers of one number, so they must never
+/// disagree — including on the inputs that are not numbers.
+///
+/// `f32::clamp` propagates `NaN` and `f32::max` scrubs it, so before the
+/// single normalisation in `progress` a `NaN` announced "NaN%" over two
+/// equal weights: a bar drawn half full. Out-of-range and non-finite input
+/// is normalised once, ahead of both channels; the announced percentage and
+/// the drawn percentage are compared here against each other, not against a
+/// hardcoded pair, so neither channel can be fixed alone.
+#[test]
+fn the_announced_percentage_and_the_drawn_fill_always_agree() {
+    for value in [
+        0.0,
+        0.62,
+        1.0,
+        -0.5,
+        1.5,
+        f32::NAN,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+    ] {
+        let announced = announced_percent(value);
+        let drawn = drawn_percent(value);
+        assert!(
+            (announced - drawn).abs() < 0.5,
+            "value {value:?} announces {announced}% but draws {drawn:.2}%"
+        );
+    }
+    assert_eq!(
+        announced_percent(f32::NAN),
+        0.0,
+        "a value nobody could compute must not announce a finished job"
+    );
+}

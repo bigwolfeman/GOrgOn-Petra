@@ -124,20 +124,34 @@ impl SlotSchema {
 ///
 /// `gradient-stop-1` and `gradient-stop-2` are mutually required by
 /// design (design doc §4: "No (both, or neither)") — binding one without
-/// the other is a tree-acceptance error. That pairing is a cross-slot
-/// invariant `tree::validate` enforces (an unapplied `Violation::
-/// IncompleteGradient`, design doc §3.3); it is not expressible on a
-/// single [`SlotSpec`] and is deliberately **not** encoded here. Neither
+/// the other is a tree-acceptance error. That pairing is not expressible on
+/// a single [`SlotSpec`] and is deliberately **not** encoded here. Neither
 /// gradient stop is individually `required`: `SlotSpec::required` means
 /// "every node binding this slot must supply it," which is not the
-/// gradient pair's rule.
+/// gradient pair's rule. **The rule is not enforced anywhere yet** — this
+/// doc used to cite a `Violation::IncompleteGradient` that does not exist
+/// in `tree::validate`, which is the kind of claim a schema with no
+/// consumer accumulates.
 ///
-/// Deliberately **not** declared: a `ring` slot (`focus.ring` and
+/// Deliberately **not** declared: a `ring` slot. `focus.ring` and
 /// `focus.ring-halo` are token *names* on the focus indicator's own
-/// non-schema path, not slot names — a `ring` slot would be confusable
-/// with them) and a `radius` slot (a corner radius is a property of the
-/// rect every slot draws into, not a colour one slot contributes; it
-/// belongs on `Props`, not the slot schema). See design doc §4.
+/// non-schema path, not slot names, and a `ring` slot would be confusable
+/// with them.
+///
+/// `radius` **is** declared, reversing an earlier decision recorded here.
+/// The argument was that a corner radius is a property of the rect every
+/// slot draws into rather than a colour one slot contributes, so "it
+/// belongs on `Props`, not the slot schema". The code went the other way:
+/// `radius` is bound through `props.tokens` by eight components and read
+/// through `paint::RADIUS_SLOT` by the painter, and `props.tokens` **is**
+/// the slot channel. Refusing it here while the whole library binds it
+/// left the schema disagreeing with the painter in both directions —
+/// `radius` painter-known and schema-refused, `shadow` schema-declared and
+/// painter-unknown — for as long as nothing consulted the schema. It is
+/// consulted now (`tree::Registry::slots`), so the disagreement had to be
+/// resolved rather than restated. `shadow` stays declared: a slot the
+/// shipped painter does not draw yet lands in `PaintReport::unknown_slots`,
+/// which is that report's job and not tree acceptance's.
 #[must_use]
 pub fn standard_slots() -> SlotSchema {
     let mut s = SlotSchema::new();
@@ -149,7 +163,8 @@ pub fn standard_slots() -> SlotSchema {
         .declare(SlotSpec::new("divider", TokenKind::Color, false))
         .declare(SlotSpec::new("gradient-stop-1", TokenKind::Color, false))
         .declare(SlotSpec::new("gradient-stop-2", TokenKind::Color, false))
-        .declare(SlotSpec::new("overlay", TokenKind::Color, false));
+        .declare(SlotSpec::new("overlay", TokenKind::Color, false))
+        .declare(SlotSpec::new("radius", TokenKind::Shape, false));
     s
 }
 
@@ -175,6 +190,7 @@ mod tests {
             ("gradient-stop-1", TokenKind::Color),
             ("gradient-stop-2", TokenKind::Color),
             ("overlay", TokenKind::Color),
+            ("radius", TokenKind::Shape),
         ];
         assert_eq!(
             schema.len(),
@@ -191,13 +207,14 @@ mod tests {
         }
     }
 
-    /// A slot the schema never declared — including the two the design doc
-    /// explicitly refuses to add, `ring` and `radius` (design doc §4) — is
-    /// not accepted: `contains` is false and `get` is `None`.
+    /// A slot the schema never declared — including `ring`, which the design
+    /// doc explicitly refuses to add — is not accepted: `contains` is false
+    /// and `get` is `None`. `radius` is no longer in this list; see
+    /// [`standard_slots`] for why that decision reversed.
     #[test]
     fn a_slot_outside_the_schema_is_not_accepted() {
         let schema = standard_slots();
-        for outsider in ["ring", "radius", "tint", "background-color", ""] {
+        for outsider in ["ring", "tint", "background-color", ""] {
             assert!(
                 !schema.contains(outsider),
                 "unschema'd slot `{outsider}` was reported as contained"
@@ -216,7 +233,7 @@ mod tests {
         schema.declare(SlotSpec::new("background", TokenKind::Color, true));
         assert!(schema.get("background").unwrap().required());
         // Overwriting does not grow the set.
-        assert_eq!(schema.len(), 9);
+        assert_eq!(schema.len(), 10);
     }
 
     #[test]

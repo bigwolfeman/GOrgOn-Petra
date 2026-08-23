@@ -33,13 +33,16 @@ use gorgon_petra::layout::overlay_surface::surface_scopes;
 use gorgon_petra::layout::{
     ChangeSet, LayoutCtx, LayoutState, MeasureCache, RowSource, ScrollStack,
 };
-use gorgon_petra::token::{Presenter, TokenName, Vocabulary, standard_vocabulary};
+use gorgon_petra::token::{
+    DesignToken, Presenter, StatusToken, Theme, ThemeSnapshot, TokenName, Vocabulary,
+    standard_vocabulary,
+};
 use gorgon_petra::tree::{InputPolicy, Interaction, NodeKind, Props, Registry, ViewNode, validate};
 
 use crate::image::ImageSources;
 use crate::input::EventTranslator;
 use crate::paint::{CustomPainters, PaintReport, paint_frame_with_hosts};
-use crate::text::GalleyShaper;
+use crate::text::{FontFaces, GalleyShaper, Typography};
 
 /// The egui layer every Petra frame paints into.
 ///
@@ -101,6 +104,19 @@ pub struct Host<A: App> {
     state: LayoutState,
     presenter: Presenter,
     registry: Registry,
+    /// Token names this application declares beyond the ones its theme
+    /// defines, kept apart from `registry` because the registry's vocabulary
+    /// is re-derived from the theme on every publication and would otherwise
+    /// take them with it.
+    extra_vocabulary: Vocabulary,
+    /// The theme revision `registry`'s vocabulary and `shaper`'s typography
+    /// were derived from. `Presenter::publish` takes `&self` and can be
+    /// called from anywhere, so nothing tells the host a theme changed; this
+    /// is what lets [`Host::pass`] notice.
+    bound_revision: u64,
+    /// Which egui font family draws each weight class, spent every time the
+    /// typography map is rebuilt from a theme.
+    faces: FontFaces,
     /// Host-supplied painters for registered `custom` kinds, and decoded
     /// image sources. Both start empty, which is the pre-FR-059 behaviour
     /// exactly: an unregistered name lands in `PaintReport::undrawn` rather
@@ -123,19 +139,33 @@ impl<A: App> Host<A> {
         // empty one an application would otherwise have no way to populate
         // for the names this crate's own shipped views need
         // (`refusal_view`'s `surface.base`/`status.down` among them). An
-        // application still reaches `registry_mut().vocabulary_mut()` to
-        // declare anything its own trees need beyond the presenter's theme.
+        // application declares anything its own trees need beyond the
+        // presenter's theme through `Host::declare_token`, which keeps the
+        // declaration where a later theme publication cannot take it away.
+        // The shaper's typography map is the other half of the theme a frame
+        // reads, so it is bound from the same theme here, and re-bound from
+        // the same place.
+        let snapshot = presenter.current();
+        let faces = FontFaces::default();
+        let extra_vocabulary = Vocabulary::new();
         let registry =
-            Registry::with_vocabulary(Vocabulary::from_theme(presenter.current().theme()));
+            Registry::with_vocabulary(composed_vocabulary(snapshot.theme(), &extra_vocabulary));
+        let mut shaper = GalleyShaper::new(ctx.clone());
+        *shaper.typography_mut() = Typography::from_theme(snapshot.theme(), &faces);
+        let bound_revision = snapshot.revision();
+        drop(snapshot);
         Self {
             app,
-            shaper: GalleyShaper::new(ctx.clone()),
+            shaper,
             translator: EventTranslator::new(),
             cache: MeasureCache::new(),
             counter: FrameCounter::new(),
             state: LayoutState::default(),
             presenter,
             registry,
+            extra_vocabulary,
+            bound_revision,
+            faces,
             painters: CustomPainters::new(),
             images: ImageSources::new(),
             last_frame: None,
@@ -159,8 +189,114 @@ impl<A: App> Host<A> {
 
     /// The registry tree acceptance validates against — register custom kinds
     /// and transition names here before the first frame.
+    ///
+    /// **Not the place to declare token names.** The vocabulary inside this
+    /// registry is a projection of the published theme and is overwritten
+    /// whole every time a new revision is published, so a name declared
+    /// through `registry_mut().vocabulary_mut()` survives only until the
+    /// next theme swap. Use [`Host::declare_token`] and
+    /// [`Host::declare_status`], which are kept and re-applied on top of
+    /// every theme.
     pub fn registry_mut(&mut self) -> &mut Registry {
         &mut self.registry
+    }
+
+    /// Declare a token name this application's own trees use beyond the ones
+    /// its theme defines, and re-derive the registry so it takes effect now.
+    ///
+    /// A name declared here outlives every theme publication. A name
+    /// declared straight into `registry_mut().vocabulary_mut()` does not —
+    /// see [`Host::registry_mut`].
+    pub fn declare_token(&mut self, token: DesignToken) -> &mut Self {
+        self.extra_vocabulary.declare(token);
+        self.rebind_current_theme();
+        self
+    }
+
+    /// Declare a status beyond the theme's own, with the same lifetime rule
+    /// as [`Host::declare_token`].
+    pub fn declare_status(&mut self, status: StatusToken) -> &mut Self {
+        self.extra_vocabulary.declare_status(status);
+        self.rebind_current_theme();
+        self
+    }
+
+    /// Point each [`gorgon_petra::token::TypographyWeight`] class at the egui
+    /// font family that draws it, and re-shape everything through the new
+    /// mapping.
+    ///
+    /// The default maps all three classes to `Proportional`, because egui's
+    /// built-in fonts install one proportional face — under it a `Bold`
+    /// token paints at regular weight. A host that installs a bold face
+    /// through `egui::Context::set_fonts` names it here.
+    pub fn set_font_faces(&mut self, faces: FontFaces) {
+        self.faces = faces;
+        self.rebind_current_theme();
+    }
+
+    /// The shaper, for its cache statistics and its bound typography map.
+    #[must_use]
+    pub fn shaper(&self) -> &GalleyShaper {
+        &self.shaper
+    }
+
+    /// The presenter this host reads its theme from — the way an application
+    /// publishes a new one.
+    ///
+    /// A shared reference is enough because `Presenter::publish` takes
+    /// `&self`; the host is not told, and does not need to be. The next
+    /// [`Host::pass`] sees a revision it has not bound and re-derives
+    /// everything that depends on the theme before a tree is accepted
+    /// against it.
+    #[must_use]
+    pub fn presenter(&self) -> &Presenter {
+        &self.presenter
+    }
+
+    /// Re-derive everything that is a function of the theme, from whatever
+    /// the presenter currently holds.
+    fn rebind_current_theme(&mut self) {
+        let snapshot = self.presenter.current();
+        self.bound_revision = snapshot.revision();
+        self.bind_theme(snapshot.theme());
+    }
+
+    /// Re-derive the registry's vocabulary and the shaper's typography when
+    /// the published revision has moved since they were last derived.
+    ///
+    /// Contract C6 makes validation theme-independent, and *because* of that
+    /// resolution is total: `tree::props::resolve_spacing` panics on a name
+    /// the snapshot does not define, deliberately, so that no container
+    /// carries a fallback branch. That totality holds only while the
+    /// registry a tree is accepted against and the theme the frame resolves
+    /// against name the same tokens. Deriving the registry once, in
+    /// [`Host::new`], held it only until the first publication: a theme with
+    /// a different vocabulary left the registry accepting trees that named
+    /// tokens the new theme does not define, and the panic — the assertion
+    /// holding C6 — fired mid-frame.
+    ///
+    /// `Presenter::publish` takes `&self` and can be called from any thread
+    /// at any time, so nothing can tell the host it happened. Comparing
+    /// revisions at the top of the one pass that reads the snapshot anyway
+    /// is the check that needs no cooperation from the publisher, and the
+    /// revision is the right key: it moves on *every* publication, even one
+    /// that republishes an identical theme.
+    fn rebind_theme_if_stale(&mut self, snapshot: &ThemeSnapshot) {
+        if snapshot.revision() == self.bound_revision {
+            return;
+        }
+        self.bound_revision = snapshot.revision();
+        self.bind_theme(snapshot.theme());
+    }
+
+    fn bind_theme(&mut self, theme: &Theme) {
+        *self.registry.vocabulary_mut() = composed_vocabulary(theme, &self.extra_vocabulary);
+        *self.shaper.typography_mut() = Typography::from_theme(theme, &self.faces);
+        // Every cached galley was shaped through the old map. The key
+        // carries size, family and line height, so a stale entry could not
+        // be *served* — but it can no longer be asked for either, and would
+        // sit in the bound taking a slot from a live run.
+        self.shaper.clear();
     }
 
     /// The painter registry for `custom` kinds — register a painter before the
@@ -237,6 +373,10 @@ impl<A: App> Host<A> {
     /// host without a window.
     pub fn pass(&mut self, ctx: &Context) {
         let snapshot = self.presenter.current();
+        // Before anything reads the registry: a theme published since the
+        // last pass may name a different set of tokens, and a tree accepted
+        // against the old set would panic when this one resolved it.
+        self.rebind_theme_if_stale(&snapshot);
         let scale = Scale::new(ctx.pixels_per_point()).unwrap_or(Scale::ONE);
         let screen = ctx.content_rect();
         let viewport = Viewport {
@@ -578,6 +718,27 @@ fn refusal_view(message: &str) -> ViewNode {
         )
 }
 
+/// The vocabulary a registry is given: every name `theme` defines, plus the
+/// application's own declarations on top.
+///
+/// Built fresh from the theme rather than merged into the previous one, so a
+/// name the *old* theme defined and the new one does not leaves the
+/// vocabulary with it. Merging would keep accepting trees that name it, and
+/// the frame that resolved one would panic — which is the whole failure this
+/// composition exists to prevent.
+fn composed_vocabulary(theme: &Theme, extra: &Vocabulary) -> Vocabulary {
+    let mut vocabulary = Vocabulary::from_theme(theme);
+    for name in extra.names() {
+        if let Some(kind) = extra.kind_of(name) {
+            vocabulary.declare(DesignToken::new(name.clone(), kind));
+        }
+    }
+    for status in extra.statuses() {
+        vocabulary.declare_status(status.clone());
+    }
+    vocabulary
+}
+
 /// A presenter over the shipped dark theme, for callers that have no theme of
 /// their own yet.
 #[must_use]
@@ -603,6 +764,9 @@ mod tests {
         seen: Vec<(String, String)>,
         dismissed: Vec<String>,
         bad_tree: bool,
+        /// Bind the application's own spacing token on the root, the way an
+        /// application with a design system of its own does.
+        gutter: bool,
         modal: bool,
         menu: bool,
         hide_run: bool,
@@ -641,6 +805,9 @@ mod tests {
             panel
                 .tokens
                 .insert("background".into(), TokenName::new("surface.base").unwrap());
+            if self.gutter {
+                panel.spacing = Some(TokenName::new("spacing.app-gutter").unwrap());
+            }
             let mut root = ViewNode::new(NodeKind::Stack, "root")
                 .with_props(panel)
                 .child(ViewNode::new(NodeKind::Text, "title").with_props(Props {
@@ -831,6 +998,158 @@ mod tests {
             host.app().dismissed.is_empty(),
             "{:?}",
             host.app().dismissed
+        );
+    }
+
+    /// A theme swap must leave the registry and the theme naming the same
+    /// tokens, and must carry the type ramp with it.
+    ///
+    /// The registry's vocabulary and the shaper's typography map are both
+    /// projections of the published theme, and both used to be taken once,
+    /// in `Host::new`. `Presenter::publish` takes `&self` and tells nobody,
+    /// so after a swap the registry went on accepting a tree that named a
+    /// token the new theme does not define — and `tree::props::resolve_*`,
+    /// which is *total* by contract C6 and therefore panics rather than
+    /// carrying a fallback branch, brought the window down mid-frame.
+    ///
+    /// Both halves are checked through one swap: the application's own
+    /// `spacing.app-gutter` leaves the registry with the theme that defined
+    /// it, and `typography.heading` takes the new theme's size.
+    #[test]
+    fn a_theme_swap_rebinds_the_registry_and_the_type_ramp() {
+        use gorgon_petra::token::{
+            DesignToken, Presenter, Theme, ThemeMode, TokenKind, TokenValue, TypographyValue,
+            TypographyWeight, dark, light, standard_vocabulary,
+        };
+
+        let gutter = TokenName::new("spacing.app-gutter").unwrap();
+        let heading = TokenName::new("typography.heading").unwrap();
+
+        // The application's design system: the shipped ramp plus one name of
+        // its own. A complete, legal theme.
+        let mut vocabulary = standard_vocabulary();
+        vocabulary.declare(DesignToken::new(gutter.clone(), TokenKind::Spacing));
+        let mut values = light().values().clone();
+        values.insert(gutter.clone(), TokenValue::Spacing(20.0));
+        let app_theme =
+            Theme::build(ThemeMode::Light, &vocabulary, values).expect("a complete app theme");
+
+        // What the operator switches to: the shipped vocabulary, which does
+        // not declare the gutter, and a heading a third larger.
+        let mut values = dark().values().clone();
+        values.insert(
+            heading.clone(),
+            TokenValue::Typography(TypographyValue {
+                size: 33.0,
+                line_height: 44.0,
+                weight: TypographyWeight::Bold,
+            }),
+        );
+        let other_theme = Theme::build(ThemeMode::Dark, &standard_vocabulary(), values)
+            .expect("a complete shipped theme");
+
+        let ctx = headless();
+        let demo = Demo {
+            gutter: true,
+            ..Demo::default()
+        };
+        let mut host = Host::new(&ctx, demo, Presenter::new(app_theme));
+
+        step(&ctx, &mut host, RawInput::default());
+        assert!(
+            host.registry_mut().vocabulary().contains(&gutter),
+            "the host must seed its registry from the theme it was built with"
+        );
+        assert!(
+            host.frame()
+                .expect("a frame")
+                .placements
+                .iter()
+                .any(|p| p.id.ends_with("/root")),
+            "the application's own tree must be accepted before the swap"
+        );
+        assert!(host.report().expect("a report").is_complete());
+        assert_eq!(
+            host.shaper()
+                .typography()
+                .style(heading.as_str())
+                .expect("the app theme's ramp is bound")
+                .font
+                .size,
+            20.0
+        );
+
+        host.presenter().publish(other_theme);
+
+        // The pass that must not panic.
+        step(&ctx, &mut host, RawInput::default());
+
+        assert!(
+            !host.registry_mut().vocabulary().contains(&gutter),
+            "a name the new theme does not define must leave the registry \
+             with the old theme; keeping it means a tree naming it is still \
+             accepted and the frame that resolves it panics"
+        );
+        let ids: Vec<&str> = host
+            .frame()
+            .expect("a frame")
+            .placements
+            .iter()
+            .map(|p| p.id.as_str())
+            .collect();
+        assert!(
+            ids.iter().any(|id| id.contains("petra-tree-refused")),
+            "the tree must be refused against the new vocabulary and the \
+             violation painted, not resolved against a stale one: {ids:?}"
+        );
+        assert!(
+            host.report().expect("a report").is_complete(),
+            "{:?}",
+            host.report()
+        );
+        assert_eq!(
+            host.shaper()
+                .typography()
+                .style(heading.as_str())
+                .expect("the new theme's ramp is bound")
+                .font
+                .size,
+            33.0,
+            "the shaper's typography is the same projection of the same \
+             theme as the registry's vocabulary, and follows the same swap"
+        );
+    }
+
+    /// A name declared through [`Host::declare_token`] survives a theme
+    /// swap; the registry's own vocabulary is rebuilt from the theme, so a
+    /// name declared straight into it does not.
+    #[test]
+    fn an_application_declaration_survives_a_theme_swap() {
+        use gorgon_petra::token::{DesignToken, Presenter, TokenKind, dark, light};
+
+        let ours = TokenName::new("spacing.app-gutter").unwrap();
+        let theirs = TokenName::new("spacing.written-into-the-registry").unwrap();
+
+        let ctx = headless();
+        let mut host = Host::new(&ctx, Demo::default(), Presenter::new(light()));
+        host.declare_token(DesignToken::new(ours.clone(), TokenKind::Spacing));
+        host.registry_mut()
+            .vocabulary_mut()
+            .declare(DesignToken::new(theirs.clone(), TokenKind::Spacing));
+        assert!(host.registry_mut().vocabulary().contains(&ours));
+        assert!(host.registry_mut().vocabulary().contains(&theirs));
+
+        host.presenter().publish(dark());
+        step(&ctx, &mut host, RawInput::default());
+
+        assert!(
+            host.registry_mut().vocabulary().contains(&ours),
+            "declare_token is the declaration the host keeps and re-applies"
+        );
+        assert!(
+            !host.registry_mut().vocabulary().contains(&theirs),
+            "and registry_mut().vocabulary_mut() is documented as the one \
+             that does not survive, so the doc must stay true"
         );
     }
 
