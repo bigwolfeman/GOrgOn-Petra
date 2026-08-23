@@ -31,8 +31,7 @@ pub fn measure(
     path: &mut KeyPath,
     proposal: SizeProposal,
 ) -> Size {
-    let props = node.props.stack(ctx.theme);
-    let main = props.axis;
+    let main = node.props.axis.unwrap_or(Axis::Vertical);
     if node.children.is_empty() {
         return Size::ZERO;
     }
@@ -44,7 +43,7 @@ pub fn measure(
     // probe through unchanged, so `Zero`/`Unbounded` measurement still answers
     // truthfully about the padded budget, not the whole rect.
     let padding = ctx.padding(&node.props.padding);
-    let spacing = reserved_spacing(props.spacing, node.children.len());
+    let spacing = reserved_spacing(ctx.spacing(&node.props.spacing), node.children.len());
     let cross = proposal
         .axis(main.cross())
         .shrink(padding.along(main.cross()));
@@ -91,8 +90,8 @@ pub fn place(
     slot: Slot,
     sink: &mut dyn PlacementSink,
 ) {
-    let props = node.props.stack(ctx.theme);
-    let main = props.axis;
+    let main = node.props.axis.unwrap_or(Axis::Vertical);
+    let align = node.props.align.unwrap_or_default();
     // Padding is inside the box: the stack's own placed rect (pushed below,
     // `rect: slot.rect`) never moves or shrinks because of its own padding —
     // only what it offers its children does. `content` floors at zero rather
@@ -107,7 +106,7 @@ pub fn place(
     let main_extent = content.size().along(main).max(0.0);
     let cross_extent = content.size().across(main).max(0.0);
     let gaps = node.children.len().saturating_sub(1) as f32;
-    let declared = props.spacing.max(0.0);
+    let declared = ctx.spacing(&node.props.spacing).max(0.0);
     // Spacing is reserved before distribution, but it cannot reserve room the
     // container does not have. A rect too small to hold its own gaps would
     // otherwise push the last child clean outside its parent, where nothing
@@ -210,7 +209,7 @@ pub fn place(
     };
     for (i, child) in node.children.iter().enumerate() {
         let extent = extents[i];
-        let across = match props.align {
+        let across = match align {
             // Stretch fills the cross extent, but a declared maximum on the
             // child's own cross axis still wins (2026-08-22: constraints beat
             // Stretch, see `.agents/tallies/QUESTIONS.md` Round 3 item 2 and
@@ -234,7 +233,7 @@ pub fn place(
                 .min(cross_extent),
             _ => plan.taken[i].across(main).min(cross_extent),
         };
-        let offset = props.align.offset(cross_extent, across);
+        let offset = align.offset(cross_extent, across);
         let rect = match main {
             Axis::Horizontal => Rect::new(cursor, content.y + offset, extent, across),
             Axis::Vertical => Rect::new(content.x + offset, cursor, across, extent),

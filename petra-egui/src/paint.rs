@@ -38,12 +38,16 @@ pub const BACKGROUND_SLOT: &str = "background";
 pub const BORDER_SLOT: &str = "border";
 /// Token slot used for a node's text.
 pub const FOREGROUND_SLOT: &str = "foreground";
+/// Token slot painted as the corner radius of a node's background and
+/// border. Resolves through a `shape.*` token (FR-053, C17); a node that
+/// binds no `radius` paints square corners, the same default it had before
+/// this slot existed.
+pub const RADIUS_SLOT: &str = "radius";
 
 /// Every token slot this painter knows how to use. Anything else a node binds
 /// lands in [`PaintReport::unknown_slots`] rather than being dropped on the
-/// floor — the shipped vocabulary already declares `shape.*` tokens that
-/// nothing here consumes.
-const KNOWN_SLOTS: &[&str] = &[BACKGROUND_SLOT, BORDER_SLOT, FOREGROUND_SLOT];
+/// floor.
+const KNOWN_SLOTS: &[&str] = &[BACKGROUND_SLOT, BORDER_SLOT, FOREGROUND_SLOT, RADIUS_SLOT];
 /// Token consulted for text with no declared `foreground`.
 pub const DEFAULT_TEXT_TOKEN: &str = "text.primary";
 
@@ -55,6 +59,18 @@ pub const DEFAULT_TEXT_TOKEN: &str = "text.primary";
 pub trait ColorSource {
     /// The colour for `token`, or `None` when the theme has no such colour.
     fn color(&self, token: &str) -> Option<Color32>;
+
+    /// The corner radius, in logical units, `token` resolves to, or `None`
+    /// when the source has no such shape.
+    ///
+    /// Defaulted rather than required: every existing implementor of this
+    /// trait — including test fixtures that only ever supplied colours —
+    /// keeps compiling and keeps painting the square corners it always did.
+    /// Only [`ThemeSnapshot`], which actually carries `shape.*` tokens,
+    /// needs to override it.
+    fn radius(&self, _token: &str) -> Option<f32> {
+        None
+    }
 }
 
 impl ColorSource for ThemeSnapshot {
@@ -70,6 +86,11 @@ impl ColorSource for ThemeSnapshot {
             ))),
             _ => None,
         }
+    }
+
+    fn radius(&self, token: &str) -> Option<f32> {
+        let name = TokenName::new(token).ok()?;
+        self.corner(&name)
     }
 }
 
@@ -91,6 +112,26 @@ fn resolve_or_record(
         report.unresolved_tokens.insert(token.to_owned());
     }
     color
+}
+
+/// Resolve `token` to a corner radius, recording it unresolved on a miss.
+///
+/// Falls back to `0.0` — square corners — on a miss rather than returning
+/// `None` for the caller to fall back on: unlike a fill or a stroke, which
+/// can simply not be drawn, a corner radius is always applied to a rect that
+/// is going to be painted regardless. `0.0` is also the exact corner every
+/// node had before this slot existed, so an unresolved `radius` degrades to
+/// the old picture rather than to a new failure mode.
+fn resolve_radius_or_record(
+    colors: &dyn ColorSource,
+    token: &str,
+    report: &mut PaintReport,
+) -> f32 {
+    let radius = colors.radius(token);
+    if radius.is_none() {
+        report.unresolved_tokens.insert(token.to_owned());
+    }
+    radius.unwrap_or(0.0)
 }
 
 /// What one paint pass did, and what it could not do.
@@ -147,9 +188,10 @@ pub struct PaintReport {
     pub unresolved_tokens: BTreeSet<String>,
     /// Content kinds this pass has no painter for, sorted.
     pub undrawn: BTreeSet<String>,
-    /// Token slots this pass does not know how to use, sorted. A node binding
-    /// `radius` gets square corners today; without this set it would get them
-    /// silently, and the report would read clean.
+    /// Token slots this pass does not know how to use, sorted. `radius` is
+    /// no longer one of them (FR-053, C17) — a node binding it gets a real
+    /// corner, and a genuinely unrecognised slot name still lands here
+    /// rather than being dropped silently.
     pub unknown_slots: BTreeSet<String>,
     /// The frame's placement and content arrays disagreed in length. They are
     /// public fields on [`gorgon_petra::frame::PetrifiedFrame`] and are zipped
@@ -446,19 +488,23 @@ fn paint_one(
     let rect = to_egui_snapped(placement.rect, env.scale);
     let mut shapes = 0_usize;
 
-    // Every slot this painter does not understand is recorded by name. A node
-    // binding `radius` to `shape.corner-lg` gets square corners today; the
-    // point of the set is that it does not get them silently.
+    // Every slot this painter does not understand is recorded by name.
     for slot in content.tokens.keys() {
         if !KNOWN_SLOTS.contains(&slot.as_str()) {
             report.unknown_slots.insert(slot.clone());
         }
     }
 
+    // `radius` shapes both the fill and the stroke below it, so it is
+    // resolved once, ahead of either, rather than duplicated into both arms.
+    let corner_radius = content.tokens.get(RADIUS_SLOT).map_or(0.0, |token| {
+        resolve_radius_or_record(env.colors, token, report)
+    });
+
     if let Some(token) = content.tokens.get(BACKGROUND_SLOT)
         && let Some(color) = resolve_or_record(env.colors, token, report)
     {
-        painter.rect_filled(rect, 0.0, color);
+        painter.rect_filled(rect, corner_radius, color);
         report.fills += 1;
         shapes += 1;
     }
@@ -468,7 +514,7 @@ fn paint_one(
         let width = device_snapped_width(1.0, env.scale);
         painter.rect_stroke(
             rect,
-            0.0,
+            corner_radius,
             Stroke::new(width, color),
             egui::StrokeKind::Inside,
         );
@@ -674,13 +720,13 @@ mod tests {
         ColorSource, CustomPaintCtx, CustomPainters, device_snapped_width, paint_frame,
         paint_frame_with_hosts, to_egui_snapped, verify_paint_accounting,
     };
-    use egui::{Color32, Context, Id, LayerId, Order, RawInput, Shape};
+    use egui::{Color32, Context, CornerRadius, Id, LayerId, Order, RawInput, Shape};
     use gorgon_petra::frame::round_rect;
     use gorgon_petra::frame::{TransitionActivity, Viewport, petrify};
     use gorgon_petra::geom::Size;
     use gorgon_petra::geom::{Rect as PetraRect, Scale};
     use gorgon_petra::testing::{Harness, validated};
-    use gorgon_petra::token::{ThemeMode, ThemeSnapshot, dark};
+    use gorgon_petra::token::{ThemeMode, ThemeSnapshot, TokenName, dark};
     use gorgon_petra::tree::{NodeKind, Props, ViewNode};
 
     use crate::image::{ImagePixels, ImageSources};
@@ -718,14 +764,18 @@ mod tests {
         ThemeSnapshot::new(dark(), 1)
     }
 
+    /// A token reference, for the fixtures below — `Props.tokens`' value
+    /// type is [`TokenName`], not a plain string (C15).
+    fn tok(name: &str) -> TokenName {
+        TokenName::new(name).expect("test token names are well-formed")
+    }
+
     fn tree() -> ViewNode {
         let mut panel = Props::default();
         panel
             .tokens
-            .insert("background".into(), "surface.base".into());
-        panel
-            .tokens
-            .insert("border".into(), "surface.raised".into());
+            .insert("background".into(), tok("surface.base"));
+        panel.tokens.insert("border".into(), tok("surface.raised"));
         ViewNode::new(NodeKind::Stack, "root")
             .with_props(panel)
             .child(ViewNode::new(NodeKind::Text, "title").with_props(Props {
@@ -772,7 +822,7 @@ mod tests {
         let mut props = Props::default();
         props
             .tokens
-            .insert("background".into(), "surface.invented".into());
+            .insert("background".into(), tok("surface.invented"));
         let node = ViewNode::new(NodeKind::Stack, "root").with_props(props);
         let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
         let frame = frame_of(&node, &mut h);
@@ -926,9 +976,7 @@ mod tests {
             let host = Headless::new();
             let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
             let mut props = Props::default();
-            props
-                .tokens
-                .insert("border".into(), "surface.raised".into());
+            props.tokens.insert("border".into(), tok("surface.raised"));
             let node = ViewNode::new(NodeKind::Stack, "root").with_props(props);
             let frame = petrify(
                 1,
@@ -993,21 +1041,19 @@ mod tests {
         assert!(report.undrawn.contains("image:logo.png"), "{report:?}");
     }
 
-    /// A token slot no painter consumes is named rather than dropped. The
-    /// shipped vocabulary declares `shape.*` tokens and nothing here reads
-    /// them, so a node asking for rounded corners gets square ones — that is
-    /// allowed to be true, and not allowed to be silent.
+    /// A token slot no painter consumes is still named rather than dropped.
+    /// `radius` used to be the example fixture here — the shipped vocabulary
+    /// declared `shape.*` tokens and nothing read them — but it is a known
+    /// slot now (FR-053, C17), so an invented name stands in for it.
     #[test]
-    fn a_token_slot_this_painter_does_not_know_is_recorded() {
+    fn a_genuinely_unknown_token_slot_is_recorded() {
         let host = Headless::new();
         let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
         let mut props = Props {
             text: Some("hi".into()),
             ..Props::default()
         };
-        props
-            .tokens
-            .insert("radius".into(), "shape.corner-lg".into());
+        props.tokens.insert("shadow".into(), tok("shape.corner-lg"));
         let frame = frame_of(
             &ViewNode::new(NodeKind::Text, "t").with_props(props),
             &mut h,
@@ -1015,10 +1061,58 @@ mod tests {
         let mut shaper = host.shaper();
         let report = paint_frame(&host.painter(), &frame, &mut shaper, &snapshot());
 
-        assert!(report.unknown_slots.contains("radius"), "{report:?}");
+        assert!(report.unknown_slots.contains("shadow"), "{report:?}");
+        assert!(
+            !report.unknown_slots.contains("radius"),
+            "radius is a known slot now (C17): {report:?}"
+        );
         // The text still painted, so the placement is drawn, not silent — the
         // unknown slot is a gap in the painter, not a lost placement.
         assert_eq!(report.drawn, 1, "{report:?}");
+    }
+
+    /// C17's proof. A node binding `radius` must get the token's own corner,
+    /// not a square one — read from the shape egui actually received, the
+    /// same standard `a_border_stroke_is_a_whole_number_of_device_pixels`
+    /// and the focus-ring tests hold themselves to, rather than trusted from
+    /// the report alone.
+    #[test]
+    fn a_bound_radius_paints_the_named_corner() {
+        let host = Headless::new();
+        let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
+        let mut props = Props::default();
+        props
+            .tokens
+            .insert("background".into(), tok("surface.base"));
+        props.tokens.insert("radius".into(), tok("shape.corner-lg"));
+        let node = ViewNode::new(NodeKind::Stack, "root").with_props(props);
+        let frame = frame_of(&node, &mut h);
+        let mut shaper = host.shaper();
+        let report = paint_frame(&host.painter(), &frame, &mut shaper, &snapshot());
+
+        assert!(!report.unknown_slots.contains("radius"), "{report:?}");
+        assert!(report.unresolved_tokens.is_empty(), "{report:?}");
+        assert_eq!(report.fills, 1, "{report:?}");
+
+        let out = host.0.run_ui(RawInput::default(), |_| {});
+        let rect_shape = out
+            .shapes
+            .iter()
+            .find_map(|cs| match &cs.shape {
+                Shape::Rect(r) => Some(r.clone()),
+                _ => None,
+            })
+            .expect("the fill must reach egui as a Shape::Rect");
+        out.drop_without_applying_deltas();
+
+        // shape.corner-lg is 12.0 in both shipped themes (corner radius is
+        // geometry, not colour, so it does not vary by mode) and
+        // `CornerRadius::from(f32)` rounds to `u8`.
+        assert_eq!(
+            rect_shape.corner_radius,
+            CornerRadius::from(12.0_f32),
+            "the painted rect did not carry the token's own radius"
+        );
     }
 
     // --- Focus ------------------------------------------------------------
@@ -1102,14 +1196,14 @@ mod tests {
         };
         dark_bg
             .tokens
-            .insert("background".into(), "surface.base".into());
+            .insert("background".into(), tok("surface.base"));
         let mut light_bg = Props {
             text: Some("Run".into()),
             ..Props::default()
         };
         light_bg
             .tokens
-            .insert("background".into(), "status.degraded".into());
+            .insert("background".into(), tok("status.degraded"));
 
         for (what, node) in [
             ("no background token", plain),

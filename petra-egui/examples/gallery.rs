@@ -41,6 +41,15 @@ use gorgon_petra::tree::{
 fn sp(name: &str) -> Option<TokenName> {
     Some(TokenName::new(name).expect("gallery spacing tokens are well-formed"))
 }
+
+/// A colour or typography token reference, for `props.tokens` values and
+/// `props.style` (FR-053, C15). Both are `TokenName` now rather than
+/// `String`, so every literal this file used to hand `.into()` goes through
+/// here instead — mechanical, C11: this function changes no picture, it only
+/// makes the existing names typecheck.
+fn tok(name: &str) -> TokenName {
+    TokenName::new(name).expect("gallery style tokens are well-formed")
+}
 use gorgon_petra_egui::host::{App, Host, default_presenter};
 
 /// The one custom kind this gallery declares. Registered on the host before
@@ -170,22 +179,22 @@ impl Gallery {
     fn heading(key: &str, text: &str) -> ViewNode {
         let mut props = Props {
             text: Some(text.to_owned()),
-            style: Some("typography.heading".into()),
+            style: Some(tok("typography.heading")),
             ..Props::default()
         };
         props
             .tokens
-            .insert("foreground".into(), "text.primary".into());
+            .insert("foreground".into(), tok("text.primary"));
         ViewNode::new(NodeKind::Text, key).with_props(props)
     }
 
     fn body(key: &str, text: &str, token: &str) -> ViewNode {
         let mut props = Props {
             text: Some(text.to_owned()),
-            style: Some("typography.body".into()),
+            style: Some(tok("typography.body")),
             ..Props::default()
         };
-        props.tokens.insert("foreground".into(), token.into());
+        props.tokens.insert("foreground".into(), tok(token));
         ViewNode::new(NodeKind::Text, key).with_props(props)
     }
 
@@ -195,15 +204,15 @@ impl Gallery {
     fn button(key: &str, label: &str) -> ViewNode {
         let mut props = Props {
             text: Some(label.to_owned()),
-            style: Some("typography.body".into()),
+            style: Some(tok("typography.body")),
             ..Props::default()
         };
         props
             .tokens
-            .insert("background".into(), "surface.raised".into());
+            .insert("background".into(), tok("surface.raised"));
         props
             .tokens
-            .insert("foreground".into(), "text.primary".into());
+            .insert("foreground".into(), tok("text.primary"));
         ViewNode::new(NodeKind::Text, key)
             .with_props(props)
             .interactive(
@@ -325,9 +334,8 @@ impl Gallery {
                             axis: Some(Axis::Horizontal),
                             ..Props::default()
                         };
-                        p.tokens
-                            .insert("background".into(), "surface.raised".into());
-                        p.tokens.insert("border".into(), "text.muted".into());
+                        p.tokens.insert("background".into(), tok("surface.raised"));
+                        p.tokens.insert("border".into(), tok("text.muted"));
                         p
                     }),
                     Self::body("label", label, "text.primary"),
@@ -408,7 +416,7 @@ impl Gallery {
                     ],
                     ..Props::default()
                 };
-                p.tokens.insert("border".into(), "text.muted".into());
+                p.tokens.insert("border".into(), tok("text.muted"));
                 p
             })
             .child(Self::swatch("done", 0.0, 10.0, Some("status.ok"), None))
@@ -440,16 +448,14 @@ impl Gallery {
         let field = |key: &str, placeholder: &str| {
             let mut props = Props {
                 placeholder: Some(placeholder.to_owned()),
-                style: Some("typography.body".into()),
+                style: Some(tok("typography.body")),
                 ..Props::default()
             };
             props
                 .tokens
-                .insert("background".into(), "surface.raised".into());
-            props
-                .tokens
-                .insert("foreground".into(), "text.muted".into());
-            props.tokens.insert("border".into(), "text.muted".into());
+                .insert("background".into(), tok("surface.raised"));
+            props.tokens.insert("foreground".into(), tok("text.muted"));
+            props.tokens.insert("border".into(), tok("text.muted"));
             ViewNode::new(NodeKind::Input, key)
                 .with_props(props)
                 .with_constraints(Self::width(220.0))
@@ -602,7 +608,7 @@ impl Gallery {
         let mut wrapped = Props {
             text: Some(long.to_owned()),
             wrap: Some(TextWrap::Wrap),
-            style: Some("typography.body".into()),
+            style: Some(tok("typography.body")),
             ..Props::default()
         };
         // Both text nodes are width-clamped below. Without it the window is
@@ -611,30 +617,28 @@ impl Gallery {
         // two behaviours while demonstrating neither.
         wrapped
             .tokens
-            .insert("foreground".into(), "text.primary".into());
+            .insert("foreground".into(), tok("text.primary"));
 
         let mut clipped = Props {
             text: Some(long.to_owned()),
             wrap: Some(TextWrap::Ellipsis),
             max_lines: Some(1),
-            style: Some("typography.body".into()),
+            style: Some(tok("typography.body")),
             ..Props::default()
         };
         clipped
             .tokens
-            .insert("foreground".into(), "text.muted".into());
+            .insert("foreground".into(), tok("text.muted"));
 
         let mut field = Props {
             placeholder: Some("An Input with a placeholder and no value".into()),
-            style: Some("typography.body".into()),
+            style: Some(tok("typography.body")),
             ..Props::default()
         };
         field
             .tokens
-            .insert("background".into(), "surface.raised".into());
-        field
-            .tokens
-            .insert("foreground".into(), "text.muted".into());
+            .insert("background".into(), tok("surface.raised"));
+        field.tokens.insert("foreground".into(), tok("text.muted"));
 
         Self::column(
             "text",
@@ -828,10 +832,10 @@ impl Gallery {
     fn swatch(key: &str, w: f32, h: f32, fill: Option<&str>, edge: Option<&str>) -> ViewNode {
         let mut props = Props::default();
         if let Some(fill) = fill {
-            props.tokens.insert("background".into(), fill.into());
+            props.tokens.insert("background".into(), tok(fill));
         }
         if let Some(edge) = edge {
-            props.tokens.insert("border".into(), edge.into());
+            props.tokens.insert("border".into(), tok(edge));
         }
         ViewNode::new(NodeKind::Spacer, key)
             .with_props(props)
@@ -854,15 +858,15 @@ impl Gallery {
     fn chip(key: &str, label: &str, fill: Option<&str>, fg: &str, edge: Option<&str>) -> ViewNode {
         let mut props = Props {
             text: Some(label.to_owned()),
-            style: Some("typography.body".into()),
+            style: Some(tok("typography.body")),
             ..Props::default()
         };
-        props.tokens.insert("foreground".into(), fg.into());
+        props.tokens.insert("foreground".into(), tok(fg));
         if let Some(fill) = fill {
-            props.tokens.insert("background".into(), fill.into());
+            props.tokens.insert("background".into(), tok(fill));
         }
         if let Some(edge) = edge {
-            props.tokens.insert("border".into(), edge.into());
+            props.tokens.insert("border".into(), tok(edge));
         }
         ViewNode::new(NodeKind::Text, key).with_props(props)
     }
@@ -921,8 +925,8 @@ impl Gallery {
         let mut props = props;
         props
             .tokens
-            .insert("background".into(), "surface.raised".into());
-        props.tokens.insert("border".into(), "text.muted".into());
+            .insert("background".into(), tok("surface.raised"));
+        props.tokens.insert("border".into(), tok("text.muted"));
         ViewNode::new(kind, key).with_props(props)
     }
 
@@ -939,7 +943,7 @@ impl Gallery {
             };
             props
                 .tokens
-                .insert("background".into(), "surface.raised".into());
+                .insert("background".into(), tok("surface.raised"));
             return Some(
                 ViewNode::new(NodeKind::Surface, "modal")
                     .with_props(props)
@@ -1000,7 +1004,7 @@ impl Gallery {
             };
             props
                 .tokens
-                .insert("background".into(), "surface.raised".into());
+                .insert("background".into(), tok("surface.raised"));
             let item = |key: &str, label: &str, fg: &str| {
                 Self::control(key, label, Some("surface.raised"), fg, None)
             };
@@ -1031,7 +1035,7 @@ impl Gallery {
             };
             props
                 .tokens
-                .insert("background".into(), "surface.raised".into());
+                .insert("background".into(), tok("surface.raised"));
             return Some(
                 ViewNode::new(NodeKind::Surface, "toast")
                     .with_props(props)
@@ -1089,8 +1093,7 @@ impl App for Gallery {
             spacing: sp("spacing.lg"),
             ..Props::default()
         };
-        page.tokens
-            .insert("background".into(), "surface.base".into());
+        page.tokens.insert("background".into(), tok("surface.base"));
 
         let mut root = ViewNode::new(NodeKind::Stack, "root")
             .with_props(page)

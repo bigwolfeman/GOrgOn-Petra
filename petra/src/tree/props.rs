@@ -4,10 +4,19 @@
 //! differently on purpose (`contracts/view-tree.md` §"Styling parameters are
 //! token references", FR-053):
 //!
-//! * **Styling** — `spacing`, `column_spacing`, `row_spacing`, `padding`.
+//! * **Styling** — `spacing`, `column_spacing`, `row_spacing`, `padding`,
+//!   `style` (typography), and `tokens` (colour and corner radius, by slot).
 //!   These are *taste*, and taste belongs to the theme, so they carry
 //!   [`TokenName`]s and resolve through a [`ThemeSnapshot`]. An author cannot
-//!   write `spacing: 7`, because 7 is not a step anybody chose.
+//!   write `spacing: 7`, because 7 is not a step anybody chose — and, since
+//!   the field itself is `Option<TokenName>` rather than `Option<String>`,
+//!   an author cannot write `style: "#3a3a3a"` either: [`TokenName::new`]
+//!   refuses anything that parses as a colour or a number before a `Props`
+//!   can even deserialize. FR-053 names five styling families — spacing,
+//!   padding, corner radius, typography, colour — and this is the last of
+//!   them landing: `spacing`/`padding` were token-typed first, `style` and
+//!   `tokens` (which carries `radius` alongside `background`/`border`/
+//!   `foreground`) close the set.
 //! * **Layout declaration** — `constraints`, track sizes, `align`, `axis`,
 //!   `wrap`, `max_lines`, `span`. These stay numeric. A minimum width is a
 //!   fact about a label, not a taste decision: no theme can make a
@@ -385,9 +394,9 @@ pub struct Props {
     /// Maximum rendered lines before truncation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_lines: Option<usize>,
-    /// Typography token name.
+    /// Typography token reference, or `None` for the theme's body style.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub style: Option<String>,
+    pub style: Option<TokenName>,
     /// Image source identifier.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
@@ -425,12 +434,20 @@ pub struct Props {
     /// [`Props::spacing`] is one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub padding: Option<InsetRefs>,
-    /// Token references by role name (`background`, `foreground`, `border`, …).
+    /// Token references by paint slot (`background`, `foreground`, `border`,
+    /// `radius`, …).
     ///
-    /// Values are token names, never literal styles: FR-013's gate reads this
-    /// map and rejects anything that parses as a colour or a number.
+    /// The map *key* is a slot name — a role in the paint pass, decided by
+    /// the painter (`gorgon_petra_egui::paint::KNOWN_SLOTS`), not a design
+    /// token — so it stays a plain `String`. The map *value* is a
+    /// [`TokenName`]: FR-013's refusal of a literal colour or number in this
+    /// position used to be a validation-time check
+    /// (`tree::validate::is_style_literal`, since deleted); it is now a
+    /// construction-time one, because a `String` that looks like `#3a3a3a`
+    /// or `12` cannot become a `TokenName` in the first place, on this map's
+    /// value type or on the wire deserializing into it.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub tokens: BTreeMap<String, String>,
+    pub tokens: BTreeMap<String, TokenName>,
 }
 
 /// Resolved `stack` parameters.
@@ -647,7 +664,7 @@ impl Props {
             text: self.text.as_deref().unwrap_or(""),
             wrap: self.wrap.unwrap_or_default(),
             max_lines: self.max_lines,
-            style: self.style.as_deref(),
+            style: self.style.as_ref().map(TokenName::as_str),
         }
     }
 
@@ -823,7 +840,7 @@ mod tests {
         };
         props
             .tokens
-            .insert("background".into(), "surface.raised".into());
+            .insert("background".into(), n("surface.raised"));
         let json = serde_json::to_string(&props).unwrap();
         let back: Props = serde_json::from_str(&json).unwrap();
         assert_eq!(back, props);

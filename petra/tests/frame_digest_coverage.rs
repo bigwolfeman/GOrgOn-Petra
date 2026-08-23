@@ -20,7 +20,7 @@
 use gorgon_petra::frame::{FrameDigest, PetrifiedFrame, TransitionActivity, Viewport, petrify};
 use gorgon_petra::geom::Size;
 use gorgon_petra::testing::{Harness, validated_with};
-use gorgon_petra::token::ThemeMode;
+use gorgon_petra::token::{ThemeMode, TokenName};
 use gorgon_petra::tree::{Interaction, NodeKind, Props, Registry, Role, TextWrap, ViewNode};
 
 /// Every custom kind name a tree in this file declares. The digest tests
@@ -77,7 +77,9 @@ fn differs_on_paint_alone(what: &str, a: &ViewNode, b: &ViewNode) {
 
 fn tokened(slot: &str, value: &str) -> ViewNode {
     let mut props = Props::default();
-    props.tokens.insert(slot.into(), value.into());
+    props
+        .tokens
+        .insert(slot.into(), TokenName::new(value).unwrap());
     ViewNode::new(NodeKind::Stack, "panel").with_props(props)
 }
 
@@ -133,7 +135,7 @@ fn a_typography_token_moves_the_digest() {
     differs_on_paint_alone(
         "style: none vs heading",
         &labelled(|_| {}),
-        &labelled(|p| p.style = Some("heading".into())),
+        &labelled(|p| p.style = Some(TokenName::new("typography.heading").unwrap())),
     );
 }
 
@@ -216,10 +218,13 @@ fn a_petrified_frames_paint_hashes_describe_its_payload() {
     let tree = ViewNode::new(NodeKind::Stack, "root")
         .with_props({
             let mut p = Props::default();
-            p.tokens.insert("background".into(), "surface.base".into());
+            p.tokens
+                .insert("background".into(), TokenName::new("surface.base").unwrap());
             p
         })
-        .child(labelled(|p| p.style = Some("heading".into())));
+        .child(labelled(|p| {
+            p.style = Some(TokenName::new("typography.heading").unwrap())
+        }));
     let mut f = frame(&tree);
     assert!(f.paint_hashes_agree(), "{:?}", f.placements);
 
@@ -245,14 +250,14 @@ fn a_payload_carrying_tree_digests_identically_a_hundred_times() {
     let mut panel = Props::default();
     panel
         .tokens
-        .insert("background".into(), "surface.base".into());
+        .insert("background".into(), TokenName::new("surface.base").unwrap());
     panel
         .tokens
-        .insert("border".into(), "surface.raised".into());
+        .insert("border".into(), TokenName::new("surface.raised").unwrap());
     let tree = ViewNode::new(NodeKind::Stack, "root")
         .with_props(panel)
         .child(labelled(|p| {
-            p.style = Some("heading".into());
+            p.style = Some(TokenName::new("typography.heading").unwrap());
             p.wrap = Some(TextWrap::Ellipsis);
             p.max_lines = Some(1);
         }))

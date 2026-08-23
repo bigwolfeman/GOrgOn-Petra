@@ -148,13 +148,6 @@ pub enum Violation {
         /// What that `scroll` resolves the parameter to, as text.
         owner: String,
     },
-    /// A style literal appears where a token name is required (FR-013).
-    LiteralStyleValue {
-        /// The token slot.
-        slot: String,
-        /// The literal that was found.
-        value: String,
-    },
     /// A leaf kind declares `padding`.
     ///
     /// A leaf has no children to offer an inset rect to, and `Placement`
@@ -275,10 +268,6 @@ impl fmt::Display for Violation {
             } => write!(
                 f,
                 "props.{prop} is {declared} on a `collection`, but its scroll ancestor `{scroll}` owns that parameter and resolves it to {owner}; declare it on the scroll (a collection outside every scroll keeps its own)"
-            ),
-            Self::LiteralStyleValue { slot, value } => write!(
-                f,
-                "tokens.{slot} is the literal {value:?}; features reference token names, never values"
             ),
             Self::PaddingOnLeafKind { kind } => write!(
                 f,
@@ -696,36 +685,20 @@ fn check_node(
         });
     }
 
-    for (slot, value) in &node.props.tokens {
-        if is_style_literal(value) {
-            push(Violation::LiteralStyleValue {
-                slot: slot.clone(),
-                value: value.clone(),
-            });
-        }
-    }
-}
-
-/// Whether a token slot holds a value instead of a name.
-///
-/// The two shapes a literal takes in practice are a CSS-style hex colour and a
-/// bare number. A token name is `surface.raised` or `text-muted`; neither
-/// parses as either.
-fn is_style_literal(value: &str) -> bool {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return true;
-    }
-    if trimmed.starts_with('#') {
-        return true;
-    }
-    if trimmed.parse::<f64>().is_ok() {
-        return true;
-    }
-    let lower = trimmed.to_ascii_lowercase();
-    ["rgb(", "rgba(", "hsl(", "hsla("]
-        .iter()
-        .any(|prefix| lower.starts_with(prefix))
+    // A literal in a token slot (FR-013) used to be refused here: a
+    // validate-time walk over `node.props.tokens` calling `is_style_literal`
+    // on each `String` value, pushing `Violation::LiteralStyleValue` on a
+    // hit. Both are gone. `node.props.tokens`'s value type is now
+    // `TokenName` (contract C15), and `TokenName::new` — which its
+    // `Deserialize` impl calls — already refuses a hex colour, a bare
+    // number, and an `rgb(...)`/`hsl(...)` call
+    // (`token::name::looks_like_style_literal`). A `Props` carrying a
+    // literal in a token slot therefore cannot deserialize at all, so there
+    // is nothing left for acceptance to catch: the tree cannot be built in
+    // the first place. `a_literal_in_a_token_slot_never_deserializes` below
+    // is the proof, at the boundary where a literal could actually arrive —
+    // parsing a wire payload — rather than at construction in Rust, where
+    // the type system already makes it unrepresentable.
 }
 
 #[cfg(test)]
@@ -1309,25 +1282,37 @@ mod tests {
         assert_eq!(err.unusable()[0].why, "negative");
     }
 
+    /// C16's proof. FR-013 used to be a validate-time refusal
+    /// (`is_style_literal` walking `Props.tokens`, pushing
+    /// `Violation::LiteralStyleValue` on a hit); both are deleted. C15 makes
+    /// `Props.tokens`'s value type `TokenName`, and `TokenName::new` — which
+    /// its `Deserialize` impl calls — already refuses every shape
+    /// `is_style_literal` refused: a hex colour, a bare number, an
+    /// `rgb(...)`/`hsl(...)` call, and an empty or whitespace-only string.
+    /// That refusal now fires at the wire boundary, before a `Props` — let
+    /// alone a `ViewNode` `validate` could inspect — exists at all, which is
+    /// strictly earlier than a validate-time check can ever run. Proved by
+    /// deserializing the wire form, the same boundary
+    /// `a_number_in_a_styling_slot_never_reaches_acceptance` uses for
+    /// `spacing`/`padding`, rather than by constructing a `Props` in Rust
+    /// directly — the type system already makes that construction not
+    /// compile, so there is no runtime path left to exercise there.
     #[test]
-    fn literal_styles_are_refused_where_tokens_belong() {
-        for literal in ["#ff0000", "12", "rgb(1,2,3)", " "] {
-            let mut props = Props::default();
-            props.tokens.insert("background".into(), literal.into());
-            let node = ViewNode::new(NodeKind::Text, "t").with_props(props);
-            let err = validate(&node, &Registry::new()).unwrap_err();
+    fn a_literal_in_a_token_slot_never_deserializes() {
+        for literal in ["#ff0000", "12", "rgb(1,2,3)", " ", ""] {
+            let json = format!(r#"{{"tokens":{{"background":{literal:?}}}}}"#);
+            let err = serde_json::from_str::<Props>(&json).unwrap_err();
             assert!(
-                matches!(
-                    err.as_slice()[0].violation,
-                    Violation::LiteralStyleValue { .. }
-                ),
-                "{literal:?} was accepted"
+                err.to_string().contains("style value") || err.to_string().contains("empty"),
+                "{literal:?} should be refused as a non-name, got: {err}"
             );
         }
-        let mut props = Props::default();
-        props
-            .tokens
-            .insert("background".into(), "surface.raised".into());
+
+        // A well-formed name still deserializes, and the tree it lands in
+        // still accepts — the stronger check does not refuse more than the
+        // old one did.
+        let json = r#"{"tokens":{"background":"surface.raised"}}"#;
+        let props: Props = serde_json::from_str(json).expect("a real token name deserializes");
         assert!(
             validate(
                 &ViewNode::new(NodeKind::Text, "t").with_props(props),

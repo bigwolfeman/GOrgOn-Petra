@@ -463,7 +463,7 @@ pub fn paint_content_of(node: &ViewNode) -> PaintContent {
     PaintContent {
         text: text.map(|text| TextPaint {
             text,
-            style: props.style.clone(),
+            style: props.style.as_ref().map(|t| t.as_str().to_owned()),
             wrap: props.wrap.unwrap_or_default(),
             max_lines: props.max_lines,
         }),
@@ -475,7 +475,11 @@ pub fn paint_content_of(node: &ViewNode) -> PaintContent {
             NodeKind::Custom => props.custom_kind.clone(),
             _ => None,
         },
-        tokens: props.tokens.clone(),
+        tokens: props
+            .tokens
+            .iter()
+            .map(|(k, v)| (k.clone(), v.as_str().to_owned()))
+            .collect(),
     }
 }
 
@@ -648,7 +652,7 @@ mod tests {
         let tree = ViewNode::new(NodeKind::Stack, "root")
             .child(ViewNode::new(NodeKind::Text, "title").with_props(Props {
                 text: Some("Fibers".into()),
-                style: Some("heading".into()),
+                style: Some(TokenName::new("typography.heading").unwrap()),
                 ..Props::default()
             }))
             .child(ViewNode::new(NodeKind::Spacer, "gap"));
@@ -676,7 +680,7 @@ mod tests {
             ]
         );
         let title = frame.content[1].text.as_ref().unwrap();
-        assert_eq!(title.style.as_deref(), Some("heading"));
+        assert_eq!(title.style.as_deref(), Some("typography.heading"));
         assert!(
             frame.content[0].is_empty(),
             "a bare stack draws nothing of its own"
@@ -731,9 +735,10 @@ mod tests {
     fn token_references_reach_the_payload() {
         use crate::tree::Props;
         let mut props = Props::default();
-        props
-            .tokens
-            .insert("background".into(), "surface.raised".into());
+        props.tokens.insert(
+            "background".into(),
+            TokenName::new("surface.raised").unwrap(),
+        );
         let node = ViewNode::new(NodeKind::Stack, "panel").with_props(props);
         let content = super::paint_content_of(&node);
         assert_eq!(

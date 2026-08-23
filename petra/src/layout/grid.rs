@@ -26,8 +26,7 @@ pub fn measure(
     path: &mut KeyPath,
     proposal: SizeProposal,
 ) -> Size {
-    let props = node.props.grid(ctx.theme);
-    let ncols = props.columns.len();
+    let ncols = node.props.columns.len();
     if ncols == 0 {
         // Tree acceptance is expected to refuse a grid with no declared
         // columns before layout ever sees it; this is the defensive floor
@@ -41,14 +40,16 @@ pub fn measure(
     // the grid's own measured extent already accounts for its padding —
     // exactly parallel to how it already accounts for spacing.
     let padding = ctx.padding(&node.props.padding);
-    let flow = Flow::seat(&node.children, ncols, props.rows.len());
-    let row_tracks = effective_row_tracks(&props.rows, &flow);
+    let column_spacing = ctx.spacing(&node.props.column_spacing);
+    let row_spacing = ctx.spacing(&node.props.row_spacing);
+    let flow = Flow::seat(&node.children, ncols, node.props.rows.len());
+    let row_tracks = effective_row_tracks(&node.props.rows, &flow);
     let col_widths = resolve_columns(
         node,
         ctx,
         path,
-        &props.columns,
-        props.column_spacing,
+        &node.props.columns,
+        column_spacing,
         proposal.horizontal.shrink(padding.along(Axis::Horizontal)),
         &flow,
     );
@@ -61,7 +62,7 @@ pub fn measure(
         RowContext {
             col_widths: &col_widths.extents,
             col_spacing: col_widths.spacing,
-            row_spacing: props.row_spacing,
+            row_spacing,
             flow: &flow,
         },
     );
@@ -82,12 +83,14 @@ pub fn place(
     slot: Slot,
     sink: &mut dyn PlacementSink,
 ) {
-    let props = node.props.grid(ctx.theme);
-    let ncols = props.columns.len();
+    let ncols = node.props.columns.len();
+    let align = node.props.align.unwrap_or_default();
     // Padding insets what the grid offers its children; the grid's own
     // placed rect below stays `slot.rect`, unmodified by its own padding
     // (padding is inside the box, not around it).
     let padding = ctx.padding(&node.props.padding);
+    let column_spacing = ctx.spacing(&node.props.column_spacing);
+    let row_spacing = ctx.spacing(&node.props.row_spacing);
     let content = slot.rect.inset_edges(padding);
 
     // Resolve the tracks before pushing this container's own placement. The
@@ -106,14 +109,14 @@ pub fn place(
         // committing this one. `content`, not `slot.rect`: track sizing must
         // never see the budget the padding already spent.
         let offer = SizeProposal::exact(content.size());
-        let flow = Flow::seat(&node.children, ncols, props.rows.len());
-        let row_tracks = effective_row_tracks(&props.rows, &flow);
+        let flow = Flow::seat(&node.children, ncols, node.props.rows.len());
+        let row_tracks = effective_row_tracks(&node.props.rows, &flow);
         let col_widths = resolve_columns(
             node,
             ctx,
             path,
-            &props.columns,
-            props.column_spacing,
+            &node.props.columns,
+            column_spacing,
             offer.horizontal,
             &flow,
         );
@@ -126,7 +129,7 @@ pub fn place(
             RowContext {
                 col_widths: &col_widths.extents,
                 col_spacing: col_widths.spacing,
-                row_spacing: props.row_spacing,
+                row_spacing,
                 flow: &flow,
             },
         );
@@ -167,7 +170,7 @@ pub fn place(
                 continue;
             };
             let cell = cell.size();
-            if props.align == Align::Stretch {
+            if align == Align::Stretch {
                 if child.constraints.horizontal.clamp(cell.w) > cell.w + FIT_EPSILON
                     || child.constraints.vertical.clamp(cell.h) > cell.h + FIT_EPSILON
                 {
@@ -217,7 +220,7 @@ pub fn place(
             let Some(cell) = cells.of(i) else {
                 continue;
             };
-            place_in_cell(child, ctx, path, cell, props.align, slot, sink);
+            place_in_cell(child, ctx, path, cell, align, slot, sink);
         }
     }
 
@@ -1059,15 +1062,16 @@ mod tests {
     fn column_extents(g: &ViewNode, probe: Proposal) -> Vec<f32> {
         let mut h = Harness::new();
         h.bind_tree_gaps(g);
-        let props = g.props.grid(&h.theme);
-        let flow = Flow::seat(&g.children, props.columns.len(), props.rows.len());
+        let ctx = h.ctx();
+        let column_spacing = ctx.spacing(&g.props.column_spacing);
+        let flow = Flow::seat(&g.children, g.props.columns.len(), g.props.rows.len());
         let mut path = path_at(g);
         resolve_columns(
             g,
             &mut h.ctx(),
             &mut path,
-            &props.columns,
-            props.column_spacing,
+            &g.props.columns,
+            column_spacing,
             probe,
             &flow,
         )

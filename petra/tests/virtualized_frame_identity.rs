@@ -23,7 +23,7 @@ use gorgon_petra::frame::{FrameDigest, PetrifiedFrame, TransitionActivity, Viewp
 use gorgon_petra::geom::Size;
 use gorgon_petra::layout::RowSource;
 use gorgon_petra::testing::{Harness, MonoContent, validated};
-use gorgon_petra::token::ThemeMode;
+use gorgon_petra::token::{ThemeMode, TokenName};
 use gorgon_petra::tree::{Key, NodeKind, Props, ViewNode};
 
 const TOTAL_ROWS: usize = 100_000;
@@ -52,9 +52,10 @@ impl RowSource for TokenRows {
                     text: Some("row".into()),
                     ..Props::default()
                 };
-                props
-                    .tokens
-                    .insert("background".into(), self.background.into());
+                props.tokens.insert(
+                    "background".into(),
+                    TokenName::new(self.background).unwrap(),
+                );
                 Arc::new(
                     ViewNode::new(NodeKind::Text, Key::new(format!("row-{index}")))
                         .with_props(props),

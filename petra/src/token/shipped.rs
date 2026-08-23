@@ -65,6 +65,88 @@ fn insert_spacing_ramp(values: &mut BTreeMap<TokenName, TokenValue>) {
     }
 }
 
+/// The shipped corner-radius ramp: five steps, in logical units.
+///
+/// Five, not two, because two steps cannot express either end a component
+/// library needs: a sharp edge (a table cell, a tab underline) and a full
+/// pill (a toggle knob, a status dot). `none` and `full` are those two ends;
+/// `sm`/`md`/`lg` are the everyday range between them — a chip or a field
+/// (`sm`), a button or a card (`md`), a panel or a modal (`lg`).
+///
+/// `full` is `999.0`, not some smaller "big enough" number. The painter
+/// hands this to `egui::CornerRadius`, whose fields are `u8` — Petra's own
+/// `From<f32>` conversion there does `radius.round() as u8`, a saturating
+/// cast in Rust, so `999.0` lands on exactly `255`, the type's maximum,
+/// regardless of how large the sentinel is. That is the same idiom CSS uses
+/// for `border-radius: 9999px`: a value chosen to always exceed half of any
+/// realistic control's shorter edge, so the rendered corner is always a full
+/// stadium rather than a specific radius that might not be big enough for a
+/// particular box.
+///
+/// Two values are carried forward unchanged from the pre-ramp vocabulary —
+/// `shape.corner-sm` at 4 and `shape.corner-lg` at 12 — so nothing already
+/// bound to either name moves.
+const SHAPE_RAMP: [(&str, f32); 5] = [
+    ("shape.corner-none", 0.0),
+    ("shape.corner-sm", 4.0),
+    ("shape.corner-md", 8.0),
+    ("shape.corner-lg", 12.0),
+    ("shape.corner-full", 999.0),
+];
+
+/// Assign every [`SHAPE_RAMP`] step into a theme's value map. Both themes
+/// call this rather than spelling the ramp out twice, for the same reason
+/// [`insert_spacing_ramp`] exists: a hand-copied ramp is a ramp that drifts.
+fn insert_shape_ramp(values: &mut BTreeMap<TokenName, TokenValue>) {
+    for (step, radius) in SHAPE_RAMP {
+        values.insert(
+            name(step),
+            TokenValue::Shape(ShapeValue {
+                corner_radius: radius,
+            }),
+        );
+    }
+}
+
+/// The shipped typography ramp: `body` plus three heading levels.
+///
+/// `typography.body` and `typography.heading` are unchanged from the
+/// pre-ramp vocabulary — same names, same sizes — so nothing already bound
+/// to either moves. `heading-sm` and `heading-lg` are new, added around
+/// `heading` the same way the corner ramp added `none`/`md`/`full` around
+/// its own unchanged `sm`/`lg`: one level cannot express a hierarchy, and a
+/// page with a title, a section heading, and a field label needs three
+/// distinct sizes, not one repeated three times. Every level is `Bold`
+/// (only `body` is `Regular`): a heading ramp is a size scale, not a weight
+/// scale, and mixing the two variables would make "is this a heading?" a
+/// question about two fields instead of one.
+///
+/// Declared once and shared by both shipped themes, because typography is
+/// type, not colour: a heading's size does not change when the operator
+/// turns the lights off, the same reasoning [`SPACING_RAMP`] and
+/// [`SHAPE_RAMP`] use for their own families.
+const TYPOGRAPHY_RAMP: [(&str, f32, f32, TypographyWeight); 4] = [
+    ("typography.body", 14.0, 20.0, TypographyWeight::Regular),
+    ("typography.heading-sm", 16.0, 22.0, TypographyWeight::Bold),
+    ("typography.heading", 20.0, 28.0, TypographyWeight::Bold),
+    ("typography.heading-lg", 28.0, 36.0, TypographyWeight::Bold),
+];
+
+/// Assign every [`TYPOGRAPHY_RAMP`] step into a theme's value map, for the
+/// same drift-proofing reason [`insert_spacing_ramp`] exists.
+fn insert_typography_ramp(values: &mut BTreeMap<TokenName, TokenValue>) {
+    for (step, size, line_height, weight) in TYPOGRAPHY_RAMP {
+        values.insert(
+            name(step),
+            TokenValue::Typography(TypographyValue {
+                size,
+                line_height,
+                weight,
+            }),
+        );
+    }
+}
+
 /// The full set of tokens the shipped light and dark themes must define.
 ///
 /// Deliberately small: enough surface/text/status/spacing/typography/
@@ -92,13 +174,30 @@ pub fn standard_vocabulary() -> Vocabulary {
             TokenKind::Typography,
         ))
         .declare(DesignToken::new(
+            name("typography.heading-sm"),
+            TokenKind::Typography,
+        ))
+        .declare(DesignToken::new(
             name("typography.heading"),
+            TokenKind::Typography,
+        ))
+        .declare(DesignToken::new(
+            name("typography.heading-lg"),
             TokenKind::Typography,
         ))
         .declare(DesignToken::new(name("motion.fast"), TokenKind::Motion))
         .declare(DesignToken::new(name("motion.slow"), TokenKind::Motion))
+        .declare(DesignToken::new(
+            name("shape.corner-none"),
+            TokenKind::Shape,
+        ))
         .declare(DesignToken::new(name("shape.corner-sm"), TokenKind::Shape))
+        .declare(DesignToken::new(name("shape.corner-md"), TokenKind::Shape))
         .declare(DesignToken::new(name("shape.corner-lg"), TokenKind::Shape))
+        .declare(DesignToken::new(
+            name("shape.corner-full"),
+            TokenKind::Shape,
+        ))
         // The keyboard focus ring (FR-015, FR-025). Two colours, because the
         // ring is an ink band flanked by two paper halos: see
         // `crate::token::focus` for why one band cannot be enough, and
@@ -153,22 +252,7 @@ pub fn light() -> Theme {
         TokenValue::Color(ColorValue::from_srgb8(0x5c, 0x5c, 0x5c, 0xff)),
     );
     insert_spacing_ramp(&mut values);
-    values.insert(
-        name("typography.body"),
-        TokenValue::Typography(TypographyValue {
-            size: 14.0,
-            line_height: 20.0,
-            weight: TypographyWeight::Regular,
-        }),
-    );
-    values.insert(
-        name("typography.heading"),
-        TokenValue::Typography(TypographyValue {
-            size: 20.0,
-            line_height: 28.0,
-            weight: TypographyWeight::Bold,
-        }),
-    );
+    insert_typography_ramp(&mut values);
     values.insert(
         name("motion.fast"),
         TokenValue::Motion(MotionValue {
@@ -183,16 +267,7 @@ pub fn light() -> Theme {
             easing: MotionEasing::EaseInOut,
         }),
     );
-    values.insert(
-        name("shape.corner-sm"),
-        TokenValue::Shape(ShapeValue { corner_radius: 4.0 }),
-    );
-    values.insert(
-        name("shape.corner-lg"),
-        TokenValue::Shape(ShapeValue {
-            corner_radius: 12.0,
-        }),
-    );
+    insert_shape_ramp(&mut values);
 
     // Status colours. The values are chosen by measurement, not by taste:
     // `status_colours_stay_apart_under_red_green_colour_blindness` simulates
@@ -261,22 +336,7 @@ pub fn dark() -> Theme {
         TokenValue::Color(ColorValue::from_srgb8(0xa3, 0xa3, 0xa3, 0xff)),
     );
     insert_spacing_ramp(&mut values);
-    values.insert(
-        name("typography.body"),
-        TokenValue::Typography(TypographyValue {
-            size: 14.0,
-            line_height: 20.0,
-            weight: TypographyWeight::Regular,
-        }),
-    );
-    values.insert(
-        name("typography.heading"),
-        TokenValue::Typography(TypographyValue {
-            size: 20.0,
-            line_height: 28.0,
-            weight: TypographyWeight::Bold,
-        }),
-    );
+    insert_typography_ramp(&mut values);
     values.insert(
         name("motion.fast"),
         TokenValue::Motion(MotionValue {
@@ -291,16 +351,7 @@ pub fn dark() -> Theme {
             easing: MotionEasing::EaseInOut,
         }),
     );
-    values.insert(
-        name("shape.corner-sm"),
-        TokenValue::Shape(ShapeValue { corner_radius: 4.0 }),
-    );
-    values.insert(
-        name("shape.corner-lg"),
-        TokenValue::Shape(ShapeValue {
-            corner_radius: 12.0,
-        }),
-    );
+    insert_shape_ramp(&mut values);
 
     // The focus ring, dark mode: the ink/paper pair inverted, so the core
     // still reads as the drawn line and the halos as the ground around it.
@@ -658,6 +709,159 @@ mod tests {
         assert_eq!(
             checked, 8,
             "expected the eight-step ramp, checked {checked}"
+        );
+    }
+
+    /// The corner ramp, pinned by value. `none` and `full` are the two ends
+    /// two steps could not reach; `sm` and `lg` are unchanged from the
+    /// pre-ramp vocabulary so nothing already bound to either name moves.
+    #[test]
+    fn the_shape_ramp_is_five_ordered_steps_from_sharp_to_pill() {
+        let expected: [(&str, f32); 5] = [
+            ("shape.corner-none", 0.0),
+            ("shape.corner-sm", 4.0),
+            ("shape.corner-md", 8.0),
+            ("shape.corner-lg", 12.0),
+            ("shape.corner-full", 999.0),
+        ];
+        let theme = light();
+        let mut previous = -1.0f32;
+        for (step, radius) in expected {
+            let got = theme.value(&TokenName::new(step).unwrap());
+            assert_eq!(
+                got,
+                Some(&TokenValue::Shape(crate::token::value::ShapeValue {
+                    corner_radius: radius
+                })),
+                "{step} must be {radius} logical units, found {got:?}"
+            );
+            assert!(
+                radius > previous,
+                "the ramp must grow: {step} at {radius} does not exceed {previous}"
+            );
+            previous = radius;
+        }
+
+        // Every shape name the vocabulary declares is one of the five above,
+        // so a sixth step cannot appear without this test naming it.
+        let vocab = standard_vocabulary();
+        let declared: Vec<&TokenName> = vocab
+            .names()
+            .filter(|n| vocab.kind_of(n) == Some(crate::token::value::TokenKind::Shape))
+            .collect();
+        assert_eq!(
+            declared.len(),
+            expected.len(),
+            "the vocabulary declares {} shape tokens but the ramp has {}: {declared:?}",
+            declared.len(),
+            expected.len()
+        );
+    }
+
+    /// Corner radius is geometry, the same reasoning
+    /// [`the_two_shipped_themes_agree_on_every_gap`] applies to spacing: a
+    /// rounded corner does not change shape when the operator turns the
+    /// lights off, so light and dark must agree on every step.
+    #[test]
+    fn the_two_shipped_themes_agree_on_every_corner() {
+        let (l, d) = (light(), dark());
+        let vocab = standard_vocabulary();
+        let mut checked = 0usize;
+        for name in vocab.names() {
+            if vocab.kind_of(name) != Some(crate::token::value::TokenKind::Shape) {
+                continue;
+            }
+            assert_eq!(
+                l.value(name),
+                d.value(name),
+                "{name} differs between light and dark; corner radius is geometry, not colour"
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 5, "expected the five-step ramp, checked {checked}");
+    }
+
+    /// The typography ramp, pinned by value. `body` and `heading` keep the
+    /// sizes the pre-ramp vocabulary shipped; `heading-sm`/`heading-lg` are
+    /// the new levels, added around `heading` the same way the corner ramp
+    /// added `none`/`md`/`full` around its own unchanged `sm`/`lg`.
+    #[test]
+    fn the_typography_ramp_is_body_and_three_ordered_heading_levels() {
+        use crate::token::value::TypographyWeight;
+        let expected: [(&str, f32, f32, TypographyWeight); 4] = [
+            ("typography.body", 14.0, 20.0, TypographyWeight::Regular),
+            ("typography.heading-sm", 16.0, 22.0, TypographyWeight::Bold),
+            ("typography.heading", 20.0, 28.0, TypographyWeight::Bold),
+            ("typography.heading-lg", 28.0, 36.0, TypographyWeight::Bold),
+        ];
+        let theme = light();
+        for (step, size, line_height, weight) in expected {
+            let got = theme.value(&TokenName::new(step).unwrap());
+            assert_eq!(
+                got,
+                Some(&TokenValue::Typography(
+                    crate::token::value::TypographyValue {
+                        size,
+                        line_height,
+                        weight,
+                    }
+                )),
+                "{step} must be size {size}, found {got:?}"
+            );
+        }
+
+        // The three heading levels are a size hierarchy: each strictly
+        // larger than the last, so "heading" without a suffix is
+        // meaningfully the middle of three rather than a name with no
+        // siblings.
+        let sizes = [16.0_f32, 20.0, 28.0];
+        for pair in sizes.windows(2) {
+            assert!(
+                pair[1] > pair[0],
+                "heading levels must grow: {} does not exceed {}",
+                pair[1],
+                pair[0]
+            );
+        }
+
+        let vocab = standard_vocabulary();
+        let declared: Vec<&TokenName> = vocab
+            .names()
+            .filter(|n| vocab.kind_of(n) == Some(crate::token::value::TokenKind::Typography))
+            .collect();
+        assert_eq!(
+            declared.len(),
+            expected.len(),
+            "the vocabulary declares {} typography tokens but the ramp has {}: {declared:?}",
+            declared.len(),
+            expected.len()
+        );
+    }
+
+    /// Typography is type, not colour: a heading's size does not change
+    /// when the operator turns the lights off, the same reasoning
+    /// [`the_two_shipped_themes_agree_on_every_gap`] and
+    /// [`the_two_shipped_themes_agree_on_every_corner`] apply to spacing
+    /// and shape.
+    #[test]
+    fn the_two_shipped_themes_agree_on_every_typography_level() {
+        let (l, d) = (light(), dark());
+        let vocab = standard_vocabulary();
+        let mut checked = 0usize;
+        for name in vocab.names() {
+            if vocab.kind_of(name) != Some(crate::token::value::TokenKind::Typography) {
+                continue;
+            }
+            assert_eq!(
+                l.value(name),
+                d.value(name),
+                "{name} differs between light and dark; typography is type, not colour"
+            );
+            checked += 1;
+        }
+        assert_eq!(
+            checked, 4,
+            "expected the four-entry ramp, checked {checked}"
         );
     }
 

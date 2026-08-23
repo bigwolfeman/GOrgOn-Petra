@@ -33,7 +33,7 @@ use gorgon_petra::layout::overlay_surface::surface_scopes;
 use gorgon_petra::layout::{
     ChangeSet, LayoutCtx, LayoutState, MeasureCache, RowSource, ScrollStack,
 };
-use gorgon_petra::token::Presenter;
+use gorgon_petra::token::{Presenter, TokenName};
 use gorgon_petra::tree::{InputPolicy, Interaction, NodeKind, Props, Registry, ViewNode, validate};
 
 use crate::image::ImageSources;
@@ -542,10 +542,10 @@ fn refusal_view(message: &str) -> ViewNode {
     let mut tokens = Props::default();
     tokens
         .tokens
-        .insert("background".into(), "surface.base".into());
+        .insert("background".into(), TokenName::new("surface.base").unwrap());
     tokens
         .tokens
-        .insert("foreground".into(), "status.down".into());
+        .insert("foreground".into(), TokenName::new("status.down").unwrap());
     ViewNode::new(NodeKind::Stack, "petra-tree-refused")
         .with_props(tokens)
         .child(
@@ -570,6 +570,7 @@ mod tests {
     use gorgon_petra::geom::{Point, Rect};
     use gorgon_petra::input::{InputEvent, Route};
     use gorgon_petra::layout::RowSource;
+    use gorgon_petra::token::TokenName;
     use gorgon_petra::tree::{
         Anchor, ClampRule, InputPolicy, Interaction, Layer, NodeKind, Props, Role, ViewNode,
     };
@@ -617,7 +618,7 @@ mod tests {
             let mut panel = Props::default();
             panel
                 .tokens
-                .insert("background".into(), "surface.base".into());
+                .insert("background".into(), TokenName::new("surface.base").unwrap());
             let mut root = ViewNode::new(NodeKind::Stack, "root")
                 .with_props(panel)
                 .child(ViewNode::new(NodeKind::Text, "title").with_props(Props {
