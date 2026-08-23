@@ -9,12 +9,50 @@ description = "Petra UI driver: semantic-tree query server, settle-blocking acti
 publish = false
 
 [dependencies]
+# Shared with the client (T033), which is importable everywhere (FR-041), so
+# these stay unconditional: `wire.rs`'s request/response types and the
+# `gorgon-petra` semantic-tree/frame types they wrap must be buildable with no
+# feature on.
+gorgon-petra = { path = "../petra" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+# Server-only, so the endpoint cannot exist in a build that did not ask
+# (FR-042). `gorgon-petra-egui` is not touched by `src/server/` itself today —
+# `frame.rs`/`hub.rs` read only `gorgon_petra::frame::PetrifiedFrame` — but the
+# feature carries it because the driver's own integration tests need a real
+# `Host` to produce a real frame over the real socket, and because T030's
+# `inject.rs` and T032's `snapshot/` (both under this feature) need it too.
+gorgon-petra-egui = { path = "../petra-egui", optional = true }
+nix = { workspace = true, optional = true }
+
+[dev-dependencies]
+# The server's own tests drive a real socket with a real client, so they need
+# the same NDJSON codec the future T033 client will ship — reading it by hand
+# here would be exactly the "hand-rolled per-test socket code" the contract
+# calls a review-rejectable defect. `tokio-util`'s `LinesCodec` equivalent is
+# not pulled in for that reason either; the tests read/write NDJSON with the
+# same `AsyncBufReadExt`/`AsyncWriteExt` primitives `server/mod.rs` uses.
+tempfile.workspace = true
+# `tests/server.rs` drives a real `gorgon-petra-egui::host::Host` headlessly
+# (`gorgon/petra-egui/examples/gallery.rs`'s own test pattern) to get a real
+# `PetrifiedFrame` to publish and query — the wave brief's "a test that calls
+# a handler function directly proves nothing" applies just as much to a
+# hand-built frame as to a hand-built request. That needs `egui::Context`
+# directly, not only the version `gorgon-petra-egui` already pulls in
+# transitively.
+egui = "0.36.1"
 
 [features]
 # The driver endpoint exists only when this feature is on. Production binaries
 # must not enable it: contracts/driver-protocol.md forbids a runtime switch.
 default = []
-testkit = []
+testkit = ["dep:gorgon-petra-egui", "dep:nix"]
+
+[[test]]
+name = "server"
+required-features = ["testkit"]
 
 [lints]
 workspace = true

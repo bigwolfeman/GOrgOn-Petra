@@ -6,11 +6,20 @@
 //! [`gorgon_petra::layout::ContentMeasure`], and translates platform input at
 //! the boundary.
 //!
-//! It does **not** push AccessKit nodes. There is no `accesskit` dependency
-//! here; an incoming `AccessKitActionRequest` is counted by name in
-//! [`input::EventTranslator::untranslated`] and dropped. Screen-reader support
-//! is task T028, and this line is what an agent reading the crate should find
-//! instead of a claim that it already works.
+//! It pushes AccessKit nodes from [`gorgon_petra::semantic::SemanticTree`]
+//! through [`accesskit::publish`] (T028, FR-027) — the same projection that
+//! answers the agent's UI-state query and the driver's finders, so a screen
+//! reader and a test can never be told different things. [`host::Host::pass`]
+//! calls it once per frame. Delivery is an `egui::Plugin` rather than a plain
+//! assignment, because `egui::Context::end_pass` writes its own AccessKit
+//! update after the pass and would overwrite ours; `accesskit`'s module doc
+//! carries the two source citations for why that is the only seam that works.
+//!
+//! What still does not work, so nobody reads the above as more than it is: no
+//! live window has been run against a real screen reader, and an incoming
+//! `AccessKitActionRequest` is still counted by name in
+//! [`input::EventTranslator::untranslated`] and dropped. Routing one into
+//! effect is a driver-input concern (T030's boundary), not this line's.
 //!
 //! egui's `Ui` layout is never used. No egui type appears on Petra's authoring
 //! surface, and the `petra-boundary` gate walks `gorgon-petra`'s resolved
@@ -19,8 +28,10 @@
 
 pub mod invariant;
 
+pub mod accesskit;
 pub mod host;
 pub mod image;
+pub mod inject;
 pub mod input;
 pub mod paint;
 pub mod text;

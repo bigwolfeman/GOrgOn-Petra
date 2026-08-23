@@ -13,7 +13,13 @@ egui = "0.36.1"
 gorgon-petra = { path = "../petra" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# `accesskit` enables `egui-winit/accesskit`, the platform-adapter feature
+# that actually publishes an `accesskit::TreeUpdate` to the OS screen
+# reader. `egui-winit` is native-only (see eframe's own target split), so
+# this is a no-op on wasm32 and is not requested there; wasm's AT story is
+# `web_screen_reader` (D-072), unrelated to this crate.
 eframe = { version = "0.36.1", default-features = false, features = [
+    "accesskit",
     "default_fonts",
     "wayland",
     "wgpu",

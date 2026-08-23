@@ -504,6 +504,28 @@ impl<A: App> Host<A> {
             ctx.request_repaint();
         }
 
+        // The screen reader hears the frame that was just painted, not the
+        // tree the application described (FR-027): one projection, from the
+        // placements, so a divergence between what an assistive technology
+        // announces and what a driver asserts is impossible by construction
+        // rather than by discipline.
+        //
+        // After the focus reconciliation above on purpose. `frame` was placed
+        // from the *previous* focus, so its `focused` flags describe the ring
+        // that is on screen — which is the thing a reader should announce. The
+        // `publish_focus` branch above already asks for one more frame when
+        // that ring moved, and this publishes again on that frame.
+        //
+        // `publish` self-registers its plugin, and the plugin is what makes
+        // this survive: `egui::Context::end_pass` writes its own AccessKit
+        // update — one `Role::Window` root, since Petra builds no `Ui` — and
+        // only `Plugin::output_hook` runs late enough to replace it. Assigning
+        // the field from here would be silently undone the moment a real
+        // screen reader attached and eframe turned egui's generation on.
+        if let Some(tree) = gorgon_petra::semantic::project(&frame) {
+            crate::accesskit::publish(ctx, &tree);
+        }
+
         self.schedule(ctx, &frame);
         self.last_frame = Some(frame);
         // Input for the *next* pass is routed against this frame, so the
@@ -1444,6 +1466,46 @@ mod tests {
             "focus did not come back out of a closed modal"
         );
         assert_eq!(host.focus().active_scope(), None);
+    }
+
+    /// A screen reader must hear the frame the host just painted, through the
+    /// host's own pass — not through a projection some other caller remembers
+    /// to run.
+    ///
+    /// This is the assertion the crate doc's claim rests on, and it is written
+    /// against the configuration where the wiring can fail: `enable_accesskit`
+    /// on, so `egui::Context::end_pass` writes its own one-node
+    /// `Role::Window` tree. Asserting `is_some()` would pass on that tree.
+    /// The assertion is therefore on a Petra node, by id and by label.
+    #[test]
+    fn a_host_pass_publishes_the_painted_frame_to_accesskit() {
+        let ctx = headless();
+        ctx.enable_accesskit();
+        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+
+        let mut out = ctx.run_ui(RawInput::default(), |_| host.pass(&ctx));
+        // `epaint` asserts on drop that a texture delta was handled; this test
+        // reads `platform_output` only, so the delta is cleared rather than
+        // silently dropped.
+        out.textures_delta.clear();
+
+        let update = out
+            .platform_output
+            .accesskit_update
+            .expect("accesskit is enabled, so end_pass always writes something");
+        let wanted = egui::Id::new("/root/run").accesskit_id();
+        let (_, node) = update
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == wanted)
+            .unwrap_or_else(|| {
+                panic!(
+                    "the host published no node for /root/run — {} node(s) on \
+                     the output, which is egui's own tree and not Petra's",
+                    update.nodes.len()
+                )
+            });
+        assert_eq!(node.label(), Some("Run"));
     }
 
     /// The frame the host paints must show where focus is. The ring is drawn
