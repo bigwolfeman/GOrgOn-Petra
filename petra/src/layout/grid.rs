@@ -269,8 +269,20 @@ impl Cells {
         Some(Rect::new(
             x,
             y,
-            span_extent(&self.col_w, self.col_spacing, run.col, run.ncols),
-            span_extent(&self.row_h, self.row_spacing, run.row, run.nrows),
+            seam_extent(
+                &self.col_x,
+                &self.col_w,
+                self.col_spacing,
+                run.col,
+                run.ncols,
+            ),
+            seam_extent(
+                &self.row_y,
+                &self.row_h,
+                self.row_spacing,
+                run.row,
+                run.nrows,
+            ),
         ))
     }
 }
@@ -418,6 +430,47 @@ impl Flow {
             ncols: 1,
             nrows: 1,
         })
+    }
+}
+
+/// A placed run's extent, taken from the seam its neighbour will start at.
+///
+/// [`span_extent`] sums a run's own tracks left to right; [`cumulative_offsets`]
+/// accumulates absolutely across the whole axis. Both reach the same
+/// mathematical boundary, by different associations, and `f32` does not agree
+/// that those are one number. For a single-cell child that never mattered —
+/// its far edge *is* the next track's origin, the same float from the same
+/// addition — which is exactly the guarantee `cumulative_offsets`' own doc
+/// comment says it exists to provide.
+///
+/// Spanning broke it. Measured, 2026-08-22, 401x307 at scale 1.0 over 96
+/// weighted quarter-hour rows: a run of 8 starting at row 41 ended at
+/// `138.41664 + 24.083332 = 162.49997`, while `cumulative_offsets` put row 49
+/// at `162.50002`. A 4.6e-05 disagreement, except 162.5 is a rounding
+/// boundary, so `crate::frame::rounding` sent the two sides of one seam to
+/// device rows 162 and 163 — a visible one-pixel gap between two abutting
+/// quarter-hours, at scale 1.0, on a display with no fractional scaling at
+/// all. `gorgon/petra/tests/layout_matrix.rs`'s
+/// `a_week_view_lays_out_from_one_grid` is what surfaced it.
+///
+/// So a run that has a neighbour reads its far edge back out of the offsets
+/// the neighbour will use, and the seam is bit-identical by construction
+/// rather than by luck. A run ending on the last track has no neighbour to
+/// disagree with and falls back to the sum.
+///
+/// [`span_extent`] is unchanged and still correct for **measurement**, where
+/// there is no seam and no offsets array yet.
+fn seam_extent(
+    offsets: &[f32],
+    track_extents: &[f32],
+    spacing: f32,
+    start: usize,
+    count: usize,
+) -> f32 {
+    let end = start.saturating_add(count.max(1));
+    match (offsets.get(start), offsets.get(end)) {
+        (Some(&lead), Some(&next)) => next - spacing.max(0.0) - lead,
+        _ => span_extent(track_extents, spacing, start, count),
     }
 }
 
@@ -1022,6 +1075,52 @@ mod tests {
     /// the run, so nothing outside the span can claim it, and a child that
     /// negotiated against 80 would leave six units of its own cell unused
     /// with no way to find out.
+    /// A spanning run's far edge is the *same float* its neighbour starts at.
+    ///
+    /// The regression this pins was real and visible. `span_extent` sums a
+    /// run's own tracks; `cumulative_offsets` accumulates absolutely across the
+    /// axis. Exact arithmetic calls those one number and `f32` does not, and
+    /// when the disagreement straddles a rounding boundary the two sides of one
+    /// seam land on different device pixels.
+    ///
+    /// The numbers here are the measured case, not an invented one: 96 weighted
+    /// quarter-hour rows in 289 units at scale 1.0, a run of 8 rows starting at
+    /// row 41. Summing gave `138.41664 + 24.083332 = 162.49997`; the offsets put
+    /// row 49 at `162.50002`; 162.5 is a rounding boundary, so the block ended
+    /// on device row 162 and its neighbour began on 163.
+    ///
+    /// `assert_eq!` on `f32` is deliberate. "Close enough" is exactly the bug —
+    /// the whole point is that the seam is one number, not two near ones.
+    #[test]
+    fn a_spanning_run_ends_on_the_float_its_neighbour_begins_at() {
+        let g = ViewNode::new(NodeKind::Grid, "g")
+            .with_props(Props {
+                columns: vec![TrackSize::Fixed { value: 40.0 }],
+                rows: vec![TrackSize::Weight { weight: 1.0 }; 96],
+                row_spacing: Some(0.0),
+                align: Some(Align::Stretch),
+                ..Props::default()
+            })
+            .with_children(
+                (0..41)
+                    .map(|i| spacer(&format!("pre{i}")))
+                    .chain([spanning("block", 1, 8), spacer("after")])
+                    .collect::<Vec<_>>(),
+            );
+        let rects = child_rects(&g, Rect::new(0.0, 0.0, 40.0, 289.0));
+        let block = rects[41];
+        let after = rects[42];
+        assert_eq!(
+            block.bottom(),
+            after.y,
+            "the seam must be one float: block ends {}, neighbour starts {}, \
+             delta {:e}",
+            block.bottom(),
+            after.y,
+            after.y - block.bottom()
+        );
+    }
+
     #[test]
     fn a_spanning_child_is_offered_the_gap_between_the_tracks_it_covers() {
         let g = fixed_grid(3, 40.0, 6.0, vec![spanning("wide", 2, 1), spacer("c")]);
