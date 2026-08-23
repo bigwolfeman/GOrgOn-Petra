@@ -1075,6 +1075,36 @@ mod tests {
     /// the run, so nothing outside the span can claim it, and a child that
     /// negotiated against 80 would leave six units of its own cell unused
     /// with no way to find out.
+    /// The last-track fallback, which nothing else exercises.
+    ///
+    /// `seam_extent` reads a run's far edge out of the neighbour's offset, and
+    /// a run ending on the last track has no neighbour, so it falls back to
+    /// summing. That branch is the one the week-view sweep cannot reach —
+    /// nothing sits below or right of a run that ends the axis, so no seam
+    /// assertion ever compares across it (leaf C3 named this gap rather than
+    /// glossing it, and this test is the answer).
+    ///
+    /// Two claims, because the fallback could be wrong in two directions: the
+    /// run must cover its tracks *and their interior gaps*, and it must end
+    /// exactly where the grid's content ends rather than overshooting into
+    /// space no track owns.
+    #[test]
+    fn a_run_ending_on_the_last_track_falls_back_and_still_covers_its_tracks() {
+        // Three 40-unit columns, 6 apart: content spans 40*3 + 6*2 = 132.
+        let g = fixed_grid(3, 40.0, 6.0, vec![spacer("a"), spanning("tail", 2, 1)]);
+        let rects = child_rects(&g, Rect::new(0.0, 0.0, 132.0, 80.0));
+        let tail = rects[1];
+        assert_eq!(
+            tail.w, 86.0,
+            "columns 1-2 plus the one interior gap: 40 + 6 + 40"
+        );
+        assert_eq!(
+            tail.right(),
+            132.0,
+            "the run ends where the grid's content ends, not past it"
+        );
+    }
+
     /// A spanning run's far edge is the *same float* its neighbour starts at.
     ///
     /// The regression this pins was real and visible. `span_extent` sums a

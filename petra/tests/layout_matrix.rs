@@ -59,8 +59,8 @@ use gorgon_petra::layout::LayoutState;
 use gorgon_petra::testing::{GeneratedRows, Harness, MonoContent, validated};
 use gorgon_petra::token::ThemeMode;
 use gorgon_petra::tree::{
-    Anchor, AxisConstraint, ClampRule, Constraints, Key, KeyPath, Layer, NodeKind, Props, Registry,
-    TextWrap, TrackSize, ViewNode, validate,
+    Anchor, AxisConstraint, ClampRule, Constraints, GridSpan, Key, KeyPath, Layer, NodeKind, Props,
+    Registry, TextWrap, TrackSize, ViewNode, validate,
 };
 use proptest::prelude::*;
 
@@ -1624,6 +1624,936 @@ fn abutting_grid_cells_share_a_device_edge_from_a_shifted_origin() {
                 db.x,
                 a.rect.right(),
                 b.rect.x
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SC-014 / FR-061: the week view
+// ---------------------------------------------------------------------------
+
+/// Days across the week.
+const WEEK_DAYS: usize = 7;
+/// Columns inside one day. Two, because the whole difficulty of a week view is
+/// what it does when two things run at once: the second one has to sit
+/// *beside* the first, not on top of it.
+const DAY_LANES: usize = 2;
+/// The hour gutter, plus every day's lanes.
+const WEEK_COLS: usize = 1 + WEEK_DAYS * DAY_LANES;
+/// Quarter-hour row tracks in one day. FR-061's own sentence: "an event
+/// occupying four of ninety-six row tracks".
+const DAY_SLOTS: usize = 96;
+/// Row tracks: the day-name header, then the time axis.
+const WEEK_ROWS: usize = 1 + DAY_SLOTS;
+/// Quarter-hour slots in an hour, and so the row span of an hour label.
+const SLOTS_PER_HOUR: usize = 4;
+/// Declared height of the day-name header row.
+const WEEK_HEADER_H: f32 = 18.0;
+/// Declared width of the hour gutter column.
+const WEEK_GUTTER_W: f32 = 34.0;
+
+/// Day names, left to right.
+const DAY_NAMES: [&str; WEEK_DAYS] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+/// One entry in a lane's chain: what is scheduled, and how many quarter-hour
+/// slots it takes.
+type Run = (&'static str, usize);
+
+/// One entry in a day's plan.
+enum Segment {
+    /// Nothing runs beside this one, so it takes the day's whole width — a
+    /// two-column span.
+    Whole(&'static str, usize),
+    /// Two things run at once. Each lane carries its own chain over the same
+    /// stretch of the day, and the two chains need not change at the same
+    /// moment: that is what makes a *partial* overlap expressible.
+    Concurrent(&'static [Run], &'static [Run]),
+}
+
+impl Segment {
+    /// Quarter-hour slots this segment covers.
+    fn slots(&self) -> usize {
+        match self {
+            Self::Whole(_, slots) => *slots,
+            Self::Concurrent(left, right) => {
+                let lhs: usize = left.iter().map(|run| run.1).sum();
+                let rhs: usize = right.iter().map(|run| run.1).sum();
+                assert_eq!(
+                    lhs, rhs,
+                    "a concurrent region's two lanes must cover the same slots, \
+                     or the day stops tiling its own column"
+                );
+                lhs
+            }
+        }
+    }
+}
+
+/// A time-blocked Monday, with one pair that runs at exactly the same time.
+const MONDAY: &[Segment] = &[
+    Segment::Whole("Sleep", 24),
+    Segment::Whole("Morning routine", 6),
+    Segment::Whole("Commute", 2),
+    // Fifteen minutes: one row track, and the unit every other extent in this
+    // fixture is judged against.
+    Segment::Whole("Standup", 1),
+    Segment::Whole("Deep work: kernel", 8),
+    // Ninety minutes over six of ninety-six row tracks — FR-061's example.
+    Segment::Whole("Design review", 6),
+    Segment::Whole("Lunch", 5),
+    Segment::Concurrent(&[("Interview loop", 4)], &[("Build triage", 4)]),
+    Segment::Whole("Paperwork", 4),
+    Segment::Whole("Deep work: tests", 8),
+    Segment::Whole("Commute home", 2),
+    Segment::Whole("Dinner", 6),
+    Segment::Whole("Reading", 6),
+    Segment::Whole("Sleep", 14),
+];
+
+/// A Tuesday whose morning runs two lanes that change at different moments,
+/// so every overlap in it is a partial one.
+const TUESDAY: &[Segment] = &[
+    Segment::Whole("Sleep", 26),
+    Segment::Whole("Morning routine", 6),
+    Segment::Concurrent(
+        &[("Spec drafting", 8), ("Pairing: petra", 8)],
+        &[("Email triage", 2), ("Vendor call", 8), ("Bug triage", 6)],
+    ),
+    Segment::Whole("Lunch", 4),
+    Segment::Whole("Deep work: seating", 12),
+    Segment::Whole("Retro", 4),
+    Segment::Whole("Errands", 6),
+    Segment::Whole("Dinner", 4),
+    Segment::Whole("Evening", 8),
+    Segment::Whole("Sleep", 10),
+];
+
+/// A Wednesday with nothing concurrent on it at all: every block takes the
+/// day's whole width.
+const WEDNESDAY: &[Segment] = &[
+    Segment::Whole("Sleep", 28),
+    Segment::Whole("Morning routine", 4),
+    Segment::Whole("Deep work: grid spans", 16),
+    Segment::Whole("Lunch", 4),
+    Segment::Whole("Office hours", 8),
+    Segment::Whole("Deep work: review", 8),
+    Segment::Whole("Wrap-up", 2),
+    Segment::Whole("Evening", 16),
+    Segment::Whole("Sleep", 10),
+];
+
+/// A Thursday whose concurrent region puts one block beside two.
+const THURSDAY: &[Segment] = &[
+    Segment::Whole("Sleep", 26),
+    Segment::Whole("Morning routine", 6),
+    Segment::Whole("Standup", 1),
+    Segment::Whole("Deep work: layout", 11),
+    Segment::Concurrent(
+        &[("Release call", 4)],
+        &[("Doc pass", 2), ("Metrics review", 2)],
+    ),
+    Segment::Whole("Lunch", 4),
+    Segment::Whole("Deep work: petrify", 16),
+    Segment::Whole("Commute home", 2),
+    Segment::Whole("Evening", 16),
+    Segment::Whole("Sleep", 10),
+];
+
+/// A plain Friday.
+const FRIDAY: &[Segment] = &[
+    Segment::Whole("Sleep", 26),
+    Segment::Whole("Morning routine", 6),
+    Segment::Whole("Deep work: gates", 16),
+    Segment::Whole("Lunch", 4),
+    Segment::Whole("Demo", 4),
+    Segment::Whole("One-on-ones", 8),
+    Segment::Whole("Week review", 4),
+    Segment::Whole("Evening", 18),
+    Segment::Whole("Sleep", 10),
+];
+
+/// A Saturday, which starts later and runs longer blocks.
+const SATURDAY: &[Segment] = &[
+    Segment::Whole("Sleep", 32),
+    Segment::Whole("Long run", 8),
+    Segment::Whole("Chores", 8),
+    Segment::Whole("Lunch", 4),
+    Segment::Whole("Workshop", 12),
+    Segment::Whole("Dinner with friends", 12),
+    Segment::Whole("Evening", 10),
+    Segment::Whole("Sleep", 10),
+];
+
+/// A Sunday held by one all-day block: a span over every row track the grid
+/// has, and over both of the day's lanes.
+const SUNDAY: &[Segment] = &[Segment::Whole("Offsite: annual planning", DAY_SLOTS)];
+
+/// The week, left to right.
+const WEEK: [&[Segment]; WEEK_DAYS] = [
+    MONDAY, TUESDAY, WEDNESDAY, THURSDAY, FRIDAY, SATURDAY, SUNDAY,
+];
+
+/// What one cell of the week grid is. The role follows from where the cell
+/// sits, and it decides which assertions apply to it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CellRole {
+    /// The corner above the gutter and left of the day names.
+    Corner,
+    /// A day name, spanning that day's lanes.
+    DayHeader,
+    /// An hour on the time axis, spanning that hour's quarter-hour rows.
+    HourLabel,
+    /// A scheduled block.
+    Event,
+}
+
+/// One cell of the week grid: what it says, where it was declared to sit, and
+/// how many tracks it was declared to cover.
+///
+/// The declared seat is what every assertion is judged against, and it is
+/// never read back from the frame. A frame that seated a block in a cell the
+/// author did not write is exactly the bug these assertions exist to catch, so
+/// the expectation has to come from the declaration.
+#[derive(Clone, Debug)]
+struct WeekCell {
+    /// Identity key, and so the tail of the placement id.
+    key: String,
+    /// The text the cell carries.
+    label: String,
+    /// Which of the four kinds of cell this is.
+    role: CellRole,
+    /// The day band the cell sits in, when it sits in one.
+    day: Option<usize>,
+    /// The lane inside that day, when the cell occupies exactly one of them.
+    /// `None` for a block that takes the day's whole width.
+    lane: Option<usize>,
+    /// Declared leading column.
+    col: usize,
+    /// Declared leading row. Row zero is the day-name header.
+    row: usize,
+    /// Declared column span.
+    ncols: usize,
+    /// Declared row span.
+    nrows: usize,
+}
+
+impl WeekCell {
+    /// First quarter-hour slot, counting from midnight.
+    fn slot(&self) -> usize {
+        self.row.saturating_sub(1)
+    }
+
+    /// One past the last quarter-hour slot.
+    fn slot_end(&self) -> usize {
+        self.slot() + self.nrows
+    }
+}
+
+/// One scheduled block. A block with no lane takes the day's whole width.
+fn event_cell(day: usize, lane: Option<usize>, slot: usize, slots: usize, label: &str) -> WeekCell {
+    let col = 1 + day * DAY_LANES + lane.unwrap_or(0);
+    WeekCell {
+        key: format!("e{col}-{}", slot + 1),
+        label: label.to_owned(),
+        role: CellRole::Event,
+        day: Some(day),
+        lane,
+        col,
+        row: slot + 1,
+        ncols: if lane.is_some() { 1 } else { DAY_LANES },
+        nrows: slots,
+    }
+}
+
+/// The week's cells, in the order the grid reads them: row-major by declared
+/// seat.
+///
+/// The plan tiles the grid exactly — every cell of every row is covered by
+/// some block's run. That is not decoration, it is what Petra's grid asks for.
+/// Seating is a forward-only cursor (`layout::grid`'s `Flow::seat`) with no
+/// cell addresses in the tree at all, so a hole in the tiling could only be
+/// crossed by declaring something to fill it, and a something-to-fill-it is
+/// the spacer-based positioning SC-014 refuses. A week with every minute
+/// allocated is a time-blocked week, which is what this fixture is; a week
+/// view with a genuinely empty afternoon needs a container that places
+/// children at declared rects, which this spec names as deferred rather than
+/// missing.
+fn week_cells() -> Vec<WeekCell> {
+    let mut cells = vec![WeekCell {
+        key: "corner".to_owned(),
+        label: "wk 34".to_owned(),
+        role: CellRole::Corner,
+        day: None,
+        lane: None,
+        col: 0,
+        row: 0,
+        ncols: 1,
+        nrows: 1,
+    }];
+    for (day, name) in DAY_NAMES.iter().enumerate() {
+        cells.push(WeekCell {
+            key: format!("day-{day}"),
+            label: (*name).to_owned(),
+            role: CellRole::DayHeader,
+            day: Some(day),
+            lane: None,
+            col: 1 + day * DAY_LANES,
+            row: 0,
+            ncols: DAY_LANES,
+            nrows: 1,
+        });
+    }
+    for hour in 0..DAY_SLOTS / SLOTS_PER_HOUR {
+        cells.push(WeekCell {
+            key: format!("hour-{hour:02}"),
+            label: format!("{hour:02}:00"),
+            role: CellRole::HourLabel,
+            day: None,
+            lane: None,
+            col: 0,
+            row: 1 + hour * SLOTS_PER_HOUR,
+            ncols: 1,
+            nrows: SLOTS_PER_HOUR,
+        });
+    }
+    for (day, plan) in WEEK.iter().enumerate() {
+        let mut slot = 0;
+        for segment in plan.iter() {
+            match segment {
+                Segment::Whole(label, slots) => {
+                    cells.push(event_cell(day, None, slot, *slots, label));
+                }
+                Segment::Concurrent(left, right) => {
+                    for (lane, chain) in [(0, left), (1, right)] {
+                        let mut at = slot;
+                        for (label, slots) in chain.iter() {
+                            cells.push(event_cell(day, Some(lane), at, *slots, label));
+                            at += slots;
+                        }
+                    }
+                }
+            }
+            slot += segment.slots();
+        }
+        assert_eq!(
+            slot, DAY_SLOTS,
+            "{}'s plan covers {slot} quarter-hour slots, not {DAY_SLOTS}; the \
+             week view tiles its grid exactly and a short day leaves a hole no \
+             flow-seated grid can step over",
+            DAY_NAMES[day]
+        );
+    }
+    cells.sort_by_key(|cell| (cell.row, cell.col));
+    cells
+}
+
+/// The week view: one grid, and text in it. No stack, no spacer, no nesting.
+///
+/// Columns are the hour gutter and then two weighted lanes per day, so the
+/// days share the width the window has. Rows are the day-name header and then
+/// ninety-six weighted quarter-hour tracks, so the day fills the height the
+/// window has and an event's extent is its duration times a track.
+fn week_view(cells: &[WeekCell], column_spacing: f32) -> ViewNode {
+    let mut columns = Vec::with_capacity(WEEK_COLS);
+    columns.push(TrackSize::Fixed {
+        value: WEEK_GUTTER_W,
+    });
+    columns.resize(WEEK_COLS, TrackSize::Weight { weight: 1.0 });
+    let mut rows = Vec::with_capacity(WEEK_ROWS);
+    rows.push(TrackSize::Fixed {
+        value: WEEK_HEADER_H,
+    });
+    rows.resize(WEEK_ROWS, TrackSize::Weight { weight: 1.0 });
+    let mut grid = ViewNode::new(NodeKind::Grid, "week").with_props(Props {
+        columns,
+        rows,
+        column_spacing: Some(column_spacing),
+        // The time axis is continuous: 09:00 ends where 09:15 begins. A gap
+        // between row tracks would be a gap in *time*, so the row gap is the
+        // one number in this fixture that is not swept.
+        row_spacing: Some(0.0),
+        align: Some(Align::Stretch),
+        ..Props::default()
+    });
+    for cell in cells {
+        grid = grid.child(
+            ViewNode::new(NodeKind::Text, Key::new(cell.key.clone())).with_props(Props {
+                text: Some(cell.label.clone()),
+                wrap: Some(TextWrap::Clip),
+                span: Some(GridSpan {
+                    columns: cell.ncols,
+                    rows: cell.nrows,
+                }),
+                ..Props::default()
+            }),
+        );
+    }
+    grid
+}
+
+/// Slack for an extent a grid summed track by track, compared against the same
+/// quantity written as one multiplication.
+///
+/// `layout::grid`'s `span_extent` adds a run's track extents left to right, so
+/// a ninety-six track run is ninety-six `f32` additions, while `slots * unit`
+/// is one multiplication. `f32` carries about seven digits and the two
+/// arithmetics need not agree in the last of them. Four parts in a hundred
+/// thousand per track is roughly two hundred times smaller than the
+/// quarter-hour track a real duration bug would move an event by.
+fn slot_slack(slots: usize, unit: f32) -> f32 {
+    EPS + 4e-5 * slots as f32 * unit.abs()
+}
+
+/// SC-014: a week view — events occupying track ranges, overlapping events in
+/// adjacent columns — lays out from one grid with zero spacer-based
+/// positioning, at every window size and display scale in the US1 matrix.
+///
+/// This is the surface FR-061 was argued from, so the test is written to be
+/// unsatisfiable by the fake FR-061 replaces. Without a row span, a ninety
+/// minute event over ninety-six quarter-hour tracks can only be positioned by
+/// computed `Spacer` siblings, and
+/// `.agents/notes/implemented/feature/2026-08-22-petra-insets-and-padding-prop.md`
+/// records why that degrades rather than merely being ugly: a rigid spacer and
+/// a text label land in the same priority group in `stack::distribute`, the
+/// label is usually the more flexible of the two, and `concede`'s
+/// `FlexibleSlack` step therefore takes from the label — the content — before
+/// it touches the spacer. So the tree is walked here, not trusted: the fixture
+/// declares one grid and nothing else, and a spacer appearing in it fails the
+/// test before a single rect is looked at.
+///
+/// What the frame is then held to, in this order — the pair claims first,
+/// because they are SC-014's headline and because a failure there is the one
+/// that names two events rather than a coordinate:
+///
+/// * one container in the frame, and it is the grid;
+/// * no two cells share a unit of the surface, in logical units or in device
+///   pixels;
+/// * two events declared to run at once cover exactly the time they share, and
+///   sit in adjacent columns rather than on top of each other;
+/// * an event's extent is its duration: `n` quarter-hour tracks tall, so the
+///   ninety-minute block is six times the fifteen-minute one and three times
+///   the thirty-minute one;
+/// * the time axis is continuous — cells that start on a row share a top edge,
+///   and consecutive blocks in a column hand off with no seam, in logical
+///   units and after device rounding;
+/// * the day axis runs left to right, each event stays inside its day's band,
+///   and a block with nothing beside it covers that band's whole width.
+///
+/// What it does not cover: a day with a genuinely empty afternoon. Petra's
+/// grid seats by a forward-only cursor and takes no cell addresses, so an
+/// empty cell in the middle of a row is unreachable without a filler child —
+/// see [`week_cells`]. The spec names the container that would fix it
+/// (children at declared rects) as deferred, not missing.
+#[test]
+fn a_week_view_lays_out_from_one_grid() {
+    let cells = week_cells();
+
+    // --- The fixture's own shape ------------------------------------------
+    // Checked before anything is laid out. "A ninety-minute event is not the
+    // height of a thirty-minute one" is worth nothing if the fixture quietly
+    // stopped containing either of them.
+    let events: Vec<usize> = cells
+        .iter()
+        .enumerate()
+        .filter(|(_, cell)| cell.role == CellRole::Event)
+        .map(|(i, _)| i)
+        .collect();
+    let quarter_at = *events
+        .iter()
+        .find(|&&i| cells[i].nrows == 1)
+        .expect("the fixture schedules a fifteen-minute block: it is the unit");
+    let ninety_at = *events
+        .iter()
+        .find(|&&i| cells[i].nrows == 6)
+        .expect("the fixture schedules a ninety-minute block: six of ninety-six row tracks, FR-061's own example");
+    let thirty_at = *events
+        .iter()
+        .find(|&&i| cells[i].nrows == 2)
+        .expect("the fixture schedules a thirty-minute block, the one a ninety-minute block is measured against");
+    assert!(
+        events.iter().any(|&i| cells[i].nrows == DAY_SLOTS),
+        "the fixture must schedule one all-day block, so a span that covers \
+         every row track the grid has is exercised"
+    );
+    assert!(
+        events.iter().any(|&i| cells[i].row == 1),
+        "the fixture must schedule a block that starts on the first time track"
+    );
+    assert!(
+        events.iter().any(|&i| cells[i].slot_end() == DAY_SLOTS),
+        "the fixture must schedule a block that ends on the last time track"
+    );
+
+    // Pairs that run at once. They are the reason a day has two lanes, and the
+    // reason SC-014 says "overlapping events in adjacent columns". The tuple
+    // is ordered (left lane, right lane), not by declaration order: a lane's
+    // chains change at different moments, so the later-declared block of a
+    // pair is not always the right-hand one.
+    let mut concurrent: Vec<(usize, usize)> = Vec::new();
+    for (n, &i) in events.iter().enumerate() {
+        for &j in &events[n + 1..] {
+            let (a, b) = (&cells[i], &cells[j]);
+            if a.day != b.day || a.lane.is_none() || b.lane.is_none() || a.lane == b.lane {
+                continue;
+            }
+            if a.slot() < b.slot_end() && b.slot() < a.slot_end() {
+                concurrent.push(if a.lane == Some(0) { (i, j) } else { (j, i) });
+            }
+        }
+    }
+    assert!(
+        concurrent
+            .iter()
+            .any(|&(a, b)| cells[a].row == cells[b].row && cells[a].nrows == cells[b].nrows),
+        "the fixture must schedule one pair that runs at exactly the same time"
+    );
+    assert!(
+        concurrent
+            .iter()
+            .any(|&(a, b)| cells[a].row != cells[b].row || cells[a].nrows != cells[b].nrows),
+        "the fixture must schedule one pair that runs at overlapping but not \
+         identical times: a partial overlap is the case a whole-cell fake gets \
+         right by accident"
+    );
+
+    // --- One grid, and no spacer in it ------------------------------------
+    // The tree, not the frame: a spacer-positioned fake still petrifies to
+    // rects that tile, so the refusal has to be made where the fake would be
+    // written.
+    fn tally(node: &ViewNode, out: &mut BTreeMap<&'static str, usize>) {
+        *out.entry(node.kind.as_str()).or_default() += 1;
+        for child in &node.children {
+            tally(child, out);
+        }
+    }
+    let declared = week_view(&cells, 0.0);
+    let mut kinds = BTreeMap::new();
+    tally(&declared, &mut kinds);
+    assert_eq!(
+        kinds.get("spacer"),
+        None,
+        "a spacer reached the week view. SC-014 asks for zero spacer-based \
+         positioning, and FR-005's concession order is why: a rigid spacer and \
+         a text label share a priority group, and `concede` takes from the \
+         label first"
+    );
+    assert_eq!(
+        kinds.get("grid").copied(),
+        Some(1),
+        "the week view lays out from one grid, and this tree declares {kinds:?}"
+    );
+    assert_eq!(
+        kinds.get("text").copied(),
+        Some(cells.len()),
+        "every cell of the week is one text node, and this tree declares \
+         {kinds:?} for {} cells",
+        cells.len()
+    );
+    assert_eq!(
+        kinds.len(),
+        2,
+        "the week view is a grid of text and nothing else; this tree also \
+         declares {kinds:?}"
+    );
+
+    // --- The sweep ---------------------------------------------------------
+    assert!(
+        SCALES.contains(&1.25) && SCALES.contains(&1.5) && SCALES.contains(&1.75),
+        "SC-014 is a claim at every display scale in the US1 matrix, and \
+         SCALES no longer carries the fractional ones (1.25, 1.5, 1.75) that \
+         make it a claim about anything"
+    );
+    let mut rotation = 0usize;
+    for &viewport in SIZES {
+        for &factor in SCALES {
+            // Column spacing is sampled by rotation over the sweep, the way
+            // the matrix samples its own spacings. Every gap meets every size
+            // and every scale somewhere.
+            let column_spacing = SPACINGS[rotation % SPACINGS.len()];
+            rotation += 1;
+            let where_ = format!(
+                "{}x{} @{factor} gap={column_spacing}",
+                viewport.w, viewport.h
+            );
+            let scale = Scale::new(factor).expect("the matrix scales are positive and finite");
+            let node = week_view(&cells, column_spacing);
+            let mut harness = Harness::new();
+            harness.scale = scale;
+            let frame = petrify(
+                1,
+                validated(&node),
+                &mut harness.ctx(),
+                Viewport::new(viewport, ThemeMode::Dark).with_scale(scale),
+                TransitionActivity::default(),
+            );
+
+            // Placements arrive in declaration order, one per cell, so a cell
+            // and its placement pair up by index — after that is checked by
+            // id rather than assumed.
+            assert_eq!(
+                frame.placements.len(),
+                cells.len() + 1,
+                "{where_}: {} cells petrified to {} placements; the grid and \
+                 one placement per cell is {}",
+                cells.len(),
+                frame.placements.len(),
+                cells.len() + 1
+            );
+            for (i, cell) in cells.iter().enumerate() {
+                assert_eq!(
+                    frame.placements[i + 1].id,
+                    format!("/week/{}", cell.key),
+                    "{where_}: placement {} is not {}'s; the frame reordered \
+                     the grid's children",
+                    i + 1,
+                    cell.key
+                );
+            }
+            let rect = |i: usize| frame.placements[i + 1].rect;
+
+            // --- W1. One grid, in the frame as well as in the tree ---------
+            let containers: Vec<&Placement> = frame
+                .placements
+                .iter()
+                .filter(|p| p.kind.is_container())
+                .collect();
+            assert_eq!(
+                containers.len(),
+                1,
+                "{where_}: the week view must petrify to exactly one \
+                 container, and this frame has {}",
+                containers.len()
+            );
+            assert_eq!(
+                containers[0].kind,
+                NodeKind::Grid,
+                "{where_}: the one container must be the grid, and it is a \
+                 {:?}",
+                containers[0].kind
+            );
+            let grid_rect = frame.placements[0].rect;
+
+            // --- W2. Nothing draws on top of anything else -----------------
+            for (i, cell) in cells.iter().enumerate() {
+                assert!(
+                    contains(grid_rect, rect(i)),
+                    "{where_}: {} ({}) at {:?} is outside the week grid at \
+                     {grid_rect:?}",
+                    cell.key,
+                    cell.label,
+                    rect(i)
+                );
+            }
+            for (i, a) in cells.iter().enumerate() {
+                for (j, b) in cells.iter().enumerate().skip(i + 1) {
+                    assert!(
+                        !rect(i).overlaps(rect(j)),
+                        "{where_}: {} ({}) at {:?} and {} ({}) at {:?} \
+                         overlap; two cells of one grid never share a unit of \
+                         the surface",
+                        a.key,
+                        a.label,
+                        rect(i),
+                        b.key,
+                        b.label,
+                        rect(j)
+                    );
+                    assert!(
+                        !device_overlaps(round_rect(rect(i), scale), round_rect(rect(j), scale)),
+                        "{where_}: {} ({}) and {} ({}) overlap in device \
+                         pixels at scale {factor}, though their logical rects \
+                         {:?} and {:?} do not",
+                        a.key,
+                        a.label,
+                        b.key,
+                        b.label,
+                        rect(i),
+                        rect(j)
+                    );
+                }
+            }
+
+            // The quarter-hour track, read off the frame rather than derived:
+            // a one-track span is the track's own extent, untouched.
+            let unit = rect(quarter_at).h;
+
+            // The claim C3-5 asks for, made on two named blocks rather than
+            // only through the general rule below: three times the duration is
+            // three times the extent, whatever the window and whatever the
+            // scale.
+            let (thirty, ninety) = (rect(thirty_at).h, rect(ninety_at).h);
+            assert!(
+                (ninety - 3.0 * thirty).abs() <= slot_slack(6, unit),
+                "{where_}: {} ({}) runs ninety minutes and stands {ninety} \
+                 units tall while {} ({}) runs thirty and stands {thirty}; a \
+                 ninety-minute event is three thirty-minute ones",
+                cells[ninety_at].key,
+                cells[ninety_at].label,
+                cells[thirty_at].key,
+                cells[thirty_at].label
+            );
+
+            // --- W3. Events that overlap in time sit side by side ----------
+            // SC-014's headline, claimed in both directions: the pair covers
+            // exactly the time it was declared to share, and none of the same
+            // surface. Drop either event's row span and the first half of this
+            // goes red naming both of them.
+            for &(left, right) in &concurrent {
+                let (a, b) = (&cells[left], &cells[right]);
+                let (ra, rb) = (rect(left), rect(right));
+                let shared = a.slot_end().min(b.slot_end()) - a.slot().max(b.slot());
+                let want = shared as f32 * unit;
+                let seen = ra.bottom().min(rb.bottom()) - ra.y.max(rb.y);
+                assert!(
+                    (seen - want).abs() <= slot_slack(shared, unit),
+                    "{where_}: {} ({}) and {} ({}) overlap in time for \
+                     {shared} quarter-hour tracks, which is {want} units, but \
+                     their rects {ra:?} and {rb:?} share {seen} units of the \
+                     time axis",
+                    a.key,
+                    a.label,
+                    b.key,
+                    b.label
+                );
+                assert!(
+                    ra.right() <= rb.x + EPS,
+                    "{where_}: {} ({}) and {} ({}) overlap in time, so they \
+                     must sit in adjacent columns; {} ends at x {} and {} \
+                     starts at x {}",
+                    a.key,
+                    a.label,
+                    b.key,
+                    b.label,
+                    a.key,
+                    ra.right(),
+                    b.key,
+                    rb.x
+                );
+            }
+
+            // --- W4. An event's extent is its duration ---------------------
+            for (i, cell) in cells.iter().enumerate().filter(|(_, c)| c.row > 0) {
+                let want = cell.nrows as f32 * unit;
+                assert!(
+                    (rect(i).h - want).abs() <= slot_slack(cell.nrows, unit),
+                    "{where_}: {} ({}) covers {} quarter-hour tracks, so it \
+                     stands {want} units tall, and it is {}; a ninety-minute \
+                     event is not the height of a thirty-minute one",
+                    cell.key,
+                    cell.label,
+                    cell.nrows,
+                    rect(i).h
+                );
+            }
+            for (i, cell) in cells.iter().enumerate().filter(|(_, c)| c.row == 0) {
+                assert!(
+                    (rect(i).h - WEEK_HEADER_H).abs() <= EPS,
+                    "{where_}: the header cell {} stands {} units tall, not \
+                     the {WEEK_HEADER_H} it declares, so the time axis does \
+                     not start where it says it does",
+                    cell.label,
+                    rect(i).h
+                );
+            }
+
+            // --- W5. The time axis is one continuous run -------------------
+            let mut first_on_row: Vec<Option<(usize, f32)>> = vec![None; WEEK_ROWS];
+            for (i, cell) in cells.iter().enumerate() {
+                match first_on_row[cell.row] {
+                    None => first_on_row[cell.row] = Some((i, rect(i).y)),
+                    Some((first, y)) => assert_eq!(
+                        rect(i).y,
+                        y,
+                        "{where_}: {} ({}) and {} ({}) both start on row {}, \
+                         so they share a top edge to the last bit of the \
+                         float; they are at y {} and y {y}",
+                        cell.key,
+                        cell.label,
+                        cells[first].key,
+                        cells[first].label,
+                        cell.row,
+                        rect(i).y
+                    ),
+                }
+            }
+            for col in 0..WEEK_COLS {
+                let chain: Vec<usize> = cells
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, c)| c.row > 0 && c.col <= col && col < c.col + c.ncols)
+                    .map(|(i, _)| i)
+                    .collect();
+                for pair in chain.windows(2) {
+                    let (a, b) = (&cells[pair[0]], &cells[pair[1]]);
+                    assert_eq!(
+                        a.row + a.nrows,
+                        b.row,
+                        "{where_}: the fixture's column {col} runs {} ({}) \
+                         into {} ({}) with a hole between them; a flow-seated \
+                         grid cannot step over one",
+                        a.key,
+                        a.label,
+                        b.key,
+                        b.label
+                    );
+                    let (ra, rb) = (rect(pair[0]), rect(pair[1]));
+                    assert_eq!(
+                        ra.bottom(),
+                        rb.y,
+                        "{where_}: {} ({}) ends at y {} and {} ({}) begins at \
+                         y {}; column {col}'s time axis has a gap in it. The \
+                         two are one number, so they are one `f32`: \
+                         `seam_extent` reads a run's far edge back out of the \
+                         offsets its neighbour starts from",
+                        a.key,
+                        a.label,
+                        ra.bottom(),
+                        b.key,
+                        b.label,
+                        rb.y
+                    );
+                    // Exact, with no tolerance, and the exactness is earned
+                    // rather than assumed. Two rects round to the same device
+                    // edge only if they are the same `f32` first: rounding is
+                    // per-coordinate, so a boundary that lands on an exact
+                    // half pixel sends a pair that disagrees in the last bit
+                    // to two different device rows.
+                    //
+                    // A single-track cell always had that, because its far
+                    // edge *is* the next track's origin — the same float from
+                    // the same addition in `cumulative_offsets`, which is what
+                    // `abutting_grid_cells_share_a_device_edge_from_a_shifted_origin`
+                    // pins. A spanning run did not, until 2026-08-22: this
+                    // test found a run of 8 rows at 401x307 @1.0 ending on
+                    // device row 162 while its neighbour began on 163, a
+                    // visible gap between two quarter-hours on a display with
+                    // no fractional scaling at all. `Cells::of` had summed the
+                    // run's own tracks with `span_extent` instead of reading
+                    // the neighbour's origin back.
+                    //
+                    // `layout::grid::seam_extent` closed it, and
+                    // `a_spanning_run_ends_on_the_float_its_neighbour_begins_at`
+                    // in that module holds the raw `f32` down at the unit
+                    // level. This assertion is the same claim at the surface
+                    // level: over the whole sweep, and after rounding. If it
+                    // ever needs a tolerance again, the tolerance is the bug.
+                    let (da, db) = (round_rect(ra, scale), round_rect(rb, scale));
+                    assert_eq!(
+                        da.bottom(),
+                        db.y,
+                        "{where_}: {} ({}) and {} ({}) abut in logical units \
+                         but land on device rows {} and {} at scale {factor}; \
+                         a seam opened between two quarter-hours",
+                        a.key,
+                        a.label,
+                        b.key,
+                        b.label,
+                        da.bottom(),
+                        db.y
+                    );
+                }
+            }
+
+            // --- W6. The day axis ------------------------------------------
+            let band: Vec<Rect> = (0..WEEK_DAYS)
+                .map(|day| {
+                    let i = cells
+                        .iter()
+                        .position(|c| c.role == CellRole::DayHeader && c.day == Some(day))
+                        .expect("every day carries a header cell");
+                    rect(i)
+                })
+                .collect();
+            for (day, b) in band.iter().enumerate().skip(1) {
+                assert!(
+                    band[day - 1].right() <= b.x + EPS,
+                    "{where_}: {} ends at x {} and {} starts at x {}; the days \
+                     run left to right and never cross",
+                    DAY_NAMES[day - 1],
+                    band[day - 1].right(),
+                    DAY_NAMES[day],
+                    b.x
+                );
+            }
+            for (i, cell) in cells
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| c.role == CellRole::Event)
+            {
+                let day = cell.day.expect("an event names the day it is on");
+                let (r, b) = (rect(i), band[day]);
+                assert!(
+                    r.x >= b.x - EPS && r.right() <= b.right() + EPS,
+                    "{where_}: {} ({}) at {r:?} is outside {}'s column band \
+                     {b:?}",
+                    cell.key,
+                    cell.label,
+                    DAY_NAMES[day]
+                );
+                match cell.lane {
+                    None => assert!(
+                        (r.x - b.x).abs() <= EPS && (r.right() - b.right()).abs() <= EPS,
+                        "{where_}: {} ({}) runs with nothing beside it, so its \
+                         two-column span covers {}'s whole band {b:?}; it \
+                         covers {r:?}",
+                        cell.key,
+                        cell.label,
+                        DAY_NAMES[day]
+                    ),
+                    Some(0) => assert!(
+                        (r.x - b.x).abs() <= EPS,
+                        "{where_}: {} ({}) is in {}'s left lane, so it starts \
+                         where the band does; the band starts at x {} and it \
+                         starts at x {}",
+                        cell.key,
+                        cell.label,
+                        DAY_NAMES[day],
+                        b.x,
+                        r.x
+                    ),
+                    Some(_) => assert!(
+                        (r.right() - b.right()).abs() <= EPS,
+                        "{where_}: {} ({}) is in {}'s right lane, so it ends \
+                         where the band does; the band ends at x {} and it \
+                         ends at x {}",
+                        cell.key,
+                        cell.label,
+                        DAY_NAMES[day],
+                        b.right(),
+                        r.right()
+                    ),
+                }
+            }
+            for (i, cell) in cells
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| c.role == CellRole::HourLabel)
+            {
+                assert!(
+                    rect(i).right() <= band[0].x + EPS,
+                    "{where_}: the hour label {} ends at x {} and {} begins at \
+                     x {}; the time axis stays left of the days",
+                    cell.label,
+                    rect(i).right(),
+                    DAY_NAMES[0],
+                    band[0].x
+                );
+            }
+
+            // --- W7. FR-006: one configuration, one digest -----------------
+            let mut again = Harness::new();
+            again.scale = scale;
+            let repeat = petrify(
+                1,
+                validated(&node),
+                &mut again.ctx(),
+                Viewport::new(viewport, ThemeMode::Dark).with_scale(scale),
+                TransitionActivity::default(),
+            );
+            assert_eq!(
+                frame.digest, repeat.digest,
+                "{where_}: the same week petrified twice to two digests"
             );
         }
     }
