@@ -325,6 +325,7 @@ fn kind_word(kind: TokenKind) -> &'static str {
         TokenKind::Typography => "typography",
         TokenKind::Motion => "motion",
         TokenKind::Shape => "shape",
+        TokenKind::Silhouette => "silhouette",
     }
 }
 
@@ -730,88 +731,17 @@ fn check_node(
         });
     }
 
+    // Every rule that turns on which kind of node this is, one named check
+    // per kind, in this order; a kind that carries no rules of its own falls
+    // through. A `collection` rule therefore has exactly one place to land,
+    // and a reader asking what a `surface` must declare finds the answer by
+    // name instead of by counting braces. Nothing here is order-sensitive
+    // across arms: a node has one kind, so at most one arm ever runs.
     match node.kind {
-        NodeKind::Custom => match node.props.custom_kind.as_deref() {
-            Some(name) if registry.has_custom_kind(name) => {}
-            other => push(Violation::UnregisteredCustomKind {
-                name: other.map(str::to_owned),
-                registered: registry
-                    .custom_kinds()
-                    .into_iter()
-                    .map(str::to_owned)
-                    .collect(),
-            }),
-        },
-        NodeKind::Grid => {
-            if node.props.columns.is_empty() {
-                push(Violation::MissingRequiredProp {
-                    kind: NodeKind::Grid,
-                    prop: "columns",
-                });
-            }
-            for track in node.props.columns.iter().chain(node.props.rows.iter()) {
-                if let TrackSize::Weight { weight } = track
-                    && !(weight.is_finite() && *weight > 0.0)
-                {
-                    push(Violation::ValueOutOfRange {
-                        prop: "columns[].weight",
-                        value: format!("{weight}"),
-                        expected: "a finite weight greater than zero",
-                    });
-                }
-            }
-        }
-        NodeKind::Collection => {
-            if node.props.total_count.is_none() {
-                push(Violation::MissingRequiredProp {
-                    kind: NodeKind::Collection,
-                    prop: "total_count",
-                });
-            }
-            if node.props.source.is_none() {
-                push(Violation::MissingRequiredProp {
-                    kind: NodeKind::Collection,
-                    prop: "source",
-                });
-            }
-            if let Some((scroll_id, scroll)) = scroll {
-                if let Some(overscan) = node.props.overscan {
-                    push(Violation::ScrollParamOwnedByAncestor {
-                        prop: "overscan",
-                        declared: format!("{overscan}"),
-                        scroll: scroll_id.to_owned(),
-                        owner: format!("{}", scroll.overscan),
-                    });
-                }
-                // An agreeing declaration is allowed: an author may spell out
-                // the axis a list runs along. Only a disagreement is refused,
-                // because only a disagreement would be overridden.
-                if let Some(axis) = node.props.axis
-                    && axis != scroll.axis
-                {
-                    push(Violation::ScrollParamOwnedByAncestor {
-                        prop: "axis",
-                        declared: Axis::as_str(axis).to_owned(),
-                        scroll: scroll_id.to_owned(),
-                        owner: scroll.axis.as_str().to_owned(),
-                    });
-                }
-            }
-        }
-        NodeKind::Surface => {
-            if node.props.layer.is_none() {
-                push(Violation::MissingRequiredProp {
-                    kind: NodeKind::Surface,
-                    prop: "layer",
-                });
-            }
-            if node.props.anchor.is_none() {
-                push(Violation::MissingRequiredProp {
-                    kind: NodeKind::Surface,
-                    prop: "anchor",
-                });
-            }
-        }
+        NodeKind::Custom => check_custom_kind(node, registry, &mut push),
+        NodeKind::Grid => check_grid_tracks(node, &mut push),
+        NodeKind::Collection => check_collection(node, scroll, &mut push),
+        NodeKind::Surface => check_surface(node, &mut push),
         _ => {}
     }
 
@@ -958,6 +888,140 @@ fn check_node(
                 }
             }
         }
+    }
+}
+
+/// A `custom` node names a kind the host has registered.
+///
+/// The whole point of the kind is that this crate has never heard of it, so
+/// the registry is the only authority there is: an unregistered name — or no
+/// name at all — is refused rather than drawn as an empty box, and the
+/// refusal carries the registered set, so an author who misspelled one can
+/// see what they were reaching for.
+fn check_custom_kind(node: &ViewNode, registry: &Registry, push: &mut impl FnMut(Violation)) {
+    match node.props.custom_kind.as_deref() {
+        Some(name) if registry.has_custom_kind(name) => {}
+        other => push(Violation::UnregisteredCustomKind {
+            name: other.map(str::to_owned),
+            registered: registry
+                .custom_kinds()
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+        }),
+    }
+}
+
+/// A `grid`'s own tracks: at least one column, and every declared weight a
+/// real ratio.
+///
+/// Columns are required because a grid with none has no tracks to seat
+/// anything against. [`check_grid_spans`] — the sibling check, run from
+/// [`walk`] because only the grid knows its own tracks — says nothing at all
+/// in that case, so this is the violation that has to name the cause. Rows
+/// are not required: they grow to fit content ([`max_row_tracks`]).
+///
+/// A `Weight` track takes a share of the leftover axis in proportion, so
+/// zero, negative, and non-finite are one bug with three spellings — a share
+/// of nothing, or of a total that is itself NaN. Both axes go through the one
+/// loop, and each carries its own prop name: a bad row weight said
+/// `columns[].weight` until this check was extracted, which sent the author
+/// to the wrong list.
+fn check_grid_tracks(node: &ViewNode, push: &mut impl FnMut(Violation)) {
+    if node.props.columns.is_empty() {
+        push(Violation::MissingRequiredProp {
+            kind: NodeKind::Grid,
+            prop: "columns",
+        });
+    }
+    let axes = [
+        ("columns[].weight", &node.props.columns),
+        ("rows[].weight", &node.props.rows),
+    ];
+    for (prop, tracks) in axes {
+        for track in tracks {
+            if let TrackSize::Weight { weight } = track
+                && !(weight.is_finite() && *weight > 0.0)
+            {
+                push(Violation::ValueOutOfRange {
+                    prop,
+                    value: format!("{weight}"),
+                    expected: "a finite weight greater than zero",
+                });
+            }
+        }
+    }
+}
+
+/// A `collection`'s required props, and the scroll parameters it may not take
+/// back from an enclosing `scroll`.
+///
+/// `total_count` and `source` are what virtualisation runs on: the count
+/// fixes the scrollable extent before a single item is built, and the source
+/// names where the items come from. Neither has a defensible default, so
+/// neither is optional.
+///
+/// `overscan` and `axis` belong to the nearest enclosing `scroll`
+/// ([`ScrollAncestor`]), which resolves them once for everything beneath it.
+/// A declaration here would be quietly overridden, so it is refused instead,
+/// and the refusal names both the value written and the value that wins.
+fn check_collection(node: &ViewNode, scroll: ScrollAncestor<'_>, push: &mut impl FnMut(Violation)) {
+    if node.props.total_count.is_none() {
+        push(Violation::MissingRequiredProp {
+            kind: NodeKind::Collection,
+            prop: "total_count",
+        });
+    }
+    if node.props.source.is_none() {
+        push(Violation::MissingRequiredProp {
+            kind: NodeKind::Collection,
+            prop: "source",
+        });
+    }
+    if let Some((scroll_id, scroll)) = scroll {
+        if let Some(overscan) = node.props.overscan {
+            push(Violation::ScrollParamOwnedByAncestor {
+                prop: "overscan",
+                declared: format!("{overscan}"),
+                scroll: scroll_id.to_owned(),
+                owner: format!("{}", scroll.overscan),
+            });
+        }
+        // An agreeing declaration is allowed: an author may spell out the
+        // axis a list runs along. Only a disagreement is refused, because
+        // only a disagreement would be overridden.
+        if let Some(axis) = node.props.axis
+            && axis != scroll.axis
+        {
+            push(Violation::ScrollParamOwnedByAncestor {
+                prop: "axis",
+                declared: Axis::as_str(axis).to_owned(),
+                scroll: scroll_id.to_owned(),
+                owner: scroll.axis.as_str().to_owned(),
+            });
+        }
+    }
+}
+
+/// A `surface` declares both of the things that place it.
+///
+/// A surface is anchored in viewport coordinates rather than laid out by its
+/// parent, so `anchor` decides where it sits and `layer` decides what it sits
+/// in front of. Defaulting either one would put a popover somewhere the
+/// author did not choose, in front of or behind something they did not
+/// choose, with nothing on screen to say a default had been taken.
+fn check_surface(node: &ViewNode, push: &mut impl FnMut(Violation)) {
+    if node.props.layer.is_none() {
+        push(Violation::MissingRequiredProp {
+            kind: NodeKind::Surface,
+            prop: "layer",
+        });
+    }
+    if node.props.anchor.is_none() {
+        push(Violation::MissingRequiredProp {
+            kind: NodeKind::Surface,
+            prop: "anchor",
+        });
     }
 }
 
@@ -1524,6 +1588,25 @@ mod tests {
             }
         );
 
+        // The other half of the surface rule. Every other surface fixture in
+        // this crate supplies `layer`, so without this case the `layer` push
+        // could be deleted and the whole suite would stay green.
+        let unlayered = ViewNode::new(NodeKind::Surface, "s").with_props(Props {
+            anchor: Some(Anchor::Node {
+                id: "/root".into(),
+                edge: Edge::Bottom,
+            }),
+            ..Props::default()
+        });
+        let err = validate(&unlayered, &Registry::new()).unwrap_err();
+        assert_eq!(
+            err.as_slice()[0].violation,
+            Violation::MissingRequiredProp {
+                kind: NodeKind::Surface,
+                prop: "layer"
+            }
+        );
+
         let ok = ViewNode::new(NodeKind::Surface, "s").with_props(Props {
             layer: Some(Layer::Popup),
             anchor: Some(Anchor::Node {
@@ -1544,15 +1627,37 @@ mod tests {
         let err = validate(&node, &Registry::new()).unwrap_err();
         assert_eq!(err.len(), 1, "{err}");
 
+        // Both axes are checked, and each names its own list. Asserting the
+        // prop rather than the variant is what makes a row weight reported as
+        // `columns[].weight` a failure here.
         let grid = ViewNode::new(NodeKind::Grid, "g").with_props(Props {
             columns: vec![TrackSize::Weight { weight: 0.0 }],
             ..Props::default()
         });
         let err = validate(&grid, &Registry::new()).unwrap_err();
-        assert!(matches!(
+        assert_eq!(
             err.as_slice()[0].violation,
-            Violation::ValueOutOfRange { .. }
-        ));
+            Violation::ValueOutOfRange {
+                prop: "columns[].weight",
+                value: "0".into(),
+                expected: "a finite weight greater than zero",
+            }
+        );
+
+        let rows = ViewNode::new(NodeKind::Grid, "g").with_props(Props {
+            columns: vec![TrackSize::Weight { weight: 1.0 }],
+            rows: vec![TrackSize::Weight { weight: f32::NAN }],
+            ..Props::default()
+        });
+        let err = validate(&rows, &Registry::new()).unwrap_err();
+        assert_eq!(
+            err.as_slice()[0].violation,
+            Violation::ValueOutOfRange {
+                prop: "rows[].weight",
+                value: "NaN".into(),
+                expected: "a finite weight greater than zero",
+            }
+        );
     }
 
     /// `spacing` and `padding` used to be range-checked here, edge by edge.

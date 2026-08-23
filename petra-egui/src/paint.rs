@@ -27,7 +27,9 @@ use egui::{Color32, Painter, Rgba, Stroke};
 use gorgon_petra::frame::{PaintContent, PetrifiedFrame, Placement, round_rect};
 use gorgon_petra::geom::{Rect as PetraRect, Scale};
 use gorgon_petra::layout::TextRequest;
-use gorgon_petra::token::{FocusRing, ThemeSnapshot, TokenName, TokenValue};
+use gorgon_petra::token::{
+    FocusRing, MotionValue, Silhouette, ThemeSnapshot, TokenName, TokenValue, TypographyValue,
+};
 
 use crate::image::ImageSources;
 use crate::text::GalleyShaper;
@@ -43,37 +45,126 @@ pub const FOREGROUND_SLOT: &str = "foreground";
 /// binds no `radius` paints square corners, the same default it had before
 /// this slot existed.
 pub const RADIUS_SLOT: &str = "radius";
+/// Token slot naming the outline family a node's background and border are
+/// drawn as. Resolves through a `shape.silhouette-*` token
+/// ([`gorgon_petra::token::Silhouette`]); a node that binds no `silhouette`
+/// paints the rect it always did.
+///
+/// This is the slot that makes [`RADIUS_SLOT`] finite. A corner radius on a
+/// square box spans a sharp square to a full disc and stops there, so a
+/// component with four figures to express — `component::status`, whose
+/// `StatusShape` has exactly four variants — had two pictures for four
+/// meanings, and at the radii the library actually bound, the two differed
+/// by 0.414 logical units: under one device pixel at scale 1.0. FR-015 says
+/// meaning must never rest on colour alone, and that shape channel was not
+/// reaching the screen.
+pub const SILHOUETTE_SLOT: &str = "silhouette";
 
 /// Every token slot this painter knows how to use. Anything else a node binds
 /// lands in [`PaintReport::unknown_slots`] rather than being dropped on the
 /// floor.
-const KNOWN_SLOTS: &[&str] = &[BACKGROUND_SLOT, BORDER_SLOT, FOREGROUND_SLOT, RADIUS_SLOT];
+const KNOWN_SLOTS: &[&str] = &[
+    BACKGROUND_SLOT,
+    BORDER_SLOT,
+    FOREGROUND_SLOT,
+    RADIUS_SLOT,
+    SILHOUETTE_SLOT,
+];
 /// Token consulted for text with no declared `foreground`.
 pub const DEFAULT_TEXT_TOKEN: &str = "text.primary";
 
-/// Resolves a token name to a colour.
+/// Resolves a token name to the value a theme assigns it.
 ///
 /// A trait rather than a concrete theme so the painter has no opinion about
-/// where colours come from: the shipped implementation reads a
+/// where tokens come from: the shipped implementation reads a
 /// [`ThemeSnapshot`], and a test can supply four colours and no theme at all.
-pub trait ColorSource {
+///
+/// [`TokenSource::value`] is the whole vocabulary — every kind a theme can
+/// assign — and every other method here is one typed reading of it. That
+/// breadth is what FR-059 means by "the painter receives the theme
+/// snapshot": a hosted painter handed one of these reads `spacing.*`,
+/// `typography.*` and `motion.*` off the same theme the rest of the frame
+/// painted with, instead of inventing a second set of numbers beside the
+/// design system. Two slices of the snapshot — colour and shape — is what
+/// this trait used to be, and a sparkline that wants to step its gridlines
+/// on the 4-unit ramp could not reach the ramp.
+///
+/// `value` is defaulted rather than required, so a fixture that only ever
+/// answered [`TokenSource::color`] keeps compiling and keeps answering
+/// exactly what it answered before: `None` to everything else.
+pub trait TokenSource {
     /// The colour for `token`, or `None` when the theme has no such colour.
+    ///
+    /// The one required method, and the only one that is not a plain reading
+    /// of [`TokenSource::value`]: a colour crosses out of Petra's linear
+    /// light into egui's gamma-encoded [`Color32`], and where that
+    /// conversion happens is a decision the source gets to make.
     fn color(&self, token: &str) -> Option<Color32>;
+
+    /// The raw value `token` resolves to, whatever kind it is, or `None`
+    /// when this source does not define it.
+    ///
+    /// Defaulted to `None` so every implementor that predates the wider
+    /// vocabulary keeps compiling. Overriding this one method is what lights
+    /// up every typed reader below, which is why [`ThemeSnapshot`] overrides
+    /// it and a four-colour fixture does not have to.
+    fn value(&self, _token: &str) -> Option<&TokenValue> {
+        None
+    }
 
     /// The corner radius, in logical units, `token` resolves to, or `None`
     /// when the source has no such shape.
+    fn radius(&self, token: &str) -> Option<f32> {
+        match self.value(token)? {
+            TokenValue::Shape(shape) => Some(shape.corner_radius),
+            _ => None,
+        }
+    }
+
+    /// The outline family `token` resolves to, or `None` when the source has
+    /// no such figure.
+    fn silhouette(&self, token: &str) -> Option<Silhouette> {
+        match self.value(token)? {
+            TokenValue::Silhouette(figure) => Some(*figure),
+            _ => None,
+        }
+    }
+
+    /// The gap, in logical units, `token` resolves to, or `None` when the
+    /// source has no such spacing.
     ///
-    /// Defaulted rather than required: every existing implementor of this
-    /// trait — including test fixtures that only ever supplied colours —
-    /// keeps compiling and keeps painting the square corners it always did.
-    /// Only [`ThemeSnapshot`], which actually carries `shape.*` tokens,
-    /// needs to override it.
-    fn radius(&self, _token: &str) -> Option<f32> {
-        None
+    /// This is the reader the old narrowing cost. A hosted painter that
+    /// wants its own geometry to sit on the same ramp as the frame around it
+    /// had no way to read the ramp, so it spelled literals — inside
+    /// `petra-egui/src`, which the `literal-style` lane does not read.
+    fn spacing(&self, token: &str) -> Option<f32> {
+        match self.value(token)? {
+            TokenValue::Spacing(units) => Some(*units),
+            _ => None,
+        }
+    }
+
+    /// The text style `token` resolves to, or `None` when the source has no
+    /// such style. A hosted painter that labels its own axis picks its size
+    /// off the type ramp here rather than off a number of its own.
+    fn typography(&self, token: &str) -> Option<TypographyValue> {
+        match self.value(token)? {
+            TokenValue::Typography(style) => Some(*style),
+            _ => None,
+        }
+    }
+
+    /// The transition timing `token` resolves to, or `None` when the source
+    /// has no such motion.
+    fn motion(&self, token: &str) -> Option<MotionValue> {
+        match self.value(token)? {
+            TokenValue::Motion(timing) => Some(*timing),
+            _ => None,
+        }
     }
 }
 
-impl ColorSource for ThemeSnapshot {
+impl TokenSource for ThemeSnapshot {
     fn color(&self, token: &str) -> Option<Color32> {
         let name = TokenName::new(token).ok()?;
         match self.value(&name)? {
@@ -88,9 +179,30 @@ impl ColorSource for ThemeSnapshot {
         }
     }
 
+    // `value` is the whole of what this impl has to say; every typed reader
+    // the trait defines could ride on the default bodies from here. The
+    // three below still delegate instead, because `gorgon-petra` owns an
+    // accessor for each and its doc is explicit that the kind match is
+    // written once, there. The defaults exist for sources that are not a
+    // snapshot at all and have no petra-side accessor to borrow.
+    fn value(&self, token: &str) -> Option<&TokenValue> {
+        let name = TokenName::new(token).ok()?;
+        ThemeSnapshot::value(self, &name)
+    }
+
     fn radius(&self, token: &str) -> Option<f32> {
         let name = TokenName::new(token).ok()?;
         self.corner(&name)
+    }
+
+    fn silhouette(&self, token: &str) -> Option<Silhouette> {
+        let name = TokenName::new(token).ok()?;
+        ThemeSnapshot::silhouette(self, &name)
+    }
+
+    fn spacing(&self, token: &str) -> Option<f32> {
+        let name = TokenName::new(token).ok()?;
+        ThemeSnapshot::spacing(self, &name)
     }
 }
 
@@ -103,7 +215,7 @@ impl ColorSource for ThemeSnapshot {
 /// is worse than a visibly wrong one for text, and folding that fourth site
 /// in here would erase the difference on purpose.
 fn resolve_or_record(
-    colors: &dyn ColorSource,
+    colors: &dyn TokenSource,
     token: &str,
     report: &mut PaintReport,
 ) -> Option<Color32> {
@@ -123,7 +235,7 @@ fn resolve_or_record(
 /// node had before this slot existed, so an unresolved `radius` degrades to
 /// the old picture rather than to a new failure mode.
 fn resolve_radius_or_record(
-    colors: &dyn ColorSource,
+    colors: &dyn TokenSource,
     token: &str,
     report: &mut PaintReport,
 ) -> f32 {
@@ -132,6 +244,59 @@ fn resolve_radius_or_record(
         report.unresolved_tokens.insert(token.to_owned());
     }
     radius.unwrap_or(0.0)
+}
+
+/// Resolve `token` to an outline family, recording it unresolved on a miss.
+///
+/// Falls back to [`Silhouette::Rect`] for the same reason
+/// [`resolve_radius_or_record`] falls back to `0.0`: the figure is always
+/// applied to a node that is going to be painted regardless, and the rect is
+/// the exact figure every node drew before this slot existed. The miss is in
+/// the report either way, which is the part that stops a mistyped silhouette
+/// from quietly becoming a square — the failure mode this whole slot was
+/// added to close.
+fn resolve_silhouette_or_record(
+    colors: &dyn TokenSource,
+    token: &str,
+    report: &mut PaintReport,
+) -> Silhouette {
+    let figure = colors.silhouette(token);
+    if figure.is_none() {
+        report.unresolved_tokens.insert(token.to_owned());
+    }
+    figure.unwrap_or_default()
+}
+
+/// The closed outline `figure` traces inside `rect`, or `None` for
+/// [`Silhouette::Rect`] — which is not a polygon here but egui's own rounded
+/// rect, so that a corner radius keeps working and a square box at
+/// `shape.corner-full` keeps painting the disc it always did.
+///
+/// The engine names the figure and this function is the only place its
+/// geometry is written down. Both polygons are inscribed in the node's rect
+/// and wound clockwise in egui's y-down space.
+///
+/// Why these two and not, say, a pentagon: a triangle and a diamond are the
+/// figures a corner radius cannot reach, they stay separable from each other
+/// and from a box at the 10x10 the status marker actually paints at, and
+/// they are the silhouettes `gorgon_petra::token::StatusShape` already
+/// names. A figure whose outline is close to its bounding box would add a
+/// vocabulary entry without adding a channel.
+fn silhouette_points(figure: Silhouette, rect: egui::Rect) -> Option<Vec<egui::Pos2>> {
+    let (l, r, t, b) = (rect.left(), rect.right(), rect.top(), rect.bottom());
+    let (cx, cy) = (rect.center().x, rect.center().y);
+    match figure {
+        Silhouette::Rect => None,
+        // Apex at the top edge's midpoint, base along the bottom edge.
+        Silhouette::Triangle => Some(vec![egui::pos2(cx, t), egui::pos2(r, b), egui::pos2(l, b)]),
+        // One vertex at the midpoint of each edge.
+        Silhouette::Diamond => Some(vec![
+            egui::pos2(cx, t),
+            egui::pos2(r, cy),
+            egui::pos2(cx, b),
+            egui::pos2(l, cy),
+        ]),
+    }
 }
 
 /// What one paint pass did, and what it could not do.
@@ -254,9 +419,15 @@ pub struct CustomPaintCtx<'a> {
     pub opacity: f32,
     /// The device scale this frame was placed at.
     pub scale: Scale,
-    /// The colour source this pass is painting with, for a painter that
-    /// wants a token's colour rather than a colour of its own invention.
-    pub colors: &'a dyn ColorSource,
+    /// The theme snapshot this pass is painting with, read through
+    /// [`TokenSource`] so a painter has no opinion about where the theme
+    /// comes from.
+    ///
+    /// FR-059's fifth item, and the whole snapshot rather than a slice of
+    /// it: colour, shape, spacing, typography and motion all resolve here,
+    /// so a hosted painter spaces and sizes itself on the same design system
+    /// as the frame around it instead of carrying literals of its own.
+    pub tokens: &'a dyn TokenSource,
 }
 
 /// A host-registered painter for one `PaintContent.custom` name.
@@ -325,7 +496,7 @@ pub fn paint_frame(
     painter: &Painter,
     frame: &PetrifiedFrame,
     shaper: &mut GalleyShaper,
-    colors: &dyn ColorSource,
+    colors: &dyn TokenSource,
 ) -> PaintReport {
     paint_frame_with_hosts(
         painter,
@@ -352,7 +523,7 @@ pub fn paint_frame_with_hosts(
     painter: &Painter,
     frame: &PetrifiedFrame,
     shaper: &mut GalleyShaper,
-    colors: &dyn ColorSource,
+    colors: &dyn TokenSource,
     painters: &CustomPainters,
     images: &mut ImageSources,
 ) -> PaintReport {
@@ -425,7 +596,7 @@ pub fn paint_frame_with_hosts(
 fn paint_focus_ring(
     painter: &Painter,
     placement: &Placement,
-    colors: &dyn ColorSource,
+    colors: &dyn TokenSource,
     scale: Scale,
     report: &mut PaintReport,
 ) -> bool {
@@ -477,7 +648,7 @@ fn device_snapped_width(width: f32, scale: Scale) -> f32 {
 /// keeps honest that a long parameter list would not.
 struct PaintEnv<'a> {
     shaper: &'a mut GalleyShaper,
-    colors: &'a dyn ColorSource,
+    colors: &'a dyn TokenSource,
     scale: Scale,
     painters: &'a CustomPainters,
     images: &'a mut ImageSources,
@@ -500,16 +671,35 @@ fn paint_one(
         }
     }
 
-    // `radius` shapes both the fill and the stroke below it, so it is
-    // resolved once, ahead of either, rather than duplicated into both arms.
+    // `radius` and `silhouette` shape both the fill and the stroke below
+    // them, so both are resolved once, ahead of either, rather than
+    // duplicated into two arms that could drift apart.
     let corner_radius = content.tokens.get(RADIUS_SLOT).map_or(0.0, |token| {
         resolve_radius_or_record(env.colors, token, report)
     });
+    let figure = content
+        .tokens
+        .get(SILHOUETTE_SLOT)
+        .map_or(Silhouette::Rect, |token| {
+            resolve_silhouette_or_record(env.colors, token, report)
+        });
+    let outline = silhouette_points(figure, rect);
 
     if let Some(token) = content.tokens.get(BACKGROUND_SLOT)
         && let Some(color) = resolve_or_record(env.colors, token, report)
     {
-        painter.rect_filled(rect, corner_radius, color);
+        match &outline {
+            None => {
+                painter.rect_filled(rect, corner_radius, color);
+            }
+            Some(points) => {
+                painter.add(egui::Shape::convex_polygon(
+                    points.clone(),
+                    color,
+                    Stroke::NONE,
+                ));
+            }
+        }
         report.fills += 1;
         shapes += 1;
     }
@@ -517,12 +707,31 @@ fn paint_one(
         && let Some(color) = resolve_or_record(env.colors, token, report)
     {
         let width = device_snapped_width(1.0, env.scale);
-        painter.rect_stroke(
-            rect,
-            corner_radius,
-            Stroke::new(width, color),
-            egui::StrokeKind::Inside,
-        );
+        match &outline {
+            None => {
+                painter.rect_stroke(
+                    rect,
+                    corner_radius,
+                    Stroke::new(width, color),
+                    egui::StrokeKind::Inside,
+                );
+            }
+            // A polygon stroke is centred on its path rather than inset the
+            // way `StrokeKind::Inside` insets a rect's. At the one-unit
+            // width this painter draws, that is half a logical unit of
+            // overhang on a marker whose whole job is to be a recognisable
+            // outline; correcting it would mean insetting the polygon, and
+            // an inset that shrinks a triangle is not the same operation on
+            // every figure. Left centred, and named here rather than
+            // silently different.
+            Some(points) => {
+                painter.add(egui::Shape::convex_polygon(
+                    points.clone(),
+                    Color32::TRANSPARENT,
+                    Stroke::new(width, color),
+                ));
+            }
+        }
         shapes += 1;
     }
 
@@ -590,7 +799,7 @@ fn paint_one(
             clip: painter.clip_rect(),
             opacity: painter.opacity(),
             scale: env.scale,
-            colors: env.colors,
+            tokens: env.colors,
         };
         // `is_some_and` rather than an `if let` that ignores the bool: a
         // registered painter that draws nothing must be treated exactly
@@ -735,7 +944,7 @@ pub fn verify_paint_accounting() {
 #[cfg(test)]
 mod tests {
     use super::{
-        ColorSource, CustomPaintCtx, CustomPainters, device_snapped_width, paint_frame,
+        CustomPaintCtx, CustomPainters, TokenSource, device_snapped_width, paint_frame,
         paint_frame_with_hosts, to_egui_snapped, verify_paint_accounting,
     };
     use egui::{Color32, Context, CornerRadius, Id, LayerId, Order, RawInput, Shape};
@@ -1282,7 +1491,7 @@ mod tests {
     fn paint_focused(
         node: &ViewNode,
         focused: Option<&str>,
-        colors: &dyn ColorSource,
+        colors: &dyn TokenSource,
     ) -> (usize, super::PaintReport) {
         let host = Headless::new();
         let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
@@ -1388,7 +1597,7 @@ mod tests {
     #[test]
     fn a_theme_without_the_ring_tokens_reports_a_blind_focus() {
         struct NoFocusColors;
-        impl ColorSource for NoFocusColors {
+        impl TokenSource for NoFocusColors {
             fn color(&self, token: &str) -> Option<Color32> {
                 if token.starts_with("focus.") {
                     return None;
@@ -1510,6 +1719,85 @@ mod tests {
         assert!(report.is_complete(), "{report:?}");
     }
 
+    /// FR-059's fifth item, and the one that did not land beside the other
+    /// four: the painter is handed **the theme snapshot**, not two slices of
+    /// it. A painter that reads a `spacing.*` and a `typography.*` token off
+    /// the context it is given must get the values the theme actually holds.
+    /// Without this, a hosted region cannot sit on the design system's ramp
+    /// and has to spell literals instead — inside `petra-egui/src`, which
+    /// the `literal-style` lane does not read, so nothing would catch them.
+    #[test]
+    fn a_custom_painter_reads_spacing_and_typography_off_the_theme() {
+        /// What the recording painter took off its context. Named for the
+        /// same reason [`SeenCtx`] is: `clippy::type_complexity` refuses the
+        /// nested form spelled inline.
+        type SeenTokens = std::rc::Rc<
+            std::cell::RefCell<Option<(Option<f32>, Option<gorgon_petra::token::TypographyValue>)>>,
+        >;
+
+        let host = Headless::new();
+        let registry = registry_with("sparkline");
+        let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
+        let frame = frame_of_registered(&custom_node("sparkline"), &mut h, &registry);
+        let mut shaper = host.shaper();
+
+        let seen: SeenTokens = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let sink = std::rc::Rc::clone(&seen);
+        let mut painters = CustomPainters::new();
+        painters.register(
+            "sparkline",
+            move |painter: &egui::Painter, ctx: &CustomPaintCtx<'_>| {
+                *sink.borrow_mut() = Some((
+                    ctx.tokens.spacing("spacing.xs"),
+                    ctx.tokens.typography("typography.body"),
+                ));
+                painter.rect_filled(ctx.rect, 0.0, Color32::WHITE);
+                true
+            },
+        );
+
+        let mut images = ImageSources::new();
+        let theme = snapshot();
+        let report = paint_frame_with_hosts(
+            &host.painter(),
+            &frame,
+            &mut shaper,
+            &theme,
+            &painters,
+            &mut images,
+        );
+        assert_eq!(report.customs, 1, "the painter must have run: {report:?}");
+
+        let (gap, body) = seen.borrow().expect("the painter ran, so it recorded");
+
+        // The oracle is the snapshot's own accessors rather than a number
+        // copied out of `shipped.rs`: this asserts the painter reads *the
+        // theme*, and keeps telling the truth if the ramp is re-tuned.
+        let expected_gap = ThemeSnapshot::spacing(&theme, &tok("spacing.xs"));
+        assert_eq!(
+            gap, expected_gap,
+            "the painter must read the theme's spacing ramp, not a number of its own"
+        );
+        assert!(
+            gap.is_some_and(|g| g > 0.0),
+            "the shipped theme defines spacing.xs, so a `None` here means the \
+             context never carried the ramp at all: {gap:?}"
+        );
+
+        let expected_body = match ThemeSnapshot::value(&theme, &tok("typography.body")) {
+            Some(gorgon_petra::token::TokenValue::Typography(style)) => Some(*style),
+            _ => None,
+        };
+        assert_eq!(
+            body, expected_body,
+            "the painter must read the theme's type ramp"
+        );
+        assert!(
+            body.is_some_and(|b| b.size > 0.0),
+            "the shipped theme defines typography.body: {body:?}"
+        );
+    }
+
     /// FR-059: a custom kind the tree accepts (`register_custom_kind`) but
     /// no host painter answers for is still `undrawn`, never a silent
     /// blank. This is exactly `petra-egui/examples/gallery.rs`'s
@@ -1599,7 +1887,7 @@ mod tests {
                     ctx.clip,
                     ctx.opacity,
                     ctx.scale,
-                    ctx.colors.color("surface.base").is_some(),
+                    ctx.tokens.color("surface.base").is_some(),
                 ));
                 true
             },
@@ -1739,5 +2027,276 @@ mod tests {
             "{report:?}"
         );
         assert!(!report.is_complete(), "{report:?}");
+    }
+
+    // ---------------------------------------------------------------
+    // FR-015: the shape channel has to reach the screen.
+    //
+    // The tests below measure *coverage*, not declarations. Every earlier
+    // check on this channel read a token name off a `ViewNode` or a corner
+    // radius off a `Shape::Rect`, which is exactly how four `StatusShape`
+    // variants shipped as two pictures — and how those two differed by
+    // 0.414 logical units, under one device pixel at scale 1.0. So these
+    // run the real paint pass, hand the emitted shapes to egui's own
+    // tessellator, and compare the triangles it produces.
+    // ---------------------------------------------------------------
+
+    /// Half a logical unit per sample: four samples per device pixel at
+    /// scale 1.0, fine enough that the measured fractions below sit within
+    /// a point or two of the figures' analytic areas.
+    const SAMPLE_PITCH: f32 = 0.5;
+
+    /// The fraction of a marker's box on which two markers must disagree to
+    /// count as different silhouettes.
+    ///
+    /// Calibrated against the defect, not against the fix. A corner radius
+    /// is the only channel this library had before the `silhouette` slot
+    /// existed, and on the two markers here the largest difference a corner
+    /// radius alone can produce is:
+    ///
+    /// * 0.060 of the box — a 10x10 status dot at `shape.corner-sm` against
+    ///   the same dot at `shape.corner-full`;
+    /// * 0.104 of the box — a 12x12 checkbox at `shape.corner-sm` against a
+    ///   12x12 radio at `shape.corner-full`.
+    ///
+    /// Both figures are measured, not estimated: reverting this leaf's two
+    /// component files to their previous bindings and re-running the two
+    /// tests below prints exactly those numbers, and both tests fail.
+    ///
+    /// Both of those are pictures the review measured as differing by under
+    /// one device pixel of outline deviation (0.414 and 0.828 logical units)
+    /// — that is, indistinguishable. The bar sits above both, so a pair that
+    /// separates only by rounding its corners fails here. Every pair this
+    /// library actually paints clears 0.21, so the bar is not tight against
+    /// the fix either; both margins are printed by the tests below.
+    const MIN_DISTINCT_FRACTION: f64 = 0.15;
+
+    /// Whether `p` is inside the triangle `(a, b, c)`, winding-agnostic.
+    fn in_triangle(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2, c: egui::Pos2) -> bool {
+        let side =
+            |u: egui::Pos2, v: egui::Pos2| (v.x - u.x) * (p.y - u.y) - (v.y - u.y) * (p.x - u.x);
+        let (d1, d2, d3) = (side(a, b), side(b, c), side(c, a));
+        let neg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
+        let pos = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
+        !(neg && pos)
+    }
+
+    /// Paint `node` and return which samples inside the placement whose id
+    /// ends with `marker`, sampled at [`SAMPLE_PITCH`], the renderer
+    /// actually covered.
+    ///
+    /// The coverage comes from `Context::tessellate` — the same call an
+    /// eframe backend makes on its way to the GPU — with feathering turned
+    /// off, so an anti-aliasing fringe cannot inflate a difference between
+    /// two silhouettes. Sampling is confined to the marker's own rect, so
+    /// the label beside it contributes nothing.
+    fn marker_coverage(node: ViewNode, marker: &str) -> Vec<bool> {
+        let host = Headless::new();
+        host.0
+            .tessellation_options_mut(|options| options.feathering = false);
+        let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
+        let tree = ViewNode::new(NodeKind::Stack, "root").child(node);
+        let frame = frame_of(&tree, &mut h);
+        let placement = frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with(marker))
+            .unwrap_or_else(|| panic!("no placement id ends with {marker:?}"));
+        let box_rect = to_egui_snapped(placement.rect, Scale::new(1.0).expect("scale 1 is legal"));
+
+        let mut shaper = host.shaper();
+        let report = paint_frame(&host.painter(), &frame, &mut shaper, &snapshot());
+        assert!(
+            report.unresolved_tokens.is_empty(),
+            "every token this marker binds must resolve: {report:?}"
+        );
+
+        let out = host.0.run_ui(RawInput::default(), |_| {});
+        let ppp = out.pixels_per_point;
+        let primitives = host.0.tessellate(out.shapes.clone(), ppp);
+        out.drop_without_applying_deltas();
+
+        let mut triangles: Vec<[egui::Pos2; 3]> = Vec::new();
+        for clipped in &primitives {
+            if let egui::epaint::Primitive::Mesh(mesh) = &clipped.primitive {
+                for tri in mesh.indices.chunks_exact(3) {
+                    triangles.push([
+                        mesh.vertices[tri[0] as usize].pos,
+                        mesh.vertices[tri[1] as usize].pos,
+                        mesh.vertices[tri[2] as usize].pos,
+                    ]);
+                }
+            }
+        }
+        assert!(
+            !triangles.is_empty(),
+            "the pass emitted no geometry at all for {marker:?}"
+        );
+
+        let cols = (box_rect.width() / SAMPLE_PITCH).round() as usize;
+        let rows = (box_rect.height() / SAMPLE_PITCH).round() as usize;
+        let mut covered = Vec::with_capacity(cols * rows);
+        for row in 0..rows {
+            for col in 0..cols {
+                #[allow(clippy::cast_precision_loss)]
+                let p = egui::pos2(
+                    box_rect.left() + (col as f32 + 0.5) * SAMPLE_PITCH,
+                    box_rect.top() + (row as f32 + 0.5) * SAMPLE_PITCH,
+                );
+                covered.push(triangles.iter().any(|t| in_triangle(p, t[0], t[1], t[2])));
+            }
+        }
+        covered
+    }
+
+    /// The fraction of a marker's box on which two coverage maps disagree.
+    fn disagreement(a: &[bool], b: &[bool]) -> f64 {
+        assert_eq!(a.len(), b.len(), "coverage maps must be the same shape");
+        let differing = a.iter().zip(b).filter(|(x, y)| x != y).count();
+        differing as f64 / a.len() as f64
+    }
+
+    /// All four `StatusShape` variants paint four different pictures.
+    ///
+    /// This is FR-015's non-colour channel measured where it has to be true:
+    /// on the tessellated geometry. `Circle` and `Square` are two ends of the
+    /// rect family (`shape.corner-full` and `shape.corner-none`); `Triangle`
+    /// and `Diamond` are figures no corner radius can reach, and they arrive
+    /// through the `silhouette` slot.
+    ///
+    /// The pair that matters most is `Triangle` against `Square`: the shipped
+    /// light theme paints `status.degraded` an orange-red and `status.down` a
+    /// dark red, so those two markers are the ones a red-green colourblind
+    /// operator has to tell apart without hue.
+    #[test]
+    fn every_status_shape_paints_a_distinguishable_marker() {
+        use gorgon_petra::component::status;
+        use gorgon_petra::token::{StatusShape, StatusToken};
+
+        let cases = [
+            ("status.ok", StatusShape::Circle),
+            ("status.degraded", StatusShape::Triangle),
+            ("status.down", StatusShape::Square),
+            ("status.ok", StatusShape::Diamond),
+        ];
+        let maps: Vec<(StatusShape, Vec<bool>)> = cases
+            .iter()
+            .map(|(token, shape)| {
+                let st = StatusToken::new(tok(token), *shape, "S")
+                    .expect("the fixture text is non-empty");
+                (*shape, marker_coverage(status("s", &st), "/s/dot"))
+            })
+            .collect();
+
+        for (shape, map) in &maps {
+            #[allow(clippy::cast_precision_loss)]
+            let filled = map.iter().filter(|c| **c).count() as f64 / map.len() as f64;
+            println!("{shape:?}: covers {filled:.3} of its box");
+        }
+        for i in 0..maps.len() {
+            for j in (i + 1)..maps.len() {
+                let differing = disagreement(&maps[i].1, &maps[j].1);
+                println!(
+                    "{:?} vs {:?}: {differing:.3} of the box differs (bar {MIN_DISTINCT_FRACTION})",
+                    maps[i].0, maps[j].0,
+                );
+                assert!(
+                    differing >= MIN_DISTINCT_FRACTION,
+                    "StatusShape::{:?} and StatusShape::{:?} paint the same marker: only \
+                     {differing:.3} of the marker's box differs, at or below what a corner \
+                     radius alone already produced, so the FR-015 shape channel does not \
+                     survive to the screen for this pair",
+                    maps[i].0,
+                    maps[j].0,
+                );
+            }
+        }
+    }
+
+    /// A checkbox and a radio paint two different boxes.
+    ///
+    /// `controls`'s module doc claims "a round control reads as 'one choice
+    /// among several' the way a square one does not". Both boxes are 12x12,
+    /// and until the checkbox lost its `shape.corner-sm` rounding the two
+    /// outlines were 0.828 logical units apart at their widest — under one
+    /// device pixel. Measured on coverage rather than on the corner radius,
+    /// because the corner radius is the number that was already right.
+    #[test]
+    fn a_checkbox_and_a_radio_paint_distinguishable_boxes() {
+        use gorgon_petra::component::{checkbox, radio};
+
+        let cb = marker_coverage(checkbox("c", "Restart", true), "/c/box");
+        let rb = marker_coverage(radio("r", "Restart", true), "/r/box");
+        let differing = disagreement(&cb, &rb);
+        #[allow(clippy::cast_precision_loss)]
+        let (cb_fill, rb_fill) = (
+            cb.iter().filter(|c| **c).count() as f64 / cb.len() as f64,
+            rb.iter().filter(|c| **c).count() as f64 / rb.len() as f64,
+        );
+        println!(
+            "checkbox covers {cb_fill:.3}, radio covers {rb_fill:.3}, {differing:.3} of the \
+             box differs (bar {MIN_DISTINCT_FRACTION})"
+        );
+        assert!(
+            differing >= MIN_DISTINCT_FRACTION,
+            "checkbox and radio paint the same box: only {differing:.3} of it differs, at \
+             or below what a corner radius alone already produced"
+        );
+    }
+
+    /// A `silhouette` token the source cannot resolve is reported, and the
+    /// node falls back to the rect every node drew before the slot existed.
+    ///
+    /// The fallback is the safe half; the report is the half that matters.
+    /// A mistyped figure that silently became a square is the same defect
+    /// this slot was added to close, one level down.
+    #[test]
+    fn an_unresolved_silhouette_is_reported_and_falls_back_to_a_rect() {
+        let mut props = Props::default();
+        props
+            .tokens
+            .insert("background".into(), tok("surface.base"));
+        props
+            .tokens
+            .insert("silhouette".into(), tok("shape.silhouette-hexagon"));
+        let host = Headless::new();
+        let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
+        let node = ViewNode::new(NodeKind::Stack, "root").with_props(props);
+        let frame = petrify(
+            1,
+            gorgon_petra::testing::validated_with(
+                &node,
+                &gorgon_petra::tree::Registry::with_vocabulary({
+                    let mut v = gorgon_petra::token::standard_vocabulary();
+                    v.declare(gorgon_petra::token::DesignToken::new(
+                        tok("shape.silhouette-hexagon"),
+                        gorgon_petra::token::TokenKind::Silhouette,
+                    ));
+                    v
+                }),
+            ),
+            &mut h.ctx(),
+            Viewport::new(Size::new(240.0, 120.0), ThemeMode::Dark),
+            TransitionActivity::default(),
+        );
+        let mut shaper = host.shaper();
+        let report = paint_frame(&host.painter(), &frame, &mut shaper, &snapshot());
+
+        assert!(
+            report
+                .unresolved_tokens
+                .contains("shape.silhouette-hexagon"),
+            "an unresolvable figure must be named in the report: {report:?}"
+        );
+        assert_eq!(report.fills, 1, "the fallback still paints: {report:?}");
+
+        let out = host.0.run_ui(RawInput::default(), |_| {});
+        let rects = out
+            .shapes
+            .iter()
+            .filter(|cs| matches!(cs.shape, Shape::Rect(_)))
+            .count();
+        out.drop_without_applying_deltas();
+        assert_eq!(rects, 1, "the fallback figure is a rect, not a polygon");
     }
 }

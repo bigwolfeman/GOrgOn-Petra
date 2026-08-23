@@ -138,6 +138,16 @@ impl SlotSchema {
 /// non-schema path, not slot names, and a `ring` slot would be confusable
 /// with them.
 ///
+/// `silhouette` is declared for the same reason `radius` is, and it is the
+/// slot that makes `radius` finite: a corner radius spans a square to a
+/// circle and no further, so a status marker whose only non-colour channel
+/// was `radius` had exactly two silhouettes to distinguish four
+/// `StatusShape` variants with — and, at the 4-versus-999 pair the library
+/// actually bound, the two differed by 0.414 logical units, under one
+/// device pixel. `silhouette` names the figure and `radius` rounds its
+/// corners; the pair is what FR-015's shape channel needs to reach the
+/// screen.
+///
 /// `radius` **is** declared, reversing an earlier decision recorded here.
 /// The argument was that a corner radius is a property of the rect every
 /// slot draws into rather than a colour one slot contributes, so "it
@@ -164,7 +174,8 @@ pub fn standard_slots() -> SlotSchema {
         .declare(SlotSpec::new("gradient-stop-1", TokenKind::Color, false))
         .declare(SlotSpec::new("gradient-stop-2", TokenKind::Color, false))
         .declare(SlotSpec::new("overlay", TokenKind::Color, false))
-        .declare(SlotSpec::new("radius", TokenKind::Shape, false));
+        .declare(SlotSpec::new("radius", TokenKind::Shape, false))
+        .declare(SlotSpec::new("silhouette", TokenKind::Silhouette, false));
     s
 }
 
@@ -191,6 +202,7 @@ mod tests {
             ("gradient-stop-2", TokenKind::Color),
             ("overlay", TokenKind::Color),
             ("radius", TokenKind::Shape),
+            ("silhouette", TokenKind::Silhouette),
         ];
         assert_eq!(
             schema.len(),
@@ -233,7 +245,7 @@ mod tests {
         schema.declare(SlotSpec::new("background", TokenKind::Color, true));
         assert!(schema.get("background").unwrap().required());
         // Overwriting does not grow the set.
-        assert_eq!(schema.len(), 10);
+        assert_eq!(schema.len(), 11);
     }
 
     #[test]

@@ -3,7 +3,7 @@
 use crate::token::ThemeMode;
 use crate::token::name::TokenName;
 use crate::token::theme::Theme;
-use crate::token::value::TokenValue;
+use crate::token::value::{Silhouette, TokenValue};
 
 /// An immutable resolution of one [`Theme`] at one revision.
 ///
@@ -84,6 +84,21 @@ impl ThemeSnapshot {
     pub fn corner(&self, name: &TokenName) -> Option<f32> {
         match self.value(name)? {
             TokenValue::Shape(shape) => Some(shape.corner_radius),
+            _ => None,
+        }
+    }
+
+    /// The outline family `name` resolves to. `None` when the theme has no
+    /// such token, and `None` — never a silent [`Silhouette::Rect`] — when
+    /// it has one at another kind, for the same reason
+    /// [`ThemeSnapshot::corner`] refuses to answer for a colour: a caller
+    /// that cannot tell "no such figure" from "the default figure" cannot
+    /// report the miss, and an unreported miss is how FR-015's shape
+    /// channel went missing the first time.
+    #[must_use]
+    pub fn silhouette(&self, name: &TokenName) -> Option<Silhouette> {
+        match self.value(name)? {
+            TokenValue::Silhouette(figure) => Some(*figure),
             _ => None,
         }
     }

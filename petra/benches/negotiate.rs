@@ -59,6 +59,57 @@
 //! keys), so a fix has to stop rebuilding and re-hashing whole paths, not
 //! shorten them.
 //!
+//! # H1g — a grid whose children span
+//!
+//! `Flow::seat` marks every row of every span into an occupancy scan, so the
+//! shipped claim is that seating costs `children x rows` and each factor alone
+//! is linear. Two ladders, plus a control, because one ladder cannot separate
+//! the factors and a grid of N children already costs Θ(N) before any of them
+//! spans.
+//!
+//! Span depth, at 400 children in one column:
+//!
+//! | span rows | cost | vs no span |
+//! |---|---|---|
+//! | 1 (no span) | 656.72 µs | — |
+//! | 2 | 841.44 µs | 1.3x |
+//! | 8 | 2.01 ms | 3.1x |
+//! | 32 | 6.44 ms | 9.8x |
+//! | 128 | 25.15 ms | 38.3x |
+//! | 400 | 76.95 ms | 117.2x |
+//! | | | **rows^0.85** |
+//!
+//! Sub-linear, and honestly earned: 117x the baseline at 400 rows is the scan
+//! doing the work it says it does.
+//!
+//! Child count is the one that does not hold. Same one-column shape, same
+//! rungs, spanned at 8 rows against a control that declares no span at all:
+//!
+//! | children | no span | spanned | ratio | ns/child spanning |
+//! |---|---|---|---|---|
+//! | 100 | 154.83 µs | 326.27 µs | 2.1x | 1 714.5 |
+//! | 200 | 308.51 µs | 774.37 µs | 2.5x | 2 329.3 |
+//! | 400 | 659.47 µs | 2.02 ms | 3.1x | 3 402.3 |
+//! | 800 | 1.53 ms | 5.88 ms | 3.9x | 5 441.9 |
+//! | 1 600 | 4.08 ms | 20.16 ms | 4.9x | 10 052.7 |
+//! | | **N^1.18** | **N^1.49** | | **excess +0.31** |
+//!
+//! The control is why this is a claim about spanning and not about `petrify`.
+//! Both columns are the same tree with one prop changed, so the +0.31 is the
+//! spanning path alone: **the per-child cost of a span rises with how many
+//! children are already seated** — 5.9x more per child over 16x the children.
+//! The bound below is on the excess, not on the spanned exponent, for the same
+//! reason.
+//!
+//! Severed only halfway, and the half that is missing is named rather than
+//! guessed at. Two candidates: `seat`'s collision probe, which on a
+//! one-column grid re-checks every row of a span it has already rejected; and
+//! the row tracks, since 1 600 children spanning 8 rows produce 12 800 row
+//! tracks that every per-child pass walks. This bench cannot tell them apart —
+//! its two variables move together. What separates them is a ladder that holds
+//! the row-track count fixed while growing the child count, which needs a
+//! multi-column grid, and it is not written here.
+//!
 //! # H2 — FR-035: measured, and false
 //!
 //! FR-035: "Per-frame work MUST scale with what changed, not with total tree
@@ -186,7 +237,7 @@ use gorgon_petra::layout::{ChangeSet, MeasureCache};
 use gorgon_petra::petrify;
 use gorgon_petra::testing::{Harness, MonoContent, NoRows, validated};
 use gorgon_petra::token::ThemeMode;
-use gorgon_petra::tree::{Key, KeyPath, NodeKind, Props, TrackSize, ViewNode};
+use gorgon_petra::tree::{GridSpan, Key, KeyPath, NodeKind, Props, TrackSize, ViewNode};
 
 /// The window every experiment negotiates against. Fixed across every ladder:
 /// a viewport that grew with N would put a second variable in every exponent.
@@ -233,6 +284,24 @@ const MAX_DEEP_EXPONENT: f64 = 2.1;
 /// an eightfold N to cost twice as much, which covers allocator drift in a
 /// bigger tree, and refuses anything carrying a per-node term.
 const MAX_CHANGE_EXPONENT: f64 = 0.35;
+
+/// A grid's seating cost against the row span its children declare, and
+/// against how many children declare one.
+///
+/// The row bound is absolute: `Flow::seat` marks every row of every span, so
+/// linear in rows is the work and 1.25 is the same headroom
+/// [`MAX_COLD_EXPONENT`] takes over its own N^1 target.
+///
+/// The child bound is **not** absolute, and that is the point. A grid of N
+/// children costs Θ(N) to negotiate whether it spans or not — H1 measures the
+/// unspanned grid at N^1.06 — so an absolute bound on the spanned ladder would
+/// be bounding `petrify` and calling it seating. What is bounded is the
+/// *excess*: the spanned ladder's exponent minus the unspanned control's, on
+/// the same shape at the same rungs. Seating that scans only the rows a span
+/// covers adds a constant factor and no slope, so the honest target for the
+/// excess is zero and 0.25 is the tripwire.
+const MAX_SPAN_ROW_EXPONENT: f64 = 1.25;
+const MAX_SPAN_CHILD_EXCESS: f64 = 0.25;
 
 /// Rows per panel in every H2 change-size experiment.
 const ROWS: usize = 32;
@@ -295,6 +364,29 @@ fn grid(side: usize) -> ViewNode {
         .map(|i| Arc::new(leaf(format!("cell-{i}"), 4)))
         .collect();
     root
+}
+
+/// A one-column grid of `children` spacers, each declaring a `rows`-row span.
+///
+/// One column on purpose: it takes the column axis out of the measurement, so
+/// the only thing the ladders below vary is the row occupancy `Flow::seat`
+/// has to scan. `rows == 1` declares no span at all, which is the baseline
+/// every spanned rung is read against.
+fn spanned(children: usize, rows: usize) -> ViewNode {
+    let kids: Vec<ViewNode> = (0..children)
+        .map(|i| {
+            ViewNode::new(NodeKind::Spacer, format!("c{i}")).with_props(Props {
+                span: (rows > 1).then_some(GridSpan { columns: 1, rows }),
+                ..Props::default()
+            })
+        })
+        .collect();
+    ViewNode::new(NodeKind::Grid, "g")
+        .with_props(Props {
+            columns: vec![TrackSize::Fixed { value: 40.0 }],
+            ..Props::default()
+        })
+        .with_children(kids)
 }
 
 /// A balanced tree of `depth` levels and `fanout` children per level, with
@@ -816,6 +908,93 @@ fn h1s_phase() {
     );
 }
 
+/// H1g: what a spanning grid costs to seat.
+///
+/// Three ladders, because `seat`'s cost has two factors and a grid of N
+/// children already costs Θ(N) before any of them spans. The first holds the
+/// child count and grows the span. The second holds the span and grows the
+/// child count. The third is the control for the second: the same shape, the
+/// same rungs, no span declared at all. Bounds in [`run`] are read off the
+/// first and off the *difference* between the second and the third.
+///
+/// The row ladder starts at 2 and not at 1. `rows == 1` declares no span, so
+/// it pays no occupancy scan at all, and anchoring an exponent there would
+/// measure the step onto the spanning path once and then divide it across the
+/// whole ladder — which reads as sub-linear growth and hides the slope. The
+/// no-span rung is still printed, as the baseline the ratio column is against.
+fn h1g_phase() -> (Option<f64>, Option<f64>, Option<f64>) {
+    const HELD_CHILDREN: usize = 400;
+    const HELD_ROWS: usize = 8;
+    const CHILD_LADDER: [usize; 5] = [100, 200, 400, 800, 1600];
+
+    println!("\nH1g grid seating: {HELD_CHILDREN} children, span rows growing");
+    let baseline = median_dur(ROUNDS, || {
+        let tree = spanned(HELD_CHILDREN, 1);
+        let nodes = node_count(&tree);
+        cold(&tree, nodes)
+    });
+    println!("  rows=   1 (no span)  {baseline:>10.2?}   baseline");
+    let mut rows_points: Vec<(usize, Duration)> = Vec::new();
+    for &rows in &[2usize, 8, 32, 128, 400] {
+        let tree = spanned(HELD_CHILDREN, rows);
+        let nodes = node_count(&tree);
+        let elapsed = median_dur(ROUNDS, || cold(&tree, nodes));
+        println!(
+            "  rows={rows:>4}            {elapsed:>10.2?}   {:5.1}x baseline",
+            elapsed.as_secs_f64() / baseline.as_secs_f64()
+        );
+        rows_points.push((rows, elapsed));
+        if elapsed > POINT_BUDGET {
+            println!("  ladder stopped after rows={rows}: over the {POINT_BUDGET:.0?} budget.");
+            break;
+        }
+    }
+    println!(
+        "  seating ~ rows^{:.2} at {HELD_CHILDREN} children",
+        slope(&rows_points)
+    );
+
+    println!("\nH1g grid seating: children growing, spanned at {HELD_ROWS} rows vs not spanned");
+    let mut spanned_points: Vec<(usize, Duration)> = Vec::new();
+    let mut control_points: Vec<(usize, Duration)> = Vec::new();
+    for &children in &CHILD_LADDER {
+        let flat = spanned(children, 1);
+        let flat_nodes = node_count(&flat);
+        let control = median_dur(ROUNDS, || cold(&flat, flat_nodes));
+        control_points.push((children, control));
+
+        let tree = spanned(children, HELD_ROWS);
+        let nodes = node_count(&tree);
+        let elapsed = median_dur(ROUNDS, || cold(&tree, nodes));
+        spanned_points.push((children, elapsed));
+
+        println!(
+            "  children={children:>5}   no span {control:>9.2?}   spanned {elapsed:>9.2?}   \
+             {:5.1}x   {:8.1} ns/child spanning",
+            elapsed.as_secs_f64() / control.as_secs_f64(),
+            (elapsed.as_secs_f64() - control.as_secs_f64()) * 1e9 / children as f64
+        );
+        if elapsed > POINT_BUDGET {
+            println!(
+                "  ladder stopped after children={children}: over the {POINT_BUDGET:.0?} budget."
+            );
+            break;
+        }
+    }
+    let (e_span, e_control) = (slope(&spanned_points), slope(&control_points));
+    println!(
+        "  spanned ~ children^{e_span:.2},  unspanned control ~ children^{e_control:.2},  \
+         seating excess {:+.2}",
+        e_span - e_control
+    );
+
+    let excess = match (exponent(&spanned_points), exponent(&control_points)) {
+        (Some(a), Some(b)) => Some(a - b),
+        _ => None,
+    };
+    (exponent(&rows_points), excess, exponent(&control_points))
+}
+
 /// H2a: cost against change size k, tree held fixed at `PANELS` x `ROWS`.
 /// Returns the unwitnessed leaf's post-change width from the `k=0` run, which
 /// [`sabotage_phase`] prints alongside its own staleness numbers rather than
@@ -1008,6 +1187,7 @@ fn run() {
     let (e_wide, e_grid, e_deep) = h1_phase();
     h1d_phase();
     h1s_phase();
+    let (e_span_rows, e_span_excess, _e_span_control) = h1g_phase();
     let floor_width = h2a_phase();
     let e_change = h2c_phase();
     sabotage_phase(floor_width);
@@ -1017,6 +1197,11 @@ fn run() {
         println!("\n(debug build: numbers printed, bounds enforced in release only)");
         return;
     }
+
+    // Every bound is collected and reported together. Panicking at the first
+    // one would hide the rest — and the rest includes FR-035, which is known
+    // to fail and is the reason this bench exists.
+    let mut broken: Vec<String> = Vec::new();
     for (label, e, bound) in [
         ("wide stack", e_wide, MAX_COLD_EXPONENT),
         ("grid", e_grid, MAX_COLD_EXPONENT),
@@ -1024,16 +1209,43 @@ fn run() {
     ] {
         match e {
             Some(e) if e <= bound => {}
-            Some(e) => panic!(
-                "a cold negotiation of the {label} shape costs N^{e:.2}, over the N^{bound} \
-                 bound"
-            ),
-            None => panic!("{label}: exponent unmeasurable; too few rungs ran to report a slope"),
+            Some(e) => broken.push(format!(
+                "a cold negotiation of the {label} shape costs N^{e:.2}, over the N^{bound} bound"
+            )),
+            None => broken.push(format!(
+                "{label}: exponent unmeasurable; too few rungs ran to report a slope"
+            )),
         }
+    }
+    match e_span_rows {
+        Some(e) if e <= MAX_SPAN_ROW_EXPONENT => {}
+        Some(e) => broken.push(format!(
+            "seating a spanning grid costs rows^{e:.2}, over the rows^{MAX_SPAN_ROW_EXPONENT} \
+             bound. `Flow::seat` marks every row of every span, so linear in rows is the work \
+             it has to do and anything above it is rows being re-read"
+        )),
+        None => broken
+            .push("span row exponent unmeasurable; too few rungs ran to report a slope".into()),
+    }
+    match e_span_excess {
+        Some(e) if e <= MAX_SPAN_CHILD_EXCESS => {}
+        Some(e) => broken.push(format!(
+            "seating cost grows {e:+.2} faster in child count when the children span than when \
+             they do not, over the {MAX_SPAN_CHILD_EXCESS:+.2} bound. Both ladders are the same \
+             one-column grid at the same rungs, so the difference is the spanning path alone: \
+             an occupancy scan whose cost per child rises with the number of children already \
+             seated. A grid of a few hundred spanning cells — a week view, a Gantt row, a table \
+             with merged headers — is an ordinary surface for a Lua author to write, and this \
+             is the term that decides what it costs"
+        )),
+        None => broken.push(
+            "span child-count excess unmeasurable; too few rungs ran on one of the two ladders"
+                .into(),
+        ),
     }
     match e_change {
         Some(e) if e <= MAX_CHANGE_EXPONENT => println!("\nFR-035: within bound"),
-        Some(e) => panic!(
+        Some(e) => broken.push(format!(
             "FR-035 is not met: one leaf's edit costs N^{e:.2} in the size of the tree around \
              it, over the N^{MAX_CHANGE_EXPONENT} bound, against a target of flat. This is the \
              *incremental* column: the measurement cache is invalidated by path, unchanged \
@@ -1048,8 +1260,18 @@ fn run() {
              untouched -- a per-container incremental arrangement, which is a larger piece of \
              work than subtree reuse and should be measured against these numbers before \
              anyone decides it is worth building"
-        ),
-        None => panic!("FR-035 exponent unmeasurable; too few rungs ran to report a slope"),
+        )),
+        None => {
+            broken.push("FR-035 exponent unmeasurable; too few rungs ran to report a slope".into())
+        }
+    }
+
+    if !broken.is_empty() {
+        panic!(
+            "{} bound(s) not met:\n\n{}",
+            broken.len(),
+            broken.join("\n\n")
+        );
     }
 }
 

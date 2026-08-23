@@ -21,7 +21,9 @@ use gorgon_petra::frame::{FrameDigest, PetrifiedFrame, TransitionActivity, Viewp
 use gorgon_petra::geom::Size;
 use gorgon_petra::testing::{Harness, validated_with};
 use gorgon_petra::token::{ThemeMode, TokenName, standard_vocabulary};
-use gorgon_petra::tree::{Interaction, NodeKind, Props, Registry, Role, TextWrap, ViewNode};
+use gorgon_petra::tree::{
+    GridSpan, Interaction, NodeKind, Props, Registry, Role, TextWrap, TrackSize, ViewNode,
+};
 
 /// Every custom kind name a tree in this file declares, plus the shipped
 /// vocabulary every token reference in this file's trees is drawn from
@@ -115,6 +117,141 @@ fn the_slot_a_token_is_bound_to_moves_the_digest() {
         &tokened("background", "surface.raised"),
         &tokened("foreground", "surface.raised"),
     );
+}
+
+// --------------------------------------------------------------- grid spans
+
+/// T085 promised three property tests and the third was "digest stable across
+/// span orderings". What shipped compares `column_extents` — two floats — and
+/// equal track widths do not entail an equal digest, which is the whole
+/// premise of this file.
+///
+/// The promise cannot be discharged as *whole-digest invariance under
+/// permuting the children*, and saying so is part of the answer rather than a
+/// dodge: grid seating is cursor-ordered, so moving a spanning child earlier
+/// in the declaration moves it to an earlier cell and draws a different
+/// picture. A digest that ignored that would be broken. What the promise
+/// means, and what `column_sizing_does_not_depend_on_which_span_is_resolved_first`
+/// was reaching for, is that *span resolution order must not leak into the
+/// geometry*. The three tests below say that in terms the digest carries.
+///
+/// This is the first: two spanning children swap their content, so the order
+/// the wider span is resolved in flips.
+///
+/// Three columns and one plain child, and both details are load-bearing.
+/// `TrackNatural::resolve` is `single.unwrap_or(spanned)` — a spanning child
+/// speaks into a track **only when no child occupies that track alone**. An
+/// earlier draft of this test put a plain cell under each of two columns, and
+/// those two cells masked the spans completely: the assertion held with the
+/// spanning pair contributing nothing to it, which is a test that cannot fail
+/// for the reason it claims. So the pair spans columns 0 and 1, which no
+/// single child occupies, and `r` wraps to column 2 of the second row, where
+/// its x origin is exactly the boundary the spans decided.
+///
+/// Column origins only, and the exclusion is measured rather than assumed. A
+/// child is sized to its own content, so the wide text is 96 units in one tree
+/// and 16 in the other and wraps inside its cell, which moves the row heights
+/// under it. That is content deciding a content-sized row. Column x is the
+/// axis the spanning pair negotiates, and it is the axis that must not move.
+fn spanning_rows(first: &str, second: &str) -> ViewNode {
+    let spanning = |key: &str, text: &str| {
+        ViewNode::new(NodeKind::Text, key).with_props(Props {
+            text: Some(text.into()),
+            span: Some(GridSpan {
+                columns: 2,
+                rows: 1,
+            }),
+            ..Props::default()
+        })
+    };
+    ViewNode::new(NodeKind::Grid, "g")
+        .with_props(Props {
+            columns: vec![TrackSize::FitContent; 3],
+            ..Props::default()
+        })
+        .child(spanning("p", first))
+        .child(spanning("q", second))
+        .child(ViewNode::new(NodeKind::Text, "r").with_props(Props {
+            text: Some("z".into()),
+            ..Props::default()
+        }))
+}
+
+#[test]
+fn which_span_resolves_first_moves_no_column_origin() {
+    let (fwd, rev) = (
+        frame(&spanning_rows("xxxxxxxxxxxx", "xx")),
+        frame(&spanning_rows("xx", "xxxxxxxxxxxx")),
+    );
+    let columns = |f: &PetrifiedFrame| -> Vec<(String, f32)> {
+        f.placements
+            .iter()
+            .map(|p| (p.id.clone(), p.rect.x))
+            .collect()
+    };
+    assert_eq!(
+        columns(&fwd),
+        columns(&rev),
+        "a column origin moved, so track sizing depends on which span resolved first"
+    );
+    assert!(
+        columns(&fwd).iter().any(|(id, x)| id == "/g/r" && *x > 0.0),
+        "the plain cell sits at x=0, so this fixture never witnessed the column \
+         boundary the spans decide: {:?}",
+        columns(&fwd)
+    );
+    assert_ne!(
+        fwd.digest, rev.digest,
+        "the two trees draw different words and the frame digest cannot see it"
+    );
+}
+
+/// The second: `GridSpan::ONE` is the pre-FR-061 behaviour spelled out, so
+/// declaring it must cost nothing. If seating ever branched on
+/// `span.is_some()` rather than on the extent the span covers, or if the span
+/// reached `PaintContent`, these two would be different frames.
+#[test]
+fn a_one_cell_span_is_the_same_frame_as_no_span_at_all() {
+    // Two children, and the spanned one is second. A grid whose only child is
+    // the one under test cannot see a seating shift: an empty first column is
+    // zero wide and the default gap is zero, so a child pushed from cell 0 to
+    // cell 1 lands on the same x. The plain child ahead of it gives column
+    // zero a width, so a shift moves the cell under test somewhere visible.
+    let tree = |span: Option<GridSpan>| {
+        ViewNode::new(NodeKind::Grid, "g")
+            .with_props(Props {
+                columns: vec![TrackSize::FitContent; 2],
+                ..Props::default()
+            })
+            .child(ViewNode::new(NodeKind::Text, "a").with_props(Props {
+                text: Some("zzzz".into()),
+                ..Props::default()
+            }))
+            .child(ViewNode::new(NodeKind::Text, "p").with_props(Props {
+                text: Some("hi".into()),
+                span,
+                ..Props::default()
+            }))
+    };
+    assert_eq!(
+        dig(&tree(Some(GridSpan::ONE))),
+        dig(&tree(None)),
+        "declaring the one-cell span must be the same picture as declaring no \
+         span, or `GridSpan::ONE` is not the default it claims to be"
+    );
+}
+
+/// The third: "stable" taken literally. `a_payload_carrying_tree_digests_identically_a_hundred_times`
+/// makes this claim for a tree with no grid in it; the span path seats through
+/// a mutable occupancy cursor, which is exactly the kind of state that decays
+/// into a run-dependent answer.
+#[test]
+fn a_spanning_grid_digests_identically_a_hundred_times() {
+    let tree = spanning_rows("xxxxxxxxxxxx", "xx");
+    let first = dig(&tree);
+    for run in 1..100 {
+        assert_eq!(dig(&tree), first, "run {run} disagreed with run 0");
+    }
 }
 
 fn text_node(props: Props) -> ViewNode {

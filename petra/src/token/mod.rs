@@ -30,8 +30,8 @@ pub use snapshot::ThemeSnapshot;
 pub use status::{StatusShape, StatusToken, StatusTokenError};
 pub use theme::{Theme, ThemeError, ThemeMismatch, ThemeUnusable};
 pub use value::{
-    ColorValue, MotionEasing, MotionValue, ShapeValue, TokenKind, TokenValue, TypographyValue,
-    TypographyWeight,
+    ColorValue, MotionEasing, MotionValue, ShapeValue, Silhouette, TokenKind, TokenValue,
+    TypographyValue, TypographyWeight,
 };
 pub use vocabulary::{DesignToken, Vocabulary};
 

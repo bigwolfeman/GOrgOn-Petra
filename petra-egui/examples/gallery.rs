@@ -1143,7 +1143,8 @@ impl Gallery {
                     note(
                         "note",
                         "Colour is never the only channel: every state carries its own \
-                         word and its own silhouette, because `status` takes a whole \
+                         word and its own silhouette — OK is a disc, Degraded a \
+                         triangle, Down a square — because `status` takes a whole \
                          StatusToken and there is no way to hand it a hue on its own.",
                     ),
                 ],
@@ -1658,18 +1659,30 @@ impl App for Gallery {
 /// sample every pass, so an empty series means the painter ran without the
 /// application behind it.
 ///
-/// Every colour comes from `ctx.colors`, the same
-/// [`gorgon_petra_egui::paint::ColorSource`] the rest of the frame painted
-/// with, so the sparkline follows the theme instead of carrying a palette of
-/// its own. Nothing here means anything by hue: the line is ink, and the
-/// number it plots is printed beside it in the PLACEMENTS tile.
+/// Every colour *and every gap* comes from `ctx.tokens`, the same
+/// [`gorgon_petra_egui::paint::TokenSource`] the rest of the frame painted
+/// with, so the sparkline follows the theme instead of carrying a palette
+/// and a spacing ramp of its own. Nothing here means anything by hue: the
+/// line is ink, and the number it plots is printed beside it in the
+/// PLACEMENTS tile.
 fn paint_sparkline(painter: &egui::Painter, ctx: &CustomPaintCtx<'_>, samples: &[f32]) -> bool {
     if samples.is_empty() {
         return false;
     }
     let (Some(ink), Some(rule)) = (
-        ctx.colors.color("text.primary"),
-        ctx.colors.color("text.muted"),
+        ctx.tokens.color("text.primary"),
+        ctx.tokens.color("text.muted"),
+    ) else {
+        return false;
+    };
+    // The well's inset and the head marker sit on the theme's spacing ramp,
+    // not on numbers this function picked. A theme that does not carry the
+    // ramp cannot be plotted on it, and saying so — `false`, so the name
+    // lands in `undrawn` — is the honest answer, the same one an absent ink
+    // colour gets above.
+    let (Some(inset), Some(marker)) = (
+        ctx.tokens.spacing("spacing.xs"),
+        ctx.tokens.spacing("spacing.2xs"),
     ) else {
         return false;
     };
@@ -1678,7 +1691,7 @@ fn paint_sparkline(painter: &egui::Painter, ctx: &CustomPaintCtx<'_>, samples: &
     // for exactly this: a hairline declared in logical units is two pixels on
     // a 2x display, which reads as a border rather than as a baseline.
     let hairline = (1.0 / ctx.scale.factor()).max(0.5);
-    let plot = ctx.rect.shrink(4.0);
+    let plot = ctx.rect.shrink(inset);
     if plot.width() <= 0.0 || plot.height() <= 0.0 {
         return false;
     }
@@ -1715,7 +1728,7 @@ fn paint_sparkline(painter: &egui::Painter, ctx: &CustomPaintCtx<'_>, samples: &
     // The head of the series, marked, so a one-sample history is still a
     // drawn sparkline rather than an empty well that claims to have drawn.
     if let Some(head) = head {
-        painter.circle_filled(head, 2.0, ink);
+        painter.circle_filled(head, marker, ink);
     }
     true
 }

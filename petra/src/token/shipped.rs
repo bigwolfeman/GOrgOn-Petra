@@ -13,8 +13,8 @@ use crate::token::name::TokenName;
 use crate::token::status::{StatusShape, StatusToken};
 use crate::token::theme::Theme;
 use crate::token::value::{
-    ColorValue, MotionEasing, MotionValue, ShapeValue, TokenKind, TokenValue, TypographyValue,
-    TypographyWeight,
+    ColorValue, MotionEasing, MotionValue, ShapeValue, Silhouette, TokenKind, TokenValue,
+    TypographyValue, TypographyWeight,
 };
 use crate::token::vocabulary::{DesignToken, Vocabulary};
 
@@ -108,6 +108,34 @@ fn insert_shape_ramp(values: &mut BTreeMap<TokenName, TokenValue>) {
     }
 }
 
+/// The shipped silhouette family: the three outline figures a paint slot
+/// can name.
+///
+/// Not a ramp — there is no ordering between a triangle and a diamond — so
+/// unlike [`SHAPE_RAMP`] this is a set, and the tests below hold it to
+/// membership rather than to monotonicity.
+///
+/// `rect` is declared even though it is what an unbound `silhouette` slot
+/// already means. A design system that can only name the exceptions makes
+/// "this marker is deliberately a plain box" and "somebody forgot the
+/// silhouette" the same declaration; naming the default lets
+/// `component::status` bind the slot for all four of `StatusShape`'s
+/// variants rather than for two of them, which is what makes its mapping
+/// total and its test able to walk every variant.
+const SILHOUETTE_FAMILY: [(&str, Silhouette); 3] = [
+    ("shape.silhouette-rect", Silhouette::Rect),
+    ("shape.silhouette-triangle", Silhouette::Triangle),
+    ("shape.silhouette-diamond", Silhouette::Diamond),
+];
+
+/// Assign every [`SILHOUETTE_FAMILY`] member into a theme's value map, for
+/// the same reason [`insert_shape_ramp`] exists.
+fn insert_silhouette_family(values: &mut BTreeMap<TokenName, TokenValue>) {
+    for (token, figure) in SILHOUETTE_FAMILY {
+        values.insert(name(token), TokenValue::Silhouette(figure));
+    }
+}
+
 /// The shipped typography ramp: `body` plus three heading levels.
 ///
 /// `typography.body` and `typography.heading` are unchanged from the
@@ -198,6 +226,21 @@ pub fn standard_vocabulary() -> Vocabulary {
             name("shape.corner-full"),
             TokenKind::Shape,
         ))
+        // The outline family (FR-015). A corner radius spans square to
+        // circle and stops there; these are the two figures beyond it, plus
+        // the name for the box itself. See `crate::token::value::Silhouette`.
+        .declare(DesignToken::new(
+            name("shape.silhouette-rect"),
+            TokenKind::Silhouette,
+        ))
+        .declare(DesignToken::new(
+            name("shape.silhouette-triangle"),
+            TokenKind::Silhouette,
+        ))
+        .declare(DesignToken::new(
+            name("shape.silhouette-diamond"),
+            TokenKind::Silhouette,
+        ))
         // The keyboard focus ring (FR-015, FR-025). Two colours, because the
         // ring is an ink band flanked by two paper halos: see
         // `crate::token::focus` for why one band cannot be enough, and
@@ -268,6 +311,7 @@ pub fn light() -> Theme {
         }),
     );
     insert_shape_ramp(&mut values);
+    insert_silhouette_family(&mut values);
 
     // Status colours. The values are chosen by measurement, not by taste:
     // `status_colours_stay_apart_under_red_green_colour_blindness` simulates
@@ -352,6 +396,7 @@ pub fn dark() -> Theme {
         }),
     );
     insert_shape_ramp(&mut values);
+    insert_silhouette_family(&mut values);
 
     // The focus ring, dark mode: the ink/paper pair inverted, so the core
     // still reads as the drawn line and the halos as the ground around it.
@@ -762,6 +807,53 @@ mod tests {
     /// [`the_two_shipped_themes_agree_on_every_gap`] applies to spacing: a
     /// rounded corner does not change shape when the operator turns the
     /// lights off, so light and dark must agree on every step.
+    /// The outline family, pinned by value in both themes.
+    ///
+    /// A silhouette is geometry, not colour: a "degraded" marker is a
+    /// triangle with the lights on and a triangle with them off, the same
+    /// reasoning [`the_two_shipped_themes_agree_on_every_corner`] applies
+    /// to a corner radius. The membership assertion at the end is what
+    /// stops a fourth figure appearing without this test naming it — and
+    /// without `gorgon-petra-egui`'s painter, which matches on this enum
+    /// exhaustively, being asked to draw it.
+    #[test]
+    fn the_silhouette_family_is_three_figures_pinned_in_both_themes() {
+        use crate::token::value::Silhouette;
+        let expected: [(&str, Silhouette); 3] = [
+            ("shape.silhouette-rect", Silhouette::Rect),
+            ("shape.silhouette-triangle", Silhouette::Triangle),
+            ("shape.silhouette-diamond", Silhouette::Diamond),
+        ];
+        let (l, d) = (light(), dark());
+        for (token, figure) in expected {
+            let n = TokenName::new(token).unwrap();
+            assert_eq!(
+                l.value(&n),
+                Some(&TokenValue::Silhouette(figure)),
+                "{token} must be {figure:?} in the light theme, found {:?}",
+                l.value(&n)
+            );
+            assert_eq!(
+                d.value(&n),
+                l.value(&n),
+                "{token} differs between light and dark; a silhouette is geometry, not colour"
+            );
+        }
+
+        let vocab = standard_vocabulary();
+        let declared: Vec<&TokenName> = vocab
+            .names()
+            .filter(|n| vocab.kind_of(n) == Some(crate::token::value::TokenKind::Silhouette))
+            .collect();
+        assert_eq!(
+            declared.len(),
+            expected.len(),
+            "the vocabulary declares {} silhouette tokens but the family has {}: {declared:?}",
+            declared.len(),
+            expected.len()
+        );
+    }
+
     #[test]
     fn the_two_shipped_themes_agree_on_every_corner() {
         let (l, d) = (light(), dark());

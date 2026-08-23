@@ -137,9 +137,18 @@ pub fn place(
 
         // Absolute coordinates, seeded from the inset content rect, not the
         // grid's own outer rect: see `cumulative_offsets`.
+        //
+        // The far edges come from `content` for the same reason the origins
+        // do. A run that ends the axis has no neighbour to take its far edge
+        // from, and where the tracks partition the box (`Tracks::fills`) the
+        // box's own edge is that far edge — the identical float the grid's
+        // last row must land on. `content`, not `slot.rect`: with padding the
+        // tracks end at the padding, and the grid's rect does not.
         let cells = Cells {
             col_x: cumulative_offsets(content.x, &col_widths.extents, col_widths.spacing),
             row_y: cumulative_offsets(content.y, &row_heights.extents, row_heights.spacing),
+            col_far: col_widths.fills.then(|| content.right()),
+            row_far: row_heights.fills.then(|| content.bottom()),
             col_w: col_widths.extents,
             row_h: row_heights.extents,
             col_spacing: col_widths.spacing,
@@ -254,6 +263,12 @@ struct Cells {
     col_spacing: f32,
     /// Row gap actually used.
     row_spacing: f32,
+    /// The x the columns end on when they partition the content box, and
+    /// `None` when they stop short of it. See [`seam_extent`] and
+    /// [`Tracks::fills`].
+    col_far: Option<f32>,
+    /// The y the rows end on, on the same terms.
+    row_far: Option<f32>,
     /// Where each child sits.
     flow: Flow,
 }
@@ -262,10 +277,12 @@ impl Cells {
     /// The rect child `i` occupies, or `None` when its leading track is out of
     /// range.
     ///
-    /// The extent is the child's whole track run — the summed extents of the
-    /// tracks it spans plus the gaps between them ([`span_extent`]) — so a
-    /// child spanning three columns is offered, and clipped to, all three of
-    /// them and the two gaps, not just its own.
+    /// The extent is the child's whole track run — the tracks it spans plus
+    /// the gaps between them — so a child spanning three columns is offered,
+    /// and clipped to, all three of them and the two gaps, not just its own.
+    /// [`seam_extent`] is what turns that into a float, and it takes the run's
+    /// far edge from whatever sits on the other side of it: the neighbour's
+    /// own offset, or the axis end for a run that has no neighbour.
     fn of(&self, i: usize) -> Option<Rect> {
         let run = self.flow.runs.get(i)?;
         let (&x, &y) = (self.col_x.get(run.col)?, self.row_y.get(run.row)?);
@@ -275,6 +292,7 @@ impl Cells {
             seam_extent(
                 &self.col_x,
                 &self.col_w,
+                self.col_far,
                 self.col_spacing,
                 run.col,
                 run.ncols,
@@ -282,6 +300,7 @@ impl Cells {
             seam_extent(
                 &self.row_y,
                 &self.row_h,
+                self.row_far,
                 self.row_spacing,
                 run.row,
                 run.nrows,
@@ -458,14 +477,38 @@ impl Flow {
 ///
 /// So a run that has a neighbour reads its far edge back out of the offsets
 /// the neighbour will use, and the seam is bit-identical by construction
-/// rather than by luck. A run ending on the last track has no neighbour to
-/// disagree with and falls back to the sum.
+/// rather than by luck.
+///
+/// A run ending on the **last** track has no neighbour, and summing there put
+/// the same defect at the other end of the axis. Measured, 2026-08-23, a
+/// hundred weighted rows in 301 units: the rows ended at `300.99994` while the
+/// grid itself ended at `301.0`, and at scale 1.5 those are device rows 451
+/// and 452 — a one-pixel band of light along the bottom of the grid. Over 5
+/// scales x 4 row counts x 6 heights x 4 spans: 37 splits, every one at the
+/// axis end, zero at an interior seam.
+///
+/// `far` closes that. It is the coordinate the *tracks themselves* end on when
+/// they partition the whole content box — which is a structural fact, not a
+/// measured one: weighted tracks are defined to absorb the budget, so their
+/// far edge **is** the content box's far edge whatever `budget * (w / total)`
+/// rounds to. The last run reads it the way an interior run reads its
+/// neighbour's offset, and the residue of a hundred roundings lands inside the
+/// last track instead of between the grid and its own last row.
+///
+/// `far` is `None` — and the sum is the answer again — exactly when the tracks
+/// do **not** partition the box: three 40-unit columns in a 300-unit grid stop
+/// at 132, and anchoring them to 300 would stretch the last column by 168
+/// units. [`Tracks::fills`] is what tells the two apart, and it is decided
+/// where the distribution happens rather than guessed from the numbers here;
+/// a numeric "did they add up to the budget?" test would be the tolerance this
+/// whole function exists to avoid.
 ///
 /// [`span_extent`] is unchanged and still correct for **measurement**, where
 /// there is no seam and no offsets array yet.
 fn seam_extent(
     offsets: &[f32],
     track_extents: &[f32],
+    far: Option<f32>,
     spacing: f32,
     start: usize,
     count: usize,
@@ -473,6 +516,14 @@ fn seam_extent(
     let end = start.saturating_add(count.max(1));
     match (offsets.get(start), offsets.get(end)) {
         (Some(&lead), Some(&next)) => next - spacing.max(0.0) - lead,
+        // The axis end, standing in for the neighbour that is not there. The
+        // floor is the same defensive floor `span_extent` has: it cannot fire
+        // while the offsets are monotonic, and it costs nothing when it does
+        // not, because `max` on a positive `f32` returns that same `f32`.
+        (Some(&lead), None) if end == offsets.len() => match far {
+            Some(far) => (far - lead).max(0.0),
+            None => span_extent(track_extents, spacing, start, count),
+        },
         _ => span_extent(track_extents, spacing, start, count),
     }
 }
@@ -589,6 +640,73 @@ fn effective_row_tracks(rows: &[TrackSize], flow: &Flow) -> Vec<TrackSize> {
     out
 }
 
+/// What [`spend_declared`] found: the tracks that name their own size have
+/// taken it, and what the weight tracks divide is what is left.
+struct Declared {
+    /// Extents so far. Weight tracks are still zero; they are filled in by
+    /// the caller, which is the only step that needs `weight_total`.
+    widths: Vec<f32>,
+    /// The budget the weight tracks share.
+    budget: f32,
+    /// Summed weights, zero when no track on this axis is weighted.
+    weight_total: f32,
+    /// Whether a track declared more room than the budget still held.
+    ///
+    /// Recorded here, per track, against the running budget — not recovered
+    /// afterwards by adding the extents back up. Those are the same question
+    /// in exact arithmetic and not in `f32`, and the re-summed form is the one
+    /// that reported a plain weighted grid as truncated: see
+    /// [`distribute_tracks`].
+    overflowed: bool,
+}
+
+/// The first distribution pass: every track that declares its own size takes
+/// it, left to right, out of `budget`.
+///
+/// `Fixed` takes its declared value whether or not the budget can carry it —
+/// that is what makes it fixed, and reporting the overflow rather than
+/// silently shrinking is what [`Declared::overflowed`] is for. `FitContent`
+/// asks its content and is clamped to what remains, so it can never overflow.
+/// `Weight` declares nothing here; it is a share of whatever this pass leaves.
+///
+/// Lifted out of [`distribute_tracks`] so that function reads as the three
+/// steps it is — reserve the gaps, spend the declared sizes, share the rest —
+/// rather than carrying all three in one body.
+fn spend_declared(
+    tracks: &[TrackSize],
+    budget: f32,
+    natural: &mut impl FnMut(usize, Proposal) -> f32,
+) -> Declared {
+    let mut out = Declared {
+        widths: vec![0.0_f32; tracks.len()],
+        budget,
+        weight_total: 0.0,
+        overflowed: false,
+    };
+    for (i, track) in tracks.iter().enumerate() {
+        match track {
+            TrackSize::Fixed { value } => {
+                let w = value.max(0.0);
+                out.widths[i] = w;
+                if w > out.budget + FIT_EPSILON {
+                    out.overflowed = true;
+                }
+                out.budget = (out.budget - w).max(0.0);
+            }
+            TrackSize::FitContent => {
+                let ideal = natural(i, Proposal::Unspecified).max(0.0);
+                let w = ideal.min(out.budget);
+                out.widths[i] = w;
+                out.budget = (out.budget - w).max(0.0);
+            }
+            TrackSize::Weight { weight } => {
+                out.weight_total += weight.max(0.0);
+            }
+        }
+    }
+    out
+}
+
 /// Resolve one axis of grid tracks against `container_probe` (the
 /// container's own proposal on this axis).
 ///
@@ -627,8 +745,11 @@ fn distribute_tracks(
                 })
                 .collect(),
             spacing: spacing.max(0.0),
-            // An open probe has no budget, so nothing can fail to fit in it.
+            // An open probe has no budget, so nothing can fail to fit in it,
+            // and nothing partitions it either: there is no far edge for a
+            // last track to close on.
             truncated: false,
+            fills: false,
         };
     };
 
@@ -655,39 +776,61 @@ fn distribute_tracks(
         spacing = if n > 1 { avail / (n - 1) as f32 } else { 0.0 };
         forced = true;
     }
-    let mut budget = (avail - reserved(spacing, n)).max(0.0);
-    let mut widths = vec![0.0_f32; n];
-    let mut weight_total = 0.0_f32;
-    for (i, track) in tracks.iter().enumerate() {
-        match track {
-            TrackSize::Fixed { value } => {
-                let w = value.max(0.0);
-                widths[i] = w;
-                budget = (budget - w).max(0.0);
-            }
-            TrackSize::FitContent => {
-                let ideal = natural(i, Proposal::Unspecified).max(0.0);
-                let w = ideal.min(budget);
-                widths[i] = w;
-                budget = (budget - w).max(0.0);
-            }
-            TrackSize::Weight { weight } => {
-                weight_total += weight.max(0.0);
-            }
-        }
-    }
+    let Declared {
+        mut widths,
+        budget,
+        weight_total,
+        overflowed,
+    } = spend_declared(
+        tracks,
+        (avail - reserved(spacing, n)).max(0.0),
+        &mut natural,
+    );
+    // Shrinking the gaps to fit is itself a declaration that did not fit.
+    let overflowed = overflowed || forced;
     if weight_total > 0.0 {
         for (i, track) in tracks.iter().enumerate() {
             if let TrackSize::Weight { weight } = track {
-                // `budget` can never go negative (every subtraction above
-                // floors at zero), so a weight track's share never goes
-                // negative either — it collapses to zero, not overflow.
+                // `budget` can never go negative (every subtraction in
+                // `spend_declared` floors at zero), so a weight track's share
+                // never goes negative either — it collapses to zero, not
+                // overflow.
                 widths[i] = (budget * (weight.max(0.0) / weight_total)).max(0.0);
             }
         }
+        if !overflowed {
+            return Tracks {
+                extents: widths,
+                spacing,
+                truncated: false,
+                fills: true,
+            };
+        }
+        // A weight track is a share of `budget`, and `budget` is what the
+        // fixed and fit-content tracks left. A share of a budget cannot
+        // exceed the budget, so this axis fits, exactly, by construction —
+        // and it is a partition of `avail`, which is what `Tracks::fills`
+        // says and what lets a run ending on the last track close on the
+        // content box's own edge (`seam_extent`).
+        //
+        // [`fit_to_budget`] is not asked, because asking it means re-deriving
+        // the total by summing the extents back up, and summing is the one
+        // question this axis cannot answer. Measured, 2026-08-23: 96 weighted
+        // rows of `727 / 96` accumulate to `727.0003`, which is over
+        // `FIT_EPSILON`, so a grid that had truncated nothing reported
+        // `truncated` — a digest input — and then cut 3e-4 off its last row
+        // to "fit" a budget it already fitted. The overflow that can really
+        // happen here is a *declared* extent bigger than the budget, and
+        // `overflowed` catches that in `spend_declared`, per track, while the
+        // budget is still a number nobody has had to re-sum.
     }
     let mut fitted = fit_to_budget(widths, spacing, avail);
     fitted.truncated |= forced;
+    // Not a partition: either nothing draws on the leftover budget (the tracks
+    // declare their own size and the grid may be bigger than all of them), or
+    // the cut is what decided where they stop. Either way the last track ends
+    // where its own extent ends, not where the content box does.
+    fitted.fills = false;
     fitted
 }
 
@@ -703,6 +846,22 @@ struct Tracks {
     extents: Vec<f32>,
     spacing: f32,
     truncated: bool,
+    /// Whether these tracks partition the whole budget they were given, so
+    /// that the last one's far edge **is** the content box's far edge.
+    ///
+    /// A structural answer, decided by which sizing kinds took part, not a
+    /// numeric one recovered by adding the extents back up — the sum is
+    /// precisely the quantity that cannot be trusted here ([`seam_extent`]).
+    ///
+    /// A weighted track is defined as a share of whatever budget the fixed and
+    /// fit-content tracks left, so any grid with one absorbs its axis exactly.
+    /// Without one the tracks say how big they are and the grid may be larger;
+    /// three 40-unit columns in a 300-unit grid end at 132 and must stay
+    /// there. Truncation is excluded for the same reason from the other side:
+    /// it deliberately collapses the trailing tracks to zero, and a collapsed
+    /// last track anchored to the far edge would be handed back all the room
+    /// the cut just took away.
+    fills: bool,
 }
 
 /// Force `extents` to fit `avail` once spacing is reserved, and report whether
@@ -728,6 +887,7 @@ fn fit_to_budget(extents: Vec<f32>, spacing: f32, avail: f32) -> Tracks {
             extents,
             spacing,
             truncated: false,
+            fills: false,
         };
     }
     let mut left = (avail - gaps).max(0.0);
@@ -743,6 +903,7 @@ fn fit_to_budget(extents: Vec<f32>, spacing: f32, avail: f32) -> Tracks {
         extents: cut,
         spacing,
         truncated: true,
+        fills: false,
     }
 }
 
@@ -1083,21 +1244,41 @@ mod tests {
     /// the run, so nothing outside the span can claim it, and a child that
     /// negotiated against 80 would leave six units of its own cell unused
     /// with no way to find out.
-    /// The last-track fallback, which nothing else exercises.
+    /// The last-track branch: a run that ends the axis must cover its tracks
+    /// *and* close on the float the grid's own content closes on.
     ///
     /// `seam_extent` reads a run's far edge out of the neighbour's offset, and
-    /// a run ending on the last track has no neighbour, so it falls back to
-    /// summing. That branch is the one the week-view sweep cannot reach —
-    /// nothing sits below or right of a run that ends the axis, so no seam
-    /// assertion ever compares across it (leaf C3 named this gap rather than
-    /// glossing it, and this test is the answer).
+    /// a run ending on the last track has no neighbour. That branch is the one
+    /// the week-view sweep cannot reach — nothing sits below or right of a run
+    /// that ends the axis, so no seam assertion ever compares across it (leaf
+    /// C3 named this gap rather than glossing it).
     ///
-    /// Two claims, because the fallback could be wrong in two directions: the
-    /// run must cover its tracks *and their interior gaps*, and it must end
-    /// exactly where the grid's content ends rather than overshooting into
-    /// space no track owns.
+    /// Three claims, because the branch can be wrong in three directions.
+    ///
+    /// The first two run on `Fixed` tracks that under-fill nothing and sum
+    /// exactly: the run must cover its tracks *and their interior gaps*, and
+    /// it must stop where the tracks stop rather than overshooting into space
+    /// no track owns. Those are the claims `ed65e08` wrote, and they are still
+    /// the right claims — but every number in that fixture (40, 6, 132) is
+    /// exactly representable in `f32`, so both hold under *any* summation
+    /// order. **That fixture cannot fail on a summation defect**, which is why
+    /// it sat green through the one below for a day.
+    ///
+    /// The third claim is the one it could not make. Weighted tracks partition
+    /// the content box by construction, so the last one's far edge *is* the
+    /// content box's far edge — but `budget * (w / total)` is not exactly
+    /// representable, and summing a hundred of them left the last row's bottom
+    /// at `300.99994` against a grid bottom of `301.0`. At scale 1.5 that is
+    /// device row 451 against 452: a one-pixel light band along the bottom of
+    /// the grid, the same artefact `feaa3b7` closed at the interior seams, at
+    /// the other end of the axis. Measured over 5 scales x 4 row counts x 6
+    /// heights x 4 spans: 37 splits, every one at the axis end.
+    ///
+    /// `assert_eq!` on raw `f32` for the same reason the interior seam uses
+    /// it: the edge is one number, not two near ones. A tolerance here is the
+    /// bug wearing the test's clothes.
     #[test]
-    fn a_run_ending_on_the_last_track_falls_back_and_still_covers_its_tracks() {
+    fn a_run_ending_on_the_last_track_covers_its_tracks_and_ends_where_the_grid_does() {
         // Three 40-unit columns, 6 apart: content spans 40*3 + 6*2 = 132.
         let g = fixed_grid(3, 40.0, 6.0, vec![spacer("a"), spanning("tail", 2, 1)]);
         let rects = child_rects(&g, Rect::new(0.0, 0.0, 132.0, 80.0));
@@ -1111,6 +1292,47 @@ mod tests {
             132.0,
             "the run ends where the grid's content ends, not past it"
         );
+
+        // Tracks whose extents are not exactly representable, at the display
+        // scale the split shows up on. `h / rows` is never a binary fraction
+        // in any of these, so the accumulated far edge and the grid's own far
+        // edge are only equal if the code makes them equal.
+        let scale = Scale::new(1.5).unwrap();
+        for (rows, h) in [(100_usize, 301.0_f32), (48, 401.0), (96, 727.0)] {
+            for span in [1_usize, 3] {
+                let head = rows - span;
+                let children = (0..head)
+                    .map(|i| spacer(&format!("pre{i}")))
+                    .chain([spanning("tail", 1, span)])
+                    .collect::<Vec<_>>();
+                let g = ViewNode::new(NodeKind::Grid, "g")
+                    .with_props(Props {
+                        columns: vec![TrackSize::Fixed { value: 40.0 }],
+                        rows: vec![TrackSize::Weight { weight: 1.0 }; rows],
+                        row_spacing: gap(0.0),
+                        column_spacing: gap(0.0),
+                        align: Some(Align::Stretch),
+                        ..Props::default()
+                    })
+                    .with_children(children);
+                let offer = Rect::new(0.0, 0.0, 40.0, h);
+                let tail = *child_rects(&g, offer).last().unwrap();
+                assert_eq!(
+                    tail.bottom(),
+                    offer.bottom(),
+                    "rows={rows} h={h} span={span}: the last row must end on the \
+                     grid's own float, not {} — delta {:e}",
+                    tail.bottom(),
+                    offer.bottom() - tail.bottom()
+                );
+                assert_eq!(
+                    round_rect(tail, scale).bottom(),
+                    round_rect(offer, scale).bottom(),
+                    "rows={rows} h={h} span={span}: one device pixel of light \
+                     along the bottom of the grid at scale 1.5"
+                );
+            }
+        }
     }
 
     /// A spanning run's far edge is the *same float* its neighbour starts at.

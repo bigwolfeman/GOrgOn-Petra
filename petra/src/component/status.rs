@@ -11,31 +11,59 @@
 //! function could reassemble incorrectly — means a colour-only status
 //! cannot reach this function at all. That is gate C1-6: not "discouraged",
 //! unrepresentable.
+//!
+//! # The shape channel, and what it used to be
+//!
+//! This module used to carry [`StatusShape`] as a corner radius alone:
+//! `Circle` bound `shape.corner-full` and the other three bound
+//! `shape.corner-sm`. On the 10x10 dot that is a maximum outline deviation
+//! of 0.414 logical units between the two — under one device pixel at scale
+//! 1.0 — and three of the four variants were the same picture. FR-015 says
+//! meaning must not rest on colour alone; the shipped light theme paints
+//! `status.degraded` an orange-red and `status.down` a dark red, which is
+//! exactly the pair a red-green colourblind operator needs another channel
+//! for, and it was exactly the pair that had none.
+//!
+//! The channel is now two token slots, not one: `silhouette` names the
+//! figure ([`crate::token::Silhouette`]) and `radius` rounds its corners.
+//! All four variants reach the screen as four different outlines —
+//! see [`marker_for`] for the mapping and `gorgon-petra-egui`'s
+//! `paint::silhouette_points` for the geometry that draws it.
 
 use super::stack;
 use super::swatch;
 use super::text::text;
-use super::tokens::{SHAPE_FULL, SHAPE_SM, SPACING_SM};
+use super::tokens::{
+    SHAPE_FULL, SHAPE_NONE, SILHOUETTE_DIAMOND, SILHOUETTE_RECT, SILHOUETTE_TRIANGLE, SPACING_SM, t,
+};
 use crate::geom::Axis;
 use crate::token::{StatusShape, StatusToken};
 use crate::tree::{Key, Role, ViewNode};
 
 const DOT: f32 = 10.0;
 
-/// The corner radius standing in for the shape channel.
+/// The paint slot naming a node's outline family. The painter's own
+/// `SILHOUETTE_SLOT`; spelled here because a slot key is a plain string by
+/// design (`Props::tokens`), not a token name this module could import.
+const SILHOUETTE_SLOT: &str = "silhouette";
+/// The `(radius, silhouette)` token pair one [`StatusShape`] paints as.
 ///
-/// Only two silhouettes are reachable through a corner-radius swatch: round
-/// ([`StatusShape::Circle`]) and not-round (everything else). That is the
-/// same ceiling `gallery.rs`'s own `status_table` comment already records —
-/// two of `StatusShape`'s four variants render as tofu in the shipped font,
-/// and nothing in the painter consumes `StatusShape` directly — so
-/// `Triangle`, `Square`, and `Diamond` all draw as the square swatch today.
-/// The text channel is what actually carries the distinction between them;
-/// the shape channel here is real but coarser than the type it reads.
-fn corner_for(shape: StatusShape) -> &'static str {
+/// Total over the enum, with no catch-all arm: a fifth variant will not
+/// compile until somebody decides what figure it draws, which is the check
+/// that stops a new status shape from silently inheriting a square.
+///
+/// `radius` is `None` for the two polygons on purpose. A triangle and a
+/// diamond have no corner radius to round, so binding one would be a
+/// declaration the painter ignores — and a slot bound but not drawn is the
+/// shape this defect took the first time.
+fn marker_for(shape: StatusShape) -> (Option<&'static str>, &'static str) {
     match shape {
-        StatusShape::Circle => SHAPE_FULL,
-        StatusShape::Triangle | StatusShape::Square | StatusShape::Diamond => SHAPE_SM,
+        // A full radius on a square box is a disc. The rect family already
+        // spans square-to-circle, so a circle needs no figure of its own.
+        StatusShape::Circle => (Some(SHAPE_FULL), SILHOUETTE_RECT),
+        StatusShape::Square => (Some(SHAPE_NONE), SILHOUETTE_RECT),
+        StatusShape::Triangle => (None, SILHOUETTE_TRIANGLE),
+        StatusShape::Diamond => (None, SILHOUETTE_DIAMOND),
     }
 }
 
@@ -47,14 +75,11 @@ fn corner_for(shape: StatusShape) -> &'static str {
 /// to trip.
 pub fn status(key: impl Into<Key>, status: &StatusToken) -> ViewNode {
     let key = key.into();
-    let dot = swatch(
-        "dot",
-        DOT,
-        DOT,
-        Some(status.name().as_str()),
-        None,
-        Some(corner_for(status.shape())),
-    );
+    let (radius, silhouette) = marker_for(status.shape());
+    let mut dot = swatch("dot", DOT, DOT, Some(status.name().as_str()), None, radius);
+    dot.props
+        .tokens
+        .insert(SILHOUETTE_SLOT.into(), t(silhouette));
     let label_node = text("label", status.text());
     let mut node = stack(
         key,

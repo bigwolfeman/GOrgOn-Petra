@@ -30,6 +30,8 @@ pub enum TokenKind {
     Motion,
     /// A geometric parameter of a shape, e.g. a corner radius.
     Shape,
+    /// An outline family: which closed figure a slot's rect is drawn as.
+    Silhouette,
 }
 
 /// A colour in linear light, straight (non-premultiplied) alpha, each
@@ -154,6 +156,43 @@ pub struct ShapeValue {
     pub corner_radius: f32,
 }
 
+/// Which closed figure a paint slot's rect is drawn as.
+///
+/// A separate token kind from [`ShapeValue`] rather than a field on it,
+/// because the two answer different questions and a slot binds them
+/// separately: [`TokenKind::Shape`] says *how round the corners are*,
+/// this says *what figure the corners belong to*. Keeping them apart is
+/// what lets one `radius` ramp serve every silhouette instead of one
+/// combined token per (figure, radius) pair.
+///
+/// Three variants, not four, and that is deliberate. A circle is
+/// [`Silhouette::Rect`] at `shape.corner-full`: the rect family already
+/// spans every convex rounded box from a sharp square to a full disc, and
+/// adding a `Circle` variant would make the same picture reachable two
+/// ways. [`Silhouette::Triangle`] and [`Silhouette::Diamond`] are the two
+/// figures no corner radius can reach, which is the whole reason this kind
+/// exists — see `crate::component::status`, where FR-015's shape channel
+/// used to collapse to a sub-pixel difference in corner radius because a
+/// rounded rect was the only figure the painter could draw.
+///
+/// The engine names the figure; a renderer decides the geometry. Nothing
+/// here is in device units and nothing here knows about a graphics API.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Silhouette {
+    /// The node's rect, with its `radius` slot's corners. A square at
+    /// `shape.corner-none`, a circle at `shape.corner-full` on a square
+    /// box, a stadium at `shape.corner-full` on an oblong one.
+    #[default]
+    Rect,
+    /// A triangle inscribed in the node's rect, apex at the top edge's
+    /// midpoint and base along the bottom edge.
+    Triangle,
+    /// A diamond inscribed in the node's rect: one vertex at the midpoint
+    /// of each edge.
+    Diamond,
+}
+
 /// A resolved token value. Exactly one variant per [`TokenKind`]; the two
 /// enums are kept in lock-step by [`TokenValue::kind`], which
 /// [`crate::token::theme::Theme::build`] uses to refuse a value assigned at
@@ -171,6 +210,8 @@ pub enum TokenValue {
     Motion(MotionValue),
     /// A shape parameter.
     Shape(ShapeValue),
+    /// An outline family.
+    Silhouette(Silhouette),
 }
 
 impl TokenValue {
@@ -183,6 +224,7 @@ impl TokenValue {
             Self::Typography(_) => TokenKind::Typography,
             Self::Motion(_) => TokenKind::Motion,
             Self::Shape(_) => TokenKind::Shape,
+            Self::Silhouette(_) => TokenKind::Silhouette,
         }
     }
 }
@@ -190,8 +232,8 @@ impl TokenValue {
 #[cfg(test)]
 mod tests {
     use super::{
-        ColorValue, MotionEasing, MotionValue, ShapeValue, TokenKind, TokenValue, TypographyValue,
-        TypographyWeight,
+        ColorValue, MotionEasing, MotionValue, ShapeValue, Silhouette, TokenKind, TokenValue,
+        TypographyValue, TypographyWeight,
     };
 
     #[test]
@@ -222,6 +264,36 @@ mod tests {
             TokenValue::Shape(ShapeValue { corner_radius: 4.0 }).kind(),
             TokenKind::Shape
         );
+        assert_eq!(
+            TokenValue::Silhouette(Silhouette::Triangle).kind(),
+            TokenKind::Silhouette
+        );
+    }
+
+    /// `Silhouette`'s wire spelling is what a serialized theme carries, so
+    /// it is pinned here rather than left to the derive's defaults: a
+    /// renamed variant would otherwise silently stop matching a theme file
+    /// already on disk.
+    #[test]
+    fn silhouette_round_trips_through_its_kebab_case_wire_form() {
+        for (variant, wire) in [
+            (Silhouette::Rect, "\"rect\""),
+            (Silhouette::Triangle, "\"triangle\""),
+            (Silhouette::Diamond, "\"diamond\""),
+        ] {
+            let encoded = serde_json::to_string(&variant).expect("a unit variant serializes");
+            assert_eq!(encoded, wire, "{variant:?} changed its wire spelling");
+            let decoded: Silhouette =
+                serde_json::from_str(wire).expect("the pinned wire form decodes");
+            assert_eq!(decoded, variant);
+        }
+    }
+
+    /// A slot that binds no silhouette gets the figure every node had
+    /// before this kind existed.
+    #[test]
+    fn the_default_silhouette_is_the_rect_every_node_used_to_draw() {
+        assert_eq!(Silhouette::default(), Silhouette::Rect);
     }
 
     #[test]

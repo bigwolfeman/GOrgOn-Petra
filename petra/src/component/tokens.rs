@@ -22,9 +22,14 @@ pub(crate) const SPACING_SM: &str = "spacing.sm";
 pub(crate) const SPACING_MD: &str = "spacing.md";
 pub(crate) const SPACING_LG: &str = "spacing.lg";
 
+pub(crate) const SHAPE_NONE: &str = "shape.corner-none";
 pub(crate) const SHAPE_SM: &str = "shape.corner-sm";
 pub(crate) const SHAPE_MD: &str = "shape.corner-md";
 pub(crate) const SHAPE_FULL: &str = "shape.corner-full";
+
+pub(crate) const SILHOUETTE_RECT: &str = "shape.silhouette-rect";
+pub(crate) const SILHOUETTE_TRIANGLE: &str = "shape.silhouette-triangle";
+pub(crate) const SILHOUETTE_DIAMOND: &str = "shape.silhouette-diamond";
 
 pub(crate) const TYPOGRAPHY_BODY: &str = "typography.body";
 pub(crate) const TYPOGRAPHY_HEADING: &str = "typography.heading";
@@ -48,9 +53,13 @@ pub(crate) const ALL: &[&str] = &[
     SPACING_SM,
     SPACING_MD,
     SPACING_LG,
+    SHAPE_NONE,
     SHAPE_SM,
     SHAPE_MD,
     SHAPE_FULL,
+    SILHOUETTE_RECT,
+    SILHOUETTE_TRIANGLE,
+    SILHOUETTE_DIAMOND,
     TYPOGRAPHY_BODY,
     TYPOGRAPHY_HEADING,
     SURFACE_BASE,

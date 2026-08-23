@@ -3,12 +3,22 @@
 //! All three carry `Role::Button` plus a declared `selected` state (C13's
 //! table): a checked checkbox, a chosen radio, and an "on" toggle are the
 //! same semantic fact — one control is presently true — worn by three
-//! different shapes. The shape channel is corner radius, the whole
-//! vocabulary the shipped shape ramp gives a control library to work with:
-//! a checkbox stays square-ish ([`SHAPE_SM`]), a radio and a toggle's track
-//! are full pills ([`SHAPE_FULL`]) — a round control reads as "one choice
-//! among several" the way a square one does not, which is the same
-//! distinction a browser's own checkbox/radio pair makes.
+//! different shapes. The shape channel is corner radius, which is enough
+//! here and only here: a square and a circle are the two ends of the rect
+//! family, so unlike `super::status` this pair needs no `silhouette` token
+//! to separate them. A checkbox is a sharp square ([`SHAPE_NONE`]), a radio
+//! and a toggle's track are full pills ([`SHAPE_FULL`]) — a round control
+//! reads as "one choice among several" the way a square one does not, which
+//! is the same distinction a browser's own checkbox/radio pair makes.
+//!
+//! The checkbox was `shape.corner-sm`, not [`SHAPE_NONE`], until the two boxes
+//! were measured against each other on the 12x12 box they actually paint
+//! into: a 4-unit radius against a full one is 0.828 logical units of
+//! outline deviation at its widest, under one device pixel at scale 1.0.
+//! The shipped corner ramp has no step between `none` and `sm`, so the only
+//! honest way to make the distinction visible was to take the rounding off
+//! — which also makes the checkbox a *square*, the shape the doc above
+//! already claimed it was.
 //!
 //! Selection is never carried by fill colour alone: every control here also
 //! sets `Semantics.selected`, so the state survives with the colour turned
@@ -16,7 +26,7 @@
 
 use super::text::text;
 use super::tokens::{
-    SHAPE_FULL, SHAPE_SM, SPACING_2XS, SPACING_SM, SPACING_XS, SURFACE_RAISED, TEXT_MUTED,
+    SHAPE_FULL, SHAPE_NONE, SPACING_2XS, SPACING_SM, SPACING_XS, SURFACE_RAISED, TEXT_MUTED,
     TEXT_PRIMARY, t,
 };
 use super::{pad, stack, swatch};
@@ -56,9 +66,9 @@ fn box_control(
     node
 }
 
-/// A checkbox: an independent on/off choice.
+/// A checkbox: an independent on/off choice, drawn as a sharp square.
 pub fn checkbox(key: impl Into<Key>, label: impl Into<String>, checked: bool) -> ViewNode {
-    box_control(key, label, checked, SHAPE_SM)
+    box_control(key, label, checked, SHAPE_NONE)
 }
 
 /// A radio button: one choice among a group, drawn as a filled circle when
