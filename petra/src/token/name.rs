@@ -14,11 +14,19 @@
 //!    `is_style_literal` refuses (hex colour, bare number, `rgb(...)` /
 //!    `hsl(...)` function calls);
 //! 2. the candidate must be namespaced: two or more role segments joined by
-//!    `.`, `-`, or `_`, each segment plain lowercase letters. This is what
-//!    rejects `grey700` and `red` without hand-maintaining a colour-word
-//!    list, while still accepting `text-muted` — the hyphenated form
-//!    `is_style_literal`'s own doc comment gives as a valid token name
-//!    alongside `surface.raised`.
+//!    `.`, `-`, or `_`, each segment lowercase letters, optionally *preceded*
+//!    by digits. This is what rejects `grey700` and `red` without
+//!    hand-maintaining a colour-word list, while still accepting `text-muted`
+//!    — the hyphenated form `is_style_literal`'s own doc comment gives as a
+//!    valid token name alongside `surface.raised` — and `spacing.2xs`, the
+//!    shipped ramp's smallest step.
+//!
+//! Rule 2's digit placement is the whole rule, not a loophole in it. A digit
+//! *after* the letters is a shade index — `grey700`, `blue500` — which is a
+//! value dressed as a word, and stays refused. A digit *before* them is a
+//! multiplier on a named step — `2xs` is "two steps below extra-small", the
+//! same reading `2xl` has — which is a role, and is accepted. See
+//! [`is_semantic_segment`].
 
 use std::fmt;
 
@@ -131,12 +139,19 @@ fn looks_like_style_literal(trimmed: &str) -> bool {
         .any(|prefix| lower.starts_with(prefix))
 }
 
-/// A semantic name segment: one or more plain lowercase ASCII letters.
+/// A semantic name segment: one or more plain lowercase ASCII letters,
+/// optionally preceded by ASCII digits.
 ///
-/// Excluding digits is deliberate, not incidental: `grey700`'s digits are
-/// exactly what makes it a value (a shade index) rather than a role.
+/// Where the digits sit is the rule. `grey700` puts them last, which is a
+/// *shade index* — a value with a word in front of it — and stays refused,
+/// as does a segment of digits alone (`spacing.2` names a number, not a
+/// step). `2xs` puts them first, which is a *multiplier on a named step*,
+/// read the same way `2xl` is; the shipped ramp is `2xs … 3xl` and every one
+/// of those is a role. A segment must still end in letters either way, so
+/// there is no shape that satisfies this and also parses as a number.
 fn is_semantic_segment(segment: &str) -> bool {
-    !segment.is_empty() && segment.bytes().all(|b| b.is_ascii_lowercase())
+    let letters = segment.trim_start_matches(|c: char| c.is_ascii_digit());
+    !letters.is_empty() && letters.bytes().all(|b| b.is_ascii_lowercase())
 }
 
 #[cfg(test)]
@@ -148,6 +163,45 @@ mod tests {
         assert!(TokenName::new("surface.raised").is_ok());
         assert!(TokenName::new("text-muted").is_ok());
         assert!(TokenName::new("status.degraded").is_ok());
+    }
+
+    /// The shipped spacing ramp runs `spacing.2xs … spacing.3xl`, so a
+    /// leading multiplier has to be constructible. It is the *only* digit
+    /// placement that is: see [`super::is_semantic_segment`].
+    #[test]
+    fn a_step_multiplier_is_a_role_and_is_accepted() {
+        for step in [
+            "spacing.2xs",
+            "spacing.xs",
+            "spacing.sm",
+            "spacing.md",
+            "spacing.lg",
+            "spacing.xl",
+            "spacing.2xl",
+            "spacing.3xl",
+        ] {
+            assert!(
+                TokenName::new(step).is_ok(),
+                "{step} is a step on the shipped ramp and must be a legal name"
+            );
+        }
+    }
+
+    /// The other side of the same rule. A digit that *follows* letters is a
+    /// shade index, a digit-only segment is a bare number, and neither is a
+    /// role — so widening the rule for `2xs` must not have widened it for
+    /// these.
+    #[test]
+    fn a_trailing_or_lone_digit_is_a_value_and_stays_refused() {
+        for candidate in ["surface.grey700", "spacing.2", "text.x2", "spacing.16"] {
+            assert_eq!(
+                TokenName::new(candidate).unwrap_err(),
+                TokenNameError::NotNamespaced {
+                    candidate: candidate.into()
+                },
+                "{candidate} names a value, not a role"
+            );
+        }
     }
 
     #[test]

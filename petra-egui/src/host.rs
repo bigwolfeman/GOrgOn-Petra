@@ -281,6 +281,11 @@ impl<A: App> Host<A> {
                 rows: &mut self.app,
                 cache: &mut self.cache,
                 state: &self.state,
+                // The same snapshot this pass paints from and reports as
+                // `viewport.theme_rev`, so a container resolving a token
+                // during measure reads the theme the frame is actually
+                // painted under.
+                theme: snapshot.as_ref(),
                 theme_rev: viewport.theme_rev,
                 scale: viewport.scale,
                 scroll: ScrollStack::new(),

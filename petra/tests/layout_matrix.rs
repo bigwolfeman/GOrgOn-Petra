@@ -56,8 +56,8 @@ use gorgon_petra::frame::{
 };
 use gorgon_petra::geom::{Align, Axis, Rect, Scale, Size};
 use gorgon_petra::layout::LayoutState;
-use gorgon_petra::testing::{GeneratedRows, Harness, MonoContent, validated};
-use gorgon_petra::token::ThemeMode;
+use gorgon_petra::testing::{GeneratedRows, Harness, MonoContent, gap, validated};
+use gorgon_petra::token::{ThemeMode, ThemeSnapshot};
 use gorgon_petra::tree::{
     Anchor, AxisConstraint, ClampRule, Constraints, GridSpan, Key, KeyPath, Layer, NodeKind, Props,
     Registry, TextWrap, TrackSize, ViewNode, validate,
@@ -205,7 +205,7 @@ fn text_node(key: &str, body: &str, wrap: TextWrap) -> ViewNode {
 fn stack_node(key: &str, axis: Axis, spacing: f32, align: Align) -> ViewNode {
     ViewNode::new(NodeKind::Stack, Key::new(key)).with_props(Props {
         axis: Some(axis),
-        spacing: Some(spacing),
+        spacing: gap(spacing),
         align: Some(align),
         ..Props::default()
     })
@@ -268,8 +268,8 @@ fn panel(cfg: &Config) -> ViewNode {
                 TrackSize::Fixed { value: 48.0 },
                 TrackSize::Weight { weight: 1.0 },
             ],
-            column_spacing: Some(cfg.spacing),
-            row_spacing: Some(cfg.spacing),
+            column_spacing: gap(cfg.spacing),
+            row_spacing: gap(cfg.spacing),
             align: Some(cfg.align),
             ..Props::default()
         })
@@ -400,12 +400,20 @@ struct ContainerRule {
 /// Read from the *tree*, never from the frame: a frame that lost a container's
 /// axis is exactly the bug these assertions exist to catch, so the expectation
 /// has to come from the declaration.
-fn container_rules(root: &ViewNode) -> BTreeMap<String, ContainerRule> {
-    fn walk(node: &ViewNode, path: &mut KeyPath, out: &mut BTreeMap<String, ContainerRule>) {
+fn container_rules(root: &ViewNode, theme: &ThemeSnapshot) -> BTreeMap<String, ContainerRule> {
+    fn walk(
+        node: &ViewNode,
+        theme: &ThemeSnapshot,
+        path: &mut KeyPath,
+        out: &mut BTreeMap<String, ContainerRule>,
+    ) {
         path.push(node.key.clone());
         if node.kind.is_container() {
-            let stack = node.props.stack();
-            let grid = node.props.grid();
+            // The same snapshot the frame under test was measured under, so
+            // the gap this expectation is built from is the gap the engine
+            // reserved — not a second, independently authored number.
+            let stack = node.props.stack(theme);
+            let grid = node.props.grid(theme);
             out.insert(
                 path.id(),
                 ContainerRule {
@@ -430,12 +438,12 @@ fn container_rules(root: &ViewNode) -> BTreeMap<String, ContainerRule> {
             );
         }
         for child in &node.children {
-            walk(child, path, out);
+            walk(child, theme, path, out);
         }
         path.pop();
     }
     let mut out = BTreeMap::new();
-    walk(root, &mut KeyPath::root(), &mut out);
+    walk(root, theme, &mut KeyPath::root(), &mut out);
     out
 }
 
@@ -899,7 +907,7 @@ fn every_configuration_satisfies_the_negotiation_contract() {
         validate(&tree, &registry).unwrap_or_else(|errors| {
             panic!("{}: the fixture is not a legal tree: {errors}", cfg.label())
         });
-        let rules = container_rules(&tree);
+        let rules = container_rules(&tree, &harness_for(cfg).theme);
         let frame = frame_of(cfg);
         check_frame(cfg, &frame, &rules);
     }
@@ -1574,8 +1582,8 @@ fn abutting_grid_cells_share_a_device_edge_from_a_shifted_origin() {
                     TrackSize::Weight { weight: 1.0 },
                     TrackSize::Weight { weight: 1.0 },
                 ],
-                column_spacing: Some(0.0),
-                row_spacing: Some(0.0),
+                column_spacing: gap(0.0),
+                row_spacing: gap(0.0),
                 align: Some(Align::Stretch),
                 ..Props::default()
             })
@@ -1968,11 +1976,11 @@ fn week_view(cells: &[WeekCell], column_spacing: f32) -> ViewNode {
     let mut grid = ViewNode::new(NodeKind::Grid, "week").with_props(Props {
         columns,
         rows,
-        column_spacing: Some(column_spacing),
+        column_spacing: gap(column_spacing),
         // The time axis is continuous: 09:00 ends where 09:15 begins. A gap
         // between row tracks would be a gap in *time*, so the row gap is the
         // one number in this fixture that is not swept.
-        row_spacing: Some(0.0),
+        row_spacing: gap(0.0),
         align: Some(Align::Stretch),
         ..Props::default()
     });

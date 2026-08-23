@@ -672,35 +672,15 @@ fn check_node(
         });
     }
 
-    if let Some(spacing) = node.props.spacing
-        && !(spacing.is_finite() && spacing >= 0.0)
-    {
-        push(Violation::ValueOutOfRange {
-            prop: "spacing",
-            value: format!("{spacing}"),
-            expected: "a finite value of zero or more",
-        });
-    }
-
-    if let Some(padding) = node.props.padding {
-        if !node.kind.is_container() {
-            push(Violation::PaddingOnLeafKind { kind: node.kind });
-        } else {
-            for (prop, value) in [
-                ("padding.top", padding.top),
-                ("padding.right", padding.right),
-                ("padding.bottom", padding.bottom),
-                ("padding.left", padding.left),
-            ] {
-                if !(value.is_finite() && value >= 0.0) {
-                    push(Violation::ValueOutOfRange {
-                        prop,
-                        value: format!("{value}"),
-                        expected: "a finite value of zero or more",
-                    });
-                }
-            }
-        }
+    // `spacing` and every edge of `padding` used to be range-checked here.
+    // They are token references now (FR-053), so there is no number in the
+    // tree left to range-check: a `TokenName` has no sign and cannot be NaN,
+    // and serde refuses a bare number in the slot before acceptance ever
+    // runs. The check did not disappear — it moved to where the number is now
+    // written, which is `token::Theme::build`, and it refuses a theme that
+    // assigns a negative or non-finite extent to any name.
+    if node.props.padding.is_some() && !node.kind.is_container() {
+        push(Violation::PaddingOnLeafKind { kind: node.kind });
     }
 
     if let Some(name) = node.transition.as_ref().map(|t| t.name().to_owned())
@@ -751,9 +731,10 @@ fn is_style_literal(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{Registry, TreeError, Violation, validate};
-    use crate::geom::{Axis, Insets};
+    use crate::geom::Axis;
+    use crate::testing::gap_token;
     use crate::tree::node::{Interaction, NodeKind, Role, Semantics, ViewNode};
-    use crate::tree::props::{Anchor, Edge, GridSpan, Layer, Props, TrackSize};
+    use crate::tree::props::{Anchor, Edge, GridSpan, InsetRefs, Layer, Props, TrackSize};
 
     fn stack(key: &str) -> ViewNode {
         ViewNode::new(NodeKind::Stack, key)
@@ -1099,7 +1080,7 @@ mod tests {
     #[test]
     fn a_leaf_kind_refuses_padding() {
         let node = ViewNode::new(NodeKind::Text, "t").with_props(Props {
-            padding: Some(Insets::all(4.0)),
+            padding: Some(InsetRefs::all(gap_token(4.0))),
             ..Props::default()
         });
         let err = validate(&node, &Registry::new()).unwrap_err();
@@ -1122,7 +1103,7 @@ mod tests {
     #[test]
     fn a_container_kind_may_declare_padding() {
         let tree = stack("root").with_props(Props {
-            padding: Some(Insets::symmetric(4.0, 8.0)),
+            padding: Some(InsetRefs::symmetric(gap_token(4.0), gap_token(8.0))),
             ..Props::default()
         });
         assert!(validate(&tree, &Registry::new()).is_ok());
@@ -1270,11 +1251,10 @@ mod tests {
     fn out_of_range_values_are_named() {
         let node = ViewNode::new(NodeKind::Text, "t").with_props(Props {
             opacity: Some(1.5),
-            spacing: Some(-1.0),
             ..Props::default()
         });
         let err = validate(&node, &Registry::new()).unwrap_err();
-        assert_eq!(err.len(), 2, "{err}");
+        assert_eq!(err.len(), 1, "{err}");
 
         let grid = ViewNode::new(NodeKind::Grid, "g").with_props(Props {
             columns: vec![TrackSize::Weight { weight: 0.0 }],
@@ -1287,39 +1267,46 @@ mod tests {
         ));
     }
 
-    /// Every one of `padding`'s four edges is range-checked independently,
-    /// the same way `spacing: Some(-1.0)` is checked above — a container
-    /// that declares `padding` with a NaN or negative edge is refused, named
-    /// by that edge, not silently clamped.
+    /// `spacing` and `padding` used to be range-checked here, edge by edge.
+    /// They are token references now (FR-053), so the number an author could
+    /// have got wrong is not in the tree any more — and this test pins where
+    /// each half of that check went, so neither half can be lost quietly.
+    ///
+    /// The *shape* half is enforced before acceptance, by `TokenName`: a bare
+    /// number, a hex string, or a negative literal in a styling slot fails to
+    /// deserialize, so no such `Props` can be constructed to validate.
+    /// The *range* half moved to `token::Theme::build`, which is where the
+    /// number is now written.
     #[test]
-    fn out_of_range_padding_edges_are_named() {
-        let node = stack("root").with_props(Props {
-            padding: Some(Insets {
-                top: -1.0,
-                right: f32::NAN,
-                bottom: 0.0,
-                left: 3.0,
-            }),
-            ..Props::default()
-        });
-        let err = validate(&node, &Registry::new()).unwrap_err();
-        assert_eq!(err.len(), 2, "{err}");
-        assert_eq!(
-            err.as_slice()[0].violation,
-            Violation::ValueOutOfRange {
-                prop: "padding.top",
-                value: "-1".into(),
-                expected: "a finite value of zero or more",
-            }
+    fn a_number_in_a_styling_slot_never_reaches_acceptance() {
+        for bad in [
+            r#"{"spacing":-1}"#,
+            r#"{"spacing":0}"#,
+            r#"{"column_spacing":7.5}"#,
+            r#"{"padding":{"top":-1,"right":3}}"#,
+        ] {
+            let err = serde_json::from_str::<Props>(bad).unwrap_err();
+            assert!(
+                err.to_string().contains("invalid type") || err.to_string().contains("token name"),
+                "{bad} should be refused as a non-name, got: {err}"
+            );
+        }
+
+        // And the range half, at its new home. A theme is where the extent
+        // is written, so a theme is what refuses a bad one.
+        let mut values = crate::token::light().values().clone();
+        values.insert(
+            crate::token::TokenName::new("spacing.md").unwrap(),
+            crate::token::TokenValue::Spacing(-1.0),
         );
-        assert_eq!(
-            err.as_slice()[1].violation,
-            Violation::ValueOutOfRange {
-                prop: "padding.right",
-                value: "NaN".into(),
-                expected: "a finite value of zero or more",
-            }
-        );
+        let err = crate::token::Theme::build(
+            crate::token::ThemeMode::Light,
+            &crate::token::standard_vocabulary(),
+            values,
+        )
+        .unwrap_err();
+        assert_eq!(err.unusable().len(), 1, "{err}");
+        assert_eq!(err.unusable()[0].why, "negative");
     }
 
     #[test]

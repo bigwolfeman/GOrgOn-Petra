@@ -15,7 +15,8 @@ pub use node::{
     ViewNode,
 };
 pub use props::{
-    Anchor, ClampRule, CollectionProps, Edge, GridProps, GridSpan, InputPolicy, Layer, Props,
-    ScrollProps, StackProps, SurfaceProps, TextProps, TextWrap, TrackSize,
+    Anchor, ClampRule, CollectionProps, Edge, GridProps, GridSpan, InputPolicy, InsetRefs, Layer,
+    Props, ScrollProps, StackProps, SurfaceProps, TextProps, TextWrap, TrackSize, resolve_insets,
+    resolve_spacing,
 };
 pub use validate::{Registry, TreeError, TreeErrors, ValidatedTree, Violation, validate};

@@ -13,14 +13,19 @@
 
 use std::collections::BTreeMap;
 use std::ops::Range;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
-use crate::geom::{Scale, Size};
+use crate::geom::{Insets, Scale, Size};
 use crate::layout::{
     ContentMeasure, LayoutCtx, LayoutState, MeasureCache, RowSource, ScrollStack, SizeProposal,
     TextMeasurement, TextRequest,
 };
-use crate::tree::{Key, NodeKind, Props, Registry, TextWrap, ValidatedTree, ViewNode, validate};
+use crate::token::{
+    DesignToken, Theme, ThemeSnapshot, TokenKind, TokenName, TokenValue, light, standard_vocabulary,
+};
+use crate::tree::{
+    InsetRefs, Key, NodeKind, Props, Registry, TextWrap, ValidatedTree, ViewNode, validate,
+};
 
 /// Accept `tree` against an empty [`Registry`] and mint the token
 /// [`crate::frame::petrify`] requires, panicking with the named violations if
@@ -51,6 +56,122 @@ pub fn validated_with<'a>(tree: &'a ViewNode, registry: &Registry) -> ValidatedT
         Ok(v) => v,
         Err(errors) => panic!("tree used in a test did not pass acceptance:\n{errors}"),
     }
+}
+
+/// The whole-unit gaps every [`Harness`] resolves without being asked:
+/// `spacing.0units` through `spacing.64units`.
+///
+/// 64 because [`crate::tree::props::DEFAULT_OVERSCAN`] is 64, and almost
+/// every fixture in the workspace reserves less than the largest default the
+/// engine ships. It is a *pre-binding* range, not a limit on what
+/// [`gap_token`] can name: a fixture outside it names its gap the same way
+/// and calls [`Harness::bind_tree_gaps`] or [`Harness::bind_spacings`].
+pub const MAX_PREBOUND_GAP: u32 = 64;
+
+/// The token name for a fixture gap of exactly `units` logical units.
+///
+/// Layout fixtures and design tokens want opposite things from a number. The
+/// shipped ramp ([`crate::token::standard_vocabulary`]) is eight steps chosen
+/// so a page hangs together; a fixture asserts "four children and a gap of 9
+/// measure 27 units of gap", and its expectation is arithmetic on that 9.
+/// Rounding the fixture onto a ramp step would make it agree with the design
+/// system and stop measuring the container — the container is what is under
+/// test, not the taste.
+///
+/// So fixtures get their own names, and the name **encodes the gap**. A whole
+/// number spells itself (`spacing.9units`), because that is what a fixture
+/// author reads in a diff; anything else spells its bit pattern
+/// (`spacing.1097654321bits`), because a swept `14.189328` still has to name
+/// itself exactly and no decimal spelling survives [`TokenName`]'s
+/// segment rule. [`gap_units`] reads either form back.
+///
+/// Encoding rather than registering is what lets a *generated* tree carry a
+/// complete theme: [`Harness::bind_tree_gaps`] binds what the tree declares,
+/// so a proptest never has to keep a second list of the gaps it swept.
+///
+/// # Panics
+/// If `units` is negative or not finite. A gap is neither.
+#[must_use]
+pub fn gap_token(units: f32) -> TokenName {
+    assert!(
+        units.is_finite() && units >= 0.0,
+        "a fixture gap is a finite, non-negative extent, not {units}"
+    );
+    let spelled = if units.fract() == 0.0 && units <= f64::from(u32::MAX) as f32 {
+        format!("spacing.{}units", units as u32)
+    } else {
+        format!("spacing.{}bits", units.to_bits())
+    };
+    TokenName::new(spelled).expect("a fixture gap spells a well-formed token name")
+}
+
+/// The gap `name` encodes, or `None` when `name` is not one [`gap_token`]
+/// produced.
+///
+/// Exact in both directions: the whole-unit form round-trips through a `u32`
+/// and the general form through `f32::to_bits`, so a fixture's declared gap
+/// and its resolved gap are the same float, not two floats that print alike.
+#[must_use]
+pub fn gap_units(name: &TokenName) -> Option<f32> {
+    let rest = name.as_str().strip_prefix("spacing.")?;
+    if let Some(digits) = rest.strip_suffix("units") {
+        return digits.parse::<u32>().ok().map(|whole| whole as f32);
+    }
+    rest.strip_suffix("bits")
+        .and_then(|digits| digits.parse::<u32>().ok())
+        .map(f32::from_bits)
+}
+
+/// [`gap_token`] wrapped for a props field, which is what every call site
+/// wants: `spacing: gap(9.0)`.
+///
+/// Zero is a token here, not an absence. A fixture that means "this stack
+/// declares a gap and the gap is nothing" is making a different statement
+/// from one that declares no gap at all, and both statements have tests.
+///
+/// # Panics
+/// As [`gap_token`].
+#[must_use]
+pub fn gap(units: f32) -> Option<TokenName> {
+    Some(gap_token(units))
+}
+
+/// The [`InsetRefs`] that names each edge of `insets` on the fixture gap
+/// scale, so a fixture can keep saying what it means in numbers
+/// (`gap_insets(Insets::symmetric(4.0, 8.0))`) while the tree it builds
+/// carries token references like every other tree.
+///
+/// # Panics
+/// As [`gap_token`].
+#[must_use]
+pub fn gap_insets(insets: Insets) -> InsetRefs {
+    InsetRefs {
+        top: gap(insets.top),
+        right: gap(insets.right),
+        bottom: gap(insets.bottom),
+        left: gap(insets.left),
+    }
+}
+
+/// The theme every [`Harness`] starts on: the shipped light theme, plus one
+/// [`gap_token`] per whole unit up to [`MAX_PREBOUND_GAP`].
+///
+/// Built once and cloned, which is cheaper than the `light()` call each
+/// harness used to make on its own — the sRGB conversions and the map inserts
+/// happen one time for the whole process.
+fn fixture_theme() -> &'static Theme {
+    static THEME: OnceLock<Theme> = OnceLock::new();
+    THEME.get_or_init(|| {
+        let mut vocab = standard_vocabulary();
+        let mut values = light().values().clone();
+        for units in 0..=MAX_PREBOUND_GAP {
+            let name = gap_token(units as f32);
+            vocab.declare(DesignToken::new(name.clone(), TokenKind::Spacing));
+            values.insert(name, TokenValue::Spacing(units as f32));
+        }
+        Theme::build(crate::token::ThemeMode::Light, &vocab, values)
+            .expect("the shipped light theme plus a whole-unit gap scale is complete")
+    })
 }
 
 /// A fixed-pitch text measurer: every character is [`MonoContent::char_w`]
@@ -231,6 +352,13 @@ pub struct Harness<C: ContentMeasure, R: RowSource> {
     pub cache: MeasureCache,
     /// The state snapshot this pass reads.
     pub state: LayoutState,
+    /// The theme snapshot this pass resolves token names against. Owned here
+    /// because [`LayoutCtx::theme`] borrows one for the whole pass. Starts on
+    /// the shipped [`light`] theme plus the whole-unit fixture gap scale
+    /// ([`gap_token`]) at revision 1, which is the `theme_rev` below; swap it
+    /// with [`Harness::set_theme`], which keeps the two in step, or extend it
+    /// with [`Harness::bind_spacings`].
+    pub theme: ThemeSnapshot,
     /// Theme snapshot revision.
     pub theme_rev: u64,
     /// Display scale.
@@ -259,6 +387,7 @@ impl<C: ContentMeasure, R: RowSource> Harness<C, R> {
             rows,
             cache: MeasureCache::new(),
             state: LayoutState::default(),
+            theme: ThemeSnapshot::new(fixture_theme().clone(), 1),
             theme_rev: 1,
             scale: Scale::ONE,
         }
@@ -271,11 +400,125 @@ impl<C: ContentMeasure, R: RowSource> Harness<C, R> {
             rows: &mut self.rows,
             cache: &mut self.cache,
             state: &self.state,
+            theme: &self.theme,
             theme_rev: self.theme_rev,
             scale: self.scale,
             scroll: ScrollStack::new(),
             reuse: None,
         }
+    }
+
+    /// Extend this harness's theme with spacing names it does not already
+    /// define, at exact values.
+    ///
+    /// For a gap outside the pre-bound whole-unit range
+    /// ([`MAX_PREBOUND_GAP`]) under a name the fixture chooses for itself.
+    /// A fixture that names its gaps with [`gap_token`] wants
+    /// [`Harness::bind_tree_gaps`] instead, which reads the numbers off the
+    /// tree rather than making the author list them again.
+    ///
+    /// The theme this builds is a real one, built through [`Theme::build`]
+    /// against a vocabulary that declares every name the theme assigns — so
+    /// it is complete and kind-checked exactly like a shipped theme, and
+    /// resolution through it takes the path production takes. Bindings
+    /// accumulate: the vocabulary is derived from what the current theme
+    /// already assigns, so a second call does not erase the first, and
+    /// calling this after [`Harness::set_theme`] extends *that* theme rather
+    /// than reverting to the shipped one.
+    ///
+    /// The revision is left where it was, so binding a fixture gap does not
+    /// look like a theme switch to [`crate::layout::MeasureCache`].
+    ///
+    /// # Panics
+    /// If a name is not a well-formed [`TokenName`], or if the resulting
+    /// theme is not complete — both are bugs in the fixture, not conditions
+    /// to recover from.
+    pub fn bind_spacings(&mut self, extra: &[(&str, f32)]) {
+        let mut vocab = standard_vocabulary();
+        let mut values = self.theme.theme().values().clone();
+        // Whatever the current theme already assigns, at the kind it assigns
+        // it: that is what keeps earlier bindings (and a swapped-in theme's
+        // own extras) declared rather than dropped on the next build.
+        for (name, value) in &values {
+            vocab.declare(DesignToken::new(name.clone(), value.kind()));
+        }
+        for (raw, units) in extra {
+            let name = TokenName::new(*raw)
+                .unwrap_or_else(|err| panic!("fixture spacing name {raw:?}: {err}"));
+            vocab.declare(DesignToken::new(name.clone(), TokenKind::Spacing));
+            values.insert(name, TokenValue::Spacing(*units));
+        }
+        let theme = Theme::build(self.theme.mode(), &vocab, values)
+            .expect("a fixture theme extended with spacing names is complete");
+        self.theme = ThemeSnapshot::new(theme, self.theme.revision());
+    }
+
+    /// Bind every [`gap_token`] gap that `tree` declares and this harness's
+    /// theme does not already define.
+    ///
+    /// The name encodes the number ([`gap_token`]), so the tree is a complete
+    /// statement of what its theme has to answer. A fixture that generates
+    /// gaps — a proptest sweep — therefore needs no second list of the values
+    /// it generated, and cannot let the two drift.
+    ///
+    /// Names the theme already defines are left alone, so the shipped ramp
+    /// and the pre-bound whole-unit range are never re-declared, and a name
+    /// that is not a fixture gap (a shipped `spacing.md`, say) is ignored
+    /// rather than guessed at.
+    ///
+    /// # Panics
+    /// If the resulting theme is not complete, which would be a bug here
+    /// rather than in the fixture.
+    pub fn bind_tree_gaps(&mut self, tree: &ViewNode) {
+        fn walk(node: &ViewNode, out: &mut Vec<TokenName>) {
+            let padding =
+                node.props.padding.iter().flat_map(|refs| {
+                    [&refs.top, &refs.right, &refs.bottom, &refs.left].into_iter()
+                });
+            for name in [
+                &node.props.spacing,
+                &node.props.column_spacing,
+                &node.props.row_spacing,
+            ]
+            .into_iter()
+            .chain(padding)
+            .flatten()
+            {
+                out.push(name.clone());
+            }
+            for child in &node.children {
+                walk(child, out);
+            }
+        }
+
+        let mut declared = Vec::new();
+        walk(tree, &mut declared);
+        let wanted: Vec<(String, f32)> = declared
+            .into_iter()
+            .filter(|name| self.theme.value(name).is_none())
+            .filter_map(|name| gap_units(&name).map(|units| (name.as_str().to_owned(), units)))
+            .collect();
+        if wanted.is_empty() {
+            return;
+        }
+        let pairs: Vec<(&str, f32)> = wanted
+            .iter()
+            .map(|(name, units)| (name.as_str(), *units))
+            .collect();
+        self.bind_spacings(&pairs);
+    }
+
+    /// Swap in a different theme snapshot, the way a running host does when
+    /// the operator switches theme.
+    ///
+    /// `theme_rev` follows the snapshot's own revision, because the pair has
+    /// to agree for the measure cache to be invalidated by the switch it is
+    /// supposed to be invalidated by. A fixture that wants the two to
+    /// disagree — `crate::layout::reuse::FrameMemo::adopt` documents why some
+    /// do — still assigns the field directly.
+    pub fn set_theme(&mut self, theme: ThemeSnapshot) {
+        self.theme_rev = theme.revision();
+        self.theme = theme;
     }
 
     /// Set a scroll offset for a node id.

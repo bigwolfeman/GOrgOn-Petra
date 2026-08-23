@@ -575,6 +575,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::{Constraints, Interaction, NodeKind, Role, ViewNode};
+    use crate::testing::gap;
     use crate::tree::props::Props;
 
     /// The wire form is the shape a Lua table produces: declared keys only.
@@ -589,7 +590,7 @@ mod tests {
     fn a_populated_tree_round_trips() {
         let tree = ViewNode::new(NodeKind::Stack, "root")
             .with_props(Props {
-                spacing: Some(8.0),
+                spacing: gap(8.0),
                 ..Props::default()
             })
             .child(ViewNode::new(NodeKind::Text, "title").with_props(Props {

@@ -24,9 +24,10 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use crate::frame::placement::{PaintContent, PlacementSemantics, PlacementSink, TextPaint};
-use crate::geom::{Rect, Scale, Size};
+use crate::geom::{Insets, Rect, Scale, Size};
+use crate::token::{ThemeSnapshot, TokenName};
 use crate::tree::props::ScrollProps;
-use crate::tree::{KeyPath, NodeKind, Role, TextWrap, ViewNode};
+use crate::tree::{InsetRefs, KeyPath, NodeKind, Role, TextWrap, ViewNode};
 
 pub use proposal::{ChangeSet, MeasureCache, MeasureKey, Proposal, SizeProposal};
 
@@ -175,7 +176,24 @@ pub struct LayoutCtx<'a> {
     pub cache: &'a mut MeasureCache,
     /// The state snapshot this frame reads.
     pub state: &'a LayoutState,
+    /// The theme snapshot in force for this frame.
+    ///
+    /// A container that reads a styling token resolves the name here, at the
+    /// read site, rather than against some earlier resolution: the snapshot
+    /// is immutable for the whole pass, so every read in one frame answers
+    /// from the same theme. [`ThemeSnapshot`] is complete against its
+    /// vocabulary by construction ([`crate::token::Theme::build`]), so a name
+    /// an accepted tree may carry always resolves and no container needs a
+    /// fallback branch.
+    ///
+    /// This is *not* the measure-cache key: [`LayoutCtx::key`] keys on
+    /// `theme_rev`, which is the same fact as one comparable number.
+    pub theme: &'a ThemeSnapshot,
     /// Theme snapshot revision in force.
+    ///
+    /// The revision of [`LayoutCtx::theme`] in a real host. It is a separate
+    /// field because it is a separate job: a revision can key a cache and
+    /// hash into a digest, and a snapshot can do neither.
     pub theme_rev: u64,
     /// Display scale.
     pub scale: Scale,
@@ -211,6 +229,30 @@ impl LayoutCtx<'_> {
     #[must_use]
     pub fn enclosing_scroll(&self) -> Option<&ScrollFrame> {
         self.scroll.innermost()
+    }
+
+    /// The gap a styling token reference names, in logical units.
+    ///
+    /// The read a container performs on `props.spacing`,
+    /// `props.column_spacing`, or `props.row_spacing`, resolved against the
+    /// snapshot this pass carries. Absence answers
+    /// [`crate::tree::props::DEFAULT_SPACING`].
+    ///
+    /// Here rather than free-standing so that a container never has to reach
+    /// for a theme itself: [`LayoutCtx::theme`] is the theme for this frame,
+    /// and taking the resolution through the context is what makes that true
+    /// at the read site instead of true by convention.
+    #[must_use]
+    pub fn spacing(&self, reference: &Option<TokenName>) -> f32 {
+        crate::tree::props::resolve_spacing(self.theme, reference)
+    }
+
+    /// The four content insets a styling token reference names, in logical
+    /// units. [`LayoutCtx::spacing`] on four edges; absence answers
+    /// [`crate::geom::Insets::NONE`].
+    #[must_use]
+    pub fn padding(&self, reference: &Option<InsetRefs>) -> Insets {
+        crate::tree::props::resolve_insets(self.theme, reference)
     }
 
     /// Run `f` with `frame` as the innermost enclosing scroll.
@@ -534,8 +576,9 @@ pub fn default_role(kind: NodeKind) -> Option<Role> {
 
 #[cfg(test)]
 mod tests {
-    use super::{LayoutState, Slot, default_role, semantics_of};
+    use super::{LayoutCtx, LayoutState, SizeProposal, Slot, default_role, semantics_of};
     use crate::geom::Rect;
+    use crate::token::{TokenName, TokenValue};
     use crate::tree::{Interaction, NodeKind, Role, ViewNode};
 
     #[test]
@@ -792,6 +835,158 @@ mod tests {
         );
         assert_eq!(ctx.scroll.depth(), 0);
         assert!(ctx.enclosing_scroll().is_none());
+    }
+
+    /// The read every container acquires once `Props`'s styling fields
+    /// become token references: a name, resolved against the snapshot the
+    /// context carries, at the read site.
+    ///
+    /// Deliberately shaped like `stack::measure`'s own gap arithmetic —
+    /// resolve, then sum the children's measured extents — so the resolved
+    /// number has to reach a `Size` for the assertions below to hold. A
+    /// lookup whose answer went nowhere would prove nothing.
+    fn measure_row_with_token_gap(
+        node: &ViewNode,
+        ctx: &mut LayoutCtx<'_>,
+        token: &TokenName,
+    ) -> crate::geom::Size {
+        // No fallback arm: `Theme::build` proves every theme complete against
+        // its vocabulary, so a declared name resolves at its declared kind or
+        // the theme never existed.
+        let gap = match ctx.theme.value(token) {
+            Some(TokenValue::Spacing(units)) => *units,
+            other => panic!("{token} must resolve to a spacing value, found {other:?}"),
+        };
+        let mut path = crate::tree::KeyPath::root();
+        let mut total = gap * node.children.len().saturating_sub(1) as f32;
+        let mut tallest = 0.0f32;
+        for child in &node.children {
+            let got = super::measure(child, ctx, &mut path, SizeProposal::unbounded());
+            total += got.w;
+            tallest = tallest.max(got.h);
+        }
+        crate::geom::Size::new(total, tallest)
+    }
+
+    /// `light()` with one spacing token reassigned, built through
+    /// `Theme::build` like any other theme so the switch under test is a
+    /// complete theme, not a patched map.
+    fn theme_with_spacing_sm(units: f32) -> crate::token::Theme {
+        let mut values = crate::token::light().values().clone();
+        values.insert(
+            TokenName::new("spacing.sm").expect("well-formed name"),
+            TokenValue::Spacing(units),
+        );
+        crate::token::Theme::build(
+            crate::token::ThemeMode::Light,
+            &crate::token::standard_vocabulary(),
+            values,
+        )
+        .expect("light()'s own assignments with one spacing value replaced are complete")
+    }
+
+    /// `LayoutCtx::theme_rev` can invalidate a cache and nothing else: it
+    /// cannot answer "how wide is `spacing.md`". This is the test that the
+    /// context reaches a snapshot that can, and that the snapshot it reaches
+    /// is the live one — a field wired to some fixed theme would pass the
+    /// first assertion and fail the second.
+    #[test]
+    fn a_container_reads_a_token_during_measure_and_the_value_tracks_a_theme_switch() {
+        use crate::testing::Harness;
+        use crate::tree::Props;
+
+        let text = |key: &str| {
+            ViewNode::new(NodeKind::Text, key).with_props(Props {
+                text: Some("ab".to_owned()),
+                ..Props::default()
+            })
+        };
+        let row = ViewNode::new(NodeKind::Stack, "row")
+            .child(text("a"))
+            .child(text("b"))
+            .child(text("c"));
+        // `spacing.sm`, not `spacing.md`: the eight-step ramp renamed the
+        // step that means 8 logical units, and this fixture is about the 8,
+        // not about the label.
+        let sm = TokenName::new("spacing.sm").expect("well-formed name");
+
+        // `Harness::new` starts on the shipped light theme (plus the fixture
+        // gap scale), where `spacing.sm` is 8 logical units.
+        let mut h = Harness::new();
+        assert_eq!(h.theme.value(&sm), Some(&TokenValue::Spacing(8.0)));
+        let narrow = {
+            let mut ctx = h.ctx();
+            measure_row_with_token_gap(&row, &mut ctx, &sm)
+        };
+
+        h.set_theme(crate::token::ThemeSnapshot::new(
+            theme_with_spacing_sm(24.0),
+            2,
+        ));
+        let wide = {
+            let mut ctx = h.ctx();
+            measure_row_with_token_gap(&row, &mut ctx, &sm)
+        };
+
+        // Two gaps between three children, each 16 units wider than before.
+        assert_eq!(wide.w, narrow.w + 2.0 * (24.0 - 8.0));
+        assert_eq!(wide.h, narrow.h, "only the gap moved");
+        // The revision the cache keys on moved with the snapshot the
+        // containers read, which is what makes the switch invalidate the
+        // measurements it changed.
+        assert_eq!(h.theme_rev, 2);
+        assert_eq!(h.ctx().theme.revision(), 2);
+    }
+
+    /// The two helpers a container reads a styling prop through
+    /// ([`LayoutCtx::spacing`], [`LayoutCtx::padding`]), against the four
+    /// facts their contract states: a named gap resolves, an absent one is
+    /// the documented default, a partly named inset insets only the edges it
+    /// names, and both answers move with the theme in force.
+    #[test]
+    fn the_context_helpers_resolve_a_reference_and_read_absence_as_the_default() {
+        use crate::testing::Harness;
+        use crate::tree::InsetRefs;
+        use crate::tree::props::DEFAULT_SPACING;
+
+        let sm = TokenName::new("spacing.sm").expect("well-formed name");
+        let lg = TokenName::new("spacing.lg").expect("well-formed name");
+        let mut h = Harness::new();
+
+        {
+            let ctx = h.ctx();
+            assert_eq!(ctx.spacing(&Some(sm.clone())), 8.0);
+            assert_eq!(ctx.spacing(&None), DEFAULT_SPACING);
+            assert_eq!(
+                ctx.padding(&Some(InsetRefs::symmetric(sm.clone(), lg.clone()))),
+                crate::geom::Insets::symmetric(8.0, 16.0)
+            );
+            assert_eq!(
+                ctx.padding(&Some(InsetRefs {
+                    left: Some(lg.clone()),
+                    ..InsetRefs::default()
+                })),
+                crate::geom::Insets {
+                    left: 16.0,
+                    ..crate::geom::Insets::NONE
+                },
+                "an unnamed edge is no inset"
+            );
+            assert_eq!(ctx.padding(&None), crate::geom::Insets::NONE);
+        }
+
+        // The same two declarations under a theme that moved one of them.
+        h.set_theme(crate::token::ThemeSnapshot::new(
+            theme_with_spacing_sm(40.0),
+            2,
+        ));
+        let ctx = h.ctx();
+        assert_eq!(ctx.spacing(&Some(sm.clone())), 40.0);
+        assert_eq!(
+            ctx.padding(&Some(InsetRefs::symmetric(sm, lg))),
+            crate::geom::Insets::symmetric(40.0, 16.0),
+            "only the reassigned name moved"
+        );
     }
 
     #[test]

@@ -1,5 +1,21 @@
 //! Kind-specific node parameters.
 //!
+//! Three classes of parameter live in the one bag below, and they are typed
+//! differently on purpose (`contracts/view-tree.md` §"Styling parameters are
+//! token references", FR-053):
+//!
+//! * **Styling** — `spacing`, `column_spacing`, `row_spacing`, `padding`.
+//!   These are *taste*, and taste belongs to the theme, so they carry
+//!   [`TokenName`]s and resolve through a [`ThemeSnapshot`]. An author cannot
+//!   write `spacing: 7`, because 7 is not a step anybody chose.
+//! * **Layout declaration** — `constraints`, track sizes, `align`, `axis`,
+//!   `wrap`, `max_lines`, `span`. These stay numeric. A minimum width is a
+//!   fact about a label, not a taste decision: no theme can make a
+//!   three-digit counter fit in two digits' worth of room.
+//! * **Performance hint** — `overscan`, `estimated_extent`, `total_count`.
+//!   These stay numeric too. `overscan` changes no pixel; it changes how much
+//!   is materialized off-screen, and it belongs to no theme.
+//!
 //! `props` is deliberately one flat bag of optional plain values rather than a
 //! Rust enum: the wire form must be the shape a Lua table produces
 //! (`contracts/view-tree.md`, FR-011), and a table has no tag. Coherence
@@ -12,6 +28,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::geom::{Align, Axis, Insets};
+use crate::token::{ThemeSnapshot, TokenName};
 
 /// How a text node handles content it cannot fit.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -144,6 +161,63 @@ pub(crate) fn max_row_tracks(declared_rows: usize, child_count: usize) -> usize 
     declared_rows.max(child_count)
 }
 
+/// Content insets named one edge at a time, as token references.
+///
+/// [`Insets`] one level up: same four edges, same `all`/`symmetric`
+/// constructors, same "an absent edge is no inset" reading. The difference is
+/// what an edge holds — a name here, a number there — and which side of
+/// resolution it lives on. `InsetRefs` is what an author writes;
+/// [`Insets`] is what a container measures with, and
+/// [`Props::padding`] is the one step between them.
+///
+/// The two types are kept separate rather than made generic over the edge
+/// type. A generic would let a resolved `Insets<TokenName>` and an authored
+/// `Insets<f32>` be spelled the same way at a call site, and the whole point
+/// of FR-053 is that those are different things: one has been through a
+/// theme and one has not.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct InsetRefs {
+    /// Top edge.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top: Option<TokenName>,
+    /// Right edge.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub right: Option<TokenName>,
+    /// Bottom edge.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bottom: Option<TokenName>,
+    /// Left edge.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub left: Option<TokenName>,
+}
+
+impl InsetRefs {
+    /// The same token on all four edges — [`Insets::all`]'s shape.
+    #[must_use]
+    pub fn all(name: TokenName) -> Self {
+        Self {
+            top: Some(name.clone()),
+            right: Some(name.clone()),
+            bottom: Some(name.clone()),
+            left: Some(name),
+        }
+    }
+
+    /// A horizontal token on left/right and a vertical one on top/bottom —
+    /// [`Insets::symmetric`]'s shape, and the argument order goes with it
+    /// (horizontal first).
+    #[must_use]
+    pub fn symmetric(horizontal: TokenName, vertical: TokenName) -> Self {
+        Self {
+            top: Some(vertical.clone()),
+            right: Some(horizontal.clone()),
+            bottom: Some(vertical),
+            left: Some(horizontal),
+        }
+    }
+}
+
 /// Which surface layer an overlay lives on. Higher layers paint later.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -246,8 +320,13 @@ pub struct Props {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub axis: Option<Axis>,
     /// Gap between stack children, reserved before distribution.
+    ///
+    /// A token reference (FR-053): the gap between two controls is a taste
+    /// decision, and taste is the theme's. Absent still means
+    /// [`DEFAULT_SPACING`] — token-typing changes what an author may *say*,
+    /// not what silence means.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub spacing: Option<f32>,
+    pub spacing: Option<TokenName>,
     /// Cross-axis alignment of children.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub align: Option<Align>,
@@ -257,12 +336,12 @@ pub struct Props {
     /// Grid row tracks, leading to trailing.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub rows: Vec<TrackSize>,
-    /// Gap between grid columns.
+    /// Gap between grid columns. A token reference, like [`Props::spacing`].
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub column_spacing: Option<f32>,
-    /// Gap between grid rows.
+    pub column_spacing: Option<TokenName>,
+    /// Gap between grid rows. A token reference, like [`Props::spacing`].
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub row_spacing: Option<f32>,
+    pub row_spacing: Option<TokenName>,
     /// How many grid tracks this node covers on each axis.
     ///
     /// Declared on the **child**, read by the `grid` parent: it is the child
@@ -341,8 +420,11 @@ pub struct Props {
     /// and `padding` on a leaf is a tree-acceptance violation rather than a
     /// silently ignored declaration
     /// ([`crate::tree::Violation::PaddingOnLeafKind`]).
+    ///
+    /// Token references, one per edge ([`InsetRefs`]), for the same reason
+    /// [`Props::spacing`] is one.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub padding: Option<Insets>,
+    pub padding: Option<InsetRefs>,
     /// Token references by role name (`background`, `foreground`, `border`, …).
     ///
     /// Values are token names, never literal styles: FR-013's gate reads this
@@ -430,6 +512,53 @@ pub struct SurfaceProps<'a> {
 
 /// Default gap between stack children when none is declared.
 pub const DEFAULT_SPACING: f32 = 0.0;
+
+/// The one place a styling token reference becomes a number.
+///
+/// Absence answers [`DEFAULT_SPACING`], which is what absence answered before
+/// these props were token-typed: the type change governs what an author may
+/// *say*, not what silence means.
+///
+/// A present name always resolves, and this function has no arm for the case
+/// where it does not. That is a property of the pipeline, not an optimism:
+/// [`crate::token::Theme::build`] proves a theme assigns every vocabulary
+/// name, at its declared kind, at a usable extent, and tree acceptance
+/// refuses a reference to a name the vocabulary does not declare. A `None`
+/// from [`ThemeSnapshot::spacing`] therefore means one of those two proofs is
+/// broken, and the honest response is to say so and stop — a fallback here
+/// would paint a plausible page over a broken theme and let it ship.
+#[must_use]
+pub fn resolve_spacing(theme: &ThemeSnapshot, reference: &Option<TokenName>) -> f32 {
+    let Some(name) = reference else {
+        return DEFAULT_SPACING;
+    };
+    theme.spacing(name).unwrap_or_else(|| {
+        panic!(
+            "petra: `{name}` does not resolve to a gap in the theme at revision {}; \
+             a validated tree cannot reference a name the vocabulary does not \
+             declare at TokenKind::Spacing, so either tree acceptance or \
+             Theme::build let this through",
+            theme.revision()
+        )
+    })
+}
+
+/// [`resolve_spacing`] on four edges. An absent edge is no inset, the same
+/// way an absent `padding` is [`Insets::NONE`] — the two readings have to
+/// agree, or `{ "top": "spacing.sm" }` and a fully spelled-out `InsetRefs`
+/// with three absent edges would mean different things.
+#[must_use]
+pub fn resolve_insets(theme: &ThemeSnapshot, reference: &Option<InsetRefs>) -> Insets {
+    let Some(refs) = reference else {
+        return Insets::NONE;
+    };
+    Insets {
+        top: resolve_spacing(theme, &refs.top),
+        right: resolve_spacing(theme, &refs.right),
+        bottom: resolve_spacing(theme, &refs.bottom),
+        left: resolve_spacing(theme, &refs.left),
+    }
+}
 /// Default overscan for a scroll container, in logical units.
 pub const DEFAULT_OVERSCAN: f32 = 64.0;
 /// Fallback row extent when a collection declares none.
@@ -439,23 +568,30 @@ impl Props {
     /// Resolved `stack` parameters. Valid for any node that passed acceptance
     /// as a `stack`; defaults are the documented ones, never a guess about a
     /// missing required field.
+    ///
+    /// `theme` is what turns the declared gap token into logical units. It is
+    /// a parameter rather than something this type holds because a `Props` is
+    /// authored once and read under whichever theme is in force for the frame
+    /// being measured — the same tree under two themes is two different sets
+    /// of gaps, and there is no cached copy of the earlier one to go stale.
     #[must_use]
-    pub fn stack(&self) -> StackProps {
+    pub fn stack(&self, theme: &ThemeSnapshot) -> StackProps {
         StackProps {
             axis: self.axis.unwrap_or(Axis::Vertical),
-            spacing: self.spacing.unwrap_or(DEFAULT_SPACING),
+            spacing: resolve_spacing(theme, &self.spacing),
             align: self.align.unwrap_or_default(),
         }
     }
 
-    /// Resolved `grid` parameters.
+    /// Resolved `grid` parameters. `theme` resolves the two gap tokens, as in
+    /// [`Props::stack`].
     #[must_use]
-    pub fn grid(&self) -> GridProps {
+    pub fn grid(&self, theme: &ThemeSnapshot) -> GridProps {
         GridProps {
             columns: self.columns.clone(),
             rows: self.rows.clone(),
-            column_spacing: self.column_spacing.unwrap_or(DEFAULT_SPACING),
-            row_spacing: self.row_spacing.unwrap_or(DEFAULT_SPACING),
+            column_spacing: resolve_spacing(theme, &self.column_spacing),
+            row_spacing: resolve_spacing(theme, &self.row_spacing),
             align: self.align.unwrap_or_default(),
         }
     }
@@ -489,8 +625,8 @@ impl Props {
     /// `Insets::NONE` — the same "absence is the documented default" rule
     /// every other resolver here follows (`DEFAULT_SPACING`, `DEFAULT_OVERSCAN`).
     #[must_use]
-    pub fn padding(&self) -> Insets {
-        self.padding.unwrap_or(Insets::NONE)
+    pub fn padding(&self, theme: &ThemeSnapshot) -> Insets {
+        resolve_insets(theme, &self.padding)
     }
 
     /// Resolved `collection` parameters, or `None` when the node is not a
@@ -529,8 +665,20 @@ impl Props {
 
 #[cfg(test)]
 mod tests {
-    use super::{GridSpan, Layer, Props, TextWrap, TrackSize, max_row_tracks};
+    use super::{GridSpan, InsetRefs, Layer, Props, TextWrap, TrackSize, max_row_tracks};
     use crate::geom::{Axis, Insets};
+    use crate::token::{ThemeSnapshot, TokenName, light};
+
+    /// A well-formed name, for the fixtures below.
+    fn n(name: &str) -> TokenName {
+        TokenName::new(name).expect("test token names are well-formed")
+    }
+
+    /// The shipped light theme as a snapshot: `spacing.xs` is 4 units and
+    /// `spacing.sm` is 8, which is what the resolutions below expect.
+    fn theme() -> ThemeSnapshot {
+        ThemeSnapshot::new(light(), 1)
+    }
 
     /// One cell on both axes, which is what every child had before FR-061.
     /// Pinned as a test rather than trusted to the `Default` impl staying
@@ -663,14 +811,14 @@ mod tests {
     fn declared_fields_round_trip() {
         let mut props = Props {
             axis: Some(Axis::Horizontal),
-            spacing: Some(8.0),
+            spacing: Some(n("spacing.sm")),
             columns: vec![
                 TrackSize::Fixed { value: 100.0 },
                 TrackSize::Weight { weight: 1.0 },
             ],
             wrap: Some(TextWrap::Ellipsis),
             layer: Some(Layer::Modal),
-            padding: Some(Insets::symmetric(4.0, 8.0)),
+            padding: Some(InsetRefs::symmetric(n("spacing.xs"), n("spacing.sm"))),
             ..Props::default()
         };
         props
@@ -697,36 +845,175 @@ mod tests {
     #[test]
     fn defaults_are_the_documented_ones() {
         let props = Props::default();
-        assert_eq!(props.stack().axis, Axis::Vertical);
-        assert_eq!(props.stack().spacing, 0.0);
+        let theme = theme();
+        assert_eq!(props.stack(&theme).axis, Axis::Vertical);
+        assert_eq!(props.stack(&theme).spacing, super::DEFAULT_SPACING);
+        assert_eq!(props.grid(&theme).column_spacing, super::DEFAULT_SPACING);
+        assert_eq!(props.grid(&theme).row_spacing, super::DEFAULT_SPACING);
         assert_eq!(props.scroll().axis, Axis::Vertical);
         assert!(props.collection().is_none());
         assert!(props.surface().is_none());
         assert_eq!(props.text().text, "");
-        assert_eq!(props.padding(), Insets::NONE);
+        assert_eq!(props.padding(&theme), Insets::NONE);
     }
 
     /// `Props.padding` round-trips through serde the same way every other
     /// declared field does — pinned separately from `declared_fields_round_trip`
-    /// because the field is new and its serde shape (an `Insets` struct, not a
-    /// plain scalar) is worth checking on its own.
+    /// because its serde shape (a four-edge struct, not a plain scalar) is
+    /// worth checking on its own.
     #[test]
     fn padding_round_trips_through_serde() {
         let props = Props {
-            padding: Some(Insets::symmetric(4.0, 8.0)),
+            padding: Some(InsetRefs::symmetric(n("spacing.xs"), n("spacing.sm"))),
             ..Props::default()
         };
         let json = serde_json::to_string(&props).unwrap();
-        assert!(json.contains("\"padding\""), "{json}");
+        assert_eq!(
+            json,
+            r#"{"padding":{"top":"spacing.sm","right":"spacing.xs","bottom":"spacing.sm","left":"spacing.xs"}}"#
+        );
         let back: Props = serde_json::from_str(&json).unwrap();
         assert_eq!(back, props);
-        assert_eq!(back.padding(), Insets::symmetric(4.0, 8.0));
+        assert_eq!(back.padding(&theme()), Insets::symmetric(4.0, 8.0));
 
         // Absent padding serializes away entirely, and resolves to NONE.
         let bare = Props::default();
         let bare_json = serde_json::to_string(&bare).unwrap();
         assert!(!bare_json.contains("padding"), "{bare_json}");
-        assert_eq!(bare.padding(), Insets::NONE);
+        assert_eq!(bare.padding(&theme()), Insets::NONE);
+    }
+
+    /// `InsetRefs` mirrors [`Insets`] one level up, so the two constructors
+    /// have to seat their arguments on the same edges. Checked against
+    /// [`Insets`] itself rather than against a hand-written expectation: if
+    /// `Insets::symmetric` ever swapped its arguments, this fails with it
+    /// instead of quietly agreeing with the old order.
+    #[test]
+    fn the_two_inset_constructors_agree_edge_for_edge() {
+        let theme = theme();
+        let all = Props {
+            padding: Some(InsetRefs::all(n("spacing.sm"))),
+            ..Props::default()
+        };
+        assert_eq!(all.padding(&theme), Insets::all(8.0));
+
+        let sym = Props {
+            padding: Some(InsetRefs::symmetric(n("spacing.xs"), n("spacing.sm"))),
+            ..Props::default()
+        };
+        assert_eq!(sym.padding(&theme), Insets::symmetric(4.0, 8.0));
+    }
+
+    /// A partly declared `InsetRefs` insets only the edges it names, and an
+    /// empty one insets nothing — the same reading an absent `padding` gets.
+    /// The empty form also has to survive the wire: `{}` is what a Lua table
+    /// with no keys produces.
+    #[test]
+    fn an_unnamed_edge_is_no_inset_and_an_empty_refs_writes_an_empty_table() {
+        let theme = theme();
+        let top_only = Props {
+            padding: Some(InsetRefs {
+                top: Some(n("spacing.lg")),
+                ..InsetRefs::default()
+            }),
+            ..Props::default()
+        };
+        assert_eq!(
+            top_only.padding(&theme),
+            Insets {
+                top: 16.0,
+                ..Insets::NONE
+            }
+        );
+        assert_eq!(
+            serde_json::to_string(&top_only).unwrap(),
+            r#"{"padding":{"top":"spacing.lg"}}"#
+        );
+
+        let empty = Props {
+            padding: Some(InsetRefs::default()),
+            ..Props::default()
+        };
+        assert_eq!(serde_json::to_string(&empty).unwrap(), r#"{"padding":{}}"#);
+        assert_eq!(
+            serde_json::from_str::<Props>(r#"{"padding":{}}"#).unwrap(),
+            empty
+        );
+        assert_eq!(empty.padding(&theme), Insets::NONE);
+    }
+
+    /// FR-053's whole point, on the wire. A styling prop is a token
+    /// reference, so a literal in that slot is refused at deserialization —
+    /// by [`TokenName`]'s own structural check, before any tree ever reaches
+    /// acceptance. This is what replaced the numeric range check tree
+    /// acceptance used to run on `spacing`.
+    #[test]
+    fn a_literal_in_a_styling_slot_is_refused_on_the_wire() {
+        for bad in [
+            r#"{"spacing":8}"#,
+            r#"{"spacing":-1}"#,
+            r#"{"spacing":"16"}"#,
+            r##"{"spacing":"#aabbcc"}"##,
+            r#"{"column_spacing":12}"#,
+            r#"{"row_spacing":"4"}"#,
+            r#"{"padding":{"top":6}}"#,
+            r#"{"padding":{"left":"8"}}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<Props>(bad).is_err(),
+                "{bad} names a value in a slot that only takes a token"
+            );
+        }
+    }
+
+    /// The layout-declaration and performance-hint classes stay numeric
+    /// (FR-053). A minimum width is a fact about a label and `overscan`
+    /// changes no pixel, so neither belongs to a theme — and this is the
+    /// test that fails if a later pass token-types them by reflex.
+    #[test]
+    fn declarations_and_hints_are_still_numbers() {
+        let props: Props = serde_json::from_str(
+            r#"{"overscan":128,"estimated_extent":24,"total_count":900,"max_lines":3,
+                "columns":[{"type":"fixed","value":220}]}"#,
+        )
+        .expect("numeric declarations and hints stay numeric");
+        assert_eq!(props.overscan, Some(128.0));
+        assert_eq!(props.estimated_extent, Some(24.0));
+        assert_eq!(props.total_count, Some(900));
+        assert_eq!(props.max_lines, Some(3));
+        assert_eq!(props.columns, vec![TrackSize::Fixed { value: 220.0 }]);
+    }
+
+    /// The gap a container reserves tracks the theme it is measured under,
+    /// which is the whole reason resolution takes a snapshot instead of
+    /// happening once at authoring time.
+    #[test]
+    fn one_declaration_resolves_to_two_gaps_under_two_themes() {
+        let props = Props {
+            spacing: Some(n("spacing.sm")),
+            column_spacing: Some(n("spacing.lg")),
+            ..Props::default()
+        };
+        assert_eq!(props.stack(&theme()).spacing, 8.0);
+        assert_eq!(props.grid(&theme()).column_spacing, 16.0);
+
+        let mut values = light().values().clone();
+        values.insert(n("spacing.sm"), crate::token::TokenValue::Spacing(40.0));
+        let roomy = ThemeSnapshot::new(
+            crate::token::Theme::build(
+                crate::token::ThemeMode::Light,
+                &crate::token::standard_vocabulary(),
+                values,
+            )
+            .expect("light()'s assignments with one gap replaced are complete"),
+            2,
+        );
+        assert_eq!(props.stack(&roomy).spacing, 40.0);
+        assert_eq!(
+            props.grid(&roomy).column_spacing,
+            16.0,
+            "only the reassigned name moved"
+        );
     }
 
     #[test]

@@ -24,11 +24,23 @@ pub struct Theme {
 
 impl Theme {
     /// Build a theme, refusing it unless `values` assigns every token
-    /// `vocabulary` declares, each at its declared kind.
+    /// `vocabulary` declares, each at its declared kind, and each at a value
+    /// layout can use.
+    ///
+    /// The third condition is why a styling prop can be a bare token
+    /// reference. `Props.spacing` and `Props.padding` used to carry numbers,
+    /// and tree acceptance range-checked them (`tree::validate`): a negative
+    /// or NaN gap is not a gap. Those props now carry names, so the number
+    /// arrives from here instead — and the check has to arrive with it, or
+    /// nothing checks it at all. A theme is the one place the number is
+    /// written, so a theme is where "a gap is a finite, non-negative extent"
+    /// is proved. Layout can then resolve a name without a range arm, the
+    /// same way it resolves one without a fallback arm.
     ///
     /// # Errors
-    /// Returns [`ThemeError`] naming every missing token and every
-    /// kind-mismatched token, not just the first found.
+    /// Returns [`ThemeError`] naming every missing token, every
+    /// kind-mismatched token, and every unusable value — all of them, not
+    /// just the first found.
     pub fn build(
         mode: ThemeMode,
         vocabulary: &Vocabulary,
@@ -36,6 +48,7 @@ impl Theme {
     ) -> Result<Self, ThemeError> {
         let mut missing = Vec::new();
         let mut mismatched = Vec::new();
+        let mut unusable = Vec::new();
         for name in vocabulary.names() {
             let declared = vocabulary
                 .kind_of(name)
@@ -49,16 +62,24 @@ impl Theme {
                         found: value.kind(),
                     });
                 }
-                Some(_) => {}
+                Some(value) => {
+                    if let Some(why) = unusable_extent(value) {
+                        unusable.push(ThemeUnusable {
+                            name: name.clone(),
+                            why,
+                        });
+                    }
+                }
             }
         }
-        if missing.is_empty() && mismatched.is_empty() {
+        if missing.is_empty() && mismatched.is_empty() && unusable.is_empty() {
             Ok(Self { mode, values })
         } else {
             Err(ThemeError {
                 mode,
                 missing,
                 mismatched,
+                unusable,
             })
         }
     }
@@ -82,6 +103,38 @@ impl Theme {
     }
 }
 
+/// Why a value that is the right *kind* is still not a value layout can lay
+/// anything out with, or `None` when it is fine.
+///
+/// Only the extent-valued kinds are checked, and only for the two properties
+/// every consumer of an extent assumes: finite, and not negative. A colour
+/// out of `[0, 1]` clips at paint time and a motion duration is not a
+/// distance, so neither is this function's business.
+fn unusable_extent(value: &TokenValue) -> Option<&'static str> {
+    let extent = match value {
+        TokenValue::Spacing(units) => *units,
+        TokenValue::Shape(shape) => shape.corner_radius,
+        _ => return None,
+    };
+    if !extent.is_finite() {
+        Some("not a finite number")
+    } else if extent < 0.0 {
+        Some("negative")
+    } else {
+        None
+    }
+}
+
+/// One token assigned a value of the right kind that layout still cannot
+/// use: a negative gap, a NaN corner radius.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThemeUnusable {
+    /// The token name.
+    pub name: TokenName,
+    /// What is wrong with the value, in one phrase.
+    pub why: &'static str,
+}
+
 /// One token whose assigned value's kind disagrees with its vocabulary
 /// declaration.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -103,6 +156,7 @@ pub struct ThemeError {
     mode: ThemeMode,
     missing: Vec<TokenName>,
     mismatched: Vec<ThemeMismatch>,
+    unusable: Vec<ThemeUnusable>,
 }
 
 impl ThemeError {
@@ -118,6 +172,12 @@ impl ThemeError {
     pub fn mismatched(&self) -> &[ThemeMismatch] {
         &self.mismatched
     }
+
+    /// Every token assigned an extent layout cannot use.
+    #[must_use]
+    pub fn unusable(&self) -> &[ThemeUnusable] {
+        &self.unusable
+    }
 }
 
 impl fmt::Display for ThemeError {
@@ -132,6 +192,9 @@ impl fmt::Display for ThemeError {
                 "  {}: expected {:?}, found {:?}",
                 mismatch.name, mismatch.declared, mismatch.found
             )?;
+        }
+        for bad in &self.unusable {
+            writeln!(f, "  {}: extent is {}", bad.name, bad.why)?;
         }
         Ok(())
     }
@@ -206,6 +269,93 @@ mod tests {
             err.mismatched()[0].name,
             TokenName::new("surface.raised").unwrap()
         );
+    }
+
+    fn gap_vocabulary() -> Vocabulary {
+        let mut vocab = Vocabulary::new();
+        vocab.declare(DesignToken::new(
+            TokenName::new("spacing.md").unwrap(),
+            crate::token::value::TokenKind::Spacing,
+        ));
+        vocab.declare(DesignToken::new(
+            TokenName::new("shape.corner-sm").unwrap(),
+            crate::token::value::TokenKind::Shape,
+        ));
+        vocab
+    }
+
+    /// The check `tree::validate` used to run on `Props.spacing` and every
+    /// edge of `Props.padding`, now run where the number is actually
+    /// written.
+    ///
+    /// This is not defence in depth — it is the *only* place the number is
+    /// checked any more, because a styling prop is a name and a name has no
+    /// sign. A negative gap makes a stack lay its children on top of each
+    /// other; a NaN one poisons every extent downstream of it.
+    #[test]
+    fn a_negative_or_non_finite_extent_is_refused_and_named() {
+        for (bad, why) in [
+            (TokenValue::Spacing(-1.0), "negative"),
+            (TokenValue::Spacing(f32::NAN), "not a finite number"),
+            (TokenValue::Spacing(f32::INFINITY), "not a finite number"),
+        ] {
+            let mut values = BTreeMap::new();
+            values.insert(TokenName::new("spacing.md").unwrap(), bad);
+            values.insert(
+                TokenName::new("shape.corner-sm").unwrap(),
+                TokenValue::Shape(crate::token::value::ShapeValue { corner_radius: 4.0 }),
+            );
+            let err = Theme::build(ThemeMode::Light, &gap_vocabulary(), values).unwrap_err();
+            assert!(err.missing().is_empty(), "{err}");
+            assert!(err.mismatched().is_empty(), "{err}");
+            assert_eq!(err.unusable().len(), 1, "{bad:?} was accepted: {err}");
+            assert_eq!(
+                err.unusable()[0].name,
+                TokenName::new("spacing.md").unwrap()
+            );
+            assert_eq!(err.unusable()[0].why, why);
+            assert!(err.to_string().contains(why), "{err}");
+        }
+    }
+
+    /// A corner radius is an extent too, and gets the same treatment — the
+    /// rule is about what the number has to be, not about which prop reads
+    /// it.
+    #[test]
+    fn an_unusable_corner_radius_is_refused_as_well() {
+        let mut values = BTreeMap::new();
+        values.insert(
+            TokenName::new("spacing.md").unwrap(),
+            TokenValue::Spacing(12.0),
+        );
+        values.insert(
+            TokenName::new("shape.corner-sm").unwrap(),
+            TokenValue::Shape(crate::token::value::ShapeValue {
+                corner_radius: -2.0,
+            }),
+        );
+        let err = Theme::build(ThemeMode::Light, &gap_vocabulary(), values).unwrap_err();
+        assert_eq!(err.unusable().len(), 1, "{err}");
+        assert_eq!(
+            err.unusable()[0].name,
+            TokenName::new("shape.corner-sm").unwrap()
+        );
+    }
+
+    /// Zero is a gap an author may want (a flush run of cells), so the floor
+    /// is "not negative", not "positive".
+    #[test]
+    fn a_zero_extent_is_usable() {
+        let mut values = BTreeMap::new();
+        values.insert(
+            TokenName::new("spacing.md").unwrap(),
+            TokenValue::Spacing(0.0),
+        );
+        values.insert(
+            TokenName::new("shape.corner-sm").unwrap(),
+            TokenValue::Shape(crate::token::value::ShapeValue { corner_radius: 0.0 }),
+        );
+        assert!(Theme::build(ThemeMode::Light, &gap_vocabulary(), values).is_ok());
     }
 
     #[test]

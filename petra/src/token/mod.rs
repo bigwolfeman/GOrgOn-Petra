@@ -28,7 +28,7 @@ pub use shipped::{dark, light, standard_vocabulary};
 pub use slot::{SlotSchema, SlotSpec, standard_slots};
 pub use snapshot::ThemeSnapshot;
 pub use status::{StatusShape, StatusToken, StatusTokenError};
-pub use theme::{Theme, ThemeError, ThemeMismatch};
+pub use theme::{Theme, ThemeError, ThemeMismatch, ThemeUnusable};
 pub use value::{
     ColorValue, MotionEasing, MotionValue, ShapeValue, TokenKind, TokenValue, TypographyValue,
     TypographyWeight,

@@ -23,6 +23,48 @@ fn name(n: &str) -> TokenName {
         .unwrap_or_else(|err| panic!("shipped vocabulary name {n:?} must be well-formed: {err}"))
 }
 
+/// The shipped spacing ramp: eight steps, in logical units, on a 4-unit base.
+///
+/// A **ramp**, not a number line. Its job is to be the whole set of gaps a
+/// page is allowed to use, so that two panels written by two authors line up
+/// without either of them measuring the other. That is why it is short and
+/// why the steps grow: `2xs`/`xs` separate glyph-scale things (an icon from
+/// its label), `sm`/`md` separate controls inside a group, `lg`/`xl` separate
+/// groups, and `2xl`/`3xl` separate regions of a page. A gap that lands
+/// between two steps is a gap nobody chose.
+///
+/// Every value the pre-ramp vocabulary defined — 4, 8, 16 — survives here
+/// under some name, so the change from three steps to eight is a rename, not
+/// a revalue. Two names shift, and both shifts are downward by one step: what
+/// was `spacing.sm` (4) is now `spacing.xs`, and what was `spacing.md` (8) is
+/// now `spacing.sm`. `spacing.lg` (16) does not move.
+///
+/// Declared once and shared by both shipped themes verbatim, because spacing
+/// is geometry: a gap does not change when the lights go out. Colour is the
+/// only channel [`light`] and [`dark`] disagree on, and
+/// `the_two_shipped_themes_agree_on_every_gap` holds them to that.
+const SPACING_RAMP: [(&str, f32); 8] = [
+    ("spacing.2xs", 2.0),
+    ("spacing.xs", 4.0),
+    ("spacing.sm", 8.0),
+    ("spacing.md", 12.0),
+    ("spacing.lg", 16.0),
+    ("spacing.xl", 24.0),
+    ("spacing.2xl", 32.0),
+    ("spacing.3xl", 48.0),
+];
+
+/// Assign every [`SPACING_RAMP`] step into a theme's value map.
+///
+/// Both themes call this rather than spelling the ramp out twice: a hand-
+/// copied ramp is a ramp that drifts, and a drifted one would make the same
+/// token name mean two different gaps depending on the operator's theme.
+fn insert_spacing_ramp(values: &mut BTreeMap<TokenName, TokenValue>) {
+    for (step, units) in SPACING_RAMP {
+        values.insert(name(step), TokenValue::Spacing(units));
+    }
+}
+
 /// The full set of tokens the shipped light and dark themes must define.
 ///
 /// Deliberately small: enough surface/text/status/spacing/typography/
@@ -37,9 +79,14 @@ pub fn standard_vocabulary() -> Vocabulary {
         .declare(DesignToken::new(name("surface.raised"), TokenKind::Color))
         .declare(DesignToken::new(name("text.primary"), TokenKind::Color))
         .declare(DesignToken::new(name("text.muted"), TokenKind::Color))
+        .declare(DesignToken::new(name("spacing.2xs"), TokenKind::Spacing))
+        .declare(DesignToken::new(name("spacing.xs"), TokenKind::Spacing))
         .declare(DesignToken::new(name("spacing.sm"), TokenKind::Spacing))
         .declare(DesignToken::new(name("spacing.md"), TokenKind::Spacing))
         .declare(DesignToken::new(name("spacing.lg"), TokenKind::Spacing))
+        .declare(DesignToken::new(name("spacing.xl"), TokenKind::Spacing))
+        .declare(DesignToken::new(name("spacing.2xl"), TokenKind::Spacing))
+        .declare(DesignToken::new(name("spacing.3xl"), TokenKind::Spacing))
         .declare(DesignToken::new(
             name("typography.body"),
             TokenKind::Typography,
@@ -105,9 +152,7 @@ pub fn light() -> Theme {
         name("text.muted"),
         TokenValue::Color(ColorValue::from_srgb8(0x5c, 0x5c, 0x5c, 0xff)),
     );
-    values.insert(name("spacing.sm"), TokenValue::Spacing(4.0));
-    values.insert(name("spacing.md"), TokenValue::Spacing(8.0));
-    values.insert(name("spacing.lg"), TokenValue::Spacing(16.0));
+    insert_spacing_ramp(&mut values);
     values.insert(
         name("typography.body"),
         TokenValue::Typography(TypographyValue {
@@ -215,9 +260,7 @@ pub fn dark() -> Theme {
         name("text.muted"),
         TokenValue::Color(ColorValue::from_srgb8(0xa3, 0xa3, 0xa3, 0xff)),
     );
-    values.insert(name("spacing.sm"), TokenValue::Spacing(4.0));
-    values.insert(name("spacing.md"), TokenValue::Spacing(8.0));
-    values.insert(name("spacing.lg"), TokenValue::Spacing(16.0));
+    insert_spacing_ramp(&mut values);
     values.insert(
         name("typography.body"),
         TokenValue::Typography(TypographyValue {
@@ -537,6 +580,85 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The ramp, pinned by value.
+    ///
+    /// Every styling prop in every tree now resolves through one of these
+    /// eight numbers, so changing one is a page-wide visual change and has to
+    /// be a deliberate edit here rather than a quiet drift. The two carried
+    /// forward from the pre-ramp vocabulary — `spacing.xs` at 4 and
+    /// `spacing.sm` at 8 — are the ones that used to be called `spacing.sm`
+    /// and `spacing.md`; that rename is the reason a converted call site may
+    /// name a different token than the number it replaced suggests.
+    #[test]
+    fn the_spacing_ramp_is_eight_growing_steps_on_a_four_unit_base() {
+        let expected: [(&str, f32); 8] = [
+            ("spacing.2xs", 2.0),
+            ("spacing.xs", 4.0),
+            ("spacing.sm", 8.0),
+            ("spacing.md", 12.0),
+            ("spacing.lg", 16.0),
+            ("spacing.xl", 24.0),
+            ("spacing.2xl", 32.0),
+            ("spacing.3xl", 48.0),
+        ];
+        let theme = light();
+        let mut previous = 0.0f32;
+        for (step, units) in expected {
+            let got = theme.value(&TokenName::new(step).unwrap());
+            assert_eq!(
+                got,
+                Some(&TokenValue::Spacing(units)),
+                "{step} must be {units} logical units, found {got:?}"
+            );
+            assert!(
+                units > previous,
+                "the ramp must grow: {step} at {units} does not exceed {previous}"
+            );
+            previous = units;
+        }
+
+        // Every spacing name the vocabulary declares is one of the eight
+        // above, so no ninth step can appear without this test naming it.
+        let vocab = standard_vocabulary();
+        let declared: Vec<&TokenName> = vocab
+            .names()
+            .filter(|n| vocab.kind_of(n) == Some(crate::token::value::TokenKind::Spacing))
+            .collect();
+        assert_eq!(
+            declared.len(),
+            expected.len(),
+            "the vocabulary declares {} spacing tokens but the ramp has {}: {declared:?}",
+            declared.len(),
+            expected.len()
+        );
+    }
+
+    /// Spacing is geometry. A gap does not change when the operator turns the
+    /// lights off, so the two shipped themes must assign every spacing name
+    /// the same number — the only channel they are allowed to disagree on is
+    /// colour.
+    #[test]
+    fn the_two_shipped_themes_agree_on_every_gap() {
+        let (l, d) = (light(), dark());
+        let vocab = standard_vocabulary();
+        let mut checked = 0usize;
+        for name in vocab.names() {
+            if vocab.kind_of(name) != Some(crate::token::value::TokenKind::Spacing) {
+                continue;
+            }
+            assert_eq!(
+                l.value(name),
+                d.value(name),
+                "{name} differs between light and dark; spacing is geometry, not colour"
+            );
+            checked += 1;
+        }
+        assert_eq!(
+            checked, 8,
+            "expected the eight-step ramp, checked {checked}"
+        );
     }
 
     #[test]

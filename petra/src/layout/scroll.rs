@@ -78,7 +78,7 @@ pub fn measure(
 ) -> Size {
     let scroll = node.props.scroll();
     let axis = scroll.axis;
-    let padding = node.props.padding();
+    let padding = ctx.padding(&node.props.padding);
     let Some(child) = node.children.first() else {
         // No content: nothing to negotiate against, and this container's
         // own declared `constraints` (applied centrally by the dispatcher
@@ -170,7 +170,7 @@ pub fn place(
         // not `slot.rect`, is what every offset/clip computation below is
         // relative to: the padded strip is a permanent gutter the content
         // never enters, at either scroll extreme.
-        let padding = node.props.padding();
+        let padding = ctx.padding(&node.props.padding);
         let content = slot.rect.inset_edges(padding);
         let viewport_size = content.size();
 
@@ -420,10 +420,10 @@ fn axis_rect(
 #[cfg(test)]
 mod tests {
     use crate::frame::placement::PlacementList;
-    use crate::geom::{Axis, Insets, Rect, Size};
+    use crate::geom::{Axis, Rect, Size};
     use crate::layout::{MeasureCache, Proposal, SizeProposal, Slot};
-    use crate::testing::{GeneratedRows, Harness, MonoContent};
-    use crate::tree::{AxisConstraint, Constraints, KeyPath, NodeKind, Props, ViewNode};
+    use crate::testing::{GeneratedRows, Harness, MonoContent, gap_token};
+    use crate::tree::{AxisConstraint, Constraints, InsetRefs, KeyPath, NodeKind, Props, ViewNode};
 
     /// A spacer whose measured extent on the vertical axis is pinned to
     /// `main`, no matter what proposal it is probed with — a deterministic
@@ -565,7 +565,7 @@ mod tests {
         let mut h = Harness::new();
         let tree = ViewNode::new(NodeKind::Scroll, "list")
             .with_props(Props {
-                padding: Some(Insets::all(10.0)),
+                padding: Some(InsetRefs::all(gap_token(10.0))),
                 ..Props::default()
             })
             .child(fixed_extent_child(400.0));
@@ -619,7 +619,7 @@ mod tests {
             h.set_scroll("/list", offset);
             let tree = ViewNode::new(NodeKind::Scroll, "list")
                 .with_props(Props {
-                    padding: Some(Insets::all(10.0)),
+                    padding: Some(InsetRefs::all(gap_token(10.0))),
                     ..Props::default()
                 })
                 .child(fixed_extent_child(400.0));
@@ -672,7 +672,7 @@ mod tests {
         let mut h = Harness::new();
         let tree = ViewNode::new(NodeKind::Scroll, "list")
             .with_props(Props {
-                padding: Some(Insets::all(10.0)),
+                padding: Some(InsetRefs::all(gap_token(10.0))),
                 ..Props::default()
             })
             .child(fixed_extent_child(400.0));

@@ -31,7 +31,7 @@ pub fn measure(
     path: &mut KeyPath,
     proposal: SizeProposal,
 ) -> Size {
-    let props = node.props.stack();
+    let props = node.props.stack(ctx.theme);
     let main = props.axis;
     if node.children.is_empty() {
         return Size::ZERO;
@@ -43,7 +43,7 @@ pub fn measure(
     // never a `Give` `concede` can raid. `Proposal::shrink` passes an open
     // probe through unchanged, so `Zero`/`Unbounded` measurement still answers
     // truthfully about the padded budget, not the whole rect.
-    let padding = node.props.padding();
+    let padding = ctx.padding(&node.props.padding);
     let spacing = reserved_spacing(props.spacing, node.children.len());
     let cross = proposal
         .axis(main.cross())
@@ -91,7 +91,7 @@ pub fn place(
     slot: Slot,
     sink: &mut dyn PlacementSink,
 ) {
-    let props = node.props.stack();
+    let props = node.props.stack(ctx.theme);
     let main = props.axis;
     // Padding is inside the box: the stack's own placed rect (pushed below,
     // `rect: slot.rect`) never moves or shrinks because of its own padding —
@@ -100,7 +100,7 @@ pub fn place(
     // already applies to itself a few lines down, and a genuine collapse
     // (the box smaller than its own declared insets) is flagged exactly the
     // way a spacing collapse already is, via `padding_collapsed` below.
-    let padding = node.props.padding();
+    let padding = ctx.padding(&node.props.padding);
     let padding_collapsed = (slot.rect.w - padding.left - padding.right) < -FIT_EPSILON
         || (slot.rect.h - padding.top - padding.bottom) < -FIT_EPSILON;
     let content = slot.rect.inset_edges(padding);
@@ -367,7 +367,7 @@ mod tests {
     use crate::frame::placement::{Placement, PlacementList};
     use crate::geom::{Align, Axis, Insets, Rect, Size};
     use crate::layout::{SizeProposal, Slot};
-    use crate::testing::Harness;
+    use crate::testing::{Harness, gap};
     use crate::tree::{AxisConstraint, Constraints, Key, KeyPath, NodeKind, Props, ViewNode};
 
     /// Constraints that touch one axis only, so a test says what it means
@@ -412,7 +412,7 @@ mod tests {
         ViewNode::new(NodeKind::Stack, Key::new("stack"))
             .with_props(Props {
                 axis: Some(axis),
-                spacing: Some(spacing),
+                spacing: gap(spacing),
                 align: Some(align),
                 ..Props::default()
             })
@@ -432,7 +432,7 @@ mod tests {
             .with_props(Props {
                 axis: Some(axis),
                 align: Some(align),
-                padding: Some(padding),
+                padding: Some(crate::testing::gap_insets(padding)),
                 ..Props::default()
             })
             .with_children(children)
@@ -440,6 +440,10 @@ mod tests {
 
     fn placements(tree: &ViewNode, rect: Rect) -> Vec<Placement> {
         let mut h = Harness::new();
+        // The swept fixtures below generate fractional gaps, which the
+        // pre-bound whole-unit range does not cover. The names carry the
+        // numbers, so the harness reads them off the tree.
+        h.bind_tree_gaps(tree);
         let mut ctx = h.ctx();
         let mut path = KeyPath::root();
         let mut sink = PlacementList::new();
@@ -449,6 +453,7 @@ mod tests {
 
     fn measured(tree: &ViewNode, proposal: SizeProposal) -> Size {
         let mut h = Harness::new();
+        h.bind_tree_gaps(tree);
         let mut ctx = h.ctx();
         let mut path = KeyPath::root();
         crate::layout::measure(tree, &mut ctx, &mut path, proposal)

@@ -25,10 +25,22 @@ use std::sync::Arc;
 use gorgon_petra::geom::{Align, Axis};
 use gorgon_petra::input::{InputEvent, Route, activates};
 use gorgon_petra::layout::{ChangeSet, RowSource};
+use gorgon_petra::token::TokenName;
 use gorgon_petra::tree::{
     Anchor, AxisConstraint, ClampRule, Constraints, InputPolicy, Interaction, Layer, NodeKind,
     Props, Role, Semantics, TextWrap, TrackSize, ViewNode,
 };
+
+/// A spacing token reference, for the styling props that take one (FR-053).
+///
+/// Every gap on this page is a step of the shipped ramp
+/// (`gorgon_petra::token::standard_vocabulary`), because the page's job is to
+/// show what the design system can say. A gap that used to be a float and did
+/// not land on a step moved to the nearest step, ties upward — six of them
+/// did, by one or two logical units each.
+fn sp(name: &str) -> Option<TokenName> {
+    Some(TokenName::new(name).expect("gallery spacing tokens are well-formed"))
+}
 use gorgon_petra_egui::host::{App, Host, default_presenter};
 
 /// The one custom kind this gallery declares. Registered on the host before
@@ -201,22 +213,22 @@ impl Gallery {
             )
     }
 
-    fn row(key: &str, spacing: f32, children: Vec<ViewNode>) -> ViewNode {
+    fn row(key: &str, spacing: Option<TokenName>, children: Vec<ViewNode>) -> ViewNode {
         ViewNode::new(NodeKind::Stack, key)
             .with_props(Props {
                 axis: Some(Axis::Horizontal),
-                spacing: Some(spacing),
+                spacing,
                 align: Some(Align::Start),
                 ..Props::default()
             })
             .with_children(children)
     }
 
-    fn column(key: &str, spacing: f32, children: Vec<ViewNode>) -> ViewNode {
+    fn column(key: &str, spacing: Option<TokenName>, children: Vec<ViewNode>) -> ViewNode {
         ViewNode::new(NodeKind::Stack, key)
             .with_props(Props {
                 axis: Some(Axis::Vertical),
-                spacing: Some(spacing),
+                spacing,
                 ..Props::default()
             })
             .with_children(children)
@@ -226,14 +238,14 @@ impl Gallery {
     fn section(key: &str, title: &str, children: Vec<ViewNode>) -> ViewNode {
         let mut rows = vec![Self::heading(&format!("{key}-h"), title)];
         rows.extend(children);
-        Self::column(key, 8.0, rows)
+        Self::column(key, sp("spacing.sm"), rows)
     }
 
     /// Buttons in the three states a real one has.
     fn buttons_row(&self) -> ViewNode {
         Self::row(
             "buttons",
-            10.0,
+            sp("spacing.md"),
             vec![
                 // Primary is the inverted pair rather than a coloured accent:
                 // the palette has no accent that is not a *status*, and
@@ -277,7 +289,7 @@ impl Gallery {
         let check = |key: &str, label: &str, on: bool| {
             Self::row(
                 key,
-                6.0,
+                sp("spacing.sm"),
                 vec![
                     Self::swatch(
                         "box",
@@ -306,9 +318,9 @@ impl Gallery {
             }
             Self::row(
                 key,
-                6.0,
+                sp("spacing.sm"),
                 vec![
-                    Self::row("track", 0.0, track).with_props({
+                    Self::row("track", None, track).with_props({
                         let mut p = Props {
                             axis: Some(Axis::Horizontal),
                             ..Props::default()
@@ -329,7 +341,7 @@ impl Gallery {
         };
         Self::row(
             "controls",
-            22.0,
+            sp("spacing.xl"),
             vec![
                 check("check-on", "Checked", true),
                 check("check-off", "Unchecked", false),
@@ -370,9 +382,9 @@ impl Gallery {
             .collect();
         Self::column(
             "tabs",
-            0.0,
+            None,
             vec![
-                Self::row("tablist", 4.0, tabs).with_semantics(Semantics {
+                Self::row("tablist", sp("spacing.xs"), tabs).with_semantics(Semantics {
                     role: Some(Role::TabList),
                     ..Semantics::default()
                 }),
@@ -410,7 +422,7 @@ impl Gallery {
             });
         Self::row(
             "progress",
-            12.0,
+            sp("spacing.md"),
             vec![
                 Self::body("progress-l", "Rebuild", "text.muted"),
                 bar,
@@ -450,8 +462,8 @@ impl Gallery {
         ViewNode::new(NodeKind::Grid, "form")
             .with_props(Props {
                 columns: vec![TrackSize::Fixed { value: 110.0 }, TrackSize::FitContent],
-                column_spacing: Some(12.0),
-                row_spacing: Some(6.0),
+                column_spacing: sp("spacing.md"),
+                row_spacing: sp("spacing.sm"),
                 ..Props::default()
             })
             .child(Self::body("f-l1", "Fiber name", "text.muted"))
@@ -475,8 +487,8 @@ impl Gallery {
                     TrackSize::Fixed { value: 110.0 },
                     TrackSize::FitContent,
                 ],
-                column_spacing: Some(14.0),
-                row_spacing: Some(5.0),
+                column_spacing: sp("spacing.lg"),
+                row_spacing: sp("spacing.xs"),
                 ..Props::default()
             })
             .with_semantics(Semantics {
@@ -491,7 +503,7 @@ impl Gallery {
                 .child(Self::body(key, key, "text.primary"))
                 .child(Self::row(
                     &format!("{key}-state"),
-                    6.0,
+                    sp("spacing.sm"),
                     vec![
                         Self::swatch("dot", 10.0, 10.0, Some(token), None),
                         Self::body("word", word, "text.primary"),
@@ -506,7 +518,7 @@ impl Gallery {
     fn status_section() -> ViewNode {
         Self::column(
             "status",
-            8.0,
+            sp("spacing.sm"),
             vec![
                 Self::heading("status-h", "Status"),
                 Self::body(
@@ -531,8 +543,8 @@ impl Gallery {
                     TrackSize::FitContent,
                     TrackSize::Weight { weight: 1.0 },
                 ],
-                column_spacing: Some(8.0),
-                row_spacing: Some(4.0),
+                column_spacing: sp("spacing.sm"),
+                row_spacing: sp("spacing.xs"),
                 ..Props::default()
             })
             .child(Self::body("g-a", "Fixed 90", "text.primary"))
@@ -548,13 +560,13 @@ impl Gallery {
 
         Self::column(
             "layout",
-            6.0,
+            sp("spacing.sm"),
             vec![
                 Self::heading("layout-h", "Grid, Stack, Spacer, Separator"),
                 grid,
                 Self::row(
                     "layout-row",
-                    8.0,
+                    sp("spacing.sm"),
                     vec![
                         Self::body("l-left", "left", "text.primary"),
                         // Height-clamped on purpose. An unconstrained
@@ -626,7 +638,7 @@ impl Gallery {
 
         Self::column(
             "text",
-            6.0,
+            sp("spacing.sm"),
             vec![
                 Self::heading("text-h", "Text and Input"),
                 ViewNode::new(NodeKind::Text, "wrapped")
@@ -689,7 +701,7 @@ impl Gallery {
         });
         Self::column(
             "collection",
-            6.0,
+            sp("spacing.sm"),
             vec![
                 Self::heading("coll-h", "Scroll over a virtualized Collection"),
                 Self::body(
@@ -725,7 +737,7 @@ impl Gallery {
     fn surface_section(&self) -> ViewNode {
         Self::column(
             "surfaces",
-            6.0,
+            sp("spacing.sm"),
             vec![
                 Self::heading("surf-h", "Surface input policies"),
                 Self::body(
@@ -736,7 +748,7 @@ impl Gallery {
                 ),
                 Self::row(
                     "surf-row",
-                    12.0,
+                    sp("spacing.md"),
                     vec![
                         Self::control(
                             "open-modal",
@@ -769,7 +781,7 @@ impl Gallery {
     fn undrawn_section() -> ViewNode {
         Self::column(
             "undrawn",
-            6.0,
+            sp("spacing.sm"),
             vec![
                 Self::heading("undrawn-h", "Declared with no painter"),
                 Self::body(
@@ -780,7 +792,7 @@ impl Gallery {
                 ),
                 Self::row(
                     "undrawn-row",
-                    12.0,
+                    sp("spacing.md"),
                     vec![
                         Self::placeholder_box(
                             NodeKind::Image,
@@ -922,7 +934,7 @@ impl Gallery {
                 clamp: Some(ClampRule::Shrink),
                 input_policy: Some(InputPolicy::Block),
                 axis: Some(Axis::Vertical),
-                spacing: Some(8.0),
+                spacing: sp("spacing.sm"),
                 ..Props::default()
             };
             props
@@ -946,7 +958,7 @@ impl Gallery {
                     ))
                     .child(Self::row(
                         "modal-actions",
-                        10.0,
+                        sp("spacing.md"),
                         vec![
                             ViewNode::new(NodeKind::Spacer, "modal-push").with_constraints(
                                 Constraints {
@@ -983,7 +995,7 @@ impl Gallery {
                 clamp: Some(ClampRule::Shrink),
                 input_policy: Some(InputPolicy::DismissOutside),
                 axis: Some(Axis::Vertical),
-                spacing: Some(8.0),
+                spacing: sp("spacing.sm"),
                 ..Props::default()
             };
             props
@@ -1014,7 +1026,7 @@ impl Gallery {
                 clamp: Some(ClampRule::Shrink),
                 input_policy: Some(InputPolicy::Passthrough),
                 axis: Some(Axis::Vertical),
-                spacing: Some(8.0),
+                spacing: sp("spacing.sm"),
                 ..Props::default()
             };
             props
@@ -1074,7 +1086,7 @@ impl App for Gallery {
     fn view(&mut self) -> ViewNode {
         let mut page = Props {
             axis: Some(Axis::Vertical),
-            spacing: Some(18.0),
+            spacing: sp("spacing.lg"),
             ..Props::default()
         };
         page.tokens
@@ -1340,7 +1352,7 @@ fn main() -> eframe::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Gallery, TOTAL_ROWS};
+    use super::{Gallery, TOTAL_ROWS, sp};
     use egui::{Context, Event, Modifiers, Pos2, RawInput};
     use gorgon_petra::geom::Point;
     use gorgon_petra::tree::{NodeKind, ViewNode};
@@ -1422,7 +1434,7 @@ mod tests {
     fn an_unconstrained_spacer_claims_the_cross_axis_too() {
         let row = Gallery::row(
             "probe",
-            8.0,
+            sp("spacing.sm"),
             vec![
                 Gallery::body("a", "left", "text.primary"),
                 ViewNode::new(NodeKind::Spacer, "gap"),

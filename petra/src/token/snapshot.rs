@@ -53,12 +53,93 @@ impl ThemeSnapshot {
     pub fn value(&self, name: &TokenName) -> Option<&TokenValue> {
         self.theme.value(name)
     }
+
+    /// The gap `name` resolves to, in logical units.
+    ///
+    /// `None` means one of two things, and they are the same thing to a
+    /// caller: the snapshot does not define `name`, or it defines it as
+    /// something that is not a gap. Both are authoring bugs a validated tree
+    /// cannot reach — [`crate::token::Theme::build`] proves a theme assigns
+    /// every vocabulary name at its declared kind — so no caller needs an
+    /// arm per case.
+    ///
+    /// This exists so that no container ever writes
+    /// `match snapshot.value(n) { Some(TokenValue::Spacing(v)) => …, … }`
+    /// itself. That `match` has a wrong answer available (treat a
+    /// non-spacing token as a zero gap) and would be written once per
+    /// container; here it is written once, and the wrong answer is not
+    /// spelled at all.
+    #[must_use]
+    pub fn spacing(&self, name: &TokenName) -> Option<f32> {
+        match self.value(name)? {
+            TokenValue::Spacing(units) => Some(*units),
+            _ => None,
+        }
+    }
+
+    /// The corner radius `name` resolves to, in logical units. The shape
+    /// sibling of [`ThemeSnapshot::spacing`], and `None` for the same two
+    /// reasons.
+    #[must_use]
+    pub fn corner(&self, name: &TokenName) -> Option<f32> {
+        match self.value(name)? {
+            TokenValue::Shape(shape) => Some(shape.corner_radius),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::ThemeSnapshot;
+    use crate::token::name::TokenName;
     use crate::token::shipped::light;
+
+    fn n(s: &str) -> TokenName {
+        TokenName::new(s).expect("test names are well-formed")
+    }
+
+    /// The typed accessors answer at their own kind and refuse every other
+    /// kind, rather than coercing. `surface.base` is a real, defined token —
+    /// so a `None` here is the accessor discriminating on kind, not on
+    /// existence, which is the property that lets containers drop their own
+    /// `match`.
+    #[test]
+    fn a_typed_accessor_answers_only_at_its_own_kind() {
+        let snapshot = ThemeSnapshot::new(light(), 1);
+        assert_eq!(snapshot.spacing(&n("spacing.md")), Some(12.0));
+        assert_eq!(snapshot.corner(&n("shape.corner-lg")), Some(12.0));
+
+        assert!(snapshot.value(&n("surface.base")).is_some());
+        assert_eq!(snapshot.spacing(&n("surface.base")), None);
+        assert_eq!(snapshot.corner(&n("surface.base")), None);
+        assert_eq!(snapshot.spacing(&n("shape.corner-lg")), None);
+        assert_eq!(snapshot.corner(&n("spacing.md")), None);
+
+        assert_eq!(snapshot.spacing(&n("not.a.token")), None);
+    }
+
+    /// Every step of the shipped ramp is reachable through the typed
+    /// accessor, which is the read path every styling prop now takes.
+    #[test]
+    fn every_ramp_step_resolves_through_the_typed_accessor() {
+        let snapshot = ThemeSnapshot::new(light(), 1);
+        for step in [
+            "spacing.2xs",
+            "spacing.xs",
+            "spacing.sm",
+            "spacing.md",
+            "spacing.lg",
+            "spacing.xl",
+            "spacing.2xl",
+            "spacing.3xl",
+        ] {
+            assert!(
+                snapshot.spacing(&n(step)).is_some_and(|v| v > 0.0),
+                "{step} does not resolve to a positive gap"
+            );
+        }
+    }
 
     #[test]
     fn a_snapshot_exposes_its_theme_through_read_only_accessors() {

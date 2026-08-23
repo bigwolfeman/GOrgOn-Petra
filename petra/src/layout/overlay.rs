@@ -31,7 +31,7 @@ pub fn measure(
     // other container reserves it before its own distribution: every child
     // answers the container's proposal shrunk by the padding, and the
     // padding is added back onto the reported per-axis max afterward.
-    let padding = node.props.padding();
+    let padding = ctx.padding(&node.props.padding);
     let inset_proposal = SizeProposal {
         horizontal: proposal.horizontal.shrink(padding.along(Axis::Horizontal)),
         vertical: proposal.vertical.shrink(padding.along(Axis::Vertical)),
@@ -62,7 +62,7 @@ pub fn place(
     slot: Slot,
     sink: &mut dyn PlacementSink,
 ) {
-    let padding = node.props.padding();
+    let padding = ctx.padding(&node.props.padding);
     let id = path.id();
     let semantics = semantics_of(node, &id, ctx.state);
     let me = sink.push(Placement {
@@ -124,7 +124,7 @@ mod tests {
     use crate::frame::placement::PlacementList;
     use crate::geom::{Insets, Rect};
     use crate::testing::Harness;
-    use crate::tree::{Anchor, AxisConstraint, Layer, NodeKind, Props};
+    use crate::tree::{Anchor, AxisConstraint, InsetRefs, Layer, NodeKind, Props};
 
     fn overlay(children: Vec<ViewNode>) -> ViewNode {
         ViewNode::new(NodeKind::Overlay, "o").with_children(children)
@@ -281,7 +281,7 @@ mod tests {
     #[test]
     fn a_padded_overlay_insets_its_children() {
         let mut node = overlay(vec![spacer("a"), spacer("b"), text("c", "hi there")]);
-        node.props.padding = Some(Insets::all(10.0));
+        node.props.padding = Some(crate::testing::gap_insets(Insets::all(10.0)));
         let mut h = Harness::new();
         let mut path = path_at(&node);
         let mut sink = PlacementList::new();
@@ -313,7 +313,7 @@ mod tests {
         a.constraints.vertical = pinned(5.0);
         let mut node = overlay(vec![a]);
         // 8 units horizontal total (4 + 4), 16 vertical total (8 + 8).
-        node.props.padding = Some(Insets::symmetric(4.0, 8.0));
+        node.props.padding = Some(crate::testing::gap_insets(Insets::symmetric(4.0, 8.0)));
 
         let mut h = Harness::new();
         for proposal in [
@@ -342,7 +342,7 @@ mod tests {
     #[test]
     fn an_overlay_too_small_for_its_own_padding_collapses_but_keeps_its_own_rect() {
         let mut node = overlay(vec![spacer("a")]);
-        node.props.padding = Some(Insets::all(20.0));
+        node.props.padding = Some(crate::testing::gap_insets(Insets::all(20.0)));
         let mut h = Harness::new();
         let mut path = path_at(&node);
         let mut sink = PlacementList::new();
@@ -384,12 +384,17 @@ mod tests {
             ..Props::default()
         });
         let mut node = overlay(vec![popup]);
-        node.props.padding = Some(Insets {
-            left: 100.0,
-            ..Insets::NONE
+        let mut h = Harness::new();
+        // 100 is past the shared fixture scale (`MAX_FIXTURE_GAP`) on
+        // purpose: this test is about a padding wider than any page would
+        // use, so it mints its own name rather than borrowing a step.
+        let wide = crate::token::TokenName::new("spacing.wide-fixture").unwrap();
+        h.bind_spacings(&[(wide.as_str(), 100.0)]);
+        node.props.padding = Some(InsetRefs {
+            left: Some(wide),
+            ..InsetRefs::default()
         });
 
-        let mut h = Harness::new();
         let mut path = path_at(&node);
         let mut sink = PlacementList::new();
         let outer = Rect::new(0.0, 0.0, 300.0, 150.0);

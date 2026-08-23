@@ -26,7 +26,7 @@ pub fn measure(
     path: &mut KeyPath,
     proposal: SizeProposal,
 ) -> Size {
-    let props = node.props.grid();
+    let props = node.props.grid(ctx.theme);
     let ncols = props.columns.len();
     if ncols == 0 {
         // Tree acceptance is expected to refuse a grid with no declared
@@ -40,7 +40,7 @@ pub fn measure(
     // padding already spent. Added back onto the reported size afterward, so
     // the grid's own measured extent already accounts for its padding —
     // exactly parallel to how it already accounts for spacing.
-    let padding = node.props.padding();
+    let padding = ctx.padding(&node.props.padding);
     let flow = Flow::seat(&node.children, ncols, props.rows.len());
     let row_tracks = effective_row_tracks(&props.rows, &flow);
     let col_widths = resolve_columns(
@@ -82,12 +82,12 @@ pub fn place(
     slot: Slot,
     sink: &mut dyn PlacementSink,
 ) {
-    let props = node.props.grid();
+    let props = node.props.grid(ctx.theme);
     let ncols = props.columns.len();
     // Padding insets what the grid offers its children; the grid's own
     // placed rect below stays `slot.rect`, unmodified by its own padding
     // (padding is inside the box, not around it).
-    let padding = node.props.padding();
+    let padding = ctx.padding(&node.props.padding);
     let content = slot.rect.inset_edges(padding);
 
     // Resolve the tracks before pushing this container's own placement. The
@@ -974,8 +974,8 @@ mod tests {
     use crate::frame::rounding::round_rect;
     use crate::geom::Scale;
     use crate::geom::{Axis, Insets};
-    use crate::testing::{Harness, MonoContent, NoRows};
-    use crate::tree::{AxisConstraint, Constraints, NodeKind, Props};
+    use crate::testing::{Harness, MonoContent, NoRows, gap, gap_token};
+    use crate::tree::{AxisConstraint, Constraints, InsetRefs, NodeKind, Props};
     use proptest::prelude::*;
 
     fn spacer(key: &str) -> ViewNode {
@@ -1018,8 +1018,8 @@ mod tests {
             .with_props(Props {
                 columns: vec![TrackSize::Fixed { value: width }; ncols],
                 rows: vec![TrackSize::Fixed { value: 20.0 }; 4],
-                column_spacing: Some(spacing),
-                row_spacing: Some(0.0),
+                column_spacing: gap(spacing),
+                row_spacing: gap(0.0),
                 align: Some(Align::Stretch),
                 ..Props::default()
             })
@@ -1046,6 +1046,9 @@ mod tests {
     /// The rects `place` produced for the children, in declaration order.
     fn child_rects(g: &ViewNode, offer: Rect) -> Vec<Rect> {
         let mut h = Harness::new();
+        // Swept fixtures generate fractional gaps, which the pre-bound
+        // whole-unit range does not cover. The names carry the numbers.
+        h.bind_tree_gaps(g);
         let mut path = path_at(g);
         let mut sink = PlacementList::new();
         place(g, &mut h.ctx(), &mut path, Slot::new(offer), &mut sink);
@@ -1054,9 +1057,10 @@ mod tests {
 
     /// The column extents this grid resolves to under `probe`.
     fn column_extents(g: &ViewNode, probe: Proposal) -> Vec<f32> {
-        let props = g.props.grid();
-        let flow = Flow::seat(&g.children, props.columns.len(), props.rows.len());
         let mut h = Harness::new();
+        h.bind_tree_gaps(g);
+        let props = g.props.grid(&h.theme);
+        let flow = Flow::seat(&g.children, props.columns.len(), props.rows.len());
         let mut path = path_at(g);
         resolve_columns(
             g,
@@ -1127,7 +1131,7 @@ mod tests {
             .with_props(Props {
                 columns: vec![TrackSize::Fixed { value: 40.0 }],
                 rows: vec![TrackSize::Weight { weight: 1.0 }; 96],
-                row_spacing: Some(0.0),
+                row_spacing: gap(0.0),
                 align: Some(Align::Stretch),
                 ..Props::default()
             })
@@ -1173,7 +1177,7 @@ mod tests {
             .with_props(Props {
                 columns: vec![TrackSize::Fixed { value: 30.0 }],
                 rows: vec![TrackSize::Fixed { value: 20.0 }; 3],
-                row_spacing: Some(9.0),
+                row_spacing: gap(9.0),
                 align: Some(Align::Stretch),
                 ..Props::default()
             })
@@ -1220,7 +1224,7 @@ mod tests {
             let before = ViewNode::new(NodeKind::Grid, "g")
                 .with_props(Props {
                     columns: columns.clone(),
-                    column_spacing: Some(spacing),
+                    column_spacing: gap(spacing),
                     ..Props::default()
                 })
                 .with_children(determined.clone());
@@ -1262,7 +1266,7 @@ mod tests {
         let g = ViewNode::new(NodeKind::Grid, "g")
             .with_props(Props {
                 columns: vec![TrackSize::FitContent; 2],
-                column_spacing: Some(4.0),
+                column_spacing: gap(4.0),
                 ..Props::default()
             })
             .child(spanning_text("wide", "xxxxxxxxxx", 2, 1));
@@ -1444,7 +1448,7 @@ mod tests {
                     TrackSize::Weight { weight: 1.0 },
                 ],
                 rows: vec![TrackSize::Fixed { value: 20.0 }],
-                column_spacing: Some(10.0),
+                column_spacing: gap(10.0),
                 align: Some(Align::Stretch),
                 ..Props::default()
             })
@@ -1555,7 +1559,7 @@ mod tests {
         // Mutate the field directly rather than `.with_props(Props { .. })`:
         // the latter replaces the whole struct, which would silently drop
         // the `columns` the `grid()` helper just set.
-        g.props.column_spacing = Some(10.0);
+        g.props.column_spacing = gap(10.0);
         let mut h = Harness::new();
         let mut path = path_at(&g);
         let size = measure(
@@ -1630,8 +1634,8 @@ mod tests {
                     TrackSize::Fixed { value: 20.0 },
                     TrackSize::Fixed { value: 40.0 },
                 ],
-                column_spacing: Some(5.0),
-                row_spacing: Some(2.0),
+                column_spacing: gap(5.0),
+                row_spacing: gap(2.0),
                 ..Props::default()
             })
             .with_children(vec![spacer("a"), spacer("b"), spacer("c"), spacer("d")]);
@@ -1675,9 +1679,9 @@ mod tests {
                     TrackSize::Fixed { value: 20.0 },
                     TrackSize::Fixed { value: 40.0 },
                 ],
-                column_spacing: Some(5.0),
-                row_spacing: Some(2.0),
-                padding: Some(Insets::all(10.0)),
+                column_spacing: gap(5.0),
+                row_spacing: gap(2.0),
+                padding: Some(InsetRefs::all(gap_token(10.0))),
                 ..Props::default()
             })
             .with_children(vec![spacer("a"), spacer("b"), spacer("c"), spacer("d")]);
@@ -1721,9 +1725,9 @@ mod tests {
             ],
             vec![spacer("a"), spacer("b"), spacer("c")],
         );
-        g.props.column_spacing = Some(10.0);
+        g.props.column_spacing = gap(10.0);
         // 30 units horizontal total (15 + 15), 10 vertical total (5 + 5).
-        g.props.padding = Some(Insets::symmetric(15.0, 5.0));
+        g.props.padding = Some(crate::testing::gap_insets(Insets::symmetric(15.0, 5.0)));
         let mut h = Harness::new();
         let mut path = path_at(&g);
         let size = measure(
@@ -1751,7 +1755,7 @@ mod tests {
             .with_props(Props {
                 columns: vec![TrackSize::Fixed { value: 50.0 }],
                 rows: vec![TrackSize::Fixed { value: 40.0 }],
-                padding: Some(Insets::all(20.0)),
+                padding: Some(InsetRefs::all(gap_token(20.0))),
                 ..Props::default()
             })
             .with_children(vec![spacer("a")]);
@@ -2057,13 +2061,23 @@ mod tests {
                 })
                 .collect();
             let mut g = grid(columns, children);
-            g.props.column_spacing = Some(spacing);
-            g.props.row_spacing = Some(spacing);
+            // The sweep generates gaps and paddings by value, so it binds
+            // its own names for them rather than rounding onto either the
+            // shipped ramp or the whole-unit fixture scale: the invariants
+            // below are arithmetic on the exact generated numbers.
+            let swept_gap = crate::token::TokenName::new("spacing.swept-gap").unwrap();
+            let swept_pad = crate::token::TokenName::new("spacing.swept-pad").unwrap();
+            g.props.column_spacing = Some(swept_gap.clone());
+            g.props.row_spacing = Some(swept_gap.clone());
 
             let mut h = Harness::with(
                 MonoContent { image_size: Size::new(120.0, 40.0), ..MonoContent::default() },
                 NoRows,
             );
+            h.bind_spacings(&[
+                (swept_gap.as_str(), spacing),
+                (swept_pad.as_str(), padding_amt),
+            ]);
 
             let offer = Rect::new(0.0, 0.0, offer_w, 800.0);
             let mut mpath = path_at(&g);
@@ -2088,7 +2102,7 @@ mod tests {
             // exercise the separate degenerate-collapse case, which
             // `a_grid_too_small_for_its_own_padding_collapses_but_never_goes_negative`
             // already pins by hand.
-            g.props.padding = Some(Insets::all(padding_amt));
+            g.props.padding = Some(InsetRefs::all(swept_pad));
 
             let mut ppath = path_at(&g);
             let mut sink = PlacementList::new();

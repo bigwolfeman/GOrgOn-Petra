@@ -77,7 +77,7 @@ pub fn measure(
 ) -> Size {
     let _ = proposal;
     let natural = natural_size(node, ctx, path);
-    let padding = node.props.padding();
+    let padding = ctx.padding(&node.props.padding);
     Size::new(
         natural.w + padding.along(Axis::Horizontal),
         natural.h + padding.along(Axis::Vertical),
@@ -119,7 +119,7 @@ pub fn place(
     // exactly like the rest of its natural size. `content_rect` is inset
     // back out of the *clamped* `rect` afterwards, not built from this
     // padded `natural` directly.
-    let padding = node.props.padding();
+    let padding = ctx.padding(&node.props.padding);
     natural.w += padding.along(Axis::Horizontal);
     natural.h += padding.along(Axis::Vertical);
 
@@ -463,7 +463,7 @@ mod tests {
                 anchor: Some(anchor),
                 clamp: Some(clamp),
                 input_policy: Some(InputPolicy::Block),
-                padding: Some(padding),
+                padding: Some(crate::testing::gap_insets(padding)),
                 ..Props::default()
             })
             .child(content)
