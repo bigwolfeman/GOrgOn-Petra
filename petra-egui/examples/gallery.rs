@@ -5,57 +5,126 @@
 //! never proves that a font loads, that wgpu is reachable, or that a click
 //! from a real compositor lands where the hit test says it does.
 //!
-//! It is a **harness, not a demo**. The strip along the top reports the
+//! It is a **harness, not a demo**. The band under the masthead reports the
 //! previous frame's own honesty counters — placements, silent nodes,
 //! unresolved tokens, focused-but-unringed nodes — so a component that
 //! "looks fine" while the engine is unhappy about it is visible rather than
-//! flattering. A demo hides those. This one is built around them.
+//! flattering. A demo hides those. This one is built around them, and the
+//! sparkline beside them is the same numbers over time, drawn by a
+//! host-registered painter through the FR-059 escape hatch.
 //!
 //! Run it: `cargo run -p gorgon-petra-egui --example gallery`
+//! Light theme: `PETRA_GALLERY_THEME=light cargo run … --example gallery`
+//! Capture one frame and exit: `PETRA_GALLERY_SHOT=/tmp/gallery.ppm cargo run …`
 //!
-//! What it cannot show: `NodeKind::Image` and `NodeKind::Custom` have no
-//! painter in this crate yet, and the section at the bottom declares one of
-//! each on purpose so they turn up in the `undrawn` counter instead of being
-//! quietly left out. Animation is not here at all — `petra/src/anim/` is a
-//! module header.
+//! # What this file is not allowed to do (T078, SC-011)
+//!
+//! It contains **no literal style value**. Every gap is a step of the shipped
+//! spacing ramp, every corner a step of the shipped shape ramp, every colour
+//! and type step a name from [`gorgon_petra::token::standard_vocabulary`].
+//! `cargo xtask verify-literal-style` scans this file — it is most of that
+//! lane's whole corpus — and the scan is text-based, so **every token name
+//! below is spelled as a literal at its own call site on purpose**. Hiding
+//! the names behind `const`s the way `petra/src/component/tokens.rs` does
+//! would move them out of the lane's reach and turn a real gate into a
+//! rubber stamp. The repetition here is the gate's fixture.
+//!
+//! # What it composes from
+//!
+//! Everything the component library covers comes from the component library
+//! ([`gorgon_petra::component`], thirteen names). The primitives are reached
+//! for only where C13 deliberately stops: `Grid` track sizing, `Scroll`,
+//! `Collection`, `Overlay`, `Surface`, `Separator`, `Spacer`, and the two
+//! hosted kinds. Four gaps in the library turned up while writing this page
+//! and are worked around here rather than papered over — see [`muted`],
+//! [`caption`], [`on_card`] and [`disabled_button`], each of which names the
+//! one it is standing in for, and none of which reaches past a component's
+//! own public surface into its children.
+//!
+//! # What this page assumes about its window
+//!
+//! At least about 1100 logical units of width. Everything on it is weighted
+//! or fit-to-content except one track: the text card's measure is a fixed
+//! 360-unit column, because a demonstration of wrapping has to be measured
+//! against a width the window cannot widen out from under it. Below roughly
+//! 1100 the two page columns fall under 360 and that card starts truncating
+//! — honestly, and visibly, which is the point, but it is a limit rather
+//! than a surprise. There is no breakpoint machinery in Petra to turn the
+//! two columns into one, and inventing one here would be a layout feature
+//! wearing a gallery's clothes.
+//!
+//! # Two things on this page are still wrong, and are not this file's to fix
+//!
+//! * **The type ramp does not reach the screen.**
+//!   `gorgon_petra_egui::text::Typography::default` is keyed on `body`,
+//!   `heading`, `small`, `mono` — the pre-vocabulary names — while the
+//!   shipped vocabulary declares `typography.body`, `typography.heading-sm`,
+//!   `typography.heading` and `typography.heading-lg`, and `Host::new`
+//!   never binds the two together. Every lookup misses and every run on this
+//!   page renders at the 14-unit default, masthead included. The tokens in
+//!   the tree are right; the renderer flattens them. So the hierarchy you
+//!   can actually see here is carried by space, by capitals and by the
+//!   cards — not by size.
+//! * **A `progress` bar draws no fill.** `petra/src/component/progress.rs`
+//!   builds both of its cells with `swatch(_, 0.0, 10.0, …)`, and `swatch`
+//!   clamps width to exactly its first argument — so the fill and the track
+//!   are both zero units wide whatever the grid's column weights say, and
+//!   the bar is an empty outline. The percentage beside it is text this
+//!   file adds, which is why the value is still legible.
 
+use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::ops::Range;
+use std::rc::Rc;
 use std::sync::Arc;
 
-use gorgon_petra::geom::{Align, Axis};
-use gorgon_petra::input::{InputEvent, Route, activates};
-use gorgon_petra::layout::{ChangeSet, RowSource};
-use gorgon_petra::token::TokenName;
-use gorgon_petra::tree::{
-    Anchor, AxisConstraint, ClampRule, Constraints, InputPolicy, Interaction, Layer, NodeKind,
-    Props, Role, Semantics, TextWrap, TrackSize, ViewNode,
+use gorgon_petra::component::{
+    button, checkbox, field, heading, list_row, progress, radio, section, status, tab, tab_bar,
+    text, toggle,
 };
+use gorgon_petra::geom::{Align, Axis};
+use gorgon_petra::input::{InputEvent, PointerButton, Route, activates};
+use gorgon_petra::layout::{ChangeSet, RowSource};
+use gorgon_petra::token::{Presenter, StatusToken, TokenName, dark, light, standard_vocabulary};
+use gorgon_petra::tree::{
+    Anchor, AxisConstraint, ClampRule, Constraints, InputPolicy, InsetRefs, Layer, NodeKind, Props,
+    Role, Semantics, TextWrap, TrackSize, ViewNode,
+};
+use gorgon_petra_egui::host::{App, Host};
+use gorgon_petra_egui::paint::{CustomPaintCtx, CustomPainters};
 
 /// A spacing token reference, for the styling props that take one (FR-053).
-///
-/// Every gap on this page is a step of the shipped ramp
-/// (`gorgon_petra::token::standard_vocabulary`), because the page's job is to
-/// show what the design system can say. A gap that used to be a float and did
-/// not land on a step moved to the nearest step, ties upward — six of them
-/// did, by one or two logical units each.
 fn sp(name: &str) -> Option<TokenName> {
     Some(TokenName::new(name).expect("gallery spacing tokens are well-formed"))
 }
 
-/// A colour or typography token reference, for `props.tokens` values and
-/// `props.style` (FR-053, C15). Both are `TokenName` now rather than
-/// `String`, so every literal this file used to hand `.into()` goes through
-/// here instead — mechanical, C11: this function changes no picture, it only
-/// makes the existing names typecheck.
+/// A colour, typography or shape token reference, for `props.tokens` values,
+/// `props.style` and the edges of an [`InsetRefs`].
 fn tok(name: &str) -> TokenName {
     TokenName::new(name).expect("gallery style tokens are well-formed")
 }
-use gorgon_petra_egui::host::{App, Host, default_presenter};
 
-/// The one custom kind this gallery declares. Registered on the host before
-/// the first pass: an unregistered custom kind is a tree-acceptance
-/// violation, so this is not decoration.
+/// Symmetric padding from two spacing steps, horizontal first — the same
+/// argument order [`InsetRefs::symmetric`] uses.
+fn pad(horizontal: &str, vertical: &str) -> InsetRefs {
+    InsetRefs::symmetric(tok(horizontal), tok(vertical))
+}
+
+/// The one custom kind this gallery declares. Registered on the host's
+/// [`gorgon_petra::tree::Registry`] before the first pass (an unregistered
+/// custom kind is a tree-acceptance violation) *and* on the host's
+/// [`CustomPainters`] (an unregistered painter is a reported gap in
+/// `PaintReport::undrawn`). Two registrations, two different failures,
+/// deliberately separate: see [`register_sparkline`].
 const CUSTOM_KIND: &str = "sparkline";
+
+/// The image source this page declares and **does not** register a loader
+/// for, on purpose. It is the control for the sparkline: the two hosted
+/// kinds are described in the same card, one drawn through a registered
+/// painter and one left to land in `PaintReport::undrawn` under its own
+/// name — so the counter that reports the gap is proved to still work at the
+/// same moment the escape hatch is proved to work.
+const IMAGE_SOURCE: &str = "gallery/logo";
 
 /// Rows the virtualized `Collection` section pulls from.
 const ROW_SOURCE: &str = "gallery/rows";
@@ -63,34 +132,102 @@ const ROW_SOURCE: &str = "gallery/rows";
 /// the point: `Collection` asks for the visible window only.
 const TOTAL_ROWS: usize = 100_000;
 
-/// The three shipped status tokens, each with the shape and the words that
-/// carry the same meaning the colour does.
+/// How many passes the sparkline remembers.
+const HISTORY: usize = 64;
+
+/// The three fibers the status card reports on: a key, the status token that
+/// names their state, and the detail line under the name.
 ///
-/// Colour is never the only channel here, and that is a property of
-/// `StatusToken` rather than a courtesy of this file: it carries `shape()`
-/// and `text()` beside its colour token precisely so a reader who cannot
-/// separate the hues still gets the state. Showing all three channels at
-/// once is how you check that claim is still true.
-const STATUSES: [(&str, &str, &str, &str); 3] = [
+/// The token names are looked up in [`standard_vocabulary`] at build time
+/// rather than reassembled here, because [`status`] takes a whole
+/// [`StatusToken`] — colour, shape and text together, FR-015 — and there is
+/// deliberately no way to hand it a colour on its own.
+const FIBERS: [(&str, &str, &str); 3] = [
     (
         "supervisor/root",
         "status.ok",
-        "Ok",
-        "12 children, 0 restarts",
+        "12 children · 0 restarts · uptime 4h11m",
     ),
     (
         "worker/indexer",
         "status.degraded",
-        "Degraded",
-        "retry 3 of 5, last error 40s ago",
+        "retry 3 of 5 · last error 40s ago",
     ),
-    (
-        "worker/shaper",
-        "status.down",
-        "Down",
-        "disposer deadline exceeded",
-    ),
+    ("worker/shaper", "status.down", "disposer deadline exceeded"),
 ];
+
+/// The restart policy the radio group in the Controls card chooses between.
+const POLICIES: [(&str, &str); 3] = [
+    ("policy-never", "Never"),
+    ("policy-failure", "On failure"),
+    ("policy-always", "Always"),
+];
+
+// ---------------------------------------------------------------------------
+// The design rules this page follows
+// ---------------------------------------------------------------------------
+//
+// Stated once, here, and then obeyed at every call site below. A gallery that
+// picks each gap and each corner by eye is a pile of controls; the rules are
+// what make it a page.
+//
+// **Corner scale — radius grows with elevation.**
+//   * `shape.corner-full` for anything whose meaning is "round": a status
+//     dot, a radio, a toggle's track and knob, a progress bar's ends. The
+//     component library already binds these; nothing here overrides them.
+//   * `shape.corner-sm` (4) for things flush in a dense list: inputs, tabs,
+//     list rows, and the two hosted wells. Library-bound for the first three.
+//   * `shape.corner-md` (8) for things that sit *on* the page: buttons and
+//     cards. Library-bound for `button` and `section`; this file binds it on
+//     the one card it assembles itself (the telemetry band) so that card and
+//     a `section` are the same object.
+//   * `shape.corner-lg` (12) for the three surfaces that float *above* the
+//     page: the modal, the popup and the toast. This is the only step this
+//     file chooses, and it is the only one the library does not already fix.
+//
+// **Spacing rhythm — the gap grows with the depth of the seam it crosses.**
+//   All eight steps are used, and each one has exactly one job:
+//   `spacing.2xs` (2) inside one label pair: a caption over the thing it
+//   names, and the rows of the popup.
+//   `spacing.xs` (4) between the rows of one dense grid, where the rule is
+//   already doing the separating.
+//   `spacing.sm` (8) between the parts of one group: a tab strip and its
+//   rule, a fiber's name and its detail, the runs inside the text measure.
+//   `spacing.md` (12) the page's working gap — between the blocks inside a
+//   card, and between the controls of one row. It is the most common gap on
+//   the page by a wide margin, which is what a working gap should be.
+//   `spacing.lg` (16) a card's own vertical padding, and the gap between
+//   the stat tiles, which is the one place md was too tight to read as five
+//   columns.
+//   `spacing.xl` (24) between cards, between the two page columns, and a
+//   surface's own horizontal padding.
+//   `spacing.2xl` (32) between the page's three regions, and its top and
+//   bottom margin.
+//   `spacing.3xl` (48) the page's left and right margin — the widest gap on
+//   the page belongs at its edge.
+//   A gap that wants to be something else is a gap nobody chose.
+//
+// **Hierarchy through type and space.** Four type steps ship: `body` (14),
+// `heading-sm` (16), `heading` (20), `heading-lg` (28). The masthead binds
+// `heading-lg`, every card title and every stat number binds `heading`, and
+// everything else binds `body` — muted and set in capitals when it labels
+// something else, plain and primary when it is the thing itself. That is
+// five distinguishable roles out of two sizes and two tones.
+//
+// Two of those five reach the screen today. The renderer's typography map is
+// keyed on the pre-vocabulary names (see the module doc), so every run draws
+// at 14 units and the size half of the hierarchy is currently invisible. The
+// tone half and the capitals half both work, and the cards, the rules and the
+// page margin carry the rest. This is worth knowing before reading a capture
+// of this page and concluding the type scale was never chosen.
+//
+// **Colour is never the only channel (FR-015).** The three fiber states go
+// through `status`, which carries the shape and the words beside the hue. The
+// one library control distinguished only by fill — a selected tab — also
+// declares `Semantics.selected`. The disabled button is un-filled *and*
+// strips its interactions *and* says so in a caption. The popup's dangerous
+// item says so in words instead of being painted red. The sparkline is drawn
+// in ink, not in a status hue: nothing about it means anything by colour.
 
 /// The previous frame's counters, read back off the host after each pass.
 ///
@@ -113,22 +250,56 @@ struct Counters {
 }
 
 impl Counters {
-    fn line(&self) -> String {
-        format!(
-            "frame {} (previous pass) · {} placements · {} drawn · {} empty · {} clipped · \
-             {} silent · rings {} · blind focus {} · unresolved tokens {} · undrawn {} · {}",
-            self.seq,
-            self.placements,
-            self.drawn,
-            self.empty,
-            self.clipped,
-            self.silent,
-            self.focus_rings,
-            self.blind_focus,
-            self.unresolved,
-            self.undrawn,
-            if self.desynced { "DESYNCED" } else { "in sync" },
-        )
+    /// The ten tiles the stat grid draws, in reading order: a caps label and
+    /// the value under it.
+    ///
+    /// Ten short strings rather than one long sentence, because the sentence
+    /// this replaced ran to about 150 characters and at `typography.body`
+    /// that is wider than the page. It truncated — and Petra truncates
+    /// honestly, so the harness's own readout was the first thing on the
+    /// page to lose its tail. A stat grid wraps by construction.
+    fn tiles(&self) -> [(&'static str, String); 10] {
+        [
+            ("placements", self.placements.to_string()),
+            ("drawn", self.drawn.to_string()),
+            ("empty", self.empty.to_string()),
+            ("clipped", self.clipped.to_string()),
+            ("silent", self.silent.to_string()),
+            ("rings", self.focus_rings.to_string()),
+            ("blind focus", self.blind_focus.to_string()),
+            ("unresolved", self.unresolved.to_string()),
+            ("undrawn", self.undrawn.to_string()),
+            (
+                "digest",
+                if self.desynced { "DESYNCED" } else { "in sync" }.to_owned(),
+            ),
+        ]
+    }
+}
+
+/// The last [`HISTORY`] placement counts, shared between the application that
+/// records them and the painter that draws them.
+///
+/// `Rc<RefCell<_>>` because a registered painter is a `'static` closure that
+/// cannot borrow the application, and egui runs this whole loop on one
+/// thread. The series is real: [`App::view`] pushes the number the
+/// PLACEMENTS tile prints, once per pass, so the sparkline and the tile are
+/// the same measurement at two time scales rather than two numbers that
+/// could disagree.
+#[derive(Clone, Default)]
+struct History(Rc<RefCell<VecDeque<f32>>>);
+
+impl History {
+    fn push(&self, value: f32) {
+        let mut samples = self.0.borrow_mut();
+        if samples.len() == HISTORY {
+            samples.pop_front();
+        }
+        samples.push_back(value);
+    }
+
+    fn samples(&self) -> Vec<f32> {
+        self.0.borrow().iter().copied().collect()
     }
 }
 
@@ -150,10 +321,20 @@ struct Gallery {
     probe: Option<ViewNode>,
     /// Which tab the tab strip has selected.
     tab: usize,
+    /// The two independent checkboxes.
+    stopped: bool,
+    verbose: bool,
+    /// Which restart policy the radio group has chosen: an index into
+    /// [`POLICIES`].
+    policy: usize,
+    /// The toggle.
+    tracing: bool,
     /// How full the progress bar is, 0..=1.
     progress: f32,
     /// Which row of the virtualized list is selected.
     selected_row: Option<usize>,
+    /// The series the registered sparkline painter draws.
+    history: History,
 }
 
 impl Default for Gallery {
@@ -167,454 +348,655 @@ impl Default for Gallery {
             dismissals: 0,
             probe: None,
             tab: 0,
+            stopped: true,
+            verbose: false,
+            policy: 1,
+            tracing: true,
             // Not zero and not one: a bar pinned to either end demonstrates
             // nothing about how the two weighted tracks split.
             progress: 0.62,
             selected_row: Some(3),
+            history: History::default(),
         }
     }
 }
 
+// ---------------------------------------------------------------------------
+// The three places C13's thirteen names do not reach
+// ---------------------------------------------------------------------------
+
+/// Body text in the muted tone.
+///
+/// **Library gap 1.** [`text`] binds `text.primary` and takes no tone
+/// argument, so there is no muted run in C13's set. Rather than hand-rolling
+/// a `NodeKind::Text` — which would re-decide the kind, the typography step
+/// and the wrap policy this page has no business re-deciding — this composes
+/// the component and rebinds the one slot it needs. The kind, the type step
+/// and the structure still come from the library; only the tone is this
+/// file's.
+fn muted(key: &str, content: &str) -> ViewNode {
+    let mut node = text(key, content);
+    node.props
+        .tokens
+        .insert("foreground".into(), tok("text.muted"));
+    node
+}
+
+/// A muted run that is allowed to wrap.
+///
+/// Every explanatory line on this page goes through here. Without
+/// `TextWrap::Wrap` a note wider than its card is truncated — honestly, but
+/// truncated — and a page full of sentences ending in an ellipsis is the
+/// failure this harness exists to make visible, not one to commit.
+fn note(key: &str, content: &str) -> ViewNode {
+    let mut node = muted(key, content);
+    node.props.wrap = Some(TextWrap::Wrap);
+    node
+}
+
+/// A field label or a column header: muted, body-size, set in capitals.
+///
+/// **Library gap 2.** The type ramp has four steps and the library exposes
+/// two of them ([`text`] and [`heading`]); there is no "label" component and
+/// no smaller step to build one from. Capitals plus the muted tone is the
+/// fifth typographic role this page needs and the ramp does not carry — it
+/// costs no new token, and it is legible to a reader who cannot separate the
+/// hues. It is also the only one of the five that survives the renderer's
+/// broken typography map, since it is a property of the string rather than
+/// of the font.
+///
+/// The uppercasing happens **here**, not at the call sites. A helper that
+/// only renamed [`muted`] and trusted every caller to type in capitals would
+/// be a wrapper around nothing, and the first caller to forget would leave a
+/// label that is a different typographic role from its neighbours with
+/// nothing to catch it.
+fn caption(key: &str, content: &str) -> ViewNode {
+    muted(key, &content.to_uppercase())
+}
+
+/// A button that declares itself unavailable.
+///
+/// **Library gap 4.** [`button`] always returns a focusable, clickable node;
+/// C13 has no disabled variant. Composing one from the public surface means
+/// three edits to the returned node — clear the interactions so a press
+/// cannot route to it, declare `Semantics.disabled` so the projection says
+/// so, and drop the fill so it does not read as available. All three are
+/// public fields; none of them reaches inside the component's own children,
+/// which is the line between composing a component and forking it.
+/// Re-seat a library control for a card instead of for the page.
+///
+/// **Library gap 3, and the one that is actually visible from across the
+/// room.** The surface ramp has two steps, `surface.base` and
+/// `surface.raised`. [`section`] spends the second one on the card, and so
+/// does every control the library fills: [`button`] and a selected [`tab`]
+/// or [`list_row`] all bind `surface.raised`, and an unselected `tab` or
+/// `list_row` binds `surface.base`. Each is right on its own and the pair is
+/// wrong together — a raised control on a raised card has no edge at all,
+/// and the *unselected* tabs were the only ones on this page with a visible
+/// box. Measured on the first capture of this rewrite: Save and Cancel drew
+/// nothing but their focus ring, every Store row read as selected, and the
+/// selected tab read as the unselected one.
+///
+/// The rule this applies is the one two steps can express: **on a card, a
+/// filled control swaps to the other step and takes an edge, and a control
+/// filled with the card's own page colour drops its fill entirely.** The
+/// third level of elevation is drawn with a line, because there is no third
+/// fill to spend.
+fn on_card(mut node: ViewNode) -> ViewNode {
+    match node
+        .props
+        .tokens
+        .get("background")
+        .map(TokenName::as_str)
+        .unwrap_or_default()
+    {
+        "surface.raised" => {
+            node.props
+                .tokens
+                .insert("background".into(), tok("surface.base"));
+            node.props
+                .tokens
+                .entry("border".into())
+                .or_insert_with(|| tok("text.muted"));
+        }
+        "surface.base" => {
+            node.props.tokens.remove("background");
+            // And the corner with it, when nothing is left to round. A node
+            // whose only remaining binding is `radius` *declares* content
+            // and paints no shape, which the paint pass counts as `silent`
+            // — the one outcome `PaintReport::is_complete` refuses, and a
+            // debug host asserts on. Measured: dropping the fill and
+            // keeping the corner turned five list rows and two tabs into
+            // silent placements and panicked the host.
+            if !node.props.tokens.contains_key("border") {
+                node.props.tokens.remove("radius");
+            }
+        }
+        _ => {}
+    }
+    node
+}
+
+fn disabled_button(key: &str, label: &str) -> ViewNode {
+    let mut node = button(key, label);
+    node.interactions.clear();
+    node.semantics.disabled = true;
+    node.props.tokens.remove("background");
+    node.props.tokens.insert("border".into(), tok("text.muted"));
+    // The fourth channel, and the only one that reaches the label. `button`
+    // builds its label as a child node, and rebinding a child's foreground
+    // would mean reaching past the component's own surface into its
+    // internals — the line this file does not cross. `Props.opacity` is a
+    // compositing property of the whole subtree, it is declared on the node
+    // this function already owns, and it is a lightness channel rather than
+    // a hue, so it survives a reader who cannot separate the colours.
+    node.props.opacity = Some(0.45);
+    node
+}
+
+// ---------------------------------------------------------------------------
+// Primitive helpers: the shapes C13 deliberately leaves to the primitives
+// ---------------------------------------------------------------------------
+
 impl Gallery {
-    fn heading(key: &str, text: &str) -> ViewNode {
-        let mut props = Props {
-            text: Some(text.to_owned()),
-            style: Some(tok("typography.heading")),
-            ..Props::default()
+    /// A horizontal stack. `align` is explicit at every call site rather than
+    /// defaulted, because a control row and a text row want different answers
+    /// and a defaulted one is a decision nobody made.
+    fn row(
+        key: &str,
+        spacing: Option<TokenName>,
+        align: Align,
+        children: Vec<ViewNode>,
+    ) -> ViewNode {
+        ViewNode::new(NodeKind::Stack, key)
+            .with_props(Props {
+                axis: Some(Axis::Horizontal),
+                spacing,
+                align: Some(align),
+                ..Props::default()
+            })
+            .with_children(children)
+    }
+
+    /// A vertical run of blocks, each as tall as it needs to be.
+    ///
+    /// A single-column `Grid`, not a `Stack`, and the difference is the
+    /// reason this helper exists at all. A vertical `Stack` placed at an
+    /// exact height divides that height among its children by **equal
+    /// share** (`layout/stack.rs::distribute`), and a child offered less
+    /// than it needs answers with the squeezed size rather than with its
+    /// natural one — so one tall block in a run of short ones is compressed
+    /// and its text truncates. It is honest truncation, and nobody asked for
+    /// it. Measured on this page before the change: the Controls card came
+    /// out 188 units tall against a natural 224, every button label was cut
+    /// to zero height, and the tab strip was eight units tall.
+    ///
+    /// A `Grid`'s implicit rows are `FitContent`, and a `FitContent` track
+    /// under a closed probe is measured with `Proposal::Unspecified` and
+    /// clamped only to what is left (`layout/grid.rs::distribute_tracks`) —
+    /// the natural extent, never a share of the total. That is the sizing a
+    /// vertical run of blocks wants, and asking for it by choosing the
+    /// container is better than asking for it by tuning every block's
+    /// constraints until the share arithmetic happens to come out.
+    fn column(key: &str, spacing: Option<TokenName>, children: Vec<ViewNode>) -> ViewNode {
+        Self::tracks(
+            key,
+            vec![TrackSize::Weight { weight: 1.0 }],
+            spacing,
+            children,
+        )
+    }
+
+    /// A vertical run whose one column is a fixed measure rather than the
+    /// room available.
+    ///
+    /// The width has to be the *track's*, not a clamp on each child: a text
+    /// node measures its wrapped height against the width it is offered, and
+    /// a constraint applied after that measurement narrows the box without
+    /// re-wrapping the run inside it — which reads as a paragraph that has
+    /// lost its last two lines.
+    fn measure_column(
+        key: &str,
+        width: f32,
+        spacing: Option<TokenName>,
+        children: Vec<ViewNode>,
+    ) -> ViewNode {
+        Self::tracks(
+            key,
+            vec![TrackSize::Fixed { value: width }],
+            spacing,
+            children,
+        )
+    }
+
+    /// The shared shape of [`Self::column`] and [`Self::measure_column`].
+    fn tracks(
+        key: &str,
+        columns: Vec<TrackSize>,
+        spacing: Option<TokenName>,
+        children: Vec<ViewNode>,
+    ) -> ViewNode {
+        ViewNode::new(NodeKind::Grid, key)
+            .with_props(Props {
+                columns,
+                row_spacing: spacing,
+                ..Props::default()
+            })
+            .with_children(children)
+    }
+
+    /// The body of a card: a [`Self::column`] that outranks the card's own
+    /// title when the card divides its height.
+    ///
+    /// [`section`] is a vertical `Stack`, which is the one container on this
+    /// page whose sizing this file cannot choose — so the title and the body
+    /// go through the equal-share distribution described on [`Self::column`],
+    /// and with two children of very different heights the body is the one
+    /// that loses. `AxisConstraint::priority` is the declared way out:
+    /// `distribute` walks priority groups highest-first and reserves only
+    /// the *lower*-priority children's floors, so a body at priority 1 is
+    /// offered everything the title's floor does not need, and answers with
+    /// its natural height. One line of declaration instead of a height
+    /// guessed per card.
+    fn body(key: &str, spacing: Option<TokenName>, children: Vec<ViewNode>) -> ViewNode {
+        Self::column(key, spacing, children).with_constraints(Constraints {
+            vertical: AxisConstraint {
+                min: None,
+                max: None,
+                priority: 1,
+            },
+            ..Constraints::default()
+        })
+    }
+
+    /// A drawn horizontal rule.
+    ///
+    /// A bare `Separator` paints **nothing**: the painter knows four token
+    /// slots, and a node that binds none of them declares no content, so it
+    /// is counted `empty` and leaves no mark. Every separator this page had
+    /// before this rewrite was invisible for exactly that reason. Binding
+    /// `background` is what makes a rule a rule.
+    fn rule(key: &str) -> ViewNode {
+        let mut props = Props::default();
+        props.tokens.insert("background".into(), tok("text.muted"));
+        ViewNode::new(NodeKind::Separator, key).with_props(props)
+    }
+
+    /// A hard clamp on one axis, so a node is measured against an extent the
+    /// window cannot change out from under it.
+    ///
+    /// Layout declaration, not styling: `xtask`'s literal-style lane never
+    /// inspects `constraints`, and says so in as many words, because a track
+    /// size and a text measure are numeric by spec.
+    fn exact(axis: Axis, value: f32) -> Constraints {
+        let clamp = AxisConstraint {
+            min: Some(value),
+            max: Some(value),
+            priority: 0,
         };
-        props
+        match axis {
+            Axis::Horizontal => Constraints {
+                horizontal: clamp,
+                ..Constraints::default()
+            },
+            Axis::Vertical => Constraints {
+                vertical: clamp,
+                ..Constraints::default()
+            },
+        }
+    }
+
+    /// A floor on one axis with no ceiling: what a control that must be big
+    /// enough to look like a control, but may grow, declares.
+    fn at_least(axis: Axis, value: f32) -> Constraints {
+        let clamp = AxisConstraint {
+            min: Some(value),
+            max: None,
+            priority: 0,
+        };
+        match axis {
+            Axis::Horizontal => Constraints {
+                horizontal: clamp,
+                ..Constraints::default()
+            },
+            Axis::Vertical => Constraints {
+                vertical: clamp,
+                ..Constraints::default()
+            },
+        }
+    }
+
+    /// The card treatment: raised fill, muted edge, `shape.corner-md`.
+    ///
+    /// [`section`] applies exactly this to every titled block. The telemetry
+    /// band is the one card on the page that is a `Grid` rather than a titled
+    /// column, so it cannot go through `section` — and a card that was
+    /// *nearly* a section would be the "round buttons in a square layout"
+    /// failure in miniature. This function is how the two stay one object.
+    fn card(mut node: ViewNode) -> ViewNode {
+        node.props.padding = Some(pad("spacing.lg", "spacing.md"));
+        node.props
             .tokens
-            .insert("foreground".into(), tok("text.primary"));
-        ViewNode::new(NodeKind::Text, key).with_props(props)
+            .insert("background".into(), tok("surface.raised"));
+        node.props.tokens.insert("border".into(), tok("text.muted"));
+        node.props
+            .tokens
+            .insert("radius".into(), tok("shape.corner-md"));
+        node
     }
 
-    fn body(key: &str, text: &str, token: &str) -> ViewNode {
+    /// A floating surface: the modal, the popup and the toast, which are the
+    /// only three things on this page with `shape.corner-lg`.
+    fn surface(key: &str, layer: Layer, policy: InputPolicy) -> ViewNode {
         let mut props = Props {
-            text: Some(text.to_owned()),
-            style: Some(tok("typography.body")),
-            ..Props::default()
-        };
-        props.tokens.insert("foreground".into(), tok(token));
-        ViewNode::new(NodeKind::Text, key).with_props(props)
-    }
-
-    /// A focusable, clickable label. `Role::Button` with `Focus` and `Click`
-    /// and deliberately no `Key`: a button is not a text field, and claiming
-    /// `Key` would make Tab traversal have to guess.
-    fn button(key: &str, label: &str) -> ViewNode {
-        let mut props = Props {
-            text: Some(label.to_owned()),
-            style: Some(tok("typography.body")),
+            layer: Some(layer),
+            anchor: Some(Anchor::Viewport),
+            clamp: Some(ClampRule::Shrink),
+            input_policy: Some(policy),
+            // One child, always: every caller hands this a single
+            // `Self::column`. A `surface` stacks its children the way a
+            // vertical `Stack` does, and stacking four blocks of different
+            // heights inside one is the equal-share squeeze all over again —
+            // measured, on the first capture with the modal open: the
+            // heading and the body were flattened to nothing and the rule
+            // inflated into a 28-unit grey bar across the dialog.
+            axis: Some(Axis::Vertical),
+            padding: Some(pad("spacing.xl", "spacing.lg")),
             ..Props::default()
         };
         props
             .tokens
             .insert("background".into(), tok("surface.raised"));
-        props
+        props.tokens.insert("border".into(), tok("text.muted"));
+        props.tokens.insert("radius".into(), tok("shape.corner-lg"));
+        ViewNode::new(NodeKind::Surface, key).with_props(props)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The page
+// ---------------------------------------------------------------------------
+
+impl Gallery {
+    /// Title, and one line saying what this window is for.
+    fn masthead() -> ViewNode {
+        let mut title = Props {
+            text: Some("Petra component gallery".to_owned()),
+            style: Some(tok("typography.heading-lg")),
+            ..Props::default()
+        };
+        title
             .tokens
             .insert("foreground".into(), tok("text.primary"));
-        ViewNode::new(NodeKind::Text, key)
+        Self::column(
+            "masthead",
+            sp("spacing.2xs"),
+            vec![
+                ViewNode::new(NodeKind::Text, "title").with_props(title),
+                note(
+                    "tagline",
+                    "Every component the library ships, over a live host, beside the \
+                     counters that say whether the engine agrees it drew them.",
+                ),
+            ],
+        )
+    }
+
+    /// The honesty band: ten counters as stat tiles, the last routed event,
+    /// and the sparkline of the placement count over recent passes.
+    fn telemetry(&self) -> ViewNode {
+        let tiles = self.counters.tiles();
+        let mut stats = ViewNode::new(NodeKind::Grid, "stats").with_props(Props {
+            columns: vec![
+                TrackSize::Weight { weight: 1.0 },
+                TrackSize::Weight { weight: 1.0 },
+                TrackSize::Weight { weight: 1.0 },
+                TrackSize::Weight { weight: 1.0 },
+                TrackSize::Weight { weight: 1.0 },
+            ],
+            column_spacing: sp("spacing.lg"),
+            row_spacing: sp("spacing.md"),
+            ..Props::default()
+        });
+        for (label, value) in &tiles {
+            let key = label.replace(' ', "-");
+            stats = stats.child(Self::column(
+                &key,
+                sp("spacing.2xs"),
+                vec![
+                    caption("label", label),
+                    // `heading` rather than a bespoke Text: a stat's number
+                    // is the one place on this page where a 20-unit run is
+                    // not a title, and reusing the component keeps it the
+                    // same type step as one.
+                    heading("value", value.as_str()),
+                ],
+            ));
+        }
+
+        let left = Self::column(
+            "readout",
+            sp("spacing.md"),
+            vec![
+                caption(
+                    "heading",
+                    &format!("frame {} · previous pass", self.counters.seq),
+                ),
+                stats,
+                note(
+                    "last",
+                    &format!(
+                        "last event: {}   ·   dismissals reported: {}",
+                        if self.last_event.is_empty() {
+                            "none yet — click a control or press Tab"
+                        } else {
+                            &self.last_event
+                        },
+                        self.dismissals
+                    ),
+                ),
+            ],
+        );
+
+        let right = Self::column(
+            "trend",
+            sp("spacing.2xs"),
+            vec![
+                caption("label", "placements per pass"),
+                Self::sparkline(),
+                muted("scale", &format!("last {HISTORY} passes")),
+            ],
+        );
+
+        Self::card(
+            ViewNode::new(NodeKind::Grid, "telemetry")
+                .with_props(Props {
+                    columns: vec![TrackSize::Weight { weight: 1.0 }, TrackSize::FitContent],
+                    column_spacing: sp("spacing.xl"),
+                    ..Props::default()
+                })
+                .child(left)
+                .child(right),
+        )
+    }
+
+    /// The custom node the registered painter draws into.
+    ///
+    /// A well on `surface.base` inside a `surface.raised` card, so the plot
+    /// area is a hole in the card rather than a box on top of it. The fill
+    /// and the corner are this file's; everything inside the rect is the
+    /// painter's, and Petra never sees it — which is what makes the frame
+    /// *hosted* (FR-060).
+    fn sparkline() -> ViewNode {
+        let mut props = Props {
+            custom_kind: Some(CUSTOM_KIND.to_owned()),
+            ..Props::default()
+        };
+        props
+            .tokens
+            .insert("background".into(), tok("surface.base"));
+        props.tokens.insert("radius".into(), tok("shape.corner-sm"));
+        ViewNode::new(NodeKind::Custom, "sparkline")
             .with_props(props)
-            .interactive(
-                Role::Button,
-                label.to_owned(),
-                &[Interaction::Focus, Interaction::Click],
-            )
-    }
-
-    fn row(key: &str, spacing: Option<TokenName>, children: Vec<ViewNode>) -> ViewNode {
-        ViewNode::new(NodeKind::Stack, key)
-            .with_props(Props {
-                axis: Some(Axis::Horizontal),
-                spacing,
-                align: Some(Align::Start),
-                ..Props::default()
+            .with_constraints(Constraints {
+                horizontal: AxisConstraint {
+                    min: Some(240.0),
+                    max: Some(240.0),
+                    priority: 0,
+                },
+                vertical: AxisConstraint {
+                    min: Some(56.0),
+                    max: Some(56.0),
+                    priority: 0,
+                },
             })
-            .with_children(children)
     }
 
-    fn column(key: &str, spacing: Option<TokenName>, children: Vec<ViewNode>) -> ViewNode {
-        ViewNode::new(NodeKind::Stack, key)
-            .with_props(Props {
-                axis: Some(Axis::Vertical),
-                spacing,
-                ..Props::default()
-            })
-            .with_children(children)
-    }
-
-    /// A titled block, so every section on the page has the same shape.
-    fn section(key: &str, title: &str, children: Vec<ViewNode>) -> ViewNode {
-        let mut rows = vec![Self::heading(&format!("{key}-h"), title)];
-        rows.extend(children);
-        Self::column(key, sp("spacing.sm"), rows)
-    }
-
-    /// Buttons in the three states a real one has.
-    fn buttons_row(&self) -> ViewNode {
-        Self::row(
+    /// Buttons, the three binary controls, the tab strip and a progress bar:
+    /// nine of the thirteen component names, in one card.
+    fn controls_card(&self) -> ViewNode {
+        let buttons = Self::row(
             "buttons",
             sp("spacing.md"),
+            Align::Center,
             vec![
-                // Primary is the inverted pair rather than a coloured accent:
-                // the palette has no accent that is not a *status*, and
-                // spending `status.ok` on "this button matters" would make
-                // green mean two different things.
-                Self::control(
-                    "primary",
-                    "Save",
-                    Some("text.primary"),
-                    "surface.base",
-                    None,
-                ),
-                Self::control(
-                    "secondary",
-                    "Cancel",
-                    Some("surface.raised"),
-                    "text.primary",
-                    Some("text.muted"),
-                ),
-                // No `Click`, and `disabled` in its semantics: the tree says
-                // it is unavailable rather than the colour implying it.
-                Self::chip(
-                    "disabled",
-                    "Disabled",
-                    Some("surface.base"),
-                    "text.muted",
-                    Some("text.muted"),
-                )
-                .with_semantics(Semantics {
-                    role: Some(Role::Button),
-                    label: Some("Disabled".to_owned()),
-                    disabled: true,
-                    ..Semantics::default()
-                }),
+                on_card(button("save", "Save")),
+                on_card(button("cancel", "Cancel")),
+                disabled_button("retire", "Retire"),
             ],
-        )
-    }
+        );
 
-    /// A checkbox, a radio and a toggle — each a box inside a box.
-    fn controls_row(&self) -> ViewNode {
-        let check = |key: &str, label: &str, on: bool| {
-            Self::row(
-                key,
-                sp("spacing.sm"),
-                vec![
-                    Self::swatch(
-                        "box",
-                        12.0,
-                        12.0,
-                        on.then_some("text.primary"),
-                        Some("text.muted"),
-                    ),
-                    Self::body("label", label, "text.primary"),
-                ],
-            )
-            .interactive(
-                Role::Button,
-                label.to_owned(),
-                &[Interaction::Focus, Interaction::Click],
-            )
-        };
-        let toggle = |key: &str, label: &str, on: bool| {
-            let mut track = vec![];
-            if on {
-                track.push(Self::swatch("pad", 14.0, 12.0, None, None));
-            }
-            track.push(Self::swatch("knob", 12.0, 12.0, Some("text.primary"), None));
-            if !on {
-                track.push(Self::swatch("pad", 14.0, 12.0, None, None));
-            }
-            Self::row(
-                key,
-                sp("spacing.sm"),
-                vec![
-                    Self::row("track", None, track).with_props({
-                        let mut p = Props {
-                            axis: Some(Axis::Horizontal),
-                            ..Props::default()
-                        };
-                        p.tokens.insert("background".into(), tok("surface.raised"));
-                        p.tokens.insert("border".into(), tok("text.muted"));
-                        p
-                    }),
-                    Self::body("label", label, "text.primary"),
-                ],
-            )
-            .interactive(
-                Role::Button,
-                label.to_owned(),
-                &[Interaction::Focus, Interaction::Click],
-            )
-        };
-        Self::row(
-            "controls",
-            sp("spacing.xl"),
-            vec![
-                check("check-on", "Checked", true),
-                check("check-off", "Unchecked", false),
-                toggle("toggle-on", "Toggle on", true),
-                toggle("toggle-off", "Toggle off", false),
-            ],
-        )
-    }
-
-    /// A tab strip: the selected tab is a different fill *and* carries
-    /// `selected` in its semantics, so the state is not only a colour.
-    fn tabs_row(&self) -> ViewNode {
-        let names = ["Fibers", "Trace", "Capabilities"];
-        let tabs = names
-            .iter()
-            .enumerate()
-            .map(|(i, name)| {
-                let on = i == self.tab;
-                Self::chip(
-                    name,
-                    name,
-                    Some(if on { "surface.raised" } else { "surface.base" }),
-                    if on { "text.primary" } else { "text.muted" },
-                    on.then_some("text.primary"),
-                )
-                .with_semantics(Semantics {
-                    role: Some(Role::Tab),
-                    label: Some((*name).to_owned()),
-                    selected: on,
-                    ..Semantics::default()
-                })
-                .interactive(
-                    Role::Tab,
-                    (*name).to_owned(),
-                    &[Interaction::Focus, Interaction::Click],
-                )
-            })
-            .collect();
-        Self::column(
-            "tabs",
-            None,
-            vec![
-                Self::row("tablist", sp("spacing.xs"), tabs).with_semantics(Semantics {
-                    role: Some(Role::TabList),
-                    ..Semantics::default()
-                }),
-                ViewNode::new(NodeKind::Separator, "tab-rule"),
-            ],
-        )
-    }
-
-    /// A progress bar: a filled box inside a wider one, sized by weight.
-    fn progress_row(&self) -> ViewNode {
-        let done = self.progress.clamp(0.0, 1.0);
-        let rest = (1.0 - done).max(0.001);
-        let bar = ViewNode::new(NodeKind::Grid, "bar")
-            .with_props({
-                let mut p = Props {
-                    columns: vec![
-                        TrackSize::Weight {
-                            weight: done.max(0.001),
-                        },
-                        TrackSize::Weight { weight: rest },
-                    ],
-                    ..Props::default()
-                };
-                p.tokens.insert("border".into(), tok("text.muted"));
-                p
-            })
-            .child(Self::swatch("done", 0.0, 10.0, Some("status.ok"), None))
-            .child(Self::swatch("todo", 0.0, 10.0, None, None))
-            .with_constraints(Self::width(260.0))
-            .with_semantics(Semantics {
-                role: Some(Role::Progress),
-                label: Some("Rebuild".to_owned()),
-                value: Some(format!("{:.0}%", done * 100.0)),
-                ..Semantics::default()
-            });
-        Self::row(
-            "progress",
+        let checks = Self::row(
+            "checks",
             sp("spacing.md"),
+            Align::Center,
             vec![
-                Self::body("progress-l", "Rebuild", "text.muted"),
-                bar,
-                Self::body(
-                    "progress-v",
-                    &format!("{:.0}%", done * 100.0),
-                    "text.primary",
-                ),
+                checkbox("stopped", "Include stopped", self.stopped),
+                checkbox("verbose", "Verbose trace", self.verbose),
             ],
-        )
-    }
+        );
 
-    /// A two-column form: label beside field.
-    fn form_grid() -> ViewNode {
-        let field = |key: &str, placeholder: &str| {
-            let mut props = Props {
-                placeholder: Some(placeholder.to_owned()),
-                style: Some(tok("typography.body")),
-                ..Props::default()
-            };
-            props
-                .tokens
-                .insert("background".into(), tok("surface.raised"));
-            props.tokens.insert("foreground".into(), tok("text.muted"));
-            props.tokens.insert("border".into(), tok("text.muted"));
-            ViewNode::new(NodeKind::Input, key)
-                .with_props(props)
-                .with_constraints(Self::width(220.0))
-                .interactive(
-                    Role::TextInput,
-                    placeholder.to_owned(),
-                    &[Interaction::Focus, Interaction::Key, Interaction::TextEdit],
-                )
-        };
-        ViewNode::new(NodeKind::Grid, "form")
-            .with_props(Props {
-                columns: vec![TrackSize::Fixed { value: 110.0 }, TrackSize::FitContent],
-                column_spacing: sp("spacing.md"),
-                row_spacing: sp("spacing.sm"),
-                ..Props::default()
-            })
-            .child(Self::body("f-l1", "Fiber name", "text.muted"))
-            .child(field("f-name", "supervisor/root"))
-            .child(Self::body("f-l2", "Capability", "text.muted"))
-            .child(field("f-cap", "fs.read"))
-    }
+        let policies = Self::row(
+            "policies",
+            sp("spacing.md"),
+            Align::Center,
+            POLICIES
+                .iter()
+                .enumerate()
+                .map(|(i, (key, label))| radio(*key, *label, i == self.policy))
+                .collect(),
+        );
 
-    /// A table whose status column is a drawn swatch beside the word.
-    ///
-    /// The swatch is a real rectangle rather than a glyph on purpose: two of
-    /// the three shapes `StatusToken` declares render as tofu in the shipped
-    /// font, and nothing in the painter consumes [`StatusShape`] at all, so a
-    /// drawn box is the only shape channel that actually reaches the screen
-    /// today.
-    fn status_table() -> ViewNode {
-        let mut grid = ViewNode::new(NodeKind::Grid, "table")
-            .with_props(Props {
-                columns: vec![
-                    TrackSize::Fixed { value: 150.0 },
-                    TrackSize::Fixed { value: 110.0 },
-                    TrackSize::FitContent,
-                ],
-                column_spacing: sp("spacing.lg"),
-                row_spacing: sp("spacing.xs"),
-                ..Props::default()
-            })
-            .with_semantics(Semantics {
-                role: Some(Role::Table),
-                ..Semantics::default()
-            })
-            .child(Self::body("h1", "FIBER", "text.muted"))
-            .child(Self::body("h2", "STATE", "text.muted"))
-            .child(Self::body("h3", "DETAIL", "text.muted"));
-        for (key, token, word, detail) in STATUSES {
-            grid = grid
-                .child(Self::body(key, key, "text.primary"))
-                .child(Self::row(
-                    &format!("{key}-state"),
-                    sp("spacing.sm"),
-                    vec![
-                        Self::swatch("dot", 10.0, 10.0, Some(token), None),
-                        Self::body("word", word, "text.primary"),
-                    ],
-                ))
-                .child(Self::body(&format!("{key}-detail"), detail, "text.muted"));
-        }
-        grid
-    }
-
-    /// Every shipped status, through colour, a drawn swatch and the word.
-    fn status_section() -> ViewNode {
-        Self::column(
-            "status",
+        let tabs = Self::column(
+            "tabs",
             sp("spacing.sm"),
             vec![
-                Self::heading("status-h", "Status"),
-                Self::body(
-                    "status-note",
-                    "colour is never the only channel: each state carries a word, and \
-                     the swatch is drawn rather than typed because two of the three \
-                     shapes StatusToken declares are tofu in the shipped font",
-                    "text.muted",
+                tab_bar(
+                    "tablist",
+                    vec![
+                        on_card(tab("tab-fibers", "Fibers", self.tab == 0)),
+                        on_card(tab("tab-trace", "Trace", self.tab == 1)),
+                        on_card(tab("tab-caps", "Capabilities", self.tab == 2)),
+                    ],
                 ),
-                Self::status_table(),
+                Self::rule("tab-rule"),
             ],
+        );
+
+        let done = self.progress.clamp(0.0, 1.0);
+        let bar = Self::row(
+            "rebuild",
+            sp("spacing.md"),
+            Align::Center,
+            vec![
+                caption("label", "rebuild"),
+                progress("bar", "Rebuild", done)
+                    .with_constraints(Self::at_least(Axis::Horizontal, 140.0)),
+                text("value", format!("{:.0}%", done * 100.0)),
+            ],
+        );
+
+        section(
+            "controls",
+            "Controls",
+            vec![Self::body(
+                "body",
+                sp("spacing.md"),
+                vec![
+                    buttons,
+                    caption(
+                        "buttons-note",
+                        "the third is disabled: no interactions, no fill",
+                    ),
+                    Self::rule("rule-a"),
+                    checks,
+                    Self::row(
+                        "policy-row",
+                        sp("spacing.md"),
+                        Align::Center,
+                        vec![caption("label", "restart"), policies],
+                    ),
+                    toggle("tracing", "Trace this tree", self.tracing),
+                    Self::rule("rule-b"),
+                    tabs,
+                    bar,
+                ],
+            )],
         )
     }
 
-    /// A `Grid` with three tracks of different sizing rules beside a nested
-    /// vertical `Stack`, a `Spacer` and a `Separator`.
-    fn layout_section() -> ViewNode {
-        let grid = ViewNode::new(NodeKind::Grid, "grid")
+    /// A two-column form: a caption beside a field.
+    fn form_card() -> ViewNode {
+        let grid = ViewNode::new(NodeKind::Grid, "form")
             .with_props(Props {
                 columns: vec![
-                    TrackSize::Fixed { value: 90.0 },
-                    TrackSize::FitContent,
+                    TrackSize::Fixed { value: 120.0 },
                     TrackSize::Weight { weight: 1.0 },
                 ],
-                column_spacing: sp("spacing.sm"),
-                row_spacing: sp("spacing.xs"),
+                column_spacing: sp("spacing.md"),
+                row_spacing: sp("spacing.sm"),
+                // A field's natural width is its placeholder's width, so
+                // without this the two boxes are as wide as the words in
+                // them and the form has a ragged right edge. `Stretch` is
+                // the declaration that says "fill the track", and it is a
+                // layout answer rather than a width guessed per field.
+                align: Some(Align::Stretch),
                 ..Props::default()
             })
-            .child(Self::body("g-a", "Fixed 90", "text.primary"))
-            .child(Self::body("g-b", "FitContent", "text.primary"))
-            .child(Self::body(
-                "g-c",
-                "Weight(1) takes the rest",
-                "text.primary",
-            ))
-            .child(Self::body("g-d", "row two", "text.muted"))
-            .child(Self::body("g-e", "wider cell here", "text.muted"))
-            .child(Self::body("g-f", "and the remainder", "text.muted"));
+            .child(caption("l-name", "fiber name"))
+            // A `field` is a `NodeKind::Input`, which is a leaf: padding is
+            // refused on it (`Violation::PaddingOnLeafKind`), so the only way
+            // a field gets the height of a real control is a floor on its own
+            // constraints. A paint slot is not a child, so its corner radius
+            // still applies to its own rect.
+            .child(
+                field("f-name", "supervisor/root")
+                    .with_constraints(Self::at_least(Axis::Vertical, 28.0)),
+            )
+            .child(caption("l-cap", "capability"))
+            .child(
+                field("f-cap", "fs.read").with_constraints(Self::at_least(Axis::Vertical, 28.0)),
+            );
 
-        Self::column(
-            "layout",
-            sp("spacing.sm"),
-            vec![
-                Self::heading("layout-h", "Grid, Stack, Spacer, Separator"),
-                grid,
-                Self::row(
-                    "layout-row",
-                    sp("spacing.sm"),
-                    vec![
-                        Self::body("l-left", "left", "text.primary"),
-                        // Height-clamped on purpose. An unconstrained
-                        // `Spacer` takes everything offered on *both* axes
-                        // (`layout/leaf.rs`), so one in a horizontal row
-                        // claims the row's whole height and opens a hole the
-                        // size of the window. SwiftUI's `Spacer` expands only
-                        // along its stack's axis; Petra's does not, and
-                        // `an_unconstrained_spacer_claims_the_cross_axis_too`
-                        // pins that so the difference is a decision rather
-                        // than a surprise.
-                        ViewNode::new(NodeKind::Spacer, "l-gap").with_constraints(Constraints {
-                            vertical: AxisConstraint {
-                                min: Some(0.0),
-                                max: Some(0.0),
-                                priority: 0,
-                            },
-                            ..Constraints::default()
-                        }),
-                        ViewNode::new(NodeKind::Separator, "l-sep"),
-                        Self::body("l-right", "right of a separator", "text.primary"),
-                    ],
-                ),
-            ],
+        section(
+            "form",
+            "Form",
+            vec![Self::body("body", sp("spacing.md"), vec![grid])],
         )
     }
 
-    /// Wrapping, elision and a placeholder-only `Input`.
-    fn text_section() -> ViewNode {
+    /// Wrapping, elision, and mixed scripts.
+    fn text_card() -> ViewNode {
         let long = "A long line that has to wrap, because the whole point of a text \
                     node is that the engine measures it against the width it is offered \
                     rather than trusting whoever wrote the string.";
+
         let mut wrapped = Props {
             text: Some(long.to_owned()),
             wrap: Some(TextWrap::Wrap),
             style: Some(tok("typography.body")),
             ..Props::default()
         };
-        // Both text nodes are width-clamped below. Without it the window is
-        // wide enough that the "wrapped" string fits on one line and the
-        // "elided" one never truncates — a section claiming to demonstrate
-        // two behaviours while demonstrating neither.
         wrapped
             .tokens
             .insert("foreground".into(), tok("text.primary"));
@@ -630,426 +1012,450 @@ impl Gallery {
             .tokens
             .insert("foreground".into(), tok("text.muted"));
 
-        let mut field = Props {
-            placeholder: Some("An Input with a placeholder and no value".into()),
-            style: Some(tok("typography.body")),
-            ..Props::default()
-        };
-        field
-            .tokens
-            .insert("background".into(), tok("surface.raised"));
-        field.tokens.insert("foreground".into(), tok("text.muted"));
+        // Both runs share one measure, and the measure is the *track's*
+        // width rather than a clamp on each node — see
+        // [`Self::measure_column`] for why the difference is the whole
+        // paragraph. 360 logical units at the shipped body size is about
+        // sixty characters, which is the readable range, so this is a
+        // typographic decision rather than a workaround. It is also what
+        // makes the two nodes differ at all: at the card's full width the
+        // "wrapped" string fits on one line and the "elided" one never
+        // truncates, and then the card demonstrates neither.
+        section(
+            "type",
+            "Text",
+            vec![Self::body(
+                "body",
+                sp("spacing.md"),
+                vec![Self::measure_column(
+                    "measure",
+                    360.0,
+                    sp("spacing.sm"),
+                    vec![
+                        ViewNode::new(NodeKind::Text, "wrapped").with_props(wrapped),
+                        caption("elide-note", "the same string, capped at one line"),
+                        ViewNode::new(NodeKind::Text, "elided").with_props(clipped),
+                        text("scripts", "mixed scripts: Ünïcödé · 日本語 · العربية"),
+                        caption(
+                            "scripts-note",
+                            "the shipped font set has no CJK or Arabic · the boxes are \
+                             the fallback glyph, not a layout fault",
+                        ),
+                    ],
+                )],
+            )],
+        )
+    }
 
-        Self::column(
-            "text",
+    /// The three track-sizing rules, a spacer and a rule — the `Grid`
+    /// vocabulary C13 leaves to the primitives, carrying `Role::Table`
+    /// because a grid of labelled cells is what a table is.
+    fn layout_card() -> ViewNode {
+        let grid = ViewNode::new(NodeKind::Grid, "tracks")
+            .with_props(Props {
+                columns: vec![
+                    TrackSize::Fixed { value: 90.0 },
+                    TrackSize::FitContent,
+                    TrackSize::Weight { weight: 1.0 },
+                ],
+                column_spacing: sp("spacing.md"),
+                row_spacing: sp("spacing.xs"),
+                ..Props::default()
+            })
+            .with_semantics(Semantics {
+                role: Some(Role::Table),
+                ..Semantics::default()
+            })
+            .child(caption("h-a", "fixed 90"))
+            .child(caption("h-b", "fitcontent"))
+            .child(caption("h-c", "weight(1)"))
+            .child(text("g-a", "clamped"))
+            .child(text("g-b", "wider cell here"))
+            .child(text("g-c", "takes the rest"));
+
+        let spacer_row = Self::row(
+            "spacer-row",
             sp("spacing.sm"),
+            Align::Center,
             vec![
-                Self::heading("text-h", "Text and Input"),
-                ViewNode::new(NodeKind::Text, "wrapped")
-                    .with_props(wrapped)
-                    .with_constraints(Constraints {
-                        horizontal: AxisConstraint {
-                            min: Some(420.0),
-                            max: Some(420.0),
-                            priority: 0,
-                        },
-                        // A floor, not a cap. A vertical stack offers each
-                        // child an exact height, and `layout/text.rs` treats
-                        // an exact vertical offer as a ceiling it will never
-                        // grow past — so without room reserved here the
-                        // wrapping node is capped to a single clipped line
-                        // and the section demonstrates nothing.
-                        vertical: AxisConstraint {
-                            min: Some(80.0),
-                            max: None,
-                            priority: 0,
-                        },
-                    }),
-                Self::body(
-                    "elide-note",
-                    "the same string capped at one line:",
-                    "text.muted",
-                ),
-                ViewNode::new(NodeKind::Text, "elided")
-                    .with_props(clipped)
-                    .with_constraints(Self::width(420.0)),
-                Self::body(
-                    "scripts",
-                    "mixed scripts: Ünïcödé · 日本語 · العربية",
-                    "text.primary",
-                ),
-                ViewNode::new(NodeKind::Input, "field")
-                    .with_props(field)
-                    .interactive(
-                        Role::TextInput,
-                        "Filter".to_owned(),
-                        &[Interaction::Focus, Interaction::Key, Interaction::TextEdit],
-                    ),
+                text("left", "left"),
+                // Height-clamped on purpose. An unconstrained `Spacer` takes
+                // everything offered on *both* axes (`layout/leaf.rs`), so
+                // one in a horizontal row claims the row's whole height and
+                // opens a hole the size of the window. SwiftUI's `Spacer`
+                // expands only along its stack's axis; Petra's does not, and
+                // `an_unconstrained_spacer_claims_the_cross_axis_too` pins
+                // that so the difference is a decision rather than a
+                // surprise.
+                ViewNode::new(NodeKind::Spacer, "gap")
+                    .with_constraints(Self::exact(Axis::Vertical, 0.0)),
+                text("right", "pushed right by a Spacer"),
             ],
+        );
+
+        section(
+            "layout",
+            "Layout primitives",
+            vec![Self::body(
+                "body",
+                sp("spacing.md"),
+                vec![grid, Self::rule("layout-rule"), spacer_row],
+            )],
+        )
+    }
+
+    /// Every shipped status, through colour, shape and the word: the FR-015
+    /// card.
+    fn status_card() -> ViewNode {
+        let vocabulary = standard_vocabulary();
+        // The state leads. A `FitContent` state column on the right sits
+        // wherever the widest name leaves it — measured at about five
+        // hundred units away from the row it belongs to, which reads as two
+        // unrelated lists. On the left the three dots line up in a column
+        // the eye can run down, and the names start on a common edge because
+        // `FitContent` takes the widest of the three.
+        let mut grid = ViewNode::new(NodeKind::Grid, "fibers").with_props(Props {
+            columns: vec![TrackSize::FitContent, TrackSize::Weight { weight: 1.0 }],
+            column_spacing: sp("spacing.md"),
+            row_spacing: sp("spacing.sm"),
+            ..Props::default()
+        });
+        for (fiber, token, detail) in FIBERS {
+            let declared: &StatusToken = vocabulary
+                .status(&tok(token))
+                .unwrap_or_else(|| panic!("{token} must be a declared status"));
+            grid = grid
+                .child(status(format!("{fiber}-state"), declared))
+                .child(Self::column(
+                    fiber,
+                    sp("spacing.2xs"),
+                    vec![text("name", fiber), note("detail", detail)],
+                ));
+        }
+
+        section(
+            "status",
+            "Fibers",
+            vec![Self::body(
+                "body",
+                sp("spacing.md"),
+                vec![
+                    grid,
+                    note(
+                        "note",
+                        "Colour is never the only channel: every state carries its own \
+                         word and its own silhouette, because `status` takes a whole \
+                         StatusToken and there is no way to hand it a hue on its own.",
+                    ),
+                ],
+            )],
         )
     }
 
     /// A `Scroll` over a `Collection` that claims a hundred thousand rows.
     ///
     /// The collection asks [`RowSource`] only for the window it can see, so
-    /// the row count below is a claim about the store and not about work
-    /// this frame did. Watch the placement counter in the strip: it does not
-    /// grow with `TOTAL_ROWS`.
-    fn collection_section() -> ViewNode {
+    /// the row count below is a claim about the store and not about work this
+    /// frame did. Watch the PLACEMENTS tile: it does not grow with
+    /// [`TOTAL_ROWS`].
+    fn collection_card() -> ViewNode {
         let list = ViewNode::new(NodeKind::Collection, "rows").with_props(Props {
-            source: Some(ROW_SOURCE.into()),
+            source: Some(ROW_SOURCE.to_owned()),
             total_count: Some(TOTAL_ROWS),
-            estimated_extent: Some(22.0),
+            // A `list_row` is a padded stack: `spacing.xs` above and below a
+            // 20-unit body line. Declaring 28 rather than the bare line
+            // height is what keeps the rows contiguous instead of leaving a
+            // gap of exactly the padding under each one.
+            estimated_extent: Some(28.0),
             axis: Some(Axis::Vertical),
             ..Props::default()
         });
-        Self::column(
-            "collection",
-            sp("spacing.sm"),
-            vec![
-                Self::heading("coll-h", "Scroll over a virtualized Collection"),
-                Self::body(
-                    "coll-note",
-                    "100 000 rows declared; only the visible window is ever placed",
-                    "text.muted",
-                ),
-                ViewNode::new(NodeKind::Scroll, "scroll")
-                    .with_props(Props {
-                        axis: Some(Axis::Vertical),
-                        // On the scroll, not on the collection inside it. Tree
-                        // acceptance refuses `overscan` on a nested collection
-                        // rather than silently ignoring it, because the scroll
-                        // is what actually resolves the value.
-                        overscan: Some(64.0),
-                        ..Props::default()
-                    })
-                    .with_constraints(Constraints {
-                        vertical: AxisConstraint {
-                            min: Some(220.0),
-                            max: Some(220.0),
-                            priority: 0,
-                        },
-                        ..Constraints::default()
-                    })
-                    .child(list),
-            ],
+
+        section(
+            "store",
+            "Store",
+            vec![Self::body(
+                "body",
+                sp("spacing.md"),
+                vec![
+                    caption(
+                        "note",
+                        "100 000 rows declared · only the visible window is placed",
+                    ),
+                    ViewNode::new(NodeKind::Scroll, "scroll")
+                        .with_props(Props {
+                            axis: Some(Axis::Vertical),
+                            // On the scroll, not on the collection inside
+                            // it. Tree acceptance refuses `overscan` on a
+                            // nested collection rather than silently
+                            // ignoring it, because the scroll is what
+                            // actually resolves the value.
+                            overscan: Some(64.0),
+                            ..Props::default()
+                        })
+                        .with_constraints(Self::exact(Axis::Vertical, 224.0))
+                        .child(list),
+                ],
+            )],
         )
     }
 
     /// The three surface input policies, each openable and each behaving
     /// differently on a click outside it.
-    fn surface_section(&self) -> ViewNode {
-        Self::column(
-            "surfaces",
-            sp("spacing.sm"),
-            vec![
-                Self::heading("surf-h", "Surface input policies"),
-                Self::body(
-                    "surf-note",
-                    "Block swallows a click outside it · Passthrough lets it through · \
-                     DismissOutside lets it through and asks to close",
-                    "text.muted",
-                ),
-                Self::row(
-                    "surf-row",
-                    sp("spacing.md"),
-                    vec![
-                        Self::control(
-                            "open-modal",
-                            "Open Block modal",
-                            Some("surface.raised"),
-                            "text.primary",
-                            Some("text.muted"),
-                        ),
-                        Self::control(
-                            "open-menu",
-                            "Open DismissOutside popup",
-                            Some("surface.raised"),
-                            "text.primary",
-                            Some("text.muted"),
-                        ),
-                        Self::control(
-                            "open-pass",
-                            "Open Passthrough panel",
-                            Some("surface.raised"),
-                            "text.primary",
-                            Some("text.muted"),
-                        ),
-                    ],
-                ),
-            ],
+    fn surface_card() -> ViewNode {
+        section(
+            "overlays",
+            "Overlays",
+            vec![Self::body(
+                "body",
+                sp("spacing.md"),
+                vec![
+                    note(
+                        "note",
+                        "Block swallows a click outside it · Passthrough lets it \
+                         through · DismissOutside lets it through and asks this \
+                         application to close.",
+                    ),
+                    Self::row(
+                        "open",
+                        sp("spacing.md"),
+                        Align::Center,
+                        vec![
+                            on_card(button("open-modal", "Block modal")),
+                            on_card(button("open-menu", "Dismiss popup")),
+                            on_card(button("open-pass", "Toast")),
+                        ],
+                    ),
+                ],
+            )],
         )
     }
 
-    /// One `Image` and one `Custom`, declared so their absence is counted.
-    fn undrawn_section() -> ViewNode {
-        Self::column(
-            "undrawn",
-            sp("spacing.sm"),
-            vec![
-                Self::heading("undrawn-h", "Declared with no painter"),
-                Self::body(
-                    "undrawn-note",
-                    "laid out and measured, but their content has no painter; \
-                     they appear in the undrawn counter above",
-                    "text.muted",
-                ),
-                Self::row(
-                    "undrawn-row",
-                    sp("spacing.md"),
-                    vec![
-                        Self::placeholder_box(
-                            NodeKind::Image,
-                            "logo",
-                            Props {
-                                image: Some("gallery/logo".into()),
-                                ..Props::default()
-                            },
-                        ),
-                        Self::placeholder_box(
-                            NodeKind::Custom,
-                            "sparkline",
-                            Props {
-                                custom_kind: Some(CUSTOM_KIND.into()),
-                                ..Props::default()
-                            },
-                        ),
-                    ],
-                ),
-            ],
-        )
-    }
-
-    /// A filled rectangle of an exact size.
+    /// The two hosted kinds described side by side: one drawn through a
+    /// registered painter, one deliberately left undrawn.
     ///
-    /// The painter knows exactly three token slots — `background`, `border`
-    /// and `foreground` — so every piece of widget chrome in this file is
-    /// this function: a coloured box, sometimes with an edge. There is no
-    /// corner radius, no shadow, no icon set. A checkbox is a box inside a
-    /// box; a toggle is a box that moves; a progress bar is a box inside a
-    /// wider box. Saying so plainly is more useful than making it look like
-    /// there is more vocabulary than there is.
-    fn swatch(key: &str, w: f32, h: f32, fill: Option<&str>, edge: Option<&str>) -> ViewNode {
-        let mut props = Props::default();
-        if let Some(fill) = fill {
-            props.tokens.insert("background".into(), tok(fill));
-        }
-        if let Some(edge) = edge {
-            props.tokens.insert("border".into(), tok(edge));
-        }
-        ViewNode::new(NodeKind::Spacer, key)
+    /// This is the honest half of FR-059 and FR-060 in one card. Both nodes
+    /// declare content Petra never sees the pixels of; the sparkline has a
+    /// painter and is counted in `PaintReport::customs`, the image has no
+    /// source and lands in `PaintReport::undrawn` under its own name, so an
+    /// operator learns *which* picture is missing rather than that "an image"
+    /// is.
+    fn hosted_card() -> ViewNode {
+        let mut image = Props {
+            image: Some(IMAGE_SOURCE.to_owned()),
+            ..Props::default()
+        };
+        image
+            .tokens
+            .insert("background".into(), tok("surface.base"));
+        image.tokens.insert("border".into(), tok("text.muted"));
+        image.tokens.insert("radius".into(), tok("shape.corner-sm"));
+
+        // A `FitContent` well beside a `Weight` caption, rather than two
+        // equal columns: the well is 96 units wide and a half-width column
+        // would strand it against a gap the size of the caption beside it.
+        let pair = ViewNode::new(NodeKind::Grid, "pair")
+            .with_props(Props {
+                columns: vec![TrackSize::FitContent, TrackSize::Weight { weight: 1.0 }],
+                column_spacing: sp("spacing.md"),
+                row_spacing: sp("spacing.sm"),
+                ..Props::default()
+            })
+            .child(
+                ViewNode::new(NodeKind::Image, "logo")
+                    .with_props(image)
+                    .with_constraints(Constraints {
+                        horizontal: AxisConstraint {
+                            min: Some(96.0),
+                            max: Some(96.0),
+                            priority: 0,
+                        },
+                        vertical: AxisConstraint {
+                            min: Some(48.0),
+                            max: Some(48.0),
+                            priority: 0,
+                        },
+                    }),
+            )
+            .child(Self::column(
+                "logo-caption",
+                sp("spacing.2xs"),
+                vec![
+                    caption("label", "image · no source"),
+                    note(
+                        "detail",
+                        "no loader is registered for it, so the paint pass names it in \
+                         the undrawn set and the UNDRAWN tile above reads 1",
+                    ),
+                ],
+            ))
+            .child(Self::sparkline_swatch())
+            .child(Self::column(
+                "spark-caption",
+                sp("spacing.2xs"),
+                vec![
+                    caption("label", "custom · sparkline"),
+                    note(
+                        "detail",
+                        "a registered painter draws it, in Petra's own paint order, at \
+                         the top of this page",
+                    ),
+                ],
+            ));
+
+        section(
+            "hosted",
+            "Hosted content",
+            vec![Self::body(
+                "body",
+                sp("spacing.md"),
+                vec![
+                    note(
+                        "note",
+                        "Petra places and clips both of these; their pixels come from \
+                         the host and the frame digest cannot see either, which is what \
+                         makes this frame hosted.",
+                    ),
+                    pair,
+                ],
+            )],
+        )
+    }
+
+    /// A second, smaller sparkline, so the card that explains the escape
+    /// hatch shows the thing it is explaining.
+    ///
+    /// The same registered painter draws it — one name, one painter, two
+    /// placements — which is the cheapest available proof that the dispatch
+    /// is keyed on the custom name rather than on the node.
+    fn sparkline_swatch() -> ViewNode {
+        let mut props = Props {
+            custom_kind: Some(CUSTOM_KIND.to_owned()),
+            ..Props::default()
+        };
+        props
+            .tokens
+            .insert("background".into(), tok("surface.base"));
+        props.tokens.insert("radius".into(), tok("shape.corner-sm"));
+        ViewNode::new(NodeKind::Custom, "spark")
             .with_props(props)
             .with_constraints(Constraints {
                 horizontal: AxisConstraint {
-                    min: Some(w),
-                    max: Some(w),
+                    min: Some(96.0),
+                    max: Some(96.0),
                     priority: 0,
                 },
                 vertical: AxisConstraint {
-                    min: Some(h),
-                    max: Some(h),
+                    min: Some(48.0),
+                    max: Some(48.0),
                     priority: 0,
                 },
             })
     }
 
-    /// Text on a filled, optionally bordered box — the shape every control
-    /// here has.
-    fn chip(key: &str, label: &str, fill: Option<&str>, fg: &str, edge: Option<&str>) -> ViewNode {
-        let mut props = Props {
-            text: Some(label.to_owned()),
-            style: Some(tok("typography.body")),
-            ..Props::default()
-        };
-        props.tokens.insert("foreground".into(), tok(fg));
-        if let Some(fill) = fill {
-            props.tokens.insert("background".into(), tok(fill));
-        }
-        if let Some(edge) = edge {
-            props.tokens.insert("border".into(), tok(edge));
-        }
-        ViewNode::new(NodeKind::Text, key).with_props(props)
-    }
-
-    /// A focusable, clickable control.
-    ///
-    /// Flush against its own edge, because padding cannot be composed here.
-    /// `Props` has no padding field, and the obvious workaround — spacers
-    /// above and below the label inside the fill — does not survive layout: a
-    /// vertical `Stack` divides the height it is offered equally among its
-    /// children instead of sizing to content, so a three-child column offered
-    /// 15.1pt hands the label 5.0pt for a run that needs 14 and the glyphs
-    /// spill out of the box. Measured, both with inflexible pads and with
-    /// pads declared `min: 0, max: pad`; the split was 5/5/5 either way.
-    ///
-    /// So: a `padding` prop is not a nicety here, it is the difference
-    /// between being able to draw a button and not.
-    fn control(
-        key: &str,
-        label: &str,
-        fill: Option<&str>,
-        fg: &str,
-        edge: Option<&str>,
-    ) -> ViewNode {
-        Self::chip(key, label, fill, fg, edge).interactive(
-            Role::Button,
-            label.to_owned(),
-            &[Interaction::Focus, Interaction::Click],
-        )
-    }
-
-    /// A hard width clamp, so a text node is measured against a width the
-    /// window cannot widen out from under it.
-    fn width(value: f32) -> Constraints {
-        Constraints {
-            horizontal: AxisConstraint {
-                min: Some(value),
-                max: Some(value),
-                priority: 0,
-            },
-            ..Constraints::default()
-        }
-    }
-
-    /// A node whose *content* has no painter, given a background so it still
-    /// emits a shape.
-    ///
-    /// Not cosmetic. `PaintReport::is_complete` treats a placement that
-    /// emitted nothing as `silent`, and `Host::pass` debug-asserts on it — so
-    /// a bare `Image` or `Custom` node **panics a debug-build host**, even
-    /// though the missing painter is already recorded in `report.undrawn`.
-    /// The known gap trips the alarm meant for unknown ones. Giving these a
-    /// background is the workaround; the inconsistency between `undrawn` and
-    /// `is_complete` is the thing to fix.
-    fn placeholder_box(kind: NodeKind, key: &str, props: Props) -> ViewNode {
-        let mut props = props;
-        props
-            .tokens
-            .insert("background".into(), tok("surface.raised"));
-        props.tokens.insert("border".into(), tok("text.muted"));
-        ViewNode::new(kind, key).with_props(props)
-    }
-
     fn overlay(&self) -> Option<ViewNode> {
         if self.modal {
-            let mut props = Props {
-                layer: Some(Layer::Modal),
-                anchor: Some(Anchor::Viewport),
-                clamp: Some(ClampRule::Shrink),
-                input_policy: Some(InputPolicy::Block),
-                axis: Some(Axis::Vertical),
-                spacing: sp("spacing.sm"),
-                ..Props::default()
-            };
-            props
-                .tokens
-                .insert("background".into(), tok("surface.raised"));
             return Some(
-                ViewNode::new(NodeKind::Surface, "modal")
-                    .with_props(props)
+                Self::surface("modal", Layer::Modal, InputPolicy::Block)
                     .with_semantics(Semantics {
                         role: Some(Role::Dialog),
                         label: Some("Retire fiber".to_owned()),
                         ..Semantics::default()
                     })
-                    .child(Self::heading("modal-t", "Retire worker/indexer?"))
-                    .child(ViewNode::new(NodeKind::Separator, "modal-rule"))
-                    .child(Self::body(
-                        "modal-b",
-                        "Its three children are retired with it. A click outside \
-                         this dialog is swallowed — that is what Block means.",
-                        "text.muted",
-                    ))
-                    .child(Self::row(
-                        "modal-actions",
+                    .child(Self::column(
+                        "body",
                         sp("spacing.md"),
                         vec![
-                            ViewNode::new(NodeKind::Spacer, "modal-push").with_constraints(
-                                Constraints {
-                                    vertical: AxisConstraint {
-                                        min: Some(0.0),
-                                        max: Some(0.0),
-                                        priority: 0,
-                                    },
-                                    ..Constraints::default()
-                                },
+                            heading("title", "Retire worker/indexer?"),
+                            Self::rule("rule"),
+                            note(
+                                "note",
+                                "Its three children are retired with it. A click \
+                                 outside this dialog is swallowed — that is what Block \
+                                 means.",
                             ),
-                            Self::control(
-                                "modal-close",
-                                "Cancel",
-                                Some("surface.base"),
-                                "text.primary",
-                                Some("text.muted"),
-                            ),
-                            Self::control(
-                                "modal-confirm",
-                                "Retire",
-                                Some("text.primary"),
-                                "surface.base",
-                                None,
+                            Self::row(
+                                "actions",
+                                sp("spacing.md"),
+                                Align::Center,
+                                vec![
+                                    ViewNode::new(NodeKind::Spacer, "push")
+                                        .with_constraints(Self::exact(Axis::Vertical, 0.0)),
+                                    on_card(button("modal-close", "Cancel")),
+                                    on_card(button("modal-confirm", "Retire")),
+                                ],
                             ),
                         ],
                     )),
             );
         }
         if self.menu {
-            let mut props = Props {
-                layer: Some(Layer::Popup),
-                anchor: Some(Anchor::Viewport),
-                clamp: Some(ClampRule::Shrink),
-                input_policy: Some(InputPolicy::DismissOutside),
-                axis: Some(Axis::Vertical),
-                spacing: sp("spacing.sm"),
-                ..Props::default()
-            };
-            props
-                .tokens
-                .insert("background".into(), tok("surface.raised"));
-            let item = |key: &str, label: &str, fg: &str| {
-                Self::control(key, label, Some("surface.raised"), fg, None)
-            };
             return Some(
-                ViewNode::new(NodeKind::Surface, "menu")
-                    .with_props(props)
+                Self::surface("menu", Layer::Popup, InputPolicy::DismissOutside)
                     .with_semantics(Semantics {
                         role: Some(Role::List),
                         label: Some("Fiber actions".to_owned()),
                         ..Semantics::default()
                     })
-                    .child(Self::body("menu-t", "Fiber actions", "text.muted"))
-                    .child(item("menu-item", "Inspect", "text.primary"))
-                    .child(item("menu-trace", "Follow trace", "text.primary"))
-                    .child(ViewNode::new(NodeKind::Separator, "menu-rule"))
-                    .child(item("menu-kill", "Kill", "status.down")),
+                    .child(Self::column(
+                        "body",
+                        sp("spacing.2xs"),
+                        vec![
+                            caption("title", "fiber actions"),
+                            // Uniform rows, and the danger of the last one
+                            // is in its words. An earlier version painted
+                            // "Kill" in `status.down`, which is meaning
+                            // carried by hue alone — the exact thing
+                            // `status` exists to make unnecessary.
+                            on_card(list_row("menu-inspect", "Inspect", false)),
+                            on_card(list_row("menu-trace", "Follow trace", false)),
+                            Self::rule("rule"),
+                            on_card(list_row("menu-kill", "Kill — cannot be undone", false)),
+                        ],
+                    )),
             );
         }
         if self.passthrough {
-            let mut props = Props {
-                layer: Some(Layer::Toast),
-                anchor: Some(Anchor::Viewport),
-                clamp: Some(ClampRule::Shrink),
-                input_policy: Some(InputPolicy::Passthrough),
-                axis: Some(Axis::Vertical),
-                spacing: sp("spacing.sm"),
-                ..Props::default()
-            };
-            props
-                .tokens
-                .insert("background".into(), tok("surface.raised"));
             return Some(
-                ViewNode::new(NodeKind::Surface, "toast")
-                    .with_props(props)
-                    .child(Self::body(
-                        "toast-t",
-                        "Passthrough: clicks reach what is underneath. \
-                         Press its button below to close.",
-                        "text.primary",
-                    ))
-                    .child(Self::button("toast-close", "Close")),
+                Self::surface("toast", Layer::Toast, InputPolicy::Passthrough).child(Self::column(
+                    "body",
+                    sp("spacing.md"),
+                    vec![
+                        note(
+                            "note",
+                            "Passthrough: clicks reach what is underneath. Press \
+                                 its button to close.",
+                        ),
+                        on_card(button("toast-close", "Close")),
+                    ],
+                )),
             );
         }
         None
     }
+}
+
+/// Whether `event` should act on the node it routed to.
+///
+/// [`activates`] answers only for the keyboard stand-in — Enter or Space on
+/// the focused node — because that is the part `crate::input::route` has to
+/// widen to keep a `Click`-only button operable from the keyboard (FR-025).
+/// It is deliberately *not* an answer about the pointer, and this gallery
+/// used to guard on it alone: every mouse press on this page was reported
+/// "not an activation" and dropped, so the tab strip, the surface buttons
+/// and the row selection were all decorative. A press that reaches
+/// [`Route::Pointer`] has already passed `hit_test` for
+/// [`gorgon_petra::tree::Interaction::Click`], so the node it names is a node
+/// that asked to be clicked; acting on it is the whole point.
+fn activated(event: &InputEvent) -> bool {
+    activates(event)
+        || matches!(
+            event,
+            InputEvent::PointerPressed {
+                button: PointerButton::Primary,
+                ..
+            }
+        )
 }
 
 impl RowSource for Gallery {
@@ -1061,26 +1467,11 @@ impl RowSource for Gallery {
             .map(|i| {
                 // Keyed by the row's own index, not by its position in this
                 // window, so scrolling does not renumber what is on screen.
-                // Uniform, deliberately. An earlier version alternated
-                // `text.primary`/`text.muted` per row, which read as a
-                // rendering fault rather than as zebra striping — the engine
-                // does nothing of the kind on its own.
-                let selected = self.selected_row == Some(i);
-                Arc::new(
-                    Gallery::chip(
-                        &format!("row-{i}"),
-                        &format!("row {i:>6}  ·  a virtualized entry"),
-                        selected.then_some("surface.raised"),
-                        "text.primary",
-                        None,
-                    )
-                    .with_semantics(Semantics {
-                        role: Some(Role::ListItem),
-                        label: Some(format!("row {i}")),
-                        selected,
-                        ..Semantics::default()
-                    }),
-                )
+                Arc::new(on_card(list_row(
+                    format!("row-{i}"),
+                    format!("supervisor/worker-{i:05}"),
+                    self.selected_row == Some(i),
+                )))
             })
             .collect()
     }
@@ -1088,79 +1479,106 @@ impl RowSource for Gallery {
 
 impl App for Gallery {
     fn view(&mut self) -> ViewNode {
+        // Recorded before the tree is built, so the series the sparkline
+        // draws is exactly the series the PLACEMENTS tile prints — one sample
+        // per pass, never two numbers that could disagree. It also means the
+        // painter is never handed an empty series at paint time.
+        #[allow(clippy::cast_precision_loss)]
+        self.history.push(self.counters.placements as f32);
+
+        let columns = ViewNode::new(NodeKind::Grid, "columns")
+            .with_props(Props {
+                columns: vec![
+                    TrackSize::Weight { weight: 1.0 },
+                    TrackSize::Weight { weight: 1.0 },
+                ],
+                column_spacing: sp("spacing.xl"),
+                row_spacing: sp("spacing.xl"),
+                ..Props::default()
+            })
+            .child(Self::column(
+                "left",
+                sp("spacing.xl"),
+                vec![
+                    self.controls_card(),
+                    Self::form_card(),
+                    Self::text_card(),
+                    Self::layout_card(),
+                ],
+            ))
+            .child(Self::column(
+                "right",
+                sp("spacing.xl"),
+                vec![
+                    // First, and not by accident: this card holds the one
+                    // node on the page with no painter, and the UNDRAWN
+                    // tile in the band directly above it is the counter
+                    // that reports it. A card that explains a counter
+                    // belongs next to the counter — and a hosted node
+                    // scrolled below the fold is clipped away before the
+                    // paint pass can report it at all, which would make
+                    // that tile read 0 for a reason that has nothing to do
+                    // with painters.
+                    Self::hosted_card(),
+                    Self::status_card(),
+                    Self::collection_card(),
+                    Self::surface_card(),
+                ],
+            ));
+
+        // The page itself is a `Self::column` too — a single-column `Grid`,
+        // carrying the page margin and the page fill. Its four regions have
+        // very different heights, and a `Stack` would share the window's
+        // height out between them instead of letting each be as tall as it
+        // is. See `Self::column` for the measurement behind that.
         let mut page = Props {
-            axis: Some(Axis::Vertical),
-            spacing: sp("spacing.lg"),
+            columns: vec![TrackSize::Weight { weight: 1.0 }],
+            row_spacing: sp("spacing.2xl"),
+            padding: Some(pad("spacing.3xl", "spacing.2xl")),
             ..Props::default()
         };
         page.tokens.insert("background".into(), tok("surface.base"));
 
-        let mut root = ViewNode::new(NodeKind::Stack, "root")
+        let mut root = ViewNode::new(NodeKind::Grid, "root")
             .with_props(page)
-            .child(Gallery::heading("title", "Petra component gallery"))
-            .child(Gallery::body(
-                "counters",
-                &self.counters.line(),
-                "text.muted",
-            ))
-            .child(Gallery::body(
-                "last",
-                &format!(
-                    "last event: {}   ·   dismissals reported: {}",
-                    if self.last_event.is_empty() {
-                        "none yet — click a button or press Tab"
-                    } else {
-                        &self.last_event
-                    },
-                    self.dismissals
-                ),
-                "text.muted",
-            ))
-            .child(Gallery::section(
-                "widgets",
-                "Controls",
-                vec![
-                    self.buttons_row(),
-                    self.controls_row(),
-                    self.tabs_row(),
-                    self.progress_row(),
-                ],
-            ))
-            .child(Gallery::section(
-                "forms",
-                "Form",
-                vec![Gallery::form_grid()],
-            ))
-            .child(Gallery::layout_section())
-            .child(Gallery::text_section())
-            .child(Gallery::status_section())
-            .child(self.surface_section())
-            .child(Gallery::collection_section())
-            .child(Gallery::undrawn_section());
+            .child(Self::masthead())
+            .child(self.telemetry())
+            .child(Self::rule("masthead-rule"))
+            .child(columns);
 
         if let Some(probe) = self.probe.clone() {
             root = root.child(probe);
         }
-        // The page scrolls. Without this the root stack is offered exactly the
-        // window's height and divides it among its sections, so adding a
-        // section does not make the page longer — it makes every existing
-        // section shorter, down to text squeezed to a few points tall. A
-        // vertical stack distributes the height it is given; something has to
-        // give it an unbounded one, and a scroll is that something.
+
+        // The page scrolls. Without this the root stack is offered exactly
+        // the window's height and divides it among its regions, so adding a
+        // card does not make the page longer — it makes every existing card
+        // shorter, down to text squeezed to a few points tall. A vertical
+        // stack distributes the height it is given; something has to give it
+        // an unbounded one, and a scroll is that something.
+        // The page fill lives on the *scroll*, not only on the content
+        // inside it: a page shorter than the window leaves the rest of the
+        // frame painted by whatever cleared it, and the seam between the two
+        // blacks is visible. The scroll is the node that covers the whole
+        // viewport, so it is the one that has to carry the colour.
+        let mut scroll = Props {
+            axis: Some(Axis::Vertical),
+            overscan: Some(64.0),
+            ..Props::default()
+        };
+        scroll
+            .tokens
+            .insert("background".into(), tok("surface.base"));
         let page = ViewNode::new(NodeKind::Scroll, "page")
-            .with_props(Props {
-                axis: Some(Axis::Vertical),
-                overscan: Some(64.0),
-                ..Props::default()
-            })
+            .with_props(scroll)
             .child(root);
 
         // Surfaces sit beside the page, not inside it. They are anchored to
-        // the viewport, and a viewport-anchored thing inside scrolling content
-        // is placed in the wrong coordinate space — a popup that moves when
-        // the page moves, and hit-testing that disagrees with what is on
-        // screen. `Overlay` is the container for this: every child gets the
-        // container's own proposal, z-order by child order.
+        // the viewport, and a viewport-anchored thing inside scrolling
+        // content is placed in the wrong coordinate space — a popup that
+        // moves when the page moves, and hit-testing that disagrees with what
+        // is on screen. `Overlay` is the container for this: every child gets
+        // the container's own proposal, z-order by child order.
         let mut shell = ViewNode::new(NodeKind::Overlay, "shell").child(page);
         if let Some(overlay) = self.overlay() {
             shell = shell.child(overlay);
@@ -1176,7 +1594,7 @@ impl App for Gallery {
                 return;
             }
         };
-        if !activates(event) {
+        if !activated(event) {
             self.last_event = format!("{node} (not an activation)");
             return;
         }
@@ -1190,12 +1608,17 @@ impl App for Gallery {
             "open-pass" => self.passthrough = true,
             "modal-close" | "modal-confirm" => self.modal = false,
             "toast-close" => self.passthrough = false,
-            "menu-item" | "menu-trace" | "menu-kill" => self.menu = false,
-            "Fibers" => self.tab = 0,
-            "Trace" => self.tab = 1,
-            "Capabilities" => self.tab = 2,
+            "menu-inspect" | "menu-trace" | "menu-kill" => self.menu = false,
+            "tab-fibers" => self.tab = 0,
+            "tab-trace" => self.tab = 1,
+            "tab-caps" => self.tab = 2,
+            "stopped" => self.stopped = !self.stopped,
+            "verbose" => self.verbose = !self.verbose,
+            "tracing" => self.tracing = !self.tracing,
             _ => {
-                if let Some(i) = tail.strip_prefix("row-").and_then(|n| n.parse().ok()) {
+                if let Some(i) = POLICIES.iter().position(|(key, _)| *key == tail) {
+                    self.policy = i;
+                } else if let Some(i) = tail.strip_prefix("row-").and_then(|n| n.parse().ok()) {
                     self.selected_row = Some(i);
                 }
             }
@@ -1220,6 +1643,140 @@ impl App for Gallery {
         ChangeSet::All
     }
 }
+
+// ---------------------------------------------------------------------------
+// The registered sparkline painter (T087, FR-059)
+// ---------------------------------------------------------------------------
+
+/// Draw `samples` as a sparkline inside `ctx.rect`.
+///
+/// Returns whether it drew anything, which is the whole contract: a
+/// registered painter that draws nothing must return `false` so its name
+/// still lands in `PaintReport::undrawn`, rather than the frame reading
+/// complete over a placement nobody painted. Three ways that happens here —
+/// an empty series, a theme with no ink colour, and a rect too small to plot
+/// in — and all three are real rather than defensive: [`App::view`] pushes a
+/// sample every pass, so an empty series means the painter ran without the
+/// application behind it.
+///
+/// Every colour comes from `ctx.colors`, the same
+/// [`gorgon_petra_egui::paint::ColorSource`] the rest of the frame painted
+/// with, so the sparkline follows the theme instead of carrying a palette of
+/// its own. Nothing here means anything by hue: the line is ink, and the
+/// number it plots is printed beside it in the PLACEMENTS tile.
+fn paint_sparkline(painter: &egui::Painter, ctx: &CustomPaintCtx<'_>, samples: &[f32]) -> bool {
+    if samples.is_empty() {
+        return false;
+    }
+    let (Some(ink), Some(rule)) = (
+        ctx.colors.color("text.primary"),
+        ctx.colors.color("text.muted"),
+    ) else {
+        return false;
+    };
+
+    // One device pixel, whatever the window's scale is. `ctx.scale` exists
+    // for exactly this: a hairline declared in logical units is two pixels on
+    // a 2x display, which reads as a border rather than as a baseline.
+    let hairline = (1.0 / ctx.scale.factor()).max(0.5);
+    let plot = ctx.rect.shrink(4.0);
+    if plot.width() <= 0.0 || plot.height() <= 0.0 {
+        return false;
+    }
+
+    painter.line_segment(
+        [plot.left_bottom(), plot.right_bottom()],
+        egui::Stroke::new(hairline, rule),
+    );
+
+    let lo = samples.iter().copied().fold(f32::INFINITY, f32::min);
+    let hi = samples.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    // A flat series still has to plot somewhere, and dividing by its own zero
+    // range would put it at NaN. One is the smallest span that keeps a
+    // constant line on the baseline instead of off the top of the well.
+    let span = (hi - lo).max(1.0);
+    #[allow(clippy::cast_precision_loss)]
+    let last = samples.len().saturating_sub(1) as f32;
+    let at = |i: usize, v: f32| {
+        #[allow(clippy::cast_precision_loss)]
+        let x = if last > 0.0 {
+            plot.left() + plot.width() * (i as f32 / last)
+        } else {
+            plot.right()
+        };
+        egui::pos2(x, plot.bottom() - plot.height() * ((v - lo) / span))
+    };
+
+    let points: Vec<egui::Pos2> = samples.iter().enumerate().map(|(i, v)| at(i, *v)).collect();
+    // Read before the vector is moved into the shape below.
+    let head = points.last().copied();
+    if points.len() > 1 {
+        painter.add(egui::Shape::line(points, egui::Stroke::new(1.5, ink)));
+    }
+    // The head of the series, marked, so a one-sample history is still a
+    // drawn sparkline rather than an empty well that claims to have drawn.
+    if let Some(head) = head {
+        painter.circle_filled(head, 2.0, ink);
+    }
+    true
+}
+
+/// Register the sparkline painter over `history`.
+///
+/// A function rather than an inline closure at both call sites, because the
+/// window and the test suite must register the *same* painter over the *same*
+/// series — a test that registered a simpler one would prove that some
+/// painter draws, not that this page's does.
+fn register_sparkline(painters: &mut CustomPainters, history: History) {
+    painters.register(CUSTOM_KIND, move |painter, ctx| {
+        paint_sparkline(painter, ctx, &history.samples())
+    });
+}
+
+/// A host over a fresh gallery, with the custom kind registered on the tree
+/// registry and the painter registered on the paint dispatch.
+///
+/// One function, used by `main` and by every test below, so the window and
+/// the suite cannot drift into registering different things.
+fn build_host(ctx: &egui::Context, presenter: Presenter) -> Host<Gallery> {
+    let app = Gallery::default();
+    let history = app.history.clone();
+    let mut host = Host::new(ctx, app, presenter);
+    host.registry_mut().register_custom_kind(CUSTOM_KIND);
+    register_sparkline(host.painters_mut(), history);
+    host
+}
+
+/// Open one overlay at startup, from `PETRA_GALLERY_OPEN`.
+///
+/// The three surfaces are the only part of this page a capture cannot
+/// otherwise show: they are opened by a click, and a run that screenshots
+/// itself never clicks anything. Anything unrecognised opens nothing, which
+/// is the ordinary state.
+fn open_from_env(app: &mut Gallery) {
+    match std::env::var("PETRA_GALLERY_OPEN").as_deref() {
+        Ok("modal") => app.modal = true,
+        Ok("menu") => app.menu = true,
+        Ok("toast") => app.passthrough = true,
+        _ => {}
+    }
+}
+
+/// Which shipped theme to present, from `PETRA_GALLERY_THEME`.
+///
+/// Both themes are shipped and both must render this page, so the window can
+/// show either. Anything but `light` is dark, which is the default the rest
+/// of the crate uses (`host::default_presenter`).
+fn presenter_from_env() -> Presenter {
+    match std::env::var("PETRA_GALLERY_THEME").as_deref() {
+        Ok("light") => Presenter::new(light()),
+        _ => Presenter::new(dark()),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The window
+// ---------------------------------------------------------------------------
 
 /// An opt-in capture, driven by `PETRA_GALLERY_SHOT=<path>`.
 ///
@@ -1290,8 +1847,8 @@ impl eframe::App for GalleryWindow {
             });
         // Written for the *next* pass to render. The application builds its
         // tree before the frame that measures it exists, so there is no way
-        // to show this pass's own numbers this pass; the label says
-        // "previous pass" rather than pretending otherwise.
+        // to show this pass's own numbers this pass; the label says "previous
+        // pass" rather than pretending otherwise.
         self.host.app_mut().counters = counters;
 
         let Some(plan) = &mut self.shot else { return };
@@ -1334,15 +1891,15 @@ impl eframe::App for GalleryWindow {
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1100.0, 900.0]),
+        viewport: egui::ViewportBuilder::default().with_inner_size([1200.0, 900.0]),
         ..eframe::NativeOptions::default()
     };
     eframe::run_native(
         "Petra component gallery",
         options,
         Box::new(|cc| {
-            let mut host = Host::new(&cc.egui_ctx, Gallery::default(), default_presenter());
-            host.registry_mut().register_custom_kind(CUSTOM_KIND);
+            let mut host = build_host(&cc.egui_ctx, presenter_from_env());
+            open_from_env(host.app_mut());
             let shot = std::env::var_os("PETRA_GALLERY_SHOT").map(|path| ShotPlan {
                 path: std::path::PathBuf::from(path),
                 passes: 0,
@@ -1355,20 +1912,21 @@ fn main() -> eframe::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Gallery, TOTAL_ROWS, sp};
+    use super::{Gallery, TOTAL_ROWS, build_host, sp};
     use egui::{Context, Event, Modifiers, Pos2, RawInput};
-    use gorgon_petra::geom::Point;
-    use gorgon_petra::tree::{NodeKind, ViewNode};
-    use gorgon_petra_egui::host::{App, Host, default_presenter};
+    use gorgon_petra::geom::{Align, Point};
+    use gorgon_petra::token::{Presenter, dark, light};
+    use gorgon_petra::tree::{NodeKind, Role, ViewNode};
+    use gorgon_petra_egui::host::{App, Host};
 
     /// The window size `main` asks for.
     ///
     /// The tests run at it deliberately. An `egui::Context` with a default
     /// `RawInput` reports a screen about 10 000pt tall, and at that size
     /// nothing in this gallery ever clips, scrolls, or runs out of room — so
-    /// a headless suite that takes the default is not exercising the layout
-    /// a person actually sees.
-    const WINDOW: [f32; 2] = [1100.0, 900.0];
+    /// a headless suite that takes the default is not exercising the layout a
+    /// person actually sees.
+    const WINDOW: [f32; 2] = [1200.0, 900.0];
 
     fn sized(mut input: RawInput) -> RawInput {
         input.screen_rect = Some(egui::Rect::from_min_size(
@@ -1401,10 +1959,22 @@ mod tests {
         input
     }
 
-    fn host() -> (Context, Host<Gallery>) {
+    /// A host presenting `presenter`, with the custom kind and the sparkline
+    /// painter registered exactly as `main` registers them.
+    fn host_with(presenter: Presenter) -> (Context, Host<Gallery>) {
         let ctx = headless();
-        let mut host = Host::new(&ctx, Gallery::default(), default_presenter());
-        host.registry_mut().register_custom_kind(super::CUSTOM_KIND);
+        let host = build_host(&ctx, presenter);
+        (ctx, host)
+    }
+
+    fn host() -> (Context, Host<Gallery>) {
+        host_with(Presenter::new(dark()))
+    }
+
+    /// One settled pass over a fresh gallery.
+    fn settled(presenter: Presenter) -> (Context, Host<Gallery>) {
+        let (ctx, mut host) = host_with(presenter);
+        step(&ctx, &mut host, RawInput::default());
         (ctx, host)
     }
 
@@ -1426,26 +1996,263 @@ mod tests {
         }
     }
 
+    /// T078's structural half: every role only a component sets is on the
+    /// page.
+    ///
+    /// Asserted through the placed semantic roles rather than by grepping
+    /// this file for function names, because a call that never reaches the
+    /// tree proves nothing. `Role::Button` covers `button`, `checkbox`,
+    /// `radio` and `toggle`; `TabList`, `Tab`, `TextInput`, `Progress`,
+    /// `Status` and `ListItem` are each set by exactly one component and by
+    /// nothing else in this file.
+    #[test]
+    fn every_component_role_reaches_the_frame() {
+        let (_ctx, host) = settled(Presenter::new(dark()));
+        let frame = host.frame().expect("a frame");
+        for role in [
+            Role::Button,
+            Role::TabList,
+            Role::Tab,
+            Role::TextInput,
+            Role::Progress,
+            Role::Status,
+            Role::ListItem,
+            Role::Table,
+        ] {
+            assert!(
+                frame
+                    .placements
+                    .iter()
+                    .any(|p| p.semantics.role.as_ref() == Some(&role)),
+                "no placement carries {role:?}; the page is missing the component that \
+                 sets it"
+            );
+        }
+    }
+
+    /// SC-011: the page renders under both shipped themes with nothing
+    /// unresolved and no slot the painter does not know.
+    ///
+    /// Two themes, one loop, because "it works in dark" is half a claim: the
+    /// light theme assigns different colours to the same names, and a name
+    /// only one theme declares would resolve in one and land in
+    /// `unresolved_tokens` in the other.
+    #[test]
+    fn the_page_renders_under_both_shipped_themes() {
+        for (what, presenter) in [
+            ("dark", Presenter::new(dark())),
+            ("light", Presenter::new(light())),
+        ] {
+            let (_ctx, host) = settled(presenter);
+            let report = host.report().expect("a paint report");
+            assert!(report.is_complete(), "{what}: {report:?}");
+            assert!(!report.desynced, "{what}: {report:?}");
+            assert!(
+                report.unresolved_tokens.is_empty(),
+                "{what}: every token this gallery binds must exist in the shipped theme: {:?}",
+                report.unresolved_tokens
+            );
+            assert!(
+                report.unknown_slots.is_empty(),
+                "{what}: the gallery must not bind a slot the painter does not know: {:?}",
+                report.unknown_slots
+            );
+            assert_eq!(
+                report.blind_focus, 0,
+                "{what}: a focused node with no ring is a node a keyboard user cannot \
+                 find: {report:?}"
+            );
+            assert!(
+                report.texts > 40,
+                "{what}: the gallery declares far more than forty text runs; {} drawn \
+                 means whole cards silently vanished",
+                report.texts
+            );
+        }
+    }
+
+    /// T087: the sparkline is drawn by the registered painter, and is not in
+    /// the undrawn set.
+    #[test]
+    fn the_sparkline_paints_through_the_registered_painter() {
+        let (_ctx, host) = settled(Presenter::new(dark()));
+        let report = host.report().expect("a paint report");
+        assert_eq!(
+            report.customs, 2,
+            "both custom placements — the band's sparkline and the swatch in the \
+             Hosted content card — must have been drawn by the registered painter: \
+             {report:?}"
+        );
+        assert!(
+            !report
+                .undrawn
+                .contains(&format!("custom:{}", super::CUSTOM_KIND)),
+            "the sparkline has a painter and must not be reported undrawn: {report:?}"
+        );
+    }
+
+    /// The inverse, so the test above cannot pass by the painter being
+    /// irrelevant: with no painter registered, the same tree reports the same
+    /// kind undrawn.
+    ///
+    /// This is the sabotage the gate asks for, kept as a test rather than as
+    /// a one-off edit — it re-runs on every `cargo test` instead of being
+    /// something somebody once did.
+    #[test]
+    fn without_the_registered_painter_the_sparkline_is_undrawn() {
+        let ctx = headless();
+        // Deliberately *not* `build_host`: the kind is registered on the tree
+        // registry, so the tree is still accepted, and the painter is not
+        // registered at all.
+        let mut host = Host::new(&ctx, Gallery::default(), Presenter::new(dark()));
+        host.registry_mut().register_custom_kind(super::CUSTOM_KIND);
+        step(&ctx, &mut host, RawInput::default());
+
+        let report = host.report().expect("a paint report");
+        assert_eq!(report.customs, 0, "{report:?}");
+        assert!(
+            report
+                .undrawn
+                .contains(&format!("custom:{}", super::CUSTOM_KIND)),
+            "an unregistered custom kind must be named in the undrawn set: {report:?}"
+        );
+    }
+
+    /// FR-060's honest half: a frame carrying content Petra never sees the
+    /// pixels of says so, and names which placements those are.
+    #[test]
+    fn the_frame_reports_itself_hosted() {
+        let (_ctx, host) = settled(Presenter::new(dark()));
+        let frame = host.frame().expect("a frame");
+        assert!(
+            frame.hosted(),
+            "this page declares a custom node and an image; its digest cannot see \
+             either, and the frame must say so"
+        );
+        let hosted: Vec<&str> = frame
+            .hosted_placements()
+            .map(|(p, _)| p.id.as_str())
+            .collect();
+        assert!(
+            hosted.iter().any(|id| id.ends_with("/sparkline")),
+            "the sparkline must be one of the hosted placements: {hosted:?}"
+        );
+        assert!(
+            hosted.iter().any(|id| id.ends_with("/logo")),
+            "the image must be one of the hosted placements: {hosted:?}"
+        );
+    }
+
+    /// The image is the only content on this page without a painter.
+    ///
+    /// It is deliberately left unregistered: it is the control that proves
+    /// `undrawn` still reports, at the same moment the sparkline proves the
+    /// escape hatch works. T081 makes an unresolvable image name *itself*, so
+    /// an operator learns which picture is missing.
+    #[test]
+    fn only_the_unregistered_image_lacks_a_painter() {
+        let (_ctx, host) = settled(Presenter::new(dark()));
+        let undrawn = &host.report().expect("a report").undrawn;
+        assert_eq!(
+            undrawn.len(),
+            1,
+            "expected exactly the unregistered image: {undrawn:?}"
+        );
+        assert!(
+            undrawn.contains(&format!("image:{}", super::IMAGE_SOURCE)),
+            "{undrawn:?}"
+        );
+    }
+
+    /// Nothing on this page truncates except the one node that asks to.
+    ///
+    /// This is the assertion the rewrite is measured by, and it is the one no
+    /// other test here makes. Petra truncates *honestly*: a row budget too
+    /// tight for a padded control, a card too narrow for its own note, and a
+    /// stack squeezed below its children's natural heights all surface as
+    /// `PaintState::truncated` rather than as overflow. Before this rewrite
+    /// the same assertion found **seventeen** truncated placements at
+    /// 1100x900 — every button, every control label, every tab, and the whole
+    /// text section — while all ten of the tests that shipped beside them
+    /// passed.
+    #[test]
+    fn nothing_truncates_except_the_node_that_declares_it() {
+        let (_ctx, host) = settled(Presenter::new(dark()));
+        let frame = host.frame().expect("a frame");
+        let truncated: Vec<&str> = frame
+            .placements
+            .iter()
+            .filter(|p| p.paint.truncated)
+            .map(|p| p.id.as_str())
+            .collect();
+        assert_eq!(
+            truncated,
+            vec!["/shell/page/root/columns/left/type/body/measure/elided"],
+            "exactly one node on this page declares `TextWrap::Ellipsis` with \
+             `max_lines: 1`; anything else in this list is a budget too tight for what \
+             it holds"
+        );
+    }
+
+    /// The wrapped and the elided string are the same text and behave
+    /// differently.
+    #[test]
+    fn the_elided_text_truncates_and_the_wrapped_one_does_not() {
+        let (_ctx, host) = settled(Presenter::new(dark()));
+        let frame = host.frame().expect("a frame");
+        let get = |suffix: &str| {
+            frame
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with(suffix))
+                .unwrap_or_else(|| panic!("no placement ending {suffix}"))
+        };
+        let wrapped = get("/type/body/measure/wrapped");
+        let elided = get("/type/body/measure/elided");
+
+        assert!(
+            !wrapped.paint.truncated,
+            "the wrapping node must show the whole string: {wrapped:?}"
+        );
+        assert!(
+            elided.paint.truncated,
+            "the one-line node must report that it cut the string: {elided:?}"
+        );
+        assert!(
+            wrapped.rect.h > elided.rect.h,
+            "wrapping must cost more height than eliding: wrapped {}, elided {}",
+            wrapped.rect.h,
+            elided.rect.h
+        );
+    }
+
     /// A `Spacer` with no constraints takes the cross axis as well as the
     /// main one.
     ///
     /// Pinned rather than fixed. `layout/leaf.rs` answers a spacer's measure
     /// with the offered extent on *both* axes, so a spacer in a horizontal
     /// row is as tall as the row can be — which is not what a reader coming
-    /// from SwiftUI expects, where `Spacer()` in an `HStack` contributes no
-    /// height. Changing it is a semantics decision in shipped, tested engine
-    /// code and is not this gallery's to make; recording it is.
+    /// from SwiftUI expects. Changing it is a semantics decision in shipped,
+    /// tested engine code and is not this gallery's to make; recording it is.
     #[test]
     fn an_unconstrained_spacer_claims_the_cross_axis_too() {
+        // Clamped tall on purpose. The question this test asks is what an
+        // unconstrained spacer does with the *cross* axis it is offered, so
+        // the row has to be offered a cross extent worth claiming — the page
+        // itself never offers one, because every vertical run on it is
+        // `FitContent` and a spacer's natural extent under an open probe is
+        // zero.
         let row = Gallery::row(
             "probe",
             sp("spacing.sm"),
+            Align::Start,
             vec![
-                Gallery::body("a", "left", "text.primary"),
+                gorgon_petra::component::text("a", "left"),
                 ViewNode::new(NodeKind::Spacer, "gap"),
-                Gallery::body("b", "right", "text.primary"),
+                gorgon_petra::component::text("b", "right"),
             ],
-        );
+        )
+        .with_constraints(Gallery::exact(gorgon_petra::geom::Axis::Vertical, 200.0));
         let (ctx, mut host) = host();
         host.app_mut().probe = Some(row);
         step(&ctx, &mut host, RawInput::default());
@@ -1464,162 +2271,91 @@ mod tests {
         let gap_h = find("/probe/gap");
         assert!(
             gap_h > text_h * 2.0,
-            "this test exists because the spacer is much taller than its text \
-             siblings; if it is not, the engine's spacer semantics changed and \
-             the gallery's `l-gap` clamp and its comment should go: \
-             gap {gap_h}, text {text_h}"
-        );
-    }
-
-    /// The wrapped and the elided string are the same text and behave
-    /// differently.
-    ///
-    /// Asserted through `PaintState::truncated` and the placed height rather
-    /// than by eye: the section is only worth having if the two nodes
-    /// actually diverge, and before the width clamp went in they did not.
-    #[test]
-    fn the_elided_text_truncates_and_the_wrapped_one_does_not() {
-        let (ctx, mut host) = host();
-        step(&ctx, &mut host, RawInput::default());
-
-        let frame = host.frame().expect("a frame");
-        let get = |suffix: &str| {
-            frame
-                .placements
-                .iter()
-                .find(|p| p.id.ends_with(suffix))
-                .unwrap_or_else(|| panic!("no placement ending {suffix}"))
-        };
-        let wrapped = get("/text/wrapped");
-        let elided = get("/text/elided");
-
-        assert!(
-            !wrapped.paint.truncated,
-            "the wrapping node must show the whole string: {wrapped:?}"
-        );
-        assert!(
-            elided.paint.truncated,
-            "the one-line node must report that it cut the string: {elided:?}"
-        );
-        assert!(
-            wrapped.rect.h > elided.rect.h,
-            "wrapping must cost more height than eliding: wrapped {}, elided {}",
-            wrapped.rect.h,
-            elided.rect.h
+            "this test exists because the spacer is much taller than its text siblings; \
+             if it is not, the engine's spacer semantics changed and the layout card's \
+             `gap` clamp and its comment should go: gap {gap_h}, text {text_h}"
         );
     }
 
     /// Nothing claims an absurd extent.
     ///
-    /// Written after the first capture showed a four-hundred-pixel hole in
+    /// Written after the first capture showed a four-hundred-unit hole in
     /// the middle of the page. A hole is invisible to every other assertion
     /// here — placements are placed, paint is complete, tokens resolve — so
     /// without this the harness would have called that frame clean.
+    ///
+    /// The bound is the *page's* own height, not the viewport's. The page
+    /// scrolls, so a column taller than the window is the normal state of a
+    /// gallery with eight cards in it and asserting against the viewport
+    /// only says "this window is small". Asserting against the page says the
+    /// thing that is actually a fault: nothing inside the page is bigger
+    /// than the page. The collection's own box is the one exemption, and it
+    /// is a real one — its extent is the whole store's, which is what the
+    /// scroll above it exists to move through.
     #[test]
     fn no_placement_claims_an_absurd_extent() {
-        let (ctx, mut host) = host();
-        step(&ctx, &mut host, RawInput::default());
-
+        let (_ctx, host) = settled(Presenter::new(dark()));
         let frame = host.frame().expect("a frame");
-        let viewport_h = frame.viewport.size.h;
+        let page_h = frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/page/root"))
+            .expect("the page content was placed")
+            .rect
+            .h;
         let mut tall: Vec<(String, f32)> = frame
             .placements
             .iter()
-            // Scroll *content* is allowed to dwarf the viewport — that is
-            // what the scroll above it exists to move through. Two things
-            // qualify: the collection's own box, which is the whole store's
-            // extent, and the page itself, which is as long as its sections
-            // need. Everything else is a layout fault.
             .filter(|p| !p.id.ends_with("/page/root") && !p.id.ends_with("/rows"))
             .map(|p| (p.id.clone(), p.rect.h))
-            .filter(|(_, h)| *h > viewport_h)
+            .filter(|(_, h)| *h > page_h)
             .collect();
         tall.sort_by(|a, b| b.1.total_cmp(&a.1));
         assert!(
             tall.is_empty(),
-            "these placements are taller than the whole {viewport_h}pt viewport: {tall:#?}"
-        );
-    }
-
-    /// The whole gallery lays out and paints with nothing left silent.
-    ///
-    /// This is the assertion the window cannot make for itself: a component
-    /// can look plausible on screen while the paint pass quietly failed to
-    /// account for it.
-    #[test]
-    fn every_component_places_and_paints_completely() {
-        let (ctx, mut host) = host();
-        step(&ctx, &mut host, RawInput::default());
-
-        let report = host.report().expect("a paint report");
-        assert!(report.is_complete(), "{report:?}");
-        assert!(!report.desynced, "{report:?}");
-        assert!(
-            report.unresolved_tokens.is_empty(),
-            "every token this gallery binds must exist in the shipped theme: {:?}",
-            report.unresolved_tokens
-        );
-        assert!(
-            report.unknown_slots.is_empty(),
-            "the gallery must not bind a slot the painter does not know: {:?}",
-            report.unknown_slots
-        );
-        assert_eq!(
-            report.blind_focus, 0,
-            "a focused node with no ring is a node a keyboard user cannot find: {report:?}"
-        );
-        assert!(
-            report.texts > 20,
-            "the gallery declares far more than twenty text runs; {} drawn means whole \
-             sections silently vanished",
-            report.texts
-        );
-    }
-
-    /// `Image` and `Custom` are the only two kinds without a painter, and the
-    /// gallery declares exactly one of each so the gap stays counted.
-    ///
-    /// If someone adds a painter for either, this test fails and tells them
-    /// to update the gallery's own claim about itself — which is the point.
-    #[test]
-    fn only_the_declared_undrawn_section_lacks_a_painter() {
-        let (ctx, mut host) = host();
-        step(&ctx, &mut host, RawInput::default());
-
-        let undrawn = &host.report().expect("a report").undrawn;
-        // Keyed by the content that had no painter, not by node id.
-        assert_eq!(
-            undrawn.len(),
-            2,
-            "expected exactly the image and the custom kind: {undrawn:?}"
-        );
-        // T081 makes an unresolvable image source name *itself* rather than
-        // reporting a bare kind, so an operator reading `undrawn` learns which
-        // source failed. The gallery declares one image, `gallery/logo`, and no
-        // `ImageSources` registry is wired here, so that is the name it lands as.
-        assert!(undrawn.contains("image:gallery/logo"), "{undrawn:?}");
-        assert!(
-            undrawn.contains(&format!("custom:{}", super::CUSTOM_KIND)),
-            "{undrawn:?}"
+            "these placements are taller than the whole {page_h}pt page: {tall:#?}"
         );
     }
 
     /// The collection claims a hundred thousand rows and places a window.
-    ///
-    /// Asserted as a bound on total placements rather than on the row count,
-    /// because the failure this guards against — virtualization silently
-    /// falling back to placing everything — shows up as a frame with a
-    /// hundred thousand placements in it.
     #[test]
     fn the_collection_places_a_window_not_the_whole_store() {
-        let (ctx, mut host) = host();
-        step(&ctx, &mut host, RawInput::default());
-
+        let (_ctx, host) = settled(Presenter::new(dark()));
         let placed = host.frame().expect("a frame").placements.len();
         assert!(
-            placed < 500,
-            "the whole gallery placed {placed} nodes against a store of {TOTAL_ROWS} rows; \
-             virtualization is not doing its job"
+            placed < 900,
+            "the whole gallery placed {placed} nodes against a store of {TOTAL_ROWS} \
+             rows; virtualization is not doing its job"
+        );
+    }
+
+    /// A click on a checkbox flips it, which is the difference between a
+    /// control and a picture of one.
+    #[test]
+    fn clicking_a_checkbox_flips_its_declared_state() {
+        let (ctx, mut host) = host();
+        step(&ctx, &mut host, RawInput::default());
+        let before = host.app().stopped;
+
+        let rect = host
+            .frame()
+            .expect("a frame")
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/checks/stopped"))
+            .expect("the checkbox was placed")
+            .rect;
+        step(
+            &ctx,
+            &mut host,
+            press_at(Pos2::new(rect.x + rect.w / 2.0, rect.y + rect.h / 2.0)),
+        );
+
+        assert_ne!(
+            host.app().stopped,
+            before,
+            "the press must have reached the checkbox: {}",
+            host.app().last_event
         );
     }
 
@@ -1681,9 +2417,16 @@ mod tests {
     }
 
     /// The inverse of the test above, so it cannot pass by dismissing on
-    /// every press: inside the popup, nothing closes.
+    /// every press: a press *inside* the popup is delivered to the popup and
+    /// reports no dismissal at all.
+    ///
+    /// The popup may well close afterwards — the press lands on one of its
+    /// items and this application closes the menu when an item is chosen,
+    /// which is what a menu is for. What must not happen is a *dismissal*:
+    /// `App::dismissed` is the engine telling the application that a press
+    /// landed outside a `DismissOutside` surface, and this press did not.
     #[test]
-    fn a_press_inside_the_dismiss_popup_closes_nothing() {
+    fn a_press_inside_the_dismiss_popup_reports_no_dismissal() {
         let (ctx, mut host) = host();
         host.app_mut().menu = true;
         step(&ctx, &mut host, RawInput::default());
@@ -1699,7 +2442,16 @@ mod tests {
         let inside = Pos2::new(menu.x + menu.w / 2.0, menu.y + menu.h / 2.0);
 
         step(&ctx, &mut host, press_at(inside));
-        assert_eq!(host.app().dismissals, 0);
-        assert!(host.app().menu, "a press inside must not close it");
+        assert_eq!(
+            host.app().dismissals,
+            0,
+            "a press inside the surface is not a dismissal: {}",
+            host.app().last_event
+        );
+        assert!(
+            host.app().last_event.contains("/menu/"),
+            "the press must have been routed into the popup, not dropped: {}",
+            host.app().last_event
+        );
     }
 }
