@@ -21,28 +21,32 @@ use crate::layout::{
     TextMeasurement, TextRequest,
 };
 use crate::token::{
-    DesignToken, Theme, ThemeSnapshot, TokenKind, TokenName, TokenValue, light, standard_vocabulary,
+    DesignToken, Theme, ThemeSnapshot, TokenKind, TokenName, TokenValue, Vocabulary, light,
+    standard_vocabulary,
 };
 use crate::tree::{
     InsetRefs, Key, NodeKind, Props, Registry, TextWrap, ValidatedTree, ViewNode, validate,
 };
 
-/// Accept `tree` against an empty [`Registry`] and mint the token
-/// [`crate::frame::petrify`] requires, panicking with the named violations if
-/// it does not validate.
+/// Accept `tree` against [`extended_vocabulary`]`(tree)` — the shipped
+/// vocabulary plus this tree's own [`gap_token`] spacings — and mint the
+/// token [`crate::frame::petrify`] requires, panicking with the named
+/// violations if it does not validate.
 ///
 /// This is the one helper every test and bench in the workspace mints a
 /// [`ValidatedTree`] through, rather than each of dozens of call sites
 /// repeating its own `validate(...).expect("valid")` — see the project's
 /// util rule. Reach for [`validated_with`] instead when the tree under test
-/// declares a custom kind or a transition name that a real registry would
-/// need to know about.
+/// declares a custom kind or a transition name a real registry would need to
+/// know about, or when it references tokens outside the shipped vocabulary
+/// and the fixture gap scale — [`extended_vocabulary`] documents exactly what
+/// this function does and does not cover.
 ///
 /// # Panics
 /// Panics naming the violations when `tree` does not accept.
 #[must_use]
 pub fn validated(tree: &ViewNode) -> ValidatedTree<'_> {
-    validated_with(tree, &Registry::new())
+    validated_with(tree, &Registry::with_vocabulary(extended_vocabulary(tree)))
 }
 
 /// [`validated`], against a caller-supplied [`Registry`] rather than an empty
@@ -151,6 +155,73 @@ pub fn gap_insets(insets: Insets) -> InsetRefs {
         bottom: gap(insets.bottom),
         left: gap(insets.left),
     }
+}
+
+/// Every spacing-shaped token name `tree` declares: `spacing`,
+/// `column_spacing`, `row_spacing`, and every edge of `padding`, walked over
+/// the whole tree.
+///
+/// Shared by [`Harness::bind_tree_gaps`] (which extends a *theme* with these
+/// names) and [`extended_vocabulary`] (which extends a *vocabulary* with
+/// them) — one walk, so the two can never drift into declaring a different
+/// set of names than the one a tree actually references.
+fn spacing_refs(node: &ViewNode, out: &mut Vec<TokenName>) {
+    let padding = node
+        .props
+        .padding
+        .iter()
+        .flat_map(|refs| [&refs.top, &refs.right, &refs.bottom, &refs.left].into_iter());
+    for name in [
+        &node.props.spacing,
+        &node.props.column_spacing,
+        &node.props.row_spacing,
+    ]
+    .into_iter()
+    .chain(padding)
+    .flatten()
+    {
+        out.push(name.clone());
+    }
+    for child in &node.children {
+        spacing_refs(child, out);
+    }
+}
+
+/// The vocabulary [`validated`] and [`validated_with`]'s callers implicitly
+/// build a theme against: [`standard_vocabulary`], the whole-unit fixture
+/// gap scale ([`gap_token`], `0..=`[`MAX_PREBOUND_GAP`] — the same range
+/// [`fixture_theme`] pre-binds), and every [`gap_token`]-shaped name `tree`
+/// itself declares outside that range ([`gap_units`] recognises the shape;
+/// anything else is left alone).
+///
+/// This is one vocabulary, not a second, looser rule set for fixtures (C18):
+/// a fixture that names a token neither shipped nor a [`gap_token`] spelling
+/// is refused exactly as it would be under a host's real vocabulary — the
+/// only names this function adds are ones [`gap_token`] itself would have
+/// produced, each declared at the one kind [`gap_token`] ever means,
+/// [`TokenKind::Spacing`]. A fixture that invents an arbitrary spacing name
+/// through [`Harness::bind_spacings`] rather than [`gap_token`] is not
+/// covered — those names are for the layout-module white-box tests that
+/// call `measure`/`place` directly and never pass through [`validate`] at
+/// all; a fixture that does validate should spell its gaps with
+/// [`gap_token`].
+#[must_use]
+pub fn extended_vocabulary(tree: &ViewNode) -> Vocabulary {
+    let mut vocab = standard_vocabulary();
+    for units in 0..=MAX_PREBOUND_GAP {
+        vocab.declare(DesignToken::new(
+            gap_token(units as f32),
+            TokenKind::Spacing,
+        ));
+    }
+    let mut declared = Vec::new();
+    spacing_refs(tree, &mut declared);
+    for name in declared {
+        if gap_units(&name).is_some() {
+            vocab.declare(DesignToken::new(name, TokenKind::Spacing));
+        }
+    }
+    vocab
 }
 
 /// The theme every [`Harness`] starts on: the shipped light theme, plus one
@@ -434,14 +505,11 @@ impl<C: ContentMeasure, R: RowSource> Harness<C, R> {
     /// theme is not complete — both are bugs in the fixture, not conditions
     /// to recover from.
     pub fn bind_spacings(&mut self, extra: &[(&str, f32)]) {
-        let mut vocab = standard_vocabulary();
         let mut values = self.theme.theme().values().clone();
         // Whatever the current theme already assigns, at the kind it assigns
         // it: that is what keeps earlier bindings (and a swapped-in theme's
         // own extras) declared rather than dropped on the next build.
-        for (name, value) in &values {
-            vocab.declare(DesignToken::new(name.clone(), value.kind()));
-        }
+        let mut vocab = Vocabulary::from_theme(self.theme.theme());
         for (raw, units) in extra {
             let name = TokenName::new(*raw)
                 .unwrap_or_else(|err| panic!("fixture spacing name {raw:?}: {err}"));
@@ -470,29 +538,8 @@ impl<C: ContentMeasure, R: RowSource> Harness<C, R> {
     /// If the resulting theme is not complete, which would be a bug here
     /// rather than in the fixture.
     pub fn bind_tree_gaps(&mut self, tree: &ViewNode) {
-        fn walk(node: &ViewNode, out: &mut Vec<TokenName>) {
-            let padding =
-                node.props.padding.iter().flat_map(|refs| {
-                    [&refs.top, &refs.right, &refs.bottom, &refs.left].into_iter()
-                });
-            for name in [
-                &node.props.spacing,
-                &node.props.column_spacing,
-                &node.props.row_spacing,
-            ]
-            .into_iter()
-            .chain(padding)
-            .flatten()
-            {
-                out.push(name.clone());
-            }
-            for child in &node.children {
-                walk(child, out);
-            }
-        }
-
         let mut declared = Vec::new();
-        walk(tree, &mut declared);
+        spacing_refs(tree, &mut declared);
         let wanted: Vec<(String, f32)> = declared
             .into_iter()
             .filter(|name| self.theme.value(name).is_none())
@@ -610,5 +657,60 @@ mod tests {
         let ctx = h.ctx();
         assert_eq!(ctx.state.scroll_offset("/list"), 40.0);
         assert_eq!(ctx.theme_rev, 1);
+    }
+}
+
+#[cfg(test)]
+mod escape_hatch {
+    use super::{extended_vocabulary, gap, gap_token};
+    use crate::token::TokenName;
+    use crate::tree::{NodeKind, Props, Registry, ViewNode, validate};
+
+    /// The fixture harness widens the vocabulary so a generated tree can spell
+    /// its own gaps ([`gap_token`]), and that widening is the one thing that
+    /// could quietly turn every fixture in the workspace into a proof of
+    /// nothing. So it is deliberately narrow: [`extended_vocabulary`] declares
+    /// only names `gap_token` itself would have produced. A fixture that
+    /// invents any other name is refused exactly like production code is.
+    ///
+    /// This is true by construction today — `extended_vocabulary` filters on
+    /// `gap_units(&name).is_some()`. The test exists because "by construction"
+    /// stays true only until somebody edits the construction.
+    #[test]
+    fn the_fixture_vocabulary_is_not_an_escape_hatch() {
+        let minted = gap_token(9.0);
+        let invented = TokenName::new("spacing.whatever").expect("well-formed, just undeclared");
+
+        for (name, must_be_accepted) in [(minted, true), (invented, false)] {
+            let tree = ViewNode::new(NodeKind::Stack, "root").with_props(Props {
+                spacing: Some(name.clone()),
+                ..Props::default()
+            });
+            let registry = Registry::with_vocabulary(extended_vocabulary(&tree));
+            let accepted = validate(&tree, &registry).is_ok();
+            assert_eq!(
+                accepted, must_be_accepted,
+                "`{name}` acceptance under the fixture vocabulary"
+            );
+        }
+    }
+
+    /// The gap the harness mints is a *spacing* token, so naming it in a
+    /// styling slot of another kind is still a kind mismatch. Widening the
+    /// vocabulary must not widen what a name may be used for.
+    #[test]
+    fn a_minted_gap_is_still_only_a_spacing_token() {
+        let tree = ViewNode::new(NodeKind::Stack, "root").with_props(Props {
+            spacing: gap(9.0),
+            style: Some(gap_token(9.0)),
+            ..Props::default()
+        });
+        let registry = Registry::with_vocabulary(extended_vocabulary(&tree));
+        let err =
+            validate(&tree, &registry).expect_err("a spacing token is not a typography token");
+        assert!(
+            err.to_string().contains("props.style"),
+            "the refusal must name the offending parameter, got: {err}"
+        );
     }
 }

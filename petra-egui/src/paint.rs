@@ -814,25 +814,31 @@ mod tests {
         assert!(report.undrawn.is_empty(), "{report:?}");
     }
 
-    /// A token the theme does not define is reported, not silently skipped and
-    /// not guessed at.
+    /// A token neither shipped nor declared to the registry used to reach
+    /// paint and come back as `report.unresolved_tokens` — this test's
+    /// assertion, before `gorgon-petra`'s tree-acceptance vocabulary check
+    /// (FR-056, contract C5) existed. It cannot any more: `frame_of` mints
+    /// its `ValidatedTree` through `gorgon_petra::testing::validated`, which
+    /// now refuses a tree naming an undeclared token before paint ever sees
+    /// it (`tree::validate::Violation::UnknownTokenRef`) — so the scenario
+    /// this test used to construct is unreachable through the front door,
+    /// the same way an out-of-vocabulary spacing name can no longer reach
+    /// `props::resolve_spacing`'s `panic!`. `PaintReport::unresolved_tokens`
+    /// stays as the same kind of defense-in-depth that panic is, and is
+    /// still exercised where it is still reachable — a themed snapshot
+    /// legitimately missing a *focus-ring* value, below — but the case this
+    /// test named is now provable at the earlier boundary, and that is what
+    /// it proves instead.
     #[test]
-    fn an_unresolved_token_is_named() {
-        let host = Headless::new();
+    fn an_undeclared_token_is_refused_before_paint_ever_sees_it() {
         let mut props = Props::default();
         props
             .tokens
             .insert("background".into(), tok("surface.invented"));
         let node = ViewNode::new(NodeKind::Stack, "root").with_props(props);
-        let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
-        let frame = frame_of(&node, &mut h);
-        let mut shaper = host.shaper();
-        let report = paint_frame(&host.painter(), &frame, &mut shaper, &snapshot());
-        assert_eq!(report.fills, 0);
-        assert!(
-            report.unresolved_tokens.contains("surface.invented"),
-            "{report:?}"
-        );
+        let errors = gorgon_petra::tree::validate(&node, &gorgon_petra::tree::Registry::new())
+            .expect_err("surface.invented is not declared to any vocabulary");
+        assert!(errors.to_string().contains("surface.invented"), "{errors}");
     }
 
     /// Content this crate cannot draw yet is named rather than left as an

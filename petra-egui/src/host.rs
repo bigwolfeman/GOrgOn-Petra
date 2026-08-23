@@ -33,7 +33,7 @@ use gorgon_petra::layout::overlay_surface::surface_scopes;
 use gorgon_petra::layout::{
     ChangeSet, LayoutCtx, LayoutState, MeasureCache, RowSource, ScrollStack,
 };
-use gorgon_petra::token::{Presenter, TokenName};
+use gorgon_petra::token::{Presenter, TokenName, Vocabulary, standard_vocabulary};
 use gorgon_petra::tree::{InputPolicy, Interaction, NodeKind, Props, Registry, ViewNode, validate};
 
 use crate::image::ImageSources;
@@ -116,6 +116,17 @@ pub struct Host<A: App> {
 impl<A: App> Host<A> {
     /// A host over `app`, using `ctx` for fonts and `presenter` for the theme.
     pub fn new(ctx: &Context, app: A, presenter: Presenter) -> Self {
+        // The registry that accepts a tree and the theme that resolves it
+        // must agree about what token names exist (contract C6): a `Host`
+        // has a theme from the moment it is built (`presenter`), so its
+        // registry starts with that theme's own vocabulary rather than an
+        // empty one an application would otherwise have no way to populate
+        // for the names this crate's own shipped views need
+        // (`refusal_view`'s `surface.base`/`status.down` among them). An
+        // application still reaches `registry_mut().vocabulary_mut()` to
+        // declare anything its own trees need beyond the presenter's theme.
+        let registry =
+            Registry::with_vocabulary(Vocabulary::from_theme(presenter.current().theme()));
         Self {
             app,
             shaper: GalleyShaper::new(ctx.clone()),
@@ -124,7 +135,7 @@ impl<A: App> Host<A> {
             counter: FrameCounter::new(),
             state: LayoutState::default(),
             presenter,
-            registry: Registry::new(),
+            registry,
             painters: CustomPainters::new(),
             images: ImageSources::new(),
             last_frame: None,
@@ -268,10 +279,21 @@ impl<A: App> Host<A> {
             // report violations would be this crate's own bug, and the
             // `expect` says so by name rather than laying out a tree nothing
             // ever accepted.
+            //
+            // Validated against the shipped vocabulary, not `self.registry`:
+            // `refusal_view` references this crate's own shipped names
+            // (`surface.base`, `status.down`), and an application's registry
+            // is under no obligation to have declared them — its vocabulary
+            // is its own design system, which may not ship either name. The
+            // fallback view this crate paints when *that* vocabulary refuses
+            // a tree must not itself depend on it.
             Err(errors) => {
                 refusal_tree = refusal_view(&errors.to_string());
-                validate(&refusal_tree, &self.registry)
-                    .expect("gorgon-petra-egui's own refusal_view must validate")
+                validate(
+                    &refusal_tree,
+                    &Registry::with_vocabulary(standard_vocabulary()),
+                )
+                .expect("gorgon-petra-egui's own refusal_view must validate")
             }
         };
 
@@ -1248,7 +1270,18 @@ mod tests {
     #[test]
     fn the_refusal_view_is_a_well_formed_tree() {
         let view = refusal_view("boom");
-        assert!(gorgon_petra::tree::validate(&view, &gorgon_petra::tree::Registry::new()).is_ok());
+        // The same registry `pass` validates it against (above): the
+        // shipped vocabulary, not an empty one — `refusal_view` names this
+        // crate's own shipped tokens, never an application's.
+        assert!(
+            gorgon_petra::tree::validate(
+                &view,
+                &gorgon_petra::tree::Registry::with_vocabulary(
+                    gorgon_petra::token::standard_vocabulary()
+                )
+            )
+            .is_ok()
+        );
         assert_eq!(petra_layer(), petra_layer());
     }
 }

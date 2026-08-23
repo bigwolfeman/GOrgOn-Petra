@@ -56,7 +56,9 @@ use gorgon_petra::frame::{
 };
 use gorgon_petra::geom::{Align, Axis, Rect, Scale, Size};
 use gorgon_petra::layout::LayoutState;
-use gorgon_petra::testing::{GeneratedRows, Harness, MonoContent, gap, validated};
+use gorgon_petra::testing::{
+    GeneratedRows, Harness, MonoContent, extended_vocabulary, gap, validated,
+};
 use gorgon_petra::token::{ThemeMode, ThemeSnapshot};
 use gorgon_petra::tree::{
     Anchor, AxisConstraint, ClampRule, Constraints, GridSpan, Key, KeyPath, Layer, NodeKind, Props,
@@ -895,7 +897,6 @@ fn check_overlay(where_: &str, placements: &[Placement], kids: &[usize]) {
 /// configuration. Scenario 3 is `the_same_configuration_petrifies_to_one_digest`.
 #[test]
 fn every_configuration_satisfies_the_negotiation_contract() {
-    let registry = Registry::new();
     let configs = matrix();
     assert_eq!(
         configs.len(),
@@ -904,6 +905,14 @@ fn every_configuration_satisfies_the_negotiation_contract() {
     );
     for cfg in &configs {
         let tree = panel(cfg);
+        // The fixture spells its gaps with `testing::gap`, which mints a name
+        // encoding the extent (`spacing.9units`). Those names are real token
+        // references and are checked against a vocabulary like any other, so
+        // the registry has to carry the same extended vocabulary the harness
+        // builds — a bare `Registry::new()` declares nothing and refuses every
+        // gap in the matrix. `validate` is called directly rather than through
+        // `testing::validated` only so a refusal can name the configuration.
+        let registry = Registry::with_vocabulary(extended_vocabulary(&tree));
         validate(&tree, &registry).unwrap_or_else(|errors| {
             panic!("{}: the fixture is not a legal tree: {errors}", cfg.label())
         });

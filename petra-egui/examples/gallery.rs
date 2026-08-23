@@ -1417,7 +1417,9 @@ mod tests {
     #[test]
     fn the_gallery_tree_is_accepted() {
         let tree = Gallery::default().view();
-        let mut registry = gorgon_petra::tree::Registry::new();
+        let mut registry = gorgon_petra::tree::Registry::with_vocabulary(
+            gorgon_petra::token::standard_vocabulary(),
+        );
         registry.register_custom_kind(super::CUSTOM_KIND);
         if let Err(errors) = gorgon_petra::tree::validate(&tree, &registry) {
             panic!("the gallery's own tree is not acceptable: {errors}");

@@ -20,15 +20,18 @@
 use gorgon_petra::frame::{FrameDigest, PetrifiedFrame, TransitionActivity, Viewport, petrify};
 use gorgon_petra::geom::Size;
 use gorgon_petra::testing::{Harness, validated_with};
-use gorgon_petra::token::{ThemeMode, TokenName};
+use gorgon_petra::token::{ThemeMode, TokenName, standard_vocabulary};
 use gorgon_petra::tree::{Interaction, NodeKind, Props, Registry, Role, TextWrap, ViewNode};
 
-/// Every custom kind name a tree in this file declares. The digest tests
-/// exercise custom-painter naming, not acceptance, so the registry has to
-/// know both names or `frame`/`dig` would refuse trees this file's own tests
+/// Every custom kind name a tree in this file declares, plus the shipped
+/// vocabulary every token reference in this file's trees is drawn from
+/// (`surface.base`, `surface.raised`, `typography.heading`, …). The digest
+/// tests exercise custom-painter naming and token-driven digest changes, not
+/// acceptance, so the registry has to know both custom kinds and the real
+/// token names or `frame`/`dig` would refuse trees this file's own tests
 /// build on purpose.
 fn registry() -> Registry {
-    let mut registry = Registry::new();
+    let mut registry = Registry::with_vocabulary(standard_vocabulary());
     registry.register_custom_kind("sparkline");
     registry.register_custom_kind("gauge");
     registry

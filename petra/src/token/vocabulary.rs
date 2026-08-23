@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 
 use crate::token::name::TokenName;
 use crate::token::status::StatusToken;
+use crate::token::theme::Theme;
 use crate::token::value::TokenKind;
 
 /// One entry in the vocabulary: a semantic name and the value shape it must
@@ -94,6 +95,22 @@ impl Vocabulary {
         self.tokens.keys()
     }
 
+    /// Declared names of exactly `kind`, in a stable (sorted) order.
+    ///
+    /// This is the "legal set" `tree::validate::Violation::UnknownTokenRef`
+    /// and `TokenKindMismatch` (FR-056) name in their message: the answer to
+    /// "what could this prop have said instead" is never the whole
+    /// vocabulary, because a spacing prop was never going to accept a colour
+    /// name — it is the subset that shares the slot's own shape.
+    #[must_use]
+    pub fn names_of_kind(&self, kind: TokenKind) -> Vec<&TokenName> {
+        self.tokens
+            .iter()
+            .filter(move |(_, k)| **k == kind)
+            .map(|(name, _)| name)
+            .collect()
+    }
+
     /// All declared status entries, in a stable (sorted-by-name) order.
     pub fn statuses(&self) -> impl Iterator<Item = &StatusToken> {
         self.statuses.values()
@@ -103,6 +120,26 @@ impl Vocabulary {
     #[must_use]
     pub fn len(&self) -> usize {
         self.tokens.len()
+    }
+
+    /// The vocabulary `theme` was proved complete against, reconstructed
+    /// from what it actually assigns.
+    ///
+    /// [`Theme::build`] already proves `theme` assigns a value, at a
+    /// consistent kind, to every name in *some* vocabulary — this is that
+    /// vocabulary, read back off the theme rather than kept as a second,
+    /// hand-written copy that could drift from it. The motivating caller is
+    /// a host wiring up a [`crate::tree::validate::Registry`] from the theme
+    /// it already has: the registry that accepts a tree and the theme that
+    /// resolves it should start in agreement about what exists, and this is
+    /// how they do, with nothing to keep in sync by hand.
+    #[must_use]
+    pub fn from_theme(theme: &Theme) -> Self {
+        let mut vocab = Self::new();
+        for (name, value) in theme.values() {
+            vocab.declare(DesignToken::new(name.clone(), value.kind()));
+        }
+        vocab
     }
 
     /// Whether no tokens are declared.
@@ -136,5 +173,60 @@ mod tests {
         vocab.declare(DesignToken::new(name.clone(), TokenKind::Color));
         assert!(vocab.contains(&name));
         assert!(vocab.status(&name).is_none());
+    }
+
+    /// The legal set for one kind excludes every other kind, and comes back
+    /// sorted — the same order `names()` already promises.
+    #[test]
+    fn names_of_kind_is_scoped_and_sorted() {
+        let mut vocab = Vocabulary::new();
+        vocab
+            .declare(DesignToken::new(
+                TokenName::new("spacing.md").unwrap(),
+                TokenKind::Spacing,
+            ))
+            .declare(DesignToken::new(
+                TokenName::new("spacing.2xs").unwrap(),
+                TokenKind::Spacing,
+            ))
+            .declare(DesignToken::new(
+                TokenName::new("surface.raised").unwrap(),
+                TokenKind::Color,
+            ));
+        let spacing = vocab.names_of_kind(TokenKind::Spacing);
+        assert_eq!(
+            spacing,
+            vec![
+                &TokenName::new("spacing.2xs").unwrap(),
+                &TokenName::new("spacing.md").unwrap(),
+            ],
+            "a colour token must not leak into the spacing legal set"
+        );
+        assert_eq!(vocab.names_of_kind(TokenKind::Motion).len(), 0);
+    }
+
+    /// The vocabulary read back off a theme accepts exactly the trees the
+    /// vocabulary that built the theme would have — same names, same kinds
+    /// — which is the round trip a host relies on when it wires a
+    /// `Registry` from a theme it already has.
+    #[test]
+    fn from_theme_reconstructs_the_vocabulary_the_theme_was_built_against() {
+        let original = crate::token::standard_vocabulary();
+        let theme = crate::token::Theme::build(
+            crate::token::ThemeMode::Light,
+            &original,
+            crate::token::light().values().clone(),
+        )
+        .expect("the shipped light theme is complete");
+
+        let reconstructed = Vocabulary::from_theme(&theme);
+        assert_eq!(reconstructed.len(), original.len());
+        for name in original.names() {
+            assert_eq!(
+                reconstructed.kind_of(name),
+                original.kind_of(name),
+                "{name} must round-trip at the same kind"
+            );
+        }
     }
 }

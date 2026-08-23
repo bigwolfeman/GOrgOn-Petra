@@ -16,6 +16,7 @@ pub mod invariant;
 
 pub mod anim;
 pub mod cache;
+pub mod component;
 pub mod focus;
 pub mod frame;
 pub mod geom;

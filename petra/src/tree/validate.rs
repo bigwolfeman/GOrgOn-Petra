@@ -9,24 +9,49 @@ use std::collections::{BTreeSet, HashSet};
 use std::fmt;
 
 use crate::geom::Axis;
+use crate::token::{TokenKind, TokenName, Vocabulary};
 use crate::tree::key::{Key, KeyPath};
 use crate::tree::node::{NodeKind, Role, ViewNode};
 use crate::tree::props::{ScrollProps, TrackSize, max_row_tracks};
 
-/// Names the host has registered: custom node kinds and transition
-/// definitions. Both are populated by the host before the first tree is
-/// accepted; an unregistered reference is a violation, never a fallback.
+/// Names the host has registered: custom node kinds, transition
+/// definitions, and the design-token vocabulary. All three are populated by
+/// the host before the first tree is accepted; an unregistered reference is
+/// a violation, never a fallback.
+///
+/// The vocabulary is theme-independent (C6): it is the set of names a theme
+/// must resolve, not a resolved theme itself, so `validate` never takes a
+/// `ThemeSnapshot` — a tree accepted against this registry is accepted
+/// under every theme built complete against the same vocabulary
+/// (`token::Theme::build`).
 #[derive(Clone, Debug, Default)]
 pub struct Registry {
     custom_kinds: BTreeSet<String>,
     transitions: BTreeSet<String>,
+    vocabulary: Vocabulary,
 }
 
 impl Registry {
-    /// An empty registry.
+    /// An empty registry: no custom kinds, no transitions, and no declared
+    /// token vocabulary — so every styling token reference in a tree
+    /// validated against it is refused as unknown. A host wires up its real
+    /// vocabulary through [`Registry::with_vocabulary`]; this constructor is
+    /// for the cases upstream of that (or for a tree that references no
+    /// tokens at all).
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A registry seeded with `vocabulary`, with no custom kinds or
+    /// transitions registered yet — chain [`Registry::register_custom_kind`]
+    /// and [`Registry::register_transition`] as needed.
+    #[must_use]
+    pub fn with_vocabulary(vocabulary: Vocabulary) -> Self {
+        Self {
+            vocabulary,
+            ..Self::default()
+        }
     }
 
     /// Register a custom node kind name.
@@ -61,6 +86,22 @@ impl Registry {
     #[must_use]
     pub fn transitions(&self) -> Vec<&str> {
         self.transitions.iter().map(String::as_str).collect()
+    }
+
+    /// The declared token vocabulary this registry validates styling
+    /// references against.
+    #[must_use]
+    pub fn vocabulary(&self) -> &Vocabulary {
+        &self.vocabulary
+    }
+
+    /// The vocabulary, mutably — for a host that builds its `Registry` once
+    /// (through, say, a UI toolkit's own constructor) and declares its
+    /// tokens afterward, the same way [`Registry::register_custom_kind`] and
+    /// [`Registry::register_transition`] are called after construction
+    /// rather than threaded through it.
+    pub fn vocabulary_mut(&mut self) -> &mut Vocabulary {
+        &mut self.vocabulary
     }
 }
 
@@ -195,6 +236,73 @@ pub enum Violation {
         /// The parent's kind, or `None` when the node is the root.
         parent: Option<NodeKind>,
     },
+    /// A styling prop names a token the vocabulary does not declare at all
+    /// (FR-056): unknown, misspelled, or simply never registered.
+    ///
+    /// Never falls back to a default and never renders — the only outcomes
+    /// for a node carrying this violation are refusal here, at tree
+    /// acceptance, before any theme or layout pass sees the name.
+    UnknownTokenRef {
+        /// The `props` field the name was given to (`"spacing"`,
+        /// `"padding.top"`, `"tokens.background"`, …).
+        prop: String,
+        /// The offending name, exactly as declared.
+        name: TokenName,
+        /// The names that *would* have been legal here: every vocabulary
+        /// entry of the kind this prop expects, not the whole vocabulary —
+        /// a spacing prop was never going to accept a colour name, so
+        /// listing one would not help the author find the fix.
+        legal: Vec<TokenName>,
+    },
+    /// A styling prop names a token the vocabulary declares, but at a
+    /// [`TokenKind`] this prop does not accept — `spacing` naming a token
+    /// declared [`TokenKind::Color`], for instance.
+    ///
+    /// Distinct from [`Violation::UnknownTokenRef`] because the fix is
+    /// different: the name is not a typo, it is a real token that belongs to
+    /// a different slot.
+    TokenKindMismatch {
+        /// The `props` field the name was given to.
+        prop: String,
+        /// The offending name.
+        name: TokenName,
+        /// The kind this prop's slot requires.
+        expected: TokenKind,
+        /// The kind the vocabulary actually declares `name` at.
+        found: TokenKind,
+        /// Every vocabulary entry actually declared at `expected` — the
+        /// legal set for this slot.
+        legal: Vec<TokenName>,
+    },
+}
+
+/// A [`TokenKind`] rendered the way a refusal message names it. Not
+/// [`std::fmt::Display`] on [`TokenKind`] itself: that type lives in
+/// `token::value`, which this module does not own, and the wording here is
+/// specific to how a violation names a kind mismatch.
+fn kind_word(kind: TokenKind) -> &'static str {
+    match kind {
+        TokenKind::Color => "color",
+        TokenKind::Spacing => "spacing",
+        TokenKind::Typography => "typography",
+        TokenKind::Motion => "motion",
+        TokenKind::Shape => "shape",
+    }
+}
+
+/// `legal`, rendered as the message body names it: `[a, b, c]`, or
+/// `[none declared]` for a vocabulary that declares nothing of the kind a
+/// prop needed — which is itself informative, not a blank the author has to
+/// wonder about.
+fn legal_set(legal: &[TokenName]) -> String {
+    if legal.is_empty() {
+        return "none declared".to_owned();
+    }
+    legal
+        .iter()
+        .map(TokenName::as_str)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 impl fmt::Display for Violation {
@@ -302,6 +410,24 @@ impl fmt::Display for Violation {
                     "declares props.span but is the root, so it has no grid to be seated in; the declaration would be ignored"
                 ),
             },
+            Self::UnknownTokenRef { prop, name, legal } => write!(
+                f,
+                "props.{prop} names token `{name}`, which the vocabulary does not declare; legal: [{}]",
+                legal_set(legal)
+            ),
+            Self::TokenKindMismatch {
+                prop,
+                name,
+                expected,
+                found,
+                legal,
+            } => write!(
+                f,
+                "props.{prop} names token `{name}`, which is a {} token, but props.{prop} takes a {} token; legal: [{}]",
+                kind_word(*found),
+                kind_word(*expected),
+                legal_set(legal)
+            ),
         }
     }
 }
@@ -699,6 +825,105 @@ fn check_node(
     // is the proof, at the boundary where a literal could actually arrive —
     // parsing a wire payload — rather than at construction in Rust, where
     // the type system already makes it unrepresentable.
+
+    // FR-056: every styling token reference this node declares must name a
+    // vocabulary entry, and — for the props whose slot has one fixed shape —
+    // at the kind that slot requires. Checked unconditionally, independent
+    // of `node.kind`: a reference is either right or refused, the same way
+    // `opacity` above is range-checked whether or not this kind of node ever
+    // reads it. A field this kind does not use is usually caught by its own
+    // violation already (`PaddingOnLeafKind`, `ScrollParamOwnedByAncestor`);
+    // that a declaration is dead is a different fact from whether the name
+    // in it is real, and both are worth refusing.
+    let vocabulary = registry.vocabulary();
+    for (prop, expected, reference) in [
+        ("spacing", TokenKind::Spacing, &node.props.spacing),
+        (
+            "column_spacing",
+            TokenKind::Spacing,
+            &node.props.column_spacing,
+        ),
+        ("row_spacing", TokenKind::Spacing, &node.props.row_spacing),
+        ("style", TokenKind::Typography, &node.props.style),
+    ] {
+        if let Some(name) = reference {
+            check_token_ref(vocabulary, prop, name, expected, &mut push);
+        }
+    }
+    if let Some(refs) = &node.props.padding {
+        for (prop, reference) in [
+            ("padding.top", &refs.top),
+            ("padding.right", &refs.right),
+            ("padding.bottom", &refs.bottom),
+            ("padding.left", &refs.left),
+        ] {
+            if let Some(name) = reference {
+                check_token_ref(vocabulary, prop, name, TokenKind::Spacing, &mut push);
+            }
+        }
+    }
+    // `props.tokens`'s keys are paint slots, not design-token kinds
+    // (`tree::props`'s own doc comment on the field: the slot is "decided by
+    // the painter", e.g. `gorgon_petra_egui::paint::KNOWN_SLOTS`). This
+    // module does not — and must not — hardcode which slot wants which
+    // `TokenKind`: `radius` happens to pair with `TokenKind::Shape` today
+    // and `background`/`foreground`/`border` with `TokenKind::Color`, but a
+    // host can register a painter with slots this crate has never heard of,
+    // and a slot a *shipped* painter does not know yet (an invented name,
+    // proven live by
+    // `gorgon_petra_egui::paint::tests::a_genuinely_unknown_token_slot_is_recorded`)
+    // can legitimately carry a token of any kind — that mismatch is the
+    // painter's `unknown_slots` report to make, not tree acceptance's. So
+    // only existence is checked here: the name must be a real, declared
+    // token, whichever kind it was declared at.
+    for (slot, name) in &node.props.tokens {
+        match vocabulary.kind_of(name) {
+            Some(_) => {}
+            None => push(Violation::UnknownTokenRef {
+                prop: format!("tokens.{slot}"),
+                name: name.clone(),
+                legal: vocabulary.names().cloned().collect(),
+            }),
+        }
+    }
+}
+
+/// One styling prop's declared token name against the vocabulary: refused if
+/// the name is not declared at all
+/// ([`Violation::UnknownTokenRef`]), refused if it is declared but at the
+/// wrong [`TokenKind`] for this prop's slot
+/// ([`Violation::TokenKindMismatch`]), otherwise silent. A name is one or the
+/// other, never both, so `push` is called at most once per reference.
+fn check_token_ref(
+    vocabulary: &Vocabulary,
+    prop: &str,
+    name: &TokenName,
+    expected: TokenKind,
+    push: &mut impl FnMut(Violation),
+) {
+    match vocabulary.kind_of(name) {
+        None => push(Violation::UnknownTokenRef {
+            prop: prop.to_owned(),
+            name: name.clone(),
+            legal: vocabulary
+                .names_of_kind(expected)
+                .into_iter()
+                .cloned()
+                .collect(),
+        }),
+        Some(found) if found != expected => push(Violation::TokenKindMismatch {
+            prop: prop.to_owned(),
+            name: name.clone(),
+            expected,
+            found,
+            legal: vocabulary
+                .names_of_kind(expected)
+                .into_iter()
+                .cloned()
+                .collect(),
+        }),
+        Some(_) => {}
+    }
 }
 
 #[cfg(test)]
@@ -706,11 +931,25 @@ mod tests {
     use super::{Registry, TreeError, Violation, validate};
     use crate::geom::Axis;
     use crate::testing::gap_token;
+    use crate::token::{DesignToken, TokenKind, TokenName, Vocabulary, light, standard_vocabulary};
     use crate::tree::node::{Interaction, NodeKind, Role, Semantics, ViewNode};
     use crate::tree::props::{Anchor, Edge, GridSpan, InsetRefs, Layer, Props, TrackSize};
 
     fn stack(key: &str) -> ViewNode {
         ViewNode::new(NodeKind::Stack, key)
+    }
+
+    /// A registry whose vocabulary declares exactly the two fixture gaps the
+    /// padding tests below reference (`gap_token(4.0)`, `gap_token(8.0)`),
+    /// each at [`TokenKind::Spacing`] — just enough for those tests to stay
+    /// about padding placement, not about the token vocabulary FR-056 checks
+    /// against.
+    fn spacing_registry() -> Registry {
+        let mut vocab = Vocabulary::new();
+        for units in [4.0, 8.0] {
+            vocab.declare(DesignToken::new(gap_token(units), TokenKind::Spacing));
+        }
+        Registry::with_vocabulary(vocab)
     }
 
     /// A `collection` that declares nothing about scrolling, for the
@@ -1056,7 +1295,7 @@ mod tests {
             padding: Some(InsetRefs::all(gap_token(4.0))),
             ..Props::default()
         });
-        let err = validate(&node, &Registry::new()).unwrap_err();
+        let err = validate(&node, &spacing_registry()).unwrap_err();
         assert_eq!(err.len(), 1, "{err}");
         assert_eq!(err.as_slice()[0].path, "/t");
         assert_eq!(
@@ -1079,7 +1318,7 @@ mod tests {
             padding: Some(InsetRefs::symmetric(gap_token(4.0), gap_token(8.0))),
             ..Props::default()
         });
-        assert!(validate(&tree, &Registry::new()).is_ok());
+        assert!(validate(&tree, &spacing_registry()).is_ok());
     }
 
     #[test]
@@ -1309,14 +1548,16 @@ mod tests {
         }
 
         // A well-formed name still deserializes, and the tree it lands in
-        // still accepts — the stronger check does not refuse more than the
-        // old one did.
+        // still accepts — against a registry that actually declares it
+        // (FR-056: an *undeclared* well-formed name is refused too, which is
+        // exactly what the rest of this module's FR-056 tests cover — this
+        // one is about the deserialize boundary, not the vocabulary one).
         let json = r#"{"tokens":{"background":"surface.raised"}}"#;
         let props: Props = serde_json::from_str(json).expect("a real token name deserializes");
         assert!(
             validate(
                 &ViewNode::new(NodeKind::Text, "t").with_props(props),
-                &Registry::new()
+                &Registry::with_vocabulary(standard_vocabulary())
             )
             .is_ok()
         );
@@ -1432,5 +1673,300 @@ mod tests {
         assert_eq!(err.len(), 2);
         assert_eq!(err.as_slice()[0].path, "/root/a");
         assert_eq!(err.as_slice()[1].path, "/root/b");
+    }
+
+    // ---------------------------------------------------------- FR-056: the
+    // vocabulary. An unknown, misspelled, or ill-typed token reference is
+    // refused naming the value, the parameter, and the legal set — never a
+    // fallback, never a render.
+
+    /// The refusal names all three things FR-056 requires, proved on the
+    /// *rendered* message (gate B4-2b) rather than by reading the struct's
+    /// fields: a `Display` impl that forgot to print `legal` would still
+    /// pass a field-level assertion, and this is the test built to catch
+    /// exactly that.
+    #[test]
+    fn an_unknown_token_reference_names_value_parameter_and_legal_set() {
+        let mut vocab = Vocabulary::new();
+        vocab
+            .declare(DesignToken::new(
+                TokenName::new("spacing.md").unwrap(),
+                TokenKind::Spacing,
+            ))
+            .declare(DesignToken::new(
+                TokenName::new("spacing.sm").unwrap(),
+                TokenKind::Spacing,
+            ));
+        let tree = ViewNode::new(NodeKind::Stack, "root").with_props(Props {
+            spacing: Some(TokenName::new("spacing.bogus").unwrap()),
+            ..Props::default()
+        });
+        let err = validate(&tree, &Registry::with_vocabulary(vocab)).unwrap_err();
+        assert_eq!(err.len(), 1, "{err}");
+        assert_eq!(
+            err.as_slice()[0].violation,
+            Violation::UnknownTokenRef {
+                prop: "spacing".to_owned(),
+                name: TokenName::new("spacing.bogus").unwrap(),
+                legal: vec![
+                    TokenName::new("spacing.md").unwrap(),
+                    TokenName::new("spacing.sm").unwrap(),
+                ],
+            }
+        );
+        let message = err.to_string();
+        assert!(message.contains("spacing.bogus"), "the value: {message}");
+        assert!(
+            message.contains("props.spacing"),
+            "the parameter: {message}"
+        );
+        assert!(
+            message.contains("spacing.md") && message.contains("spacing.sm"),
+            "the legal set: {message}"
+        );
+    }
+
+    /// A name of the wrong *kind* for its slot is refused too — `spacing`
+    /// naming a token the vocabulary declares as [`TokenKind::Color`] — and
+    /// the message names both kinds plus the legal set for the one the slot
+    /// actually wanted, proved on the rendered message (B4-2b).
+    #[test]
+    fn a_token_declared_at_the_wrong_kind_is_refused_naming_both_kinds() {
+        let mut vocab = Vocabulary::new();
+        vocab
+            .declare(DesignToken::new(
+                TokenName::new("surface.raised").unwrap(),
+                TokenKind::Color,
+            ))
+            .declare(DesignToken::new(
+                TokenName::new("spacing.md").unwrap(),
+                TokenKind::Spacing,
+            ));
+        let tree = ViewNode::new(NodeKind::Stack, "root").with_props(Props {
+            spacing: Some(TokenName::new("surface.raised").unwrap()),
+            ..Props::default()
+        });
+        let err = validate(&tree, &Registry::with_vocabulary(vocab)).unwrap_err();
+        assert_eq!(err.len(), 1, "{err}");
+        assert_eq!(
+            err.as_slice()[0].violation,
+            Violation::TokenKindMismatch {
+                prop: "spacing".to_owned(),
+                name: TokenName::new("surface.raised").unwrap(),
+                expected: TokenKind::Spacing,
+                found: TokenKind::Color,
+                legal: vec![TokenName::new("spacing.md").unwrap()],
+            }
+        );
+        let message = err.to_string();
+        assert!(message.contains("surface.raised"), "the value: {message}");
+        assert!(
+            message.contains("props.spacing"),
+            "the parameter: {message}"
+        );
+        assert!(message.contains("color"), "the found kind: {message}");
+        assert!(message.contains("spacing.md"), "the legal set: {message}");
+    }
+
+    /// The same declared name is legal in one slot and refused in another —
+    /// `surface.raised` fits `tokens.background` (a [`TokenKind::Color`]
+    /// slot) but not `spacing` (a [`TokenKind::Spacing`] one). Fitness is a
+    /// property of the pairing, not of the name alone.
+    #[test]
+    fn a_name_legal_in_one_slot_is_refused_in_another() {
+        let mut vocab = Vocabulary::new();
+        vocab.declare(DesignToken::new(
+            TokenName::new("surface.raised").unwrap(),
+            TokenKind::Color,
+        ));
+        let registry = Registry::with_vocabulary(vocab);
+
+        let legal_slot = ViewNode::new(NodeKind::Stack, "root").with_props(Props {
+            tokens: [(
+                "background".to_owned(),
+                TokenName::new("surface.raised").unwrap(),
+            )]
+            .into_iter()
+            .collect(),
+            ..Props::default()
+        });
+        assert!(
+            validate(&legal_slot, &registry).is_ok(),
+            "surface.raised is a declared Color, and tokens.background \
+             checks existence only"
+        );
+
+        let wrong_slot = ViewNode::new(NodeKind::Stack, "root").with_props(Props {
+            spacing: Some(TokenName::new("surface.raised").unwrap()),
+            ..Props::default()
+        });
+        let err = validate(&wrong_slot, &registry).unwrap_err();
+        assert!(
+            matches!(
+                err.as_slice()[0].violation,
+                Violation::TokenKindMismatch { .. }
+            ),
+            "the same name is a Color, and spacing wants Spacing: {err}"
+        );
+    }
+
+    /// `props.tokens`'s value is checked for existence only, never for
+    /// kind — the map's keys are paint slots the painter defines
+    /// (`tree::props::Props::tokens`'s own doc comment names
+    /// `gorgon_petra_egui::paint::KNOWN_SLOTS`), and this module does not
+    /// know, and must not guess, which [`TokenKind`] a given slot wants. A
+    /// shape token under an invented slot name is exactly the case
+    /// `gorgon_petra_egui::paint::tests::a_genuinely_unknown_token_slot_is_recorded`
+    /// exercises downstream (a `shadow` slot the shipped painter does not
+    /// recognise, carrying `shape.corner-lg`), and it must still validate
+    /// here — the mismatch, if any, is the painter's `unknown_slots` report
+    /// to make, not tree acceptance's.
+    #[test]
+    fn a_tokens_map_entry_is_checked_for_existence_only_not_kind() {
+        let mut vocab = Vocabulary::new();
+        vocab.declare(DesignToken::new(
+            TokenName::new("shape.corner-lg").unwrap(),
+            TokenKind::Shape,
+        ));
+        let node = ViewNode::new(NodeKind::Text, "t").with_props(Props {
+            tokens: [(
+                "shadow".to_owned(),
+                TokenName::new("shape.corner-lg").unwrap(),
+            )]
+            .into_iter()
+            .collect(),
+            ..Props::default()
+        });
+        assert!(
+            validate(&node, &Registry::with_vocabulary(vocab)).is_ok(),
+            "a declared token under an unrecognised slot name is still a \
+             real, declared token"
+        );
+    }
+
+    /// The other half of the same coin: a `tokens` map entry naming
+    /// something the vocabulary does not declare at all is refused, exactly
+    /// like every other styling prop.
+    #[test]
+    fn an_unknown_tokens_map_entry_is_refused() {
+        let vocab = standard_vocabulary();
+        let node = ViewNode::new(NodeKind::Text, "t").with_props(Props {
+            tokens: [(
+                "background".to_owned(),
+                TokenName::new("surface.invented").unwrap(),
+            )]
+            .into_iter()
+            .collect(),
+            ..Props::default()
+        });
+        let err = validate(&node, &Registry::with_vocabulary(vocab.clone())).unwrap_err();
+        assert_eq!(err.len(), 1, "{err}");
+        assert_eq!(
+            err.as_slice()[0].violation,
+            Violation::UnknownTokenRef {
+                prop: "tokens.background".to_owned(),
+                name: TokenName::new("surface.invented").unwrap(),
+                legal: vocab.names().cloned().collect(),
+            }
+        );
+    }
+
+    /// C6/C5's totality guarantee, proved rather than left as a comment: for
+    /// any tree `validate` accepts, every token name it declared resolves
+    /// under a theme built complete against the same vocabulary
+    /// (`token::Theme::build`). `validate` refuses every name the vocabulary
+    /// does not declare; `Theme::build` refuses a theme that fails to assign
+    /// a value to any name the vocabulary *does* declare. The two proofs
+    /// meet in the middle, and this test is the meeting point: nothing an
+    /// accepted tree references is left unresolved, so `resolve_spacing`'s
+    /// `panic!` (`tree::props`) is never reached for a tree that passed
+    /// here.
+    #[test]
+    fn resolution_is_total_for_an_accepted_tree() {
+        let vocab = standard_vocabulary();
+        let theme = crate::token::Theme::build(
+            crate::token::ThemeMode::Light,
+            &vocab,
+            light().values().clone(),
+        )
+        .expect("the shipped light theme is complete against the shipped vocabulary");
+
+        let tree = ViewNode::new(NodeKind::Stack, "root")
+            .with_props(Props {
+                spacing: Some(TokenName::new("spacing.md").unwrap()),
+                padding: Some(InsetRefs::all(TokenName::new("spacing.sm").unwrap())),
+                tokens: [
+                    (
+                        "background".to_owned(),
+                        TokenName::new("surface.base").unwrap(),
+                    ),
+                    (
+                        "radius".to_owned(),
+                        TokenName::new("shape.corner-md").unwrap(),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+                ..Props::default()
+            })
+            .child(ViewNode::new(NodeKind::Text, "t").with_props(Props {
+                style: Some(TokenName::new("typography.body").unwrap()),
+                ..Props::default()
+            }));
+
+        assert!(validate(&tree, &Registry::with_vocabulary(vocab)).is_ok());
+
+        for name in [
+            "spacing.md",
+            "spacing.sm",
+            "surface.base",
+            "shape.corner-md",
+            "typography.body",
+        ] {
+            assert!(
+                theme.value(&TokenName::new(name).unwrap()).is_some(),
+                "{name} must resolve in a theme complete against the \
+                 vocabulary that accepted it"
+            );
+        }
+    }
+
+    /// `vocabulary_mut` lets a `Registry` built once declare tokens
+    /// afterward, the same way `register_custom_kind` already does for
+    /// custom kinds — the accessor a host actually has after construction is
+    /// `Registry::vocabulary_mut`, not a rebuild through `with_vocabulary`.
+    #[test]
+    fn vocabulary_mut_lets_a_registry_declare_tokens_after_construction() {
+        let mut registry = Registry::new();
+        registry.vocabulary_mut().declare(DesignToken::new(
+            TokenName::new("spacing.md").unwrap(),
+            TokenKind::Spacing,
+        ));
+        let tree = ViewNode::new(NodeKind::Stack, "root").with_props(Props {
+            spacing: Some(TokenName::new("spacing.md").unwrap()),
+            ..Props::default()
+        });
+        assert!(validate(&tree, &registry).is_ok());
+    }
+
+    /// FR-056: a refused reference never falls back to a default. The other
+    /// half of FR-056 — a refused reference never renders — is a type-level
+    /// guarantee this test cannot exercise dynamically: [`super::ValidatedTree`]
+    /// (what `frame::petrify` requires) has no public constructor other than
+    /// this function's `Ok` arm, so a tree this test refuses cannot reach
+    /// `petrify` at all; there is no runtime path left to call. What remains
+    /// to prove is refusal itself — that an unknown name is not silently
+    /// swapped for [`crate::tree::props::DEFAULT_SPACING`] or any other
+    /// default.
+    #[test]
+    fn a_refused_token_reference_never_defaults() {
+        let tree = ViewNode::new(NodeKind::Stack, "root").with_props(Props {
+            spacing: Some(TokenName::new("spacing.nonexistent").unwrap()),
+            ..Props::default()
+        });
+        assert!(
+            validate(&tree, &Registry::new()).is_err(),
+            "an unknown name must refuse the tree, not resolve to a default"
+        );
     }
 }
