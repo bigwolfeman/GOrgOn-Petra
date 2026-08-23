@@ -20,6 +20,7 @@
 pub mod invariant;
 
 pub mod host;
+pub mod image;
 pub mod input;
 pub mod paint;
 pub mod text;

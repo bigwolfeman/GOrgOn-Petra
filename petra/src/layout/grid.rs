@@ -13,6 +13,7 @@ use crate::frame::placement::{PaintState, Placement, PlacementSink};
 use crate::geom::{Align, Axis, Rect, Size};
 use crate::layout::constraints::FIT_EPSILON;
 use crate::layout::{LayoutCtx, Proposal, SizeProposal, Slot, semantics_of};
+use crate::tree::props::{GridSpan, max_row_tracks};
 use crate::tree::{KeyPath, TrackSize, ViewNode};
 
 /// Measure this container under `proposal`.
@@ -40,7 +41,8 @@ pub fn measure(
     // the grid's own measured extent already accounts for its padding —
     // exactly parallel to how it already accounts for spacing.
     let padding = node.props.padding();
-    let row_tracks = effective_row_tracks(&props.rows, node.children.len(), ncols);
+    let flow = Flow::seat(&node.children, ncols, props.rows.len());
+    let row_tracks = effective_row_tracks(&props.rows, &flow);
     let col_widths = resolve_columns(
         node,
         ctx,
@@ -48,16 +50,20 @@ pub fn measure(
         &props.columns,
         props.column_spacing,
         proposal.horizontal.shrink(padding.along(Axis::Horizontal)),
-        ncols,
+        &flow,
     );
     let row_heights = resolve_rows(
         node,
         ctx,
         path,
         &row_tracks,
-        props.row_spacing,
         proposal.vertical.shrink(padding.along(Axis::Vertical)),
-        (ncols, &col_widths.extents),
+        RowContext {
+            col_widths: &col_widths.extents,
+            col_spacing: col_widths.spacing,
+            row_spacing: props.row_spacing,
+            flow: &flow,
+        },
     );
     let w = col_widths.extents.iter().sum::<f32>()
         + reserved(col_widths.spacing, ncols)
@@ -100,7 +106,8 @@ pub fn place(
         // committing this one. `content`, not `slot.rect`: track sizing must
         // never see the budget the padding already spent.
         let offer = SizeProposal::exact(content.size());
-        let row_tracks = effective_row_tracks(&props.rows, node.children.len(), ncols);
+        let flow = Flow::seat(&node.children, ncols, props.rows.len());
+        let row_tracks = effective_row_tracks(&props.rows, &flow);
         let col_widths = resolve_columns(
             node,
             ctx,
@@ -108,23 +115,34 @@ pub fn place(
             &props.columns,
             props.column_spacing,
             offer.horizontal,
-            ncols,
+            &flow,
         );
         let row_heights = resolve_rows(
             node,
             ctx,
             path,
             &row_tracks,
-            props.row_spacing,
             offer.vertical,
-            (ncols, &col_widths.extents),
+            RowContext {
+                col_widths: &col_widths.extents,
+                col_spacing: col_widths.spacing,
+                row_spacing: props.row_spacing,
+                flow: &flow,
+            },
         );
         truncated = col_widths.truncated || row_heights.truncated;
 
         // Absolute coordinates, seeded from the inset content rect, not the
         // grid's own outer rect: see `cumulative_offsets`.
-        let col_x = cumulative_offsets(content.x, &col_widths.extents, col_widths.spacing);
-        let row_y = cumulative_offsets(content.y, &row_heights.extents, row_heights.spacing);
+        let cells = Cells {
+            col_x: cumulative_offsets(content.x, &col_widths.extents, col_widths.spacing),
+            row_y: cumulative_offsets(content.y, &row_heights.extents, row_heights.spacing),
+            col_w: col_widths.extents,
+            row_h: row_heights.extents,
+            col_spacing: col_widths.spacing,
+            row_spacing: row_heights.spacing,
+            flow,
+        };
 
         // A child that answers larger than its cell is clamped into it by
         // `place_in_cell`. Ask now, so the container can report the clamp;
@@ -145,13 +163,10 @@ pub fn place(
         // still lose room to `place_in_cell`'s `.min(cell.w)` / `.min(cell.h)`
         // floor.
         for (i, child) in node.children.iter().enumerate() {
-            let (Some(&w), Some(&h)) = (
-                col_widths.extents.get(i % ncols),
-                row_heights.extents.get(i / ncols),
-            ) else {
+            let Some(cell) = cells.of(i) else {
                 continue;
             };
-            let cell = Size::new(w, h);
+            let cell = cell.size();
             if props.align == Align::Stretch {
                 if child.constraints.horizontal.clamp(cell.w) > cell.w + FIT_EPSILON
                     || child.constraints.vertical.clamp(cell.h) > cell.h + FIT_EPSILON
@@ -167,7 +182,7 @@ pub fn place(
                 }
             }
         }
-        plan = Some((col_x, row_y, col_widths.extents, row_heights.extents));
+        plan = Some(cells);
     }
 
     let id = path.id();
@@ -192,22 +207,16 @@ pub fn place(
     });
     sink.enter(me);
 
-    if let Some((col_x, row_y, col_widths, row_heights)) = plan {
+    if let Some(cells) = plan {
         for (i, child) in node.children.iter().enumerate() {
-            let col = i % ncols;
-            let row = i / ncols;
-            // `effective_row_tracks` always grows to fit every child, so this
-            // is in range today; the guard is the floor against a future
-            // change to that invariant, not a case this can reach now.
-            let (Some(&x), Some(&y), Some(&w), Some(&h)) = (
-                col_x.get(col),
-                row_y.get(row),
-                col_widths.get(col),
-                row_heights.get(row),
-            ) else {
+            // `effective_row_tracks` always grows to fit every child, and tree
+            // acceptance refuses a span that runs past the last track, so
+            // `Cells::of` is in range today; the `None` arm is the floor
+            // against a future change to either invariant, not a case this can
+            // reach now.
+            let Some(cell) = cells.of(i) else {
                 continue;
             };
-            let cell = Rect::new(x, y, w, h);
             place_in_cell(child, ctx, path, cell, props.align, slot, sink);
         }
     }
@@ -220,19 +229,305 @@ fn reserved(spacing: f32, n: usize) -> f32 {
     spacing.max(0.0) * n.saturating_sub(1) as f32
 }
 
+/// The resolved cell geometry of one grid, everything [`place`] needs to turn
+/// a child index into the rect that child occupies.
+///
+/// Kept as one value rather than four parallel `Vec`s in a tuple because the
+/// truncation probe and the placement loop must agree on every cell exactly —
+/// they used to derive it twice from `i % ncols` and `i / ncols`, which was
+/// harmless while a cell was one track wide and is not once a span can make it
+/// wider. [`Cells::of`] is now the single answer both read.
+struct Cells {
+    /// Leading absolute x of each column.
+    col_x: Vec<f32>,
+    /// Leading absolute y of each row.
+    row_y: Vec<f32>,
+    /// Resolved column extents.
+    col_w: Vec<f32>,
+    /// Resolved row extents.
+    row_h: Vec<f32>,
+    /// Column gap actually used, which is not always the declared one — see
+    /// [`Tracks::spacing`].
+    col_spacing: f32,
+    /// Row gap actually used.
+    row_spacing: f32,
+    /// Where each child sits.
+    flow: Flow,
+}
+
+impl Cells {
+    /// The rect child `i` occupies, or `None` when its leading track is out of
+    /// range.
+    ///
+    /// The extent is the child's whole track run — the summed extents of the
+    /// tracks it spans plus the gaps between them ([`span_extent`]) — so a
+    /// child spanning three columns is offered, and clipped to, all three of
+    /// them and the two gaps, not just its own.
+    fn of(&self, i: usize) -> Option<Rect> {
+        let run = self.flow.runs.get(i)?;
+        let (&x, &y) = (self.col_x.get(run.col)?, self.row_y.get(run.row)?);
+        Some(Rect::new(
+            x,
+            y,
+            span_extent(&self.col_w, self.col_spacing, run.col, run.ncols),
+            span_extent(&self.row_h, self.row_spacing, run.row, run.nrows),
+        ))
+    }
+}
+
+/// The block of cells one child occupies: its leading cell and the track
+/// counts it covers on each axis.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CellRun {
+    /// Leading column.
+    col: usize,
+    /// Leading row.
+    row: usize,
+    /// Column tracks covered, at least one.
+    ncols: usize,
+    /// Row tracks covered, at least one.
+    nrows: usize,
+}
+
+impl CellRun {
+    /// The leading track and the count on `axis`.
+    fn on(self, axis: Axis) -> (usize, usize) {
+        match axis {
+            Axis::Horizontal => (self.col, self.ncols),
+            Axis::Vertical => (self.row, self.nrows),
+        }
+    }
+}
+
+/// Where every child of one grid sits.
+///
+/// Children are seated in declaration order by a cursor that walks the cells
+/// row-major, takes the run its span asks for, and moves past it. Two rules
+/// keep the seating honest, and both exist because a span is a count of cells
+/// and cells are a finite resource:
+///
+/// * A run that does not fit in what is left of the current row starts the
+///   next row instead. A three-column child cannot begin in the last column of
+///   a four-column grid and finish in the next row: the contract says the
+///   tracks it covers are **contiguous**, and a wrapped run is two pieces.
+/// * A run never lands on a cell an earlier child already took. A row-spanning
+///   child reaches down into rows the cursor has not reached yet, so the
+///   claims have to be remembered rather than inferred from the cursor
+///   position.
+///
+/// This is what makes the span usable rather than decorative. Seating child
+/// `i` at the bare `(i % ncols, i / ncols)` — its index, ignoring every span
+/// declared before it — puts the child after a two-column span directly on top
+/// of that span's second cell, with no arrangement of the tree able to avoid
+/// it, because the index *is* the column. `no_two_children_ever_share_a_cell`
+/// is the property that pins the rule this replaces it with.
+///
+/// The cursor only ever moves forward, so seating every child costs one pass
+/// over the cells, and a hole an earlier wrap left behind stays a hole. That
+/// is a choice, not an oversight: backfilling would make a child's seat depend
+/// on children declared after it, and FR-006's digest is easier to trust when
+/// reading order and seating order agree.
+///
+/// A grid with no declared span produces exactly the seating the grid had
+/// before FR-061: every run is one cell, the cursor advances one cell per
+/// child and never skips, so child `i` lands on `(i % ncols, i / ncols)`.
+#[derive(Clone, Debug, Default)]
+struct Flow {
+    /// One run per child, in declaration order.
+    runs: Vec<CellRun>,
+    /// How many rows the seating consumed.
+    rows: usize,
+}
+
+impl Flow {
+    /// Seat `children` in a grid `ncols` wide.
+    fn seat(children: &[std::sync::Arc<ViewNode>], ncols: usize, declared_rows: usize) -> Self {
+        let mut flow = Self {
+            runs: Vec::with_capacity(children.len()),
+            rows: 0,
+        };
+        if ncols == 0 {
+            // Tree acceptance refuses a grid with no columns; this is the
+            // defensive floor for a container called out of turn.
+            return flow;
+        }
+        // The same ceiling tree acceptance measures a row span against, so the
+        // clamp below and `Violation::GridSpanOutOfRange` can never disagree
+        // about which spans are reachable. Floored at one so a childless grid
+        // still seats a run rather than a run of no rows.
+        let row_cap = max_row_tracks(declared_rows, children.len()).max(1);
+        // Row-major occupancy, grown a row at a time as runs reach into rows
+        // the cursor has not visited.
+        let mut taken: Vec<bool> = Vec::with_capacity(children.len());
+        let mut cursor = 0_usize;
+        for child in children {
+            let span: GridSpan = child.props.span();
+            // Tree acceptance refuses a span larger than its axis has tracks
+            // (`Violation::GridSpanOutOfRange`), so both clamps are defensive
+            // floors for a container called out of turn. Without the column
+            // one, a run wider than a row would wrap forever looking for a
+            // home; without the row one, a `usize` typo would ask for an
+            // occupancy map the machine does not have.
+            let ncols_spanned = span.on(Axis::Horizontal).min(ncols);
+            let nrows_spanned = span.on(Axis::Vertical).min(row_cap);
+            let run = loop {
+                let col = cursor % ncols;
+                let row = cursor / ncols;
+                if col + ncols_spanned > ncols {
+                    // Not enough of this row left; the run stays contiguous by
+                    // starting the next one.
+                    cursor = (row + 1) * ncols;
+                    continue;
+                }
+                let needed = (row + nrows_spanned) * ncols;
+                if taken.len() < needed {
+                    taken.resize(needed, false);
+                }
+                let free = (row..row + nrows_spanned)
+                    .all(|r| (col..col + ncols_spanned).all(|c| !taken[r * ncols + c]));
+                if !free {
+                    cursor += 1;
+                    continue;
+                }
+                for r in row..row + nrows_spanned {
+                    for c in col..col + ncols_spanned {
+                        taken[r * ncols + c] = true;
+                    }
+                }
+                cursor = row * ncols + col + ncols_spanned;
+                break CellRun {
+                    col,
+                    row,
+                    ncols: ncols_spanned,
+                    nrows: nrows_spanned,
+                };
+            };
+            flow.rows = flow.rows.max(run.row + run.nrows);
+            flow.runs.push(run);
+        }
+        flow
+    }
+
+    /// Child `i`'s run, or a one-cell run at the origin when `i` names no
+    /// child. The fallback is unreachable through [`measure`] and [`place`],
+    /// which only ever index their own children.
+    fn run(&self, i: usize) -> CellRun {
+        self.runs.get(i).copied().unwrap_or(CellRun {
+            col: 0,
+            row: 0,
+            ncols: 1,
+            nrows: 1,
+        })
+    }
+}
+
+/// The extent a child spanning `count` tracks from `start` negotiates
+/// against: the summed extents of those tracks **plus the `count - 1` gaps
+/// between them**.
+///
+/// The gaps are not decoration. Two 40-unit columns 8 apart offer a child
+/// spanning both of them 88 units, not 80: the gap is interior to the run, so
+/// nothing else can claim it. Dropping the term makes every multi-track child
+/// negotiate against less space than it actually has, and it is the exact
+/// clause `spanning_extent_counts_the_interior_gaps` holds down.
+///
+/// `count == 1` returns the track's own extent untouched, with no arithmetic
+/// applied to it at all. That is deliberate: a tree that declares no span must
+/// reach [`crate::frame::petrify`] with bit-identical rects to the ones it had
+/// before this function existed, and `x + 0.0 - 0.0` is not a guarantee about
+/// `f32`, it is a hope.
+///
+/// Track indices past the end read as zero rather than panicking. Tree
+/// acceptance refuses a span that runs past the last track
+/// ([`crate::tree::Violation::GridSpanOutOfRange`]) and `petrify` takes only a
+/// validated tree, so this is the defensive floor for a container called out
+/// of turn, not a shape the contract describes.
+fn span_extent(track_extents: &[f32], spacing: f32, start: usize, count: usize) -> f32 {
+    let spacing = spacing.max(0.0);
+    let mut total = 0.0_f32;
+    for (nth, track) in (start..start.saturating_add(count.max(1))).enumerate() {
+        if nth > 0 {
+            // The gap contribution: interior to the run, so nothing outside
+            // the span can claim it, and the child negotiates against it.
+            total += spacing;
+        }
+        total += track_extents.get(track).copied().unwrap_or(0.0);
+    }
+    total
+}
+
+/// One track's content-driven extent, accumulated from the children that
+/// touch it.
+///
+/// This is the FR-061 sizing rule in one place, so both axes obey it
+/// identically. `contracts/view-tree.md`: a spanning child "contributes to
+/// those tracks' sizing only where no single-track child already determines
+/// them — a spanning child never makes a track larger than the largest
+/// single-track child in it, which is what keeps track sizing independent of
+/// span resolution order and therefore deterministic."
+///
+/// So the two populations are kept apart rather than folded into one running
+/// maximum:
+///
+/// * Any single-track child in this track **determines** it. Its largest
+///   answer is the track's extent, and a spanning child cannot add to that —
+///   not by a unit. Presence determines, not size: a single-track child that
+///   answers zero still fixes the track at zero, because it is still an author
+///   putting something in exactly this track and nowhere else.
+/// * Only where no single-track child occupies the track at all does a
+///   spanning child get a say, and then it asks for an even share of what it
+///   wanted, after the interior gaps it already gets for free are taken off.
+///
+/// Both branches are a plain maximum over per-child values, each computed from
+/// that one child's own measurement alone. Nothing is subtracted from a
+/// running remainder, so no track's extent depends on which spanning child was
+/// resolved first — the property FR-006's digest rests on. The alternative
+/// (CSS Grid's distribute-the-excess pass) needs an explicit sort to be
+/// deterministic at all, and still leaves track sizing a function of
+/// resolution order.
+#[derive(Clone, Copy, Debug, Default)]
+struct TrackNatural {
+    /// Largest answer from a child occupying this track and no other on this
+    /// axis. `None` means no such child exists, which is the only case a
+    /// spanning child can speak into.
+    single: Option<f32>,
+    /// Largest per-track share claimed by a spanning child.
+    spanned: f32,
+}
+
+impl TrackNatural {
+    /// Record a child that occupies this track and no other on this axis.
+    fn single(&mut self, extent: f32) {
+        self.single = Some(self.single.unwrap_or(0.0).max(extent));
+    }
+
+    /// Record a child that covers this track along with `count - 1` others.
+    fn spanning(&mut self, extent: f32, spacing: f32, count: usize) {
+        let count = count.max(1);
+        // The child is already getting the interior gaps (see `span_extent`),
+        // so only the part of its answer the tracks themselves have to carry
+        // is shared out among them.
+        let share = (extent - reserved(spacing, count)).max(0.0) / count as f32;
+        self.spanned = self.spanned.max(share);
+    }
+
+    /// The track's content extent.
+    fn resolve(self) -> f32 {
+        self.single.unwrap_or(self.spanned)
+    }
+}
+
 /// Row tracks after the implicit-row rule: declared rows are used as given,
 /// then grown with `FitContent` — the same sizing an implicit row gets when
-/// none are declared — until every child has a row to land in row-major
-/// order. A tree that declares more rows than its children need is left
-/// exactly as declared; this only ever adds rows, never removes one.
-fn effective_row_tracks(rows: &[TrackSize], child_count: usize, ncols: usize) -> Vec<TrackSize> {
-    let needed = if ncols == 0 {
-        0
-    } else {
-        child_count.div_ceil(ncols)
-    };
+/// none are declared — until every row [`Flow::seat`] used has a track. A tree
+/// that declares more rows than its children need is left exactly as declared;
+/// this only ever adds rows, never removes one.
+///
+/// The count comes from the seating rather than from `children.len() / ncols`
+/// because a row-spanning child reaches into rows no child's index names.
+fn effective_row_tracks(rows: &[TrackSize], flow: &Flow) -> Vec<TrackSize> {
     let mut out = rows.to_vec();
-    while out.len() < needed {
+    while out.len() < flow.rows {
         out.push(TrackSize::FitContent);
     }
     out
@@ -404,10 +699,10 @@ fn resolve_columns(
     tracks: &[TrackSize],
     spacing: f32,
     container_probe: Proposal,
-    ncols: usize,
+    flow: &Flow,
 ) -> Tracks {
     distribute_tracks(tracks, spacing, container_probe, |col, probe| {
-        column_natural_width(node, ctx, path, col, ncols, probe)
+        column_natural_width(node, ctx, path, col, flow, spacing, probe)
     })
 }
 
@@ -418,64 +713,116 @@ fn resolve_rows(
     ctx: &mut LayoutCtx<'_>,
     path: &mut KeyPath,
     tracks: &[TrackSize],
-    spacing: f32,
     container_probe: Proposal,
-    cells: (usize, &[f32]),
+    rows: RowContext<'_>,
 ) -> Tracks {
-    let (ncols, col_widths) = cells;
-    distribute_tracks(tracks, spacing, container_probe, |row, probe| {
-        row_natural_height(node, ctx, path, row, ncols, col_widths, probe)
+    distribute_tracks(tracks, rows.row_spacing, container_probe, |row, probe| {
+        row_natural_height(node, ctx, path, row, &rows, probe)
     })
 }
 
-/// The widest response among column `col`'s children to `probe` on the
-/// horizontal axis. The vertical axis is always `Unspecified`: a column's
-/// width does not yet know what height its row will settle on.
+/// Everything sizing a row track needs beyond the node and the probe.
+///
+/// Gathered into one value because the row axis, unlike the column axis, is
+/// resolved second and so depends on what the first one settled: a cell's
+/// height is measured at the exact width its column run already has, which
+/// takes the resolved column extents, the gap actually used between them, and
+/// the seating that says which columns the cell covers.
+#[derive(Clone, Copy)]
+struct RowContext<'a> {
+    /// Column extents, already resolved.
+    col_widths: &'a [f32],
+    /// Gap actually used between columns, which is not always the declared
+    /// one — see [`Tracks::spacing`].
+    col_spacing: f32,
+    /// Gap declared between rows.
+    row_spacing: f32,
+    /// Where each child sits.
+    flow: &'a Flow,
+}
+
+/// Column `col`'s content width under `probe` on the horizontal axis. The
+/// vertical axis is always `Unspecified`: a column's width does not yet know
+/// what height its row will settle on.
+///
+/// `spacing` is this axis's **declared** gap, needed to take the interior gaps
+/// off a spanning child's answer before it is shared out — see [`TrackNatural`]
+/// for the rule that decides which children get a say here at all. Declared
+/// rather than resolved because [`distribute_tracks`] has not decided yet
+/// whether the gaps themselves have to shrink; the two differ only when the
+/// container was offered less than its own gaps need, and in that case
+/// `distribute_tracks` has already driven the budget to zero, so every
+/// `FitContent` track collapses whatever this answers. Placement never reads
+/// the declared value: [`Cells`] carries `Tracks::spacing`, the gap actually
+/// used.
 fn column_natural_width(
     node: &ViewNode,
     ctx: &mut LayoutCtx<'_>,
     path: &mut KeyPath,
     col: usize,
-    ncols: usize,
+    flow: &Flow,
+    spacing: f32,
     probe: Proposal,
 ) -> f32 {
     let proposal = SizeProposal {
         horizontal: probe,
         vertical: Proposal::Unspecified,
     };
-    node.children
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| i % ncols == col)
-        .map(|(_, child)| crate::layout::measure(child, ctx, path, proposal).w)
-        .fold(0.0_f32, f32::max)
+    let mut natural = TrackNatural::default();
+    for (i, child) in node.children.iter().enumerate() {
+        let (start, count) = flow.run(i).on(Axis::Horizontal);
+        if col < start || col >= start.saturating_add(count) {
+            continue;
+        }
+        let w = crate::layout::measure(child, ctx, path, proposal).w;
+        if count == 1 {
+            natural.single(w);
+        } else {
+            natural.spanning(w, spacing, count);
+        }
+    }
+    natural.resolve()
 }
 
-/// The tallest response among row `row`'s children to `probe` on the vertical
-/// axis. Each cell's horizontal axis is `Exact` at its own column's already-
-/// resolved width, per the contract's row rule.
+/// Row `row`'s content height under `probe` on the vertical axis. Each cell's
+/// horizontal axis is `Exact` at the width its own column run already
+/// resolved to, per the contract's row rule — for a column-spanning child that
+/// is the summed widths of the columns it covers plus the gaps between them,
+/// which is the whole of what "negotiates against the summed track extents"
+/// means on this axis.
 fn row_natural_height(
     node: &ViewNode,
     ctx: &mut LayoutCtx<'_>,
     path: &mut KeyPath,
     row: usize,
-    ncols: usize,
-    col_widths: &[f32],
+    rows: &RowContext<'_>,
     probe: Proposal,
 ) -> f32 {
-    let mut tallest = 0.0_f32;
+    let RowContext {
+        col_widths,
+        col_spacing,
+        row_spacing,
+        flow,
+    } = *rows;
+    let mut natural = TrackNatural::default();
     for (i, child) in node.children.iter().enumerate() {
-        if i / ncols != row {
+        let run = flow.run(i);
+        let (start, count) = run.on(Axis::Vertical);
+        if row < start || row >= start.saturating_add(count) {
             continue;
         }
-        let w = col_widths.get(i % ncols).copied().unwrap_or(0.0);
         let proposal = SizeProposal {
-            horizontal: Proposal::Exact(w),
+            horizontal: Proposal::Exact(span_extent(col_widths, col_spacing, run.col, run.ncols)),
             vertical: probe,
         };
-        tallest = tallest.max(crate::layout::measure(child, ctx, path, proposal).h);
+        let h = crate::layout::measure(child, ctx, path, proposal).h;
+        if count == 1 {
+            natural.single(h);
+        } else {
+            natural.spanning(h, row_spacing, count);
+        }
     }
-    tallest
+    natural.resolve()
 }
 
 /// Leading **absolute** coordinates for a run of track sizes plus fixed
@@ -571,6 +918,8 @@ fn place_in_cell(
 mod tests {
     use super::*;
     use crate::frame::placement::PlacementList;
+    use crate::frame::rounding::round_rect;
+    use crate::geom::Scale;
     use crate::geom::{Axis, Insets};
     use crate::testing::{Harness, MonoContent, NoRows};
     use crate::tree::{AxisConstraint, Constraints, NodeKind, Props};
@@ -605,6 +954,445 @@ mod tests {
     }
 
     // MonoContent: 8.0 logical units per character, 16.0 per line.
+
+    // ---- FR-061: grid track spanning -------------------------------------
+
+    /// A grid `ncols` wide of equal `Fixed` columns, with `spacing` between
+    /// them and one declared `Fixed` row, so every extent below is a number
+    /// the test states rather than one it measured.
+    fn fixed_grid(ncols: usize, width: f32, spacing: f32, children: Vec<ViewNode>) -> ViewNode {
+        ViewNode::new(NodeKind::Grid, "g")
+            .with_props(Props {
+                columns: vec![TrackSize::Fixed { value: width }; ncols],
+                rows: vec![TrackSize::Fixed { value: 20.0 }; 4],
+                column_spacing: Some(spacing),
+                row_spacing: Some(0.0),
+                align: Some(Align::Stretch),
+                ..Props::default()
+            })
+            .with_children(children)
+    }
+
+    fn spanning(key: &str, columns: usize, rows: usize) -> ViewNode {
+        ViewNode::new(NodeKind::Spacer, key).with_props(Props {
+            span: Some(GridSpan { columns, rows }),
+            ..Props::default()
+        })
+    }
+
+    /// A text child that spans, so a span can be given real content to
+    /// negotiate with.
+    fn spanning_text(key: &str, s: &str, columns: usize, rows: usize) -> ViewNode {
+        ViewNode::new(NodeKind::Text, key).with_props(Props {
+            text: Some(s.to_owned()),
+            span: Some(GridSpan { columns, rows }),
+            ..Props::default()
+        })
+    }
+
+    /// The rects `place` produced for the children, in declaration order.
+    fn child_rects(g: &ViewNode, offer: Rect) -> Vec<Rect> {
+        let mut h = Harness::new();
+        let mut path = path_at(g);
+        let mut sink = PlacementList::new();
+        place(g, &mut h.ctx(), &mut path, Slot::new(offer), &mut sink);
+        sink.as_slice()[1..].iter().map(|p| p.rect).collect()
+    }
+
+    /// The column extents this grid resolves to under `probe`.
+    fn column_extents(g: &ViewNode, probe: Proposal) -> Vec<f32> {
+        let props = g.props.grid();
+        let flow = Flow::seat(&g.children, props.columns.len(), props.rows.len());
+        let mut h = Harness::new();
+        let mut path = path_at(g);
+        resolve_columns(
+            g,
+            &mut h.ctx(),
+            &mut path,
+            &props.columns,
+            props.column_spacing,
+            probe,
+            &flow,
+        )
+        .extents
+    }
+
+    /// Hand-computed: three 40-unit columns 6 apart, a child covering the
+    /// first two. It gets 40 + 6 + 40 = 86, not 80. The gap is interior to
+    /// the run, so nothing outside the span can claim it, and a child that
+    /// negotiated against 80 would leave six units of its own cell unused
+    /// with no way to find out.
+    #[test]
+    fn a_spanning_child_is_offered_the_gap_between_the_tracks_it_covers() {
+        let g = fixed_grid(3, 40.0, 6.0, vec![spanning("wide", 2, 1), spacer("c")]);
+        let rects = child_rects(&g, Rect::new(0.0, 0.0, 132.0, 80.0));
+        assert_eq!(
+            rects,
+            vec![
+                Rect::new(0.0, 0.0, 86.0, 20.0),  // wide: columns 0-1 plus the gap
+                Rect::new(92.0, 0.0, 40.0, 20.0), // c: column 2, unmoved
+            ]
+        );
+    }
+
+    /// The row-axis statement of the same rule, so neither axis can lose the
+    /// gap term while the other keeps it: two 20-unit rows 9 apart give a
+    /// two-row child 49 units, not 40.
+    #[test]
+    fn the_gap_between_spanned_rows_counts_too() {
+        let g = ViewNode::new(NodeKind::Grid, "g")
+            .with_props(Props {
+                columns: vec![TrackSize::Fixed { value: 30.0 }],
+                rows: vec![TrackSize::Fixed { value: 20.0 }; 3],
+                row_spacing: Some(9.0),
+                align: Some(Align::Stretch),
+                ..Props::default()
+            })
+            .with_children(vec![spanning("tall", 1, 2), spacer("b")]);
+        let rects = child_rects(&g, Rect::new(0.0, 0.0, 30.0, 78.0));
+        assert_eq!(
+            rects,
+            vec![
+                Rect::new(0.0, 0.0, 30.0, 49.0),  // rows 0-1 plus the 9-unit gap
+                Rect::new(0.0, 58.0, 30.0, 20.0), // b: row 2, unmoved
+            ]
+        );
+    }
+
+    /// **The binding invariant.** Adding a spanning child to a grid whose
+    /// columns are already determined must not move one of them.
+    ///
+    /// `contracts/view-tree.md`: "a spanning child never makes a track larger
+    /// than the largest single-track child in it, which is what keeps track
+    /// sizing independent of span resolution order and therefore
+    /// deterministic." The spanning child here asks for as much as the
+    /// generator can make it ask for; every column still answers exactly what
+    /// its own single-track child asked for. Merge the two populations into
+    /// one running maximum and this goes red on the first wide span.
+    #[test]
+    fn adding_a_spanning_child_never_moves_a_track_a_single_track_child_set() {
+        proptest!(|(
+            widths in prop::collection::vec(1_usize..24, 2..5),
+            span_chars in 0_usize..200,
+            span_cols in 2_usize..5,
+            spacing in prop::sample::select(vec![0.0_f32, 4.0, 17.5]),
+        )| {
+            let ncols = widths.len();
+            let span_cols = span_cols.min(ncols);
+            let columns = vec![TrackSize::FitContent; ncols];
+            // One single-track text per column, each with its own content
+            // width. These are what determine the columns.
+            let determined: Vec<ViewNode> = widths
+                .iter()
+                .enumerate()
+                .map(|(i, chars)| text(&format!("d{i}"), &"x".repeat(*chars)))
+                .collect();
+
+            let before = ViewNode::new(NodeKind::Grid, "g")
+                .with_props(Props {
+                    columns: columns.clone(),
+                    column_spacing: Some(spacing),
+                    ..Props::default()
+                })
+                .with_children(determined.clone());
+            let baseline = column_extents(&before, Proposal::Unspecified);
+            // MonoContent is 8 units per character, so each column is its own
+            // child's run width and nothing else.
+            prop_assert_eq!(
+                &baseline,
+                &widths.iter().map(|c| *c as f32 * 8.0).collect::<Vec<f32>>()
+            );
+
+            // Now the only change: one spanning child, appended.
+            let mut after = before.clone();
+            after.children.push(std::sync::Arc::new(spanning_text(
+                "wide",
+                &"x".repeat(span_chars),
+                span_cols,
+                1,
+            )));
+            prop_assert_eq!(
+                column_extents(&after, Proposal::Unspecified),
+                baseline,
+                "a {}-column span of {} chars moved a determined track",
+                span_cols,
+                span_chars,
+            );
+        });
+    }
+
+    /// The other half of the rule: where **no** single-track child claims a
+    /// column, the spanning child does get a say — otherwise a grid whose only
+    /// content spans would collapse to nothing.
+    ///
+    /// Two fit-content columns 4 apart and one child covering both. The child
+    /// wants 80 units; 4 of them are the gap it already has, so the two
+    /// columns take 38 each and the run comes to exactly the 80 asked for.
+    #[test]
+    fn a_span_sizes_the_columns_no_single_track_child_claims() {
+        let g = ViewNode::new(NodeKind::Grid, "g")
+            .with_props(Props {
+                columns: vec![TrackSize::FitContent; 2],
+                column_spacing: Some(4.0),
+                ..Props::default()
+            })
+            .child(spanning_text("wide", "xxxxxxxxxx", 2, 1));
+        assert_eq!(column_extents(&g, Proposal::Unspecified), vec![38.0, 38.0]);
+    }
+
+    /// Presence determines, not size. A single-track child that answers zero
+    /// still fixes its column at zero: it is an author putting something in
+    /// exactly that column and nowhere else, and a span reaching over it must
+    /// not overrule that.
+    #[test]
+    fn a_single_track_child_that_answers_zero_still_holds_its_column_down() {
+        let g = ViewNode::new(NodeKind::Grid, "g")
+            .with_props(Props {
+                columns: vec![TrackSize::FitContent; 2],
+                ..Props::default()
+            })
+            // Row 0: an empty text in column 0, nothing in column 1.
+            // Row 1: a wide child spanning both.
+            .child(text("empty", ""))
+            .child(spanning_text("wide", "xxxxxxxxxx", 2, 1));
+        // Column 0 is held at zero by `empty`; column 1 has no single-track
+        // child, so the span sizes it to its even share of 80.
+        assert_eq!(column_extents(&g, Proposal::Unspecified), vec![0.0, 40.0]);
+    }
+
+    /// Track sizing must not depend on the order spans are resolved in, which
+    /// is what FR-006's digest rests on. Two spanning children covering the
+    /// same columns from different rows produce the same columns whichever
+    /// order they are declared in — a distribute-the-excess pass would not.
+    #[test]
+    fn column_sizing_does_not_depend_on_which_span_is_resolved_first() {
+        proptest!(|(a in 0_usize..40, b in 0_usize..40)| {
+            let columns = vec![TrackSize::FitContent; 2];
+            let build = |first: &str, second: &str| {
+                ViewNode::new(NodeKind::Grid, "g")
+                    .with_props(Props {
+                        columns: columns.clone(),
+                        ..Props::default()
+                    })
+                    .child(spanning_text("p", first, 2, 1))
+                    .child(spanning_text("q", second, 2, 1))
+            };
+            let fwd = column_extents(&build(&"x".repeat(a), &"x".repeat(b)), Proposal::Unspecified);
+            let rev = column_extents(&build(&"x".repeat(b), &"x".repeat(a)), Proposal::Unspecified);
+            prop_assert_eq!(fwd, rev);
+        });
+    }
+
+    /// No two children ever share a cell, for any shape of span.
+    ///
+    /// This is the property that made the cursor necessary. Seating child `i`
+    /// at the bare `(i % ncols, i / ncols)` puts the child after a two-column
+    /// span directly on top of that span's second cell, and no arrangement of
+    /// the tree can avoid it, because under that rule the index *is* the
+    /// column.
+    #[test]
+    fn no_two_children_ever_share_a_cell() {
+        proptest!(|(
+            ncols in 1_usize..5,
+            spans in prop::collection::vec((1_usize..5, 1_usize..4), 1..9),
+        )| {
+            let children: Vec<ViewNode> = spans
+                .iter()
+                .enumerate()
+                .map(|(i, (c, r))| spanning(&format!("c{i}"), (*c).min(ncols), *r))
+                .collect();
+            let g = ViewNode::new(NodeKind::Grid, "g")
+                .with_props(Props {
+                    columns: vec![TrackSize::FitContent; ncols],
+                    ..Props::default()
+                })
+                .with_children(children);
+            let flow = Flow::seat(&g.children, ncols, 0);
+            prop_assert_eq!(flow.runs.len(), spans.len());
+            for (i, run) in flow.runs.iter().enumerate() {
+                // Contiguous and inside the grid on the column axis.
+                prop_assert!(
+                    run.col + run.ncols <= ncols,
+                    "run {i} at {run:?} runs past column {ncols}"
+                );
+                prop_assert!(run.row + run.nrows <= flow.rows);
+                for (j, other) in flow.runs.iter().enumerate().take(i) {
+                    let cols_meet =
+                        run.col < other.col + other.ncols && other.col < run.col + run.ncols;
+                    let rows_meet =
+                        run.row < other.row + other.nrows && other.row < run.row + run.nrows;
+                    prop_assert!(
+                        !(cols_meet && rows_meet),
+                        "child {i} at {run:?} shares a cell with child {j} at {other:?}"
+                    );
+                }
+            }
+        });
+    }
+
+    /// **The no-movement guarantee, stated as the seating rule it rests on.**
+    ///
+    /// With every span at one the cursor advances one cell per child and never
+    /// skips, so child `i` seats at exactly `(i % ncols, i / ncols)` — the
+    /// rule this grid followed before FR-061 existed. That is *why* a tree
+    /// with no declared span keeps its rects, and therefore its frame digest.
+    #[test]
+    fn a_tree_with_no_span_seats_every_child_exactly_where_its_index_says() {
+        proptest!(|(ncols in 1_usize..6, n in 0_usize..21)| {
+            let children: Vec<ViewNode> =
+                (0..n).map(|i| spacer(&format!("c{i}"))).collect();
+            let g = ViewNode::new(NodeKind::Grid, "g")
+                .with_props(Props {
+                    columns: vec![TrackSize::FitContent; ncols],
+                    ..Props::default()
+                })
+                .with_children(children);
+            let flow = Flow::seat(&g.children, ncols, 0);
+            for i in 0..n {
+                prop_assert_eq!(
+                    flow.runs[i],
+                    CellRun { col: i % ncols, row: i / ncols, ncols: 1, nrows: 1 }
+                );
+            }
+            prop_assert_eq!(flow.rows, n.div_ceil(ncols));
+        });
+    }
+
+    /// A run that does not fit what is left of a row starts the next one
+    /// rather than wrapping across the edge: the contract says the tracks a
+    /// child covers are contiguous, and a wrapped run is two pieces.
+    #[test]
+    fn a_run_too_wide_for_the_rest_of_its_row_starts_the_next_row() {
+        let g = fixed_grid(
+            3,
+            10.0,
+            0.0,
+            vec![spacer("a"), spanning("wide", 3, 1), spacer("z")],
+        );
+        let rects = child_rects(&g, Rect::new(0.0, 0.0, 30.0, 60.0));
+        assert_eq!(
+            rects,
+            vec![
+                Rect::new(0.0, 0.0, 10.0, 20.0),  // a: row 0, column 0
+                Rect::new(0.0, 20.0, 30.0, 20.0), // wide: all of row 1
+                Rect::new(0.0, 40.0, 10.0, 20.0), // z: row 2, the hole is not backfilled
+            ]
+        );
+    }
+
+    /// A row-spanning child reaches into rows the cursor has not visited, so
+    /// the next child has to step around it rather than land underneath.
+    #[test]
+    fn a_row_span_pushes_later_children_past_the_cells_it_holds() {
+        let g = fixed_grid(
+            2,
+            10.0,
+            0.0,
+            vec![spanning("tall", 1, 2), spacer("b"), spacer("c")],
+        );
+        let rects = child_rects(&g, Rect::new(0.0, 0.0, 20.0, 40.0));
+        assert_eq!(
+            rects,
+            vec![
+                Rect::new(0.0, 0.0, 10.0, 40.0),   // tall: column 0, rows 0-1
+                Rect::new(10.0, 0.0, 10.0, 20.0),  // b: column 1, row 0
+                Rect::new(10.0, 20.0, 10.0, 20.0), // c: column 1, row 1 — not (0,1)
+            ]
+        );
+    }
+
+    /// A span across a `Weight` track negotiates against what the weights
+    /// actually resolved to, not against a declared number: 200 units, 20 of
+    /// gap, a 40-unit fixed column, and 140 split evenly between two weights.
+    /// The child covering both weight columns gets 70 + 10 + 70.
+    #[test]
+    fn a_span_across_weight_tracks_uses_their_resolved_extents() {
+        let g = ViewNode::new(NodeKind::Grid, "g")
+            .with_props(Props {
+                columns: vec![
+                    TrackSize::Fixed { value: 40.0 },
+                    TrackSize::Weight { weight: 1.0 },
+                    TrackSize::Weight { weight: 1.0 },
+                ],
+                rows: vec![TrackSize::Fixed { value: 20.0 }],
+                column_spacing: Some(10.0),
+                align: Some(Align::Stretch),
+                ..Props::default()
+            })
+            .with_children(vec![spacer("a"), spanning("wide", 2, 1)]);
+        let rects = child_rects(&g, Rect::new(0.0, 0.0, 200.0, 20.0));
+        assert_eq!(
+            rects,
+            vec![
+                Rect::new(0.0, 0.0, 40.0, 20.0),
+                Rect::new(50.0, 0.0, 150.0, 20.0),
+            ]
+        );
+    }
+
+    /// The cell clamp still applies, and it clamps to the whole run rather
+    /// than to one track. A child whose declared minimum is wider than the two
+    /// columns it covers is cut to those two columns and the gap between them,
+    /// and the grid reports the loss instead of letting it bleed into the next
+    /// column.
+    #[test]
+    fn a_child_too_wide_for_its_run_is_clamped_to_the_run_and_reported() {
+        let mut wide = spanning("wide", 2, 1);
+        wide.constraints = Constraints {
+            horizontal: AxisConstraint {
+                min: Some(500.0),
+                ..AxisConstraint::default()
+            },
+            ..Constraints::default()
+        };
+        let g = fixed_grid(3, 40.0, 6.0, vec![wide, spacer("c")]);
+        let mut h = Harness::new();
+        let mut path = path_at(&g);
+        let mut sink = PlacementList::new();
+        place(
+            &g,
+            &mut h.ctx(),
+            &mut path,
+            Slot::new(Rect::new(0.0, 0.0, 132.0, 20.0)),
+            &mut sink,
+        );
+        let rects: Vec<Rect> = sink.as_slice()[1..].iter().map(|p| p.rect).collect();
+        assert_eq!(
+            rects[0],
+            Rect::new(0.0, 0.0, 86.0, 20.0),
+            "clamped to the run"
+        );
+        assert_eq!(
+            rects[1],
+            Rect::new(92.0, 0.0, 40.0, 20.0),
+            "neighbour unmoved"
+        );
+        assert!(
+            sink.as_slice()[0].paint.truncated,
+            "a child cut down to its run is a truncation the grid must report"
+        );
+    }
+
+    /// A spanning cell's trailing edge lands on the same device pixel as the
+    /// leading edge of the column after it, from an origin that is not on a
+    /// pixel boundary. Without this the seam between a span and its neighbour
+    /// grows or loses a pixel at fractional scale, which is the same defect
+    /// `cumulative_offsets` documents for ordinary adjacent cells.
+    #[test]
+    fn a_spanning_cell_shares_a_device_edge_with_the_column_after_it() {
+        for scale_factor in [1.0_f32, 1.25, 1.5, 2.0] {
+            let scale = Scale::new(scale_factor).unwrap();
+            let g = fixed_grid(3, 13.3, 0.0, vec![spanning("wide", 2, 1), spacer("c")]);
+            let rects = child_rects(&g, Rect::new(7.4, 3.1, 39.9, 20.0));
+            let span = round_rect(rects[0], scale);
+            let after = round_rect(rects[1], scale);
+            assert_eq!(
+                span.x + span.w,
+                after.x,
+                "at scale {scale_factor} the span's trailing edge and its neighbour's leading edge parted"
+            );
+        }
+    }
 
     #[test]
     fn hand_computed_track_widths_pin_fixed_weight_and_spacing() {

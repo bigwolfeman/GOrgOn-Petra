@@ -160,6 +160,32 @@ impl PaintContent {
             && self.custom.is_none()
             && self.tokens.is_empty()
     }
+
+    /// Whether the host, not Petra, produces this node's pixels.
+    ///
+    /// True for exactly the two payload members whose *content* the digest
+    /// does not reach: [`PaintContent::image`], which the digest hashes as a
+    /// source string, and [`PaintContent::custom`], which it hashes as a
+    /// painter's name (`contracts/frame-identity.md`, "Not covered": *the
+    /// pixels of hosted content*). Petra placed and clipped the region; a
+    /// decoder or a registered painter filled it. So two frames in which one
+    /// painter drew two different pictures into one rect carry the **same**
+    /// digest, and a consumer that wants pixel equality over such a region
+    /// must ask for a pixel comparison instead.
+    ///
+    /// [`PaintContent::text`] and [`PaintContent::tokens`] are **not** hosted:
+    /// the digest hashes the string and the token names themselves, so a
+    /// changed word or a rebound colour is a changed digest.
+    ///
+    /// This reads the payload, never the geometry. A hosted node clipped down
+    /// to nothing still answers `true` — the flag is an upper bound on where
+    /// the digest is blind, and over-reporting costs a consumer a pixel
+    /// comparison it did not need, where under-reporting would have it trust
+    /// a digest that cannot see the difference.
+    #[must_use]
+    pub fn is_hosted(&self) -> bool {
+        self.image.is_some() || self.custom.is_some()
+    }
 }
 
 /// Where a container sends the placements it produces.
@@ -533,10 +559,15 @@ fn extents_match_parents(placements: &[Placement], subtree_len: &[usize]) -> boo
 
 #[cfg(test)]
 mod tests {
-    use super::{PaintState, Placement, PlacementList, PlacementSemantics, PlacementSink};
+    use std::collections::BTreeMap;
+
+    use super::{
+        PaintContent, PaintState, Placement, PlacementList, PlacementSemantics, PlacementSink,
+        TextPaint,
+    };
     use crate::geom::Rect;
     use crate::layout::Slot;
-    use crate::tree::NodeKind;
+    use crate::tree::{NodeKind, TextWrap};
 
     fn placement(id: &str) -> Placement {
         Placement {
@@ -663,5 +694,75 @@ mod tests {
             !super::extents_match_parents(&placements, &wrong),
             "a subtree_len that ignores a real child must be caught"
         );
+    }
+
+    /// `is_hosted` answers for exactly the two payload members the digest
+    /// reaches by name rather than by content, and for nothing else.
+    ///
+    /// Written as a table so a member moving from one side of the line to the
+    /// other is one changed row rather than a silently absent case. The two
+    /// text rows matter most: a hosted flag that answered `true` for a text
+    /// run would tell every consumer of a plain label frame to fall back to
+    /// pixel comparison, which the digest covers perfectly well.
+    #[test]
+    fn only_an_image_or_a_custom_painter_makes_a_payload_hosted() {
+        let text = TextPaint {
+            text: "hi".into(),
+            style: None,
+            wrap: TextWrap::Wrap,
+            max_lines: None,
+        };
+        let mut tokens = BTreeMap::new();
+        tokens.insert("background".to_owned(), "surface.raised".to_owned());
+
+        let cases: [(&str, PaintContent, bool); 6] = [
+            ("a bare container", PaintContent::default(), false),
+            (
+                "a text run",
+                PaintContent {
+                    text: Some(text.clone()),
+                    ..PaintContent::default()
+                },
+                false,
+            ),
+            (
+                "token bindings alone",
+                PaintContent {
+                    tokens: tokens.clone(),
+                    ..PaintContent::default()
+                },
+                false,
+            ),
+            (
+                "an image",
+                PaintContent {
+                    image: Some("logo.png".into()),
+                    ..PaintContent::default()
+                },
+                true,
+            ),
+            (
+                "a custom painter",
+                PaintContent {
+                    custom: Some("gauge".into()),
+                    ..PaintContent::default()
+                },
+                true,
+            ),
+            (
+                "an image and a painter on one node",
+                PaintContent {
+                    text: Some(text),
+                    image: Some("logo.png".into()),
+                    custom: Some("gauge".into()),
+                    tokens,
+                },
+                true,
+            ),
+        ];
+
+        for (what, content, want) in cases {
+            assert_eq!(content.is_hosted(), want, "{what}");
+        }
     }
 }

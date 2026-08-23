@@ -5,8 +5,23 @@
 //! own paint order, so egui's z-ordering never gets a say — `Ui` is not used,
 //! and neither is egui's layer ordering beyond the single layer this paints
 //! into.
+//!
+//! # Hosted content (FR-059, T080/T081)
+//!
+//! Two of Petra's twelve node kinds declare content this crate cannot draw on
+//! its own — an image names a source, a custom node names a registered
+//! painter — and both were, until now, unconditionally reported in
+//! [`PaintReport::undrawn`]. [`CustomPainters`] and
+//! [`crate::image::ImageSources`] are how a host closes that gap: registering
+//! a painter or a source makes the matching content draw into the *same*
+//! layer, in the *same* Petra-decided paint order, as everything else in this
+//! file — a registered painter draws through the `&Painter` this module
+//! hands it, never a layer or a `Ui` of its own. What does not change is the
+//! honesty: a name with nothing registered, and a registered painter that
+//! draws nothing, land in `undrawn` exactly alike. See
+//! [`paint_frame_with_hosts`].
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use egui::{Color32, Painter, Rgba, Stroke};
 use gorgon_petra::frame::{PaintContent, PetrifiedFrame, Placement, round_rect};
@@ -14,6 +29,7 @@ use gorgon_petra::geom::{Rect as PetraRect, Scale};
 use gorgon_petra::layout::TextRequest;
 use gorgon_petra::token::{FocusRing, ThemeSnapshot, TokenName, TokenValue};
 
+use crate::image::ImageSources;
 use crate::text::GalleyShaper;
 
 /// Token slot painted as a filled rect behind a node.
@@ -116,6 +132,10 @@ pub struct PaintReport {
     pub fills: usize,
     /// Text runs drawn.
     pub texts: usize,
+    /// Images drawn through a resolved [`crate::image::ImageSources`] entry.
+    pub images: usize,
+    /// Custom nodes drawn through a registered [`CustomPainters`] entry.
+    pub customs: usize,
     /// Focus rings drawn: focused placements that got at least one band.
     pub focus_rings: usize,
     /// **Focused placements that got no ring at all.** Keyboard operation
@@ -164,7 +184,92 @@ enum Outcome {
     Silent,
 }
 
-/// Draw `frame` into `painter`.
+/// What a registered custom painter is given to draw with.
+///
+/// Petra has already resolved position, clipping, fade and scale for this
+/// placement by the time a custom painter runs, so this is everything a
+/// painter needs to draw *content* and nothing it would need to negotiate
+/// *layout* — the same division of labour [`crate::image`] draws for images.
+///
+/// `clip` and `opacity` are already in force on the `&Painter` a painter is
+/// called with (`Painter::clip_rect`, `Painter::opacity`) — every shape drawn
+/// through it is clipped and faded automatically. They are repeated here so
+/// a painter that needs the *number* — to skip expensive work at zero
+/// opacity, say, rather than pay for it and have it faded away — does not
+/// have to reach back into the painter to get it.
+pub struct CustomPaintCtx<'a> {
+    /// This placement's rect, already snapped to the device-pixel grid.
+    pub rect: egui::Rect,
+    /// The clip rect already in force on the painter this ctx accompanies.
+    pub clip: egui::Rect,
+    /// This placement's opacity, already clamped to `0.0..=1.0` and already
+    /// in force on the painter this ctx accompanies.
+    pub opacity: f32,
+    /// The device scale this frame was placed at.
+    pub scale: Scale,
+    /// The colour source this pass is painting with, for a painter that
+    /// wants a token's colour rather than a colour of its own invention.
+    pub colors: &'a dyn ColorSource,
+}
+
+/// A host-registered painter for one `PaintContent.custom` name.
+///
+/// Returns whether it drew anything. **A painter that draws nothing must
+/// return `false`** — a sparkline given no data points, say — so its name
+/// still lands in [`PaintReport::undrawn`] rather than the frame reading as
+/// complete over a placement nothing actually painted. This is FR-059's
+/// "registered-but-unpainted stays undrawn" made structural: the return
+/// value is the only signal [`paint_one`] has, so a painter that lies about
+/// it is the one way this contract can still be broken, and it is a
+/// one-line honesty obligation on whoever writes the painter rather than
+/// something this crate can enforce further.
+pub type CustomPainterFn = dyn Fn(&Painter, &CustomPaintCtx<'_>) -> bool;
+
+/// Host-registered painters, keyed by the name `PaintContent.custom` carries.
+///
+/// Empty by default, so a frame with no host registration paints exactly
+/// what this crate shipped before T080 existed: every custom name lands in
+/// `undrawn`. Registration is opt-in per name — an unregistered name and a
+/// registered painter that chose not to draw are the same outcome from the
+/// frame's point of view, and [`paint_one`] treats them identically.
+#[derive(Default)]
+pub struct CustomPainters {
+    painters: BTreeMap<String, Box<CustomPainterFn>>,
+}
+
+impl CustomPainters {
+    /// An empty registry: every custom name lands in `undrawn`.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register `painter` under `name`. Registering the same name twice
+    /// replaces the previous painter rather than keeping both — there is
+    /// exactly one painter per name, the same "last registration wins" rule
+    /// [`crate::image::ImageSources::register`] uses for sources.
+    pub fn register(
+        &mut self,
+        name: impl Into<String>,
+        painter: impl Fn(&Painter, &CustomPaintCtx<'_>) -> bool + 'static,
+    ) {
+        self.painters.insert(name.into(), Box::new(painter));
+    }
+
+    /// The painter registered for `name`, or `None` when nothing is.
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<&CustomPainterFn> {
+        self.painters.get(name).map(|painter| painter.as_ref())
+    }
+}
+
+/// Draw `frame` into `painter`, with no host-registered painters or image
+/// sources.
+///
+/// This is the entry point every existing caller keeps using unchanged: a
+/// frame painted this way behaves exactly as it did before T080/T081 — every
+/// `image` and every `custom` node lands in [`PaintReport::undrawn`], named.
+/// A host that wants either drawn calls [`paint_frame_with_hosts`] instead.
 ///
 /// The painter is expected to be a full-window layer painter
 /// (`egui::Context::layer_painter`); each placement gets a clipped, faded clone
@@ -174,6 +279,35 @@ pub fn paint_frame(
     frame: &PetrifiedFrame,
     shaper: &mut GalleyShaper,
     colors: &dyn ColorSource,
+) -> PaintReport {
+    paint_frame_with_hosts(
+        painter,
+        frame,
+        shaper,
+        colors,
+        &CustomPainters::default(),
+        &mut ImageSources::default(),
+    )
+}
+
+/// Draw `frame` into `painter`, dispatching `PaintContent.custom` through
+/// `painters` and `PaintContent.image` through `images`.
+///
+/// Everything [`paint_frame`] documents holds here too; the only difference
+/// is that a name either registry answers for is drawn instead of merely
+/// reported. Kept as a second function rather than growing `paint_frame`'s
+/// parameter list so every caller written against the four-argument form —
+/// `gorgon-petra-egui`'s own `Host::pass` included — keeps compiling
+/// unchanged; wiring a running host up to real registries is call-site work
+/// for whoever owns that host loop, not a signature this function should
+/// force on every caller that does not need it yet.
+pub fn paint_frame_with_hosts(
+    painter: &Painter,
+    frame: &PetrifiedFrame,
+    shaper: &mut GalleyShaper,
+    colors: &dyn ColorSource,
+    painters: &CustomPainters,
+    images: &mut ImageSources,
 ) -> PaintReport {
     let mut report = PaintReport {
         placements: frame.placements.len(),
@@ -187,6 +321,13 @@ pub fn paint_frame(
     // frame and allocates nothing. The rings are drawn after the loop rather
     // than inside it because a ring reaches outside its node's rect, and a
     // later sibling's fill would paint over one drawn in tree order.
+    let mut env = PaintEnv {
+        shaper,
+        colors,
+        scale,
+        painters,
+        images,
+    };
     let mut focused: Vec<&Placement> = Vec::new();
     for (placement, content) in frame.paint_pairs() {
         let clip = to_egui_snapped(placement.clip, scale);
@@ -201,7 +342,7 @@ pub fn paint_frame(
         }
         let mut p = painter.with_clip_rect(clip);
         p.set_opacity(placement.opacity.clamp(0.0, 1.0));
-        match paint_one(&p, placement, content, shaper, colors, scale, &mut report) {
+        match paint_one(&p, placement, content, &mut env, &mut report) {
             Outcome::Drawn => report.drawn += 1,
             Outcome::Empty => report.empty += 1,
             Outcome::Silent => report.silent += 1,
@@ -280,16 +421,29 @@ fn device_snapped_width(width: f32, scale: Scale) -> f32 {
     (width * factor).round().max(1.0) / factor
 }
 
+/// Everything one paint pass shares across every placement it visits, beyond
+/// the placement and content that change per call.
+///
+/// Grouped into one struct rather than threading five parameters through
+/// [`paint_one`] individually — `shaper` and `images` need `&mut` and the
+/// other three do not, which is exactly the split a hand-written struct
+/// keeps honest that a long parameter list would not.
+struct PaintEnv<'a> {
+    shaper: &'a mut GalleyShaper,
+    colors: &'a dyn ColorSource,
+    scale: Scale,
+    painters: &'a CustomPainters,
+    images: &'a mut ImageSources,
+}
+
 fn paint_one(
     painter: &Painter,
     placement: &Placement,
     content: &PaintContent,
-    shaper: &mut GalleyShaper,
-    colors: &dyn ColorSource,
-    scale: Scale,
+    env: &mut PaintEnv<'_>,
     report: &mut PaintReport,
 ) -> Outcome {
-    let rect = to_egui_snapped(placement.rect, scale);
+    let rect = to_egui_snapped(placement.rect, env.scale);
     let mut shapes = 0_usize;
 
     // Every slot this painter does not understand is recorded by name. A node
@@ -302,16 +456,16 @@ fn paint_one(
     }
 
     if let Some(token) = content.tokens.get(BACKGROUND_SLOT)
-        && let Some(color) = resolve_or_record(colors, token, report)
+        && let Some(color) = resolve_or_record(env.colors, token, report)
     {
         painter.rect_filled(rect, 0.0, color);
         report.fills += 1;
         shapes += 1;
     }
     if let Some(token) = content.tokens.get(BORDER_SLOT)
-        && let Some(color) = resolve_or_record(colors, token, report)
+        && let Some(color) = resolve_or_record(env.colors, token, report)
     {
-        let width = device_snapped_width(1.0, scale);
+        let width = device_snapped_width(1.0, env.scale);
         painter.rect_stroke(
             rect,
             0.0,
@@ -326,14 +480,14 @@ fn paint_one(
             .tokens
             .get(FOREGROUND_SLOT)
             .map_or(DEFAULT_TEXT_TOKEN, String::as_str);
-        let color = colors.color(token).unwrap_or_else(|| {
+        let color = env.colors.color(token).unwrap_or_else(|| {
             report.unresolved_tokens.insert(token.to_owned());
             // Not a guess at the theme's intent: a visibly wrong colour is
             // better than invisible text, and the unresolved token is in the
             // report either way.
             Color32::PLACEHOLDER
         });
-        let galley = shaper.galley(&TextRequest {
+        let galley = env.shaper.galley(&TextRequest {
             text: &text.text,
             style: text.style.as_deref(),
             wrap: text.wrap,
@@ -345,11 +499,49 @@ fn paint_one(
         shapes += 1;
     }
 
-    if content.image.is_some() {
-        report.undrawn.insert("image".into());
+    if let Some(source) = &content.image {
+        // `resolve` is the whole of "decode/upload behind a source-keyed
+        // cache" (T081): a source this pass has drawn before comes back
+        // from the cache, a new one is decoded and uploaded once. Either
+        // way what comes back is a texture with its own natural size, and
+        // `image::contain` is the aspect handling — fit that size inside
+        // `rect`, the space Petra offered this node, without stretching it.
+        if let Some(handle) = env.images.resolve(painter.ctx(), source) {
+            let target = crate::image::contain(rect, handle.size_vec2());
+            let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+            painter.image(handle.id(), target, uv, Color32::WHITE);
+            report.images += 1;
+            shapes += 1;
+        } else {
+            // Not registered, or registered with pixels that failed to
+            // decode — either way this is the source that could not be
+            // drawn, named so the operator knows which picture is missing
+            // rather than that "an image" is.
+            report.undrawn.insert(format!("image:{source}"));
+        }
     }
     if let Some(name) = &content.custom {
-        report.undrawn.insert(format!("custom:{name}"));
+        let ctx = CustomPaintCtx {
+            rect,
+            clip: painter.clip_rect(),
+            opacity: painter.opacity(),
+            scale: env.scale,
+            colors: env.colors,
+        };
+        // `is_some_and` rather than an `if let` that ignores the bool: a
+        // registered painter that draws nothing must be treated exactly
+        // like no painter at all, and this is the one line where that
+        // equivalence either holds or quietly stops holding.
+        if env
+            .painters
+            .get(name)
+            .is_some_and(|paint| paint(painter, &ctx))
+        {
+            report.customs += 1;
+            shapes += 1;
+        } else {
+            report.undrawn.insert(format!("custom:{name}"));
+        }
     }
 
     if content.is_empty() {
@@ -479,7 +671,8 @@ pub fn verify_paint_accounting() {
 #[cfg(test)]
 mod tests {
     use super::{
-        ColorSource, device_snapped_width, paint_frame, to_egui_snapped, verify_paint_accounting,
+        ColorSource, CustomPaintCtx, CustomPainters, device_snapped_width, paint_frame,
+        paint_frame_with_hosts, to_egui_snapped, verify_paint_accounting,
     };
     use egui::{Color32, Context, Id, LayerId, Order, RawInput, Shape};
     use gorgon_petra::frame::round_rect;
@@ -490,6 +683,7 @@ mod tests {
     use gorgon_petra::token::{ThemeMode, ThemeSnapshot, dark};
     use gorgon_petra::tree::{NodeKind, Props, ViewNode};
 
+    use crate::image::{ImagePixels, ImageSources};
     use crate::text::GalleyShaper;
 
     struct Headless(Context);
@@ -623,7 +817,8 @@ mod tests {
                 .iter()
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
-            ["image"]
+            ["image:logo.png"],
+            "T081: an unresolvable source is named by itself, not by the bare kind"
         );
     }
 
@@ -795,7 +990,7 @@ mod tests {
         assert_eq!(report.silent, 1, "the image painted nothing: {report:?}");
         assert_eq!(report.empty, 1, "the bare stack declares nothing to paint");
         assert!(!report.is_complete(), "{report:?}");
-        assert!(report.undrawn.contains("image"), "{report:?}");
+        assert!(report.undrawn.contains("image:logo.png"), "{report:?}");
     }
 
     /// A token slot no painter consumes is named rather than dropped. The
@@ -1001,6 +1196,315 @@ mod tests {
         let report = paint_frame(&host.painter(), &frame, &mut shaper, &snapshot());
 
         assert!(report.desynced, "{report:?}");
+        assert!(!report.is_complete(), "{report:?}");
+    }
+
+    // --- Hosted content: custom painter dispatch (T080) --------------------
+
+    fn custom_node(kind: &str) -> ViewNode {
+        ViewNode::new(NodeKind::Stack, "root").child(
+            ViewNode::new(NodeKind::Custom, "chart").with_props(Props {
+                custom_kind: Some(kind.into()),
+                ..Props::default()
+            }),
+        )
+    }
+
+    /// A [`gorgon_petra::tree::Registry`] that accepts `kind` as a valid
+    /// custom node — tree acceptance, the thing `gallery.rs` calls
+    /// `register_custom_kind` for. Deliberately a different registration
+    /// from [`CustomPainters`]: a tree can accept a kind no painter answers
+    /// for, which is exactly the case `a_registered_kind_with_no_painter_is_still_undrawn`
+    /// below exercises.
+    fn registry_with(kind: &str) -> gorgon_petra::tree::Registry {
+        let mut registry = gorgon_petra::tree::Registry::new();
+        registry.register_custom_kind(kind);
+        registry
+    }
+
+    fn frame_of_registered(
+        node: &ViewNode,
+        h: &mut Harness<GalleyShaper, gorgon_petra::testing::NoRows>,
+        registry: &gorgon_petra::tree::Registry,
+    ) -> gorgon_petra::frame::PetrifiedFrame {
+        petrify(
+            1,
+            gorgon_petra::testing::validated_with(node, registry),
+            &mut h.ctx(),
+            Viewport::new(Size::new(240.0, 120.0), ThemeMode::Dark),
+            TransitionActivity::default(),
+        )
+    }
+
+    /// What the recording painter in the test below captured from its
+    /// [`CustomPaintCtx`]: rect, clip, opacity, scale, and whether the theme
+    /// reached it. Named rather than spelled inline because `clippy::type_complexity`
+    /// refuses the nested form, and rightly — the tuple says nothing about itself.
+    type SeenCtx =
+        std::rc::Rc<std::cell::RefCell<Option<(egui::Rect, egui::Rect, f32, Scale, bool)>>>;
+    /// FR-059's headline claim: a host-registered painter draws into the
+    /// same pass, at the same layer, and the placement it draws is counted
+    /// as drawn — not undrawn, not silent.
+    #[test]
+    fn a_registered_custom_painter_draws_into_the_frame() {
+        let host = Headless::new();
+        let registry = registry_with("sparkline");
+        let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
+        let frame = frame_of_registered(&custom_node("sparkline"), &mut h, &registry);
+        let mut shaper = host.shaper();
+
+        let mut painters = CustomPainters::new();
+        painters.register(
+            "sparkline",
+            |painter: &egui::Painter, ctx: &CustomPaintCtx<'_>| {
+                painter.rect_filled(ctx.rect, 0.0, Color32::WHITE);
+                true
+            },
+        );
+        let mut images = ImageSources::new();
+        let report = paint_frame_with_hosts(
+            &host.painter(),
+            &frame,
+            &mut shaper,
+            &snapshot(),
+            &painters,
+            &mut images,
+        );
+
+        assert_eq!(report.customs, 1, "{report:?}");
+        assert_eq!(report.drawn, 1, "{report:?}");
+        assert!(report.undrawn.is_empty(), "{report:?}");
+        assert!(report.is_complete(), "{report:?}");
+    }
+
+    /// FR-059: a custom kind the tree accepts (`register_custom_kind`) but
+    /// no host painter answers for is still `undrawn`, never a silent
+    /// blank. This is exactly `petra-egui/examples/gallery.rs`'s
+    /// `sparkline` section today: accepted by the tree, unregistered in the
+    /// paint dispatch.
+    #[test]
+    fn a_registered_kind_with_no_painter_is_still_undrawn() {
+        let host = Headless::new();
+        let registry = registry_with("sparkline");
+        let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
+        let frame = frame_of_registered(&custom_node("sparkline"), &mut h, &registry);
+        let mut shaper = host.shaper();
+
+        let report = paint_frame(&host.painter(), &frame, &mut shaper, &snapshot());
+
+        assert!(report.undrawn.contains("custom:sparkline"), "{report:?}");
+        assert_eq!(report.silent, 1, "{report:?}");
+        assert!(!report.is_complete(), "{report:?}");
+    }
+
+    /// The other half of "registered-but-unpainted stays undrawn": a
+    /// painter that *is* registered but draws nothing — a sparkline handed
+    /// zero data points, say — must be treated exactly like no painter at
+    /// all, not as a pass. FR-059 makes this required behaviour, and this
+    /// is the test A1-7's sabotage targets: an `if let Some(paint) = ...`
+    /// that ignores the returned `bool` would make this frame read as
+    /// complete over content nothing actually drew.
+    #[test]
+    fn a_painter_that_draws_nothing_is_still_undrawn() {
+        let host = Headless::new();
+        let registry = registry_with("sparkline");
+        let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
+        let frame = frame_of_registered(&custom_node("sparkline"), &mut h, &registry);
+        let mut shaper = host.shaper();
+
+        let mut painters = CustomPainters::new();
+        painters.register(
+            "sparkline",
+            |_painter: &egui::Painter, _ctx: &CustomPaintCtx<'_>| {
+                // Registered, ran, and had nothing to draw this frame.
+                false
+            },
+        );
+        let mut images = ImageSources::new();
+        let report = paint_frame_with_hosts(
+            &host.painter(),
+            &frame,
+            &mut shaper,
+            &snapshot(),
+            &painters,
+            &mut images,
+        );
+
+        assert!(report.undrawn.contains("custom:sparkline"), "{report:?}");
+        assert_eq!(report.customs, 0, "{report:?}");
+        assert_eq!(report.silent, 1, "{report:?}");
+        assert!(!report.is_complete(), "{report:?}");
+    }
+
+    /// FR-059's field list, checked rather than assumed: a custom painter
+    /// receives the resolved rect, the clip, the opacity, the device scale,
+    /// and a colour source that resolves the same theme the rest of the
+    /// frame painted with.
+    #[test]
+    fn a_custom_painter_receives_the_resolved_geometry_and_theme() {
+        let host = Headless::new();
+        let registry = registry_with("sparkline");
+        let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
+        let frame = frame_of_registered(&custom_node("sparkline"), &mut h, &registry);
+        let mut shaper = host.shaper();
+        let expected = frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/chart"))
+            .expect("the custom node placed")
+            .rect;
+        let expected_rect = to_egui_snapped(expected, frame.viewport.scale);
+
+        let seen: SeenCtx = std::rc::Rc::default();
+        let recorder = std::rc::Rc::clone(&seen);
+        let mut painters = CustomPainters::new();
+        painters.register(
+            "sparkline",
+            move |_painter: &egui::Painter, ctx: &CustomPaintCtx<'_>| {
+                *recorder.borrow_mut() = Some((
+                    ctx.rect,
+                    ctx.clip,
+                    ctx.opacity,
+                    ctx.scale,
+                    ctx.colors.color("surface.base").is_some(),
+                ));
+                true
+            },
+        );
+        let mut images = ImageSources::new();
+        let report = paint_frame_with_hosts(
+            &host.painter(),
+            &frame,
+            &mut shaper,
+            &snapshot(),
+            &painters,
+            &mut images,
+        );
+        assert_eq!(report.customs, 1, "{report:?}");
+
+        let (rect, clip, opacity, scale, saw_theme_color) =
+            seen.borrow().expect("the painter must have run");
+        assert_eq!(
+            rect, expected_rect,
+            "the resolved rect must match the placement"
+        );
+        assert!(
+            clip.is_positive(),
+            "a node nothing has clipped away must still carry a positive clip: {clip:?}"
+        );
+        assert!(
+            clip.contains_rect(rect),
+            "the clip in force must cover the rect it accompanies: clip {clip:?}, rect {rect:?}"
+        );
+        assert!((opacity - 1.0).abs() < 1e-6, "opacity {opacity}");
+        assert_eq!(
+            scale, frame.viewport.scale,
+            "the device scale must be the frame's"
+        );
+        assert!(
+            saw_theme_color,
+            "the painter must be able to resolve a real theme colour, not a fake one"
+        );
+    }
+
+    // --- Hosted content: image dispatch (T081) ------------------------------
+
+    fn image_node(source: &str) -> ViewNode {
+        ViewNode::new(NodeKind::Stack, "root").child(
+            ViewNode::new(NodeKind::Image, "logo").with_props(Props {
+                image: Some(source.into()),
+                ..Props::default()
+            }),
+        )
+    }
+
+    /// T081's headline claim: a source resolved through a registered
+    /// `ImageSources` draws, and the placement is counted as drawn.
+    #[test]
+    fn a_registered_image_source_draws_and_is_not_undrawn() {
+        let host = Headless::new();
+        let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
+        let frame = frame_of(&image_node("gallery/logo"), &mut h);
+        let mut shaper = host.shaper();
+
+        let mut images = ImageSources::new();
+        images.register(
+            "gallery/logo",
+            ImagePixels::new(2, 1, vec![255, 0, 0, 255, 0, 255, 0, 255]),
+        );
+        let painters = CustomPainters::new();
+        let report = paint_frame_with_hosts(
+            &host.painter(),
+            &frame,
+            &mut shaper,
+            &snapshot(),
+            &painters,
+            &mut images,
+        );
+
+        assert_eq!(report.images, 1, "{report:?}");
+        assert!(report.undrawn.is_empty(), "{report:?}");
+        assert!(report.is_complete(), "{report:?}");
+    }
+
+    /// T081: a source with nothing registered for it is named by itself in
+    /// `undrawn` — not by the bare "image" kind, so an operator can tell
+    /// *which* picture failed to load.
+    #[test]
+    fn an_unresolvable_image_source_is_named_by_itself() {
+        let host = Headless::new();
+        let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
+        let frame = frame_of(&image_node("gallery/missing"), &mut h);
+        let mut shaper = host.shaper();
+
+        // A registry that has *something* registered, just not this name —
+        // proves the miss is per-source, not "the registry is empty".
+        let mut images = ImageSources::new();
+        images.register("gallery/logo", ImagePixels::new(1, 1, vec![0, 0, 0, 255]));
+        let painters = CustomPainters::new();
+        let report = paint_frame_with_hosts(
+            &host.painter(),
+            &frame,
+            &mut shaper,
+            &snapshot(),
+            &painters,
+            &mut images,
+        );
+
+        assert_eq!(report.images, 0, "{report:?}");
+        assert!(
+            report.undrawn.contains("image:gallery/missing"),
+            "{report:?}"
+        );
+        assert!(!report.is_complete(), "{report:?}");
+    }
+
+    /// A source registered with pixels that do not decode (wrong byte
+    /// count for the declared dimensions) fails to resolve exactly like an
+    /// unregistered one — named, not silently blank, not a panic.
+    #[test]
+    fn a_source_that_fails_to_decode_is_named_in_undrawn() {
+        let host = Headless::new();
+        let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
+        let frame = frame_of(&image_node("gallery/broken"), &mut h);
+        let mut shaper = host.shaper();
+
+        let mut images = ImageSources::new();
+        images.register("gallery/broken", ImagePixels::new(4, 4, vec![1, 2, 3]));
+        let painters = CustomPainters::new();
+        let report = paint_frame_with_hosts(
+            &host.painter(),
+            &frame,
+            &mut shaper,
+            &snapshot(),
+            &painters,
+            &mut images,
+        );
+
+        assert!(
+            report.undrawn.contains("image:gallery/broken"),
+            "{report:?}"
+        );
         assert!(!report.is_complete(), "{report:?}");
     }
 }

@@ -1576,7 +1576,11 @@ mod tests {
             2,
             "expected exactly the image and the custom kind: {undrawn:?}"
         );
-        assert!(undrawn.contains("image"), "{undrawn:?}");
+        // T081 makes an unresolvable image source name *itself* rather than
+        // reporting a bare kind, so an operator reading `undrawn` learns which
+        // source failed. The gallery declares one image, `gallery/logo`, and no
+        // `ImageSources` registry is wired here, so that is the name it lands as.
+        assert!(undrawn.contains("image:gallery/logo"), "{undrawn:?}");
         assert!(
             undrawn.contains(&format!("custom:{}", super::CUSTOM_KIND)),
             "{undrawn:?}"

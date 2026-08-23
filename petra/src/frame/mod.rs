@@ -119,6 +119,59 @@ impl PetrifiedFrame {
         out
     }
 
+    /// Whether any placement in this frame is hosted — whether the host, not
+    /// Petra, produced some of this frame's pixels
+    /// ([`PaintContent::is_hosted`]).
+    ///
+    /// This is the flag FR-060 requires the frame to carry, and the one the
+    /// driver's `frame` and `screenshot` responses surface
+    /// (`contracts/frame-identity.md`, "Not covered"). It tells a consumer
+    /// which of two claims it is holding:
+    ///
+    /// - `false`: two screenshots carrying one digest are the same picture.
+    ///   Digest equality is picture equality.
+    /// - `true`: "this screenshot is of the frame with this digest" still
+    ///   holds, but two screenshots with one digest may show different
+    ///   pictures, because the digest hashes an image's source string and a
+    ///   custom painter's name, never what either drew. A gate that wants
+    ///   pixel equality over such a region asks for a pixel comparison.
+    ///
+    /// Derived from [`PetrifiedFrame::content`] on demand rather than stored
+    /// beside it. A stored copy would be a second source of truth over the
+    /// same public field, free to drift from it exactly the way a stale
+    /// `paint_hash` can — and [`PetrifiedFrame::paint_hashes_agree`] exists
+    /// because that drift is not hypothetical. There is nothing here to keep
+    /// in sync, so nothing here can go stale.
+    ///
+    /// The frame is the unit because that is the unit a screenshot verifies.
+    /// Which placements are hosted is [`PetrifiedFrame::hosted_placements`].
+    #[must_use]
+    pub fn hosted(&self) -> bool {
+        // Over `content` rather than `drawn()`: the zip in `drawn` stops at
+        // the shorter of the two arrays, so a frame whose payload array
+        // outran its placements — which `paint_hashes_agree` calls a
+        // disagreement — would hide a hosted payload in the tail. Both
+        // arrays are public; this one answers over all of the one it reads.
+        self.content.iter().any(PaintContent::is_hosted)
+    }
+
+    /// Every hosted placement paired with what it draws, in tree pre-order.
+    ///
+    /// The rects a pixel comparison covers when
+    /// [`PetrifiedFrame::hosted`] is true: these are the regions where digest
+    /// equality does not imply picture equality, and nowhere else in the
+    /// frame is.
+    ///
+    /// Pairs the two arrays, so on a malformed frame whose payload array
+    /// outran its placements this can come up empty where
+    /// [`PetrifiedFrame::hosted`] says `true` — there is no placement to
+    /// report. That frame's digest already describes a picture it no longer
+    /// draws; [`PetrifiedFrame::paint_hashes_agree`] is the check that names
+    /// it, and neither accessor is the place to paper over it.
+    pub fn hosted_placements(&self) -> impl Iterator<Item = (&Placement, &PaintContent)> {
+        self.drawn().filter(|(_, content)| content.is_hosted())
+    }
+
     /// Whether every placement's paint hash still describes the payload at the
     /// same index.
     ///
@@ -325,15 +378,30 @@ pub fn petrify(
 mod tests {
     use super::{FrameCounter, TransitionActivity, Viewport, petrify};
     use crate::geom::Size;
-    use crate::testing::{Harness, MonoContent, NoRows, validated};
+    use crate::testing::{Harness, MonoContent, NoRows, validated, validated_with};
     use crate::token::ThemeMode;
-    use crate::tree::{AxisConstraint, Constraints, NodeKind, Props, ViewNode};
+    use crate::tree::{AxisConstraint, Constraints, NodeKind, Props, Registry, ViewNode};
 
     fn frame_of(tree: &ViewNode, w: f32, h: f32) -> super::PetrifiedFrame {
         let mut harness = Harness::with(MonoContent::default(), NoRows);
         petrify(
             1,
             validated(tree),
+            &mut harness.ctx(),
+            Viewport::new(Size::new(w, h), ThemeMode::Dark),
+            TransitionActivity::default(),
+        )
+    }
+
+    /// [`frame_of`] against a registry that knows one custom painter name, so
+    /// a tree may declare a `custom` node without failing acceptance.
+    fn frame_of_custom(tree: &ViewNode, painter: &str, w: f32, h: f32) -> super::PetrifiedFrame {
+        let mut registry = Registry::new();
+        registry.register_custom_kind(painter);
+        let mut harness = Harness::with(MonoContent::default(), NoRows);
+        petrify(
+            1,
+            validated_with(tree, &registry),
             &mut harness.ctx(),
             Viewport::new(Size::new(w, h), ThemeMode::Dark),
             TransitionActivity::default(),
@@ -420,6 +488,134 @@ mod tests {
         let seen: Vec<u64> = (0..5).map(|_| counter.take()).collect();
         assert_eq!(seen, [1, 2, 3, 4, 5]);
         assert_eq!(counter.peek(), 6);
+    }
+
+    /// A frame with nothing in it is not hosted, and asking does not panic.
+    ///
+    /// `petrify` always places a root, so this case is reachable only by
+    /// building the frame directly — which the digest's own empty-frame
+    /// reference vector already does. The accessor must answer it anyway: a
+    /// consumer holds a `PetrifiedFrame`, not a promise about how it was made.
+    #[test]
+    fn a_frame_with_no_placements_is_not_hosted() {
+        let viewport = Viewport::new(Size::new(1280.0, 800.0), ThemeMode::Dark);
+        let frame = super::PetrifiedFrame {
+            seq: 1,
+            digest: super::digest::digest(&viewport, &[]),
+            placements: Vec::new(),
+            content: Vec::new(),
+            subtree_hashes: Vec::new(),
+            subtree_len: Vec::new(),
+            slots: Vec::new(),
+            viewport,
+            transitions: TransitionActivity::default(),
+        };
+        assert!(!frame.hosted(), "there is nothing here to be hosted");
+        assert_eq!(frame.hosted_placements().count(), 0);
+    }
+
+    /// Text and containers are not hosted: the digest hashes the string and
+    /// the token names, so digest equality really is picture equality here.
+    ///
+    /// This is the half of the flag that has teeth. A flag stuck at `true`
+    /// would tell every consumer of every ordinary frame to fall back to
+    /// pixel comparison, and the FR-040 guarantee would be worth nothing.
+    #[test]
+    fn a_frame_of_text_and_containers_is_not_hosted() {
+        let tree = ViewNode::new(NodeKind::Stack, "root")
+            .child(text("a", "hello"))
+            .child(ViewNode::new(NodeKind::Spacer, "gap"))
+            .child(text("b", "world"));
+        let frame = frame_of(&tree, 200.0, 100.0);
+        assert!(frame.placements.len() >= 4, "{:?}", frame.placements);
+        assert!(
+            !frame.hosted(),
+            "text and containers are hashed by content, not by name"
+        );
+        assert_eq!(frame.hosted_placements().count(), 0);
+    }
+
+    /// Nesting does not hide a hosted node: the flag is over every placement
+    /// in the frame, not over the root or the top level.
+    ///
+    /// The image here sits inside a scroll, so it reaches the placement list
+    /// through the scrolled path rather than the plain one.
+    #[test]
+    fn an_image_inside_a_scrolled_subtree_makes_the_whole_frame_hosted() {
+        let tree = ViewNode::new(NodeKind::Stack, "root").child(
+            ViewNode::new(NodeKind::Scroll, "sc").child(
+                ViewNode::new(NodeKind::Stack, "inner")
+                    .child(text("caption", "a picture"))
+                    .child(ViewNode::new(NodeKind::Image, "pic").with_props(Props {
+                        image: Some("logo.png".to_string()),
+                        ..Props::default()
+                    })),
+            ),
+        );
+        let frame = frame_of(&tree, 200.0, 100.0);
+        assert!(frame.hosted(), "an image three levels down is still hosted");
+        let hosted: Vec<&str> = frame
+            .hosted_placements()
+            .map(|(p, _)| p.id.as_str())
+            .collect();
+        assert_eq!(
+            hosted,
+            ["/root/sc/inner/pic"],
+            "only the image is hosted; its ancestors draw their own pixels"
+        );
+    }
+
+    /// A hosted node clipped down to nothing still reports hosted.
+    ///
+    /// The flag reads the payload, never the geometry. That is deliberate and
+    /// this pins it: the flag is an upper bound on where the digest is blind,
+    /// and the safe direction is to over-report. Deciding it from the clip
+    /// would make it depend on the renderer honouring that clip exactly, and
+    /// on empty-rect arithmetic, to answer a question whose wrong answer is a
+    /// consumer trusting a digest that cannot see the difference.
+    #[test]
+    fn a_hosted_node_clipped_away_still_reports_hosted() {
+        let tall = Constraints {
+            vertical: AxisConstraint {
+                min: Some(400.0),
+                ..AxisConstraint::default()
+            },
+            ..Constraints::default()
+        };
+        let tree = ViewNode::new(NodeKind::Scroll, "sc").child(
+            ViewNode::new(NodeKind::Stack, "inner")
+                .with_props(Props {
+                    axis: Some(crate::geom::Axis::Vertical),
+                    ..Props::default()
+                })
+                .child(ViewNode::new(NodeKind::Spacer, "push").with_constraints(tall))
+                .child(ViewNode::new(NodeKind::Custom, "gauge").with_props(Props {
+                    custom_kind: Some("gauge".to_string()),
+                    ..Props::default()
+                })),
+        );
+        let frame = frame_of_custom(&tree, "gauge", 200.0, 40.0);
+        let gauge = frame
+            .placement("/sc/inner/gauge")
+            .expect("the custom node is placed even when the scroll clips it away");
+        assert!(
+            gauge.rect.w > 0.0 && gauge.rect.h > 0.0,
+            "a zero-area gauge would pass the next assertion for the wrong \
+             reason: rect {:?}",
+            gauge.rect
+        );
+        let visible = gauge.rect.intersect(gauge.clip);
+        assert!(
+            visible.w == 0.0 || visible.h == 0.0,
+            "this fixture must clip the gauge away entirely, or it proves \
+             nothing: rect {:?}, clip {:?}, visible {visible:?}",
+            gauge.rect,
+            gauge.clip
+        );
+        assert!(
+            frame.hosted(),
+            "the flag reads the payload, so a clipped-away painter still counts"
+        );
     }
 
     /// Ambient animations run forever by declaration, so a frame with only

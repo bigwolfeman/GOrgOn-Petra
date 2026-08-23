@@ -36,8 +36,9 @@ use gorgon_petra::layout::{
 use gorgon_petra::token::Presenter;
 use gorgon_petra::tree::{InputPolicy, Interaction, NodeKind, Props, Registry, ViewNode, validate};
 
+use crate::image::ImageSources;
 use crate::input::EventTranslator;
-use crate::paint::{PaintReport, paint_frame};
+use crate::paint::{CustomPainters, PaintReport, paint_frame_with_hosts};
 use crate::text::GalleyShaper;
 
 /// The egui layer every Petra frame paints into.
@@ -100,6 +101,12 @@ pub struct Host<A: App> {
     state: LayoutState,
     presenter: Presenter,
     registry: Registry,
+    /// Host-supplied painters for registered `custom` kinds, and decoded
+    /// image sources. Both start empty, which is the pre-FR-059 behaviour
+    /// exactly: an unregistered name lands in `PaintReport::undrawn` rather
+    /// than being drawn or being silently skipped.
+    painters: CustomPainters,
+    images: ImageSources,
     last_frame: Option<PetrifiedFrame>,
     last_scopes: BTreeMap<String, InputPolicy>,
     last_report: Option<PaintReport>,
@@ -118,6 +125,8 @@ impl<A: App> Host<A> {
             state: LayoutState::default(),
             presenter,
             registry: Registry::new(),
+            painters: CustomPainters::new(),
+            images: ImageSources::new(),
             last_frame: None,
             last_scopes: BTreeMap::new(),
             last_report: None,
@@ -141,6 +150,23 @@ impl<A: App> Host<A> {
     /// and transition names here before the first frame.
     pub fn registry_mut(&mut self) -> &mut Registry {
         &mut self.registry
+    }
+
+    /// The painter registry for `custom` kinds — register a painter before the
+    /// first pass, the same way `registry_mut` registers the kind itself.
+    ///
+    /// Registering the *kind* makes a tree acceptable; registering the
+    /// *painter* makes it visible. They are deliberately separate: a kind with
+    /// no painter is a reported gap (`PaintReport::undrawn`), not a refusal,
+    /// because a host that measures a region it cannot yet draw is a real and
+    /// honest state (FR-059).
+    pub fn painters_mut(&mut self) -> &mut CustomPainters {
+        &mut self.painters
+    }
+
+    /// The image source registry.
+    pub fn images_mut(&mut self) -> &mut ImageSources {
+        &mut self.images
     }
 
     /// The application.
@@ -271,11 +297,13 @@ impl<A: App> Host<A> {
             )
         };
 
-        let report = paint_frame(
+        let report = paint_frame_with_hosts(
             &ctx.layer_painter(petra_layer()),
             &frame,
             &mut self.shaper,
             snapshot.as_ref(),
+            &self.painters,
+            &mut self.images,
         );
         debug_assert!(
             report.is_complete(),

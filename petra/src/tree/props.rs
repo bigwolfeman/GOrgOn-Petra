@@ -62,6 +62,88 @@ pub enum TrackSize {
     FitContent,
 }
 
+/// How many contiguous grid tracks one child covers on each axis.
+///
+/// A **count**, never a range: the author says how many tracks the child
+/// covers, and the grid decides where the run starts (FR-061). No cell address
+/// appears in the tree, so no tree can name a cell that does not exist, and
+/// re-ordering children cannot leave a stale coordinate behind. Both counts
+/// default to one, which is exactly the single cell every child occupied
+/// before spanning existed — a tree that declares no span is seated,
+/// measured, and digested identically to one written before this type.
+///
+/// A count of zero, or one larger than the axis has tracks, is a
+/// tree-acceptance violation rather than a clamp
+/// ([`crate::tree::Violation::GridSpanOutOfRange`]): a silently shortened span
+/// puts a child somewhere the author did not write.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct GridSpan {
+    /// Column tracks covered, counting the child's own column as the first.
+    pub columns: usize,
+    /// Row tracks covered, counting the child's own row as the first.
+    pub rows: usize,
+}
+
+impl Default for GridSpan {
+    /// One track on each axis — one cell, the pre-FR-061 behaviour.
+    fn default() -> Self {
+        Self {
+            columns: 1,
+            rows: 1,
+        }
+    }
+}
+
+impl GridSpan {
+    /// The one-cell span. Named so layout can state the default rather than
+    /// spell `Self { columns: 1, rows: 1 }` at each site.
+    pub const ONE: Self = Self {
+        columns: 1,
+        rows: 1,
+    };
+
+    /// Track count on `axis`, floored at one.
+    ///
+    /// The floor is a defensive one, not a policy: tree acceptance refuses a
+    /// zero count before layout ever runs, and [`crate::frame::petrify`] takes
+    /// only a [`crate::tree::ValidatedTree`]. It exists so a container called
+    /// out of turn divides by a span width of one rather than of zero.
+    #[must_use]
+    pub fn on(self, axis: Axis) -> usize {
+        match axis {
+            Axis::Horizontal => self.columns,
+            Axis::Vertical => self.rows,
+        }
+        .max(1)
+    }
+}
+
+/// The most row tracks a grid can have before any child spans: the rows it
+/// declared, or one per child, whichever is more.
+///
+/// A **ceiling**, not a count. The grid's real row count comes from its
+/// seating, and a span can push that past this number — rows have always grown
+/// to fit content, and a spanning child is content like any other. Deriving
+/// the count instead (`child_count.div_ceil(ncols)`) is wrong the moment a
+/// span exists, because children and cells stop being the same quantity: four
+/// children in four columns occupy five cells if one of them spans two, so the
+/// last child sits in row 1 and `4.div_ceil(4)` still answers one row.
+///
+/// What it is for is bounding a declared row span. Rows grow, so no positive
+/// row span can ever "run past the last row" the way an over-wide column span
+/// runs past the last column — the grid would just grow another row. A run
+/// longer than this covers rows nothing in the tree asks for, and without the
+/// bound a `usize` typo in one `span.rows` would materialize every one of
+/// them.
+///
+/// `ncols` is deliberately not a parameter: one row per child is the ceiling
+/// whatever the width, and dividing by the width is the exact mistake
+/// described above.
+pub(crate) fn max_row_tracks(declared_rows: usize, child_count: usize) -> usize {
+    declared_rows.max(child_count)
+}
+
 /// Which surface layer an overlay lives on. Higher layers paint later.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -181,6 +263,17 @@ pub struct Props {
     /// Gap between grid rows.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub row_spacing: Option<f32>,
+    /// How many grid tracks this node covers on each axis.
+    ///
+    /// Declared on the **child**, read by the `grid` parent: it is the child
+    /// that knows it is a week-long event or a full-width header. Absent is
+    /// the one-cell span every child had before FR-061, and it serializes
+    /// away, so no tree written before spanning existed changes shape.
+    /// Declaring it under a parent that is not a `grid` is a violation
+    /// ([`crate::tree::Violation::SpanOutsideGrid`]) rather than a silently
+    /// ignored field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub span: Option<GridSpan>,
     /// Extra logical extent materialized past each end of a scroll viewport.
     ///
     /// Declared on the **`scroll`**, which is what has a viewport and an
@@ -384,6 +477,14 @@ impl Props {
         }
     }
 
+    /// Resolved grid span. Absent declares one cell, which is
+    /// [`GridSpan::ONE`] — the same "absence is the documented default" rule
+    /// [`Props::padding`] follows.
+    #[must_use]
+    pub fn span(&self) -> GridSpan {
+        self.span.unwrap_or(GridSpan::ONE)
+    }
+
     /// Resolved content insets. Absent declares no padding, which resolves to
     /// `Insets::NONE` — the same "absence is the documented default" rule
     /// every other resolver here follows (`DEFAULT_SPACING`, `DEFAULT_OVERSCAN`).
@@ -428,8 +529,109 @@ impl Props {
 
 #[cfg(test)]
 mod tests {
-    use super::{Layer, Props, TextWrap, TrackSize};
+    use super::{GridSpan, Layer, Props, TextWrap, TrackSize, max_row_tracks};
     use crate::geom::{Axis, Insets};
+
+    /// One cell on both axes, which is what every child had before FR-061.
+    /// Pinned as a test rather than trusted to the `Default` impl staying
+    /// written that way: the whole no-movement claim for existing trees rests
+    /// on an absent span resolving to exactly this.
+    #[test]
+    fn an_absent_span_resolves_to_one_cell() {
+        assert_eq!(GridSpan::default(), GridSpan::ONE);
+        assert_eq!(GridSpan::ONE.columns, 1);
+        assert_eq!(GridSpan::ONE.rows, 1);
+        assert_eq!(Props::default().span(), GridSpan::ONE);
+        assert_eq!(GridSpan::ONE.on(Axis::Horizontal), 1);
+        assert_eq!(GridSpan::ONE.on(Axis::Vertical), 1);
+    }
+
+    /// A Lua table writes the axis it cares about and leaves the other one
+    /// out. FR-011 requires the wire shape stay something a table can produce,
+    /// and a table that says `{ rows = 4 }` must not be read as a zero-column
+    /// span.
+    #[test]
+    fn a_span_that_names_one_axis_leaves_the_other_at_one() {
+        let rows_only: GridSpan = serde_json::from_str(r#"{"rows":4}"#).unwrap();
+        assert_eq!(
+            rows_only,
+            GridSpan {
+                columns: 1,
+                rows: 4
+            }
+        );
+        let cols_only: GridSpan = serde_json::from_str(r#"{"columns":3}"#).unwrap();
+        assert_eq!(
+            cols_only,
+            GridSpan {
+                columns: 3,
+                rows: 1
+            }
+        );
+        let neither: GridSpan = serde_json::from_str("{}").unwrap();
+        assert_eq!(neither, GridSpan::ONE);
+    }
+
+    /// `deny_unknown_fields`, the same as every other props type here: a
+    /// misspelled axis is refused, not silently read as the default.
+    #[test]
+    fn a_misspelled_span_axis_is_refused_rather_than_defaulted() {
+        let err = serde_json::from_str::<GridSpan>(r#"{"column":3}"#).unwrap_err();
+        assert!(
+            err.to_string().contains("unknown field"),
+            "expected an unknown-field refusal, got {err}"
+        );
+    }
+
+    /// A `Props` with no span serializes without the key at all, so no tree
+    /// written before spanning existed changes shape on the wire — and a
+    /// `Props` that does declare one round-trips to the same value.
+    #[test]
+    fn a_span_round_trips_and_an_absent_one_writes_no_key() {
+        let plain = Props {
+            columns: vec![TrackSize::FitContent],
+            ..Props::default()
+        };
+        let json = serde_json::to_string(&plain).unwrap();
+        assert!(
+            !json.contains("span"),
+            "an undeclared span must not appear on the wire, got {json}"
+        );
+        assert_eq!(serde_json::from_str::<Props>(&json).unwrap(), plain);
+
+        let spanning = Props {
+            span: Some(GridSpan {
+                columns: 2,
+                rows: 4,
+            }),
+            ..Props::default()
+        };
+        let json = serde_json::to_string(&spanning).unwrap();
+        assert_eq!(json, r#"{"span":{"columns":2,"rows":4}}"#);
+        assert_eq!(serde_json::from_str::<Props>(&json).unwrap(), spanning);
+        assert_eq!(
+            serde_json::from_str::<Props>(&json).unwrap().span(),
+            GridSpan {
+                columns: 2,
+                rows: 4
+            }
+        );
+    }
+
+    /// The row ceiling is one row per child, never `children / columns`.
+    ///
+    /// Dividing is the mistake this function exists to name: four children in
+    /// four columns take five cells once one of them spans two, so the last
+    /// child sits in row 1 while `4.div_ceil(4)` still answers one row. A
+    /// ceiling derived that way would refuse a two-row span on a grid that is
+    /// about to have two rows.
+    #[test]
+    fn the_row_ceiling_counts_children_not_cells_per_row() {
+        assert_eq!(max_row_tracks(0, 4), 4);
+        assert_eq!(max_row_tracks(96, 20), 96, "declared rows win when larger");
+        assert_eq!(max_row_tracks(2, 9), 9, "children win when they are more");
+        assert_eq!(max_row_tracks(0, 0), 0);
+    }
 
     /// One vocabulary for one enum. The digest hashes
     /// [`TextWrap::as_str`] and the wire form uses serde's name; if the two
