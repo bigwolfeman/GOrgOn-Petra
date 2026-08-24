@@ -13,6 +13,17 @@
 //! integration tests are separate crates, so this file is recompiled once
 //! per binary that pulls it in. That is a build-graph fact, not a second
 //! *source*: there is exactly one place this code is written.
+//!
+//! [`gorgond`], [`inspector`] and [`journey`] are T044's addition: a real,
+//! subprocess-booted `gorgond`, a real inspector `Shell` hosted the same
+//! `DriverHost` way [`driven_server`] hosts [`CountingApp`] above, and the
+//! keyboard-only driver primitives both `tests/inspector_journey.rs` and
+//! T045's `tests/inspector_reconnect.rs` drive them with (FS-2: one journey
+//! harness, owned by T044).
+
+pub mod gorgond;
+pub mod inspector;
+pub mod journey;
 
 use std::ops::Range;
 use std::path::Path;

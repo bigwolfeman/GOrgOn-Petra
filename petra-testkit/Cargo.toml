@@ -78,6 +78,16 @@ tempfile.workspace = true
 # directly, not only the version `gorgon-petra-egui` already pulls in
 # transitively.
 egui = "0.36.1"
+# T044/T045's `tests/inspector_journey.rs` / `tests/inspector_reconnect.rs`
+# host the real `gorgon-inspector::app::Shell` (via `support::inspector`)
+# under this crate's own `DriverHost` — never a hand-built subset of
+# panels. `gorgond` itself is *not* listed here: `CARGO_BIN_EXE_<name>` only
+# populates for a binary in the *same* package as the test, never for one in
+# a dependency, so `support::gorgond` instead builds it with a `cargo build
+# --message-format=json` subprocess and reads the artifact path back — see
+# that module's own doc for why. Dev-only, same as `egui` above: nothing
+# under `src/` names `gorgon-inspector`.
+gorgon-inspector = { path = "../inspector" }
 
 [features]
 # The driver endpoint exists only when this feature is on. Production binaries
@@ -101,6 +111,17 @@ required-features = ["testkit"]
 # does — see that entry's own reasoning, which applies here unchanged.
 [[test]]
 name = "journey"
+required-features = ["testkit"]
+
+# T044: the US3 acceptance journey against a real, subprocess-booted
+# `gorgond` — needs the real driver server the same way `journey` does.
+[[test]]
+name = "inspector_journey"
+required-features = ["testkit"]
+
+# T045: daemon-restart honesty, on the harness T044 owns.
+[[test]]
+name = "inspector_reconnect"
 required-features = ["testkit"]
 
 # T036's production-exclusion proof is the mirror image of the two entries
