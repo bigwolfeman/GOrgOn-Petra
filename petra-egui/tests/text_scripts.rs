@@ -63,14 +63,10 @@
 use egui::{Context, FontId, RawInput};
 use gorgon_petra::layout::{ContentMeasure as _, TextRequest};
 use gorgon_petra::tree::TextWrap;
-use gorgon_petra_egui::fonts::{self, DESKTOP_FALLBACKS, GlyphOutcome, GlyphProbe, ScriptCoverage};
-use gorgon_petra_egui::text::GalleyShaper;
-
-/// The size the shipped `typography.body` token asks for. Coverage is
-/// measured at the size text is actually read at, because glyph
-/// rasterisation — and therefore the atlas region every comparison in here
-/// is made of — is scale-dependent.
-const BODY_SIZE: f32 = 14.0;
+use gorgon_petra_egui::fonts::{
+    self, DESKTOP_FALLBACKS, FontStackReport, GlyphOutcome, GlyphProbe, ScriptCoverage,
+};
+use gorgon_petra_egui::text::{GalleyShaper, Typography};
 
 /// A codepoint no face in the installed stack carries: EGYPTIAN HIEROGLYPH
 /// A001. Used to prove the detector fires without touching any sample.
@@ -82,7 +78,7 @@ const UNCOVERABLE: char = '\u{13000}';
 /// Panics — loudly, naming every path it tried — rather than skipping when
 /// the host lacks a face. A test that reports success on a machine where it
 /// could not do the work is the failure this whole file exists to prevent.
-fn desktop_context() -> Context {
+fn desktop_context() -> (Context, FontStackReport) {
     let ctx = Context::default();
     // egui has no fonts at all until a pass has run, and it applies new
     // definitions at the start of the pass *after* `set_fonts`. So: pass,
@@ -104,12 +100,26 @@ fn desktop_context() -> Context {
     ANNOUNCED.call_once(|| {
         print!("{}", report.summary());
     });
-    ctx
+    (ctx, report)
 }
 
-/// The probe, over the font the body typography token resolves to.
+/// The probe, over the font the shipped `typography.body` token resolves to.
+///
+/// Read off [`Typography`] rather than written out as a size and a family, so
+/// that coverage is measured at the size body text is actually read at even
+/// after the theme's type ramp moves. Glyph rasterisation is scale-dependent,
+/// and the atlas region every comparison in this file is made of moves with
+/// it.
 fn probe(ctx: &Context) -> GlyphProbe {
-    GlyphProbe::new(ctx, FontId::proportional(BODY_SIZE))
+    let typography = Typography::default();
+    let (style, unresolved) = typography.resolve(Some("typography.body"));
+    assert_eq!(
+        unresolved, None,
+        "the shipped theme must bind `typography.body`; measuring against a fallback style \
+         would measure a size no text is drawn at"
+    );
+    let font: FontId = style.font.clone();
+    GlyphProbe::new(ctx, font)
         .expect("the probe must be able to tell a box from a glyph before anything else runs")
 }
 
@@ -128,7 +138,7 @@ fn measure(ctx: &Context, probe: &GlyphProbe) -> Vec<ScriptCoverage> {
 /// glyph, and the machine-readable coverage lines say so.
 #[test]
 fn every_sample_script_renders_without_a_single_box() {
-    let ctx = desktop_context();
+    let (ctx, _report) = desktop_context();
     let probe = probe(&ctx);
     let coverages = measure(&ctx, &probe);
 
@@ -165,7 +175,7 @@ fn every_sample_script_renders_without_a_single_box() {
 /// the exact `Arc<Galley>` `paint::paint_frame` would put on screen.
 #[test]
 fn the_production_shaper_draws_the_same_runs_without_a_box() {
-    let ctx = desktop_context();
+    let (ctx, _report) = desktop_context();
     let probe = probe(&ctx);
     let mut shaper = GalleyShaper::new(ctx.clone());
 
@@ -227,7 +237,7 @@ fn the_production_shaper_draws_the_same_runs_without_a_box() {
 /// "the comparison never says no".
 #[test]
 fn the_detector_calls_an_uncoverable_codepoint_a_box() {
-    let ctx = desktop_context();
+    let (ctx, _report) = desktop_context();
     let probe = probe(&ctx);
     assert_eq!(
         probe.outcome(&ctx, UNCOVERABLE),
@@ -259,9 +269,8 @@ fn the_detector_calls_an_uncoverable_codepoint_a_box() {
 /// so the record cannot outlive the defect.
 #[test]
 fn the_emoji_gaps_are_exactly_the_recorded_ones() {
-    let ctx = desktop_context();
+    let (ctx, report) = desktop_context();
     let probe = probe(&ctx);
-    let report = fonts::install_desktop_fallbacks(&ctx);
     let host_has_a_modern_emoji_face = report.installed_face("gorgon-fallback-emoji");
 
     let coverage = probe.coverage(&ctx, "emoji-boundary", fonts::emoji_boundary_sample());
