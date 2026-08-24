@@ -40,16 +40,27 @@
 //! polling publisher would spend a clone a frame proving that nothing
 //! changed.
 
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::Arc;
+
+use tokio::sync::watch;
 
 use gorgon_petra::frame::PetrifiedFrame;
 use gorgon_petra::semantic::{self, SemanticTree};
+
+use crate::bridge::SettleState;
 
 /// One published frame, and its semantic projection, computed together so a
 /// reader's `(frame, tree)` pair is always from the same pass.
 pub struct Published {
     /// The frame as `Host::pass` petrified it.
     pub frame: PetrifiedFrame,
+    /// What this pass reported about whether the UI is done moving.
+    ///
+    /// Read by [`crate::settle`] to answer `wait_settle` and to decide when
+    /// an `act` may return. Measured at publish time by whoever published —
+    /// see [`FrameHub::publish_with`] for what the two publishing paths each
+    /// promise.
+    pub settle: SettleState,
     /// [`semantic::project`] of the same frame. `None` only for a frame with
     /// zero placements — `petrify` never produces one (the root is always
     /// placed), so in practice this is `Some` from the first real publish
@@ -60,17 +71,21 @@ pub struct Published {
 
 /// A cheap, `Clone`-able handle onto the latest published frame.
 ///
-/// Every clone shares the same underlying state (it is an `Arc` inside), so
-/// the application keeps one [`FrameHub`] from [`crate::server::Server::new`]
-/// and the server keeps another — both read and write the same cell.
+/// Backed by a [`tokio::sync::watch`] channel rather than a plain lock,
+/// because the driver has two readers with different needs and one cell has
+/// to serve both: `tree`/`frame` want the current value with no waiting
+/// ([`FrameHub::current`], a borrow-and-clone of an `Arc`), and `wait_settle`
+/// wants to be woken when a *new* frame arrives ([`FrameHub::subscribe`])
+/// without polling. A `watch` gives both from one write, and a publish never
+/// blocks on a reader.
 #[derive(Clone)]
-pub struct FrameHub(Arc<RwLock<Option<Arc<Published>>>>);
+pub struct FrameHub(Arc<watch::Sender<Option<Arc<Published>>>>);
 
 impl FrameHub {
     /// A hub with nothing published yet.
     #[must_use]
     pub fn new() -> Self {
-        Self(Arc::new(RwLock::new(None)))
+        Self(Arc::new(watch::Sender::new(None)))
     }
 
     /// Publish `frame` as the latest state driver queries answer from.
@@ -83,13 +98,37 @@ impl FrameHub {
     /// practice, an application publishes every pass — `Host::pass` already
     /// only runs when something is worth repainting).
     pub fn publish(&self, frame: &PetrifiedFrame) {
+        self.publish_with(frame, SettleState::from_frame(frame));
+    }
+
+    /// Publish `frame` together with the settle state the publisher measured
+    /// for this pass.
+    ///
+    /// The two paths differ in exactly one way, and it is worth being
+    /// explicit because a driver's `wait_settle` believes what is published
+    /// here:
+    ///
+    /// * [`FrameHub::publish`] derives the state from the frame alone. It
+    ///   reports the frame's own transition counts and says nothing is
+    ///   queued and no repaint is pending — true for an application with no
+    ///   [`crate::bridge::UiBridge`], because there is nothing that could
+    ///   queue work for it.
+    /// * `publish_with` is what
+    ///   [`crate::driver_host::DriverHost::step`] calls, and it reports the
+    ///   bridge queue and egui's own repaint request as well, because with a
+    ///   bridge attached those can be non-empty and a settle that ignored
+    ///   them would return while an action was still waiting to be applied.
+    pub fn publish_with(&self, frame: &PetrifiedFrame, settle: SettleState) {
         let tree = semantic::project(frame);
         let published = Arc::new(Published {
             frame: frame.clone(),
             tree,
+            settle,
         });
-        let mut guard = self.0.write().unwrap_or_else(PoisonError::into_inner);
-        *guard = Some(published);
+        // `send_replace`, not `send`: a publish must not fail because no
+        // driver client happens to be subscribed at that instant. The UI
+        // thread publishes whether or not anybody is listening.
+        self.0.send_replace(Some(published));
     }
 
     /// The most recently published frame, or `None` before the first
@@ -100,10 +139,19 @@ impl FrameHub {
     /// another query) for longer than a refcount bump.
     #[must_use]
     pub fn current(&self) -> Option<Arc<Published>> {
-        self.0
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+        self.0.borrow().clone()
+    }
+
+    /// A receiver that is woken by every [`FrameHub::publish_with`].
+    ///
+    /// What [`crate::settle`] waits on. The receiver starts up to date, so a
+    /// caller that subscribes and then immediately checks
+    /// [`FrameHub::current`] cannot miss a frame published in between: it
+    /// will see it in the borrow, and the next `changed()` will report the
+    /// frame after it.
+    #[must_use]
+    pub fn subscribe(&self) -> watch::Receiver<Option<Arc<Published>>> {
+        self.0.subscribe()
     }
 }
 

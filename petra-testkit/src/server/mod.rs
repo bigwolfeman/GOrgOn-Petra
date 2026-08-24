@@ -83,6 +83,7 @@ use crate::wire::{self, ErrorKind, Request, WireError};
 /// A driver server, bound to one [`FrameHub`].
 pub struct Server {
     hub: FrameHub,
+    bridge: crate::bridge::UiBridge,
     app: String,
     /// Cross-connection action ordering. See the module docs' "Concurrency"
     /// section for why a mutex acquired at handler entry, rather than at the
@@ -93,26 +94,37 @@ pub struct Server {
 
 impl Server {
     /// A new server presenting as `app` in `health`, sharing a fresh
-    /// [`FrameHub`] with the caller.
+    /// [`FrameHub`] and a fresh [`crate::bridge::UiBridge`] with the caller.
     ///
-    /// Returns the server (wrapped for [`Server::serve`], which needs to
-    /// clone it per connection) and the hub half the embedding application
-    /// keeps to call [`FrameHub::publish`] on after every `Host::pass`.
+    /// Returns three halves, and an application needs all three: the server
+    /// (wrapped for [`Server::serve`], which clones it per connection), the
+    /// hub it publishes frames into after every pass, and the bridge it
+    /// drains driver jobs from. In practice the last two go straight into
+    /// [`crate::driver_host::DriverHost::new`], which owns both from then on.
     #[must_use]
-    pub fn new(app: impl Into<String>) -> (Arc<Self>, FrameHub) {
+    pub fn new(app: impl Into<String>) -> (Arc<Self>, FrameHub, crate::bridge::UiBridge) {
         let hub = FrameHub::new();
+        let bridge = crate::bridge::UiBridge::new();
         let server = Arc::new(Self {
             hub: hub.clone(),
+            bridge: bridge.clone(),
             app: app.into(),
             action_order: tokio::sync::Mutex::new(()),
         });
-        (server, hub)
+        (server, hub, bridge)
     }
 
     /// The frame state this server answers `tree`/`frame` from.
     #[must_use]
     pub fn hub(&self) -> &FrameHub {
         &self.hub
+    }
+
+    /// The job queue `act` and `screenshot` submit into, and that the
+    /// application drains on the UI thread.
+    #[must_use]
+    pub fn bridge(&self) -> &crate::bridge::UiBridge {
+        &self.bridge
     }
 
     /// The `app` name `health` reports.

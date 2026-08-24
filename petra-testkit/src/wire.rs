@@ -319,6 +319,464 @@ pub fn frame_result(frame: &PetrifiedFrame) -> FrameResult {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Settle vocabulary
+//
+// `SettleState`, `Pending`, `SettleResult` and `ActResult` live here rather
+// than beside the settle logic in `crate::settle`, for the same reason
+// `HealthResult` and `FrameResult` do: three things read them and only one
+// may depend on `egui`. The application writes a `SettleState` per pass
+// (`crate::bridge`, `testkit`-only), `crate::settle` decides settledness from
+// it (`testkit`-only), and the importable driver client parses the results
+// off the wire with no feature on at all (FR-041). A copy in the client would
+// be a second definition of the protocol, which is exactly the drift this
+// module exists to prevent.
+// ---------------------------------------------------------------------------
+
+/// What one published frame reports about whether the UI is done moving.
+///
+/// Written by `crate::driver_host::DriverHost::step` at publish time, read
+/// by [`crate::settle`]. Every field is measured at that moment, not
+/// predicted: `queued_jobs` is `crate::bridge::UiBridge::queued` after the pass,
+/// `repaint_pending` is what egui itself asked for, and the two transition
+/// counts are the frame's own [`gorgon_petra::frame::TransitionActivity`].
+///
+/// Ambient is carried but **excluded from settled** (FR-039): a declared
+/// endless animation never stops, so a settle that waited for it would never
+/// return. Carrying it anyway is what lets `wait_settle`'s timeout say
+/// "3 ambient animations are running, which do not block settle" instead of
+/// leaving a caller to guess.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SettleState {
+    /// The published frame's own sequence.
+    pub frame_seq: u64,
+    /// The sequence of the most recent frame that consumed an injected
+    /// action, or `0` if none ever has. `PetrifiedFrame::seq` starts at 1, so
+    /// `0` cannot collide with a real frame.
+    pub applied_frame_seq: u64,
+    /// Transitions still moving toward a target. Blocks settle.
+    pub running_transitions: usize,
+    /// Declared-endless animations. Does **not** block settle.
+    pub ambient_transitions: usize,
+    /// Jobs queued on the bridge and not yet serviced. Blocks settle.
+    pub queued_jobs: usize,
+    /// Whether egui asked for another frame. Blocks settle.
+    pub repaint_pending: bool,
+}
+
+impl SettleState {
+    /// The state a frame reports about itself, with nothing else known.
+    ///
+    /// What `crate::server::FrameHub::publish` records for an application
+    /// that has no `crate::bridge::UiBridge`: the frame's own transition counts are real,
+    /// and `queued_jobs`/`repaint_pending` are zero because with no bridge
+    /// attached nothing can queue work and no driver is waiting on a
+    /// repaint. An application that *does* run a bridge must go through
+    /// `crate::server::FrameHub::publish_with` instead — this constructor
+    /// would understate it.
+    #[must_use]
+    pub fn from_frame(frame: &gorgon_petra::frame::PetrifiedFrame) -> Self {
+        Self {
+            frame_seq: frame.seq,
+            applied_frame_seq: 0,
+            running_transitions: frame.transitions.running,
+            ambient_transitions: frame.transitions.ambient,
+            queued_jobs: 0,
+            repaint_pending: false,
+        }
+    }
+}
+
+/// Why the UI is (or is not) done moving, in words a human can act on.
+///
+/// This is the `pending` member of `wait_settle`'s result and the body of
+/// `act`'s timeout message. It is deliberately not a bitmask and not a bare
+/// boolean: a caller that hits a timeout has to be able to read the answer
+/// and know what to do next.
+///
+/// Both string lists and the raw counts are carried. The lists are what a
+/// person reads; the counts are what a program branches on, so nobody has to
+/// parse English to find out how many transitions were running.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pending {
+    /// Every reason the UI has not settled, one sentence each. Empty means
+    /// settled — see [`Pending::is_settled`].
+    pub blocking: Vec<String>,
+    /// Reasons that were observed and deliberately do **not** block settle:
+    /// today, exactly declared-ambient animation (FR-039). Reported so a
+    /// timeout does not read as silence about a UI that is visibly moving.
+    pub not_blocking: Vec<String>,
+    /// Transitions still moving toward a target. Blocks settle.
+    pub running_transitions: usize,
+    /// Jobs queued on the `crate::bridge::UiBridge` and not yet serviced.
+    /// Blocks settle.
+    pub queued_jobs: usize,
+    /// Whether egui asked for another frame. Blocks settle.
+    pub repaint_pending: bool,
+    /// Declared-ambient animations. Reported, never blocking.
+    pub ambient_transitions: usize,
+}
+
+/// `""` or `"s"`, so a reason reads "1 job queued" and not "1 jobs queued".
+fn plural(n: usize) -> &'static str {
+    if n == 1 { "" } else { "s" }
+}
+
+impl Pending {
+    /// Read one published frame's settle state into words.
+    ///
+    /// **This function is the settle predicate.** A condition blocks settle
+    /// exactly when it pushes onto [`Pending::blocking`] here; nothing else
+    /// in this crate decides settledness. Ambient goes to
+    /// [`Pending::not_blocking`] instead (FR-039), which is why a frame with
+    /// ambient animation and nothing else is settled.
+    #[must_use]
+    pub fn of(state: SettleState) -> Self {
+        let mut blocking = Vec::new();
+        if state.running_transitions > 0 {
+            let n = state.running_transitions;
+            blocking.push(format!("{n} transition{} running", plural(n)));
+        }
+        if state.queued_jobs > 0 {
+            let n = state.queued_jobs;
+            blocking.push(format!("{n} job{} queued", plural(n)));
+        }
+        if state.repaint_pending {
+            blocking.push("a repaint is pending".to_owned());
+        }
+        let mut not_blocking = Vec::new();
+        if state.ambient_transitions > 0 {
+            let n = state.ambient_transitions;
+            not_blocking.push(if n == 1 {
+                "1 ambient animation running, which does not block settle (FR-039)".to_owned()
+            } else {
+                format!("{n} ambient animations running, which do not block settle (FR-039)")
+            });
+        }
+        Self {
+            blocking,
+            not_blocking,
+            running_transitions: state.running_transitions,
+            queued_jobs: state.queued_jobs,
+            repaint_pending: state.repaint_pending,
+            ambient_transitions: state.ambient_transitions,
+        }
+    }
+
+    /// The reason a wait that never saw a single frame is not settled.
+    ///
+    /// Distinct from "settled with nothing pending": an application that has
+    /// not completed a `Host::pass` has not settled, it has not started.
+    #[must_use]
+    pub fn no_frame_yet() -> Self {
+        Self {
+            blocking: vec![
+                "no frame has been published yet; the application has not completed a \
+                 Host::pass since the driver server started"
+                    .to_owned(),
+            ],
+            ..Self::default()
+        }
+    }
+
+    /// The reason an `act` wait is not settled while the frame that applied
+    /// the action has not been published yet.
+    #[must_use]
+    pub fn awaiting_applied_frame(applied_frame_seq: u64, newest_frame_seq: u64) -> Self {
+        Self {
+            blocking: vec![format!(
+                "the frame that applied the action (seq {applied_frame_seq}) has not been \
+                 published yet; the newest published frame is seq {newest_frame_seq}"
+            )],
+            ..Self::default()
+        }
+    }
+
+    /// The reason a wait ended because the hub stopped existing.
+    ///
+    /// Unreachable while the caller holds a [`FrameHub`] — the hub *is* the
+    /// sender — but handled in words rather than by panicking, so a future
+    /// caller that holds only a receiver gets an answer instead of an abort.
+    #[must_use]
+    pub fn publisher_gone() -> Self {
+        Self {
+            blocking: vec![
+                "the application dropped its frame publisher; no further frames can arrive"
+                    .to_owned(),
+            ],
+            ..Self::default()
+        }
+    }
+
+    /// Whether nothing blocks settle. Ambient in [`Pending::not_blocking`]
+    /// does not make this false — that is FR-039, and it is the whole reason
+    /// the two lists are separate.
+    #[must_use]
+    pub fn is_settled(&self) -> bool {
+        self.blocking.is_empty()
+    }
+
+    /// One line naming every reason, blocking first, non-blocking in
+    /// parentheses. What a `timeout` error message carries.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        let head = if self.blocking.is_empty() {
+            "nothing blocks settle".to_owned()
+        } else {
+            self.blocking.join("; ")
+        };
+        if self.not_blocking.is_empty() {
+            head
+        } else {
+            format!("{head} ({})", self.not_blocking.join("; "))
+        }
+    }
+}
+
+/// Whether a published frame's settle state means the UI is done moving.
+///
+/// Delegates to [`Pending::of`] so there is one definition of the rule, not
+/// two that can drift. Ambient is excluded (FR-039).
+#[must_use]
+pub fn is_settled(state: SettleState) -> bool {
+    Pending::of(state).is_settled()
+}
+
+/// `wait_settle`'s result: `{settled, frame_seq, pending}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SettleResult {
+    /// Whether a settled frame was observed before the deadline.
+    pub settled: bool,
+    /// The frame the answer is about: the settled frame when `settled`, else
+    /// the newest frame the wait ever saw. `0` means no frame was ever seen —
+    /// `PetrifiedFrame::seq` starts at 1, so it cannot collide.
+    ///
+    /// This is the frame's own `seq`, the same number `health`, `frame` and
+    /// `screenshot` report, never [`SettleState::frame_seq`] (the publisher's
+    /// copy of it) — so a driver can never see one frame under two numbers.
+    pub frame_seq: u64,
+    /// Why, in words. On a timeout, every reason that was actually true.
+    pub pending: Pending,
+}
+
+/// `act`'s result: `{applied_frame_seq, settled_frame_seq}`.
+///
+/// See the module docs' "`applied_frame_seq` vs `settled_frame_seq`" for
+/// which one a test author should assert on. In short: `applied` answers "did
+/// my input land", `settled` answers "is the UI done reacting to it".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActResult {
+    /// The frame that consumed the injected events. Never zero for a
+    /// serviced action.
+    pub applied_frame_seq: u64,
+    /// The first frame at or after `applied_frame_seq` with nothing pending.
+    /// Greater than or equal to `applied_frame_seq`, and equal to it when the
+    /// action started nothing that animates.
+    pub settled_frame_seq: u64,
+}
+
+// ---------------------------------------------------------------------------
+// `act`'s parameters
+//
+// `contracts/driver-protocol.md` fixes `{kind, target: {node_id | pos},
+// payload?}` and leaves the payload's shape to the implementation. It is
+// spelled out here rather than in the server because the client has to build
+// exactly what the server parses, and `gorgon_petra::KeyCode` and
+// `Modifiers` carry no serde derives — so without one shared spelling the two
+// sides would each invent one.
+// ---------------------------------------------------------------------------
+
+/// A point on the wire, in **device pixels** — the same units and rounding
+/// [`WirePlacement::rect`] carries.
+///
+/// Device rather than logical, so a client that read a placement out of a
+/// `frame` response can aim at it without knowing the display scale. The
+/// server divides by `viewport.scale` before handing the point to the
+/// injector, which works in logical units.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct WirePoint {
+    /// Device-pixel x.
+    pub x: f32,
+    /// Device-pixel y.
+    pub y: f32,
+}
+
+/// `act`'s `target`: exactly one of `{node_id}` or `{pos}`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WireTarget {
+    /// A stable semantic-tree id. A stale one fails with
+    /// [`ErrorKind::StaleNode`] and delivers nothing (FR-039) — it never
+    /// falls through to whatever now occupies those coordinates.
+    NodeId(String),
+    /// A raw device-pixel point. Nothing about it can go stale.
+    Pos(WirePoint),
+}
+
+/// Chord modifiers on the wire. Absent means none held.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireModifiers {
+    /// Shift.
+    #[serde(default)]
+    pub shift: bool,
+    /// Control.
+    #[serde(default)]
+    pub ctrl: bool,
+    /// Alt / Option.
+    #[serde(default)]
+    pub alt: bool,
+    /// Command / Super / Windows.
+    #[serde(default)]
+    pub meta: bool,
+}
+
+/// `act`'s `payload`: the members the requested `kind` needs, and no others.
+///
+/// One flat optional set rather than a per-kind enum, because the wire's
+/// discriminant is already `kind` and a second one would let a request name
+/// two different actions. Which members a kind requires is checked by the
+/// server, which is the only side that can answer "this frame cannot do
+/// that".
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ActPayload {
+    /// `text-edit`: the committed text, as a paste or an IME commit would
+    /// deliver it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// `key`: the key's name — see [`key_name`] for the spelling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    /// `drag`: where the gesture ends, device pixels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<WirePoint>,
+    /// `scroll`: the wheel delta, device pixels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delta: Option<WirePoint>,
+    /// Modifiers held for the whole gesture. `scroll` carries none — Petra's
+    /// own scroll event has no modifier field, so a value here would be
+    /// discarded rather than honoured.
+    #[serde(default)]
+    pub modifiers: WireModifiers,
+}
+
+/// A key's wire spelling.
+///
+/// Lower-case, kebab for the two-word names, `f1`..`f24` for function keys,
+/// and the character itself for a printable key. Closed by
+/// [`gorgon_petra::KeyCode`] being closed; [`parse_key`] is the exact
+/// inverse, which `crate::invariant` checks over every non-parameterised
+/// variant.
+#[must_use]
+pub fn key_name(key: gorgon_petra::KeyCode) -> String {
+    use gorgon_petra::KeyCode as K;
+    match key {
+        K::Tab => "tab".to_owned(),
+        K::Enter => "enter".to_owned(),
+        K::Escape => "escape".to_owned(),
+        K::Space => "space".to_owned(),
+        K::Backspace => "backspace".to_owned(),
+        K::Delete => "delete".to_owned(),
+        K::Up => "up".to_owned(),
+        K::Down => "down".to_owned(),
+        K::Left => "left".to_owned(),
+        K::Right => "right".to_owned(),
+        K::Home => "home".to_owned(),
+        K::End => "end".to_owned(),
+        K::PageUp => "page-up".to_owned(),
+        K::PageDown => "page-down".to_owned(),
+        K::Function(n) => format!("f{n}"),
+        K::Char(c) => c.to_string(),
+    }
+}
+
+/// Parse a key's wire spelling, or `None` for anything that names no key.
+///
+/// A single character is a printable key, lower-cased the same way
+/// [`gorgon_petra::KeyCode::Char`] documents. `f0` and `f25` name no key: the
+/// range is 1..=24, and a caller that meant a character gets the one-character
+/// arm instead.
+#[must_use]
+pub fn parse_key(raw: &str) -> Option<gorgon_petra::KeyCode> {
+    use gorgon_petra::KeyCode as K;
+    Some(match raw {
+        "tab" => K::Tab,
+        "enter" => K::Enter,
+        "escape" => K::Escape,
+        "space" => K::Space,
+        "backspace" => K::Backspace,
+        "delete" => K::Delete,
+        "up" => K::Up,
+        "down" => K::Down,
+        "left" => K::Left,
+        "right" => K::Right,
+        "home" => K::Home,
+        "end" => K::End,
+        "page-up" => K::PageUp,
+        "page-down" => K::PageDown,
+        other => {
+            if let Some(digits) = other.strip_prefix('f')
+                && digits.len() <= 2
+                && let Ok(n) = digits.parse::<u8>()
+                && (1..=24).contains(&n)
+            {
+                return Some(K::Function(n));
+            }
+            let mut chars = other.chars();
+            let (first, rest) = (chars.next()?, chars.next());
+            if rest.is_some() {
+                return None;
+            }
+            K::Char(first.to_ascii_lowercase())
+        }
+    })
+}
+
+/// `screenshot`'s result: `{seq, digest, png_base64, hosted}`.
+///
+/// `png_base64` is text because the envelope is JSON, which has no byte
+/// type. [`ScreenshotResult::png_bytes`] is the way back; a client never has
+/// to know which base64 alphabet was used.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScreenshotResult {
+    /// The sequence of the frame that was actually captured and verified
+    /// (FR-040) — not whichever frame happened to be current when the
+    /// request arrived.
+    pub seq: u64,
+    /// That frame's digest, hex-encoded.
+    pub digest: String,
+    /// Standard-alphabet base64 of the PNG bytes, with padding.
+    pub png_base64: String,
+    /// Whether any placement in the captured frame was drawn by a
+    /// host-registered custom painter (FR-060). Load-bearing: a consumer
+    /// comparing screenshots by digest must refuse or qualify the comparison
+    /// when this is true (`contracts/driver-protocol.md`, "Hosted content").
+    pub hosted: bool,
+}
+
+impl ScreenshotResult {
+    /// Build one from a capture's raw parts.
+    #[must_use]
+    pub fn new(seq: u64, digest: String, png: &[u8], hosted: bool) -> Self {
+        use base64::Engine as _;
+        Self {
+            seq,
+            digest,
+            png_base64: base64::engine::general_purpose::STANDARD.encode(png),
+            hosted,
+        }
+    }
+
+    /// The PNG bytes.
+    ///
+    /// # Errors
+    /// The decode error, when `png_base64` is not valid base64 — which for a
+    /// response this crate produced can only mean the transport corrupted it.
+    pub fn png_bytes(&self) -> Result<Vec<u8>, base64::DecodeError> {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.decode(&self.png_base64)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ErrorKind, Request};

@@ -79,7 +79,7 @@ fn settled_host() -> (Context, Host<DemoApp>) {
 /// A running server over a real socket under a fresh temp `XDG_RUNTIME_DIR`,
 /// already carrying one published, real frame.
 async fn running_server(dir: &Path) -> UnixStream {
-    let (server, hub) = Server::new("driver-test-app");
+    let (server, hub, _bridge) = Server::new("driver-test-app");
     let listener = Server::bind_under(dir)
         .await
         .expect("bind under a fresh temp dir");
@@ -287,4 +287,495 @@ async fn the_same_uid_peer_check_runs_and_accepts_this_process() {
     let mut client = Client::new(stream);
     let reply = client.call(1, "health", json!({})).await;
     assert_eq!(reply["ok"], true, "{reply}");
+}
+
+// ---------------------------------------------------------------------------
+// The three verbs that need the UI thread.
+//
+// `health`, `tree` and `frame` above answer from a published snapshot, so a
+// test can publish one by hand and never run a loop. `act`, `wait_settle` and
+// `screenshot` cannot: an action has to be injected into the input of a real
+// pass, and a capture has to happen while the pass's shapes still exist. So
+// these tests stand up a real driver-controlled application on its own thread
+// — `DriverHost` stepping a real `Host` — and talk to it over the real
+// socket. Nothing here calls a handler directly.
+//
+// This is also where the check deleted from `dispatch.rs` went. That test
+// asserted `act`/`wait_settle`/`screenshot` answered `unsupported` naming
+// their task; it could not survive them being implemented. What replaces it is
+// stronger in both directions: the parameter-validation tests that stayed in
+// `dispatch.rs` (a missing `kind`, an unknown kind, a `drag` with no
+// destination, an unknown key name, a malformed region), and the end-to-end
+// tests below, which assert the verbs do the thing rather than that they
+// decline to.
+// ---------------------------------------------------------------------------
+
+use std::sync::Arc as StdArc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use gorgon_petra_testkit::driver_host::DriverHost;
+use gorgon_petra_testkit::snapshot::Snapshotter;
+
+/// The driven application counts clicks and puts the count in the button's
+/// own label.
+///
+/// That is the whole point: a driver test that asserts only on the numbers
+/// `act` returns proves the verb answered, not that the click landed. The
+/// count travels input -> `App::handle` -> `view` -> a new frame -> the
+/// semantic tree, so a `tree` query after the `act` is reading the
+/// application's real state through the real projection.
+#[derive(Default)]
+struct CountingApp {
+    clicks: usize,
+}
+
+impl RowSource for CountingApp {
+    fn rows(&mut self, _source: &str, _range: Range<usize>) -> Vec<Arc<ViewNode>> {
+        Vec::new()
+    }
+}
+
+impl App for CountingApp {
+    fn view(&mut self) -> ViewNode {
+        ViewNode::new(NodeKind::Stack, "root").child(button("go", format!("Go {}", self.clicks)))
+    }
+
+    fn handle(&mut self, event: &InputEvent, route: &Route) {
+        if matches!(event, InputEvent::PointerPressed { .. })
+            && matches!(route, Route::Pointer { node } if node == "/root/go")
+        {
+            self.clicks += 1;
+        }
+    }
+
+    fn take_changes(&mut self) -> ChangeSet {
+        ChangeSet::All
+    }
+}
+
+/// A driver-controlled application running its own loop on its own thread.
+///
+/// The loop polls at 2 ms rather than sleeping until woken. That is a test
+/// harness, not the shipped shape: a real application blocks in its windowing
+/// event loop and `UiBridge::submit`'s `request_repaint` wakes it. Polling
+/// here keeps the test free of a winit dependency, and costs only that the
+/// zero-idle property (SC-002) is not what these tests measure.
+struct DrivenApp {
+    stop: StdArc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for DrivenApp {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// A server, a stepping application, and a connected client.
+async fn driven_server(dir: &Path) -> (DrivenApp, Client) {
+    let (server, hub, bridge) = Server::new("driven-test-app");
+    let listener = Server::bind_under(dir)
+        .await
+        .expect("bind under a fresh temp dir");
+    let socket = Server::socket_path_under(dir);
+    tokio::spawn(server.serve(listener));
+
+    let stop = StdArc::new(AtomicBool::new(false));
+    let thread_stop = StdArc::clone(&stop);
+    let thread = std::thread::spawn(move || {
+        let ctx = headless();
+        let host = Host::new(&ctx, CountingApp::default(), Presenter::new(dark()));
+        let mut driver = DriverHost::new(&ctx, host, hub, bridge, Snapshotter::new());
+        while !thread_stop.load(Ordering::SeqCst) {
+            driver
+                .step(&ctx, sized(RawInput::default()))
+                .drop_without_applying_deltas();
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    });
+
+    let stream = UnixStream::connect(&socket)
+        .await
+        .unwrap_or_else(|err| panic!("connect to {}: {err}", socket.display()));
+    // Wait for the first frame, so a test never races the application's
+    // startup and reads a "no frame yet" it did not mean to test.
+    let mut client = Client::new(stream);
+    for attempt in 1..=200 {
+        let health = client.call(attempt, "health", json!({})).await;
+        if health["result"]["frame_seq"].as_u64().unwrap_or(0) > 0 {
+            break;
+        }
+        assert!(attempt < 200, "the application never published a frame");
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    (
+        DrivenApp {
+            stop,
+            thread: Some(thread),
+        },
+        client,
+    )
+}
+
+/// `act` all the way down: the request crosses the socket, the events are
+/// injected into a real pass's input, and both frame numbers come back.
+#[tokio::test]
+async fn act_clicks_a_real_button_and_reports_both_frames() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (_app, mut client) = driven_server(dir.path()).await;
+
+    let before = button_label(&mut client, 99).await;
+    assert_eq!(
+        before, "Go 0",
+        "the application did not start at zero clicks"
+    );
+
+    let reply = client
+        .call(
+            100,
+            "act",
+            json!({"kind": "click", "target": {"node_id": "/root/go"}, "timeout_ms": 5000}),
+        )
+        .await;
+    assert_eq!(reply["ok"], true, "{reply}");
+    let applied = reply["result"]["applied_frame_seq"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("no applied_frame_seq: {reply}"));
+    let settled = reply["result"]["settled_frame_seq"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("no settled_frame_seq: {reply}"));
+    assert!(applied > 0, "an action was applied by no frame: {reply}");
+    assert!(
+        settled >= applied,
+        "the UI settled before the action was applied: {reply}"
+    );
+
+    // The load-bearing assertion. `act` returning two plausible numbers
+    // proves the verb answered; only the application's own state proves the
+    // click was delivered, and this reads it back through the semantic tree.
+    let after = button_label(&mut client, 101).await;
+    assert_eq!(
+        after, "Go 1",
+        "the click never reached the application: the button still reads {before:?}"
+    );
+}
+
+/// The driven application's button label, read over the socket.
+async fn button_label(client: &mut Client, id: i64) -> String {
+    let reply = client.call(id, "tree", json!({"role": "button"})).await;
+    assert_eq!(reply["ok"], true, "{reply}");
+    let matches = reply["result"]
+        .as_array()
+        .unwrap_or_else(|| panic!("expected an array of matches: {reply}"));
+    assert_eq!(matches.len(), 1, "{reply}");
+    matches[0]["label"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no label: {reply}"))
+        .to_owned()
+}
+
+/// Rule 3: a stale target fails loudly and delivers nothing.
+#[tokio::test]
+async fn a_stale_node_id_fails_with_stale_node_and_names_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (_app, mut client) = driven_server(dir.path()).await;
+
+    let reply = client
+        .call(
+            100,
+            "act",
+            json!({"kind": "click", "target": {"node_id": "/root/never-existed"}}),
+        )
+        .await;
+    assert_eq!(reply["ok"], false, "{reply}");
+    assert_eq!(reply["error"]["kind"], "stale-node", "{reply}");
+    assert!(
+        reply["error"]["message"]
+            .as_str()
+            .expect("a message")
+            .contains("never-existed"),
+        "the error does not name the node: {reply}"
+    );
+}
+
+/// A UI with nothing moving settles, and says so with no reason left over.
+#[tokio::test]
+async fn wait_settle_answers_settled_for_a_quiet_ui() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (_app, mut client) = driven_server(dir.path()).await;
+
+    let reply = client
+        .call(100, "wait_settle", json!({"timeout_ms": 5000}))
+        .await;
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert_eq!(reply["result"]["settled"], true, "{reply}");
+    assert!(
+        reply["result"]["frame_seq"].as_u64().unwrap_or(0) > 0,
+        "settled on no frame at all: {reply}"
+    );
+    let blocking = reply["result"]["pending"]["blocking"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no pending.blocking: {reply}"));
+    assert!(
+        blocking.is_empty(),
+        "settled: true beside a blocking reason: {reply}"
+    );
+}
+
+/// FR-040: the PNG is of the frame the response names. Proved by comparing
+/// the capture's digest against what `frame` reports for the same quiet UI —
+/// a capture that answered with a different frame's identity would differ.
+#[tokio::test]
+async fn screenshot_returns_a_png_of_the_frame_it_names() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (_app, mut client) = driven_server(dir.path()).await;
+
+    // Change what is on screen first, so "the frame it names" is a real
+    // claim. Against a static UI every frame carries the same digest, and a
+    // capture that answered with the wrong frame's identity would be
+    // indistinguishable from one that answered correctly.
+    let before = client.call(98, "frame", json!({})).await["result"]["digest"]
+        .as_str()
+        .expect("a digest")
+        .to_owned();
+    let acted = client
+        .call(
+            99,
+            "act",
+            json!({"kind": "click", "target": {"node_id": "/root/go"}, "timeout_ms": 5000}),
+        )
+        .await;
+    assert_eq!(acted["ok"], true, "{acted}");
+
+    let reply = client.call(100, "screenshot", json!({})).await;
+    if reply["ok"] == false {
+        // A build with no reachable GPU adapter cannot capture. That is a
+        // missing prerequisite, and the contract says a gate names it rather
+        // than skipping (FR-043) — so this asserts the *shape* of the honest
+        // refusal instead of passing silently.
+        assert_eq!(reply["error"]["kind"], "unsupported", "{reply}");
+        panic!(
+            "screenshot could not capture on this machine; the driver refused honestly, but \
+             this test proves nothing here: {reply}"
+        );
+    }
+    let seq = reply["result"]["seq"].as_u64().expect("a seq");
+    let digest = reply["result"]["digest"].as_str().expect("a digest");
+    assert!(seq > 0, "{reply}");
+    assert_eq!(digest.len(), 64, "a digest is 32 hex bytes: {reply}");
+
+    let frame = client.call(101, "frame", json!({})).await;
+    assert_eq!(
+        frame["result"]["digest"].as_str().expect("a digest"),
+        digest,
+        "the capture named a different frame's content than the one on screen"
+    );
+    assert_eq!(
+        reply["result"]["hosted"], frame["result"]["hosted"],
+        "{reply}"
+    );
+    assert_ne!(
+        digest, before,
+        "the capture named the pre-click frame's content, so this test could not tell a \
+         correct capture from a stale one"
+    );
+
+    let png = reply["result"]["png_base64"].as_str().expect("base64");
+    assert!(!png.is_empty(), "{reply}");
+    let bytes = gorgon_petra_testkit::wire::ScreenshotResult {
+        seq,
+        digest: digest.to_owned(),
+        png_base64: png.to_owned(),
+        hosted: false,
+    }
+    .png_bytes()
+    .expect("the base64 decodes");
+    assert_eq!(
+        &bytes[..8],
+        &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a],
+        "the payload is not a PNG"
+    );
+}
+
+/// A region outside the frame is refused rather than clamped, so a caller
+/// never gets a picture of somewhere else.
+#[tokio::test]
+async fn a_region_outside_the_viewport_is_refused() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (_app, mut client) = driven_server(dir.path()).await;
+
+    let reply = client
+        .call(
+            100,
+            "screenshot",
+            json!({"region": {"x": 100000, "y": 100000, "w": 10, "h": 10}}),
+        )
+        .await;
+    assert_eq!(reply["ok"], false, "{reply}");
+    assert_eq!(reply["error"]["kind"], "invalid-params", "{reply}");
+}
+
+// ---------------------------------------------------------------------------
+// The importable client against the real server.
+//
+// T033's own tests drive a scripted listener, which proves framing, id routing
+// and error mapping without needing the `testkit` feature — and deliberately
+// cannot prove that the shapes it parses are the shapes this server emits.
+// That is what these two tests are for, and why they live here: this is the
+// only file in the crate where a real `Client` and a real `Server` can meet.
+// ---------------------------------------------------------------------------
+
+use gorgon_petra::tree::Interaction;
+use gorgon_petra_testkit::driver::{
+    ActTarget, Client as Driver, JourneyStep, TreeAnswer, TreeQuery,
+};
+
+/// A driven server plus a connected importable client.
+async fn driven_with_client(dir: &Path) -> (DrivenApp, Driver) {
+    // `driven_server` already waits for the first frame, so the client below
+    // never races startup. Its raw `Client` is dropped; the socket stays.
+    let (app, mut raw) = driven_server(dir).await;
+    let _ = raw.call(1, "health", json!({})).await;
+    // The two halves of the socket-path formula, checked against each other
+    // rather than trusted. The client cannot import `Server::socket_path_under`
+    // — it is `testkit`-gated and the client must build with no feature on —
+    // so it recomputes the formula, and a drift would show up as "nothing ever
+    // connects" with no error naming the cause.
+    assert_eq!(
+        gorgon_petra_testkit::driver::this_process_socket_path(dir),
+        Server::socket_path_under(dir),
+        "the client's socket-path formula drifted from the server's"
+    );
+    let driver = Driver::connect(&Server::socket_path_under(dir))
+        .await
+        .expect("the importable client connects to the real server");
+    (app, driver)
+}
+
+/// Every verb the client types, against the server that actually emits those
+/// shapes. A field the client named differently would fail to decode here,
+/// which is the whole point.
+#[tokio::test]
+async fn the_importable_client_speaks_to_the_real_server() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (_app, driver) = driven_with_client(dir.path()).await;
+
+    let health = driver.health().await.expect("health decodes");
+    assert_eq!(health.app, "driven-test-app");
+    assert_eq!(health.pid, std::process::id());
+    assert!(health.frame_seq > 0);
+
+    let frame = driver.frame().await.expect("frame decodes");
+    assert!(!frame.placements.is_empty(), "a real frame has placements");
+    assert_eq!(frame.digest.len(), 64);
+
+    // The finder, and the server's documented asymmetry: a filtered query
+    // answers an array, an unfiltered one answers a node.
+    let button = driver
+        .find_by_role("button")
+        .await
+        .expect("exactly one button");
+    assert_eq!(button.label, "Go 0");
+    match driver
+        .tree(&TreeQuery::default())
+        .await
+        .expect("an unfiltered tree decodes")
+    {
+        TreeAnswer::Node(root) => assert_eq!(root.id, "/root"),
+        TreeAnswer::Matches(matches) => {
+            panic!("an unfiltered query answered an array of {}", matches.len())
+        }
+    }
+
+    let settled = driver
+        .wait_settle(5_000)
+        .await
+        .expect("wait_settle decodes");
+    assert!(settled.settled, "{settled:?}");
+    assert!(
+        settled.pending.blocking.is_empty(),
+        "settled beside a blocking reason: {settled:?}"
+    );
+
+    let acted = driver
+        .act(
+            Interaction::Click,
+            ActTarget::NodeId(button.id.clone()),
+            None,
+        )
+        .await
+        .expect("act decodes");
+    assert!(acted.applied_frame_seq > 0);
+    assert!(acted.settled_frame_seq >= acted.applied_frame_seq);
+
+    let after = driver
+        .find_by_role("button")
+        .await
+        .expect("the button is still there");
+    assert_eq!(
+        after.label, "Go 1",
+        "the client's act did not reach the application"
+    );
+}
+
+/// FR-044: a journey records real evidence per step, taken by round-tripping
+/// the server — never a restatement of the request.
+#[tokio::test]
+async fn a_journey_records_evidence_that_moved_with_the_ui() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (_app, driver) = driven_with_client(dir.path()).await;
+
+    let report = driver
+        .run_journey(vec![
+            JourneyStep::wait_settle("settle before starting", 5_000),
+            JourneyStep::act(
+                "click the button",
+                Interaction::Click,
+                ActTarget::NodeId("/root/go".into()),
+                None,
+            ),
+            JourneyStep::query(
+                "read the label back",
+                TreeQuery::default().with_role("button"),
+            ),
+        ])
+        .await;
+
+    assert_eq!(report.steps.len(), 3, "{report:#?}");
+    for step in &report.steps {
+        assert!(
+            step.failure_report().is_none(),
+            "{:?}",
+            step.failure_report()
+        );
+        assert!(
+            step.before.frame_seq > 0 && step.after.frame_seq > 0,
+            "a step recorded no frame evidence: {step:#?}"
+        );
+        assert_eq!(step.before.digest.len(), 64, "{step:#?}");
+    }
+
+    // The click step's evidence has to show the UI actually moved: the frame
+    // after it is later than the frame before it. Evidence that merely echoed
+    // the request would show the same number twice.
+    let click = &report.steps[1];
+    assert!(
+        click.after.frame_seq > click.before.frame_seq,
+        "the click step's after-evidence is not later than its before-evidence: {click:#?}"
+    );
+
+    let last = report.steps[2]
+        .outcome
+        .as_ref()
+        .expect("the query step succeeded");
+    match last {
+        gorgon_petra_testkit::driver::StepOutcome::Queried(TreeAnswer::Matches(nodes)) => {
+            assert_eq!(nodes.len(), 1, "{nodes:#?}");
+            assert_eq!(nodes[0].label, "Go 1");
+        }
+        other => panic!("expected a filtered query's matches, got {other:?}"),
+    }
 }

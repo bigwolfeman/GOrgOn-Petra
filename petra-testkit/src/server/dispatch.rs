@@ -1,20 +1,45 @@
-//! Verb dispatch: the handler seam T030 (`act`), T031 (`wait_settle` and real
-//! settle-blocking for `act`) and T032 (`screenshot`) fill in.
+//! Verb dispatch: all six verbs, for real.
 //!
-//! `health`, `tree` and `frame` are real, end to end, reading only what
-//! already existed: [`gorgon_petra::semantic`]'s projection (via
-//! [`super::hub::FrameHub`], which projects once per publish) and
-//! [`gorgon_petra::frame::PetrifiedFrame::hosted`]. `act`, `screenshot` and
-//! `wait_settle` answer [`ErrorKind::Unsupported`] naming the task that will
-//! implement them — an honest not-yet, never a fabricated result, and never
-//! a stub that returns as if it had run.
+//! `health`, `tree` and `frame` answer from what the application last
+//! published — [`super::hub::FrameHub`]'s snapshot — and never touch the UI
+//! thread. `act`, `screenshot` and `wait_settle` cannot work that way, and
+//! the shapes they use are documented where they live:
+//! [`crate::bridge`] for the job queue, [`crate::settle`] for what "settled"
+//! means, [`crate::snapshot`] for the pixels.
+//!
+//! # Which verbs take the ordering slot, and why
+//!
+//! [`super::Server::action_order`] is acquired by `act` and by `wait_settle`,
+//! for the whole verb, and by nothing else.
+//!
+//! * `act` holds it across both halves — inject, then wait for settle — which
+//!   is what makes two clients' actions execute in arrival order (rule 4)
+//!   rather than interleaving mid-gesture.
+//! * `wait_settle` holds it so that an `act` arriving during a wait queues
+//!   behind it instead of overtaking it. The cost is real and worth stating:
+//!   one client's long `wait_settle` delays another client's `act` by up to
+//!   its timeout. That is the same ordering promise applied consistently, and
+//!   a driver that does not want it has `frame` and `tree`, which never take
+//!   the slot.
+//! * `screenshot` does **not** take it. It changes nothing, so serializing it
+//!   behind actions would buy no ordering and would only make captures wait.
+//!   It still goes through the bridge, so the frame it captures is a real
+//!   painted one — see [`crate::snapshot`] for what "identity-verified"
+//!   covers.
 
 use serde_json::Value;
 
 use gorgon_petra::semantic::{StateFlag, TreeQuery};
+use gorgon_petra::tree::Interaction;
+use gorgon_petra::{Modifiers, Point, Size};
+use gorgon_petra_egui::inject::{Action, Target};
 
 use super::Server;
-use crate::wire::{self, ErrorKind, Request, WireError};
+use crate::bridge::{Answer, Job};
+use crate::settle;
+use crate::wire::{
+    self, ActPayload, ErrorKind, Request, WireError, WireModifiers, WirePoint, WireRect, WireTarget,
+};
 
 /// Every verb this server recognizes.
 const VERBS: &[&str] = &[
@@ -37,28 +62,9 @@ pub(super) async fn dispatch(server: &Server, req: &Request) -> Result<Value, Wi
         "health" => Ok(health(server)),
         "tree" => tree(server, &req.params),
         "frame" => frame(server),
-        "act" => {
-            action(
-                server,
-                "act needs T030 (synthetic input injection over the real \
-             platform-input boundary, gorgon/petra-egui/src/inject.rs) and T031 (settle \
-             detection, gorgon/petra-testkit/src/settle.rs); neither has landed yet",
-            )
-            .await
-        }
-        "wait_settle" => {
-            action(
-                server,
-                "wait_settle needs T031 (settle detection, \
-             gorgon/petra-testkit/src/settle.rs); it has not landed yet",
-            )
-            .await
-        }
-        "screenshot" => Err(WireError::new(
-            ErrorKind::Unsupported,
-            "screenshot needs T032 (wgpu readback + identity verification, \
-             gorgon/petra-testkit/src/snapshot/); it has not landed yet",
-        )),
+        "act" => act(server, &req.params).await,
+        "wait_settle" => wait_settle(server, &req.params).await,
+        "screenshot" => screenshot(server, &req.params).await,
         _ => unreachable!("filtered by the VERBS check above"),
     }
 }
@@ -210,14 +216,243 @@ fn no_frame_yet() -> WireError {
     )
 }
 
-/// `act`/`wait_settle`: acquire the cross-connection ordering slot (see
-/// `server/mod.rs`'s module docs), then answer `unsupported` naming `why`.
-/// The acquire-then-release happens even though the body below does nothing
-/// with the slot yet, so the ordering guarantee is already live: T030/T031
-/// replace this function's body, not its entry point.
-async fn action(server: &Server, why: &str) -> Result<Value, WireError> {
+/// `act`: `{kind, target, payload?, timeout_ms?}` ->
+/// `{applied_frame_seq, settled_frame_seq}`.
+///
+/// Both halves of "Action semantics" rule 2 happen here and in this order:
+/// the events are injected and a pass runs
+/// ([`crate::bridge::UiBridge::submit`], answered on the UI thread by
+/// [`crate::driver_host::DriverHost::step`]), and only then does the settle
+/// wait start, from the frame that applied them
+/// ([`settle::settle_after_act`]). A frame older than the action can never
+/// answer for it.
+///
+/// `timeout_ms` is not in the contract's parameter list. It is accepted
+/// anyway, because rule 2 makes this verb blocking and the contract gives a
+/// caller no other way to bound the wait; absent, [`settle::DEFAULT_TIMEOUT_MS`]
+/// applies. A contract-conformant client that never sends it is unaffected.
+async fn act(server: &Server, params: &Value) -> Result<Value, WireError> {
+    let request = ActRequest::parse(params)?;
+    // The slot is taken before anything is injected and held until the wait
+    // finishes, so two clients' actions cannot interleave mid-gesture.
     let _guard = server.action_order().lock().await;
-    Err(WireError::new(ErrorKind::Unsupported, why))
+    // The scale comes from the frame on screen, so a device-pixel target
+    // means the same thing to the caller and to the injector. No frame means
+    // there is nothing to act on, and saying so beats guessing a scale.
+    let Some(published) = server.hub().current() else {
+        return Err(no_frame_yet());
+    };
+    let scale = published.frame.viewport.scale.factor();
+    let (target, action) = request.to_action(scale)?;
+    match server.bridge().submit(Job::Act { target, action }).await {
+        Answer::Acted { applied_frame_seq } => {
+            let result =
+                settle::settle_after_act(server.hub(), applied_frame_seq, request.timeout_ms)
+                    .await?;
+            Ok(serde_json::to_value(result).expect("ActResult serializes"))
+        }
+        Answer::Refused(err) => Err(err),
+        // `Job::Act` is answered by exactly one arm of
+        // `DriverHost::step`, and it is not the capture arm.
+        Answer::Captured { .. } => Err(WireError::new(
+            ErrorKind::Timeout,
+            "the UI thread answered an action with a capture; this is a bug in \
+             gorgon-petra-testkit, not a protocol case",
+        )),
+    }
+}
+
+/// `wait_settle`: `{timeout_ms}` -> `{settled, frame_seq, pending}`.
+///
+/// Never fails. A deadline reached is `settled: false` with every pending
+/// reason named — the contract's verb table gives this verb a `settled: bool`,
+/// so a timeout is an answer the caller reads, not an error it catches.
+async fn wait_settle(server: &Server, params: &Value) -> Result<Value, WireError> {
+    let timeout_ms = parse_timeout(params)?;
+    let _guard = server.action_order().lock().await;
+    let result = settle::wait_settle(server.hub(), timeout_ms).await;
+    Ok(serde_json::to_value(result).expect("SettleResult serializes"))
+}
+
+/// `screenshot`: `{region?}` -> `{seq, digest, png_base64, hosted}`.
+///
+/// The capture happens on the UI thread, against the frame that pass painted,
+/// and the `(seq, digest)` on the response is that frame's — verified before
+/// the PNG was produced, not asserted afterwards (FR-040).
+async fn screenshot(server: &Server, params: &Value) -> Result<Value, WireError> {
+    let region = parse_region(params)?;
+    match server.bridge().submit(Job::Capture { region }).await {
+        Answer::Captured {
+            seq,
+            digest,
+            png,
+            hosted,
+        } => Ok(
+            serde_json::to_value(wire::ScreenshotResult::new(seq, digest, &png, hosted))
+                .expect("ScreenshotResult serializes"),
+        ),
+        Answer::Refused(err) => Err(err),
+        Answer::Acted { .. } => Err(WireError::new(
+            ErrorKind::Timeout,
+            "the UI thread answered a capture with an action; this is a bug in \
+             gorgon-petra-testkit, not a protocol case",
+        )),
+    }
+}
+
+/// `act`'s parsed parameters.
+struct ActRequest {
+    kind: Interaction,
+    target: WireTarget,
+    payload: ActPayload,
+    timeout_ms: Option<u64>,
+}
+
+impl ActRequest {
+    fn parse(params: &Value) -> Result<Self, WireError> {
+        let kind = params
+            .get("kind")
+            .ok_or_else(|| WireError::new(ErrorKind::InvalidParams, "`act` needs a `kind`"))?;
+        let kind: Interaction = serde_json::from_value(kind.clone()).map_err(|err| {
+            WireError::new(
+                ErrorKind::InvalidParams,
+                format!(
+                    "`kind` must be one of click, drag, hover, focus, text-edit, scroll, \
+                     key: {err}"
+                ),
+            )
+        })?;
+        let target = params.get("target").ok_or_else(|| {
+            WireError::new(
+                ErrorKind::InvalidParams,
+                "`act` needs a `target` of `{node_id}` or `{pos}`",
+            )
+        })?;
+        let target: WireTarget = serde_json::from_value(target.clone()).map_err(|err| {
+            WireError::new(
+                ErrorKind::InvalidParams,
+                format!("`target` must be `{{node_id}}` or `{{pos: {{x, y}}}}`: {err}"),
+            )
+        })?;
+        let payload: ActPayload = match params.get("payload") {
+            Some(raw) => serde_json::from_value(raw.clone()).map_err(|err| {
+                WireError::new(ErrorKind::InvalidParams, format!("`payload`: {err}"))
+            })?,
+            None => ActPayload::default(),
+        };
+        Ok(Self {
+            kind,
+            target,
+            payload,
+            timeout_ms: parse_timeout(params)?,
+        })
+    }
+
+    /// The request in the injector's own vocabulary.
+    ///
+    /// `scale` converts every device-pixel point on the wire into the logical
+    /// units [`gorgon_petra_egui::inject`] works in — one conversion, here,
+    /// so no other call site has to remember which units it holds.
+    fn to_action(&self, scale: f32) -> Result<(Target, Action), WireError> {
+        let target = match &self.target {
+            WireTarget::NodeId(id) => Target::NodeId(id.clone()),
+            WireTarget::Pos(p) => Target::Pos(logical_point(*p, scale)),
+        };
+        let modifiers = modifiers(self.payload.modifiers);
+        let action = match self.kind {
+            Interaction::Click => Action::Click { modifiers },
+            Interaction::Hover => Action::Hover,
+            Interaction::Focus => Action::Focus,
+            Interaction::Drag => {
+                let to = self.payload.to.ok_or_else(|| {
+                    WireError::new(
+                        ErrorKind::InvalidParams,
+                        "`drag` needs `payload.to: {x, y}` — where the gesture ends",
+                    )
+                })?;
+                Action::Drag {
+                    to: logical_point(to, scale),
+                    modifiers,
+                }
+            }
+            Interaction::TextEdit => {
+                let text = self.payload.text.clone().ok_or_else(|| {
+                    WireError::new(
+                        ErrorKind::InvalidParams,
+                        "`text-edit` needs `payload.text` — the committed text",
+                    )
+                })?;
+                Action::TextEdit { text }
+            }
+            Interaction::Scroll => {
+                let delta = self.payload.delta.ok_or_else(|| {
+                    WireError::new(
+                        ErrorKind::InvalidParams,
+                        "`scroll` needs `payload.delta: {x, y}` — the wheel delta",
+                    )
+                })?;
+                Action::Scroll {
+                    delta: Size::new(delta.x / scale, delta.y / scale),
+                }
+            }
+            Interaction::Key => {
+                let raw = self.payload.key.as_deref().ok_or_else(|| {
+                    WireError::new(
+                        ErrorKind::InvalidParams,
+                        "`key` needs `payload.key` — the key's name, e.g. `enter`, `page-up`, \
+                         `f5`, or a single character",
+                    )
+                })?;
+                let key = wire::parse_key(raw).ok_or_else(|| {
+                    WireError::new(
+                        ErrorKind::InvalidParams,
+                        format!("`{raw}` names no key; see `wire::key_name` for the spelling"),
+                    )
+                })?;
+                Action::Key { key, modifiers }
+            }
+        };
+        Ok((target, action))
+    }
+}
+
+fn logical_point(p: WirePoint, scale: f32) -> Point {
+    Point::new(p.x / scale, p.y / scale)
+}
+
+fn modifiers(m: WireModifiers) -> Modifiers {
+    Modifiers {
+        shift: m.shift,
+        ctrl: m.ctrl,
+        alt: m.alt,
+        meta: m.meta,
+    }
+}
+
+fn parse_timeout(params: &Value) -> Result<Option<u64>, WireError> {
+    match params.get("timeout_ms") {
+        None | Some(Value::Null) => Ok(None),
+        Some(raw) => raw.as_u64().map(Some).ok_or_else(|| {
+            WireError::new(
+                ErrorKind::InvalidParams,
+                "`timeout_ms` must be a non-negative integer number of milliseconds",
+            )
+        }),
+    }
+}
+
+fn parse_region(params: &Value) -> Result<Option<WireRect>, WireError> {
+    match params.get("region") {
+        None | Some(Value::Null) => Ok(None),
+        Some(raw) => serde_json::from_value::<WireRect>(raw.clone())
+            .map(Some)
+            .map_err(|err| {
+                WireError::new(
+                    ErrorKind::InvalidParams,
+                    format!("`region` must be `{{x, y, w, h}}` in device pixels: {err}"),
+                )
+            }),
+    }
 }
 
 #[cfg(test)]
@@ -237,7 +472,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_unknown_verb_is_reported_as_such() {
-        let (server, _hub) = Server::new("test-app");
+        let (server, _hub, _bridge) = Server::new("test-app");
         let err = dispatch(&server, &req("no-such-verb", json!({})))
             .await
             .unwrap_err();
@@ -247,7 +482,7 @@ mod tests {
 
     #[tokio::test]
     async fn health_answers_before_any_frame_is_published() {
-        let (server, _hub) = Server::new("test-app");
+        let (server, _hub, _bridge) = Server::new("test-app");
         let result = dispatch(&server, &req("health", json!({}))).await.unwrap();
         assert_eq!(result["app"], "test-app");
         assert_eq!(result["pid"], std::process::id());
@@ -256,7 +491,7 @@ mod tests {
 
     #[tokio::test]
     async fn tree_before_any_publish_is_an_honest_not_yet() {
-        let (server, _hub) = Server::new("test-app");
+        let (server, _hub, _bridge) = Server::new("test-app");
         let err = dispatch(&server, &req("tree", json!({})))
             .await
             .unwrap_err();
@@ -265,31 +500,136 @@ mod tests {
 
     #[tokio::test]
     async fn a_malformed_role_filter_is_invalid_params() {
-        let (server, _hub) = Server::new("test-app");
+        let (server, _hub, _bridge) = Server::new("test-app");
         let err = dispatch(&server, &req("tree", json!({"role": 5})))
             .await
             .unwrap_err();
         assert_eq!(err.kind, ErrorKind::InvalidParams);
     }
 
+    /// A frame with no placements: enough for the parameter checks below,
+    /// which need only the viewport's scale, and never enough to be mistaken
+    /// for a real UI. `petrify` never produces one.
+    fn scale_only_frame() -> gorgon_petra::frame::PetrifiedFrame {
+        use gorgon_petra::frame::{PetrifiedFrame, TransitionActivity, Viewport, digest};
+        use gorgon_petra::geom::Size;
+        use gorgon_petra::token::ThemeMode;
+        let viewport = Viewport::new(Size::new(100.0, 100.0), ThemeMode::Dark);
+        PetrifiedFrame {
+            seq: 1,
+            digest: digest::digest(&viewport, &[]),
+            placements: Vec::new(),
+            content: Vec::new(),
+            subtree_hashes: Vec::new(),
+            subtree_len: Vec::new(),
+            slots: Vec::new(),
+            viewport,
+            transitions: TransitionActivity::default(),
+        }
+    }
+
     #[tokio::test]
-    async fn act_and_wait_settle_are_unsupported_and_name_a_task() {
-        let (server, _hub) = Server::new("test-app");
-        let err = dispatch(&server, &req("act", json!({}))).await.unwrap_err();
-        assert_eq!(err.kind, ErrorKind::Unsupported);
-        assert!(err.message.contains("T030"), "{}", err.message);
+    async fn act_before_any_frame_is_an_honest_not_yet() {
+        let (server, _hub, _bridge) = Server::new("test-app");
+        let err = dispatch(
+            &server,
+            &req(
+                "act",
+                json!({"kind": "click", "target": {"node_id": "/root"}}),
+            ),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Timeout);
+        assert!(err.message.contains("Host::pass"), "{}", err.message);
+    }
 
-        let err = dispatch(&server, &req("wait_settle", json!({})))
+    #[tokio::test]
+    async fn act_without_a_kind_is_invalid_params() {
+        let (server, _hub, _bridge) = Server::new("test-app");
+        let err = dispatch(&server, &req("act", json!({"target": {"node_id": "/x"}})))
             .await
             .unwrap_err();
-        assert_eq!(err.kind, ErrorKind::Unsupported);
-        assert!(err.message.contains("T031"), "{}", err.message);
+        assert_eq!(err.kind, ErrorKind::InvalidParams);
+        assert!(err.message.contains("kind"), "{}", err.message);
+    }
 
-        let err = dispatch(&server, &req("screenshot", json!({})))
+    #[tokio::test]
+    async fn an_unknown_action_kind_is_invalid_params_and_lists_the_seven() {
+        let (server, _hub, _bridge) = Server::new("test-app");
+        let err = dispatch(
+            &server,
+            &req(
+                "act",
+                json!({"kind": "double-click", "target": {"node_id": "/x"}}),
+            ),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.kind, ErrorKind::InvalidParams);
+        assert!(err.message.contains("text-edit"), "{}", err.message);
+    }
+
+    #[tokio::test]
+    async fn a_drag_without_a_destination_is_invalid_params() {
+        let (server, hub, _bridge) = Server::new("test-app");
+        hub.publish(&scale_only_frame());
+        let err = dispatch(
+            &server,
+            &req("act", json!({"kind": "drag", "target": {"node_id": "/x"}})),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.kind, ErrorKind::InvalidParams);
+        assert!(err.message.contains("payload.to"), "{}", err.message);
+    }
+
+    #[tokio::test]
+    async fn an_unknown_key_name_is_invalid_params_and_quotes_it() {
+        let (server, hub, _bridge) = Server::new("test-app");
+        hub.publish(&scale_only_frame());
+        let err = dispatch(
+            &server,
+            &req(
+                "act",
+                json!({
+                    "kind": "key",
+                    "target": {"node_id": "/x"},
+                    "payload": {"key": "super-enter"}
+                }),
+            ),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.kind, ErrorKind::InvalidParams);
+        assert!(err.message.contains("super-enter"), "{}", err.message);
+    }
+
+    #[tokio::test]
+    async fn wait_settle_answers_rather_than_failing_when_nothing_was_published() {
+        let (server, _hub, _bridge) = Server::new("test-app");
+        let result = dispatch(&server, &req("wait_settle", json!({"timeout_ms": 0})))
+            .await
+            .expect("wait_settle never errors");
+        assert_eq!(result["settled"], false);
+        assert_eq!(result["frame_seq"], 0);
+        assert!(
+            !result["pending"]["blocking"]
+                .as_array()
+                .expect("blocking is an array")
+                .is_empty(),
+            "a timeout with no reason named: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_malformed_region_is_invalid_params() {
+        let (server, _hub, _bridge) = Server::new("test-app");
+        let err = dispatch(&server, &req("screenshot", json!({"region": "all of it"})))
             .await
             .unwrap_err();
-        assert_eq!(err.kind, ErrorKind::Unsupported);
-        assert!(err.message.contains("T032"), "{}", err.message);
+        assert_eq!(err.kind, ErrorKind::InvalidParams);
+        assert!(err.message.contains("device pixels"), "{}", err.message);
     }
 
     /// The seam `act`/`wait_settle` share: the ordering slot serializes
@@ -301,7 +641,7 @@ mod tests {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
 
-        let (server, _hub) = Server::new("test-app");
+        let (server, _hub, _bridge) = Server::new("test-app");
         let concurrent = Arc::new(AtomicUsize::new(0));
         let max_seen = Arc::new(AtomicUsize::new(0));
         let mut tasks = Vec::new();

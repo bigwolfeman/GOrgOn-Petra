@@ -14,6 +14,11 @@ publish = false
 # `gorgon-petra` semantic-tree/frame types they wrap must be buildable with no
 # feature on.
 gorgon-petra = { path = "../petra" }
+# `screenshot` carries its PNG as base64 text, and both sides of the wire need
+# the codec: the server encodes, and a client that wants the bytes back
+# decodes. Unconditional for that second reason — a `testkit`-gated base64
+# would leave the importable client (FR-041) holding a string it cannot open.
+base64 = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
@@ -25,6 +30,36 @@ tokio.workspace = true
 # `Host` to produce a real frame over the real socket, and because T030's
 # `inject.rs` and T032's `snapshot/` (both under this feature) need it too.
 gorgon-petra-egui = { path = "../petra-egui", optional = true }
+# `src/bridge.rs` holds a clone of the application's `egui::Context` so a job
+# queued into an idle window can wake it (`Context::request_repaint` is the
+# documented thread-safe wake-up, and Petra paints no frames at idle by
+# design). That is a non-test use of `egui`, so it cannot ride on the
+# dev-dependency below. Optional, and reached only through `testkit`: the
+# client half of this crate (FR-041) must still build with no feature on.
+egui = { version = "0.36.1", optional = true }
+# T032's `src/snapshot/`: real pixels, through `egui`'s own tessellator and
+# `egui_wgpu`'s own pipeline, on a headless `wgpu` device.
+egui-wgpu = { version = "0.36.1", optional = true, default-features = false }
+# Declared here rather than left to `egui-wgpu`'s own `wgpu` line, because
+# that line asks for `["std", "wgsl"]` and *no backend*: which backends exist
+# is the embedder's choice, and a snapshot lane with none compiled in finds no
+# adapter and fails every capture. `PRIMARY | GL` is what `snapshot/gpu.rs`
+# asks the instance for. Already in the lock graph at 30.0.0 through
+# `eframe`'s `wgpu` feature, so this adds no download.
+wgpu = { version = "30.0", optional = true, default-features = false, features = [
+    "std",
+    "wgsl",
+    "vulkan",
+    "gles",
+] }
+# wgpu expresses device bring-up as two `async` calls. A capture runs on the
+# UI thread, which is not a tokio context, so blocking on those two futures
+# is the honest shape — the same one `egui_kittest` uses.
+pollster = { version = "1.0", optional = true }
+# PNG encoding for the `screenshot` result, and PNG decoding in the snapshot
+# tests, which assert on the pixels that came back rather than on a byte
+# count.
+image = { workspace = true, optional = true }
 nix = { workspace = true, optional = true }
 
 [dev-dependencies]
@@ -48,7 +83,15 @@ egui = "0.36.1"
 # The driver endpoint exists only when this feature is on. Production binaries
 # must not enable it: contracts/driver-protocol.md forbids a runtime switch.
 default = []
-testkit = ["dep:gorgon-petra-egui", "dep:nix"]
+testkit = [
+    "dep:gorgon-petra-egui",
+    "dep:egui",
+    "dep:egui-wgpu",
+    "dep:image",
+    "dep:nix",
+    "dep:pollster",
+    "dep:wgpu",
+]
 
 [[test]]
 name = "server"
