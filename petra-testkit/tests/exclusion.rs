@@ -92,12 +92,24 @@ fn build_example(testkit: bool) -> PathBuf {
         args.push("testkit".to_owned());
     }
 
-    let child = Command::new("cargo")
-        .args(&args)
+    let mut cmd = Command::new("cargo");
+    cmd.args(&args)
         .current_dir(manifest_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    // Process-group leader, so a timeout below can kill the whole subtree
+    // this spawns (`cargo` -> `rustc`), not just `cargo` itself — the same
+    // shape `gorgon/caps/src/subprocess.rs` uses under D-027. Without this,
+    // SIGKILL to `cargo` alone leaves its descendants orphaned and running:
+    // SIGKILL is not inherited and a dead `cargo` cannot relay it on the
+    // way down.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    let child = cmd
         .spawn()
         .unwrap_or_else(|err| panic!("start `cargo {}`: {err}", args.join(" ")));
     let pid = child.id();
@@ -118,9 +130,12 @@ fn build_example(testkit: bool) -> PathBuf {
             )
         }),
         Err(_) => {
-            let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
+            let kill_note = match kill_process_group(pid) {
+                Ok(()) => "killed its process group".to_owned(),
+                Err(err) => format!("failed to kill its process group: {err}"),
+            };
             panic!(
-                "`cargo {}` (pid {pid}) did not finish within {BUILD_TIMEOUT:?}; killed",
+                "`cargo {}` (pid {pid}) did not finish within {BUILD_TIMEOUT:?}; {kill_note}",
                 args.join(" ")
             );
         }
@@ -153,6 +168,40 @@ fn build_example(testkit: bool) -> PathBuf {
             String::from_utf8_lossy(&output.stdout)
         )
     })
+}
+
+/// Send SIGKILL to `pid`'s entire process group (`kill -9 -<pid>`), never
+/// `pid` alone. `pid` here is always a `cargo` process-group leader (see
+/// [`build_example`]'s `process_group(0)`): SIGKILL is not inherited, so
+/// signalling only the leader leaves any real descendant it spawned
+/// (`rustc`) running once the leader is gone — the same group-kill shape
+/// `gorgon/caps/src/subprocess.rs::terminate_group` uses under D-027, minus
+/// the SIGTERM grace period that function gives first — this only runs
+/// after the caller has already waited [`BUILD_TIMEOUT`] (300s) past the
+/// build's own bound, so there is nothing left worth shutting down
+/// gracefully.
+///
+/// This file deliberately builds with no Cargo features on (its own module
+/// doc, above) so it cannot rely on this crate's optional `nix` dependency
+/// — that is only pulled in behind the `testkit` feature — or on
+/// `tests/support/gorgond.rs::kill_process_group`, which depends on `nix`
+/// being present for that same reason. Shelling out to the `kill` binary,
+/// the same way this file's own `Command::new("kill")` already did before
+/// this fix, is what keeps this test buildable and correct with no
+/// features on.
+///
+/// # Errors
+/// The `kill` command failed to start, or exited non-zero.
+fn kill_process_group(pid: u32) -> Result<(), String> {
+    let target = format!("-{pid}");
+    let status = Command::new("kill")
+        .args(["-9", &target])
+        .status()
+        .map_err(|err| format!("failed to run `kill -9 {target}`: {err}"))?;
+    if !status.success() {
+        return Err(format!("`kill -9 {target}` exited {status}"));
+    }
+    Ok(())
 }
 
 /// Run a system tool and return its stdout as text, panicking (naming the
@@ -243,4 +292,65 @@ fn the_check_discriminates_against_a_testkit_build() {
         "the testkit build of examples/driven carries no `.sock` string; the exclusion check \
          above would pass on any binary and proves nothing: {binary:?}"
     );
+}
+
+#[cfg(test)]
+mod kill_process_group_tests {
+    use super::kill_process_group;
+    use std::os::unix::process::CommandExt;
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    /// The reproduction that motivated this fix, run for real: a
+    /// process-group leader with two children of its own (`cargo` ->
+    /// `rustc`, collapsed to one `sh` spawning two `sleep`s for a fast,
+    /// dependency-free test). `kill_process_group` must take out every
+    /// process in the group, not just the leader — which is exactly the
+    /// bug this file used to have: killing only the leader's pid left its
+    /// children (SIGKILL is not inherited, and a dead `cargo` cannot relay
+    /// it) running until the operator's machine was cleaned up by hand.
+    #[test]
+    fn kill_process_group_kills_every_process_in_the_group_not_just_the_leader() {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg("sleep 30 & sleep 30 & wait");
+        cmd.process_group(0);
+        let mut child = cmd
+            .spawn()
+            .expect("spawn a process-group leader with two children");
+        let pid = child.id();
+        // Give the shell a moment to fork both children before killing the
+        // group out from under it.
+        std::thread::sleep(Duration::from_millis(200));
+
+        kill_process_group(pid).expect("kill the process group");
+        let _ = child.wait();
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if !group_has_any_process(pid) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "expected no processes left in group {pid} after kill_process_group, \
+                 but `kill -0 -{pid}` still reports at least one"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// `kill -0 -<pgid>` succeeds (sends no signal, only checks) iff at
+    /// least one process in that group still exists. Stderr is swallowed —
+    /// `kill` prints its own "no such process" line once the group is
+    /// gone, which is the expected steady state this loop polls toward,
+    /// not a failure worth surfacing on every poll.
+    fn group_has_any_process(pgid: u32) -> bool {
+        Command::new("kill")
+            .args(["-0", &format!("-{pgid}")])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
 }

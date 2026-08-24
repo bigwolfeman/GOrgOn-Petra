@@ -110,24 +110,65 @@ pub fn foreign_causes(causes: &[egui::RepaintCause]) -> Vec<ForeignRepaint> {
 /// emphatically not a toolkit file, and a substring match would silently
 /// exempt every application example in this repository from the audit.
 fn is_accounted_for(file: &str) -> bool {
-    /// Crate names whose repaints are the toolkit's own bookkeeping —
-    /// window events, IME, egui's widget animations. None of them is a Petra
-    /// transition and none of them belongs to a hosted painter.
-    const TOOLKIT: [&str; 5] = ["egui", "eframe", "epaint", "ecolor", "accesskit"];
+    /// Crate names whose repaints are the toolkit's own bookkeeping — window
+    /// events, IME, egui's widget animations. None of them is a Petra
+    /// transition and none belongs to a hosted painter.
+    ///
+    /// Written out rather than derived from a prefix. A prefix rule reduced
+    /// `egui_playground` to `egui` and exempted every file in it from the
+    /// audit; the 2026-08-24 shakedown found that hole. An unlisted crate is
+    /// now reported as foreign, which is the safe direction for an audit: a
+    /// name that turns out to be toolkit is added here after somebody has
+    /// read the report, rather than being silently exempt forever.
+    ///
+    /// The list is every egui-family package in this workspace's
+    /// `Cargo.lock`.
+    ///
+    /// One collision remains and cannot be resolved from a path: a directory
+    /// named exactly `egui` that holds an application rather than the
+    /// toolkit reads as toolkit, because that is also what a path dependency
+    /// or a git checkout of the real crate looks like. Exempting it is the
+    /// wrong direction for an audit, but the alternative — refusing bare
+    /// names — would report every git-checkout build as foreign.
+    const TOOLKIT: [&str; 16] = [
+        "accesskit",
+        "accesskit_atspi_common",
+        "accesskit_consumer",
+        "accesskit_macos",
+        "accesskit_unix",
+        "accesskit_windows",
+        "accesskit_winit",
+        "ecolor",
+        "eframe",
+        "egui",
+        "egui-wgpu",
+        "egui-winit",
+        "egui_glow",
+        "emath",
+        "epaint",
+        "epaint_default_fonts",
+    ];
     /// This crate's own two request sites: `host.rs`'s focus-ring
     /// reconciliation and `schedule.rs`'s motion request. Both are already
     /// accounted for by the thing that made them.
     const OURS: [&str; 2] = ["petra-egui/src/host.rs", "petra-egui/src/schedule.rs"];
+
+    // `file!()` carries the host separator, so a path built on Windows is
+    // backslash-separated. Normalising here rather than at every comparison
+    // keeps both checks below written once.
+    let file = file.replace('\\', "/");
     if OURS.iter().any(|ours| file.ends_with(ours)) {
         return true;
     }
     file.split('/').any(|part| {
-        // A cargo registry directory carries the version: `egui-0.36.1`. A
-        // sibling crate carries an underscore: `accesskit_winit`. Both reduce
-        // to the crate name; `petra-egui` reduces to `petra`, which is the
-        // whole point.
-        let stem = part.split(['-', '_']).next().unwrap_or(part);
-        TOOLKIT.contains(&stem)
+        // A cargo registry directory carries the version: `egui-0.36.1`,
+        // `accesskit_winit-0.1`. Nothing else may be trimmed — the crate
+        // name itself has to match, dashes, underscores and all.
+        let name = part
+            .rsplit_once('-')
+            .filter(|(_, version)| version.starts_with(|c: char| c.is_ascii_digit()))
+            .map_or(part, |(name, _)| name);
+        TOOLKIT.contains(&name)
     })
 }
 
@@ -230,6 +271,46 @@ mod tests {
             "gorgon/petra-egui/examples/gallery.rs:214"
         );
         assert_eq!(foreign[1].source, "src/panels/sparkline.rs:77");
+    }
+
+    /// The trap a *prefix* match falls into, found by the 2026-08-24
+    /// shakedown: reducing a path component at its first `-` or `_` turned
+    /// `egui_playground` into `egui`, so an application crate whose name
+    /// merely starts with a toolkit crate's name was exempt from the audit
+    /// entirely — and so was every file under any directory called `egui`.
+    #[test]
+    fn a_crate_whose_name_starts_with_a_toolkit_name_is_not_the_toolkit() {
+        assert!(!is_accounted_for("egui_playground/src/main.rs"));
+        assert!(!is_accounted_for("eframe_demo/src/lib.rs"));
+        assert!(!is_accounted_for("epaint-viewer/src/main.rs"));
+        // A component that is *exactly* a toolkit crate name still counts,
+        // because that is what a path dependency or a git checkout of the
+        // toolkit looks like. See `is_accounted_for`'s own note on the one
+        // collision this rule cannot resolve from a path alone.
+        assert!(is_accounted_for("/home/x/egui/crates/egui/src/context.rs"));
+        // and the registry ones still are
+        assert!(is_accounted_for(
+            "/home/x/.cargo/registry/src/index.crates.io-1/egui-0.36.1/src/context.rs"
+        ));
+        assert!(is_accounted_for(
+            "/home/x/.cargo/registry/src/index.crates.io-1/accesskit_winit-0.1/src/lib.rs"
+        ));
+        assert!(is_accounted_for(
+            "/home/x/.cargo/registry/src/index.crates.io-1/egui-winit-0.36.1/src/lib.rs"
+        ));
+    }
+
+    /// `file!()` carries the host separator, so on Windows every path in a
+    /// cause arrives backslash-separated. Before the shakedown this made
+    /// egui's own bookkeeping *and* this host's own focus-ring request read
+    /// as foreign, so the idle audit could not pass on that platform at all.
+    #[test]
+    fn a_windows_path_classifies_the_same_as_a_unix_one() {
+        assert!(is_accounted_for(r"C:\src\gorgon\petra-egui\src\host.rs"));
+        assert!(is_accounted_for(
+            r"C:\Users\x\.cargo\registry\src\index.crates.io-1\egui-0.36.1\src\context.rs"
+        ));
+        assert!(!is_accounted_for(r"C:\src\myapp\src\panels\sparkline.rs"));
     }
 
     /// The trap a substring match falls into: this crate's own directory has

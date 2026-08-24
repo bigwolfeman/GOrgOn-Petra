@@ -275,7 +275,7 @@ fn set_truncated(node: &mut SemanticNode, id: &str) -> bool {
 
 /// The first node, in pre-order, with at least two directly-focusable
 /// children — the target `swap_two_focusable_children` needs.
-fn find_parent_with_two_focusable_children<'a>(node: &'a SemanticNode) -> Option<&'a SemanticNode> {
+fn find_parent_with_two_focusable_children(node: &SemanticNode) -> Option<&SemanticNode> {
     let focusable_children = node.children.iter().filter(|c| c.is_focusable()).count();
     if focusable_children >= 2 {
         return Some(node);
@@ -394,11 +394,34 @@ async fn every_inspector_screen_passes_the_semantic_audit() {
         });
     }
 
-    assert_eq!(
-        screens.len(),
-        5,
-        "did not capture all seven panels (default screen + all four tabs)"
-    );
+    // The property the message under the old `screens.len() == 5` assertion
+    // named and that assertion never checked: the length was set four lines
+    // above by this same loop and could not fail. Found by the 2026-08-24
+    // shakedown. What matters is that every panel `Shell::mounted` composes
+    // actually appeared on some captured screen — an audit that ran over a
+    // composition missing a panel would report zero violations for it.
+    const PANELS: [&str; 7] = [
+        "identity",
+        "fibers",
+        "fiber-detail",
+        "approvals",
+        "leaks",
+        "unload",
+        "trace",
+    ];
+    for panel in PANELS {
+        let seen = screens.iter().any(|screen| {
+            screen
+                .tree
+                .iter()
+                .any(|node| node.id.split('/').any(|segment| segment == panel))
+        });
+        assert!(
+            seen,
+            "no captured screen carries a node under `{panel}`; this audit ran over a \
+             composition that is missing that panel, and reported zero violations for it"
+        );
+    }
 
     // ---- Consistency: the hub and the wire agree on the current frame. ----
     // Proves `FrameHub::current` (what this test audits) and the driver's
@@ -504,6 +527,28 @@ async fn every_inspector_screen_passes_the_semantic_audit() {
     // honestly-reported outcome, and weakening or gating around the rule to
     // force a green run here would be exactly the theater this wave exists
     // to prevent.
+    // `TruncationIsReal` is not asserted with the other three, but it is not
+    // unbounded either. Pinning the count is what keeps the rule
+    // load-bearing: excluded-and-unpinned, it could go from zero to any
+    // number and this gate would stay green, which the 2026-08-24 shakedown
+    // named. Raising this number is a deliberate act that has to name the
+    // defect it is admitting.
+    const KNOWN_TRUNCATION_VIOLATIONS: usize = 0;
+    assert_eq!(
+        truncation_violations.len(),
+        KNOWN_TRUNCATION_VIOLATIONS,
+        "the number of TruncationIsReal violations moved. This rule is reported rather than \
+         asserted alongside the other three because the open `Placement::clip` defect \
+         (.agents/notes/proposed/bug-fix/2026-08-24-inspector-text-paints-outside-its-rect.md) \
+         can legitimately produce one — but the count is pinned, so a change has to be read \
+         and accounted for rather than absorbed silently:\n{}",
+        truncation_violations
+            .iter()
+            .map(|(s, v)| format!("[{s}] {v}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+
     let hard_violations: Vec<_> = all_violations
         .iter()
         .filter(|(_, v)| v.rule != AuditRule::TruncationIsReal)

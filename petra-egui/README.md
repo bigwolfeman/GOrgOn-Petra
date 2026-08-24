@@ -45,9 +45,14 @@ mentions an egui type.
   atlas half is merged upstream, the shaping half is still a draft PR. Until the
   overlay fork carries it, an emoji renders monochrome or not at all — never as
   a tofu box, and the gap is recorded rather than hidden.
-- The wasm target is **not** built by any gate. Nothing in
-  `gorgon/xtask/src/` passes `--target`, so desktop/web parity (SC-006) is
-  unverified in both directions (tasks T060-T062).
+- The wasm target **is** built by a gate, as of T060/T061: `cargo xtask gates
+  petra-parity` builds `gorgon/xtask/parity-wasm` for `wasm32-unknown-unknown`,
+  runs it in a headless browser, and compares frame digests and pixels against
+  the desktop host (SC-006, tolerance 2/255 per channel). What is still
+  unverified on the web side is SC-009: the mixed-script and emoji probe
+  (`gorgon/petra-egui/tests/text_scripts.rs`) is a desktop-only test, and no
+  lane runs a `GlyphProbe` in a browser, so tofu on the web target would not be
+  caught (task T066 as amended).
 
 ## Agent Experience
 
