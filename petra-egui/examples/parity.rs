@@ -76,6 +76,7 @@
 use std::ops::Range;
 use std::sync::Arc;
 
+use egui::{Context, FontId, RawInput};
 use gorgon_petra::component::{
     button, checkbox, field, heading, list_row, progress, radio, section, status, tab, tab_bar,
     text, toggle,
@@ -93,6 +94,7 @@ use gorgon_petra::tree::{
     Anchor, AxisConstraint, ClampRule, Constraints, InputPolicy, InsetRefs, Layer, NodeKind, Props,
     Role, Semantics, TextWrap, TrackSize, ViewNode,
 };
+use gorgon_petra_egui::fonts::{self, GlyphProbe};
 use gorgon_petra_egui::host::{App, Host};
 use gorgon_petra_egui::image::ImagePixels;
 use gorgon_petra_egui::paint::{CustomPaintCtx, CustomPainters};
@@ -1604,12 +1606,85 @@ fn presenter() -> Presenter {
 }
 
 // ---------------------------------------------------------------------------
+// SC-009's other half: what this target's font stack can actually draw
+// ---------------------------------------------------------------------------
+
+/// The point size the glyph probe measures at.
+///
+/// Not a style token and deliberately not one: this is the size the
+/// *measurement* runs at, not a size anything on the page is drawn at. The
+/// probe compares atlas regions, and epaint allocates one region per (face,
+/// glyph, metrics, subpixel bin) — so the measurement has to name a size, and
+/// naming the body size the page itself uses is the closest thing to what a
+/// reader would see.
+const GLYPH_PROBE_SIZE: f32 = 16.0;
+
+/// The first line of a healthy report, so a reader (and the lane) can tell a
+/// report from a truncated one.
+const GLYPH_HEADER: &str = "PETRA-GLYPH 1";
+
+/// Measure this target's font stack against
+/// [`gorgon_petra_egui::fonts::script_samples`].
+///
+/// # Why this builds its own `Context` instead of using the page's
+///
+/// The probe lays every sample codepoint out on its own, which pulls glyphs
+/// into the font atlas that the page never draws. Doing that on the running
+/// application's context would grow *its* atlas, and this example is the one
+/// the pixel-parity lane compares desktop against web on. A separate context
+/// keeps the measurement from touching the picture it is measured beside.
+///
+/// # Why the answer differs between the two targets, and why that is honest
+///
+/// [`gorgon_petra_egui::fonts::install_desktop_fallbacks`] reads font *files*
+/// off the host. `wasm32-unknown-unknown` has no filesystem, so the browser
+/// gets exactly what `eframe`'s `default_fonts` embeds and nothing else. This
+/// function therefore reports what the *current target* can draw rather than
+/// asserting a number, and the caller decides what that number has to be. A
+/// desktop caller that wants the fuller stack installs the fallbacks first;
+/// see `tests/text_scripts.rs`.
+///
+/// # Errors
+/// The probe refused to build, which means the detector could not tell a box
+/// from a glyph on this stack — reported rather than silently downgraded to
+/// "everything rendered".
+fn glyph_report() -> Result<String, String> {
+    let ctx = Context::default();
+    // egui has no fonts at all until a pass has run.
+    ctx.run_ui(RawInput::default(), |_| {})
+        .drop_without_applying_deltas();
+    let probe = GlyphProbe::new(&ctx, FontId::proportional(GLYPH_PROBE_SIZE))?;
+
+    let mut out = format!("{GLYPH_HEADER}\n");
+    let mut detail = String::new();
+    for (script, sample) in fonts::script_samples() {
+        let coverage = probe.coverage(&ctx, script, sample);
+        out.push_str(&coverage.report_line());
+        out.push('\n');
+        detail.push_str(&coverage.gap_report());
+    }
+    out.push_str(&detail);
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
 // Entry points: one per target, and neither one names the other's API
 // ---------------------------------------------------------------------------
 
 /// The native entry point: a window, the same shape `gallery.rs` opens.
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result<()> {
+    // The same measurement the web build publishes into its page, on the
+    // target that has a filesystem to install fallback faces from. Printed,
+    // not asserted: this file is a canary, and the desktop numbers are held
+    // to a floor by `tests/text_scripts.rs`. Printing it on both targets is
+    // what keeps the two answers comparable by a reader — SC-009's two halves
+    // differ, and a reader who can only see one of them cannot tell by how
+    // much.
+    match glyph_report() {
+        Ok(report) => eprint!("{report}"),
+        Err(err) => eprintln!("petra parity: the glyph probe refused to build: {err}"),
+    }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([1200.0, 900.0]),
         ..eframe::NativeOptions::default()
@@ -1635,6 +1710,51 @@ mod web {
     /// The canvas element `examples/parity.html` declares, and the only thing
     /// this module looks for in the document.
     pub const CANVAS_ID: &str = "petra-parity-canvas";
+
+    /// Where [`publish_glyph_report`] writes SC-009's web measurement, and
+    /// where the `petra-parity` lane reads it from.
+    ///
+    /// Two elements rather than one, the same protocol
+    /// `gorgon/xtask/parity-wasm/digests.html` uses for the digest report: a
+    /// reader that polled the body alone could not tell "the module has not
+    /// run yet" from "the module ran and measured nothing", and those are
+    /// opposite answers. Both are `display: none` in the host page — this
+    /// example is the page a pixel-parity comparison is run against, and a
+    /// measurement that changed the picture it is measured beside would be
+    /// worse than no measurement.
+    const GLYPH_OUT_ID: &str = "petra-glyph-out";
+
+    /// The element that says whether [`GLYPH_OUT_ID`] is finished: `pending`
+    /// from the host page, then `ok` or `error` from here.
+    const GLYPH_STATE_ID: &str = "petra-glyph-state";
+
+    /// Measure this target's font stack and write the answer into the page.
+    ///
+    /// Runs before the app starts and on its own `egui::Context`, so nothing
+    /// it lays out reaches the canvas the lane screenshots. A failure is
+    /// published as `error` with the reason rather than left as `pending`:
+    /// the difference between "the probe refused to build" and "the module
+    /// never loaded" is the difference between a product defect and a broken
+    /// harness, and a lane that cannot tell them apart reports the wrong one.
+    fn publish_glyph_report() {
+        let Some(document) = web_sys::window().and_then(|w| w.document()) else {
+            fail("petra parity: no document, so no glyph report was published");
+            return;
+        };
+        let (state, body) = match super::glyph_report() {
+            Ok(report) => ("ok", report),
+            Err(err) => ("error", err),
+        };
+        for (id, text) in [(GLYPH_OUT_ID, body.as_str()), (GLYPH_STATE_ID, state)] {
+            match document.get_element_by_id(id) {
+                Some(element) => element.set_text_content(Some(text)),
+                None => fail(&format!(
+                    "petra parity: no element with id `{id}`; the host page must declare it \
+                     for the SC-009 glyph measurement to be readable"
+                )),
+            }
+        }
+    }
 
     thread_local! {
         /// Whether [`start`] has already run.
@@ -1688,6 +1808,10 @@ mod web {
         if STARTED.with(Cell::get) {
             return;
         }
+        // Before the canvas is even looked for: the measurement is about this
+        // build's font stack, not about the app, and a page whose canvas is
+        // missing should still be able to answer SC-009.
+        publish_glyph_report();
         // The flag is claimed only once a canvas is actually in hand. Setting
         // it first would make a missing canvas permanent: `main` runs before
         // the host page's own call, so a page that mounts its canvas late
@@ -1738,7 +1862,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{CUSTOM_KIND, MISSING_SOURCE, Parity, build_window};
+    use super::{CUSTOM_KIND, GLYPH_HEADER, MISSING_SOURCE, Parity, build_window, glyph_report};
     use egui::{Context, Pos2, RawInput};
     use gorgon_petra::token::{Presenter, dark, light};
     use gorgon_petra::tree::{NodeKind, ViewNode};
@@ -1895,6 +2019,62 @@ mod tests {
             report.undrawn.contains(&format!("image:{MISSING_SOURCE}")),
             "the unregistered source must be named in the undrawn set: {:?}",
             report.undrawn
+        );
+    }
+
+    /// The font stack a browser gets, measured here where no browser is
+    /// needed.
+    ///
+    /// `wasm32-unknown-unknown` has no filesystem, so
+    /// `fonts::install_desktop_fallbacks` cannot run there and the web build
+    /// gets exactly what `eframe`'s `default_fonts` embeds. A plain
+    /// `egui::Context` on this machine has the same four faces and nothing
+    /// else, which makes this test the offline half of the same question the
+    /// `petra-parity` lane asks a real browser: **which scripts can the web
+    /// build draw without boxes?**
+    ///
+    /// Measured on 2026-08-24 against egui 0.36.1's bundled faces:
+    /// `latin=26/26`, `emoji=5/5`, and `cjk`, `arabic`, `devanagari` and
+    /// `hebrew` at `0` of 15, 10, 11 and 7. The assertion below is that
+    /// split, not those counts: the counts move whenever
+    /// `fonts::script_samples` is edited, and the split is the fact the lane
+    /// depends on. `gorgon/xtask/src/parity/glyphs.rs` holds the same split
+    /// as the browser-side requirement, and its `WEB_REQUIRED_SCRIPTS` is
+    /// what goes red if this one ever changes without that one changing too.
+    #[test]
+    fn the_stack_a_browser_gets_draws_latin_and_emoji_and_nothing_else() {
+        let report = glyph_report().expect("the probe builds on the bundled font stack");
+        assert!(report.starts_with(GLYPH_HEADER), "{report}");
+
+        let mut complete = Vec::new();
+        let mut empty = Vec::new();
+        for line in report.lines().filter_map(|l| l.strip_prefix("GLYPH ")) {
+            let (script, counts) = line.split_once('=').expect("GLYPH <script>=<n>/<n>");
+            let (covered, total) = counts.split_once('/').expect("<covered>/<total>");
+            let covered: usize = covered.parse().expect("a covered count");
+            let total: usize = total.parse().expect("a total count");
+            assert!(total > 0, "script {script:?} measured no codepoints");
+            if covered == total {
+                complete.push(script.to_owned());
+            } else if covered == 0 {
+                empty.push(script.to_owned());
+            } else {
+                panic!(
+                    "script {script:?} is partly covered ({covered}/{total}) on the bundled \
+                     stack; the lane's two-way split in xtask/src/parity/glyphs.rs assumes \
+                     every script is all or nothing and needs re-measuring:\n{report}"
+                );
+            }
+        }
+        assert_eq!(
+            complete,
+            ["latin", "emoji"],
+            "the scripts a browser can draw have changed:\n{report}"
+        );
+        assert_eq!(
+            empty,
+            ["cjk", "arabic", "devanagari", "hebrew"],
+            "the scripts a browser cannot draw have changed:\n{report}"
         );
     }
 }

@@ -79,7 +79,12 @@ fn fiber_needle(row: &str) -> String {
 async fn the_us3_task_list_completes_keyboard_only_against_a_live_daemon() {
     let daemon = Daemon::boot_demo().await;
     let ui_dir = tempfile::tempdir().expect("tempdir for the driver socket");
-    let (_driven, driver) = inspector_with_client(ui_dir.path(), daemon.endpoint()).await;
+    let (_driven, driver) = inspector_with_client(
+        ui_dir.path(),
+        "gorgon-inspector-journey-test",
+        daemon.endpoint(),
+    )
+    .await;
     // T064/SC-003: every interaction this journey issues below through
     // `timed_enter`/`timed_key`/`measure::tab_until` lands here, timed —
     // the seed the "Baselines" section at the end of this test reports and
@@ -304,8 +309,9 @@ async fn the_us3_task_list_completes_keyboard_only_against_a_live_daemon() {
     //
     // Raw `frame_seq` deltas across this window are NOT SC-002 evidence in
     // *this* harness, and asserting on them would be dishonest: T044's
-    // `support::inspector::DrivenInspector` (a file this leaf may not edit)
-    // steps unconditionally every 2ms forever, regardless of whether the
+    // `support::inspector::DrivenInspector` — the one mount every inspector
+    // test comes through — steps unconditionally every 2ms forever,
+    // regardless of whether the
     // application ever asked for a repaint — the same documented tradeoff
     // `support::mod`'s `DrivenApp` doc comment names for its own identical
     // loop shape: "costs only that the zero-idle property (SC-002) is not

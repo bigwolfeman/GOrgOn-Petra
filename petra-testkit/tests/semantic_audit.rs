@@ -52,11 +52,17 @@
 //! audit input is read from the same `FrameHub` the driver's own verbs
 //! read from — the two are provably the same frame, not two different
 //! views of it (the `wire_frame.seq`/`last.frame.seq` assertion in the test
-//! below checks this directly). [`support::inspector::inspector_with_client`]
-//! does not expose its `Server`/`FrameHub`, so this file stands up its own
-//! copy of that harness (`mount_audited_inspector`) rather than editing a
-//! file this leaf does not own; the duplication is the cost of that
-//! boundary, not an oversight.
+//! below checks this directly).
+//!
+//! That hub arrives through
+//! [`support::inspector::DrivenInspector::hub`]. This file used to stand up
+//! its own copy of that harness (`mount_audited_inspector`) purely because
+//! the accessor did not exist and the leaf that wrote this file could not
+//! add it — file ownership was frozen during a subagent fan-out. The
+//! 2026-08-24 shakedown named the copy (F16) and it is gone: the audit now
+//! mounts the window through the same `support::inspector` every other
+//! inspector test uses, so the gate and the journey cannot drift into
+//! auditing two different compositions.
 //!
 //! # Two things this file was told to expect, and confirms rather than
 //! assumes
@@ -87,41 +93,23 @@
 
 #![cfg(feature = "testkit")]
 // `mod support;` pulls in the whole shared harness (`support::mod`'s own
-// module doc); this file uses `gorgond` and `journey` but not `inspector`
-// (it stands up its own mount — see the module doc above) or `measure`
-// (T046/T064's timing twins, irrelevant to an audit gate).
+// module doc); this file uses `gorgond`, `inspector` and `journey` but not
+// `measure` (T046/T064's timing twins, irrelevant to an audit gate).
 #![allow(dead_code)]
 
 mod support;
 
-use std::path::Path;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use egui::{Context, Pos2, RawInput};
-
-use gorgon_inspector::app::Shell;
-use gorgon_inspector::bridge::{self, BridgeOptions};
-use gorgon_inspector::data::SessionOptions;
 use gorgon_petra::frame::PetrifiedFrame;
 use gorgon_petra::semantic::{AuditRule, AuditViolation, SemanticNode, SemanticTree, audit};
-use gorgon_petra::token::{Presenter, dark};
 use gorgon_petra::tree::Role;
-use gorgon_petra_egui::host::Host;
-use gorgon_petra_testkit::driver::Client as Driver;
-use gorgon_petra_testkit::driver_host::DriverHost;
-use gorgon_petra_testkit::server::{FrameHub, Server};
-use gorgon_petra_testkit::snapshot::Snapshotter;
+use gorgon_petra_testkit::server::FrameHub;
 
 use support::gorgond::Daemon;
+use support::inspector::inspector_with_client;
 use support::journey::{press_enter, tab_until, wait_tree};
 
-/// `gorgon-inspector`'s own `main.rs` size — same choice
-/// `support::inspector`'s identical constant makes, for the identical
-/// reason: a seven-panel window negotiated at a toy size is not proof about
-/// the size an operator actually sees it at.
-const WINDOW: [f32; 2] = [1400.0, 900.0];
 /// Generous headroom over the focusable nodes this window ever mounts
 /// against the shipped demo — `inspector_journey.rs`'s own constant,
 /// carried over unchanged (same window, same demo composition).
@@ -131,110 +119,6 @@ const MAX_TAB_PRESSES: usize = 80;
 const DATA_WAIT: Duration = Duration::from_secs(15);
 /// The four tabbed screens, in the order `Shell::mounted` composes them.
 const TABS: [&str; 4] = ["Approvals", "Leaks", "Unload preview", "Trace"];
-
-fn sized(mut input: RawInput) -> RawInput {
-    input.screen_rect = Some(egui::Rect::from_min_size(
-        Pos2::ZERO,
-        egui::vec2(WINDOW[0], WINDOW[1]),
-    ));
-    input
-}
-
-fn headless() -> Context {
-    let ctx = Context::default();
-    ctx.run_ui(sized(RawInput::default()), |_| {})
-        .drop_without_applying_deltas();
-    ctx
-}
-
-/// A driver-controlled inspector window running on its own thread, killed
-/// by `Drop` — the same shape `support::inspector::DrivenInspector` uses.
-/// A separate type, not that one, because this file also needs the
-/// `FrameHub` clone that struct does not expose (see the module doc).
-struct AuditedInspector {
-    stop: Arc<AtomicBool>,
-    thread: Option<std::thread::JoinHandle<()>>,
-}
-
-impl Drop for AuditedInspector {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::SeqCst);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
-    }
-}
-
-/// Stand up the real inspector `Shell::mounted` composition under a real
-/// driver server, dialing `endpoint`, and hand back the driven-window
-/// guard, a connected driver client, and the `FrameHub` the server answers
-/// `tree`/`frame` from — so this test can read the *real* `(SemanticTree,
-/// PetrifiedFrame)` pair for whatever the driver just navigated to, rather
-/// than reassembling one from wire-narrowed replies (module doc).
-async fn mount_audited_inspector(
-    dir: &Path,
-    endpoint: String,
-) -> (AuditedInspector, Driver, FrameHub) {
-    let (server, hub, ui_bridge) = Server::new("gorgon-inspector-semantic-audit");
-    let listener = Server::bind_under(dir)
-        .await
-        .expect("bind the driver socket under a fresh temp dir");
-    let socket = Server::socket_path_under(dir);
-    tokio::spawn(server.serve(listener));
-
-    let data_bridge = bridge::spawn(
-        &tokio::runtime::Handle::current(),
-        endpoint,
-        SessionOptions {
-            identity_timeout: Duration::from_millis(800),
-            era_probe_timeout: Duration::from_millis(300),
-            ..SessionOptions::default()
-        },
-        BridgeOptions {
-            tick: Duration::from_millis(20),
-            poll: Duration::from_millis(150),
-            ..BridgeOptions::default()
-        },
-        None,
-    );
-
-    let thread_hub = hub.clone();
-    let stop = Arc::new(AtomicBool::new(false));
-    let thread_stop = Arc::clone(&stop);
-    let thread = std::thread::spawn(move || {
-        let ctx = headless();
-        let shell = Shell::mounted(data_bridge);
-        let host = Host::new(&ctx, shell, Presenter::new(dark()));
-        let mut driver = DriverHost::new(&ctx, host, thread_hub, ui_bridge, Snapshotter::new());
-        while !thread_stop.load(Ordering::SeqCst) {
-            driver
-                .step(&ctx, sized(RawInput::default()))
-                .drop_without_applying_deltas();
-            std::thread::sleep(Duration::from_millis(2));
-        }
-    });
-
-    let driver = Driver::connect(&socket)
-        .await
-        .expect("connect the importable driver client to the inspector's own socket");
-    for attempt in 1..=200 {
-        let health = driver.health().await.expect("health decodes");
-        if health.frame_seq > 0 {
-            break;
-        }
-        assert!(attempt < 200, "the inspector never published a frame");
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-
-    (
-        AuditedInspector {
-            stop,
-            thread: Some(thread),
-        },
-        driver,
-        hub,
-    )
-}
 
 /// The real, currently-published `(SemanticTree, PetrifiedFrame)` pair —
 /// the same objects `server::dispatch::tree`/`frame` answer the driver's
@@ -323,7 +207,14 @@ struct Screen {
 async fn every_inspector_screen_passes_the_semantic_audit() {
     let daemon = Daemon::boot_demo().await;
     let ui_dir = tempfile::tempdir().expect("tempdir for the driver socket");
-    let (_driven, driver, hub) = mount_audited_inspector(ui_dir.path(), daemon.endpoint()).await;
+    let (driven, driver) = inspector_with_client(
+        ui_dir.path(),
+        "gorgon-inspector-semantic-audit",
+        daemon.endpoint(),
+    )
+    .await;
+    // The hub the driver's own `tree`/`frame` verbs answer from (module doc).
+    let hub = driven.hub();
 
     // Wait for a live connection the same way `inspector_journey.rs` does,
     // so the default screen this test captures next is not an empty
@@ -352,7 +243,7 @@ async fn every_inspector_screen_passes_the_semantic_audit() {
     // ---- Screen 1: the three always-on panels (identity, fiber list, ----
     // ---- fiber detail) -- `Slot::Leading`/`Slot::Trailing`, on screen ----
     // ---- with no navigation at all. ----
-    let (tree, frame) = snapshot(&hub);
+    let (tree, frame) = snapshot(hub);
     println!("SCREEN: default (identity + fiber list + fiber detail)");
     screens.push(Screen {
         name: "default",
@@ -385,7 +276,7 @@ async fn every_inspector_screen_passes_the_semantic_audit() {
             },
         )
         .await;
-        let (tree, frame) = snapshot(&hub);
+        let (tree, frame) = snapshot(hub);
         println!("SCREEN: {tab_label}");
         screens.push(Screen {
             name: tab_label,

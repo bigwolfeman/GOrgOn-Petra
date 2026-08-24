@@ -64,7 +64,12 @@ fn fiber_needle(row: &str) -> String {
 async fn every_projection_backed_panel_names_its_disconnect_and_recovers_on_restart() {
     let mut daemon = Daemon::boot_demo().await;
     let ui_dir = tempfile::tempdir().expect("tempdir for the driver socket");
-    let (_driven, driver) = inspector_with_client(ui_dir.path(), daemon.endpoint()).await;
+    let (_driven, driver) = inspector_with_client(
+        ui_dir.path(),
+        "gorgon-inspector-reconnect-test",
+        daemon.endpoint(),
+    )
+    .await;
     let endpoint = daemon.endpoint();
 
     // Connect, and select `ticker` so `info` (fiber-detail's own

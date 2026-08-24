@@ -42,11 +42,24 @@
         padding: 2rem;
         white-space: pre-wrap;
       }
+      /* SC-009's web half. `examples/parity.rs` writes its glyph measurement
+         into these two before it starts the app, and `cargo xtask gates
+         petra-parity` reads them back over WebDriver. Never shown: this page
+         is also the one the pixel-parity comparison screenshots, and an
+         element that took up space would change the picture. */
+      #petra-glyph-state,
+      #petra-glyph-out {
+        display: none;
+      }
     </style>
   </head>
   <body>
     <canvas id="petra-parity-canvas"></canvas>
     <pre id="petra-parity-error"></pre>
+    <!-- `pending` until the module has run, so a reader can tell "not yet"
+         from "measured nothing". -->
+    <pre id="petra-glyph-state">pending</pre>
+    <pre id="petra-glyph-out"></pre>
     <script type="module">
       // `--target web` output: a named export per `#[wasm_bindgen]` item, and
       // a default export that instantiates the module.
