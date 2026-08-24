@@ -63,9 +63,7 @@
 use egui::{Context, FontId, RawInput};
 use gorgon_petra::layout::{ContentMeasure as _, TextRequest};
 use gorgon_petra::tree::TextWrap;
-use gorgon_petra_egui::fonts::{
-    self, DESKTOP_FALLBACKS, GlyphOutcome, GlyphProbe, ScriptCoverage,
-};
+use gorgon_petra_egui::fonts::{self, DESKTOP_FALLBACKS, GlyphOutcome, GlyphProbe, ScriptCoverage};
 use gorgon_petra_egui::text::GalleyShaper;
 
 /// The size the shipped `typography.body` token asks for. Coverage is
