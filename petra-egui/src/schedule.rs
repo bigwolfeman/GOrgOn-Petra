@@ -31,7 +31,20 @@
 //! this host, and hands them to the ledger, which refuses to treat them as
 //! declared motion and reports them by name.
 //!
-//! Two honest limits, both stated rather than discovered later:
+//! **What runs here every frame, and what does not.** [`FrameMotion::advance`]
+//! reads the causes and feeds the ledger on every pass — that half is live in
+//! the shipped host, because evidence not gathered on the frame it happened is
+//! gone. The *window* audit (`Scheduler::idle_audit`) is not called from here
+//! and is not meant to be: it is a query over accumulated evidence, it
+//! allocates per offender, and answered on the frame pump it would be asking
+//! a sixty-second question of a one-frame ledger. What this pass hands back
+//! instead is `FrameDecision::undeclared` — the count of new offences on this
+//! frame — which `Host::pass` keeps and `Host::decision()` publishes. A gate
+//! or an operator turns that into the named message by calling
+//! `Host::motion().scheduler().idle_audit(window)` once, at the end of the
+//! span it is judging.
+//!
+//! Three honest limits, all stated rather than discovered later:
 //!
 //! * `Context::repaint_causes` returns the *previous* pass's causes (egui
 //!   swaps the list in `begin_pass`), so attribution runs one frame behind. For
@@ -41,6 +54,14 @@
 //! * A cause is attributed to the hosted placements *in the frame*, not proven
 //!   to come from one of them. The file and line in the message are the proof
 //!   of who called; the surface list is the candidate set. The message says so.
+//! * [`is_accounted_for`] exempts this crate's own `host.rs` and `schedule.rs`
+//!   wholesale, so no `request_repaint` made from either file can ever be
+//!   foreign. That is correct for the two real call sites, and it has a
+//!   testing consequence worth stating: `host.rs`'s own unit tests cannot
+//!   produce a foreign cause, because `Context::request_repaint` is
+//!   `#[track_caller]` and would attribute them to `host.rs`. The end-to-end
+//!   FR-062 test therefore lives in `tests/idle_audit.rs`, where the caller's
+//!   file is a real third-party path.
 
 use egui::Context;
 use gorgon_petra::anim::{

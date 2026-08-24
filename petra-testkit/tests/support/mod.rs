@@ -242,9 +242,9 @@ pub async fn driven_server(dir: &Path) -> (DrivenApp, Client) {
 /// A driven server plus a connected importable client.
 pub async fn driven_with_client(dir: &Path) -> (DrivenApp, Driver) {
     // `driven_server` already waits for the first frame, so the client below
-    // never races startup. Its raw `Client` is dropped; the socket stays.
-    let (app, mut raw) = driven_server(dir).await;
-    let _ = raw.call(1, "health", json!({})).await;
+    // never races startup. Its raw `Client` is dropped (it goes out of
+    // scope unused below); the socket stays.
+    let (app, _raw) = driven_server(dir).await;
     // The two halves of the socket-path formula, checked against each other
     // rather than trusted. The client cannot import `Server::socket_path_under`
     // — it is `testkit`-gated and the client must build with no feature on —

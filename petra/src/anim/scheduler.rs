@@ -32,6 +32,9 @@ pub fn wants_frame(activity: TransitionActivity) -> bool {
 }
 
 /// What one pass decided.
+#[must_use = "a pass that ignores its decision cannot report an undeclared \
+              repaint; read `undeclared`, or keep the decision where an \
+              operator can reach it (FR-062)"]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FrameDecision {
     /// The motion the frame carries, as written onto it.
@@ -125,10 +128,14 @@ impl Scheduler {
         self.frames_observed
     }
 
-    /// How many frames this scheduler asked for.
+    /// How many passes ended with motion wanting another frame.
     ///
-    /// The SC-002 number. Over a window in which nothing is declared to move,
-    /// it must be zero.
+    /// The *motion* contribution to SC-002, not the whole of it. A host asks
+    /// for frames for other reasons too — egui repaints on input, and
+    /// `petra-egui`'s focus reconciliation asks once when a ring moves — and
+    /// none of those reach this counter. What it does promise is the half
+    /// this module owns: over a window in which nothing is declared to move,
+    /// motion asks for nothing, and this is zero.
     #[must_use]
     pub fn frames_requested(&self) -> u64 {
         self.frames_requested
@@ -141,6 +148,19 @@ impl Scheduler {
     }
 
     /// The zero-idle audit over a `window`-second span.
+    ///
+    /// **A query, not a per-frame duty.** The evidence is gathered every pass
+    /// by [`Scheduler::advance`]; this asks the accumulated question, and only
+    /// whoever owns the window can ask it. That is a journey gate at the end
+    /// of a run, or an operator holding a live host. It is deliberately *not*
+    /// called from `petra-egui`'s frame pump: answered on frame one it would
+    /// report over an observed span of zero seconds, and answered on every
+    /// frame it would allocate an [`IdleViolation`] per frame on the one path
+    /// whose whole purpose is to do nothing at idle.
+    ///
+    /// The cheap continuous form is [`AmbientLedger::is_clean`], and the
+    /// cheapest of all is [`FrameDecision::undeclared`], which every pass
+    /// already returns.
     ///
     /// # Errors
     /// [`IdleViolation`] naming every hosted surface that drove repaints

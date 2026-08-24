@@ -181,7 +181,12 @@ fn mover_x(frame: &PetrifiedFrame) -> f32 {
 /// Drive `tree` for one tick and hand back the frame as it would be painted.
 fn tick(scheduler: &mut Scheduler, tree: &ViewNode, seq: u64, now: f64) -> PetrifiedFrame {
     let mut frame = frame_of(tree, seq);
-    scheduler.advance(&mut frame, &Declarations::collect(tree), now, &[]);
+    let decision = scheduler.advance(&mut frame, &Declarations::collect(tree), now, &[]);
+    // Nothing foreign is offered here, so nothing may be recorded. Asserting
+    // it rather than dropping the decision: `tick` is the helper most of the
+    // scenarios below run on, and a ledger that recorded on an empty
+    // `foreign` slice would make every one of their idle audits meaningless.
+    assert_eq!(decision.undeclared, 0, "no foreign repaint was offered");
     frame
 }
 

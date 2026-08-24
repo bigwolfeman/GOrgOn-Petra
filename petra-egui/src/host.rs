@@ -25,7 +25,7 @@
 use std::collections::BTreeMap;
 
 use egui::{Context, Id, LayerId, Order};
-use gorgon_petra::anim::TransitionRegistry;
+use gorgon_petra::anim::{FrameDecision, TransitionRegistry};
 use gorgon_petra::focus::FocusTree;
 use gorgon_petra::frame::{FrameCounter, PetrifiedFrame, TransitionActivity, Viewport, petrify};
 use gorgon_petra::geom::{Scale, Size};
@@ -133,6 +133,13 @@ pub struct Host<A: App> {
     last_frame: Option<PetrifiedFrame>,
     last_scopes: BTreeMap<String, InputPolicy>,
     last_report: Option<PaintReport>,
+    /// What the last pass's motion decided, including how many undeclared
+    /// repaints the ambient ledger recorded on it (FR-062). Kept for the same
+    /// reason `last_report` is: the pass computes an integrity fact that
+    /// nothing on the frame path can act on, and dropping it would leave the
+    /// shipped host deaf to the one failure Petra cannot prevent — a hosted
+    /// painter that drives repaints without declaring `ambient`.
+    last_motion: Option<FrameDecision>,
     focus: FocusTree,
 }
 
@@ -182,6 +189,7 @@ impl<A: App> Host<A> {
             last_frame: None,
             last_scopes: BTreeMap::new(),
             last_report: None,
+            last_motion: None,
             focus: FocusTree::default(),
         }
     }
@@ -378,6 +386,33 @@ impl<A: App> Host<A> {
         self.last_report.as_ref()
     }
 
+    /// What the most recent pass's motion decided, or `None` before the first
+    /// pass.
+    ///
+    /// [`FrameDecision::undeclared`] is the live FR-062 signal. Non-zero means
+    /// a hosted surface is driving repaints without declaring `ambient`, so
+    /// idle is unreachable and SC-002 is already broken — Petra refuses to
+    /// count such a request as motion, but it cannot stop egui from repainting
+    /// on someone else's behalf, so reporting is the only remaining defence.
+    ///
+    /// **It is an edge, not a level.** The count is how many *new*
+    /// `(surface, source)` pairs the ledger had never seen before, so one
+    /// painter asking on six hundred consecutive frames reads `1` on the first
+    /// and `0` on the rest. Polling this and seeing zero therefore does not
+    /// mean the run is clean. The level is
+    /// [`Host::motion`]`().scheduler().ledger().is_clean()`, which is O(1) and
+    /// safe to read every frame; the named, human-readable form — every
+    /// offending surface, the `file:line` that asked, the counts and the
+    /// window — is `.idle_audit(window)`, asked once at the end of the span
+    /// being judged.
+    ///
+    /// All three are exercised against this accessor in
+    /// `tests/idle_audit.rs`.
+    #[must_use]
+    pub fn decision(&self) -> Option<FrameDecision> {
+        self.last_motion
+    }
+
     /// Run one whole pass: input, view, petrify, paint, schedule.
     ///
     /// Public and independent of `eframe` so a test or the driver can step the
@@ -484,7 +519,7 @@ impl<A: App> Host<A> {
         // and all (`gorgon_petra::anim::engine`). A frame with nothing moving
         // comes back untouched, so an idle window's frame is byte-identical
         // to what `petrify` produced.
-        self.motion.advance(ctx, &mut frame, &tree);
+        let decision = self.motion.advance(ctx, &mut frame, &tree);
 
         let report = paint_frame_with_hosts(
             &ctx.layer_painter(petra_layer()),
@@ -557,6 +592,12 @@ impl<A: App> Host<A> {
         // that no longer describe it.
         self.last_scopes = scopes;
         self.last_report = Some(report);
+        // The pass already paid for this and nothing on the frame path can
+        // act on it, so the only question left is whether it survives the
+        // pass. It must: a repaint Petra did not make is the one way SC-002
+        // breaks that Petra cannot prevent, and an operator who cannot read
+        // the count has no way to find out. See `Host::decision`.
+        self.last_motion = Some(decision);
     }
 
     /// Seat focus inside the frontmost blocking surface when it is outside

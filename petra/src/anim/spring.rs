@@ -231,6 +231,18 @@ impl Spring {
     /// If `t` is negative or not finite. A trajectory has no past; asking for
     /// one is a caller bug, and evaluating `e^{+ζω₀t}` for it would return a
     /// plausible-looking divergent number instead of saying so.
+    ///
+    /// Also panics if the result is not finite. `omega0` and `t` are each
+    /// bounded only by [`f64::is_finite`] (`Spring::new`'s doc: "refused
+    /// rather than clamped to something arbitrary" — there is no principled
+    /// UI-domain ceiling to pick for a raw physical frequency). An extreme
+    /// but individually finite `omega0` and `t` can still overflow an
+    /// intermediate product (`omega0 * t`, or `c * t` where `c` carries an
+    /// `omega0` factor) to `±inf`, and `0.0 * inf = NaN` once the decay term
+    /// has already underflowed to exactly zero. That NaN would look like a
+    /// plausible-but-wrong settled value to every caller downstream — the
+    /// same failure mode the `t < 0` check above already refuses rather than
+    /// hides, extended to the output instead of just the input.
     #[must_use]
     pub fn evaluate_scalar(self, x0: f64, v0: f64, target: f64, t: f64) -> (f64, f64) {
         assert!(
@@ -266,7 +278,16 @@ impl Spring {
                 (c1 * e1 + c2 * e2, c1 * z1 * e1 + c2 * z2 * e2)
             }
         };
-        (target + y, v)
+        let (pos, vel) = (target + y, v);
+        assert!(
+            pos.is_finite() && vel.is_finite(),
+            "spring closed form overflowed to a non-finite result (pos={pos}, vel={vel}) from \
+             omega0={}, zeta={}, t={t} — this is an overflowing product, not a real trajectory \
+             value",
+            self.omega0,
+            self.zeta
+        );
+        (pos, vel)
     }
 
     /// The same evaluation, componentwise over a vector.
@@ -287,6 +308,15 @@ impl Spring {
         target: AnimVector,
         t: f64,
     ) -> (AnimVector, AnimVector) {
+        // Reuse `AnimVector`'s own length check (see `Sub`'s panic doc in
+        // `value.rs`) rather than duplicating it here. Checking `x0` against
+        // both `v0` and `target` covers all three by transitivity, and each
+        // panic already names both lengths. Without this, the loop below
+        // walks only `x0.len()` and would silently leave a longer `v0` or
+        // `target` partially unevaluated — the exact truncation
+        // `value.rs`'s module doc forbids.
+        let _ = x0 - v0;
+        let _ = x0 - target;
         let mut pos = x0;
         let mut vel = v0;
         for i in 0..x0.len() {
@@ -532,6 +562,51 @@ mod tests {
         let spring = Spring::new(20.0, 1.0 - 1e-9).unwrap();
         assert_eq!(spring.regime(), Regime::Critical);
         let (x, v) = spring.evaluate_scalar(0.0, 0.0, 1.0, 0.05);
+        assert!(x.is_finite() && v.is_finite(), "x={x} v={v}");
+    }
+
+    /// F12: `evaluate`'s doc promises a panic when the three vectors do not
+    /// all agree in length. `x0`/`target` are 2 components, `v0` is 4 — the
+    /// mismatch the doc says is refused.
+    #[test]
+    #[should_panic(expected = "different lengths")]
+    fn evaluate_refuses_mismatched_vector_lengths() {
+        let spring = Spring::new(20.0, 1.0).unwrap();
+        let x0 = AnimVector::new([1.0, 2.0, 0.0, 0.0], 2);
+        let v0 = AnimVector::new([1.0, 2.0, 3.0, 4.0], 4);
+        let target = AnimVector::new([5.0, 6.0, 0.0, 0.0], 2);
+        let _ = spring.evaluate(x0, v0, target, 0.1);
+    }
+
+    /// F13: a legal-but-extreme `omega0` combined with a legal-but-extreme
+    /// `t` overflows the closed form's intermediate products in the critical
+    /// regime, and used to return `(NaN, NaN)` silently. It must now refuse
+    /// instead of returning a plausible-looking divergent number.
+    #[test]
+    #[should_panic(expected = "overflowed to a non-finite result")]
+    fn evaluate_scalar_refuses_a_non_finite_result_critical() {
+        let spring = Spring::new(1e10, 1.0).unwrap();
+        let _ = spring.evaluate_scalar(0.0, 0.0, 1.0, 1e300);
+    }
+
+    /// Same overflow shape, underdamped regime: `omega_d * t` overflows and
+    /// `sin`/`cos` of an infinite argument is `NaN` in IEEE 754.
+    #[test]
+    #[should_panic(expected = "overflowed to a non-finite result")]
+    fn evaluate_scalar_refuses_a_non_finite_result_underdamped() {
+        let spring = Spring::new(1e10, 0.5).unwrap();
+        let _ = spring.evaluate_scalar(0.0, 0.0, 1.0, 1e300);
+    }
+
+    /// Same shape, overdamped regime. Both roots stay negative for `ζ > 1`,
+    /// so `exp(z * t)` underflows to exactly zero rather than overflowing —
+    /// this regime was never reachable to `NaN` this way, and the finiteness
+    /// assert added for the other two regimes must not turn this legitimate,
+    /// fully-decayed result into a spurious panic.
+    #[test]
+    fn evaluate_scalar_stays_finite_overdamped_at_the_same_extreme() {
+        let spring = Spring::new(1e10, 2.5).unwrap();
+        let (x, v) = spring.evaluate_scalar(0.0, 0.0, 1.0, 1e300);
         assert!(x.is_finite() && v.is_finite(), "x={x} v={v}");
     }
 }

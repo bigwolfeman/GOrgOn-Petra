@@ -123,17 +123,41 @@ mod driven {
         ctx
     }
 
+    /// The largest `PETRA_DRIVEN_SECONDS` this example accepts: 24 hours.
+    /// Comfortably more than any real lane needs (the default is 60s; the
+    /// `xtask` gate lanes hardcode `"60"`), and comfortably below where
+    /// `Instant::now() + Duration::from_secs(n)` (used at the call site
+    /// below) can overflow — that overflow does not fire until `n` is on
+    /// the order of 10^18-10^19 seconds on this platform, so this bound has
+    /// many orders of magnitude of margin, not a near-miss.
+    const MAX_SECONDS: u64 = 24 * 60 * 60;
+
     /// `PETRA_DRIVEN_SECONDS`, or the contract's own default of 60 — a run
     /// with a bad value fails loudly rather than silently picking a default
     /// that hides a caller's typo (FR-043's discipline applies here too: a
     /// gate that misreads its own environment is worse than one that
     /// refuses).
+    ///
+    /// F16: a syntactically valid but huge `u64` used to sail through this
+    /// parse and panic later, inside std, at the `Instant + Duration` call
+    /// site — a message that names neither `PETRA_DRIVEN_SECONDS` nor the
+    /// value that broke it. Bounded here instead, with the same
+    /// named-variable diagnostic the parse-failure branch already used.
     fn run_seconds() -> u64 {
         match std::env::var("PETRA_DRIVEN_SECONDS") {
             Err(std::env::VarError::NotPresent) => 60,
-            Ok(raw) => raw
-                .parse()
-                .unwrap_or_else(|err| panic!("PETRA_DRIVEN_SECONDS={raw:?} is not a u64: {err}")),
+            Ok(raw) => {
+                let parsed: u64 = raw.parse().unwrap_or_else(|err| {
+                    panic!("PETRA_DRIVEN_SECONDS={raw:?} is not a u64: {err}")
+                });
+                if parsed > MAX_SECONDS {
+                    panic!(
+                        "PETRA_DRIVEN_SECONDS={raw:?} exceeds the accepted bound of \
+                         {MAX_SECONDS} seconds (24h)"
+                    );
+                }
+                parsed
+            }
             Err(err) => panic!("PETRA_DRIVEN_SECONDS: {err}"),
         }
     }

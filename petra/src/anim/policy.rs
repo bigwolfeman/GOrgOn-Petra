@@ -52,6 +52,31 @@
 //! turns it into an error naming the surface, the source location that asked,
 //! and how many times — so the 60-second zero-idle assertion fails for a named
 //! reason instead of mysteriously.
+//!
+//! # Recording and auditing are two different jobs, on two different clocks
+//!
+//! Being precise about this, because the two are easy to conflate and the
+//! difference decides where each one is called from.
+//!
+//! [`AmbientLedger::observe`] is **continuous**. It runs once per pass, in
+//! the shipped host — `gorgon-petra-egui`'s `FrameMotion::advance`, reached
+//! from `Host::pass` — because evidence that is not gathered on the frame it
+//! happened cannot be recovered afterwards. It is O(hosted placements) and
+//! allocates nothing when the frame is clean, which is what lets it sit on the
+//! idle path at all.
+//!
+//! [`AmbientLedger::audit`] is a **query over a window**. Nobody can ask it
+//! per frame and mean anything: on frame one the observed span is zero
+//! seconds, and on every frame it would build a fresh [`IdleViolation`] with
+//! a cloned [`Offender`] per entry. It belongs to whoever owns the window —
+//! a journey gate closing out a run, or an operator holding a live host — and
+//! `gorgon-petra` deliberately does not guess who that is.
+//!
+//! Between the two sits the per-pass count. [`AmbientLedger::observe`] returns
+//! how many *new* offences it just recorded, `Scheduler::advance` carries it
+//! out as `FrameDecision::undeclared`, and `Host::decision()` keeps the last
+//! one. That is the signal a host can act on without paying for an audit, and
+//! `FrameDecision` is `#[must_use]` so a pass cannot quietly drop it.
 
 use std::collections::BTreeMap;
 use std::fmt;
