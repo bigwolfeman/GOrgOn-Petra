@@ -43,3 +43,29 @@ workspace = true
 [[example]]
 name = "gallery"
 test = true
+
+# The web half of the parity example (T060). `eframe` re-exports `web_sys` and
+# `wasm_bindgen`, but only as types — the `#[wasm_bindgen]` attribute needs the
+# macro crate in scope by its own name, `spawn_local` lives in
+# `wasm-bindgen-futures`, and `web_sys::console` is behind a feature `eframe`
+# does not request. All three resolve to versions already in `Cargo.lock`, and
+# the `wasm-bindgen` pin must keep matching the `wasm-bindgen` CLI that
+# processes the artifact: a mismatch fails the bundle step, not the build.
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen = "0.2.127"
+wasm-bindgen-futures = "0.4.77"
+web-sys = { version = "0.3.104", features = [
+    "Document",
+    "Element",
+    "HtmlCanvasElement",
+    "Window",
+    "console",
+] }
+
+# `test = true` so the assertions at the bottom of the parity example run under
+# `cargo test --all-targets`, the same reason `gallery` declares it. An example
+# nothing runs is an example that rots — and this one's whole job is to still
+# be true a year from now.
+[[example]]
+name = "parity"
+test = true

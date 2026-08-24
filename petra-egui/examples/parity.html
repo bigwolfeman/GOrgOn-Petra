@@ -1,0 +1,81 @@
+<!doctype html>
+<!--
+  The host page for the `parity` example's web build (T060, spec 003 US6).
+
+  `b1-wasm-bundle.sh` copies this file into the bundle output directory as
+  `index.html`, beside the `parity.js` / `parity_bg.wasm` pair `wasm-bindgen`
+  produces. Serve that directory over HTTP — `file://` will not do, because a
+  browser refuses to fetch a WebAssembly module from it — and open it.
+
+  The canvas id below is the one `examples/parity.rs` looks for. If they ever
+  disagree, the example's own entry point says so in the console rather than
+  leaving a blank page: that is `web::canvas` in parity.rs.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Petra web parity</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        /* The canvas paints the whole page; this is only what shows in the
+           instant before the module resolves, and behind a failure banner. */
+        background: #14161a;
+        color: #c8cdd4;
+        font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+      /* Hidden until something actually fails. An always-visible status line
+         would be indistinguishable from a page that never started. */
+      #petra-parity-error {
+        display: none;
+        position: absolute;
+        inset: 0;
+        padding: 2rem;
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="petra-parity-canvas"></canvas>
+    <pre id="petra-parity-error"></pre>
+    <script type="module">
+      // `--target web` output: a named export per `#[wasm_bindgen]` item, and
+      // a default export that instantiates the module.
+      import init, { start_parity } from "./parity.js";
+
+      function fail(what, err) {
+        const banner = document.getElementById("petra-parity-error");
+        banner.style.display = "block";
+        banner.textContent = `petra parity: ${what}\n\n${err}`;
+        console.error(what, err);
+      }
+
+      try {
+        await init();
+      } catch (err) {
+        // The one failure the Rust side cannot report, because it never ran.
+        fail("failed to load parity_bg.wasm", err);
+        throw err;
+      }
+
+      try {
+        // Explicit rather than relying on the bundler to call `main`. The Rust
+        // side guards against being started twice, so calling this when the
+        // module already started is harmless.
+        start_parity();
+      } catch (err) {
+        fail("the app panicked while starting", err);
+        throw err;
+      }
+    </script>
+  </body>
+</html>
