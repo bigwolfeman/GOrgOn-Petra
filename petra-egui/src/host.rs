@@ -25,6 +25,7 @@
 use std::collections::BTreeMap;
 
 use egui::{Context, Id, LayerId, Order};
+use gorgon_petra::anim::TransitionRegistry;
 use gorgon_petra::focus::FocusTree;
 use gorgon_petra::frame::{FrameCounter, PetrifiedFrame, TransitionActivity, Viewport, petrify};
 use gorgon_petra::geom::{Scale, Size};
@@ -42,6 +43,7 @@ use gorgon_petra::tree::{InputPolicy, Interaction, NodeKind, Props, Registry, Vi
 use crate::image::ImageSources;
 use crate::input::EventTranslator;
 use crate::paint::{CustomPainters, PaintReport, paint_frame_with_hosts};
+use crate::schedule::FrameMotion;
 use crate::text::{FontFaces, GalleyShaper, Typography};
 
 /// The egui layer every Petra frame paints into.
@@ -123,6 +125,11 @@ pub struct Host<A: App> {
     /// than being drawn or being silently skipped.
     painters: CustomPainters,
     images: ImageSources,
+    /// Every declared transition, the trajectories in flight, and the
+    /// repaint decision. Held across passes because a trajectory that did not
+    /// survive the frame that started it would restart every frame and never
+    /// move.
+    motion: FrameMotion,
     last_frame: Option<PetrifiedFrame>,
     last_scopes: BTreeMap<String, InputPolicy>,
     last_report: Option<PaintReport>,
@@ -168,6 +175,10 @@ impl<A: App> Host<A> {
             faces,
             painters: CustomPainters::new(),
             images: ImageSources::new(),
+            // No definitions until an application declares some, which is the
+            // honest empty state: with none registered, no tree may name a
+            // transition and every frame is genuinely settled.
+            motion: FrameMotion::new(TransitionRegistry::new()),
             last_frame: None,
             last_scopes: BTreeMap::new(),
             last_report: None,
@@ -437,7 +448,7 @@ impl<A: App> Host<A> {
             }
         };
 
-        let frame = {
+        let mut frame = {
             let mut ctx_layout = LayoutCtx {
                 content: &mut self.shaper,
                 rows: &mut self.app,
@@ -458,11 +469,22 @@ impl<A: App> Host<A> {
                 tree,
                 &mut ctx_layout,
                 viewport,
-                // Transitions land in US4. Until then every frame is settled,
-                // which is the honest report: nothing is moving.
+                // The real count is not known until the transitions have been
+                // advanced, and they are advanced against the placements this
+                // call produces. So the frame is petrified settled and
+                // `FrameMotion::advance` writes the measured activity onto it
+                // below, along with the placements that are actually on
+                // screen and the digest of them.
                 TransitionActivity::default(),
             )
         };
+
+        // Layout negotiated the targets; this interpolates the result and
+        // rewrites the frame into what is actually painted, activity, digest
+        // and all (`gorgon_petra::anim::engine`). A frame with nothing moving
+        // comes back untouched, so an idle window's frame is byte-identical
+        // to what `petrify` produced.
+        self.motion.advance(ctx, &mut frame, &tree);
 
         let report = paint_frame_with_hosts(
             &ctx.layer_painter(petra_layer()),
@@ -701,10 +723,54 @@ impl<A: App> Host<A> {
     /// This is the whole of the zero-idle contract on this side
     /// (`contracts/animation.md` §"Frame scheduling"): egui already repaints on
     /// input, so the host's only job is to *not* ask when nothing is running.
+    /// The decision itself lives in [`crate::schedule::request_if_moving`],
+    /// which reads `gorgon_petra::anim::wants_frame` — one rule, one place, so
+    /// the host and the engine cannot drift apart on what "moving" means.
     fn schedule(&self, ctx: &Context, frame: &PetrifiedFrame) {
-        if frame.transitions.running > 0 || frame.transitions.ambient > 0 {
-            ctx.request_repaint();
-        }
+        crate::schedule::request_if_moving(ctx, frame);
+    }
+
+    /// Declare the transition definitions this application's trees name.
+    ///
+    /// Registers them with the engine **and** declares their names into the
+    /// registry tree acceptance runs against, in one motion
+    /// ([`gorgon_petra::anim::TransitionRegistry::declare_into`]): a name the
+    /// engine can resolve is a name a tree may use, and one it cannot is a
+    /// tree-acceptance error, which is what
+    /// `gorgon_petra::tree::TransitionRef`'s own doc promises.
+    ///
+    /// Replaces whatever was declared before, and resets every trajectory in
+    /// flight — a transition already running under a definition that no longer
+    /// exists has nothing to run under.
+    pub fn set_transitions(&mut self, definitions: TransitionRegistry) -> &mut Self {
+        definitions.declare_into(&mut self.registry);
+        self.motion = FrameMotion::new(definitions);
+        self
+    }
+
+    /// Turn reduced motion on or off.
+    ///
+    /// The host is where this belongs: it is a platform accessibility
+    /// preference, not a design-system fact and not part of the theme. Putting
+    /// it on `Theme` or `ThemeSnapshot` would give it a revision, and a theme
+    /// revision is both a measure-cache key and a frame-digest input — so
+    /// toggling it would change the digest of every frame in the application,
+    /// including frames with no motion in them, which is the opposite of
+    /// FR-031's "identical end states". The argument in full, with the two
+    /// rejected alternatives, is in
+    /// `.agents/notes/implemented/architecture/2026-08-23-petra-motion.md`.
+    ///
+    /// Turning it on completes every running movement transition instantly at
+    /// its target.
+    pub fn set_reduced_motion(&mut self, on: bool) -> &mut Self {
+        self.motion.set_reduced_motion(on);
+        self
+    }
+
+    /// The motion state: frame counts and the zero-idle audit.
+    #[must_use]
+    pub fn motion(&self) -> &FrameMotion {
+        &self.motion
     }
 }
 
