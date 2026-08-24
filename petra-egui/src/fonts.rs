@@ -142,11 +142,9 @@ pub struct FallbackFace {
 /// and legible* to *claimed and invisible* — a [`GlyphOutcome::Blank`],
 /// strictly worse than the box it was meant to replace. Colour emoji are
 /// research item R4 of spec 003, they land in the overlay fork's
-/// custom-glyph registry, and that fork does not exist in this workspace.
-/// [`no_colour_emoji_face_is_named`] keeps a colour face out of this table
-/// until it does.
-///
-/// [`no_colour_emoji_face_is_named`]: #
+/// custom-glyph registry, and that fork does not exist in this workspace. The
+/// unit test `no_colour_emoji_face_is_named` below keeps a colour face out of
+/// this table until it does.
 pub const DESKTOP_FALLBACKS: &[FallbackFace] = &[
     FallbackFace {
         name: "gorgon-fallback-cjk",
