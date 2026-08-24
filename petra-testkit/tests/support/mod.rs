@@ -20,10 +20,16 @@
 //! keyboard-only driver primitives both `tests/inspector_journey.rs` and
 //! T045's `tests/inspector_reconnect.rs` drive them with (FS-2: one journey
 //! harness, owned by T044).
+//!
+//! [`measure`] is T046/T064's addition: timed twins of a few of
+//! [`journey`]'s primitives, plus `p99`/`vm_rss_kb` — see that module's own
+//! doc comment for why the timing wrappers duplicate rather than reach into
+//! `journey.rs`.
 
 pub mod gorgond;
 pub mod inspector;
 pub mod journey;
+pub mod measure;
 
 use std::ops::Range;
 use std::path::Path;
