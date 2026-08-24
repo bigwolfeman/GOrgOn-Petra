@@ -29,6 +29,7 @@
 pub mod invariant;
 
 pub mod accesskit;
+pub mod fonts;
 pub mod host;
 pub mod image;
 pub mod inject;
