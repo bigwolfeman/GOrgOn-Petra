@@ -10,15 +10,15 @@
 
 #![cfg(feature = "testkit")]
 
+mod support;
+
 use std::ops::Range;
 use std::path::Path;
 use std::sync::Arc;
 
-use egui::{Context, Pos2, RawInput};
+use egui::{Context, RawInput};
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
-use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 
 use gorgon_petra::component::button;
 use gorgon_petra::input::{InputEvent, Route};
@@ -27,6 +27,7 @@ use gorgon_petra::token::{Presenter, dark};
 use gorgon_petra::tree::{NodeKind, ViewNode};
 use gorgon_petra_egui::host::{App, Host};
 use gorgon_petra_testkit::server::Server;
+use support::{Client, driven_server, driven_with_client, headless, sized};
 
 /// A small tree with one real interactive node (`button`), so `tree` has
 /// something with a role, a label, and actions to find.
@@ -48,23 +49,6 @@ impl App for DemoApp {
     fn take_changes(&mut self) -> ChangeSet {
         ChangeSet::All
     }
-}
-
-const WINDOW: [f32; 2] = [400.0, 300.0];
-
-fn sized(mut input: RawInput) -> RawInput {
-    input.screen_rect = Some(egui::Rect::from_min_size(
-        Pos2::ZERO,
-        egui::vec2(WINDOW[0], WINDOW[1]),
-    ));
-    input
-}
-
-fn headless() -> Context {
-    let ctx = Context::default();
-    ctx.run_ui(sized(RawInput::default()), |_| {})
-        .drop_without_applying_deltas();
-    ctx
 }
 
 /// A host, already run through one settled pass, so `host.frame()` is real.
@@ -92,54 +76,6 @@ async fn running_server(dir: &Path) -> UnixStream {
     UnixStream::connect(&socket)
         .await
         .unwrap_or_else(|err| panic!("connect to {}: {err}", socket.display()))
-}
-
-/// A request/response pair over one persistent connection, so a test can
-/// issue several calls without reconnecting.
-struct Client {
-    reader: BufReader<OwnedReadHalf>,
-    writer: OwnedWriteHalf,
-}
-
-impl Client {
-    fn new(stream: UnixStream) -> Self {
-        let (reader, writer) = stream.into_split();
-        Self {
-            reader: BufReader::new(reader),
-            writer,
-        }
-    }
-
-    async fn call(&mut self, id: i64, verb: &str, params: Value) -> Value {
-        let request = json!({"id": id, "verb": verb, "params": params}).to_string();
-        self.writer
-            .write_all(format!("{request}\n").as_bytes())
-            .await
-            .expect("write request");
-        let mut line = String::new();
-        self.reader
-            .read_line(&mut line)
-            .await
-            .expect("read response");
-        assert!(!line.is_empty(), "connection closed with no reply");
-        serde_json::from_str(&line).unwrap_or_else(|err| panic!("malformed reply {line:?}: {err}"))
-    }
-
-    /// Write a raw line, bypassing [`Client::call`]'s request construction —
-    /// for the malformed-JSON test.
-    async fn send_raw(&mut self, line: &str) -> Value {
-        self.writer
-            .write_all(format!("{line}\n").as_bytes())
-            .await
-            .expect("write raw line");
-        let mut reply = String::new();
-        self.reader
-            .read_line(&mut reply)
-            .await
-            .expect("read response");
-        serde_json::from_str(&reply)
-            .unwrap_or_else(|err| panic!("malformed reply {reply:?}: {err}"))
-    }
 }
 
 /// `health` over the real socket: well-formed, and identity matches this
@@ -309,116 +245,6 @@ async fn the_same_uid_peer_check_runs_and_accepts_this_process() {
 // tests below, which assert the verbs do the thing rather than that they
 // decline to.
 // ---------------------------------------------------------------------------
-
-use std::sync::Arc as StdArc;
-use std::sync::atomic::{AtomicBool, Ordering};
-
-use gorgon_petra_testkit::driver_host::DriverHost;
-use gorgon_petra_testkit::snapshot::Snapshotter;
-
-/// The driven application counts clicks and puts the count in the button's
-/// own label.
-///
-/// That is the whole point: a driver test that asserts only on the numbers
-/// `act` returns proves the verb answered, not that the click landed. The
-/// count travels input -> `App::handle` -> `view` -> a new frame -> the
-/// semantic tree, so a `tree` query after the `act` is reading the
-/// application's real state through the real projection.
-#[derive(Default)]
-struct CountingApp {
-    clicks: usize,
-}
-
-impl RowSource for CountingApp {
-    fn rows(&mut self, _source: &str, _range: Range<usize>) -> Vec<Arc<ViewNode>> {
-        Vec::new()
-    }
-}
-
-impl App for CountingApp {
-    fn view(&mut self) -> ViewNode {
-        ViewNode::new(NodeKind::Stack, "root").child(button("go", format!("Go {}", self.clicks)))
-    }
-
-    fn handle(&mut self, event: &InputEvent, route: &Route) {
-        if matches!(event, InputEvent::PointerPressed { .. })
-            && matches!(route, Route::Pointer { node } if node == "/root/go")
-        {
-            self.clicks += 1;
-        }
-    }
-
-    fn take_changes(&mut self) -> ChangeSet {
-        ChangeSet::All
-    }
-}
-
-/// A driver-controlled application running its own loop on its own thread.
-///
-/// The loop polls at 2 ms rather than sleeping until woken. That is a test
-/// harness, not the shipped shape: a real application blocks in its windowing
-/// event loop and `UiBridge::submit`'s `request_repaint` wakes it. Polling
-/// here keeps the test free of a winit dependency, and costs only that the
-/// zero-idle property (SC-002) is not what these tests measure.
-struct DrivenApp {
-    stop: StdArc<AtomicBool>,
-    thread: Option<std::thread::JoinHandle<()>>,
-}
-
-impl Drop for DrivenApp {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::SeqCst);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
-    }
-}
-
-/// A server, a stepping application, and a connected client.
-async fn driven_server(dir: &Path) -> (DrivenApp, Client) {
-    let (server, hub, bridge) = Server::new("driven-test-app");
-    let listener = Server::bind_under(dir)
-        .await
-        .expect("bind under a fresh temp dir");
-    let socket = Server::socket_path_under(dir);
-    tokio::spawn(server.serve(listener));
-
-    let stop = StdArc::new(AtomicBool::new(false));
-    let thread_stop = StdArc::clone(&stop);
-    let thread = std::thread::spawn(move || {
-        let ctx = headless();
-        let host = Host::new(&ctx, CountingApp::default(), Presenter::new(dark()));
-        let mut driver = DriverHost::new(&ctx, host, hub, bridge, Snapshotter::new());
-        while !thread_stop.load(Ordering::SeqCst) {
-            driver
-                .step(&ctx, sized(RawInput::default()))
-                .drop_without_applying_deltas();
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
-    });
-
-    let stream = UnixStream::connect(&socket)
-        .await
-        .unwrap_or_else(|err| panic!("connect to {}: {err}", socket.display()));
-    // Wait for the first frame, so a test never races the application's
-    // startup and reads a "no frame yet" it did not mean to test.
-    let mut client = Client::new(stream);
-    for attempt in 1..=200 {
-        let health = client.call(attempt, "health", json!({})).await;
-        if health["result"]["frame_seq"].as_u64().unwrap_or(0) > 0 {
-            break;
-        }
-        assert!(attempt < 200, "the application never published a frame");
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    (
-        DrivenApp {
-            stop,
-            thread: Some(thread),
-        },
-        client,
-    )
-}
 
 /// `act` all the way down: the request crosses the socket, the events are
 /// injected into a real pass's input, and both frame numbers come back.
@@ -629,31 +455,7 @@ async fn a_region_outside_the_viewport_is_refused() {
 // ---------------------------------------------------------------------------
 
 use gorgon_petra::tree::Interaction;
-use gorgon_petra_testkit::driver::{
-    ActTarget, Client as Driver, JourneyStep, TreeAnswer, TreeQuery,
-};
-
-/// A driven server plus a connected importable client.
-async fn driven_with_client(dir: &Path) -> (DrivenApp, Driver) {
-    // `driven_server` already waits for the first frame, so the client below
-    // never races startup. Its raw `Client` is dropped; the socket stays.
-    let (app, mut raw) = driven_server(dir).await;
-    let _ = raw.call(1, "health", json!({})).await;
-    // The two halves of the socket-path formula, checked against each other
-    // rather than trusted. The client cannot import `Server::socket_path_under`
-    // — it is `testkit`-gated and the client must build with no feature on —
-    // so it recomputes the formula, and a drift would show up as "nothing ever
-    // connects" with no error naming the cause.
-    assert_eq!(
-        gorgon_petra_testkit::driver::this_process_socket_path(dir),
-        Server::socket_path_under(dir),
-        "the client's socket-path formula drifted from the server's"
-    );
-    let driver = Driver::connect(&Server::socket_path_under(dir))
-        .await
-        .expect("the importable client connects to the real server");
-    (app, driver)
-}
+use gorgon_petra_testkit::driver::{ActTarget, JourneyStep, TreeAnswer, TreeQuery};
 
 /// Every verb the client types, against the server that actually emits those
 /// shapes. A field the client named differently would fail to decode here,

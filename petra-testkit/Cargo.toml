@@ -97,5 +97,18 @@ testkit = [
 name = "server"
 required-features = ["testkit"]
 
+# T035's acceptance journey needs the same real driver server `server.rs`
+# does — see that entry's own reasoning, which applies here unchanged.
+[[test]]
+name = "journey"
+required-features = ["testkit"]
+
+# T036's production-exclusion proof is the mirror image of the two entries
+# above: it exists specifically to prove the *no*-feature shape, so it must
+# build and run with no feature on, the same way `tests/driver.rs` does —
+# deliberately no `[[test]]` entry here, so cargo's default auto-discovery
+# picks it up unconditionally rather than requiring `testkit` the way
+# `server`/`journey` do.
+
 [lints]
 workspace = true
