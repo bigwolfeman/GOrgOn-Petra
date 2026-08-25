@@ -145,6 +145,27 @@ pub struct Host<A: App> {
 
 impl<A: App> Host<A> {
     /// A host over `app`, using `ctx` for fonts and `presenter` for the theme.
+    ///
+    /// # Fonts
+    ///
+    /// This installs the embedded design-system faces on `ctx`
+    /// ([`crate::fonts::install_design_system`]) and binds the weight axis to
+    /// them. It is not optional and it is not conditional: the shipped face
+    /// is what every extent in this engine is measured against, and a host
+    /// that drew in whatever face happened to be lying around would make
+    /// SC-004's cross-target digest equality an accident of two machines
+    /// having the same fonts installed.
+    ///
+    /// It costs no I/O — the faces are `include_bytes!` — which is the whole
+    /// reason it can live here. The *script* fallbacks
+    /// ([`crate::fonts::install_desktop_fallbacks`]) do read files and stay
+    /// opt-in for exactly that reason.
+    ///
+    /// egui applies new definitions at the start of the next pass, so the
+    /// first `Host::pass` after construction is the first frame drawn in the
+    /// shipped face. An application that wants its own stack calls
+    /// `Context::set_fonts` *after* this and takes responsibility for the
+    /// consequence.
     pub fn new(ctx: &Context, app: A, presenter: Presenter) -> Self {
         // The registry that accepts a tree and the theme that resolves it
         // must agree about what token names exist (contract C6): a `Host`
@@ -159,8 +180,12 @@ impl<A: App> Host<A> {
         // The shaper's typography map is the other half of the theme a frame
         // reads, so it is bound from the same theme here, and re-bound from
         // the same place.
+        crate::fonts::install_design_system(ctx);
         let snapshot = presenter.current();
-        let faces = FontFaces::default();
+        // Not `FontFaces::default()`: that points all three weight classes at
+        // one family because egui's default stack has one proportional face.
+        // The embedded stack has three, so `Bold` finally paints bold.
+        let faces = crate::fonts::design_system_faces();
         let extra_vocabulary = Vocabulary::new();
         let registry =
             Registry::with_vocabulary(composed_vocabulary(snapshot.theme(), &extra_vocabulary));
@@ -251,6 +276,37 @@ impl<A: App> Host<A> {
     pub fn set_font_faces(&mut self, faces: FontFaces) {
         self.faces = faces;
         self.rebind_current_theme();
+    }
+
+    /// Install the host machine's script fallback faces on top of the
+    /// embedded ones, and re-shape everything through the new stack.
+    ///
+    /// The design-system faces are already in force —
+    /// [`Host::new`] installs them, they are embedded, and they cost no I/O.
+    /// This is the other half: CJK, Arabic, Devanagari and Hebrew, read from
+    /// the host's filesystem, which is why it is a call a desktop product
+    /// makes rather than something that happens by itself. It cannot work on
+    /// wasm, and it is roughly 32 MiB of Noto that this crate deliberately
+    /// does not embed — see `fonts`'s module documentation for both.
+    ///
+    /// Call it once, at startup, and **read the report**.
+    /// [`crate::fonts::FontStackReport::is_complete`] answers whether the
+    /// machine had every required face, and
+    /// [`crate::fonts::FontStackReport::summary`] names the ones it did not
+    /// and every path that was tried. A product that drops it has chosen to
+    /// find out about a missing face by seeing boxes on screen.
+    ///
+    /// Two chores a caller must not forget are done here rather than left to
+    /// be rediscovered: every cached galley was shaped against the old stack
+    /// and is dropped, and the caller is spared having to know that egui
+    /// applies new definitions at the start of the *next* pass — which it
+    /// still does, so the first frame after this call is the first one drawn
+    /// with the new faces.
+    pub fn install_script_fallbacks(&mut self, ctx: &Context) -> crate::fonts::FontStackReport {
+        let report = crate::fonts::install_desktop_fallbacks(ctx);
+        self.shaper.clear();
+        self.cache.clear();
+        report
     }
 
     /// The shaper, for its cache statistics and its bound typography map.

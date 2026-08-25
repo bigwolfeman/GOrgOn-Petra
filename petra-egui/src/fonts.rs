@@ -4,18 +4,55 @@
 //!
 //! # 1. A font stack that can draw more than Latin
 //!
+//! Two halves, and the split is the whole design.
+//!
+//! ## The design system: embedded, unconditional, identical everywhere
+//!
+//! [`DESIGN_SYSTEM_FACES`] is IBM Plex Sans in three weights plus IBM Plex
+//! Mono, `include_bytes!`'d out of `gorgon/petra-egui/assets/fonts`.
+//! [`install_design_system`] puts them at the head of every family, and
+//! [`crate::host::Host::new`] calls it, so a product built on this crate
+//! draws in the shipped face without doing anything.
+//!
+//! Embedded rather than read from the host for one reason that is not taste:
+//! a frame digest is a claim that two machines agree about a picture, and a
+//! text extent is a function of the face that measured it. A stack assembled
+//! from whatever the operator installed makes `SC-004`'s cross-target digest
+//! equality an accident. It is also the only design that works on wasm at
+//! all, where there is no filesystem to read a face from.
+//!
+//! 759 KiB, and `include_bytes!` in a `const` costs nothing at run time:
+//! there is no I/O, so the objection that kept fonts out of
+//! [`crate::host::Host::new`] — that it should not read files behind an
+//! application's back — does not apply to these.
+//!
+//! Why Plex and not Inter or Geist: `epaint` 0.36.1 exposes no OpenType
+//! feature-tag API, so `tnum` cannot be requested and the shipped face must
+//! carry tabular figures *by default*. All four embedded faces give every
+//! digit an advance of 600/1000 units and carry no `tnum`/`pnum` feature at
+//! all. `assets/fonts/PROVENANCE.md` records the measurement and the
+//! licence; `every_embedded_face_has_tabular_figures_by_default` re-measures
+//! it on every test run, off the bytes actually compiled in.
+//!
+//! ## Script fallbacks: opt-in, from the host, desktop only
+//!
 //! egui's built-in font definitions install four faces — `Ubuntu-Light`,
 //! `Hack`, `NotoEmoji-Regular` and `emoji-icon-font` — and none of them
-//! carries CJK, Arabic, Devanagari or Hebrew. Text in those scripts is not
-//! *badly* drawn under the default stack; it is drawn as a row of replacement
-//! boxes, one per codepoint. [`install_desktop_fallbacks`] adds the faces the
-//! host machine already has, so the boxes stop.
+//! carries CJK, Arabic, Devanagari or Hebrew. Neither does Plex. Text in
+//! those scripts is not *badly* drawn under either stack; it is drawn as a
+//! row of replacement boxes, one per codepoint. [`install_desktop_fallbacks`]
+//! adds the faces the host machine already has, on top of the embedded ones,
+//! so the boxes stop.
 //!
-//! It is deliberately **opt-in**: it reads files, which is not something
-//! [`crate::host::Host::new`] should do behind an application's back, and the
-//! set of faces a product ships is a product decision. What this module
-//! guarantees is that the decision is *takeable*, and that whatever it took
-//! is reported rather than guessed at — see [`FontStackReport`].
+//! That half stays **opt-in**, and stays a read of the host's files, because
+//! the alternative is roughly 32 MiB of Noto — `NotoSansCJK-Regular.ttc` is
+//! 16 MiB by itself — and no surface in this workspace draws those scripts
+//! outside a test sample. The trade is stated rather than hidden: a desktop
+//! product that renders user content calls it and gets a
+//! [`FontStackReport`] naming what it got; a product that does not call it
+//! draws boxes for CJK and can find out from the same report why. The web
+//! target cannot call it at all, which is the honest reason SC-009's web
+//! clause is not closed by this module.
 //!
 //! # 2. A detector that can tell a drawn glyph from a drawn box
 //!
@@ -82,6 +119,170 @@ use egui::{Color32, Context, FontData, FontDefinitions, FontFamily, FontId, Gall
 /// it answer for codepoints it draws an icon for. Script faces first, emoji
 /// last, is the order that makes the fallback chain explainable.
 const BUILTIN_EMOJI_FACES: &[&str] = &["NotoEmoji-Regular", "emoji-icon-font"];
+
+/// One embedded face: the family name it is installed under and its bytes.
+///
+/// The bytes are a `&'static [u8]` from `include_bytes!`, so the face costs
+/// one page-mapped slice of the binary and no I/O at any point.
+#[derive(Clone, Copy, Debug)]
+pub struct EmbeddedFace {
+    /// The name the face is registered under in [`egui::FontDefinitions`],
+    /// and the key every family chain refers to it by.
+    pub name: &'static str,
+    /// The face itself.
+    pub bytes: &'static [u8],
+}
+
+/// The family a proportional weight class draws through.
+///
+/// egui has no weight axis: a [`egui::FontId`] carries a size and a family,
+/// and a weight is a different face registered under a different family name.
+/// These are those names. [`crate::text::FontFaces`] binds
+/// `TypographyWeight` to them and [`design_system_faces`] builds that
+/// binding, so a theme that declares `weight: Bold` finally paints bold —
+/// which it could not under egui's defaults, because the default stack has
+/// exactly one proportional face to share between all three classes.
+pub const SANS_REGULAR_FAMILY: &str = "gorgon-sans";
+/// See [`SANS_REGULAR_FAMILY`].
+pub const SANS_MEDIUM_FAMILY: &str = "gorgon-sans-medium";
+/// See [`SANS_REGULAR_FAMILY`].
+pub const SANS_BOLD_FAMILY: &str = "gorgon-sans-bold";
+
+/// Registered face names for the four embedded faces.
+const SANS_REGULAR: &str = "gorgon-plex-sans-regular";
+const SANS_MEDIUM: &str = "gorgon-plex-sans-medium";
+const SANS_BOLD: &str = "gorgon-plex-sans-bold";
+const MONO_REGULAR: &str = "gorgon-plex-mono-regular";
+
+/// The faces this crate embeds, in no particular order — the chains built by
+/// [`design_system_definitions`] decide precedence, not this list.
+///
+/// Public so a test can measure the exact bytes that are compiled in rather
+/// than a copy on disk that may have drifted, and so a host that assembles
+/// its own [`egui::FontDefinitions`] can take the faces without taking this
+/// module's family layout.
+///
+/// Provenance, versions, SHA-256s, the licence, and the measurement behind
+/// the choice of face: `gorgon/petra-egui/assets/fonts/PROVENANCE.md`.
+pub const DESIGN_SYSTEM_FACES: &[EmbeddedFace] = &[
+    EmbeddedFace {
+        name: SANS_REGULAR,
+        bytes: include_bytes!("../assets/fonts/IBMPlexSans-Regular.ttf"),
+    },
+    EmbeddedFace {
+        name: SANS_MEDIUM,
+        bytes: include_bytes!("../assets/fonts/IBMPlexSans-Medium.ttf"),
+    },
+    EmbeddedFace {
+        name: SANS_BOLD,
+        bytes: include_bytes!("../assets/fonts/IBMPlexSans-Bold.ttf"),
+    },
+    EmbeddedFace {
+        name: MONO_REGULAR,
+        bytes: include_bytes!("../assets/fonts/IBMPlexMono-Regular.ttf"),
+    },
+];
+
+/// The SIL Open Font License 1.1 the embedded faces ship under, compiled in
+/// beside them.
+///
+/// The OFL requires the licence travel with the font. A binary that embeds
+/// the bytes and leaves the licence in a repository the binary's user never
+/// sees has not done that, so the text is here and a product can print it.
+pub const DESIGN_SYSTEM_LICENSE: &str = include_str!("../assets/fonts/OFL.txt");
+
+/// egui's defaults with the embedded faces registered and spliced in at the
+/// head of every family.
+///
+/// "At the head" is the whole of the layout: `Ubuntu-Light` and `Hack` stay
+/// in the chains behind Plex, so a codepoint Plex does not carry still
+/// resolves instead of drawing a box, and the emoji faces stay last for the
+/// reason [`BUILTIN_EMOJI_FACES`] gives. The three named sans families each
+/// carry their own weight first and then the whole proportional chain, so a
+/// bold run falls back through exactly the same faces a regular one does.
+#[must_use]
+pub fn design_system_definitions() -> FontDefinitions {
+    let mut definitions = FontDefinitions::default();
+    register_design_system(&mut definitions);
+    definitions
+}
+
+/// Register the embedded faces into `definitions` and put them at the head of
+/// every family.
+///
+/// Separate from [`design_system_definitions`] so
+/// [`desktop_fallback_definitions`] can stack the host's script faces on top
+/// of the same base instead of starting again from egui's defaults — which is
+/// what it used to do, and which would have thrown Plex away the moment a
+/// product asked for CJK.
+fn register_design_system(definitions: &mut FontDefinitions) {
+    for face in DESIGN_SYSTEM_FACES {
+        definitions.font_data.insert(
+            face.name.to_owned(),
+            Arc::new(FontData {
+                font: std::borrow::Cow::Borrowed(face.bytes),
+                index: 0,
+                tweak: egui::FontTweak::default(),
+            }),
+        );
+    }
+
+    let proportional = definitions
+        .families
+        .entry(FontFamily::Proportional)
+        .or_default();
+    proportional.insert(0, SANS_REGULAR.to_owned());
+    let proportional = proportional.clone();
+
+    definitions
+        .families
+        .entry(FontFamily::Monospace)
+        .or_default()
+        .insert(0, MONO_REGULAR.to_owned());
+
+    // Each weight family: its own face, then the full proportional chain
+    // behind it. Cloning the chain rather than naming the family recursively
+    // because egui resolves a family to a flat list of face names, not to
+    // other families.
+    for (family, face) in [
+        (SANS_REGULAR_FAMILY, SANS_REGULAR),
+        (SANS_MEDIUM_FAMILY, SANS_MEDIUM),
+        (SANS_BOLD_FAMILY, SANS_BOLD),
+    ] {
+        let mut chain = vec![face.to_owned()];
+        chain.extend(proportional.iter().filter(|n| *n != face).cloned());
+        definitions
+            .families
+            .insert(FontFamily::Name(family.into()), chain);
+    }
+}
+
+/// The weight-to-family binding [`design_system_definitions`] makes possible.
+///
+/// [`crate::text::FontFaces::default`] points all three weight classes at
+/// `FontFamily::Proportional`, because egui's default stack has one
+/// proportional face and no bold one — under it, a token declared `Bold`
+/// paints at regular weight and
+/// [`crate::text::FontFaces::distinguishes_weight`] answers `false`. This
+/// binding is the first one in the workspace for which it answers `true`.
+#[must_use]
+pub fn design_system_faces() -> crate::text::FontFaces {
+    crate::text::FontFaces::new(
+        FontFamily::Name(SANS_REGULAR_FAMILY.into()),
+        FontFamily::Name(SANS_MEDIUM_FAMILY.into()),
+        FontFamily::Name(SANS_BOLD_FAMILY.into()),
+    )
+}
+
+/// Install the embedded design-system faces on `ctx`.
+///
+/// egui applies new font definitions at the start of the next pass, so the
+/// caller must drive one before the new faces answer anything, and a shaper
+/// holding cached galleys must be cleared ([`crate::text::GalleyShaper::clear`]).
+/// [`crate::host::Host::new`] does both; a caller installing by hand must too.
+pub fn install_design_system(ctx: &Context) {
+    ctx.set_fonts(design_system_definitions());
+}
 
 /// A face this crate will install if the host machine has it.
 ///
@@ -340,13 +541,20 @@ impl FontStackReport {
 /// The definitions [`install_desktop_fallbacks`] would install, and the
 /// report describing them.
 ///
+/// The base is [`design_system_definitions`], not egui's bare defaults: the
+/// script faces stack *on top of* the embedded ones. Building from
+/// `FontDefinitions::default()` — which is what this did before the faces
+/// were embedded — would have thrown Plex away the moment a product asked
+/// for CJK, and the product would have gone back to Ubuntu-Light with every
+/// gate still green.
+///
 /// Split out from the install so the file-system half can be exercised
 /// without an [`egui::Context`], and so a host that already builds its own
 /// [`egui::FontDefinitions`] can take the fallback chain without taking
 /// egui's defaults wholesale.
 #[must_use]
 pub fn desktop_fallback_definitions() -> (FontDefinitions, FontStackReport) {
-    let mut definitions = FontDefinitions::default();
+    let mut definitions = design_system_definitions();
     let mut report = FontStackReport::default();
 
     for face in DESKTOP_FALLBACKS {
@@ -385,7 +593,14 @@ pub fn desktop_fallback_definitions() -> (FontDefinitions, FontStackReport) {
     (definitions, report)
 }
 
-/// Install [`DESKTOP_FALLBACKS`] on top of egui's built-in faces.
+/// Install [`DESKTOP_FALLBACKS`] on top of the embedded design-system faces
+/// and egui's built-in ones.
+///
+/// This is the **script** half of the stack and it is opt-in: it reads files
+/// from the host, so it cannot run on wasm and it is not something
+/// [`crate::host::Host::new`] does behind an application's back. The design
+/// system itself needs no call — see [`install_design_system`], which
+/// `Host::new` does run, because embedded bytes cost no I/O.
 ///
 /// egui applies new font definitions at the start of the next pass, so the
 /// caller must drive one before the new faces answer anything — see
@@ -816,6 +1031,175 @@ mod tests {
         ctx.run_ui(egui::RawInput::default(), |_| {})
             .drop_without_applying_deltas();
         ctx
+    }
+
+    /// The measured claim that chose the face, re-measured through the
+    /// production path on every test run.
+    ///
+    /// `epaint` 0.36.1 exposes no OpenType feature-tag API, so `tnum` cannot
+    /// be requested: the shipped face has to be tabular by default or the
+    /// product draws proportional figures for ever and no theme edit can fix
+    /// it. This lays each digit out through `layout_job` — the same call
+    /// `GalleyShaper` paints from — and compares advances. Reading the
+    /// `hmtx` table instead would prove something about a file; this proves
+    /// something about what reaches the screen.
+    ///
+    /// Checked on both the proportional and the monospace family. A
+    /// monospace face is tabular trivially; it is here because "the mono
+    /// face is monospaced" is exactly the assumption a family swap breaks
+    /// quietly.
+    #[test]
+    fn every_embedded_face_draws_digits_at_one_width() {
+        let ctx = Context::default();
+        install_design_system(&ctx);
+        ctx.run_ui(egui::RawInput::default(), |_| {})
+            .drop_without_applying_deltas();
+
+        for family in [
+            FontFamily::Proportional,
+            FontFamily::Monospace,
+            FontFamily::Name(SANS_REGULAR_FAMILY.into()),
+            FontFamily::Name(SANS_MEDIUM_FAMILY.into()),
+            FontFamily::Name(SANS_BOLD_FAMILY.into()),
+        ] {
+            let font = FontId::new(16.0, family.clone());
+            let widths: Vec<f32> = "0123456789"
+                .chars()
+                .map(|d| {
+                    let mut job = LayoutJob::default();
+                    job.append(
+                        &d.to_string(),
+                        0.0,
+                        TextFormat {
+                            font_id: font.clone(),
+                            color: Color32::WHITE,
+                            ..TextFormat::default()
+                        },
+                    );
+                    ctx.fonts_mut(|f| f.layout_job(job)).rect.width()
+                })
+                .collect();
+            let first = widths[0];
+            assert!(
+                widths.iter().all(|w| (w - first).abs() < 0.01),
+                "{family:?} draws proportional figures: {widths:?}. epaint cannot request \
+                 `tnum`, so a face whose digits differ in width makes every column of numbers \
+                 in the product ragged and no theme edit can fix it. See \
+                 assets/fonts/PROVENANCE.md."
+            );
+            assert!(first > 0.0, "{family:?} drew nothing for a digit");
+        }
+    }
+
+    /// All four embedded faces reach `FontDefinitions`, and every family
+    /// chain that should lead with one does.
+    ///
+    /// The failure this guards is a face that is `include_bytes!`'d, counted
+    /// in the bundle size, and never named in a chain — dead weight that
+    /// looks like a shipped font.
+    #[test]
+    fn the_embedded_faces_lead_every_family_they_belong_to() {
+        let definitions = design_system_definitions();
+        for face in DESIGN_SYSTEM_FACES {
+            assert!(
+                definitions.font_data.contains_key(face.name),
+                "{} is embedded but never registered",
+                face.name
+            );
+            assert!(
+                is_sfnt(face.bytes),
+                "{} is not an sfnt container; epaint panics on a face skrifa cannot parse",
+                face.name
+            );
+        }
+        let leads = [
+            (FontFamily::Proportional, SANS_REGULAR),
+            (FontFamily::Monospace, MONO_REGULAR),
+            (FontFamily::Name(SANS_REGULAR_FAMILY.into()), SANS_REGULAR),
+            (FontFamily::Name(SANS_MEDIUM_FAMILY.into()), SANS_MEDIUM),
+            (FontFamily::Name(SANS_BOLD_FAMILY.into()), SANS_BOLD),
+        ];
+        for (family, expected) in leads {
+            let chain = definitions
+                .families
+                .get(&family)
+                .unwrap_or_else(|| panic!("{family:?} has no chain"));
+            assert_eq!(
+                chain.first().map(String::as_str),
+                Some(expected),
+                "{family:?} does not lead with the shipped face: {chain:?}"
+            );
+            assert!(
+                chain.len() > 1,
+                "{family:?} has no fallback behind the shipped face, so a codepoint Plex does \
+                 not carry draws a box instead of falling through: {chain:?}"
+            );
+        }
+    }
+
+    /// The weight channel, off since this crate existed, is on.
+    ///
+    /// `FontFaces::default` points all three classes at one family because
+    /// egui's default stack has one proportional face, so a token declared
+    /// `Bold` painted at regular weight and `distinguishes_weight` answered
+    /// `false`. This is the binding that makes it `true`, and the assertion
+    /// is on that method rather than on three family names so it stays a
+    /// test of the property rather than of the spelling.
+    #[test]
+    fn the_embedded_stack_can_actually_paint_three_weights() {
+        assert!(
+            design_system_faces().distinguishes_weight(),
+            "three weight classes must map to three different families"
+        );
+        assert!(
+            !crate::text::FontFaces::default().distinguishes_weight(),
+            "the default is still the one-face stack; if this changed, \
+             `design_system_faces` may no longer be the thing that turns the channel on"
+        );
+    }
+
+    /// Every non-ASCII codepoint the shipped product actually renders draws
+    /// ink rather than a replacement box, under the embedded stack alone —
+    /// with no host font installed and no fallback call.
+    ///
+    /// This is the corpus that decided against embedding Noto Sans Symbols 2:
+    /// it was specified to cover "the `StatusShape` glyphs that are tofu
+    /// today", those now draw as polygons from `paint::silhouette_points`,
+    /// and the face carries none of the punctuation below. See
+    /// `assets/fonts/PROVENANCE.md`.
+    ///
+    /// Deliberately not `script_samples()`: those are CJK, Arabic,
+    /// Devanagari and emoji, which the embedded stack does not carry and is
+    /// not claimed to. `tests/text_scripts.rs` measures those, against the
+    /// host stack, and says so.
+    #[test]
+    fn the_embedded_stack_draws_every_symbol_the_product_renders() {
+        // Enumerated from the string literals under `inspector/src`,
+        // `petra/src` and `petra-egui/src`: em and en dashes, ellipsis,
+        // section sign, middot, times, minus, arrow, radical,
+        // greater-or-equal, plus-minus, superscript two, subscript zero, and
+        // the Greek this workspace's animation curves are named in.
+        const SHIPPED: &str = "—–…§·×−→√≥±²₀ωζπΔÜïöé";
+
+        let ctx = Context::default();
+        install_design_system(&ctx);
+        ctx.run_ui(egui::RawInput::default(), |_| {})
+            .drop_without_applying_deltas();
+
+        let probe = GlyphProbe::new(&ctx, FontId::new(16.0, FontFamily::Proportional))
+            .expect("the probe must be able to learn the replacement box");
+        let gaps: Vec<String> = SHIPPED
+            .chars()
+            .map(|c| (c, probe.outcome(&ctx, c)))
+            .filter(|(_, outcome)| outcome.is_gap())
+            .map(|(c, outcome)| format!("U+{:04X} {c} => {}", c as u32, outcome.as_str()))
+            .collect();
+        assert!(
+            gaps.is_empty(),
+            "the embedded stack cannot draw {} codepoint(s) the product renders:\n  {}",
+            gaps.len(),
+            gaps.join("\n  ")
+        );
     }
 
     #[test]
