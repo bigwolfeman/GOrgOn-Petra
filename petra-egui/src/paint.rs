@@ -571,6 +571,15 @@ pub fn paint_frame_with_hosts(
         shaper,
         colors,
         scale,
+        page: to_egui_snapped(
+            PetraRect {
+                x: 0.0,
+                y: 0.0,
+                w: frame.viewport.size.w,
+                h: frame.viewport.size.h,
+            },
+            scale,
+        ),
         painters,
         images,
     };
@@ -678,6 +687,16 @@ struct PaintEnv<'a> {
     shaper: &'a mut GalleyShaper,
     colors: &'a dyn TokenSource,
     scale: Scale,
+    /// The whole drawable surface, device-snapped: `frame.viewport.size` at
+    /// the origin.
+    ///
+    /// Only the shadow block reads it, and only to stop an elevation from
+    /// leaving the page — see the comment there for why that boundary is
+    /// load-bearing rather than tidy. Taken from Petra's own viewport rather
+    /// than from `egui::Context`, which in 0.36.1 has no accessor for it and
+    /// would in any case be answering about the window rather than about the
+    /// surface Petra laid the frame out for.
+    page: egui::Rect,
     painters: &'a CustomPainters,
     images: &'a mut ImageSources,
 }
@@ -746,6 +765,21 @@ fn paint_one(
             // `spread` grows the rect, `blur` feathers past that, and
             // `offset` displaces the whole thing. A shadow cannot escape by
             // more than it was declared to extend.
+            //
+            // And it may not leave the surface at all, which is what the
+            // intersection with `screen_rect` is for. A shadow is allowed
+            // outside its *node*; it is not allowed outside the *page*. The
+            // difference is not cosmetic: `gorgon/petra-egui/examples/parity.rs`
+            // pins `RawInput::screen_rect` to a fixed rectangle so the two
+            // targets lay out identically whatever size a window manager
+            // grants, and `petra-parity` refuses the capture if anything is
+            // painted beyond that pin -- which is exactly what a card near the
+            // bottom edge did once elevation landed, because widening a clip
+            // by 13 units walks straight through a boundary nothing else in
+            // this painter can reach. `PaintEnv::page` is Petra's own
+            // viewport, which is the pinned rectangle on that page and the
+            // real surface everywhere else, so one intersection is correct in
+            // both cases.
             let reach = f32::from(geometry.spread)
                 + f32::from(geometry.blur)
                 + f32::from(geometry.offset[0].abs().max(geometry.offset[1].abs()));
@@ -756,7 +790,7 @@ fn paint_one(
             // survived only in the corner cut-outs the card's own rounding
             // left behind. `set_clip_rect` is the one that replaces.
             let mut cast = painter.clone();
-            cast.set_clip_rect(painter.clip_rect().expand(reach));
+            cast.set_clip_rect(painter.clip_rect().expand(reach).intersect(env.page));
             cast.add(egui::Shape::Rect(shadow.as_shape(rect, corner_radius)));
             report.fills += 1;
             shapes += 1;
@@ -1148,6 +1182,95 @@ mod tests {
             Viewport::new(Size::new(240.0, 120.0), ThemeMode::Dark),
             TransitionActivity::default(),
         )
+    }
+
+    /// An elevation may leave its own node. It may not leave the page.
+    ///
+    /// # The bug this is the guard for
+    ///
+    /// A shadow is the one thing in this painter that deliberately draws
+    /// outside the rect it belongs to, so the shadow block widens its clip by
+    /// the declared reach. Nothing capped that, and a card near the bottom of
+    /// the surface therefore painted *past the end of the page* — up to
+    /// `spread + blur + max(|offset|)` units of blurred black onto whatever
+    /// was outside.
+    ///
+    /// On a window that is only ever as large as the frame, nobody would
+    /// notice. `gorgon/petra-egui/examples/parity.rs` is not that: it pins
+    /// `RawInput::screen_rect` to a fixed rectangle so the native and web
+    /// targets lay out identically whatever size a window manager grants, and
+    /// the `petra-parity` lane refuses the capture outright if anything is
+    /// painted outside the pin. It did refuse it, naming "5 or more distinct
+    /// colour(s) outside that rectangle" against a budget of 4 — which is what
+    /// a blurred shadow gradient looks like when it lands in a margin that is
+    /// supposed to hold one flat colour.
+    ///
+    /// # What is asserted
+    ///
+    /// The fixture is a node bound flush to the bottom-right of a small
+    /// viewport, carrying `shadow.overlay` — the deeper of the two, reach 13,
+    /// so an unclamped clip would escape by a wide margin. Every clip rect
+    /// egui received must sit inside the page. Reading the clip rather than
+    /// the pixels is deliberate: the clip is what the bug was, and a pixel
+    /// assertion would additionally depend on the shadow's alpha being high
+    /// enough to change a byte, which is a different claim.
+    #[test]
+    fn an_elevation_may_leave_its_node_but_never_leaves_the_page() {
+        const PAGE: Size = Size { w: 240.0, h: 120.0 };
+
+        let host = Headless::new();
+        let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
+
+        // Flush to the far corner, so the shadow has somewhere to escape to.
+        let mut props = Props::default();
+        props
+            .tokens
+            .insert("background".into(), tok("surface.raised"));
+        props.tokens.insert("shadow".into(), tok("shadow.overlay"));
+        let card = ViewNode::new(NodeKind::Stack, "card")
+            .with_props(props)
+            .with_constraints(gorgon_petra::tree::Constraints {
+                horizontal: gorgon_petra::tree::AxisConstraint {
+                    min: Some(PAGE.w),
+                    max: Some(PAGE.w),
+                    priority: 0,
+                },
+                vertical: gorgon_petra::tree::AxisConstraint {
+                    min: Some(PAGE.h),
+                    max: Some(PAGE.h),
+                    priority: 0,
+                },
+            });
+        let tree = ViewNode::new(NodeKind::Stack, "root").child(card);
+        let frame = frame_of(&tree, &mut h);
+
+        let mut shaper = host.shaper();
+        let report = paint_frame(&host.painter(), &frame, &mut shaper, &snapshot());
+        assert!(report.unresolved_tokens.is_empty(), "{report:?}");
+        assert!(
+            report.fills >= 2,
+            "the fixture must actually draw a shadow and a fill, or this test \
+             passes by drawing nothing: {report:?}"
+        );
+
+        let page = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(PAGE.w, PAGE.h));
+        let out = host.0.run_ui(RawInput::default(), |_| {});
+        let escaped: Vec<egui::Rect> = out
+            .shapes
+            .iter()
+            .map(|cs| cs.clip_rect)
+            .filter(|clip| !page.contains_rect(*clip))
+            .collect();
+        out.drop_without_applying_deltas();
+
+        assert!(
+            escaped.is_empty(),
+            "{} clip rect(s) reach outside the {PAGE:?} page: {escaped:?}. A \
+             shadow is allowed outside its node and is not allowed outside the \
+             surface -- see the shadow block's own comment for the lane that \
+             catches this when the assertion does not.",
+            escaped.len()
+        );
     }
 
     /// The declared type ramp has to survive all the way to the screen.
