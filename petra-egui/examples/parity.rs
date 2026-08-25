@@ -265,6 +265,31 @@ struct Parity {
     tracing: bool,
     progress: f32,
     selected_row: Option<usize>,
+    /// True when this page must not move in response to input.
+    ///
+    /// The desktop half of the `petra-parity` lane is a **real window on the
+    /// operator's live X server**, and the web half is a headless canvas that
+    /// no pointer can reach. Every field above this one is mutable from
+    /// input, and all but `last_event` are drawn outside the lane's declared
+    /// non-parity regions — so a stray click while the window is up moves the
+    /// desktop raster and nothing moves the browser's. That is not a parity
+    /// regression, but the comparator cannot tell the difference, and it is
+    /// exactly what happened on 2026-08-24: the bundle bar read 50% in the
+    /// window and 62% in the browser, and the lane failed with a worst delta
+    /// of 209/255 at the bar's own pixels.
+    ///
+    /// A pixel-parity fixture has to be a pure function of its build, its
+    /// viewport and its theme. When this flag is set the event still routes
+    /// and still reaches `handle` — nothing about Petra's input path is
+    /// bypassed — and `handle` then changes nothing at all, `last_event`
+    /// included. Not even the echo: `last_event` is drawn through `note`,
+    /// which wraps, so a longer line could take a second row and paint below
+    /// the `readout-summary` rectangle declared to excuse it.
+    ///
+    /// The freeze is not silent. The sample prints `petra parity: frozen=true`
+    /// on stderr before it opens a window, the lane refuses to capture without
+    /// that answer, and it echoes the handshake into its own output.
+    frozen: bool,
 }
 
 impl Default for Parity {
@@ -282,7 +307,67 @@ impl Default for Parity {
             // about how the two weighted tracks split.
             progress: 0.62,
             selected_row: Some(2),
+            // Off by default: running the sample by hand is supposed to be
+            // interactive, and every test below wants the live input path.
+            // Only the capture lane turns it on, through `FROZEN_VAR`.
+            frozen: false,
         }
+    }
+}
+
+/// The variable the capture lane sets to freeze this page.
+///
+/// Read by [`build_window`] on the native target only. Its spelling is a
+/// contract with `gorgon/xtask/src/parity/desktop.rs`, which sets it, and the
+/// two cannot drift silently: `main` prints `petra parity: frozen=<bool>` on
+/// stderr and `NativeWindow::open` fails the lane when it asked for a frozen
+/// page and did not get that line. The same shape the `WINDOW_TITLE` literal
+/// already uses across the same crate boundary.
+#[cfg(not(target_arch = "wasm32"))]
+const FROZEN_VAR: &str = "PETRA_PARITY_FROZEN";
+
+/// The inner size the native sample asks the window system for.
+///
+/// **At or above `MIN_CAPTURE` in `gorgon/xtask/src/parity.rs`, which is
+/// 1400x900.** This used to be 1200x900 — narrower than that floor — so the
+/// `petra-parity` lane could only capture the page when a tiling compositor
+/// happened to enlarge the window past what the sample asked for, and failed
+/// with "the compositor gave the sample a 1200x900 window" whenever the
+/// window manager simply honoured the request. Measured on 2026-08-24: three
+/// consecutive runs at 2009x1392, 1401x1392 and 1200x900, the last of them a
+/// gate failure caused by nothing but the operator's desktop state.
+///
+/// The lane does not take this on trust: the sample reports it in the same
+/// stderr handshake that carries `frozen=`, and `NativeWindow::confirm` fails
+/// by name if it is below the floor.
+#[cfg(not(target_arch = "wasm32"))]
+const WINDOW_REQUEST: (f32, f32) = (1600.0, 1000.0);
+
+/// Whether [`FROZEN_VAR`]'s value asks for a frozen page.
+///
+/// Split from the environment read so it can be tested without mutating a
+/// process-wide variable — the same shape `xtask`'s own `require_runtime_dir`
+/// uses for the same reason. Set-but-empty and `0` are "no", so a caller that
+/// clears the variable by setting it empty gets the interactive page rather
+/// than a silently frozen one.
+#[cfg(not(target_arch = "wasm32"))]
+fn frozen_from_env(value: Option<std::ffi::OsString>) -> bool {
+    value.is_some_and(|value| !value.is_empty() && value != "0")
+}
+
+/// Whether this build must ignore input that would move the page.
+///
+/// Always false on the web: that target has no environment to read and no
+/// pointer to defend against — its canvas is driven by WebDriver, which
+/// clicks nothing.
+fn frozen() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        false
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        frozen_from_env(std::env::var_os(FROZEN_VAR))
     }
 }
 
@@ -1341,6 +1426,14 @@ impl App for Parity {
     }
 
     fn handle(&mut self, event: &InputEvent, route: &Route) {
+        // Before anything, including `last_event`. See `Parity::frozen`: while
+        // this page is being captured it must move by not one pixel, and
+        // `last_event` is drawn through `note`, which wraps — a longer echo
+        // could take a second line and paint below the declared region that
+        // exists to excuse it.
+        if self.frozen {
+            return;
+        }
         let node = match route {
             Route::Pointer { node } | Route::Keyboard { node } => node.clone(),
             Route::Unrouted { reason } => {
@@ -1572,7 +1665,10 @@ fn read_back(host: &Host<Parity>) -> Readout {
 /// One function, used by the native entry point, the web entry point and every
 /// test below, so no two of them can drift into registering different things.
 fn build_window(ctx: &egui::Context, presenter: Presenter) -> ParityWindow {
-    let app = Parity::default();
+    let app = Parity {
+        frozen: frozen(),
+        ..Parity::default()
+    };
     let meter = std::rc::Rc::new(std::cell::Cell::new(app.progress));
     let mut host = Host::new(ctx, app, presenter);
     host.registry_mut().register_custom_kind(CUSTOM_KIND);
@@ -1685,8 +1781,20 @@ fn main() -> eframe::Result<()> {
         Ok(report) => eprint!("{report}"),
         Err(err) => eprintln!("petra parity: the glyph probe refused to build: {err}"),
     }
+    // The handshake `NativeWindow::open` checks. A capture lane that set
+    // `PETRA_PARITY_FROZEN` and got an interactive page anyway would compare
+    // a window a pointer can move against a canvas nothing can, which is the
+    // failure the flag exists to remove — so the lane refuses rather than
+    // trusting that the variable arrived under the name it was sent.
+    eprintln!(
+        "petra parity: frozen={} window={}x{}",
+        frozen(),
+        WINDOW_REQUEST.0 as u32,
+        WINDOW_REQUEST.1 as u32
+    );
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1200.0, 900.0]),
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([WINDOW_REQUEST.0, WINDOW_REQUEST.1]),
         ..eframe::NativeOptions::default()
     };
     eframe::run_native(
@@ -1864,6 +1972,8 @@ fn main() {
 mod tests {
     use super::{CUSTOM_KIND, GLYPH_HEADER, MISSING_SOURCE, Parity, build_window, glyph_report};
     use egui::{Context, Pos2, RawInput};
+    use gorgon_petra::geom::Point;
+    use gorgon_petra::input::{InputEvent, Modifiers, PointerButton, Route};
     use gorgon_petra::token::{Presenter, dark, light};
     use gorgon_petra::tree::{NodeKind, ViewNode};
     use gorgon_petra_egui::host::App;
@@ -2076,5 +2186,82 @@ mod tests {
             ["cjk", "arabic", "devanagari", "hebrew"],
             "the scripts a browser cannot draw have changed:\n{report}"
         );
+    }
+
+    /// The bundle bar's button id, read out of a real settled frame rather
+    /// than spelled here, so this test follows the page instead of pinning a
+    /// path that could stop existing while the test stayed green.
+    fn bump_node(window: &super::ParityWindow) -> String {
+        window
+            .host
+            .frame()
+            .expect("a settled frame")
+            .placements
+            .as_slice()
+            .iter()
+            .map(|placement| placement.id.clone())
+            .find(|id| id.ends_with("/bump"))
+            .expect("the page declares a `bump` button")
+    }
+
+    fn primary_press() -> InputEvent {
+        InputEvent::PointerPressed {
+            pos: Point::new(0.0, 0.0),
+            button: PointerButton::Primary,
+            modifiers: Modifiers::default(),
+        }
+    }
+
+    /// A frozen page moves by nothing on a click that moves the live one.
+    ///
+    /// This is the 2026-08-24 `petra-parity` failure in a unit test. The
+    /// desktop half of that lane is a real window on a live X server: a click
+    /// that lands on `bump` while the window is up moves the bundle bar, the
+    /// headless browser canvas has no such click, and the comparator reports
+    /// a 209/255 delta at the bar's own pixels. Both halves are asserted here
+    /// — the interactive page must still move, or this test would pass
+    /// against a page that ignores input for some other reason.
+    #[test]
+    fn a_frozen_page_does_not_move_on_the_click_that_would_move_it() {
+        let (_ctx, window) = settled(Presenter::new(dark()));
+        let node = bump_node(&window);
+        let route = Route::Pointer { node: node.clone() };
+        let start = Parity::default().progress;
+
+        let mut interactive = Parity::default();
+        interactive.handle(&primary_press(), &route);
+        assert!(
+            (interactive.progress - start).abs() > f32::EPSILON,
+            "the interactive page must still act on a click, or this test proves nothing \
+             about the frozen one: {start} -> {}",
+            interactive.progress
+        );
+
+        let mut frozen = Parity {
+            frozen: true,
+            ..Parity::default()
+        };
+        frozen.handle(&primary_press(), &route);
+        assert_eq!(
+            frozen.progress, start,
+            "a frozen page moved on a click; the desktop capture is no longer a pure \
+             function of the build and the parity comparison is a coin toss"
+        );
+        assert_eq!(
+            frozen.last_event, "",
+            "a frozen page must not move even the echo: `last_event` is drawn through a \
+             wrapping text node, and a second line would paint below the declared region \
+             that exists to excuse the first"
+        );
+    }
+
+    /// Only a real opt-in freezes the page.
+    #[test]
+    fn frozen_from_env_reads_only_a_real_opt_in() {
+        use std::ffi::OsString;
+        assert!(!super::frozen_from_env(None));
+        assert!(!super::frozen_from_env(Some(OsString::from(""))));
+        assert!(!super::frozen_from_env(Some(OsString::from("0"))));
+        assert!(super::frozen_from_env(Some(OsString::from("1"))));
     }
 }
