@@ -1256,6 +1256,59 @@ mod tests {
         );
     }
 
+    /// The glyph atlas's coverage curve is a projection of the theme's mode,
+    /// and it has to move when the mode does.
+    ///
+    /// The defect this guards shipped: nothing in this workspace wrote
+    /// `Visuals::text_options` at all, so the atlas was always built from
+    /// `Visuals::default()` — which is `Visuals::dark()` — including under
+    /// `light()`, where epaint documents `Off` as the correct curve. It was
+    /// invisible to every gate in the tree because a curve changes pixels and
+    /// not placements, and the frame digest hashes placements.
+    ///
+    /// Both of egui's own per-theme styles are read, not just the active one,
+    /// because [`bind_glyph_coverage`] writes both on purpose: an application
+    /// that calls `Context::set_theme` must not thereby get a curve for the
+    /// wrong Petra mode.
+    #[test]
+    fn the_glyph_coverage_curve_follows_the_theme_mode() {
+        use egui::epaint::FontColorTransferFunction;
+        use gorgon_petra::token::{Presenter, dark, light};
+
+        fn bound(ctx: &Context) -> [FontColorTransferFunction; 2] {
+            [egui::Theme::Dark, egui::Theme::Light].map(|theme| {
+                ctx.style_of(theme).visuals.text_options.color_transfer_function
+            })
+        }
+
+        let ctx = headless();
+        let mut host = Host::new(&ctx, Demo::default(), Presenter::new(light()));
+        assert_eq!(
+            bound(&ctx),
+            [FontColorTransferFunction::Off; 2],
+            "a host built on the light theme must rasterise through the curve \
+             epaint documents for light mode, in both of egui's styles, before \
+             its first pass rather than after it"
+        );
+
+        host.presenter().publish(dark());
+        step(&ctx, &mut host, RawInput::default());
+        assert_eq!(
+            bound(&ctx),
+            [FontColorTransferFunction::TwoCoverageMinusCoverageSq; 2],
+            "publishing the dark theme must move the curve with it; a stale \
+             curve is the shipped defect this test exists for"
+        );
+
+        host.presenter().publish(light());
+        step(&ctx, &mut host, RawInput::default());
+        assert_eq!(
+            bound(&ctx),
+            [FontColorTransferFunction::Off; 2],
+            "and back, so this asserts a binding rather than a one-way latch"
+        );
+    }
+
     /// A theme swap must leave the registry and the theme naming the same
     /// tokens, and must carry the type ramp with it.
     ///

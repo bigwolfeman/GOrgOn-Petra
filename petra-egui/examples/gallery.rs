@@ -1812,14 +1812,35 @@ struct ShotPlan {
 /// already said is not final.
 const SHOT_AFTER_PASSES: u32 = 3;
 
+/// Write the pinned page, not the granted window.
+///
+/// A screenshot is of the framebuffer, so it is whatever size the window
+/// manager handed out — [`GALLERY_VIEWPORT`] pins where the *page* is laid
+/// out, and the margin around it is not part of the page. Cropping here is
+/// what makes two captures taken on two runs hold the same pixels; the
+/// `petra-parity` lane does exactly this and for exactly this reason.
+///
+/// A window smaller than the pin is refused rather than padded or clamped: a
+/// short capture would silently drop the bottom of the page, and a
+/// measurement taken from it would be a measurement of a different page that
+/// looked like a valid one.
 fn write_ppm(path: &std::path::Path, image: &egui::ColorImage) -> std::io::Result<()> {
     use std::io::Write as _;
-    let [w, h] = image.size;
+    let [src_w, src_h] = image.size;
+    let (w, h) = (GALLERY_VIEWPORT.0 as usize, GALLERY_VIEWPORT.1 as usize);
+    if src_w < w || src_h < h {
+        return Err(std::io::Error::other(format!(
+            "the window manager granted {src_w}x{src_h}, which is smaller than the \
+             pinned {w}x{h} page; the capture would be missing part of the page"
+        )));
+    }
     let mut out = std::io::BufWriter::new(std::fs::File::create(path)?);
     write!(out, "P6\n{w} {h}\n255\n")?;
-    for px in &image.pixels {
-        let [r, g, b, _a] = px.to_srgba_unmultiplied();
-        out.write_all(&[r, g, b])?;
+    for row in 0..h {
+        for col in 0..w {
+            let [r, g, b, _a] = image.pixels[row * src_w + col].to_srgba_unmultiplied();
+            out.write_all(&[r, g, b])?;
+        }
     }
     out.flush()
 }
@@ -1834,7 +1855,33 @@ struct GalleryWindow {
     shot: Option<ShotPlan>,
 }
 
+/// The layout surface every capture of this page is taken at.
+///
+/// A window manager is free to ignore `with_inner_size`, and a tiling one
+/// always does: the same `PETRA_GALLERY_SHOT` invocation produced 2009x1392
+/// on one run and 1401x1392 on the next. Petra's layout is viewport-relative,
+/// so those two captures hold *different pages* — different wraps, different
+/// track widths — and a measurement taken from one cannot be compared with a
+/// measurement taken from the other. It broke a real run: the ink pixel count
+/// in a fixed band nearly doubled between two arms of an experiment that
+/// changed one rasteriser flag, because the band was sampling different text.
+///
+/// So the surface is pinned here rather than requested, which is the same fix
+/// and for the same reason as `examples/parity.rs`'s own
+/// `PARITY_VIEWPORT` — see that constant for the fuller argument, and for why
+/// `safe_area_insets` has to be zeroed alongside it.
+const GALLERY_VIEWPORT: (f32, f32) = (1200.0, 900.0);
+
 impl eframe::App for GalleryWindow {
+    /// Pin the layout surface to [`GALLERY_VIEWPORT`], whatever the host gave.
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        raw_input.screen_rect = Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(GALLERY_VIEWPORT.0, GALLERY_VIEWPORT.1),
+        ));
+        raw_input.safe_area_insets = Some(egui::SafeAreaInsets::default());
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.host.pass(&ctx);
@@ -1886,7 +1933,9 @@ impl eframe::App for GalleryWindow {
         if let Some(image) = image {
             match write_ppm(&plan.path, &image) {
                 Ok(()) => println!(
-                    "gallery: wrote {}x{} to {}",
+                    "gallery: wrote the pinned {}x{} page, cropped from a {}x{} window, to {}",
+                    GALLERY_VIEWPORT.0 as usize,
+                    GALLERY_VIEWPORT.1 as usize,
                     image.size[0],
                     image.size[1],
                     plan.path.display()
@@ -1903,7 +1952,11 @@ impl eframe::App for GalleryWindow {
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1200.0, 900.0]),
+        // Asked for, not relied on: `GalleryWindow::raw_input_hook` is what
+        // actually decides the layout surface. One constant feeds both so a
+        // window that *is* granted the request holds no margin to explain.
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([GALLERY_VIEWPORT.0, GALLERY_VIEWPORT.1]),
         ..eframe::NativeOptions::default()
     };
     eframe::run_native(
