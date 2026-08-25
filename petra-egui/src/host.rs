@@ -182,7 +182,7 @@ pub(crate) const COVERAGE_TOKEN: &str = "text.coverage-curve";
 /// variance-resistant of the two priors rather than either theme's old
 /// number by accident of which mode it happened to be in. `snap: false`
 /// matches every theme this workspace has ever shipped.
-pub(crate) const FALLBACK_COVERAGE: CoverageValue = CoverageValue {
+pub const FALLBACK_COVERAGE: CoverageValue = CoverageValue {
     passes: 2.0,
     snap: false,
 };
@@ -194,7 +194,7 @@ pub(crate) const FALLBACK_COVERAGE: CoverageValue = CoverageValue {
 /// have refused had this been declared at the wrong kind — defensive here
 /// regardless, because this function must never panic on a hand-built
 /// `Theme`).
-fn coverage_value(theme: &Theme) -> CoverageValue {
+pub fn coverage_value(theme: &Theme) -> CoverageValue {
     let name = TokenName::new(COVERAGE_TOKEN)
         .expect("\"text.coverage-curve\" is a well-formed token name");
     match theme.value(&name) {
@@ -207,22 +207,28 @@ fn coverage_value(theme: &Theme) -> CoverageValue {
 /// [`bind_glyph_coverage`] writes onto the `Context`, and the paint-repeat
 /// count and fractional-pass alpha [`crate::paint`] reads to repeat the
 /// galley emission.
+///
+/// Public because it is the *only* authority on that mapping, and an
+/// inspection tool that re-derived it would be a second authority able to
+/// disagree — silently, and in exactly the artifact a human is looking at to
+/// judge the real thing. `tests/text_size_probe.rs` is the caller this was
+/// opened for.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct CoveragePlan {
+pub struct CoveragePlan {
     /// The curve the glyph atlas rasterises through.
-    pub(crate) curve: egui::epaint::FontColorTransferFunction,
+    pub curve: egui::epaint::FontColorTransferFunction,
     /// How many whole times to paint the galley.
-    pub(crate) repeats: u8,
+    pub repeats: u8,
     /// `0.0` for no further pass; otherwise the fraction of the text
     /// colour's alpha to paint one further time, ai-macs' fractional-pass
     /// model ported verbatim (SPEC.md §1.4, §2.3).
-    pub(crate) fraction: f32,
+    pub fraction: f32,
     /// Whether a glyph's horizontal origin snaps to a whole device pixel.
     /// Carried straight through from [`CoverageValue::snap`] — see that
     /// field's doc comment for the (inverted, `bool`-vs-`bool`, no
     /// compile-time guard) mapping onto
     /// [`egui::TextOptions::subpixel_binning`].
-    pub(crate) snap: bool,
+    pub snap: bool,
 }
 
 /// `passes → (atlas curve, paint count, fractional-pass alpha)`, the
@@ -249,7 +255,7 @@ pub(crate) struct CoveragePlan {
 /// times would be `n = 6`, not `n = 3`; no row of this table, and no value
 /// this function returns for any `passes` in the legal `[1.0, 4.0]` range,
 /// pairs `TwoCov` with three paints (`two_cov_at_three_paints_would_be_n_six_and_no_row_produces_it`).
-pub(crate) fn coverage_plan(value: CoverageValue) -> CoveragePlan {
+pub fn coverage_plan(value: CoverageValue) -> CoveragePlan {
     use egui::epaint::FontColorTransferFunction;
 
     /// Float wobble tolerance for recognising the two exact anchor points a
