@@ -222,12 +222,22 @@ const POLICIES: [(&str, &str); 3] = [
 // something else, plain and primary when it is the thing itself. That is
 // five distinguishable roles out of two sizes and two tones.
 //
-// Two of those five reach the screen today. The renderer's typography map is
-// keyed on the pre-vocabulary names (see the module doc), so every run draws
-// at 14 units and the size half of the hierarchy is currently invisible. The
-// tone half and the capitals half both work, and the cards, the rules and the
-// page margin carry the rest. This is worth knowing before reading a capture
-// of this page and concluding the type scale was never chosen.
+// All five reach the screen. This paragraph used to say the opposite -- that
+// the renderer's typography map was keyed on pre-vocabulary names, so every
+// run drew at 14 units and the size half of the hierarchy was invisible --
+// and told the reader to distrust any capture of this page on that basis.
+// Measured on a real 1200x900 capture (2026-08-25), the masthead's ink spans
+// 28 rows, a card title 15, a stat number 14 and a caption 12: `heading-lg`,
+// `heading` and `body` are all distinct on screen. Whether the claim was
+// always wrong or was fixed and the comment left behind is not recoverable
+// from the file; either way a comment telling a reader to disbelieve a
+// correct capture is worse than no comment, because it retires a real
+// observation before it can be made.
+//
+// What *is* still true is narrower and belongs to the component library, not
+// the renderer: `typography.heading-sm` (16) is reachable from no component
+// at all, and `heading-lg` only by building a raw `Props` by hand, which the
+// masthead below does. Four declared steps, two with a public function.
 //
 // **Colour is never the only channel (FR-015).** The three fiber states go
 // through `status`, which carries the shape and the words beside the hue. The

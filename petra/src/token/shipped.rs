@@ -137,6 +137,106 @@ fn insert_layer_set(values: &mut BTreeMap<TokenName, TokenValue>, layers: &[[u8;
     );
 }
 
+/// The one accent hue, and the ink that goes on top of it.
+///
+/// **Blue, and the choice is not taste.** The operator this project is built
+/// for is red-green colour blind, so the single hue the interface leans on
+/// has to be the one that survives both deuteranopia and protanopia. Blue is
+/// the axis neither deficiency collapses;
+/// `the_accent_survives_red_green_colour_blindness` measures that against
+/// the same Viénot-Brettel-Mollon transform the status palette is held to,
+/// rather than leaving it as a claim in a comment.
+///
+/// The standing rule still holds and this token does not weaken it: **colour
+/// is never the only channel.** The accent may not be the sole signal for
+/// any state, exactly as `status.*` may not be
+/// (see [`crate::token::status`]).
+///
+/// The accent is a **fill**, not a text tone. The four places it is
+/// sanctioned to be spent — primary button fill, focus ring, selected tab,
+/// progress fill — are all non-text user-interface components, so the floor
+/// it is judged against is WCAG 2.1 SC 1.4.11 *Non-text Contrast* (3:1,
+/// Level AA), not SC 1.4.3's 4.5:1 body-text floor. That distinction is
+/// load-bearing here rather than pedantic: light `#0f62fe` measures
+/// **4.47:1** on `surface.layer-one` (`#f2f2f2`), which clears 3:1 with room
+/// and misses 4.5:1 by 0.03. Held to the text floor the shipped value would
+/// fail on the card surface it is meant to sit on.
+/// `the_accent_clears_aa_on_every_surface_it_can_be_painted_on` states
+/// which floor it uses and why, and pins the deepest layer each theme's
+/// accent survives.
+const LIGHT_ACCENT: [u8; 3] = [0x0f, 0x62, 0xfe];
+/// See [`LIGHT_ACCENT`]. Lifted for the dark ground, and the reason is the
+/// *label*, not the fill: `#0f62fe` on `#121212` is 3.745:1 and on `#222222`
+/// is 3.18:1, so the light accent would technically clear the 3:1 fill floor
+/// in dark mode. What it cannot do is carry text — dark's
+/// [`ON_ACCENT_TOKEN`] is `#121212`, and `#121212` on `#0f62fe` is 3.745:1,
+/// under the 4.5:1 AA body-text floor. A primary button whose fill passes
+/// and whose label fails is the worse of the two failures, because the fill
+/// is the part a reader does not have to decode.
+const DARK_ACCENT: [u8; 3] = [0x45, 0x89, 0xff];
+
+/// The name the accent fill is bound under.
+const ACCENT_TOKEN: &str = "accent.primary";
+
+/// The name for text painted **on** the accent fill.
+///
+/// **This token exists because a measurement forced it, not because the
+/// palette looked incomplete.** A primary button is one of the accent's four
+/// sanctioned uses, and a button has a label. Neither shipped text tone can
+/// legibly carry that label:
+///
+/// | on the accent fill | `text.primary` | `text.muted` |
+/// |---|---|---|
+/// | light, on `#0f62fe` | 3.48:1 | 1.95:1 |
+/// | dark, on `#4589ff` | 2.99:1 | 2.26:1 |
+///
+/// All four are under the 4.5:1 AA floor for body text, and the dark pair is
+/// the worse of the two — which is the same shape as the bug
+/// `every_text_tone_clears_aa_on_every_surface_it_can_be_painted_on` was
+/// written after. A component author reaching for the obvious tone would
+/// reproduce that bug on a new ground.
+///
+/// The value is **not a fourth grey chosen by eye**: it is the theme's own
+/// `surface.base`, assigned by [`insert_accent`] from `LAYERS[0]` so it
+/// cannot drift away from it. Ink on a filled accent is the page the accent
+/// is cut out of — white in light (5.00:1), `#121212` in dark (5.60:1).
+///
+/// A **hover or pressed variant was considered and refused.** Nothing in
+/// this pass measures a need for one: no interaction state is sanctioned to
+/// change the accent's hue, the painter already dims and lifts through
+/// `Props.opacity` end to end, and this file's own doc comments record that
+/// a declared name nothing reads is the defect the M-Carbon note counted at
+/// 12 of 18 names. `text.on-accent` clears that bar and a `accent.hover`
+/// does not: one has a failing measurement behind it, the other has a
+/// habit.
+const ON_ACCENT_TOKEN: &str = "text.on-accent";
+
+/// Assign a mode's accent pair into a theme's value map.
+///
+/// `layers` is the same array [`insert_layer_set`] takes, and only
+/// `layers[0]` is read: [`ON_ACCENT_TOKEN`] *is* `surface.base`, and taking
+/// it from the layer set rather than repeating the literal is what stops the
+/// two from drifting into two different whites.
+fn insert_accent(
+    values: &mut BTreeMap<TokenName, TokenValue>,
+    accent: &[u8; 3],
+    layers: &[[u8; 3]; 4],
+) {
+    values.insert(
+        name(ACCENT_TOKEN),
+        TokenValue::Color(ColorValue::from_srgb8(
+            accent[0], accent[1], accent[2], 0xff,
+        )),
+    );
+    let ground = layers[0];
+    values.insert(
+        name(ON_ACCENT_TOKEN),
+        TokenValue::Color(ColorValue::from_srgb8(
+            ground[0], ground[1], ground[2], 0xff,
+        )),
+    );
+}
+
 /// The shipped spring set: M-Carbon's motion constants, `(name, ζ, stiffness)`.
 ///
 /// From Material 3 Expressive, because Carbon has no spring at all —
@@ -278,6 +378,123 @@ fn insert_shape_ramp(values: &mut BTreeMap<TokenName, TokenValue>) {
     }
 }
 
+/// The geometry of one cast shadow: where it falls, how far it softens, how
+/// far it grows.
+///
+/// Named fields rather than the bare tuple `SPRING_SET` and `SHAPE_RAMP`
+/// use, and the difference is deliberate: those two tables are private and
+/// read exactly once each, ten lines below their own declaration, so a
+/// reader never has to remember which position is which. This one is
+/// **public** and is read from another crate, where `(_, [0, 3], 10, 0)`
+/// would make "blur then spread" a fact the caller has to remember rather
+/// than one the type states.
+///
+/// The field types mirror `epaint::Shadow`'s exactly — `[i8; 2]`, `u8`,
+/// `u8` — so the adapter's conversion is a field-for-field move with no
+/// range to check and no cast to get wrong. `gorgon-petra` does not depend
+/// on `epaint`; matching the layout is what keeps the seam trivial without
+/// taking the dependency.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShadowGeometry {
+    /// How far the shadow is displaced from the shape casting it, in logical
+    /// units, `[x, y]`. `x` is `0` in both shipped rows: a shadow offset
+    /// sideways implies a light source off to one side, and a tiling shell
+    /// whose panels can sit anywhere has no such side.
+    pub offset: [i8; 2],
+    /// The softening radius, in logical units.
+    pub blur: u8,
+    /// How far the shadow's rectangle grows past the shape casting it,
+    /// before blurring, in logical units.
+    pub spread: u8,
+}
+
+/// The elevation geometry, shared verbatim by both shipped themes.
+///
+/// **Geometry is not a token, and that is the same split every other family
+/// in this file already makes.** A gap does not change when the lights go
+/// out (`SPACING_RAMP`), a corner does not (`SHAPE_RAMP`), a spring does
+/// not (`SPRING_SET`), a heading's size does not (`TYPOGRAPHY_RAMP`).
+/// Neither does the direction a shadow falls in. Only the *colour* changes,
+/// so only the colour is a token — `shadow.raised` and `shadow.overlay` at
+/// [`TokenKind::Color`], against the `shadow` slot `slot.rs` already
+/// declares. No new [`TokenKind`] is added, and none is needed.
+///
+/// Two levels, not five. `raised` is roughly Material 3's level 1 — a card
+/// or a panel that has been lifted off the page. `overlay` is roughly its
+/// level 3 — a menu, a dialog, something that has left the page entirely.
+/// The layer set (`LAYER_TOKENS`) is still the primary depth cue in both
+/// themes and this does not replace it; a shadow is the sparse secondary,
+/// used where tone alone cannot separate a surface from what is behind it.
+///
+/// Keyed by token name and held to the vocabulary by
+/// `the_shadow_geometry_covers_every_shadow_token_and_nothing_else`, so a
+/// third shadow colour cannot be declared without a painter finding it has
+/// no geometry to draw with.
+pub const SHADOW_GEOMETRY: [(&str, ShadowGeometry); 2] = [
+    (
+        "shadow.raised",
+        ShadowGeometry {
+            offset: [0, 1],
+            blur: 4,
+            spread: 0,
+        },
+    ),
+    (
+        "shadow.overlay",
+        ShadowGeometry {
+            offset: [0, 3],
+            blur: 10,
+            spread: 0,
+        },
+    ),
+];
+
+/// The two elevation colours, ground first, in [`SHADOW_GEOMETRY`]'s order.
+const SHADOW_TOKENS: [&str; 2] = ["shadow.raised", "shadow.overlay"];
+
+/// The light theme's shadow alphas, out of 255, in [`SHADOW_TOKENS`]' order.
+///
+/// **These numbers are sourced to nobody.** Material 3 publishes no literal
+/// alpha for its fallback shadows, and no other system was found that does
+/// at these two levels. They are a reasoned starting point — 15% and 22% —
+/// and they are expected to move once a capture exists to judge them from.
+/// Nothing here should be read as measured.
+///
+/// Black in both themes. A lightened "shadow" in dark mode is not a shadow;
+/// occlusion darkens, and no guidance was found recommending otherwise.
+/// `the_shadow_set_is_black_and_deepens_with_its_ground` holds that.
+const LIGHT_SHADOW_ALPHAS: [u8; 2] = [38, 56];
+
+/// The dark theme's shadow alphas. Higher than [`LIGHT_SHADOW_ALPHAS`] —
+/// 25% and 35% — because black on a dark ground has less room to darken it.
+///
+/// **This is the number most likely to be wrong, and here is the
+/// measurement so the next reader does not have to take it on faith.**
+/// Composited over `surface.base` (`#121212`), `shadow.raised` at alpha 64
+/// moves the ground by **ΔL\* 1.37**. The dark layer set's own step — one
+/// visible unit of depth in this design — is 7.76 L\*, so the raised shadow
+/// is 18% of one layer step, and CIE L\*'s conventional just-noticeable
+/// difference is about 1.0. It is above the JND and not by much.
+///
+/// `the_shadow_set_is_black_and_deepens_with_its_ground` pins that ΔL\*
+/// with a floor so the value cannot silently drop below visibility. It
+/// cannot prove the shadow is visible *on a screen*, because a token test
+/// has no pixels: that is a capture's job, and until a capture exists this
+/// figure is the honest ceiling on what has been shown.
+const DARK_SHADOW_ALPHAS: [u8; 2] = [64, 90];
+
+/// Assign a mode's shadow colours into a theme's value map. Both themes call
+/// this for the same reason [`insert_layer_set`] exists: two hand-copied
+/// alpha pairs are two pairs that drift.
+fn insert_shadow_set(values: &mut BTreeMap<TokenName, TokenValue>, alphas: &[u8; 2]) {
+    for (token, alpha) in SHADOW_TOKENS.iter().zip(alphas) {
+        values.insert(
+            name(token),
+            TokenValue::Color(ColorValue::from_srgb8(0x00, 0x00, 0x00, *alpha)),
+        );
+    }
+}
+
 /// The shipped silhouette family: the three outline figures a paint slot
 /// can name.
 ///
@@ -371,6 +588,18 @@ pub fn standard_vocabulary() -> Vocabulary {
         .declare(DesignToken::new(name(RAISED_ALIAS), TokenKind::Color))
         .declare(DesignToken::new(name("text.primary"), TokenKind::Color))
         .declare(DesignToken::new(name("text.muted"), TokenKind::Color))
+        // The accent, and the ink that goes on it. One hue, spent on four
+        // sanctioned things (primary button fill, focus ring, selected tab,
+        // progress fill); see `LIGHT_ACCENT` for why it is blue and
+        // `ON_ACCENT_TOKEN` for why the pair is two names rather than one.
+        .declare(DesignToken::new(name(ACCENT_TOKEN), TokenKind::Color))
+        .declare(DesignToken::new(name(ON_ACCENT_TOKEN), TokenKind::Color))
+        // Elevation. Colour only: the offset, blur and spread that go with
+        // these two live in `SHADOW_GEOMETRY` as shared Rust constants, for
+        // the same reason the spacing and corner ramps are shared — a shadow
+        // does not change direction when the lights go out.
+        .declare(DesignToken::new(name(SHADOW_TOKENS[0]), TokenKind::Color))
+        .declare(DesignToken::new(name(SHADOW_TOKENS[1]), TokenKind::Color))
         .declare(DesignToken::new(name("spacing.2xs"), TokenKind::Spacing))
         .declare(DesignToken::new(name("spacing.xs"), TokenKind::Spacing))
         .declare(DesignToken::new(name("spacing.sm"), TokenKind::Spacing))
@@ -497,6 +726,8 @@ pub fn light() -> Theme {
     let mut values = BTreeMap::new();
 
     insert_layer_set(&mut values, &LIGHT_LAYERS);
+    insert_accent(&mut values, &LIGHT_ACCENT, &LIGHT_LAYERS);
+    insert_shadow_set(&mut values, &LIGHT_SHADOW_ALPHAS);
     values.insert(
         name("text.primary"),
         TokenValue::Color(ColorValue::from_srgb8(0x1a, 0x1a, 0x1a, 0xff)),
@@ -584,6 +815,8 @@ pub fn dark() -> Theme {
     let mut values = BTreeMap::new();
 
     insert_layer_set(&mut values, &DARK_LAYERS);
+    insert_accent(&mut values, &DARK_ACCENT, &DARK_LAYERS);
+    insert_shadow_set(&mut values, &DARK_SHADOW_ALPHAS);
     values.insert(
         name("text.primary"),
         TokenValue::Color(ColorValue::from_srgb8(0xf2, 0xf2, 0xf2, 0xff)),
@@ -649,7 +882,10 @@ pub fn dark() -> Theme {
 
 #[cfg(test)]
 mod tests {
-    use super::{LAYER_TOKENS, RAISED_ALIAS, SPRING_SET, dark, light, standard_vocabulary};
+    use super::{
+        ACCENT_TOKEN, DARK_LAYERS, LAYER_TOKENS, LIGHT_LAYERS, ON_ACCENT_TOKEN, RAISED_ALIAS,
+        SHADOW_GEOMETRY, SHADOW_TOKENS, SPRING_SET, dark, light, standard_vocabulary,
+    };
     use crate::token::ThemeMode;
     use crate::token::focus::{HALO_TOKEN, RING_TOKEN};
     use crate::token::name::TokenName;
@@ -1701,6 +1937,411 @@ mod tests {
                      {step:.2}x, outside {step_band:?}. Too small and the \
                      ramp has one tone under two names; too large and the \
                      quiet tone is the one this test exists to keep readable."
+                );
+            }
+        }
+    }
+    /// The deepest [`LAYER_TOKENS`] index the accent stays legible on, per
+    /// theme. Read with [`the_accent_clears_aa_on_every_surface_it_can_be_painted_on`],
+    /// which asserts both sides of the boundary the way
+    /// [`DEEPEST_STATUS_LAYER`] does.
+    ///
+    /// Light reaches the bottom of its set because the light layers
+    /// *alternate* rather than ramp — every one of the four is `#ffffff` or
+    /// `#f2f2f2`, so there is no deep end to lose. Dark stops at layer two:
+    /// `#4589ff` is 3.78:1 on `#333333` and **2.91:1** on `#444444`, and the
+    /// painter needs that number. A primary button dropped onto dark's
+    /// deepest layer is under the fill floor.
+    const DEEPEST_ACCENT_LAYER: [(&str, usize); 2] = [("light", 3), ("dark", 2)];
+
+    /// The accent has to be visible wherever it is spent, on every layer it
+    /// can be spent on, in both themes.
+    ///
+    /// # Which floor, and why it is not 4.5:1
+    ///
+    /// This is the question the test had to answer before it could assert
+    /// anything, and getting it wrong in either direction is a real failure
+    /// rather than a pedantic one.
+    ///
+    /// The accent is a **fill**. Its four sanctioned uses — primary button
+    /// fill, focus ring, selected tab, progress fill — are all non-text
+    /// user-interface components, and WCAG 2.1 grades those under SC 1.4.11
+    /// *Non-text Contrast*, whose Level AA threshold is 3:1. That is the
+    /// floor here: [`MIN_SURFACE_CONTRAST`], the same one the status marks
+    /// are held to, for the same reason.
+    ///
+    /// Held to SC 1.4.3's 4.5:1 body-text floor instead, the shipped light
+    /// accent **fails**: `#0f62fe` is 4.47:1 on `surface.layer-one`
+    /// (`#f2f2f2`), missing by 0.03. It also stops being a coherent
+    /// question, because light's layer set alternates — at 4.5:1 the light
+    /// accent would pass on layers zero and two and fail on one and three,
+    /// and "the deepest layer it survives" would not name anything.
+    ///
+    /// The text floor is not dropped, it is moved to where it belongs: the
+    /// *label on* the accent is text, and
+    /// [`text_on_the_accent_clears_aa_and_no_other_shipped_tone_does`] holds
+    /// that pair to 4.5:1.
+    ///
+    /// # Why the far side is asserted too
+    ///
+    /// Same reason as [`a_status_marker_is_legible_only_down_to_its_theme_s_deepest_layer`]:
+    /// the near side alone lets a palette edit silently gain or lose a layer
+    /// of headroom, and the painter needs the boundary as a number, not as a
+    /// direction.
+    #[test]
+    fn the_accent_clears_aa_on_every_surface_it_can_be_painted_on() {
+        for (label, deepest) in DEEPEST_ACCENT_LAYER {
+            let theme = if label == "light" { light() } else { dark() };
+            let accent = theme_color(&theme, ACCENT_TOKEN);
+
+            for (depth, token) in LAYER_TOKENS.iter().enumerate() {
+                let ratio = contrast(accent, theme_color(&theme, token));
+                if depth <= deepest {
+                    assert!(
+                        ratio >= MIN_SURFACE_CONTRAST,
+                        "{label}: {ACCENT_TOKEN} is declared paintable on \
+                         {token} (depth {depth} <= {deepest}) but measures \
+                         {ratio:.2}:1 on it, under the \
+                         {MIN_SURFACE_CONTRAST}:1 non-text floor (WCAG SC \
+                         1.4.11). A button fill nobody can find is not an \
+                         affordance."
+                    );
+                } else {
+                    assert!(
+                        ratio < MIN_SURFACE_CONTRAST,
+                        "{label}: {ACCENT_TOKEN} now clears \
+                         {MIN_SURFACE_CONTRAST}:1 on {token} (depth {depth}) \
+                         at {ratio:.2}:1. That is an improvement, and it \
+                         means DEEPEST_ACCENT_LAYER is stale: raise {label} \
+                         to {depth} so the painter is allowed to use the \
+                         depth it just gained."
+                    );
+                }
+            }
+
+            // The alias the painter still binds is layer one; it must not be
+            // a hole in the sweep above.
+            let ratio = contrast(accent, theme_color(&theme, RAISED_ALIAS));
+            assert!(
+                ratio >= MIN_SURFACE_CONTRAST,
+                "{label}: {ACCENT_TOKEN} on {RAISED_ALIAS} is {ratio:.2}:1, \
+                 under the {MIN_SURFACE_CONTRAST}:1 non-text floor"
+            );
+        }
+    }
+
+    /// The accent is the one hue the interface leans on, and the operator it
+    /// is built for is red-green colour blind. So it is measured through the
+    /// same Viénot-Brettel-Mollon transform
+    /// [`status_colours_stay_apart_under_red_green_colour_blindness`] uses,
+    /// against the marks it shares a page with.
+    ///
+    /// This is a **separate** test rather than a fourth entry in that one,
+    /// because the claim is a different shape: the three status colours must
+    /// be mutually distinguishable because they are one channel with three
+    /// values, whereas the accent must merely not be *confusable* with any
+    /// of them. Folding it in would have made a test named for status assert
+    /// something that is not status, and its message would have pointed a
+    /// future reader at the wrong palette.
+    ///
+    /// The tightest pair is dark `accent.primary` against dark `status.ok`
+    /// (ΔE\*ab 68.4 under deuteranopia) — both sit on the blue-green side,
+    /// which is exactly where a red-green deficiency has the least room, so
+    /// it is the pair to watch when either colour is retuned.
+    #[test]
+    fn the_accent_survives_red_green_colour_blindness() {
+        const STATUSES: [&str; 3] = ["status.ok", "status.degraded", "status.down"];
+        for (label, theme) in [("light", light()), ("dark", dark())] {
+            let accent = theme_color(&theme, ACCENT_TOKEN);
+            for (vision, matrix) in [("deuteranope", &DEUTERANOPE), ("protanope", &PROTANOPE)] {
+                let seen_accent = to_lab(simulate(accent, matrix));
+                for status in STATUSES {
+                    let seen = to_lab(simulate(theme_color(&theme, status), matrix));
+                    let d = delta_e(seen_accent, seen);
+                    assert!(
+                        d >= MIN_STATUS_SEPARATION,
+                        "{label}: {ACCENT_TOKEN} and {status} are only ΔE*ab \
+                         {d:.1} apart to a {vision} reader (floor is \
+                         {MIN_STATUS_SEPARATION}). An accent a reader cannot \
+                         tell from a state marker turns every selected tab \
+                         into a status report."
+                    );
+                }
+            }
+        }
+    }
+
+    /// A label on a filled accent is text on a coloured ground, and it is
+    /// judged by the text floor.
+    ///
+    /// # Why [`ON_ACCENT_TOKEN`] exists at all
+    ///
+    /// Because neither shipped tone can carry it. Measured on the accent
+    /// fill: light `text.primary` 3.48:1, light `text.muted` 1.95:1, dark
+    /// `text.primary` 2.99:1, dark `text.muted` 2.26:1 — four misses of a
+    /// 4.5:1 floor. A component author reaching for the obvious tone would
+    /// reproduce the exact bug
+    /// [`every_text_tone_clears_aa_on_every_surface_it_can_be_painted_on`]
+    /// was written after, on a ground that test does not sweep.
+    ///
+    /// # Why the second half asserts a failure
+    ///
+    /// The `_and_no_other_shipped_tone_does` half is the token's own
+    /// justification, kept honest. This file's doc comments record that a
+    /// declared name nothing reads is a defect; the mirror of that is a
+    /// declared name nothing *needs*. If a future accent retune let
+    /// `text.primary` clear 4.5:1 on the fill, [`ON_ACCENT_TOKEN`] would be
+    /// a third name for a colour two names already cover, and this assertion
+    /// fires and says to delete it.
+    #[test]
+    fn text_on_the_accent_clears_aa_and_no_other_shipped_tone_does() {
+        /// WCAG 2.x SC 1.4.3 AA for body text — the same floor
+        /// [`every_text_tone_clears_aa_on_every_surface_it_can_be_painted_on`]
+        /// uses, restated here because this test sweeps a different ground.
+        const MIN_TEXT_CONTRAST: f32 = 4.5;
+
+        for (label, theme, layers) in [
+            ("light", light(), &LIGHT_LAYERS),
+            ("dark", dark(), &DARK_LAYERS),
+        ] {
+            let accent = theme_color(&theme, ACCENT_TOKEN);
+            let on_accent = theme_color(&theme, ON_ACCENT_TOKEN);
+
+            let ratio = contrast(on_accent, accent);
+            assert!(
+                ratio >= MIN_TEXT_CONTRAST,
+                "{label}: {ON_ACCENT_TOKEN} on {ACCENT_TOKEN} is {ratio:.2}:1, \
+                 below the {MIN_TEXT_CONTRAST}:1 AA floor. The label on a \
+                 primary button is body text and gets no discount for being \
+                 short."
+            );
+
+            // The value is the theme's own ground, taken from the layer set
+            // by `insert_accent` rather than repeated as a literal. Held
+            // here so the two cannot drift into two different whites.
+            let ground = layers[0];
+            assert_eq!(
+                on_accent,
+                ColorValue::from_srgb8(ground[0], ground[1], ground[2], 0xff),
+                "{label}: {ON_ACCENT_TOKEN} must be this theme's \
+                 surface.base — ink on a filled accent is the page the \
+                 accent is cut out of"
+            );
+
+            for tone in ["text.primary", "text.muted"] {
+                let ratio = contrast(theme_color(&theme, tone), accent);
+                assert!(
+                    ratio < MIN_TEXT_CONTRAST,
+                    "{label}: {tone} now clears {MIN_TEXT_CONTRAST}:1 on \
+                     {ACCENT_TOKEN} at {ratio:.2}:1, so {ON_ACCENT_TOKEN} is \
+                     a name for a colour {tone} already covers. Delete the \
+                     token and rebind its callers, or this file is carrying \
+                     a name nothing needs."
+                );
+            }
+        }
+    }
+
+    /// The elevation colours are black in both themes, they get stronger as
+    /// the ground they fall on gets darker, and they actually change the
+    /// pixel they land on.
+    ///
+    /// # The failure this exists to catch
+    ///
+    /// It is a **silent** one. If a shadow alpha is too low against
+    /// `#121212`, the token still resolves, the painter still reports a
+    /// fill, every other test in this file stays green, and the rendered
+    /// window looks identical. Work that passes every automated signal while
+    /// changing no pixel is the thing this repo's standing rule is for, so
+    /// the alpha is not allowed to be judged by "it parsed".
+    ///
+    /// # What is measured, and what this test cannot reach
+    ///
+    /// Compositing black at straight alpha `a` over a ground gives
+    /// `ground x (1 - a)` in linear light, so the darkening is exactly
+    /// computable from the token pair with no renderer involved. The test
+    /// takes the CIE L\* of ground and result and requires the drop to clear
+    /// [`MIN_SHADOW_DARKENING`].
+    ///
+    /// That is a floor on *arithmetic* visibility, not on screen
+    /// visibility. It cannot see a draw-order bug that paints the shadow on
+    /// top of the card, it cannot see a blur radius that spreads the drop
+    /// over so many pixels that none of them reach this delta, and it cannot
+    /// judge taste. A capture owns all three. What this stops is the alpha
+    /// silently going to nothing.
+    #[test]
+    fn the_shadow_set_is_black_and_deepens_with_its_ground() {
+        /// The smallest CIE L\* drop a shadow may make on the worst ground
+        /// it can fall on. 1.0 is roughly L\*'s just-noticeable difference.
+        ///
+        /// **The shipped dark `shadow.raised` clears this by 0.37**, at
+        /// ΔL\* 1.37 on `surface.base`, which is 18% of the 7.76 L\* step
+        /// between two dark layers. That is thin, it is named here rather
+        /// than buried, and it is the first number a capture should argue
+        /// with. This floor is a fence against the value silently going to
+        /// zero; it is not a claim that 1.37 is enough.
+        const MIN_SHADOW_DARKENING: f32 = 1.0;
+
+        let mut previous_light: Option<f32> = None;
+
+        for (label, theme, alphas) in [
+            ("light", light(), &super::LIGHT_SHADOW_ALPHAS),
+            ("dark", dark(), &super::DARK_SHADOW_ALPHAS),
+        ] {
+            let mut alpha_seen = Vec::new();
+            for (token, declared) in SHADOW_TOKENS.iter().zip(alphas) {
+                let shadow = theme_color(&theme, token);
+
+                assert!(
+                    shadow.r == 0.0 && shadow.g == 0.0 && shadow.b == 0.0,
+                    "{label}/{token} is not black: ({}, {}, {}). Occlusion \
+                     darkens — a lightened shadow in dark mode is a glow, \
+                     and this design does not ship one.",
+                    shadow.r,
+                    shadow.g,
+                    shadow.b,
+                );
+                assert!(
+                    (shadow.a - f32::from(*declared) / 255.0).abs() < 1e-6,
+                    "{label}/{token} carries alpha {} but its table says \
+                     {declared}/255",
+                    shadow.a,
+                );
+                alpha_seen.push(shadow.a);
+
+                // The worst ground in this theme is the one where black has
+                // the least room left to darken it.
+                let worst = LAYER_TOKENS
+                    .iter()
+                    .map(|surface| {
+                        let ground = theme_color(&theme, surface);
+                        let composited = ColorValue {
+                            r: ground.r * (1.0 - shadow.a),
+                            g: ground.g * (1.0 - shadow.a),
+                            b: ground.b * (1.0 - shadow.a),
+                            a: 1.0,
+                        };
+                        (lightness(ground) - lightness(composited), *surface)
+                    })
+                    .fold((f32::MAX, ""), |acc, x| if x.0 < acc.0 { x } else { acc });
+
+                assert!(
+                    worst.0 >= MIN_SHADOW_DARKENING,
+                    "{label}/{token} at alpha {declared}/255 darkens {} by \
+                     only ΔL* {:.2}, under the {MIN_SHADOW_DARKENING} floor. \
+                     The token resolves and the painter reports a fill, and \
+                     the operator sees no shadow at all.",
+                    worst.1,
+                    worst.0,
+                );
+            }
+
+            assert!(
+                alpha_seen[1] > alpha_seen[0],
+                "{label}: shadow.overlay ({}) must be stronger than \
+                 shadow.raised ({}) — an overlay has left the page and a \
+                 raised card has not",
+                alpha_seen[1],
+                alpha_seen[0],
+            );
+
+            match previous_light {
+                None => previous_light = Some(alpha_seen[0]),
+                Some(light_raised) => assert!(
+                    alpha_seen[0] > light_raised,
+                    "dark shadow.raised ({}) must be stronger than light's \
+                     ({light_raised}): black on a dark ground has less room \
+                     to darken it, which is optics and not a theme branch",
+                    alpha_seen[0],
+                ),
+            }
+        }
+    }
+
+    /// Every shadow colour the vocabulary declares has exactly one geometry
+    /// row, and the geometry is shared by both themes because it is not a
+    /// token at all.
+    ///
+    /// # Why this pairing needs a gate
+    ///
+    /// [`SHADOW_GEOMETRY`] is the one public constant in this file, read by
+    /// `gorgon-petra-egui`'s painter across a crate boundary, and it is
+    /// joined to the vocabulary by **string name only**. Nothing in the type
+    /// system connects `shadow.overlay` the declared token to
+    /// `"shadow.overlay"` the table key. Declare a third shadow colour and
+    /// forget the row, and the painter resolves a colour it has no offset or
+    /// blur to draw with — at which point it either guesses or drops the
+    /// slot, and both are silent.
+    ///
+    /// The reverse direction is gated too: a geometry row whose name no
+    /// theme defines is a row the painter can never reach.
+    #[test]
+    fn the_shadow_geometry_covers_every_shadow_token_and_nothing_else() {
+        let vocab = standard_vocabulary();
+        let declared: Vec<String> = vocab
+            .names_of_kind(crate::token::value::TokenKind::Color)
+            .into_iter()
+            .map(std::string::ToString::to_string)
+            .filter(|n| n.starts_with("shadow."))
+            .collect();
+        let keyed: Vec<String> = SHADOW_GEOMETRY
+            .iter()
+            .map(|(token, _)| (*token).to_string())
+            .collect();
+        let mut sorted_keys = keyed.clone();
+        sorted_keys.sort();
+        assert_eq!(
+            declared, sorted_keys,
+            "the vocabulary's shadow colours and SHADOW_GEOMETRY's rows have \
+             drifted apart. A declared shadow with no geometry is a colour \
+             the painter cannot place; a geometry row with no token is a row \
+             it can never reach."
+        );
+        assert_eq!(
+            keyed,
+            SHADOW_TOKENS.map(std::string::ToString::to_string).to_vec(),
+            "SHADOW_GEOMETRY and SHADOW_TOKENS must stay in the same order — \
+             insert_shadow_set zips SHADOW_TOKENS against a raw alpha array, \
+             so a reorder in one and not the other swaps the two shadows' \
+             colours without changing a single value"
+        );
+
+        let raised = SHADOW_GEOMETRY[0].1;
+        let overlay = SHADOW_GEOMETRY[1].1;
+        assert!(
+            overlay.offset[1] > raised.offset[1] && overlay.blur > raised.blur,
+            "shadow.overlay must fall further and soften more than \
+             shadow.raised ({overlay:?} vs {raised:?}); if the two geometries \
+             ever converge the design has one elevation under two names"
+        );
+        for (token, geometry) in SHADOW_GEOMETRY {
+            assert_eq!(
+                geometry.offset[0], 0,
+                "{token} is offset sideways by {}. A horizontal offset \
+                 implies a light source off to one side, and a tiling shell \
+                 whose panels sit anywhere has no such side.",
+                geometry.offset[0],
+            );
+            assert_eq!(
+                geometry.spread, 0,
+                "{token} spreads by {}; neither shipped level grows its \
+                 rectangle before blurring",
+                geometry.spread,
+            );
+        }
+
+        // The geometry is not reachable as a token in either theme: that is
+        // the whole claim of the colour/geometry split. Only the colour is.
+        for (label, theme) in [("light", light()), ("dark", dark())] {
+            for (token, _) in SHADOW_GEOMETRY {
+                assert!(
+                    matches!(
+                        theme.value(&TokenName::new(token).unwrap()),
+                        Some(TokenValue::Color(_))
+                    ),
+                    "{label}/{token} must resolve to a Color and nothing \
+                     else — offset, blur and spread are shared Rust \
+                     constants, not per-theme values"
                 );
             }
         }
