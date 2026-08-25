@@ -583,7 +583,11 @@ pub fn paint_frame_with_hosts(
         painters,
         images,
     };
-    let mut focused: Vec<&Placement> = Vec::new();
+    // The focused placement *and* the corner radius it asked for. The ring
+    // tracks the node's own rounding, so it needs the `radius` slot the main
+    // loop already resolved — carried here rather than re-derived, so a ring
+    // can never round differently from the shape it is ringing.
+    let mut focused: Vec<(&Placement, f32)> = Vec::new();
     for (placement, content) in frame.paint_pairs() {
         let clip = to_egui_snapped(placement.clip, scale);
         if !clip.is_positive() {
@@ -603,13 +607,16 @@ pub fn paint_frame_with_hosts(
             Outcome::Silent => report.silent += 1,
         }
         if placement.semantics.focused {
-            focused.push(placement);
+            let corner_radius = content.tokens.get(RADIUS_SLOT).map_or(0.0, |token| {
+                resolve_radius_or_record(env.colors, token, &mut report)
+            });
+            focused.push((placement, corner_radius));
         }
     }
-    for placement in focused {
+    for (placement, corner_radius) in focused {
         let mut p = painter.with_clip_rect(to_egui_snapped(placement.clip, scale));
         p.set_opacity(placement.opacity.clamp(0.0, 1.0));
-        if paint_focus_ring(&p, placement, colors, scale, &mut report) {
+        if paint_focus_ring(&p, placement, corner_radius, colors, scale, &mut report) {
             report.focus_rings += 1;
         } else {
             report.blind_focus += 1;
@@ -633,6 +640,7 @@ pub fn paint_frame_with_hosts(
 fn paint_focus_ring(
     painter: &Painter,
     placement: &Placement,
+    corner_radius: f32,
     colors: &dyn TokenSource,
     scale: Scale,
     report: &mut PaintReport,
@@ -649,9 +657,17 @@ fn paint_focus_ring(
             continue;
         }
         let width = device_snapped_width(band.width, scale);
+        // Concentric with the node, not square around it. This passed a
+        // hardcoded `0.0` until 2026-08-25, so a focused `button` — eight
+        // units of `shape.corner-md` — wore a hard rectangle while the two
+        // unfocused buttons beside it kept their corners. It did not read as
+        // one component with focus on it; it read as a different component.
+        // `FocusBand::radius_delta` carries the offset, because a band inset
+        // by `d` has to lose `d` of radius or it bulges at the corners.
+        let radius = (corner_radius + band.radius_delta).max(0.0);
         painter.rect_stroke(
             rect,
-            0.0,
+            radius,
             Stroke::new(width, color),
             egui::StrokeKind::Middle,
         );
@@ -1893,6 +1909,93 @@ mod tests {
         let shapes = out.shapes.len();
         out.drop_without_applying_deltas();
         (shapes, report)
+    }
+
+    /// The ring is concentric with the node's own corners, not a square
+    /// drawn around them.
+    ///
+    /// # What this looked like when it was wrong
+    ///
+    /// `paint_focus_ring` passed a hardcoded `0.0` corner radius until
+    /// 2026-08-25. A focused `component::button` — `shape.corner-md`, eight
+    /// units of rounding — therefore wore a hard rectangle, while the two
+    /// unfocused buttons beside it kept their corners. The reported symptom
+    /// was not "the focus ring is wrong"; it was that the primary button
+    /// looked like a different component from its own neighbours.
+    ///
+    /// It survived because every existing ring test counts bands, checks
+    /// colours or checks the report, and a square ring has exactly as many
+    /// bands in exactly the right colours as a rounded one.
+    ///
+    /// # What is asserted
+    ///
+    /// The three radii egui received, against the three the geometry
+    /// defines: the node's own radius plus `FocusBand::radius_delta`, which
+    /// is `-1.5`, `0.0`, `+1.5` for the shipped ring. Checking all three
+    /// rather than "not zero" is what catches a ring that rounds but is not
+    /// *concentric* — one that bulges at the corners because every band took
+    /// the node's radius unchanged.
+    #[test]
+    fn the_focus_ring_follows_the_corners_of_the_node_it_rings() {
+        use gorgon_petra::token::focus::FocusRing;
+        use gorgon_petra::tree::{Interaction, Role};
+
+        let radius = snapshot()
+            .radius("shape.corner-md")
+            .expect("the shipped shape ramp declares shape.corner-md");
+        let mut props = Props {
+            text: Some("Run".into()),
+            ..Props::default()
+        };
+        props
+            .tokens
+            .insert("background".into(), tok("surface.raised"));
+        props.tokens.insert("radius".into(), tok("shape.corner-md"));
+        let node = ViewNode::new(NodeKind::Text, "root")
+            .with_props(props)
+            .interactive(
+                Role::Button,
+                "Run",
+                &[Interaction::Click, Interaction::Focus],
+            );
+
+        let host = Headless::new();
+        let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
+        h.state.focused = Some("/root".to_owned());
+        let frame = frame_of(&node, &mut h);
+        let mut shaper = host.shaper();
+        let report = paint_frame(&host.painter(), &frame, &mut shaper, &snapshot());
+        assert_eq!(report.focus_rings, 1, "{report:?}");
+
+        let out = host.0.run_ui(RawInput::default(), |_| {});
+        // The three stroked rects are the ring; the node's own fill is
+        // filled, not stroked, so `stroke.width > 0.0` selects the bands.
+        let mut ring: Vec<u8> = out
+            .shapes
+            .iter()
+            .filter_map(|cs| match &cs.shape {
+                Shape::Rect(r) if r.stroke.width > 0.0 => Some(r.corner_radius.nw),
+                _ => None,
+            })
+            .collect();
+        out.drop_without_applying_deltas();
+        ring.sort_unstable();
+
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let mut want: Vec<u8> = FocusRing::STANDARD
+            .bands(gorgon_petra::geom::Rect::new(0.0, 0.0, 80.0, 30.0))
+            .iter()
+            .map(|band| (radius + band.radius_delta).max(0.0).round() as u8)
+            .collect();
+        want.sort_unstable();
+
+        assert_eq!(
+            ring, want,
+            "the ring's three bands must be concentric with the node's own \
+             {radius}-unit corners. All-zero is the square-ring bug; all-equal \
+             is a ring that rounds without being concentric and bulges at the \
+             corners."
+        );
     }
 
     /// The headline claim: focusing a node changes the picture, by three

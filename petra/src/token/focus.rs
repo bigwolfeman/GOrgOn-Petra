@@ -62,6 +62,24 @@ pub struct FocusBand {
     pub width: f32,
     /// Colour token for this band.
     pub token: &'static str,
+    /// What to add to the focused node's own corner radius to round this
+    /// band, in logical units. Negative for a band inside the node's edge.
+    ///
+    /// **A ring that ignores this draws a square around a rounded control**,
+    /// which is what shipped until 2026-08-25: `paint_focus_ring` passed a
+    /// hardcoded `0.0` corner radius, so a focused `button` — a
+    /// `shape.corner-md`, eight-unit rounding — wore a hard rectangle. Next
+    /// to two unfocused buttons that kept their corners, it read as a
+    /// different component rather than as the same one with focus on it.
+    ///
+    /// The offset is here rather than in the renderer for the same reason
+    /// the rest of this geometry is (D-069): where a band sits relative to
+    /// the node is a design decision a second renderer has to reproduce, and
+    /// concentric rounding is part of where it sits. A band whose rect is
+    /// inset by `d` has to lose `d` of radius or it is not concentric with
+    /// the edge it is tracking — it would bulge at the corners and pinch on
+    /// the flats.
+    pub radius_delta: f32,
 }
 
 /// The focus ring's measurements, in logical units.
@@ -109,16 +127,19 @@ impl FocusRing {
                 rect: rect.inset(flank),
                 width: self.halo,
                 token: HALO_TOKEN,
+                radius_delta: -flank,
             },
             FocusBand {
                 rect,
                 width: self.core,
                 token: RING_TOKEN,
+                radius_delta: 0.0,
             },
             FocusBand {
                 rect: rect.inset(-flank),
                 width: self.halo,
                 token: HALO_TOKEN,
+                radius_delta: flank,
             },
         ]
     }
