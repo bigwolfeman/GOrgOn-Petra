@@ -3,7 +3,9 @@
 //! page).
 
 use super::text::heading;
-use super::tokens::{SHAPE_MD, SPACING_LG, SPACING_MD, SPACING_SM, SURFACE_RAISED, TEXT_MUTED, t};
+use super::tokens::{
+    SHADOW_RAISED, SHAPE_MD, SPACING_LG, SPACING_MD, SPACING_SM, SURFACE_RAISED, t,
+};
 use super::{pad, stack};
 use crate::geom::Axis;
 use crate::tree::{Key, ViewNode};
@@ -30,7 +32,12 @@ pub fn section(key: impl Into<Key>, title: impl Into<String>, children: Vec<View
     node.props
         .tokens
         .insert("background".into(), t(SURFACE_RAISED));
-    node.props.tokens.insert("border".into(), t(TEXT_MUTED));
+    // Depth, not an outline. This bound `border` to `text.muted` until
+    // 2026-08-25. That drew every card on every page in a *text* colour --
+    // 10.7:1 against the fill it was separating, as loud as the prose inside
+    // it, and carrying nothing the fill was not already carrying. There is no
+    // border token in the theme, which is why a text one had been conscripted.
+    node.props.tokens.insert("shadow".into(), t(SHADOW_RAISED));
     node.props.tokens.insert("radius".into(), t(SHAPE_MD));
     node
 }

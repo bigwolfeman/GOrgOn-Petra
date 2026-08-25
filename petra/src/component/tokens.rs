@@ -34,6 +34,12 @@ pub(crate) const SILHOUETTE_DIAMOND: &str = "shape.silhouette-diamond";
 pub(crate) const TYPOGRAPHY_BODY: &str = "typography.body";
 pub(crate) const TYPOGRAPHY_HEADING: &str = "typography.heading";
 
+/// The elevation a resting container casts. Colour only: the offset, blur
+/// and spread live in `token::SHADOW_GEOMETRY`, because they are the same in
+/// both themes and a theme is the wrong place to keep a fact that does not
+/// change with the lights.
+pub(crate) const SHADOW_RAISED: &str = "shadow.raised";
+
 pub(crate) const SURFACE_BASE: &str = "surface.base";
 pub(crate) const SURFACE_RAISED: &str = "surface.raised";
 pub(crate) const TEXT_PRIMARY: &str = "text.primary";
@@ -62,6 +68,7 @@ pub(crate) const ALL: &[&str] = &[
     SILHOUETTE_DIAMOND,
     TYPOGRAPHY_BODY,
     TYPOGRAPHY_HEADING,
+    SHADOW_RAISED,
     SURFACE_BASE,
     SURFACE_RAISED,
     TEXT_PRIMARY,

@@ -684,7 +684,7 @@ impl Gallery {
         }
     }
 
-    /// The card treatment: raised fill, muted edge, `shape.corner-md`.
+    /// The card treatment: raised fill, an elevation shadow, `shape.corner-md`.
     ///
     /// [`section`] applies exactly this to every titled block. The telemetry
     /// band is the one card on the page that is a `Grid` rather than a titled
@@ -696,7 +696,13 @@ impl Gallery {
         node.props
             .tokens
             .insert("background".into(), tok("surface.raised"));
-        node.props.tokens.insert("border".into(), tok("text.muted"));
+        // Depth, not an outline. This bound `border` to `text.muted` until
+        // 2026-08-25, which drew a hairline at 10.7:1 against the fill it was
+        // separating -- as loud as body text, and carrying no information the
+        // fill was not already carrying. A card is not a wireframe.
+        node.props
+            .tokens
+            .insert("shadow".into(), tok("shadow.raised"));
         node.props
             .tokens
             .insert("radius".into(), tok("shape.corner-md"));
@@ -725,7 +731,9 @@ impl Gallery {
         props
             .tokens
             .insert("background".into(), tok("surface.raised"));
-        props.tokens.insert("border".into(), tok("text.muted"));
+        props
+            .tokens
+            .insert("shadow".into(), tok("shadow.overlay"));
         props.tokens.insert("radius".into(), tok("shape.corner-lg"));
         ViewNode::new(NodeKind::Surface, key).with_props(props)
     }

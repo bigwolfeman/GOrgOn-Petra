@@ -29,7 +29,8 @@ use gorgon_petra::geom::{Rect as PetraRect, Scale};
 use gorgon_petra::layout::TextRequest;
 use gorgon_petra::token::value::CoverageValue;
 use gorgon_petra::token::{
-    FocusRing, MotionValue, Silhouette, ThemeSnapshot, TokenName, TokenValue, TypographyValue,
+    FocusRing, MotionValue, SHADOW_GEOMETRY, Silhouette, ThemeSnapshot, TokenName, TokenValue,
+    TypographyValue,
 };
 
 use crate::host::{COVERAGE_TOKEN, FALLBACK_COVERAGE, coverage_plan};
@@ -62,6 +63,14 @@ pub const RADIUS_SLOT: &str = "radius";
 /// reaching the screen.
 pub const SILHOUETTE_SLOT: &str = "silhouette";
 
+/// Token consulted for the elevation shadow cast behind a node's fill.
+///
+/// Bound to one of the two names [`gorgon_petra::token::SHADOW_GEOMETRY`]
+/// carries. The token supplies only the *colour*; the offset, blur and spread
+/// come from that table, because they do not change between themes and a
+/// theme is the wrong place to keep a fact that is the same in both.
+pub const SHADOW_SLOT: &str = "shadow";
+
 /// Every token slot this painter knows how to use. Anything else a node binds
 /// lands in [`PaintReport::unknown_slots`] rather than being dropped on the
 /// floor.
@@ -70,6 +79,7 @@ const KNOWN_SLOTS: &[&str] = &[
     BORDER_SLOT,
     FOREGROUND_SLOT,
     RADIUS_SLOT,
+    SHADOW_SLOT,
     SILHOUETTE_SLOT,
 ];
 /// Token consulted for text with no declared `foreground`.
@@ -703,6 +713,55 @@ fn paint_one(
         });
     let outline = silhouette_points(figure, rect);
 
+    // Elevation goes down first, because a shadow is behind the thing that
+    // casts it. Drawn after the fill it would sit *on* the card, which is not
+    // a subtle mistake -- it is an obviously wrong picture, and that is the
+    // reason this block is here rather than next to the border below.
+    if let Some(token) = content.tokens.get(SHADOW_SLOT) {
+        // A rectangular shadow under a triangle is worse than no shadow, and
+        // `epaint::Shadow::as_shape` can only make a `RectShape`. A node that
+        // asked for both gets its silhouette honoured and its elevation
+        // dropped, and nothing in `report` claims a shadow was drawn.
+        if outline.is_none()
+            && let Some(color) = resolve_or_record(env.colors, token, report)
+            && let Some((_, geometry)) = SHADOW_GEOMETRY
+                .iter()
+                .find(|(name, _)| *name == token.as_str())
+        {
+            let shadow = egui::epaint::Shadow {
+                offset: geometry.offset,
+                blur: geometry.blur,
+                spread: geometry.spread,
+                color,
+            };
+            // A shadow is the one thing on this page that has to draw
+            // *outside* the node casting it, and every placement arrives here
+            // already clipped to its own bounds. Painting it through the
+            // inherited clip drew nothing at all: the token resolved, the
+            // report counted a fill, and the window was pixel-identical --
+            // the exact silent failure the design contract predicted for this
+            // block, arriving through a mechanism the contract did not.
+            //
+            // The clip is widened by the shadow's own reach and no further:
+            // `spread` grows the rect, `blur` feathers past that, and
+            // `offset` displaces the whole thing. A shadow cannot escape by
+            // more than it was declared to extend.
+            let reach = f32::from(geometry.spread)
+                + f32::from(geometry.blur)
+                + f32::from(geometry.offset[0].abs().max(geometry.offset[1].abs()));
+            // `Painter::with_clip_rect` INTERSECTS -- `rect.intersect(self.clip_rect)`
+            // in egui-0.36.1's `painter.rs:73`. It can only ever narrow, so
+            // widening through it is a silent no-op, and that is exactly how
+            // the first attempt at this block failed: the shadow drew, and
+            // survived only in the corner cut-outs the card's own rounding
+            // left behind. `set_clip_rect` is the one that replaces.
+            let mut cast = painter.clone();
+            cast.set_clip_rect(painter.clip_rect().expand(reach));
+            cast.add(egui::Shape::Rect(shadow.as_shape(rect, corner_radius)));
+            report.fills += 1;
+            shapes += 1;
+        }
+    }
     if let Some(token) = content.tokens.get(BACKGROUND_SLOT)
         && let Some(color) = resolve_or_record(env.colors, token, report)
     {
@@ -1566,19 +1625,32 @@ mod tests {
     /// exercised, because a fixture covering one while its doc claims the
     /// other is how this test drifted the first time:
     ///
-    /// * `shadow` — declared by `standard_slots()`, so a tree binding it is
-    ///   accepted, and absent from this painter's `KNOWN_SLOTS`, so nothing
-    ///   draws it. The token has to be a colour, which is the kind the
-    ///   schema declares for it; tree acceptance checks that pairing now.
+    /// * `highlight` — declared by `standard_slots()`, so a tree binding it
+    ///   is accepted, and absent from this painter's `KNOWN_SLOTS`, so
+    ///   nothing draws it. The token has to be a colour, which is the kind
+    ///   the schema declares for it; tree acceptance checks that pairing now.
+    ///
+    ///   This fixture was `shadow` until 2026-08-25, when the painter learned
+    ///   to draw one and the fixture silently stopped testing the route its
+    ///   own doc claimed. That is the exact drift the paragraph above warns
+    ///   about, and it happened anyway, which is worth more than the warning:
+    ///   the guard is the two `standard_slots()` assertions below, not the
+    ///   comment. They are what turned a green-but-meaningless test red.
     /// * `glow` — declared by nobody. A host painter's invented slot name
     ///   takes this path, and acceptance checks only that the token exists.
     #[test]
     fn a_genuinely_unknown_token_slot_is_recorded() {
         use gorgon_petra::token::standard_slots;
         assert!(
-            standard_slots().contains("shadow"),
+            standard_slots().contains("highlight"),
             "the declared-but-undrawn half of this test needs a slot the \
              shipped schema declares"
+        );
+        assert!(
+            !super::KNOWN_SLOTS.contains(&"highlight"),
+            "and one this painter does not draw -- if `highlight` gains a \
+             painter, move this fixture to another declared-but-undrawn slot \
+             rather than deleting the assertion"
         );
         assert!(
             !standard_slots().contains("glow"),
@@ -1592,7 +1664,7 @@ mod tests {
             text: Some("hi".into()),
             ..Props::default()
         };
-        props.tokens.insert("shadow".into(), tok("surface.raised"));
+        props.tokens.insert("highlight".into(), tok("surface.raised"));
         props.tokens.insert("glow".into(), tok("text.muted"));
         let frame = frame_of(
             &ViewNode::new(NodeKind::Text, "t").with_props(props),
@@ -1601,7 +1673,7 @@ mod tests {
         let mut shaper = host.shaper();
         let report = paint_frame(&host.painter(), &frame, &mut shaper, &snapshot());
 
-        assert!(report.unknown_slots.contains("shadow"), "{report:?}");
+        assert!(report.unknown_slots.contains("highlight"), "{report:?}");
         assert!(report.unknown_slots.contains("glow"), "{report:?}");
         assert!(
             !report.unknown_slots.contains("radius"),
