@@ -25,9 +25,19 @@ fn name(n: &str) -> TokenName {
 
 /// The names of the four surface layers, ground first.
 ///
-/// A **layer set**, which is M-Carbon's depth cue and is not an elevation
-/// ramp: depth is carried by one grey sitting on another, never by a shadow.
-/// See `.agents/notes/proposed/architecture/2026-08-24-m-carbon-design-language.md`.
+/// A **layer set**, which is M-Carbon's *primary* depth cue: depth is
+/// carried by one grey sitting on another. See
+/// `.agents/notes/proposed/architecture/2026-08-24-m-carbon-design-language.md`.
+///
+/// This comment used to end "never by a shadow", and that clause was
+/// retired on 2026-08-25. It rested on a premise about the painter that
+/// turned out to be false — epaint 0.36.1 implements `Shadow` as one
+/// `RectShape` with a widened feather (`tessellator.rs`'s
+/// `self.feathering.max(blur_width)`), so elevation costs one mesh and no
+/// second pass, and nothing was ever waiting on a blur primitive. Both
+/// Carbon and Material 3 use a tonal step as the default and spend a shadow
+/// sparingly on what floats; that is what this set plus `SHADOW_TOKENS` now
+/// does. The layer set is still the depth cue for anything *resting*.
 ///
 /// Carbon names these `background`, `layer-01`, `layer-02`, `layer-03`, and
 /// this set keeps that shape — a role word for the ground, ordinals above
@@ -2274,6 +2284,72 @@ mod tests {
                          three, and the page reads as a wireframe."
                     );
                 }
+            }
+        }
+    }
+
+    /// **One layer of tonal step is not a control boundary**, in either
+    /// theme, and this test exists to keep that measured rather than
+    /// rediscovered.
+    ///
+    /// # Why a passing test asserts a failure
+    ///
+    /// The 2026-08-25 design pass took the outlines off the cards and
+    /// replaced them with tone, which was right. The obvious next step was to
+    /// do the same to the controls, and a capture said no: a `button` seated
+    /// one layer ahead of the card it sits on is a `#f2f2f2`-to-`#ffffff`
+    /// step in light. That is 1.12:1, against WCAG 2.1 SC 1.4.11's 3:1 floor
+    /// for the visual information that identifies a user-interface component.
+    ///
+    /// So `button` and `field` keep a quiet [`BORDER_TOKEN`] edge, and this
+    /// test is the number that says why. It asserts the step is **below** the
+    /// floor, which reads backwards until you see what it is guarding: the
+    /// next person to look at an outlined button will want to delete the
+    /// outline, and this makes them measure first. If a future layer set
+    /// genuinely separates a control from its ground at 3:1, this test fails,
+    /// and the correct response is to delete both the test and the borders
+    /// together.
+    ///
+    /// Light is the worse of the two and structurally so. Its layer set
+    /// *alternates* (`#ffffff`, `#f2f2f2`, `#ffffff`, `#f2f2f2`) rather than
+    /// ramping, so there is no deeper step to reach for: the widest gap the
+    /// light set can produce between any two adjacent layers is the one
+    /// measured here.
+    #[test]
+    fn one_layer_of_step_does_not_reach_the_control_boundary_floor() {
+        /// WCAG 2.1 SC 1.4.11 *Non-text Contrast*, Level AA.
+        const MIN_UI_CONTRAST: f32 = 3.0;
+
+        for (label, theme) in [("light", light()), ("dark", dark())] {
+            for depth in 0..LAYER_TOKENS.len() - 1 {
+                let ground = theme_color(&theme, LAYER_TOKENS[depth]);
+                let control = theme_color(&theme, LAYER_TOKENS[depth + 1]);
+                let step = contrast(control, ground);
+                assert!(
+                    step < MIN_UI_CONTRAST,
+                    "{label}: a control seated on layer {depth} now reads \
+                     {step:.2}:1 against its ground, which clears the \
+                     {MIN_UI_CONTRAST}:1 SC 1.4.11 floor on its own. The \
+                     borders on `button` and `field` exist only because this \
+                     number was 1.26:1 and 1.12:1 -- if the layer set now \
+                     carries the boundary by itself, delete those borders and \
+                     delete this test with them."
+                );
+            }
+
+            // And the edge that is there instead does clear it, on every one
+            // of those grounds. Asserted here beside the number it answers,
+            // so the pair reads as one argument rather than two unrelated
+            // gates in different files.
+            let border = theme_color(&theme, BORDER_TOKEN);
+            for surface in &LAYER_TOKENS {
+                let edge = contrast(border, theme_color(&theme, surface));
+                assert!(
+                    edge >= MIN_UI_CONTRAST,
+                    "{label}: {BORDER_TOKEN} on {surface} is {edge:.2}:1, \
+                     under the floor the tonal step already failed. With both \
+                     under 3:1 a control on this layer has no boundary at all."
+                );
             }
         }
     }

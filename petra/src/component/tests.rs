@@ -218,44 +218,83 @@ fn walk(node: &ViewNode, path: &str, visit: &mut impl FnMut(&str, &crate::tree::
     }
 }
 
-/// **The regression guard for the 2026-08-25 design pass.** Every border the
-/// library still draws is one where the edge *is* the control, and every one
-/// of them is painted in the border tone rather than a text tone.
+/// **The regression guard for the 2026-08-25 design pass.** Exactly the set
+/// of nodes below draws an edge, every one of them in the border tone, and
+/// nothing else in the library draws one at all.
 ///
-/// # What went wrong, and why a contrast test could not have caught it
+/// # The rule, stated once
 ///
-/// The theme had no border colour, so every outline in this module bound
-/// `text.muted`. That is 10.73:1 against the card it was drawn on — it
-/// passed every contrast floor in the workspace, by roughly a factor of
-/// three — and the page read as a wireframe: the card edge, the field box,
-/// the progress rail and the checkbox square were all exactly as loud as the
-/// prose inside them.
+/// **Containers get a tone. Controls get an edge.**
 ///
-/// The fix was two moves. Most of those borders are gone, replaced by a
-/// tonal step ([`on_layer`]) or an elevation shadow (`section`). The ones
-/// that survive survive for a structural reason, not a stylistic one: an
-/// unchecked checkbox and an unselected radio have no fill, so their outline
-/// is the entire control.
+/// A card, a well, a progress rail, an image frame and a list strip are
+/// separated from what is behind them by a *fill* — one layer of the shipped
+/// set sitting on another, or an elevation shadow. Every one of those also
+/// drew a `text.muted` outline before this pass: 10.73:1 against the fill it
+/// was separating, decoration over a shape that already had a boundary, and
+/// the reason the page read as a wireframe. Those are gone.
 ///
-/// This test pins **both halves at once**, which is why it is one test and
-/// not two. A future edit that puts a border back on the field would pass a
-/// tone check (it would bind the right token) and fail here. An edit that
-/// repaints the checkbox in `text.muted` would pass a count check (the same
-/// nodes draw edges) and fail here.
+/// A `button`, a `field`, a checkbox box, a radio box and a toggle track
+/// keep one, for two different reasons that both come down to a
+/// measurement:
+///
+/// - The binary controls' marks have **no fill at all** when they are off.
+///   `box_control` passes `None` as the background of an unchecked box, so
+///   taking the outline away does not quieten the control, it deletes it.
+/// - `button` and `field` have a fill, and it is not enough.
+///   [`on_layer`] steps them one layer ahead of the card they sit on, which
+///   measures **1.26:1 in dark and 1.12:1 in light** against WCAG 2.1 SC
+///   1.4.11's 3:1 floor for the information that identifies a control. The
+///   table is in `button`'s `Chrome::Edged`. Tone carries depth; the edge
+///   carries the boundary. That pairing is M-Carbon's own rule, already
+///   recorded in `crate::token::shipped`'s `LAYER_TOKENS` doc.
+///
+/// `list_row` and `tab` are the deliberate omission: each is one segment of
+/// a strip rather than a free-standing control, the strip is what identifies
+/// it, and a tab bar of five outlined boxes is a wireframe again.
+/// `primary_button` is the other: its accent fill measures 4.75:1 (dark) and
+/// 4.47:1 (light) on the card unaided, so an edge on it would be decoration
+/// — and being the one button with no outline is a second, non-hue channel
+/// saying which one is primary.
+///
+/// # Why one test and not two
+///
+/// Each half alone is defeatable. A future edit that puts a border back on
+/// the card would bind the right *token* and pass a tone check. An edit that
+/// repaints the checkbox in `text.muted` would leave the same *set* of nodes
+/// bordered and pass a membership check. Both halves are asserted here,
+/// against an exact set rather than an allow-list, so adding a border
+/// anywhere fails just as loudly as removing one.
 ///
 /// # What it cannot reach
 ///
-/// Only what [`full_gallery`] composes. A component this fixture does not
-/// call could grow an outline unseen, which is why the fixture is the
-/// all-thirteen tree rather than a hand-picked subset — and why
-/// `every_component_in_one_tree_passes_the_audit_with_zero_findings` reads
-/// from the same one.
+/// Only what [`full_gallery`] composes, which is why that fixture is the
+/// all-thirteen tree rather than a hand-picked subset. And contrast is not
+/// the only thing that makes an edge shout: stroke width lives in the
+/// painter (`gorgon-petra-egui`'s `device_snapped_width`), not here. A
+/// capture owns that.
 #[test]
-fn the_only_borders_left_are_the_ones_that_are_the_control() {
-    /// Key paths, relative to their component, that are allowed to draw an
-    /// edge. Suffix-matched: the fixture nests these under section keys that
-    /// are not this test's business.
-    const EDGE_IS_THE_CONTROL: [&str; 2] = ["/box", "/track"];
+fn containers_take_a_tone_and_controls_take_an_edge() {
+    /// Every node in [`full_gallery`] that may draw a border, by the key
+    /// path it appears at. An exact set: a node missing from here that draws
+    /// one fails, and a node listed here that stops drawing one fails too.
+    const DRAWS_AN_EDGE: [&str; 5] = [
+        // `button` and `field`: a fill one layer ahead is 1.12:1 in light.
+        "root/controls/secondary",
+        "root/controls/name",
+        // The binary controls' marks: no fill at all when they are off.
+        "root/controls/check/box",
+        "root/controls/radio/box",
+        "root/controls/toggle/track",
+    ];
+
+    // `status` is not on that list, and the omission is measured rather than
+    // an oversight: a status mark carries a `silhouette` and a filled
+    // status colour, so its shape *is* its boundary and every one of the
+    // three shipped colours already clears 3:1 on the layers it can be
+    // painted on (`shipped.rs`'s own status gates). Adding an outline would
+    // put a grey ring around the one channel that is deliberately not grey.
+    // `primary_button` is absent for the reason in this test's doc; its
+    // label child is a `Text` node and draws no box at all.
 
     let mut bordered: Vec<String> = Vec::new();
     walk(&full_gallery(), "", &mut |path, props| {
@@ -272,24 +311,16 @@ fn the_only_borders_left_are_the_ones_that_are_the_control() {
         );
         bordered.push(path.to_owned());
     });
+    bordered.sort();
 
-    for path in &bordered {
-        assert!(
-            EDGE_IS_THE_CONTROL
-                .iter()
-                .any(|suffix| path.ends_with(suffix)),
-            "{path} draws a border. Only a node whose outline *is* the \
-             control keeps one — an unchecked checkbox or radio box, or a \
-             toggle track. Everything else takes a tonal step (`on_layer`) \
-             or an elevation shadow. If this node genuinely needs an edge, \
-             say why here rather than widening the list quietly."
-        );
-    }
-    assert!(
-        !bordered.is_empty(),
-        "no node in the fixture draws a border at all, so the tone assertion \
-         above ran zero times and this test is vacuous. The checkbox, radio \
-         and toggle are supposed to be here."
+    let mut expected: Vec<String> = DRAWS_AN_EDGE.iter().map(|s| (*s).to_owned()).collect();
+    expected.sort();
+    assert_eq!(
+        bordered, expected,
+        "the set of nodes drawing an edge changed. Containers take a tone \
+         and controls take an edge -- read this test's doc before widening \
+         the list, and if a node genuinely needs an edge, say which of the \
+         two measured reasons applies to it."
     );
 }
 
@@ -368,7 +399,7 @@ fn a_seat_deeper_than_the_ramp_is_clamped_and_still_has_a_step_in_it() {
 /// accent fill as "a background, therefore mine to move" could walk a
 /// primary button onto a ground its own colour cannot carry.
 #[test]
-fn on_layer_leaves_every_other_fill_alone_and_adds_no_border() {
+fn on_layer_leaves_every_other_fill_alone_and_never_touches_an_edge() {
     for depth in 0..=MAX_LAYER_DEPTH {
         let primary = on_layer(primary_button("p", "Save"), depth);
         assert_eq!(
@@ -382,20 +413,32 @@ fn on_layer_leaves_every_other_fill_alone_and_adds_no_border() {
              surface tone for this pass to step"
         );
 
-        for node in [
-            on_layer(button("b", "Save"), depth),
-            on_layer(field("f", "Fiber name"), depth),
-            on_layer(tab("t", "Trace", false), depth),
-            on_layer(list_row("l", "row", true), depth),
-            primary,
+        for (before, after) in [
+            (button("b", "Save"), on_layer(button("b", "Save"), depth)),
+            (
+                field("f", "Fiber name"),
+                on_layer(field("f", "Fiber name"), depth),
+            ),
+            (
+                tab("t", "Trace", false),
+                on_layer(tab("t", "Trace", false), depth),
+            ),
+            (
+                list_row("l", "row", true),
+                on_layer(list_row("l", "row", true), depth),
+            ),
+            (primary_button("p", "Save"), primary),
         ] {
-            assert!(
-                !node.props.tokens.contains_key("border"),
-                "{:?} gained a border from being re-seated. The point of \
-                 having four fills is that the depth cue is tonal; an \
-                 operator that quietly re-introduces an outline puts back the \
-                 wireframe this replaced.",
-                node.key
+            assert_eq!(
+                before.props.tokens.get("border"),
+                after.props.tokens.get("border"),
+                "{:?}'s edge changed when it was re-seated. Which components \
+                 draw an edge, and in what tone, is decided once by the \
+                 component (see `containers_take_a_tone_and_controls_take_an_edge`) \
+                 and is not a depth question. An operator that added one here \
+                 would put an outline on a card; one that removed it would take \
+                 the boundary off every control on a card.",
+                after.key
             );
         }
     }

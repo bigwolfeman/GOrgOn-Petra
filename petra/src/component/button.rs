@@ -2,7 +2,7 @@
 
 use super::pad;
 use super::tokens::{
-    ACCENT_PRIMARY, SHADOW_RAISED, SHAPE_MD, SPACING_MD, SPACING_SM, SURFACE_RAISED,
+    ACCENT_PRIMARY, BORDER_SUBTLE, SHADOW_RAISED, SHAPE_MD, SPACING_MD, SPACING_SM, SURFACE_RAISED,
     TEXT_ON_ACCENT, TEXT_PRIMARY, TYPOGRAPHY_BODY, t,
 };
 use crate::geom::Axis;
@@ -24,7 +24,7 @@ use crate::tree::{Interaction, Key, NodeKind, Props, Role, ViewNode};
 /// — a `Text` node has no children to inset. The label lives in the child;
 /// the role, the interactions, and the chrome live on the wrapper.
 pub fn button(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
-    labelled(key, label, SURFACE_RAISED, TEXT_PRIMARY, false)
+    labelled(key, label, SURFACE_RAISED, TEXT_PRIMARY, Chrome::Edged)
 }
 
 /// The page's one loudest action, filled with the accent instead of a grey.
@@ -65,7 +65,7 @@ pub fn button(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
 /// `ON_ACCENT_TOKEN`'s own doc comment — so this is not a stylistic choice
 /// and a caller must not "simplify" it back.
 pub fn primary_button(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
-    labelled(key, label, ACCENT_PRIMARY, TEXT_ON_ACCENT, true)
+    labelled(key, label, ACCENT_PRIMARY, TEXT_ON_ACCENT, Chrome::Raised)
 }
 
 /// The shape both entries above share: a padded, rounded `Stack` carrying
@@ -76,12 +76,61 @@ pub fn primary_button(key: impl Into<Key>, label: impl Into<String>) -> ViewNode
 /// they would drift, and the thing that would drift first is the role and
 /// interaction block below — the one part FR-058 says a caller must never be
 /// able to skip.
+/// What separates a button from the surface under it.
+///
+/// The two entries are not a style menu; each is the answer to a
+/// measurement, and the measurement is in [`Chrome::Edged`]'s doc.
+#[derive(Clone, Copy)]
+enum Chrome {
+    /// A quiet outline in [`BORDER_SUBTLE`], no elevation.
+    ///
+    /// **Why a default button keeps an edge when the card lost one.**
+    /// [`super::on_layer`] seats a button one layer ahead of its ground,
+    /// which is the depth cue and is *not* enough on its own to identify a
+    /// control. Measured against the card a button actually sits on:
+    ///
+    /// | | one layer ahead | `border.subtle` |
+    /// |---|---|---|
+    /// | dark, on `#222222` | **1.26:1** | 5.80:1 |
+    /// | light, on `#f2f2f2` | **1.12:1** | 3.34:1 |
+    ///
+    /// WCAG 2.1 SC 1.4.11 *Non-text Contrast* asks 3:1 for the visual
+    /// information required to identify a user-interface component. A tonal
+    /// step of 1.12:1 does not come close, and light is the worse of the two
+    /// because its layer set *alternates* rather than ramps -- the step there
+    /// is `#f2f2f2` to `#ffffff` and there is nowhere further to go.
+    ///
+    /// So tone carries the depth and a quiet edge carries the boundary. That
+    /// pairing is not invented here: `crate::token::shipped`'s `LAYER_TOKENS`
+    /// doc already records it as M-Carbon's own rule, taken from Carbon --
+    /// *"Borders pair with their same number."*
+    ///
+    /// The 2026-08-25 pass deleted the outline from the card, the well, the
+    /// progress rail and the image frame, all of which had it for decoration
+    /// over a shape that already had a fill, and repainted the rest from a
+    /// text tone at 10.73:1 to this one. That is the reduction. It is not the
+    /// same claim as "no component draws an edge", and this table is here so
+    /// that a later reader who wants to finish the job can see what it would
+    /// cost before doing it.
+    Edged,
+    /// An accent fill and an elevation shadow, no outline.
+    ///
+    /// The accent needs no edge and must not have one: it measures 4.75:1
+    /// (dark) and 4.47:1 (light) against the card on its own, well past the
+    /// 3:1 floor [`Chrome::Edged`] exists to reach. Drawing a border on top
+    /// of that would be the wireframe again, on the one control that least
+    /// needs it -- and having exactly one button on the page carry *no*
+    /// outline is a second, structural channel saying which one is primary,
+    /// for a reader who cannot separate the hue.
+    Raised,
+}
+
 fn labelled(
     key: impl Into<Key>,
     label: impl Into<String>,
     background: &str,
     foreground: &str,
-    raised: bool,
+    chrome: Chrome,
 ) -> ViewNode {
     let key = key.into();
     let label = label.into();
@@ -104,10 +153,15 @@ fn labelled(
     };
     props.tokens.insert("background".into(), t(background));
     props.tokens.insert("radius".into(), t(SHAPE_MD));
-    if raised {
+    match chrome {
+        Chrome::Edged => {
+            props.tokens.insert("border".into(), t(BORDER_SUBTLE));
+        }
         // Elevation, and only on the primary. A page where every button
         // casts a shadow has no hierarchy, it just has fog.
-        props.tokens.insert("shadow".into(), t(SHADOW_RAISED));
+        Chrome::Raised => {
+            props.tokens.insert("shadow".into(), t(SHADOW_RAISED));
+        }
     }
 
     ViewNode::new(NodeKind::Stack, key)
