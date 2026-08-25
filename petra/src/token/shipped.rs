@@ -590,7 +590,7 @@ pub fn dark() -> Theme {
     );
     values.insert(
         name("text.muted"),
-        TokenValue::Color(ColorValue::from_srgb8(0xb7, 0xb7, 0xb7, 0xff)),
+        TokenValue::Color(ColorValue::from_srgb8(0xd4, 0xd4, 0xd4, 0xff)),
     );
     insert_spacing_ramp(&mut values);
     insert_typography_ramp(&mut values);
@@ -1642,20 +1642,41 @@ mod tests {
     /// type ramp has one tone with two names and every "de-emphasised" label
     /// on every page silently shouts.
     ///
-    /// Both shipped themes are tuned to the same step (1.79x) on purpose, so
-    /// a reader switching themes gets the same hierarchy, not a louder one.
+    /// The two themes are tuned to *different* steps on purpose — see
+    /// [`DARK_STEP`] inside the test for why one number could not serve
+    /// both, and what it cost to find that out.
     #[test]
     fn every_text_tone_clears_aa_on_every_surface_it_can_be_painted_on() {
         /// WCAG 2.x AA for body text. Not AAA (7:1): that floor would force
         /// `text.muted` so close to `text.primary` on the deepest layer that
         /// the step assertion below could not also hold.
         const MIN_TEXT_CONTRAST: f32 = 4.5;
-        /// The de-emphasis step, as `primary:muted` contrast on one ground.
-        /// Below the floor the two tones are one tone; above the ceiling the
-        /// quiet one is the unreadable one this test was written about.
-        const STEP: std::ops::RangeInclusive<f32> = 1.4..=2.0;
+        /// The de-emphasis step each theme is allowed, as `primary:muted`
+        /// contrast on one ground.
+        ///
+        /// **Per theme, and deliberately not the same number.** The first
+        /// version of this gate held both themes to one band, because one
+        /// band is tidier and because a reader switching themes should get
+        /// the same hierarchy. That reasoning was right and the
+        /// implementation of it was wrong: a contrast *ratio* is not a
+        /// perceptual unit, and light-on-dark blooms in a way dark-on-light
+        /// does not. Holding dark to light's step put dark `text.muted` at
+        /// `#b7b7b7`, which cleared every arithmetic floor and was reported
+        /// as hard to read on the screen it actually ships on.
+        ///
+        /// So the bands are tuned per theme against what each one looks
+        /// like, and the *shipped* values sit inside them rather than the
+        /// bands being derived from a formula. Dark needs the smaller step
+        /// to read as equally quiet. Neither band is a measurement; each is
+        /// a fence a few points either side of a judged value, there to
+        /// catch drift rather than to define taste.
+        const DARK_STEP: std::ops::RangeInclusive<f32> = 1.20..=1.60;
+        /// See [`DARK_STEP`]. Light tolerates — and needs — the wider step.
+        const LIGHT_STEP: std::ops::RangeInclusive<f32> = 1.55..=2.10;
 
-        for (label, theme) in [("light", light()), ("dark", dark())] {
+        for (label, theme, step_band) in
+            [("light", light(), LIGHT_STEP), ("dark", dark(), DARK_STEP)]
+        {
             let primary = theme_color(&theme, "text.primary");
             let muted = theme_color(&theme, "text.muted");
 
@@ -1675,11 +1696,11 @@ mod tests {
 
                 let step = contrast(primary, ground) / contrast(muted, ground);
                 assert!(
-                    STEP.contains(&step),
+                    step_band.contains(&step),
                     "{label}: on {surface} the primary:muted step is \
-                     {step:.2}x, outside {STEP:?}. Too small and the ramp \
-                     has one tone under two names; too large and the quiet \
-                     tone is the one this test exists to keep readable."
+                     {step:.2}x, outside {step_band:?}. Too small and the \
+                     ramp has one tone under two names; too large and the \
+                     quiet tone is the one this test exists to keep readable."
                 );
             }
         }

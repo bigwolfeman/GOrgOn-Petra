@@ -16,6 +16,8 @@
 //! Run it: `cargo run -p gorgon-petra-egui --example gallery`
 //! Light theme: `PETRA_GALLERY_THEME=light cargo run … --example gallery`
 //! Capture one frame and exit: `PETRA_GALLERY_SHOT=/tmp/gallery.ppm cargo run …`
+//! Retone any colour token: `PETRA_GALLERY_COLOR=text.muted=#c6c6c6 cargo run …`
+//!   — see [`colors_from_env`]. Comma-separate to move several at once.
 //! Sweep the glyph-sharpness dial: `PETRA_GALLERY_COVERAGE=3,snap cargo run …`
 //!   — see [`coverage_from_env`]. Overrides `text.coverage-curve` for this one
 //!   window only, so the two dials can be judged by eye at real size without
@@ -88,7 +90,7 @@ use gorgon_petra::component::{
 use gorgon_petra::geom::{Align, Axis};
 use gorgon_petra::input::{InputEvent, PointerButton, Route, activates};
 use gorgon_petra::layout::{ChangeSet, RowSource};
-use gorgon_petra::token::value::{CoverageValue, TokenValue};
+use gorgon_petra::token::value::{ColorValue, CoverageValue, TokenValue};
 use gorgon_petra::token::{
     Presenter, StatusToken, Theme, TokenName, dark, light, standard_vocabulary,
 };
@@ -1791,7 +1793,72 @@ fn presenter_from_env() -> Presenter {
         Ok("light") => light(),
         _ => dark(),
     };
-    Presenter::new(coverage_from_env(theme))
+    Presenter::new(colors_from_env(coverage_from_env(theme)))
+}
+
+/// Override any colour token from `PETRA_GALLERY_COLOR`, so a tone can be
+/// judged in place instead of guessed at.
+///
+/// Syntax is a comma-separated list of `token=#rrggbb` or `token=#rrggbbaa`:
+///
+/// ```text
+/// PETRA_GALLERY_COLOR="text.muted=#c6c6c6,surface.layer-one=#1e1e1e"
+/// ```
+///
+/// **Deliberately general, rather than one knob per token.** `text.muted`
+/// is the tone being tuned today; a `PETRA_GALLERY_MUTED` would have been
+/// shorter to write and would have been followed by `PETRA_GALLERY_PRIMARY`
+/// the next time, and by a drawer of dead one-offs the time after. One
+/// parser that takes any declared colour name costs the same and answers
+/// every future version of this question.
+///
+/// Nothing in `src/` reads this. It bends only the copy this one window
+/// presents, and a malformed value panics rather than quietly showing the
+/// shipped colour under a label claiming otherwise — a capture that lies
+/// about its own settings is worse than no capture.
+fn colors_from_env(theme: Theme) -> Theme {
+    let Ok(spec) = std::env::var("PETRA_GALLERY_COLOR") else {
+        return theme;
+    };
+    let mode = theme.mode();
+    let mut values = theme.values().clone();
+    for pair in spec.split(',').filter(|p| !p.trim().is_empty()) {
+        let (token, hex) = pair
+            .split_once('=')
+            .unwrap_or_else(|| panic!("PETRA_GALLERY_COLOR={spec}: {pair:?} is not token=#rrggbb"));
+        let name = TokenName::new(token.trim())
+            .unwrap_or_else(|err| panic!("PETRA_GALLERY_COLOR={spec}: {token:?}: {err}"));
+        assert!(
+            values.contains_key(&name),
+            "PETRA_GALLERY_COLOR={spec}: {token:?} is not a token this theme assigns"
+        );
+        values.insert(name, TokenValue::Color(parse_hex(hex.trim(), &spec)));
+    }
+    Theme::build(mode, &standard_vocabulary(), values)
+        .expect("only declared colour tokens changed, each to a usable colour")
+}
+
+/// `#rrggbb` or `#rrggbbaa` to a [`ColorValue`]. Panics with the whole
+/// offending spec, because a half-parsed colour is how a tuning session ends
+/// up arguing about a capture nobody can reproduce.
+fn parse_hex(hex: &str, spec: &str) -> ColorValue {
+    let digits = hex.strip_prefix('#').unwrap_or_else(|| {
+        panic!("PETRA_GALLERY_COLOR={spec}: {hex:?} must start with '#'");
+    });
+    assert!(
+        digits.len() == 6 || digits.len() == 8,
+        "PETRA_GALLERY_COLOR={spec}: {hex:?} must be #rrggbb or #rrggbbaa"
+    );
+    let byte = |i: usize| {
+        u8::from_str_radix(&digits[i..i + 2], 16)
+            .unwrap_or_else(|err| panic!("PETRA_GALLERY_COLOR={spec}: {hex:?}: {err}"))
+    };
+    ColorValue::from_srgb8(
+        byte(0),
+        byte(2),
+        byte(4),
+        if digits.len() == 8 { byte(6) } else { 0xff },
+    )
 }
 
 /// Override `text.coverage-curve` from `PETRA_GALLERY_COVERAGE`, so the two
