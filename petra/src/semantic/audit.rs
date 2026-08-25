@@ -30,7 +30,13 @@ pub enum AuditRule {
     /// Contract obligation 3: focus order equals child order (SC-010).
     FocusOrderIsChildOrder,
     /// Contract obligation 4: a `truncated` flag corresponds to a real
-    /// truncation.
+    /// truncation, and an `overflowed` flag to a real overflow.
+    ///
+    /// The two are separate facts about a node and this rule checks both:
+    /// `truncated` says a policy hid something on purpose, `overflowed` says
+    /// the box was too small and the remainder is clipped away. They were one
+    /// flag until 2026-08-24, which meant a working ellipsis and a corrupted
+    /// panel reached this rule as the same report.
     TruncationIsReal,
     /// Projection integrity: a node whose id names no placement in the frame.
     /// The FR-009 honesty rule — an unmaterialized row is a `total_count`,
@@ -206,6 +212,33 @@ pub fn audit(tree: &SemanticTree, frame: &PetrifiedFrame) -> Vec<AuditViolation>
                     node.state.truncated, placement.paint.truncated
                 ),
             ));
+        }
+        if node.state.overflowed != placement.paint.overflowed {
+            out.push(violation(
+                AuditRule::TruncationIsReal,
+                &node.id,
+                format!(
+                    "tree says overflowed={}, the placement says {}",
+                    node.state.overflowed, placement.paint.overflowed
+                ),
+            ));
+        }
+        if node.state.overflowed {
+            // An overflow is a fact about content against a rect, so a node
+            // that draws nothing cannot have one. Same shape as the
+            // `truncated` check below, and it is the check that stops
+            // `overflowed` from becoming a bit a container sets out of habit.
+            let draws_text = frame
+                .content
+                .get(index)
+                .is_some_and(|content| content.text.is_some());
+            if !draws_text {
+                out.push(violation(
+                    AuditRule::TruncationIsReal,
+                    &node.id,
+                    "flagged overflowed while drawing no text, so it had no content to outgrow                      its box",
+                ));
+            }
         }
         if node.state.truncated {
             let draws_text = frame

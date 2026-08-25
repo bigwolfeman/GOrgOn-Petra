@@ -174,6 +174,12 @@ pub fn place(
             // room, and the child's own placement records only what its own
             // content lost.
             truncated: lost,
+            // Never the stack: `overflowed` is "the content is bigger than
+            // the rect it was given", and only the leaf that owns the content
+            // can measure that. A stack that ran out of room says so with
+            // `truncated` above, which is the FR-005 concession it actually
+            // performed.
+            overflowed: false,
             token_revision: ctx.theme_rev,
             // Filled by `PlacementSink::attach` once the dispatcher
             // has the payload; no container owns this.

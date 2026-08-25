@@ -15,6 +15,13 @@ use crate::geom::Scale;
 /// the version bump that a serialization change requires cannot be forgotten
 /// quietly.
 ///
+/// `v5` covers [`PaintState::overflowed`]. `layout::text::place` used to fold
+/// "an ellipsis policy fired" and "the box was too small" into the single
+/// `truncated` bit; splitting them adds a bit to the leaf stream. It is a
+/// picture-deciding bit and not merely bookkeeping: an overflowing run is now
+/// clipped to its own rect, so two frames that differ in it differ in what
+/// reaches the screen. No other field moved.
+///
 /// `v4` restructures the digest from one flat BLAKE3 stream over every
 /// placement into a Merkle tree over the placement tree — see [`NODE_DOMAIN`]
 /// and [`SUBTREE_DOMAIN`]. The flat form hashed a pre-order *flattening* of
@@ -38,7 +45,7 @@ use crate::geom::Scale;
 /// covered only the text content hash, the truncation flag, and the theme
 /// revision, so two frames that bound the same node's `background` to two
 /// different colours shared one digest.
-pub const DOMAIN: &[u8] = b"gorgon-petra-frame-v4";
+pub const DOMAIN: &[u8] = b"gorgon-petra-frame-v5";
 
 /// Domain separation for one placement's leaf hash.
 ///
@@ -230,6 +237,7 @@ fn leaf_bytes(scale: Scale, p: &Placement) -> Vec<u8> {
             PaintState {
                 content_hash,
                 truncated,
+                overflowed,
                 token_revision,
                 paint_hash,
             },
@@ -285,6 +293,7 @@ fn leaf_bytes(scale: Scale, p: &Placement) -> Vec<u8> {
     w.text(&canonical_decimal(*opacity));
     w.u64(*content_hash);
     w.bool(*truncated);
+    w.bool(*overflowed);
     w.u64(*token_revision);
     w.u64(*paint_hash);
     w.bool(*focused);
@@ -655,6 +664,7 @@ mod tests {
             paint: PaintState {
                 content_hash: hash_text("hello"),
                 truncated: false,
+                overflowed: false,
                 token_revision: 7,
                 paint_hash: 0,
             },
@@ -708,6 +718,7 @@ mod tests {
             paint: PaintState {
                 content_hash: hash_text("Fibers"),
                 truncated: false,
+                overflowed: false,
                 token_revision: 7,
                 paint_hash: hash_paint_content(&rich_content()),
             },
@@ -785,6 +796,9 @@ mod tests {
             ("paint.content_hash", |p| p.paint.content_hash ^= 1),
             ("paint.truncated", |p| {
                 p.paint.truncated = !p.paint.truncated;
+            }),
+            ("paint.overflowed", |p| {
+                p.paint.overflowed = !p.paint.overflowed;
             }),
             ("paint.token_revision", |p| p.paint.token_revision += 1),
             ("paint.paint_hash", |p| p.paint.paint_hash ^= 1),
@@ -1109,7 +1123,7 @@ mod tests {
     fn the_canonical_stream_matches_its_pinned_vectors() {
         assert_eq!(
             super::DOMAIN,
-            b"gorgon-petra-frame-v4",
+            b"gorgon-petra-frame-v5",
             "the frame prefix moved without the vectors below moving with it"
         );
         assert_eq!(super::PAINT_DOMAIN, b"gorgon-petra-paint-v2");
@@ -1127,12 +1141,12 @@ mod tests {
         let vp = viewport();
         assert_eq!(
             digest(&vp, &[]).hex(),
-            "912c3c245f1b43ecdc1676719424d9cffcb116e550caf2fd8fbb590829f67a52",
+            "4eab8eb5d3568a92228c027e03e4237fd793a67621208c177c602c00c091e1e1",
             "the empty-frame stream changed; see this test's doc comment"
         );
         assert_eq!(
             digest(&vp, &[rich_placement()]).hex(),
-            "330c8dbbe78078d09efd3fb96ab4067a362b5334a7971682db8def2c3efb4cdb",
+            "3582e569bbd8f76a6b2c9085785e1b8f91e74fbd45129b43d74a3f0642f0e643",
             "the placement stream changed; see this test's doc comment"
         );
     }

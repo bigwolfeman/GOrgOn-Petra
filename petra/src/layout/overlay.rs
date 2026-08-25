@@ -75,6 +75,7 @@ pub fn place(
         paint: PaintState {
             content_hash: 0,
             truncated: false,
+            overflowed: false,
             token_revision: ctx.theme_rev,
             // Filled by `PlacementSink::attach` once the dispatcher
             // has the payload; no container owns this.

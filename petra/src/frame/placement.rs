@@ -17,8 +17,29 @@ use crate::tree::{Interaction, NodeKind, Role, TextWrap};
 pub struct PaintState {
     /// Hash of the node's rendered text, or zero when it renders none.
     pub content_hash: u64,
-    /// Whether content was hidden by a truncation rule this frame.
+    /// Whether content was hidden by a truncation *rule* this frame: an
+    /// ellipsis policy, a `max_lines` cap, or a container conceding under
+    /// FR-005 because the fit was impossible.
+    ///
+    /// A rule that fired is a rule working. A title elided to one line with a
+    /// trailing `…` is this flag and is not a defect;
+    /// [`PaintState::overflowed`] is the one that is.
     pub truncated: bool,
+    /// Whether the content is larger than the rect this node was given, so
+    /// the part that did not fit is clipped away rather than elided.
+    ///
+    /// Separate from [`PaintState::truncated`] because the two have opposite
+    /// meanings for a reader of a frame. `truncated` says a policy chose to
+    /// hide something and marked where it stopped; `overflowed` says nobody
+    /// chose anything — the box was too small, and `layout::text::place`
+    /// clips the run to its own rect so the remainder does not paint over the
+    /// neighbouring row. One flag carried both until 2026-08-24, which made
+    /// an audit rule that reads it unable to tell a working ellipsis from a
+    /// corrupted panel.
+    ///
+    /// Written by [`crate::layout::text::place`], which is the only place
+    /// that knows both the run's real extent and the rect it was handed.
+    pub overflowed: bool,
     /// Revision of the theme snapshot this node's tokens resolved against.
     ///
     /// This is the *global* snapshot revision, never which token this node

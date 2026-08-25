@@ -68,9 +68,25 @@ pub struct NodeState {
     /// Expansion state, for expandables only; `None` on everything else.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expanded: Option<bool>,
-    /// Content was hidden by a truncation rule this frame (FR-020).
+    /// Content was hidden by a truncation rule this frame (FR-020): an
+    /// ellipsis policy, a line cap, or a container conceding under FR-005.
+    /// A rule that fired is a rule working.
     #[serde(skip_serializing_if = "is_false")]
     pub truncated: bool,
+    /// Content is larger than the rect this node was given, so the part that
+    /// did not fit is clipped away rather than elided.
+    ///
+    /// The opposite of `truncated` in what it tells a reader: nothing chose
+    /// to hide this, the box was simply too small. Kept apart from
+    /// `truncated` since 2026-08-24, when one flag carrying both made
+    /// `audit::AuditRule::TruncationIsReal` unable to distinguish a working
+    /// ellipsis from a corrupted panel.
+    ///
+    /// Absent from the wire form when `false`, like every other flag here, so
+    /// a consumer written against the older shape reads an unchanged tree
+    /// until a node actually overflows.
+    #[serde(skip_serializing_if = "is_false")]
+    pub overflowed: bool,
     /// The projection behind this node is past its freshness bound.
     #[serde(skip_serializing_if = "is_false")]
     pub stale: bool,

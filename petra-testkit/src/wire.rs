@@ -227,8 +227,11 @@ pub struct WirePlacement {
     pub opacity: f32,
     /// Hash of the node's rendered text, or zero.
     pub content_hash: u64,
-    /// Whether content was hidden by truncation this frame.
+    /// Whether content was hidden by a truncation rule this frame.
     pub truncated: bool,
+    /// Whether the content is bigger than the rect, so the remainder is
+    /// clipped away rather than elided.
+    pub overflowed: bool,
     /// Theme snapshot revision this node's tokens resolved against.
     pub token_revision: u64,
     /// Hash of this node's paint payload (`frame-identity.md`, "Paint
@@ -297,6 +300,7 @@ pub fn frame_result(frame: &PetrifiedFrame) -> FrameResult {
                 opacity: p.opacity,
                 content_hash: p.paint.content_hash,
                 truncated: p.paint.truncated,
+                overflowed: p.paint.overflowed,
                 token_revision: p.paint.token_revision,
                 paint_hash: p.paint.paint_hash,
                 focused: p.semantics.focused,

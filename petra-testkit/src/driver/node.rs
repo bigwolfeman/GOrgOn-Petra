@@ -47,8 +47,12 @@ pub struct DriverState {
     pub selected: bool,
     /// Expansion state, `None` on non-expandables.
     pub expanded: Option<bool>,
-    /// Content was hidden by truncation this frame.
+    /// Content was hidden by a truncation rule this frame.
     pub truncated: bool,
+    /// Content is bigger than the rect it was given, so the remainder is
+    /// clipped away. Absent from the wire form when `false`.
+    #[serde(default)]
+    pub overflowed: bool,
     /// Rendered from a projection past its freshness bound.
     pub stale: bool,
     /// Hosts a declared-endless animation, settle-exempt.

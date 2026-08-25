@@ -173,13 +173,14 @@ fn parse_state_flag(raw: &str) -> Result<StateFlag, WireError> {
         "selected" => Ok(StateFlag::Selected),
         "expanded" => Ok(StateFlag::Expanded),
         "truncated" => Ok(StateFlag::Truncated),
+        "overflowed" => Ok(StateFlag::Overflowed),
         "stale" => Ok(StateFlag::Stale),
         "ambient" => Ok(StateFlag::Ambient),
         other => Err(WireError::new(
             ErrorKind::InvalidParams,
             format!(
                 "unknown state flag `{other}`; known flags: focused, disabled, selected, \
-                 expanded, truncated, stale, ambient"
+                 expanded, truncated, overflowed, stale, ambient"
             ),
         )),
     }

@@ -209,6 +209,11 @@ pub fn place(
         paint: PaintState {
             content_hash: 0,
             truncated,
+            // A grid places its cells; it never re-measures a run against the
+            // rect it handed out. Vertical overflow is decided by the leaf
+            // that owns the content (`layout::text::place`), so a container
+            // that claimed it here would be guessing.
+            overflowed: false,
             token_revision: ctx.theme_rev,
             // Filled by `PlacementSink::attach` once the dispatcher
             // has the payload; no container owns this.

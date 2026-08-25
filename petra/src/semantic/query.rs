@@ -27,6 +27,8 @@ pub enum StateFlag {
     Expanded,
     /// [`crate::semantic::NodeState::truncated`].
     Truncated,
+    /// [`crate::semantic::NodeState::overflowed`].
+    Overflowed,
     /// [`crate::semantic::NodeState::stale`].
     Stale,
     /// [`crate::semantic::NodeState::ambient`].
@@ -44,6 +46,7 @@ impl StateFlag {
             Self::Selected => state.selected,
             Self::Expanded => state.expanded == Some(true),
             Self::Truncated => state.truncated,
+            Self::Overflowed => state.overflowed,
             Self::Stale => state.stale,
             Self::Ambient => state.ambient,
         }

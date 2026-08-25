@@ -88,6 +88,7 @@ fn node_at(frame: &PetrifiedFrame, index: usize, children: Vec<SemanticNode>) ->
             // content, and it records the fact in paint state. The projection
             // reports it; it never re-derives it.
             truncated: placement.paint.truncated,
+            overflowed: placement.paint.overflowed,
             stale: *stale,
             ambient: *ambient,
         },

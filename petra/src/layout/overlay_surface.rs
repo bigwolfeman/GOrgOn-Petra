@@ -172,6 +172,9 @@ pub fn place(
             // exactly what "content hidden this frame" means for a surface
             // that has no text run of its own to truncate.
             truncated: needs_scroll,
+            // See `PaintState::overflowed`: written by the leaf that owns the
+            // content, never by a container.
+            overflowed: false,
             token_revision: ctx.theme_rev,
             // Filled by `PlacementSink::attach` once the dispatcher
             // has the payload; no container owns this.
