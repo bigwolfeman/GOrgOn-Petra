@@ -24,7 +24,9 @@ pub use focus::{FocusBand, FocusRing};
 pub use name::{TokenName, TokenNameError};
 pub use presenter::Presenter;
 pub use selection::ThemeSelection;
-pub use shipped::{SHADOW_GEOMETRY, ShadowGeometry, dark, light, standard_vocabulary};
+pub use shipped::{
+    LAYER_TOKENS, SHADOW_GEOMETRY, ShadowGeometry, dark, light, standard_vocabulary,
+};
 pub use slot::{SlotSchema, SlotSpec, standard_slots};
 pub use snapshot::ThemeSnapshot;
 pub use status::{StatusShape, StatusToken, StatusTokenError};

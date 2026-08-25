@@ -52,7 +52,7 @@ fn name(n: &str) -> TokenName {
 /// - **`layer-accent-*` is not a layer.** Carbon: *"not considered a proper
 ///   layer but a supporting color for `$layer` inside of components."* It
 ///   does not belong in this array and must not be counted when stepping.
-const LAYER_TOKENS: [&str; 4] = [
+pub const LAYER_TOKENS: [&str; 4] = [
     "surface.base",
     "surface.layer-one",
     "surface.layer-two",
@@ -137,6 +137,51 @@ fn insert_layer_set(values: &mut BTreeMap<TokenName, TokenValue>, layers: &[[u8;
     );
 }
 
+/// The name a drawn boundary binds.
+///
+/// **This token exists because the library had no border colour and was
+/// conscripting a text one.** Every outline in `component/` bound
+/// `text.muted`: the card edge, the field box, the checkbox square, the
+/// toggle track, the progress rail. On `surface.layer-one` that is 10.73:1
+/// in dark and 8.70:1 in light — a hairline painted as loud as the prose
+/// inside it, on a page where nothing was louder. The result reads as a
+/// wireframe rather than as a set of surfaces, which is the complaint that
+/// started this pass.
+///
+/// The floor is **WCAG 2.1 SC 1.4.11 *Non-text Contrast*, 3:1**, not SC
+/// 1.4.3's 4.5:1 — a boundary is a user-interface component, not body text,
+/// and this is the same distinction [`ACCENT_TOKEN`] turns on. Holding a
+/// border to the text floor is precisely how it ends up looking like text.
+///
+/// Two claims travel with the value and both are measured by
+/// [`tests::the_border_tone_is_visible_everywhere_and_quieter_than_every_text_tone`]:
+/// it clears 3:1 on every layer it can be drawn on, and on every one of
+/// those layers it is *strictly and substantially* quieter than both text
+/// tones. The second is the regression guard. A border that drifts back up
+/// the ramp does not fail any contrast floor — it passes harder — so the
+/// only thing that can catch the drift is a ceiling, and this is it.
+///
+/// **One border tone, not two.** A `border.strong` for selected or hovered
+/// edges was considered and refused: nothing in this pass measures a need
+/// for one, the focus ring is already a separate two-token pair that covers
+/// the loudest case, and this file's own [`ON_ACCENT_TOKEN`] comment records
+/// that a declared name nothing reads is the defect the M-Carbon note
+/// counted at 12 of 18 names.
+const BORDER_TOKEN: &str = "border.subtle";
+
+/// Light `border.subtle`. Worst ground is `#f2f2f2` at 3.34:1; against
+/// `#ffffff` it is 3.74:1. `text.muted` on the same worst ground is 8.70:1,
+/// so the border sits 2.6x quieter.
+const LIGHT_BORDER: [u8; 3] = [0x84, 0x84, 0x84];
+
+/// Dark `border.subtle`. Worst ground is `surface.layer-three` (`#444444`)
+/// at 3.55:1; against `surface.base` it is 6.82:1. `text.muted` on that same
+/// worst ground is 6.57:1, so the border sits 1.85x quieter — a smaller
+/// margin than light's, because dark's layer set *ramps* while light's
+/// alternates, so dark's deepest layer is genuinely close to this tone and
+/// light's never gets there.
+const DARK_BORDER: [u8; 3] = [0x9c, 0x9c, 0x9c];
+
 /// The one accent hue, and the ink that goes on top of it.
 ///
 /// **Blue, and the choice is not taste.** The operator this project is built
@@ -210,6 +255,16 @@ const ACCENT_TOKEN: &str = "accent.primary";
 /// does not: one has a failing measurement behind it, the other has a
 /// habit.
 const ON_ACCENT_TOKEN: &str = "text.on-accent";
+
+/// Assign a mode's [`BORDER_TOKEN`] into a theme's value map.
+fn insert_border(values: &mut BTreeMap<TokenName, TokenValue>, border: &[u8; 3]) {
+    values.insert(
+        name(BORDER_TOKEN),
+        TokenValue::Color(ColorValue::from_srgb8(
+            border[0], border[1], border[2], 0xff,
+        )),
+    );
+}
 
 /// Assign a mode's accent pair into a theme's value map.
 ///
@@ -594,6 +649,10 @@ pub fn standard_vocabulary() -> Vocabulary {
         // `ON_ACCENT_TOKEN` for why the pair is two names rather than one.
         .declare(DesignToken::new(name(ACCENT_TOKEN), TokenKind::Color))
         .declare(DesignToken::new(name(ON_ACCENT_TOKEN), TokenKind::Color))
+        // The one drawn boundary. Judged against SC 1.4.11's 3:1 and held
+        // *below* both text tones, because the defect this replaced was a
+        // border that was too loud rather than one that was too faint.
+        .declare(DesignToken::new(name(BORDER_TOKEN), TokenKind::Color))
         // Elevation. Colour only: the offset, blur and spread that go with
         // these two live in `SHADOW_GEOMETRY` as shared Rust constants, for
         // the same reason the spacing and corner ramps are shared — a shadow
@@ -727,6 +786,7 @@ pub fn light() -> Theme {
 
     insert_layer_set(&mut values, &LIGHT_LAYERS);
     insert_accent(&mut values, &LIGHT_ACCENT, &LIGHT_LAYERS);
+    insert_border(&mut values, &LIGHT_BORDER);
     insert_shadow_set(&mut values, &LIGHT_SHADOW_ALPHAS);
     values.insert(
         name("text.primary"),
@@ -816,6 +876,7 @@ pub fn dark() -> Theme {
 
     insert_layer_set(&mut values, &DARK_LAYERS);
     insert_accent(&mut values, &DARK_ACCENT, &DARK_LAYERS);
+    insert_border(&mut values, &DARK_BORDER);
     insert_shadow_set(&mut values, &DARK_SHADOW_ALPHAS);
     values.insert(
         name("text.primary"),
@@ -883,8 +944,8 @@ pub fn dark() -> Theme {
 #[cfg(test)]
 mod tests {
     use super::{
-        ACCENT_TOKEN, DARK_LAYERS, LAYER_TOKENS, LIGHT_LAYERS, ON_ACCENT_TOKEN, RAISED_ALIAS,
-        SHADOW_GEOMETRY, SHADOW_TOKENS, SPRING_SET, dark, light, standard_vocabulary,
+        ACCENT_TOKEN, BORDER_TOKEN, DARK_LAYERS, LAYER_TOKENS, LIGHT_LAYERS, ON_ACCENT_TOKEN,
+        RAISED_ALIAS, SHADOW_GEOMETRY, SHADOW_TOKENS, SPRING_SET, dark, light, standard_vocabulary,
     };
     use crate::token::ThemeMode;
     use crate::token::focus::{HALO_TOKEN, RING_TOKEN};
@@ -2138,6 +2199,81 @@ mod tests {
                      token and rebind its callers, or this file is carrying \
                      a name nothing needs."
                 );
+            }
+        }
+    }
+
+    /// [`BORDER_TOKEN`] is visible on every layer it can be drawn on, and on
+    /// every one of those layers it is decisively quieter than both text
+    /// tones.
+    ///
+    /// # The two halves, and why the second one is the point
+    ///
+    /// The floor is the ordinary half: a boundary nobody can see is not a
+    /// boundary. [`MIN_UI_CONTRAST`] is WCAG 2.1 SC 1.4.11's 3:1, the same
+    /// floor `the_accent_clears_aa_on_every_surface_it_can_be_painted_on`
+    /// uses and for the same reason — a drawn edge is a user-interface
+    /// component, not body text.
+    ///
+    /// The **ceiling** is the half this test exists for. Before this token
+    /// shipped, every border in `component/` bound `text.muted`, and that
+    /// passed every contrast assertion in this file: it passed them by a
+    /// factor of three. Loudness is not a contrast failure, which is exactly
+    /// why no floor could ever have caught it. So the border is pinned
+    /// *under* the text tones by a named factor, on each ground separately,
+    /// and a future edit that quietly walks it back up the grey ramp fails
+    /// here instead of shipping a wireframe.
+    ///
+    /// # What this cannot reach
+    ///
+    /// Contrast is not the only thing that makes an edge shout — a 2px
+    /// stroke of this colour would read louder than a 1px stroke of a
+    /// brighter one, and stroke width lives in the painter
+    /// (`gorgon-petra-egui`'s `device_snapped_width`), not in this file. A
+    /// capture owns that. What this stops is the *tone* drifting.
+    #[test]
+    fn the_border_tone_is_visible_everywhere_and_quieter_than_every_text_tone() {
+        /// WCAG 2.1 SC 1.4.11 *Non-text Contrast*, Level AA. A border is a
+        /// component boundary, so 3:1 and not 4.5:1.
+        const MIN_UI_CONTRAST: f32 = 3.0;
+        /// How much quieter than a text tone the border must be, as a ratio
+        /// of contrasts on the *same* ground.
+        ///
+        /// Not a perceptual constant. It is a fence set below the tighter of
+        /// the two shipped margins — dark's 1.85x against `text.muted` on
+        /// `surface.layer-three`, light's 2.60x — with enough room that a
+        /// deliberate retune does not trip it and a slide back toward a text
+        /// tone does.
+        const MIN_QUIETER_THAN_TEXT: f32 = 1.5;
+
+        for (label, theme) in [("light", light()), ("dark", dark())] {
+            let border = theme_color(&theme, BORDER_TOKEN);
+            let primary = theme_color(&theme, "text.primary");
+            let muted = theme_color(&theme, "text.muted");
+
+            for surface in LAYER_TOKENS.iter().chain(std::iter::once(&RAISED_ALIAS)) {
+                let ground = theme_color(&theme, surface);
+                let edge = contrast(border, ground);
+                assert!(
+                    edge >= MIN_UI_CONTRAST,
+                    "{label}: {BORDER_TOKEN} on {surface} is {edge:.2}:1, below \
+                     the {MIN_UI_CONTRAST}:1 SC 1.4.11 floor for a component \
+                     boundary. An edge a reader cannot find is not separating \
+                     anything."
+                );
+
+                for (tone_name, tone) in [("text.primary", primary), ("text.muted", muted)] {
+                    let quieter = contrast(tone, ground) / edge;
+                    assert!(
+                        quieter >= MIN_QUIETER_THAN_TEXT,
+                        "{label}: on {surface}, {BORDER_TOKEN} is only \
+                         {quieter:.2}x quieter than {tone_name}, under \
+                         {MIN_QUIETER_THAN_TEXT}x. A border at a text tone is \
+                         the defect this token replaced: it fails no contrast \
+                         floor, it passes every one of them by a factor of \
+                         three, and the page reads as a wireframe."
+                    );
+                }
             }
         }
     }

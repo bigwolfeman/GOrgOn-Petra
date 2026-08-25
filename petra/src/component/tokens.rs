@@ -45,6 +45,26 @@ pub(crate) const SURFACE_RAISED: &str = "surface.raised";
 pub(crate) const TEXT_PRIMARY: &str = "text.primary";
 pub(crate) const TEXT_MUTED: &str = "text.muted";
 
+/// The one colour a drawn boundary is allowed to be.
+///
+/// Every border in this library bound [`TEXT_MUTED`] until 2026-08-25 —
+/// 10.73:1 against the card it was drawn on, as loud as the prose inside
+/// it, because there was no border colour in the theme and a text one had
+/// been conscripted. Most of those borders are now gone entirely; the ones
+/// that survive are the ones where the edge *is* the control (an unchecked
+/// checkbox is nothing but its outline), and they bind this.
+pub(crate) const BORDER_SUBTLE: &str = "border.subtle";
+
+/// The accent fill, and the ink that goes on top of it.
+///
+/// Spent by [`super::primary_button`] and nothing else in this library. See
+/// `crate::token::shipped`'s own comments for why the hue is blue (it is the
+/// axis red-green colour blindness does not collapse) and why the pair is
+/// two names rather than one (neither shipped text tone clears AA on it).
+pub(crate) const ACCENT_PRIMARY: &str = "accent.primary";
+/// See [`ACCENT_PRIMARY`].
+pub(crate) const TEXT_ON_ACCENT: &str = "text.on-accent";
+
 /// Every constant above, for the completeness proof. A name added above and
 /// left out of this list would silently stop being covered, so the list is
 /// what the test walks rather than the component source.
@@ -73,6 +93,9 @@ pub(crate) const ALL: &[&str] = &[
     SURFACE_RAISED,
     TEXT_PRIMARY,
     TEXT_MUTED,
+    BORDER_SUBTLE,
+    ACCENT_PRIMARY,
+    TEXT_ON_ACCENT,
 ];
 
 /// `name` as a [`TokenName`].

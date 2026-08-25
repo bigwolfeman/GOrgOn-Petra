@@ -23,10 +23,29 @@
 //! Selection is never carried by fill colour alone: every control here also
 //! sets `Semantics.selected`, so the state survives with the colour turned
 //! off.
+//!
+//! # Why these three keep a border when the rest of the library dropped one
+//!
+//! The 2026-08-25 design pass deleted the outline from the card, the field
+//! and the progress rail and replaced it with a tonal step, because in each
+//! of those the edge was decoration over a shape that already had a fill.
+//! These are the exception, and the reason is structural rather than
+//! aesthetic: **an unchecked checkbox and an unselected radio are nothing
+//! but their outline.** `fill` above is `None` when the control is off, so
+//! taking the border away does not quieten the control, it deletes it. The
+//! toggle track is the same argument one step weaker — it has a fill, but
+//! that fill is what the knob slides *inside*, and a track a reader cannot
+//! find the ends of does not read as a track.
+//!
+//! What changed for all three is the tone. They bound `text.muted`, a text
+//! colour at 10.73:1 on a card; they now bind [`BORDER_SUBTLE`], which is
+//! held at or above SC 1.4.11's 3:1 on every layer and pinned *below* both
+//! text tones by
+//! `crate::token::shipped`'s `the_border_tone_is_visible_everywhere_and_quieter_than_every_text_tone`.
 
 use super::text::text;
 use super::tokens::{
-    SHAPE_FULL, SHAPE_NONE, SPACING_2XS, SPACING_SM, SPACING_XS, SURFACE_RAISED, TEXT_MUTED,
+    BORDER_SUBTLE, SHAPE_FULL, SHAPE_NONE, SPACING_2XS, SPACING_SM, SPACING_XS, SURFACE_RAISED,
     TEXT_PRIMARY, t,
 };
 use super::{pad, stack, swatch};
@@ -52,7 +71,7 @@ fn box_control(
         Axis::Horizontal,
         Some(SPACING_SM),
         vec![
-            swatch("box", BOX, BOX, fill, Some(TEXT_MUTED), Some(box_shape)),
+            swatch("box", BOX, BOX, fill, Some(BORDER_SUBTLE), Some(box_shape)),
             text("label", label.clone()),
         ],
     );
@@ -102,7 +121,7 @@ pub fn toggle(key: impl Into<Key>, label: impl Into<String>, on: bool) -> ViewNo
         .props
         .tokens
         .insert("background".into(), t(SURFACE_RAISED));
-    track.props.tokens.insert("border".into(), t(TEXT_MUTED));
+    track.props.tokens.insert("border".into(), t(BORDER_SUBTLE));
     track.props.tokens.insert("radius".into(), t(SHAPE_FULL));
 
     let mut row = stack(

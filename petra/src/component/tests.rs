@@ -15,9 +15,10 @@ use crate::testing::{Harness, validated_with};
 use crate::token::{StatusShape, StatusToken, ThemeMode, TokenName, standard_vocabulary};
 use crate::tree::{NodeKind, Props, Registry, ViewNode};
 
+use super::tokens::{ACCENT_PRIMARY, BORDER_SUBTLE, TEXT_ON_ACCENT};
 use super::{
-    button, checkbox, field, heading, list_row, progress, radio, section, status, tab, tab_bar,
-    text, toggle,
+    MAX_LAYER_DEPTH, button, checkbox, field, heading, list_row, on_layer, primary_button,
+    progress, radio, section, status, tab, tab_bar, text, toggle,
 };
 
 const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
@@ -46,7 +47,8 @@ fn full_gallery() -> ViewNode {
             checkbox("check", "Checked", true),
             radio("radio", "Chosen", false),
             toggle("toggle", "On", true),
-            button("primary", "Save"),
+            primary_button("primary", "Save"),
+            button("secondary", "Cancel"),
             field("name", "Fiber name"),
         ],
     );
@@ -200,6 +202,247 @@ fn multi_part_components_are_built_from_primitive_container_kinds() {
     assert_eq!(section("s", "T", vec![]).kind, NodeKind::Stack);
     assert_eq!(progress("p", "Rebuild", 0.5).kind, NodeKind::Grid);
     assert_eq!(tab_bar("tb", vec![]).kind, NodeKind::Stack);
+}
+
+/// Walk `node` and everything under it, handing `visit` each node's key path
+/// and its bound tokens.
+fn walk(node: &ViewNode, path: &str, visit: &mut impl FnMut(&str, &crate::tree::Props)) {
+    let here = if path.is_empty() {
+        node.key.as_str().to_owned()
+    } else {
+        format!("{path}/{}", node.key.as_str())
+    };
+    visit(&here, &node.props);
+    for child in &node.children {
+        walk(child, &here, visit);
+    }
+}
+
+/// **The regression guard for the 2026-08-25 design pass.** Every border the
+/// library still draws is one where the edge *is* the control, and every one
+/// of them is painted in the border tone rather than a text tone.
+///
+/// # What went wrong, and why a contrast test could not have caught it
+///
+/// The theme had no border colour, so every outline in this module bound
+/// `text.muted`. That is 10.73:1 against the card it was drawn on — it
+/// passed every contrast floor in the workspace, by roughly a factor of
+/// three — and the page read as a wireframe: the card edge, the field box,
+/// the progress rail and the checkbox square were all exactly as loud as the
+/// prose inside them.
+///
+/// The fix was two moves. Most of those borders are gone, replaced by a
+/// tonal step ([`on_layer`]) or an elevation shadow (`section`). The ones
+/// that survive survive for a structural reason, not a stylistic one: an
+/// unchecked checkbox and an unselected radio have no fill, so their outline
+/// is the entire control.
+///
+/// This test pins **both halves at once**, which is why it is one test and
+/// not two. A future edit that puts a border back on the field would pass a
+/// tone check (it would bind the right token) and fail here. An edit that
+/// repaints the checkbox in `text.muted` would pass a count check (the same
+/// nodes draw edges) and fail here.
+///
+/// # What it cannot reach
+///
+/// Only what [`full_gallery`] composes. A component this fixture does not
+/// call could grow an outline unseen, which is why the fixture is the
+/// all-thirteen tree rather than a hand-picked subset — and why
+/// `every_component_in_one_tree_passes_the_audit_with_zero_findings` reads
+/// from the same one.
+#[test]
+fn the_only_borders_left_are_the_ones_that_are_the_control() {
+    /// Key paths, relative to their component, that are allowed to draw an
+    /// edge. Suffix-matched: the fixture nests these under section keys that
+    /// are not this test's business.
+    const EDGE_IS_THE_CONTROL: [&str; 2] = ["/box", "/track"];
+
+    let mut bordered: Vec<String> = Vec::new();
+    walk(&full_gallery(), "", &mut |path, props| {
+        let Some(token) = props.tokens.get("border") else {
+            return;
+        };
+        assert_eq!(
+            token.as_str(),
+            BORDER_SUBTLE,
+            "{path} draws its edge in `{}`. A border binds the border tone; \
+             binding a text tone is how this library came to look like a \
+             wireframe, and it fails no contrast floor on the way.",
+            token.as_str()
+        );
+        bordered.push(path.to_owned());
+    });
+
+    for path in &bordered {
+        assert!(
+            EDGE_IS_THE_CONTROL
+                .iter()
+                .any(|suffix| path.ends_with(suffix)),
+            "{path} draws a border. Only a node whose outline *is* the \
+             control keeps one — an unchecked checkbox or radio box, or a \
+             toggle track. Everything else takes a tonal step (`on_layer`) \
+             or an elevation shadow. If this node genuinely needs an edge, \
+             say why here rather than widening the list quietly."
+        );
+    }
+    assert!(
+        !bordered.is_empty(),
+        "no node in the fixture draws a border at all, so the tone assertion \
+         above ran zero times and this test is vacuous. The checkbox, radio \
+         and toggle are supposed to be here."
+    );
+}
+
+/// [`on_layer`] seats a control one tone ahead of the ground it is placed
+/// on, and a control that means to disappear takes the ground's own tone.
+///
+/// Both halves are checked against the *shipped colours*, not only against
+/// the token names: two names that resolved to one grey would pass a name
+/// comparison and paint an invisible control, which is precisely the failure
+/// the four-layer set was extended to fix.
+#[test]
+fn on_layer_steps_a_control_one_tone_ahead_of_its_ground() {
+    use crate::token::{LAYER_TOKENS, TokenValue, dark, light};
+
+    for depth in 0..=MAX_LAYER_DEPTH {
+        let raised = on_layer(button("b", "Save"), depth);
+        let flush = on_layer(tab("t", "Trace", false), depth);
+
+        assert_eq!(
+            raised.props.tokens.get("background").map(TokenName::as_str),
+            Some(LAYER_TOKENS[depth + 1]),
+            "a raised control seated on layer {depth} must take the tone one \
+             step ahead of it"
+        );
+        assert_eq!(
+            flush.props.tokens.get("background").map(TokenName::as_str),
+            Some(LAYER_TOKENS[depth]),
+            "a control that means to sit flush with its ground must take the \
+             ground's own tone"
+        );
+
+        for (label, theme) in [("light", light()), ("dark", dark())] {
+            let colour = |token: &str| match theme.value(&TokenName::new(token).unwrap()) {
+                Some(TokenValue::Color(c)) => *c,
+                other => panic!("{token} is not a colour: {other:?}"),
+            };
+            assert_ne!(
+                colour(LAYER_TOKENS[depth]),
+                colour(LAYER_TOKENS[depth + 1]),
+                "{label}: layers {depth} and {} resolve to the same colour, \
+                 so a control seated here has no edge at all — the tonal cue \
+                 is the whole depth cue now that the borders are gone",
+                depth + 1
+            );
+        }
+    }
+}
+
+/// A seat deeper than the layer set can express is clamped rather than
+/// allowed to run off the end of it.
+///
+/// The end of `LAYER_TOKENS` is `surface.layer-three`, so an unclamped
+/// `depth + 1` would either panic on the index or — worse, if someone
+/// "fixed" it with a saturating index — resolve the control and its ground
+/// to the same grey. That second failure is silent: the token resolves, the
+/// painter reports a fill, and the control is invisible.
+#[test]
+fn a_seat_deeper_than_the_ramp_is_clamped_and_still_has_a_step_in_it() {
+    use crate::token::LAYER_TOKENS;
+
+    let deep = on_layer(button("b", "Save"), MAX_LAYER_DEPTH + 40);
+    assert_eq!(
+        deep.props.tokens.get("background").map(TokenName::as_str),
+        Some(LAYER_TOKENS[MAX_LAYER_DEPTH + 1]),
+        "an over-deep seat must land on the deepest step the ramp can \
+         express, not past the end of it"
+    );
+}
+
+/// [`on_layer`] rewrites the two tones it is about and nothing else, and it
+/// never adds an edge.
+///
+/// The accent case is the one with a measurement behind it: `shipped.rs`'s
+/// `DEEPEST_ACCENT_LAYER` records that dark's accent is under the 3:1 fill
+/// floor on `surface.layer-three`, so a re-seating pass that treated an
+/// accent fill as "a background, therefore mine to move" could walk a
+/// primary button onto a ground its own colour cannot carry.
+#[test]
+fn on_layer_leaves_every_other_fill_alone_and_adds_no_border() {
+    for depth in 0..=MAX_LAYER_DEPTH {
+        let primary = on_layer(primary_button("p", "Save"), depth);
+        assert_eq!(
+            primary
+                .props
+                .tokens
+                .get("background")
+                .map(TokenName::as_str),
+            Some(ACCENT_PRIMARY),
+            "an accent fill is a deliberate choice by whoever bound it, not a \
+             surface tone for this pass to step"
+        );
+
+        for node in [
+            on_layer(button("b", "Save"), depth),
+            on_layer(field("f", "Fiber name"), depth),
+            on_layer(tab("t", "Trace", false), depth),
+            on_layer(list_row("l", "row", true), depth),
+            primary,
+        ] {
+            assert!(
+                !node.props.tokens.contains_key("border"),
+                "{:?} gained a border from being re-seated. The point of \
+                 having four fills is that the depth cue is tonal; an \
+                 operator that quietly re-introduces an outline puts back the \
+                 wireframe this replaced.",
+                node.key
+            );
+        }
+    }
+}
+
+/// The primary button spends the accent, and its label is the ink that goes
+/// with it.
+///
+/// `text.on-accent` is not a stylistic pick: `shipped.rs` measures both
+/// shipped text tones on both accents at 1.95:1 to 3.48:1, all four under
+/// the 4.5:1 AA floor. A caller — or a later edit — that "simplifies" the
+/// label back to `text.primary` fails here.
+#[test]
+fn the_primary_button_spends_the_accent_and_the_ink_that_goes_with_it() {
+    let node = primary_button("p", "Save");
+    assert_eq!(
+        node.props.tokens.get("background").map(TokenName::as_str),
+        Some(ACCENT_PRIMARY)
+    );
+    assert!(
+        node.props.tokens.contains_key("shadow"),
+        "the one loudest action is the one control that lifts off the card"
+    );
+    assert!(
+        !node.props.tokens.contains_key("border"),
+        "the accent is the emphasis; an edge on top of it is the wireframe again"
+    );
+
+    let label = node
+        .children
+        .first()
+        .expect("primary_button carries its label as a child node");
+    assert_eq!(
+        label.props.tokens.get("foreground").map(TokenName::as_str),
+        Some(TEXT_ON_ACCENT),
+        "neither shipped text tone clears AA on either accent — see \
+         `ON_ACCENT_TOKEN`'s own measurements"
+    );
+
+    // The plain button must not have quietly picked either up.
+    let plain = button("b", "Cancel");
+    assert!(!plain.props.tokens.contains_key("shadow"));
+    assert_ne!(
+        plain.props.tokens.get("background").map(TokenName::as_str),
+        Some(ACCENT_PRIMARY),
+        "an accent that appears on every button is not an accent"
+    );
 }
 
 /// Keeps [`full_gallery`]'s two status calls pinned to distinct shapes, so

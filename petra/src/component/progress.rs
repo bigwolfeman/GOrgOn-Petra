@@ -2,7 +2,7 @@
 //! and formatted value.
 
 use super::swatch;
-use super::tokens::{SHAPE_FULL, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY, t};
+use super::tokens::{SHAPE_FULL, SURFACE_RAISED, TEXT_PRIMARY, t};
 use crate::geom::Align;
 use crate::tree::{AxisConstraint, Key, NodeKind, Props, Role, Semantics, TrackSize, ViewNode};
 
@@ -18,8 +18,9 @@ const BAR_HEIGHT: f32 = 10.0;
 /// weight small enough to round away instead.
 const MIN_WEIGHT: f32 = 0.001;
 
-/// One cell of the bar: a coloured box that takes its width from the grid
-/// track it sits in.
+/// One cell of the bar: a box that takes its width from the grid track it
+/// sits in, coloured when it has something of its own to say and bare when
+/// the rail behind it is already saying it.
 ///
 /// [`swatch`] pins both axes to the extents it is handed, which is what a
 /// checkbox box or a status dot wants — a fixed square. A progress cell is
@@ -29,8 +30,8 @@ const MIN_WEIGHT: f32 = 0.001;
 /// "`Stretch` is the declaration that says fill the track" idiom the
 /// gallery's two-column form uses for its fields). The vertical pin stays:
 /// the bar's thickness belongs to the component, not to the row it lands in.
-fn bar_cell(key: &'static str, background: &str) -> ViewNode {
-    let mut cell = swatch(key, 0.0, BAR_HEIGHT, Some(background), None, None);
+fn bar_cell(key: &'static str, background: Option<&str>) -> ViewNode {
+    let mut cell = swatch(key, 0.0, BAR_HEIGHT, background, None, None);
     cell.constraints.horizontal = AxisConstraint::default();
     cell
 }
@@ -84,11 +85,29 @@ pub fn progress(key: impl Into<Key>, label: impl Into<String>, value: f32) -> Vi
         align: Some(Align::Stretch),
         ..Props::default()
     };
-    bar_props.tokens.insert("border".into(), t(TEXT_MUTED));
+    // The rail. This bound `border` to `text.muted` and nothing else until
+    // 2026-08-25: a hairline box at 10.73:1 drawn around two coloured cells
+    // that already met each other at a hard edge.
+    //
+    // Dropping the border could not simply leave the node bare. A node that
+    // declares content and paints nothing is `Outcome::Silent` in
+    // `gorgon-petra-egui`'s paint pass — the one outcome `PaintReport::is_complete`
+    // refuses and a debug host asserts on — and with the border gone the grid's
+    // only remaining binding would have been `radius`, which shapes a fill
+    // that is not there. So the rail takes the track's own colour as a real
+    // fill, which is what it was drawing a box around in the first place.
+    bar_props
+        .tokens
+        .insert("background".into(), t(SURFACE_RAISED));
     bar_props.tokens.insert("radius".into(), t(SHAPE_FULL));
 
-    let fill = bar_cell("fill", TEXT_PRIMARY);
-    let track = bar_cell("track", SURFACE_RAISED);
+    let fill = bar_cell("fill", Some(TEXT_PRIMARY));
+    // No colour of its own. The rail behind it is already the track tone, so
+    // a cell painted the same colour on top of it is a second shape carrying
+    // the first one's information — and an unpainted `Spacer` is
+    // `Outcome::Empty`, which is the accounted, allowed state for a node that
+    // exists to hold a grid column open rather than to be seen.
+    let track = bar_cell("track", None);
 
     let mut node = ViewNode::new(NodeKind::Grid, key)
         .with_props(bar_props)
