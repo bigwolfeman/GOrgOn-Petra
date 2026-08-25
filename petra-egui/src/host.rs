@@ -1277,7 +1277,10 @@ mod tests {
 
         fn bound(ctx: &Context) -> [FontColorTransferFunction; 2] {
             [egui::Theme::Dark, egui::Theme::Light].map(|theme| {
-                ctx.style_of(theme).visuals.text_options.color_transfer_function
+                ctx.style_of(theme)
+                    .visuals
+                    .text_options
+                    .color_transfer_function
             })
         }
 
