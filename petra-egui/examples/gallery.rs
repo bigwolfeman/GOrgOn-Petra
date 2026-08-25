@@ -41,11 +41,14 @@
 //! ([`gorgon_petra::component`], thirteen names). The primitives are reached
 //! for only where C13 deliberately stops: `Grid` track sizing, `Scroll`,
 //! `Collection`, `Overlay`, `Surface`, `Separator`, `Spacer`, and the two
-//! hosted kinds. Four gaps in the library turned up while writing this page
+//! hosted kinds. Three gaps in the library turned up while writing this page
 //! and are worked around here rather than papered over — see [`muted`],
-//! [`caption`], [`on_card`] and [`disabled_button`], each of which names the
-//! one it is standing in for, and none of which reaches past a component's
-//! own public surface into its children.
+//! [`caption`] and [`disabled_button`], each of which names the one it is
+//! standing in for, and none of which reaches past a component's own public
+//! surface into its children. A fourth gap — a control had no way to know
+//! which surface it was being re-seated onto — was real too, and is now
+//! closed in the library itself as
+//! [`gorgon_petra::component::on_layer`] rather than worked around here.
 //!
 //! # What this page assumes about its window
 //!
@@ -84,8 +87,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gorgon_petra::component::{
-    button, checkbox, field, heading, list_row, progress, radio, section, status, tab, tab_bar,
-    text, toggle,
+    button, checkbox, field, heading, list_row, on_layer, primary_button, progress, radio, section,
+    status, tab, tab_bar, text, toggle,
 };
 use gorgon_petra::geom::{Align, Axis};
 use gorgon_petra::input::{InputEvent, PointerButton, Route, activates};
@@ -438,69 +441,31 @@ fn caption(key: &str, content: &str) -> ViewNode {
 /// C13 has no disabled variant. Composing one from the public surface means
 /// three edits to the returned node — clear the interactions so a press
 /// cannot route to it, declare `Semantics.disabled` so the projection says
-/// so, and drop the fill so it does not read as available. All three are
-/// public fields; none of them reaches inside the component's own children,
-/// which is the line between composing a component and forking it.
-/// Re-seat a library control for a card instead of for the page.
+/// so, and re-seat the fill so it reads as recessed into its ground rather
+/// than available. All three are public fields; none of them reaches inside
+/// the component's own children, which is the line between composing a
+/// component and forking it.
 ///
-/// **Library gap 3, and the one that is actually visible from across the
-/// room.** The surface ramp has two steps, `surface.base` and
-/// `surface.raised`. [`section`] spends the second one on the card, and so
-/// does every control the library fills: [`button`] and a selected [`tab`]
-/// or [`list_row`] all bind `surface.raised`, and an unselected `tab` or
-/// `list_row` binds `surface.base`. Each is right on its own and the pair is
-/// wrong together — a raised control on a raised card has no edge at all,
-/// and the *unselected* tabs were the only ones on this page with a visible
-/// box. Measured on the first capture of this rewrite: Save and Cancel drew
-/// nothing but their focus ring, every Store row read as selected, and the
-/// selected tab read as the unselected one.
-///
-/// The rule this applies is the one two steps can express: **on a card, a
-/// filled control swaps to the other step and takes an edge, and a control
-/// filled with the card's own page colour drops its fill entirely.** The
-/// third level of elevation is drawn with a line, because there is no third
-/// fill to spend.
-fn on_card(mut node: ViewNode) -> ViewNode {
-    match node
-        .props
-        .tokens
-        .get("background")
-        .map(TokenName::as_str)
-        .unwrap_or_default()
-    {
-        "surface.raised" => {
-            node.props
-                .tokens
-                .insert("background".into(), tok("surface.base"));
-            node.props
-                .tokens
-                .entry("border".into())
-                .or_insert_with(|| tok("text.muted"));
-        }
-        "surface.base" => {
-            node.props.tokens.remove("background");
-            // And the corner with it, when nothing is left to round. A node
-            // whose only remaining binding is `radius` *declares* content
-            // and paints no shape, which the paint pass counts as `silent`
-            // — the one outcome `PaintReport::is_complete` refuses, and a
-            // debug host asserts on. Measured: dropping the fill and
-            // keeping the corner turned five list rows and two tabs into
-            // silent placements and panicked the host.
-            if !node.props.tokens.contains_key("border") {
-                node.props.tokens.remove("radius");
-            }
-        }
-        _ => {}
-    }
-    node
-}
-
-fn disabled_button(key: &str, label: &str) -> ViewNode {
+/// **R6.** This used to strip the fill entirely and draw a `text.muted`
+/// outline in its place — the loudest possible edge, on the one control that
+/// should read as the quietest. [`gorgon_petra::component::on_layer`] existing
+/// now (see its rustdoc, and the note at this function's one call site for
+/// the measured history of why a step was needed at all) means "no step" can
+/// be expressed directly: force the base branch regardless of what
+/// [`button`] bound, so the result is always the tone of the ground rather
+/// than one step ahead of it. `Props.opacity` stays as the de-emphasis
+/// channel, no shadow is cast, and no border is drawn.
+fn disabled_button(key: &str, label: &str, depth: usize) -> ViewNode {
     let mut node = button(key, label);
     node.interactions.clear();
     node.semantics.disabled = true;
-    node.props.tokens.remove("background");
-    node.props.tokens.insert("border".into(), tok("text.muted"));
+    // Force the `surface.base` branch of `on_layer` regardless of what
+    // `button` bound, so this always resolves to "same layer as the
+    // ground" rather than the "one step ahead" an enabled button gets.
+    node.props
+        .tokens
+        .insert("background".into(), tok("surface.base"));
+    let mut node = on_layer(node, depth);
     // The fourth channel, and the only one that reaches the label. `button`
     // builds its label as a child node, and rebinding a child's foreground
     // would mean reaching past the component's own surface into its
@@ -634,9 +599,21 @@ impl Gallery {
     /// is counted `empty` and leaves no mark. Every separator this page had
     /// before this rewrite was invisible for exactly that reason. Binding
     /// `background` is what makes a rule a rule.
+    ///
+    /// **The tone is `border.subtle`, not `text.muted`.** A `Separator` has
+    /// no `border` slot to bind, so for this node kind `background` *is* the
+    /// edge-drawing mechanism — functionally the same thing an outline is on
+    /// a filled box, and subject to the same rule. It bound `text.muted`
+    /// until 2026-08-25, and the first capture after the borders came off
+    /// made the cost obvious: with every card outline gone, these four rules
+    /// were measured at byte 212 on a byte-34 card, the loudest marks left
+    /// on the page and louder than the prose they divided. A divider is a
+    /// component boundary (WCAG 2.1 SC 1.4.11, 3:1), not body text.
     fn rule(key: &str) -> ViewNode {
         let mut props = Props::default();
-        props.tokens.insert("background".into(), tok("text.muted"));
+        props
+            .tokens
+            .insert("background".into(), tok("border.subtle"));
         ViewNode::new(NodeKind::Separator, key).with_props(props)
     }
 
@@ -731,9 +708,7 @@ impl Gallery {
         props
             .tokens
             .insert("background".into(), tok("surface.raised"));
-        props
-            .tokens
-            .insert("shadow".into(), tok("shadow.overlay"));
+        props.tokens.insert("shadow".into(), tok("shadow.overlay"));
         props.tokens.insert("radius".into(), tok("shape.corner-lg"));
         ViewNode::new(NodeKind::Surface, key).with_props(props)
     }
@@ -853,6 +828,15 @@ impl Gallery {
     /// and the corner are this file's; everything inside the rect is the
     /// painter's, and Petra never sees it — which is what makes the frame
     /// *hosted* (FR-060).
+    ///
+    /// Deliberately **not** run through [`on_layer`]: that function only
+    /// knows how to raise a node onto its ground, so it maps `surface.base`
+    /// to the *ground's* tone (here, `LAYER_TOKENS[1]` — the card's own
+    /// fill, which would erase the hole). A sunken well wants the opposite —
+    /// one step *back*, toward the page — and `LAYER_TOKENS[0]` is exactly
+    /// what `surface.base` already names, so the direct binding is correct
+    /// as written and no border is needed: the fill against the card's fill
+    /// is the edge.
     fn sparkline() -> ViewNode {
         let mut props = Props {
             custom_kind: Some(CUSTOM_KIND.to_owned()),
@@ -886,9 +870,22 @@ impl Gallery {
             sp("spacing.md"),
             Align::Center,
             vec![
-                on_card(button("save", "Save")),
-                on_card(button("cancel", "Cancel")),
-                disabled_button("retire", "Retire"),
+                // R5: the one accent on this page. Save is the fibers form's
+                // single loudest action — the control a reader should find
+                // first — filled with `accent.primary` instead of a grey
+                // step. See `primary_button`'s rustdoc for why an outline
+                // was the wrong way to say that.
+                primary_button("save", "Save"),
+                // Measured on the first capture of this rewrite, before the
+                // library had an answer for it: a raised control on a
+                // raised card has no edge at all. Save and Cancel drew
+                // nothing but their focus ring, every Store row read as
+                // selected, and the selected tab read as the unselected
+                // one. `on_layer` (`gorgon_petra::component`) is the
+                // library's fix now — depth 1, because a control on this
+                // card sits on `LAYER_TOKENS[1]`.
+                on_layer(button("cancel", "Cancel"), 1),
+                disabled_button("retire", "Retire", 1),
             ],
         );
 
@@ -920,9 +917,9 @@ impl Gallery {
                 tab_bar(
                     "tablist",
                     vec![
-                        on_card(tab("tab-fibers", "Fibers", self.tab == 0)),
-                        on_card(tab("tab-trace", "Trace", self.tab == 1)),
-                        on_card(tab("tab-caps", "Capabilities", self.tab == 2)),
+                        on_layer(tab("tab-fibers", "Fibers", self.tab == 0), 1),
+                        on_layer(tab("tab-trace", "Trace", self.tab == 1), 1),
+                        on_layer(tab("tab-caps", "Capabilities", self.tab == 2), 1),
                     ],
                 ),
                 Self::rule("tab-rule"),
@@ -1248,9 +1245,9 @@ impl Gallery {
                         sp("spacing.md"),
                         Align::Center,
                         vec![
-                            on_card(button("open-modal", "Block modal")),
-                            on_card(button("open-menu", "Dismiss popup")),
-                            on_card(button("open-pass", "Toast")),
+                            on_layer(button("open-modal", "Block modal"), 1),
+                            on_layer(button("open-menu", "Dismiss popup"), 1),
+                            on_layer(button("open-pass", "Toast"), 1),
                         ],
                     ),
                 ],
@@ -1272,10 +1269,14 @@ impl Gallery {
             image: Some(IMAGE_SOURCE.to_owned()),
             ..Props::default()
         };
+        // Same sunken-well tone as `sparkline`, not run through `on_layer`
+        // for the same reason — see that function's rustdoc. The fill
+        // against the card's fill is the edge, so (R2, R3) the
+        // `text.muted` outline this used to carry is gone: it named a text
+        // tone as a border and did work the fill was already doing.
         image
             .tokens
             .insert("background".into(), tok("surface.base"));
-        image.tokens.insert("border".into(), tok("text.muted"));
         image.tokens.insert("radius".into(), tok("shape.corner-sm"));
 
         // A `FitContent` well beside a `Weight` caption, rather than two
@@ -1355,6 +1356,9 @@ impl Gallery {
     /// The same registered painter draws it — one name, one painter, two
     /// placements — which is the cheapest available proof that the dispatch
     /// is keyed on the custom name rather than on the node.
+    ///
+    /// Same sunken-well tone, and the same reason it is not run through
+    /// `on_layer`, as [`Self::sparkline`].
     fn sparkline_swatch() -> ViewNode {
         let mut props = Props {
             custom_kind: Some(CUSTOM_KIND.to_owned()),
@@ -1408,8 +1412,8 @@ impl Gallery {
                                 vec![
                                     ViewNode::new(NodeKind::Spacer, "push")
                                         .with_constraints(Self::exact(Axis::Vertical, 0.0)),
-                                    on_card(button("modal-close", "Cancel")),
-                                    on_card(button("modal-confirm", "Retire")),
+                                    on_layer(button("modal-close", "Cancel"), 1),
+                                    on_layer(button("modal-confirm", "Retire"), 1),
                                 ],
                             ),
                         ],
@@ -1434,10 +1438,10 @@ impl Gallery {
                             // "Kill" in `status.down`, which is meaning
                             // carried by hue alone — the exact thing
                             // `status` exists to make unnecessary.
-                            on_card(list_row("menu-inspect", "Inspect", false)),
-                            on_card(list_row("menu-trace", "Follow trace", false)),
+                            on_layer(list_row("menu-inspect", "Inspect", false), 1),
+                            on_layer(list_row("menu-trace", "Follow trace", false), 1),
                             Self::rule("rule"),
-                            on_card(list_row("menu-kill", "Kill — cannot be undone", false)),
+                            on_layer(list_row("menu-kill", "Kill — cannot be undone", false), 1),
                         ],
                     )),
             );
@@ -1453,7 +1457,7 @@ impl Gallery {
                             "Passthrough: clicks reach what is underneath. Press \
                                  its button to close.",
                         ),
-                        on_card(button("toast-close", "Close")),
+                        on_layer(button("toast-close", "Close"), 1),
                     ],
                 )),
             );
@@ -1494,11 +1498,14 @@ impl RowSource for Gallery {
             .map(|i| {
                 // Keyed by the row's own index, not by its position in this
                 // window, so scrolling does not renumber what is on screen.
-                Arc::new(on_card(list_row(
-                    format!("row-{i}"),
-                    format!("supervisor/worker-{i:05}"),
-                    self.selected_row == Some(i),
-                )))
+                Arc::new(on_layer(
+                    list_row(
+                        format!("row-{i}"),
+                        format!("supervisor/worker-{i:05}"),
+                        self.selected_row == Some(i),
+                    ),
+                    1,
+                ))
             })
             .collect()
     }
@@ -1696,9 +1703,13 @@ fn paint_sparkline(painter: &egui::Painter, ctx: &CustomPaintCtx<'_>, samples: &
     if samples.is_empty() {
         return false;
     }
+    // The plotted line is ink; the baseline under it is a boundary, so the
+    // two take different tones. The baseline read `text.muted` until
+    // 2026-08-25, which drew the well's axis at the same weight as the
+    // series plotted above it.
     let (Some(ink), Some(rule)) = (
         ctx.tokens.color("text.primary"),
-        ctx.tokens.color("text.muted"),
+        ctx.tokens.color("border.subtle"),
     ) else {
         return false;
     };

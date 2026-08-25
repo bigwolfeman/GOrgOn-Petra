@@ -1664,7 +1664,9 @@ mod tests {
             text: Some("hi".into()),
             ..Props::default()
         };
-        props.tokens.insert("highlight".into(), tok("surface.raised"));
+        props
+            .tokens
+            .insert("highlight".into(), tok("surface.raised"));
         props.tokens.insert("glow".into(), tok("text.muted"));
         let frame = frame_of(
             &ViewNode::new(NodeKind::Text, "t").with_props(props),

@@ -78,8 +78,8 @@ use std::sync::Arc;
 
 use egui::{Context, FontId, RawInput};
 use gorgon_petra::component::{
-    button, checkbox, field, heading, list_row, progress, radio, section, status, tab, tab_bar,
-    text, toggle,
+    button, checkbox, field, heading, list_row, on_layer, primary_button, progress, radio, section,
+    status, tab, tab_bar, text, toggle,
 };
 use gorgon_petra::geom::{Align, Axis};
 use gorgon_petra::input::{InputEvent, PointerButton, Route, activates};
@@ -407,14 +407,20 @@ fn frozen() -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// The four places the component library does not reach
+// The three places the component library does not reach
 // ---------------------------------------------------------------------------
 //
-// These four are the same four `gallery.rs` documents at length, applying the
-// same rules. They are restated here rather than shared because two examples
-// cannot share a private module without inventing a crate to hold it, and
-// because this file must stay buildable on its own: a canary that stopped
-// compiling when its neighbour was edited would report the wrong failure.
+// These three are the same three `gallery.rs` documents at length, applying
+// the same rules. They are restated here rather than shared because two
+// examples cannot share a private module without inventing a crate to hold
+// it, and because this file must stay buildable on its own: a canary that
+// stopped compiling when its neighbour was edited would report the wrong
+// failure. A fourth place, re-seating a control placed on a card, used to
+// live here too as a private `on_card`; it is now
+// `gorgon_petra::component::on_layer`, imported rather than restated,
+// because the rule it encodes (which tone a control's own `background`
+// resolves to at a given nesting depth) belongs to the library's token
+// vocabulary, not to this page.
 
 /// Body text in the muted tone. `text` binds `text.primary` and takes no tone
 /// argument, so the component is composed and its one slot rebound rather
@@ -443,45 +449,6 @@ fn note(key: &str, content: &str) -> ViewNode {
 /// neighbours.
 fn caption(key: &str, content: &str) -> ViewNode {
     muted(key, &content.to_uppercase())
-}
-
-/// Re-seat a library control for a card.
-///
-/// The surface ramp has two steps. `section` spends the raised one on the
-/// card, and so does every filled control, so a filled control on a card has
-/// no edge at all. The rule two steps can express: on a card, a filled
-/// control swaps to the other step and takes an edge, and a control filled
-/// with the card's own colour drops its fill entirely.
-fn on_card(mut node: ViewNode) -> ViewNode {
-    match node
-        .props
-        .tokens
-        .get("background")
-        .map(TokenName::as_str)
-        .unwrap_or_default()
-    {
-        "surface.raised" => {
-            node.props
-                .tokens
-                .insert("background".into(), tok("surface.base"));
-            node.props
-                .tokens
-                .entry("border".into())
-                .or_insert_with(|| tok("text.muted"));
-        }
-        "surface.base" => {
-            node.props.tokens.remove("background");
-            // And the corner with it, when nothing is left to round. A node
-            // whose only remaining binding is a radius declares content and
-            // paints no shape, which the paint pass counts as `silent` — the
-            // one outcome a debug host asserts on.
-            if !node.props.tokens.contains_key("border") {
-                node.props.tokens.remove("radius");
-            }
-        }
-        _ => {}
-    }
-    node
 }
 
 // ---------------------------------------------------------------------------
@@ -565,10 +532,17 @@ impl Parity {
     ///
     /// A bare `Separator` paints nothing: the painter knows four token slots,
     /// and a node that binds none of them declares no content. Binding the
-    /// background is what makes a rule a rule.
+    /// background is what makes a rule a rule — and a `Separator` has no
+    /// `border` slot to bind, so its `background` *is* the edge, the same
+    /// role a card's outline used to play. That makes `text.muted` here the
+    /// same conscription BORDERS.md names everywhere else (R2): a divider is
+    /// a component boundary, WCAG 2.1 SC 1.4.11's 3:1 case, not prose, so it
+    /// takes `border.subtle`, not a text tone.
     fn rule(key: &str) -> ViewNode {
         let mut props = Props::default();
-        props.tokens.insert("background".into(), tok("text.muted"));
+        props
+            .tokens
+            .insert("background".into(), tok("border.subtle"));
         ViewNode::new(NodeKind::Separator, key).with_props(props)
     }
 
@@ -623,18 +597,23 @@ impl Parity {
         }
     }
 
-    /// The card treatment: raised fill, muted edge, a medium corner.
+    /// The card treatment: raised fill, an elevation shadow, a medium corner.
     ///
-    /// `section` applies exactly this to every titled block. The telemetry
-    /// band is the one card here that is a `Grid` rather than a titled column,
-    /// so it cannot go through `section`; this function is how the two stay
-    /// one object.
+    /// `section` applies exactly this to every titled block (down to the
+    /// same `shadow.raised` token, for the same reason: BORDERS.md R2/R3 —
+    /// no `border` may bind a text tone, and depth is drawn as elevation, not
+    /// as an outline, once there is a fill to spend). The telemetry band is
+    /// the one card here that is a `Grid` rather than a titled column, so it
+    /// cannot go through `section`; this function is how the two stay one
+    /// object.
     fn card(mut node: ViewNode) -> ViewNode {
         node.props.padding = Some(inset("spacing.lg", "spacing.md"));
         node.props
             .tokens
             .insert("background".into(), tok("surface.raised"));
-        node.props.tokens.insert("border".into(), tok("text.muted"));
+        node.props
+            .tokens
+            .insert("shadow".into(), tok("shadow.raised"));
         node.props
             .tokens
             .insert("radius".into(), tok("shape.corner-md"));
@@ -643,6 +622,12 @@ impl Parity {
 
     /// A floating surface: the modal and the toast, the only two things here
     /// with the largest corner.
+    ///
+    /// `shadow.overlay`, not `shadow.raised`: `SHADOW_GEOMETRY`'s own doc
+    /// draws the line at "has left the page entirely" for the deeper of the
+    /// two elevations, and a viewport-anchored dialog or toast is exactly
+    /// that — unlike [`Self::card`], which is still part of the page's own
+    /// flow.
     fn surface(key: &str, layer: Layer, policy: InputPolicy) -> ViewNode {
         let mut props = Props {
             layer: Some(layer),
@@ -659,7 +644,7 @@ impl Parity {
         props
             .tokens
             .insert("background".into(), tok("surface.raised"));
-        props.tokens.insert("border".into(), tok("text.muted"));
+        props.tokens.insert("shadow".into(), tok("shadow.overlay"));
         props.tokens.insert("radius".into(), tok("shape.corner-lg"));
         ViewNode::new(NodeKind::Surface, key).with_props(props)
     }
@@ -852,8 +837,16 @@ impl Parity {
             sp("spacing.md"),
             Align::Center,
             vec![
-                on_card(button("open-modal", "Open modal")),
-                on_card(button("bump", "Bump progress")),
+                // R5: one accent per view. This is the page's single loudest
+                // action — the entry point into the whole ship-the-bundle
+                // flow — so it is the one control that spends
+                // `accent.primary` rather than a layer step. `primary_button`
+                // is not passed through `on_layer`: it fills with the accent,
+                // which `on_layer` never rewrites (see its own doc), so
+                // wrapping it here would be a no-op that misstates the call
+                // site's intent.
+                primary_button("open-modal", "Open modal"),
+                on_layer(button("bump", "Bump progress"), 1),
             ],
         );
 
@@ -885,9 +878,9 @@ impl Parity {
                 tab_bar(
                     "tablist",
                     vec![
-                        on_card(tab("tab-native", "Native", self.tab == 0)),
-                        on_card(tab("tab-web", "Web", self.tab == 1)),
-                        on_card(tab("tab-both", "Both", self.tab == 2)),
+                        on_layer(tab("tab-native", "Native", self.tab == 0), 1),
+                        on_layer(tab("tab-web", "Web", self.tab == 1), 1),
+                        on_layer(tab("tab-both", "Both", self.tab == 2), 1),
                     ],
                 ),
                 Self::rule("tab-rule"),
@@ -945,13 +938,19 @@ impl Parity {
             style: Some(tok("typography.body")),
             ..Props::default()
         };
+        // `surface.raised`, not `surface.base`, and seated with `on_layer`
+        // below at the call site — the same recipe `field`'s own doc spells
+        // out ("seats a field one step ahead of whatever it is placed on,
+        // so it reads as a well cut into the card"). This node exists to
+        // prove `NodeKind::Input` is reachable without the component, so it
+        // earns that by matching what the component actually paints, not by
+        // improvising a different box.
         readonly
             .tokens
-            .insert("background".into(), tok("surface.base"));
+            .insert("background".into(), tok("surface.raised"));
         readonly
             .tokens
             .insert("foreground".into(), tok("text.muted"));
-        readonly.tokens.insert("border".into(), tok("text.muted"));
         readonly
             .tokens
             .insert("radius".into(), tok("shape.corner-sm"));
@@ -981,9 +980,11 @@ impl Parity {
             )
             .child(caption("l-target", "build target"))
             .child(
-                ViewNode::new(NodeKind::Input, "f-target")
-                    .with_props(readonly)
-                    .with_constraints(Self::at_least(Axis::Vertical, 28.0)),
+                on_layer(
+                    ViewNode::new(NodeKind::Input, "f-target").with_props(readonly),
+                    1,
+                )
+                .with_constraints(Self::at_least(Axis::Vertical, 28.0)),
             );
 
         section(
@@ -1162,10 +1163,19 @@ impl Parity {
             image: Some(MISSING_SOURCE.to_owned()),
             ..Props::default()
         };
+        // `surface.base` stays literal, not `on_layer`-seated: this box
+        // sits beside `Self::meter`'s in the same row, and that one's own
+        // doc calls the identical pattern out by name — "a well on the page
+        // colour inside a raised card, so the plot area is a hole in the
+        // card rather than a box on top of it." Re-seating one of the two
+        // and not the other would make two visually-matched wells in one
+        // row read as different depths. The fill alone (no border) still
+        // paints a shape, so the fixture's whole point — an unregistered
+        // image source landing in `PaintReport::undrawn` while the node
+        // around it is not `Outcome::Silent` — still holds.
         missing
             .tokens
             .insert("background".into(), tok("surface.base"));
-        missing.tokens.insert("border".into(), tok("text.muted"));
         missing
             .tokens
             .insert("radius".into(), tok("shape.corner-sm"));
@@ -1311,8 +1321,8 @@ impl Parity {
                             vec![
                                 ViewNode::new(NodeKind::Spacer, "push")
                                     .with_constraints(Self::exact(Axis::Vertical, 0.0)),
-                                on_card(button("modal-close", "Cancel")),
-                                on_card(button("modal-confirm", "Ship")),
+                                on_layer(button("modal-close", "Cancel"), 1),
+                                on_layer(button("modal-confirm", "Ship"), 1),
                             ],
                         ),
                     ],
@@ -1365,11 +1375,14 @@ impl RowSource for Parity {
             .map(|i| {
                 // Keyed by the row's own index, not by its position in this
                 // window, so scrolling does not renumber what is on screen.
-                Arc::new(on_card(list_row(
-                    format!("row-{i}"),
-                    format!("supervisor/worker-{i:05}"),
-                    self.selected_row == Some(i),
-                )))
+                Arc::new(on_layer(
+                    list_row(
+                        format!("row-{i}"),
+                        format!("supervisor/worker-{i:05}"),
+                        self.selected_row == Some(i),
+                    ),
+                    1,
+                ))
             })
             .collect()
     }
