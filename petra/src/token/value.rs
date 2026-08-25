@@ -34,6 +34,9 @@ pub enum TokenKind {
     Shape,
     /// An outline family: which closed figure a slot's rect is drawn as.
     Silhouette,
+    /// How many times a glyph's coverage is composited against itself —
+    /// the sharpness of rendered text. See [`CoverageValue`].
+    Coverage,
 }
 
 /// A colour in linear light, straight (non-premultiplied) alpha, each
@@ -199,6 +202,71 @@ pub struct ShapeValue {
     pub corner_radius: f32,
 }
 
+/// The glyph text-sharpness curve: how many times rasterised coverage is
+/// composited against itself, plus whether a glyph's horizontal origin
+/// snaps to a whole device pixel.
+///
+/// The port of ai-macs' two *related but distinct* env knobs,
+/// `GORGON_TEXT_PASSES` and `GORGON_TEXT_SNAP`
+/// (`ai-macs/pkg/ui/gio/text_tuning.go:41-101`), into one Petra token rather
+/// than process environment, so an agent or a user can tune either through a
+/// theme revision instead of a recompile
+/// (`ignored/builds/2026-08-24-text-pipeline-port/SPEC.md` §6, and
+/// `ai-macs/Ai-notes/08-15-2026/TextRendering/01-glyph-pixel-snap.md` for
+/// the root cause the pair addresses).
+///
+/// **Two knobs, one root cause, opposite ends of it.** The defect is
+/// per-character *weight variance*: a stem that lands on a pixel boundary
+/// rasterises as one dark column, and the same stem half a pixel over
+/// spreads across two columns at half coverage each, which reads grey next
+/// to its neighbours. `snap` attacks the cause — placement — by rounding
+/// every glyph origin to a whole pixel, which drives the variance to
+/// exactly zero and pays for it by quantising kerning (uneven-looking
+/// spacing). `passes` attacks the symptom — how visible a given amount of
+/// variance reads — by steepening the coverage curve so a half-coverage
+/// column darkens toward its full-coverage neighbours rather than sitting
+/// visibly between them. ai-macs' own comment on the trade-off: it "cannot
+/// be settled by measurement", which is why both ship as knobs rather than
+/// as a single chosen constant.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CoverageValue {
+    /// How many times coverage is composited against itself. `1.0` is no
+    /// compositing (equivalent to epaint's `Off`); `2.0` is exactly
+    /// epaint's `TwoCoverageMinusCoverageSq`; values above `2.0` have no
+    /// closed-form atlas curve and are reached by repeated painting instead
+    /// (SPEC.md §2.3). Continuous, not an integer count, for the same
+    /// reason ai-macs' own field is a `float32`: `1.0 - (1.0 - a).powf(passes)`
+    /// is defined for a fractional `passes`, and a slider dragged across
+    /// the range should not snap between whole numbers (SPEC.md §1.4).
+    ///
+    /// # Legal range
+    ///
+    /// `[1.0, 4.0]`, refused outside that by
+    /// [`crate::token::theme::Theme::build`] the same way a negative
+    /// [`ShapeValue::corner_radius`] is refused: `1.0` is "no compositing"
+    /// (the identity), and `4.0` is ai-macs' own `maxTextSharpness`
+    /// (`text_tuning.go:55`) — the ceiling it measured, not an arbitrary
+    /// round number.
+    pub passes: f32,
+    /// Whether a glyph's horizontal origin snaps to a whole device pixel
+    /// before it is drawn. Named for the intent — "does placement snap to
+    /// the pixel grid" — the same word ai-macs' own env var uses
+    /// (`GORGON_TEXT_SNAP`), not for the epaint field a binder maps it onto.
+    ///
+    /// **The mapping is inverted.** A binder reads this as
+    /// `TextOptions::subpixel_binning = !snap`: `snap: true` means
+    /// `subpixel_binning: false`. epaint's field asks "keep sub-pixel
+    /// precision", so *on* means *do not* snap; this field asks "snap to
+    /// the grid", so *on* means the opposite of epaint's *on*. The doc
+    /// comment carries the inversion here, at the type the binder reads,
+    /// rather than leaving it to be re-derived correctly at each call site.
+    ///
+    /// No range to refuse: every `bool` is legal, so
+    /// [`crate::token::theme::Theme::build`]'s usability check has nothing
+    /// to say about this field the way it does about `passes`.
+    pub snap: bool,
+}
+
 /// Which closed figure a paint slot's rect is drawn as.
 ///
 /// A separate token kind from [`ShapeValue`] rather than a field on it,
@@ -257,6 +325,8 @@ pub enum TokenValue {
     Shape(ShapeValue),
     /// An outline family.
     Silhouette(Silhouette),
+    /// A glyph coverage compositing curve.
+    Coverage(CoverageValue),
 }
 
 impl TokenValue {
@@ -271,6 +341,7 @@ impl TokenValue {
             Self::Spring(_) => TokenKind::Spring,
             Self::Shape(_) => TokenKind::Shape,
             Self::Silhouette(_) => TokenKind::Silhouette,
+            Self::Coverage(_) => TokenKind::Coverage,
         }
     }
 }
@@ -278,8 +349,8 @@ impl TokenValue {
 #[cfg(test)]
 mod tests {
     use super::{
-        ColorValue, MotionEasing, MotionValue, ShapeValue, Silhouette, TokenKind, TokenValue,
-        TypographyValue, TypographyWeight,
+        ColorValue, CoverageValue, MotionEasing, MotionValue, ShapeValue, Silhouette, TokenKind,
+        TokenValue, TypographyValue, TypographyWeight,
     };
 
     #[test]
@@ -314,6 +385,34 @@ mod tests {
             TokenValue::Silhouette(Silhouette::Triangle).kind(),
             TokenKind::Silhouette
         );
+        assert_eq!(
+            TokenValue::Coverage(CoverageValue {
+                passes: 3.0,
+                snap: false
+            })
+            .kind(),
+            TokenKind::Coverage
+        );
+    }
+
+    /// `CoverageValue`'s wire spelling, pinned the same way
+    /// [`silhouette_round_trips_through_its_kebab_case_wire_form`] pins
+    /// `Silhouette`'s: a theme file already on disk names this shape by its
+    /// serialized form, so a renamed field would silently stop matching it.
+    #[test]
+    fn coverage_value_round_trips_through_its_wire_form() {
+        let value = TokenValue::Coverage(CoverageValue {
+            passes: 3.0,
+            snap: false,
+        });
+        let json = serde_json::to_string(&value).expect("a struct variant serializes");
+        assert_eq!(
+            json,
+            r#"{"kind":"coverage","value":{"passes":3.0,"snap":false}}"#
+        );
+        let decoded: TokenValue =
+            serde_json::from_str(&json).expect("the pinned wire form decodes");
+        assert_eq!(decoded, value);
     }
 
     /// `Silhouette`'s wire spelling is what a serialized theme carries, so

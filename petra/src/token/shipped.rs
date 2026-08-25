@@ -13,8 +13,8 @@ use crate::token::name::TokenName;
 use crate::token::status::{StatusShape, StatusToken};
 use crate::token::theme::Theme;
 use crate::token::value::{
-    ColorValue, MotionEasing, MotionValue, ShapeValue, Silhouette, SpringValue, TokenKind,
-    TokenValue, TypographyValue, TypographyWeight,
+    ColorValue, CoverageValue, MotionEasing, MotionValue, ShapeValue, Silhouette, SpringValue,
+    TokenKind, TokenValue, TypographyValue, TypographyWeight,
 };
 use crate::token::vocabulary::{DesignToken, Vocabulary};
 
@@ -453,7 +453,19 @@ pub fn standard_vocabulary() -> Vocabulary {
         // `the_focus_ring_is_visible_over_any_surface` below for the
         // measurement that holds the pair to it.
         .declare(DesignToken::new(name(RING_TOKEN), TokenKind::Color))
-        .declare(DesignToken::new(name(HALO_TOKEN), TokenKind::Color));
+        .declare(DesignToken::new(name(HALO_TOKEN), TokenKind::Color))
+        // The glyph coverage curve: how many times a glyph's rasterised
+        // coverage is composited against itself, plus whether its origin
+        // snaps to a whole pixel. The port of ai-macs' `GORGON_TEXT_PASSES`
+        // and `GORGON_TEXT_SNAP` env knobs into a token
+        // (`ignored/builds/2026-08-24-text-pipeline-port/SPEC.md` §6). See
+        // `crate::token::value::CoverageValue` for both fields' full
+        // rationale, including the `snap`-to-`subpixel_binning` inversion a
+        // binder must apply.
+        .declare(DesignToken::new(
+            name("text.coverage-curve"),
+            TokenKind::Coverage,
+        ));
 
     // The status subset (FR-015): colour, shape, and text together. Shape
     // and text are mode-independent — only the colour painted into the
@@ -554,6 +566,14 @@ pub fn light() -> Theme {
         TokenValue::Color(ColorValue::from_srgb8(0x49, 0x12, 0x15, 0xff)),
     );
 
+    values.insert(
+        name("text.coverage-curve"),
+        TokenValue::Coverage(CoverageValue {
+            passes: 3.0,
+            snap: false,
+        }),
+    );
+
     Theme::build(ThemeMode::Light, &vocab, values).expect("shipped light theme must be complete")
 }
 
@@ -616,6 +636,14 @@ pub fn dark() -> Theme {
         TokenValue::Color(ColorValue::from_srgb8(0xf2, 0x1c, 0x0d, 0xff)),
     );
 
+    values.insert(
+        name("text.coverage-curve"),
+        TokenValue::Coverage(CoverageValue {
+            passes: 3.0,
+            snap: false,
+        }),
+    );
+
     Theme::build(ThemeMode::Dark, &vocab, values).expect("shipped dark theme must be complete")
 }
 
@@ -625,7 +653,7 @@ mod tests {
     use crate::token::ThemeMode;
     use crate::token::focus::{HALO_TOKEN, RING_TOKEN};
     use crate::token::name::TokenName;
-    use crate::token::value::{ColorValue, TokenValue};
+    use crate::token::value::{ColorValue, CoverageValue, TokenValue};
 
     /// The floor every pair of shipped status colours must clear, in CIE
     /// ΔE*ab, after the frame is simulated through red-green colour
@@ -1560,6 +1588,27 @@ mod tests {
             // calling it is proof a shape exists, since there is no other
             // way to have constructed this `StatusToken`.
             let _ = status.shape();
+        }
+    }
+
+    /// SPEC.md §6.2's "same value in both themes" argument, checked rather
+    /// than trusted: `light` and `dark` are two independent value maps, and
+    /// nothing but this test stops one of them drifting to a different
+    /// pass count or a different snap setting the way
+    /// [`the_two_shipped_themes_agree_on_every_gap`] guards the spacing
+    /// ramp.
+    #[test]
+    fn both_shipped_themes_assign_the_coverage_curve_the_same_passes_and_snap() {
+        let token = TokenName::new("text.coverage-curve").unwrap();
+        for (label, theme) in [("light", light()), ("dark", dark())] {
+            assert_eq!(
+                theme.value(&token),
+                Some(&TokenValue::Coverage(CoverageValue {
+                    passes: 3.0,
+                    snap: false
+                })),
+                "{label} theme's text.coverage-curve must be passes: 3.0, snap: false"
+            );
         }
     }
 }

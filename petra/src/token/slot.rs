@@ -162,6 +162,25 @@ impl SlotSchema {
 /// resolved rather than restated. `shadow` stays declared: a slot the
 /// shipped painter does not draw yet lands in `PaintReport::unknown_slots`,
 /// which is that report's job and not tree acceptance's.
+/// Deliberately **not** declared: a `coverage` slot for
+/// `text.coverage-curve` (`TokenKind::Coverage`,
+/// `ignored/builds/2026-08-24-text-pipeline-port/SPEC.md` §6.3).
+///
+/// Every slot this schema declares answers "what does *this node's rect*
+/// paint with" — `background`'s colour, `radius`'s corner, `silhouette`'s
+/// figure are all properties of one node's drawn shape, bound per node
+/// through `props.tokens`. The coverage curve answers a different question:
+/// how the text-rendering *atlas* composites coverage before any node's
+/// glyphs are drawn from it. `gorgon-petra-egui`'s `bind_glyph_coverage`
+/// reads it once per theme revision, at `Host` scope, the same way it reads
+/// mode to pick a `FontColorTransferFunction` — not once per node the way
+/// `paint::RADIUS_SLOT` reads `radius`. A `SlotSpec` here would promise a
+/// per-node override the renderer has no mechanism to keep: two sibling
+/// `Text` nodes cannot each choose their own atlas, because there is one
+/// atlas. Declaring the slot anyway would be the same defect
+/// `shipped.rs:46-51` names for an unread token, aimed the other way — a
+/// schema entry nothing in the render path could honour per node, rather
+/// than a vocabulary entry nothing reads at all.
 #[must_use]
 pub fn standard_slots() -> SlotSchema {
     let mut s = SlotSchema::new();

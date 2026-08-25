@@ -128,20 +128,51 @@ impl Theme {
 /// Why a value that is the right *kind* is still not a value layout can lay
 /// anything out with, or `None` when it is fine.
 ///
-/// Only the extent-valued kinds are checked, and only for the two properties
-/// every consumer of an extent assumes: finite, and not negative. A colour
-/// out of `[0, 1]` clips at paint time and a motion duration is not a
-/// distance, so neither is this function's business.
+/// Most of the extent-valued kinds are checked for the two properties every
+/// consumer of an extent assumes: finite, and not negative. A colour out of
+/// `[0, 1]` clips at paint time and a motion duration is not a distance, so
+/// neither is this function's business.
+///
+/// [`TokenValue::Coverage`] is the one exception: it is checked against its
+/// own legal range, `[1.0, 4.0]`
+/// (`ignored/builds/2026-08-24-text-pipeline-port/SPEC.md` §1.1, §6.1),
+/// rather than "not negative". A pass count of `0.0` composites nothing —
+/// it is not a smaller version of the effect, it is off — and a pass count
+/// above `4.0` is past ai-macs' own `maxTextSharpness` ceiling, never
+/// measured by either project. "Refuse outside the range, never clamp into
+/// it" is the same posture ai-macs' env parser takes for its three knobs
+/// (SPEC.md §1.1: "falls to the default, never to zero"); here the
+/// equivalent is refusing the whole theme, because a token has no env
+/// default to fall back to.
 fn unusable_extent(value: &TokenValue) -> Option<&'static str> {
-    let extent = match value {
-        TokenValue::Spacing(units) => *units,
-        TokenValue::Shape(shape) => shape.corner_radius,
-        _ => return None,
-    };
+    match value {
+        TokenValue::Spacing(units) => finite_and_nonnegative(*units),
+        TokenValue::Shape(shape) => finite_and_nonnegative(shape.corner_radius),
+        TokenValue::Coverage(coverage) => finite_and_in_range(coverage.passes, 1.0, 4.0),
+        _ => None,
+    }
+}
+
+/// `extent` must be finite and not negative — the shared rule
+/// [`TokenValue::Spacing`] and [`TokenValue::Shape`] both check.
+fn finite_and_nonnegative(extent: f32) -> Option<&'static str> {
     if !extent.is_finite() {
         Some("not a finite number")
     } else if extent < 0.0 {
         Some("negative")
+    } else {
+        None
+    }
+}
+
+/// `value` must be finite and fall inside `[lo, hi]` — the rule
+/// [`TokenValue::Coverage`] checks, whose legal range is not "non-negative"
+/// (see [`unusable_extent`]'s doc comment for why).
+fn finite_and_in_range(value: f32, lo: f32, hi: f32) -> Option<&'static str> {
+    if !value.is_finite() {
+        Some("not a finite number")
+    } else if value < lo || value > hi {
+        Some("outside its legal range")
     } else {
         None
     }
@@ -458,6 +489,63 @@ mod tests {
             TokenValue::Shape(crate::token::value::ShapeValue { corner_radius: 0.0 }),
         );
         assert!(Theme::build(ThemeMode::Light, &gap_vocabulary(), values).is_ok());
+    }
+
+    fn coverage_vocabulary() -> Vocabulary {
+        let mut vocab = Vocabulary::new();
+        vocab.declare(DesignToken::new(
+            TokenName::new("text.coverage-curve").unwrap(),
+            crate::token::value::TokenKind::Coverage,
+        ));
+        vocab
+    }
+
+    /// D4: a pass count outside `[1.0, 4.0]`, and NaN, are refused at
+    /// `Theme::build` — the same "refuse, never clamp" posture
+    /// [`a_negative_or_non_finite_extent_is_refused_and_named`] proves for
+    /// spacing, but against `Coverage`'s own legal range rather than
+    /// "not negative".
+    #[test]
+    fn a_coverage_pass_count_outside_its_legal_range_is_refused() {
+        for bad in [0.0_f32, 0.999, 4.001, 10.0, -1.0, f32::NAN, f32::INFINITY] {
+            let mut values = BTreeMap::new();
+            values.insert(
+                TokenName::new("text.coverage-curve").unwrap(),
+                TokenValue::Coverage(crate::token::value::CoverageValue {
+                    passes: bad,
+                    snap: false,
+                }),
+            );
+            let err = Theme::build(ThemeMode::Light, &coverage_vocabulary(), values)
+                .expect_err(&format!("passes: {bad} must be refused"));
+            assert!(err.missing().is_empty(), "{err}");
+            assert!(err.mismatched().is_empty(), "{err}");
+            assert_eq!(err.unusable().len(), 1, "{bad}: {err}");
+            assert_eq!(
+                err.unusable()[0].name,
+                TokenName::new("text.coverage-curve").unwrap()
+            );
+        }
+    }
+
+    /// The far side of the same rule: every value in the legal range,
+    /// including both closed endpoints, is accepted.
+    #[test]
+    fn a_coverage_pass_count_inside_its_legal_range_is_usable() {
+        for ok in [1.0_f32, 1.5, 2.0, 3.0, 4.0] {
+            let mut values = BTreeMap::new();
+            values.insert(
+                TokenName::new("text.coverage-curve").unwrap(),
+                TokenValue::Coverage(crate::token::value::CoverageValue {
+                    passes: ok,
+                    snap: false,
+                }),
+            );
+            assert!(
+                Theme::build(ThemeMode::Light, &coverage_vocabulary(), values).is_ok(),
+                "passes: {ok} must be usable"
+            );
+        }
     }
 
     #[test]
