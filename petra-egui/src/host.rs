@@ -258,9 +258,17 @@ pub(crate) fn coverage_plan(value: CoverageValue) -> CoveragePlan {
     const EPS: f32 = 1e-4;
 
     let (curve, repeats, fraction) = if (value.passes - 2.0).abs() < EPS {
-        (FontColorTransferFunction::TwoCoverageMinusCoverageSq, 1, 0.0)
+        (
+            FontColorTransferFunction::TwoCoverageMinusCoverageSq,
+            1,
+            0.0,
+        )
     } else if (value.passes - 4.0).abs() < EPS {
-        (FontColorTransferFunction::TwoCoverageMinusCoverageSq, 2, 0.0)
+        (
+            FontColorTransferFunction::TwoCoverageMinusCoverageSq,
+            2,
+            0.0,
+        )
     } else {
         let whole = value.passes.floor().max(1.0);
         let frac = value.passes - whole;
@@ -1131,7 +1139,9 @@ pub fn default_presenter() -> Presenter {
 
 #[cfg(test)]
 mod tests {
-    use super::{App, ChangeSet, Host, coverage_plan, default_presenter, petra_layer, refusal_view};
+    use super::{
+        App, ChangeSet, Host, coverage_plan, default_presenter, petra_layer, refusal_view,
+    };
     use egui::{Context, Event, Key, Modifiers, RawInput};
     use gorgon_petra::geom::{Point, Rect};
     use gorgon_petra::input::{InputEvent, Route};
@@ -1579,17 +1589,18 @@ mod tests {
             values.insert(
                 TokenName::new("text.coverage-curve")
                     .expect("\"text.coverage-curve\" is a well-formed token name"),
-                TokenValue::Coverage(CoverageValue {
-                    passes: 3.0,
-                    snap,
-                }),
+                TokenValue::Coverage(CoverageValue { passes: 3.0, snap }),
             );
             Theme::build(mode, &standard_vocabulary(), values)
                 .expect("overriding snap alone keeps the theme complete")
         }
 
         let ctx = headless();
-        let mut host = Host::new(&ctx, Demo::default(), Presenter::new(with_snap(light(), false)));
+        let mut host = Host::new(
+            &ctx,
+            Demo::default(),
+            Presenter::new(with_snap(light(), false)),
+        );
         assert_eq!(
             bound_binning(&ctx),
             [true; 2],

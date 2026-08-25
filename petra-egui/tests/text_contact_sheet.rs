@@ -268,7 +268,13 @@ impl Gpu {
     /// Render one pass's shapes into a fresh `width x height` texture and
     /// read the RGBA bytes back. One renderer is built per call because one
     /// renderer is built per arm's font atlas — see the struct doc.
-    fn capture(&self, ctx: &Context, output: &egui::FullOutput, width: u32, height: u32) -> Vec<u8> {
+    fn capture(
+        &self,
+        ctx: &Context,
+        output: &egui::FullOutput,
+        width: u32,
+        height: u32,
+    ) -> Vec<u8> {
         let mut renderer = egui_wgpu::Renderer::new(
             &self.device,
             TARGET_FORMAT,
@@ -293,8 +299,13 @@ impl Gpu {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("text-contact-sheet encoder"),
             });
-        let user_buffers =
-            renderer.update_buffers(&self.device, &self.queue, &mut encoder, &primitives, &screen);
+        let user_buffers = renderer.update_buffers(
+            &self.device,
+            &self.queue,
+            &mut encoder,
+            &primitives,
+            &screen,
+        );
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("text-contact-sheet target"),
             size: wgpu::Extent3d {
@@ -546,8 +557,10 @@ fn render_arm(
         n
     );
 
-    let mut input = RawInput::default();
-    input.screen_rect = Some(Rect::from_min_size(Pos2::ZERO, vec2(ROW_W, ROW_H)));
+    let input = RawInput {
+        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(ROW_W, ROW_H))),
+        ..RawInput::default()
+    };
 
     // Galleys are shaped inside the pass, not before it: `GalleyShaper`
     // reads `ctx.fonts(...)`, and no `Fonts` exists on a context that has
@@ -639,7 +652,8 @@ fn blit_magnified(dest: &mut [u8], dest_w: u32, dest_y0: u32, src: &[u8], src_w:
 fn write_ppm(path: &std::path::Path, width: u32, height: u32, rgb: &[u8]) {
     let mut file = std::fs::File::create(path)
         .unwrap_or_else(|err| panic!("create {}: {err}", path.display()));
-    write!(file, "P6\n{width} {height}\n255\n").unwrap_or_else(|err| panic!("write PPM header: {err}"));
+    write!(file, "P6\n{width} {height}\n255\n")
+        .unwrap_or_else(|err| panic!("write PPM header: {err}"));
     file.write_all(rgb)
         .unwrap_or_else(|err| panic!("write PPM body: {err}"));
 }

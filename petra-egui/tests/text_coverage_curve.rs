@@ -140,8 +140,13 @@ impl Gpu {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("text-coverage-curve encoder"),
             });
-        let user_buffers =
-            renderer.update_buffers(&self.device, &self.queue, &mut encoder, &primitives, &screen);
+        let user_buffers = renderer.update_buffers(
+            &self.device,
+            &self.queue,
+            &mut encoder,
+            &primitives,
+            &screen,
+        );
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("text-coverage-curve target"),
             size: wgpu::Extent3d {
@@ -286,11 +291,19 @@ const PROBE_POS: Pos2 = Pos2::new(4.0, 4.0);
 /// text over an opaque surface fill and must recover coverage from RGB).
 fn render_probe(gpu: &Gpu, curve: FontColorTransferFunction, paints: u8) -> Vec<u8> {
     let ctx = context_with_curve(curve);
-    let mut renderer =
-        egui_wgpu::Renderer::new(&gpu.device, TARGET_FORMAT, egui_wgpu::RendererOptions::PREDICTABLE);
+    let mut renderer = egui_wgpu::Renderer::new(
+        &gpu.device,
+        TARGET_FORMAT,
+        egui_wgpu::RendererOptions::PREDICTABLE,
+    );
 
-    let mut input = RawInput::default();
-    input.screen_rect = Some(Rect::from_min_size(Pos2::ZERO, vec2(PROBE_W as f32, PROBE_H as f32)));
+    let input = RawInput {
+        screen_rect: Some(Rect::from_min_size(
+            Pos2::ZERO,
+            vec2(PROBE_W as f32, PROBE_H as f32),
+        )),
+        ..RawInput::default()
+    };
 
     // Galleys are shaped inside the pass: `ctx.fonts(...)` (which
     // `Painter::layout_no_wrap` calls internally) panics on a context that
@@ -308,7 +321,8 @@ fn render_probe(gpu: &Gpu, curve: FontColorTransferFunction, paints: u8) -> Vec<
         // `paint`'s public entry points, which is the display-free
         // boundary this gate holds (see the module doc).
         for _ in 0..paints {
-            ui.painter().galley(PROBE_POS, galley.clone(), Color32::WHITE);
+            ui.painter()
+                .galley(PROBE_POS, galley.clone(), Color32::WHITE);
         }
     });
 
@@ -385,7 +399,11 @@ fn composited_alpha_follows_the_repeat_paint_identity() {
         );
     }
 
-    let twocov_1 = render_probe(&gpu, FontColorTransferFunction::TwoCoverageMinusCoverageSq, 1);
+    let twocov_1 = render_probe(
+        &gpu,
+        FontColorTransferFunction::TwoCoverageMinusCoverageSq,
+        1,
+    );
     let off_2 = render_probe(&gpu, FontColorTransferFunction::Off, 2);
     let a_twocov1 = i32::from(alpha_at(&twocov_1, PROBE_W, probe_x, probe_y));
     let a_off2 = i32::from(alpha_at(&off_2, PROBE_W, probe_x, probe_y));
@@ -443,11 +461,13 @@ fn cost_line(i: usize) -> String {
 /// the text-heavy view C4 asks for, not the single glyph C1 probes. Returns
 /// the `FullOutput` and the CPU time spent producing it (`run_ui` only).
 fn cost_frame(ctx: &Context, lines: usize, paints: u8) -> (egui::FullOutput, std::time::Duration) {
-    let mut input = RawInput::default();
-    input.screen_rect = Some(Rect::from_min_size(
-        Pos2::ZERO,
-        vec2(COST_WIDTH, (lines.max(1) as f32) * COST_LINE_H),
-    ));
+    let input = RawInput {
+        screen_rect: Some(Rect::from_min_size(
+            Pos2::ZERO,
+            vec2(COST_WIDTH, (lines.max(1) as f32) * COST_LINE_H),
+        )),
+        ..RawInput::default()
+    };
     let start = std::time::Instant::now();
     let output = ctx.run_ui(input, |ui| {
         let painter = ui.painter();
@@ -521,8 +541,11 @@ fn coverage_pass_relative_cost() {
     );
 
     let ctx = context_with_curve(FontColorTransferFunction::Off);
-    let mut renderer =
-        egui_wgpu::Renderer::new(&gpu.device, TARGET_FORMAT, egui_wgpu::RendererOptions::PREDICTABLE);
+    let mut renderer = egui_wgpu::Renderer::new(
+        &gpu.device,
+        TARGET_FORMAT,
+        egui_wgpu::RendererOptions::PREDICTABLE,
+    );
 
     // Fixed cost of an empty frame (0 lines), the same control ai-macs uses:
     // "submitting and reading back a frame costs the same whether or not

@@ -808,7 +808,11 @@ fn paint_one(
             // ai-macs' fractional pass, ported verbatim: one further paint
             // at the colour's alpha scaled by the fractional remainder, not
             // the fraction silently dropped.
-            painter.galley(rect.min, galley.clone(), color.gamma_multiply(plan.fraction));
+            painter.galley(
+                rect.min,
+                galley.clone(),
+                color.gamma_multiply(plan.fraction),
+            );
         }
         report.texts += 1;
         shapes += 1;
