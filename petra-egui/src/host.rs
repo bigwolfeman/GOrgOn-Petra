@@ -35,7 +35,7 @@ use gorgon_petra::layout::{
     ChangeSet, LayoutCtx, LayoutState, MeasureCache, RowSource, ScrollStack,
 };
 use gorgon_petra::token::{
-    DesignToken, Presenter, StatusToken, Theme, ThemeSnapshot, TokenName, Vocabulary,
+    DesignToken, Presenter, StatusToken, Theme, ThemeMode, ThemeSnapshot, TokenName, Vocabulary,
     standard_vocabulary,
 };
 use gorgon_petra::tree::{InputPolicy, Interaction, NodeKind, Props, Registry, ViewNode, validate};
@@ -96,9 +96,72 @@ pub trait App: RowSource {
     }
 }
 
+/// Point egui's glyph rasteriser at the coverage curve its own documentation
+/// names for `mode`.
+///
+/// # Why this is a correctness fix and not a tuning knob
+///
+/// epaint rasterises every glyph once, white, into one atlas, and the shader
+/// multiplies that coverage by the run's colour in gamma space
+/// (`egui.wgsl`: `in.color * tex_gamma`). One atlas cannot be right for both
+/// dark-on-light and light-on-dark, so epaint bends the coverage on the way
+/// in and says so itself (`epaint/src/image.rs`): *"This whole thing is less
+/// than rigorous. It would be better to either render all text colors into
+/// the font atlas … or do the color compensation in the shader."*
+///
+/// The bend is [`FontColorTransferFunction`], and it has a documented answer
+/// per mode: `Off` — "looks good for black-on-white text, i.e. light mode" —
+/// and `TwoCoverageMinusCoverageSq` (`α = 2c - c²`) — "looks good for
+/// white-on-black text, i.e. dark mode", which is also the enum's
+/// `#[default]`.
+///
+/// Nothing in this workspace used to write it. So the atlas was always built
+/// from `Visuals::default()`, which is `Visuals::dark()`, **including under
+/// `token::light()`** — the product applied the curve epaint documents as
+/// wrong for the mode it was actually in. Measured on a gallery capture
+/// before this landed: the fraction of mid-coverage ink pixels in a 14 px
+/// body paragraph was 45.2% dark and 45.4% light, and mean coverage was
+/// 0.673 in both. Two themes agreeing to three digits is not a coincidence,
+/// it is one curve.
+///
+/// # Why both egui themes are written
+///
+/// egui keeps a `Style` per *its own* theme and `Options::style()` picks by
+/// that, which this crate never sets. Writing only the active one would
+/// leave a host that later calls `Context::set_theme` reading a stale curve.
+/// Writing the one field into both means Petra's mode decides the curve
+/// whatever egui thinks its own theme is, and takes nothing else from an
+/// application that wants to own `Visuals` — which is the narrowest version
+/// of this that works.
+///
+/// No atlas clear is needed: `Fonts::begin_pass` compares the incoming
+/// `TextOptions` against the ones the atlas was built with and recreates it
+/// when they differ, so writing the field is the whole of the change.
+fn bind_glyph_coverage(ctx: &Context, mode: ThemeMode) {
+    use egui::epaint::FontColorTransferFunction;
+
+    let curve = match mode {
+        ThemeMode::Light => FontColorTransferFunction::LIGHT_MODE_DEFAULT,
+        ThemeMode::Dark => FontColorTransferFunction::DARK_MODE_DEFAULT,
+    };
+    for theme in [egui::Theme::Dark, egui::Theme::Light] {
+        ctx.style_mut_of(theme, |style| {
+            style.visuals.text_options.color_transfer_function = curve;
+        });
+    }
+}
+
 /// Drives one Petra application inside an `eframe` window.
 pub struct Host<A: App> {
     app: A,
+    /// The one egui context this host is bound to for its life.
+    ///
+    /// The shaper already holds a clone and has since it was built, so this
+    /// records a dependency that existed rather than adding one. It is here
+    /// because [`Host::bind_theme`] has to reach egui — the glyph atlas's
+    /// coverage curve is a function of the theme's mode (see that method) —
+    /// and it is reached from call sites that have no `&Context` to pass.
+    ctx: Context,
     shaper: GalleyShaper,
     translator: EventTranslator,
     cache: MeasureCache,
@@ -182,6 +245,11 @@ impl<A: App> Host<A> {
         // the same place.
         crate::fonts::install_design_system(ctx);
         let snapshot = presenter.current();
+        // Before the first pass rasterises anything: the curve below is an
+        // input to the atlas, and egui rebuilds the atlas when it changes.
+        // Setting it here means the first frame is drawn through the right
+        // one rather than through one frame of the wrong one.
+        bind_glyph_coverage(ctx, snapshot.mode());
         // Not `FontFaces::default()`: that points all three weight classes at
         // one family because egui's default stack has one proportional face.
         // The embedded stack has three, so `Bold` finally paints bold.
@@ -195,6 +263,7 @@ impl<A: App> Host<A> {
         drop(snapshot);
         Self {
             app,
+            ctx: ctx.clone(),
             shaper,
             translator: EventTranslator::new(),
             cache: MeasureCache::new(),
@@ -367,6 +436,7 @@ impl<A: App> Host<A> {
     fn bind_theme(&mut self, theme: &Theme) {
         *self.registry.vocabulary_mut() = composed_vocabulary(theme, &self.extra_vocabulary);
         *self.shaper.typography_mut() = Typography::from_theme(theme, &self.faces);
+        bind_glyph_coverage(&self.ctx, theme.mode());
         // Every cached galley was shaped through the old map. The key
         // carries size, family and line height, so a stale entry could not
         // be *served* — but it can no longer be asked for either, and would
