@@ -27,10 +27,12 @@ use egui::{Color32, Painter, Rgba, Stroke};
 use gorgon_petra::frame::{PaintContent, PetrifiedFrame, Placement, round_rect};
 use gorgon_petra::geom::{Rect as PetraRect, Scale};
 use gorgon_petra::layout::TextRequest;
+use gorgon_petra::token::value::CoverageValue;
 use gorgon_petra::token::{
     FocusRing, MotionValue, Silhouette, ThemeSnapshot, TokenName, TokenValue, TypographyValue,
 };
 
+use crate::host::{COVERAGE_TOKEN, FALLBACK_COVERAGE, coverage_plan};
 use crate::image::ImageSources;
 use crate::text::GalleyShaper;
 
@@ -159,6 +161,22 @@ pub trait TokenSource {
     fn motion(&self, token: &str) -> Option<MotionValue> {
         match self.value(token)? {
             TokenValue::Motion(timing) => Some(*timing),
+            _ => None,
+        }
+    }
+
+    /// The glyph coverage curve `token` resolves to, or `None` when the
+    /// source has no such value — a `TokenSource` whose vocabulary predates
+    /// [`crate::host::COVERAGE_TOKEN`], or a fixture (most of this module's
+    /// own tests) that only ever implements [`TokenSource::color`]. The text
+    /// paint path (below) falls back to
+    /// [`crate::host::FALLBACK_COVERAGE`] rather than treating `None` here
+    /// as "paint once and stop asking" — the same defensive posture
+    /// [`crate::host::bind_glyph_coverage`] takes for the atlas half of this
+    /// same token.
+    fn coverage(&self, token: &str) -> Option<CoverageValue> {
+        match self.value(token)? {
+            TokenValue::Coverage(curve) => Some(*curve),
             _ => None,
         }
     }
@@ -767,7 +785,31 @@ fn paint_one(
             max_lines: text.max_lines,
             available_width: Some(placement.rect.w),
         });
-        painter.galley(rect.min, galley, color);
+        // The atlas curve alone cannot reach every `passes` value the
+        // `text.coverage-curve` token allows (SPEC.md §2.3: no
+        // `FontColorTransferFunction` variant exists past two-pass
+        // compositing), so the rest is spent here, by painting the same
+        // galley `repeats` times under egui-wgpu's premultiplied
+        // source-over — which composites to `1 - (1-a)^repeats`, the same
+        // identity the atlas curve itself rests on
+        // (`crate::host::coverage_plan`'s doc comment names the trap this
+        // is the other half of). `report.texts` and `shapes` count the
+        // logical run once regardless of how many physical paints it took —
+        // see this module's doc comment and `PaintReport`'s.
+        let coverage = env
+            .colors
+            .coverage(COVERAGE_TOKEN)
+            .unwrap_or(FALLBACK_COVERAGE);
+        let plan = coverage_plan(coverage);
+        for _ in 0..plan.repeats {
+            painter.galley(rect.min, galley.clone(), color);
+        }
+        if plan.fraction > 0.0 {
+            // ai-macs' fractional pass, ported verbatim: one further paint
+            // at the colour's alpha scaled by the fractional remainder, not
+            // the fraction silently dropped.
+            painter.galley(rect.min, galley.clone(), color.gamma_multiply(plan.fraction));
+        }
         report.texts += 1;
         shapes += 1;
     }
@@ -953,7 +995,10 @@ mod tests {
     use gorgon_petra::geom::Size;
     use gorgon_petra::geom::{Rect as PetraRect, Scale};
     use gorgon_petra::testing::{Harness, validated};
-    use gorgon_petra::token::{ThemeMode, ThemeSnapshot, TokenName, dark};
+    use gorgon_petra::token::value::CoverageValue;
+    use gorgon_petra::token::{
+        Theme, ThemeMode, ThemeSnapshot, TokenName, TokenValue, dark, standard_vocabulary,
+    };
     use gorgon_petra::tree::{NodeKind, Props, ViewNode};
 
     use crate::image::{ImagePixels, ImageSources};
@@ -989,6 +1034,23 @@ mod tests {
 
     fn snapshot() -> ThemeSnapshot {
         ThemeSnapshot::new(dark(), 1)
+    }
+
+    /// `dark()` with its `text.coverage-curve` overridden — the fixture the
+    /// coverage-repeat tests below use to reach `passes` values other than
+    /// dark's own shipped `3.0`.
+    fn coverage_variant(passes: f32, snap: bool) -> ThemeSnapshot {
+        let mut values = dark().values().clone();
+        values.insert(
+            TokenName::new("text.coverage-curve")
+                .expect("\"text.coverage-curve\" is a well-formed token name"),
+            TokenValue::Coverage(CoverageValue { passes, snap }),
+        );
+        let theme = Theme::build(ThemeMode::Dark, &standard_vocabulary(), values).expect(
+            "overriding an already-declared token's value at its declared kind \
+             keeps the theme complete",
+        );
+        ThemeSnapshot::new(theme, 1)
     }
 
     /// A token reference, for the fixtures below — `Props.tokens`' value
@@ -1050,7 +1112,7 @@ mod tests {
         assert_eq!(report.texts, 2, "{report:?}");
 
         let out = host.0.run_ui(RawInput::default(), |_| {});
-        let sizes: Vec<f32> = out
+        let mut sizes: Vec<f32> = out
             .shapes
             .iter()
             .filter_map(|cs| match &cs.shape {
@@ -1060,10 +1122,24 @@ mod tests {
             .collect();
         out.drop_without_applying_deltas();
 
+        // dark()'s shipped `text.coverage-curve` is `passes: 3.0`, so each
+        // logical run paints three times -- three physical `Shape::Text`
+        // entries per run, six total for two runs -- before this test's own
+        // concern (the size ramp) ever gets a look. A binder that dropped
+        // the repeat count silently would leave this at 2, not 6, and this
+        // assertion would be the one to catch it.
+        assert_eq!(
+            sizes.len(),
+            6,
+            "two runs at three paints each (passes: 3.0) must all reach \
+             egui: {sizes:?}"
+        );
+        sizes.dedup();
         assert_eq!(
             sizes.len(),
             2,
-            "one heading run and one body run must reach egui: {sizes:?}"
+            "one heading run and one body run, once the three identical \
+             coverage-repeat paints per run are collapsed: {sizes:?}"
         );
         assert!(
             sizes[0] > sizes[1],
@@ -1076,6 +1152,99 @@ mod tests {
             sizes,
             vec![20.0, 14.0],
             "and at the sizes the shipped ramp declares: {sizes:?}"
+        );
+    }
+
+    /// `report.texts` is `PaintReport`'s honesty counter and the gallery
+    /// prints it — painting one run three times for `passes: 3.0` must
+    /// still report one text, not three, or the counter starts lying about
+    /// the thing it exists to be honest about.
+    #[test]
+    fn painting_a_run_several_times_for_coverage_still_reports_one_text() {
+        let host = Headless::new();
+        let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
+        let tree = ViewNode::new(NodeKind::Text, "label").with_props(Props {
+            text: Some("Fibers".into()),
+            ..Props::default()
+        });
+        let frame = frame_of(&tree, &mut h);
+        let mut shaper = host.shaper();
+        // dark() ships `text.coverage-curve` at `passes: 3.0` -- three
+        // physical paints for this one logical run.
+        let report = paint_frame(&host.painter(), &frame, &mut shaper, &snapshot());
+        assert_eq!(report.texts, 1, "{report:?}");
+        assert_eq!(report.drawn, 1, "{report:?}");
+        assert_eq!(report.placements, 1);
+
+        let out = host.0.run_ui(RawInput::default(), |_| {});
+        let text_shapes = out
+            .shapes
+            .iter()
+            .filter(|cs| matches!(cs.shape, Shape::Text(_)))
+            .count();
+        out.drop_without_applying_deltas();
+        assert_eq!(
+            text_shapes, 3,
+            "passes: 3.0 must still paint the glyph three times even though \
+             the report counts one text run"
+        );
+    }
+
+    /// A non-integer `passes` is not dropped to its floor: ai-macs' own
+    /// fractional-pass model — one further paint at the colour's alpha
+    /// scaled by the fractional remainder — ports verbatim (SPEC.md §1.4,
+    /// §2.3).
+    #[test]
+    fn a_fractional_passes_value_paints_one_further_faded_pass() {
+        let host = Headless::new();
+        let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
+        let tree = ViewNode::new(NodeKind::Text, "label").with_props(Props {
+            text: Some("Fibers".into()),
+            ..Props::default()
+        });
+        let frame = frame_of(&tree, &mut h);
+        let mut shaper = host.shaper();
+        // passes: 2.5 is not one of the two anchor points `coverage_plan`
+        // spends the atlas curve on, so it decomposes as Off, two whole
+        // paints, plus one further pass at half the text colour's alpha.
+        let report = paint_frame(
+            &host.painter(),
+            &frame,
+            &mut shaper,
+            &coverage_variant(2.5, false),
+        );
+        assert_eq!(report.texts, 1, "{report:?}");
+
+        let out = host.0.run_ui(RawInput::default(), |_| {});
+        let fallback_colors: Vec<Color32> = out
+            .shapes
+            .iter()
+            .filter_map(|cs| match &cs.shape {
+                Shape::Text(t) => Some(t.fallback_color),
+                _ => None,
+            })
+            .collect();
+        out.drop_without_applying_deltas();
+
+        assert_eq!(
+            fallback_colors.len(),
+            3,
+            "two whole passes plus one fractional pass: {fallback_colors:?}"
+        );
+        assert_eq!(
+            fallback_colors[0], fallback_colors[1],
+            "the two whole passes must paint at full, identical alpha: \
+             {fallback_colors:?}"
+        );
+        assert!(
+            fallback_colors[2].a() < fallback_colors[0].a(),
+            "the fractional pass must be faded, not painted at full alpha: \
+             {fallback_colors:?}"
+        );
+        assert_ne!(
+            fallback_colors[2].a(),
+            0,
+            "faded is not the same as invisible: {fallback_colors:?}"
         );
     }
 

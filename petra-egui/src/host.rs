@@ -34,8 +34,9 @@ use gorgon_petra::layout::overlay_surface::surface_scopes;
 use gorgon_petra::layout::{
     ChangeSet, LayoutCtx, LayoutState, MeasureCache, RowSource, ScrollStack,
 };
+use gorgon_petra::token::value::CoverageValue;
 use gorgon_petra::token::{
-    DesignToken, Presenter, StatusToken, Theme, ThemeMode, ThemeSnapshot, TokenName, Vocabulary,
+    DesignToken, Presenter, StatusToken, Theme, ThemeSnapshot, TokenName, TokenValue, Vocabulary,
     standard_vocabulary,
 };
 use gorgon_petra::tree::{InputPolicy, Interaction, NodeKind, Props, Registry, ViewNode, validate};
@@ -109,45 +110,171 @@ pub trait App: RowSource {
 /// than rigorous. It would be better to either render all text colors into
 /// the font atlas … or do the color compensation in the shader."*
 ///
-/// The bend is [`FontColorTransferFunction`], and it has a documented answer
-/// per mode: `Off` — "looks good for black-on-white text, i.e. light mode" —
-/// and `TwoCoverageMinusCoverageSq` (`α = 2c - c²`) — "looks good for
-/// white-on-black text, i.e. dark mode", which is also the enum's
-/// `#[default]`.
+/// The bend is [`FontColorTransferFunction`], and it used to have a
+/// hardcoded answer per `ThemeMode` — `Off` for light, `TwoCoverageMinusCoverageSq`
+/// for dark — because those are epaint's own documented per-mode defaults.
+/// That shipped in `86de1a6` and it was **harmful**: it fixed light mode's
+/// curve at the identity (`n = 1`), which is the *most* variance-prone
+/// setting on the per-character weight variance defect this text pipeline
+/// port exists to close (see the port README), not the least. Both curve
+/// *and* paint-repeat count are now a function of one token,
+/// `text.coverage-curve` ([`CoverageValue`]), read off the theme — not of
+/// `ThemeMode` — so light and dark ship identically unless a theme
+/// deliberately diverges them.
 ///
-/// Nothing in this workspace used to write it. So the atlas was always built
-/// from `Visuals::default()`, which is `Visuals::dark()`, **including under
-/// `token::light()`** — the product applied the curve epaint documents as
-/// wrong for the mode it was actually in. Measured on a gallery capture
-/// before this landed: the fraction of mid-coverage ink pixels in a 14 px
-/// body paragraph was 45.2% dark and 45.4% light, and mean coverage was
-/// 0.673 in both. Two themes agreeing to three digits is not a coincidence,
-/// it is one curve.
+/// # Why this still needs writing at all
+///
+/// epaint rasterises every glyph once, white, into one atlas, and the shader
+/// multiplies that coverage by the run's colour in gamma space
+/// (`egui.wgsl`: `in.color * tex_gamma`). One atlas cannot be right for both
+/// dark-on-light and light-on-dark, so epaint bends the coverage on the way
+/// in and says so itself (`epaint/src/image.rs`): *"This whole thing is less
+/// than rigorous. It would be better to either render all text colors into
+/// the font atlas … or do the color compensation in the shader."*
+///
+/// # The atlas curve and the paint count multiply
+///
+/// `2c - c² ≡ 1 - (1-c)²`, so `TwoCoverageMinusCoverageSq` *is* two-pass
+/// compositing, and painting a galley `k` times under egui-wgpu's
+/// premultiplied source-over composites to `1 - (1-a)^k`
+/// (`crate::paint`'s galley loop). `effective_n = n_atlas · repeats`, which
+/// is exactly what [`coverage_plan`] computes and what [`crate::paint`]
+/// spends. This function only writes the atlas half of that pair — the
+/// repeat half is read straight off the same token, independently, by
+/// [`crate::paint::TokenSource::coverage`], so the two halves can never
+/// read two different published theme revisions.
 ///
 /// # Why both egui themes are written
 ///
 /// egui keeps a `Style` per *its own* theme and `Options::style()` picks by
 /// that, which this crate never sets. Writing only the active one would
 /// leave a host that later calls `Context::set_theme` reading a stale curve.
-/// Writing the one field into both means Petra's mode decides the curve
-/// whatever egui thinks its own theme is, and takes nothing else from an
-/// application that wants to own `Visuals` — which is the narrowest version
-/// of this that works.
+/// Writing the one field into both means Petra's published theme decides the
+/// curve whatever egui thinks its own theme is, and takes nothing else from
+/// an application that wants to own `Visuals` — which is the narrowest
+/// version of this that works.
 ///
 /// No atlas clear is needed: `Fonts::begin_pass` compares the incoming
 /// `TextOptions` against the ones the atlas was built with and recreates it
 /// when they differ, so writing the field is the whole of the change.
-fn bind_glyph_coverage(ctx: &Context, mode: ThemeMode) {
+fn bind_glyph_coverage(ctx: &Context, theme: &Theme) {
+    let plan = coverage_plan(coverage_value(theme));
+    for egui_theme in [egui::Theme::Dark, egui::Theme::Light] {
+        ctx.style_mut_of(egui_theme, |style| {
+            style.visuals.text_options.color_transfer_function = plan.curve;
+            style.visuals.text_options.subpixel_binning = !plan.snap;
+        });
+    }
+}
+
+/// The token name every coverage-curve lookup reads, spelled once so
+/// [`bind_glyph_coverage`] and [`crate::paint::TokenSource::coverage`]
+/// cannot drift onto two different strings.
+pub(crate) const COVERAGE_TOKEN: &str = "text.coverage-curve";
+
+/// The pair a theme predating [`COVERAGE_TOKEN`] falls back to: `passes:
+/// 2.0` is exactly what both shipped themes' curves computed to before this
+/// token existed (dark ran `TwoCoverageMinusCoverageSq` at one paint, light
+/// ran `Off` at one paint under the old mode-keyed match this superseded —
+/// `n = 2` and `n = 1` respectively — and `2.0` is the higher, honestly
+/// neutral one of the two, not a third number nobody measured), so an
+/// application that hands this host an older vocabulary gets the more
+/// variance-resistant of the two priors rather than either theme's old
+/// number by accident of which mode it happened to be in. `snap: false`
+/// matches every theme this workspace has ever shipped.
+pub(crate) const FALLBACK_COVERAGE: CoverageValue = CoverageValue {
+    passes: 2.0,
+    snap: false,
+};
+
+/// `theme`'s `text.coverage-curve`, or [`FALLBACK_COVERAGE`] when the theme's
+/// vocabulary predates the token (an application built its own theme against
+/// an older [`gorgon_petra::token::standard_vocabulary`] snapshot) or the
+/// name resolves to some other token kind (a theme bug `Theme::build` would
+/// have refused had this been declared at the wrong kind — defensive here
+/// regardless, because this function must never panic on a hand-built
+/// `Theme`).
+fn coverage_value(theme: &Theme) -> CoverageValue {
+    let name = TokenName::new(COVERAGE_TOKEN)
+        .expect("\"text.coverage-curve\" is a well-formed token name");
+    match theme.value(&name) {
+        Some(TokenValue::Coverage(value)) => *value,
+        _ => FALLBACK_COVERAGE,
+    }
+}
+
+/// What one [`CoverageValue`] resolves to on the paint path: the atlas curve
+/// [`bind_glyph_coverage`] writes onto the `Context`, and the paint-repeat
+/// count and fractional-pass alpha [`crate::paint`] reads to repeat the
+/// galley emission.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct CoveragePlan {
+    /// The curve the glyph atlas rasterises through.
+    pub(crate) curve: egui::epaint::FontColorTransferFunction,
+    /// How many whole times to paint the galley.
+    pub(crate) repeats: u8,
+    /// `0.0` for no further pass; otherwise the fraction of the text
+    /// colour's alpha to paint one further time, ai-macs' fractional-pass
+    /// model ported verbatim (SPEC.md §1.4, §2.3).
+    pub(crate) fraction: f32,
+    /// Whether a glyph's horizontal origin snaps to a whole device pixel.
+    /// Carried straight through from [`CoverageValue::snap`] — see that
+    /// field's doc comment for the (inverted, `bool`-vs-`bool`, no
+    /// compile-time guard) mapping onto
+    /// [`egui::TextOptions::subpixel_binning`].
+    pub(crate) snap: bool,
+}
+
+/// `passes → (atlas curve, paint count, fractional-pass alpha)`, the
+/// contract table `SPEC.md` §6.3/§6.4 pins:
+///
+/// | `passes` | atlas curve | paints | effective n |
+/// |---|---|---|---|
+/// | 1.0 | `Off` | 1 | 1 |
+/// | 2.0 | `TwoCoverageMinusCoverageSq` | 1 | 2 |
+/// | 3.0 | `Off` | 3 | 3 |
+/// | 4.0 | `TwoCoverageMinusCoverageSq` | 2 | 4 |
+///
+/// # The trap
+///
+/// `2c - c² ≡ 1 - (1-c)²`: `TwoCoverageMinusCoverageSq` *is* two-pass
+/// compositing, so the atlas curve and the paint count MULTIPLY —
+/// `effective_n = n_atlas · repeats`. `passes = 2.0` deliberately spends the
+/// atlas curve rather than two paints (identical output, one fewer draw);
+/// `passes = 4.0` spends it twice. Every other value — every odd integer,
+/// and every fractional value, including one whose floor is even — goes
+/// through `Off` instead, so the fractional pass below always composites
+/// against raw coverage and stays exactly ai-macs' own formula rather than
+/// needing a second, curve-scaled fractional term. Painting `TwoCov` three
+/// times would be `n = 6`, not `n = 3`; no row of this table, and no value
+/// this function returns for any `passes` in the legal `[1.0, 4.0]` range,
+/// pairs `TwoCov` with three paints (`two_cov_at_three_paints_would_be_n_six_and_no_row_produces_it`).
+pub(crate) fn coverage_plan(value: CoverageValue) -> CoveragePlan {
     use egui::epaint::FontColorTransferFunction;
 
-    let curve = match mode {
-        ThemeMode::Light => FontColorTransferFunction::LIGHT_MODE_DEFAULT,
-        ThemeMode::Dark => FontColorTransferFunction::DARK_MODE_DEFAULT,
+    /// Float wobble tolerance for recognising the two exact anchor points a
+    /// theme value most likely lands on. Well under any daylight between two
+    /// legal `passes` values a theme would ever assign on purpose.
+    const EPS: f32 = 1e-4;
+
+    let (curve, repeats, fraction) = if (value.passes - 2.0).abs() < EPS {
+        (FontColorTransferFunction::TwoCoverageMinusCoverageSq, 1, 0.0)
+    } else if (value.passes - 4.0).abs() < EPS {
+        (FontColorTransferFunction::TwoCoverageMinusCoverageSq, 2, 0.0)
+    } else {
+        let whole = value.passes.floor().max(1.0);
+        let frac = value.passes - whole;
+        (
+            FontColorTransferFunction::Off,
+            whole as u8,
+            if frac > 0.001 { frac } else { 0.0 },
+        )
     };
-    for theme in [egui::Theme::Dark, egui::Theme::Light] {
-        ctx.style_mut_of(theme, |style| {
-            style.visuals.text_options.color_transfer_function = curve;
-        });
+    CoveragePlan {
+        curve,
+        repeats,
+        fraction,
+        snap: value.snap,
     }
 }
 
@@ -159,8 +286,9 @@ pub struct Host<A: App> {
     /// The shaper already holds a clone and has since it was built, so this
     /// records a dependency that existed rather than adding one. It is here
     /// because [`Host::bind_theme`] has to reach egui — the glyph atlas's
-    /// coverage curve is a function of the theme's mode (see that method) —
-    /// and it is reached from call sites that have no `&Context` to pass.
+    /// coverage curve is a function of the theme's `text.coverage-curve`
+    /// token (see that method) — and it is reached from call sites that
+    /// have no `&Context` to pass.
     ctx: Context,
     shaper: GalleyShaper,
     translator: EventTranslator,
@@ -249,7 +377,7 @@ impl<A: App> Host<A> {
         // input to the atlas, and egui rebuilds the atlas when it changes.
         // Setting it here means the first frame is drawn through the right
         // one rather than through one frame of the wrong one.
-        bind_glyph_coverage(ctx, snapshot.mode());
+        bind_glyph_coverage(ctx, snapshot.theme());
         // Not `FontFaces::default()`: that points all three weight classes at
         // one family because egui's default stack has one proportional face.
         // The embedded stack has three, so `Bold` finally paints bold.
@@ -436,7 +564,7 @@ impl<A: App> Host<A> {
     fn bind_theme(&mut self, theme: &Theme) {
         *self.registry.vocabulary_mut() = composed_vocabulary(theme, &self.extra_vocabulary);
         *self.shaper.typography_mut() = Typography::from_theme(theme, &self.faces);
-        bind_glyph_coverage(&self.ctx, theme.mode());
+        bind_glyph_coverage(&self.ctx, theme);
         // Every cached galley was shaped through the old map. The key
         // carries size, family and line height, so a stale entry could not
         // be *served* — but it can no longer be asked for either, and would
@@ -1003,7 +1131,7 @@ pub fn default_presenter() -> Presenter {
 
 #[cfg(test)]
 mod tests {
-    use super::{App, ChangeSet, Host, default_presenter, petra_layer, refusal_view};
+    use super::{App, ChangeSet, Host, coverage_plan, default_presenter, petra_layer, refusal_view};
     use egui::{Context, Event, Key, Modifiers, RawInput};
     use gorgon_petra::geom::{Point, Rect};
     use gorgon_petra::input::{InputEvent, Route};
@@ -1256,24 +1384,34 @@ mod tests {
         );
     }
 
-    /// The glyph atlas's coverage curve is a projection of the theme's mode,
-    /// and it has to move when the mode does.
+    /// The glyph atlas's coverage curve is a projection of the published
+    /// theme's `text.coverage-curve` token — **not** of `ThemeMode`, and it
+    /// has to move when the token does, whether or not the mode moves with
+    /// it.
     ///
-    /// The defect this guards shipped: nothing in this workspace wrote
-    /// `Visuals::text_options` at all, so the atlas was always built from
-    /// `Visuals::default()` — which is `Visuals::dark()` — including under
-    /// `light()`, where epaint documents `Off` as the correct curve. It was
-    /// invisible to every gate in the tree because a curve changes pixels and
-    /// not placements, and the frame digest hashes placements.
+    /// Two defects this guards, one after the other:
+    ///
+    /// * Nothing in this workspace used to write `Visuals::text_options` at
+    ///   all, so the atlas was always built from `Visuals::default()` —
+    ///   `Visuals::dark()` — including under `light()`.
+    /// * The fix that followed (`86de1a6`) wrote the curve keyed on
+    ///   `ThemeMode` instead — `Off` for light, `TwoCoverageMinusCoverageSq`
+    ///   for dark — which was itself harmful: it pinned light mode at
+    ///   `n = 1`, the identity, the setting *most* exposed to the
+    ///   per-character weight variance this text pipeline port exists to
+    ///   close, not the least. Both shipped themes now assign
+    ///   `text.coverage-curve` the identical `passes: 3.0, snap: false`
+    ///   (`ef31ea8`), so a curve that still moved with the mode alone would
+    ///   be the same hardcode with an extra layer of indirection.
     ///
     /// Both of egui's own per-theme styles are read, not just the active one,
     /// because [`bind_glyph_coverage`] writes both on purpose: an application
-    /// that calls `Context::set_theme` must not thereby get a curve for the
-    /// wrong Petra mode.
+    /// that calls `Context::set_theme` must not thereby get a stale curve.
     #[test]
     fn the_glyph_coverage_curve_follows_the_theme_mode() {
         use egui::epaint::FontColorTransferFunction;
-        use gorgon_petra::token::{Presenter, dark, light};
+        use gorgon_petra::token::value::CoverageValue;
+        use gorgon_petra::token::{Presenter, Theme, TokenValue, dark, light, standard_vocabulary};
 
         fn bound(ctx: &Context) -> [FontColorTransferFunction; 2] {
             [egui::Theme::Dark, egui::Theme::Light].map(|theme| {
@@ -1284,23 +1422,58 @@ mod tests {
             })
         }
 
+        /// `base` with its `text.coverage-curve` overridden — the only way
+        /// this test can observe the binder reading the *token* rather than
+        /// `ThemeMode`, now that both shipped themes assign the token the
+        /// same value.
+        fn with_coverage(base: Theme, passes: f32, snap: bool) -> Theme {
+            let mode = base.mode();
+            let mut values = base.values().clone();
+            values.insert(
+                TokenName::new("text.coverage-curve")
+                    .expect("\"text.coverage-curve\" is a well-formed token name"),
+                TokenValue::Coverage(CoverageValue { passes, snap }),
+            );
+            Theme::build(mode, &standard_vocabulary(), values).expect(
+                "overriding an already-declared token's value at its declared \
+                 kind keeps the theme complete",
+            )
+        }
+
         let ctx = headless();
         let mut host = Host::new(&ctx, Demo::default(), Presenter::new(light()));
+        // light's own text.coverage-curve is passes: 3.0 -- odd, so Off at
+        // three paints. Not Off "because it is light mode": see below.
         assert_eq!(
             bound(&ctx),
             [FontColorTransferFunction::Off; 2],
-            "a host built on the light theme must rasterise through the curve \
-             epaint documents for light mode, in both of egui's styles, before \
-             its first pass rather than after it"
+            "light's shipped text.coverage-curve (passes: 3.0) must bind, in \
+             both of egui's styles, before the first pass rather than after it"
         );
 
         host.presenter().publish(dark());
         step(&ctx, &mut host, RawInput::default());
         assert_eq!(
             bound(&ctx),
+            [FontColorTransferFunction::Off; 2],
+            "dark ships the identical text.coverage-curve as light, so the \
+             curve must stay identical across the swap — this is the proof \
+             the binder reads the token and not ThemeMode: a mode-keyed \
+             binding (the superseded `86de1a6` hardcode) would have flipped \
+             this to TwoCoverageMinusCoverageSq on dark alone"
+        );
+
+        // Now move the token itself, on the theme this host is already
+        // publishing dark() as: the curve must follow the *value*, not stay
+        // pinned at whatever a shipped theme happens to assign today.
+        host.presenter().publish(with_coverage(dark(), 2.0, false));
+        step(&ctx, &mut host, RawInput::default());
+        assert_eq!(
+            bound(&ctx),
             [FontColorTransferFunction::TwoCoverageMinusCoverageSq; 2],
-            "publishing the dark theme must move the curve with it; a stale \
-             curve is the shipped defect this test exists for"
+            "publishing a theme whose text.coverage-curve moved to \
+             passes: 2.0 must move the curve with it; a stale curve is the \
+             defect both predecessor tests exist for"
         );
 
         host.presenter().publish(light());
@@ -1308,7 +1481,132 @@ mod tests {
         assert_eq!(
             bound(&ctx),
             [FontColorTransferFunction::Off; 2],
-            "and back, so this asserts a binding rather than a one-way latch"
+            "and back to light's own passes: 3.0, so this asserts a binding \
+             rather than a one-way latch"
+        );
+    }
+
+    /// `coverage_plan` at every row the contract table names (`SPEC.md`
+    /// §6.3): `bind_glyph_coverage` and `crate::paint`'s repeat loop derive
+    /// both halves from this one function, so a wrong row here is a wrong
+    /// picture on screen from both directions at once.
+    #[test]
+    fn the_coverage_curve_mapping_matches_every_contract_row() {
+        use egui::epaint::FontColorTransferFunction;
+        use gorgon_petra::token::value::CoverageValue;
+
+        let cases = [
+            (1.0_f32, FontColorTransferFunction::Off, 1_u8),
+            (
+                2.0,
+                FontColorTransferFunction::TwoCoverageMinusCoverageSq,
+                1,
+            ),
+            (3.0, FontColorTransferFunction::Off, 3),
+            (
+                4.0,
+                FontColorTransferFunction::TwoCoverageMinusCoverageSq,
+                2,
+            ),
+        ];
+        for (passes, curve, repeats) in cases {
+            let plan = coverage_plan(CoverageValue {
+                passes,
+                snap: false,
+            });
+            assert_eq!(plan.curve, curve, "passes={passes}: {plan:?}");
+            assert_eq!(plan.repeats, repeats, "passes={passes}: {plan:?}");
+            assert_eq!(plan.fraction, 0.0, "passes={passes}: {plan:?}");
+        }
+    }
+
+    /// The trap `SPEC.md` §6.4 names by name: `2c - c² ≡ 1 - (1-c)²`, so
+    /// `TwoCoverageMinusCoverageSq` *is* two-pass compositing, and the atlas
+    /// curve and the paint count MULTIPLY (`effective_n = n_atlas · repeats`).
+    /// `TwoCov` at three paints would be `n = 6`; no legal `passes` in
+    /// `[1.0, 4.0]` maps to it, and this pins that for every value the
+    /// mapping actually has to answer for, not only the four table rows.
+    #[test]
+    fn two_cov_at_three_paints_would_be_n_six_and_no_row_produces_it() {
+        use egui::epaint::FontColorTransferFunction;
+        use gorgon_petra::token::value::CoverageValue;
+
+        for tenths in 10..=40 {
+            let passes = tenths as f32 / 10.0;
+            let plan = coverage_plan(CoverageValue {
+                passes,
+                snap: false,
+            });
+            assert!(
+                !(plan.curve == FontColorTransferFunction::TwoCoverageMinusCoverageSq
+                    && plan.repeats == 3),
+                "passes={passes}: TwoCov at 3 paints is n=6, not a legal row: {plan:?}"
+            );
+        }
+
+        // The specific pair the gate names: passes=4.0 must be TwoCov at
+        // *two* paints (n=4), never TwoCov at three (n=6, wrong) and never
+        // Off at four (n=4, correct but one paint more than it needs).
+        let four = coverage_plan(CoverageValue {
+            passes: 4.0,
+            snap: false,
+        });
+        assert_eq!(
+            four.curve,
+            FontColorTransferFunction::TwoCoverageMinusCoverageSq,
+            "{four:?}"
+        );
+        assert_eq!(four.repeats, 2, "{four:?}");
+    }
+
+    /// `CoverageValue::snap` is deliberately inverted at this binder:
+    /// `snap: true` means `subpixel_binning: false`. Both sides are `bool`,
+    /// so the compiler cannot catch a polarity flip here — only a test that
+    /// asserts the actual direction can.
+    #[test]
+    fn snap_reaches_subpixel_binning_inverted() {
+        use gorgon_petra::token::value::CoverageValue;
+        use gorgon_petra::token::{Presenter, Theme, TokenValue, dark, light, standard_vocabulary};
+
+        fn bound_binning(ctx: &Context) -> [bool; 2] {
+            [egui::Theme::Dark, egui::Theme::Light]
+                .map(|theme| ctx.style_of(theme).visuals.text_options.subpixel_binning)
+        }
+
+        fn with_snap(base: Theme, snap: bool) -> Theme {
+            let mode = base.mode();
+            let mut values = base.values().clone();
+            values.insert(
+                TokenName::new("text.coverage-curve")
+                    .expect("\"text.coverage-curve\" is a well-formed token name"),
+                TokenValue::Coverage(CoverageValue {
+                    passes: 3.0,
+                    snap,
+                }),
+            );
+            Theme::build(mode, &standard_vocabulary(), values)
+                .expect("overriding snap alone keeps the theme complete")
+        }
+
+        let ctx = headless();
+        let mut host = Host::new(&ctx, Demo::default(), Presenter::new(with_snap(light(), false)));
+        assert_eq!(
+            bound_binning(&ctx),
+            [true; 2],
+            "snap: false must leave subpixel_binning ON (keep sub-pixel \
+             precision) -- epaint's own default"
+        );
+
+        host.presenter().publish(with_snap(dark(), true));
+        step(&ctx, &mut host, RawInput::default());
+        assert_eq!(
+            bound_binning(&ctx),
+            [false; 2],
+            "snap: true must turn subpixel_binning OFF -- the inversion \
+             CoverageValue::snap documents. A binder that wired this straight \
+             through (snap -> subpixel_binning with no inversion) would leave \
+             this true, and the compiler would not have caught it: both sides \
+             are bool"
         );
     }
 
