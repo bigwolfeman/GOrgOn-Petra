@@ -503,7 +503,7 @@ pub fn light() -> Theme {
     );
     values.insert(
         name("text.muted"),
-        TokenValue::Color(ColorValue::from_srgb8(0x5c, 0x5c, 0x5c, 0xff)),
+        TokenValue::Color(ColorValue::from_srgb8(0x44, 0x44, 0x44, 0xff)),
     );
     insert_spacing_ramp(&mut values);
     insert_typography_ramp(&mut values);
@@ -569,7 +569,7 @@ pub fn light() -> Theme {
     values.insert(
         name("text.coverage-curve"),
         TokenValue::Coverage(CoverageValue {
-            passes: 3.0,
+            passes: 2.0,
             snap: false,
         }),
     );
@@ -590,7 +590,7 @@ pub fn dark() -> Theme {
     );
     values.insert(
         name("text.muted"),
-        TokenValue::Color(ColorValue::from_srgb8(0xa3, 0xa3, 0xa3, 0xff)),
+        TokenValue::Color(ColorValue::from_srgb8(0xb7, 0xb7, 0xb7, 0xff)),
     );
     insert_spacing_ramp(&mut values);
     insert_typography_ramp(&mut values);
@@ -639,7 +639,7 @@ pub fn dark() -> Theme {
     values.insert(
         name("text.coverage-curve"),
         TokenValue::Coverage(CoverageValue {
-            passes: 3.0,
+            passes: 2.0,
             snap: false,
         }),
     );
@@ -1604,11 +1604,84 @@ mod tests {
             assert_eq!(
                 theme.value(&token),
                 Some(&TokenValue::Coverage(CoverageValue {
-                    passes: 3.0,
+                    passes: 2.0,
                     snap: false
                 })),
-                "{label} theme's text.coverage-curve must be passes: 3.0, snap: false"
+                "{label} theme's text.coverage-curve must be passes: 2.0, snap: false"
             );
+        }
+    }
+
+    /// Every text tone must stay readable on every surface it can land on,
+    /// and must stay a *visible step* away from the tone above it.
+    ///
+    /// # Why this test exists
+    ///
+    /// It was written after a bug report that read "the text is greying out
+    /// from the background", and it is the check that would have caught that
+    /// report before it was filed. The reported defect was chased through
+    /// the glyph rasteriser first — coverage curves, sub-pixel binning,
+    /// hinting targets — and none of it was the cause. The cause was a
+    /// token: dark `text.muted` was `#a3a3a3`, which is **3.86:1** against
+    /// `surface.layer-three` (`#444444`), below the 4.5:1 AA floor for body
+    /// text. Text set in it did not "grey out" because of how it was
+    /// rasterised. It was grey.
+    ///
+    /// The lesson the test encodes: a tone is not judged on its own, it is
+    /// judged against every ground it can be painted on. `text.muted` reads
+    /// fine on `surface.base` and fails four layers up, and nothing in the
+    /// theme's own construction notices, because a theme assigns colours one
+    /// at a time and legibility is a property of pairs.
+    ///
+    /// # The two floors, and why the second one is needed
+    ///
+    /// [`MIN_TEXT_CONTRAST`] is WCAG AA for body text. On its own it is
+    /// gameable in the laziest possible way: set `text.muted` to
+    /// `text.primary` and every ratio passes. So the second assertion pins
+    /// the *step* — muted must be meaningfully quieter than primary, or the
+    /// type ramp has one tone with two names and every "de-emphasised" label
+    /// on every page silently shouts.
+    ///
+    /// Both shipped themes are tuned to the same step (1.79x) on purpose, so
+    /// a reader switching themes gets the same hierarchy, not a louder one.
+    #[test]
+    fn every_text_tone_clears_aa_on_every_surface_it_can_be_painted_on() {
+        /// WCAG 2.x AA for body text. Not AAA (7:1): that floor would force
+        /// `text.muted` so close to `text.primary` on the deepest layer that
+        /// the step assertion below could not also hold.
+        const MIN_TEXT_CONTRAST: f32 = 4.5;
+        /// The de-emphasis step, as `primary:muted` contrast on one ground.
+        /// Below the floor the two tones are one tone; above the ceiling the
+        /// quiet one is the unreadable one this test was written about.
+        const STEP: std::ops::RangeInclusive<f32> = 1.4..=2.0;
+
+        for (label, theme) in [("light", light()), ("dark", dark())] {
+            let primary = theme_color(&theme, "text.primary");
+            let muted = theme_color(&theme, "text.muted");
+
+            for surface in LAYER_TOKENS.iter().chain(std::iter::once(&RAISED_ALIAS)) {
+                let ground = theme_color(&theme, surface);
+                for (tone_name, tone) in [("text.primary", primary), ("text.muted", muted)] {
+                    let ratio = contrast(tone, ground);
+                    assert!(
+                        ratio >= MIN_TEXT_CONTRAST,
+                        "{label}: {tone_name} on {surface} is {ratio:.2}:1, \
+                         below the {MIN_TEXT_CONTRAST}:1 AA floor for body \
+                         text. A reader sees this as text that has greyed \
+                         out, and no amount of glyph rasterisation fixes a \
+                         tone that is genuinely too close to its ground."
+                    );
+                }
+
+                let step = contrast(primary, ground) / contrast(muted, ground);
+                assert!(
+                    STEP.contains(&step),
+                    "{label}: on {surface} the primary:muted step is \
+                     {step:.2}x, outside {STEP:?}. Too small and the ramp \
+                     has one tone under two names; too large and the quiet \
+                     tone is the one this test exists to keep readable."
+                );
+            }
         }
     }
 }

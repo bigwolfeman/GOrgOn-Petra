@@ -16,6 +16,10 @@
 //! Run it: `cargo run -p gorgon-petra-egui --example gallery`
 //! Light theme: `PETRA_GALLERY_THEME=light cargo run … --example gallery`
 //! Capture one frame and exit: `PETRA_GALLERY_SHOT=/tmp/gallery.ppm cargo run …`
+//! Sweep the glyph-sharpness dial: `PETRA_GALLERY_COVERAGE=3,snap cargo run …`
+//!   — see [`coverage_from_env`]. Overrides `text.coverage-curve` for this one
+//!   window only, so the two dials can be judged by eye at real size without
+//!   editing and rebuilding `gorgon-petra` once per value.
 //!
 //! # What this file is not allowed to do (T078, SC-011)
 //!
@@ -84,7 +88,10 @@ use gorgon_petra::component::{
 use gorgon_petra::geom::{Align, Axis};
 use gorgon_petra::input::{InputEvent, PointerButton, Route, activates};
 use gorgon_petra::layout::{ChangeSet, RowSource};
-use gorgon_petra::token::{Presenter, StatusToken, TokenName, dark, light, standard_vocabulary};
+use gorgon_petra::token::value::{CoverageValue, TokenValue};
+use gorgon_petra::token::{
+    Presenter, StatusToken, Theme, TokenName, dark, light, standard_vocabulary,
+};
 use gorgon_petra::tree::{
     Anchor, AxisConstraint, ClampRule, Constraints, InputPolicy, InsetRefs, Layer, NodeKind, Props,
     Role, Semantics, TextWrap, TrackSize, ViewNode,
@@ -1780,10 +1787,66 @@ fn open_from_env(app: &mut Gallery) {
 /// show either. Anything but `light` is dark, which is the default the rest
 /// of the crate uses (`host::default_presenter`).
 fn presenter_from_env() -> Presenter {
-    match std::env::var("PETRA_GALLERY_THEME").as_deref() {
-        Ok("light") => Presenter::new(light()),
-        _ => Presenter::new(dark()),
+    let theme = match std::env::var("PETRA_GALLERY_THEME").as_deref() {
+        Ok("light") => light(),
+        _ => dark(),
+    };
+    Presenter::new(coverage_from_env(theme))
+}
+
+/// Override `text.coverage-curve` from `PETRA_GALLERY_COVERAGE`, so the two
+/// glyph-sharpness dials can be swept without editing and rebuilding
+/// `gorgon-petra`.
+///
+/// This is the slider. ai-macs tuned its own defaults by dragging one
+/// (`text_tuning.go`), and the value that ships is a taste call made by
+/// looking at real glyphs at real size, not one derived from a metric — so
+/// the gallery, which is the page those glyphs are looked at on, is where the
+/// dial belongs. Nothing in `src/` reads this variable: the shipped themes
+/// carry the shipped value, and this only bends the copy this one window
+/// presents.
+///
+/// Syntax is `passes[,snap]`: `3`, `3.5`, `4,snap`. `passes` is clamped to
+/// the `[1.0, 4.0]` range `Theme::build` accepts. `snap` sets
+/// [`gorgon_petra::token::value::CoverageValue::snap`], which the host
+/// inverts into epaint's `subpixel_binning` — with it on, every glyph
+/// rasterises once at an integer x instead of at one of four sub-pixel
+/// phases.
+///
+/// An unset variable returns `theme` untouched. A malformed one panics rather
+/// than silently presenting the shipped value under a label claiming
+/// otherwise, which would make every capture taken with it a lie.
+fn coverage_from_env(theme: Theme) -> Theme {
+    let Ok(spec) = std::env::var("PETRA_GALLERY_COVERAGE") else {
+        return theme;
+    };
+    let mut parts = spec.split(',');
+    let passes: f32 = parts
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .parse()
+        .unwrap_or_else(|_| panic!("PETRA_GALLERY_COVERAGE={spec}: passes is not a number"));
+    let mut snap = false;
+    for flag in parts {
+        match flag.trim() {
+            "snap" => snap = true,
+            "nosnap" | "" => {}
+            other => panic!("PETRA_GALLERY_COVERAGE={spec}: unknown flag {other:?}"),
+        }
     }
+
+    let mode = theme.mode();
+    let mut values = theme.values().clone();
+    values.insert(
+        TokenName::new("text.coverage-curve").expect("a literal, well-formed token name"),
+        TokenValue::Coverage(CoverageValue {
+            passes: passes.clamp(1.0, 4.0),
+            snap,
+        }),
+    );
+    Theme::build(mode, &standard_vocabulary(), values)
+        .expect("only text.coverage-curve changed, and it stayed in range")
 }
 
 // ---------------------------------------------------------------------------

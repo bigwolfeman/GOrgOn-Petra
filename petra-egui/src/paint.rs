@@ -1111,7 +1111,12 @@ mod tests {
             .child(body_text("b", "Body"));
         let frame = frame_of(&tree, &mut h);
         let mut shaper = host.shaper();
-        let report = paint_frame(&host.painter(), &frame, &mut shaper, &snapshot());
+        let report = paint_frame(
+            &host.painter(),
+            &frame,
+            &mut shaper,
+            &coverage_variant(3.0, false),
+        );
         assert!(report.unresolved_tokens.is_empty(), "{report:?}");
         assert_eq!(report.texts, 2, "{report:?}");
 
@@ -1126,12 +1131,17 @@ mod tests {
             .collect();
         out.drop_without_applying_deltas();
 
-        // dark()'s shipped `text.coverage-curve` is `passes: 3.0`, so each
-        // logical run paints three times -- three physical `Shape::Text`
-        // entries per run, six total for two runs -- before this test's own
-        // concern (the size ramp) ever gets a look. A binder that dropped
-        // the repeat count silently would leave this at 2, not 6, and this
-        // assertion would be the one to catch it.
+        // The fixture pins `passes: 3.0` rather than reading whatever the
+        // shipped theme carries, so each logical run paints three times --
+        // three physical `Shape::Text` entries per run, six total for two
+        // runs -- before this test's own concern (the size ramp) ever gets a
+        // look. A binder that dropped the repeat count silently would leave
+        // this at 2, not 6, and this assertion would be the one to catch it.
+        //
+        // Reading `dark()` here instead would make the assertion a function
+        // of a tuning decision: the shipped value moved to `2.0` (one paint)
+        // when the muted-tone fix landed, and this test would have gone
+        // vacuously green while still claiming to guard the repeat count.
         assert_eq!(
             sizes.len(),
             6,
@@ -1163,6 +1173,12 @@ mod tests {
     /// prints it — painting one run three times for `passes: 3.0` must
     /// still report one text, not three, or the counter starts lying about
     /// the thing it exists to be honest about.
+    ///
+    /// `passes` comes from [`coverage_variant`], not from `dark()`. The
+    /// property under test is "a repeated paint reports once", and a test
+    /// that sourced the repeat count from the shipped theme would stop
+    /// testing it the moment the shipped value became `1` physical paint —
+    /// silently, and while still passing.
     #[test]
     fn painting_a_run_several_times_for_coverage_still_reports_one_text() {
         let host = Headless::new();
@@ -1173,9 +1189,13 @@ mod tests {
         });
         let frame = frame_of(&tree, &mut h);
         let mut shaper = host.shaper();
-        // dark() ships `text.coverage-curve` at `passes: 3.0` -- three
-        // physical paints for this one logical run.
-        let report = paint_frame(&host.painter(), &frame, &mut shaper, &snapshot());
+        // `passes: 3.0` -- three physical paints for this one logical run.
+        let report = paint_frame(
+            &host.painter(),
+            &frame,
+            &mut shaper,
+            &coverage_variant(3.0, false),
+        );
         assert_eq!(report.texts, 1, "{report:?}");
         assert_eq!(report.drawn, 1, "{report:?}");
         assert_eq!(report.placements, 1);

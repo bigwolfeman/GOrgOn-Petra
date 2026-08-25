@@ -1452,12 +1452,13 @@ mod tests {
 
         let ctx = headless();
         let mut host = Host::new(&ctx, Demo::default(), Presenter::new(light()));
-        // light's own text.coverage-curve is passes: 3.0 -- odd, so Off at
-        // three paints. Not Off "because it is light mode": see below.
+        // light's own text.coverage-curve is passes: 2.0 -- the one value
+        // the atlas curve spends instead of a second paint. Not
+        // TwoCoverageMinusCoverageSq "because it is light mode": see below.
         assert_eq!(
             bound(&ctx),
-            [FontColorTransferFunction::Off; 2],
-            "light's shipped text.coverage-curve (passes: 3.0) must bind, in \
+            [FontColorTransferFunction::TwoCoverageMinusCoverageSq; 2],
+            "light's shipped text.coverage-curve (passes: 2.0) must bind, in \
              both of egui's styles, before the first pass rather than after it"
         );
 
@@ -1465,33 +1466,34 @@ mod tests {
         step(&ctx, &mut host, RawInput::default());
         assert_eq!(
             bound(&ctx),
-            [FontColorTransferFunction::Off; 2],
+            [FontColorTransferFunction::TwoCoverageMinusCoverageSq; 2],
             "dark ships the identical text.coverage-curve as light, so the \
              curve must stay identical across the swap — this is the proof \
              the binder reads the token and not ThemeMode: a mode-keyed \
              binding (the superseded `86de1a6` hardcode) would have flipped \
-             this to TwoCoverageMinusCoverageSq on dark alone"
+             light alone to Off"
         );
 
         // Now move the token itself, on the theme this host is already
         // publishing dark() as: the curve must follow the *value*, not stay
         // pinned at whatever a shipped theme happens to assign today.
-        host.presenter().publish(with_coverage(dark(), 2.0, false));
+        host.presenter().publish(with_coverage(dark(), 3.0, false));
         step(&ctx, &mut host, RawInput::default());
         assert_eq!(
             bound(&ctx),
-            [FontColorTransferFunction::TwoCoverageMinusCoverageSq; 2],
+            [FontColorTransferFunction::Off; 2],
             "publishing a theme whose text.coverage-curve moved to \
-             passes: 2.0 must move the curve with it; a stale curve is the \
-             defect both predecessor tests exist for"
+             passes: 3.0 must move the curve with it — an odd count is three \
+             paints through the identity curve; a stale curve is the defect \
+             both predecessor tests exist for"
         );
 
         host.presenter().publish(light());
         step(&ctx, &mut host, RawInput::default());
         assert_eq!(
             bound(&ctx),
-            [FontColorTransferFunction::Off; 2],
-            "and back to light's own passes: 3.0, so this asserts a binding \
+            [FontColorTransferFunction::TwoCoverageMinusCoverageSq; 2],
+            "and back to light's own passes: 2.0, so this asserts a binding \
              rather than a one-way latch"
         );
     }
