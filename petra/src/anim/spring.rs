@@ -30,7 +30,10 @@
 
 use std::fmt;
 
-use super::value::AnimVector;
+use super::value::{AnimVector, PropertyKind};
+use crate::token::name::TokenName;
+use crate::token::snapshot::ThemeSnapshot;
+use crate::token::value::SpringValue;
 
 /// Two π, spelled once — both parameterisations divide by a period.
 const TAU: f64 = std::f64::consts::TAU;
@@ -328,10 +331,308 @@ impl Spring {
     }
 }
 
+/// Which of the three speeds in M-Carbon's spring set a transition wants.
+///
+/// Three, not a number, for the same reason the spacing ramp is eight steps
+/// and not a float: a duration nobody chose from a set is a duration that
+/// drifts, and two panels animating at 210 ms and 230 ms read as a bug in
+/// one of them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MotionSpeed {
+    /// The quickest of the three. State changes inside one control.
+    Fast,
+    /// The everyday pace.
+    Default,
+    /// Deliberate, for a change large enough to want following.
+    Slow,
+}
+
+impl MotionSpeed {
+    /// This speed's word, as it appears at the end of a spring token's name.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Fast => "fast",
+            Self::Default => "default",
+            Self::Slow => "slow",
+        }
+    }
+}
+
+/// The spring token that should drive `property` at `speed`.
+///
+/// This function is M-Carbon's `spatial`/`effects` rule, and it is a function
+/// rather than a naming convention so that the rule has exactly one
+/// implementation. Springs that move a thing through space carry a little
+/// bounce (ζ 0.6–0.8); springs that drive opacity or colour are critically
+/// damped at ζ = 1.0, because an opacity that overshoots clips at 1.0 or
+/// flickers at 0.0.
+///
+/// The split is drawn by [`PropertyKind::is_movement`], which already exists
+/// and already draws it — `contracts/animation.md` uses the same line to
+/// decide what reduced motion may cancel. Two rules over one predicate stay
+/// in step; two rules over two predicates do not.
+#[must_use]
+pub fn spring_token(property: PropertyKind, speed: MotionSpeed) -> &'static str {
+    match (property.is_movement(), speed) {
+        (true, MotionSpeed::Fast) => "motion.spatial.fast",
+        (true, MotionSpeed::Default) => "motion.spatial.default",
+        (true, MotionSpeed::Slow) => "motion.spatial.slow",
+        (false, MotionSpeed::Fast) => "motion.effects.fast",
+        (false, MotionSpeed::Default) => "motion.effects.default",
+        (false, MotionSpeed::Slow) => "motion.effects.slow",
+    }
+}
+
+/// The spring a theme says should drive `property` at `speed`.
+///
+/// This is the path that was missing: [`Spring`] has worked since the
+/// animation engine landed and no theme could name one, because
+/// [`MotionValue`](crate::token::MotionValue) can only say "120 ms,
+/// ease-out". A caller now writes
+/// `Timing::Spring(theme_spring(snapshot, PropertyKind::Position,
+/// MotionSpeed::Default)?)` and gets the design system's answer instead of
+/// its own.
+///
+/// `None` means the snapshot does not define the token, or defines it at
+/// another kind, or names a pair that is not a spring — the same three
+/// reasons every typed accessor on
+/// [`ThemeSnapshot`](crate::token::ThemeSnapshot) returns `None`, and the
+/// same non-answer, so a caller that cannot build the transition reports the
+/// miss rather than substituting a default nobody chose.
+#[must_use]
+pub fn theme_spring(
+    snapshot: &ThemeSnapshot,
+    property: PropertyKind,
+    speed: MotionSpeed,
+) -> Option<Spring> {
+    let token = TokenName::new(spring_token(property, speed)).ok()?;
+    Spring::try_from(snapshot.spring(&token)?).ok()
+}
+
+/// Build a spring from the pair a design token declares.
+///
+/// The conversion is `ω₀ = √stiffness`, `ζ = damping_ratio`, and it is exact
+/// with no correction factor because both ends are unit-mass: this module's
+/// header fixes `stiffness = ω₀²`, and Material 3 Expressive's `SpringForce`
+/// — where the shipped constants come from — computes `mNaturalFreq =
+/// Math.sqrt(stiffness)` with no mass term either.
+///
+/// Living here rather than on [`SpringValue`] keeps the dependency pointing
+/// one way. `anim` reads `token`; `token` must not read `anim`, or the two
+/// close a loop and neither can be understood without the other.
+impl TryFrom<SpringValue> for Spring {
+    type Error = SpringError;
+
+    /// # Errors
+    /// [`SpringError::Frequency`] for a non-positive or non-finite
+    /// stiffness, [`SpringError::Damping`] for a negative or non-finite
+    /// damping ratio.
+    fn try_from(value: SpringValue) -> Result<Self, Self::Error> {
+        let stiffness = f64::from(value.stiffness);
+        if !stiffness.is_finite() || stiffness <= 0.0 {
+            // Report the frequency the caller would have got, so the message
+            // is in the units `Spring::new` speaks.
+            return Err(SpringError::Frequency(stiffness.sqrt()));
+        }
+        Self::new(stiffness.sqrt(), f64::from(value.damping_ratio))
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Regime, Spring, SpringError, TAU};
-    use crate::anim::value::AnimVector;
+    use super::{MotionSpeed, Regime, Spring, SpringError, TAU, spring_token, theme_spring};
+    use crate::anim::value::{AnimVector, PropertyKind};
+    use crate::token::name::TokenName;
+    use crate::token::snapshot::ThemeSnapshot;
+    use crate::token::value::SpringValue;
+    use crate::token::{TokenValue, dark, light};
+
+    /// Every shipped spring token, with the undamped frequency Material 3
+    /// Expressive publishes for it.
+    ///
+    /// ω₀ is listed here as a **number**, not computed as `stiffness.sqrt()`.
+    /// Computing it would make the assertion below a tautology — `sqrt(k)`
+    /// compared against `sqrt(k)` passes for every `k`, including a mistyped
+    /// one. Written out, a transposed digit in
+    /// `crate::token::shipped::SPRING_SET` fails this test instead of
+    /// shipping a spring that animates slightly wrong, which is a defect
+    /// nobody reports because nobody can see 380 against 830 in a still.
+    ///
+    /// Source: the M-Carbon note's motion table, itself from M3 Expressive's
+    /// `MotionScheme` constants.
+    const PUBLISHED: [(&str, f32, f32, f64); 6] = [
+        ("motion.spatial.fast", 0.60, 800.0, 28.2843),
+        ("motion.spatial.default", 0.80, 380.0, 19.4936),
+        ("motion.spatial.slow", 0.80, 200.0, 14.1421),
+        ("motion.effects.fast", 1.00, 3800.0, 61.6441),
+        ("motion.effects.default", 1.00, 1600.0, 40.0000),
+        ("motion.effects.slow", 1.00, 800.0, 28.2843),
+    ];
+
+    /// The shipped spring tokens carry the published constants, and convert
+    /// to the published frequencies.
+    ///
+    /// Three claims, and the third is the one with teeth:
+    ///
+    /// 1. each token's declared `(ζ, stiffness)` is the published pair;
+    /// 2. converting it lands on the published ω₀ — an independently
+    ///    written number, so this catches a wrong stiffness rather than
+    ///    restating it;
+    /// 3. the `spatial`/`effects` taxonomy holds — every `effects` row is
+    ///    critically damped and every `spatial` row is not.
+    #[test]
+    fn the_shipped_spring_tokens_convert_to_the_published_frequencies() {
+        let snapshot = ThemeSnapshot::new(dark(), 1);
+        for (token, zeta, stiffness, omega0) in PUBLISHED {
+            let name = TokenName::new(token).expect("published names are well-formed");
+            let value = snapshot
+                .spring(&name)
+                .unwrap_or_else(|| panic!("{token} is not a spring in the shipped dark theme"));
+
+            assert_eq!(
+                value,
+                SpringValue {
+                    damping_ratio: zeta,
+                    stiffness,
+                },
+                "{token} does not carry its published constants"
+            );
+
+            let spring = Spring::try_from(value).expect("a published pair is physical");
+            assert!(
+                (spring.omega0() - omega0).abs() < 1e-3,
+                "{token}: stiffness {stiffness} converts to ω₀ {:.4}, but the \
+                 published frequency is {omega0}. Either the stiffness in \
+                 SPRING_SET is mistyped or the unit-mass assumption \
+                 (ω₀ = √stiffness) no longer holds.",
+                spring.omega0(),
+            );
+            assert!(
+                (spring.zeta() - f64::from(zeta)).abs() < 1e-6,
+                "{token}: ζ came through as {} rather than {zeta}",
+                spring.zeta(),
+            );
+
+            let critical = spring.regime() == Regime::Critical;
+            assert_eq!(
+                critical,
+                token.starts_with("motion.effects."),
+                "{token} is {:?}. The spatial/effects split is a rule, not a \
+                 prefix: effects springs drive opacity and colour and must be \
+                 critically damped, because an opacity that overshoots clips \
+                 at 1.0 or flickers at 0.0. Spatial springs must not be, or \
+                 nothing ever arrives with any weight.",
+                spring.regime(),
+            );
+        }
+    }
+
+    /// The resolver reaches every published token, and routes by movement.
+    ///
+    /// Without this, `SpringValue` would be a token kind nothing reads —
+    /// the exact defect the M-Carbon note names, where 12 of 18 declared
+    /// token names were never read by the painter. The assertion that the
+    /// six names it can produce are exactly the six that ship is what stops
+    /// the two lists drifting into a resolver that asks for a token no theme
+    /// defines.
+    #[test]
+    fn the_resolver_reaches_every_shipped_spring_and_routes_by_movement() {
+        let speeds = [MotionSpeed::Fast, MotionSpeed::Default, MotionSpeed::Slow];
+        let mut reached = Vec::new();
+        for (label, theme) in [("light", light()), ("dark", dark())] {
+            let snapshot = ThemeSnapshot::new(theme, 1);
+            for property in [
+                PropertyKind::Position,
+                PropertyKind::Size,
+                PropertyKind::Opacity,
+                PropertyKind::Color,
+            ] {
+                for speed in speeds {
+                    let token = spring_token(property, speed);
+                    assert_eq!(
+                        token.starts_with("motion.spatial."),
+                        property.is_movement(),
+                        "{property:?} routed to {token}; the split must follow \
+                         PropertyKind::is_movement, not the property's name"
+                    );
+                    let spring = theme_spring(&snapshot, property, speed).unwrap_or_else(|| {
+                        panic!("{label} theme cannot resolve {token} for {property:?}")
+                    });
+                    assert_eq!(
+                        spring.regime() == Regime::Critical,
+                        !property.is_movement(),
+                        "{label}/{token}: a spring driving {property:?} has the \
+                         wrong damping regime for its taxonomy"
+                    );
+                    if !reached.contains(&token) {
+                        reached.push(token);
+                    }
+                }
+            }
+        }
+        reached.sort_unstable();
+        let mut published: Vec<&str> = PUBLISHED.iter().map(|row| row.0).collect();
+        published.sort_unstable();
+        assert_eq!(
+            reached, published,
+            "the resolver reaches a different set of tokens than the theme ships"
+        );
+    }
+
+    /// An unphysical declaration is refused at the conversion, not absorbed.
+    ///
+    /// `SpringValue` is a plain pair of numbers on purpose — a token is a
+    /// declaration and a theme can be authored by hand — so this is the
+    /// boundary where "0 stiffness" has to stop being a value and start
+    /// being an error. A zero-stiffness spring never moves; a negative
+    /// damping ratio amplifies and never settles. Neither may reach the
+    /// engine as a default substituted on the caller's behalf.
+    #[test]
+    fn an_unphysical_spring_token_is_refused() {
+        let dead = SpringValue {
+            damping_ratio: 1.0,
+            stiffness: 0.0,
+        };
+        assert!(matches!(
+            Spring::try_from(dead),
+            Err(SpringError::Frequency(_))
+        ));
+
+        let amplifying = SpringValue {
+            damping_ratio: -0.5,
+            stiffness: 800.0,
+        };
+        assert!(matches!(
+            Spring::try_from(amplifying),
+            Err(SpringError::Damping(_))
+        ));
+
+        // And the resolver does not paper over it: a theme carrying the dead
+        // pair yields None rather than a substituted default.
+        let vocab = crate::token::standard_vocabulary();
+        let base = light();
+        let mut values: std::collections::BTreeMap<_, _> = vocab
+            .names()
+            .map(|n| (n.clone(), *base.value(n).expect("complete theme")))
+            .collect();
+        values.insert(
+            TokenName::new("motion.spatial.fast").unwrap(),
+            TokenValue::Spring(dead),
+        );
+        let broken = crate::token::Theme::build(crate::token::ThemeMode::Light, &vocab, values)
+            .expect("still complete, just unphysical");
+        assert_eq!(
+            theme_spring(
+                &ThemeSnapshot::new(broken, 1),
+                PropertyKind::Position,
+                MotionSpeed::Fast,
+            ),
+            None,
+            "a theme declaring a spring that cannot exist must resolve to \
+             None, not to Spring::default() chosen on the caller's behalf"
+        );
+    }
 
     /// The closed forms must satisfy the ODE the contract fixes. This is the
     /// test that would catch a transcription slip in any of the three

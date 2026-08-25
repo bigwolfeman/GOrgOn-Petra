@@ -54,7 +54,7 @@ pub use engine::{Declarations, TransitionEngine};
 pub use policy::{AmbientLedger, ForeignRepaint, IdleReport, IdleViolation, MotionPolicy};
 pub use registry::{ExitRule, Timing, Track, TransitionDef, TransitionRegistry};
 pub use scheduler::{FrameDecision, Scheduler, wants_frame};
-pub use spring::{Regime, Spring, SpringError};
+pub use spring::{MotionSpeed, Regime, Spring, SpringError, spring_token, theme_spring};
 pub use value::{AnimVector, Animatable, Opacity, PropertyKind, Thresholds};
 
 /// Fixtures shared by this module's own tests.

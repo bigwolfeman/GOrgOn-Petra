@@ -3,7 +3,7 @@
 use crate::token::ThemeMode;
 use crate::token::name::TokenName;
 use crate::token::theme::Theme;
-use crate::token::value::{Silhouette, TokenValue};
+use crate::token::value::{Silhouette, SpringValue, TokenValue};
 
 /// An immutable resolution of one [`Theme`] at one revision.
 ///
@@ -99,6 +99,22 @@ impl ThemeSnapshot {
     pub fn silhouette(&self, name: &TokenName) -> Option<Silhouette> {
         match self.value(name)? {
             TokenValue::Silhouette(figure) => Some(*figure),
+            _ => None,
+        }
+    }
+
+    /// The spring parameters `name` resolves to. The motion sibling of
+    /// [`ThemeSnapshot::spacing`], and `None` for the same two reasons.
+    ///
+    /// Returns the declared pair, not a built
+    /// [`Spring`](crate::anim::spring::Spring): `token` does not depend on
+    /// `anim`. `crate::anim::spring` turns one of these into a spring, and
+    /// `crate::anim::spring::theme_spring` is the resolver that goes from a
+    /// snapshot and a property straight to the spring that should drive it.
+    #[must_use]
+    pub fn spring(&self, name: &TokenName) -> Option<SpringValue> {
+        match self.value(name)? {
+            TokenValue::Spring(spring) => Some(*spring),
             _ => None,
         }
     }

@@ -28,6 +28,8 @@ pub enum TokenKind {
     Typography,
     /// A transition timing: duration and easing curve.
     Motion,
+    /// A spring's physical parameters: damping ratio and stiffness.
+    Spring,
     /// A geometric parameter of a shape, e.g. a corner radius.
     Shape,
     /// An outline family: which closed figure a slot's rect is drawn as.
@@ -147,6 +149,47 @@ pub enum MotionEasing {
     EaseInOut,
 }
 
+/// A spring, named by the two numbers that define one.
+///
+/// Separate from [`MotionValue`] rather than a field on it, because the two
+/// are different animations and not two settings of one. A [`MotionValue`]
+/// is a duration and a curve: it starts, it runs for exactly that long, it
+/// stops. A spring has no duration — it is a differential equation that
+/// settles when it settles, it can be retargeted mid-flight from wherever it
+/// currently is, and it carries velocity across that retarget. A struct
+/// holding `duration_ms`, `easing`, `stiffness` and `damping_ratio` would be
+/// a union wearing a struct's clothes, with two of the four fields dead in
+/// either reading.
+///
+/// This type deliberately does **not** name
+/// [`crate::anim::Spring`](crate::anim::spring::Spring). `anim` depends on
+/// `token` — `anim::value` resolves [`ColorValue`] — so a token naming an
+/// `anim` type would close that loop. The conversion lives on the `anim`
+/// side, as `impl TryFrom<SpringValue> for Spring`, which is also where the
+/// error for an unphysical pair belongs: a `TokenValue` is a declaration and
+/// this type stays a plain pair of numbers, checked when something builds a
+/// spring out of it.
+///
+/// # Units
+///
+/// `stiffness`, not frequency, because that is the unit the source
+/// publishes. M-Carbon's motion constants come from Material 3 Expressive,
+/// whose `SpringForce` is unit-mass — it computes `mNaturalFreq =
+/// Math.sqrt(stiffness)` with no mass term — and
+/// [`crate::anim::Spring`](crate::anim::spring::Spring) is unit-mass too
+/// (`spring.rs`: *"stiffness = ω₀² and damping = 2ζω₀"*). So the conversion
+/// is `ω₀ = √stiffness` and `ζ = damping_ratio`, exactly, with no correction
+/// factor, and storing stiffness keeps the token readable against the table
+/// it was copied from.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SpringValue {
+    /// ζ, the damping ratio. Below 1 overshoots, 1 is critically damped
+    /// (fastest approach with no overshoot), above 1 crawls in.
+    pub damping_ratio: f32,
+    /// The spring constant, at unit mass. `ω₀ = √stiffness`.
+    pub stiffness: f32,
+}
+
 /// A geometric parameter of a shape. Extended with more fields (border
 /// width, etc.) as the vocabulary grows; a single corner radius is what the
 /// shipped vocabulary needs today.
@@ -208,6 +251,8 @@ pub enum TokenValue {
     Typography(TypographyValue),
     /// A transition timing.
     Motion(MotionValue),
+    /// A spring's physical parameters.
+    Spring(SpringValue),
     /// A shape parameter.
     Shape(ShapeValue),
     /// An outline family.
@@ -223,6 +268,7 @@ impl TokenValue {
             Self::Spacing(_) => TokenKind::Spacing,
             Self::Typography(_) => TokenKind::Typography,
             Self::Motion(_) => TokenKind::Motion,
+            Self::Spring(_) => TokenKind::Spring,
             Self::Shape(_) => TokenKind::Shape,
             Self::Silhouette(_) => TokenKind::Silhouette,
         }

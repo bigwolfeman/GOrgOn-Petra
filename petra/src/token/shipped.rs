@@ -13,14 +13,184 @@ use crate::token::name::TokenName;
 use crate::token::status::{StatusShape, StatusToken};
 use crate::token::theme::Theme;
 use crate::token::value::{
-    ColorValue, MotionEasing, MotionValue, ShapeValue, Silhouette, TokenKind, TokenValue,
-    TypographyValue, TypographyWeight,
+    ColorValue, MotionEasing, MotionValue, ShapeValue, Silhouette, SpringValue, TokenKind,
+    TokenValue, TypographyValue, TypographyWeight,
 };
 use crate::token::vocabulary::{DesignToken, Vocabulary};
 
 fn name(n: &str) -> TokenName {
     TokenName::new(n)
         .unwrap_or_else(|err| panic!("shipped vocabulary name {n:?} must be well-formed: {err}"))
+}
+
+/// The names of the four surface layers, ground first.
+///
+/// A **layer set**, which is M-Carbon's depth cue and is not an elevation
+/// ramp: depth is carried by one grey sitting on another, never by a shadow.
+/// See `.agents/notes/proposed/architecture/2026-08-24-m-carbon-design-language.md`.
+///
+/// Carbon names these `background`, `layer-01`, `layer-02`, `layer-03`, and
+/// this set keeps that shape — a role word for the ground, ordinals above
+/// it — but spells the ordinals as words. `surface.layer-01` is not
+/// constructible: [`crate::token::name`] splits on `-` and requires every
+/// segment to end in lowercase letters, so a pure-digit segment is refused.
+/// That rule is what stops `surface.grey700` from existing, and it catches
+/// Carbon's numbering as collateral. Words are the way through it that keeps
+/// the ordinal, and the ordinal is load-bearing: M-Carbon's field rule is
+/// *"a field sits one layer number ahead of the background it is on"*, which
+/// cannot be stated over a set of role words.
+///
+/// Two rules travel with this set and are recorded here because neither has
+/// a token yet:
+///
+/// - **`field-*` sits one layer number ahead of its background.** A field on
+///   `layer-two` uses `field-three`. Borders pair with their *same* number.
+///   No `field-*` token ships here: nothing in the painter draws a field
+///   background yet, and a declared name nothing reads is the defect the
+///   M-Carbon note measured at 12 of 18 names. The rule is written down so
+///   the token arrives correct rather than arriving early.
+/// - **`layer-accent-*` is not a layer.** Carbon: *"not considered a proper
+///   layer but a supporting color for `$layer` inside of components."* It
+///   does not belong in this array and must not be counted when stepping.
+const LAYER_TOKENS: [&str; 4] = [
+    "surface.base",
+    "surface.layer-one",
+    "surface.layer-two",
+    "surface.layer-three",
+];
+
+/// `surface.raised` — the name the painter binds today for layer one.
+///
+/// Petra named two surfaces before it had a layer set, and `gorgon-petra-egui`
+/// binds both names in ~30 places. This alias resolves to exactly
+/// `LAYER_TOKENS[1]`'s colour in both themes, asserted by
+/// `the_raised_alias_is_layer_one_in_both_themes`, so the painter keeps
+/// working unchanged and the migration is a rename in one crate rather than
+/// a flag day across two. **It is a shim, not a fifth layer.** New bindings
+/// use the ordinal name; the alias goes when the painter stops naming it.
+const RAISED_ALIAS: &str = "surface.raised";
+
+/// The light layer set: an **alternation** between two greys, not a ramp.
+///
+/// `#ffffff → #f2f2f2 → #ffffff → #f2f2f2`. This is the structural finding
+/// that is easiest to get wrong, and a light theme built as a monotonic ramp
+/// is wrong even when every step in it passes contrast. On a light ground
+/// depth is read from the *change* at a boundary, not from a direction:
+/// keep stepping a light theme darker and by layer three it is a mid-grey
+/// theme, and the text colour tuned for near-white no longer holds. Carbon
+/// ships four themes and both of its light ones alternate.
+///
+/// The pair kept is Petra's own `#ffffff`/`#f2f2f2` rather than Carbon
+/// White's `#ffffff`/`#f4f4f4`. The two differ by 2/255 on each channel,
+/// which is exactly the per-channel tolerance the parity lane already
+/// allows, so no capture can tell them apart and adopting Carbon's would
+/// re-baseline every light capture to buy a difference no gate can measure.
+const LIGHT_LAYERS: [[u8; 3]; 4] = [
+    [0xff, 0xff, 0xff],
+    [0xf2, 0xf2, 0xf2],
+    [0xff, 0xff, 0xff],
+    [0xf2, 0xf2, 0xf2],
+];
+
+/// The dark layer set: a **monotonic step**, lighter each time.
+///
+/// `#121212 → #222222 → #333333 → #444444`, which is Petra's two shipped
+/// darks extended by the same interval that already separates them. The
+/// interval is chosen in CIE L\*, not in hex: the four measure L\* 5.46,
+/// 13.23, 21.25, 28.85, so the steps are 7.76, 8.02 and 7.61 — a spread of
+/// 0.41 across the whole set. Carbon Gray 100's own ramp (`#161616`,
+/// `#262626`, `#393939`, `#525252`) steps 7.91, 8.81, 10.91, a spread of
+/// 2.99, so its layers separate progressively harder as they climb.
+///
+/// Even steps are the point of a depth cue. Two panels nested two deep
+/// should read as the same amount of "further forward" as two nested one
+/// deep, and that is a statement about perceived lightness, which is what
+/// L\* measures and hex does not. Keeping Petra's own base also means no
+/// painted token moves: `surface.base` and `surface.raised` hold the values
+/// they already had, so this set adds two layers and re-baselines nothing.
+///
+/// `the_dark_layer_set_steps_evenly_in_perceived_lightness` holds both
+/// claims — monotone, and even — to measurement rather than to this comment.
+const DARK_LAYERS: [[u8; 3]; 4] = [
+    [0x12, 0x12, 0x12],
+    [0x22, 0x22, 0x22],
+    [0x33, 0x33, 0x33],
+    [0x44, 0x44, 0x44],
+];
+
+/// Assign a mode's layer set, plus the [`RAISED_ALIAS`] shim, into a theme's
+/// value map. Both themes call this for the same reason
+/// [`insert_spacing_ramp`] exists: a hand-copied set is a set that drifts,
+/// and a drifted alias would make `surface.raised` and `surface.layer-one`
+/// two different greys under one theme.
+fn insert_layer_set(values: &mut BTreeMap<TokenName, TokenValue>, layers: &[[u8; 3]; 4]) {
+    for (token, rgb) in LAYER_TOKENS.iter().zip(layers) {
+        values.insert(
+            name(token),
+            TokenValue::Color(ColorValue::from_srgb8(rgb[0], rgb[1], rgb[2], 0xff)),
+        );
+    }
+    let one = layers[1];
+    values.insert(
+        name(RAISED_ALIAS),
+        TokenValue::Color(ColorValue::from_srgb8(one[0], one[1], one[2], 0xff)),
+    );
+}
+
+/// The shipped spring set: M-Carbon's motion constants, `(name, ζ, stiffness)`.
+///
+/// From Material 3 Expressive, because Carbon has no spring at all —
+/// `@carbon/motion` ships easing curves and there is no `mass`, `stiffness`
+/// or `damping` anywhere in its source. Petra has the opposite problem: a
+/// working damped harmonic oscillator in [`crate::anim::spring`] that no
+/// theme could reach, because [`MotionValue`] can only say "120 ms,
+/// ease-out". [`crate::token::value::SpringValue`] is the variant that can
+/// say it, and this is the seed.
+///
+/// **The `spatial`/`effects` split is a rule, not a naming scheme.** A
+/// spring that moves a thing through space carries a little bounce, because
+/// a thing arriving at a place overshoots slightly and that is what makes it
+/// read as a thing rather than a fade. A spring driving opacity or colour is
+/// critically damped, ζ = 1.0, in all three `effects` rows: an opacity that
+/// overshoots goes past 1.0 and clips, or past 0.0 and flickers, which is
+/// not expressive, it is a bug with a curve. [`crate::anim::PropertyKind`]
+/// already draws exactly this line for reduced motion — `is_movement` is
+/// true for position and size and false for opacity and colour — so the
+/// taxonomy has a home rather than being a prefix convention, and
+/// `crate::anim::spring::theme_spring` is where the two meet.
+///
+/// Both systems are unit-mass, so the conversion is exact: Compose's
+/// `SpringForce` computes `mNaturalFreq = Math.sqrt(stiffness)` with no mass
+/// term, and `crate::anim::spring` states *"stiffness = ω₀² and damping =
+/// 2ζω₀"*. `ω₀ = √stiffness`, `ζ = dampingRatio`, no correction factor.
+/// `the_spring_set_converts_to_the_published_frequencies` checks every row
+/// against the published ω₀ rather than against `sqrt` of its own input, so
+/// a mistyped stiffness fails instead of animating slightly wrong.
+///
+/// Shared verbatim by both themes: a spring is physics, and physics does not
+/// change when the lights go out. `the_two_shipped_themes_agree_on_every_spring`
+/// holds them to it, the same way `..._agree_on_every_gap` holds the spacing
+/// ramp.
+const SPRING_SET: [(&str, f32, f32); 6] = [
+    ("motion.spatial.fast", 0.60, 800.0),
+    ("motion.spatial.default", 0.80, 380.0),
+    ("motion.spatial.slow", 0.80, 200.0),
+    ("motion.effects.fast", 1.00, 3800.0),
+    ("motion.effects.default", 1.00, 1600.0),
+    ("motion.effects.slow", 1.00, 800.0),
+];
+
+/// Assign every [`SPRING_SET`] row into a theme's value map.
+fn insert_spring_set(values: &mut BTreeMap<TokenName, TokenValue>) {
+    for (token, damping_ratio, stiffness) in SPRING_SET {
+        values.insert(
+            name(token),
+            TokenValue::Spring(SpringValue {
+                damping_ratio,
+                stiffness,
+            }),
+        );
+    }
 }
 
 /// The shipped spacing ramp: eight steps, in logical units, on a 4-unit base.
@@ -186,7 +356,19 @@ pub fn standard_vocabulary() -> Vocabulary {
 
     vocab
         .declare(DesignToken::new(name("surface.base"), TokenKind::Color))
-        .declare(DesignToken::new(name("surface.raised"), TokenKind::Color))
+        .declare(DesignToken::new(
+            name("surface.layer-one"),
+            TokenKind::Color,
+        ))
+        .declare(DesignToken::new(
+            name("surface.layer-two"),
+            TokenKind::Color,
+        ))
+        .declare(DesignToken::new(
+            name("surface.layer-three"),
+            TokenKind::Color,
+        ))
+        .declare(DesignToken::new(name(RAISED_ALIAS), TokenKind::Color))
         .declare(DesignToken::new(name("text.primary"), TokenKind::Color))
         .declare(DesignToken::new(name("text.muted"), TokenKind::Color))
         .declare(DesignToken::new(name("spacing.2xs"), TokenKind::Spacing))
@@ -215,6 +397,30 @@ pub fn standard_vocabulary() -> Vocabulary {
         ))
         .declare(DesignToken::new(name("motion.fast"), TokenKind::Motion))
         .declare(DesignToken::new(name("motion.slow"), TokenKind::Motion))
+        .declare(DesignToken::new(
+            name("motion.spatial.fast"),
+            TokenKind::Spring,
+        ))
+        .declare(DesignToken::new(
+            name("motion.spatial.default"),
+            TokenKind::Spring,
+        ))
+        .declare(DesignToken::new(
+            name("motion.spatial.slow"),
+            TokenKind::Spring,
+        ))
+        .declare(DesignToken::new(
+            name("motion.effects.fast"),
+            TokenKind::Spring,
+        ))
+        .declare(DesignToken::new(
+            name("motion.effects.default"),
+            TokenKind::Spring,
+        ))
+        .declare(DesignToken::new(
+            name("motion.effects.slow"),
+            TokenKind::Spring,
+        ))
         .declare(DesignToken::new(
             name("shape.corner-none"),
             TokenKind::Shape,
@@ -278,14 +484,7 @@ pub fn light() -> Theme {
     let vocab = standard_vocabulary();
     let mut values = BTreeMap::new();
 
-    values.insert(
-        name("surface.base"),
-        TokenValue::Color(ColorValue::from_srgb8(0xff, 0xff, 0xff, 0xff)),
-    );
-    values.insert(
-        name("surface.raised"),
-        TokenValue::Color(ColorValue::from_srgb8(0xf2, 0xf2, 0xf2, 0xff)),
-    );
+    insert_layer_set(&mut values, &LIGHT_LAYERS);
     values.insert(
         name("text.primary"),
         TokenValue::Color(ColorValue::from_srgb8(0x1a, 0x1a, 0x1a, 0xff)),
@@ -310,6 +509,7 @@ pub fn light() -> Theme {
             easing: MotionEasing::EaseInOut,
         }),
     );
+    insert_spring_set(&mut values);
     insert_shape_ramp(&mut values);
     insert_silhouette_family(&mut values);
 
@@ -363,14 +563,7 @@ pub fn dark() -> Theme {
     let vocab = standard_vocabulary();
     let mut values = BTreeMap::new();
 
-    values.insert(
-        name("surface.base"),
-        TokenValue::Color(ColorValue::from_srgb8(0x12, 0x12, 0x12, 0xff)),
-    );
-    values.insert(
-        name("surface.raised"),
-        TokenValue::Color(ColorValue::from_srgb8(0x22, 0x22, 0x22, 0xff)),
-    );
+    insert_layer_set(&mut values, &DARK_LAYERS);
     values.insert(
         name("text.primary"),
         TokenValue::Color(ColorValue::from_srgb8(0xf2, 0xf2, 0xf2, 0xff)),
@@ -395,6 +588,7 @@ pub fn dark() -> Theme {
             easing: MotionEasing::EaseInOut,
         }),
     );
+    insert_spring_set(&mut values);
     insert_shape_ramp(&mut values);
     insert_silhouette_family(&mut values);
 
@@ -427,7 +621,7 @@ pub fn dark() -> Theme {
 
 #[cfg(test)]
 mod tests {
-    use super::{dark, light, standard_vocabulary};
+    use super::{LAYER_TOKENS, RAISED_ALIAS, SPRING_SET, dark, light, standard_vocabulary};
     use crate::token::ThemeMode;
     use crate::token::focus::{HALO_TOKEN, RING_TOKEN};
     use crate::token::name::TokenName;
@@ -451,19 +645,32 @@ mod tests {
     /// apart leave a band of surface colours that hides both.
     const MIN_RING_BAND_SEPARATION: f32 = 7.0;
 
-    /// Viénot-Brettel-Mollon reduced matrices, applied to *linear* RGB.
+    /// Viénot-Brettel-Mollon 1999 reduced matrices, applied to *linear* RGB.
     /// Deuteranopia (no green cone) and protanopia (no red cone) are both
     /// simulated because "red-green colour blind" covers both and they do not
     /// collapse the same pairs.
+    ///
+    /// These are not transcribed from a blog post. They are the composition
+    /// `LMS→RGB · reduce · RGB→LMS` of the three matrices the 1999 paper
+    /// publishes (Eqs. 4-6), and
+    /// [`the_simulation_matrices_are_the_ones_the_paper_derives`] recomposes
+    /// them from those equations and fails on a changed digit. The matrix
+    /// this file shipped before was the "colorjack ColorMatrix" deuteranope
+    /// matrix (`0.625/0.375`, `0.700/0.300`, `0/0.300/0.700`), whose own
+    /// author disclaims it as inaccurate, plus an untraceable `1/6, 5/6`
+    /// protanope matrix. That pair did not simulate what the comment claimed:
+    /// pure red and pure green stayed ΔE\*ab 88.4 apart under it, against
+    /// 30.4 under the real transform, so the separation gate was scoring the
+    /// palette for a reader who can still tell red from green.
     const DEUTERANOPE: [[f32; 3]; 3] = [
-        [0.625, 0.375, 0.0],
-        [0.700, 0.300, 0.0],
-        [0.0, 0.300, 0.700],
+        [0.29275, 0.70725, 0.0],
+        [0.29275, 0.70725, 0.0],
+        [-0.02234, 0.02234, 1.0],
     ];
     const PROTANOPE: [[f32; 3]; 3] = [
-        [0.1667, 0.8333, 0.0],
-        [0.1667, 0.8333, 0.0],
-        [0.0, 0.1667, 0.8333],
+        [0.11238, 0.88762, 0.0],
+        [0.11238, 0.88762, 0.0],
+        [0.00401, -0.00401, 1.0],
     ];
 
     fn simulate(c: ColorValue, m: &[[f32; 3]; 3]) -> [f32; 3] {
@@ -515,6 +722,155 @@ mod tests {
         }
     }
 
+    /// The two simulation matrices, recomputed from the paper rather than
+    /// trusted as constants.
+    ///
+    /// The pair this file used to ship was mislabelled: the comment named
+    /// Viénot-Brettel-Mollon and the numbers were something else, and nothing
+    /// in the suite could tell, because a 3x3 of plausible-looking decimals
+    /// reads the same whether it models the eye or not. So this test does not
+    /// assert *about* the matrices, it rebuilds them: it starts from the
+    /// three matrices the 1999 paper publishes and composes them, and the
+    /// shipped constants have to be what falls out.
+    ///
+    /// Method (Viénot, Brettel & Mollon 1999, "Digital video colourmaps for
+    /// checking the legibility of displays by dichromats", Eqs. 4-6):
+    ///
+    /// 1. take linear display RGB into LMS cone responses ([`RGB_TO_LMS`]);
+    /// 2. rebuild the missing cone's response from the two that survive,
+    ///    which projects the colour onto the diagonal plane through the
+    ///    neutral axis and the deficiency's anchor wavelength;
+    /// 3. come back to linear RGB.
+    ///
+    /// Steps 1 and 3 are one matrix and its inverse, so only [`RGB_TO_LMS`]
+    /// and the two reductions are typed in here; the inverse is solved for.
+    /// A wrong digit anywhere in [`DEUTERANOPE`] or [`PROTANOPE`] fails this
+    /// test instead of quietly animating the accessibility gate.
+    #[test]
+    fn the_simulation_matrices_are_the_ones_the_paper_derives() {
+        type M3 = [[f64; 3]; 3];
+
+        /// Eq. 4: linear RGB to LMS on the Smith-Pokorny fundamentals.
+        const RGB_TO_LMS: M3 = [
+            [17.8824, 43.5161, 4.11935],
+            [3.45565, 27.1554, 3.86714],
+            [0.029_956_6, 0.184_309, 1.46709],
+        ];
+        /// Eq. 5: the protanope has no L cone, so L is rebuilt from M and S.
+        const PROTAN_REDUCE: M3 = [[0.0, 2.02344, -2.52581], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        /// Eq. 6: the deuteranope has no M cone, so M is rebuilt from L and S.
+        const DEUTAN_REDUCE: M3 = [[1.0, 0.0, 0.0], [0.494_207, 0.0, 1.24827], [0.0, 0.0, 1.0]];
+
+        fn mul(a: &M3, b: &M3) -> M3 {
+            std::array::from_fn(|i| {
+                std::array::from_fn(|j| (0..3).map(|k| a[i][k] * b[k][j]).sum())
+            })
+        }
+
+        /// Cofactor inverse. Three-by-three, so the closed form is shorter
+        /// than any elimination loop and has no pivot choices to get wrong.
+        fn invert(m: &M3) -> M3 {
+            let c: M3 = std::array::from_fn(|i| {
+                std::array::from_fn(|j| {
+                    let (r, s) = ((i + 1) % 3, (i + 2) % 3);
+                    let (u, v) = ((j + 1) % 3, (j + 2) % 3);
+                    m[r][u] * m[s][v] - m[r][v] * m[s][u]
+                })
+            });
+            let det: f64 = (0..3).map(|j| m[0][j] * c[0][j]).sum();
+            assert!(det.abs() > 1e-9, "RGB_TO_LMS is singular");
+            // Transpose of the cofactor matrix over the determinant.
+            std::array::from_fn(|i| std::array::from_fn(|j| c[j][i] / det))
+        }
+
+        let lms_to_rgb = invert(&RGB_TO_LMS);
+        // The inverse has to actually invert, or the composition below is
+        // measuring nothing.
+        let identity = mul(&lms_to_rgb, &RGB_TO_LMS);
+        for (i, row) in identity.iter().enumerate() {
+            for (j, got) in row.iter().enumerate() {
+                let want = if i == j { 1.0 } else { 0.0 };
+                assert!(
+                    (got - want).abs() < 1e-9,
+                    "the LMS inverse is wrong at [{i}][{j}]: {got}"
+                );
+            }
+        }
+
+        for (vision, reduce, shipped) in [
+            ("deuteranope", &DEUTAN_REDUCE, &DEUTERANOPE),
+            ("protanope", &PROTAN_REDUCE, &PROTANOPE),
+        ] {
+            let derived = mul(&lms_to_rgb, &mul(reduce, &RGB_TO_LMS));
+            for i in 0..3 {
+                for j in 0..3 {
+                    assert!(
+                        (derived[i][j] - f64::from(shipped[i][j])).abs() < 5e-5,
+                        "{vision} row {i} column {j}: the shipped matrix says \
+                         {}, composing the 1999 paper's Eqs. 4-6 gives {:.5}. \
+                         The constant is not the transform it claims to be.",
+                        shipped[i][j],
+                        derived[i][j],
+                    );
+                }
+            }
+
+            // The same property, measured through [`simulate`] rather than
+            // read off the constants, because [`simulate`] is what the gate
+            // below actually calls. The composition check above cannot see a
+            // bug that lives in the application — a transposed index, a
+            // stray gamma step — and such a bug moves every ΔE in the suite
+            // without moving a single digit in this file.
+            //
+            // The property: the reduced model projects onto the diagonal
+            // plane through the neutral axis and the deficiency's anchor,
+            // and on that plane the red and green outputs are equal. A
+            // dichromat's surviving cones cannot pull those two apart, so an
+            // unequal pair means the simulation is handing the reader a
+            // discrimination they do not have.
+            for step in 0..=8 {
+                let t = step as f32 / 8.0;
+                for probe in [
+                    ColorValue {
+                        r: t,
+                        g: 0.0,
+                        b: 0.0,
+                        a: 1.0,
+                    },
+                    ColorValue {
+                        r: 0.0,
+                        g: t,
+                        b: 0.0,
+                        a: 1.0,
+                    },
+                    ColorValue {
+                        r: 0.0,
+                        g: 0.0,
+                        b: t,
+                        a: 1.0,
+                    },
+                    ColorValue {
+                        r: t,
+                        g: 1.0 - t,
+                        b: 0.5,
+                        a: 1.0,
+                    },
+                ] {
+                    let out = simulate(probe, shipped);
+                    assert!(
+                        (out[0] - out[1]).abs() < 1e-4,
+                        "{vision}: simulating {probe:?} gives red {} and \
+                         green {}, which is off the model's diagonal plane. \
+                         The matrix is right, so the fault is in how it is \
+                         applied.",
+                        out[0],
+                        out[1],
+                    );
+                }
+            }
+        }
+    }
+
     /// FR-015's colour channel, measured rather than asserted.
     ///
     /// This is the test the previous palette did not have, and its absence is
@@ -562,6 +918,185 @@ mod tests {
                             STATUSES[j],
                         );
                     }
+                }
+            }
+        }
+    }
+
+    /// CIE L\*, the perceived-lightness axis, from a linear-light colour.
+    /// Shares [`to_lab`]'s D65 white and its `f` companion; separate because
+    /// the layer tests want lightness alone and ΔE would drown a 0.4 spread
+    /// in chroma noise.
+    fn lightness(c: ColorValue) -> f32 {
+        to_lab([c.r, c.g, c.b])[0]
+    }
+
+    /// The dark layer set climbs, and climbs by an even amount.
+    ///
+    /// Two separate claims and both matter. **Monotone** is the difference
+    /// between a dark layer set and a light one: a dark theme steps one way
+    /// and a light theme alternates, and building either with the other's
+    /// algorithm produces something that passes every contrast check and
+    /// still reads wrong.
+    ///
+    /// **Even** is the claim that makes the set a depth cue rather than four
+    /// greys. Two panels nested two deep should read as the same amount of
+    /// "further forward" as two nested one deep, and that is a statement
+    /// about perceived lightness. The measurement is therefore in CIE L\* and
+    /// not in hex: `#121212 → #222222 → #333333 → #444444` is even in hex by
+    /// inspection, but so is any other fixed hex interval, and hex is not
+    /// linear in perceived lightness. Carbon Gray 100's ramp is the
+    /// counter-example — it steps 7.91, 8.81, 10.91 in L\*, a spread of 2.99,
+    /// so its deepest layers separate a third harder than its shallowest.
+    #[test]
+    fn the_dark_layer_set_steps_evenly_in_perceived_lightness() {
+        let theme = dark();
+        let ls: Vec<f32> = LAYER_TOKENS
+            .iter()
+            .map(|t| lightness(theme_color(&theme, t)))
+            .collect();
+
+        let steps: Vec<f32> = ls.windows(2).map(|w| w[1] - w[0]).collect();
+        for (i, step) in steps.iter().enumerate() {
+            assert!(
+                *step > 0.0,
+                "dark {} -> {} falls by {step:.2} in L*; a dark layer set \
+                 steps lighter every time, and a set that reverses reads as \
+                 two unrelated pairs rather than one stack",
+                LAYER_TOKENS[i],
+                LAYER_TOKENS[i + 1],
+            );
+        }
+
+        let (lo, hi) = steps
+            .iter()
+            .fold((f32::MAX, f32::MIN), |(lo, hi), s| (lo.min(*s), hi.max(*s)));
+        assert!(
+            hi - lo < 1.0,
+            "the dark layer steps are {steps:?} in L*, a spread of {:.2}. \
+             Even steps are what makes the set a depth cue: one layer of \
+             nesting has to look like one layer of nesting wherever it \
+             happens. For scale, Carbon Gray 100 spreads 2.99 and is the \
+             ramp this set deliberately does not copy.",
+            hi - lo,
+        );
+    }
+
+    /// The light layer set alternates between two colours and does not ramp.
+    ///
+    /// The whole reason this test exists as its own function: a light theme
+    /// built as a monotonic ramp passes every contrast assertion in this
+    /// file and is still wrong. Nothing else here can catch it, because the
+    /// defect is structural rather than numeric — by layer three a ramped
+    /// light theme is a mid-grey theme, and `text.primary`, chosen against
+    /// near-white, has quietly stopped being the right ink.
+    #[test]
+    fn the_light_layer_set_alternates_rather_than_ramping() {
+        let theme = light();
+        let colors: Vec<ColorValue> = LAYER_TOKENS
+            .iter()
+            .map(|t| theme_color(&theme, t))
+            .collect();
+
+        assert_eq!(
+            colors[0], colors[2],
+            "light {} and {} must be the same colour: a light layer set \
+             alternates between two greys, and depth is read from the change \
+             at a boundary rather than from a direction",
+            LAYER_TOKENS[0], LAYER_TOKENS[2],
+        );
+        assert_eq!(
+            colors[1], colors[3],
+            "light {} and {} must be the same colour",
+            LAYER_TOKENS[1], LAYER_TOKENS[3],
+        );
+        assert!(
+            (lightness(colors[0]) - lightness(colors[1])).abs() > 1.0,
+            "the light set's two greys are only {:.2} apart in L*; an \
+             alternation nobody can see is one surface with two names",
+            (lightness(colors[0]) - lightness(colors[1])).abs(),
+        );
+    }
+
+    /// `surface.raised` resolves to layer one, in both themes.
+    ///
+    /// The alias exists because `gorgon-petra-egui` binds the pre-layer-set
+    /// name in about thirty places, and this change does not own that crate.
+    /// Two names for one colour is drift waiting to happen, so the invariant
+    /// that makes it safe is asserted rather than commented: when the painter
+    /// migrates to the ordinal name, this test and [`RAISED_ALIAS`] are
+    /// deleted together.
+    #[test]
+    fn the_raised_alias_is_layer_one_in_both_themes() {
+        for (label, theme) in [("light", light()), ("dark", dark())] {
+            assert_eq!(
+                theme_color(&theme, RAISED_ALIAS),
+                theme_color(&theme, LAYER_TOKENS[1]),
+                "{label}: {RAISED_ALIAS} has drifted from {}; it is a \
+                 migration alias for layer one, not a fifth layer",
+                LAYER_TOKENS[1],
+            );
+        }
+    }
+
+    /// How deep a status marker may be painted, per theme, measured.
+    ///
+    /// A status colour was tuned against one surface, and the layer set has
+    /// four. This pins the boundary in **both** directions: every layer up to
+    /// and including the index below carries all three status colours at
+    /// [`MIN_STATUS_SEPARATION`]'s sibling floor, and the first layer past it
+    /// carries at least one that does not.
+    ///
+    /// Asserting the far side is the point. The near side alone would let a
+    /// future palette edit silently gain or lose a layer of depth, and the
+    /// painter needs the number: **in dark mode a status marker may sit on
+    /// the ground and on layer one, and nowhere deeper.** `status.down`
+    /// misses on `surface.layer-two` by 0.02 — 2.98:1 against a 3.0 floor —
+    /// which is close enough that it will read as a rounding accident to
+    /// anyone who meets it without this test to point at.
+    ///
+    /// This is a legibility floor, not the colour channel. FR-015's meaning
+    /// travels on `StatusShape`'s silhouette and its word, both of which
+    /// survive any background. What fails past the boundary is *seeing the
+    /// marker at all*, which is why it is a floor rather than a preference.
+    const DEEPEST_STATUS_LAYER: [(&str, usize); 2] = [("light", 3), ("dark", 1)];
+
+    #[test]
+    fn a_status_marker_is_legible_only_down_to_its_theme_s_deepest_layer() {
+        const STATUSES: [&str; 3] = ["status.ok", "status.degraded", "status.down"];
+        for (label, deepest) in DEEPEST_STATUS_LAYER {
+            let theme = if label == "light" { light() } else { dark() };
+            let colors: Vec<ColorValue> = STATUSES.iter().map(|s| theme_color(&theme, s)).collect();
+
+            for (depth, token) in LAYER_TOKENS.iter().enumerate() {
+                let layer = theme_color(&theme, token);
+                let worst = STATUSES
+                    .iter()
+                    .zip(&colors)
+                    .map(|(n, c)| (contrast(*c, layer), *n))
+                    .fold((f32::MAX, ""), |acc, x| if x.0 < acc.0 { x } else { acc });
+
+                if depth <= deepest {
+                    assert!(
+                        worst.0 >= MIN_SURFACE_CONTRAST,
+                        "{label}/{token} is declared status-bearing (depth \
+                         {depth} <= {deepest}) but {} is only {:.2}:1 on it, \
+                         under the {MIN_SURFACE_CONTRAST} floor. Either the \
+                         palette moved or the layer did.",
+                        worst.1,
+                        worst.0,
+                    );
+                } else {
+                    assert!(
+                        worst.0 < MIN_SURFACE_CONTRAST,
+                        "{label}/{token} (depth {depth}) now carries every \
+                         status — the worst is {} at {:.2}:1. That is an \
+                         improvement, and it means DEEPEST_STATUS_LAYER is \
+                         stale: raise {label} to {depth} so the painter is \
+                         allowed to use the depth it just gained.",
+                        worst.1,
+                        worst.0,
+                    );
                 }
             }
         }
@@ -754,6 +1289,37 @@ mod tests {
         assert_eq!(
             checked, 8,
             "expected the eight-step ramp, checked {checked}"
+        );
+    }
+
+    /// A spring is physics, so both themes must name the same one.
+    ///
+    /// The spacing sibling of `the_two_shipped_themes_agree_on_every_gap`,
+    /// and for the same reason: colour is the only channel `light` and
+    /// `dark` are allowed to disagree on. A panel that slides in faster
+    /// because the operator switched to dark mode is a bug that no capture
+    /// would ever show, because a capture is a still.
+    #[test]
+    fn the_two_shipped_themes_agree_on_every_spring() {
+        let (l, d) = (light(), dark());
+        let vocab = standard_vocabulary();
+        let mut checked = 0usize;
+        for name in vocab.names() {
+            if vocab.kind_of(name) != Some(crate::token::value::TokenKind::Spring) {
+                continue;
+            }
+            assert_eq!(
+                l.value(name),
+                d.value(name),
+                "{name} differs between light and dark; a spring is physics, not colour"
+            );
+            checked += 1;
+        }
+        assert_eq!(
+            checked,
+            SPRING_SET.len(),
+            "expected {} spring tokens, checked {checked}",
+            SPRING_SET.len(),
         );
     }
 
