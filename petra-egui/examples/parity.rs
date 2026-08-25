@@ -326,20 +326,55 @@ impl Default for Parity {
 #[cfg(not(target_arch = "wasm32"))]
 const FROZEN_VAR: &str = "PETRA_PARITY_FROZEN";
 
+/// The logical rectangle this page lays itself out in, on **both** targets.
+///
+/// Petra's layout is viewport-relative: the page grid is one weight-1.0
+/// column and the card band under it is two, so every card's width — and,
+/// through wrapping, every row's height below it — is a function of how wide
+/// the surface is. A window manager that hands the sample a different size on
+/// two consecutive runs therefore hands the `petra-parity` lane a different
+/// picture, and SC-006's ppm moves with the desktop rather than with the
+/// code. Measured on 2026-08-24 at one unchanged commit: 1600x1000 gave 81
+/// ppm over 1 368 424 compared pixels with 14.5% of the frame excluded by the
+/// declared masks, and 2009x1392 gave 60 ppm over 2 540 412 with 9.2%
+/// excluded.
+///
+/// So the page does not use the surface it is given. [`ParityWindow`] pins
+/// `RawInput::screen_rect` to exactly this rectangle at the surface's own
+/// origin, on the native target and in the browser alike, and whatever the
+/// window system granted beyond it stays cleared. The lane crops its desktop
+/// capture to the same rectangle and drives the browser canvas at it, so both
+/// captures are the same fixed geometry however large the window was.
+///
+/// The two sides do not take each other on trust: the sample reports this
+/// size as `viewport=` in its stderr handshake and
+/// `gorgon/xtask/src/parity/desktop.rs`'s `check_handshake` refuses any value
+/// but its own `CAPTURE_SIZE`.
+///
+/// Sized under [`WINDOW_REQUEST`] with room to spare, because the pin is only
+/// useful while the granted surface is at least this large; below it the lane
+/// fails naming the size rather than cropping a page that never painted
+/// there.
+const PARITY_VIEWPORT: (f32, f32) = (1400.0, 900.0);
+
 /// The inner size the native sample asks the window system for.
 ///
-/// **At or above `MIN_CAPTURE` in `gorgon/xtask/src/parity.rs`, which is
-/// 1400x900.** This used to be 1200x900 — narrower than that floor — so the
-/// `petra-parity` lane could only capture the page when a tiling compositor
-/// happened to enlarge the window past what the sample asked for, and failed
-/// with "the compositor gave the sample a 1200x900 window" whenever the
-/// window manager simply honoured the request. Measured on 2026-08-24: three
-/// consecutive runs at 2009x1392, 1401x1392 and 1200x900, the last of them a
-/// gate failure caused by nothing but the operator's desktop state.
+/// **At or above `CAPTURE_ORIGIN + CAPTURE_SIZE` in
+/// `gorgon/xtask/src/parity.rs`, which is 1400x900 at (0, 0).** This used to
+/// be 1200x900 — narrower than that — so the `petra-parity` lane could only
+/// capture the page when a tiling compositor happened to enlarge the window
+/// past what the sample asked for, and failed with "the compositor gave the
+/// sample a 1200x900 window" whenever the window manager simply honoured the
+/// request. Measured on 2026-08-24: three consecutive runs at 2009x1392,
+/// 1401x1392 and 1200x900, the last of them a gate failure caused by nothing
+/// but the operator's desktop state.
 ///
-/// The lane does not take this on trust: the sample reports it in the same
-/// stderr handshake that carries `frozen=`, and `NativeWindow::confirm` fails
-/// by name if it is below the floor.
+/// What the window manager grants above this no longer changes what is
+/// measured — the page lays itself out in [`PARITY_VIEWPORT`] and the lane
+/// crops to it — but it still has to grant enough for that rectangle to sit
+/// inside. The lane does not take this on trust: the sample reports it in the
+/// same stderr handshake that carries `frozen=`, and `NativeWindow::confirm`
+/// fails by name if it is too small.
 #[cfg(not(target_arch = "wasm32"))]
 const WINDOW_REQUEST: (f32, f32) = (1600.0, 1000.0);
 
@@ -1613,6 +1648,26 @@ struct ParityWindow {
 }
 
 impl eframe::App for ParityWindow {
+    /// Pin the layout surface to [`PARITY_VIEWPORT`], whatever the host gave.
+    ///
+    /// `eframe` calls this on the native and the web target both, after it has
+    /// filled `screen_rect` from the window or the canvas and before `egui`
+    /// reads it, so this one override is what makes the two hosts lay out the
+    /// same page — and makes each host lay out the same page twice running
+    /// under a window manager that resizes it.
+    ///
+    /// `safe_area_insets` is zeroed alongside it because `content_rect`, which
+    /// is what `Host::pass` measures against, is `screen_rect` minus those
+    /// insets: pinning the rect and leaving an inset behind would pin
+    /// everything except the number actually used.
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        raw_input.screen_rect = Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(PARITY_VIEWPORT.0, PARITY_VIEWPORT.1),
+        ));
+        raw_input.safe_area_insets = Some(egui::SafeAreaInsets::default());
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         // Before the pass, not after. The painter runs *inside* the pass, so a
         // value written afterwards is one frame behind the number the page
@@ -1787,10 +1842,12 @@ fn main() -> eframe::Result<()> {
     // failure the flag exists to remove — so the lane refuses rather than
     // trusting that the variable arrived under the name it was sent.
     eprintln!(
-        "petra parity: frozen={} window={}x{}",
+        "petra parity: frozen={} window={}x{} viewport={}x{}",
         frozen(),
         WINDOW_REQUEST.0 as u32,
-        WINDOW_REQUEST.1 as u32
+        WINDOW_REQUEST.1 as u32,
+        PARITY_VIEWPORT.0 as u32,
+        PARITY_VIEWPORT.1 as u32
     );
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
