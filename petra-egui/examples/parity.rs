@@ -1548,13 +1548,19 @@ impl App for Parity {
 ///
 /// Every colour *and every gap* comes from `ctx.tokens`, the same source the
 /// rest of the frame painted with, so the meter follows the theme instead of
-/// carrying a palette of its own. Nothing here means anything by hue: the fill
-/// is ink, the empty segments are the rule colour, and the count of filled
-/// segments is the channel a reader who cannot separate the two still gets.
+/// carrying a palette of its own. Nothing here means anything by hue: a filled
+/// segment is ink, an empty one is an outline in the border tone, and the
+/// count of filled segments is the channel a reader who cannot separate the
+/// two still gets.
 fn paint_meter(painter: &egui::Painter, ctx: &CustomPaintCtx<'_>, fraction: f32) -> bool {
+    // `border.subtle`, not `text.muted`. An empty segment below is drawn with
+    // `rect_stroke` -- it is an outline, not a fill, which is what makes it a
+    // component boundary and not ink. It bound `text.muted` until 2026-08-25;
+    // at 10.73:1 on the card, the *empty* half of this meter was drawn as
+    // loudly as the full half, which is the one thing a meter must not do.
     let (Some(ink), Some(rule)) = (
         ctx.tokens.color("text.primary"),
-        ctx.tokens.color("text.muted"),
+        ctx.tokens.color("border.subtle"),
     ) else {
         return false;
     };

@@ -447,14 +447,21 @@ fn caption(key: &str, content: &str) -> ViewNode {
 /// component and forking it.
 ///
 /// **R6.** This used to strip the fill entirely and draw a `text.muted`
-/// outline in its place — the loudest possible edge, on the one control that
-/// should read as the quietest. [`gorgon_petra::component::on_layer`] existing
-/// now (see its rustdoc, and the note at this function's one call site for
-/// the measured history of why a step was needed at all) means "no step" can
-/// be expressed directly: force the base branch regardless of what
-/// [`button`] bound, so the result is always the tone of the ground rather
-/// than one step ahead of it. `Props.opacity` stays as the de-emphasis
-/// channel, no shadow is cast, and no border is drawn.
+/// outline in its place — a text tone at 10.73:1, the loudest possible edge,
+/// on the one control that should read as the quietest.
+/// [`gorgon_petra::component::on_layer`] existing now (see its rustdoc, and
+/// the note at this function's one call site for the measured history of why
+/// a step was needed at all) means "no step" can be expressed directly:
+/// force the base branch regardless of what [`button`] bound, so the result
+/// is always the tone of the ground rather than one step ahead of it.
+///
+/// **Three channels, and the edge is not one of them.** The de-emphasis is
+/// the missing tonal step, `Props.opacity`, and the declared
+/// `Semantics.disabled`. The `border.subtle` edge [`button`] draws is kept,
+/// unchanged and dimmed with everything else — a disabled control still has
+/// to read as a *control*, or the reader cannot tell an unavailable button
+/// from a line of grey text. What it must not read as is available, and the
+/// missing step is what says so.
 fn disabled_button(key: &str, label: &str, depth: usize) -> ViewNode {
     let mut node = button(key, label);
     node.interactions.clear();
