@@ -2,7 +2,7 @@
 
 use super::pad;
 use super::tokens::{
-    ACCENT_PRIMARY, BORDER_SUBTLE, SHADOW_RAISED, SHAPE_MD, SPACING_MD, SPACING_SM, SURFACE_RAISED,
+    ACCENT_PRIMARY, SHADOW_RAISED, SHAPE_MD, SPACING_MD, SPACING_SM, SURFACE_RAISED,
     TEXT_ON_ACCENT, TEXT_PRIMARY, TYPOGRAPHY_BODY, t,
 };
 use crate::geom::Axis;
@@ -24,7 +24,7 @@ use crate::tree::{Interaction, Key, NodeKind, Props, Role, ViewNode};
 /// — a `Text` node has no children to inset. The label lives in the child;
 /// the role, the interactions, and the chrome live on the wrapper.
 pub fn button(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
-    labelled(key, label, SURFACE_RAISED, TEXT_PRIMARY, Chrome::Edged)
+    labelled(key, label, SURFACE_RAISED, TEXT_PRIMARY)
 }
 
 /// The page's one loudest action, filled with the accent instead of a grey.
@@ -65,72 +65,60 @@ pub fn button(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
 /// `ON_ACCENT_TOKEN`'s own doc comment — so this is not a stylistic choice
 /// and a caller must not "simplify" it back.
 pub fn primary_button(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
-    labelled(key, label, ACCENT_PRIMARY, TEXT_ON_ACCENT, Chrome::Raised)
+    labelled(key, label, ACCENT_PRIMARY, TEXT_ON_ACCENT)
 }
 
-/// The shape both entries above share: a padded, rounded `Stack` carrying
-/// the chrome, around a `Text` child carrying the label.
+/// The shape both entries above share: a padded, rounded, **elevated**
+/// `Stack`, around a `Text` child carrying the label.
 ///
-/// One body rather than two because the *only* differences between a default
-/// and a primary button are the two colours and the elevation. Written twice
-/// they would drift, and the thing that would drift first is the role and
-/// interaction block below — the one part FR-058 says a caller must never be
-/// able to skip.
-/// What separates a button from the surface under it.
+/// One body rather than two because the only difference between a default
+/// and a primary button is its two colours. Written twice they would drift,
+/// and the thing that would drift first is the role and interaction block
+/// below — the one part FR-058 says a caller must never be able to skip.
 ///
-/// The two entries are not a style menu; each is the answer to a
-/// measurement, and the measurement is in [`Chrome::Edged`]'s doc.
-#[derive(Clone, Copy)]
-enum Chrome {
-    /// A quiet outline in [`BORDER_SUBTLE`], no elevation.
-    ///
-    /// **Why a default button keeps an edge when the card lost one.**
-    /// [`super::on_layer`] seats a button one layer ahead of its ground,
-    /// which is the depth cue and is *not* enough on its own to identify a
-    /// control. Measured against the card a button actually sits on:
-    ///
-    /// | | one layer ahead | `border.subtle` |
-    /// |---|---|---|
-    /// | dark, on `#222222` | **1.26:1** | 5.80:1 |
-    /// | light, on `#f2f2f2` | **1.12:1** | 3.34:1 |
-    ///
-    /// WCAG 2.1 SC 1.4.11 *Non-text Contrast* asks 3:1 for the visual
-    /// information required to identify a user-interface component. A tonal
-    /// step of 1.12:1 does not come close, and light is the worse of the two
-    /// because its layer set *alternates* rather than ramps -- the step there
-    /// is `#f2f2f2` to `#ffffff` and there is nowhere further to go.
-    ///
-    /// So tone carries the depth and a quiet edge carries the boundary. That
-    /// pairing is not invented here: `crate::token::shipped`'s `LAYER_TOKENS`
-    /// doc already records it as M-Carbon's own rule, taken from Carbon --
-    /// *"Borders pair with their same number."*
-    ///
-    /// The 2026-08-25 pass deleted the outline from the card, the well, the
-    /// progress rail and the image frame, all of which had it for decoration
-    /// over a shape that already had a fill, and repainted the rest from a
-    /// text tone at 10.73:1 to this one. That is the reduction. It is not the
-    /// same claim as "no component draws an edge", and this table is here so
-    /// that a later reader who wants to finish the job can see what it would
-    /// cost before doing it.
-    Edged,
-    /// An accent fill and an elevation shadow, no outline.
-    ///
-    /// The accent needs no edge and must not have one: it measures 4.75:1
-    /// (dark) and 4.47:1 (light) against the card on its own, well past the
-    /// 3:1 floor [`Chrome::Edged`] exists to reach. Drawing a border on top
-    /// of that would be the wireframe again, on the one control that least
-    /// needs it -- and having exactly one button on the page carry *no*
-    /// outline is a second, structural channel saying which one is primary,
-    /// for a reader who cannot separate the hue.
-    Raised,
-}
-
+/// A `Chrome` enum briefly lived here to tell the two apart. It went when the
+/// border did, because both arms then produced the same node, and two
+/// variants with identical bodies is a switch that decides nothing.
+///
+/// # A button sits *on* the surface, and depth is what says so
+///
+/// Every button casts [`SHADOW_RAISED`] and none of them draws an outline.
+/// The hierarchy between them is carried by the **fill**: the accent measures
+/// 4.75:1 (dark) and 4.47:1 (light) against the card, so the primary is the
+/// loudest thing in the row whatever shadow either casts. Giving the primary
+/// a deeper shadow *as well* was considered and refused — two elevations on
+/// one row of buttons reads as fog, and the accent is already unambiguous.
+///
+/// ## The trade this makes, stated rather than buried
+///
+/// A button was outlined in `border.subtle` for part of 2026-08-25. That
+/// outline was the only thing here reaching WCAG 2.1 SC 1.4.11's 3:1 for the
+/// visual information identifying a component, and the numbers belong in
+/// front of a reader:
+///
+/// | separating a button from the card it sits on | light | dark |
+/// |---|---|---|
+/// | one layer of tonal step | 1.12:1 | 1.26:1 |
+/// | `shadow.raised` at its darkest pixel | ~1.6:1 | ~1.4:1 |
+/// | `border.subtle` (removed) | **3.34:1** | **5.80:1** |
+///
+/// So this is a deliberate step *down* in measured boundary contrast, taken
+/// on the operator's instruction after seeing both rendered, and it is the
+/// call Material 3 and Apple's HIG both make for a filled button: the label
+/// and the fill identify the control, and the edge is not carrying that load
+/// alone. It is recorded so nobody later reads the absent border as an
+/// oversight, and so anyone re-opening it starts from the measurement rather
+/// than from taste.
+///
+/// [`super::field`] keeps its edge. A field is a place to *put* something
+/// rather than a thing to press, it carries no label of its own until
+/// somebody types one, and an empty well with no boundary does not read as an
+/// input at all.
 fn labelled(
     key: impl Into<Key>,
     label: impl Into<String>,
     background: &str,
     foreground: &str,
-    chrome: Chrome,
 ) -> ViewNode {
     let key = key.into();
     let label = label.into();
@@ -153,16 +141,7 @@ fn labelled(
     };
     props.tokens.insert("background".into(), t(background));
     props.tokens.insert("radius".into(), t(SHAPE_MD));
-    match chrome {
-        Chrome::Edged => {
-            props.tokens.insert("border".into(), t(BORDER_SUBTLE));
-        }
-        // Elevation, and only on the primary. A page where every button
-        // casts a shadow has no hierarchy, it just has fog.
-        Chrome::Raised => {
-            props.tokens.insert("shadow".into(), t(SHADOW_RAISED));
-        }
-    }
+    props.tokens.insert("shadow".into(), t(SHADOW_RAISED));
 
     ViewNode::new(NodeKind::Stack, key)
         .with_props(props)

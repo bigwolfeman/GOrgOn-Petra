@@ -455,25 +455,35 @@ fn caption(key: &str, content: &str) -> ViewNode {
 /// force the base branch regardless of what [`button`] bound, so the result
 /// is always the tone of the ground rather than one step ahead of it.
 ///
-/// **Three channels, and the edge is not one of them.** The de-emphasis is
-/// the missing tonal step, `Props.opacity`, and the declared
-/// `Semantics.disabled`. The `border.subtle` edge [`button`] draws is kept,
-/// unchanged and dimmed with everything else — a disabled control still has
-/// to read as a *control*, or the reader cannot tell an unavailable button
-/// from a line of grey text. What it must not read as is available, and the
-/// missing step is what says so.
+/// **Three channels.** The de-emphasis is the dropped elevation,
+/// `Props.opacity`, and the declared `Semantics.disabled`. The dropped
+/// elevation is the one a reader sees first, and the one that survives a
+/// reader who cannot separate the colours at all: a control lying flat
+/// beside two that are lifted reads as unavailable before any hue is
+/// decoded. The button keeps its tonal step, so it still reads as a button
+/// — see the note at the `on_layer` call for the version of this that did
+/// not, and drew nothing.
 fn disabled_button(key: &str, label: &str, depth: usize) -> ViewNode {
     let mut node = button(key, label);
     node.interactions.clear();
     node.semantics.disabled = true;
-    // Force the `surface.base` branch of `on_layer` regardless of what
-    // `button` bound, so this always resolves to "same layer as the
-    // ground" rather than the "one step ahead" an enabled button gets.
-    node.props
-        .tokens
-        .insert("background".into(), tok("surface.base"));
+    // Depth is the "you can press this" channel, so an unavailable control
+    // does not get it. `button` casts `shadow.raised` on every instance, and
+    // dropping it is what a reader sees first: a control lying flat beside
+    // two that are lifted reads as unavailable before any of its colours do,
+    // and it survives a reader who cannot separate the colours at all.
+    node.props.tokens.remove("shadow");
+    // The **tonal step is kept**, and the first version of this got that
+    // wrong. It forced `surface.base` as well, on the reasoning that a
+    // disabled control should sit flush with its ground. With the border
+    // gone that left nothing: no step, no shadow, no edge, so "Retire" drew
+    // no shape whatsoever and read as a line of grey text between two
+    // buttons. A disabled control still has to look like a control, or the
+    // reader cannot tell an unavailable button from a caption. What it must
+    // not look like is a *pressable* one, and the missing elevation is what
+    // says that.
     let mut node = on_layer(node, depth);
-    // The fourth channel, and the only one that reaches the label. `button`
+    // The third channel, and the only one that reaches the label. `button`
     // builds its label as a child node, and rebinding a child's foreground
     // would mean reaching past the component's own surface into its
     // internals — the line this file does not cross. `Props.opacity` is a

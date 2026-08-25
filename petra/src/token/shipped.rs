@@ -2301,14 +2301,22 @@ mod tests {
     /// step in light. That is 1.12:1, against WCAG 2.1 SC 1.4.11's 3:1 floor
     /// for the visual information that identifies a user-interface component.
     ///
-    /// So `button` and `field` keep a quiet [`BORDER_TOKEN`] edge, and this
-    /// test is the number that says why. It asserts the step is **below** the
-    /// floor, which reads backwards until you see what it is guarding: the
-    /// next person to look at an outlined button will want to delete the
-    /// outline, and this makes them measure first. If a future layer set
-    /// genuinely separates a control from its ground at 3:1, this test fails,
-    /// and the correct response is to delete both the test and the borders
-    /// together.
+    /// So `field` keeps a quiet [`BORDER_TOKEN`] edge, and this test is the
+    /// number that says why. It asserts the step is **below** the floor,
+    /// which reads backwards until you see what it is guarding: the next
+    /// person to look at an outlined field will want to delete the outline,
+    /// and this makes them measure first. If a future layer set genuinely
+    /// separates a control from its ground at 3:1, this test fails, and the
+    /// correct response is to delete both the test and the border together.
+    ///
+    /// **`button` did have that edge and no longer does.** It is elevated
+    /// instead, on the operator's instruction after seeing both rendered —
+    /// a weaker boundary by this same measurement (`shadow.raised` reaches
+    /// roughly 1.6:1 in light against the border's 3.34:1) and the call
+    /// Material 3 and Apple's HIG both make for a filled button.
+    /// `component::button`'s `labelled` carries the full table. The number
+    /// below is why a *field* still has one, and it is also the number that
+    /// says what the button traded away.
     ///
     /// Light is the worse of the two and structurally so. Its layer set
     /// *alternates* (`#ffffff`, `#f2f2f2`, `#ffffff`, `#f2f2f2`) rather than

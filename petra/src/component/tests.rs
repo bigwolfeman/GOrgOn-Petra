@@ -240,21 +240,24 @@ fn walk(node: &ViewNode, path: &str, visit: &mut impl FnMut(&str, &crate::tree::
 /// - The binary controls' marks have **no fill at all** when they are off.
 ///   `box_control` passes `None` as the background of an unchecked box, so
 ///   taking the outline away does not quieten the control, it deletes it.
-/// - `button` and `field` have a fill, and it is not enough.
-///   [`on_layer`] steps them one layer ahead of the card they sit on, which
-///   measures **1.26:1 in dark and 1.12:1 in light** against WCAG 2.1 SC
-///   1.4.11's 3:1 floor for the information that identifies a control. The
-///   table is in `button`'s `Chrome::Edged`. Tone carries depth; the edge
-///   carries the boundary. That pairing is M-Carbon's own rule, already
-///   recorded in `crate::token::shipped`'s `LAYER_TOKENS` doc.
+/// - `field` has a fill and it is not enough. [`on_layer`] steps it one
+///   layer ahead of the card it sits on, which measures **1.26:1 in dark and
+///   1.12:1 in light** against WCAG 2.1 SC 1.4.11's 3:1 floor. A field is a
+///   place to *put* something rather than a thing to press, and it carries
+///   no label of its own until somebody types one — an empty well with no
+///   boundary does not read as an input at all.
+///
+/// **`button` and `primary_button` were on this list and came off it.** They
+/// are elevated instead: every button casts `shadow.raised`, which is a
+/// weaker boundary by measurement (~1.6:1 in light against the border's
+/// 3.34:1) and is the call Material 3 and Apple's HIG both make for a filled
+/// button. `labelled`'s doc carries the full table and the reasoning; this
+/// test is only the pin. If buttons ever draw an edge again, this fails, and
+/// that is the intended behaviour rather than an inconvenience.
 ///
 /// `list_row` and `tab` are the deliberate omission: each is one segment of
 /// a strip rather than a free-standing control, the strip is what identifies
 /// it, and a tab bar of five outlined boxes is a wireframe again.
-/// `primary_button` is the other: its accent fill measures 4.75:1 (dark) and
-/// 4.47:1 (light) on the card unaided, so an edge on it would be decoration
-/// — and being the one button with no outline is a second, non-hue channel
-/// saying which one is primary.
 ///
 /// # Why one test and not two
 ///
@@ -277,9 +280,10 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
     /// Every node in [`full_gallery`] that may draw a border, by the key
     /// path it appears at. An exact set: a node missing from here that draws
     /// one fails, and a node listed here that stops drawing one fails too.
-    const DRAWS_AN_EDGE: [&str; 5] = [
-        // `button` and `field`: a fill one layer ahead is 1.12:1 in light.
-        "root/controls/secondary",
+    const DRAWS_AN_EDGE: [&str; 4] = [
+        // `field`: an empty well with no boundary does not read as a place
+        // to type. See `field`'s own doc for why it keeps one when `button`
+        // does not.
         "root/controls/name",
         // The binary controls' marks: no fill at all when they are off.
         "root/controls/check/box",
@@ -460,7 +464,7 @@ fn the_primary_button_spends_the_accent_and_the_ink_that_goes_with_it() {
     );
     assert!(
         node.props.tokens.contains_key("shadow"),
-        "the one loudest action is the one control that lifts off the card"
+        "a button sits *on* the surface, and depth is what says so"
     );
     assert!(
         !node.props.tokens.contains_key("border"),
@@ -478,13 +482,22 @@ fn the_primary_button_spends_the_accent_and_the_ink_that_goes_with_it() {
          `ON_ACCENT_TOKEN`'s own measurements"
     );
 
-    // The plain button must not have quietly picked either up.
+    // The plain button is elevated too -- the two are told apart by their
+    // fill, not by their depth, because that is where the contrast is. What
+    // it must not do is pick up the accent.
     let plain = button("b", "Cancel");
-    assert!(!plain.props.tokens.contains_key("shadow"));
+    assert!(
+        plain.props.tokens.contains_key("shadow"),
+        "every button lifts off the surface; only the fill ranks them"
+    );
     assert_ne!(
         plain.props.tokens.get("background").map(TokenName::as_str),
         Some(ACCENT_PRIMARY),
         "an accent that appears on every button is not an accent"
+    );
+    assert!(
+        !plain.props.tokens.contains_key("border"),
+        "a default button is separated by tone and depth, not by an outline"
     );
 }
 
