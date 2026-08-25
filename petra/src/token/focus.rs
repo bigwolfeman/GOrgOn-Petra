@@ -62,8 +62,14 @@ pub struct FocusBand {
     pub width: f32,
     /// Colour token for this band.
     pub token: &'static str,
-    /// What to add to the focused node's own corner radius to round this
-    /// band, in logical units. Negative for a band inside the node's edge.
+    /// How far outside the node's own edge this band's centreline sits,
+    /// negative for a band inside it.
+    ///
+    /// It is **also** what to add to the node's corner radius to round this
+    /// band, and that is not a coincidence worth hiding: a rounded rect
+    /// offset outward by `d` has its corner radius grow by exactly `d`, so
+    /// one number serves both. A renderer that treats them as two numbers
+    /// will eventually let them disagree.
     ///
     /// **A ring that ignores this draws a square around a rounded control**,
     /// which is what shipped until 2026-08-25: `paint_focus_ring` passed a
@@ -79,7 +85,7 @@ pub struct FocusBand {
     /// inset by `d` has to lose `d` of radius or it is not concentric with
     /// the edge it is tracking — it would bulge at the corners and pinch on
     /// the flats.
-    pub radius_delta: f32,
+    pub offset: f32,
 }
 
 /// The focus ring's measurements, in logical units.
@@ -114,6 +120,23 @@ impl FocusRing {
 
     /// The three bands for a focused node occupying `rect`, innermost first.
     ///
+    /// **The three bands are contiguous and that is load-bearing**, not a
+    /// tidy coincidence: the spans they cover are `[+1, +2]`, `[-1, +1]` and
+    /// `[-2, -1]` relative to the edge, so between them they tile four units
+    /// with no seam. `both_sides_of_the_edge_carry_a_halo_and_a_core_band`
+    /// asserts it.
+    ///
+    /// A renderer must not snap each band's rect to its device grid
+    /// separately. The halo centrelines sit on half-units by construction,
+    /// so independent rounding walks the outer band out and the inner band
+    /// in, opens a gap, and lets the node's own fill show through the middle
+    /// of its focus ring. `gorgon-petra-egui` did that until 2026-08-25 and
+    /// the ring came out as core, fill, halo instead of halo, core, halo.
+    /// The fix is to snap the *node* rect and the *widths*, then build the
+    /// bands from those — which is why [`FocusRing`] is a plain struct a
+    /// renderer can instantiate with its own snapped measurements rather
+    /// than a constant it can only read.
+    ///
     /// The core straddles the node's edge, so half the ring survives a clip
     /// that is exactly the node's own rect — the root of a frame, or a node
     /// filling its scroll viewport exactly. A ring drawn wholly outside the
@@ -127,19 +150,19 @@ impl FocusRing {
                 rect: rect.inset(flank),
                 width: self.halo,
                 token: HALO_TOKEN,
-                radius_delta: -flank,
+                offset: -flank,
             },
             FocusBand {
                 rect,
                 width: self.core,
                 token: RING_TOKEN,
-                radius_delta: 0.0,
+                offset: 0.0,
             },
             FocusBand {
                 rect: rect.inset(-flank),
                 width: self.halo,
                 token: HALO_TOKEN,
-                radius_delta: flank,
+                offset: flank,
             },
         ]
     }

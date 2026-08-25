@@ -645,26 +645,60 @@ fn paint_focus_ring(
     scale: Scale,
     report: &mut PaintReport,
 ) -> bool {
+    // Snap **once**, then build the bands from what came back.
+    //
+    // The previous version snapped each band's own rect, and that quietly
+    // destroyed the contiguity `FocusRing::bands` guarantees. The two halo
+    // centrelines sit on half-units by construction, so rounding them
+    // separately walked the outer band out by half a pixel and the inner band
+    // in by half — which opened a one-pixel gap and let the button's own fill
+    // show through the middle of its focus ring. Measured on a real capture
+    // across a straight edge: card, core, **fill**, halo, fill.
+    //
+    // Snapping the widths into a `FocusRing` of their own, rather than
+    // snapping them at the stroke, is what makes this right at fractional
+    // scale too. At 1.25x the core rounds to 3 device pixels and each halo to
+    // 1, so the flank is 2 device pixels and not the 1.875 the unsnapped
+    // measurements would give — deriving the offsets from the same numbers the
+    // strokes use is the only way those two agree.
+    let snapped = FocusRing {
+        core: device_snapped_width(FocusRing::STANDARD.core, scale),
+        halo: device_snapped_width(FocusRing::STANDARD.halo, scale),
+    };
+    let node = to_egui_snapped(placement.rect, scale);
+
     let mut drawn = false;
-    for band in FocusRing::STANDARD.bands(placement.rect) {
+    for band in snapped.bands(PetraRect {
+        x: node.min.x,
+        y: node.min.y,
+        w: node.width(),
+        h: node.height(),
+    }) {
         let Some(color) = resolve_or_record(colors, band.token, report) else {
             continue;
         };
-        let rect = to_egui_snapped(band.rect, scale);
+        // Already on the device grid: `node` is snapped and `band.offset` is
+        // a whole number of device pixels away from it. Re-snapping here is
+        // the bug above.
+        let rect = egui::Rect::from_min_size(
+            egui::pos2(band.rect.x, band.rect.y),
+            egui::vec2(band.rect.w, band.rect.h),
+        );
         if !rect.is_positive() {
             // The inner halo collapses on a node thinner than the ring. The
             // outer bands still draw, so this is not a blind focus.
             continue;
         }
-        let width = device_snapped_width(band.width, scale);
+        let width = band.width;
         // Concentric with the node, not square around it. This passed a
         // hardcoded `0.0` until 2026-08-25, so a focused `button` — eight
         // units of `shape.corner-md` — wore a hard rectangle while the two
         // unfocused buttons beside it kept their corners. It did not read as
         // one component with focus on it; it read as a different component.
-        // `FocusBand::radius_delta` carries the offset, because a band inset
-        // by `d` has to lose `d` of radius or it bulges at the corners.
-        let radius = (corner_radius + band.radius_delta).max(0.0);
+        // `FocusBand::offset` carries it, because a band offset outward by
+        // `d` gains exactly `d` of radius — one number for both, so the two
+        // cannot disagree.
+        let radius = (corner_radius + band.offset).max(0.0);
         painter.rect_stroke(
             rect,
             radius,
@@ -1911,6 +1945,91 @@ mod tests {
         (shapes, report)
     }
 
+    /// The three bands tile the ring with no seam: no pixel of the node's own
+    /// fill survives between them.
+    ///
+    /// # The bug, and why it was visible before it was findable
+    ///
+    /// `FocusRing::bands` returns three contiguous spans — `[+1,+2]`,
+    /// `[-1,+1]`, `[-2,-1]` around the edge. The painter snapped each band's
+    /// rect to the device grid *separately*, and the halo centrelines sit on
+    /// half-units by construction, so rounding walked the outer band out by
+    /// half a pixel and the inner band in by half. That opened a one-pixel
+    /// gap on the inside, and the button's own fill showed through the middle
+    /// of its focus ring.
+    ///
+    /// It was reported as the button "bleeding out of its border" and
+    /// confirmed by reading a real capture down a straight edge: card, core,
+    /// **fill**, halo, fill — where the ring should be halo, core, halo with
+    /// nothing between.
+    ///
+    /// # What is asserted
+    ///
+    /// The bands' device-space spans, sorted, must join end to end. That is
+    /// the property `FocusRing::bands` guarantees and the painter has to
+    /// preserve; a gap anywhere in it is the defect, whatever caused it.
+    /// Checking spans rather than pixels is deliberate — a pixel assertion
+    /// would also depend on the fill colour differing from both ring tokens,
+    /// which is a different claim and true only by luck.
+    #[test]
+    fn the_focus_rings_three_bands_leave_no_gap_for_the_fill_to_show_through() {
+        use gorgon_petra::tree::{Interaction, Role};
+
+        let mut props = Props {
+            text: Some("Run".into()),
+            ..Props::default()
+        };
+        props
+            .tokens
+            .insert("background".into(), tok("surface.raised"));
+        let node = ViewNode::new(NodeKind::Text, "root")
+            .with_props(props)
+            .interactive(
+                Role::Button,
+                "Run",
+                &[Interaction::Click, Interaction::Focus],
+            );
+
+        let host = Headless::new();
+        let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
+        h.state.focused = Some("/root".to_owned());
+        let frame = frame_of(&node, &mut h);
+        let mut shaper = host.shaper();
+        let report = paint_frame(&host.painter(), &frame, &mut shaper, &snapshot());
+        assert_eq!(report.focus_rings, 1, "{report:?}");
+
+        let out = host.0.run_ui(RawInput::default(), |_| {});
+        // Each band's top stroke spans [top - w/2, top + w/2] vertically.
+        let mut spans: Vec<(f32, f32)> = out
+            .shapes
+            .iter()
+            .filter_map(|cs| match &cs.shape {
+                Shape::Rect(r) if r.stroke.width > 0.0 => {
+                    let half = r.stroke.width / 2.0;
+                    Some((r.rect.top() - half, r.rect.top() + half))
+                }
+                _ => None,
+            })
+            .collect();
+        out.drop_without_applying_deltas();
+        assert_eq!(spans.len(), 3, "three bands: {spans:?}");
+        spans.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+        for pair in spans.windows(2) {
+            let (_, prev_end) = pair[0];
+            let (next_start, _) = pair[1];
+            assert!(
+                (next_start - prev_end).abs() < f32::EPSILON,
+                "the ring has a {:.2}-unit seam between {:?} and {:?} (all \
+                 spans: {spans:?}). A gap here is a stripe of the node's own \
+                 fill running through the middle of its focus ring.",
+                next_start - prev_end,
+                pair[0],
+                pair[1],
+            );
+        }
+    }
+
     /// The ring is concentric with the node's own corners, not a square
     /// drawn around them.
     ///
@@ -1985,7 +2104,7 @@ mod tests {
         let mut want: Vec<u8> = FocusRing::STANDARD
             .bands(gorgon_petra::geom::Rect::new(0.0, 0.0, 80.0, 30.0))
             .iter()
-            .map(|band| (radius + band.radius_delta).max(0.0).round() as u8)
+            .map(|band| (radius + band.offset).max(0.0).round() as u8)
             .collect();
         want.sort_unstable();
 
