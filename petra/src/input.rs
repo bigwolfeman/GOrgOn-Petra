@@ -181,7 +181,8 @@ impl InputEvent {
 /// Where an event is delivered.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Route {
-    /// Delivered to the node under the pointer.
+    /// Delivered to the node under the pointer, or — for a pointer-exit,
+    /// which carries no position — to the node it was last over.
     Pointer {
         /// Canonical id of the node hit.
         node: String,
@@ -263,8 +264,20 @@ pub fn hit_test(
 }
 
 /// Route one event against a frame and the current focus.
+///
+/// [`InputEvent::PointerLeft`] is handled before anything else and never
+/// reaches the focus branch below. It is a pointer event carrying no
+/// position, so `event.pointer_pos()` is `None` for it and it would otherwise
+/// fall straight through to the focused node — telling whatever holds focus
+/// that the pointer left it, when the pointer may never have been over it.
+/// [`route_pointer_exit`] is the seam that says where pointer-exit does go;
+/// `route` has no hover state of its own to hand it, so it passes `None` and
+/// the exit is reported dropped rather than misdelivered.
 #[must_use]
 pub fn route(frame: &PetrifiedFrame, focused: Option<&str>, event: &InputEvent) -> Route {
+    if matches!(event, InputEvent::PointerLeft) {
+        return route_pointer_exit(frame, None);
+    }
     let Some(interaction) = required_interaction(event) else {
         return Route::Unrouted {
             reason: "window-level event, delivered to no node",
@@ -298,6 +311,45 @@ pub fn route(frame: &PetrifiedFrame, focused: Option<&str>, event: &InputEvent) 
         };
     }
     Route::Keyboard {
+        node: id.to_owned(),
+    }
+}
+
+/// Route a pointer-exit ([`InputEvent::PointerLeft`]) to the node the pointer
+/// was last over.
+///
+/// Pointer-exit is the one pointer event with no position, so no hit test can
+/// aim it. The node that needs to hear it is the one that was under the
+/// pointer when it left — a hovered button has to stop looking hovered — and
+/// nothing in this crate remembers which node that was between frames. The
+/// host's `PointerState` (`contracts/interaction-state.md` §7, owned beside
+/// [`crate::focus::FocusTree`]) is what will, and `hovered` is where it plugs
+/// in: a caller that tracks the hovered id passes it and the exit lands
+/// there; a caller that does not passes `None` and the exit is reported
+/// dropped. [`route`] is the second kind today, and that is the whole of the
+/// remaining gap — the routing rule itself is here and tested.
+///
+/// A node hears pointer-exit on the same terms it hears any other hover
+/// event: it must be in this frame, declare [`Interaction::Hover`], and not
+/// be disabled.
+#[must_use]
+pub fn route_pointer_exit(frame: &PetrifiedFrame, hovered: Option<&str>) -> Route {
+    let Some(id) = hovered else {
+        return Route::Unrouted {
+            reason: "the pointer left the window and no hovered node is tracked",
+        };
+    };
+    let Some(target) = frame.placement(id) else {
+        return Route::Unrouted {
+            reason: "the hovered node is not in this frame",
+        };
+    };
+    if target.semantics.disabled || !target.semantics.actions.contains(&Interaction::Hover) {
+        return Route::Unrouted {
+            reason: "the hovered node does not accept pointer-exit",
+        };
+    }
+    Route::Pointer {
         node: id.to_owned(),
     }
 }
@@ -419,7 +471,7 @@ fn blocks_positional_input(policy: InputPolicy) -> bool {
 mod tests {
     use super::{
         InputEvent, KeyCode, Modifiers, PointerButton, Route, activates, hit_test,
-        required_interaction, route, route_with_surfaces,
+        required_interaction, route, route_pointer_exit, route_with_surfaces,
     };
     use crate::frame::{
         FrameDigest, PaintState, PetrifiedFrame, Placement, PlacementSemantics, TransitionActivity,
@@ -902,5 +954,91 @@ mod tests {
                 node: "/backdrop".into()
             }
         );
+    }
+
+    // -- Pointer-exit is aimed by hover, never by focus. --------------------
+
+    /// The regression the [`InputEvent::PointerLeft`] special case exists for.
+    ///
+    /// Pointer-exit carries no position, so before the special case it fell
+    /// past [`route`]'s positional branch into the focus branch and told the
+    /// focused node the pointer had left it — a node the pointer may never
+    /// have been over at all.
+    #[test]
+    fn pointer_left_is_never_delivered_to_the_focused_node() {
+        let f = frame(vec![node(
+            "/field",
+            Rect::new(0.0, 0.0, 100.0, 100.0),
+            0,
+            &[Interaction::Hover, Interaction::Key],
+        )]);
+        let outcome = route(&f, Some("/field"), &InputEvent::PointerLeft);
+        assert!(
+            !matches!(outcome, Route::Keyboard { .. }),
+            "pointer-exit reached the focus branch: {outcome:?}"
+        );
+        assert!(
+            matches!(outcome, Route::Unrouted { .. }),
+            "`route` tracks no hovered node, so it has nowhere to aim a \
+             pointer-exit and must say the event was dropped: {outcome:?}"
+        );
+    }
+
+    /// The other half of the same rule: the node the pointer was actually
+    /// over does hear the exit, once a caller can name it.
+    #[test]
+    fn pointer_left_lands_on_the_hovered_node_when_the_caller_tracks_one() {
+        let f = frame(vec![
+            node(
+                "/btn",
+                Rect::new(0.0, 0.0, 100.0, 100.0),
+                0,
+                &[Interaction::Hover, Interaction::Click],
+            ),
+            node(
+                "/field",
+                Rect::new(0.0, 150.0, 100.0, 20.0),
+                0,
+                &[Interaction::Key],
+            ),
+        ]);
+        assert_eq!(
+            route_pointer_exit(&f, Some("/btn")),
+            Route::Pointer {
+                node: "/btn".into()
+            }
+        );
+    }
+
+    /// A hovered node that this frame no longer places cannot be told
+    /// anything, and the drop is reported rather than swallowed.
+    #[test]
+    fn pointer_left_is_dropped_when_the_hovered_node_left_the_frame() {
+        let f = frame(vec![node(
+            "/btn",
+            Rect::new(0.0, 0.0, 100.0, 100.0),
+            0,
+            &[Interaction::Hover],
+        )]);
+        assert!(matches!(
+            route_pointer_exit(&f, Some("/gone")),
+            Route::Unrouted { .. }
+        ));
+    }
+
+    /// Pointer-exit is a hover event: a node that never declared
+    /// [`Interaction::Hover`] has no hover state to be told about.
+    #[test]
+    fn pointer_left_is_dropped_when_the_hovered_node_does_not_accept_hover() {
+        let f = frame(vec![node(
+            "/btn",
+            Rect::new(0.0, 0.0, 100.0, 100.0),
+            0,
+            &[Interaction::Click],
+        )]);
+        assert!(matches!(
+            route_pointer_exit(&f, Some("/btn")),
+            Route::Unrouted { .. }
+        ));
     }
 }
