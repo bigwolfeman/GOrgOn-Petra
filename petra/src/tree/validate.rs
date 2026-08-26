@@ -5,14 +5,14 @@
 //! sentence naming the node, not with a panel that quietly lays out wrong or a
 //! render-time surprise three frames later.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
 
 use crate::geom::Axis;
 use crate::token::{SlotSchema, TokenKind, TokenName, Vocabulary, standard_slots};
 use crate::tree::key::{Key, KeyPath};
 use crate::tree::node::{NodeKind, Role, ViewNode};
-use crate::tree::props::{ScrollProps, TrackSize, max_row_tracks};
+use crate::tree::props::{Anchor, ScrollProps, TrackSize, max_row_tracks};
 
 /// Names the host has registered: custom node kinds, transition
 /// definitions, and the design-token vocabulary. All three are populated by
@@ -312,6 +312,52 @@ pub enum Violation {
         /// legal set for this slot.
         legal: Vec<TokenName>,
     },
+    /// A `surface`'s [`Anchor::Node`] names an id no node in the tree has.
+    ///
+    /// Refused rather than resolved as [`Anchor::Viewport`]
+    /// (`contracts/anchored-placement.md` §2a). A silent fallback would put a
+    /// menu in the middle of the window instead of under the button that
+    /// opened it, and there is nothing on screen to say a fallback was taken
+    /// — the same reason `UnregisteredCustomKind` is refused instead of
+    /// drawn as an empty box. It is also half of what makes the resolution
+    /// scheme total: an anchor that names nothing has no rect to harvest, so
+    /// the harvest walk would have to invent one.
+    AnchorTargetMissing {
+        /// The id declared in `props.anchor`.
+        id: String,
+        /// The ids the tree does have, for an author who mistyped one. Every
+        /// surface anchor in a real tree names a node the author just wrote,
+        /// so the list is what turns "that id is wrong" into "you meant this
+        /// one".
+        known: Vec<String>,
+    },
+    /// A `surface`'s anchor depends, directly or transitively, on its own
+    /// placement.
+    ///
+    /// A surface anchored into a node that lives inside another anchored
+    /// surface is legal and costs one more harvest walk
+    /// (`contracts/anchored-placement.md` §1.4). What is refused here is the
+    /// case where following that dependency comes back to where it started:
+    /// the anchor rect of `A` cannot be known until `B` is placed, and `B`'s
+    /// cannot be known until `A` is. This is the *other* half of what makes
+    /// the resolution scheme total — the scheme carries no cycle detection
+    /// because no cycle survives acceptance.
+    AnchorCycle {
+        /// The dependency chain, starting and ending at this surface.
+        through: Vec<String>,
+    },
+    /// `props.state_tokens` keys on a state name the engine never resolves.
+    ///
+    /// Refused for the reason [`Violation::PaddingOnLeafKind`] is refused: no
+    /// state by that name is ever entered, so the override would be a dead
+    /// declaration — an author's `hovered:` block that never once paints,
+    /// with nothing on screen to say why.
+    UnknownStateName {
+        /// The declared key.
+        name: String,
+        /// The names the dispatcher actually resolves.
+        legal: Vec<&'static str>,
+    },
 }
 
 /// A [`TokenKind`] rendered the way a refusal message names it. Not
@@ -456,6 +502,21 @@ impl fmt::Display for Violation {
                 "props.{prop} names token `{name}`, which the vocabulary does not declare; legal: [{}]",
                 legal_set(legal)
             ),
+            Self::AnchorTargetMissing { id, known } => write!(
+                f,
+                "props.anchor names node `{id}`, which this tree has no node for; an anchor that names nothing has no rect to be placed against, and is refused rather than centred in the viewport; known ids: [{}]",
+                known.join(", ")
+            ),
+            Self::AnchorCycle { through } => write!(
+                f,
+                "props.anchor depends on this surface's own placement, through {}; a surface may be anchored into a node inside another anchored surface, but not into one whose own anchor leads back here",
+                through.join(" -> ")
+            ),
+            Self::UnknownStateName { name, legal } => write!(
+                f,
+                "props.state_tokens keys on state {name:?}, which the placement dispatcher never enters, so the override would never paint; legal: [{}]",
+                legal.join(", ")
+            ),
             Self::TokenKindMismatch {
                 prop,
                 name,
@@ -562,7 +623,12 @@ impl<'a> std::ops::Deref for ValidatedTree<'a> {
 /// requires, and the only way to produce one.
 ///
 /// # Errors
-/// Returns every violation found, in tree pre-order.
+/// Returns every violation found: first every per-node one, in tree
+/// pre-order, then the anchor violations [`check_anchors`] finds. Those two
+/// groups are two passes because they are two different questions — whether
+/// one node is well formed, and whether the tree's `surface` anchors name
+/// each other in a way that can be resolved at all — and the second cannot be
+/// asked until every node's id is known.
 pub fn validate<'a>(
     root: &'a ViewNode,
     registry: &Registry,
@@ -570,6 +636,7 @@ pub fn validate<'a>(
     let mut errors = Vec::new();
     let mut path = KeyPath::root();
     walk(root, registry, &mut path, None, None, &mut errors);
+    check_anchors(root, &mut errors);
     if errors.is_empty() {
         Ok(ValidatedTree(root))
     } else {
@@ -865,6 +932,44 @@ fn check_node(
     // all. For a status indicator that is the inverse of the FR-015 incident
     // — not colour carrying meaning alone, but the colour channel silently
     // going missing while the shape and word channels stay.
+    // The gap between an anchor and the surface it carries is a spacing
+    // token for the reason `props.spacing` is one (FR-053), so it is checked
+    // exactly the way `props.spacing` is — a literal cannot arrive here at
+    // all, because the field's type is `TokenName`.
+    if let Some(Anchor::Node {
+        offset: Some(name), ..
+    }) = &node.props.anchor
+    {
+        check_token_ref(
+            vocabulary,
+            "anchor.offset",
+            name,
+            TokenKind::Spacing,
+            &mut push,
+        );
+    }
+    // `state_tokens` is `tokens` once per state, so it is checked the same
+    // way once per state — plus the state name itself, which `tokens` has no
+    // equivalent of. A state the dispatcher never enters is refused rather
+    // than left as an override that silently never paints.
+    for (state, slots) in &node.props.state_tokens {
+        if !crate::tree::props::STATE_NAMES.contains(&state.as_str()) {
+            push(Violation::UnknownStateName {
+                name: state.clone(),
+                legal: crate::tree::props::STATE_NAMES.to_vec(),
+            });
+        }
+        for (slot, name) in slots {
+            check_slot_ref(
+                vocabulary,
+                registry,
+                &format!("state_tokens.{state}.{slot}"),
+                slot,
+                name,
+                &mut push,
+            );
+        }
+    }
     for (slot, name) in &node.props.tokens {
         match vocabulary.kind_of(name) {
             None => push(Violation::UnknownTokenRef {
@@ -1024,6 +1129,181 @@ fn check_surface(node: &ViewNode, push: &mut impl FnMut(Violation)) {
             kind: NodeKind::Surface,
             prop: "anchor",
         });
+    }
+}
+
+/// One `surface` whose anchor names another node, as [`check_anchors`] needs
+/// it: pre-order position, its own canonical id, and the id it names.
+struct AnchoredSurface {
+    /// This surface's own canonical key path.
+    id: String,
+    /// The id its `Anchor::Node` names.
+    target: String,
+}
+
+/// The `surface` anchors of the whole tree, judged together.
+///
+/// Two refusals, and both are what make `contracts/anchored-placement.md`
+/// §1's resolution scheme *total* rather than merely usual:
+///
+/// * An [`Anchor::Node`] naming no node has no rect to harvest
+///   ([`Violation::AnchorTargetMissing`]).
+/// * A surface whose anchor leads, through the surfaces enclosing it, back to
+///   itself can never be placed at all ([`Violation::AnchorCycle`]).
+///
+/// Neither can be judged one node at a time, which is why this is a second
+/// pass rather than an arm of [`check_node`]: the first needs every id in the
+/// tree, and the second needs every anchor.
+///
+/// The dependency edge is *not* "surface names node": it is "surface `A`
+/// needs the placement of surface `B`", where `B` is the nearest anchored
+/// surface enclosing `A`'s anchor target. A target in ordinary flow has no
+/// such enclosing surface and so contributes no edge, which is why an
+/// ordinary popover — the overwhelming majority of trees — reaches nothing
+/// here at all. Each surface has at most one outgoing edge, so following the
+/// chain is the whole of cycle detection.
+///
+/// Returns immediately for a tree with no `Anchor::Node` anywhere: the walk
+/// that collects the ids is the only cost, and it is not paid twice.
+fn check_anchors(root: &ViewNode, errors: &mut Vec<TreeError>) {
+    let mut ids: BTreeSet<String> = BTreeSet::new();
+    let mut surfaces: Vec<AnchoredSurface> = Vec::new();
+    // Node id -> the nearest *anchored* surface enclosing it. A surface
+    // anchored to a point or to the viewport is placed without reference to
+    // any other node, so it does not enclose its subtree in a dependency;
+    // only an `Anchor::Node` one does.
+    let mut enclosing: BTreeMap<String, String> = BTreeMap::new();
+    collect_anchors(
+        root,
+        &mut KeyPath::root(),
+        None,
+        &mut ids,
+        &mut surfaces,
+        &mut enclosing,
+    );
+    if surfaces.is_empty() {
+        return;
+    }
+
+    let mut edge: BTreeMap<&str, &str> = BTreeMap::new();
+    for surface in &surfaces {
+        if !ids.contains(&surface.target) {
+            errors.push(TreeError {
+                path: surface.id.clone(),
+                violation: Violation::AnchorTargetMissing {
+                    id: surface.target.clone(),
+                    known: ids.iter().cloned().collect(),
+                },
+            });
+            continue;
+        }
+        if let Some(owner) = enclosing.get(&surface.target) {
+            edge.insert(surface.id.as_str(), owner.as_str());
+        }
+    }
+
+    for surface in &surfaces {
+        // At most one edge leaves each surface, so a chain longer than the
+        // surface count has revisited something; the start is what we are
+        // asking about, so it is a cycle through this surface exactly when
+        // this surface is what it comes back to.
+        let mut chain = vec![surface.id.as_str()];
+        let mut at = surface.id.as_str();
+        for _ in 0..surfaces.len() {
+            let Some(next) = edge.get(at).copied() else {
+                break;
+            };
+            chain.push(next);
+            if next == surface.id.as_str() {
+                errors.push(TreeError {
+                    path: surface.id.clone(),
+                    violation: Violation::AnchorCycle {
+                        through: chain.iter().map(|s| (*s).to_owned()).collect(),
+                    },
+                });
+                break;
+            }
+            at = next;
+        }
+    }
+}
+
+/// One level of [`check_anchors`]'s walk: every node's id, every anchored
+/// surface, and which anchored surface (if any) each node is inside.
+fn collect_anchors(
+    node: &ViewNode,
+    path: &mut KeyPath,
+    owner: Option<&str>,
+    ids: &mut BTreeSet<String>,
+    surfaces: &mut Vec<AnchoredSurface>,
+    enclosing: &mut BTreeMap<String, String>,
+) {
+    path.push(node.key.clone());
+    let id = path.id();
+    if let Some(owner) = owner {
+        enclosing.insert(id.clone(), owner.to_owned());
+    }
+    let anchored = if let Some(Anchor::Node { id: target, .. }) = &node.props.anchor {
+        surfaces.push(AnchoredSurface {
+            id: id.clone(),
+            target: target.clone(),
+        });
+        // An anchored surface owns *itself*, not just its subtree: a surface
+        // anchored to its own rect is as circular as one anchored to a node
+        // inside it, and the map is what the cycle scan reads.
+        enclosing.insert(id.clone(), id.clone());
+        Some(id.clone())
+    } else {
+        None
+    };
+    ids.insert(id);
+    let child_owner = anchored.as_deref().or(owner);
+    for child in &node.children {
+        collect_anchors(child, path, child_owner, ids, surfaces, enclosing);
+    }
+    path.pop();
+}
+
+/// One paint-slot binding against the vocabulary and the registry's slot
+/// schema: the same rule the `props.tokens` loop in [`check_node`] applies,
+/// so a per-state override can never be checked more loosely than the base
+/// binding it overrides.
+///
+/// `prop` is what a refusal names (`state_tokens.hover.background`); `slot` is
+/// the paint slot itself, which is what the schema is keyed on. They differ,
+/// which is why both are passed: a message naming `background` would not tell
+/// an author which of their state blocks to fix.
+fn check_slot_ref(
+    vocabulary: &Vocabulary,
+    registry: &Registry,
+    prop: &str,
+    slot: &str,
+    name: &TokenName,
+    push: &mut impl FnMut(Violation),
+) {
+    match vocabulary.kind_of(name) {
+        None => push(Violation::UnknownTokenRef {
+            prop: prop.to_owned(),
+            name: name.clone(),
+            legal: vocabulary.names().cloned().collect(),
+        }),
+        Some(found) => {
+            if let Some(spec) = registry.slots().get(slot)
+                && spec.kind() != found
+            {
+                push(Violation::TokenKindMismatch {
+                    prop: prop.to_owned(),
+                    name: name.clone(),
+                    expected: spec.kind(),
+                    found,
+                    legal: vocabulary
+                        .names()
+                        .filter(|n| vocabulary.kind_of(n) == Some(spec.kind()))
+                        .cloned()
+                        .collect(),
+                });
+            }
+        }
     }
 }
 
@@ -1593,13 +1873,16 @@ mod tests {
         // The other half of the surface rule. Every other surface fixture in
         // this crate supplies `layer`, so without this case the `layer` push
         // could be deleted and the whole suite would stay green.
-        let unlayered = ViewNode::new(NodeKind::Surface, "s").with_props(Props {
-            anchor: Some(Anchor::Node {
-                id: "/root".into(),
-                edge: Edge::Bottom,
-            }),
-            ..Props::default()
-        });
+        //
+        // Both fixtures below sit beside a real anchor node, because an
+        // `Anchor::Node` naming nothing is now its own violation
+        // (`AnchorTargetMissing`) and would mask the one under test.
+        let unlayered = ViewNode::new(NodeKind::Stack, "root")
+            .child(ViewNode::new(NodeKind::Text, "button"))
+            .child(ViewNode::new(NodeKind::Surface, "s").with_props(Props {
+                anchor: Some(anchored_at("/root/button")),
+                ..Props::default()
+            }));
         let err = validate(&unlayered, &Registry::new()).unwrap_err();
         assert_eq!(
             err.as_slice()[0].violation,
@@ -1609,15 +1892,25 @@ mod tests {
             }
         );
 
-        let ok = ViewNode::new(NodeKind::Surface, "s").with_props(Props {
-            layer: Some(Layer::Popup),
-            anchor: Some(Anchor::Node {
-                id: "/root".into(),
-                edge: Edge::Bottom,
-            }),
-            ..Props::default()
-        });
+        let ok = ViewNode::new(NodeKind::Stack, "root")
+            .child(ViewNode::new(NodeKind::Text, "button"))
+            .child(ViewNode::new(NodeKind::Surface, "s").with_props(Props {
+                layer: Some(Layer::Popup),
+                anchor: Some(anchored_at("/root/button")),
+                ..Props::default()
+            }));
         assert!(validate(&ok, &Registry::new()).is_ok());
+    }
+
+    /// A `bottom`-edge node anchor on `id`, centred with no offset — the
+    /// shape every anchored-surface fixture in this module wants.
+    fn anchored_at(id: &str) -> Anchor {
+        Anchor::Node {
+            id: id.to_owned(),
+            edge: Edge::Bottom,
+            align: crate::tree::Align::Center,
+            offset: None,
+        }
     }
 
     #[test]
@@ -2204,5 +2497,208 @@ mod tests {
             validate(&tree, &Registry::new()).is_err(),
             "an unknown name must refuse the tree, not resolve to a default"
         );
+    }
+
+    // -- Anchored surfaces: the two refusals that make resolution total. ----
+
+    /// A `surface` on `key` anchored to `target`.
+    fn popover(key: &str, target: &str) -> ViewNode {
+        ViewNode::new(NodeKind::Surface, key).with_props(Props {
+            layer: Some(Layer::Popup),
+            anchor: Some(anchored_at(target)),
+            ..Props::default()
+        })
+    }
+
+    /// An anchor that names no node is refused, never resolved as
+    /// `Anchor::Viewport` (`contracts/anchored-placement.md` §2a).
+    #[test]
+    fn an_anchor_naming_no_node_is_refused_rather_than_centred() {
+        let tree = stack("root")
+            .child(ViewNode::new(NodeKind::Text, "button"))
+            .child(popover("popup", "/root/buton"));
+        let err = validate(&tree, &Registry::new()).unwrap_err();
+        let violation = &err.as_slice()[0].violation;
+        let Violation::AnchorTargetMissing { id, known } = violation else {
+            panic!("wrong violation: {violation:?}");
+        };
+        assert_eq!(id, "/root/buton");
+        assert!(
+            known.contains(&"/root/button".to_owned()),
+            "the refusal must name the ids that do exist, so a typo is \
+             findable: {known:?}"
+        );
+        assert_eq!(err.as_slice()[0].path, "/root/popup");
+    }
+
+    /// A surface anchored to its own rect is circular: its placement is what
+    /// decides the rect its placement is resolved against.
+    #[test]
+    fn a_surface_anchored_to_itself_is_refused() {
+        let tree = stack("root").child(popover("popup", "/root/popup"));
+        let err = validate(&tree, &Registry::new()).unwrap_err();
+        let violation = &err.as_slice()[0].violation;
+        let Violation::AnchorCycle { through } = violation else {
+            panic!("wrong violation: {violation:?}");
+        };
+        assert_eq!(through, &["/root/popup", "/root/popup"]);
+    }
+
+    /// The mutual case: each surface is anchored to a node inside the other.
+    ///
+    /// Both are named, because both are unplaceable and an author fixing one
+    /// end wants to see the other.
+    #[test]
+    fn two_surfaces_anchored_into_each_others_subtrees_are_refused() {
+        let tree = stack("root")
+            .child(popover("a", "/root/b/inner").child(ViewNode::new(NodeKind::Text, "inner")))
+            .child(popover("b", "/root/a/inner").child(ViewNode::new(NodeKind::Text, "inner")));
+        let err = validate(&tree, &Registry::new()).unwrap_err();
+        let cycles: Vec<&TreeError> = err
+            .as_slice()
+            .iter()
+            .filter(|e| matches!(e.violation, Violation::AnchorCycle { .. }))
+            .collect();
+        assert_eq!(cycles.len(), 2, "both ends are refused: {err}");
+        let Violation::AnchorCycle { through } = &cycles[0].violation else {
+            unreachable!("filtered above")
+        };
+        assert_eq!(through, &["/root/a", "/root/b", "/root/a"]);
+    }
+
+    /// One-way nesting is *not* a cycle and is not refused: it is the case
+    /// `contracts/anchored-placement.md` §1.4 spends an extra harvest walk
+    /// on. Refusing it here would make the depth rule dead code.
+    #[test]
+    fn a_surface_anchored_into_another_anchored_surface_is_accepted() {
+        let tree = stack("root")
+            .child(ViewNode::new(NodeKind::Text, "button"))
+            .child(popover("a", "/root/button").child(ViewNode::new(NodeKind::Text, "item")))
+            .child(popover("b", "/root/a/item"));
+        assert!(validate(&tree, &Registry::new()).is_ok());
+    }
+
+    /// A surface inside a non-anchored surface contributes no dependency
+    /// either: an `Anchor::Viewport` surface is placed without reference to
+    /// any other node, so nothing about it can loop.
+    #[test]
+    fn an_anchor_into_a_viewport_anchored_surface_is_accepted() {
+        let modal = ViewNode::new(NodeKind::Surface, "modal")
+            .with_props(Props {
+                layer: Some(Layer::Modal),
+                anchor: Some(Anchor::Viewport),
+                ..Props::default()
+            })
+            .child(ViewNode::new(NodeKind::Text, "field"))
+            .child(popover("hint", "/root/modal/field"));
+        let tree = stack("root").child(modal);
+        assert!(validate(&tree, &Registry::new()).is_ok());
+    }
+
+    /// `anchor.offset` is a spacing token and is checked like every other
+    /// one: a name the vocabulary does not declare is refused.
+    #[test]
+    fn an_anchor_offset_naming_no_token_is_refused() {
+        let tree = stack("root")
+            .child(ViewNode::new(NodeKind::Text, "button"))
+            .child(ViewNode::new(NodeKind::Surface, "popup").with_props(Props {
+                layer: Some(Layer::Popup),
+                anchor: Some(Anchor::Node {
+                    id: "/root/button".into(),
+                    edge: Edge::Bottom,
+                    align: crate::tree::Align::Center,
+                    offset: Some(gap_token(9.0)),
+                }),
+                ..Props::default()
+            }));
+        let err = validate(&tree, &Registry::new()).unwrap_err();
+        assert!(
+            err.as_slice().iter().any(|e| matches!(
+                &e.violation,
+                Violation::UnknownTokenRef { prop, .. } if prop == "anchor.offset"
+            )),
+            "{err}"
+        );
+        // The same tree against a vocabulary that declares the gap accepts.
+        assert!(validate(&tree, &spacing_registry_with(9.0)).is_ok());
+    }
+
+    /// As [`spacing_registry`], for one gap named by the caller.
+    fn spacing_registry_with(units: f32) -> Registry {
+        let mut vocab = Vocabulary::new();
+        vocab.declare(DesignToken::new(gap_token(units), TokenKind::Spacing));
+        Registry::with_vocabulary(vocab)
+    }
+
+    // -- Per-state token bindings. ------------------------------------------
+
+    /// A state name the dispatcher never enters is refused, not left as an
+    /// override that silently never paints.
+    #[test]
+    fn a_state_tokens_key_outside_the_state_vocabulary_is_refused() {
+        let mut states = std::collections::BTreeMap::new();
+        states.insert(
+            "hovered".to_owned(),
+            [(
+                "background".to_owned(),
+                TokenName::new("surface.raised").unwrap(),
+            )]
+            .into_iter()
+            .collect(),
+        );
+        let tree = ViewNode::new(NodeKind::Text, "t").with_props(Props {
+            state_tokens: states,
+            ..Props::default()
+        });
+        let err = validate(&tree, &Registry::with_vocabulary(standard_vocabulary())).unwrap_err();
+        let violation = &err.as_slice()[0].violation;
+        let Violation::UnknownStateName { name, legal } = violation else {
+            panic!("wrong violation: {violation:?}");
+        };
+        assert_eq!(name, "hovered", "the spelling that is right is `hover`");
+        assert!(legal.contains(&"hover"), "{legal:?}");
+    }
+
+    /// A per-state binding is checked against the vocabulary and the slot
+    /// schema exactly as the base binding is: a colour slot may not take a
+    /// spacing token just because it was declared under `hover`.
+    #[test]
+    fn a_state_tokens_binding_is_checked_like_the_base_binding() {
+        let with = |token: TokenName| {
+            let mut states = std::collections::BTreeMap::new();
+            states.insert(
+                "hover".to_owned(),
+                [("background".to_owned(), token)].into_iter().collect(),
+            );
+            ViewNode::new(NodeKind::Text, "t").with_props(Props {
+                state_tokens: states,
+                ..Props::default()
+            })
+        };
+        let registry = Registry::with_vocabulary(standard_vocabulary());
+
+        let unknown = with(TokenName::new("surface.invented").unwrap());
+        let err = validate(&unknown, &registry).unwrap_err();
+        assert!(
+            matches!(
+                &err.as_slice()[0].violation,
+                Violation::UnknownTokenRef { prop, .. } if prop == "state_tokens.hover.background"
+            ),
+            "{err}"
+        );
+
+        let wrong_kind = with(TokenName::new("spacing.md").unwrap());
+        let err = validate(&wrong_kind, &registry).unwrap_err();
+        assert!(
+            matches!(
+                &err.as_slice()[0].violation,
+                Violation::TokenKindMismatch { prop, expected, .. }
+                    if prop == "state_tokens.hover.background" && *expected == TokenKind::Color
+            ),
+            "{err}"
+        );
+
+        let right = with(TokenName::new("surface.raised").unwrap());
+        assert!(validate(&right, &registry).is_ok());
     }
 }

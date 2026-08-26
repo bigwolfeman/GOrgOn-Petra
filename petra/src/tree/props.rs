@@ -36,7 +36,15 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::geom::{Align, Axis, Insets};
+// `Align` is deliberately *not* imported: this module declares an `Align` of
+// its own — the anchor alignment in [`Anchor::Node`] — and the two are
+// different vocabularies over the same word. `crate::geom::Align` is where a
+// child sits inside the space its parent gives it (and has a `Stretch` a
+// point on an anchor's edge cannot have); [`Align`] here is where a surface
+// sits along the edge of the node it is anchored to. Every use of the former
+// in this file is spelled out in full so a reader never has to guess which
+// one is meant.
+use crate::geom::{Axis, Insets};
 use crate::token::{ThemeSnapshot, TokenName};
 
 /// How a text node handles content it cannot fit.
@@ -255,6 +263,62 @@ impl Layer {
     }
 }
 
+/// Where a surface sits along the edge of the node it is anchored to.
+///
+/// The cross-axis half of an anchored placement: [`Edge`] picks which side of
+/// the anchor the surface prefers, and this picks where along that side it
+/// starts. The pair spells out all twelve placements Carbon names, which is
+/// why Carbon's eight deprecated combined aliases are not ported
+/// (`contracts/anchored-placement.md` §3).
+///
+/// **Not [`crate::geom::Align`]**, which is the cross-axis placement of a
+/// child inside the space its parent gives it. Two differences make them two
+/// types rather than one: this one defaults to [`Align::Center`] (a caret
+/// under the middle of a button is the shape every popover library ships),
+/// while a child in a stack defaults to `Start`; and `Stretch` is meaningless
+/// here, because a surface is sized by its own content and has no track to
+/// fill.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Align {
+    /// Flush with the anchor's leading corner on the cross axis.
+    Start,
+    /// Centred on the anchor's cross-axis midpoint.
+    #[default]
+    Center,
+    /// Flush with the anchor's trailing corner on the cross axis.
+    End,
+}
+
+impl Align {
+    /// This alignment's wire name, the same spelling `serde` reads and writes.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::Center => "center",
+            Self::End => "end",
+        }
+    }
+
+    /// The leading cross-axis coordinate for a surface of `surface` extent
+    /// aligned against an anchor of `anchor` extent starting at `at`.
+    ///
+    /// Unlike [`crate::geom::Align::offset`], the result is not floored at
+    /// the anchor's leading edge: a surface wider than its anchor legitimately
+    /// overhangs it on both sides when centred, and clamping that back to the
+    /// anchor's own corner would silently turn every `Center` on a narrow
+    /// button into a `Start`.
+    #[must_use]
+    pub fn leading(self, at: f32, anchor: f32, surface: f32) -> f32 {
+        match self {
+            Self::Start => at,
+            Self::Center => at + (anchor - surface) / 2.0,
+            Self::End => at + anchor - surface,
+        }
+    }
+}
+
 /// Where an overlay surface attaches.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", tag = "type")]
@@ -265,6 +329,22 @@ pub enum Anchor {
         id: String,
         /// Which edge of the anchor the surface prefers.
         edge: Edge,
+        /// Where along that edge the surface starts.
+        ///
+        /// Defaulted so every `{ id, edge }` tree written before this field
+        /// existed parses unchanged and resolves identically — centred, the
+        /// reading those trees already had.
+        #[serde(default, skip_serializing_if = "is_default_align")]
+        align: Align,
+        /// Gap between the anchor's edge and the surface, as a spacing token.
+        ///
+        /// A token reference and never a literal, for the reason
+        /// [`Props::spacing`] is one (FR-053): the distance between a button
+        /// and its menu is a taste decision, and taste is the theme's. Absent
+        /// means no gap, which is what absence meant before this field
+        /// existed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        offset: Option<TokenName>,
     },
     /// Attached to a point in the viewport.
     Point {
@@ -275,6 +355,16 @@ pub enum Anchor {
     },
     /// Centred in the viewport.
     Viewport,
+}
+
+/// Whether an [`Align`] is the one absence already meant.
+///
+/// Only for `skip_serializing_if`: a tree that never mentioned `align` must
+/// round-trip through JSON without growing a key, or "every existing tree
+/// parses and resolves identically" would hold on the way in and fail on the
+/// way out.
+fn is_default_align(align: &Align) -> bool {
+    *align == Align::default()
 }
 
 /// Preferred side of an anchor.
@@ -289,6 +379,49 @@ pub enum Edge {
     Left,
     /// Right of the anchor.
     Right,
+}
+
+impl Edge {
+    /// This edge's wire name, the same spelling `serde` reads and writes.
+    ///
+    /// Also what the frame digest hashes for a caret's resolved side
+    /// (`crate::frame::digest::hash_paint_content`): a name rather than a
+    /// discriminant, so reordering this enum can never silently rewrite a
+    /// published digest.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Top => "top",
+            Self::Bottom => "bottom",
+            Self::Left => "left",
+            Self::Right => "right",
+        }
+    }
+
+    /// The side across the anchor from this one.
+    ///
+    /// Total by construction — every edge has exactly one opposite — which
+    /// is what `contracts/anchored-placement.md` §4 step 2 requires of the
+    /// flip: there is no edge the ladder can fail to find a second side for.
+    #[must_use]
+    pub fn opposite(self) -> Self {
+        match self {
+            Self::Top => Self::Bottom,
+            Self::Bottom => Self::Top,
+            Self::Left => Self::Right,
+            Self::Right => Self::Left,
+        }
+    }
+
+    /// The axis this edge is a side of: the axis a surface anchored to it
+    /// grows away from the anchor along, and the axis a flip reverses.
+    #[must_use]
+    pub fn axis(self) -> Axis {
+        match self {
+            Self::Top | Self::Bottom => Axis::Vertical,
+            Self::Left | Self::Right => Axis::Horizontal,
+        }
+    }
 }
 
 /// What an overlay does when its preferred placement does not fit.
@@ -338,7 +471,7 @@ pub struct Props {
     pub spacing: Option<TokenName>,
     /// Cross-axis alignment of children.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub align: Option<Align>,
+    pub align: Option<crate::geom::Align>,
     /// Grid column tracks, leading to trailing.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub columns: Vec<TrackSize>,
@@ -448,7 +581,43 @@ pub struct Props {
     /// value type or on the wire deserializing into it.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub tokens: BTreeMap<String, TokenName>,
+    /// Per-state overrides of [`Props::tokens`]: state name, then slot name,
+    /// then the token that slot takes while the node is in that state
+    /// (`contracts/interaction-state.md` §6).
+    ///
+    /// Authors declare what a hovered button looks like; they never branch on
+    /// a raw hover bool, because the bool is engine state and the tree is
+    /// authored before the engine has any. The collapse into the flat map the
+    /// painter reads happens once, in the placement dispatcher
+    /// ([`crate::layout::place`]) — never in a container, so the twelve node
+    /// kinds cannot each get the precedence differently — and the resolved
+    /// name enters `paint_hash`, so a state change that rebinds a colour
+    /// moves the frame digest.
+    ///
+    /// The outer key is one of [`STATE_NAMES`]; a name outside that set is a
+    /// tree-acceptance violation rather than a declaration that quietly never
+    /// fires ([`crate::tree::Violation::UnknownStateName`]).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub state_tokens: BTreeMap<String, BTreeMap<String, TokenName>>,
 }
+
+/// Every state name [`Props::state_tokens`] may key on, in the order the
+/// placement dispatcher applies them: later entries win.
+///
+/// The order is the precedence, written down once. It runs from the most
+/// durable condition to the most momentary — what a node *is* (`selected`,
+/// `read-only`), then what the keyboard is on (`focus`), then what the
+/// pointer is doing (`hover`, `active`) — and ends with `disabled`, which
+/// wins over everything: a control that cannot be operated must not paint as
+/// though the pointer over it means anything.
+pub const STATE_NAMES: &[&str] = &[
+    "selected",
+    "read-only",
+    "focus",
+    "hover",
+    "active",
+    "disabled",
+];
 
 /// Resolved `stack` parameters.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -458,7 +627,7 @@ pub struct StackProps {
     /// Gap reserved between adjacent children.
     pub spacing: f32,
     /// Cross-axis alignment.
-    pub align: Align,
+    pub align: crate::geom::Align,
 }
 
 /// Resolved `grid` parameters.
@@ -473,7 +642,7 @@ pub struct GridProps {
     /// Gap between rows.
     pub row_spacing: f32,
     /// Cross-axis alignment inside a cell.
-    pub align: Align,
+    pub align: crate::geom::Align,
 }
 
 /// Resolved `scroll` parameters.

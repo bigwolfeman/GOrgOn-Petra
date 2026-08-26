@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use crate::geom::Rect;
 use crate::layout::Slot;
-use crate::tree::{Interaction, NodeKind, Role, TextWrap};
+use crate::tree::{Edge, Interaction, NodeKind, Role, TextWrap};
 
 /// Paint-relevant state that is not geometry but does change the picture.
 ///
@@ -192,6 +192,38 @@ pub struct TextPaint {
     pub max_lines: Option<usize>,
 }
 
+/// The pointer a surface draws back at the node it is anchored to.
+///
+/// Petra's fourth engine-drawn primitive, beside rects, outlines and text
+/// (`contracts/view-tree.md` §Hosted content). It is deliberately **not**
+/// carried as a `custom` payload: [`PaintContent::is_hosted`] makes `custom`
+/// digest-blind, so a caret riding it could move from one side of a popover
+/// to the other without moving the frame digest — a wrong picture under a
+/// digest that says it is right.
+///
+/// Every field is engine-computed from the resolved placement
+/// (`contracts/anchored-placement.md` §5) and none is authored: the author
+/// cannot know which side the surface ended up on, because the fallback
+/// ladder decides that against the window at placement time.
+///
+/// Reaches the digest through
+/// [`crate::frame::digest::hash_paint_content`], which destructures this
+/// struct with no rest pattern.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CaretPaint {
+    /// Which side of the anchor the surface was finally placed on — the
+    /// resolved edge, after any flip, not the declared one.
+    pub side: Edge,
+    /// Tip x, logical units: the point that touches the anchor.
+    pub tip_x: f32,
+    /// Tip y, logical units.
+    pub tip_y: f32,
+    /// Base width along the surface's near edge, logical units.
+    pub w: f32,
+    /// Depth from the surface's near edge out to the tip, logical units.
+    pub h: f32,
+}
+
 /// What a placement draws, beyond its rect.
 ///
 /// Kept beside the placements rather than inside them: the renderer needs the
@@ -217,7 +249,17 @@ pub struct PaintContent {
     pub custom: Option<String>,
     /// Token references by role name, resolved against the frame's theme
     /// snapshot at paint time.
+    ///
+    /// Already collapsed: `props.tokens` with every applicable
+    /// `props.state_tokens` block folded over it in precedence order
+    /// (`crate::layout::paint_content_of`). The painter reads one flat map
+    /// and has no idea a state was involved.
     pub tokens: BTreeMap<String, String>,
+    /// The caret this placement draws back at its anchor, for a `surface`
+    /// anchored to a node and resolved onto a side. `None` for every other
+    /// placement, and for an anchored surface whose caret would fall off its
+    /// own rounded corner ([`CaretPaint`]).
+    pub caret: Option<CaretPaint>,
 }
 
 impl PaintContent {
@@ -228,6 +270,12 @@ impl PaintContent {
             && self.image.is_none()
             && self.custom.is_none()
             && self.tokens.is_empty()
+            // A caret is a shape on the screen, so a payload carrying one is
+            // not empty — and this line is what keeps it out of
+            // `hash_paint_content`'s zero shortcut, which would otherwise
+            // make a flipped caret invisible to the digest on a surface that
+            // binds no tokens at all.
+            && self.caret.is_none()
     }
 
     /// Whether the host, not Petra, produces this node's pixels.
@@ -860,6 +908,7 @@ mod tests {
                     image: Some("logo.png".into()),
                     custom: Some("gauge".into()),
                     tokens,
+                    caret: None,
                 },
                 true,
             ),

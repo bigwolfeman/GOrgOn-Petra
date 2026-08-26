@@ -14,9 +14,13 @@ pub use node::{
     AxisConstraint, Constraints, Interaction, NodeKind, ROLE_NAMES, Role, Semantics, TransitionRef,
     ViewNode,
 };
+// `Align` here is the anchor alignment `props` declares, not
+// `crate::geom::Align`, which is a child's cross-axis placement inside its
+// parent. Two vocabularies over one word, kept apart by the module they are
+// reached through; `props::Align`'s own doc comment says which is which.
 pub use props::{
-    Anchor, ClampRule, CollectionProps, Edge, GridProps, GridSpan, InputPolicy, InsetRefs, Layer,
-    Props, ScrollProps, StackProps, SurfaceProps, TextProps, TextWrap, TrackSize, resolve_insets,
-    resolve_spacing,
+    Align, Anchor, ClampRule, CollectionProps, Edge, GridProps, GridSpan, InputPolicy, InsetRefs,
+    Layer, Props, STATE_NAMES, ScrollProps, StackProps, SurfaceProps, TextProps, TextWrap,
+    TrackSize, resolve_insets, resolve_spacing,
 };
 pub use validate::{Registry, TreeError, TreeErrors, ValidatedTree, Violation, validate};

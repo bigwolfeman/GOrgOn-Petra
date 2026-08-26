@@ -5,7 +5,9 @@
 //! runs of the same inputs — no clock, no timing, no address, no iteration
 //! order of a hash map.
 
-use crate::frame::placement::{PaintContent, PaintState, Placement, PlacementSemantics, TextPaint};
+use crate::frame::placement::{
+    CaretPaint, PaintContent, PaintState, Placement, PlacementSemantics, TextPaint,
+};
 use crate::frame::rounding::round_rect;
 use crate::frame::viewport::Viewport;
 use crate::geom::Scale;
@@ -14,6 +16,16 @@ use crate::geom::Scale;
 /// different prefix can never collide with one computed under this prefix, so
 /// the version bump that a serialization change requires cannot be forgotten
 /// quietly.
+///
+/// `v7` covers [`crate::frame::placement::CaretPaint`], the caret an anchored
+/// surface draws back at the node it is anchored to. It reaches the frame
+/// through the *payload* stream rather than the leaf one, so [`PAINT_DOMAIN`]
+/// moves with it — the first time it has moved since `v2` — and the frame
+/// prefix moves because the frame prefix moves on any change below it. It is
+/// a picture-deciding payload and not bookkeeping: the fallback ladder can
+/// put the same popover above or below the same button depending on the
+/// window, and those are two different pictures. A digest blind to the side
+/// would let a screenshot consumer accept the wrong one.
 ///
 /// `v6` covers the five interaction-state flags
 /// [`PlacementSemantics::hovered`], [`PlacementSemantics::active`],
@@ -59,7 +71,7 @@ use crate::geom::Scale;
 /// covered only the text content hash, the truncation flag, and the theme
 /// revision, so two frames that bound the same node's `background` to two
 /// different colours shared one digest.
-pub const DOMAIN: &[u8] = b"gorgon-petra-frame-v6";
+pub const DOMAIN: &[u8] = b"gorgon-petra-frame-v7";
 
 /// Domain separation for one placement's leaf hash.
 ///
@@ -93,11 +105,17 @@ pub const SUBTREE_DOMAIN: &[u8] = b"gorgon-petra-subtree-v1";
 /// versions only the payload stream, so it stays put while that stream is
 /// unchanged: `v3` of the frame stream added a field to the *placement*, and
 /// `v4` changed only the *framing* around placements, from a flat stream to a
-/// Merkle tree — the payload stream itself is untouched by either. Bumping
-/// this alongside either would restate every paint hash under a version
-/// whose definition never moved, which is exactly the false signal a second
-/// implementation reads these prefixes to avoid.
-pub const PAINT_DOMAIN: &[u8] = b"gorgon-petra-paint-v2";
+/// Merkle tree — the payload stream itself was untouched by either, and the
+/// prefix stayed at `v2` through both. Bumping it alongside either would have
+/// restated every paint hash under a version whose definition never moved,
+/// which is exactly the false signal a second implementation reads these
+/// prefixes to avoid.
+///
+/// `v3` is the first move it has earned: the payload stream itself gained a
+/// member, [`crate::frame::placement::PaintContent::caret`], appended after
+/// the token map. Frame `v7` moves with it, because the frame prefix moves on
+/// any change below it.
+pub const PAINT_DOMAIN: &[u8] = b"gorgon-petra-paint-v3";
 
 /// A frame's content fingerprint.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -186,6 +204,7 @@ pub fn hash_paint_content(content: &PaintContent) -> u64 {
         image,
         custom,
         tokens,
+        caret,
     } = content;
 
     let mut w = Canonical::new();
@@ -214,6 +233,30 @@ pub fn hash_paint_content(content: &PaintContent) -> u64 {
     for (slot, token) in tokens {
         w.text(slot);
         w.text(token);
+    }
+    // The caret is a shape the engine draws, and a flip moves it from one
+    // side of a popover to the other — two different pictures, so two
+    // different digests (`contracts/anchored-placement.md` §5). The side goes
+    // in by name rather than by discriminant, so reordering `Edge` can never
+    // silently rewrite a published digest, and the geometry goes in as
+    // canonical decimals, the same rule every other float in these streams
+    // follows.
+    match caret {
+        Some(CaretPaint {
+            side,
+            tip_x,
+            tip_y,
+            w: base,
+            h: depth,
+        }) => {
+            w.bool(true);
+            w.text(side.as_str());
+            w.text(&canonical_decimal(*tip_x));
+            w.text(&canonical_decimal(*tip_y));
+            w.text(&canonical_decimal(*base));
+            w.text(&canonical_decimal(*depth));
+        }
+        None => w.bool(false),
     }
     truncate64(&blake3::hash(&w.finish()))
 }
@@ -666,12 +709,12 @@ mod tests {
         try_subtree_hashes,
     };
     use crate::frame::placement::{
-        PaintContent, PaintState, Placement, PlacementSemantics, TextPaint,
+        CaretPaint, PaintContent, PaintState, Placement, PlacementSemantics, TextPaint,
     };
     use crate::frame::viewport::Viewport;
     use crate::geom::{Rect, Scale, Size};
     use crate::token::ThemeMode;
-    use crate::tree::{Interaction, NodeKind, Role, TextWrap};
+    use crate::tree::{Edge, Interaction, NodeKind, Role, TextWrap};
 
     fn viewport() -> Viewport {
         Viewport {
@@ -800,6 +843,19 @@ mod tests {
             image: Some("logo.png".into()),
             custom: Some("sparkline".into()),
             tokens,
+            caret: None,
+        }
+    }
+
+    /// A caret with no round number in it, so a field that silently swapped
+    /// with another would still move the hash.
+    fn a_caret() -> CaretPaint {
+        CaretPaint {
+            side: Edge::Bottom,
+            tip_x: 40.5,
+            tip_y: 60.25,
+            w: 12.0,
+            h: 6.0,
         }
     }
 
@@ -984,6 +1040,41 @@ mod tests {
                 c.tokens.insert("background".into(), fg);
                 c.tokens.insert("foreground".into(), bg);
             }),
+            // The caret, one row per field. `rich_content` carries none, so
+            // the first row is "a caret appeared at all" — which is the flip
+            // case the payload version exists for, since a surface that
+            // cannot hold a caret on one side may hold one on the other.
+            ("caret: appeared", |c| c.caret = Some(a_caret())),
+            ("caret.side", |c| {
+                c.caret = Some(CaretPaint {
+                    side: Edge::Top,
+                    ..a_caret()
+                });
+            }),
+            ("caret.tip_x", |c| {
+                c.caret = Some(CaretPaint {
+                    tip_x: 41.0,
+                    ..a_caret()
+                });
+            }),
+            ("caret.tip_y", |c| {
+                c.caret = Some(CaretPaint {
+                    tip_y: 61.0,
+                    ..a_caret()
+                });
+            }),
+            ("caret.w", |c| {
+                c.caret = Some(CaretPaint {
+                    w: 13.0,
+                    ..a_caret()
+                });
+            }),
+            ("caret.h", |c| {
+                c.caret = Some(CaretPaint {
+                    h: 7.0,
+                    ..a_caret()
+                });
+            }),
         ];
 
         for (field, mutate) in table {
@@ -1028,6 +1119,7 @@ mod tests {
             image: None,
             custom: None,
             tokens: BTreeMap::new(),
+            caret: None,
         };
         assert_ne!(hash_paint_content(&content), hash_text("Fibers"));
     }
@@ -1042,6 +1134,7 @@ mod tests {
             image: Some(image.to_owned()),
             custom: Some(custom.to_owned()),
             tokens: BTreeMap::new(),
+            caret: None,
         };
         assert_ne!(
             hash_paint_content(&split("ab", "c")),
@@ -1053,6 +1146,7 @@ mod tests {
             image: None,
             custom: Some("x".into()),
             tokens: BTreeMap::new(),
+            caret: None,
         };
         let empty = PaintContent {
             image: Some(String::new()),
@@ -1069,6 +1163,7 @@ mod tests {
             image: None,
             custom: None,
             tokens,
+            caret: None,
         };
         assert_ne!(
             hash_paint_content(&with(one)),
@@ -1183,10 +1278,10 @@ mod tests {
     fn the_canonical_stream_matches_its_pinned_vectors() {
         assert_eq!(
             super::DOMAIN,
-            b"gorgon-petra-frame-v6",
+            b"gorgon-petra-frame-v7",
             "the frame prefix moved without the vectors below moving with it"
         );
-        assert_eq!(super::PAINT_DOMAIN, b"gorgon-petra-paint-v2");
+        assert_eq!(super::PAINT_DOMAIN, b"gorgon-petra-paint-v3");
         assert_eq!(super::NODE_DOMAIN, b"gorgon-petra-node-v1");
         assert_eq!(super::SUBTREE_DOMAIN, b"gorgon-petra-subtree-v1");
 
@@ -1194,19 +1289,19 @@ mod tests {
         // the payload stream.
         assert_eq!(
             hash_paint_content(&rich_content()),
-            0xca56_af4f_9537_82db,
+            0xcd9c_8db1_5041_f211,
             "the paint payload stream changed; see this test's doc comment"
         );
 
         let vp = viewport();
         assert_eq!(
             digest(&vp, &[]).hex(),
-            "6c3daacb527f432f7651ce2eb15805a52be84879ae58e8e5fef2038b867974c8",
+            "46e2e168d2dc43398b83abf04b80b1ef23ffde7a1877505c8bb1f739aff3bdca",
             "the empty-frame stream changed; see this test's doc comment"
         );
         assert_eq!(
             digest(&vp, &[rich_placement()]).hex(),
-            "b30756a529020b8e2c5e89f98f666c5a56d20f98ec02ae98cc67b1ddcbaea6fa",
+            "cda4ffb487a2fa0615edcd09016f38b7c13b950d457bc9dadba8339be0e9869e",
             "the placement stream changed; see this test's doc comment"
         );
     }

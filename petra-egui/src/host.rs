@@ -32,7 +32,7 @@ use gorgon_petra::geom::{Scale, Size};
 use gorgon_petra::input::{InputEvent, KeyCode, Route, RouteOutcome, route_with_surfaces};
 use gorgon_petra::layout::overlay_surface::surface_scopes;
 use gorgon_petra::layout::{
-    ChangeSet, LayoutCtx, LayoutState, MeasureCache, RowSource, ScrollStack,
+    AnchorRects, ChangeSet, LayoutCtx, LayoutState, MeasureCache, RowSource, ScrollStack,
 };
 use gorgon_petra::token::value::CoverageValue;
 use gorgon_petra::token::{
@@ -766,6 +766,7 @@ impl<A: App> Host<A> {
                 scale: viewport.scale,
                 scroll: ScrollStack::new(),
                 reuse: None,
+                anchors: AnchorRects::new(),
             };
             petrify(
                 self.counter.take(),

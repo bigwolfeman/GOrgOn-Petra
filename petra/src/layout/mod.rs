@@ -19,15 +19,17 @@ pub mod scroll;
 pub mod stack;
 pub mod text;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::sync::Arc;
 
-use crate::frame::placement::{PaintContent, PlacementSemantics, PlacementSink, TextPaint};
+use crate::frame::placement::{
+    CaretPaint, PaintContent, PlacementList, PlacementSemantics, PlacementSink, TextPaint,
+};
 use crate::geom::{Insets, Rect, Scale, Size};
 use crate::token::{ThemeSnapshot, TokenName};
 use crate::tree::props::ScrollProps;
-use crate::tree::{InsetRefs, KeyPath, NodeKind, Role, TextWrap, ViewNode};
+use crate::tree::{Anchor, InsetRefs, KeyPath, NodeKind, Role, TextWrap, ViewNode};
 
 pub use proposal::{ChangeSet, MeasureCache, MeasureKey, Proposal, SizeProposal};
 
@@ -204,6 +206,16 @@ pub struct LayoutCtx<'a> {
     /// from it. `None` is a full negotiation, which is what every caller
     /// outside [`crate::frame::petrify_with_memo`] wants.
     pub reuse: Option<reuse::ReuseState<'a>>,
+    /// Where every node named by an [`Anchor::Node`] was placed, harvested
+    /// before this pass's real walk.
+    ///
+    /// Start it empty ([`AnchorRects::new`]); [`place`] fills it at the root
+    /// of the walk and clears it again for a tree that anchors nothing. It is
+    /// a field on the context rather than a parameter threaded through the
+    /// twelve container modules because it is exactly what this struct is
+    /// for: everything one negotiation pass carries, available at the read
+    /// site (`contracts/anchored-placement.md` §1 step 3).
+    pub anchors: AnchorRects,
 }
 
 impl LayoutCtx<'_> {
@@ -282,6 +294,96 @@ impl LayoutCtx<'_> {
         let answer = f(self);
         self.scroll = saved;
         answer
+    }
+}
+
+/// Where one node an [`Anchor::Node`] names was placed.
+///
+/// Both halves of what the harvest walk records
+/// (`contracts/anchored-placement.md` §1 step 2): the rect the anchor node
+/// took, and the clip that was in force over it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AnchorRect {
+    /// The anchor node's own placed rect.
+    pub rect: Rect,
+    /// The clip in force over it — the chain of every `scroll` and every
+    /// clipped container between the anchor and the root.
+    pub clip: Rect,
+}
+
+impl AnchorRect {
+    /// The part of the anchor a surface is placed against: the rect, narrowed
+    /// to the clip over it.
+    ///
+    /// A row scrolled half out of its viewport is anchored to the half that
+    /// is on screen, not to the whole row: a tooltip that pointed at the
+    /// hidden half would point past the edge of the list at nothing. A row
+    /// scrolled entirely out collapses to a zero-extent rect on the clip's
+    /// boundary — still a determinate place, and the surface still lands
+    /// against the edge of the container the anchor went out of, which is the
+    /// nearest honest answer available.
+    #[must_use]
+    pub fn visible(self) -> Rect {
+        self.rect.intersect(self.clip)
+    }
+}
+
+/// The anchor rects one pass resolves [`Anchor::Node`] against, plus the
+/// pruning set in force while they are being harvested.
+///
+/// Ordered, and it has to be: `contracts/anchored-placement.md` §7 requires
+/// the harvest-to-place hand-off be order-independent, and a hash-keyed map
+/// here would make iteration order a nondeterminism bug that only some runs
+/// would show. `BTreeMap` iterates in key order on every target, which is
+/// the same reason `frame::digest` hashes the token map out of one.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AnchorRects {
+    rects: BTreeMap<String, AnchorRect>,
+    /// Every id the harvest walk may descend into: the anchor targets and
+    /// their ancestors. `None` outside a harvest walk, which is what makes
+    /// [`AnchorRects::pruned`] free on the real walk.
+    harvest: Option<BTreeSet<String>>,
+}
+
+impl AnchorRects {
+    /// Empty: nothing harvested, no harvest walk running.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Where the node with canonical id `id` was placed, if the harvest
+    /// reached it.
+    #[must_use]
+    pub fn get(&self, id: &str) -> Option<AnchorRect> {
+        self.rects.get(id).copied()
+    }
+
+    /// How many anchors were harvested. Zero for every tree that declares no
+    /// [`Anchor::Node`] at all.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.rects.len()
+    }
+
+    /// Whether nothing was harvested.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.rects.is_empty()
+    }
+
+    /// Whether the walk should stop here: true only inside a harvest walk,
+    /// and only for a subtree holding no anchor target
+    /// (`contracts/anchored-placement.md` §1 step 2, "MUST prune into a
+    /// subtree only when it contains a `T` member").
+    ///
+    /// The real walk answers `false` without building an id at all, which is
+    /// what "a tree with no anchors pays nothing" means in practice.
+    fn pruned(&self, path: &KeyPath) -> bool {
+        match &self.harvest {
+            None => false,
+            Some(keep) => !keep.contains(&path.id()),
+        }
     }
 }
 
@@ -371,6 +473,13 @@ pub fn measure(
 
 /// Place `node` into `slot`, emitting one placement for it and for every node
 /// under it. `path` is pushed and popped here, as in [`measure`].
+///
+/// At the root of a walk — `path` empty, which is what
+/// [`crate::frame::petrify`] hands in and what nothing below the root ever
+/// can, since this function pushes and pops exactly one key per node — the
+/// anchor rects are harvested first ([`harvest_anchor_rects`]). Every
+/// recursive call arrives with a non-empty path, so the harvest runs once per
+/// frame and the containers below know nothing about it.
 pub fn place(
     node: &ViewNode,
     ctx: &mut LayoutCtx<'_>,
@@ -378,7 +487,147 @@ pub fn place(
     slot: Slot,
     sink: &mut dyn PlacementSink,
 ) {
+    if path.is_empty() {
+        harvest_anchor_rects(node, ctx, slot);
+    }
+    place_node(node, ctx, path, slot, sink);
+}
+
+/// Every id an [`Anchor::Node`] in this tree names, and how deeply anchored
+/// surfaces nest around those ids.
+///
+/// The depth is the count of *anchored* surfaces enclosing an anchor target,
+/// maximised over the targets: a target inside an `Anchor::Viewport` surface
+/// adds nothing, because such a surface is placed without reference to any
+/// other node and so is already correct in the first harvest walk. This is
+/// the `d` of `contracts/anchored-placement.md` §1 step 4, and it is computed
+/// from the tree, never from a previous frame.
+///
+/// Related to `tree::validate`'s own anchor walk but not the same question:
+/// that one asks whether the anchors can be resolved at all, and its refusals
+/// are what let this one assume every target exists and no chain loops.
+fn anchor_targets(root: &ViewNode) -> (BTreeSet<String>, usize) {
+    fn walk(
+        node: &ViewNode,
+        path: &mut KeyPath,
+        surfaces_above: usize,
+        targets: &mut BTreeSet<String>,
+        enclosure: &mut BTreeMap<String, usize>,
+    ) {
+        path.push(node.key.clone());
+        let anchored = match &node.props.anchor {
+            Some(Anchor::Node { id, .. }) => {
+                targets.insert(id.clone());
+                true
+            }
+            _ => false,
+        };
+        // A surface counts its *own* anchor, not only its ancestors': a
+        // surface anchored directly to another anchored surface's rect needs
+        // that surface placed first, exactly as one anchored to a node inside
+        // it does. Counting only ancestors here left that case on one walk,
+        // resolving against a rect the first walk had centred in the viewport.
+        let own = surfaces_above + usize::from(anchored);
+        if own > 0 {
+            enclosure.insert(path.id(), own);
+        }
+        for child in &node.children {
+            walk(child, path, own, targets, enclosure);
+        }
+        path.pop();
+    }
+
+    let mut targets = BTreeSet::new();
+    let mut enclosure = BTreeMap::new();
+    walk(root, &mut KeyPath::root(), 0, &mut targets, &mut enclosure);
+    let depth = targets
+        .iter()
+        .filter_map(|id| enclosure.get(id).copied())
+        .max()
+        .unwrap_or(0);
+    (targets, depth)
+}
+
+/// Place the anchor set into `ctx.anchors`, so the real walk below can
+/// resolve every [`Anchor::Node`] against a rect that exists.
+///
+/// This is `contracts/anchored-placement.md` §1 end to end. `1 + d` pruned
+/// walks run, each seeded by the one before it, where `d` is the surface-
+/// anchor nesting depth [`anchor_targets`] reads off the tree. A tree that
+/// names no anchor runs none of them and the pass costs one walk of the tree
+/// to find that out.
+///
+/// Two things it deliberately does not do. It does not read a placement back
+/// out of the sink mid-walk — the harvest is a whole extra walk precisely so
+/// that every anchor is answered the same way, rather than only those that
+/// happen to be placed before the surface asking. And it does not consult the
+/// memo: the reuse cursor is set aside for the duration, because a harvested
+/// rect that came from the previous frame would be exactly the stale answer
+/// §6 exists to prevent. The measure cache *is* shared, which is what keeps
+/// this from being a second measurement pass — the harvest warms it and the
+/// real walk reads it back.
+///
+/// One cost this does pay, named rather than hidden: [`RowSource::rows`] is
+/// not cached, so a `collection` on the path to an anchor is materialized
+/// once per harvest walk as well as once for the real walk. That is safe by
+/// that trait's own contract — "a `collection` re-fetches its rows every
+/// frame" — and it is bounded by the pruning, which descends into a
+/// collection only when the anchor is inside it. A host whose row source is
+/// expensive and whose anchors live inside lists pays for it, and the fix
+/// there is the caching the trait already invites, not a second cache here.
+fn harvest_anchor_rects(root: &ViewNode, ctx: &mut LayoutCtx<'_>, slot: Slot) {
+    ctx.anchors = AnchorRects::new();
+    let (targets, depth) = anchor_targets(root);
+    if targets.is_empty() {
+        return;
+    }
+
+    // Every id the walk is allowed to descend into: the targets, and the
+    // ancestors it has to pass through to reach them.
+    let mut keep: BTreeSet<String> = BTreeSet::new();
+    for id in &targets {
+        keep.extend(KeyPath::ancestor_ids(id));
+        keep.insert(id.clone());
+    }
+    let mut keep = Some(keep);
+
+    let held = ctx.reuse.take();
+    for _ in 0..=depth {
+        ctx.anchors.harvest = keep.take();
+        let mut sink = PlacementList::new();
+        place_node(root, ctx, &mut KeyPath::root(), slot, &mut sink);
+        keep = ctx.anchors.harvest.take();
+        ctx.anchors.rects = sink
+            .as_slice()
+            .iter()
+            .filter(|p| targets.contains(&p.id))
+            .map(|p| {
+                (
+                    p.id.clone(),
+                    AnchorRect {
+                        rect: p.rect,
+                        clip: p.clip,
+                    },
+                )
+            })
+            .collect();
+    }
+    ctx.reuse = held;
+}
+
+/// [`place`] below the root: no harvest, and the harvest walk's own pruning.
+fn place_node(
+    node: &ViewNode,
+    ctx: &mut LayoutCtx<'_>,
+    path: &mut KeyPath,
+    slot: Slot,
+    sink: &mut dyn PlacementSink,
+) {
     path.push(node.key.clone());
+    if ctx.anchors.pruned(path) {
+        path.pop();
+        return;
+    }
     let slot = match node.props.opacity {
         Some(o) => slot.faded(o),
         None => slot,
@@ -419,7 +668,7 @@ pub fn place(
         state.note_replaced();
         state.enter(counterpart);
     }
-    place_kind(node, ctx, path, slot, sink);
+    let caret = place_kind(node, ctx, path, slot, sink);
     if let Some(state) = ctx.reuse.as_mut() {
         state.leave();
     }
@@ -429,7 +678,18 @@ pub fn place(
             path.id(),
             "a container must push its own placement before its children's"
         );
-        let content = paint_content_of(node);
+        // Read back off the placement this node just pushed rather than
+        // recomputed here: the flags a per-state token binding keys on are
+        // exactly the ones `semantics_of` already resolved, and deriving them
+        // twice is how the painted state and the reported state drift apart.
+        let states = active_states(&sink.placed()[index].semantics);
+        let mut content = paint_content_of(node, &states);
+        // The resolved side of an anchored surface is not knowable to an
+        // author and not derivable from the tree — only the ladder that just
+        // ran knows which way the box flipped — so this is the one payload
+        // member the placement pass hands the dispatcher rather than the
+        // other way round (`contracts/anchored-placement.md` §5).
+        content.caret = caret;
         if !content.is_empty() {
             sink.attach(index, content);
         }
@@ -442,13 +702,56 @@ pub fn place(
     path.pop();
 }
 
+/// Which of [`crate::tree::STATE_NAMES`] this placement is in, in the order
+/// they are applied: later entries override earlier ones.
+///
+/// A projection of the resolved semantics and nothing else, so a state name
+/// means the same thing to the token collapse below as it does to the
+/// accessibility tree and to a driver's `ui-state` query. `hovered` and
+/// `active` are `false` for every placement until `LayoutState` carries the
+/// pointer snapshot they project (`semantics_of` says so at the source); the
+/// day it does, `hover:` and `active:` token blocks light up and nothing here
+/// changes.
+#[must_use]
+pub fn active_states(semantics: &PlacementSemantics) -> Vec<&'static str> {
+    // Built in `STATE_NAMES` order rather than in whatever order the flags
+    // are read: the order *is* the precedence, and it is written down once,
+    // beside the names.
+    let held = |name: &str| match name {
+        "selected" => semantics.selected,
+        "read-only" => semantics.read_only,
+        "focus" => semantics.focused,
+        "hover" => semantics.hovered,
+        "active" => semantics.active,
+        "disabled" => semantics.disabled,
+        // Unreachable through `STATE_NAMES`, and tree acceptance refuses any
+        // other name before a frame is ever placed
+        // (`Violation::UnknownStateName`).
+        _ => false,
+    };
+    crate::tree::STATE_NAMES
+        .iter()
+        .copied()
+        .filter(|name| held(name))
+        .collect()
+}
+
 /// What this node draws, beyond its rect.
 ///
 /// Derived from the tree rather than from the placement, because the placement
 /// deliberately holds only what the digest hashes
-/// (`contracts/frame-identity.md`).
+/// (`contracts/frame-identity.md`) — except for `states`, which is the
+/// resolved interaction state the tree cannot know
+/// ([`active_states`]).
+///
+/// `states` is applied over `props.tokens` in order, so a node that binds
+/// `background` both plainly and under `hover` paints the hover binding while
+/// hovered and the plain one otherwise. The collapse happens here, once, and
+/// never in a container: twelve node kinds each folding a precedence order is
+/// twelve chances to fold it differently (`contracts/interaction-state.md`
+/// §6).
 #[must_use]
-pub fn paint_content_of(node: &ViewNode) -> PaintContent {
+pub fn paint_content_of(node: &ViewNode, states: &[&str]) -> PaintContent {
     let props = &node.props;
     let text = match node.kind {
         NodeKind::Text => Some(props.text.clone().unwrap_or_default()),
@@ -475,11 +778,25 @@ pub fn paint_content_of(node: &ViewNode) -> PaintContent {
             NodeKind::Custom => props.custom_kind.clone(),
             _ => None,
         },
-        tokens: props
-            .tokens
-            .iter()
-            .map(|(k, v)| (k.clone(), v.as_str().to_owned()))
-            .collect(),
+        tokens: {
+            let mut tokens: BTreeMap<String, String> = props
+                .tokens
+                .iter()
+                .map(|(k, v)| (k.clone(), v.as_str().to_owned()))
+                .collect();
+            for state in states {
+                let Some(overrides) = props.state_tokens.get(*state) else {
+                    continue;
+                };
+                for (slot, token) in overrides {
+                    tokens.insert(slot.clone(), token.as_str().to_owned());
+                }
+            }
+            tokens
+        },
+        // Written by the placement pass through the dispatcher, never
+        // authored: see `crate::layout::place`.
+        caret: None,
     }
 }
 
@@ -505,20 +822,26 @@ fn measure_kind(
     }
 }
 
+/// Dispatch one node's placement, and carry back the one payload only the
+/// placement pass can know: an anchored surface's caret.
+///
+/// Eleven of the twelve kinds return `None` because there is nothing about
+/// their placement an author could not have written down; a `surface`
+/// anchored to a node returns the caret the ladder resolved for it.
 fn place_kind(
     node: &ViewNode,
     ctx: &mut LayoutCtx<'_>,
     path: &mut KeyPath,
     slot: Slot,
     sink: &mut dyn PlacementSink,
-) {
+) -> Option<CaretPaint> {
     match node.kind {
         NodeKind::Stack => stack::place(node, ctx, path, slot, sink),
         NodeKind::Grid => grid::place(node, ctx, path, slot, sink),
         NodeKind::Overlay => overlay::place(node, ctx, path, slot, sink),
         NodeKind::Scroll => scroll::place(node, ctx, path, slot, sink),
         NodeKind::Collection => scroll::place_collection(node, ctx, path, slot, sink),
-        NodeKind::Surface => overlay_surface::place(node, ctx, path, slot, sink),
+        NodeKind::Surface => return overlay_surface::place(node, ctx, path, slot, sink),
         NodeKind::Text => text::place(node, ctx, path, slot, sink),
         NodeKind::Image
         | NodeKind::Input
@@ -526,6 +849,7 @@ fn place_kind(
         | NodeKind::Separator
         | NodeKind::Custom => leaf::place(node, ctx, path, slot, sink),
     }
+    None
 }
 
 /// The semantic payload for one node, built the same way by every container.
@@ -725,7 +1049,7 @@ mod tests {
             ..Props::default()
         });
         assert_eq!(
-            super::paint_content_of(&empty).text.unwrap().text,
+            super::paint_content_of(&empty, &[]).text.unwrap().text,
             "Filter…"
         );
         let filled = ViewNode::new(NodeKind::Input, "f").with_props(Props {
@@ -733,7 +1057,10 @@ mod tests {
             placeholder: Some("Filter…".into()),
             ..Props::default()
         });
-        assert_eq!(super::paint_content_of(&filled).text.unwrap().text, "fiber");
+        assert_eq!(
+            super::paint_content_of(&filled, &[]).text.unwrap().text,
+            "fiber"
+        );
     }
 
     /// Token references reach the renderer through the payload, not through
@@ -755,7 +1082,7 @@ mod tests {
             TokenName::new("surface.raised").unwrap(),
         );
         let node = ViewNode::new(NodeKind::Stack, "panel").with_props(props);
-        let content = super::paint_content_of(&node);
+        let content = super::paint_content_of(&node, &[]);
         assert_eq!(
             content.tokens.get("background").map(String::as_str),
             Some("surface.raised")
@@ -1019,5 +1346,203 @@ mod tests {
         assert_eq!(state.scroll_offset("/b"), 0.0);
         assert_eq!(state.scroll_offset("/c"), 12.0);
         assert_eq!(state.scroll_offset("/missing"), 0.0);
+    }
+
+    // -- The harvest walk: what it costs, and what it collects. ------------
+
+    /// A tree that names no anchor runs no harvest walk, and one that names
+    /// an anchor harvests exactly the anchors it names — not every node it
+    /// passed through on the way (`contracts/anchored-placement.md` §1 steps
+    /// 1 and 2).
+    ///
+    /// Read off the context after the walk rather than inferred from the
+    /// placements, because "the anchor map is empty" and "the surface landed
+    /// somewhere plausible" are two different claims and only the first one
+    /// is about cost.
+    #[test]
+    fn the_harvest_collects_the_anchor_set_and_nothing_else() {
+        use crate::frame::PlacementList;
+        use crate::geom::Rect;
+        use crate::testing::Harness;
+        use crate::tree::{Align, Anchor, Edge, KeyPath, Layer, Props};
+
+        let plain = ViewNode::new(NodeKind::Stack, "root")
+            .child(ViewNode::new(NodeKind::Text, "a"))
+            .child(ViewNode::new(NodeKind::Text, "b"));
+        let anchored = ViewNode::new(NodeKind::Stack, "root")
+            .child(ViewNode::new(NodeKind::Text, "a"))
+            .child(ViewNode::new(NodeKind::Text, "b"))
+            .child(
+                ViewNode::new(NodeKind::Surface, "popup")
+                    .with_props(Props {
+                        layer: Some(Layer::Popup),
+                        anchor: Some(Anchor::Node {
+                            id: "/root/b".into(),
+                            edge: Edge::Bottom,
+                            align: Align::Center,
+                            offset: None,
+                        }),
+                        ..Props::default()
+                    })
+                    .child(ViewNode::new(NodeKind::Text, "body")),
+            );
+
+        let harvested = |tree: &ViewNode| {
+            let mut h = Harness::new();
+            let mut ctx = h.ctx();
+            let mut path = KeyPath::root();
+            let mut sink = PlacementList::new();
+            super::place(
+                tree,
+                &mut ctx,
+                &mut path,
+                Slot::new(Rect::new(0.0, 0.0, 400.0, 300.0)),
+                &mut sink,
+            );
+            ctx.anchors.clone()
+        };
+
+        let none = harvested(&plain);
+        assert!(
+            none.is_empty(),
+            "a tree with no Anchor::Node harvests nothing at all"
+        );
+
+        let some = harvested(&anchored);
+        assert_eq!(some.len(), 1, "one anchor named, one rect harvested");
+        assert!(
+            some.get("/root/b").is_some(),
+            "and it is the one the anchor names"
+        );
+        assert!(
+            some.get("/root/a").is_none(),
+            "a sibling the walk had to measure past is not an anchor"
+        );
+        assert!(
+            some.get("/root").is_none(),
+            "nor is an ancestor it had to descend through"
+        );
+    }
+
+    // -- Per-state token bindings, collapsed once, by the dispatcher. -------
+
+    /// The whole of `contracts/interaction-state.md` §6, end to end through
+    /// `petrify`: the author declares per-state overrides, and the painter is
+    /// handed one flat map with the right one already folded in.
+    ///
+    /// Driven through a real frame rather than by calling
+    /// [`super::paint_content_of`] with a hand-written state list, because
+    /// the claim under test is that the *dispatcher* does the collapse from
+    /// the state it resolved — a test that supplied the list itself would
+    /// pass with the projection wired to nothing.
+    #[test]
+    fn the_dispatcher_collapses_per_state_bindings_into_the_flat_token_map() {
+        use crate::frame::{TransitionActivity, Viewport, petrify};
+        use crate::geom::Size;
+        use crate::testing::{Harness, validated};
+        use crate::token::{ThemeMode, TokenName};
+        use crate::tree::Props;
+        use std::collections::BTreeMap;
+
+        let name = |n: &str| TokenName::new(n).unwrap();
+        let slot = |token: &str| -> BTreeMap<String, TokenName> {
+            [("background".to_owned(), name(token))]
+                .into_iter()
+                .collect()
+        };
+        let mut states = BTreeMap::new();
+        states.insert("focus".to_owned(), slot("surface.layer-one"));
+        states.insert("disabled".to_owned(), slot("surface.layer-two"));
+
+        let build = |disabled: bool| {
+            let mut node = ViewNode::new(NodeKind::Text, "t").with_props(Props {
+                text: Some("hi".into()),
+                tokens: [("background".to_owned(), name("surface.base"))]
+                    .into_iter()
+                    .collect(),
+                state_tokens: states.clone(),
+                ..Props::default()
+            });
+            node.semantics.disabled = disabled;
+            ViewNode::new(NodeKind::Stack, "root").child(node)
+        };
+
+        let painted = |tree: &ViewNode, focused: Option<&str>| {
+            let mut h = Harness::new();
+            h.state.focused = focused.map(str::to_owned);
+            let frame = petrify(
+                1,
+                validated(tree),
+                &mut h.ctx(),
+                Viewport::new(Size::new(200.0, 100.0), ThemeMode::Dark),
+                TransitionActivity::default(),
+            );
+            let at = frame
+                .placements
+                .iter()
+                .position(|p| p.id == "/root/t")
+                .expect("the node is placed");
+            frame.content[at].tokens.get("background").cloned()
+        };
+
+        let plain = build(false);
+        assert_eq!(
+            painted(&plain, None).as_deref(),
+            Some("surface.base"),
+            "no state, so the base binding stands"
+        );
+        assert_eq!(
+            painted(&plain, Some("/root/t")).as_deref(),
+            Some("surface.layer-one"),
+            "the focused node takes its `focus` override"
+        );
+        assert_eq!(
+            painted(&plain, Some("/root/other")).as_deref(),
+            Some("surface.base"),
+            "a different node being focused overrides nothing here"
+        );
+
+        let disabled = build(true);
+        assert_eq!(
+            painted(&disabled, Some("/root/t")).as_deref(),
+            Some("surface.layer-two"),
+            "`disabled` is last in STATE_NAMES, so it wins over `focus`: a \
+             control that cannot be operated must not paint as though the \
+             keyboard being on it means anything"
+        );
+    }
+
+    /// The state list is the precedence, and it is read off the resolved
+    /// semantics rather than invented.
+    #[test]
+    fn active_states_reports_the_resolved_flags_in_precedence_order() {
+        use super::active_states;
+        use crate::frame::PlacementSemantics;
+
+        let mut semantics = PlacementSemantics {
+            focused: true,
+            selected: true,
+            disabled: true,
+            ..semantics_of(
+                &ViewNode::new(NodeKind::Text, "t"),
+                "/t",
+                &LayoutState::default(),
+            )
+        };
+        assert_eq!(
+            active_states(&semantics),
+            vec!["selected", "focus", "disabled"],
+            "STATE_NAMES order, which is the order the collapse applies them in"
+        );
+        semantics.disabled = false;
+        assert_eq!(active_states(&semantics), vec!["selected", "focus"]);
+        assert!(
+            active_states(&PlacementSemantics {
+                focused: false,
+                selected: false,
+                ..semantics
+            })
+            .is_empty()
+        );
     }
 }

@@ -12,12 +12,13 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use gorgon_petra::frame::{TransitionActivity, Viewport, petrify, petrify_with_memo};
+use gorgon_petra::geom::Axis;
 use gorgon_petra::geom::Size;
 use gorgon_petra::layout::ChangeSet;
 use gorgon_petra::layout::reuse::{FrameMemo, ReuseStats};
 use gorgon_petra::testing::{Harness, validated};
 use gorgon_petra::token::ThemeMode;
-use gorgon_petra::tree::{Key, NodeKind, Props, ViewNode};
+use gorgon_petra::tree::{Align, Anchor, Edge, Key, Layer, NodeKind, Props, ViewNode};
 
 const VIEWPORT: Size = Size { w: 400.0, h: 600.0 };
 
@@ -132,6 +133,147 @@ fn assert_same_frame(
         "subtree hashes differ"
     );
     assert_eq!(incremental.digest, full.digest, "digests differ");
+}
+
+/// The anchor of a `surface` scrolls out from under it: the memo path and a
+/// full negotiation must produce the same placement list, not merely the same
+/// digest.
+///
+/// This is the case `contracts/anchored-placement.md` §6 exists for, and it
+/// is the one the reuse test cannot catch on its own. Nothing about the
+/// surface changed between the two frames: same allocation, same slot (an
+/// `overlay` hands every child the whole window, scrolled or not), nothing
+/// declared. Pointer identity plus slot equality therefore says "reuse it",
+/// and reusing it paints the popover beside where its anchor *used* to be —
+/// under a digest that says the frame is current, because the digest is
+/// computed from the placements that were carried over.
+///
+/// So the assertion is against a full negotiation from the same state, in
+/// this file's own standard: every placement, every payload, every hash.
+#[test]
+fn a_scrolled_anchor_moves_the_surface_on_the_memo_path_too() {
+    fn row(key: &str) -> Arc<ViewNode> {
+        let mut node = ViewNode::new(NodeKind::Spacer, Key::new(key));
+        node.constraints.vertical.min = Some(50.0);
+        node.constraints.vertical.max = Some(50.0);
+        node.constraints.horizontal.min = Some(120.0);
+        node.constraints.horizontal.max = Some(120.0);
+        Arc::new(node)
+    }
+    let mut popup = ViewNode::new(NodeKind::Spacer, "body");
+    popup.constraints.vertical.min = Some(30.0);
+    popup.constraints.vertical.max = Some(30.0);
+    popup.constraints.horizontal.min = Some(60.0);
+    popup.constraints.horizontal.max = Some(60.0);
+    let tree = Arc::new(
+        ViewNode::new(NodeKind::Overlay, "root")
+            .child(
+                ViewNode::new(NodeKind::Scroll, "list")
+                    .with_props(Props {
+                        axis: Some(Axis::Vertical),
+                        ..Props::default()
+                    })
+                    .child({
+                        // Twenty rows of 50 is 1000 against a 600-high
+                        // window: the scroll must actually overflow, or the
+                        // offset is clamped to zero and nothing moves.
+                        let mut rows = ViewNode::new(NodeKind::Stack, "rows").with_props(Props {
+                            axis: Some(Axis::Vertical),
+                            ..Props::default()
+                        });
+                        for i in 0..20 {
+                            rows = rows.child_shared(row(&format!("r{i}")));
+                        }
+                        rows
+                    }),
+            )
+            .child(
+                ViewNode::new(NodeKind::Surface, "popup")
+                    .with_props(Props {
+                        layer: Some(Layer::Popup),
+                        anchor: Some(Anchor::Node {
+                            id: "/root/list/rows/r2".into(),
+                            edge: Edge::Bottom,
+                            align: Align::Center,
+                            offset: None,
+                        }),
+                        ..Props::default()
+                    })
+                    .child(popup),
+            )
+            // Untouched by the scroll and untouched by the anchor rule, so
+            // something in this frame is still eligible for reuse: without
+            // it the comparison below would be between two full
+            // negotiations, which proves nothing about the memo path.
+            .child_shared(panel("aside", "x")),
+    );
+
+    let mut h = Harness::new();
+    let first = petrify(
+        1,
+        validated(&tree),
+        &mut h.ctx(),
+        viewport(),
+        TransitionActivity::default(),
+    );
+    let before = first
+        .placement("/root/popup")
+        .expect("the surface is placed")
+        .rect;
+    let memo = FrameMemo::adopt(
+        Arc::clone(&tree),
+        first,
+        h.state.clone(),
+        h.theme_rev,
+        h.scale,
+    );
+
+    // The only thing that changes between the two frames.
+    h.state.scroll_offsets.insert("/root/list".into(), 40.0);
+    let changes = ChangeSet::None;
+    h.cache.apply(&changes);
+    let dirty = memo
+        .dirty_ids(&changes, &h.state)
+        .expect("ChangeSet::None has a dirty set");
+    let (memoed, stats) = petrify_with_memo(
+        2,
+        validated(&tree),
+        &mut h.ctx(),
+        &memo,
+        &dirty,
+        viewport(),
+        TransitionActivity::default(),
+    );
+
+    let mut fresh = Harness::new();
+    fresh.state = h.state.clone();
+    let full = petrify(
+        2,
+        validated(&tree),
+        &mut fresh.ctx(),
+        viewport(),
+        TransitionActivity::default(),
+    );
+
+    let after = memoed
+        .placement("/root/popup")
+        .expect("the surface is placed")
+        .rect;
+    assert_ne!(
+        before.y, after.y,
+        "the fixture must actually move the anchor, or this test proves nothing"
+    );
+    assert_eq!(
+        after.y,
+        before.y - 40.0,
+        "the surface follows its anchor by the scroll delta, in the same frame"
+    );
+    assert_same_frame(&memoed, &full);
+    assert!(
+        stats.reused_nodes > 0,
+        "the pass must still carry something over, or the comparison is \
+         between two full negotiations: {stats:?}"
+    );
 }
 
 /// Nothing changed at all: the same root allocation handed back.
