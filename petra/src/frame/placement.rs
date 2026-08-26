@@ -86,6 +86,54 @@ pub struct PlacementSemantics {
     /// [`crate::layout::semantics_of`]; the focus tree owns focus and this is
     /// its per-placement projection, never a place to write.
     pub focused: bool,
+    /// Whether the pointer is inside this node's hit region this frame.
+    ///
+    /// Engine-derived, exactly like [`PlacementSemantics::focused`], and from
+    /// the same hit test the router uses for clicks — an app deriving its own
+    /// hover from a pointer route would be a second hit test by a second
+    /// owner (`contracts/interaction-state.md` §1). The engine refuses this as
+    /// a [`crate::tree::Semantics`] field for that reason.
+    ///
+    /// A digest input under `gorgon-petra-frame-v6`, the same way `focused`
+    /// has been since `v3`: a hovered node is to paint from its own token
+    /// family, so two frames differing only in hover are two different
+    /// pictures and `Action::Hover` is a mutating action by design
+    /// (`contracts/interaction-state.md` §3). The flag is hashed and projected
+    /// as of this change; the per-state token binding that makes it visible
+    /// lands with the token work.
+    pub hovered: bool,
+    /// Whether this node is pressed: it holds pointer capture **and** the
+    /// pointer is still inside its rect.
+    ///
+    /// Distinct from [`PlacementSemantics::captured`] rather than a synonym
+    /// for it. A button pressed and then dragged off keeps the capture — it
+    /// is still the node every move routes to — but stops looking pressed.
+    /// Collapsing the two would either leave a button lit while the pointer
+    /// is elsewhere, or drop the gesture the moment it left the rect.
+    pub active: bool,
+    /// Whether this node holds pointer capture this frame.
+    ///
+    /// Outlives [`PlacementSemantics::active`] on a drag that leaves the rect,
+    /// and is what makes a gesture survive crossing a modal's edge
+    /// (`contracts/interaction-state.md` §7).
+    pub captured: bool,
+    /// Declared read-only state.
+    ///
+    /// **Not** a weaker `disabled`. A read-only node stays Tab-reachable, stays
+    /// a legal focus target, and keeps its focus ring; what it declares is
+    /// fewer interactions, never a second refusal path
+    /// (`contracts/interaction-state.md` §5). Mapping it onto `disabled` in
+    /// AccessKit, or adding it to the focus filter, is the defect that rule
+    /// exists to prevent.
+    pub read_only: bool,
+    /// Declared skeleton state: this node stands in for content that has not
+    /// arrived, so it paints as a placeholder shape rather than as itself.
+    ///
+    /// The top of `contracts/interaction-state.md` §4's precedence ladder — a
+    /// skeleton is not hoverable, pressable, or disabled-looking, it is simply
+    /// not there yet. Carried, hashed and projected here; the resolver that
+    /// ranks it against the others lands with the state work.
+    pub skeleton: bool,
     /// Declared disabled state.
     pub disabled: bool,
     /// Declared selected state.
@@ -203,9 +251,44 @@ impl PaintContent {
     /// the digest is blind, and over-reporting costs a consumer a pixel
     /// comparison it did not need, where under-reporting would have it trust
     /// a digest that cannot see the difference.
+    ///
+    /// This is **not** the question "can this node repaint on its own";
+    /// [`PaintContent::repaints_itself`] is. The two answered the same for
+    /// every payload that has ever existed, which is exactly why they were one
+    /// function until they were split.
     #[must_use]
     pub fn is_hosted(&self) -> bool {
         self.image.is_some() || self.custom.is_some()
+    }
+
+    /// Whether this node can put new pixels on the screen without Petra
+    /// placing a new frame.
+    ///
+    /// The wider of the two predicates `contracts/draw-list.md` §6 binds, and
+    /// the one the ambient ledger is written against
+    /// ([`crate::anim::AmbientLedger::observe`]): the ledger's question is
+    /// *"who could have asked for this repaint"*, which is not
+    /// [`PaintContent::is_hosted`]'s question, *"where is the digest blind"*.
+    ///
+    /// Today the two answer the same for every payload member that exists,
+    /// because `custom` — a registered painter free to draw whatever it likes
+    /// each frame — has been the only self-repainting content Petra has ever
+    /// carried. They are separate functions anyway, ahead of the payload that
+    /// separates them, because the alternative is finding this hole a second
+    /// time from the other end: an undeclared repainting surface invisible to
+    /// the lane that exists to catch it (FR-030, `research.md` D-05).
+    ///
+    /// The case that separates them is a **geometry-only canvas**: a draw list
+    /// with no `Sprite` in it is fully digest-visible — every coordinate it
+    /// draws is hashed — so it is never hosted, yet it rebuilds its list each
+    /// frame and so always repaints itself. When `NodeKind::Canvas` and its
+    /// payload land (T121, T122), this body gains `|| self.canvas.is_some()`
+    /// and [`PaintContent::is_hosted`] gains the narrower
+    /// `canvas.as_ref().is_some_and(DrawList::references_assets)`. Neither
+    /// consumer changes, which is the point of splitting them first.
+    #[must_use]
+    pub fn repaints_itself(&self) -> bool {
+        self.is_hosted()
     }
 }
 
@@ -784,6 +867,42 @@ mod tests {
 
         for (what, content, want) in cases {
             assert_eq!(content.is_hosted(), want, "{what}");
+            // The wider predicate is a *superset* of this one, on every
+            // payload shape, always. That direction is the half a future
+            // canvas term could get wrong: adding `canvas` to `is_hosted`
+            // without adding it to `repaints_itself` would make a
+            // sprite-carrying canvas hosted and yet not repaint-capable,
+            // which is the ambient hole of `research.md` D-05 reopened from
+            // the other end.
+            assert!(
+                !content.is_hosted() || content.repaints_itself(),
+                "{what}: hosted content must always be able to repaint itself"
+            );
         }
+    }
+
+    /// A bare container repaints nothing of its own.
+    ///
+    /// The lower bound on the wider predicate, kept beside its upper bound
+    /// above: a predicate that answered `true` for every placement would
+    /// satisfy the superset check and make the ambient ledger attribute an
+    /// unexplained repaint to every node in the frame.
+    #[test]
+    fn a_payload_that_draws_nothing_repaints_nothing() {
+        let empty = PaintContent::default();
+        assert!(!empty.repaints_itself());
+        let text = PaintContent {
+            text: Some(TextPaint {
+                text: "hi".into(),
+                style: None,
+                wrap: TextWrap::Wrap,
+                max_lines: None,
+            }),
+            ..PaintContent::default()
+        };
+        assert!(
+            !text.repaints_itself(),
+            "a text run is redrawn by Petra, never by itself"
+        );
     }
 }

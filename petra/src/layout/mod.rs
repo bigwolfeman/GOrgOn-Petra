@@ -549,6 +549,21 @@ pub fn semantics_of(node: &ViewNode, id: &str, state: &LayoutState) -> Placement
         label: node.semantics.label.clone(),
         value: node.semantics.value.clone(),
         focused: state.focused.as_deref() == Some(id),
+        // Engine-derived, from the pointer snapshot this frame is placed
+        // from. `LayoutState` carries no pointer state yet — the `hovered`,
+        // `pressed` and `capture` members `contracts/interaction-state.md` §2
+        // adds are in flight — so no node can be in any of these three states
+        // and the honest projection of the current snapshot is `false`. This
+        // is the projection, not a policy: the day `LayoutState` grows those
+        // members, these three lines read them the way `focused` reads
+        // `state.focused`, and nothing else here changes.
+        hovered: false,
+        active: false,
+        captured: false,
+        // App-declared, so these two project straight off the node the way
+        // `disabled` does, and are complete as of this change.
+        read_only: node.semantics.read_only,
+        skeleton: node.semantics.skeleton,
         disabled: node.semantics.disabled,
         selected: node.semantics.selected,
         expanded: node.semantics.expanded,

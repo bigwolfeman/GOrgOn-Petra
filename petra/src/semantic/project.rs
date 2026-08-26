@@ -59,6 +59,11 @@ fn node_at(frame: &PetrifiedFrame, index: usize, children: Vec<SemanticNode>) ->
     let PlacementSemantics {
         role,
         focused,
+        hovered,
+        active,
+        captured,
+        read_only,
+        skeleton,
         label,
         value,
         disabled,
@@ -81,6 +86,11 @@ fn node_at(frame: &PetrifiedFrame, index: usize, children: Vec<SemanticNode>) ->
         value: value.clone(),
         state: NodeState {
             focused: *focused,
+            hovered: *hovered,
+            active: *active,
+            captured: *captured,
+            read_only: *read_only,
+            skeleton: *skeleton,
             disabled: *disabled,
             selected: *selected,
             expanded: *expanded,

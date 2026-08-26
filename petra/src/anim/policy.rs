@@ -37,13 +37,20 @@
 //! # Ambient declaration (FR-062, T084)
 //!
 //! FR-033's zero-idle claim and FR-039's settle definition are both written in
-//! terms of *declared* ambient animation. A hosted surface — a custom painter
-//! or an image painter, the two things
-//! [`crate::frame::PaintContent::is_hosted`] answers `true` for — draws
-//! whatever it likes inside its rect, and Petra cannot see in. If such a
+//! terms of *declared* ambient animation. A self-repainting surface — anything
+//! [`crate::frame::PaintContent::repaints_itself`] answers `true` for — puts
+//! new pixels on the screen without Petra placing a new frame. If such a
 //! surface drives repaints without declaring `ambient`, idle is unreachable
 //! and `wait_settle` is unbounded, and SC-002 and every driver journey go with
 //! it.
+//!
+//! The predicate is deliberately **not**
+//! [`crate::frame::PaintContent::is_hosted`], which the ledger used until this
+//! change. That one is an upper bound on where the *digest* is blind, which is
+//! a different question with a different answer: a geometry-only draw list is
+//! fully digest-visible and still repaints itself every frame, so attributing
+//! against `is_hosted` would leave exactly the surface FR-030 exists to catch
+//! invisible to the lane meant to catch it (`research.md` D-05).
 //!
 //! The rule here is *refuse and report*, both. **Refuse**: an undeclared
 //! surface's repaint never reaches [`crate::frame::TransitionActivity`], so
@@ -61,9 +68,9 @@
 //! [`AmbientLedger::observe`] is **continuous**. It runs once per pass, in
 //! the shipped host — `gorgon-petra-egui`'s `FrameMotion::advance`, reached
 //! from `Host::pass` — because evidence that is not gathered on the frame it
-//! happened cannot be recovered afterwards. It is O(hosted placements) and
-//! allocates nothing when the frame is clean, which is what lets it sit on the
-//! idle path at all.
+//! happened cannot be recovered afterwards. It is O(self-repainting
+//! placements) and allocates nothing when the frame is clean, which is what
+//! lets it sit on the idle path at all.
 //!
 //! [`AmbientLedger::audit`] is a **query over a window**. Nobody can ask it
 //! per frame and mean anything: on frame one the observed span is zero
@@ -169,10 +176,10 @@ pub struct Occurrences {
 /// One entry of an [`IdleViolation`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct Offender {
-    /// The hosted placement the request is attributed to, or `None` when the
-    /// frame carried no hosted placement at all and there is nothing to
-    /// attribute it to. `None` is reported, never dropped: an unattributable
-    /// repaint still makes idle unreachable.
+    /// The self-repainting placement the request is attributed to, or `None`
+    /// when the frame carried no self-repainting placement at all and there is
+    /// nothing to attribute it to. `None` is reported, never dropped: an
+    /// unattributable repaint still makes idle unreachable.
     pub surface: Option<String>,
     /// Where the request came from.
     pub source: String,
@@ -193,7 +200,7 @@ pub struct IdleReport {
     pub declared_ambient: usize,
 }
 
-/// A hosted surface drove repaints without declaring itself ambient.
+/// A self-repainting surface drove repaints without declaring itself ambient.
 #[derive(Clone, Debug, PartialEq)]
 pub struct IdleViolation {
     /// The window that was audited, in seconds.
@@ -209,7 +216,7 @@ impl fmt::Display for IdleViolation {
         write!(
             f,
             "the {:.0}s zero-idle assertion failed: {} undeclared repaint \
-             source(s) over {:.2}s observed. A hosted surface that repaints \
+             source(s) over {:.2}s observed. A surface that repaints itself \
              must declare `ambient` (ViewNode::with_ambient), or idle is \
              unreachable and wait_settle is unbounded (FR-033, FR-039, FR-062).",
             self.window,
@@ -223,7 +230,7 @@ impl fmt::Display for IdleViolation {
                 offender
                     .surface
                     .as_deref()
-                    .unwrap_or("<none: the frame carried no hosted placement>"),
+                    .unwrap_or("<none: the frame carried no self-repainting placement>"),
                 offender.occurrences.count,
                 offender.source,
                 offender.occurrences.first,
@@ -264,11 +271,13 @@ impl AmbientLedger {
     /// `foreign` must already exclude Petra's own requests — the host knows
     /// which of its own call sites asked, and this crate does not. The
     /// attribution rule is stated in the returned [`Offender`]: a request is
-    /// attributed to every hosted placement in the frame that did **not**
-    /// declare `ambient`. When every hosted placement did declare it, the
-    /// request is explained and nothing is recorded — that is what declaring
-    /// ambient buys. When there is no hosted placement at all, the request is
-    /// recorded with no surface rather than dropped.
+    /// attributed to every **self-repainting** placement in the frame
+    /// ([`crate::frame::PetrifiedFrame::self_repainting_placements`]) that did
+    /// **not** declare `ambient`. When every such placement did declare it,
+    /// the request is explained and nothing is recorded — that is what
+    /// declaring ambient buys. When the frame carries no self-repainting
+    /// placement at all, the request is recorded with no surface rather than
+    /// dropped.
     pub fn observe(
         &mut self,
         now: f64,
@@ -280,7 +289,7 @@ impl AmbientLedger {
         self.last = Some(now);
         let mut undeclared: Vec<&str> = Vec::new();
         let mut declared = 0_usize;
-        for (placement, _) in frame.hosted_placements() {
+        for (placement, _) in frame.self_repainting_placements() {
             if placement.semantics.ambient {
                 declared += 1;
             } else {
@@ -291,8 +300,9 @@ impl AmbientLedger {
         if foreign.is_empty() {
             return 0;
         }
-        // Every hosted surface in the frame declared itself. The request is
-        // accounted for, and declaring is exactly what accounts for it.
+        // Every self-repainting surface in the frame declared itself. The
+        // request is accounted for, and declaring is exactly what accounts
+        // for it.
         if undeclared.is_empty() && declared > 0 {
             return 0;
         }
@@ -481,7 +491,7 @@ mod tests {
     }
 
     #[test]
-    fn a_repaint_with_no_hosted_placement_is_recorded_with_no_surface() {
+    fn a_repaint_with_no_self_repainting_placement_is_recorded_with_no_surface() {
         let mut ledger = AmbientLedger::new();
         let frame = crate::anim::fixtures::empty_frame();
         let recorded = ledger.observe(0.0, &frame, &[ForeignRepaint::new("somewhere.rs:1")]);
@@ -489,6 +499,89 @@ mod tests {
         let err = ledger.audit(60.0).unwrap_err();
         assert_eq!(err.offenders.len(), 1);
         assert_eq!(err.offenders[0].surface, None);
-        assert!(err.to_string().contains("no hosted placement"), "{err}");
+        assert!(
+            err.to_string().contains("no self-repainting placement"),
+            "{err}"
+        );
+    }
+
+    /// One surface declaring `ambient` does not buy its neighbour a pass.
+    ///
+    /// The short-circuit in `observe` returns early only when *every*
+    /// self-repainting placement declared itself. A version that returned on
+    /// the first declaration it found would leave the undeclared sibling —
+    /// the one actually driving the repaints — unnamed, and the 60-second
+    /// zero-idle assertion would pass while idle stayed unreachable.
+    #[test]
+    fn a_declared_surface_does_not_excuse_an_undeclared_sibling() {
+        let mut ledger = AmbientLedger::new();
+        let tree = crate::anim::fixtures::two_hosted(true, false);
+        let frame = crate::anim::fixtures::frame(&tree, 1, 100.0, 40.0);
+        assert_eq!(
+            ledger.observe(0.0, &frame, &[ForeignRepaint::new("painter.rs:1")]),
+            1
+        );
+        let err = ledger.audit(60.0).unwrap_err();
+        assert_eq!(err.offenders.len(), 1);
+        assert_eq!(err.offenders[0].surface.as_deref(), Some("/app/gauge"));
+    }
+
+    /// Two undeclared surfaces are two offenders, both named.
+    ///
+    /// A request cannot be pinned on one of them — the host reports which of
+    /// *its* call sites asked, never which surface — so attribution is to the
+    /// whole undeclared set. Reporting only the first would send an operator
+    /// to fix one surface and watch the assertion fail again.
+    #[test]
+    fn every_undeclared_surface_is_named_not_just_the_first() {
+        let mut ledger = AmbientLedger::new();
+        let tree = crate::anim::fixtures::two_hosted(false, false);
+        let frame = crate::anim::fixtures::frame(&tree, 1, 100.0, 40.0);
+        assert_eq!(
+            ledger.observe(0.0, &frame, &[ForeignRepaint::new("painter.rs:1")]),
+            2
+        );
+        let err = ledger.audit(60.0).unwrap_err();
+        let named: Vec<&str> = err
+            .offenders
+            .iter()
+            .filter_map(|o| o.surface.as_deref())
+            .collect();
+        assert_eq!(named, ["/app/gauge", "/app/spark"]);
+    }
+
+    /// The ledger attributes against the frame's self-repainting set, and
+    /// against nothing else.
+    ///
+    /// Computed from the frame rather than hardcoded, so the claim survives
+    /// the predicate widening: when a geometry-only canvas becomes
+    /// self-repainting without becoming hosted (T121), this test's expected
+    /// set widens with it and a ledger left on the narrower hosted iterator
+    /// starts disagreeing. It cannot separate the two predicates *today* — nothing
+    /// can, until that node kind exists — and it is written this way so it
+    /// will, rather than pinning the coincidence.
+    #[test]
+    fn attribution_covers_the_frames_self_repainting_set() {
+        let tree = crate::anim::fixtures::two_hosted(false, false);
+        let frame = crate::anim::fixtures::frame(&tree, 1, 100.0, 40.0);
+        let expected: Vec<&str> = frame
+            .self_repainting_placements()
+            .filter(|(p, _)| !p.semantics.ambient)
+            .map(|(p, _)| p.id.as_str())
+            .collect();
+        assert!(!expected.is_empty(), "the fixture must have offenders");
+
+        let mut ledger = AmbientLedger::new();
+        ledger.observe(0.0, &frame, &[ForeignRepaint::new("painter.rs:1")]);
+        let err = ledger.audit(60.0).unwrap_err();
+        let mut named: Vec<&str> = err
+            .offenders
+            .iter()
+            .filter_map(|o| o.surface.as_deref())
+            .collect();
+        named.sort_unstable();
+        let mut expected = expected;
+        expected.sort_unstable();
+        assert_eq!(named, expected);
     }
 }

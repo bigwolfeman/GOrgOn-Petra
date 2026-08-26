@@ -12,13 +12,28 @@ use crate::semantic::node::SemanticNode;
 
 /// One state flag a query can select on.
 ///
-/// `Focused` is absent for the same reason [`crate::semantic::NodeState`] has
-/// no `focused` field: the flag does not exist yet. A variant that always
-/// matched nothing would be a filter that lies.
+/// One variant per [`crate::semantic::NodeState`] member, and no variant
+/// without one. A variant that read no field would be a filter that lies —
+/// it would answer "no match" to every query, indistinguishable from a real
+/// answer — so a variant lands here only once the projection carries the
+/// field it reads. `hovered`, `active` and `captured` read real projected
+/// fields as of `frame-v6`; nothing sets them non-`false` until `LayoutState`
+/// carries the pointer snapshot, so those three match nothing yet for a
+/// reason a caller can act on rather than because the filter is fictional.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum StateFlag {
     /// [`crate::semantic::NodeState::focused`].
     Focused,
+    /// [`crate::semantic::NodeState::hovered`].
+    Hovered,
+    /// [`crate::semantic::NodeState::active`].
+    Active,
+    /// [`crate::semantic::NodeState::captured`].
+    Captured,
+    /// [`crate::semantic::NodeState::read_only`].
+    ReadOnly,
+    /// [`crate::semantic::NodeState::skeleton`].
+    Skeleton,
     /// [`crate::semantic::NodeState::disabled`].
     Disabled,
     /// [`crate::semantic::NodeState::selected`].
@@ -42,6 +57,11 @@ impl StateFlag {
         let state = &node.state;
         match self {
             Self::Focused => state.focused,
+            Self::Hovered => state.hovered,
+            Self::Active => state.active,
+            Self::Captured => state.captured,
+            Self::ReadOnly => state.read_only,
+            Self::Skeleton => state.skeleton,
             Self::Disabled => state.disabled,
             Self::Selected => state.selected,
             Self::Expanded => state.expanded == Some(true),

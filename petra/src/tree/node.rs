@@ -358,6 +358,30 @@ pub struct Semantics {
     /// Declared disabled state.
     #[serde(skip_serializing_if = "is_false")]
     pub disabled: bool,
+    /// Declared read-only state: the node shows a value it will not let this
+    /// author edit.
+    ///
+    /// Not a softer `disabled`, and not implemented as one
+    /// (`contracts/interaction-state.md` §5). A read-only node keeps its place
+    /// in focus order, keeps its focus ring, and keeps answering `Hover`; what
+    /// it drops is the interaction it will not honour, declared once in
+    /// [`ViewNode::interactions`] rather than refused a second time deeper in.
+    /// The contract also calls declaring both this and `disabled` a defect;
+    /// the audit rule that reports it is not written yet, so today the two
+    /// coexist silently.
+    #[serde(skip_serializing_if = "is_false")]
+    pub read_only: bool,
+    /// Declared skeleton state: this node is a placeholder for content that
+    /// has not arrived.
+    ///
+    /// Outranks every other state in `contracts/interaction-state.md` §4's
+    /// ladder: a skeleton is not a disabled control and not an empty one, it
+    /// is the shape of a control that is still loading, so hover, press and
+    /// disabled styling all give way to it. The flag is carried, digested and
+    /// projected here; the ladder that acts on it lands with the state
+    /// resolver.
+    #[serde(skip_serializing_if = "is_false")]
+    pub skeleton: bool,
     /// Declared selected state.
     #[serde(skip_serializing_if = "is_false")]
     pub selected: bool,
