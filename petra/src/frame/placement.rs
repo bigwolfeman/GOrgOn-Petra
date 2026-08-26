@@ -1,7 +1,9 @@
 //! Placements: exactly one final rect per node per frame.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
+use crate::draw::DrawList;
 use crate::geom::Rect;
 use crate::layout::Slot;
 use crate::tree::{Edge, Interaction, NodeKind, Role, TextWrap};
@@ -260,6 +262,20 @@ pub struct PaintContent {
     /// placement, and for an anchored surface whose caret would fall off its
     /// own rounded corner ([`CaretPaint`]).
     pub caret: Option<CaretPaint>,
+    /// The draw list a [`crate::tree::NodeKind::Canvas`] executes, `None` for
+    /// every other kind.
+    ///
+    /// Behind an `Arc` because a canvas that does not change hands the same
+    /// allocation back every frame, and a payload this large copied per frame
+    /// would undo what `Arc<ViewNode>` sharing buys the tree above it.
+    ///
+    /// **Not** a `custom` payload wearing a different name. `custom` reaches
+    /// the digest as a painter's name and is therefore
+    /// [`PaintContent::is_hosted`]; this reaches the digest as the picture,
+    /// command by command and float by float
+    /// (`contracts/draw-list.md` §4), and a canvas is hosted only when it
+    /// draws a `Sprite`, whose decoded pixels the digest genuinely cannot see.
+    pub canvas: Option<Arc<DrawList>>,
 }
 
 impl PaintContent {
@@ -276,6 +292,11 @@ impl PaintContent {
             // make a flipped caret invisible to the digest on a surface that
             // binds no tokens at all.
             && self.caret.is_none()
+            // Same reason, one payload later: a canvas that binds no tokens
+            // and draws a hundred shapes is not an empty payload, and the
+            // zero shortcut in `hash_paint_content` would make every one of
+            // those shapes invisible to the digest if it were.
+            && self.canvas.is_none()
     }
 
     /// Whether the host, not Petra, produces this node's pixels.
@@ -306,7 +327,18 @@ impl PaintContent {
     /// function until they were split.
     #[must_use]
     pub fn is_hosted(&self) -> bool {
-        self.image.is_some() || self.custom.is_some()
+        self.image.is_some()
+            || self.custom.is_some()
+            // Narrow on purpose. A geometry-only canvas is *not* hosted: every
+            // coordinate it draws is hashed, so digest equality really is
+            // picture equality over its rect. A canvas with at least one
+            // `Sprite` is, because the digest sees the asset's name and its
+            // rects and never the decoded pixels — the same blindness
+            // `image` has (`contracts/draw-list.md` §6).
+            || self
+                .canvas
+                .as_ref()
+                .is_some_and(|list| list.references_assets())
     }
 
     /// Whether this node can put new pixels on the screen without Petra
@@ -329,14 +361,17 @@ impl PaintContent {
     /// The case that separates them is a **geometry-only canvas**: a draw list
     /// with no `Sprite` in it is fully digest-visible — every coordinate it
     /// draws is hashed — so it is never hosted, yet it rebuilds its list each
-    /// frame and so always repaints itself. When `NodeKind::Canvas` and its
-    /// payload land (T121, T122), this body gains `|| self.canvas.is_some()`
-    /// and [`PaintContent::is_hosted`] gains the narrower
-    /// `canvas.as_ref().is_some_and(DrawList::references_assets)`. Neither
-    /// consumer changes, which is the point of splitting them first.
+    /// frame and so always repaints itself. That case exists as of T121/T122,
+    /// and the `|| self.canvas.is_some()` below is where the two predicates
+    /// finally part company. Neither consumer changed when it landed, which is
+    /// the point of having split them first.
     #[must_use]
     pub fn repaints_itself(&self) -> bool {
-        self.is_hosted()
+        // Every canvas, regardless of assets. A canvas rebuilds and resubmits
+        // its list to change anything, so it is always a surface that could
+        // have asked for the repaint the ambient ledger is trying to attribute
+        // (FR-030).
+        self.is_hosted() || self.canvas.is_some()
     }
 }
 
@@ -713,10 +748,13 @@ fn extents_match_parents(placements: &[Placement], subtree_len: &[usize]) -> boo
 mod tests {
     use std::collections::BTreeMap;
 
+    use std::sync::Arc;
+
     use super::{
         PaintContent, PaintState, Placement, PlacementList, PlacementSemantics, PlacementSink,
         TextPaint,
     };
+    use crate::draw::{ColorRef, Command, Corners, DrawList, Paint};
     use crate::geom::Rect;
     use crate::layout::Slot;
     use crate::tree::{NodeKind, TextWrap};
@@ -848,6 +886,34 @@ mod tests {
         );
     }
 
+    /// A geometry-only draw list: one filled rect, no `Sprite`.
+    fn geometry_only() -> Arc<DrawList> {
+        Arc::new(
+            DrawList::new(vec![Command::Rect {
+                rect: Rect::new(0.0, 0.0, 8.0, 8.0),
+                radius: Corners::SQUARE,
+                snap: false,
+                paint: Paint::filled(ColorRef::Token("status.ok".into())),
+            }])
+            .expect("one rect is inside every bound"),
+        )
+    }
+
+    /// The same list plus one `Sprite`, which is the only thing that makes a
+    /// canvas hosted.
+    fn with_a_sprite() -> Arc<DrawList> {
+        Arc::new(
+            DrawList::new(vec![Command::Sprite {
+                asset: crate::draw::AssetRef::host("cat.png"),
+                dst: Rect::new(0.0, 0.0, 8.0, 8.0),
+                src: None,
+                fit: crate::draw::Fit::Contain,
+                tint: None,
+            }])
+            .expect("one sprite is inside every bound"),
+        )
+    }
+
     /// `is_hosted` answers for exactly the two payload members the digest
     /// reaches by name rather than by content, and for nothing else.
     ///
@@ -867,7 +933,7 @@ mod tests {
         let mut tokens = BTreeMap::new();
         tokens.insert("background".to_owned(), "surface.raised".to_owned());
 
-        let cases: [(&str, PaintContent, bool); 6] = [
+        let cases: [(&str, PaintContent, bool); 8] = [
             ("a bare container", PaintContent::default(), false),
             (
                 "a text run",
@@ -909,6 +975,23 @@ mod tests {
                     custom: Some("gauge".into()),
                     tokens,
                     caret: None,
+                    canvas: None,
+                },
+                true,
+            ),
+            (
+                "a geometry-only canvas",
+                PaintContent {
+                    canvas: Some(geometry_only()),
+                    ..PaintContent::default()
+                },
+                false,
+            ),
+            (
+                "a canvas that draws a sprite",
+                PaintContent {
+                    canvas: Some(with_a_sprite()),
+                    ..PaintContent::default()
                 },
                 true,
             ),
@@ -952,6 +1035,61 @@ mod tests {
         assert!(
             !text.repaints_itself(),
             "a text run is redrawn by Petra, never by itself"
+        );
+    }
+
+    /// **The divergence.** `contracts/draw-list.md` §6 binds two predicates
+    /// and forbids them collapsing into one. Wave 1 split them ahead of the
+    /// payload that separates them and could not test the split, because no
+    /// payload could yet answer the two questions differently. This is that
+    /// test.
+    ///
+    /// A geometry-only canvas is the one case:
+    ///
+    /// * **not hosted** — every coordinate it draws is in the digest, so a
+    ///   screenshot consumer holding `(seq, digest)` may trust it over the
+    ///   canvas's rect exactly as it does over a label;
+    /// * **repaint-capable** — it rebuilds its list to change anything, so it
+    ///   is a surface the ambient ledger must attribute an unexplained repaint
+    ///   to, declared `ambient` or not.
+    ///
+    /// Collapsing them either way is a real defect with a name. Widening
+    /// `is_hosted` sends every canvas frame to a pixel comparison it does not
+    /// need. Narrowing `repaints_itself` takes a self-repainting surface out
+    /// of the set FR-030 audits, which is the hole `research.md` D-05 is
+    /// about.
+    #[test]
+    fn a_geometry_only_canvas_is_digest_visible_and_still_repaints_itself() {
+        let plain = PaintContent {
+            canvas: Some(geometry_only()),
+            ..PaintContent::default()
+        };
+        assert!(
+            !plain.is_hosted(),
+            "a list with no Sprite has no pixels the digest cannot see"
+        );
+        assert!(
+            plain.repaints_itself(),
+            "a canvas rebuilds its own list, so it can put new pixels up              without Petra placing a new frame"
+        );
+        assert!(!plain.is_empty(), "it draws a rect");
+
+        let sprited = PaintContent {
+            canvas: Some(with_a_sprite()),
+            ..PaintContent::default()
+        };
+        assert!(
+            sprited.is_hosted(),
+            "the digest sees the asset's name and its rects, never its pixels"
+        );
+        assert!(sprited.repaints_itself());
+
+        // The superset direction, stated over the one pair that finally
+        // separates: hosted is a subset of repaint-capable, and the gap is
+        // exactly the geometry-only canvas.
+        assert!(
+            !plain.is_hosted() && plain.repaints_itself(),
+            "this is the pair the two predicates exist to tell apart"
         );
     }
 }

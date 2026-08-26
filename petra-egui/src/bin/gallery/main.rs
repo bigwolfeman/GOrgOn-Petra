@@ -35,6 +35,7 @@
 //! this prints the roster, prints how many cells are built, and exits non-zero
 //! while the answer is zero.
 
+mod cat;
 mod cell;
 mod inventory;
 
@@ -60,6 +61,20 @@ fn main() -> ExitCode {
             cell.row.slice.letter()
         );
     }
+
+    // The one thing in this binary that does draw: spec 005's draw-list
+    // acceptance scene (T133). It is not a Carbon inventory row, so it is
+    // reported beside the tally rather than inside it — a cat is not one of
+    // the 42, and counting it as one would be exactly the kind of borrowed
+    // credit this scaffold's own doc refuses.
+    let cat = cat::drawing();
+    println!(
+        "\nacceptance scene: the cat, {} draw-list command(s), {} path verb(s), \
+         geometry only (references_assets = {})",
+        cat.len(),
+        cat.path_verbs(),
+        cat.references_assets()
+    );
 
     if built == 0 {
         eprintln!(

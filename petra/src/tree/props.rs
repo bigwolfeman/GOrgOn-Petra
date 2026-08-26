@@ -548,6 +548,21 @@ pub struct Props {
     /// Outside-input rule for `surface`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_policy: Option<InputPolicy>,
+    /// The picture a `canvas` draws.
+    ///
+    /// Behind an `Arc` for the same reason [`crate::tree::ViewNode::children`]
+    /// is: a canvas that did not change hands the same allocation back every
+    /// frame, and a list of a few thousand commands cloned per frame would
+    /// undo what the tree's own sharing buys.
+    ///
+    /// The list is checked once, at construction
+    /// ([`crate::draw::DrawList::new`]), against every bound in
+    /// `contracts/draw-list.md` §5 — so a `Props` that holds one holds a list
+    /// that has already passed. Declaring it on any kind other than `canvas`
+    /// paints nothing: `crate::layout::paint_content_of` reads it for
+    /// `NodeKind::Canvas` alone.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canvas: Option<std::sync::Arc<crate::draw::DrawList>>,
     /// Registered painter name for `custom`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub custom_kind: Option<String>,

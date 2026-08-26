@@ -9,9 +9,9 @@ use crate::tree::props::Props;
 
 /// What a node is.
 ///
-/// Twelve built-ins. `Custom` defers measurement and painting to a registered
-/// implementation named by `props.custom_kind`; an unregistered name is a
-/// tree-acceptance error, never a render-time surprise.
+/// Thirteen built-ins. `Custom` defers measurement and painting to a
+/// registered implementation named by `props.custom_kind`; an unregistered
+/// name is a tree-acceptance error, never a render-time surprise.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum NodeKind {
@@ -39,6 +39,23 @@ pub enum NodeKind {
     Separator,
     /// Host-registered measurement and painting.
     Custom,
+    /// A draw list the engine executes itself.
+    ///
+    /// A second kind beside [`NodeKind::Custom`], never a mode of it
+    /// (`contracts/draw-list.md` §7, `research.md` D-06). The two differ on
+    /// both halves of what a node kind decides:
+    ///
+    /// * **Size.** A `custom` node asks the measurement registry, because a
+    ///   host-registered measurer supplies one. A draw list has no intrinsic
+    ///   size at all — a list of coordinates is not a request for room — so a
+    ///   canvas sizes from its layout constraints alone and never reaches that
+    ///   registry ([`crate::layout::leaf::measure`]).
+    /// * **The digest.** A `custom` node's picture reaches the frame digest as
+    ///   the painter's *name*; a canvas's picture reaches it as the picture,
+    ///   through [`crate::frame::digest::hash_paint_content`]. Merging the two
+    ///   would make the wider of the two behaviours apply to both, and the
+    ///   wider one is "the digest is blind here".
+    Canvas,
 }
 
 impl NodeKind {
@@ -72,6 +89,10 @@ impl NodeKind {
             Self::Spacer => "spacer",
             Self::Separator => "separator",
             Self::Custom => "custom",
+            // A distinct string, so a driver response, the semantic tree and
+            // the undrawn report all name which kind is on screen without
+            // inspecting the payload (`contracts/draw-list.md` §7).
+            Self::Canvas => "canvas",
         }
     }
 }
@@ -638,9 +659,9 @@ mod tests {
         assert!(err.to_string().contains("kids"), "{err}");
     }
 
-    /// `NodeKind` is a closed twelve-variant enum with
+    /// `NodeKind` is a closed thirteen-variant enum with
     /// `#[serde(rename_all = "lowercase")]`, so a kind name outside the
-    /// twelve is unrepresentable in Rust and is refused here, at the
+    /// thirteen is unrepresentable in Rust and is refused here, at the
     /// deserialization boundary, before a tree exists for
     /// `crate::tree::validate` to walk. That is why `Violation` carries no
     /// `UnknownKind` variant: one would be dead code, since nothing can ever
@@ -706,6 +727,7 @@ mod tests {
             NodeKind::Spacer,
             NodeKind::Separator,
             NodeKind::Custom,
+            NodeKind::Canvas,
         ]
         .into_iter()
         .filter(|k| k.is_container())
@@ -721,6 +743,26 @@ mod tests {
                 "collection",
                 "surface"
             ]
+        );
+    }
+
+    /// `canvas` is its own wire name, distinct from `custom`.
+    ///
+    /// `contracts/draw-list.md` §7 turns on this string: a driver response,
+    /// the semantic tree and the undrawn report all name which kind is on
+    /// screen from it, and if a canvas printed as `custom` every one of them
+    /// would describe a digest-visible picture as a digest-blind one.
+    #[test]
+    fn a_canvas_is_a_second_kind_beside_custom_and_says_so() {
+        assert_eq!(NodeKind::Canvas.as_str(), "canvas");
+        assert_ne!(NodeKind::Canvas, NodeKind::Custom);
+        assert_ne!(NodeKind::Canvas.as_str(), NodeKind::Custom.as_str());
+        assert!(!NodeKind::Canvas.is_container(), "a canvas places no child");
+        let node: ViewNode = serde_json::from_str(r#"{"kind":"canvas","key":"plot"}"#).unwrap();
+        assert_eq!(node.kind, NodeKind::Canvas);
+        assert_eq!(
+            serde_json::to_string(&ViewNode::new(NodeKind::Canvas, "plot")).unwrap(),
+            r#"{"kind":"canvas","key":"plot"}"#
         );
     }
 

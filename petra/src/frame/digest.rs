@@ -5,6 +5,7 @@
 //! runs of the same inputs — no clock, no timing, no address, no iteration
 //! order of a hash map.
 
+use crate::draw::{Affine, ColorRef, Command, Corners, DrawList, Paint, PathVerb, Stroke, Width};
 use crate::frame::placement::{
     CaretPaint, PaintContent, PaintState, Placement, PlacementSemantics, TextPaint,
 };
@@ -16,6 +17,15 @@ use crate::geom::Scale;
 /// different prefix can never collide with one computed under this prefix, so
 /// the version bump that a serialization change requires cannot be forgotten
 /// quietly.
+///
+/// `v8` covers [`crate::frame::placement::PaintContent::canvas`], the draw
+/// list a `canvas` node executes (`contracts/draw-list.md` §4). Like the caret
+/// it rides the *payload* stream, so [`PAINT_DOMAIN`] moves to `v4` and the
+/// frame prefix moves with it. It is the largest thing the payload stream has
+/// ever carried and the one with the strongest reason to be there: a canvas is
+/// worth having over a registered custom painter precisely because its picture
+/// is *in* the digest rather than named by it, and a digest blind to a
+/// command would hand that guarantee back.
 ///
 /// `v7` covers [`crate::frame::placement::CaretPaint`], the caret an anchored
 /// surface draws back at the node it is anchored to. It reaches the frame
@@ -71,7 +81,7 @@ use crate::geom::Scale;
 /// covered only the text content hash, the truncation flag, and the theme
 /// revision, so two frames that bound the same node's `background` to two
 /// different colours shared one digest.
-pub const DOMAIN: &[u8] = b"gorgon-petra-frame-v7";
+pub const DOMAIN: &[u8] = b"gorgon-petra-frame-v8";
 
 /// Domain separation for one placement's leaf hash.
 ///
@@ -111,11 +121,28 @@ pub const SUBTREE_DOMAIN: &[u8] = b"gorgon-petra-subtree-v1";
 /// which is exactly the false signal a second implementation reads these
 /// prefixes to avoid.
 ///
-/// `v3` is the first move it has earned: the payload stream itself gained a
+/// `v3` was the first move it earned: the payload stream itself gained a
 /// member, [`crate::frame::placement::PaintContent::caret`], appended after
-/// the token map. Frame `v7` moves with it, because the frame prefix moves on
+/// the token map. Frame `v7` moved with it, because the frame prefix moves on
 /// any change below it.
-pub const PAINT_DOMAIN: &[u8] = b"gorgon-petra-paint-v3";
+///
+/// `v4` is the second, and it is the draw list
+/// ([`crate::frame::placement::PaintContent::canvas`]), appended after the
+/// caret under its own nested prefix [`DRAWLIST_DOMAIN`]. Frame `v8` moves
+/// with it for the same reason.
+pub const PAINT_DOMAIN: &[u8] = b"gorgon-petra-paint-v4";
+
+/// Domain separation for the nested draw-list hash.
+///
+/// Its own prefix rather than a run of fields appended to the payload stream,
+/// for the reason [`PAINT_DOMAIN`] has one: the command vocabulary is versioned
+/// on its own axis (`crate::draw::VERSION`), and a second implementation
+/// reproducing a canvas's contribution needs to know which stream it is
+/// reproducing. A seventh command or a new field on an existing one moves this
+/// to `v2` — and, per `contracts/frame-identity.md`'s "Changing the stream",
+/// moves [`PAINT_DOMAIN`] and [`DOMAIN`] with it, because the payload stream
+/// is then a different stream.
+pub const DRAWLIST_DOMAIN: &[u8] = b"gorgon-petra-drawlist-v1";
 
 /// A frame's content fingerprint.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -205,6 +232,7 @@ pub fn hash_paint_content(content: &PaintContent) -> u64 {
         custom,
         tokens,
         caret,
+        canvas,
     } = content;
 
     let mut w = Canonical::new();
@@ -258,7 +286,210 @@ pub fn hash_paint_content(content: &PaintContent) -> u64 {
         }
         None => w.bool(false),
     }
+    // Appended after the caret, as one nested `u64` rather than as a run of
+    // fields spliced into this stream: the command vocabulary versions on its
+    // own axis, and `hash_draw_list` is where that version lives
+    // (`contracts/draw-list.md` §4).
+    match canvas {
+        Some(list) => {
+            w.bool(true);
+            w.u64(hash_draw_list(list));
+        }
+        None => w.bool(false),
+    }
     truncate64(&blake3::hash(&w.finish()))
+}
+
+/// A 64-bit hash of a canvas's whole picture.
+///
+/// The stream is a command count and then every command's wire name and every
+/// field in declaration order, floats as [`canonical_decimal`] — the same
+/// primitive `opacity` has always used, so a canvas float and a placement
+/// float are printed by one rule on every target.
+///
+/// Two things this deliberately does **not** do (`contracts/draw-list.md` §4):
+///
+/// * **No device rounding.** A canvas's interior is tessellated at sub-pixel
+///   precision, so rounding a control point here would hash a picture nothing
+///   draws. Only the canvas's own placement rect rounds, and it rounds in
+///   [`leaf_bytes`] with every other placement rect.
+/// * **No quantization.** A one-ulp change from an author is a change, and it
+///   digests as one. Snapping floats to a grid to damp authoring churn would
+///   buy a quieter digest by making it lie about small moves.
+///
+/// Commands and verbs go in **by name**, never by discriminant, so reordering
+/// `crate::draw::Command` can never silently rewrite a published digest.
+#[must_use]
+pub fn hash_draw_list(list: &DrawList) -> u64 {
+    let mut w = Canonical::new();
+    w.bytes(DRAWLIST_DOMAIN);
+    w.text(crate::draw::VERSION);
+    w.u64(list.len() as u64);
+    for command in list.commands() {
+        w.text(command.as_str());
+        match command {
+            Command::Push {
+                transform,
+                clip,
+                opacity,
+            } => {
+                match transform {
+                    Some(Affine { tx, ty, sx, sy }) => {
+                        w.bool(true);
+                        for v in [tx, ty, sx, sy] {
+                            w.text(&canonical_decimal(*v));
+                        }
+                    }
+                    None => w.bool(false),
+                }
+                match clip {
+                    Some(rect) => {
+                        w.bool(true);
+                        hash_logical_rect(&mut w, *rect);
+                    }
+                    None => w.bool(false),
+                }
+                match opacity {
+                    Some(v) => {
+                        w.bool(true);
+                        w.text(&canonical_decimal(*v));
+                    }
+                    None => w.bool(false),
+                }
+            }
+            Command::Pop => {}
+            Command::Rect {
+                rect,
+                radius:
+                    Corners {
+                        top_left,
+                        top_right,
+                        bottom_right,
+                        bottom_left,
+                    },
+                snap,
+                paint,
+            } => {
+                hash_logical_rect(&mut w, *rect);
+                for v in [top_left, top_right, bottom_right, bottom_left] {
+                    w.text(&canonical_decimal(*v));
+                }
+                w.bool(*snap);
+                hash_paint(&mut w, paint);
+            }
+            Command::Ellipse {
+                center,
+                radii,
+                paint,
+            } => {
+                w.text(&canonical_decimal(center.x));
+                w.text(&canonical_decimal(center.y));
+                w.text(&canonical_decimal(radii.w));
+                w.text(&canonical_decimal(radii.h));
+                hash_paint(&mut w, paint);
+            }
+            Command::Path {
+                verbs,
+                closed,
+                paint,
+            } => {
+                w.u64(verbs.len() as u64);
+                for verb in verbs {
+                    w.text(verb.as_str());
+                    // Every point the verb carries, control points included:
+                    // a cubic whose handles moved is a different curve and
+                    // therefore a different picture.
+                    match verb {
+                        PathVerb::MoveTo(p) | PathVerb::LineTo(p) => {
+                            w.text(&canonical_decimal(p.x));
+                            w.text(&canonical_decimal(p.y));
+                        }
+                        PathVerb::QuadTo { ctrl, to } => {
+                            for p in [ctrl, to] {
+                                w.text(&canonical_decimal(p.x));
+                                w.text(&canonical_decimal(p.y));
+                            }
+                        }
+                        PathVerb::CubicTo { c1, c2, to } => {
+                            for p in [c1, c2, to] {
+                                w.text(&canonical_decimal(p.x));
+                                w.text(&canonical_decimal(p.y));
+                            }
+                        }
+                        PathVerb::Close => {}
+                    }
+                }
+                w.bool(*closed);
+                hash_paint(&mut w, paint);
+            }
+            Command::Sprite {
+                asset,
+                dst,
+                src,
+                fit,
+                tint,
+            } => {
+                // Owner and name separately, each length-prefixed: `a/bc` and
+                // `ab/c` are two different assets and must not concatenate to
+                // one stream.
+                w.text(&asset.owner);
+                w.text(&asset.name);
+                hash_logical_rect(&mut w, *dst);
+                match src {
+                    Some(rect) => {
+                        w.bool(true);
+                        hash_logical_rect(&mut w, *rect);
+                    }
+                    None => w.bool(false),
+                }
+                w.text(fit.as_str());
+                hash_color(&mut w, tint.as_ref());
+            }
+        }
+    }
+    truncate64(&blake3::hash(&w.finish()))
+}
+
+/// A canvas-local rect, four canonical decimals, unrounded.
+fn hash_logical_rect(w: &mut Canonical, rect: crate::geom::Rect) {
+    for v in [rect.x, rect.y, rect.w, rect.h] {
+        w.text(&canonical_decimal(v));
+    }
+}
+
+/// One command's fill and stroke.
+fn hash_paint(w: &mut Canonical, paint: &Paint) {
+    hash_color(w, paint.fill.as_ref());
+    match &paint.stroke {
+        Some(Stroke { width, color }) => {
+            w.bool(true);
+            let (kind, value) = match width {
+                Width::Logical(v) => ("logical", v),
+                Width::Device(v) => ("device", v),
+            };
+            w.text(kind);
+            w.text(&canonical_decimal(*value));
+            hash_color(w, Some(color));
+        }
+        None => w.bool(false),
+    }
+}
+
+/// One optional colour, tagged by kind name rather than by discriminant.
+fn hash_color(w: &mut Canonical, color: Option<&ColorRef>) {
+    match color {
+        Some(ColorRef::Token(name)) => {
+            w.bool(true);
+            w.text("token");
+            w.text(name);
+        }
+        Some(ColorRef::Rgba(channels)) => {
+            w.bool(true);
+            w.text("rgba");
+            w.bytes(channels);
+        }
+        None => w.bool(false),
+    }
 }
 
 /// One placement's own byte stream — the leaf input to [`leaf_hash`].
@@ -703,15 +934,21 @@ impl Canonical {
 mod tests {
     use std::collections::BTreeMap;
 
+    use std::sync::Arc;
+
     use super::{
         Canonical, canonical_decimal, combine_subtree_hash, digest, empty_root_hash, frame_bytes,
-        hash_paint_content, hash_text, leaf_hash, root_hash_from, subtree_hashes,
+        hash_draw_list, hash_paint_content, hash_text, leaf_hash, root_hash_from, subtree_hashes,
         try_subtree_hashes,
+    };
+    use crate::draw::{
+        Affine, AssetRef, ColorRef, Command, Corners, DrawList, Fit, Paint, PathVerb, Stroke, Width,
     };
     use crate::frame::placement::{
         CaretPaint, PaintContent, PaintState, Placement, PlacementSemantics, TextPaint,
     };
     use crate::frame::viewport::Viewport;
+    use crate::geom::Point;
     use crate::geom::{Rect, Scale, Size};
     use crate::token::ThemeMode;
     use crate::tree::{Edge, Interaction, NodeKind, Role, TextWrap};
@@ -844,7 +1081,73 @@ mod tests {
             custom: Some("sparkline".into()),
             tokens,
             caret: None,
+            canvas: None,
         }
+    }
+
+    /// A canvas whose numbers are all distinct and none of them round, so a
+    /// field that silently swapped with a neighbour would still move the hash.
+    ///
+    /// One of each shape command plus a `Push`/`Pop` pair, because the stream
+    /// writes a different field list per command and a fixture carrying only
+    /// rects would leave four of the six untested.
+    fn a_draw_list() -> Arc<DrawList> {
+        Arc::new(
+            DrawList::new(vec![
+                Command::Push {
+                    transform: Some(Affine {
+                        tx: 1.5,
+                        ty: 2.25,
+                        sx: 0.75,
+                        sy: 1.125,
+                    }),
+                    clip: Some(Rect::new(0.5, 1.5, 30.25, 40.75)),
+                    opacity: Some(0.625),
+                },
+                Command::Rect {
+                    rect: Rect::new(2.5, 3.5, 12.25, 6.75),
+                    radius: Corners::all(1.5),
+                    snap: true,
+                    paint: Paint::filled(ColorRef::Token("surface.raised".into())),
+                },
+                Command::Ellipse {
+                    center: Point::new(9.25, 4.75),
+                    radii: Size::new(3.5, 2.25),
+                    paint: Paint {
+                        fill: Some(ColorRef::Rgba([17, 34, 51, 255])),
+                        stroke: Some(Stroke {
+                            width: Width::Device(1.5),
+                            color: ColorRef::Token("border.subtle".into()),
+                        }),
+                    },
+                },
+                Command::Path {
+                    verbs: vec![
+                        PathVerb::MoveTo(Point::new(0.25, 0.75)),
+                        PathVerb::CubicTo {
+                            c1: Point::new(4.5, 0.25),
+                            c2: Point::new(8.25, 3.5),
+                            to: Point::new(9.75, 7.25),
+                        },
+                        PathVerb::Close,
+                    ],
+                    closed: true,
+                    paint: Paint::stroked(Stroke {
+                        width: Width::Logical(2.25),
+                        color: ColorRef::Token("text.primary".into()),
+                    }),
+                },
+                Command::Sprite {
+                    asset: AssetRef::host("cat.png"),
+                    dst: Rect::new(1.25, 2.75, 16.5, 9.25),
+                    src: Some(Rect::new(0.5, 0.25, 8.75, 4.5)),
+                    fit: Fit::Contain,
+                    tint: Some(ColorRef::Rgba([255, 128, 64, 200])),
+                },
+                Command::Pop,
+            ])
+            .expect("the digest fixture is inside every bound"),
+        )
     }
 
     /// A caret with no round number in it, so a field that silently swapped
@@ -1075,6 +1378,53 @@ mod tests {
                     ..a_caret()
                 });
             }),
+            // The draw list. `rich_content` carries none, so the first row is
+            // "a canvas appeared at all"; the rest move one number inside it
+            // and are the claim the whole `canvas` payload exists to make —
+            // that a canvas's *picture* is in the digest, not its name.
+            ("canvas: appeared", |c| c.canvas = Some(a_draw_list())),
+            ("canvas: one moved rect edge", |c| {
+                c.canvas = Some(mutate_canvas(|commands| {
+                    if let Command::Rect { rect, .. } = &mut commands[1] {
+                        rect.x += 0.03125;
+                    }
+                }));
+            }),
+            ("canvas: one moved bezier control point", |c| {
+                c.canvas = Some(mutate_canvas(|commands| {
+                    if let Command::Path { verbs, .. } = &mut commands[3]
+                        && let PathVerb::CubicTo { c1, .. } = &mut verbs[1]
+                    {
+                        c1.y += 0.03125;
+                    }
+                }));
+            }),
+            ("canvas: a rebound colour token", |c| {
+                c.canvas = Some(mutate_canvas(|commands| {
+                    if let Command::Rect { paint, .. } = &mut commands[1] {
+                        paint.fill = Some(ColorRef::Token("status.down".into()));
+                    }
+                }));
+            }),
+            ("canvas: snap flipped", |c| {
+                c.canvas = Some(mutate_canvas(|commands| {
+                    if let Command::Rect { snap, .. } = &mut commands[1] {
+                        *snap = false;
+                    }
+                }));
+            }),
+            ("canvas: a different asset", |c| {
+                c.canvas = Some(mutate_canvas(|commands| {
+                    if let Command::Sprite { asset, .. } = &mut commands[4] {
+                        *asset = AssetRef::host("dog.png");
+                    }
+                }));
+            }),
+            ("canvas: one command removed", |c| {
+                c.canvas = Some(mutate_canvas(|commands| {
+                    commands.remove(2);
+                }));
+            }),
         ];
 
         for (field, mutate) in table {
@@ -1087,6 +1437,104 @@ mod tests {
                 "{field} decides the picture and the paint hash cannot see it"
             );
         }
+    }
+
+    /// [`a_draw_list`] with one edit applied, rebuilt through
+    /// [`DrawList::new`] so it is still a list that passed every bound.
+    fn mutate_canvas(edit: impl FnOnce(&mut Vec<Command>)) -> Arc<DrawList> {
+        let mut commands = a_draw_list().commands().to_vec();
+        edit(&mut commands);
+        Arc::new(DrawList::new(commands).expect("the mutation stays inside every bound"))
+    }
+
+    /// The draw-list stream carries its own prefix and its own version, so a
+    /// canvas's contribution can never be confused with the payload stream it
+    /// rides in.
+    #[test]
+    fn the_draw_list_stream_is_domain_separated_and_versioned() {
+        let bytes = {
+            let mut w = Canonical::new();
+            w.bytes(super::DRAWLIST_DOMAIN);
+            w.finish()
+        };
+        assert_eq!(
+            &bytes[..8],
+            &(super::DRAWLIST_DOMAIN.len() as u64).to_le_bytes()
+        );
+        assert_eq!(super::DRAWLIST_DOMAIN, b"gorgon-petra-drawlist-v1");
+        assert_eq!(crate::draw::VERSION, "drawlist-v1");
+
+        // A canvas payload and the bare list it carries are two different
+        // hashes: the payload stream wraps it.
+        let content = PaintContent {
+            canvas: Some(a_draw_list()),
+            ..PaintContent::default()
+        };
+        assert_ne!(hash_paint_content(&content), hash_draw_list(&a_draw_list()));
+    }
+
+    /// Command boundaries cannot be forged either. Two lists whose fields
+    /// concatenate to the same text must still differ.
+    #[test]
+    fn draw_list_field_boundaries_cannot_be_forged() {
+        let sprite = |owner: &str, name: &str| {
+            DrawList::new(vec![Command::Sprite {
+                asset: AssetRef::new(owner, name),
+                dst: Rect::new(0.0, 0.0, 1.0, 1.0),
+                src: None,
+                fit: Fit::Fill,
+                tint: None,
+            }])
+            .unwrap()
+        };
+        assert_ne!(
+            hash_draw_list(&sprite("ab", "c")),
+            hash_draw_list(&sprite("a", "bc"))
+        );
+
+        // Two `Pop`s and one `Pop` differ, which is the command *count*
+        // reaching the stream.
+        let pops = |n: usize| {
+            let mut commands = vec![
+                Command::Push {
+                    transform: None,
+                    clip: None,
+                    opacity: None,
+                };
+                n
+            ];
+            commands.extend(std::iter::repeat_n(Command::Pop, n));
+            DrawList::new(commands).unwrap()
+        };
+        assert_ne!(hash_draw_list(&pops(1)), hash_draw_list(&pops(2)));
+    }
+
+    /// The digest does **not** device-round a canvas coordinate, and does not
+    /// quantize it either (`contracts/draw-list.md` §4).
+    ///
+    /// This is the opposite of the rule for a placement rect, on purpose: a
+    /// placement is drawn on the device grid, and a canvas's interior is
+    /// tessellated at sub-pixel precision. A digest that rounded here would
+    /// claim two visibly different pictures were one.
+    #[test]
+    fn a_sub_pixel_move_inside_a_canvas_moves_the_digest() {
+        let at = |x: f32| {
+            DrawList::new(vec![Command::Rect {
+                rect: Rect::new(x, 0.0, 10.0, 10.0),
+                radius: Corners::SQUARE,
+                snap: false,
+                paint: Paint::filled(ColorRef::Token("surface.base".into())),
+            }])
+            .unwrap()
+        };
+        // A tenth of a logical unit at scale 1 rounds to the same device
+        // pixel, which is exactly the move
+        // `a_move_below_one_device_pixel_keeps_the_digest` says a *placement*
+        // may make for free.
+        assert_ne!(hash_draw_list(&at(0.0)), hash_draw_list(&at(0.1)));
+        // One ulp, the strongest form of the claim.
+        let ulp = f32::from_bits(1.0_f32.to_bits() + 1);
+        assert_ne!(hash_draw_list(&at(1.0)), hash_draw_list(&at(ulp)));
     }
 
     /// A node that draws nothing of its own hashes to zero, which is what a
@@ -1120,6 +1568,7 @@ mod tests {
             custom: None,
             tokens: BTreeMap::new(),
             caret: None,
+            canvas: None,
         };
         assert_ne!(hash_paint_content(&content), hash_text("Fibers"));
     }
@@ -1135,6 +1584,7 @@ mod tests {
             custom: Some(custom.to_owned()),
             tokens: BTreeMap::new(),
             caret: None,
+            canvas: None,
         };
         assert_ne!(
             hash_paint_content(&split("ab", "c")),
@@ -1147,6 +1597,7 @@ mod tests {
             custom: Some("x".into()),
             tokens: BTreeMap::new(),
             caret: None,
+            canvas: None,
         };
         let empty = PaintContent {
             image: Some(String::new()),
@@ -1164,6 +1615,7 @@ mod tests {
             custom: None,
             tokens,
             caret: None,
+            canvas: None,
         };
         assert_ne!(
             hash_paint_content(&with(one)),
@@ -1278,10 +1730,11 @@ mod tests {
     fn the_canonical_stream_matches_its_pinned_vectors() {
         assert_eq!(
             super::DOMAIN,
-            b"gorgon-petra-frame-v7",
+            b"gorgon-petra-frame-v8",
             "the frame prefix moved without the vectors below moving with it"
         );
-        assert_eq!(super::PAINT_DOMAIN, b"gorgon-petra-paint-v3");
+        assert_eq!(super::PAINT_DOMAIN, b"gorgon-petra-paint-v4");
+        assert_eq!(super::DRAWLIST_DOMAIN, b"gorgon-petra-drawlist-v1");
         assert_eq!(super::NODE_DOMAIN, b"gorgon-petra-node-v1");
         assert_eq!(super::SUBTREE_DOMAIN, b"gorgon-petra-subtree-v1");
 
@@ -1289,19 +1742,19 @@ mod tests {
         // the payload stream.
         assert_eq!(
             hash_paint_content(&rich_content()),
-            0xcd9c_8db1_5041_f211,
+            0xa156_9044_8c82_030f,
             "the paint payload stream changed; see this test's doc comment"
         );
 
         let vp = viewport();
         assert_eq!(
             digest(&vp, &[]).hex(),
-            "46e2e168d2dc43398b83abf04b80b1ef23ffde7a1877505c8bb1f739aff3bdca",
+            "0ac565296cf778d2d8e82baa31461a56e7d2e7a8171eb0e1fb4e59f3eabdcb2c",
             "the empty-frame stream changed; see this test's doc comment"
         );
         assert_eq!(
             digest(&vp, &[rich_placement()]).hex(),
-            "cda4ffb487a2fa0615edcd09016f38b7c13b950d457bc9dadba8339be0e9869e",
+            "2a1e9cf20cb02eb826a6b15e7e0e0820d05a98bc71f796121422b4c394b20833",
             "the placement stream changed; see this test's doc comment"
         );
     }

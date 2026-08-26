@@ -778,6 +778,13 @@ pub fn paint_content_of(node: &ViewNode, states: &[&str]) -> PaintContent {
             NodeKind::Custom => props.custom_kind.clone(),
             _ => None,
         },
+        canvas: match node.kind {
+            // `Arc::clone`, not a deep copy: this runs once per canvas per
+            // frame, and the whole point of the `Arc` is that a picture the
+            // author did not change costs a refcount bump.
+            NodeKind::Canvas => props.canvas.clone(),
+            _ => None,
+        },
         tokens: {
             let mut tokens: BTreeMap<String, String> = props
                 .tokens
@@ -818,7 +825,10 @@ fn measure_kind(
         | NodeKind::Input
         | NodeKind::Spacer
         | NodeKind::Separator
-        | NodeKind::Custom => leaf::measure(node, ctx, proposal),
+        | NodeKind::Custom
+        // A canvas is a leaf that never reaches `ctx.content`: it has no
+        // intrinsic size to ask for (`contracts/draw-list.md` §7).
+        | NodeKind::Canvas => leaf::measure(node, ctx, proposal),
     }
 }
 
@@ -847,7 +857,8 @@ fn place_kind(
         | NodeKind::Input
         | NodeKind::Spacer
         | NodeKind::Separator
-        | NodeKind::Custom => leaf::place(node, ctx, path, slot, sink),
+        | NodeKind::Custom
+        | NodeKind::Canvas => leaf::place(node, ctx, path, slot, sink),
     }
     None
 }
@@ -910,10 +921,13 @@ pub fn default_role(kind: NodeKind) -> Option<Role> {
         NodeKind::Image => Role::Image,
         NodeKind::Input => Role::TextInput,
         NodeKind::Separator => Role::Separator,
-        // A spacer is empty space and a custom node is whatever its host says
-        // it is. Inventing a role for either would put a node in the
-        // accessibility tree that describes nothing.
-        NodeKind::Spacer | NodeKind::Custom => return None,
+        // A spacer is empty space, a custom node is whatever its host says it
+        // is, and a canvas is whatever its author drew. Inventing a role for
+        // any of the three would put a node in the accessibility tree that
+        // describes nothing — and a canvas is the one most tempting to call an
+        // `image`, which would promise a screen reader an alt text the payload
+        // does not carry.
+        NodeKind::Spacer | NodeKind::Custom | NodeKind::Canvas => return None,
     })
 }
 
