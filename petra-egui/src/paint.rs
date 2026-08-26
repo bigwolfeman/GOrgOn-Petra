@@ -370,6 +370,15 @@ pub struct PaintReport {
     pub images: usize,
     /// Custom nodes drawn through a registered [`CustomPainters`] entry.
     pub customs: usize,
+    /// Canvases that emitted at least one shape from their draw list.
+    pub canvases: usize,
+    /// `Sprite` commands, across every canvas, whose asset did not resolve.
+    ///
+    /// Its own term rather than a line in [`PaintReport::undrawn`], because
+    /// `contracts/draw-list.md` §10 asks for the count: a canvas drawing one
+    /// rect and one missing sprite emits a shape, so it is `Drawn`, and
+    /// without this number that half-drawn picture reads as a whole one.
+    pub missing_assets: usize,
     /// Focus rings drawn: focused placements that got at least one band.
     pub focus_rings: usize,
     /// **Focused placements that got no ring at all.** Keyboard operation
@@ -409,6 +418,7 @@ impl PaintReport {
         !self.desynced
             && self.silent == 0
             && self.blind_focus == 0
+            && self.missing_assets == 0
             && self.drawn + self.skipped_clipped + self.empty == self.placements
     }
 }
@@ -1024,6 +1034,34 @@ fn paint_one(
             report.undrawn.insert(format!("image:{source}"));
         }
     }
+    if let Some(list) = &content.canvas {
+        // A canvas is drawn by the engine, not by a host painter, which is
+        // the whole reason it is a second node kind rather than a mode of
+        // `custom`: every coordinate here is already in the digest, so what
+        // reaches the screen is a function of the frame's identity.
+        //
+        // Assets are the one part the digest cannot see — it hashes the
+        // asset's name and its rects, never decoded pixels — so a `Sprite`
+        // that does not resolve is counted rather than quietly skipped.
+        let ctx = painter.ctx().clone();
+        let mut assets = crate::draw::HostImages::new(env.images, &ctx);
+        let canvas = crate::draw::paint_canvas(
+            painter,
+            list,
+            placement.rect,
+            env.scale,
+            env.colors,
+            &mut assets,
+        );
+        report.missing_assets += canvas.missing_assets;
+        for name in &canvas.undrawn {
+            report.undrawn.insert(format!("canvas:{name}"));
+        }
+        if canvas.shapes > 0 {
+            report.canvases += 1;
+            shapes += canvas.shapes;
+        }
+    }
     if let Some(name) = &content.custom {
         let ctx = CustomPaintCtx {
             rect,
@@ -1274,6 +1312,65 @@ mod tests {
             Viewport::new(Size::new(240.0, 120.0), ThemeMode::Dark),
             TransitionActivity::default(),
         )
+    }
+
+    /// A canvas has to reach the screen, not merely reach the digest.
+    ///
+    /// # The bug this is the guard for
+    ///
+    /// `NodeKind::Canvas`, the six-command draw list, its refusals and its
+    /// digest coverage all landed before anything in this pass read
+    /// `PaintContent::canvas`. Every canvas test was green, every gate was
+    /// green, and the shipped host painted a canvas's *background token* and
+    /// none of its picture — the acceptance scene drew a coloured strip where
+    /// a cat was supposed to walk. A draw list nothing draws is the exact
+    /// shape of work that looks finished.
+    ///
+    /// So this asserts the count, not the absence of an error: `canvases`
+    /// only moves when the interpreter emitted a shape.
+    #[test]
+    fn a_canvas_is_painted_by_the_pass_and_not_merely_carried_by_it() {
+        use gorgon_petra::draw::{ColorRef, Command, Corners, DrawList, Paint};
+        use gorgon_petra::geom::Rect as DrawRect;
+
+        let host = Headless::new();
+        let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
+        let list = DrawList::new(vec![Command::Rect {
+            rect: DrawRect::new(2.0, 2.0, 40.0, 20.0),
+            radius: Corners::default(),
+            snap: false,
+            paint: Paint::filled(ColorRef::Token("surface.raised".to_owned())),
+        }])
+        .expect("one small rect is inside every draw-list bound");
+
+        let canvas = ViewNode::new(NodeKind::Canvas, "plot")
+            .with_props(Props {
+                canvas: Some(std::sync::Arc::new(list)),
+                ..Props::default()
+            })
+            .with_constraints(gorgon_petra::tree::Constraints {
+                horizontal: gorgon_petra::tree::AxisConstraint {
+                    min: Some(60.0),
+                    max: Some(60.0),
+                    priority: 5,
+                },
+                vertical: gorgon_petra::tree::AxisConstraint {
+                    min: Some(30.0),
+                    max: Some(30.0),
+                    priority: 5,
+                },
+            });
+        let tree = ViewNode::new(NodeKind::Stack, "root").child(canvas);
+        let frame = frame_of(&tree, &mut h);
+
+        let mut shaper = host.shaper();
+        let report = paint_frame(&host.painter(), &frame, &mut shaper, &snapshot());
+        assert_eq!(
+            report.canvases, 1,
+            "the pass must draw the list, not just carry it: {report:?}"
+        );
+        assert_eq!(report.missing_assets, 0, "{report:?}");
+        assert_eq!(report.silent, 0, "{report:?}");
     }
 
     /// An elevation may leave its own node. It may not leave the page.
