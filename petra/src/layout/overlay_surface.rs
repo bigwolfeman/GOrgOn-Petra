@@ -26,20 +26,28 @@
 //!
 //! ## `Anchor::Node` is a documented deferral
 //!
-//! [`Anchor::Node`] names another node's rect by id. Placements are produced
-//! in tree pre-order (`layout/mod.rs`'s `place` walks the tree once,
-//! depth-first), so the anchor node's rect may not exist yet when a surface
-//! earlier in the walk needs it, and even when it does exist,
-//! [`crate::frame::placement::PlacementSink`] exposes only `push` /
-//! `current_parent` / `enter` / `leave` — there is no way to read back a
-//! placement already pushed. Changing that trait is out of scope for this
-//! module (it is shared with every other container). So: every
-//! `Anchor::Node` resolves exactly like [`Anchor::Viewport`] today, and that
-//! is not left silent — [`resolve_anchor_kind`] is the public, tested seam
-//! that says so, and [`place`] calls it rather than quietly special-casing
-//! `Anchor::Node` inline. A future crate that gains a two-pass placement
-//! walk (or a sink that can be queried) can resolve `Anchor::Node` properly
-//! by changing this module alone.
+//! [`Anchor::Node`] names another node's rect by id, and this pass does not
+//! have that rect. The reason is the walk order, not the sink. Placements are
+//! produced in tree pre-order (`layout/mod.rs`'s `place` walks the tree once,
+//! depth-first), so a surface earlier in the walk asks for a rect its anchor
+//! has not been given yet. The sink itself can be read back —
+//! [`crate::frame::placement::PlacementSink::placed`] exists and
+//! `layout/mod.rs` already calls it — but reading it from here would answer
+//! for the anchors that happen to be placed first and answer nothing for the
+//! rest, which is a worse contract than answering the same way for all of
+//! them.
+//!
+//! So every `Anchor::Node` resolves exactly like [`Anchor::Viewport`] today,
+//! and that is not left silent — [`resolve_anchor_kind`] is the public,
+//! tested seam that says so rather than leaving it to be inferred from
+//! behaviour, and [`place`] calls it rather than quietly special-casing
+//! `Anchor::Node` inline. What closes it is a pruned harvest walk that places
+//! the anchor set before the real walk and hands this module the resulting
+//! rects (`contracts/anchored-placement.md` §1). That walk belongs in
+//! `layout/mod.rs`. Once it exists, the declared
+//! [`Edge`](crate::tree::Edge) becomes the side of the harvested rect the
+//! surface is placed against, and the clamp ladder below is already written
+//! to take a side: `AxisPlacement::Sided` is the shape it will arrive in.
 //!
 //! ## Input policy reaching the focus scope
 //!
@@ -127,22 +135,12 @@ pub fn place(
     // never render outside of.
     let viewport = slot.rect.intersect(slot.clip);
 
-    let anchor_origin = anchor_origin(surface.anchor, viewport, natural);
+    let (plan_x, plan_y) = anchor_placement(surface.anchor, viewport, natural);
 
-    let (x, rect_w, _content_w, scroll_x) = clamp_axis(
-        anchor_origin.0,
-        natural.w,
-        viewport.x,
-        viewport.w,
-        surface.clamp,
-    );
-    let (y, rect_h, _content_h, scroll_y) = clamp_axis(
-        anchor_origin.1,
-        natural.h,
-        viewport.y,
-        viewport.h,
-        surface.clamp,
-    );
+    let (x, rect_w, _content_w, scroll_x) =
+        clamp_axis(plan_x, natural.w, viewport.x, viewport.w, surface.clamp);
+    let (y, rect_h, _content_h, scroll_y) =
+        clamp_axis(plan_y, natural.h, viewport.y, viewport.h, surface.clamp);
 
     let rect = Rect::new(x, y, rect_w, rect_h);
     // Padding is inside the box: children are offered the placed, clamped
@@ -233,8 +231,10 @@ pub enum AnchorResolution {
     Point,
     /// Resolved to the viewport centre, as declared.
     Viewport,
-    /// Declared as `Anchor::Node`, but resolved as `Anchor::Viewport` because
-    /// this pass cannot read another node's placement (see the module doc).
+    /// Declared as `Anchor::Node`, but resolved as `Anchor::Viewport`
+    /// because this single pre-order pass reaches a surface before the node
+    /// it is anchored to, so the anchor rect does not exist yet (see the
+    /// module doc).
     NodeFallenBackToViewport,
 }
 
@@ -249,29 +249,134 @@ pub fn resolve_anchor_kind(anchor: &Anchor) -> AnchorResolution {
     }
 }
 
-/// The preferred top-left origin for a surface of `natural` size anchored by
-/// `anchor` inside `viewport`, before clamping.
+/// Which way a surface grows away from its anchor on one axis.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Grow {
+    /// Towards increasing coordinates: the anchor is the box's near edge.
+    Forward,
+    /// Towards decreasing coordinates: the anchor is the box's far edge.
+    Backward,
+}
+
+impl Grow {
+    fn opposite(self) -> Self {
+        match self {
+            Self::Forward => Self::Backward,
+            Self::Backward => Self::Forward,
+        }
+    }
+}
+
+/// One axis of a surface's preferred position, in the form the clamp rules
+/// need it: either a declared side to grow away from — which is what gives
+/// [`ClampRule::Flip`] an opposite side to try — or a bare origin with no
+/// side at all.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum AxisPlacement {
+    /// The box is centred on this axis and declares no side, so there is
+    /// nothing to flip to. This is what an `Anchor::Viewport` surface (and,
+    /// today, an `Anchor::Node` one) gets on both axes.
+    Centred(f32),
+    /// The box's near-in-`grow` edge sits at `at`, so `Flip` may put the box
+    /// on the other side of `at` instead.
+    Sided {
+        /// The anchor coordinate on this axis.
+        at: f32,
+        /// Which way the box extends from `at`.
+        grow: Grow,
+    },
+}
+
+impl AxisPlacement {
+    /// The preferred origin for a box of `extent`, before any clamping.
+    fn origin(self, extent: f32) -> f32 {
+        match self {
+            Self::Centred(origin) => origin,
+            Self::Sided {
+                at,
+                grow: Grow::Forward,
+            } => at,
+            Self::Sided {
+                at,
+                grow: Grow::Backward,
+            } => at - extent,
+        }
+    }
+
+    /// The same anchor read from its other side.
+    ///
+    /// `Centred` has no side, so it is its own opposite: the flip attempt
+    /// then simply repeats the preferred attempt that already failed, and
+    /// the ladder falls through to the shift with no special case for it.
+    fn flipped(self) -> Self {
+        match self {
+            Self::Centred(origin) => Self::Centred(origin),
+            Self::Sided { at, grow } => Self::Sided {
+                at,
+                grow: grow.opposite(),
+            },
+        }
+    }
+
+    /// How much window there is between the anchor and the far edge on this
+    /// side — the room a box placed here has before it runs out. Used only to
+    /// choose between the two sides when neither fits.
+    fn room(self, vp_origin: f32, vp_extent: f32) -> f32 {
+        match self {
+            Self::Centred(_) => vp_extent.max(0.0),
+            Self::Sided {
+                at,
+                grow: Grow::Forward,
+            } => (vp_origin + vp_extent - at).max(0.0),
+            Self::Sided {
+                at,
+                grow: Grow::Backward,
+            } => (at - vp_origin).max(0.0),
+        }
+    }
+}
+
+/// The preferred placement of a surface of `natural` size anchored by
+/// `anchor` inside `viewport`, one [`AxisPlacement`] per axis, before
+/// clamping.
 ///
 /// `Anchor::Point` is read as the box's top-left corner (the simplest
 /// deterministic reading available without an `Edge` to grow away from, which
-/// only `Anchor::Node` declares). `Anchor::Viewport` centres the box, and
-/// `Anchor::Node` — per [`resolve_anchor_kind`] — centres it the same way.
-fn anchor_origin(anchor: &Anchor, viewport: Rect, natural: Size) -> (f32, f32) {
+/// only `Anchor::Node` declares). That reading is a *side* on both axes: the
+/// box grows right and down from the point, so the point's other side — box
+/// ending at the point — is a real opposite for [`ClampRule::Flip`] to try.
+/// `Anchor::Viewport` centres the box and declares no side, and
+/// `Anchor::Node` — per [`resolve_anchor_kind`] — centres it the same way
+/// until the harvest walk lands (see the module doc).
+fn anchor_placement(
+    anchor: &Anchor,
+    viewport: Rect,
+    natural: Size,
+) -> (AxisPlacement, AxisPlacement) {
     match resolve_anchor_kind(anchor) {
         AnchorResolution::Point => {
             let Anchor::Point { x, y } = anchor else {
                 unreachable!("resolve_anchor_kind returned Point for a non-Point anchor")
             };
-            (*x, *y)
+            (
+                AxisPlacement::Sided {
+                    at: *x,
+                    grow: Grow::Forward,
+                },
+                AxisPlacement::Sided {
+                    at: *y,
+                    grow: Grow::Forward,
+                },
+            )
         }
         AnchorResolution::Viewport | AnchorResolution::NodeFallenBackToViewport => (
-            viewport.x + (viewport.w - natural.w) / 2.0,
-            viewport.y + (viewport.h - natural.h) / 2.0,
+            AxisPlacement::Centred(viewport.x + (viewport.w - natural.w) / 2.0),
+            AxisPlacement::Centred(viewport.y + (viewport.h - natural.h) / 2.0),
         ),
     }
 }
 
-/// Clamp one axis of a preferred `(origin, extent)` box into
+/// Clamp one axis of a `plan`ned box of `extent` into
 /// `(vp_origin, vp_origin + vp_extent)` by `rule`.
 ///
 /// Returns `(rect_origin, rect_extent, content_extent, needs_scroll)`:
@@ -281,44 +386,25 @@ fn anchor_origin(anchor: &Anchor, viewport: Rect, natural: Size) -> (f32, f32) {
 /// than `rect_extent` only under `ClampRule::Scroll` when the natural extent
 /// does not fit.
 fn clamp_axis(
-    origin: f32,
+    plan: AxisPlacement,
     extent: f32,
     vp_origin: f32,
     vp_extent: f32,
     rule: ClampRule,
 ) -> (f32, f32, f32, bool) {
     let vp_extent = vp_extent.max(0.0);
-    let fits = extent <= vp_extent;
     match rule {
         ClampRule::Shrink => {
-            // "Keep the edge" means the anchored origin itself does not move
-            // (unlike `Flip`, which slides the whole box back into bounds);
-            // only the far edge gives way. The origin is still pulled into
-            // `[vp_origin, vp_end]` first — a preferred origin that is
-            // itself off-window has no edge left to keep, so the nearest one
-            // is the honest fallback — then the extent shrinks to whatever
-            // room remains from there to the viewport's far edge.
-            let vp_end = vp_origin + vp_extent;
-            let o = origin.clamp(vp_origin, vp_end);
-            let room = (vp_end - o).max(0.0);
-            let e = extent.min(room);
+            let (o, e) = shrink_at(plan, extent, vp_origin, vp_extent);
             (o, e, e, false)
         }
         ClampRule::Flip => {
-            if fits {
-                let o = clamp_origin(origin, extent, vp_origin, vp_extent);
-                (o, extent, extent, false)
-            } else {
-                // Neither edge has room for the natural extent: flipping to
-                // the opposite side cannot help, so this is where Flip's
-                // documented fallback to Shrink applies.
-                let e = extent.min(vp_extent);
-                (vp_origin, e, e, false)
-            }
+            let (o, e) = flip_axis(plan, extent, vp_origin, vp_extent);
+            (o, e, e, false)
         }
         ClampRule::Scroll => {
-            if fits {
-                let o = clamp_origin(origin, extent, vp_origin, vp_extent);
+            if extent <= vp_extent {
+                let o = clamp_origin(plan.origin(extent), extent, vp_origin, vp_extent);
                 (o, extent, extent, false)
             } else {
                 // The extent itself is kept for the content slot; only the
@@ -326,6 +412,98 @@ fn clamp_axis(
                 // scroll affordance the module doc describes.
                 (vp_origin, vp_extent, extent, true)
             }
+        }
+    }
+}
+
+/// [`ClampRule::Flip`] on one axis, returning `(origin, extent)`.
+///
+/// The ladder, in order, first fit wins (`anchored-placement.md` §4): the
+/// declared side; then the anchor's *opposite* side, whole; then — neither
+/// having room — the side with strictly more of it, with an exact tie kept on
+/// the declared side so the choice is settled by declaration order and never
+/// by an unspecified float comparison. Only once a side is chosen does
+/// anything move or give way: the box slides into the window if the extent
+/// fits it at all, and shrinks against the chosen side if it does not.
+///
+/// The opposite-side attempt is the step this rule is named for, and it is
+/// what distinguishes `Flip` from `Shrink` and from a bare shift: a box that
+/// overhangs the right edge by 20 is placed on the anchor's left side, not
+/// slid 20 to the left.
+fn flip_axis(plan: AxisPlacement, extent: f32, vp_origin: f32, vp_extent: f32) -> (f32, f32) {
+    let preferred = plan.origin(extent);
+    if fits_at(preferred, extent, vp_origin, vp_extent) {
+        return (preferred, extent);
+    }
+
+    let other = plan.flipped();
+    let flipped = other.origin(extent);
+    if fits_at(flipped, extent, vp_origin, vp_extent) {
+        return (flipped, extent);
+    }
+
+    // Neither side holds the box as declared, so take the side with strictly
+    // more room. An exact tie keeps the declared side: the ladder's one tie,
+    // settled by declaration order rather than by which way a float
+    // comparison happens to fall.
+    let chosen = if other.room(vp_origin, vp_extent) > plan.room(vp_origin, vp_extent) {
+        other
+    } else {
+        plan
+    };
+    if extent <= vp_extent {
+        // The window does hold the box somewhere, even though neither side
+        // does: slide it in from the side just chosen.
+        return (
+            clamp_origin(chosen.origin(extent), extent, vp_origin, vp_extent),
+            extent,
+        );
+    }
+    // The extent is over budget on this axis whatever side it is on, so this
+    // is where `Flip`'s documented fallback to `Shrink` applies — at the
+    // chosen side, not at the window's near edge.
+    shrink_at(chosen, extent, vp_origin, vp_extent)
+}
+
+/// Whether a box of `extent` placed at `origin` lies wholly inside
+/// `[vp_origin, vp_origin + vp_extent]`.
+fn fits_at(origin: f32, extent: f32, vp_origin: f32, vp_extent: f32) -> bool {
+    origin >= vp_origin && origin + extent <= vp_origin + vp_extent
+}
+
+/// Keep the anchored edge where it is and let the extent give way, returning
+/// `(origin, extent)`.
+///
+/// This is what [`ClampRule::Shrink`] means, and what [`flip_axis`] falls
+/// back to once no side can hold the natural extent. The anchor is still
+/// pulled into `[vp_origin, vp_end]` first — an anchor that is itself
+/// off-window has no edge left to keep, so the nearest one is the honest
+/// fallback — and then the extent shrinks to whatever room remains from there
+/// to the window edge on the growing side.
+fn shrink_at(plan: AxisPlacement, extent: f32, vp_origin: f32, vp_extent: f32) -> (f32, f32) {
+    let vp_end = vp_origin + vp_extent;
+    match plan {
+        // A forward-growing box's anchor is already its near edge, and a
+        // centred box has no anchored edge at all, so its own preferred
+        // origin stands in as one. Both keep a near edge and let the far one
+        // give way, which is the same arithmetic.
+        AxisPlacement::Centred(near)
+        | AxisPlacement::Sided {
+            at: near,
+            grow: Grow::Forward,
+        } => {
+            let o = near.clamp(vp_origin, vp_end);
+            (o, extent.min((vp_end - o).max(0.0)))
+        }
+        AxisPlacement::Sided {
+            at,
+            grow: Grow::Backward,
+        } => {
+            // The anchor is the box's *far* edge here, so it is the far edge
+            // that stays put and the near edge that gives way.
+            let far = at.clamp(vp_origin, vp_end);
+            let e = extent.min((far - vp_origin).max(0.0));
+            (far - e, e)
         }
     }
 }
@@ -376,7 +554,9 @@ fn collect_surface_scopes(
 
 #[cfg(test)]
 mod tests {
-    use super::{AnchorResolution, clamp_axis, resolve_anchor_kind, surface_scopes};
+    use super::{
+        AnchorResolution, AxisPlacement, Grow, clamp_axis, resolve_anchor_kind, surface_scopes,
+    };
     use crate::frame::placement::PlacementList;
     use crate::geom::{Axis, Insets, Point, Rect, Size};
     use crate::layout::{SizeProposal, Slot};
@@ -553,7 +733,10 @@ mod tests {
         // extent), then add the padding to the result afterwards, the way a
         // "pad after clamp" implementation would.
         let (wrong_x, clamped_w, _content_w, _scrolls) = clamp_axis(
-            anchor_x,
+            AxisPlacement::Sided {
+                at: anchor_x,
+                grow: Grow::Forward,
+            },
             content_size.w,
             viewport.x,
             viewport.w,
@@ -629,8 +812,17 @@ mod tests {
 
     // -- Each ClampRule at each window edge, hand-computed. --------------
 
+    /// The behaviour that makes `Flip` a flip rather than a shift, at the
+    /// right edge.
+    ///
+    /// A point anchor grows the box right and down, so the opposite side is
+    /// the box's right edge sitting on the anchor: 780 - 40 = 740. A shift
+    /// would instead slide the box back until it ended at the window edge,
+    /// 800 - 40 = 760. The two answers differ by exactly the overhang, which
+    /// is what makes this test able to tell them apart
+    /// (`anchored-placement.md` §4a).
     #[test]
-    fn flip_pulls_the_box_back_from_the_right_edge() {
+    fn flip_places_the_box_on_the_opposite_side_of_the_anchor_at_the_right_edge() {
         let node = surface(
             Anchor::Point { x: 780.0, y: 10.0 },
             ClampRule::Flip,
@@ -638,13 +830,18 @@ mod tests {
             Size::new(40.0, 20.0),
         );
         let placed = place_surface(&node, Rect::new(0.0, 0.0, 800.0, 600.0));
-        // 780 + 40 = 820 > 800, so the box is pulled left to end exactly at
-        // the viewport's right edge: 800 - 40 = 760.
-        assert_eq!(placed.rect, Rect::new(760.0, 10.0, 40.0, 20.0));
+        assert_eq!(
+            placed.rect,
+            Rect::new(740.0, 10.0, 40.0, 20.0),
+            "the box belongs on the anchor's other side (740), not slid back \
+             against the window edge (760)"
+        );
     }
 
+    /// The same rule on the other axis: 590 - 40 = 550 is the opposite side,
+    /// 600 - 40 = 560 is the shift this test used to assert.
     #[test]
-    fn flip_pulls_the_box_back_from_the_bottom_edge() {
+    fn flip_places_the_box_on_the_opposite_side_of_the_anchor_at_the_bottom_edge() {
         let node = surface(
             Anchor::Point { x: 10.0, y: 590.0 },
             ClampRule::Flip,
@@ -652,11 +849,31 @@ mod tests {
             Size::new(20.0, 40.0),
         );
         let placed = place_surface(&node, Rect::new(0.0, 0.0, 800.0, 600.0));
-        assert_eq!(placed.rect, Rect::new(10.0, 560.0, 20.0, 40.0));
+        assert_eq!(placed.rect, Rect::new(10.0, 550.0, 20.0, 40.0));
     }
 
+    /// A side that fits is kept. The flip is a fallback, not a preference:
+    /// nothing moves while the declared side has room.
     #[test]
-    fn flip_pulls_the_box_back_from_the_left_and_top_edges() {
+    fn flip_leaves_the_box_on_its_declared_side_while_that_side_fits() {
+        let node = surface(
+            Anchor::Point { x: 100.0, y: 100.0 },
+            ClampRule::Flip,
+            InputPolicy::Block,
+            Size::new(40.0, 20.0),
+        );
+        let placed = place_surface(&node, Rect::new(0.0, 0.0, 800.0, 600.0));
+        assert_eq!(placed.rect, Rect::new(100.0, 100.0, 40.0, 20.0));
+    }
+
+    /// Both sides fail, so the ladder falls through to the shift — but only
+    /// after the opposite side was tried and rejected. Anchored at -30 with
+    /// a 40-wide box, the declared side reaches from -30 to 10 (off-window
+    /// on the left) and the opposite side from -70 to -30 (entirely
+    /// off-window), so the side with more room is the declared one and the
+    /// box slides in to 0.
+    #[test]
+    fn flip_shifts_the_box_in_only_after_the_opposite_side_also_fails_at_the_left_and_top_edges() {
         let node = surface(
             Anchor::Point { x: -30.0, y: -30.0 },
             ClampRule::Flip,
@@ -728,9 +945,9 @@ mod tests {
     fn the_same_surface_re_clamps_correctly_under_two_viewport_sizes() {
         // `Flip` rather than `Shrink`: this test is about the box moving to
         // stay fully visible, which is exactly the behaviour that
-        // distinguishes `Flip` (translate, keep the extent) from `Shrink`
-        // (keep the edge, reduce the extent) — see the two rules' own
-        // dedicated tests above.
+        // distinguishes `Flip` (put it on the anchor's other side, keep the
+        // extent) from `Shrink` (keep the edge, reduce the extent) — see the
+        // two rules' own dedicated tests above.
         let node = surface(
             Anchor::Point { x: 700.0, y: 500.0 },
             ClampRule::Flip,
@@ -742,8 +959,10 @@ mod tests {
 
         // Shrinking the viewport must move the box, not leave it hanging off
         // the (now smaller) window.
+        // 700 + 50 = 750 > 720 and 500 + 50 = 550 > 520, so both axes take
+        // the opposite side of the anchor: 700 - 50 = 650, 500 - 50 = 450.
         let narrow = place_surface(&node, Rect::new(0.0, 0.0, 720.0, 520.0));
-        assert_eq!(narrow.rect, Rect::new(670.0, 470.0, 50.0, 50.0));
+        assert_eq!(narrow.rect, Rect::new(650.0, 450.0, 50.0, 50.0));
         assert!(narrow.rect.x + narrow.rect.w <= 720.0);
         assert!(narrow.rect.y + narrow.rect.h <= 520.0);
     }
@@ -806,13 +1025,66 @@ mod tests {
                 proptest::strategy::Just(ClampRule::Shrink),
                 proptest::strategy::Just(ClampRule::Scroll),
             ],
+            // Every shape of plan the ladder can be handed, including the
+            // backward-growing side only `Flip` can produce and the sideless
+            // centred plan a viewport anchor produces.
+            plan in proptest::prop_oneof![
+                proptest::strategy::Just(0u8),
+                proptest::strategy::Just(1u8),
+                proptest::strategy::Just(2u8),
+            ],
         ) {
-            let (x, rw, _cw, _) = clamp_axis(ox, w, 0.0, vw, rule);
-            let (y, rh, _ch, _) = clamp_axis(oy, h, 0.0, vh, rule);
+            let axis = |at: f32| match plan {
+                0 => AxisPlacement::Sided { at, grow: Grow::Forward },
+                1 => AxisPlacement::Sided { at, grow: Grow::Backward },
+                _ => AxisPlacement::Centred(at),
+            };
+            let (x, rw, _cw, _) = clamp_axis(axis(ox), w, 0.0, vw, rule);
+            let (y, rh, _ch, _) = clamp_axis(axis(oy), h, 0.0, vh, rule);
             proptest::prop_assert!(x >= 0.0 - 0.001, "x={x} rw={rw}");
             proptest::prop_assert!(x + rw <= vw + 0.001, "x={x} rw={rw} vw={vw}");
             proptest::prop_assert!(y >= 0.0 - 0.001, "y={y} rh={rh}");
             proptest::prop_assert!(y + rh <= vh + 0.001, "y={y} rh={rh} vh={vh}");
+        }
+    }
+
+    // The ladder's own ordering, as a property rather than as three worked
+    // examples. The inputs are generated so the declared side never fits and
+    // the opposite side always does — a box at most half the window wide,
+    // anchored past the point where it would still fit growing forward.
+    // `Flip` must then put it on the anchor's other side at full extent. A
+    // shift would put it against the window edge instead, which is a
+    // different number for every case here.
+    proptest::proptest! {
+        #[test]
+        fn flip_puts_the_box_on_the_anchors_other_side_whenever_that_side_holds_it(
+            vw in 10.0f32..800.0,
+            width_ratio in 0.05f32..0.5,
+            past_ratio in 0.1f32..1.0,
+        ) {
+            let w = vw * width_ratio;
+            // Strictly past the last origin the declared side could hold, and
+            // never past the window's far edge.
+            let at = vw - w + past_ratio * w;
+            let (x, rw, _cw, scrolls) = clamp_axis(
+                AxisPlacement::Sided { at, grow: Grow::Forward },
+                w,
+                0.0,
+                vw,
+                ClampRule::Flip,
+            );
+            proptest::prop_assert!(!scrolls);
+            proptest::prop_assert!(
+                (rw - w).abs() < 0.001,
+                "the other side holds the box whole, so nothing may shrink: rw={rw} w={w}"
+            );
+            proptest::prop_assert!(
+                (x - (at - w)).abs() < 0.001,
+                "flip must land on the anchor's other side ({}), not against the \
+                 window edge ({}): x={x} at={at} w={w} vw={vw}",
+                at - w,
+                vw - w
+            );
         }
     }
 
