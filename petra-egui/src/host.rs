@@ -1646,8 +1646,8 @@ mod tests {
     #[test]
     fn a_theme_swap_rebinds_the_registry_and_the_type_ramp() {
         use gorgon_petra::token::{
-            DesignToken, Presenter, Theme, ThemeMode, TokenKind, TokenValue, TypographyValue,
-            TypographyWeight, dark, light, standard_vocabulary,
+            DesignToken, Presenter, Theme, ThemeMode, TokenKind, TokenValue, TypographyFamily,
+            TypographyValue, TypographyWeight, dark, light, standard_vocabulary,
         };
 
         let gutter = TokenName::new("spacing.app-gutter").unwrap();
@@ -1667,10 +1667,17 @@ mod tests {
         let mut values = dark().values().clone();
         values.insert(
             heading.clone(),
+            // The two trailing fields arrived with the Carbon type ramp on
+            // 2026-08-25 and are at their defaults here: this fixture is about
+            // the *size* a theme swap installs, and tracking and face class
+            // would be two more variables in a test that is not measuring
+            // either.
             TokenValue::Typography(TypographyValue {
                 size: 33.0,
                 line_height: 44.0,
                 weight: TypographyWeight::Bold,
+                letter_spacing: 0.0,
+                family: TypographyFamily::Sans,
             }),
         );
         let other_theme = Theme::build(ThemeMode::Dark, &standard_vocabulary(), values)

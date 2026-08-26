@@ -17,8 +17,8 @@ use crate::tree::{NodeKind, Props, Registry, ViewNode};
 
 use super::tokens::{ACCENT_PRIMARY, BORDER_SUBTLE, TEXT_ON_ACCENT};
 use super::{
-    MAX_LAYER_DEPTH, button, checkbox, field, heading, list_row, on_layer, primary_button,
-    progress, radio, section, status, tab, tab_bar, text, toggle,
+    MAX_LAYER_DEPTH, button, checkbox, field, heading, layer_tokens, list_row, on_layer,
+    primary_button, progress, radio, section, status, tab, tab_bar, text, toggle,
 };
 
 const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
@@ -101,7 +101,7 @@ fn full_gallery() -> ViewNode {
 #[test]
 fn every_component_in_one_tree_passes_the_audit_with_zero_findings() {
     let tree = full_gallery();
-    // The component library binds real design-token names (`spacing.md`,
+    // The component library binds real design-token names (`spacing-04`,
     // `text.primary`, ...), so — unlike most layout fixtures, which name no
     // token at all — this tree needs a `Registry` that actually declares the
     // shipped vocabulary; `crate::testing::validated`'s empty `Registry::new()`
@@ -671,4 +671,83 @@ fn the_announced_percentage_and_the_drawn_fill_always_agree() {
         0.0,
         "a value nobody could compute must not announce a finished job"
     );
+}
+
+/// FR-004a's two layering rules, read off every seat the ramp can express.
+///
+/// **The border rule is the one this exists for.** Carbon states it as
+/// *"border tokens pair with its same number, for example `$field-03` pairs
+/// with `$border-strong-03`"* — the field's number, not the background's — and
+/// stated in prose it is the kind of rule that survives one implementation and
+/// then quietly becomes "the border pairs with the background" in the next.
+/// Stated as arithmetic it is two ordinals that either match or do not.
+///
+/// The ordinals are parsed back out of the token names rather than compared to
+/// a table written here, so this fails if `layer_tokens` starts returning a
+/// consistent-looking triple that has slipped a step — which a table would
+/// have to be edited to notice.
+#[test]
+fn the_layer_triple_puts_the_field_one_ahead_and_the_border_beside_it() {
+    /// The trailing two-digit ordinal of a Carbon-spelled name, if it has one.
+    fn ordinal(token: &str) -> Option<usize> {
+        token.rsplit('-').next()?.parse().ok()
+    }
+
+    for depth in 0..=MAX_LAYER_DEPTH {
+        let seat = layer_tokens(depth);
+
+        // The background carries no ordinal of its own — the layer set spells
+        // its steps as words — so the seat number is the source of truth for
+        // it, and the other two are checked against that.
+        let field = ordinal(seat.field)
+            .unwrap_or_else(|| panic!("`{}` carries no ordinal to pair a border with", seat.field));
+        let border =
+            ordinal(seat.border).unwrap_or_else(|| panic!("`{}` carries no ordinal", seat.border));
+
+        assert_eq!(
+            field,
+            depth + 1,
+            "a field on {} must be field-0{}, one layer ahead, not `{}`",
+            seat.background,
+            depth + 1,
+            seat.field
+        );
+        assert_eq!(
+            border, field,
+            "`{}` pairs with `{}`: a border takes the *field's* number, not \
+             the background's. This is the rule that gets lost.",
+            seat.border, seat.field
+        );
+    }
+
+    // Past the end of the ramp the seat clamps rather than running off it,
+    // for `MAX_LAYER_DEPTH`'s reason: the alternative resolves a node and its
+    // ground to the same colour and reports success.
+    assert_eq!(
+        layer_tokens(MAX_LAYER_DEPTH + 7),
+        layer_tokens(MAX_LAYER_DEPTH),
+        "a deeper seat than the ramp can express must clamp, not wrap or panic"
+    );
+}
+
+/// Every name `layer_tokens` can emit is one the shipped vocabulary declares.
+///
+/// Without this the operators would be a well-formed arithmetic over names
+/// that resolve to nothing: a tree built from them is refused at acceptance,
+/// at runtime, in whichever component reaches the deepest seat first.
+#[test]
+fn every_layering_operator_name_is_in_the_standard_vocabulary() {
+    let vocab = standard_vocabulary();
+    for depth in 0..=MAX_LAYER_DEPTH {
+        let seat = layer_tokens(depth);
+        for token in [seat.background, seat.field, seat.border] {
+            let name = TokenName::new(token)
+                .unwrap_or_else(|err| panic!("`{token}` is not a well-formed token name: {err}"));
+            assert!(
+                vocab.contains(&name),
+                "seat {depth} emits `{token}`, which standard_vocabulary() does \
+                 not declare"
+            );
+        }
+    }
 }

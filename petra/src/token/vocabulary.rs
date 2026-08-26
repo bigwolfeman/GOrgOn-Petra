@@ -182,11 +182,11 @@ mod tests {
         let mut vocab = Vocabulary::new();
         vocab
             .declare(DesignToken::new(
-                TokenName::new("spacing.md").unwrap(),
+                TokenName::new("spacing-04").unwrap(),
                 TokenKind::Spacing,
             ))
             .declare(DesignToken::new(
-                TokenName::new("spacing.2xs").unwrap(),
+                TokenName::new("spacing-01").unwrap(),
                 TokenKind::Spacing,
             ))
             .declare(DesignToken::new(
@@ -197,8 +197,8 @@ mod tests {
         assert_eq!(
             spacing,
             vec![
-                &TokenName::new("spacing.2xs").unwrap(),
-                &TokenName::new("spacing.md").unwrap(),
+                &TokenName::new("spacing-01").unwrap(),
+                &TokenName::new("spacing-04").unwrap(),
             ],
             "a colour token must not leak into the spacing legal set"
         );

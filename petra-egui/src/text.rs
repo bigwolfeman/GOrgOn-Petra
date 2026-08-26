@@ -15,7 +15,7 @@ use egui::{Color32, Context, FontFamily, FontId, Galley};
 use gorgon_petra::cache::LruCache;
 use gorgon_petra::geom::Size;
 use gorgon_petra::layout::{ContentMeasure, SizeProposal, TextMeasurement, TextRequest};
-use gorgon_petra::token::{Theme, TokenValue, TypographyValue, TypographyWeight};
+use gorgon_petra::token::{Theme, TokenValue, TypographyFamily, TypographyValue, TypographyWeight};
 use gorgon_petra::tree::TextWrap;
 
 /// The character appended where a run was elided.
@@ -49,6 +49,7 @@ pub struct FontFaces {
     regular: FontFamily,
     medium: FontFamily,
     bold: FontFamily,
+    mono: FontFamily,
 }
 
 impl Default for FontFaces {
@@ -57,28 +58,54 @@ impl Default for FontFaces {
             regular: FontFamily::Proportional,
             medium: FontFamily::Proportional,
             bold: FontFamily::Proportional,
+            mono: FontFamily::Monospace,
         }
     }
 }
 
 impl FontFaces {
-    /// One family per weight class.
+    /// One family per weight class, with the default monospace face.
+    ///
+    /// The signature is unchanged from before the mono face existed, and
+    /// deliberately: every caller installs a proportional stack and wants
+    /// egui's own `FontFamily::Monospace` for code, so making them all pass a
+    /// fourth argument would be churn with one possible answer. A host with a
+    /// mono face of its own binds it through [`FontFaces::with_mono`].
     #[must_use]
     pub fn new(regular: FontFamily, medium: FontFamily, bold: FontFamily) -> Self {
         Self {
             regular,
             medium,
             bold,
+            mono: FontFamily::Monospace,
         }
     }
 
-    /// The family `weight` draws through.
+    /// The same faces, drawing [`TypographyFamily::Mono`] through `family`.
     #[must_use]
-    pub fn family(&self, weight: TypographyWeight) -> &FontFamily {
-        match weight {
-            TypographyWeight::Regular => &self.regular,
-            TypographyWeight::Medium => &self.medium,
-            TypographyWeight::Bold => &self.bold,
+    pub fn with_mono(mut self, family: FontFamily) -> Self {
+        self.mono = family;
+        self
+    }
+
+    /// The family a token draws through.
+    ///
+    /// Family wins over weight, and there is only one sensible order: a
+    /// monospace face has its own weights and a `Mono`/`Bold` token asking for
+    /// the proportional bold face would paint code in a proportional font,
+    /// which is the one thing the family field exists to prevent. The default
+    /// stack installs a single mono face, so `Mono` ignores weight entirely
+    /// there — the same honest limit [`FontFaces::distinguishes_weight`]
+    /// already reports for the proportional side.
+    #[must_use]
+    pub fn family(&self, family: TypographyFamily, weight: TypographyWeight) -> &FontFamily {
+        match family {
+            TypographyFamily::Mono => &self.mono,
+            TypographyFamily::Sans => match weight {
+                TypographyWeight::Regular => &self.regular,
+                TypographyWeight::Medium => &self.medium,
+                TypographyWeight::Bold => &self.bold,
+            },
         }
     }
 
@@ -123,6 +150,10 @@ pub struct TextStyle {
     /// Distance between the bottom rows of two subsequent lines, in logical
     /// units. `None` leaves it to the font's own metrics.
     pub line_height: Option<f32>,
+    /// Extra tracking between glyphs, in logical units, from the token's
+    /// `letter_spacing`. Reaches the galley as epaint's
+    /// `TextFormat::extra_letter_spacing`.
+    pub extra_letter_spacing: f32,
 }
 
 impl TextStyle {
@@ -132,6 +163,7 @@ impl TextStyle {
         Self {
             font,
             line_height: None,
+            extra_letter_spacing: 0.0,
         }
     }
 
@@ -146,8 +178,9 @@ impl TextStyle {
     #[must_use]
     pub fn from_token(value: &TypographyValue, faces: &FontFaces) -> Self {
         Self {
-            font: FontId::new(value.size, faces.family(value.weight).clone()),
+            font: FontId::new(value.size, faces.family(value.family, value.weight).clone()),
             line_height: Some(value.line_height),
+            extra_letter_spacing: value.letter_spacing,
         }
     }
 }
@@ -224,7 +257,9 @@ impl Typography {
         let default = styles.get(Self::BODY).cloned().unwrap_or_else(|| {
             TextStyle::new(FontId::new(
                 Self::FALLBACK_SIZE,
-                faces.family(TypographyWeight::Regular).clone(),
+                faces
+                    .family(TypographyFamily::Sans, TypographyWeight::Regular)
+                    .clone(),
             ))
         });
         Self { default, styles }
@@ -426,11 +461,18 @@ impl GalleyShaper {
         let wrap_width = req.available_width.unwrap_or(f32::INFINITY);
         let key = GalleyKey {
             text: req.text.to_owned(),
+            // Tracking is in the key because it changes the shaped run's
+            // width: two styles differing only in `letter_spacing` measure
+            // differently, and sharing a galley between them would hand the
+            // painter a run that was measured for the other one. That is the
+            // exact failure this cache's "measure and paint the same galley"
+            // rule exists to prevent.
             style: format!(
-                "{}:{:?}:{:?}",
+                "{}:{:?}:{:?}:{}",
                 style.font.size.to_bits(),
                 style.line_height.map(f32::to_bits),
-                style.font.family
+                style.font.family,
+                style.extra_letter_spacing.to_bits()
             ),
             wrap_bits: wrap_width.to_bits(),
             scale_bits: self.ctx.pixels_per_point().to_bits(),
@@ -453,6 +495,7 @@ impl GalleyShaper {
                 font_id: style.font.clone(),
                 color: Color32::PLACEHOLDER,
                 line_height: style.line_height,
+                extra_letter_spacing: style.extra_letter_spacing,
                 ..TextFormat::default()
             },
         );
@@ -519,7 +562,7 @@ mod tests {
     use super::{ELLIPSIS, FontFaces, GalleyShaper, TextStyle, Typography};
     use egui::{Context, FontFamily, FontId, RawInput};
     use gorgon_petra::layout::{ContentMeasure, SizeProposal, TextRequest};
-    use gorgon_petra::token::{TypographyValue, TypographyWeight, dark, light};
+    use gorgon_petra::token::{TypographyFamily, TypographyValue, TypographyWeight, dark, light};
     use gorgon_petra::tree::TextWrap;
 
     /// A headless egui context, brought up and torn down honestly.
@@ -674,8 +717,18 @@ mod tests {
     fn a_scale_change_is_a_different_galley() {
         let h = Headless::new();
         let mut s = h.shaper();
+        // **The run is chosen, not arbitrary.** Whether a given string
+        // measures differently at two scales depends on where its accumulated
+        // glyph advances happen to land relative to a whole pixel, so most
+        // strings answer the same extent at 1.0 and 2.0 and would make the
+        // premise below unprovable. This pangram does not: it measures
+        // 110.1875 at scale 1.0 and 109.6875 at 2.0 under the shipped body
+        // style. If a future ramp change makes the premise assertion fail,
+        // that is what happened — pick another run, do not delete the
+        // assertion, because without it this test passes whether or not the
+        // key carries the scale.
         let r = req(
-            "the quick brown fox jumps over the lazy dog",
+            "Sphinx of black quartz, judge my vow",
             Some(120.0),
             TextWrap::Wrap,
         );
@@ -831,6 +884,8 @@ mod tests {
                     size: 14.0,
                     line_height: 16.0,
                     weight: TypographyWeight::Regular,
+                    letter_spacing: 0.0,
+                    family: TypographyFamily::Sans,
                 },
                 &faces,
             ),
@@ -842,6 +897,8 @@ mod tests {
                     size: 14.0,
                     line_height: 40.0,
                     weight: TypographyWeight::Regular,
+                    letter_spacing: 0.0,
+                    family: TypographyFamily::Sans,
                 },
                 &faces,
             ),
@@ -873,6 +930,140 @@ mod tests {
         );
     }
 
+    /// `TypographyValue::letter_spacing` reaches the shaped run, and it is
+    /// measured on the galley rather than read back off the style.
+    ///
+    /// **The field would be theatre without this.** A `letter_spacing` that
+    /// round-trips through `TextStyle` and never reaches `TextFormat` is a
+    /// token an author can set, a gate can check, and a reader can never see —
+    /// which is exactly the shape of the defect this file's own `Typography`
+    /// doc comment records, where an entire declared type ramp painted at 14
+    /// units with every test green. So this measures a width difference on a
+    /// laid-out run, at a tracking value taken from the shipped ramp.
+    ///
+    /// One line, no wrapping: tracking widens a run, and a wrapped run would
+    /// answer the wrap width instead of the run's own extent.
+    #[test]
+    fn letter_spacing_reaches_the_shaped_run() {
+        let faces = FontFaces::default();
+        let mut t = Typography::new(TextStyle::new(FontId::new(14.0, FontFamily::Proportional)));
+        for (step, tracking) in [("typography.tight", 0.0), ("typography.tracked", 0.32)] {
+            t.set(
+                step,
+                TextStyle::from_token(
+                    &TypographyValue {
+                        size: 14.0,
+                        line_height: 18.0,
+                        weight: TypographyWeight::Regular,
+                        letter_spacing: tracking,
+                        family: TypographyFamily::Sans,
+                    },
+                    &faces,
+                ),
+            );
+        }
+
+        let h = Headless::new();
+        let mut s = h.shaper_with(t);
+        let text = "tracking";
+        let tight = s.text(&TextRequest {
+            style: Some("typography.tight"),
+            ..req(text, None, TextWrap::Clip)
+        });
+        let tracked = s.text(&TextRequest {
+            style: Some("typography.tracked"),
+            ..req(text, None, TextWrap::Clip)
+        });
+
+        assert!(
+            tracked.size.w > tight.size.w,
+            "0.32 units of tracking over {} characters must widen the run: \
+             {:?} against {:?}",
+            text.chars().count(),
+            tracked.size,
+            tight.size
+        );
+        assert_eq!(
+            tracked.size.h, tight.size.h,
+            "tracking is horizontal; a height change means the line height \
+             moved too and this measured two things"
+        );
+    }
+
+    /// Two styles differing only in tracking are two galleys.
+    ///
+    /// The cache key is a string built by hand, so a field added to
+    /// `TextStyle` and forgotten there is a silent bug of the worst kind: the
+    /// painter is handed a galley measured for a *different* style, which
+    /// breaks this module's one structural promise — that the run painted is
+    /// byte-for-byte the run measured.
+    #[test]
+    fn tracking_is_part_of_the_galley_key() {
+        let faces = FontFaces::default();
+        let mut t = Typography::new(TextStyle::new(FontId::new(14.0, FontFamily::Proportional)));
+        for (step, tracking) in [("typography.a", 0.0), ("typography.b", 0.6)] {
+            t.set(
+                step,
+                TextStyle::from_token(
+                    &TypographyValue {
+                        size: 14.0,
+                        line_height: 18.0,
+                        weight: TypographyWeight::Regular,
+                        letter_spacing: tracking,
+                        family: TypographyFamily::Sans,
+                    },
+                    &faces,
+                ),
+            );
+        }
+        let h = Headless::new();
+        let mut s = h.shaper_with(t);
+        let a = s.galley(&TextRequest {
+            style: Some("typography.a"),
+            ..req("same text", None, TextWrap::Clip)
+        });
+        let b = s.galley(&TextRequest {
+            style: Some("typography.b"),
+            ..req("same text", None, TextWrap::Clip)
+        });
+        assert!(
+            !std::sync::Arc::ptr_eq(&a, &b),
+            "the same text at two tracking values was served one galley; the \
+             painter would draw a run measured for the other style"
+        );
+    }
+
+    /// The shipped ramp's `code` step draws through the monospace face, and
+    /// nothing else does.
+    ///
+    /// The family field exists for exactly two of Carbon's fourteen
+    /// productive roles, so the test that matters is the *negative* half: a
+    /// `family` that silently applied to every step would be invisible in a
+    /// screenshot of a code snippet and obvious in one of a heading.
+    #[test]
+    fn only_the_code_step_draws_through_the_mono_face() {
+        let t = Typography::from_theme(&dark(), &FontFaces::default());
+        assert_eq!(
+            t.style("typography.code").unwrap().font.family,
+            FontFamily::Monospace,
+            "a code step that paints proportional is a code step in name only"
+        );
+        for proportional in [
+            "typography.caption",
+            "typography.label",
+            "typography.body",
+            "typography.body-compact",
+            "typography.heading",
+            "typography.heading-lg",
+        ] {
+            assert_eq!(
+                t.style(proportional).unwrap().font.family,
+                FontFamily::Proportional,
+                "{proportional} must stay in the sans face"
+            );
+        }
+    }
+
     /// Weight is spent choosing the egui family, because a `FontId` has no
     /// weight axis. The default font stack has one proportional face, so
     /// the default mapping cannot tell the classes apart and says so; a host
@@ -886,21 +1077,26 @@ mod tests {
              default mapping must not claim to render three weights"
         );
 
-        // Monospace stands in for an installed bold face: it is the second
-        // family egui's defaults do have, so the assertion is about the
-        // mapping and not about a font this test would have to ship.
+        // Monospace stands in for an installed emphasis face: it is the
+        // second family egui's defaults do have, so the assertion is about the
+        // mapping and not about a font this test would have to ship. Both
+        // emphasis classes are bound to it because the shipped ramp's only
+        // emphasis step is `Medium` — Carbon's `semibold` — while a host theme
+        // can still declare `Bold`, and the mapping has to carry either.
         let faces = FontFaces::new(
             FontFamily::Proportional,
-            FontFamily::Proportional,
+            FontFamily::Monospace,
             FontFamily::Monospace,
         );
-        assert!(!faces.distinguishes_weight(), "medium still shares regular");
+        assert!(!faces.distinguishes_weight(), "medium still shares bold");
 
         let heading = TextStyle::from_token(
             &TypographyValue {
                 size: 20.0,
                 line_height: 28.0,
                 weight: TypographyWeight::Bold,
+                letter_spacing: 0.0,
+                family: TypographyFamily::Sans,
             },
             &faces,
         );
@@ -912,6 +1108,8 @@ mod tests {
                 size: 14.0,
                 line_height: 20.0,
                 weight: TypographyWeight::Regular,
+                letter_spacing: 0.0,
+                family: TypographyFamily::Sans,
             },
             &faces,
         );

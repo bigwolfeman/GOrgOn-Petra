@@ -7,14 +7,22 @@
 //! must define `shadow.ambient` as a `Color`". A binding is only sound when
 //! both hold.
 //!
-//! This module declares the schema only. Nothing in `gorgon-petra` or
-//! `gorgon-petra-egui` reads it yet — `tree::validate` does not check a
-//! node's slot names against it, and `gorgon-petra-egui`'s painter still
-//! carries its own three-entry `KNOWN_SLOTS`. Landing the full declared set
-//! now, ahead of both consumers, means a later leaf wires up the check
-//! without a second migration to grow the slot set itself. See
+//! This module declares the schema; `tree::Registry::slots` consults it at
+//! acceptance, and `gorgon-petra-egui`'s painter draws every slot in it.
+//!
+//! That was not true when the module was written. It landed eleven slots
+//! ahead of both consumers, on the argument that growing the set later would
+//! cost a second migration — and the five that no painter ever came for were
+//! retired on 2026-08-25 (FR-025). See [`standard_slots`] for what each one
+//! turned out to be, and
 //! `.agents/research/08-22-2026/Petra-Visual-Design/engine/token-slot-schema.md`
-//! §3-§4 for the full argument.
+//! §3-§4 for the original argument.
+//!
+//! The lesson the retirement leaves behind is not "never land ahead of a
+//! consumer": it is that a slot is a claim about *how a node's rect is
+//! painted*, and four of the five failed on that rather than on timing. A
+//! state is a different token in the same slot; a row separator is one edge
+//! of a box; a scrim is a node. Only the gradient pair was simply unwanted.
 
 use std::collections::BTreeMap;
 
@@ -115,23 +123,38 @@ impl SlotSchema {
 }
 
 /// The shipped slot schema: every paint slot the design system has
-/// committed to, whether or not `gorgon-petra-egui`'s painter draws it yet
-/// (design doc §4). Three of these — `background`, `border`, `foreground`
-/// — are drawn today; the rest (`shadow`, `highlight`, `divider`, the
-/// `gradient-stop-1`/`gradient-stop-2` pair, `overlay`) are declared ahead
-/// of their painter implementation so a later leaf only has to add drawing
-/// code, not grow the schema.
+/// committed to. Six entries, and `gorgon-petra-egui`'s painter draws all
+/// six — `standard_slots()` and that painter's `KNOWN_SLOTS` are now the
+/// same set, which `the_shipped_schema_is_exactly_what_the_painter_draws`
+/// holds them to.
 ///
-/// `gradient-stop-1` and `gradient-stop-2` are mutually required by
-/// design (design doc §4: "No (both, or neither)") — binding one without
-/// the other is a tree-acceptance error. That pairing is not expressible on
-/// a single [`SlotSpec`] and is deliberately **not** encoded here. Neither
-/// gradient stop is individually `required`: `SlotSpec::required` means
-/// "every node binding this slot must supply it," which is not the
-/// gradient pair's rule. **The rule is not enforced anywhere yet** — this
-/// doc used to cite a `Violation::IncompleteGradient` that does not exist
-/// in `tree::validate`, which is the kind of claim a schema with no
-/// consumer accumulates.
+/// # Five slots were retired on 2026-08-25 (FR-025)
+///
+/// This schema declared eleven and the painter read six. The five unread
+/// ones — `highlight`, `divider`, `overlay`, `gradient-stop-1` and
+/// `gradient-stop-2` — were landed ahead of a painter on the argument that
+/// growing the schema later would be a second migration. Five painters later
+/// arrived for none of them, and the Carbon component inventory
+/// (`.agents/research/08-25-2026/Carbon-Component-Inventory/`) explains why:
+/// four of the five were the wrong *shape* for the need they were declared
+/// against, and the fifth had no need at all.
+///
+/// | retired slot | what the need turned out to be |
+/// |---|---|
+/// | `highlight` | Real (`$layer-hover` × 10, `$layer-selected` × 2, `$layer-active`) but it is a **state-keyed `background` binding**, not a second colour composited into one rect. Carbon never composites a state; it swaps the token bound to the same property. The tokens are in `token::shipped`; the slot was never the answer. |
+/// | `divider` | Contained list, Structured list, Data table and Menu all separate rows with `border-bottom: 1px solid $border-subtle` — one *edge* of a box. The real gap is edge-selective borders, which is its own requirement and not a slot. |
+/// | `overlay` | Real (`$overlay` × 6, the modal scrim), but a scrim is a **node** covering the viewport, painted through `background` like any other fill. Replaced by the `overlay.scrim` token. |
+/// | `gradient-stop-1`/`-2` | One consumer across 42 components — the `ai-*` aura, which also needs a blur primitive M-Carbon declined. No gradient primitive exists in the painter or the frame. |
+///
+/// **FR-025 is satisfied by deletion, not by five new painter features.**
+/// Reimplementing any of the five would be the defect M-Carbon counted at 12
+/// of 18 names, aimed at the slot channel instead of the token channel.
+///
+/// The gradient pair's mutual-requirement rule went with them. It was
+/// recorded here as *"not enforced anywhere yet"*, having previously cited a
+/// `Violation::IncompleteGradient` that `tree::validate` does not define —
+/// which is the kind of claim a schema with no consumer accumulates, and the
+/// reason this doc now describes only what is declared.
 ///
 /// Deliberately **not** declared: a `ring` slot. `focus.ring` and
 /// `focus.ring-halo` are token *names* on the focus indicator's own
@@ -188,11 +211,6 @@ pub fn standard_slots() -> SlotSchema {
         .declare(SlotSpec::new("border", TokenKind::Color, false))
         .declare(SlotSpec::new("foreground", TokenKind::Color, false))
         .declare(SlotSpec::new("shadow", TokenKind::Color, false))
-        .declare(SlotSpec::new("highlight", TokenKind::Color, false))
-        .declare(SlotSpec::new("divider", TokenKind::Color, false))
-        .declare(SlotSpec::new("gradient-stop-1", TokenKind::Color, false))
-        .declare(SlotSpec::new("gradient-stop-2", TokenKind::Color, false))
-        .declare(SlotSpec::new("overlay", TokenKind::Color, false))
         .declare(SlotSpec::new("radius", TokenKind::Shape, false))
         .declare(SlotSpec::new("silhouette", TokenKind::Silhouette, false));
     s
@@ -203,23 +221,27 @@ mod tests {
     use super::{SlotSpec, standard_slots};
     use crate::token::value::TokenKind;
 
-    /// The shipped schema declares every slot the painter knows (design doc
-    /// §4's full table), not just the three `gorgon-petra-egui` draws today
-    /// — landing the whole set now avoids a second migration when the
-    /// painter grows to draw the rest.
+    /// The shipped schema is exactly the six slots the painter draws, at the
+    /// kinds it draws them.
+    ///
+    /// The count is the load-bearing assertion, not the membership list. This
+    /// schema carried eleven entries against a six-entry painter for as long
+    /// as nothing compared the two, and every one of the five extras read as
+    /// a considered commitment rather than as a gap. A test that only checked
+    /// membership would have passed the whole time.
+    ///
+    /// The other half of the claim — that the painter's own `KNOWN_SLOTS`
+    /// is this same set — cannot be made from this crate, which does not
+    /// depend on `gorgon-petra-egui`. It is made from that side, in
+    /// `paint::tests::the_painter_draws_every_slot_the_schema_declares`.
     #[test]
-    fn the_shipped_schema_declares_every_slot_the_painter_knows() {
+    fn the_shipped_schema_is_exactly_what_the_painter_draws() {
         let schema = standard_slots();
         let expected = [
             ("background", TokenKind::Color),
             ("border", TokenKind::Color),
             ("foreground", TokenKind::Color),
             ("shadow", TokenKind::Color),
-            ("highlight", TokenKind::Color),
-            ("divider", TokenKind::Color),
-            ("gradient-stop-1", TokenKind::Color),
-            ("gradient-stop-2", TokenKind::Color),
-            ("overlay", TokenKind::Color),
             ("radius", TokenKind::Shape),
             ("silhouette", TokenKind::Silhouette),
         ];
@@ -235,6 +257,34 @@ mod tests {
             assert_eq!(spec.name(), name);
             assert_eq!(spec.kind(), kind, "slot `{name}` has the wrong TokenKind");
             assert!(schema.contains(name));
+        }
+    }
+
+    /// The five slots retired on 2026-08-25 stay retired.
+    ///
+    /// A separate test from the one above, because the two fail for different
+    /// reasons and a reader should be able to tell them apart from the name
+    /// alone: that one catches a slot count drifting, this one catches a
+    /// retired slot being reinstated because somebody read the old design doc
+    /// and not [`standard_slots`]'s table. FR-025 is satisfied by deletion,
+    /// and the deletion is what this holds.
+    #[test]
+    fn the_five_retired_slots_stay_retired() {
+        let schema = standard_slots();
+        for retired in [
+            "highlight",
+            "divider",
+            "overlay",
+            "gradient-stop-1",
+            "gradient-stop-2",
+        ] {
+            assert!(
+                !schema.contains(retired),
+                "`{retired}` was retired by FR-025; a state is a token swap on \
+                 `background`, a row separator is one edge of a box, a scrim is \
+                 a node painted through `background`, and no gradient primitive \
+                 exists. See `standard_slots` before adding it back."
+            );
         }
     }
 
@@ -260,11 +310,15 @@ mod tests {
     #[test]
     fn declaring_a_slot_twice_overwrites_the_earlier_entry() {
         let mut schema = standard_slots();
+        let before = schema.len();
         assert!(!schema.get("background").unwrap().required());
         schema.declare(SlotSpec::new("background", TokenKind::Color, true));
         assert!(schema.get("background").unwrap().required());
-        // Overwriting does not grow the set.
-        assert_eq!(schema.len(), 11);
+        // Overwriting does not grow the set. Measured against the schema's own
+        // length rather than against a literal, so this keeps testing
+        // overwriting rather than turning into a second slot count that has to
+        // be maintained beside the first.
+        assert_eq!(schema.len(), before);
     }
 
     #[test]

@@ -34,7 +34,7 @@ use super::stack;
 use super::swatch;
 use super::text::text;
 use super::tokens::{
-    SHAPE_FULL, SHAPE_NONE, SILHOUETTE_DIAMOND, SILHOUETTE_RECT, SILHOUETTE_TRIANGLE, SPACING_SM, t,
+    SHAPE_FULL, SHAPE_NONE, SILHOUETTE_DIAMOND, SILHOUETTE_RECT, SILHOUETTE_TRIANGLE, SPACING_03, t,
 };
 use crate::geom::Axis;
 use crate::token::{StatusShape, StatusToken};
@@ -84,7 +84,7 @@ pub fn status(key: impl Into<Key>, status: &StatusToken) -> ViewNode {
     let mut node = stack(
         key,
         Axis::Horizontal,
-        Some(SPACING_SM),
+        Some(SPACING_03),
         vec![dot, label_node],
     );
     node.semantics.role = Some(Role::Status);

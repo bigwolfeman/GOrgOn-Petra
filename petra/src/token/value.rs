@@ -24,7 +24,7 @@ pub enum TokenKind {
     Color,
     /// A logical-unit extent (`geom::Size`'s units, before device scale).
     Spacing,
-    /// A text style: size, line height, weight.
+    /// A text style: size, line height, weight, tracking and face class.
     Typography,
     /// A transition timing: duration and easing curve.
     Motion,
@@ -103,6 +103,20 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 }
 
 /// A text style.
+///
+/// Four fields, not three. `letter_spacing` and `family` were added on
+/// 2026-08-25 when the Carbon inventory was ported (spec 005 FR-023,
+/// `contracts/token-vocabulary.md` §7), and both were added in the *same*
+/// change on purpose: this is a public type carrying `Serialize` and
+/// `Deserialize`, so each field costs one compile-wide migration, and the
+/// research that asked for the first
+/// (`specs/005-petra-carbon-authoring/research/R-F-tokens-and-themes.md` §4)
+/// deferred the second only to avoid "growing the type twice". Growing it
+/// once is the cheaper reading of that same sentence.
+///
+/// Both new fields are `#[serde(default)]`, so a payload written before this
+/// change still deserializes — as `0.0` tracking in the sans face, which is
+/// exactly what those payloads meant.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TypographyValue {
     /// Font size in logical units.
@@ -111,6 +125,31 @@ pub struct TypographyValue {
     pub line_height: f32,
     /// Font weight class.
     pub weight: TypographyWeight,
+    /// Extra tracking between glyphs, in logical units. `0.0` is the font's
+    /// own spacing; positive opens it up.
+    ///
+    /// **This field exists because Carbon puts tracking on the small roles,
+    /// not the big ones.** `@carbon/type` 11.65.0 measures `0.32px` on
+    /// `caption-01`, `label-01` and `code-01`, `0.16px` on `body-01`,
+    /// `body-compact-01`, `label-02` and `heading-compact-01`, and `0`
+    /// everywhere at 16 units and above — the opposite shape from Material 3,
+    /// which tracks display and headline roles. Small dense text is most of
+    /// what a desktop tool paints, so a type ramp with no field for this
+    /// cannot express the part of Carbon that matters here.
+    ///
+    /// Reaches the screen through `epaint 0.36.1`'s
+    /// `TextFormat::extra_letter_spacing` (`text_layout_types.rs:484`),
+    /// carried there by `gorgon_petra_egui::text::TextStyle`.
+    #[serde(default)]
+    pub letter_spacing: f32,
+    /// Which face class draws this style.
+    ///
+    /// Separate from [`TypographyValue::weight`] because they are orthogonal
+    /// questions with orthogonal answers: weight picks between three faces of
+    /// one family, and this picks the family. A single `weight`-keyed lookup
+    /// cannot express "monospace, regular", which is what `code-01` is.
+    #[serde(default)]
+    pub family: TypographyFamily,
 }
 
 /// Font weight, as the small closed set the engine distinguishes rather
@@ -125,6 +164,27 @@ pub enum TypographyWeight {
     Medium,
     /// Heading/emphasis weight.
     Bold,
+}
+
+/// Which face class a typography token draws through.
+///
+/// Two members, and there is no third planned: Carbon's whole published
+/// stack is `IBM Plex Sans` and `IBM Plex Mono` (`@carbon/type`'s
+/// `fontFamily.ts`), and every one of the twelve roles the 42 audited
+/// components reference is one or the other. A serif or display class would
+/// be a name with no reader, which is the defect the M-Carbon note counted at
+/// 12 of 18 names.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TypographyFamily {
+    /// The proportional face. The default, because twelve of Carbon's
+    /// fourteen productive roles carry no `fontFamily` key at all and inherit
+    /// sans from its `reset` mixin.
+    #[default]
+    Sans,
+    /// The fixed-pitch face, for `code-01`/`code-02`. The only two roles that
+    /// name a family explicitly.
+    Mono,
 }
 
 /// A transition timing: how long, and along which curve.
@@ -350,7 +410,7 @@ impl TokenValue {
 mod tests {
     use super::{
         ColorValue, CoverageValue, MotionEasing, MotionValue, ShapeValue, Silhouette, TokenKind,
-        TokenValue, TypographyValue, TypographyWeight,
+        TokenValue, TypographyFamily, TypographyValue, TypographyWeight,
     };
 
     #[test]
@@ -364,7 +424,9 @@ mod tests {
             TokenValue::Typography(TypographyValue {
                 size: 14.0,
                 line_height: 20.0,
-                weight: TypographyWeight::Regular
+                weight: TypographyWeight::Regular,
+                letter_spacing: 0.16,
+                family: TypographyFamily::Sans,
             })
             .kind(),
             TokenKind::Typography

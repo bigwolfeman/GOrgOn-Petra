@@ -2,7 +2,7 @@
 
 use super::text::text;
 use super::tokens::{
-    SHAPE_SM, SPACING_SM, SPACING_XS, SURFACE_BASE, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY, t,
+    SHAPE_SM, SPACING_02, SPACING_03, SURFACE_BASE, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY, t,
 };
 use super::{pad, stack};
 use crate::geom::Axis;
@@ -21,7 +21,7 @@ pub fn tab(key: impl Into<Key>, label: impl Into<String>, selected: bool) -> Vie
     );
 
     let mut node = stack(key, Axis::Horizontal, None, vec![label_node]);
-    node.props.padding = Some(pad(SPACING_SM, SPACING_XS));
+    node.props.padding = Some(pad(SPACING_03, SPACING_02));
     node.props.tokens.insert(
         "background".into(),
         t(if selected {
@@ -45,7 +45,7 @@ pub fn tab(key: impl Into<Key>, label: impl Into<String>, selected: bool) -> Vie
 /// what [`crate::semantic::AuditRule::ActionableNeedsRoleAndLabel`] checks
 /// per node with actions, not per ancestor.
 pub fn tab_bar(key: impl Into<Key>, tabs: Vec<ViewNode>) -> ViewNode {
-    let mut node = stack(key, Axis::Horizontal, Some(SPACING_XS), tabs);
+    let mut node = stack(key, Axis::Horizontal, Some(SPACING_02), tabs);
     node.semantics = Semantics {
         role: Some(Role::TabList),
         ..Semantics::default()

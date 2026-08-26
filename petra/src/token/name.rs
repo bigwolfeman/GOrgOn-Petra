@@ -16,11 +16,11 @@
 //!    `hsl(...)` function calls);
 //! 2. the candidate must be namespaced: two or more role segments joined by
 //!    `.`, `-`, or `_`, each segment lowercase letters, optionally *preceded*
-//!    by digits. This is what rejects `grey700` and `red` without
-//!    hand-maintaining a colour-word list, while still accepting `text-muted`
-//!    — the hyphenated form `looks_like_style_literal`'s own doc comment gives as a
-//!    valid token name alongside `surface.raised` — and `spacing.2xs`, the
-//!    shipped ramp's smallest step.
+//!    by digits, **or** a fixed-width ordinal. This is what rejects `grey700`
+//!    and `red` without hand-maintaining a colour-word list, while still
+//!    accepting `text-muted` — the hyphenated form
+//!    `looks_like_style_literal`'s own doc comment gives as a valid token name
+//!    alongside `surface.raised` — and `spacing.2xs`, and `spacing-05`.
 //!
 //! Rule 2's digit placement is the whole rule, not a loophole in it. A digit
 //! *after* the letters is a shade index — `grey700`, `blue500` — which is a
@@ -28,6 +28,39 @@
 //! multiplier on a named step — `2xs` is "two steps below extra-small", the
 //! same reading `2xl` has — which is a role, and is accepted. See
 //! [`is_semantic_segment`].
+//!
+//! # The ordinal segment, added 2026-08-25
+//!
+//! A segment of **exactly two ASCII digits** is a *step index* and is
+//! accepted: `spacing-05`, `field-02`, `border-subtle-01`. This is the shape
+//! every Carbon family spells its steps in, and spec 005's token vocabulary
+//! adopts those names verbatim so `standard_vocabulary()` and the component
+//! inventory in `.agents/research/08-25-2026/Carbon-Component-Inventory/` can
+//! be diffed with one `grep` instead of through a translation table.
+//!
+//! Before this, `surface.layer-01` was not constructible and the shipped
+//! layer set spells its ordinals as words (`surface.layer-one`) to get around
+//! exactly this rule — see `shipped.rs`'s `LAYER_TOKENS`. That workaround does
+//! not scale to a thirteen-step ramp, and a vocabulary that has to invent
+//! `spacing.eleven` is a vocabulary that has stopped being the target it
+//! claims to conform to.
+//!
+//! **What this costs, stated plainly.** `spacing-16` is now a legal *name*,
+//! and 16 is a pixel value as well as a plausible step index — so this rule
+//! cannot tell "step sixteen" from "sixteen units" the way it can tell
+//! `grey700` from `2xs`. One digit (`spacing.2`) and three (`spacing.160`)
+//! stay refused, so only the two-digit range is ambiguous at all.
+//!
+//! **Where the cost is paid back.** The shape heuristic was only ever a proxy
+//! for "is this a real token", and since spec 003 there is a real check:
+//! `tree::validate`'s `check_token_ref` refuses every styling reference whose
+//! name is not declared in the registry's vocabulary, at the kind the slot
+//! requires, and `Theme::build` refuses a theme that leaves a declared name
+//! unassigned. `spacing-16` is not in `standard_vocabulary()`, so a tree
+//! binding it is refused at acceptance with the legal set named in the
+//! message. The heuristic's remaining job is to catch names that are values
+//! *and* would be declared — which is a thing an author does by accident, not
+//! a thing a design system does on purpose.
 
 use std::fmt;
 
@@ -56,7 +89,14 @@ impl TokenName {
             return Err(TokenNameError::LooksLikeValue { candidate });
         }
         let segments: Vec<&str> = trimmed.split(['.', '-', '_']).collect();
-        if segments.len() < 2 || segments.iter().any(|segment| !is_semantic_segment(segment)) {
+        // The leading segment carries the role and may not be an ordinal:
+        // `spacing-05` names a step of a named ramp, `05-02` names nothing.
+        // Without this the two-digit shape below would make a name out of
+        // punctuation and digits alone.
+        if segments.len() < 2
+            || segments.iter().any(|segment| !is_semantic_segment(segment))
+            || is_step_ordinal(segments[0])
+        {
             return Err(TokenNameError::NotNamespaced { candidate });
         }
         Ok(Self(trimmed.to_owned()))
@@ -141,18 +181,38 @@ fn looks_like_style_literal(trimmed: &str) -> bool {
 }
 
 /// A semantic name segment: one or more plain lowercase ASCII letters,
-/// optionally preceded by ASCII digits.
+/// optionally preceded by ASCII digits — or a [fixed-width
+/// ordinal](is_step_ordinal).
 ///
 /// Where the digits sit is the rule. `grey700` puts them last, which is a
-/// *shade index* — a value with a word in front of it — and stays refused,
-/// as does a segment of digits alone (`spacing.2` names a number, not a
-/// step). `2xs` puts them first, which is a *multiplier on a named step*,
-/// read the same way `2xl` is; the shipped ramp is `2xs … 3xl` and every one
-/// of those is a role. A segment must still end in letters either way, so
-/// there is no shape that satisfies this and also parses as a number.
+/// *shade index* — a value with a word in front of it — and stays refused.
+/// `2xs` puts them first, which is a *multiplier on a named step*, read the
+/// same way `2xl` is; the shipped ramp is `2xs … 3xl` and every one of those
+/// is a role. Either way the segment ends in letters, so neither shape parses
+/// as a number.
+///
+/// The third accepted shape is a bare two-digit step index (`05`), which is
+/// how Carbon spells the steps this vocabulary adopts by name. See the module
+/// doc for what that costs and where the cost is paid back.
 fn is_semantic_segment(segment: &str) -> bool {
+    if is_step_ordinal(segment) {
+        return true;
+    }
     let letters = segment.trim_start_matches(|c: char| c.is_ascii_digit());
     !letters.is_empty() && letters.bytes().all(|b| b.is_ascii_lowercase())
+}
+
+/// A step index: **exactly** two ASCII digits, as every Carbon family writes
+/// its ordinals (`spacing-05`, `field-02`, `border-subtle-01`).
+///
+/// The width is the whole rule and it is not cosmetic. One digit is how a
+/// person writes a small number (`spacing.2`), three is how they write a
+/// pixel count (`spacing.160`), and both stay refused; two digits, always
+/// zero-padded at the low end, is how Carbon writes a position in a ramp.
+/// That does not separate `05` from a two-digit *value* — see the module doc
+/// — and this function does not pretend it does.
+fn is_step_ordinal(segment: &str) -> bool {
+    segment.len() == 2 && segment.bytes().all(|b| b.is_ascii_digit())
 }
 
 #[cfg(test)]
@@ -189,18 +249,68 @@ mod tests {
     }
 
     /// The other side of the same rule. A digit that *follows* letters is a
-    /// shade index, a digit-only segment is a bare number, and neither is a
-    /// role — so widening the rule for `2xs` must not have widened it for
-    /// these.
+    /// shade index and is not a role, so widening the rule for `2xs` must not
+    /// have widened it for these.
+    ///
+    /// `spacing.16` used to sit in this list and does not any more: a
+    /// two-digit segment became a step ordinal on 2026-08-25 (see the module
+    /// doc), and the name layer can no longer tell "step sixteen" from
+    /// "sixteen units". One digit and three digits still can be told apart
+    /// from an ordinal, and still are.
     #[test]
     fn a_trailing_or_lone_digit_is_a_value_and_stays_refused() {
-        for candidate in ["surface.grey700", "spacing.2", "text.x2", "spacing.16"] {
+        for candidate in [
+            "surface.grey700",
+            "spacing.2",
+            "text.x2",
+            "spacing.160",
+            "spacing.4",
+        ] {
             assert_eq!(
                 TokenName::new(candidate).unwrap_err(),
                 TokenNameError::NotNamespaced {
                     candidate: candidate.into()
                 },
                 "{candidate} names a value, not a role"
+            );
+        }
+    }
+
+    /// Carbon spells every ramp step as a two-digit ordinal, and spec 005
+    /// adopts those names verbatim, so the whole set has to be
+    /// constructible — including the double-digit tail, which is the half a
+    /// zero-padding rule would have missed.
+    #[test]
+    fn a_two_digit_step_ordinal_is_a_role_and_is_accepted() {
+        for step in [
+            "spacing-01",
+            "spacing-05",
+            "spacing-09",
+            "spacing-10",
+            "spacing-13",
+            "field-02",
+            "border-subtle-01",
+            "layer-accent-03",
+        ] {
+            assert!(
+                TokenName::new(step).is_ok(),
+                "{step} is how Carbon spells a ramp step and must be a legal name"
+            );
+        }
+    }
+
+    /// The ordinal shape carries no role of its own, so it may not lead. A
+    /// name is a role first and a position second, and without this a string
+    /// of digits and punctuation would satisfy every other rule here.
+    #[test]
+    fn an_ordinal_may_not_be_the_leading_segment() {
+        for candidate in ["01-02", "05-md", "01.primary"] {
+            assert_eq!(
+                TokenName::new(candidate).unwrap_err(),
+                TokenNameError::NotNamespaced {
+                    candidate: candidate.into()
+                },
+                "{candidate} leads with a position and never says what of"
             );
         }
     }

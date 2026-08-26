@@ -1634,7 +1634,7 @@ mod tests {
             assert!(snap.color(token).is_some(), "{token} has no colour");
         }
         assert_eq!(
-            snap.color("spacing.md"),
+            snap.color("spacing-04"),
             None,
             "a spacing token is not a colour"
         );
@@ -1791,44 +1791,38 @@ mod tests {
     }
 
     /// A token slot this painter does not consume is still named rather than
-    /// dropped, by both routes into `unknown_slots`.
+    /// dropped.
     ///
-    /// `radius` used to be the fixture here and is a known slot now (FR-053,
-    /// C17). The two remaining routes are genuinely different and both are
-    /// exercised, because a fixture covering one while its doc claims the
-    /// other is how this test drifted the first time:
+    /// **There used to be two routes into `unknown_slots` and now there is
+    /// one.** The other was a slot `standard_slots()` declared and this
+    /// painter did not draw, and `highlight` was the fixture for it. FR-025
+    /// retired all five such slots on 2026-08-25, so that route is not merely
+    /// untested — it is empty by construction, and
+    /// [`the_painter_draws_every_slot_the_schema_declares`] is what holds it
+    /// empty. Deleting this test with it would have dropped the surviving
+    /// route, which is the one a host painter's invented slot name actually
+    /// takes.
     ///
-    /// * `highlight` — declared by `standard_slots()`, so a tree binding it
-    ///   is accepted, and absent from this painter's `KNOWN_SLOTS`, so
-    ///   nothing draws it. The token has to be a colour, which is the kind
-    ///   the schema declares for it; tree acceptance checks that pairing now.
+    /// `glow` is the fixture: declared by nobody, so tree acceptance checks
+    /// only that the *token* exists, and the painter reports the slot rather
+    /// than dropping it on the floor.
     ///
-    ///   This fixture was `shadow` until 2026-08-25, when the painter learned
-    ///   to draw one and the fixture silently stopped testing the route its
-    ///   own doc claimed. That is the exact drift the paragraph above warns
-    ///   about, and it happened anyway, which is worth more than the warning:
-    ///   the guard is the two `standard_slots()` assertions below, not the
-    ///   comment. They are what turned a green-but-meaningless test red.
-    /// * `glow` — declared by nobody. A host painter's invented slot name
-    ///   takes this path, and acceptance checks only that the token exists.
+    /// The guard is the two assertions below, not this comment. This fixture
+    /// was `shadow` until the painter learned to draw one, then `highlight`
+    /// until the slot was retired; both times a green test silently stopped
+    /// testing the route its own doc claimed, and both times it was an
+    /// assertion about the schema that caught it.
     #[test]
     fn a_genuinely_unknown_token_slot_is_recorded() {
         use gorgon_petra::token::standard_slots;
         assert!(
-            standard_slots().contains("highlight"),
-            "the declared-but-undrawn half of this test needs a slot the \
-             shipped schema declares"
-        );
-        assert!(
-            !super::KNOWN_SLOTS.contains(&"highlight"),
-            "and one this painter does not draw -- if `highlight` gains a \
-             painter, move this fixture to another declared-but-undrawn slot \
-             rather than deleting the assertion"
-        );
-        assert!(
             !standard_slots().contains("glow"),
-            "the invented half needs a slot nothing declares, or the fixture \
-             is testing one route twice"
+            "this fixture needs a slot nothing declares; if `glow` is ever \
+             added to the schema, pick another invented name"
+        );
+        assert!(
+            !super::KNOWN_SLOTS.contains(&"glow"),
+            "and one this painter does not draw"
         );
 
         let host = Headless::new();
@@ -1837,9 +1831,6 @@ mod tests {
             text: Some("hi".into()),
             ..Props::default()
         };
-        props
-            .tokens
-            .insert("highlight".into(), tok("surface.raised"));
         props.tokens.insert("glow".into(), tok("text.muted"));
         let frame = frame_of(
             &ViewNode::new(NodeKind::Text, "t").with_props(props),
@@ -1848,7 +1839,6 @@ mod tests {
         let mut shaper = host.shaper();
         let report = paint_frame(&host.painter(), &frame, &mut shaper, &snapshot());
 
-        assert!(report.unknown_slots.contains("highlight"), "{report:?}");
         assert!(report.unknown_slots.contains("glow"), "{report:?}");
         assert!(
             !report.unknown_slots.contains("radius"),
@@ -1859,7 +1849,43 @@ mod tests {
         assert_eq!(report.drawn, 1, "{report:?}");
     }
 
-    /// C17's proof. A node binding `radius` must get the token's own corner,
+    /// The schema and the painter agree, exactly, in both directions.
+    ///
+    /// **This is the invariant FR-025 bought and the reason the five retired
+    /// slots cannot quietly come back.** `token::slot` declared eleven slots
+    /// against this painter's six for as long as nothing compared the two
+    /// sets, and each of the five extras read as a considered commitment
+    /// rather than as a gap — a schema entry is indistinguishable from a
+    /// promise until something asks the painter whether it can keep it.
+    ///
+    /// Both directions matter and they fail for different reasons. A slot
+    /// declared and undrawn is a promise to an author that lands in
+    /// `PaintReport::unknown_slots` at runtime; a slot drawn and undeclared is
+    /// a painter feature that tree acceptance will not let anybody reach.
+    ///
+    /// This assertion has to live in `gorgon-petra-egui`, because
+    /// `gorgon-petra` does not depend on it and so cannot see `KNOWN_SLOTS`.
+    /// Its sibling half — that the schema is exactly six named entries — is
+    /// `token::slot::tests::the_shipped_schema_is_exactly_what_the_painter_draws`.
+    #[test]
+    fn the_painter_draws_every_slot_the_schema_declares() {
+        use gorgon_petra::token::{SlotSpec, standard_slots};
+        let schema = standard_slots();
+
+        let mut declared: Vec<&str> = schema.slots().map(SlotSpec::name).collect();
+        let mut drawn: Vec<&str> = super::KNOWN_SLOTS.to_vec();
+        declared.sort_unstable();
+        drawn.sort_unstable();
+        assert_eq!(
+            declared, drawn,
+            "the shipped slot schema and this painter's KNOWN_SLOTS have \
+             drifted apart. A slot only one side knows is either a promise to \
+             an author the painter cannot keep, or a painter feature tree \
+             acceptance will not let anybody bind."
+        );
+    }
+
+    /// C17's proof. A node binding `radius` must get the token's own corner,    /// C17's proof. A node binding `radius` must get the token's own corner,
     /// not a square one — read from the shape egui actually received, the
     /// same standard `a_border_stroke_is_a_whole_number_of_device_pixels`
     /// and the focus-ring tests hold themselves to, rather than trusted from
@@ -2360,7 +2386,7 @@ mod tests {
             "sparkline",
             move |painter: &egui::Painter, ctx: &CustomPaintCtx<'_>| {
                 *sink.borrow_mut() = Some((
-                    ctx.tokens.spacing("spacing.xs"),
+                    ctx.tokens.spacing("spacing-02"),
                     ctx.tokens.typography("typography.body"),
                 ));
                 painter.rect_filled(ctx.rect, 0.0, Color32::WHITE);
@@ -2385,14 +2411,14 @@ mod tests {
         // The oracle is the snapshot's own accessors rather than a number
         // copied out of `shipped.rs`: this asserts the painter reads *the
         // theme*, and keeps telling the truth if the ramp is re-tuned.
-        let expected_gap = ThemeSnapshot::spacing(&theme, &tok("spacing.xs"));
+        let expected_gap = ThemeSnapshot::spacing(&theme, &tok("spacing-02"));
         assert_eq!(
             gap, expected_gap,
             "the painter must read the theme's spacing ramp, not a number of its own"
         );
         assert!(
             gap.is_some_and(|g| g > 0.0),
-            "the shipped theme defines spacing.xs, so a `None` here means the \
+            "the shipped theme defines spacing-02, so a `None` here means the \
              context never carried the ramp at all: {gap:?}"
         );
 

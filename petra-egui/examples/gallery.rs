@@ -242,9 +242,10 @@ const POLICIES: [(&str, &str); 3] = [
 // observation before it can be made.
 //
 // What *is* still true is narrower and belongs to the component library, not
-// the renderer: `typography.heading-sm` (16) is reachable from no component
+// the renderer: `typography.heading-sm` (14, `Medium` since the Carbon ramp
+// landed on 2026-08-25 — it was 16 `Bold`) is reachable from no component
 // at all, and `heading-lg` only by building a raw `Props` by hand, which the
-// masthead below does. Four declared steps, two with a public function.
+// masthead below does. Ten declared steps, two with a public function.
 //
 // **Colour is never the only channel (FR-015).** The three fiber states go
 // through `status`, which carries the shape and the words beside the hue. The
