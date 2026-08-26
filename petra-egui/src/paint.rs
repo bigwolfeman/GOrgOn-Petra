@@ -864,6 +864,22 @@ fn paint_one(
         report.fills += 1;
         shapes += 1;
     }
+    // An anchored surface's caret, drawn with the fill it continues and
+    // therefore immediately after it: `crate::triangle` owns the shape, the
+    // engine owns the geometry (`contracts/anchored-placement.md` §5), and a
+    // surface that binds no background has no colour to draw one in.
+    if let Some(caret) = &content.caret {
+        let fill = content
+            .tokens
+            .get(BACKGROUND_SLOT)
+            .and_then(|token| resolve_or_record(env.colors, token, report));
+        if crate::triangle::paint_caret(painter, caret, fill, env.scale) {
+            report.fills += 1;
+            shapes += 1;
+        } else {
+            report.undrawn.insert("caret".to_owned());
+        }
+    }
     if let Some(token) = content.tokens.get(BORDER_SLOT)
         && let Some(color) = resolve_or_record(env.colors, token, report)
     {

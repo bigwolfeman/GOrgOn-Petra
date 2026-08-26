@@ -37,3 +37,4 @@ pub mod input;
 pub mod paint;
 pub mod schedule;
 pub mod text;
+pub mod triangle;

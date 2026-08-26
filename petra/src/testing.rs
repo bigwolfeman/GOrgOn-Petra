@@ -17,8 +17,8 @@ use std::sync::{Arc, OnceLock};
 
 use crate::geom::{Insets, Scale, Size};
 use crate::layout::{
-    ContentMeasure, LayoutCtx, LayoutState, MeasureCache, RowSource, ScrollStack, SizeProposal,
-    TextMeasurement, TextRequest,
+    AnchorRects, ContentMeasure, LayoutCtx, LayoutState, MeasureCache, RowSource, ScrollStack,
+    SizeProposal, TextMeasurement, TextRequest,
 };
 use crate::token::{
     DesignToken, Theme, ThemeSnapshot, TokenKind, TokenName, TokenValue, Vocabulary, light,
@@ -476,6 +476,7 @@ impl<C: ContentMeasure, R: RowSource> Harness<C, R> {
             scale: self.scale,
             scroll: ScrollStack::new(),
             reuse: None,
+            anchors: AnchorRects::new(),
         }
     }
 

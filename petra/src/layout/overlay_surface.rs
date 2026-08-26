@@ -24,30 +24,26 @@
 //! hands surfaces the whole window as `slot.rect` still lets them use all of
 //! it.
 //!
-//! ## `Anchor::Node` is a documented deferral
+//! ## `Anchor::Node` resolves against a harvested rect
 //!
-//! [`Anchor::Node`] names another node's rect by id, and this pass does not
-//! have that rect. The reason is the walk order, not the sink. Placements are
-//! produced in tree pre-order (`layout/mod.rs`'s `place` walks the tree once,
-//! depth-first), so a surface earlier in the walk asks for a rect its anchor
-//! has not been given yet. The sink itself can be read back —
-//! [`crate::frame::placement::PlacementSink::placed`] exists and
-//! `layout/mod.rs` already calls it — but reading it from here would answer
-//! for the anchors that happen to be placed first and answer nothing for the
-//! rest, which is a worse contract than answering the same way for all of
-//! them.
+//! [`Anchor::Node`] names another node's rect by id, and a single pre-order
+//! walk does not have that rect: placements are produced depth-first, so a
+//! surface early in the walk would be asking for a rect its anchor has not
+//! been given yet. Reading the sink back would answer for the anchors that
+//! happen to be placed first and answer nothing for the rest, which is a
+//! worse contract than answering the same way for all of them.
 //!
-//! So every `Anchor::Node` resolves exactly like [`Anchor::Viewport`] today,
-//! and that is not left silent — [`resolve_anchor_kind`] is the public,
-//! tested seam that says so rather than leaving it to be inferred from
-//! behaviour, and [`place`] calls it rather than quietly special-casing
-//! `Anchor::Node` inline. What closes it is a pruned harvest walk that places
-//! the anchor set before the real walk and hands this module the resulting
-//! rects (`contracts/anchored-placement.md` §1). That walk belongs in
-//! `layout/mod.rs`. Once it exists, the declared
-//! [`Edge`](crate::tree::Edge) becomes the side of the harvested rect the
-//! surface is placed against, and the clamp ladder below is already written
-//! to take a side: `AxisPlacement::Sided` is the shape it will arrive in.
+//! What closes it is the pruned harvest walk in `layout/mod.rs`
+//! ([`crate::layout::AnchorRects`], `contracts/anchored-placement.md` §1):
+//! before the real walk, the anchor set alone is placed, and the resulting
+//! rects arrive here on [`crate::layout::LayoutCtx`]. So the declared
+//! [`Edge`] is the side of the harvested rect the surface is placed against,
+//! the declared [`Align`] is where along that side it starts, and the ladder
+//! below flips, shifts and shrinks from there. [`resolve_anchor_kind`] is
+//! still the public seam that says which of those happened, and it now has a
+//! fourth answer for the one case left: a walk begun below the anchor's own
+//! subtree harvests no rect for it, and such a surface still centres in the
+//! viewport rather than guessing.
 //!
 //! ## Input policy reaching the focus scope
 //!
@@ -61,10 +57,10 @@
 
 use std::collections::BTreeMap;
 
-use crate::frame::placement::{PaintState, Placement, PlacementSink};
+use crate::frame::placement::{CaretPaint, PaintState, Placement, PlacementSink};
 use crate::geom::{Axis, Rect, Size};
-use crate::layout::{LayoutCtx, SizeProposal, Slot, semantics_of};
-use crate::tree::{Anchor, ClampRule, InputPolicy, KeyPath, ViewNode};
+use crate::layout::{AnchorRects, LayoutCtx, SizeProposal, Slot, semantics_of};
+use crate::tree::{Align, Anchor, ClampRule, Edge, InputPolicy, KeyPath, ViewNode};
 
 /// Measure this container under `proposal`.
 ///
@@ -92,14 +88,21 @@ pub fn measure(
     )
 }
 
-/// Place this container and everything under it into `slot`.
+/// Place this container and everything under it into `slot`, and report the
+/// caret it draws back at its anchor, if it has one.
+///
+/// The caret is returned rather than pushed because it is paint payload, and
+/// the dispatcher — not any container — is what attaches paint payload
+/// (`crate::layout::place`). It is the one member of that payload no author
+/// could have written down: which side the box ended up on is decided here,
+/// against the window, by the ladder in [`clamp_axis`].
 pub fn place(
     node: &ViewNode,
     ctx: &mut LayoutCtx<'_>,
     path: &mut KeyPath,
     slot: Slot,
     sink: &mut dyn PlacementSink,
-) {
+) -> Option<CaretPaint> {
     // `crate::frame::petrify` and `petrify_with_memo` — the only entry
     // points that reach this walk — accept a `crate::tree::ValidatedTree`,
     // which only `crate::tree::validate` can mint, and `validate` refuses a
@@ -135,14 +138,20 @@ pub fn place(
     // never render outside of.
     let viewport = slot.rect.intersect(slot.clip);
 
-    let (plan_x, plan_y) = anchor_placement(surface.anchor, viewport, natural);
+    let plan = anchor_placement(surface.anchor, viewport, natural, ctx);
 
-    let (x, rect_w, _content_w, scroll_x) =
-        clamp_axis(plan_x, natural.w, viewport.x, viewport.w, surface.clamp);
-    let (y, rect_h, _content_h, scroll_y) =
-        clamp_axis(plan_y, natural.h, viewport.y, viewport.h, surface.clamp);
+    let x = clamp_axis(plan.x, natural.w, viewport.x, viewport.w, surface.clamp);
+    let y = clamp_axis(plan.y, natural.h, viewport.y, viewport.h, surface.clamp);
+    let (scroll_x, scroll_y) = (x.scrolls, y.scrolls);
 
-    let rect = Rect::new(x, y, rect_w, rect_h);
+    let rect = Rect::new(x.origin, y.origin, x.extent, y.extent);
+    // One record, read by the rect above and by the caret below, so the two
+    // cannot disagree about which side the box landed on
+    // (`contracts/anchored-placement.md` §4, "Resolution record").
+    let caret = plan
+        .anchored
+        .map(|anchored| anchored.resolve(&plan, x, y, natural))
+        .and_then(|resolved| caret_of(&resolved, rect, corner_radius(node, ctx)));
     // Padding is inside the box: children are offered the placed, clamped
     // rect minus the surface's own padding — never the wider unclamped
     // extent `clamp_axis` tracked for the scroll affordance (`_content_w`/
@@ -203,6 +212,7 @@ pub fn place(
         }
     });
     sink.leave();
+    caret
 }
 
 /// The bounding box of this node's children, each probed at its own natural
@@ -223,30 +233,333 @@ fn natural_size(node: &ViewNode, ctx: &mut LayoutCtx<'_>, path: &mut KeyPath) ->
 
 /// How [`place`] resolves one [`Anchor`] variant.
 ///
-/// Exposed so a caller (or a test) can see the `Anchor::Node` deferral
-/// documented in the module doc rather than infer it from behaviour.
+/// Exposed so a caller (or a test) can see which of the four readings a
+/// surface got rather than infer it from behaviour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AnchorResolution {
     /// Resolved to the declared point.
     Point,
     /// Resolved to the viewport centre, as declared.
     Viewport,
-    /// Declared as `Anchor::Node`, but resolved as `Anchor::Viewport`
-    /// because this single pre-order pass reaches a surface before the node
-    /// it is anchored to, so the anchor rect does not exist yet (see the
-    /// module doc).
-    NodeFallenBackToViewport,
+    /// Resolved against the harvested rect of the node it names: the
+    /// declared [`Edge`] picks the side, the declared [`Align`] picks where
+    /// along it (`contracts/anchored-placement.md` §4 step 1).
+    Node,
+    /// Declared as [`Anchor::Node`], but this walk harvested no rect for
+    /// that id, so the surface centres in the viewport instead.
+    ///
+    /// Tree acceptance refuses an anchor naming no node
+    /// ([`crate::tree::Violation::AnchorTargetMissing`]) and the harvest walk
+    /// reaches every id it does name, so a frame from
+    /// [`crate::frame::petrify`] never lands here. What can is a walk begun
+    /// part-way down a tree — `crate::layout::place` called directly on a
+    /// subtree whose anchor lives above it — which is a real thing this
+    /// crate's own tests do, and centring is the honest answer for it.
+    NodeUnharvested,
 }
 
-/// How `anchor` will be resolved by [`place`]. See the module doc's
-/// `Anchor::Node` section.
+/// How `anchor` will be resolved by [`place`], given what `anchors` holds.
 #[must_use]
-pub fn resolve_anchor_kind(anchor: &Anchor) -> AnchorResolution {
+pub fn resolve_anchor_kind(anchor: &Anchor, anchors: &AnchorRects) -> AnchorResolution {
     match anchor {
         Anchor::Point { .. } => AnchorResolution::Point,
         Anchor::Viewport => AnchorResolution::Viewport,
-        Anchor::Node { .. } => AnchorResolution::NodeFallenBackToViewport,
+        Anchor::Node { id, .. } => {
+            if anchors.get(id).is_some() {
+                AnchorResolution::Node
+            } else {
+                AnchorResolution::NodeUnharvested
+            }
+        }
     }
+}
+
+/// Base width of a caret, along the near edge of the surface it belongs to.
+///
+/// Engine geometry rather than a theme token, for the reason
+/// `gorgon_petra_egui::paint`'s `SHADOW_GEOMETRY` is: the proportions of a
+/// pointer that has to read as a pointer do not change between a light theme
+/// and a dark one, and a theme is the wrong place to keep a fact that is the
+/// same in both. What the theme does decide is the caret's *colour*, which it
+/// already does — the caret paints in the surface's own `background` binding.
+pub const CARET_BASE: f32 = 12.0;
+
+/// How far a caret reaches out past the surface's near edge, towards the
+/// anchor. See [`CARET_BASE`].
+pub const CARET_DEPTH: f32 = 6.0;
+
+/// What the fallback ladder decided, in the form both the surface's rect and
+/// its caret read (`contracts/anchored-placement.md` §4, "Resolution
+/// record").
+///
+/// One record rather than two derivations: a caret computed from the declared
+/// edge while the box was placed on the resolved one is a pointer aimed at
+/// nothing, and it is exactly the kind of disagreement that survives review
+/// because both halves look right on their own.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Resolved {
+    /// The side of the anchor the surface was finally placed on — after the
+    /// flip, if there was one.
+    pub edge: Edge,
+    /// The declared cross-axis alignment. Unchanged by the ladder: a flip
+    /// reverses the main axis and never re-aligns the cross one.
+    ///
+    /// Recorded and asserted, not yet consumed: nothing in the shipped paint
+    /// path reads it, because the rect already encodes where the box landed.
+    /// It is here because the contract binds this record's field list and
+    /// because an explanation of *why* a surface is where it is — the
+    /// inspector's question — needs the declaration beside the outcome.
+    pub align: Align,
+    /// How far the cross axis had to slide to bring the box into the window
+    /// (§4 step 4), signed. Zero when the aligned position already fit.
+    ///
+    /// Recorded on the same terms as [`Resolved::align`]. The caret does not
+    /// need it: it is computed from the *final* rect, so a shift is already
+    /// accounted for in the projection rather than corrected for afterwards.
+    pub shift: f32,
+    /// The resolved gap between the anchor's edge and the surface.
+    pub offset: f32,
+    /// The rect the surface was placed against: the anchor's own rect,
+    /// narrowed to the clip that was over it
+    /// ([`crate::layout::AnchorRect::visible`]).
+    pub anchor_rect: Rect,
+}
+
+/// An [`Anchor::Node`] as the ladder needs it, before any clamping.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct AnchoredPlan {
+    edge: Edge,
+    align: Align,
+    offset: f32,
+    anchor_rect: Rect,
+}
+
+impl AnchoredPlan {
+    /// This plan plus what the two axes actually did, as one [`Resolved`].
+    ///
+    /// The flip is read off the *chosen* [`AxisPlacement`] on the main axis
+    /// rather than recomputed: whichever side [`flip_axis`] settled on is the
+    /// side the box is on, by construction.
+    fn resolve(self, plan: &AnchorPlan, x: AxisResult, y: AxisResult, natural: Size) -> Resolved {
+        let (main, cross, cross_extent) = match self.edge.axis() {
+            Axis::Vertical => (y, x, natural.w),
+            Axis::Horizontal => (x, y, natural.h),
+        };
+        let declared = match self.edge.axis() {
+            Axis::Vertical => plan.y,
+            Axis::Horizontal => plan.x,
+        };
+        let edge = if main.chosen == declared {
+            self.edge
+        } else {
+            self.edge.opposite()
+        };
+        Resolved {
+            edge,
+            align: self.align,
+            shift: cross.origin - cross.chosen.origin(cross_extent),
+            offset: self.offset,
+            anchor_rect: self.anchor_rect,
+        }
+    }
+}
+
+/// A surface's preferred position, one [`AxisPlacement`] per axis, plus the
+/// anchored reading that produced it when there was one.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct AnchorPlan {
+    x: AxisPlacement,
+    y: AxisPlacement,
+    /// `Some` only for an [`Anchor::Node`] whose rect was harvested — the
+    /// only case with a side to flip about and an anchor to point a caret at.
+    anchored: Option<AnchoredPlan>,
+}
+
+/// The preferred placement of a surface of `natural` size anchored by
+/// `anchor` inside `viewport`, before clamping.
+///
+/// `Anchor::Node` grows away from the declared [`Edge`] of the harvested
+/// anchor rect, gapped by the declared `offset` token, and starts where the
+/// declared [`Align`] puts it on the cross axis. The main axis is therefore a
+/// *side* — which is what gives [`ClampRule::Flip`] an opposite to try — and
+/// the cross axis is a bare origin, because sliding is the only thing the
+/// ladder does to a cross axis (§4 step 4).
+///
+/// `Anchor::Point` is read as the box's top-left corner (the simplest
+/// deterministic reading available without an `Edge`). That reading is a side
+/// on both axes: the box grows right and down from the point, so the point's
+/// other side — box ending at the point — is a real opposite for
+/// [`ClampRule::Flip`] to try. `Anchor::Viewport` centres the box and declares
+/// no side, and so does an `Anchor::Node` this walk harvested no rect for
+/// (see [`AnchorResolution::NodeUnharvested`]).
+fn anchor_placement(
+    anchor: &Anchor,
+    viewport: Rect,
+    natural: Size,
+    ctx: &LayoutCtx<'_>,
+) -> AnchorPlan {
+    let centred = AnchorPlan {
+        x: AxisPlacement::Centred(viewport.x + (viewport.w - natural.w) / 2.0),
+        y: AxisPlacement::Centred(viewport.y + (viewport.h - natural.h) / 2.0),
+        anchored: None,
+    };
+    match resolve_anchor_kind(anchor, &ctx.anchors) {
+        AnchorResolution::Point => {
+            let Anchor::Point { x, y } = anchor else {
+                unreachable!("resolve_anchor_kind returned Point for a non-Point anchor")
+            };
+            AnchorPlan {
+                x: AxisPlacement::point(*x, Grow::Forward),
+                y: AxisPlacement::point(*y, Grow::Forward),
+                anchored: None,
+            }
+        }
+        AnchorResolution::Viewport | AnchorResolution::NodeUnharvested => centred,
+        AnchorResolution::Node => {
+            let Anchor::Node {
+                id,
+                edge,
+                align,
+                offset,
+            } = anchor
+            else {
+                unreachable!("resolve_anchor_kind returned Node for a non-Node anchor")
+            };
+            let Some(harvested) = ctx.anchors.get(id) else {
+                unreachable!("resolve_anchor_kind returned Node only for a harvested id")
+            };
+            let anchor_rect = harvested.visible();
+            let offset = ctx.spacing(offset);
+            let main = main_axis_placement(*edge, anchor_rect, offset);
+            let cross = cross_axis_placement(*edge, *align, anchor_rect, natural);
+            let (x, y) = match edge.axis() {
+                Axis::Vertical => (cross, main),
+                Axis::Horizontal => (main, cross),
+            };
+            AnchorPlan {
+                x,
+                y,
+                anchored: Some(AnchoredPlan {
+                    edge: *edge,
+                    align: *align,
+                    offset,
+                    anchor_rect,
+                }),
+            }
+        }
+    }
+}
+
+/// The main axis of an anchored surface: the declared side of `anchor_rect`,
+/// pushed `offset` further away from it, carrying the anchor's *other* side
+/// so a flip lands past that edge rather than back across the anchor.
+fn main_axis_placement(edge: Edge, anchor_rect: Rect, offset: f32) -> AxisPlacement {
+    let (near, far) = match edge.axis() {
+        Axis::Vertical => (anchor_rect.y - offset, anchor_rect.bottom() + offset),
+        Axis::Horizontal => (anchor_rect.x - offset, anchor_rect.right() + offset),
+    };
+    match edge {
+        // Above (or left of) the anchor: the box's *far* edge sits on the
+        // anchor's leading side, so it grows backwards from there, and the
+        // flip puts it against the anchor's trailing side.
+        Edge::Top | Edge::Left => AxisPlacement::Sided {
+            at: near,
+            across: far,
+            grow: Grow::Backward,
+        },
+        Edge::Bottom | Edge::Right => AxisPlacement::Sided {
+            at: far,
+            across: near,
+            grow: Grow::Forward,
+        },
+    }
+}
+
+/// The cross axis of an anchored surface: where along the anchor's edge the
+/// declared [`Align`] starts the box.
+///
+/// [`AxisPlacement::Centred`] rather than `Sided` because there is no side
+/// here to flip about: `Start` and `End` are the two ends of one edge, not
+/// two opposite sides of the anchor, and turning a left-aligned menu into a
+/// right-aligned one because the window is narrow would move it out from
+/// under the control that opened it. The ladder slides the cross axis instead
+/// (§4 step 4), and [`Resolved::shift`] records by how much.
+fn cross_axis_placement(
+    edge: Edge,
+    align: Align,
+    anchor_rect: Rect,
+    natural: Size,
+) -> AxisPlacement {
+    let (at, anchor_extent, surface_extent) = match edge.axis() {
+        Axis::Vertical => (anchor_rect.x, anchor_rect.w, natural.w),
+        Axis::Horizontal => (anchor_rect.y, anchor_rect.h, natural.h),
+    };
+    AxisPlacement::Centred(align.leading(at, anchor_extent, surface_extent))
+}
+
+/// The corner radius this surface paints with, in logical units.
+///
+/// Read here, in the engine, because the caret's clamp range depends on it
+/// (`contracts/anchored-placement.md` §5): a caret placed inside the arc of a
+/// rounded corner is drawn hanging off the corner rather than growing out of
+/// the edge. `"radius"` is a declared paint slot
+/// (`crate::token::standard_slots`), so the name is not invented here, and a
+/// surface that binds none paints square corners and needs no inset.
+fn corner_radius(node: &ViewNode, ctx: &LayoutCtx<'_>) -> f32 {
+    node.props
+        .tokens
+        .get("radius")
+        .and_then(|name| ctx.theme.corner(name))
+        .unwrap_or(0.0)
+}
+
+/// The caret a resolved surface draws back at its anchor, or `None` when it
+/// would not land on the surface's near edge.
+///
+/// `contracts/anchored-placement.md` §5, in order: project the anchor rect's
+/// centre onto the surface's near edge; keep it inside that edge less a
+/// corner radius and half the caret's own base at each end; and suppress the
+/// caret outright — never slide it to the nearest legal spot — when the
+/// projection is off the near edge altogether, or when the edge is too short
+/// to hold a caret at all. A pointer clamped onto a surface it is not
+/// actually beside points at the wrong thing, which is worse than no pointer.
+///
+/// The depth is [`CARET_DEPTH`] or the declared gap, whichever is larger: a
+/// caret shorter than the gap its surface was pushed away by would float,
+/// tip in mid-air, with a band of background between it and the control it
+/// points at. [`Resolved::offset`] is the gap, resolved from the anchor's
+/// spacing token.
+fn caret_of(resolved: &Resolved, rect: Rect, radius: f32) -> Option<CaretPaint> {
+    let anchor = resolved.anchor_rect;
+    let (projection, near_start, near_end) = match resolved.edge.axis() {
+        Axis::Vertical => (anchor.x + anchor.w / 2.0, rect.x, rect.right()),
+        Axis::Horizontal => (anchor.y + anchor.h / 2.0, rect.y, rect.bottom()),
+    };
+    if !projection.is_finite() || projection < near_start || projection > near_end {
+        return None;
+    }
+    let low = near_start + radius + CARET_BASE / 2.0;
+    let high = near_end - radius - CARET_BASE / 2.0;
+    if low > high {
+        return None;
+    }
+    let along = projection.clamp(low, high);
+    let depth = CARET_DEPTH.max(resolved.offset);
+    let (tip_x, tip_y) = match resolved.edge {
+        // The surface is below the anchor, so its near edge is its top and
+        // the caret reaches up out of it.
+        Edge::Bottom => (along, rect.y - depth),
+        Edge::Top => (along, rect.bottom() + depth),
+        Edge::Right => (rect.x - depth, along),
+        Edge::Left => (rect.right() + depth, along),
+    };
+    Some(CaretPaint {
+        side: resolved.edge,
+        tip_x,
+        tip_y,
+        w: CARET_BASE,
+        h: depth,
+    })
 }
 
 /// Which way a surface grows away from its anchor on one axis.
@@ -278,16 +591,36 @@ enum AxisPlacement {
     /// today, an `Anchor::Node` one) gets on both axes.
     Centred(f32),
     /// The box's near-in-`grow` edge sits at `at`, so `Flip` may put the box
-    /// on the other side of `at` instead.
+    /// against `across` instead, growing the other way.
     Sided {
-        /// The anchor coordinate on this axis.
+        /// The anchor coordinate the box is placed against on this axis.
         at: f32,
+        /// The anchor's *other* side on this axis — where the flip places
+        /// the box instead.
+        ///
+        /// Equal to `at` for an [`Anchor::Point`], which has one coordinate
+        /// per axis and so is its own other side; different for an
+        /// [`Anchor::Node`], whose anchor is a rect with two edges. Getting
+        /// this wrong is not subtle: a menu declared above a 40-high button
+        /// and flipped below it would land on the button's *top* edge,
+        /// covering the control that opened it.
+        across: f32,
         /// Which way the box extends from `at`.
         grow: Grow,
     },
 }
 
 impl AxisPlacement {
+    /// A box placed against one coordinate, growing away from it, whose
+    /// other side is the same coordinate: what an [`Anchor::Point`] declares.
+    fn point(at: f32, grow: Grow) -> Self {
+        Self::Sided {
+            at,
+            across: at,
+            grow,
+        }
+    }
+
     /// The preferred origin for a box of `extent`, before any clamping.
     fn origin(self, extent: f32) -> f32 {
         match self {
@@ -295,10 +628,12 @@ impl AxisPlacement {
             Self::Sided {
                 at,
                 grow: Grow::Forward,
+                ..
             } => at,
             Self::Sided {
                 at,
                 grow: Grow::Backward,
+                ..
             } => at - extent,
         }
     }
@@ -311,8 +646,9 @@ impl AxisPlacement {
     fn flipped(self) -> Self {
         match self {
             Self::Centred(origin) => Self::Centred(origin),
-            Self::Sided { at, grow } => Self::Sided {
-                at,
+            Self::Sided { at, across, grow } => Self::Sided {
+                at: across,
+                across: at,
                 grow: grow.opposite(),
             },
         }
@@ -327,90 +663,91 @@ impl AxisPlacement {
             Self::Sided {
                 at,
                 grow: Grow::Forward,
+                ..
             } => (vp_origin + vp_extent - at).max(0.0),
             Self::Sided {
                 at,
                 grow: Grow::Backward,
+                ..
             } => (at - vp_origin).max(0.0),
         }
     }
 }
 
-/// The preferred placement of a surface of `natural` size anchored by
-/// `anchor` inside `viewport`, one [`AxisPlacement`] per axis, before
-/// clamping.
+/// What one axis of the ladder settled on.
 ///
-/// `Anchor::Point` is read as the box's top-left corner (the simplest
-/// deterministic reading available without an `Edge` to grow away from, which
-/// only `Anchor::Node` declares). That reading is a *side* on both axes: the
-/// box grows right and down from the point, so the point's other side — box
-/// ending at the point — is a real opposite for [`ClampRule::Flip`] to try.
-/// `Anchor::Viewport` centres the box and declares no side, and
-/// `Anchor::Node` — per [`resolve_anchor_kind`] — centres it the same way
-/// until the harvest walk lands (see the module doc).
-fn anchor_placement(
-    anchor: &Anchor,
-    viewport: Rect,
-    natural: Size,
-) -> (AxisPlacement, AxisPlacement) {
-    match resolve_anchor_kind(anchor) {
-        AnchorResolution::Point => {
-            let Anchor::Point { x, y } = anchor else {
-                unreachable!("resolve_anchor_kind returned Point for a non-Point anchor")
-            };
-            (
-                AxisPlacement::Sided {
-                    at: *x,
-                    grow: Grow::Forward,
-                },
-                AxisPlacement::Sided {
-                    at: *y,
-                    grow: Grow::Forward,
-                },
-            )
-        }
-        AnchorResolution::Viewport | AnchorResolution::NodeFallenBackToViewport => (
-            AxisPlacement::Centred(viewport.x + (viewport.w - natural.w) / 2.0),
-            AxisPlacement::Centred(viewport.y + (viewport.h - natural.h) / 2.0),
-        ),
-    }
+/// A struct rather than a tuple because the ladder now answers three things,
+/// and the third — which side the box ended up on — is what the caret reads.
+/// A caller that positionally unpacked two floats and a placement would be
+/// one reordered field away from pointing every caret the wrong way.
+///
+/// The wider unclamped extent `ClampRule::Scroll` keeps for its content is
+/// deliberately not here. `place` insets the child slot out of the *clamped*
+/// rect at every rule, `Scroll` included (see this module's `place`), so the
+/// only thing left of the scroll affordance is the flag below.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct AxisResult {
+    /// Leading coordinate of the placed, visible rect on this axis.
+    origin: f32,
+    /// Extent of that rect. Always `<= vp_extent`, so a placement never
+    /// renders outside the viewport on this axis.
+    extent: f32,
+    /// Whether the surface needs a scroll affordance on this axis.
+    scrolls: bool,
+    /// The side the box was finally placed on. Equal to the incoming `plan`
+    /// unless [`ClampRule::Flip`] moved it to the anchor's other side.
+    chosen: AxisPlacement,
 }
 
 /// Clamp one axis of a `plan`ned box of `extent` into
 /// `(vp_origin, vp_origin + vp_extent)` by `rule`.
-///
-/// Returns `(rect_origin, rect_extent, content_extent, needs_scroll)`:
-/// `rect_extent` is what the placed, visible rect uses (always
-/// `<= vp_extent`, so the placement never renders outside the viewport on
-/// this axis); `content_extent` is what the child slot uses, which is larger
-/// than `rect_extent` only under `ClampRule::Scroll` when the natural extent
-/// does not fit.
 fn clamp_axis(
     plan: AxisPlacement,
     extent: f32,
     vp_origin: f32,
     vp_extent: f32,
     rule: ClampRule,
-) -> (f32, f32, f32, bool) {
+) -> AxisResult {
     let vp_extent = vp_extent.max(0.0);
     match rule {
+        // Neither `Shrink` nor `Scroll` has an opposite-side step, so the
+        // side they place on is the side that was declared.
         ClampRule::Shrink => {
-            let (o, e) = shrink_at(plan, extent, vp_origin, vp_extent);
-            (o, e, e, false)
+            let (origin, extent) = shrink_at(plan, extent, vp_origin, vp_extent);
+            AxisResult {
+                origin,
+                extent,
+                scrolls: false,
+                chosen: plan,
+            }
         }
         ClampRule::Flip => {
-            let (o, e) = flip_axis(plan, extent, vp_origin, vp_extent);
-            (o, e, e, false)
+            let (origin, extent, chosen) = flip_axis(plan, extent, vp_origin, vp_extent);
+            AxisResult {
+                origin,
+                extent,
+                scrolls: false,
+                chosen,
+            }
         }
         ClampRule::Scroll => {
             if extent <= vp_extent {
-                let o = clamp_origin(plan.origin(extent), extent, vp_origin, vp_extent);
-                (o, extent, extent, false)
+                AxisResult {
+                    origin: clamp_origin(plan.origin(extent), extent, vp_origin, vp_extent),
+                    extent,
+                    scrolls: false,
+                    chosen: plan,
+                }
             } else {
                 // The extent itself is kept for the content slot; only the
                 // visible placement is bounded to the viewport, which is the
                 // scroll affordance the module doc describes.
-                (vp_origin, vp_extent, extent, true)
+                AxisResult {
+                    origin: vp_origin,
+                    extent: vp_extent,
+                    scrolls: true,
+                    chosen: plan,
+                }
             }
         }
     }
@@ -430,16 +767,21 @@ fn clamp_axis(
 /// what distinguishes `Flip` from `Shrink` and from a bare shift: a box that
 /// overhangs the right edge by 20 is placed on the anchor's left side, not
 /// slid 20 to the left.
-fn flip_axis(plan: AxisPlacement, extent: f32, vp_origin: f32, vp_extent: f32) -> (f32, f32) {
+fn flip_axis(
+    plan: AxisPlacement,
+    extent: f32,
+    vp_origin: f32,
+    vp_extent: f32,
+) -> (f32, f32, AxisPlacement) {
     let preferred = plan.origin(extent);
     if fits_at(preferred, extent, vp_origin, vp_extent) {
-        return (preferred, extent);
+        return (preferred, extent, plan);
     }
 
     let other = plan.flipped();
     let flipped = other.origin(extent);
     if fits_at(flipped, extent, vp_origin, vp_extent) {
-        return (flipped, extent);
+        return (flipped, extent, other);
     }
 
     // Neither side holds the box as declared, so take the side with strictly
@@ -457,12 +799,14 @@ fn flip_axis(plan: AxisPlacement, extent: f32, vp_origin: f32, vp_extent: f32) -
         return (
             clamp_origin(chosen.origin(extent), extent, vp_origin, vp_extent),
             extent,
+            chosen,
         );
     }
     // The extent is over budget on this axis whatever side it is on, so this
     // is where `Flip`'s documented fallback to `Shrink` applies — at the
     // chosen side, not at the window's near edge.
-    shrink_at(chosen, extent, vp_origin, vp_extent)
+    let (origin, extent) = shrink_at(chosen, extent, vp_origin, vp_extent);
+    (origin, extent, chosen)
 }
 
 /// Whether a box of `extent` placed at `origin` lies wholly inside
@@ -491,6 +835,7 @@ fn shrink_at(plan: AxisPlacement, extent: f32, vp_origin: f32, vp_extent: f32) -
         | AxisPlacement::Sided {
             at: near,
             grow: Grow::Forward,
+            ..
         } => {
             let o = near.clamp(vp_origin, vp_end);
             (o, extent.min((vp_end - o).max(0.0)))
@@ -498,6 +843,7 @@ fn shrink_at(plan: AxisPlacement, extent: f32, vp_origin: f32, vp_extent: f32) -
         AxisPlacement::Sided {
             at,
             grow: Grow::Backward,
+            ..
         } => {
             // The anchor is the box's *far* edge here, so it is the far edge
             // that stays put and the near edge that gives way.
@@ -555,15 +901,16 @@ fn collect_surface_scopes(
 #[cfg(test)]
 mod tests {
     use super::{
-        AnchorResolution, AxisPlacement, Grow, clamp_axis, resolve_anchor_kind, surface_scopes,
+        AnchorPlan, AnchorResolution, AnchoredPlan, AxisPlacement, CARET_BASE, CARET_DEPTH, Grow,
+        clamp_axis, cross_axis_placement, main_axis_placement, resolve_anchor_kind, surface_scopes,
     };
     use crate::frame::placement::PlacementList;
     use crate::geom::{Axis, Insets, Point, Rect, Size};
-    use crate::layout::{SizeProposal, Slot};
+    use crate::layout::{AnchorRects, SizeProposal, Slot};
     use crate::testing::Harness;
     use crate::tree::{
-        Anchor, ClampRule, Edge, InputPolicy, Interaction, KeyPath, Layer, NodeKind, Props, Role,
-        ViewNode,
+        Align, Anchor, ClampRule, Edge, InputPolicy, Interaction, KeyPath, Layer, NodeKind, Props,
+        Role, ViewNode,
     };
 
     /// A `surface` node with one `spacer` child of `size`, anchored and
@@ -732,17 +1079,14 @@ mod tests {
         // same `clamp_axis` call `place` makes, just fed the un-padded
         // extent), then add the padding to the result afterwards, the way a
         // "pad after clamp" implementation would.
-        let (wrong_x, clamped_w, _content_w, _scrolls) = clamp_axis(
-            AxisPlacement::Sided {
-                at: anchor_x,
-                grow: Grow::Forward,
-            },
+        let wrong = clamp_axis(
+            AxisPlacement::point(anchor_x, Grow::Forward),
             content_size.w,
             viewport.x,
             viewport.w,
             ClampRule::Shrink,
         );
-        let wrong_w = clamped_w + padding.along(Axis::Horizontal);
+        let (wrong_x, wrong_w) = (wrong.origin, wrong.extent + padding.along(Axis::Horizontal));
         assert!(
             wrong_x + wrong_w > viewport.right() + 0.001,
             "clamp-then-add: adding padding after the clamp pushes the box \
@@ -776,15 +1120,25 @@ mod tests {
         assert_eq!(placed.rect, Rect::new(350.0, 275.0, 100.0, 50.0));
     }
 
+    /// The one case left where a `Node` anchor centres in the viewport: a
+    /// walk that never saw the node the anchor names, so nothing was
+    /// harvested for it.
+    ///
+    /// Unreachable from `petrify` — tree acceptance refuses an anchor naming
+    /// no node — but reachable here, because this test places a bare subtree
+    /// directly, and it is the honest answer for that case rather than a
+    /// guess at where the missing node would have been.
     #[test]
-    fn a_node_anchor_falls_back_to_viewport_centring_and_says_so() {
+    fn an_anchor_node_with_no_harvested_rect_centres_in_the_viewport_and_says_so() {
         let anchor = Anchor::Node {
             id: "/some/other/node".into(),
             edge: Edge::Bottom,
+            align: Align::Center,
+            offset: None,
         };
         assert_eq!(
-            resolve_anchor_kind(&anchor),
-            AnchorResolution::NodeFallenBackToViewport
+            resolve_anchor_kind(&anchor, &AnchorRects::new()),
+            AnchorResolution::NodeUnharvested
         );
         let node = surface(
             anchor,
@@ -800,14 +1154,571 @@ mod tests {
 
     #[test]
     fn point_and_viewport_anchors_resolve_to_themselves() {
+        let none = AnchorRects::new();
         assert_eq!(
-            resolve_anchor_kind(&Anchor::Point { x: 1.0, y: 1.0 }),
+            resolve_anchor_kind(&Anchor::Point { x: 1.0, y: 1.0 }, &none),
             AnchorResolution::Point
         );
         assert_eq!(
-            resolve_anchor_kind(&Anchor::Viewport),
+            resolve_anchor_kind(&Anchor::Viewport, &none),
             AnchorResolution::Viewport
         );
+    }
+
+    // -- Anchor::Node: the harvested rect, the edge, the align, the caret. --
+
+    /// A tree shaped the way a real popover is: an `overlay` root holding the
+    /// control and the surface as siblings, so both are offered the whole
+    /// window and the surface anchors against the control's own rect rather
+    /// than against a box some ancestor's flow put it in.
+    ///
+    /// The control is inside a `stack` so that it takes its natural size and
+    /// not the whole window — an anchor rect equal to the viewport would make
+    /// every `Align` and every `Edge` land in the same place, and the tests
+    /// below could not tell them apart.
+    fn anchored_tree(
+        edge: Edge,
+        align: Align,
+        offset: Option<crate::token::TokenName>,
+        clamp: ClampRule,
+        control: Size,
+        popup: Size,
+        pad: f32,
+    ) -> ViewNode {
+        let mut button = ViewNode::new(NodeKind::Spacer, "button");
+        button.constraints.horizontal.min = Some(control.w);
+        button.constraints.horizontal.max = Some(control.w);
+        button.constraints.vertical.min = Some(control.h);
+        button.constraints.vertical.max = Some(control.h);
+        ViewNode::new(NodeKind::Overlay, "root")
+            .child(
+                ViewNode::new(NodeKind::Stack, "bar")
+                    .with_props(Props {
+                        axis: Some(Axis::Vertical),
+                        align: Some(crate::geom::Align::Start),
+                        // `pad` moves the control off the window's corner, so
+                        // a test that wants all four sides to have room can
+                        // ask for it. At zero the control sits at the origin
+                        // and `Top` and `Left` have none, which is what the
+                        // flip cases want instead.
+                        padding: (pad > 0.0)
+                            .then(|| crate::tree::InsetRefs::all(crate::testing::gap_token(pad))),
+                        ..Props::default()
+                    })
+                    .child(button),
+            )
+            .child(surface(
+                Anchor::Node {
+                    id: "/root/bar/button".into(),
+                    edge,
+                    align,
+                    offset,
+                },
+                clamp,
+                InputPolicy::DismissOutside,
+                popup,
+            ))
+    }
+
+    /// Place `tree` and hand back the anchor's placement and the surface's,
+    /// by id, so a test asserts one against the other rather than against a
+    /// number that would still pass if the surface had centred in the window.
+    fn place_anchored(
+        tree: &ViewNode,
+        viewport: Rect,
+    ) -> (
+        crate::frame::placement::Placement,
+        crate::frame::placement::Placement,
+        crate::frame::placement::PaintContent,
+    ) {
+        let mut h = Harness::new();
+        let mut path = KeyPath::root();
+        let mut sink = PlacementList::new();
+        crate::layout::place(
+            tree,
+            &mut h.ctx(),
+            &mut path,
+            Slot::new(viewport),
+            &mut sink,
+        );
+        let parts = sink.into_parts();
+        let at = |id: &str| {
+            parts
+                .placements
+                .iter()
+                .position(|p| p.id == id)
+                .unwrap_or_else(|| panic!("{id} was placed"))
+        };
+        let button = at("/root/bar/button");
+        let popup = at("/root/popup");
+        (
+            parts.placements[button].clone(),
+            parts.placements[popup].clone(),
+            parts.content[popup].clone(),
+        )
+    }
+
+    /// T009's whole claim: `Anchor::Node::edge` decides which side of the
+    /// harvested rect the surface is placed against.
+    ///
+    /// All four edges, each against the anchor's own placement rather than
+    /// against a hand-copied number — a surface that fell back to viewport
+    /// centring would fail every one of them, and so would one that read the
+    /// edge but harvested the wrong rect.
+    #[test]
+    fn an_anchor_node_edge_picks_the_side_of_the_harvested_rect() {
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        // Small enough that all four sides of a control inset by 60 have
+        // room: this test is about which side is chosen, not about the flip.
+        let popup = Size::new(40.0, 30.0);
+        for edge in [Edge::Top, Edge::Bottom, Edge::Left, Edge::Right] {
+            let tree = anchored_tree(
+                edge,
+                Align::Center,
+                None,
+                ClampRule::Flip,
+                Size::new(100.0, 40.0),
+                popup,
+                60.0,
+            );
+            let (button, surface, _) = place_anchored(&tree, viewport);
+            match edge {
+                Edge::Bottom => assert_eq!(
+                    surface.rect.y,
+                    button.rect.bottom(),
+                    "a bottom anchor puts the surface's top on the anchor's bottom"
+                ),
+                Edge::Top => assert_eq!(
+                    surface.rect.bottom(),
+                    button.rect.y,
+                    "a top anchor puts the surface's bottom on the anchor's top"
+                ),
+                Edge::Right => assert_eq!(surface.rect.x, button.rect.right()),
+                Edge::Left => assert_eq!(surface.rect.right(), button.rect.x),
+            }
+        }
+    }
+
+    /// `align` is the cross-axis half, and the three readings are three
+    /// different numbers on an anchor narrower than the surface.
+    #[test]
+    fn an_anchor_node_align_picks_where_along_that_side_the_surface_starts() {
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let control = Size::new(100.0, 40.0);
+        let popup = Size::new(60.0, 30.0);
+        let x_of = |align| {
+            let tree = anchored_tree(
+                Edge::Bottom,
+                align,
+                None,
+                ClampRule::Flip,
+                control,
+                popup,
+                0.0,
+            );
+            let (button, surface, _) = place_anchored(&tree, viewport);
+            (surface.rect.x, button.rect.x, button.rect.w)
+        };
+        let (start, bx, bw) = x_of(Align::Start);
+        assert_eq!(start, bx);
+        let (centre, _, _) = x_of(Align::Center);
+        assert_eq!(centre, bx + (bw - popup.w) / 2.0);
+        let (end, _, _) = x_of(Align::End);
+        assert_eq!(end, bx + bw - popup.w);
+        assert!(start < centre && centre < end, "the three must differ");
+    }
+
+    /// `offset` is a spacing token, resolved through the same path
+    /// `props.spacing` takes, and it pushes the surface away from the anchor
+    /// rather than moving the anchor.
+    #[test]
+    fn an_anchor_node_offset_gaps_the_surface_away_from_its_anchor() {
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let control = Size::new(100.0, 40.0);
+        let popup = Size::new(60.0, 30.0);
+        let gap = crate::testing::gap_token(8.0);
+        let tree = anchored_tree(
+            Edge::Bottom,
+            Align::Center,
+            Some(gap),
+            ClampRule::Flip,
+            control,
+            popup,
+            0.0,
+        );
+        let (button, surface, _) = place_anchored(&tree, viewport);
+        assert_eq!(
+            surface.rect.y,
+            button.rect.bottom() + 8.0,
+            "the declared spacing token is the gap, and the anchor did not move"
+        );
+    }
+
+    /// The caret rides the resolved side, and the resolved side is the one
+    /// the ladder ended on — not the one that was declared.
+    ///
+    /// The control sits at the top of the window, so a `Top` anchor cannot
+    /// hold a 200-high surface above it and the ladder flips to `Bottom`.
+    /// A caret computed from the declared edge would point up, off the top of
+    /// its own box, at nothing.
+    #[test]
+    fn an_anchor_node_caret_follows_the_flip_rather_than_the_declaration() {
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let tree = anchored_tree(
+            Edge::Top,
+            Align::Center,
+            None,
+            ClampRule::Flip,
+            Size::new(100.0, 40.0),
+            Size::new(120.0, 200.0),
+            0.0,
+        );
+        let (button, surface, content) = place_anchored(&tree, viewport);
+        assert_eq!(
+            surface.rect.y,
+            button.rect.bottom(),
+            "there is no room above, so the ladder must take the other side"
+        );
+        let caret = content.caret.expect("an anchored surface carries a caret");
+        assert_eq!(
+            caret.side,
+            Edge::Bottom,
+            "the caret rides the resolved side"
+        );
+        assert_eq!(
+            (caret.tip_x, caret.tip_y),
+            (
+                button.rect.x + button.rect.w / 2.0,
+                surface.rect.y - CARET_DEPTH
+            ),
+            "the tip is the anchor's centre projected onto the surface's near edge"
+        );
+        assert_eq!((caret.w, caret.h), (CARET_BASE, CARET_DEPTH));
+    }
+
+    /// A caret whose projection falls off the surface's near edge is
+    /// suppressed rather than slid to the nearest legal spot: a pointer that
+    /// is not beside its anchor points at the wrong thing.
+    ///
+    /// `Align::End` on an anchor much wider than the surface puts the
+    /// surface's whole near edge past the anchor's centre, so the projection
+    /// lands left of `rect.x`.
+    #[test]
+    fn an_anchor_node_caret_is_suppressed_when_it_would_miss_the_near_edge() {
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let tree = anchored_tree(
+            Edge::Bottom,
+            Align::End,
+            None,
+            ClampRule::Flip,
+            Size::new(400.0, 40.0),
+            Size::new(40.0, 30.0),
+            0.0,
+        );
+        let (button, surface, content) = place_anchored(&tree, viewport);
+        assert!(
+            button.rect.x + button.rect.w / 2.0 < surface.rect.x,
+            "the fixture must actually put the anchor's centre off the near edge"
+        );
+        assert_eq!(
+            content.caret, None,
+            "a caret that cannot land on the near edge is not drawn at all"
+        );
+    }
+
+    /// The record `place` builds is what both the rect and the caret read,
+    /// and it reports what actually happened rather than what was declared.
+    ///
+    /// Hand-computed against a 40x20 anchor at (100, 100) with an 8-unit gap
+    /// and a 60x30 surface: a bottom anchor puts the box at y = 128, so a
+    /// 130-high window cannot hold it and the ladder takes the anchor's other
+    /// side (`edge` becomes `Top`); a 120-wide window cannot hold the centred
+    /// cross axis at x = 90 either, so it slides to 60 and `shift` records
+    /// the -30 that took.
+    #[test]
+    fn the_resolution_record_reports_the_flip_the_shift_and_the_declaration() {
+        let anchor_rect = Rect::new(100.0, 100.0, 40.0, 20.0);
+        let natural = Size::new(60.0, 30.0);
+        let declared = AnchoredPlan {
+            edge: Edge::Bottom,
+            align: Align::Center,
+            offset: 8.0,
+            anchor_rect,
+        };
+        let plan = AnchorPlan {
+            x: cross_axis_placement(Edge::Bottom, Align::Center, anchor_rect, natural),
+            y: main_axis_placement(Edge::Bottom, anchor_rect, 8.0),
+            anchored: Some(declared),
+        };
+        assert_eq!(
+            plan.x.origin(natural.w),
+            90.0,
+            "centred on a 40-wide anchor at 100 with a 60-wide box"
+        );
+
+        let roomy_x = clamp_axis(plan.x, natural.w, 0.0, 800.0, ClampRule::Flip);
+        let roomy_y = clamp_axis(plan.y, natural.h, 0.0, 600.0, ClampRule::Flip);
+        let kept = declared.resolve(&plan, roomy_x, roomy_y, natural);
+        assert_eq!(kept.edge, Edge::Bottom, "a window with room keeps the side");
+        assert_eq!(kept.align, Align::Center, "the ladder never re-aligns");
+        assert_eq!(kept.offset, 8.0, "the resolved gap, not the token name");
+        assert_eq!(kept.shift, 0.0, "nothing had to slide");
+        assert_eq!(kept.anchor_rect, anchor_rect);
+
+        let short_y = clamp_axis(plan.y, natural.h, 0.0, 130.0, ClampRule::Flip);
+        let narrow_x = clamp_axis(plan.x, natural.w, 0.0, 120.0, ClampRule::Flip);
+        let moved = declared.resolve(&plan, narrow_x, short_y, natural);
+        assert_eq!(
+            moved.edge,
+            Edge::Top,
+            "128 + 30 does not fit in 130, so the box takes the anchor's top"
+        );
+        assert_eq!(
+            short_y.origin, 62.0,
+            "92 - 30: against the anchor's top edge"
+        );
+        assert_eq!(moved.shift, -30.0, "90 slid back to 60 to fit a 120 window");
+        assert_eq!(
+            moved.align,
+            Align::Center,
+            "a cross-axis slide is not a change of alignment"
+        );
+    }
+
+    /// A declared gap wider than the caret's own depth stretches the caret to
+    /// bridge it, rather than leaving it floating short of the control.
+    #[test]
+    fn an_anchor_node_caret_spans_a_gap_wider_than_its_own_depth() {
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let tree = anchored_tree(
+            Edge::Bottom,
+            Align::Center,
+            Some(crate::testing::gap_token(14.0)),
+            ClampRule::Flip,
+            Size::new(100.0, 40.0),
+            Size::new(60.0, 30.0),
+            0.0,
+        );
+        let (button, surface, content) = place_anchored(&tree, viewport);
+        let caret = content.caret.expect("an anchored surface carries a caret");
+        assert_eq!(surface.rect.y, button.rect.bottom() + 14.0);
+        assert_eq!(caret.h, 14.0, "the caret reaches the whole way across");
+        assert_eq!(
+            caret.tip_y,
+            button.rect.bottom(),
+            "so its tip lands on the anchor's own edge"
+        );
+        assert_eq!(caret.w, CARET_BASE, "the base is not stretched with it");
+    }
+
+    /// A surface anchored to a node *inside* another anchored surface
+    /// resolves against where that surface actually landed
+    /// (`contracts/anchored-placement.md` §1.4).
+    ///
+    /// This is the case one harvest walk cannot answer. On the first walk the
+    /// outer surface has no anchor rect yet, so it centres in the viewport
+    /// and its child lands there; a scheme that stopped after one walk would
+    /// put the inner surface under *that* rect, hundreds of units from the
+    /// control the outer one is actually beside. The assertion is against the
+    /// outer surface's own placed child, so it fails for exactly that
+    /// mistake and for no other.
+    #[test]
+    fn an_anchor_node_inside_an_anchored_surface_resolves_against_where_it_landed() {
+        let mut item = ViewNode::new(NodeKind::Spacer, "item");
+        item.constraints.horizontal.min = Some(90.0);
+        item.constraints.horizontal.max = Some(90.0);
+        item.constraints.vertical.min = Some(24.0);
+        item.constraints.vertical.max = Some(24.0);
+        let mut button = ViewNode::new(NodeKind::Spacer, "button");
+        button.constraints.horizontal.min = Some(100.0);
+        button.constraints.horizontal.max = Some(100.0);
+        button.constraints.vertical.min = Some(40.0);
+        button.constraints.vertical.max = Some(40.0);
+        let node_anchor = |id: &str| Anchor::Node {
+            id: id.to_owned(),
+            edge: Edge::Bottom,
+            align: Align::Center,
+            offset: None,
+        };
+        let surface_at = |key: &str, anchor: Anchor, child: ViewNode| {
+            ViewNode::new(NodeKind::Surface, key)
+                .with_props(Props {
+                    layer: Some(Layer::Popup),
+                    anchor: Some(anchor),
+                    clamp: Some(ClampRule::Flip),
+                    input_policy: Some(InputPolicy::DismissOutside),
+                    ..Props::default()
+                })
+                .child(child)
+        };
+        let mut body = ViewNode::new(NodeKind::Spacer, "body");
+        body.constraints.horizontal.min = Some(50.0);
+        body.constraints.horizontal.max = Some(50.0);
+        body.constraints.vertical.min = Some(20.0);
+        body.constraints.vertical.max = Some(20.0);
+
+        let tree = ViewNode::new(NodeKind::Overlay, "root")
+            .child(
+                ViewNode::new(NodeKind::Stack, "bar")
+                    .with_props(Props {
+                        axis: Some(Axis::Vertical),
+                        align: Some(crate::geom::Align::Start),
+                        ..Props::default()
+                    })
+                    .child(button),
+            )
+            .child(surface_at("outer", node_anchor("/root/bar/button"), item))
+            .child(surface_at("inner", node_anchor("/root/outer/item"), body));
+
+        let mut h = Harness::new();
+        let mut path = KeyPath::root();
+        let mut sink = PlacementList::new();
+        crate::layout::place(
+            &tree,
+            &mut h.ctx(),
+            &mut path,
+            Slot::new(Rect::new(0.0, 0.0, 800.0, 600.0)),
+            &mut sink,
+        );
+        let placed = sink.into_vec();
+        let rect = |id: &str| {
+            placed
+                .iter()
+                .find(|p| p.id == id)
+                .unwrap_or_else(|| panic!("{id} was placed"))
+                .rect
+        };
+
+        let button_rect = rect("/root/bar/button");
+        let item_rect = rect("/root/outer/item");
+        assert_eq!(
+            rect("/root/outer").y,
+            button_rect.bottom(),
+            "the outer surface hangs off the control"
+        );
+        assert_eq!(
+            rect("/root/inner").y,
+            item_rect.bottom(),
+            "and the inner one hangs off the outer surface's own child"
+        );
+        // The number a single-walk scheme would have produced, named so the
+        // assertion above cannot be satisfied by accident: a 90x24 item
+        // inside a surface centred in an 800x600 window sits far below this.
+        assert!(
+            item_rect.y < 200.0,
+            "the item must follow the control, not the window centre: {item_rect:?}"
+        );
+    }
+
+    /// The other shape of the same nesting: a surface anchored to another
+    /// anchored surface's **own** rect, rather than to a node inside it.
+    ///
+    /// A separate case because the depth rule can get one right and the other
+    /// wrong. Counting only the anchored surfaces *above* a target leaves
+    /// this one at depth zero — the target is not inside any surface, it *is*
+    /// one — so the whole thing runs on a single walk and the inner surface
+    /// resolves against where the outer one had not been placed yet.
+    #[test]
+    fn an_anchor_node_naming_an_anchored_surface_itself_still_waits_for_it() {
+        let mut button = ViewNode::new(NodeKind::Spacer, "button");
+        button.constraints.horizontal.min = Some(100.0);
+        button.constraints.horizontal.max = Some(100.0);
+        button.constraints.vertical.min = Some(40.0);
+        button.constraints.vertical.max = Some(40.0);
+        let node_anchor = |id: &str| Anchor::Node {
+            id: id.to_owned(),
+            edge: Edge::Bottom,
+            align: Align::Center,
+            offset: None,
+        };
+        let surface_at = |key: &str, anchor: Anchor, size: Size| {
+            let mut body = ViewNode::new(NodeKind::Spacer, "body");
+            body.constraints.horizontal.min = Some(size.w);
+            body.constraints.horizontal.max = Some(size.w);
+            body.constraints.vertical.min = Some(size.h);
+            body.constraints.vertical.max = Some(size.h);
+            ViewNode::new(NodeKind::Surface, key)
+                .with_props(Props {
+                    layer: Some(Layer::Popup),
+                    anchor: Some(anchor),
+                    clamp: Some(ClampRule::Flip),
+                    input_policy: Some(InputPolicy::DismissOutside),
+                    ..Props::default()
+                })
+                .child(body)
+        };
+
+        let tree = ViewNode::new(NodeKind::Overlay, "root")
+            .child(
+                ViewNode::new(NodeKind::Stack, "bar")
+                    .with_props(Props {
+                        axis: Some(Axis::Vertical),
+                        align: Some(crate::geom::Align::Start),
+                        ..Props::default()
+                    })
+                    .child(button),
+            )
+            .child(surface_at(
+                "outer",
+                node_anchor("/root/bar/button"),
+                Size::new(90.0, 24.0),
+            ))
+            .child(surface_at(
+                "inner",
+                node_anchor("/root/outer"),
+                Size::new(50.0, 20.0),
+            ));
+
+        let mut h = Harness::new();
+        let mut path = KeyPath::root();
+        let mut sink = PlacementList::new();
+        crate::layout::place(
+            &tree,
+            &mut h.ctx(),
+            &mut path,
+            Slot::new(Rect::new(0.0, 0.0, 800.0, 600.0)),
+            &mut sink,
+        );
+        let placed = sink.into_vec();
+        let rect = |id: &str| {
+            placed
+                .iter()
+                .find(|p| p.id == id)
+                .unwrap_or_else(|| panic!("{id} was placed"))
+                .rect
+        };
+        assert_eq!(
+            rect("/root/outer").y,
+            rect("/root/bar/button").bottom(),
+            "the outer surface hangs off the control"
+        );
+        assert_eq!(
+            rect("/root/inner").y,
+            rect("/root/outer").bottom(),
+            "and the inner one hangs off the outer surface's own rect, not \
+             off where an unresolved first walk left it"
+        );
+    }
+
+    /// The harvest is not a second measurement pass and not a second frame:
+    /// placing the same tree twice, from two independent harnesses, produces
+    /// the identical anchored rect.
+    #[test]
+    fn an_anchor_node_resolves_identically_on_two_independent_passes() {
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let tree = anchored_tree(
+            Edge::Bottom,
+            Align::Center,
+            None,
+            ClampRule::Flip,
+            Size::new(100.0, 40.0),
+            Size::new(120.0, 60.0),
+            0.0,
+        );
+        let first = place_anchored(&tree, viewport);
+        let second = place_anchored(&tree, viewport);
+        assert_eq!(first.1.rect, second.1.rect);
+        assert_eq!(first.2.caret, second.2.caret);
     }
 
     // -- Each ClampRule at each window edge, hand-computed. --------------
@@ -1035,12 +1946,13 @@ mod tests {
             ],
         ) {
             let axis = |at: f32| match plan {
-                0 => AxisPlacement::Sided { at, grow: Grow::Forward },
-                1 => AxisPlacement::Sided { at, grow: Grow::Backward },
+                0 => AxisPlacement::point(at, Grow::Forward),
+                1 => AxisPlacement::point(at, Grow::Backward),
                 _ => AxisPlacement::Centred(at),
             };
-            let (x, rw, _cw, _) = clamp_axis(axis(ox), w, 0.0, vw, rule);
-            let (y, rh, _ch, _) = clamp_axis(axis(oy), h, 0.0, vh, rule);
+            let ax = clamp_axis(axis(ox), w, 0.0, vw, rule);
+            let ay = clamp_axis(axis(oy), h, 0.0, vh, rule);
+            let (x, rw, y, rh) = (ax.origin, ax.extent, ay.origin, ay.extent);
             proptest::prop_assert!(x >= 0.0 - 0.001, "x={x} rw={rw}");
             proptest::prop_assert!(x + rw <= vw + 0.001, "x={x} rw={rw} vw={vw}");
             proptest::prop_assert!(y >= 0.0 - 0.001, "y={y} rh={rh}");
@@ -1066,14 +1978,21 @@ mod tests {
             // Strictly past the last origin the declared side could hold, and
             // never past the window's far edge.
             let at = vw - w + past_ratio * w;
-            let (x, rw, _cw, scrolls) = clamp_axis(
-                AxisPlacement::Sided { at, grow: Grow::Forward },
+            let placed = clamp_axis(
+                AxisPlacement::point(at, Grow::Forward),
                 w,
                 0.0,
                 vw,
                 ClampRule::Flip,
             );
-            proptest::prop_assert!(!scrolls);
+            let (x, rw) = (placed.origin, placed.extent);
+            proptest::prop_assert!(!placed.scrolls);
+            proptest::prop_assert_eq!(
+                placed.chosen,
+                AxisPlacement::point(at, Grow::Backward),
+                "the ladder must report the side it actually placed on, \
+                 because that is what the caret is drawn from"
+            );
             proptest::prop_assert!(
                 (rw - w).abs() < 0.001,
                 "the other side holds the box whole, so nothing may shrink: rw={rw} w={w}"

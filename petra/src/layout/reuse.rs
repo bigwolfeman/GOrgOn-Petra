@@ -48,9 +48,7 @@ use std::sync::Arc;
 
 use crate::frame::placement::{PaintContent, Placement, SubtreeCopy};
 use crate::layout::{ChangeSet, LayoutState, Slot};
-#[cfg(debug_assertions)]
-use crate::tree::KeyPath;
-use crate::tree::{Key, ViewNode};
+use crate::tree::{Key, KeyPath, ViewNode};
 
 /// Everything the previous frame left behind for the next one to compare
 /// against.
@@ -168,8 +166,42 @@ impl FrameMemo {
             }
         }
 
+        anchored_surfaces(&self.tree, &mut KeyPath::root(), &mut dirty);
+
         Some(dirty)
     }
+}
+
+/// Every `surface` in `node`'s subtree whose anchor names another node, by
+/// canonical id, added to `dirty`.
+///
+/// `contracts/anchored-placement.md` §6: an anchored surface is
+/// *unconditionally* dirty on the incremental path. Nothing cheaper is
+/// sound. The reuse test is pointer identity plus slot equality, and both can
+/// hold across a frame in which the anchor moved — a scroll under the anchor
+/// changes neither the surface's `Arc` nor the slot its parent offers it,
+/// while moving the rect the surface is placed against. Reusing there paints
+/// a popover beside where its button used to be, under a digest that says the
+/// frame is current.
+///
+/// It walks the *previous* tree, which is the one this memo owns and the only
+/// one a reuse decision can be made against: a surface the new tree grew has
+/// no counterpart to carry over in the first place.
+///
+/// The walk is O(N) once per incremental frame. That is the cost
+/// `contracts/anchored-placement.md`'s "Open" paragraph leaves to
+/// implementation, and it is the same order the harvest walk's own target
+/// collection already pays; a tree with no `surface` in it touches no
+/// allocation here at all.
+fn anchored_surfaces(node: &ViewNode, path: &mut KeyPath, dirty: &mut BTreeSet<String>) {
+    path.push(node.key.clone());
+    if matches!(node.props.anchor, Some(crate::tree::Anchor::Node { .. })) {
+        dirty.insert(path.id());
+    }
+    for child in &node.children {
+        anchored_surfaces(child, path, dirty);
+    }
+    path.pop();
 }
 
 /// Whether any dirty id lies at `path` or anywhere under it.
