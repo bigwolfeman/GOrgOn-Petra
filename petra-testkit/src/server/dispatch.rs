@@ -169,6 +169,14 @@ fn parse_tree_query(params: &Value) -> Result<TreeQuery, WireError> {
 fn parse_state_flag(raw: &str) -> Result<StateFlag, WireError> {
     match raw {
         "focused" => Ok(StateFlag::Focused),
+        "hovered" => Ok(StateFlag::Hovered),
+        "active" => Ok(StateFlag::Active),
+        "captured" => Ok(StateFlag::Captured),
+        // Hyphenated on the wire, snake_case in Rust: the wire spelling is
+        // fixed by `contracts/interaction-state.md` §2 and matches how the
+        // token families that key off this state are named.
+        "read-only" => Ok(StateFlag::ReadOnly),
+        "skeleton" => Ok(StateFlag::Skeleton),
         "disabled" => Ok(StateFlag::Disabled),
         "selected" => Ok(StateFlag::Selected),
         "expanded" => Ok(StateFlag::Expanded),
@@ -179,8 +187,9 @@ fn parse_state_flag(raw: &str) -> Result<StateFlag, WireError> {
         other => Err(WireError::new(
             ErrorKind::InvalidParams,
             format!(
-                "unknown state flag `{other}`; known flags: focused, disabled, selected, \
-                 expanded, truncated, overflowed, stale, ambient"
+                "unknown state flag `{other}`; known flags: focused, hovered, active, \
+                 captured, read-only, skeleton, disabled, selected, expanded, truncated, \
+                 overflowed, stale, ambient"
             ),
         )),
     }
@@ -497,6 +506,34 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.kind, ErrorKind::Timeout);
+    }
+
+    /// Every flag `contracts/interaction-state.md` §2 puts on the wire parses
+    /// to its own variant, and the hyphenated spelling is the one that works.
+    ///
+    /// The table pairs each spelling with the variant it must produce, so a
+    /// copy-paste that mapped `"active"` onto `StateFlag::Hovered` fails here
+    /// rather than silently answering the wrong query.
+    #[test]
+    fn every_interaction_state_has_a_wire_spelling() {
+        use gorgon_petra::semantic::StateFlag;
+
+        let table = [
+            ("hovered", StateFlag::Hovered),
+            ("active", StateFlag::Active),
+            ("captured", StateFlag::Captured),
+            ("read-only", StateFlag::ReadOnly),
+            ("skeleton", StateFlag::Skeleton),
+        ];
+        for (raw, want) in table {
+            assert_eq!(super::parse_state_flag(raw).unwrap(), want, "{raw}");
+        }
+
+        // The Rust spelling is not the wire spelling, and offering both would
+        // put two names on one filter.
+        let err = super::parse_state_flag("read_only").unwrap_err();
+        assert_eq!(err.kind, ErrorKind::InvalidParams);
+        assert!(err.message.contains("read-only"), "{}", err.message);
     }
 
     #[tokio::test]

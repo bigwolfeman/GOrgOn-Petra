@@ -182,8 +182,35 @@ pub(crate) mod fixtures {
         )
     }
 
-    /// A frame with no hosted placement at all.
+    /// A frame with no self-repainting placement at all.
     pub fn empty_frame() -> PetrifiedFrame {
         frame(&two_panels(0.0), 1, 100.0, 40.0)
+    }
+
+    /// A tree with two hosted nodes, each ambient or not on its own.
+    ///
+    /// `/app/spark` and `/app/gauge` are both images with a source, so both
+    /// are self-repainting as far as `policy` is concerned. Two of them rather
+    /// than one because the attribution rules that matter are about the
+    /// *set*: one declared surface must not excuse an undeclared sibling, and
+    /// two undeclared siblings must both be named.
+    pub fn two_hosted(first_ambient: bool, second_ambient: bool) -> ViewNode {
+        ViewNode::new(NodeKind::Stack, "app")
+            .child(
+                ViewNode::new(NodeKind::Image, "spark")
+                    .with_props(Props {
+                        image: Some("spark.png".into()),
+                        ..Props::default()
+                    })
+                    .with_ambient(first_ambient),
+            )
+            .child(
+                ViewNode::new(NodeKind::Image, "gauge")
+                    .with_props(Props {
+                        image: Some("gauge.png".into()),
+                        ..Props::default()
+                    })
+                    .with_ambient(second_ambient),
+            )
     }
 }

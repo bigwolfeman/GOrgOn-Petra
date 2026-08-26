@@ -42,14 +42,14 @@ fn is_false(v: &bool) -> bool {
 /// The `state` block. Absent flag means `false`, per the contract, so only
 /// the flags in force reach the wire.
 ///
-/// The contract's block also carries `focused`. It is deliberately not here
-/// yet: `PlacementSemantics` has no `focused` field, and the change that adds
-/// one — together with the focus ring that makes it mean something — is in
-/// flight elsewhere. [`crate::semantic::project`] destructures
-/// `PlacementSemantics` with no rest pattern, so the day that field lands the
-/// projection stops compiling and points at the one line that must fill this
-/// struct's missing member. Inventing `focused: false` here instead would
-/// have shipped a flag that is a lie on every focused node.
+/// Every member here is filled from [`crate::frame::PlacementSemantics`] or
+/// from the placement's paint state, never re-derived.
+/// [`crate::semantic::project`] destructures `PlacementSemantics` with no rest
+/// pattern, so a flag added there stops the projection compiling and points at
+/// the one line that must fill this struct's new member — which is how
+/// `focused` and, after it, the five interaction flags arrived. Inventing a
+/// `false` here instead would ship a flag that is a lie on every node the
+/// state is actually in force on.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct NodeState {
     /// The one node holding keyboard focus this frame.
@@ -59,6 +59,33 @@ pub struct NodeState {
     /// would be the exact divergence FR-027 bans.
     #[serde(skip_serializing_if = "is_false")]
     pub focused: bool,
+    /// The pointer is inside this node's hit region this frame.
+    ///
+    /// Engine-derived, from the same hit test the click router uses, so the
+    /// tree and the picture cannot disagree about which control is lit.
+    #[serde(skip_serializing_if = "is_false")]
+    pub hovered: bool,
+    /// The node is pressed: it holds pointer capture and the pointer is still
+    /// inside its rect.
+    #[serde(skip_serializing_if = "is_false")]
+    pub active: bool,
+    /// The node holds pointer capture this frame.
+    ///
+    /// Reported separately from `active` because it outlives it: a button
+    /// pressed and then dragged off is `captured` without being `active`, and
+    /// a driver asserting on a drag needs to see which of the two it has.
+    #[serde(skip_serializing_if = "is_false")]
+    pub captured: bool,
+    /// The node shows a value it will not let this author edit.
+    ///
+    /// Published as its own flag, never folded into `disabled`: a read-only
+    /// node is still focusable and still in tab order, and an assistive
+    /// technology told it was disabled would skip a node the user can reach.
+    #[serde(skip_serializing_if = "is_false")]
+    pub read_only: bool,
+    /// The node is a placeholder for content that has not arrived.
+    #[serde(skip_serializing_if = "is_false")]
+    pub skeleton: bool,
     /// The node refuses interaction this frame.
     #[serde(skip_serializing_if = "is_false")]
     pub disabled: bool,

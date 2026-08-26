@@ -15,6 +15,20 @@ use crate::geom::Scale;
 /// the version bump that a serialization change requires cannot be forgotten
 /// quietly.
 ///
+/// `v6` covers the five interaction-state flags
+/// [`PlacementSemantics::hovered`], [`PlacementSemantics::active`],
+/// [`PlacementSemantics::captured`], [`PlacementSemantics::read_only`] and
+/// [`PlacementSemantics::skeleton`], appended to the leaf stream after
+/// `focused` in that order (`contracts/interaction-state.md` §3). Each one
+/// picks a different token family for the same slot, so each one decides the
+/// picture the same way `focused` does. The consequence worth stating out
+/// loud: `Action::Hover` becomes a **mutating** action, and two frames
+/// differing only in which node the pointer is over no longer share a digest.
+/// That is the design, not a cost of it — a screenshot consumer holding
+/// `(seq, digest)` would otherwise accept an image with the wrong control lit.
+/// No other field moved, and [`NODE_DOMAIN`] is unchanged: the leaf framing is
+/// the same, only its field list grew.
+///
 /// `v5` covers [`PaintState::overflowed`]. `layout::text::place` used to fold
 /// "an ellipsis policy fired" and "the box was too small" into the single
 /// `truncated` bit; splitting them adds a bit to the leaf stream. It is a
@@ -45,7 +59,7 @@ use crate::geom::Scale;
 /// covered only the text content hash, the truncation flag, and the theme
 /// revision, so two frames that bound the same node's `background` to two
 /// different colours shared one digest.
-pub const DOMAIN: &[u8] = b"gorgon-petra-frame-v5";
+pub const DOMAIN: &[u8] = b"gorgon-petra-frame-v6";
 
 /// Domain separation for one placement's leaf hash.
 ///
@@ -253,6 +267,11 @@ fn leaf_bytes(scale: Scale, p: &Placement) -> Vec<u8> {
         semantics:
             PlacementSemantics {
                 focused,
+                hovered,
+                active,
+                captured,
+                read_only,
+                skeleton,
                 role: _,
                 label: _,
                 value: _,
@@ -297,6 +316,16 @@ fn leaf_bytes(scale: Scale, p: &Placement) -> Vec<u8> {
     w.u64(*token_revision);
     w.u64(*paint_hash);
     w.bool(*focused);
+    // Appended after `focused`, in exactly this order
+    // (`contracts/interaction-state.md` §3). Order is part of the
+    // serialization: swapping two of these produces a different digest for the
+    // same frame, which is why the contract fixes it rather than leaving it to
+    // whatever order the struct happens to declare.
+    w.bool(*hovered);
+    w.bool(*active);
+    w.bool(*captured);
+    w.bool(*read_only);
+    w.bool(*skeleton);
     w.finish()
 }
 
@@ -727,6 +756,15 @@ mod tests {
                 label: Some("Fibers".into()),
                 value: Some("3".into()),
                 focused: true,
+                // A deliberate mix rather than five copies of one value: an
+                // ordering mistake in the leaf stream is invisible when every
+                // flag in the fixture agrees, and the pinned vectors below
+                // are what would have to catch it.
+                hovered: true,
+                active: false,
+                captured: true,
+                read_only: false,
+                skeleton: true,
                 disabled: false,
                 selected: false,
                 expanded: Some(true),
@@ -810,6 +848,27 @@ mod tests {
             ("semantics.focused", |p| {
                 p.semantics.focused = !p.semantics.focused;
             }),
+            // The five interaction flags `v6` added. Each one sends the same
+            // slot to a different token family, so each one is a different
+            // picture — the same argument `focused` makes, five more times
+            // (`contracts/interaction-state.md` §3). `active` and `captured`
+            // are listed separately because they are separately reachable: a
+            // button pressed and dragged off is `captured` and not `active`.
+            ("semantics.hovered", |p| {
+                p.semantics.hovered = !p.semantics.hovered;
+            }),
+            ("semantics.active", |p| {
+                p.semantics.active = !p.semantics.active;
+            }),
+            ("semantics.captured", |p| {
+                p.semantics.captured = !p.semantics.captured;
+            }),
+            ("semantics.read_only", |p| {
+                p.semantics.read_only = !p.semantics.read_only;
+            }),
+            ("semantics.skeleton", |p| {
+                p.semantics.skeleton = !p.semantics.skeleton;
+            }),
         ];
 
         for (field, mutate) in table {
@@ -831,9 +890,9 @@ mod tests {
     /// Both entries are listed under "Not covered" in
     /// `contracts/frame-identity.md`. The semantic payload is accessibility
     /// data no shipped painter reads — every member of it *except*
-    /// [`PlacementSemantics::focused`], which paints a focus ring and is
-    /// covered — and `parent` is redundant with `id`, which is the full key
-    /// path.
+    /// [`PlacementSemantics::focused`] and the five interaction flags `v6`
+    /// added, which decide which token family paints and are covered — and
+    /// `parent` is redundant with `id`, which is the full key path.
     #[test]
     fn the_excluded_fields_are_excluded_on_purpose() {
         let vp = viewport();
@@ -855,8 +914,9 @@ mod tests {
         assert_eq!(
             digest(&vp, &[resemanticked]),
             baseline,
-            "every semantic member but `focused` is accessibility payload, not \
-             paint; see contracts/frame-identity.md"
+            "every semantic member outside `focused` and the five interaction \
+             flags is accessibility payload, not paint; see \
+             contracts/frame-identity.md"
         );
 
         // `parent` is excluded from the *leaf* stream unconditionally — this
@@ -1123,7 +1183,7 @@ mod tests {
     fn the_canonical_stream_matches_its_pinned_vectors() {
         assert_eq!(
             super::DOMAIN,
-            b"gorgon-petra-frame-v5",
+            b"gorgon-petra-frame-v6",
             "the frame prefix moved without the vectors below moving with it"
         );
         assert_eq!(super::PAINT_DOMAIN, b"gorgon-petra-paint-v2");
@@ -1141,12 +1201,12 @@ mod tests {
         let vp = viewport();
         assert_eq!(
             digest(&vp, &[]).hex(),
-            "4eab8eb5d3568a92228c027e03e4237fd793a67621208c177c602c00c091e1e1",
+            "6c3daacb527f432f7651ce2eb15805a52be84879ae58e8e5fef2038b867974c8",
             "the empty-frame stream changed; see this test's doc comment"
         );
         assert_eq!(
             digest(&vp, &[rich_placement()]).hex(),
-            "3582e569bbd8f76a6b2c9085785e1b8f91e74fbd45129b43d74a3f0642f0e643",
+            "b30756a529020b8e2c5e89f98f666c5a56d20f98ec02ae98cc67b1ddcbaea6fa",
             "the placement stream changed; see this test's doc comment"
         );
     }

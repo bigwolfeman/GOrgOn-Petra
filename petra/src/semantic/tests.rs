@@ -129,6 +129,8 @@ fn the_wire_shape_is_the_contract_shape() {
             label: Some("Filter".into()),
             value: Some("fib".into()),
             disabled: false,
+            read_only: false,
+            skeleton: false,
             selected: true,
             expanded: Some(true),
             stale: true,

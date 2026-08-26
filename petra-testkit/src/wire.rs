@@ -211,6 +211,14 @@ pub struct WireViewport {
 /// is carried anyway: it is what a consumer needs to reconstruct §3's subtree
 /// grouping, and without it a flat placement list would say nothing about
 /// tree shape.
+///
+/// The interaction flags are **required** fields, not `Option`
+/// (`contracts/interaction-state.md` §2). An absent flag would leave a
+/// consumer unable to decide between "not hovered" and "this server does not
+/// report hover", and either guess breaks the recompute-from-`(viewport,
+/// placements)` claim above. [`frame_result`] builds this with an exhaustive
+/// struct literal and no `..`, so a sixth state cannot be added to the
+/// placement without failing to compile here.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WirePlacement {
     /// Canonical key-path id.
@@ -237,9 +245,21 @@ pub struct WirePlacement {
     /// Hash of this node's paint payload (`frame-identity.md`, "Paint
     /// payload hash").
     pub paint_hash: u64,
-    /// Whether this placement holds keyboard focus this frame — the one
-    /// semantic-payload member that is a digest input.
+    /// Whether this placement holds keyboard focus this frame.
     pub focused: bool,
+    /// Whether the pointer is inside this placement's hit region this frame.
+    pub hovered: bool,
+    /// Whether this placement is pressed: it holds pointer capture and the
+    /// pointer is still inside its rect.
+    pub active: bool,
+    /// Whether this placement holds pointer capture this frame. Outlives
+    /// `active` on a drag that leaves the rect, so the two are separate fields
+    /// and not one.
+    pub captured: bool,
+    /// Whether this placement shows a value it will not let this author edit.
+    pub read_only: bool,
+    /// Whether this placement stands in for content that has not arrived.
+    pub skeleton: bool,
     /// Index of the parent placement in this same array, or `None` for the
     /// root.
     pub parent: Option<usize>,
@@ -304,6 +324,11 @@ pub fn frame_result(frame: &PetrifiedFrame) -> FrameResult {
                 token_revision: p.paint.token_revision,
                 paint_hash: p.paint.paint_hash,
                 focused: p.semantics.focused,
+                hovered: p.semantics.hovered,
+                active: p.semantics.active,
+                captured: p.semantics.captured,
+                read_only: p.semantics.read_only,
+                skeleton: p.semantics.skeleton,
                 parent: p.parent,
             }
         })
@@ -783,7 +808,62 @@ impl ScreenshotResult {
 
 #[cfg(test)]
 mod tests {
-    use super::{ErrorKind, Request};
+    use super::{ErrorKind, Request, WirePlacement};
+
+    /// One `frame` placement with every field present, as the server emits it.
+    fn placement_json() -> serde_json::Value {
+        serde_json::json!({
+            "id": "/app/field",
+            "kind": "text",
+            "rect": {"x": 0, "y": 0, "w": 80, "h": 20},
+            "z": 0,
+            "clip": {"x": 0, "y": 0, "w": 400, "h": 200},
+            "opacity": 1.0,
+            "content_hash": 7_u64,
+            "truncated": false,
+            "overflowed": false,
+            "token_revision": 3_u64,
+            "paint_hash": 11_u64,
+            "focused": false,
+            "hovered": true,
+            "active": false,
+            "captured": true,
+            "read_only": false,
+            "skeleton": false,
+            "parent": 0
+        })
+    }
+
+    /// The interaction flags round-trip as ordinary booleans.
+    #[test]
+    fn a_placement_carries_every_interaction_flag() {
+        let parsed: WirePlacement = serde_json::from_value(placement_json()).unwrap();
+        assert!(parsed.hovered);
+        assert!(!parsed.active);
+        assert!(parsed.captured, "captured outlives active on a drag");
+        assert!(!parsed.read_only);
+        assert!(!parsed.skeleton);
+    }
+
+    /// A placement missing one of them does not parse.
+    ///
+    /// `contracts/interaction-state.md` §2 makes these required rather than
+    /// `Option`, because the digest must be recomputable from `(viewport,
+    /// placements)` alone: a client that had to guess `false` for an absent
+    /// flag would recompute a digest the server never produced, and could not
+    /// tell that case apart from a genuinely unhovered node.
+    #[test]
+    fn a_placement_missing_an_interaction_flag_is_refused() {
+        for flag in ["hovered", "active", "captured", "read_only", "skeleton"] {
+            let mut json = placement_json();
+            json.as_object_mut().unwrap().remove(flag);
+            let parsed: Result<WirePlacement, _> = serde_json::from_value(json);
+            assert!(
+                parsed.is_err(),
+                "a placement with no `{flag}` must not deserialize"
+            );
+        }
+    }
 
     #[test]
     fn a_request_with_no_params_defaults_to_an_empty_object() {

@@ -172,6 +172,25 @@ impl PetrifiedFrame {
         self.drawn().filter(|(_, content)| content.is_hosted())
     }
 
+    /// Every placement that can put new pixels on the screen without Petra
+    /// placing a new frame, paired with what it draws, in tree pre-order.
+    ///
+    /// A superset of [`PetrifiedFrame::hosted_placements`] and a different
+    /// question, kept apart on purpose: that one answers *"where is the digest
+    /// blind"*, this one answers *"who could have asked for this repaint"*.
+    /// See [`PaintContent::repaints_itself`] for why the two coincide today
+    /// and what separates them.
+    ///
+    /// This is the set the ambient ledger attributes an unexplained repaint to
+    /// ([`crate::anim::AmbientLedger::observe`]), and the set FR-030's
+    /// `idle-audit` gate is to be written against when it is built. A consumer
+    /// wanting the pixel-vs-digest set instead wants
+    /// [`PetrifiedFrame::hosted_placements`].
+    pub fn self_repainting_placements(&self) -> impl Iterator<Item = (&Placement, &PaintContent)> {
+        self.drawn()
+            .filter(|(_, content)| content.repaints_itself())
+    }
+
     /// Whether every placement's paint hash still describes the payload at the
     /// same index.
     ///
@@ -533,6 +552,45 @@ mod tests {
             "text and containers are hashed by content, not by name"
         );
         assert_eq!(frame.hosted_placements().count(), 0);
+        assert_eq!(
+            frame.self_repainting_placements().count(),
+            0,
+            "nothing here draws itself either"
+        );
+    }
+
+    /// The wider iterator never loses a hosted placement.
+    ///
+    /// `self_repainting_placements` is a superset of `hosted_placements` by
+    /// construction ([`PaintContent::repaints_itself`]), and the ambient
+    /// ledger moved onto it on that basis. A narrowing — a canvas term added
+    /// to `is_hosted` and forgotten here, say — would take a surface out of
+    /// the set FR-030 attributes against, which is exactly the hole
+    /// `research.md` D-05 names.
+    #[test]
+    fn every_hosted_placement_is_also_self_repainting() {
+        let tree = ViewNode::new(NodeKind::Stack, "root")
+            .child(text("caption", "a picture"))
+            .child(ViewNode::new(NodeKind::Image, "pic").with_props(Props {
+                image: Some("logo.png".to_string()),
+                ..Props::default()
+            }));
+        let frame = frame_of(&tree, 200.0, 100.0);
+        let hosted: Vec<&str> = frame
+            .hosted_placements()
+            .map(|(p, _)| p.id.as_str())
+            .collect();
+        let repainting: Vec<&str> = frame
+            .self_repainting_placements()
+            .map(|(p, _)| p.id.as_str())
+            .collect();
+        assert_eq!(hosted, ["/root/pic"], "the fixture must host something");
+        for id in &hosted {
+            assert!(
+                repainting.contains(id),
+                "{id} is hosted but not reported as able to repaint itself"
+            );
+        }
     }
 
     /// Nesting does not hide a hosted node: the flag is over every placement
