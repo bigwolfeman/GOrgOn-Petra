@@ -44,6 +44,16 @@ workspace = true
 name = "gallery"
 test = true
 
+# The 42-row gallery scaffold (spec 005 T004). Declared rather than left to
+# Cargo's auto-discovery so it is visible in the manifest beside the example it
+# will eventually replace: 323 parity cells do not fit in an `examples/` target,
+# because an example is a single file Cargo will not let you split into modules.
+# The example above stays until a later task migrates it.
+[[bin]]
+name = "gallery"
+path = "src/bin/gallery/main.rs"
+test = true
+
 # The web half of the parity example (T060). `eframe` re-exports `web_sys` and
 # `wasm_bindgen`, but only as types — the `#[wasm_bindgen]` attribute needs the
 # macro crate in scope by its own name, `spawn_local` lives in
