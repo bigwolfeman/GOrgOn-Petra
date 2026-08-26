@@ -17,19 +17,32 @@ crate and a contract disagree, the contract wins.
 
 ## Known Limitations and Deferred Work
 
-- `src/anim/` and `src/semantic/` are module headers with no code (tasks
-  T027, T048-T055). Transitions and the semantic projection do not exist yet.
-- `src/focus/` is wired: `gorgon-petra-egui`'s `Host` owns one `FocusTree`,
-  reconciles it with every placed frame, and publishes the result to
-  `LayoutState::focused`. Tab and Shift+Tab traverse, Home and End jump to the
-  first and last focusable when the focused node declares no `Key` interaction,
-  and Enter or Space works a focused node that declares `Click`. What is
-  **not** done: nothing *shows* focus. `PlacementSemantics` carries no
-  `focused` flag, no container reads `LayoutState::focused` during
-  negotiation, and no painter draws a focus ring — so a keyboard user can
-  reach and operate a node without seeing which one it is (tasks T027,
-  T048-T055). A node that declares `Click` without `Focus` is still
-  unreachable by keyboard; nothing in tree acceptance requires the pair yet.
+- The engine drives three properties, not four: `DRIVEN_PROPERTIES` is
+  `[Position, Size, Opacity]`. Colour is interpolable but nothing drives it, so
+  a state change swaps a colour rather than easing it, and
+  `color_is_interpolable_but_not_yet_driven_by_the_engine` pins that gap so it
+  cannot close or widen silently.
+- Settling and ambience are two different questions, deliberately. A non-ambient
+  transition settles, and when nothing ambient exists scheduling stops. An
+  ambient definition never settles and never blocks a driver's settle - it keeps
+  scheduling by design, and `TransitionActivity::is_settled` excludes it. An
+  undeclared continuous repaint is what the ambient ledger is for.
+- Focus is wired and it shows. `gorgon-petra-egui`'s `Host` owns one
+  `FocusTree`, reconciles it with every placed frame, publishes the result to
+  `LayoutState::focused`, and `PlacementSemantics::focused` carries it into the
+  digest; `paint_focus_ring` draws it. Tab and Shift+Tab traverse, Home and End
+  jump to the first and last focusable when the focused node declares no `Key`
+  interaction, and Enter or Space works a focused node that declares `Click`.
+  What is **not** done: a node that declares `Click` without `Focus` is still
+  unreachable by keyboard, and nothing in tree acceptance requires the pair.
+- Hover, pressed and pointer capture are declared but not derived. The five
+  interaction-state flags reach `PlacementSemantics`, the semantic tree, the
+  wire and the digest, and `read_only` and `skeleton` are settable on
+  `Semantics` - but no host writes hover or pressed yet, so they read `false` on
+  every placement. `InputEvent::PointerLeft` is dropped rather than delivered,
+  because nothing tracks which node the pointer is over. The audit rule that
+  would refuse a node declaring both `read_only` and `disabled` does not exist
+  yet either.
 - `Anchor::Node` resolves the same way `Anchor::Viewport` does. The surface is
   anchored to the viewport rather than to the named node, and
   `overlay_surface::resolve_anchor_kind` says so rather than pretending
