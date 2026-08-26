@@ -25,6 +25,7 @@ use std::sync::Arc;
 
 use crate::frame::placement::{PaintContent, PlacementSemantics, PlacementSink, TextPaint};
 use crate::geom::{Insets, Rect, Scale, Size};
+use crate::input::Capture;
 use crate::token::{ThemeSnapshot, TokenName};
 use crate::tree::props::ScrollProps;
 use crate::tree::{InsetRefs, KeyPath, NodeKind, Role, TextWrap, ViewNode};
@@ -91,12 +92,41 @@ pub trait RowSource {
 }
 
 /// The read-only state one frame negotiates against.
+///
+/// # The last three members are not measure inputs
+///
+/// `hovered`, `pressed` and `capture` are the host's pointer snapshot
+/// (`contracts/interaction-state.md` §2), and they are here for exactly one
+/// consumer: [`semantics_of`], which runs *after* a container has decided
+/// what size a node takes. **No container may branch on them during
+/// measurement.** A layout that got wider on hover would re-lay-out the page
+/// under the pointer, which is the reflow every hover-driven design system
+/// exists to avoid, and it would make the frame's geometry a function of
+/// where a mouse happens to be resting — so an idle window would never be
+/// byte-identical twice.
+///
+/// This cannot be enforced by the type, because `LayoutCtx` hands the whole
+/// `LayoutState` to every container and that handoff is what `scroll_offsets`
+/// needs. It is enforced by a gate instead: `tests/zero_idle_interaction.rs`
+/// places one tree twice with different `hovered` values and requires every
+/// measured rect to be byte-identical (§9).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LayoutState {
     /// Scroll offset per scroll-container id, in logical units along its axis.
     pub scroll_offsets: BTreeMap<String, f32>,
     /// The focused node id, if any.
     pub focused: Option<String>,
+    /// The one node the pointer is over, if any. Derived by the host from
+    /// [`crate::input::hit_test`], never declared by an application — see the
+    /// type doc above for why it may not be read during measurement.
+    pub hovered: Option<String>,
+    /// The node that is pressed: it holds the pointer capture *and* the
+    /// pointer is still inside its rect
+    /// ([`crate::input::PointerState::pressed`]).
+    pub pressed: Option<String>,
+    /// The pointer capture in force, if any. Outlives `pressed`: a button
+    /// dragged off its own rect is still captured and no longer pressed.
+    pub capture: Option<Capture>,
 }
 
 impl LayoutState {
@@ -550,16 +580,24 @@ pub fn semantics_of(node: &ViewNode, id: &str, state: &LayoutState) -> Placement
         value: node.semantics.value.clone(),
         focused: state.focused.as_deref() == Some(id),
         // Engine-derived, from the pointer snapshot this frame is placed
-        // from. `LayoutState` carries no pointer state yet — the `hovered`,
-        // `pressed` and `capture` members `contracts/interaction-state.md` §2
-        // adds are in flight — so no node can be in any of these three states
-        // and the honest projection of the current snapshot is `false`. This
-        // is the projection, not a policy: the day `LayoutState` grows those
-        // members, these three lines read them the way `focused` reads
-        // `state.focused`, and nothing else here changes.
-        hovered: false,
-        active: false,
-        captured: false,
+        // from, exactly the way `focused` reads `state.focused` one line up.
+        //
+        // The `!disabled` guard is rank 2 of
+        // `contracts/interaction-state.md` §4, which says disabled *clears*
+        // hover, active and capture rather than merely outranking them.
+        // `hit_test` already refuses a disabled placement, so the host cannot
+        // put a disabled node in any of these three states in the first
+        // place — but the snapshot is a frame old (it was taken against the
+        // frame on screen, the way focus is), and a node the application
+        // disabled since then would otherwise paint one frame lit before the
+        // reconciliation caught it.
+        hovered: !node.semantics.disabled && state.hovered.as_deref() == Some(id),
+        active: !node.semantics.disabled && state.pressed.as_deref() == Some(id),
+        captured: !node.semantics.disabled
+            && state
+                .capture
+                .as_ref()
+                .is_some_and(|capture| capture.node == id),
         // App-declared, so these two project straight off the node the way
         // `disabled` does, and are complete as of this change.
         read_only: node.semantics.read_only,

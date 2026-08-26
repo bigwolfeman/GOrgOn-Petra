@@ -86,6 +86,67 @@ impl ColorValue {
             a: lerp(self.a, other.a, t),
         }
     }
+
+    /// WCAG relative luminance.
+    ///
+    /// The channels are already linear-light ([`ColorValue::from_srgb8`]
+    /// applies the transfer function on the way in), so this is the weighted
+    /// sum and nothing else. Alpha is **not** read: a translucent colour has
+    /// no luminance of its own until it is composited over something, which
+    /// is what [`ColorValue::over`] is for.
+    #[must_use]
+    pub fn relative_luminance(self) -> f32 {
+        0.2126 * self.r + 0.7152 * self.g + 0.0722 * self.b
+    }
+
+    /// The WCAG 2.1 contrast ratio between two colours, `1.0` to `21.0`.
+    ///
+    /// Symmetric: the brighter of the two goes on top whichever way round the
+    /// call is written, so a caller cannot get a ratio below 1 by passing the
+    /// pair the wrong way.
+    #[must_use]
+    pub fn contrast_ratio(self, other: Self) -> f32 {
+        let (a, b) = (self.relative_luminance(), other.relative_luminance());
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    /// This colour composited over `background`, using straight source-over
+    /// alpha in linear light.
+    ///
+    /// This is what makes a faded colour measurable. A design system that
+    /// only ever compares *token values* cannot see an opacity applied
+    /// downstream — `Props.opacity` fades a whole subtree at paint time, so
+    /// `text.primary` at 10.7:1 against its card reaches the screen at 3.4:1
+    /// and every value-level check still passes. Compositing first is the
+    /// only way a gate reads what the reader reads (FR-010).
+    #[must_use]
+    pub fn over(self, background: Self) -> Self {
+        let a = self.a.clamp(0.0, 1.0);
+        let out_a = a + background.a * (1.0 - a);
+        if out_a <= f32::EPSILON {
+            return Self::TRANSPARENT;
+        }
+        let mix = |src: f32, dst: f32| (src * a + dst * background.a * (1.0 - a)) / out_a;
+        Self {
+            r: mix(self.r, background.r),
+            g: mix(self.g, background.g),
+            b: mix(self.b, background.b),
+            a: out_a,
+        }
+    }
+
+    /// This colour with its alpha scaled by `factor`, clamped to `0.0..=1.0`.
+    ///
+    /// The compositing form of `Props.opacity`: a painter that sets a group
+    /// opacity of 0.45 draws every colour in that group at 45% of the alpha
+    /// it declared, so this is how a gate reproduces what was drawn.
+    #[must_use]
+    pub fn faded(self, factor: f32) -> Self {
+        Self {
+            a: (self.a * factor).clamp(0.0, 1.0),
+            ..self
+        }
+    }
 }
 
 /// The IEC 61966-2-1 sRGB electro-optical transfer function: encoded

@@ -21,6 +21,24 @@
 //! traversal rather than delivered to the application; everything else is
 //! routed. That is the whole of the wiring, and it is deliberately in the
 //! host: `gorgon-petra` decides *what* focus does, this crate decides *when*.
+//!
+//! # Where the pointer lives (`contracts/interaction-state.md` §7)
+//!
+//! [`Host`] owns the one [`PointerState`] a running window has, beside the
+//! focus tree and for the same reason: two facts — where the pointer is
+//! between events, and which node grabbed it — cannot be recovered from a
+//! frame, and `gorgon-petra` deliberately owns nothing that outlives one.
+//! Each pass reconciles it with the frame just placed
+//! ([`PointerState::reconcile`] — the vanished-capture rule and the hover
+//! re-derivation) and writes the result to `LayoutState::hovered`,
+//! `::pressed` and `::capture`, which is what
+//! [`gorgon_petra::layout::semantics_of`] projects the five interaction-state
+//! flags from.
+//!
+//! `hover` is **derived here and nowhere else**: an application that
+//! re-derived it from a `Route::Pointer` would be running a second hit test
+//! by a second owner, and the two drift the first time a surface overlaps
+//! something (FR-009, R-A §7(a)).
 
 use std::collections::BTreeMap;
 
@@ -29,7 +47,7 @@ use gorgon_petra::anim::{FrameDecision, TransitionRegistry};
 use gorgon_petra::focus::FocusTree;
 use gorgon_petra::frame::{FrameCounter, PetrifiedFrame, TransitionActivity, Viewport, petrify};
 use gorgon_petra::geom::{Scale, Size};
-use gorgon_petra::input::{InputEvent, KeyCode, Route, RouteOutcome, route_with_surfaces};
+use gorgon_petra::input::{InputEvent, KeyCode, PointerRouting, PointerState, Route, RouteOutcome};
 use gorgon_petra::layout::overlay_surface::surface_scopes;
 use gorgon_petra::layout::{
     ChangeSet, LayoutCtx, LayoutState, MeasureCache, RowSource, ScrollStack,
@@ -346,6 +364,9 @@ pub struct Host<A: App> {
     /// painter that drives repaints without declaring `ambient`.
     last_motion: Option<FrameDecision>,
     focus: FocusTree,
+    /// Where the pointer is, what it is over, and what it has captured. The
+    /// pointer's peer of `focus`; see this module's doc.
+    pointer: PointerState,
 }
 
 impl<A: App> Host<A> {
@@ -427,6 +448,7 @@ impl<A: App> Host<A> {
             last_report: None,
             last_motion: None,
             focus: FocusTree::default(),
+            pointer: PointerState::new(),
         }
     }
 
@@ -626,6 +648,17 @@ impl<A: App> Host<A> {
         &mut self.state
     }
 
+    /// The pointer snapshot this host derives hover, press and capture from.
+    ///
+    /// Read-only on purpose, and there is no `pointer_mut`. Hover is the
+    /// engine's to derive (FR-009) and a capture is the engine's to grant
+    /// ([`PointerState::route`] hit-tests for `Interaction::Drag` before it
+    /// hands one out); an application that could write either would be able
+    /// to light a control the router will not click.
+    pub fn pointer(&self) -> &PointerState {
+        &self.pointer
+    }
+
     /// The focus tree this host traverses: order, current focus, active scope.
     pub fn focus(&self) -> &FocusTree {
         &self.focus
@@ -701,11 +734,13 @@ impl<A: App> Host<A> {
         };
 
         self.deliver_input(ctx);
-        // Input may have moved focus; the negotiation below reads
-        // `LayoutState`, so publish it before the frame is measured rather
-        // than after it is painted. A move published here needs no repaint
-        // request: this pass's own frame is placed from it, ring and all.
+        // Input may have moved focus or the pointer; the negotiation below
+        // reads `LayoutState`, so publish both before the frame is measured
+        // rather than after it is painted. A move published here needs no
+        // repaint request: this pass's own frame is placed from it, ring,
+        // hover and all.
         let _ = self.publish_focus();
+        let _ = self.publish_pointer();
 
         // Theme and scale are global inputs to every measurement, so a change
         // to either invalidates wholesale; content changes are the
@@ -818,14 +853,34 @@ impl<A: App> Host<A> {
         let scopes = surface_scopes(&tree);
         self.focus = self.focus.update(&frame.placements, &scopes);
         self.enter_open_modal(&frame, &scopes);
-        if self.publish_focus() {
-            // The frame just painted was placed from the *previous* focus, so
-            // its ring is on the wrong node or on none at all. Both moves that
-            // reach here happen after petrify by necessity — the vanished-focus
-            // rule and a modal taking focus both need the new placements to
-            // decide — so the only honest fix is to ask for one more frame.
-            // Without this the indicator waits for the next unrelated event,
-            // which on an idle window is forever.
+        // The pointer's half of the same reconciliation, and it needs the new
+        // placements for the same reason focus does: a captured node that is
+        // gone has no successor, and hover is a fact about the picture on
+        // screen rather than about the last event — a node that moved out
+        // from under a stationary pointer stops being hovered here, without
+        // waiting for a move that may never come.
+        if let Some(ended) = self.pointer.reconcile(&frame, &scopes) {
+            self.app.handle(&ended.event(), &ended.route());
+        }
+        let moved_focus = self.publish_focus();
+        // `|`, not `||`: both have to run. Publishing is what writes the
+        // projection, so short-circuiting the second would leave `hovered`
+        // stale on every frame that also moved focus.
+        if moved_focus | self.publish_pointer() {
+            // The frame just painted was placed from the *previous* focus and
+            // the *previous* pointer snapshot, so its ring is on the wrong
+            // node, or a hovered control is lit that is no longer under the
+            // pointer. Every move that reaches here happens after petrify by
+            // necessity — the vanished-focus rule, a modal taking focus, and
+            // hover re-derivation all need the new placements to decide — so
+            // the only honest fix is to ask for one more frame. Without this
+            // the indicator waits for the next unrelated event, which on an
+            // idle window is forever.
+            //
+            // **Exactly one** extra frame, which is what keeps SC-002 intact
+            // (`tests/idle_audit.rs`): the next pass reconciles against a
+            // frame placed from the snapshot it is reconciling, both
+            // `publish` calls report no move, and nothing more is requested.
             ctx.request_repaint();
         }
 
@@ -929,6 +984,31 @@ impl<A: App> Host<A> {
         true
     }
 
+    /// Copy the pointer snapshot into the state the engine reads, and report
+    /// whether that moved anything. [`Host::publish_focus`]'s peer, with the
+    /// same one-way rule: [`PointerState`] is the owner and `LayoutState` is
+    /// the projection.
+    ///
+    /// All three members are published together and the answer is one
+    /// `bool`, because they move together: a press sets `pressed` and
+    /// `capture` in the same event, and asking for a repaint once per member
+    /// would ask three times for one picture.
+    fn publish_pointer(&mut self) -> bool {
+        let hovered = self.pointer.hovered().map(str::to_owned);
+        let pressed = self.pointer.pressed().map(str::to_owned);
+        let capture = self.pointer.capture().cloned();
+        if self.state.hovered == hovered
+            && self.state.pressed == pressed
+            && self.state.capture == capture
+        {
+            return false;
+        }
+        self.state.hovered = hovered;
+        self.state.pressed = pressed;
+        self.state.capture = capture;
+        true
+    }
+
     fn deliver_input(&mut self, ctx: &Context) {
         let events = ctx.input(|i| i.events.clone());
         let translated = self.translator.translate_all(&events);
@@ -943,24 +1023,48 @@ impl<A: App> Host<A> {
             if self.traverse(event) {
                 continue;
             }
-            let outcome = match &self.last_frame {
-                Some(frame) => route_with_surfaces(
+            // Everything goes through `PointerState`, including the events
+            // that are not pointer events at all: a window blur and an
+            // Escape both end a gesture in flight
+            // (`contracts/interaction-state.md` §7), so a router that only
+            // saw the pointer would leave a drag running with nothing left to
+            // finish it.
+            //
+            // This is also where lane A's pointer-exit seam closes.
+            // `InputEvent::PointerLeft` carries no position, so it is aimed
+            // by memory rather than by hit test:
+            // `gorgon_petra::input::route` has no memory and must pass
+            // `None` to `route_pointer_exit`, which reports the exit dropped.
+            // `PointerState::route` hands it the real hovered id instead, and
+            // `pointer_exit_lands_on_the_hovered_node` below asserts the two
+            // agree.
+            let routing = match &self.last_frame {
+                Some(frame) => self.pointer.route(
                     frame,
                     self.state.focused.as_deref(),
-                    event,
                     &self.last_scopes,
+                    event,
                 ),
-                None => RouteOutcome {
-                    route: Route::Unrouted {
-                        reason: "no frame has been placed yet",
+                None => PointerRouting {
+                    outcome: RouteOutcome {
+                        route: Route::Unrouted {
+                            reason: "no frame has been placed yet",
+                        },
+                        dismiss: Vec::new(),
                     },
-                    dismiss: Vec::new(),
+                    ended: None,
                 },
             };
-            if !outcome.dismiss.is_empty() {
-                self.app.dismissed(&outcome.dismiss);
+            if !routing.outcome.dismiss.is_empty() {
+                self.app.dismissed(&routing.outcome.dismiss);
             }
-            self.app.handle(event, &outcome.route);
+            self.app.handle(event, &routing.outcome.route);
+            // The cause, then the consequence: a component hears the release
+            // (or the blur, or the Escape) and then hears what it did to the
+            // gesture, so it never has to infer the second from the first.
+            if let Some(ended) = routing.ended {
+                self.app.handle(&ended.event(), &ended.route());
+            }
         }
     }
 
@@ -1150,7 +1254,7 @@ mod tests {
     };
     use egui::{Context, Event, Key, Modifiers, RawInput};
     use gorgon_petra::geom::{Point, Rect};
-    use gorgon_petra::input::{InputEvent, Route};
+    use gorgon_petra::input::{InputEvent, Route, route_pointer_exit};
     use gorgon_petra::layout::RowSource;
     use gorgon_petra::token::TokenName;
     use gorgon_petra::tree::{
@@ -1171,8 +1275,11 @@ mod tests {
         hide_run: bool,
     }
 
-    /// A focusable, clickable text button — a `Role::Button` node declaring
-    /// exactly what a real one does: `Click` and `Focus`, never `Key`.
+    /// A focusable, clickable, hoverable text button — a `Role::Button` node
+    /// declaring exactly what a real one does: `Click`, `Focus` and `Hover`,
+    /// never `Key`. `Hover` matters as much as the other two: a node that
+    /// does not declare it is not a hit-test candidate for hover, so the
+    /// engine never lights it.
     fn button(key: &str, label: &str) -> ViewNode {
         ViewNode::new(NodeKind::Text, key)
             .with_props(Props {
@@ -1182,7 +1289,7 @@ mod tests {
             .interactive(
                 Role::Button,
                 label.to_owned(),
-                &[Interaction::Focus, Interaction::Click],
+                &[Interaction::Focus, Interaction::Click, Interaction::Hover],
             )
     }
 
@@ -2277,5 +2384,204 @@ mod tests {
             .is_ok()
         );
         assert_eq!(petra_layer(), petra_layer());
+    }
+
+    // -----------------------------------------------------------------------
+    // Pointer state (`contracts/interaction-state.md` §7, §8, §9)
+    // -----------------------------------------------------------------------
+
+    /// One pointer move to `pos`, the way egui reports it.
+    fn move_to(pos: egui::Pos2) -> RawInput {
+        let mut input = RawInput::default();
+        input.events.push(Event::PointerMoved(pos));
+        input
+    }
+
+    /// The centre of the placement whose id is exactly `id`.
+    fn centre_of(host: &Host<Demo>, id: &str) -> egui::Pos2 {
+        let rect = host
+            .frame()
+            .expect("a frame")
+            .placement(id)
+            .unwrap_or_else(|| panic!("no placement `{id}`"))
+            .rect;
+        egui::Pos2::new(rect.x + rect.w / 2.0, rect.y + rect.h / 2.0)
+    }
+
+    fn hovered_ids(host: &Host<Demo>) -> Vec<&str> {
+        host.frame()
+            .expect("a frame")
+            .placements
+            .iter()
+            .filter(|p| p.semantics.hovered)
+            .map(|p| p.id.as_str())
+            .collect()
+    }
+
+    /// Hover reaches the picture through the shipped host, and exactly one
+    /// node carries it.
+    ///
+    /// The pointer never touches `PointerState` directly here: this is an
+    /// `egui::Event::PointerMoved` going in the same door a mouse uses, and
+    /// the assertion is on the *placement flag* the painter reads, at the far
+    /// end of translate → route → publish → petrify.
+    #[test]
+    fn a_pointer_move_lights_exactly_the_node_under_it() {
+        let ctx = headless();
+        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        step(&ctx, &mut host, RawInput::default());
+        assert!(hovered_ids(&host).is_empty(), "nothing is hovered at rest");
+
+        let run = centre_of(&host, "/root/run");
+        step(&ctx, &mut host, move_to(run));
+        assert_eq!(host.pointer().hovered(), Some("/root/run"));
+        assert_eq!(hovered_ids(&host), vec!["/root/run"]);
+
+        // Off every interactive node: hover clears rather than sticking to the
+        // last thing it touched.
+        let (_, outside) = placed_and_outside(&host, "/root/run");
+        step(&ctx, &mut host, move_to(outside));
+        assert_eq!(host.pointer().hovered(), None);
+        assert!(hovered_ids(&host).is_empty());
+    }
+
+    /// Pointer-exit lands on the node the pointer was last over.
+    ///
+    /// This is the seam `gorgon_petra::input::route` cannot close and this
+    /// host does (`contracts/interaction-state.md` §8): the router has no
+    /// memory between frames and must hand `route_pointer_exit` a `None`,
+    /// which reports the exit dropped. The call below is that same function
+    /// with the host's real hovered id — the thing lane A left a `None` in
+    /// place of — and the assertion is that the two answers differ.
+    #[test]
+    fn pointer_exit_lands_on_the_hovered_node() {
+        let ctx = headless();
+        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        step(&ctx, &mut host, RawInput::default());
+        let run = centre_of(&host, "/root/run");
+        step(&ctx, &mut host, move_to(run));
+        // Focus is deliberately somewhere else, which is what the pre-fix
+        // behaviour would have delivered the exit to.
+        host.focus_mut().focus("/root/filter").expect("focusable");
+        assert_eq!(host.pointer().hovered(), Some("/root/run"));
+
+        let frame = host.frame().expect("a frame");
+        assert_eq!(
+            route_pointer_exit(frame, host.pointer().hovered()),
+            Route::Pointer {
+                node: "/root/run".to_owned()
+            },
+            "the host's hovered id is what aims a pointer-exit"
+        );
+        assert!(
+            matches!(route_pointer_exit(frame, None), Route::Unrouted { .. }),
+            "and a caller with no memory of it can only report the drop"
+        );
+
+        // Through the real door: the exit is delivered, and hover clears.
+        let mut input = RawInput::default();
+        input.events.push(Event::PointerGone);
+        step(&ctx, &mut host, input);
+        assert_eq!(host.pointer().hovered(), None);
+        assert!(
+            host.app()
+                .seen
+                .iter()
+                .any(|(_, where_)| where_ == "/root/run"),
+            "the application never heard the exit: {:?}",
+            host.app().seen
+        );
+    }
+
+    /// A hover change costs the frame it arrives on and settles immediately
+    /// after it.
+    ///
+    /// SC-002 is a claim about an *idle* window, and hover is the state most
+    /// able to break it: it changes on every mouse twitch, and a host that
+    /// asked for a follow-up frame each time would leave a window with a
+    /// pointer resting in it repainting forever.
+    ///
+    /// **egui repaints on input by itself**, so the pass carrying the move
+    /// reports a zero delay whatever Petra does — asserting on that pass
+    /// would be asserting about egui. The pass *after* it is the one Petra
+    /// decides, and it settles: the snapshot is published before petrify, so
+    /// the frame the move produced already showed the hover; the
+    /// post-petrify reconciliation re-derived the same answer against the
+    /// frame it had just placed, `publish_pointer` reported no move, and
+    /// nothing was scheduled.
+    ///
+    /// The baseline in the middle is what stops this from passing for the
+    /// wrong reason: a move that changes no hover settles the same way, so
+    /// the assertion is about the hover rather than about the window being
+    /// quiet in general.
+    #[test]
+    fn a_hover_change_settles_on_the_next_frame() {
+        let ctx = headless();
+        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        step(&ctx, &mut host, RawInput::default());
+        let run = centre_of(&host, "/root/run");
+        let (_, outside) = placed_and_outside(&host, "/root/run");
+
+        // Baseline: a move that lights nothing. egui itself keeps asking for
+        // a frame or two after any input, so this is what "settled" costs
+        // when Petra contributes nothing at all.
+        step(&ctx, &mut host, move_to(outside));
+        assert!(hovered_ids(&host).is_empty());
+        let quiet = passes_to_settle(&ctx, &mut host);
+
+        step(&ctx, &mut host, move_to(run));
+        assert_eq!(hovered_ids(&host), vec!["/root/run"]);
+        let lit = passes_to_settle(&ctx, &mut host);
+        assert_eq!(hovered_ids(&host), vec!["/root/run"], "and it stays lit");
+        assert_eq!(
+            lit, quiet,
+            "a hover change cost {lit} passes to settle where a move that lit \
+             nothing cost {quiet}; an idle window with a pointer resting in it \
+             would never be byte-identical twice"
+        );
+        assert_eq!(
+            step(&ctx, &mut host, RawInput::default()),
+            std::time::Duration::MAX,
+            "and it is still settled a frame later"
+        );
+    }
+
+    /// Pass with no input until the window asks for nothing, and answer how
+    /// many passes that took. Panics rather than spinning: a window that
+    /// never settles is the failure, not a reason to hang.
+    fn passes_to_settle(ctx: &Context, host: &mut Host<Demo>) -> usize {
+        for count in 1..=32 {
+            if step(ctx, host, RawInput::default()) == std::time::Duration::MAX {
+                return count;
+            }
+        }
+        panic!("the window never settled over 32 quiet passes");
+    }
+
+    /// A press with a button held is a press, and it does not grab a control
+    /// that never asked to be dragged.
+    ///
+    /// The Demo page declares no `Interaction::Drag` anywhere, so this is the
+    /// fall-through half of the grab rule through the shipped host: pressing
+    /// still routes as a click and no capture is opened.
+    #[test]
+    fn a_press_on_a_click_only_control_opens_no_gesture() {
+        let ctx = headless();
+        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        step(&ctx, &mut host, RawInput::default());
+        let run = centre_of(&host, "/root/run");
+
+        step(&ctx, &mut host, press_at(run));
+        assert!(host.pointer().capture().is_none());
+        assert_eq!(host.pointer().pressed(), None);
+        assert!(
+            host.frame()
+                .expect("a frame")
+                .placements
+                .iter()
+                .all(|p| !p.semantics.captured && !p.semantics.active),
+            "nothing declared `Drag`, so nothing is captured"
+        );
+        assert_eq!(host.pointer().hovered(), Some("/root/run"));
     }
 }

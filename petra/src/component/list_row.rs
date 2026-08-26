@@ -1,7 +1,10 @@
 //! `list_row` — one selectable entry in a list.
 
 use super::text::text;
-use super::tokens::{SHAPE_SM, SPACING_02, SPACING_03, SURFACE_BASE, SURFACE_RAISED, t};
+use super::tokens::{
+    LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SHAPE_SM, SPACING_02, SPACING_03,
+    SURFACE_BASE, t,
+};
 use super::{pad, stack};
 use crate::geom::Axis;
 use crate::tree::{Interaction, Key, Role, ViewNode};
@@ -9,6 +12,23 @@ use crate::tree::{Interaction, Key, Role, ViewNode};
 /// One row of a list: a label, `Role::ListItem`, and a declared `selected`
 /// state that is never the only way a reader can tell a row is selected —
 /// the row's fill changes too.
+///
+/// # Four fills, declared once, chosen by the engine
+///
+/// This function used to pick the fill itself, with an `if selected` around
+/// two token names. It now binds all four surfaces a row can have —
+/// `background`, `background@hover`, `background@selected`,
+/// `background@selected-hover` — and lets `crate::token::state`'s precedence
+/// chain decide which is in force (`contracts/interaction-state.md` §4, §6).
+///
+/// That is not a tidying. A row is the component where the difference between
+/// *naming a combination* and *composing states* is visible: hovering a
+/// selected row has to land on `layer-selected-hover`, a tone Carbon
+/// publishes as its own entry, and neither "the hover tone" nor "the selected
+/// tone" is it. An `if` chain here would have needed a third and then a
+/// fourth branch, and a component that branches on hover needs to be told
+/// when the pointer moves — which is exactly the second hit test by a second
+/// owner that FR-009 forbids.
 pub fn list_row(key: impl Into<Key>, label: impl Into<String>, selected: bool) -> ViewNode {
     let key = key.into();
     let label = label.into();
@@ -20,20 +40,23 @@ pub fn list_row(key: impl Into<Key>, label: impl Into<String>, selected: bool) -
         vec![text("label", label.clone())],
     );
     node.props.padding = Some(pad(SPACING_03, SPACING_02));
-    node.props.tokens.insert(
-        "background".into(),
-        t(if selected {
-            SURFACE_RAISED
-        } else {
-            SURFACE_BASE
-        }),
-    );
+    for (slot, token) in [
+        ("background", SURFACE_BASE),
+        ("background@hover", LAYER_HOVER),
+        ("background@selected", LAYER_SELECTED),
+        ("background@selected-hover", LAYER_SELECTED_HOVER),
+    ] {
+        node.props.tokens.insert(slot.into(), t(token));
+    }
     node.props.tokens.insert("radius".into(), t(SHAPE_SM));
 
     let mut node = node.interactive(
         Role::ListItem,
         label,
-        &[Interaction::Focus, Interaction::Click],
+        // `Hover` is what makes the four fills above reachable: without it
+        // the engine never hit-tests this row for hover, and two of the four
+        // bindings are tokens nothing reads.
+        &[Interaction::Focus, Interaction::Click, Interaction::Hover],
     );
     node.semantics.selected = selected;
     node

@@ -132,6 +132,13 @@ impl FrameMemo {
     /// 3. The previously focused id and the newly focused one, when they
     ///    differ. Focus is a per-placement flag and a painted ring, so both
     ///    ends of a focus move are dirty.
+    /// 4. Both ends of a hover, press, or capture move, for exactly the same
+    ///    reason (`contracts/interaction-state.md` §9): each is a
+    ///    per-placement flag and a different token family, so a subtree
+    ///    carried over from the previous frame would keep painting the state
+    ///    it was in when it was built. Focus got this treatment from the
+    ///    start and these three did not, which was latent only for as long as
+    ///    nothing ever set them.
     ///
     /// Returns `None` when the change set is [`ChangeSet::All`], which is the
     /// host saying it does not know: there is no dirty *set* in that case,
@@ -159,11 +166,34 @@ impl FrameMemo {
             }
         }
 
-        if self.state.focused != now.focused {
-            if let Some(before) = &self.state.focused {
+        // Both ends of every interaction-state move. Written as a table
+        // rather than as four copies of the same `if`, so a sixth flag is one
+        // row and cannot be added with one end of the move forgotten.
+        //
+        // `capture` is compared by the id it names rather than by the whole
+        // `Capture`, which also carries `last` — the pointer's current
+        // position, which moves on every single event of a drag. Comparing
+        // the struct would mark the holder dirty on every frame of a gesture
+        // and defeat reuse for as long as the drag lasted, while telling the
+        // truth about nothing: the placement flag projects the node, not the
+        // path the pointer took to it.
+        let moves: [(Option<&String>, Option<&String>); 4] = [
+            (self.state.focused.as_ref(), now.focused.as_ref()),
+            (self.state.hovered.as_ref(), now.hovered.as_ref()),
+            (self.state.pressed.as_ref(), now.pressed.as_ref()),
+            (
+                self.state.capture.as_ref().map(|c| &c.node),
+                now.capture.as_ref().map(|c| &c.node),
+            ),
+        ];
+        for (before, after) in moves {
+            if before == after {
+                continue;
+            }
+            if let Some(before) = before {
                 dirty.insert(before.clone());
             }
-            if let Some(after) = &now.focused {
+            if let Some(after) = after {
                 dirty.insert(after.clone());
             }
         }

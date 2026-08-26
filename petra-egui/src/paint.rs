@@ -29,8 +29,8 @@ use gorgon_petra::geom::{Rect as PetraRect, Scale};
 use gorgon_petra::layout::TextRequest;
 use gorgon_petra::token::value::CoverageValue;
 use gorgon_petra::token::{
-    FocusRing, MotionValue, SHADOW_GEOMETRY, Silhouette, ThemeSnapshot, TokenName, TokenValue,
-    TypographyValue,
+    DerivedState, FocusRing, InteractionRank, MotionValue, SHADOW_GEOMETRY, Silhouette,
+    ThemeSnapshot, TokenName, TokenValue, TypographyValue, base_slot, resolve_slot, resolve_state,
 };
 
 use crate::host::{COVERAGE_TOKEN, FALLBACK_COVERAGE, coverage_plan};
@@ -607,7 +607,15 @@ pub fn paint_frame_with_hosts(
             Outcome::Silent => report.silent += 1,
         }
         if placement.semantics.focused {
-            let corner_radius = content.tokens.get(RADIUS_SLOT).map_or(0.0, |token| {
+            // The same chain `paint_one` walked, so a ring can never round
+            // differently from the shape it is ringing when a state rebinds
+            // `radius` (`gorgon_petra::token::state`).
+            let corner_radius = resolve_slot(
+                &content.tokens,
+                RADIUS_SLOT,
+                DerivedState::of(&placement.semantics),
+            )
+            .map_or(0.0, |token| {
                 resolve_radius_or_record(env.colors, token, &mut report)
             });
             focused.push((placement, corner_radius));
@@ -761,22 +769,30 @@ fn paint_one(
     let rect = to_egui_snapped(placement.rect, env.scale);
     let mut shapes = 0_usize;
 
-    // Every slot this painter does not understand is recorded by name.
+    // Every slot this painter does not understand is recorded by name,
+    // matched on the *base* slot: `background@hover` is the `background`
+    // slot bound for one state (`gorgon_petra::token::state`), not a seventh
+    // slot this painter has never heard of.
     for slot in content.tokens.keys() {
-        if !KNOWN_SLOTS.contains(&slot.as_str()) {
+        if !KNOWN_SLOTS.contains(&base_slot(slot)) {
             report.unknown_slots.insert(slot.clone());
         }
     }
 
+    // Which token family every slot below resolves through. Read once, here,
+    // rather than at each of the six lookups: the rank is a property of the
+    // node, and six copies of `resolve_state` is six chances for the border
+    // to think it is hovered while the fill thinks it is pressed.
+    let state = DerivedState::of(&placement.semantics);
+    let rank = resolve_state(state);
+
     // `radius` and `silhouette` shape both the fill and the stroke below
     // them, so both are resolved once, ahead of either, rather than
     // duplicated into two arms that could drift apart.
-    let corner_radius = content.tokens.get(RADIUS_SLOT).map_or(0.0, |token| {
+    let corner_radius = resolve_slot(&content.tokens, RADIUS_SLOT, state).map_or(0.0, |token| {
         resolve_radius_or_record(env.colors, token, report)
     });
-    let figure = content
-        .tokens
-        .get(SILHOUETTE_SLOT)
+    let figure = resolve_slot(&content.tokens, SILHOUETTE_SLOT, state)
         .map_or(Silhouette::Rect, |token| {
             resolve_silhouette_or_record(env.colors, token, report)
         });
@@ -786,16 +802,24 @@ fn paint_one(
     // casts it. Drawn after the fill it would sit *on* the card, which is not
     // a subtle mistake -- it is an obviously wrong picture, and that is the
     // reason this block is here rather than next to the border below.
-    if let Some(token) = content.tokens.get(SHADOW_SLOT) {
+    if let Some(token) = resolve_slot(&content.tokens, SHADOW_SLOT, state) {
         // A rectangular shadow under a triangle is worse than no shadow, and
         // `epaint::Shadow::as_shape` can only make a `RectShape`. A node that
         // asked for both gets its silhouette honoured and its elevation
         // dropped, and nothing in `report` claims a shadow was drawn.
+        //
+        // A **disabled** node casts no shadow either, and that is FR-010
+        // rather than a style preference. Depth is this painter's "you can
+        // press this" channel, so a control that cannot be pressed must not
+        // have it: a button lying flat beside two that are lifted reads as
+        // unavailable *before* any of its colours do, and it survives a
+        // reader who cannot separate the colours at all. The disabled colour
+        // family is the second channel, not the only one — a colour-only
+        // disabled state is exactly what FR-010 forbids.
         if outline.is_none()
+            && rank != InteractionRank::Disabled
             && let Some(color) = resolve_or_record(env.colors, token, report)
-            && let Some((_, geometry)) = SHADOW_GEOMETRY
-                .iter()
-                .find(|(name, _)| *name == token.as_str())
+            && let Some((_, geometry)) = SHADOW_GEOMETRY.iter().find(|(name, _)| *name == token)
         {
             let shadow = egui::epaint::Shadow {
                 offset: geometry.offset,
@@ -846,7 +870,7 @@ fn paint_one(
             shapes += 1;
         }
     }
-    if let Some(token) = content.tokens.get(BACKGROUND_SLOT)
+    if let Some(token) = resolve_slot(&content.tokens, BACKGROUND_SLOT, state)
         && let Some(color) = resolve_or_record(env.colors, token, report)
     {
         match &outline {
@@ -864,7 +888,7 @@ fn paint_one(
         report.fills += 1;
         shapes += 1;
     }
-    if let Some(token) = content.tokens.get(BORDER_SLOT)
+    if let Some(token) = resolve_slot(&content.tokens, BORDER_SLOT, state)
         && let Some(color) = resolve_or_record(env.colors, token, report)
     {
         let width = device_snapped_width(1.0, env.scale);
@@ -897,10 +921,8 @@ fn paint_one(
     }
 
     if let Some(text) = &content.text {
-        let token = content
-            .tokens
-            .get(FOREGROUND_SLOT)
-            .map_or(DEFAULT_TEXT_TOKEN, String::as_str);
+        let token =
+            resolve_slot(&content.tokens, FOREGROUND_SLOT, state).unwrap_or(DEFAULT_TEXT_TOKEN);
         let color = env.colors.color(token).unwrap_or_else(|| {
             report.unresolved_tokens.insert(token.to_owned());
             // Not a guess at the theme's intent: a visibly wrong colour is
@@ -1788,6 +1810,113 @@ mod tests {
         assert_eq!(report.empty, 1, "the bare stack declares nothing to paint");
         assert!(!report.is_complete(), "{report:?}");
         assert!(report.undrawn.contains("image:logo.png"), "{report:?}");
+    }
+
+    /// A state-decorated slot is the slot it decorates, in three places at
+    /// once: the schema, the unknown-slot report, and the colour actually
+    /// drawn.
+    ///
+    /// The unknown-slot half is the one that would fail loudest. Every state
+    /// binding on every component would otherwise land in
+    /// `PaintReport::unknown_slots`, so the report that exists to name the
+    /// *one* slot a host invented would name six per button and stop being
+    /// readable at all.
+    ///
+    /// The drawn half is what makes the other two matter: hovering the node
+    /// has to change the fill. Asserted through `report.fills` plus the
+    /// resolved token name rather than through pixels — this crate has no
+    /// pixel readback — but the token name is what `paint_one` hands to
+    /// `resolve_or_record`, so a chain that resolved the wrong name would
+    /// report the wrong colour as unresolved.
+    #[test]
+    fn a_state_decorated_slot_is_drawn_as_the_slot_it_decorates() {
+        use super::BACKGROUND_SLOT;
+        use gorgon_petra::token::{DerivedState, resolve_slot, standard_slots};
+
+        assert!(
+            standard_slots().contains("background@hover"),
+            "the schema must resolve a decorated key to its base slot"
+        );
+        assert!(
+            super::KNOWN_SLOTS.contains(&super::base_slot("background@hover")),
+            "and this painter must recognise it as `background`"
+        );
+
+        let host = Headless::new();
+        let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
+        let mut props = Props::default();
+        props
+            .tokens
+            .insert("background".into(), tok("surface.raised"));
+        props
+            .tokens
+            .insert("background@hover".into(), tok("layer-hover"));
+        let mut frame = frame_of(
+            &ViewNode::new(NodeKind::Stack, "card").with_props(props),
+            &mut h,
+        );
+
+        let mut shaper = host.shaper();
+        let resting = paint_frame(&host.painter(), &frame, &mut shaper, &snapshot());
+        assert!(resting.unknown_slots.is_empty(), "{resting:?}");
+        assert_eq!(resting.fills, 1);
+        assert_eq!(
+            resolve_slot(
+                &frame.content[0].tokens,
+                BACKGROUND_SLOT,
+                DerivedState::default()
+            ),
+            Some("surface.raised")
+        );
+
+        frame.placements[0].semantics.hovered = true;
+        let lit = paint_frame(&host.painter(), &frame, &mut shaper, &snapshot());
+        assert!(lit.unknown_slots.is_empty(), "{lit:?}");
+        assert_eq!(lit.fills, 1, "still exactly one fill, in a different tone");
+        assert!(lit.unresolved_tokens.is_empty(), "{lit:?}");
+        assert_eq!(
+            resolve_slot(
+                &frame.content[0].tokens,
+                BACKGROUND_SLOT,
+                DerivedState::of(&frame.placements[0].semantics)
+            ),
+            Some("layer-hover"),
+            "hovering the card did not move it to its hover surface"
+        );
+    }
+
+    /// A disabled node casts no shadow (FR-010).
+    ///
+    /// Depth is this painter's "you can press this" channel, and it is the
+    /// one channel that survives a reader who cannot separate the colours at
+    /// all — which is why "disabled" may not be carried by a colour family
+    /// alone. The same node enabled draws two fills (shadow plus background)
+    /// and disabled draws one.
+    #[test]
+    fn a_disabled_node_casts_no_shadow() {
+        let host = Headless::new();
+        let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
+        let mut props = Props::default();
+        props
+            .tokens
+            .insert("background".into(), tok("surface.raised"));
+        props.tokens.insert("shadow".into(), tok("shadow.raised"));
+        let mut frame = frame_of(
+            &ViewNode::new(NodeKind::Stack, "card").with_props(props),
+            &mut h,
+        );
+
+        let mut shaper = host.shaper();
+        let lifted = paint_frame(&host.painter(), &frame, &mut shaper, &snapshot());
+        assert_eq!(lifted.fills, 2, "an enabled card is lifted: {lifted:?}");
+
+        frame.placements[0].semantics.disabled = true;
+        let flat = paint_frame(&host.painter(), &frame, &mut shaper, &snapshot());
+        assert_eq!(
+            flat.fills, 1,
+            "a disabled card kept its elevation, so the only thing separating \
+             it from an available one is colour: {flat:?}"
+        );
     }
 
     /// A token slot this painter does not consume is still named rather than

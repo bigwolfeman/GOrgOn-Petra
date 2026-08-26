@@ -258,3 +258,137 @@ fn a_quiet_host_asks_for_no_motion_frames_and_audits_clean() {
     assert!(scheduler.ledger().is_clean());
     scheduler.idle_audit(60.0).expect("a quiet host is clean");
 }
+
+// ---------------------------------------------------------------------------
+// Hover against the sixty-second assertion
+// (`contracts/interaction-state.md` §9)
+// ---------------------------------------------------------------------------
+
+/// A page with one hoverable control and nothing hosted.
+///
+/// Its own type rather than a flag on [`Hosted`], so the tests above keep
+/// placing exactly the tree they were written against.
+struct Hoverable;
+
+impl RowSource for Hoverable {
+    fn rows(&mut self, _source: &str, _range: Range<usize>) -> Vec<Arc<ViewNode>> {
+        Vec::new()
+    }
+}
+
+impl App for Hoverable {
+    fn view(&mut self) -> ViewNode {
+        ViewNode::new(NodeKind::Stack, "root").child(
+            ViewNode::new(NodeKind::Text, "run")
+                .with_props(Props {
+                    text: Some("Run".into()),
+                    ..Props::default()
+                })
+                .with_constraints(Constraints {
+                    horizontal: AxisConstraint {
+                        min: Some(80.0),
+                        max: Some(80.0),
+                        priority: 10,
+                    },
+                    vertical: AxisConstraint {
+                        min: Some(24.0),
+                        max: Some(24.0),
+                        priority: 10,
+                    },
+                })
+                .interactive(
+                    gorgon_petra::tree::Role::Button,
+                    "Run".to_owned(),
+                    &[
+                        gorgon_petra::tree::Interaction::Focus,
+                        gorgon_petra::tree::Interaction::Click,
+                        gorgon_petra::tree::Interaction::Hover,
+                    ],
+                ),
+        )
+    }
+
+    fn handle(&mut self, _event: &InputEvent, _route: &Route) {}
+
+    fn take_changes(&mut self) -> ChangeSet {
+        ChangeSet::All
+    }
+}
+
+/// SC-002 survives a pointer resting on a control for a simulated minute.
+///
+/// Hover is the interaction state most able to break the zero-idle claim: it
+/// is engine-derived, it is re-derived against every newly placed frame, and
+/// it changes on every mouse twitch. A reconciliation that compared the wrong
+/// thing — a `Capture`'s moving `last` position, say, or a freshly allocated
+/// `String` by identity rather than by value — would report a move on every
+/// single pass and ask for a frame each time, and the window would never
+/// settle while the pointer sat still.
+///
+/// One move in, six hundred quiet passes after it, and the assertions are the
+/// same three `a_quiet_host_asks_for_no_motion_frames_and_audits_clean`
+/// makes — plus the one that stops this passing for the wrong reason: the
+/// control is still lit at the end. A host that dropped the hover after one
+/// frame would also ask for no frames.
+#[test]
+fn a_pointer_resting_on_a_control_asks_for_no_frames_over_a_minute() {
+    let ctx = headless();
+    let mut host = Host::new(&ctx, Hoverable, Presenter::new(gorgon_petra::token::dark()));
+
+    ctx.run_ui(raw_at(0.0), |_| host.pass(&ctx))
+        .drop_without_applying_deltas();
+    let rect = host
+        .frame()
+        .expect("a frame")
+        .placement("/root/run")
+        .expect("the control is placed")
+        .rect;
+    let centre = egui::Pos2::new(rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
+
+    let mut moved = raw_at(TICK);
+    moved.events.push(egui::Event::PointerMoved(centre));
+    ctx.run_ui(moved, |_| host.pass(&ctx))
+        .drop_without_applying_deltas();
+    assert_eq!(
+        host.pointer().hovered(),
+        Some("/root/run"),
+        "the fixture must actually hover something or it tests nothing"
+    );
+
+    let before = host.motion().scheduler().frames_requested();
+    for pass in 2..PASSES {
+        ctx.run_ui(raw_at(f64::from(pass) * TICK), |_| host.pass(&ctx))
+            .drop_without_applying_deltas();
+        assert_eq!(
+            host.decision().expect("a decision").undeclared,
+            0,
+            "nothing asked, so nothing may be recorded (pass {pass})"
+        );
+    }
+
+    assert_eq!(
+        host.motion().scheduler().frames_requested(),
+        before,
+        "a stationary hover asked for frames over a simulated minute"
+    );
+    assert!(host.motion().scheduler().ledger().is_clean());
+    host.motion()
+        .scheduler()
+        .idle_audit(60.0)
+        .expect("a host with a resting pointer is clean");
+
+    assert_eq!(
+        host.pointer().hovered(),
+        Some("/root/run"),
+        "and the control is still lit sixty seconds later"
+    );
+    assert!(
+        host.frame()
+            .expect("a frame")
+            .placement("/root/run")
+            .expect("placed")
+            .semantics
+            .hovered,
+        "the flag has to still be on the picture, not just in the snapshot"
+    );
+}

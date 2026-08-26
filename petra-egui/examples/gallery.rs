@@ -46,13 +46,14 @@
 //! for only where C13 deliberately stops: `Grid` track sizing, `Scroll`,
 //! `Collection`, `Overlay`, `Surface`, `Separator`, `Spacer`, and the two
 //! hosted kinds. Three gaps in the library turned up while writing this page
-//! and are worked around here rather than papered over — see [`muted`],
-//! [`caption`] and [`disabled_button`], each of which names the one it is
-//! standing in for, and none of which reaches past a component's own public
-//! surface into its children. A fourth gap — a control had no way to know
-//! which surface it was being re-seated onto — was real too, and is now
-//! closed in the library itself as
-//! [`gorgon_petra::component::on_layer`] rather than worked around here.
+//! and are worked around here rather than papered over — see [`muted`] and
+//! [`caption`], each of which names the one it is standing in for, and
+//! neither of which reaches past a component's own public surface into its
+//! children. Two more gaps were real too and are now closed in the library
+//! itself rather than worked around here: a control had no way to know which
+//! surface it was being re-seated onto
+//! ([`gorgon_petra::component::on_layer`]), and there was no disabled variant
+//! ([`gorgon_petra::component::disabled`]).
 //!
 //! # What this page assumes about its window
 //!
@@ -91,8 +92,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gorgon_petra::component::{
-    button, checkbox, field, heading, list_row, on_layer, primary_button, progress, radio, section,
-    status, tab, tab_bar, text, toggle,
+    button, checkbox, disabled, field, heading, list_row, on_layer, primary_button, progress,
+    radio, section, status, tab, tab_bar, text, toggle,
 };
 use gorgon_petra::geom::{Align, Axis};
 use gorgon_petra::input::{InputEvent, PointerButton, Route, activates};
@@ -440,63 +441,39 @@ fn caption(key: &str, content: &str) -> ViewNode {
     muted(key, &content.to_uppercase())
 }
 
-/// A button that declares itself unavailable.
+/// A button that declares itself unavailable, seated on the card it sits on.
 ///
-/// **Library gap 4.** [`button`] always returns a focusable, clickable node;
-/// C13 has no disabled variant. Composing one from the public surface means
-/// three edits to the returned node — clear the interactions so a press
-/// cannot route to it, declare `Semantics.disabled` so the projection says
-/// so, and re-seat the fill so it reads as recessed into its ground rather
-/// than available. All three are public fields; none of them reaches inside
-/// the component's own children, which is the line between composing a
-/// component and forking it.
+/// One library call each for the two facts, and nothing else. This function
+/// used to be forty lines of hand composition — clear the interactions,
+/// declare `Semantics.disabled`, delete the `shadow` binding, and then fade
+/// the whole subtree through `Props.opacity` at 45% because the label was
+/// out of reach. Every one of those four is now somewhere it can be gated:
 ///
-/// **R6.** This used to strip the fill entirely and draw a `text.muted`
-/// outline in its place — a text tone at 10.73:1, the loudest possible edge,
-/// on the one control that should read as the quietest.
-/// [`gorgon_petra::component::on_layer`] existing now (see its rustdoc, and
-/// the note at this function's one call site for the measured history of why
-/// a step was needed at all) means "no step" can be expressed directly:
-/// force the base branch regardless of what [`button`] bound, so the result
-/// is always the tone of the ground rather than one step ahead of it.
+/// * the flag and the cleared interactions are
+///   [`gorgon_petra::component::disabled`], which applies them to the whole
+///   subtree so [`button`]'s label is unavailable too;
+/// * the dropped elevation is the painter's, for any node whose resolved rank
+///   is disabled — the depth channel, and the one that survives a reader who
+///   cannot separate the colours at all;
+/// * the faded ink is [`button`]'s own `foreground@disabled` binding,
+///   resolved through the precedence chain, which is a *token* a theme can
+///   retune and a gate can measure.
 ///
-/// **Three channels.** The de-emphasis is the dropped elevation,
-/// `Props.opacity`, and the declared `Semantics.disabled`. The dropped
-/// elevation is the one a reader sees first, and the one that survives a
-/// reader who cannot separate the colours at all: a control lying flat
-/// beside two that are lifted reads as unavailable before any hue is
-/// decoded. The button keeps its tonal step, so it still reads as a button
-/// — see the note at the `on_layer` call for the version of this that did
-/// not, and drew nothing.
+/// **The opacity is gone and its job is done twice over.** A subtree faded at
+/// paint time is a state nothing can read: no digest flag, no semantic tree
+/// entry, no driver query, and a contrast gate that reads token values sees
+/// `text.primary` at 10.7:1 while the screen shows 3.4:1
+/// (`contracts/interaction-state.md` §5, FR-010).
+///
+/// **The tonal step is kept**, and an early version of this got that wrong.
+/// It forced `surface.base` as well, on the reasoning that a disabled control
+/// should sit flush with its ground. With the border gone that left nothing:
+/// no step, no shadow, no edge, so "Retire" drew no shape whatsoever and read
+/// as a line of grey text between two buttons. A disabled control still has
+/// to look like a control; what it must not look like is a *pressable* one,
+/// and the missing elevation is what says that.
 fn disabled_button(key: &str, label: &str, depth: usize) -> ViewNode {
-    let mut node = button(key, label);
-    node.interactions.clear();
-    node.semantics.disabled = true;
-    // Depth is the "you can press this" channel, so an unavailable control
-    // does not get it. `button` casts `shadow.raised` on every instance, and
-    // dropping it is what a reader sees first: a control lying flat beside
-    // two that are lifted reads as unavailable before any of its colours do,
-    // and it survives a reader who cannot separate the colours at all.
-    node.props.tokens.remove("shadow");
-    // The **tonal step is kept**, and the first version of this got that
-    // wrong. It forced `surface.base` as well, on the reasoning that a
-    // disabled control should sit flush with its ground. With the border
-    // gone that left nothing: no step, no shadow, no edge, so "Retire" drew
-    // no shape whatsoever and read as a line of grey text between two
-    // buttons. A disabled control still has to look like a control, or the
-    // reader cannot tell an unavailable button from a caption. What it must
-    // not look like is a *pressable* one, and the missing elevation is what
-    // says that.
-    let mut node = on_layer(node, depth);
-    // The third channel, and the only one that reaches the label. `button`
-    // builds its label as a child node, and rebinding a child's foreground
-    // would mean reaching past the component's own surface into its
-    // internals — the line this file does not cross. `Props.opacity` is a
-    // compositing property of the whole subtree, it is declared on the node
-    // this function already owns, and it is a lightness channel rather than
-    // a hue, so it survives a reader who cannot separate the colours.
-    node.props.opacity = Some(0.45);
-    node
+    disabled(on_layer(button(key, label), depth))
 }
 
 // ---------------------------------------------------------------------------
