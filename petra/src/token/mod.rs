@@ -15,6 +15,7 @@ pub mod selection;
 pub mod shipped;
 pub mod slot;
 pub mod snapshot;
+pub mod state;
 pub mod status;
 pub mod theme;
 pub mod value;
@@ -30,6 +31,9 @@ pub use shipped::{
 };
 pub use slot::{SlotSchema, SlotSpec, standard_slots};
 pub use snapshot::ThemeSnapshot;
+pub use state::{
+    DerivedState, InteractionRank, STATE_SEPARATOR, base_slot, resolve_slot, resolve_state,
+};
 pub use status::{StatusShape, StatusToken, StatusTokenError};
 pub use theme::{Theme, ThemeError, ThemeMismatch, ThemeUnusable};
 pub use value::{

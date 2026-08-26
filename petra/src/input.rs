@@ -99,6 +99,74 @@ pub enum KeyCode {
     Char(char),
 }
 
+/// One pointer capture in force: which node grabbed the pointer, with which
+/// button, and where the gesture has been.
+///
+/// `origin` is where the button went down and `last` is where the pointer was
+/// when this capture last saw an event. Both are kept because a drag is
+/// defined by the distance between them: a component that needs "how far have
+/// I been dragged" must not have to remember the press itself, and one that
+/// needs "where is the pointer now" must not have to re-derive it from a
+/// stream it may have missed events from.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Capture {
+    /// Canonical id of the node holding the capture.
+    pub node: String,
+    /// The button whose press opened the gesture. Only this button's release
+    /// closes it.
+    pub button: PointerButton,
+    /// Where the press landed, in logical units.
+    pub origin: Point,
+    /// Where the pointer was at this capture's most recent event.
+    pub last: Point,
+}
+
+/// Why a gesture ended without completing.
+///
+/// Four reasons rather than one bit, because a component undoes different
+/// amounts of work for each: a blur may come back, an Escape is the author
+/// saying "put it back", and a vanished node has nothing to put back at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CancelReason {
+    /// The window lost keyboard focus while the gesture was in flight.
+    Blurred,
+    /// The pointer left: either out of the window
+    /// ([`InputEvent::PointerLeft`]), or off the captured node's own rect at
+    /// the moment the button came up.
+    ///
+    /// The second case is what stops a press-then-drag-off-then-release from
+    /// activating a button (FR-016). `contracts/interaction-state.md` §7
+    /// writes the release rule as "`PointerReleased`→`Completed`" and leaves
+    /// this reason's trigger unassigned; a release outside the rect is the
+    /// one release that did *not* complete the gesture, so it is the reason's
+    /// second trigger rather than a fifth reason.
+    Left,
+    /// Escape was pressed while the gesture was in flight.
+    Escape,
+    /// The captured node is not in the newly placed frame. Unlike focus,
+    /// capture has no successor rule: there is nothing to hand a half-finished
+    /// gesture to.
+    Vanished,
+}
+
+/// How a gesture ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum GestureOutcome {
+    /// The button came up inside the captured node. This is the only outcome
+    /// a component may treat as activation.
+    Completed,
+    /// The gesture was cut short. See [`CancelReason`].
+    Cancelled(CancelReason),
+}
+
+impl GestureOutcome {
+    /// Whether the gesture finished the way its component intended.
+    #[must_use]
+    pub fn is_completed(self) -> bool {
+        matches!(self, Self::Completed)
+    }
+}
+
 /// One low-level input event.
 ///
 /// Text arrives as [`InputEvent::Text`] rather than being derived from
@@ -156,6 +224,26 @@ pub enum InputEvent {
     WindowFocused,
     /// The window lost keyboard focus.
     WindowBlurred,
+    /// A pointer gesture that held capture is over, and this is how it ended
+    /// (`contracts/interaction-state.md` §7 "Ending").
+    ///
+    /// Synthesized by [`PointerState`], never produced by a device. It is an
+    /// event rather than a return value because the node that held the
+    /// capture has to *hear* about the end through the same `handle` path it
+    /// heard the press through: a drag that is cancelled by a window blur
+    /// gets no release, so a component listening only for
+    /// [`InputEvent::PointerReleased`] would stay stuck mid-drag forever.
+    ///
+    /// It carries its own target, so it is aimed by neither position nor
+    /// focus — the node named here is the one that held capture, whether or
+    /// not it is still under the pointer, and whether or not it still exists
+    /// ([`CancelReason::Vanished`]).
+    GestureEnded {
+        /// Canonical id of the node that held the capture.
+        node: String,
+        /// Whether the gesture finished or was cut short, and why.
+        outcome: GestureOutcome,
+    },
 }
 
 impl InputEvent {
@@ -201,9 +289,42 @@ pub enum Route {
     },
 }
 
-/// The interaction a node must declare to receive an event.
+/// The interaction a node must declare to receive an event, with no pointer
+/// capture in force.
+///
+/// [`required_interaction_during`] is the whole rule; this is the common call
+/// with `capture` set to `None`.
 #[must_use]
 pub fn required_interaction(event: &InputEvent) -> Option<Interaction> {
+    required_interaction_during(event, None)
+}
+
+/// The interaction a node must declare to receive `event`, given the pointer
+/// capture in force.
+///
+/// A pointer stream means two different things depending on whether a button
+/// is down inside a node that asked for it. With nothing captured, a move is
+/// a hover and a release is half of a click, which is what
+/// [`required_interaction`] answers. With a capture in force the same three
+/// positional events are the *body of a drag*
+/// (`contracts/interaction-state.md` §7), and the interaction the holder had
+/// to declare to be receiving them at all is [`Interaction::Drag`] — it is
+/// what [`PointerState::route`] hit-tested for before it granted the capture.
+///
+/// This is a statement about the *declaration*, not about delivery: during a
+/// capture the event routes to the holder unconditionally, so nothing
+/// re-checks this. It is the answer a driver, a component author, or a test
+/// gets when it asks "what is this event, right now" — and answering "hover"
+/// for the middle of a drag would be a lie about which contract the component
+/// is operating under.
+#[must_use]
+pub fn required_interaction_during(
+    event: &InputEvent,
+    capture: Option<&Capture>,
+) -> Option<Interaction> {
+    if capture.is_some() && event.is_positional() {
+        return Some(Interaction::Drag);
+    }
     match event {
         InputEvent::PointerMoved { .. } | InputEvent::PointerLeft => Some(Interaction::Hover),
         InputEvent::PointerPressed { .. } | InputEvent::PointerReleased { .. } => {
@@ -212,6 +333,10 @@ pub fn required_interaction(event: &InputEvent) -> Option<Interaction> {
         InputEvent::Scroll { .. } => Some(Interaction::Scroll),
         InputEvent::Key { .. } => Some(Interaction::Key),
         InputEvent::Text(_) => Some(Interaction::TextEdit),
+        // A gesture end is the last event of a drag and reports on one; the
+        // node it names declared `Drag` to have been given the capture, so
+        // that is the interaction it is heard under.
+        InputEvent::GestureEnded { .. } => Some(Interaction::Drag),
         InputEvent::WindowFocused | InputEvent::WindowBlurred => None,
     }
 }
@@ -265,18 +390,33 @@ pub fn hit_test(
 
 /// Route one event against a frame and the current focus.
 ///
-/// [`InputEvent::PointerLeft`] is handled before anything else and never
-/// reaches the focus branch below. It is a pointer event carrying no
-/// position, so `event.pointer_pos()` is `None` for it and it would otherwise
-/// fall straight through to the focused node — telling whatever holds focus
-/// that the pointer left it, when the pointer may never have been over it.
-/// [`route_pointer_exit`] is the seam that says where pointer-exit does go;
-/// `route` has no hover state of its own to hand it, so it passes `None` and
-/// the exit is reported dropped rather than misdelivered.
+/// Two events are handled before anything else and never reach the focus
+/// branch below, because both are aimed by something other than position or
+/// focus.
+///
+/// [`InputEvent::PointerLeft`] is a pointer event carrying no position, so
+/// `event.pointer_pos()` is `None` for it and it would otherwise fall
+/// straight through to the focused node — telling whatever holds focus that
+/// the pointer left it, when the pointer may never have been over it.
+/// [`route_pointer_exit`] is where pointer-exit does go; `route` has no hover
+/// state of its own to hand it, so it passes `None` and the exit is reported
+/// dropped rather than misdelivered. **[`PointerState::route`] is the caller
+/// that has one** (`contracts/interaction-state.md` §8), and a host routes
+/// through it rather than through here.
+///
+/// [`InputEvent::GestureEnded`] carries its own target: the node that held
+/// the capture, which may be neither under the pointer nor focused, and under
+/// [`CancelReason::Vanished`] is not in this frame at all. So it is delivered
+/// by name, with none of the acceptance checks the other branches apply — a
+/// gesture end is a report about a contract the node already entered, not an
+/// offer of a new one it may decline.
 #[must_use]
 pub fn route(frame: &PetrifiedFrame, focused: Option<&str>, event: &InputEvent) -> Route {
     if matches!(event, InputEvent::PointerLeft) {
         return route_pointer_exit(frame, None);
+    }
+    if let InputEvent::GestureEnded { node, .. } = event {
+        return Route::Pointer { node: node.clone() };
     }
     let Some(interaction) = required_interaction(event) else {
         return Route::Unrouted {
@@ -351,6 +491,390 @@ pub fn route_pointer_exit(frame: &PetrifiedFrame, hovered: Option<&str>) -> Rout
     }
     Route::Pointer {
         node: id.to_owned(),
+    }
+}
+
+/// The pointer's position, what it is over, and what it has captured.
+///
+/// One per window, owned by the host beside its
+/// [`FocusTree`](crate::focus::FocusTree) — the same ownership shape and for
+/// the same reason (`contracts/interaction-state.md` §7). Two facts here
+/// cannot be recovered from a frame: where the pointer was between events,
+/// and which node grabbed it. Both have to be remembered by something that
+/// outlives a frame, and `gorgon-petra` deliberately owns no such thing, so
+/// the host does.
+///
+/// # Hover is derived, never declared
+///
+/// `hovered` is written only by [`hit_test`] against `Interaction::Hover` —
+/// the same hit test that routes a click (FR-009), so the lit control and the
+/// clicked control cannot be two different nodes. It is at most one node by
+/// construction: `hit_test` returns the topmost accepting placement or
+/// nothing.
+///
+/// An application must not derive its own hover from a `Route::Pointer`: that
+/// is a second hit test by a second owner, and the two drift the first time a
+/// surface overlaps something.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PointerState {
+    pos: Option<Point>,
+    hovered: Option<String>,
+    capture: Option<Capture>,
+    /// Whether the capture in force is *pressed*: the pointer is inside the
+    /// captured node's own rect. Kept as a bit rather than recomputed on
+    /// demand because the answer is a fact about a frame, and the caller that
+    /// needs it — a host publishing `LayoutState` before the next
+    /// negotiation — is between frames and holds none.
+    pressed: bool,
+}
+
+/// What one event did to a [`PointerState`], beyond where it routed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PointerRouting {
+    /// Where the event landed, or why it did not, plus any dismissals.
+    pub outcome: RouteOutcome,
+    /// The gesture this event ended, if it ended one. A host delivers it as
+    /// [`InputEvent::GestureEnded`] immediately after the event that caused
+    /// it, so the holder hears the cause and then the consequence.
+    pub ended: Option<GestureEnd>,
+}
+
+/// One ended gesture: which node held the capture, and how it finished.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GestureEnd {
+    /// Canonical id of the node that held the capture.
+    pub node: String,
+    /// How it finished.
+    pub outcome: GestureOutcome,
+}
+
+impl GestureEnd {
+    /// The event a host delivers to report this end.
+    #[must_use]
+    pub fn event(&self) -> InputEvent {
+        InputEvent::GestureEnded {
+            node: self.node.clone(),
+            outcome: self.outcome,
+        }
+    }
+
+    /// Where that event is delivered: to the node that held the capture, by
+    /// name rather than by hit test — it may no longer be under the pointer,
+    /// and under [`CancelReason::Vanished`] it may no longer exist.
+    #[must_use]
+    pub fn route(&self) -> Route {
+        Route::Pointer {
+            node: self.node.clone(),
+        }
+    }
+}
+
+impl PointerState {
+    /// Nothing under the pointer, nothing captured.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Where the pointer is, or `None` before the first positional event and
+    /// after it leaves the window.
+    #[must_use]
+    pub fn pos(&self) -> Option<Point> {
+        self.pos
+    }
+
+    /// The one node the pointer is over, if any.
+    #[must_use]
+    pub fn hovered(&self) -> Option<&str> {
+        self.hovered.as_deref()
+    }
+
+    /// The capture in force, if any.
+    #[must_use]
+    pub fn capture(&self) -> Option<&Capture> {
+        self.capture.as_ref()
+    }
+
+    /// The node that is *pressed*: it holds the capture and the pointer was
+    /// inside its rect as of the most recent frame or event.
+    ///
+    /// Distinct from [`PointerState::capture`] on purpose
+    /// (`contracts/interaction-state.md` §1): a button pressed and then
+    /// dragged off its own rect keeps the capture — every move still routes
+    /// to it — and stops looking pressed. One bit standing for both would
+    /// either leave the button lit with the pointer elsewhere, or drop the
+    /// gesture at the rect's edge.
+    #[must_use]
+    pub fn pressed(&self) -> Option<&str> {
+        self.pressed
+            .then(|| self.capture.as_ref().map(|c| c.node.as_str()))
+            .flatten()
+    }
+
+    /// Route `event` against `frame`, updating hover and capture.
+    ///
+    /// The whole of `contracts/interaction-state.md` §7 and §8, in the order
+    /// the contract puts them:
+    ///
+    /// 1. **The capture short-circuit runs first**, ahead of `hit_test` *and*
+    ///    ahead of the modal swallow test, so a drag begun inside a modal
+    ///    keeps receiving moves outside the modal's rect.
+    /// 2. **Pointer-exit is aimed by memory**, through
+    ///    [`route_pointer_exit`] with this state's real `hovered` id, which
+    ///    is the seam [`route`] alone has to pass `None` into.
+    /// 3. **A press hit-tests for [`Interaction::Drag`] before
+    ///    [`Interaction::Click`]**; a hit grants the capture and routes the
+    ///    press there, a miss falls through to the ordinary click path
+    ///    unchanged.
+    ///
+    /// `surfaces` is the same map [`route_with_surfaces`] takes.
+    pub fn route(
+        &mut self,
+        frame: &PetrifiedFrame,
+        focused: Option<&str>,
+        surfaces: &BTreeMap<String, InputPolicy>,
+        event: &InputEvent,
+    ) -> PointerRouting {
+        match event {
+            InputEvent::PointerLeft => self.pointer_left(frame),
+            InputEvent::WindowBlurred => {
+                // A window that lost keyboard focus is not going to see the
+                // button come up, so the gesture has to end here or it never
+                // ends at all.
+                let ended = self.end_capture(CancelReason::Blurred);
+                PointerRouting {
+                    outcome: route_with_surfaces(frame, focused, event, surfaces),
+                    ended,
+                }
+            }
+            InputEvent::Key {
+                key: KeyCode::Escape,
+                pressed: true,
+                ..
+            } if self.capture.is_some() => {
+                // Escape is the author saying "put it back", and it is
+                // swallowed rather than also delivered: a component that got
+                // both would undo the gesture and then run whatever its own
+                // Escape handler does, which on a dialog is closing the
+                // dialog the drag was inside.
+                let ended = self.end_capture(CancelReason::Escape);
+                PointerRouting {
+                    outcome: RouteOutcome {
+                        route: Route::Unrouted {
+                            reason: "escape cancelled the gesture holding the pointer",
+                        },
+                        dismiss: Vec::new(),
+                    },
+                    ended,
+                }
+            }
+            _ => match event.pointer_pos() {
+                Some(pos) => self.route_positional(frame, focused, surfaces, event, pos),
+                None => PointerRouting {
+                    outcome: route_with_surfaces(frame, focused, event, surfaces),
+                    ended: None,
+                },
+            },
+        }
+    }
+
+    /// Reconcile against a newly placed frame, the way
+    /// [`FocusTree::update`](crate::focus::FocusTree::update) does.
+    ///
+    /// Two jobs, both of which need placements that did not exist when the
+    /// last event was routed:
+    ///
+    /// * **The vanished rule.** A captured node absent from the new frame
+    ///   ends its gesture as [`CancelReason::Vanished`]. Unlike focus there
+    ///   is no successor: a half-finished gesture has nothing to be handed
+    ///   to.
+    /// * **Hover follows the picture, not the pointer.** Hover is a fact
+    ///   about the frame on screen, so a node that moved out from under a
+    ///   stationary pointer — or became disabled, or stopped declaring
+    ///   `Hover` — stops being hovered here, without waiting for a move that
+    ///   may never come.
+    ///
+    /// Returns the gesture this frame ended, if any.
+    pub fn reconcile(
+        &mut self,
+        frame: &PetrifiedFrame,
+        surfaces: &BTreeMap<String, InputPolicy>,
+    ) -> Option<GestureEnd> {
+        let ended = match &self.capture {
+            Some(capture) if frame.placement(&capture.node).is_none() => {
+                self.end_capture(CancelReason::Vanished)
+            }
+            _ => None,
+        };
+        self.hovered = self.derive_hover(frame, surfaces);
+        self.refresh_pressed(frame);
+        ended
+    }
+
+    /// Route [`InputEvent::PointerLeft`] (`contracts/interaction-state.md`
+    /// §8) and forget where the pointer was.
+    ///
+    /// Pointer-exit is the one pointer event with no position, so no hit test
+    /// can aim it; it goes to the node the pointer was last over, which is
+    /// exactly what this struct remembers. A capture in flight ends as
+    /// [`CancelReason::Left`] — the pointer is outside the window and the
+    /// button will come up somewhere this host will never hear about.
+    fn pointer_left(&mut self, frame: &PetrifiedFrame) -> PointerRouting {
+        let ended = self.end_capture(CancelReason::Left);
+        let route = route_pointer_exit(frame, self.hovered.as_deref());
+        self.hovered = None;
+        self.pos = None;
+        self.pressed = false;
+        PointerRouting {
+            outcome: RouteOutcome {
+                route,
+                dismiss: Vec::new(),
+            },
+            ended,
+        }
+    }
+
+    /// The positional path: move, press, release, scroll.
+    fn route_positional(
+        &mut self,
+        frame: &PetrifiedFrame,
+        focused: Option<&str>,
+        surfaces: &BTreeMap<String, InputPolicy>,
+        event: &InputEvent,
+        pos: Point,
+    ) -> PointerRouting {
+        self.pos = Some(pos);
+        if let Some(capture) = &mut self.capture {
+            capture.last = pos;
+            let node = capture.node.clone();
+            // Hover keeps deriving normally underneath the gesture
+            // (`contracts/interaction-state.md` §1 defines hover as the hit
+            // test's answer and carves out no exception for capture), which
+            // is what keeps `hovered` and `captured` two separate readings of
+            // one pointer rather than one reading with a special case in it.
+            self.hovered = self.derive_hover(frame, surfaces);
+            let ended = self.end_of_gesture(frame, event, pos);
+            self.refresh_pressed(frame);
+            return PointerRouting {
+                outcome: RouteOutcome {
+                    // Unconditional, ahead of both `hit_test` and the modal
+                    // swallow test: the holder of the capture receives this
+                    // wherever the pointer is.
+                    route: Route::Pointer { node },
+                    // A gesture owns the pointer, so a press inside it is not
+                    // a click outside a popover — it is part of the drag, and
+                    // dismissing on it would close the surface the drag is
+                    // happening in.
+                    dismiss: Vec::new(),
+                },
+                ended,
+            };
+        }
+
+        let swallowed = outside_an_open_modal(frame, pos, surfaces);
+        self.hovered = self.derive_hover(frame, surfaces);
+        let mut outcome = route_with_surfaces(frame, focused, event, surfaces);
+        if let InputEvent::PointerPressed { button, .. } = event
+            && !swallowed
+            && let Some(hit) = hit_test(frame, pos, Interaction::Drag)
+        {
+            let node = hit.id.clone();
+            self.capture = Some(Capture {
+                node: node.clone(),
+                button: *button,
+                origin: pos,
+                last: pos,
+            });
+            outcome.route = Route::Pointer { node };
+        }
+        // Unconditional: with nothing captured this clears the bit, which is
+        // the right answer and one branch fewer than asking first.
+        self.refresh_pressed(frame);
+        PointerRouting {
+            outcome,
+            ended: None,
+        }
+    }
+
+    /// Recompute whether the capture in force is pressed, against `frame`.
+    ///
+    /// Both halves of the answer move independently: the pointer moves, and
+    /// so does the rect underneath it, so this is re-asked after every
+    /// positional event *and* after every newly placed frame.
+    fn refresh_pressed(&mut self, frame: &PetrifiedFrame) {
+        self.pressed = match (&self.capture, self.pos) {
+            (Some(capture), Some(pos)) => frame
+                .placement(&capture.node)
+                .is_some_and(|p| p.rect.contains(pos) && p.clip.contains(pos)),
+            _ => false,
+        };
+    }
+
+    /// Whether `event` closes the capture in force, and how.
+    ///
+    /// Only the button that opened the gesture closes it: a second button
+    /// going down or coming up mid-drag routes to the holder as an ordinary
+    /// press or release and starts no second gesture (FR-015 — `capture` is
+    /// one `Option`, so there is nowhere for a second one to go).
+    ///
+    /// A release **inside** the captured node completes; a release
+    /// **outside** it cancels as [`CancelReason::Left`]. That is the whole of
+    /// "a release outside a pressed button does not activate it": the holder
+    /// still hears the release, and it hears immediately afterwards that the
+    /// gesture did not complete, which is the only signal a component may
+    /// treat as activation.
+    fn end_of_gesture(
+        &mut self,
+        frame: &PetrifiedFrame,
+        event: &InputEvent,
+        pos: Point,
+    ) -> Option<GestureEnd> {
+        let capture = self.capture.as_ref()?;
+        let InputEvent::PointerReleased { button, .. } = event else {
+            return None;
+        };
+        if *button != capture.button {
+            return None;
+        }
+        let inside = frame
+            .placement(&capture.node)
+            .is_some_and(|p| p.rect.contains(pos) && p.clip.contains(pos));
+        let outcome = if inside {
+            GestureOutcome::Completed
+        } else {
+            GestureOutcome::Cancelled(CancelReason::Left)
+        };
+        self.pressed = false;
+        let node = self.capture.take()?.node;
+        Some(GestureEnd { node, outcome })
+    }
+
+    /// Drop the capture in force and report its end, or `None` when nothing
+    /// was captured.
+    fn end_capture(&mut self, reason: CancelReason) -> Option<GestureEnd> {
+        self.pressed = false;
+        self.capture.take().map(|capture| GestureEnd {
+            node: capture.node,
+            outcome: GestureOutcome::Cancelled(reason),
+        })
+    }
+
+    /// The one node under the pointer that accepts hover, or `None`.
+    ///
+    /// A position behind an open `Block` surface is nowhere: a modal makes
+    /// the screen behind it inert, and a control that lit up under a pointer
+    /// that cannot click it would be advertising an interaction the router
+    /// refuses.
+    fn derive_hover(
+        &self,
+        frame: &PetrifiedFrame,
+        surfaces: &BTreeMap<String, InputPolicy>,
+    ) -> Option<String> {
+        let pos = self.pos?;
+        if outside_an_open_modal(frame, pos, surfaces) {
+            return None;
+        }
+        hit_test(frame, pos, Interaction::Hover).map(|hit| hit.id.clone())
     }
 }
 

@@ -92,16 +92,27 @@ impl SlotSchema {
         self
     }
 
-    /// Whether `slot` is declared.
+    /// Whether `slot` is declared. A state-decorated key resolves to its base
+    /// slot — see [`SlotSchema::get`].
     #[must_use]
     pub fn contains(&self, slot: &str) -> bool {
-        self.slots.contains_key(slot)
+        self.get(slot).is_some()
     }
 
     /// The declared spec for `slot`, if declared.
+    ///
+    /// A **state-decorated key resolves to its base slot's spec**:
+    /// `background@hover` answers with `background`'s entry. A state is a
+    /// different token in the same slot (`crate::token::state`), so it wants
+    /// the same [`TokenKind`] — and reading the base is what makes tree
+    /// acceptance check a state binding at all. Without it every decorated
+    /// key would fall into the "slot this schema never heard of" branch and
+    /// be checked for existence only, so `background@hover` could bind a
+    /// `Spacing` token and paint no colour, which is precisely the defect
+    /// `tree::validate`'s slot check was added to close.
     #[must_use]
     pub fn get(&self, slot: &str) -> Option<&SlotSpec> {
-        self.slots.get(slot)
+        self.slots.get(crate::token::state::base_slot(slot))
     }
 
     /// All declared slots, in a stable (sorted-by-name) order.
@@ -303,6 +314,40 @@ mod tests {
             assert!(
                 schema.get(outsider).is_none(),
                 "unschema'd slot `{outsider}` resolved to a spec"
+            );
+        }
+    }
+
+    /// A state-decorated key is the base slot, at the base slot's kind.
+    ///
+    /// The negative half is the load-bearing one: decorating a slot the
+    /// schema never declared must not conjure an entry, or the decoration
+    /// would become a way to smuggle `ring@hover` past a schema that refuses
+    /// `ring`.
+    #[test]
+    fn a_state_decorated_key_resolves_to_its_base_slot() {
+        let schema = standard_slots();
+        for decorated in [
+            "background@hover",
+            "background@active",
+            "background@selected-hover",
+            "radius@disabled",
+        ] {
+            let spec = schema
+                .get(decorated)
+                .unwrap_or_else(|| panic!("`{decorated}` must resolve to its base slot"));
+            assert_eq!(spec.name(), super::super::state::base_slot(decorated));
+            assert!(schema.contains(decorated));
+        }
+        assert_eq!(
+            schema.get("background@hover").map(SlotSpec::kind),
+            schema.get("background").map(SlotSpec::kind),
+            "a state is a different token in the same slot, so it is the same kind"
+        );
+        for outsider in ["ring@hover", "highlight@selected", "@hover"] {
+            assert!(
+                !schema.contains(outsider),
+                "decorating an undeclared slot must not declare it: {outsider}"
             );
         }
     }

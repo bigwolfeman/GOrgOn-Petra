@@ -566,6 +566,71 @@ mod tests {
         }
     }
 
+    /// A real placed frame with one hovered control, the way `Host::pass`
+    /// publishes one.
+    fn hovered_frame() -> gorgon_petra::frame::PetrifiedFrame {
+        use gorgon_petra::frame::{TransitionActivity, Viewport, petrify};
+        use gorgon_petra::geom::Size;
+        use gorgon_petra::layout::LayoutState;
+        use gorgon_petra::testing::{Harness, validated};
+        use gorgon_petra::token::ThemeMode;
+        use gorgon_petra::tree::{Interaction, NodeKind, Role, ViewNode};
+
+        let tree = ViewNode::new(NodeKind::Stack, "app").child(
+            ViewNode::new(NodeKind::Spacer, "run").interactive(
+                Role::Button,
+                "Run".to_owned(),
+                &[Interaction::Hover, Interaction::Click, Interaction::Focus],
+            ),
+        );
+        let mut harness = Harness::new();
+        harness.state = LayoutState {
+            hovered: Some("/app/run".to_owned()),
+            ..LayoutState::default()
+        };
+        petrify(
+            7,
+            validated(&tree),
+            &mut harness.ctx(),
+            Viewport::new(Size::new(200.0, 100.0), ThemeMode::Dark),
+            TransitionActivity::default(),
+        )
+    }
+
+    /// An agent reads hover out of the `tree` response, without a screenshot.
+    ///
+    /// This is the whole point of putting the five interaction states on
+    /// `NodeState` (`contracts/interaction-state.md` §2): a driver asserting
+    /// "the Run button lit up" should be reading the same projection the
+    /// screen reader hears, not diffing pixels. Two halves are checked
+    /// because a consumer needs both — the flag on the node it asked for, and
+    /// a `state:` filter that finds the node by it.
+    #[tokio::test]
+    async fn the_tree_response_carries_hover_so_an_agent_never_needs_a_screenshot() {
+        let (server, hub, _bridge) = Server::new("test-app");
+        hub.publish(&hovered_frame());
+
+        let whole = dispatch(&server, &req("tree", json!({}))).await.unwrap();
+        let text = serde_json::to_string(&whole).expect("the tree serializes");
+        assert!(
+            text.contains(r#""hovered":true"#),
+            "the tree response hides hover: {text}"
+        );
+
+        let found = dispatch(&server, &req("tree", json!({"state": "hovered"})))
+            .await
+            .unwrap();
+        let matches = found.as_array().expect("a state query answers a list");
+        assert_eq!(matches.len(), 1, "{found}");
+        assert_eq!(matches[0]["id"], "/app/run");
+        assert_eq!(matches[0]["state"]["hovered"], true);
+
+        // Absent-means-false holds for the states that are not in force, so a
+        // consumer written against the older block reads an unchanged tree.
+        assert!(!text.contains("captured"), "{text}");
+        assert!(!text.contains("skeleton"), "{text}");
+    }
+
     #[tokio::test]
     async fn act_before_any_frame_is_an_honest_not_yet() {
         let (server, _hub, _bridge) = Server::new("test-app");

@@ -1947,13 +1947,13 @@ mod tests {
         (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
     }
 
-    fn relative_luminance(c: ColorValue) -> f32 {
-        0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b
-    }
-
+    /// One definition of "how far apart do these two read", shared with every
+    /// other consumer. It used to live here as a private pair of helpers,
+    /// which meant the FR-010 gate in `gorgon-petra-egui` — the one that has
+    /// to composite through `Props.opacity` before it measures anything —
+    /// would have had to carry a second copy of the same arithmetic.
     fn contrast(a: ColorValue, b: ColorValue) -> f32 {
-        let (x, y) = (relative_luminance(a), relative_luminance(b));
-        (x.max(y) + 0.05) / (x.min(y) + 0.05)
+        a.contrast_ratio(b)
     }
 
     fn theme_color(theme: &crate::token::Theme, token: &str) -> ColorValue {

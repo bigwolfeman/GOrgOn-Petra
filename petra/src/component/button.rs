@@ -2,8 +2,9 @@
 
 use super::pad;
 use super::tokens::{
-    ACCENT_PRIMARY, SHADOW_RAISED, SHAPE_MD, SPACING_03, SPACING_04, SURFACE_RAISED,
-    TEXT_ON_ACCENT, TEXT_PRIMARY, TYPOGRAPHY_BODY, t,
+    ACCENT_PRIMARY, ICON_DISABLED, ICON_ON_COLOR_DISABLED, LAYER_ACTIVE, LAYER_HOVER,
+    SHADOW_RAISED, SHAPE_MD, SPACING_03, SPACING_04, SURFACE_RAISED, TEXT_ON_ACCENT, TEXT_PRIMARY,
+    TYPOGRAPHY_BODY, t,
 };
 use crate::geom::Axis;
 use crate::tree::{Interaction, Key, NodeKind, Props, Role, ViewNode};
@@ -24,7 +25,17 @@ use crate::tree::{Interaction, Key, NodeKind, Props, Role, ViewNode};
 /// — a `Text` node has no children to inset. The label lives in the child;
 /// the role, the interactions, and the chrome live on the wrapper.
 pub fn button(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
-    labelled(key, label, SURFACE_RAISED, TEXT_PRIMARY)
+    labelled(
+        key,
+        label,
+        Palette {
+            background: SURFACE_RAISED,
+            foreground: TEXT_PRIMARY,
+            hover: Some(LAYER_HOVER),
+            active: Some(LAYER_ACTIVE),
+            disabled_ink: ICON_DISABLED,
+        },
+    )
 }
 
 /// The page's one loudest action, filled with the accent instead of a grey.
@@ -65,7 +76,47 @@ pub fn button(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
 /// `ON_ACCENT_TOKEN`'s own doc comment — so this is not a stylistic choice
 /// and a caller must not "simplify" it back.
 pub fn primary_button(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
-    labelled(key, label, ACCENT_PRIMARY, TEXT_ON_ACCENT)
+    labelled(
+        key,
+        label,
+        Palette {
+            background: ACCENT_PRIMARY,
+            foreground: TEXT_ON_ACCENT,
+            // **No hover or pressed surface, deliberately.** The two state
+            // tones a [`button`] uses step off the *layer* ramp, and binding
+            // them here would turn the one accent control on the page grey
+            // the moment a pointer touched it — visibly wrong, where having
+            // no hover feedback is merely missing. The right answer is an
+            // `accent.primary-hover`/`-active` pair stepping off the accent
+            // the way `layer-accent-hover` steps off `layer-accent`, and the
+            // shipped vocabulary has neither; inventing the tone here would
+            // put a colour decision in a component instead of in
+            // `crate::token::shipped`. Recorded so the gap is a known one.
+            hover: None,
+            active: None,
+            disabled_ink: ICON_ON_COLOR_DISABLED,
+        },
+    )
+}
+
+/// The five names one button's chrome binds.
+///
+/// A struct rather than five positional `&str` parameters: every one of them
+/// is a token name, so every transposition compiles and paints something
+/// plausible-but-wrong.
+struct Palette {
+    /// The resting fill.
+    background: &'static str,
+    /// The resting label ink.
+    foreground: &'static str,
+    /// The fill under the pointer, or `None` for a button with no hover tone.
+    hover: Option<&'static str>,
+    /// The fill while held, or `None`.
+    active: Option<&'static str>,
+    /// The label ink when the button is unavailable. Never `None`: a disabled
+    /// control that looked exactly like a live one would leave the whole
+    /// state resting on the dropped elevation.
+    disabled_ink: &'static str,
 }
 
 /// The shape both entries above share: a padded, rounded, **elevated**
@@ -114,12 +165,7 @@ pub fn primary_button(key: impl Into<Key>, label: impl Into<String>) -> ViewNode
 /// rather than a thing to press, it carries no label of its own until
 /// somebody types one, and an empty well with no boundary does not read as an
 /// input at all.
-fn labelled(
-    key: impl Into<Key>,
-    label: impl Into<String>,
-    background: &str,
-    foreground: &str,
-) -> ViewNode {
+fn labelled(key: impl Into<Key>, label: impl Into<String>, palette: Palette) -> ViewNode {
     let key = key.into();
     let label = label.into();
 
@@ -130,7 +176,15 @@ fn labelled(
     };
     label_props
         .tokens
-        .insert("foreground".into(), t(foreground));
+        .insert("foreground".into(), t(palette.foreground));
+    // The disabled family, declared here rather than patched on afterwards.
+    // `super::disabled` sets one flag; which token that flag reaches for is
+    // the component's own decision, and putting it here is what stops a
+    // caller from having to reach into a button's label child to express
+    // "unavailable" (`contracts/interaction-state.md` §6).
+    label_props
+        .tokens
+        .insert("foreground@disabled".into(), t(palette.disabled_ink));
     let inner =
         ViewNode::new(NodeKind::Text, format!("{}-label", key.as_str())).with_props(label_props);
 
@@ -139,7 +193,26 @@ fn labelled(
         padding: Some(pad(SPACING_04, SPACING_03)),
         ..Props::default()
     };
-    props.tokens.insert("background".into(), t(background));
+    props
+        .tokens
+        .insert("background".into(), t(palette.background));
+    // Hover and pressed, as *named* surfaces rather than as a lightening
+    // rule. The painter resolves which one is in force through
+    // `crate::token::state`'s precedence chain, so nothing here branches on a
+    // hover bool and nothing here has to be told when the pointer moves.
+    //
+    // Both are optional, and an unbound one is not a gap in the chain: the
+    // lookup falls through to `background`, so a button with no hover tone
+    // simply keeps its resting fill. See [`primary_button`] for the one that
+    // does.
+    for (slot, token) in [
+        ("background@hover", palette.hover),
+        ("background@active", palette.active),
+    ] {
+        if let Some(token) = token {
+            props.tokens.insert(slot.into(), t(token));
+        }
+    }
     props.tokens.insert("radius".into(), t(SHAPE_MD));
     props.tokens.insert("shadow".into(), t(SHADOW_RAISED));
 
@@ -149,6 +222,11 @@ fn labelled(
         .interactive(
             Role::Button,
             label,
-            &[Interaction::Focus, Interaction::Click],
+            // `Hover` is not decoration. A node that does not declare it is
+            // not a hit-test candidate for hover, so the engine never lights
+            // it and the `background@hover` binding above would be a token
+            // nothing ever reads — the "declared name nothing reads" defect
+            // `crate::token::shipped` counts, aimed at the slot channel.
+            &[Interaction::Focus, Interaction::Click, Interaction::Hover],
         )
 }

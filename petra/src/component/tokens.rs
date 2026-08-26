@@ -81,6 +81,40 @@ pub(crate) const ACCENT_PRIMARY: &str = "accent.primary";
 /// See [`ACCENT_PRIMARY`].
 pub(crate) const TEXT_ON_ACCENT: &str = "text.on-accent";
 
+/// The interaction-state surfaces, bound through the decorated-key channel
+/// `crate::token::state` resolves (`background@hover`, `background@selected`,
+/// `background@selected-hover`).
+///
+/// Four names and not one composite rule, because Carbon **names the
+/// combination**: `layer-selected-hover` is its own entry in the theme, not
+/// `layer-hover` laid over `layer-selected`. A library that composited them
+/// would produce a selected-hover tone no designer ever chose, and would land
+/// on a different one in light and dark.
+pub(crate) const LAYER_HOVER: &str = "layer-hover";
+/// See [`LAYER_HOVER`]. The pressed surface: one full layer past selected, so
+/// a press is legible even on a row that was already selected.
+pub(crate) const LAYER_ACTIVE: &str = "layer-active";
+/// See [`LAYER_HOVER`].
+pub(crate) const LAYER_SELECTED: &str = "layer-selected";
+/// See [`LAYER_HOVER`].
+pub(crate) const LAYER_SELECTED_HOVER: &str = "layer-selected-hover";
+
+/// The ink a disabled control's label is drawn in: the primary text tone at
+/// 25% alpha, which is how Carbon expresses every disabled ink.
+///
+/// **This is one of two channels, never the only one.** FR-010 forbids
+/// conveying disabled by colour — or by opacity — alone, and the painter
+/// drops a disabled node's elevation for exactly that reason
+/// (`gorgon_petra_egui::paint`). A faded label says "unavailable" to a reader
+/// who can see the fade; a control lying flat beside two that are lifted says
+/// it to everyone.
+pub(crate) const ICON_DISABLED: &str = "icon-disabled";
+
+/// See [`ICON_DISABLED`]. The same idea on an accent fill: the *on-colour*
+/// ink at 25%, because a disabled label on a blue button faded toward the
+/// page's ink would be a different hue as well as a different lightness.
+pub(crate) const ICON_ON_COLOR_DISABLED: &str = "icon-on-color-disabled";
+
 /// Every constant above, for the completeness proof. A name added above and
 /// left out of this list would silently stop being covered, so the list is
 /// what the test walks rather than the component source.
@@ -112,6 +146,12 @@ pub(crate) const ALL: &[&str] = &[
     BORDER_SUBTLE,
     ACCENT_PRIMARY,
     TEXT_ON_ACCENT,
+    LAYER_HOVER,
+    LAYER_ACTIVE,
+    LAYER_SELECTED,
+    LAYER_SELECTED_HOVER,
+    ICON_DISABLED,
+    ICON_ON_COLOR_DISABLED,
 ];
 
 /// `name` as a [`TokenName`].

@@ -17,7 +17,7 @@ use std::fmt;
 use crate::focus::FocusTree;
 use crate::frame::PetrifiedFrame;
 use crate::semantic::node::{SemanticNode, SemanticTree};
-use crate::tree::Role;
+use crate::tree::{Interaction, Role};
 
 /// One thing an audited tree may get wrong.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -49,6 +49,20 @@ pub enum AuditRule {
     /// Projection integrity: a node stamped with another frame's sequence
     /// number.
     FrameSeqMismatch,
+    /// `contracts/interaction-state.md` §5: read-only is not a weaker
+    /// disabled.
+    ///
+    /// Two things go wrong under one name because they are one mistake made
+    /// at two depths. Declaring both flags on one node is the author saying
+    /// two incompatible things — a node the user can reach and read, and a
+    /// node the user cannot reach at all — and an assistive technology has to
+    /// pick one. A read-only node that declares `Focus` and is *missing from
+    /// focus order* is the same mistake made in the engine: it means
+    /// something added a `read_only` branch to the focus filter or to
+    /// `hit_test`, which §5 forbids by name. Read-only is enforced
+    /// declaratively — a read-only component declares fewer interactions —
+    /// never by a second refusal path.
+    ReadOnlyIsNotDisabled,
 }
 
 /// Every rule [`audit`] can report, in declaration order. A gate that prints a
@@ -62,6 +76,7 @@ pub const AUDIT_RULES: &[AuditRule] = &[
     AuditRule::PlacementIsNotANode,
     AuditRule::DuplicateNodeId,
     AuditRule::FrameSeqMismatch,
+    AuditRule::ReadOnlyIsNotDisabled,
 ];
 
 impl AuditRule {
@@ -77,6 +92,7 @@ impl AuditRule {
             Self::PlacementIsNotANode => "placement-is-not-a-node",
             Self::DuplicateNodeId => "duplicate-node-id",
             Self::FrameSeqMismatch => "frame-seq-mismatch",
+            Self::ReadOnlyIsNotDisabled => "read-only-is-not-disabled",
         }
     }
 }
@@ -152,6 +168,15 @@ pub fn audit(tree: &SemanticTree, frame: &PetrifiedFrame) -> Vec<AuditViolation>
                     format!("accepts {} but carries no label", action_list(node)),
                 ));
             }
+        }
+        if node.state.read_only && node.state.disabled {
+            out.push(violation(
+                AuditRule::ReadOnlyIsNotDisabled,
+                &node.id,
+                "declares both read-only and disabled; read-only stays reachable and \
+                 disabled does not, so a consumer told both has to guess which one the \
+                 author meant",
+            ));
         }
         if node.role.as_ref() == Some(&Role::Status) && node.label.trim().is_empty() {
             out.push(violation(
@@ -255,19 +280,25 @@ pub fn audit(tree: &SemanticTree, frame: &PetrifiedFrame) -> Vec<AuditViolation>
         }
     }
 
-    out.extend(focus_order_violations(tree, frame));
+    out.extend(focus_violations(tree, frame));
     out
 }
 
-/// Obligation 3, checked against the module that owns focus order rather than
-/// against a second copy of its rule.
+/// Obligation 3 and the engine half of [`AuditRule::ReadOnlyIsNotDisabled`],
+/// checked against the module that owns focus order rather than against a
+/// second copy of its rule.
+///
+/// The two rules share this function because they share the one expensive
+/// thing in it: the [`FocusTree`] built from the frame's own placements.
+/// Building it twice to keep the rules in separate functions would double the
+/// cost of the audit to save a paragraph.
 ///
 /// [`FocusTree::from_placements`] is handed an empty scope map on purpose:
 /// overlay scopes decide where traversal may *go*, never what order the
 /// focusables are in (`crate::focus`'s `index` builds `order` by filtering the
 /// placement slice and consults the scope map only for `scope_chain`). The
 /// order this compares against is therefore the real one.
-fn focus_order_violations(tree: &SemanticTree, frame: &PetrifiedFrame) -> Vec<AuditViolation> {
+fn focus_violations(tree: &SemanticTree, frame: &PetrifiedFrame) -> Vec<AuditViolation> {
     let sane_parents = frame
         .placements
         .iter()
@@ -282,13 +313,38 @@ fn focus_order_violations(tree: &SemanticTree, frame: &PetrifiedFrame) -> Vec<Au
 
     let focus = FocusTree::from_placements(&frame.placements, &BTreeMap::new());
     let expected: Vec<&str> = focus.order().iter().map(String::as_str).collect();
+
+    // §5's engine half: read-only must not have been folded into the focus
+    // filter. A read-only node that declares `Focus` and is not disabled is
+    // Tab-reachable, full stop — so if it is missing from the order the
+    // filter has grown a `read_only` branch, which is the drift this rule
+    // exists to catch. A node that declares both flags is already reported
+    // above and is skipped here, so one mistake produces one violation.
+    let mut out: Vec<AuditViolation> = tree
+        .iter()
+        .filter(|node| {
+            node.state.read_only
+                && !node.state.disabled
+                && node.actions.contains(&Interaction::Focus)
+                && !expected.contains(&node.id.as_str())
+        })
+        .map(|node| {
+            violation(
+                AuditRule::ReadOnlyIsNotDisabled,
+                &node.id,
+                "read-only, focusable and not disabled, yet absent from focus order; \
+                 read-only must never be a second refusal path (§5)",
+            )
+        })
+        .collect();
+
     let projected: Vec<&str> = tree
         .iter()
         .filter(|node| node.is_focusable())
         .map(|node| node.id.as_str())
         .collect();
     if projected == expected {
-        return Vec::new();
+        return out;
     }
 
     let at = projected
@@ -301,7 +357,7 @@ fn focus_order_violations(tree: &SemanticTree, frame: &PetrifiedFrame) -> Vec<Au
         .or_else(|| expected.get(at))
         .copied()
         .unwrap_or("/");
-    vec![violation(
+    out.push(violation(
         AuditRule::FocusOrderIsChildOrder,
         blamed,
         format!(
@@ -310,7 +366,8 @@ fn focus_order_violations(tree: &SemanticTree, frame: &PetrifiedFrame) -> Vec<Au
             projected.get(at),
             expected.get(at)
         ),
-    )]
+    ));
+    out
 }
 
 /// The node's action kinds as a readable list, for a violation message.
