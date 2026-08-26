@@ -948,26 +948,24 @@ fn check_node(
             &mut push,
         );
     }
-    // `state_tokens` is `tokens` once per state, so it is checked the same
-    // way once per state — plus the state name itself, which `tokens` has no
-    // equivalent of. A state the dispatcher never enters is refused rather
-    // than left as an override that silently never paints.
-    for (state, slots) in &node.props.state_tokens {
-        if !crate::tree::props::STATE_NAMES.contains(&state.as_str()) {
+    // A state-decorated key names a state the resolver will actually enter,
+    // or it is refused here.
+    //
+    // `crate::token::resolve_slot` builds its candidates from the flags on a
+    // placement, so a key it never builds is never looked up: `background@hovr`
+    // is not an error at paint time, it is silence. That is the one failure
+    // mode this authoring shape has that a typed map would not, so tree
+    // acceptance is where it gets closed. The legal set is the resolver's own
+    // chain, not a second list that can drift from it.
+    for slot in node.props.tokens.keys() {
+        let Some((_, state)) = slot.split_once(crate::token::STATE_SEPARATOR) else {
+            continue;
+        };
+        if !legal_state_suffix(state) {
             push(Violation::UnknownStateName {
-                name: state.clone(),
-                legal: crate::tree::props::STATE_NAMES.to_vec(),
+                name: state.to_owned(),
+                legal: legal_state_suffixes(),
             });
-        }
-        for (slot, name) in slots {
-            check_slot_ref(
-                vocabulary,
-                registry,
-                &format!("state_tokens.{state}.{slot}"),
-                slot,
-                name,
-                &mut push,
-            );
         }
     }
     for (slot, name) in &node.props.tokens {
@@ -1273,38 +1271,41 @@ fn collect_anchors(
 /// the paint slot itself, which is what the schema is keyed on. They differ,
 /// which is why both are passed: a message naming `background` would not tell
 /// an author which of their state blocks to fix.
-fn check_slot_ref(
-    vocabulary: &Vocabulary,
-    registry: &Registry,
-    prop: &str,
-    slot: &str,
-    name: &TokenName,
-    push: &mut impl FnMut(Violation),
-) {
-    match vocabulary.kind_of(name) {
-        None => push(Violation::UnknownTokenRef {
-            prop: prop.to_owned(),
-            name: name.clone(),
-            legal: vocabulary.names().cloned().collect(),
-        }),
-        Some(found) => {
-            if let Some(spec) = registry.slots().get(slot)
-                && spec.kind() != found
-            {
-                push(Violation::TokenKindMismatch {
-                    prop: prop.to_owned(),
-                    name: name.clone(),
-                    expected: spec.kind(),
-                    found,
-                    legal: vocabulary
-                        .names()
-                        .filter(|n| vocabulary.kind_of(n) == Some(spec.kind()))
-                        .cloned()
-                        .collect(),
-                });
-            }
+/// Every state suffix `crate::token::resolve_slot` can look for, in the order
+/// its chain tries them.
+///
+/// Derived from [`crate::token::InteractionRank`] rather than written out, so
+/// a rank added to the resolver cannot leave this list behind. `Enabled` has
+/// no suffix — it *is* the undecorated slot — so it contributes nothing here.
+fn legal_state_suffixes() -> Vec<&'static str> {
+    use crate::token::InteractionRank;
+    const RANKS: [InteractionRank; 4] = [
+        InteractionRank::Skeleton,
+        InteractionRank::Disabled,
+        InteractionRank::Active,
+        InteractionRank::Hover,
+    ];
+    let mut out = vec!["selected"];
+    for rank in RANKS {
+        if let Some(name) = rank.as_str() {
+            out.push(name);
         }
     }
+    out
+}
+
+/// Whether `suffix` is one the resolver's chain can produce, including the
+/// `selected-<rank>` combinations Carbon names as their own tokens.
+fn legal_state_suffix(suffix: &str) -> bool {
+    let bare = suffix.strip_prefix("selected-").unwrap_or(suffix);
+    if bare != suffix {
+        // `selected-<rank>`: the combination form. `selected-enabled` is not
+        // one — that combination is spelled `selected`.
+        return legal_state_suffixes()
+            .iter()
+            .any(|name| *name == bare && *name != "selected");
+    }
+    legal_state_suffixes().contains(&suffix)
 }
 
 /// One styling prop's declared token name against the vocabulary: refused if
@@ -2630,24 +2631,25 @@ mod tests {
         Registry::with_vocabulary(vocab)
     }
 
-    // -- Per-state token bindings. ------------------------------------------
+    // -- State-decorated token bindings. ------------------------------------
 
-    /// A state name the dispatcher never enters is refused, not left as an
-    /// override that silently never paints.
+    /// A state suffix the resolver never builds is refused at acceptance.
+    ///
+    /// This is the one failure mode the decorated-key shape has that a typed
+    /// per-state map would not: `resolve_slot` builds its candidates from the
+    /// placement's flags, so a key it never builds is not an error at paint
+    /// time — it is silence. `background@hovered` would simply never win, and
+    /// the author would see a control that does nothing on hover with no
+    /// diagnostic anywhere. Acceptance is where that gets closed.
     #[test]
-    fn a_state_tokens_key_outside_the_state_vocabulary_is_refused() {
-        let mut states = std::collections::BTreeMap::new();
-        states.insert(
-            "hovered".to_owned(),
-            [(
-                "background".to_owned(),
+    fn a_state_suffix_outside_the_resolver_chain_is_refused() {
+        let tree = ViewNode::new(NodeKind::Text, "t").with_props(Props {
+            tokens: [(
+                "background@hovered".to_owned(),
                 TokenName::new("surface.raised").unwrap(),
             )]
             .into_iter()
             .collect(),
-        );
-        let tree = ViewNode::new(NodeKind::Text, "t").with_props(Props {
-            state_tokens: states,
             ..Props::default()
         });
         let err = validate(&tree, &Registry::with_vocabulary(standard_vocabulary())).unwrap_err();
@@ -2659,30 +2661,66 @@ mod tests {
         assert!(legal.contains(&"hover"), "{legal:?}");
     }
 
-    /// A per-state binding is checked against the vocabulary and the slot
-    /// schema exactly as the base binding is: a colour slot may not take a
-    /// spacing token just because it was declared under `hover`.
+    /// The combination forms Carbon names are legal; the one that is not a
+    /// combination is not.
     #[test]
-    fn a_state_tokens_binding_is_checked_like_the_base_binding() {
-        let with = |token: TokenName| {
-            let mut states = std::collections::BTreeMap::new();
-            states.insert(
-                "hover".to_owned(),
-                [("background".to_owned(), token)].into_iter().collect(),
-            );
+    fn a_named_combination_is_legal_and_selected_enabled_is_not() {
+        let registry = Registry::with_vocabulary(standard_vocabulary());
+        let with = |key: &str| {
             ViewNode::new(NodeKind::Text, "t").with_props(Props {
-                state_tokens: states,
+                tokens: [(key.to_owned(), TokenName::new("surface.raised").unwrap())]
+                    .into_iter()
+                    .collect(),
                 ..Props::default()
             })
         };
+
+        for key in [
+            "background@hover",
+            "background@selected",
+            "background@selected-hover",
+            "background@selected-disabled",
+        ] {
+            assert!(
+                validate(&with(key), &registry).is_ok(),
+                "{key} is a candidate `resolve_slot` builds"
+            );
+        }
+
+        // `Enabled` contributes no suffix — it *is* the undecorated slot — so
+        // the selected-and-resting combination is spelled `@selected`, and
+        // `@selected-enabled` names nothing the chain will ever look for.
+        let err = validate(&with("background@selected-enabled"), &registry).unwrap_err();
+        assert!(
+            matches!(
+                &err.as_slice()[0].violation,
+                Violation::UnknownStateName { .. }
+            ),
+            "{err}"
+        );
+    }
+
+    /// A decorated binding is checked against the vocabulary and the slot
+    /// schema exactly as the base binding is: a colour slot may not take a
+    /// spacing token just because it was declared under `@hover`.
+    #[test]
+    fn a_decorated_binding_is_checked_like_the_base_binding() {
         let registry = Registry::with_vocabulary(standard_vocabulary());
+        let with = |token: TokenName| {
+            ViewNode::new(NodeKind::Text, "t").with_props(Props {
+                tokens: [("background@hover".to_owned(), token)]
+                    .into_iter()
+                    .collect(),
+                ..Props::default()
+            })
+        };
 
         let unknown = with(TokenName::new("surface.invented").unwrap());
         let err = validate(&unknown, &registry).unwrap_err();
         assert!(
             matches!(
                 &err.as_slice()[0].violation,
-                Violation::UnknownTokenRef { prop, .. } if prop == "state_tokens.hover.background"
+                Violation::UnknownTokenRef { prop, .. } if prop == "tokens.background@hover"
             ),
             "{err}"
         );
@@ -2693,12 +2731,9 @@ mod tests {
             matches!(
                 &err.as_slice()[0].violation,
                 Violation::TokenKindMismatch { prop, expected, .. }
-                    if prop == "state_tokens.hover.background" && *expected == TokenKind::Color
+                    if prop == "tokens.background@hover" && *expected == TokenKind::Color
             ),
             "{err}"
         );
-
-        let right = with(TokenName::new("surface.raised").unwrap());
-        assert!(validate(&right, &registry).is_ok());
     }
 }

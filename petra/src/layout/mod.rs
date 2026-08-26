@@ -708,12 +708,7 @@ fn place_node(
             path.id(),
             "a container must push its own placement before its children's"
         );
-        // Read back off the placement this node just pushed rather than
-        // recomputed here: the flags a per-state token binding keys on are
-        // exactly the ones `semantics_of` already resolved, and deriving them
-        // twice is how the painted state and the reported state drift apart.
-        let states = active_states(&sink.placed()[index].semantics);
-        let mut content = paint_content_of(node, &states);
+        let mut content = paint_content_of(node);
         // The resolved side of an anchored surface is not knowable to an
         // author and not derivable from the tree — only the ladder that just
         // ran knows which way the box flipped — so this is the one payload
@@ -732,56 +727,22 @@ fn place_node(
     path.pop();
 }
 
-/// Which of [`crate::tree::STATE_NAMES`] this placement is in, in the order
-/// they are applied: later entries override earlier ones.
-///
-/// A projection of the resolved semantics and nothing else, so a state name
-/// means the same thing to the token collapse below as it does to the
-/// accessibility tree and to a driver's `ui-state` query. `hovered` and
-/// `active` are `false` for every placement until `LayoutState` carries the
-/// pointer snapshot they project (`semantics_of` says so at the source); the
-/// day it does, `hover:` and `active:` token blocks light up and nothing here
-/// changes.
-#[must_use]
-pub fn active_states(semantics: &PlacementSemantics) -> Vec<&'static str> {
-    // Built in `STATE_NAMES` order rather than in whatever order the flags
-    // are read: the order *is* the precedence, and it is written down once,
-    // beside the names.
-    let held = |name: &str| match name {
-        "selected" => semantics.selected,
-        "read-only" => semantics.read_only,
-        "focus" => semantics.focused,
-        "hover" => semantics.hovered,
-        "active" => semantics.active,
-        "disabled" => semantics.disabled,
-        // Unreachable through `STATE_NAMES`, and tree acceptance refuses any
-        // other name before a frame is ever placed
-        // (`Violation::UnknownStateName`).
-        _ => false,
-    };
-    crate::tree::STATE_NAMES
-        .iter()
-        .copied()
-        .filter(|name| held(name))
-        .collect()
-}
-
 /// What this node draws, beyond its rect.
 ///
-/// Derived from the tree rather than from the placement, because the placement
+/// Derived from the tree and from nothing else, because the placement
 /// deliberately holds only what the digest hashes
-/// (`contracts/frame-identity.md`) — except for `states`, which is the
-/// resolved interaction state the tree cannot know
-/// ([`active_states`]).
+/// (`contracts/frame-identity.md`).
 ///
-/// `states` is applied over `props.tokens` in order, so a node that binds
-/// `background` both plainly and under `hover` paints the hover binding while
-/// hovered and the plain one otherwise. The collapse happens here, once, and
-/// never in a container: twelve node kinds each folding a precedence order is
-/// twelve chances to fold it differently (`contracts/interaction-state.md`
-/// §6).
+/// Interaction state does **not** enter here. A node that binds `background`
+/// and `background@hover` hands both to the painter, and
+/// `crate::token::resolve_slot` chooses between them at paint time from the
+/// placement's own flags (`contracts/interaction-state.md` §4). Resolving
+/// early would make this content differ by hover — an interaction state
+/// leaking into the placement stream — and Carbon names combinations rather
+/// than layering them, so `background@selected-hover` has to stay reachable
+/// as its own key rather than being folded away.
 #[must_use]
-pub fn paint_content_of(node: &ViewNode, states: &[&str]) -> PaintContent {
+pub fn paint_content_of(node: &ViewNode) -> PaintContent {
     let props = &node.props;
     let text = match node.kind {
         NodeKind::Text => Some(props.text.clone().unwrap_or_default()),
@@ -815,22 +776,15 @@ pub fn paint_content_of(node: &ViewNode, states: &[&str]) -> PaintContent {
             NodeKind::Canvas => props.canvas.clone(),
             _ => None,
         },
-        tokens: {
-            let mut tokens: BTreeMap<String, String> = props
-                .tokens
-                .iter()
-                .map(|(k, v)| (k.clone(), v.as_str().to_owned()))
-                .collect();
-            for state in states {
-                let Some(overrides) = props.state_tokens.get(*state) else {
-                    continue;
-                };
-                for (slot, token) in overrides {
-                    tokens.insert(slot.clone(), token.as_str().to_owned());
-                }
-            }
-            tokens
-        },
+        // Verbatim, state-decorated keys and all. `crate::token::resolve_slot`
+        // picks the winning key at paint time from the placement's own flags;
+        // collapsing here would put an interaction state into the placement
+        // stream and throw away the bindings an agent needs to read.
+        tokens: props
+            .tokens
+            .iter()
+            .map(|(k, v)| (k.clone(), v.as_str().to_owned()))
+            .collect(),
         // Written by the placement pass through the dispatcher, never
         // authored: see `crate::layout::place`.
         caret: None,
@@ -1101,7 +1055,7 @@ mod tests {
             ..Props::default()
         });
         assert_eq!(
-            super::paint_content_of(&empty, &[]).text.unwrap().text,
+            super::paint_content_of(&empty).text.unwrap().text,
             "Filter…"
         );
         let filled = ViewNode::new(NodeKind::Input, "f").with_props(Props {
@@ -1109,10 +1063,7 @@ mod tests {
             placeholder: Some("Filter…".into()),
             ..Props::default()
         });
-        assert_eq!(
-            super::paint_content_of(&filled, &[]).text.unwrap().text,
-            "fiber"
-        );
+        assert_eq!(super::paint_content_of(&filled).text.unwrap().text, "fiber");
     }
 
     /// Token references reach the renderer through the payload, not through
@@ -1134,7 +1085,7 @@ mod tests {
             TokenName::new("surface.raised").unwrap(),
         );
         let node = ViewNode::new(NodeKind::Stack, "panel").with_props(props);
-        let content = super::paint_content_of(&node, &[]);
+        let content = super::paint_content_of(&node);
         assert_eq!(
             content.tokens.get("background").map(String::as_str),
             Some("surface.raised")
@@ -1478,50 +1429,54 @@ mod tests {
 
     // -- Per-state token bindings, collapsed once, by the dispatcher. -------
 
-    /// The whole of `contracts/interaction-state.md` §6, end to end through
-    /// `petrify`: the author declares per-state overrides, and the painter is
-    /// handed one flat map with the right one already folded in.
+    /// A state-decorated binding reaches the painter as its own key, and the
+    /// resolver picks between the candidates from the placement's own flags.
     ///
     /// Driven through a real frame rather than by calling
-    /// [`super::paint_content_of`] with a hand-written state list, because
-    /// the claim under test is that the *dispatcher* does the collapse from
-    /// the state it resolved — a test that supplied the list itself would
-    /// pass with the projection wired to nothing.
+    /// [`super::paint_content_of`] directly, because the claim under test
+    /// spans two passes: petrify must carry every candidate through, and
+    /// `resolve_slot` must choose among them from the state petrify resolved.
+    /// A test that supplied the flags itself would pass with the projection
+    /// wired to nothing.
+    ///
+    /// The two assertions that matter are the last two. Carbon *names* the
+    /// combination — `$layer-selected-hover` is its own token, not hover
+    /// composited over selected — so `background@selected-disabled` must win
+    /// over both `background@selected` and `background@disabled`, and a
+    /// mechanism that layered states could not express it at all.
     #[test]
-    fn the_dispatcher_collapses_per_state_bindings_into_the_flat_token_map() {
+    fn a_state_decorated_binding_is_resolved_from_the_placements_own_flags() {
         use crate::frame::{TransitionActivity, Viewport, petrify};
         use crate::geom::Size;
         use crate::testing::{Harness, validated};
-        use crate::token::{ThemeMode, TokenName};
+        use crate::token::{DerivedState, ThemeMode, TokenName, resolve_slot};
         use crate::tree::Props;
-        use std::collections::BTreeMap;
 
         let name = |n: &str| TokenName::new(n).unwrap();
-        let slot = |token: &str| -> BTreeMap<String, TokenName> {
-            [("background".to_owned(), name(token))]
-                .into_iter()
-                .collect()
-        };
-        let mut states = BTreeMap::new();
-        states.insert("focus".to_owned(), slot("surface.layer-one"));
-        states.insert("disabled".to_owned(), slot("surface.layer-two"));
 
-        let build = |disabled: bool| {
+        let build = |disabled: bool, selected: bool| {
             let mut node = ViewNode::new(NodeKind::Text, "t").with_props(Props {
                 text: Some("hi".into()),
-                tokens: [("background".to_owned(), name("surface.base"))]
-                    .into_iter()
-                    .collect(),
-                state_tokens: states.clone(),
+                tokens: [
+                    ("background".to_owned(), name("surface.base")),
+                    ("background@disabled".to_owned(), name("surface.layer-one")),
+                    ("background@selected".to_owned(), name("surface.layer-two")),
+                    (
+                        "background@selected-disabled".to_owned(),
+                        name("surface.raised"),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
                 ..Props::default()
             });
             node.semantics.disabled = disabled;
+            node.semantics.selected = selected;
             ViewNode::new(NodeKind::Stack, "root").child(node)
         };
 
-        let painted = |tree: &ViewNode, focused: Option<&str>| {
+        let painted = |tree: &ViewNode| {
             let mut h = Harness::new();
-            h.state.focused = focused.map(str::to_owned);
             let frame = petrify(
                 1,
                 validated(tree),
@@ -1534,67 +1489,43 @@ mod tests {
                 .iter()
                 .position(|p| p.id == "/root/t")
                 .expect("the node is placed");
-            frame.content[at].tokens.get("background").cloned()
-        };
-
-        let plain = build(false);
-        assert_eq!(
-            painted(&plain, None).as_deref(),
-            Some("surface.base"),
-            "no state, so the base binding stands"
-        );
-        assert_eq!(
-            painted(&plain, Some("/root/t")).as_deref(),
-            Some("surface.layer-one"),
-            "the focused node takes its `focus` override"
-        );
-        assert_eq!(
-            painted(&plain, Some("/root/other")).as_deref(),
-            Some("surface.base"),
-            "a different node being focused overrides nothing here"
-        );
-
-        let disabled = build(true);
-        assert_eq!(
-            painted(&disabled, Some("/root/t")).as_deref(),
-            Some("surface.layer-two"),
-            "`disabled` is last in STATE_NAMES, so it wins over `focus`: a \
-             control that cannot be operated must not paint as though the \
-             keyboard being on it means anything"
-        );
-    }
-
-    /// The state list is the precedence, and it is read off the resolved
-    /// semantics rather than invented.
-    #[test]
-    fn active_states_reports_the_resolved_flags_in_precedence_order() {
-        use super::active_states;
-        use crate::frame::PlacementSemantics;
-
-        let mut semantics = PlacementSemantics {
-            focused: true,
-            selected: true,
-            disabled: true,
-            ..semantics_of(
-                &ViewNode::new(NodeKind::Text, "t"),
-                "/t",
-                &LayoutState::default(),
+            let semantics = &frame.placements[at].semantics;
+            // Every candidate must survive petrify: resolving early would put
+            // an interaction state into the placement stream.
+            assert!(
+                frame.content[at].tokens.len() >= 4,
+                "petrify must carry every candidate, not the winning one: {:?}",
+                frame.content[at].tokens
+            );
+            resolve_slot(
+                &frame.content[at].tokens,
+                "background",
+                DerivedState::of(semantics),
             )
+            .map(str::to_owned)
         };
+
         assert_eq!(
-            active_states(&semantics),
-            vec!["selected", "focus", "disabled"],
-            "STATE_NAMES order, which is the order the collapse applies them in"
+            painted(&build(false, false)).as_deref(),
+            Some("surface.base"),
+            "no state, so the undecorated binding stands"
         );
-        semantics.disabled = false;
-        assert_eq!(active_states(&semantics), vec!["selected", "focus"]);
-        assert!(
-            active_states(&PlacementSemantics {
-                focused: false,
-                selected: false,
-                ..semantics
-            })
-            .is_empty()
+        assert_eq!(
+            painted(&build(true, false)).as_deref(),
+            Some("surface.layer-one"),
+            "a disabled node takes its `@disabled` binding"
+        );
+        assert_eq!(
+            painted(&build(false, true)).as_deref(),
+            Some("surface.layer-two"),
+            "a selected node takes its `@selected` binding"
+        );
+        assert_eq!(
+            painted(&build(true, true)).as_deref(),
+            Some("surface.raised"),
+            "selected AND disabled takes the named combination, not either \
+             half: Carbon names the pair as its own token rather than \
+             layering one over the other"
         );
     }
 }

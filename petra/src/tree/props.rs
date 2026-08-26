@@ -596,43 +596,7 @@ pub struct Props {
     /// value type or on the wire deserializing into it.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub tokens: BTreeMap<String, TokenName>,
-    /// Per-state overrides of [`Props::tokens`]: state name, then slot name,
-    /// then the token that slot takes while the node is in that state
-    /// (`contracts/interaction-state.md` §6).
-    ///
-    /// Authors declare what a hovered button looks like; they never branch on
-    /// a raw hover bool, because the bool is engine state and the tree is
-    /// authored before the engine has any. The collapse into the flat map the
-    /// painter reads happens once, in the placement dispatcher
-    /// ([`crate::layout::place`]) — never in a container, so the twelve node
-    /// kinds cannot each get the precedence differently — and the resolved
-    /// name enters `paint_hash`, so a state change that rebinds a colour
-    /// moves the frame digest.
-    ///
-    /// The outer key is one of [`STATE_NAMES`]; a name outside that set is a
-    /// tree-acceptance violation rather than a declaration that quietly never
-    /// fires ([`crate::tree::Violation::UnknownStateName`]).
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub state_tokens: BTreeMap<String, BTreeMap<String, TokenName>>,
 }
-
-/// Every state name [`Props::state_tokens`] may key on, in the order the
-/// placement dispatcher applies them: later entries win.
-///
-/// The order is the precedence, written down once. It runs from the most
-/// durable condition to the most momentary — what a node *is* (`selected`,
-/// `read-only`), then what the keyboard is on (`focus`), then what the
-/// pointer is doing (`hover`, `active`) — and ends with `disabled`, which
-/// wins over everything: a control that cannot be operated must not paint as
-/// though the pointer over it means anything.
-pub const STATE_NAMES: &[&str] = &[
-    "selected",
-    "read-only",
-    "focus",
-    "hover",
-    "active",
-    "disabled",
-];
 
 /// Resolved `stack` parameters.
 #[derive(Clone, Copy, Debug, PartialEq)]

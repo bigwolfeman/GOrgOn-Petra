@@ -252,10 +252,15 @@ pub struct PaintContent {
     /// Token references by role name, resolved against the frame's theme
     /// snapshot at paint time.
     ///
-    /// Already collapsed: `props.tokens` with every applicable
-    /// `props.state_tokens` block folded over it in precedence order
-    /// (`crate::layout::paint_content_of`). The painter reads one flat map
-    /// and has no idea a state was involved.
+    /// Carries `props.tokens` verbatim, state-decorated keys and all: a
+    /// binding for `background` and one for `background@hover` both arrive
+    /// here, and `crate::token::resolve_slot` picks between them at paint
+    /// time from this placement's own flags.
+    ///
+    /// Deliberately not pre-resolved. Collapsing to the winning key would
+    /// make this map differ by hover, which puts an interaction state into
+    /// the placement stream, and it would erase the bindings an agent reading
+    /// the frame needs in order to see what a control *would* do.
     pub tokens: BTreeMap<String, String>,
     /// The caret this placement draws back at its anchor, for a `surface`
     /// anchored to a node and resolved onto a side. `None` for every other

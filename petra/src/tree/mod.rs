@@ -20,7 +20,7 @@ pub use node::{
 // reached through; `props::Align`'s own doc comment says which is which.
 pub use props::{
     Align, Anchor, ClampRule, CollectionProps, Edge, GridProps, GridSpan, InputPolicy, InsetRefs,
-    Layer, Props, STATE_NAMES, ScrollProps, StackProps, SurfaceProps, TextProps, TextWrap,
-    TrackSize, resolve_insets, resolve_spacing,
+    Layer, Props, ScrollProps, StackProps, SurfaceProps, TextProps, TextWrap, TrackSize,
+    resolve_insets, resolve_spacing,
 };
 pub use validate::{Registry, TreeError, TreeErrors, ValidatedTree, Violation, validate};
