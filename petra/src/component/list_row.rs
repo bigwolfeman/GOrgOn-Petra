@@ -1,7 +1,7 @@
 //! `list_row` — one selectable entry in a list.
 
 use super::text::text;
-use super::tokens::{SHAPE_SM, SPACING_SM, SPACING_XS, SURFACE_BASE, SURFACE_RAISED, t};
+use super::tokens::{SHAPE_SM, SPACING_02, SPACING_03, SURFACE_BASE, SURFACE_RAISED, t};
 use super::{pad, stack};
 use crate::geom::Axis;
 use crate::tree::{Interaction, Key, Role, ViewNode};
@@ -16,10 +16,10 @@ pub fn list_row(key: impl Into<Key>, label: impl Into<String>, selected: bool) -
     let mut node = stack(
         key,
         Axis::Horizontal,
-        Some(SPACING_SM),
+        Some(SPACING_03),
         vec![text("label", label.clone())],
     );
-    node.props.padding = Some(pad(SPACING_SM, SPACING_XS));
+    node.props.padding = Some(pad(SPACING_03, SPACING_02));
     node.props.tokens.insert(
         "background".into(),
         t(if selected {

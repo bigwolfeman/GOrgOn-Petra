@@ -327,7 +327,7 @@ mod tests {
     fn gap_vocabulary() -> Vocabulary {
         let mut vocab = Vocabulary::new();
         vocab.declare(DesignToken::new(
-            TokenName::new("spacing.md").unwrap(),
+            TokenName::new("spacing-04").unwrap(),
             crate::token::value::TokenKind::Spacing,
         ));
         vocab.declare(DesignToken::new(
@@ -368,7 +368,7 @@ mod tests {
 
             let mut values = BTreeMap::new();
             values.insert(
-                TokenName::new("spacing.md").unwrap(),
+                TokenName::new("spacing-04").unwrap(),
                 TokenValue::Spacing(12.0),
             );
             values.insert(
@@ -398,7 +398,7 @@ mod tests {
         let undeclared = TokenName::new("spacing.app-gutter").unwrap();
         let mut values = BTreeMap::new();
         values.insert(
-            TokenName::new("spacing.md").unwrap(),
+            TokenName::new("spacing-04").unwrap(),
             TokenValue::Spacing(12.0),
         );
         values.insert(
@@ -433,7 +433,7 @@ mod tests {
             (TokenValue::Spacing(f32::INFINITY), "not a finite number"),
         ] {
             let mut values = BTreeMap::new();
-            values.insert(TokenName::new("spacing.md").unwrap(), bad);
+            values.insert(TokenName::new("spacing-04").unwrap(), bad);
             values.insert(
                 TokenName::new("shape.corner-sm").unwrap(),
                 TokenValue::Shape(crate::token::value::ShapeValue { corner_radius: 4.0 }),
@@ -444,7 +444,7 @@ mod tests {
             assert_eq!(err.unusable().len(), 1, "{bad:?} was accepted: {err}");
             assert_eq!(
                 err.unusable()[0].name,
-                TokenName::new("spacing.md").unwrap()
+                TokenName::new("spacing-04").unwrap()
             );
             assert_eq!(err.unusable()[0].why, why);
             assert!(err.to_string().contains(why), "{err}");
@@ -458,7 +458,7 @@ mod tests {
     fn an_unusable_corner_radius_is_refused_as_well() {
         let mut values = BTreeMap::new();
         values.insert(
-            TokenName::new("spacing.md").unwrap(),
+            TokenName::new("spacing-04").unwrap(),
             TokenValue::Spacing(12.0),
         );
         values.insert(
@@ -481,7 +481,7 @@ mod tests {
     fn a_zero_extent_is_usable() {
         let mut values = BTreeMap::new();
         values.insert(
-            TokenName::new("spacing.md").unwrap(),
+            TokenName::new("spacing-04").unwrap(),
             TokenValue::Spacing(0.0),
         );
         values.insert(

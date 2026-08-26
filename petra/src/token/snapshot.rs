@@ -138,14 +138,14 @@ mod tests {
     #[test]
     fn a_typed_accessor_answers_only_at_its_own_kind() {
         let snapshot = ThemeSnapshot::new(light(), 1);
-        assert_eq!(snapshot.spacing(&n("spacing.md")), Some(12.0));
+        assert_eq!(snapshot.spacing(&n("spacing-04")), Some(12.0));
         assert_eq!(snapshot.corner(&n("shape.corner-lg")), Some(12.0));
 
         assert!(snapshot.value(&n("surface.base")).is_some());
         assert_eq!(snapshot.spacing(&n("surface.base")), None);
         assert_eq!(snapshot.corner(&n("surface.base")), None);
         assert_eq!(snapshot.spacing(&n("shape.corner-lg")), None);
-        assert_eq!(snapshot.corner(&n("spacing.md")), None);
+        assert_eq!(snapshot.corner(&n("spacing-04")), None);
 
         assert_eq!(snapshot.spacing(&n("not.a.token")), None);
     }
@@ -156,14 +156,14 @@ mod tests {
     fn every_ramp_step_resolves_through_the_typed_accessor() {
         let snapshot = ThemeSnapshot::new(light(), 1);
         for step in [
-            "spacing.2xs",
-            "spacing.xs",
-            "spacing.sm",
-            "spacing.md",
-            "spacing.lg",
-            "spacing.xl",
-            "spacing.2xl",
-            "spacing.3xl",
+            "spacing-01",
+            "spacing-02",
+            "spacing-03",
+            "spacing-04",
+            "spacing-05",
+            "spacing-06",
+            "spacing-07",
+            "spacing-09",
         ] {
             assert!(
                 snapshot.spacing(&n(step)).is_some_and(|v| v > 0.0),

@@ -45,7 +45,7 @@
 
 use super::text::text;
 use super::tokens::{
-    BORDER_SUBTLE, SHAPE_FULL, SHAPE_NONE, SPACING_2XS, SPACING_SM, SPACING_XS, SURFACE_RAISED,
+    BORDER_SUBTLE, SHAPE_FULL, SHAPE_NONE, SPACING_01, SPACING_02, SPACING_03, SURFACE_RAISED,
     TEXT_PRIMARY, t,
 };
 use super::{pad, stack, swatch};
@@ -69,13 +69,13 @@ fn box_control(
     let mut row = stack(
         key,
         Axis::Horizontal,
-        Some(SPACING_SM),
+        Some(SPACING_03),
         vec![
             swatch("box", BOX, BOX, fill, Some(BORDER_SUBTLE), Some(box_shape)),
             text("label", label.clone()),
         ],
     );
-    row.props.padding = Some(pad(SPACING_XS, SPACING_2XS));
+    row.props.padding = Some(pad(SPACING_02, SPACING_01));
     let mut node = row.interactive(
         Role::Button,
         label,
@@ -127,10 +127,10 @@ pub fn toggle(key: impl Into<Key>, label: impl Into<String>, on: bool) -> ViewNo
     let mut row = stack(
         key,
         Axis::Horizontal,
-        Some(SPACING_SM),
+        Some(SPACING_03),
         vec![track, text("label", label.clone())],
     );
-    row.props.padding = Some(pad(SPACING_XS, SPACING_2XS));
+    row.props.padding = Some(pad(SPACING_02, SPACING_01));
     let mut node = row.interactive(
         Role::Button,
         label,

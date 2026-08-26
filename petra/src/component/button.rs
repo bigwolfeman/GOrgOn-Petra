@@ -2,7 +2,7 @@
 
 use super::pad;
 use super::tokens::{
-    ACCENT_PRIMARY, SHADOW_RAISED, SHAPE_MD, SPACING_MD, SPACING_SM, SURFACE_RAISED,
+    ACCENT_PRIMARY, SHADOW_RAISED, SHAPE_MD, SPACING_03, SPACING_04, SURFACE_RAISED,
     TEXT_ON_ACCENT, TEXT_PRIMARY, TYPOGRAPHY_BODY, t,
 };
 use crate::geom::Axis;
@@ -136,7 +136,7 @@ fn labelled(
 
     let mut props = Props {
         axis: Some(Axis::Horizontal),
-        padding: Some(pad(SPACING_MD, SPACING_SM)),
+        padding: Some(pad(SPACING_04, SPACING_03)),
         ..Props::default()
     };
     props.tokens.insert("background".into(), t(background));

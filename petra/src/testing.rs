@@ -531,7 +531,7 @@ impl<C: ContentMeasure, R: RowSource> Harness<C, R> {
     ///
     /// Names the theme already defines are left alone, so the shipped ramp
     /// and the pre-bound whole-unit range are never re-declared, and a name
-    /// that is not a fixture gap (a shipped `spacing.md`, say) is ignored
+    /// that is not a fixture gap (a shipped `spacing-04`, say) is ignored
     /// rather than guessed at.
     ///
     /// # Panics

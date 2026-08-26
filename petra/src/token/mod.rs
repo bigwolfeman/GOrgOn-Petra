@@ -25,7 +25,8 @@ pub use name::{TokenName, TokenNameError};
 pub use presenter::Presenter;
 pub use selection::ThemeSelection;
 pub use shipped::{
-    LAYER_TOKENS, SHADOW_GEOMETRY, ShadowGeometry, dark, light, standard_vocabulary,
+    BORDER_SUBTLE_TOKENS, CornerRole, FIELD_TOKENS, LAYER_TOKENS, SHADOW_GEOMETRY, ShadowGeometry,
+    corner_for, dark, light, standard_vocabulary,
 };
 pub use slot::{SlotSchema, SlotSpec, standard_slots};
 pub use snapshot::ThemeSnapshot;
@@ -33,7 +34,7 @@ pub use status::{StatusShape, StatusToken, StatusTokenError};
 pub use theme::{Theme, ThemeError, ThemeMismatch, ThemeUnusable};
 pub use value::{
     ColorValue, MotionEasing, MotionValue, ShapeValue, Silhouette, SpringValue, TokenKind,
-    TokenValue, TypographyValue, TypographyWeight,
+    TokenValue, TypographyFamily, TypographyValue, TypographyWeight,
 };
 pub use vocabulary::{DesignToken, Vocabulary};
 

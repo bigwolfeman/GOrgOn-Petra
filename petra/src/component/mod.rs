@@ -60,7 +60,7 @@
 //!
 //! [`tokens`] is the one place a design-token name is spelled as a literal
 //! string. Every component reaches for a constant there rather than writing
-//! `"spacing.md"` at its own call site, so a rename in the shipped
+//! `"spacing-04"` at its own call site, so a rename in the shipped
 //! vocabulary is a one-line fix instead of a sweep across a dozen files —
 //! and [`tokens`]'s own test proves every one of those constants is
 //! actually declared in [`crate::token::standard_vocabulary`] (gate C1-7).
@@ -96,7 +96,7 @@ pub use tabs::{tab, tab_bar};
 pub use text::{heading, text};
 
 use crate::geom::Axis;
-use crate::token::{LAYER_TOKENS, TokenName};
+use crate::token::{BORDER_SUBTLE_TOKENS, FIELD_TOKENS, LAYER_TOKENS, TokenName};
 use crate::tree::{AxisConstraint, Constraints, InsetRefs, Key, NodeKind, Props, ViewNode};
 
 /// The deepest seat [`on_layer`] will honour.
@@ -192,6 +192,79 @@ pub fn on_layer(mut node: ViewNode, depth: usize) -> ViewNode {
         .tokens
         .insert("background".into(), tokens::t(reseated));
     node
+}
+
+/// The three token names one seat in the layer stack binds.
+///
+/// Returned as a triple rather than three separate calls because the two
+/// rules FR-004a states are *relationships between* these names, and a caller
+/// that fetched them one at a time could satisfy each call and still bind an
+/// inconsistent set. See [`layer_tokens`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LayerTokens {
+    /// The fill of the surface at this seat.
+    pub background: &'static str,
+    /// The fill of an input sitting **on** that surface.
+    pub field: &'static str,
+    /// The boundary drawn around that input.
+    pub border: &'static str,
+}
+
+/// FR-004a's two layering rules, as arithmetic on one seat number.
+///
+/// # The two rules
+///
+/// Carbon states them in prose, quoted exactly: *"A field is considered a
+/// layer on top of the background it is placed on, for example a field placed
+/// on a `$layer-02` background will use `$field-03`. Border tokens however,
+/// pair with its same number, for example `$field-03` pairs with
+/// `$border-strong-03` in a text input."* So:
+///
+/// ```text
+/// background := LAYER_TOKENS[n]           (n = 0 is `surface.base`)
+/// field      := FIELD_TOKENS[n]           i.e. `field-0{n+1}`, one ahead
+/// border     := BORDER_SUBTLE_TOKENS[n]   i.e. pairs with the field's number
+/// ```
+///
+/// The border rule is the one that gets lost in prose, because "pairs with
+/// its same number" is a statement about the *field's* number and not the
+/// background's. Written as two array reads at the same index it is hard to
+/// get wrong and trivial to check —
+/// [`tests::the_layer_triple_puts_the_field_one_ahead_and_the_border_beside_it`]
+/// reads every seat's triple and fails if either ordinal slips.
+///
+/// # Why this resolves at construction and not at paint
+///
+/// Carbon resolves both rules from CSS ancestry. Petra has a tree but no
+/// cascade, and the alternative — an ambient depth counter consumed by the
+/// painter — was weighed and declined: the frame digest hashes the token
+/// names a node binds, so a node re-seated from one layer to another already
+/// digests differently under this scheme and for free, where a paint-time
+/// counter would need a **new digest input** and re-baseline the published
+/// frame-identity reference and all five parity vectors. It also makes
+/// FR-024's *"re-seating is a single operation"* fall out of one argument.
+///
+/// `depth` is clamped to [`MAX_LAYER_DEPTH`], for the reason recorded there:
+/// past the end of the ramp a node and its ground resolve to the same colour
+/// and the node vanishes while every check still passes.
+///
+/// # No component calls this yet, on purpose
+///
+/// [`on_layer`] is still how a component is re-seated, and it rewrites only
+/// the `background` binding. Moving the library onto this triple binds
+/// `field` and `border` names that no component binds today, which moves
+/// every component's frame digest and every stored capture —
+/// `contracts/token-vocabulary.md` §11 puts that at step 7, one flag day
+/// rather than forty-two. This is the arithmetic landing ahead of it, proved
+/// total, so the flag day is a rebinding and not also a design argument.
+#[must_use]
+pub fn layer_tokens(depth: usize) -> LayerTokens {
+    let depth = depth.min(MAX_LAYER_DEPTH);
+    LayerTokens {
+        background: LAYER_TOKENS[depth],
+        field: FIELD_TOKENS[depth],
+        border: BORDER_SUBTLE_TOKENS[depth],
+    }
 }
 
 /// A `Stack` on `axis`, gapped by `spacing`, with no other props set.

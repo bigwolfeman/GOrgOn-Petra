@@ -3,7 +3,7 @@
 //! FR-052's vocabulary sits on top of [`crate::token::shipped::standard_vocabulary`],
 //! and the two are decided by different people at different times: the ramp
 //! is the design system's call, the component signatures are this module's.
-//! Hardcoding a literal like `"spacing.sm"` at each of a dozen call sites
+//! Hardcoding a literal like `"spacing-03"` at each of a dozen call sites
 //! means a ramp rename becomes a sweep; naming it once here and having every
 //! component read the constant means it becomes a one-line edit — which
 //! matters concretely in this build, because the ramp was still being
@@ -16,11 +16,27 @@
 
 use crate::token::TokenName;
 
-pub(crate) const SPACING_2XS: &str = "spacing.2xs";
-pub(crate) const SPACING_XS: &str = "spacing.xs";
-pub(crate) const SPACING_SM: &str = "spacing.sm";
-pub(crate) const SPACING_MD: &str = "spacing.md";
-pub(crate) const SPACING_LG: &str = "spacing.lg";
+/// The five gaps the component library spends, on Carbon's ordinal ramp.
+///
+/// These moved off the `spacing.2xs … spacing.lg` t-shirt names on
+/// 2026-08-25, when the ramp grew from eight steps to Carbon's thirteen and
+/// the t-shirt names became documented aliases
+/// (`token::shipped::SPACING_ALIASES`). **No gap changed size** — the eight
+/// old values are Carbon's `spacing-01 … spacing-09` verbatim, so this is a
+/// rename of the name and not of the number.
+///
+/// This module is the reason that migration was a five-line edit rather than
+/// a sweep, which is the claim its own doc comment above makes and this is
+/// the first change to test it.
+pub(crate) const SPACING_01: &str = "spacing-01";
+/// See [`SPACING_01`]. 4 units.
+pub(crate) const SPACING_02: &str = "spacing-02";
+/// See [`SPACING_01`]. 8 units.
+pub(crate) const SPACING_03: &str = "spacing-03";
+/// See [`SPACING_01`]. 12 units.
+pub(crate) const SPACING_04: &str = "spacing-04";
+/// See [`SPACING_01`]. 16 units.
+pub(crate) const SPACING_05: &str = "spacing-05";
 
 pub(crate) const SHAPE_NONE: &str = "shape.corner-none";
 pub(crate) const SHAPE_SM: &str = "shape.corner-sm";
@@ -74,11 +90,11 @@ pub(crate) const TEXT_ON_ACCENT: &str = "text.on-accent";
 /// unused without this — the gate is a test's job, not runtime code's.
 #[cfg(test)]
 pub(crate) const ALL: &[&str] = &[
-    SPACING_2XS,
-    SPACING_XS,
-    SPACING_SM,
-    SPACING_MD,
-    SPACING_LG,
+    SPACING_01,
+    SPACING_02,
+    SPACING_03,
+    SPACING_04,
+    SPACING_05,
     SHAPE_NONE,
     SHAPE_SM,
     SHAPE_MD,

@@ -4,7 +4,7 @@
 
 use super::text::heading;
 use super::tokens::{
-    SHADOW_RAISED, SHAPE_MD, SPACING_LG, SPACING_MD, SPACING_SM, SURFACE_RAISED, t,
+    SHADOW_RAISED, SHAPE_MD, SPACING_03, SPACING_04, SPACING_05, SURFACE_RAISED, t,
 };
 use super::{pad, stack};
 use crate::geom::Axis;
@@ -27,8 +27,8 @@ pub fn section(key: impl Into<Key>, title: impl Into<String>, children: Vec<View
     let mut rows = vec![heading("title", title)];
     rows.extend(children);
 
-    let mut node = stack(key, Axis::Vertical, Some(SPACING_SM), rows);
-    node.props.padding = Some(pad(SPACING_LG, SPACING_MD));
+    let mut node = stack(key, Axis::Vertical, Some(SPACING_03), rows);
+    node.props.padding = Some(pad(SPACING_05, SPACING_04));
     node.props
         .tokens
         .insert("background".into(), t(SURFACE_RAISED));
