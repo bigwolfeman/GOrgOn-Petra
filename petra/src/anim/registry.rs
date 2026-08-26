@@ -51,6 +51,39 @@ impl Timing {
         }
     }
 
+    /// The trajectory-local time an **ambient** transition samples at:
+    /// `t mod duration` for a keyframe track, `t` unchanged for anything else.
+    ///
+    /// This one expression is the whole of `contracts/draw-list.md` §8's
+    /// widening. Before it, an ambient keyframe track ran once, hit
+    /// [`KeyframeTrack::duration`], and snapped to the layout target — so
+    /// "ambient" meant a host had to notice the end and re-trigger it, every
+    /// host, forever, and a host that forgot got a surface that animated once
+    /// and then sat still while the settle contract still excluded it. Looping
+    /// in the engine makes the declaration mean what it says.
+    ///
+    /// The modulo is what keeps the track from ever reaching the `t >=
+    /// duration` branch in [`Timing::sample`], so an ambient track also never
+    /// reports `settled` — which is the definition of ambient, arrived at
+    /// rather than special-cased.
+    ///
+    /// A spring or a curve returns `t` untouched: neither can loop, and
+    /// [`TransitionBuilder::build`] already refuses an ambient definition that
+    /// drives either of them. A zero-duration track returns `t` untouched too,
+    /// because a modulo by zero has no answer; such a track cannot be built —
+    /// [`KeyframeTrack::new`] refuses one — and this is what the function does
+    /// rather than divide anyway.
+    #[must_use]
+    pub fn looped_time(&self, t: f64) -> f64 {
+        match self {
+            Self::Keyframes(track) => {
+                let duration = track.duration();
+                if duration > 0.0 { t % duration } else { t }
+            }
+            Self::Spring(_) | Self::Curve(_) => t,
+        }
+    }
+
     /// Value, velocity, and whether the trajectory has settled, at `t`
     /// seconds into a trajectory that began at `origin` moving at
     /// `velocity0`, heading for `target`.
@@ -384,15 +417,17 @@ impl TransitionBuilder {
         // excluded from the settle wait *and* stop moving, so a driver would
         // wait on nothing while the surface sat still. Only a spring with no
         // damping keeps going, and that is not what an author means here —
-        // ambient motion is a keyframe loop the host re-triggers, or a hosted
-        // painter. Refusing this is what stops "ambient" from becoming a way
-        // to opt out of the settle contract by accident.
+        // ambient motion is a keyframe loop, which `Timing::looped_time`
+        // makes the engine run forever without a host re-triggering anything.
+        // Refusing this is what stops "ambient" from becoming a way to opt out
+        // of the settle contract by accident.
         if self.ambient {
             for (property, timing) in &self.timings {
                 if !matches!(timing, Timing::Keyframes(_)) {
                     self.errors.push(format!(
                         "an ambient transition drives {property:?} with a {}, which settles; \
-                         ambient motion must be a keyframe loop the host re-triggers",
+                         ambient motion must be a keyframe loop, which the engine runs on \
+                         t mod duration",
                         timing.kind_name()
                     ));
                 }
@@ -585,6 +620,150 @@ mod tests {
             .build()
             .unwrap_err();
         assert!(err.contains("must be a keyframe loop"), "{err}");
+        assert!(err.contains("t mod duration"), "{err}");
+    }
+
+    /// A track that loops, for the two tests below.
+    fn looping_track() -> KeyframeTrack {
+        KeyframeTrack::new(vec![
+            Keyframe {
+                time: 0.0,
+                value: AnimVector::scalar(0.0),
+                easing_in: CubicBezier::LINEAR,
+            },
+            Keyframe {
+                time: 2.0,
+                value: AnimVector::scalar(1.0),
+                easing_in: CubicBezier::LINEAR,
+            },
+        ])
+        .unwrap()
+    }
+
+    /// `contracts/draw-list.md` §8's widening: the **engine** loops an ambient
+    /// keyframe track on `t mod duration`, rather than every host being
+    /// obliged to notice the end and re-trigger it.
+    ///
+    /// Hand-computed wrap points rather than recomputed from `duration()`: a
+    /// test that spelled `t % track.duration()` would agree with a sign error
+    /// as readily as with the truth.
+    #[test]
+    fn an_ambient_keyframe_track_loops_on_t_mod_duration() {
+        let timing = Timing::Keyframes(looping_track());
+        assert_eq!(timing.looped_time(0.0), 0.0);
+        assert_eq!(timing.looped_time(0.5), 0.5);
+        assert_eq!(timing.looped_time(1.75), 1.75);
+        assert_eq!(timing.looped_time(2.0), 0.0, "the wrap point");
+        assert_eq!(timing.looped_time(2.5), 0.5);
+        assert_eq!(timing.looped_time(7.25), 1.25, "many laps later");
+
+        // A spring and a curve pass through: neither can loop, and an ambient
+        // definition that drove one is refused at build time anyway.
+        let spring = Timing::Spring(Spring::default());
+        assert_eq!(spring.looped_time(7.25), 7.25);
+        let curve = Timing::Curve(Curve::new(0.3, CubicBezier::LINEAR).unwrap());
+        assert_eq!(curve.looped_time(7.25), 7.25);
+    }
+
+    /// The consequence that matters: a looped track never settles, so a
+    /// declared-ambient surface keeps moving instead of snapping to its layout
+    /// target one duration in.
+    ///
+    /// The second half is the control. The *same* track sampled at the *same*
+    /// unwrapped clock does settle — so this test is about the loop and not
+    /// about the track being unable to settle at all.
+    #[test]
+    fn a_looped_track_never_settles_where_the_same_track_unlooped_does() {
+        let timing = Timing::Keyframes(looping_track());
+        let origin = AnimVector::scalar(0.0);
+        let target = AnimVector::scalar(1.0);
+        let thresholds = PropertyKind::Opacity.thresholds();
+        for lap in 0..5 {
+            let t = 2.5 + f64::from(lap) * 2.0;
+            let looped = timing.sample(
+                origin,
+                AnimVector::scalar(0.0),
+                target,
+                timing.looped_time(t),
+                thresholds,
+            );
+            assert!(
+                !looped.settled,
+                "lap {lap}: an ambient track must not settle"
+            );
+            let straight = timing.sample(origin, AnimVector::scalar(0.0), target, t, thresholds);
+            assert!(
+                straight.settled,
+                "lap {lap}: the same track without the loop does settle, which is                  what makes the assertion above about the loop"
+            );
+        }
+    }
+
+    /// The other half of §8, and the reason it lives here beside the loop
+    /// rather than in `crate::draw`: **the engine owns time, so the draw list
+    /// must not.**
+    ///
+    /// A list whose content is a function of wall-clock time, while the digest
+    /// sees only the unevaluated expression, makes two identical digests draw
+    /// two different pictures — the same exclusion `frame-identity.md`'s "Not
+    /// covered" makes for wall-clock time, applied at construction. The rule
+    /// is structural (`DrawList::new` takes commands and nothing else), and
+    /// structure is exactly what a future field can quietly break, so this
+    /// reads the module's own source and refuses a time-derived identifier
+    /// appearing anywhere in its code.
+    ///
+    /// Comments are stripped first: the module doc has to be able to *say*
+    /// "clock" and "frame counter" to explain the rule it is under.
+    #[test]
+    fn the_draw_list_takes_no_time_input() {
+        /// Whole-word, case-insensitive, over code only.
+        fn time_words(source: &str) -> Vec<String> {
+            const FORBIDDEN: [&str; 11] = [
+                "instant",
+                "systemtime",
+                "duration",
+                "now",
+                "elapsed",
+                "clock",
+                "time",
+                "timestamp",
+                "tick",
+                "frame_index",
+                "frame_count",
+            ];
+            let code: String = source
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let mut found = Vec::new();
+            for token in code.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
+                let lower = token.to_ascii_lowercase();
+                if FORBIDDEN.contains(&lower.as_str()) {
+                    found.push(lower);
+                }
+            }
+            found
+        }
+
+        // The sabotage half, first: a planted field must be caught, or the
+        // clean result below proves nothing.
+        let planted = "pub struct Command {\n    /// harmless\n    pub elapsed: f32,\n}";
+        assert_eq!(time_words(planted), ["elapsed"]);
+        let commented_only = "//! a clock, a frame counter, a timestamp\npub struct Command;";
+        assert!(
+            time_words(commented_only).is_empty(),
+            "prose about the rule is not a violation of it"
+        );
+
+        let found = time_words(include_str!("../draw/mod.rs"));
+        assert!(
+            found.is_empty(),
+            "crate::draw names {found:?} in its code; a draw list may not take a \
+             time-derived value as a command field (contracts/draw-list.md §8). \
+             A canvas whose content changes every frame rebuilds and resubmits \
+             a whole new list and pays one digest change per frame."
+        );
     }
 
     #[test]

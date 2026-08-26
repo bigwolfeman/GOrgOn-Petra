@@ -157,6 +157,15 @@ struct TrackState {
     value: AnimVector,
     velocity: AnimVector,
     settled: bool,
+    /// Whether this trajectory's local clock wraps on the track's own
+    /// duration.
+    ///
+    /// Copied from [`TransitionDef::is_ambient`] when the trajectory starts,
+    /// so an ambient keyframe track runs forever without a host re-triggering
+    /// it (`contracts/draw-list.md` §8). The rule itself is one expression in
+    /// [`Timing::looped_time`]; this flag only says which trajectories it
+    /// applies to.
+    looping: bool,
 }
 
 impl TrackState {
@@ -167,6 +176,14 @@ impl TrackState {
             return self.target;
         }
         let elapsed = (now - self.start).max(0.0);
+        // An ambient track wraps: `t mod duration` never reaches the `t >=
+        // duration` branch in `Timing::sample`, so it never settles and never
+        // snaps to the layout target. Everything else passes through.
+        let elapsed = if self.looping {
+            self.timing.looped_time(elapsed)
+        } else {
+            elapsed
+        };
         let sample = self.timing.sample(
             self.origin,
             self.velocity0,
@@ -505,7 +522,26 @@ impl TransitionEngine {
                 // previous frame's value — or, for a node that has just been
                 // created, from its declared enter track, and if it declares
                 // none it simply appears at its target.
-                let origin = if created {
+                //
+                // An **ambient** definition is the exception, and it is the
+                // other half of `contracts/draw-list.md` §8. Every arm below
+                // asks "what changed", and an ambient keyframe loop is not a
+                // response to a change: it is declared, endless motion whose
+                // track carries absolute values. A canvas placed once and
+                // never moved by layout would otherwise never start its walk
+                // and would sit still forever under a declaration that says it
+                // never stops — which is exactly the shape of hole
+                // `Timing::looped_time` was widened to close at the other end.
+                // `target` is the origin because a keyframe track replaces the
+                // laid-out value rather than interpolating toward it, so the
+                // origin only decides where the property sits if the track
+                // ends, and a looped one does not.
+                let origin = if def.is_ambient() {
+                    match def.enter() {
+                        Some(track) if created && track.property == property => track.value,
+                        _ => target,
+                    }
+                } else if created {
                     match def.enter() {
                         Some(track) if track.property == property => track.value,
                         _ => return false,
@@ -533,6 +569,7 @@ impl TransitionEngine {
                         value: origin,
                         velocity: AnimVector::zeros(origin.len()),
                         settled: false,
+                        looping: def.is_ambient(),
                     },
                 );
             }
@@ -631,6 +668,9 @@ impl TransitionEngine {
                 value: recorded,
                 velocity: carried,
                 settled: false,
+                // An exit runs once and the node leaves. Looping one would
+                // keep a departed subtree spliced into every later frame.
+                looping: false,
             };
             self.nodes.remove(*id);
             self.exiting.push(ExitGroup {
@@ -742,7 +782,17 @@ impl TransitionEngine {
             .nodes
             .values()
             .flat_map(BTreeMap::values)
-            .filter(|track| !track.settled)
+            // A looping track is excluded, not because it is finished but
+            // because it never will be. `TransitionActivity::running` is
+            // "transitions still moving *toward a target*", and an ambient
+            // keyframe loop has no target it is heading for — it replaces the
+            // laid-out value forever. Counting one here would make
+            // `is_settled` permanently false and a driver's settle wait
+            // unreachable, which is the same contradiction
+            // `TransitionBuilder::build` refuses when an ambient definition
+            // drives a spring. `TransitionActivity::ambient` is where an
+            // endless animation is counted, and `wants_frame` reads that.
+            .filter(|track| !track.settled && !track.looping)
             .count()
             + self
                 .exiting
@@ -983,6 +1033,100 @@ mod tests {
         let ids: Vec<&str> = frame.placements.iter().map(|p| p.id.as_str()).collect();
         assert!(ids.contains(&"/app/title"), "{ids:?}");
         assert!(ids.contains(&"/app/body"), "{ids:?}");
+    }
+
+    /// An ambient keyframe loop starts on its own and never stops, on a node
+    /// whose laid-out position never moves.
+    ///
+    /// The other half of `contracts/draw-list.md` §8, and the half that is
+    /// invisible from `registry.rs`: `Timing::looped_time` makes a running
+    /// ambient track wrap, and this makes one *run*. Every other trajectory in
+    /// this engine starts because something changed; an ambient one is
+    /// declared motion, and a canvas placed once and never moved by layout
+    /// would otherwise sit still forever under a declaration that says it
+    /// never stops.
+    ///
+    /// Two assertions, and the second is what makes the first mean anything:
+    /// the placement is somewhere other than where layout put it, and it is
+    /// somewhere *different* one second later.
+    #[test]
+    fn an_ambient_keyframe_loop_starts_itself_and_keeps_going() {
+        use crate::anim::curve::{CubicBezier, Keyframe, KeyframeTrack};
+        use crate::anim::registry::{Timing, TransitionDef};
+        use crate::anim::value::{AnimVector, PropertyKind};
+
+        let track = KeyframeTrack::new(vec![
+            Keyframe {
+                time: 0.0,
+                value: AnimVector::new([0.0, 0.0, 0.0, 0.0], 2),
+                easing_in: CubicBezier::LINEAR,
+            },
+            Keyframe {
+                time: 2.0,
+                value: AnimVector::new([80.0, 0.0, 0.0, 0.0], 2),
+                easing_in: CubicBezier::LINEAR,
+            },
+        ])
+        .unwrap();
+        let mut registry = TransitionRegistry::new();
+        registry.register(
+            "drift",
+            TransitionDef::builder()
+                .drive(PropertyKind::Position, Timing::Keyframes(track))
+                .ambient(true)
+                .build()
+                .unwrap(),
+        );
+
+        // The tree never changes: same offset, same text, every frame. Under
+        // the pre-005 rule nothing here would ever start a trajectory.
+        let tree = ViewNode::new(NodeKind::Stack, "app").child(
+            ViewNode::new(NodeKind::Text, "mover")
+                .with_props(crate::tree::Props {
+                    text: Some("mover".into()),
+                    ..crate::tree::Props::default()
+                })
+                .with_transition("drift")
+                .with_ambient(true),
+        );
+
+        let mut engine = TransitionEngine::new(registry);
+        let declarations = Declarations::collect(&tree);
+        let settled = fixtures::frame(&tree, 1, 200.0, 100.0);
+        let laid_out = settled
+            .placement("/app/mover")
+            .expect("the fixture places a mover")
+            .rect
+            .x;
+
+        let mut xs = Vec::new();
+        for step in 0..12_u32 {
+            let mut frame = fixtures::frame(&tree, u64::from(step) + 1, 200.0, 100.0);
+            let activity = engine.animate(&mut frame, &declarations, f64::from(step) * 0.25);
+            xs.push(frame.placement("/app/mover").expect("placed").rect.x);
+            assert_eq!(
+                activity.ambient, 1,
+                "step {step}: the loop is counted as an endless animation"
+            );
+            assert!(
+                activity.is_settled(),
+                "step {step}: an ambient loop must never block settle, however \
+                 much it is moving (contracts/animation.md)"
+            );
+            assert!(
+                crate::anim::wants_frame(activity),
+                "step {step}: and yet frames must keep coming"
+            );
+        }
+
+        assert!(
+            xs.iter().any(|x| (*x - laid_out).abs() > 1.0),
+            "the ambient track never moved the placement off its laid-out x              ({laid_out}); saw {xs:?}"
+        );
+        assert!(
+            xs.windows(2).any(|w| (w[1] - w[0]).abs() > 0.5),
+            "the ambient track started and then stopped; saw {xs:?}"
+        );
     }
 
     #[test]
