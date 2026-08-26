@@ -19,8 +19,8 @@ use crate::tree::{KeyPath, ValidatedTree};
 
 pub use digest::{FrameDigest, canonical_decimal, hash_text};
 pub use placement::{
-    PaintContent, PaintState, Placement, PlacementList, PlacementSemantics, PlacementSink,
-    TextPaint,
+    CaretPaint, PaintContent, PaintState, Placement, PlacementList, PlacementSemantics,
+    PlacementSink, TextPaint,
 };
 pub use rounding::{DeviceRect, round_coord, round_rect};
 pub use viewport::Viewport;

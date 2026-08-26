@@ -25,7 +25,7 @@ use crate::token::{
     standard_vocabulary,
 };
 use crate::tree::{
-    InsetRefs, Key, NodeKind, Props, Registry, TextWrap, ValidatedTree, ViewNode, validate,
+    Anchor, InsetRefs, Key, NodeKind, Props, Registry, TextWrap, ValidatedTree, ViewNode, validate,
 };
 
 /// Accept `tree` against [`extended_vocabulary`]`(tree)` — the shipped
@@ -171,6 +171,15 @@ fn spacing_refs(node: &ViewNode, out: &mut Vec<TokenName>) {
         .padding
         .iter()
         .flat_map(|refs| [&refs.top, &refs.right, &refs.bottom, &refs.left].into_iter());
+    // An anchor offset is a spacing reference like any other, and it is the
+    // only one that does not sit on a `props.*_spacing` field. Missing it here
+    // would let a fixture name an offset token outside the pre-bound gap ramp
+    // and have `extended_vocabulary` quietly not declare it — the theme would
+    // then refuse a name the tree legitimately uses.
+    let anchor_offset = match &node.props.anchor {
+        Some(Anchor::Node { offset, .. }) => offset.as_ref(),
+        _ => None,
+    };
     for name in [
         &node.props.spacing,
         &node.props.column_spacing,
@@ -179,6 +188,7 @@ fn spacing_refs(node: &ViewNode, out: &mut Vec<TokenName>) {
     .into_iter()
     .chain(padding)
     .flatten()
+    .chain(anchor_offset)
     {
         out.push(name.clone());
     }
@@ -577,10 +587,36 @@ impl<C: ContentMeasure, R: RowSource> Harness<C, R> {
 
 #[cfg(test)]
 mod tests {
-    use super::{GeneratedRows, Harness, MonoContent};
+    use super::{
+        GeneratedRows, Harness, MAX_PREBOUND_GAP, MonoContent, extended_vocabulary, gap_token,
+    };
     use crate::geom::Size;
     use crate::layout::{ContentMeasure, RowSource, TextRequest};
-    use crate::tree::TextWrap;
+    use crate::tree::{Anchor, Edge, NodeKind, Props, TextWrap, ViewNode};
+
+    /// An anchor offset is the one spacing reference that does not sit on a
+    /// `props.*_spacing` field. Until `spacing_refs` walked it, a fixture
+    /// naming an offset outside the pre-bound ramp got a vocabulary that did
+    /// not declare it, and the tree it legitimately wrote was refused.
+    #[test]
+    fn extended_vocabulary_declares_an_anchor_offset_outside_the_prebound_ramp() {
+        let far = gap_token((MAX_PREBOUND_GAP + 7) as f32);
+        let mut node = ViewNode::new(NodeKind::Stack, "root");
+        node.props = Props {
+            anchor: Some(Anchor::Node {
+                id: "/target".to_owned(),
+                edge: Edge::Bottom,
+                align: crate::tree::Align::default(),
+                offset: Some(far.clone()),
+            }),
+            ..Props::default()
+        };
+        let vocab = extended_vocabulary(&node);
+        assert!(
+            vocab.contains(&far),
+            "the offset token {far} must be declared, or the tree that names it cannot validate"
+        );
+    }
 
     fn req<'a>(text: &'a str, width: Option<f32>, wrap: TextWrap) -> TextRequest<'a> {
         TextRequest {
