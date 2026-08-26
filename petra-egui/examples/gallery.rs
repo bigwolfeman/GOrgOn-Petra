@@ -16,6 +16,10 @@
 //! Run it: `cargo run -p gorgon-petra-egui --example gallery`
 //! Light theme: `PETRA_GALLERY_THEME=light cargo run … --example gallery`
 //! Capture one frame and exit: `PETRA_GALLERY_SHOT=/tmp/gallery.ppm cargo run …`
+//! See the whole page, not the top of it: `PETRA_GALLERY_SIZE=1200x1900 cargo run …`
+//!   — see [`viewport_from_env`]. The default pin is what makes two captures
+//!   comparable, so anything taken with this set is a picture, not a
+//!   measurement, and the run says so on stderr.
 //! Retone any colour token: `PETRA_GALLERY_COLOR=text.muted=#c6c6c6 cargo run …`
 //!   — see [`colors_from_env`]. Comma-separate to move several at once.
 //! Sweep the glyph-sharpness dial: `PETRA_GALLERY_COVERAGE=3,snap cargo run …`
@@ -2000,10 +2004,20 @@ const SHOT_AFTER_PASSES: u32 = 3;
 /// short capture would silently drop the bottom of the page, and a
 /// measurement taken from it would be a measurement of a different page that
 /// looked like a valid one.
-fn write_ppm(path: &std::path::Path, image: &egui::ColorImage) -> std::io::Result<()> {
+fn write_ppm(
+    path: &std::path::Path,
+    image: &egui::ColorImage,
+    viewport: (f32, f32),
+) -> std::io::Result<()> {
     use std::io::Write as _;
     let [src_w, src_h] = image.size;
-    let (w, h) = (GALLERY_VIEWPORT.0 as usize, GALLERY_VIEWPORT.1 as usize);
+    // `viewport`, not [`GALLERY_VIEWPORT`]. Reading the constant here while
+    // `PETRA_GALLERY_SIZE` moved the pin produced precisely the failure the
+    // doc above describes: a run pinned to 1200x1750 wrote 1200x900 and
+    // *announced 1750*, because the guard below compared the granted window
+    // against the wrong number and the crop then took the wrong rows.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let (w, h) = (viewport.0 as usize, viewport.1 as usize);
     if src_w < w || src_h < h {
         return Err(std::io::Error::other(format!(
             "the window manager granted {src_w}x{src_h}, which is smaller than the \
@@ -2029,6 +2043,10 @@ fn write_ppm(path: &std::path::Path, image: &egui::ColorImage) -> std::io::Resul
 struct GalleryWindow {
     host: Host<Gallery>,
     shot: Option<ShotPlan>,
+    /// The pinned surface for this run: [`GALLERY_VIEWPORT`], or whatever
+    /// [`viewport_from_env`] resolved. Held on the window rather than read
+    /// per frame, so one run cannot change size underneath itself.
+    viewport: (f32, f32),
 }
 
 /// The layout surface every capture of this page is taken at.
@@ -2048,12 +2066,58 @@ struct GalleryWindow {
 /// `safe_area_insets` has to be zeroed alongside it.
 const GALLERY_VIEWPORT: (f32, f32) = (1200.0, 900.0);
 
+/// The pinned surface for this run: [`GALLERY_VIEWPORT`] unless
+/// `PETRA_GALLERY_SIZE=WIDTHxHEIGHT` says otherwise.
+///
+/// **The default is the point and the override is the exception.** The pin
+/// exists so two captures are comparable, and a knob that changes it can
+/// destroy exactly the property the constant was added for — a measurement
+/// taken at one size cannot be compared with one taken at another, because
+/// the text rewraps and the grid tracks move.
+///
+/// It is here because 1200x900 shows the top of a longer page, and "what
+/// does the whole thing look like" is a real question the file could not
+/// answer. Every comparison capture still comes from the default; anything
+/// taken with this set is a *picture*, not a measurement, and a run that
+/// uses it says so on stderr rather than quietly producing a raster that
+/// looks like all the others.
+///
+/// # Panics
+/// On a value that is not `WIDTHxHEIGHT` in positive, finite logical units.
+/// A silently-ignored size knob would be worse than no knob: the operator
+/// would read the resulting capture as the size they asked for.
+fn viewport_from_env() -> (f32, f32) {
+    let Ok(spec) = std::env::var("PETRA_GALLERY_SIZE") else {
+        return GALLERY_VIEWPORT;
+    };
+    let bad = || -> ! {
+        panic!("PETRA_GALLERY_SIZE={spec:?} must be WIDTHxHEIGHT in logical units, e.g. 1200x1600")
+    };
+    let (w, h) = spec.split_once(['x', 'X']).unwrap_or_else(|| bad());
+    let parse = |s: &str| -> f32 {
+        let v: f32 = s.trim().parse().unwrap_or_else(|_| bad());
+        if !v.is_finite() || v <= 0.0 {
+            bad();
+        }
+        v
+    };
+    let size = (parse(w), parse(h));
+    eprintln!(
+        "gallery: PETRA_GALLERY_SIZE pins the page to {}x{} instead of the usual {}x{}. \
+         This capture is a picture, not a measurement -- it cannot be compared with one \
+         taken at the default size, because the text rewraps and the grid tracks move.",
+        size.0, size.1, GALLERY_VIEWPORT.0, GALLERY_VIEWPORT.1
+    );
+    size
+}
+
 impl eframe::App for GalleryWindow {
-    /// Pin the layout surface to [`GALLERY_VIEWPORT`], whatever the host gave.
+    /// Pin the layout surface to [`GALLERY_VIEWPORT`], or to whatever
+    /// `PETRA_GALLERY_SIZE` asked for, whatever the host gave.
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         raw_input.screen_rect = Some(egui::Rect::from_min_size(
             egui::Pos2::ZERO,
-            egui::vec2(GALLERY_VIEWPORT.0, GALLERY_VIEWPORT.1),
+            egui::vec2(self.viewport.0, self.viewport.1),
         ));
         raw_input.safe_area_insets = Some(egui::SafeAreaInsets::default());
     }
@@ -2107,11 +2171,11 @@ impl eframe::App for GalleryWindow {
             })
         });
         if let Some(image) = image {
-            match write_ppm(&plan.path, &image) {
+            match write_ppm(&plan.path, &image, self.viewport) {
                 Ok(()) => println!(
                     "gallery: wrote the pinned {}x{} page, cropped from a {}x{} window, to {}",
-                    GALLERY_VIEWPORT.0 as usize,
-                    GALLERY_VIEWPORT.1 as usize,
+                    self.viewport.0 as usize,
+                    self.viewport.1 as usize,
                     image.size[0],
                     image.size[1],
                     plan.path.display()
@@ -2127,12 +2191,12 @@ impl eframe::App for GalleryWindow {
 }
 
 fn main() -> eframe::Result<()> {
+    let viewport = viewport_from_env();
     let options = eframe::NativeOptions {
         // Asked for, not relied on: `GalleryWindow::raw_input_hook` is what
-        // actually decides the layout surface. One constant feeds both so a
+        // actually decides the layout surface. One value feeds both so a
         // window that *is* granted the request holds no margin to explain.
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([GALLERY_VIEWPORT.0, GALLERY_VIEWPORT.1]),
+        viewport: egui::ViewportBuilder::default().with_inner_size([viewport.0, viewport.1]),
         ..eframe::NativeOptions::default()
     };
     eframe::run_native(
@@ -2146,7 +2210,11 @@ fn main() -> eframe::Result<()> {
                 passes: 0,
                 requested: false,
             });
-            Ok(Box::new(GalleryWindow { host, shot }))
+            Ok(Box::new(GalleryWindow {
+                host,
+                shot,
+                viewport,
+            }))
         }),
     )
 }
