@@ -30,6 +30,7 @@ pub mod invariant;
 
 pub mod accesskit;
 pub mod draw;
+pub mod focus_caret;
 pub mod fonts;
 pub mod host;
 pub mod image;

@@ -483,11 +483,18 @@ fn a_well_formed_frame_audits_clean() {
             axis: Some(crate::geom::Axis::Vertical),
             ..Props::default()
         })
-        .child(ViewNode::new(NodeKind::Text, "reload").interactive(
-            Role::Button,
-            "Reload",
-            &[Interaction::Click, Interaction::Focus],
-        ))
+        .child(
+            ViewNode::new(NodeKind::Text, "reload")
+                .with_props(Props {
+                    text: Some("Reload".into()),
+                    ..Props::default()
+                })
+                .interactive(
+                    Role::Button,
+                    "Reload",
+                    &[Interaction::Click, Interaction::Focus],
+                ),
+        )
         .child(
             ViewNode::new(NodeKind::Text, "state").with_semantics(Semantics {
                 role: Some(Role::Status),
@@ -512,11 +519,18 @@ fn audit_fixture() -> (crate::semantic::SemanticTree, PetrifiedFrame) {
             axis: Some(crate::geom::Axis::Vertical),
             ..Props::default()
         })
-        .child(ViewNode::new(NodeKind::Text, "reload").interactive(
-            Role::Button,
-            "Reload",
-            &[Interaction::Click, Interaction::Focus],
-        ))
+        .child(
+            ViewNode::new(NodeKind::Text, "reload")
+                .with_props(Props {
+                    text: Some("Reload".into()),
+                    ..Props::default()
+                })
+                .interactive(
+                    Role::Button,
+                    "Reload",
+                    &[Interaction::Click, Interaction::Focus],
+                ),
+        )
         .child(ViewNode::new(NodeKind::Input, "filter").interactive(
             Role::TextInput,
             "Filter",

@@ -38,6 +38,11 @@ pub(crate) const SPACING_04: &str = "spacing-04";
 /// See [`SPACING_01`]. 16 units.
 pub(crate) const SPACING_05: &str = "spacing-05";
 
+/// Control height `size-md`. Numeric because `Constraints` stay extents
+/// (FR-053): the token ramp owns the number, this constant is how a
+/// component cites it without spelling `40.0` at the call site.
+pub(crate) const SIZE_MD: f32 = 40.0;
+
 pub(crate) const SHAPE_NONE: &str = "shape.corner-none";
 pub(crate) const SHAPE_SM: &str = "shape.corner-sm";
 pub(crate) const SHAPE_MD: &str = "shape.corner-md";
@@ -46,6 +51,7 @@ pub(crate) const SHAPE_FULL: &str = "shape.corner-full";
 pub(crate) const SILHOUETTE_RECT: &str = "shape.silhouette-rect";
 pub(crate) const SILHOUETTE_TRIANGLE: &str = "shape.silhouette-triangle";
 pub(crate) const SILHOUETTE_DIAMOND: &str = "shape.silhouette-diamond";
+pub(crate) const SILHOUETTE_OCTAGON: &str = "shape.silhouette-octagon";
 
 pub(crate) const TYPOGRAPHY_BODY: &str = "typography.body";
 pub(crate) const TYPOGRAPHY_HEADING: &str = "typography.heading";
@@ -136,6 +142,7 @@ pub(crate) const ALL: &[&str] = &[
     SILHOUETTE_RECT,
     SILHOUETTE_TRIANGLE,
     SILHOUETTE_DIAMOND,
+    SILHOUETTE_OCTAGON,
     TYPOGRAPHY_BODY,
     TYPOGRAPHY_HEADING,
     SHADOW_RAISED,

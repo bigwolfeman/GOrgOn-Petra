@@ -969,22 +969,26 @@ impl Parity {
                 align: Some(Align::Stretch),
                 ..Props::default()
             })
-            .child(caption("l-name", "fiber name"))
-            // An `Input` is a leaf, so it takes no padding: the only way it
-            // gets the height of a real control is a floor on its own
-            // constraints. A paint slot is not a child, so its corner still
-            // applies to its own rect.
-            .child(
-                field("f-name", "supervisor/root")
-                    .with_constraints(Self::at_least(Axis::Vertical, 28.0)),
-            )
-            .child(caption("l-target", "build target"))
+            .child(Self::row(
+                "l-name",
+                None,
+                Align::Center,
+                vec![caption("l-name-text", "fiber name")],
+            ))
+            .child(field("f-name", "supervisor/root"))
+            .child(Self::row(
+                "l-target",
+                None,
+                Align::Center,
+                vec![caption("l-target-text", "build target")],
+            ))
             .child(
                 on_layer(
                     ViewNode::new(NodeKind::Input, "f-target").with_props(readonly),
                     1,
                 )
-                .with_constraints(Self::at_least(Axis::Vertical, 28.0)),
+                // Not `field()`, so it does not carry `size-md` itself.
+                .with_constraints(Self::at_least(Axis::Vertical, 40.0)),
             );
 
         section(

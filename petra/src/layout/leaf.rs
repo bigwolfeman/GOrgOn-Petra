@@ -141,14 +141,26 @@ fn measure_input(node: &ViewNode, ctx: &mut LayoutCtx<'_>, proposal: SizeProposa
         Some(text) if !text.is_empty() => text,
         _ => node.props.placeholder.as_deref().unwrap_or(" "),
     };
+    // Same inset the painter uses for `Input` (`spacing-04` each side). A
+    // shrink-wrapped field has to ask for that room at measure time or the
+    // first glyph sits on the border. When the offer is finite, shape the
+    // run against the inner width so the insets do not overflow the slot.
+    let inset = ctx.spacing(&Some(
+        crate::token::TokenName::new("spacing-04").expect("spacing-04 is in the vocabulary"),
+    ));
+    let inner_width = proposal
+        .horizontal
+        .available()
+        .map(|w| (w - 2.0 * inset).max(0.0));
     let req = crate::layout::TextRequest {
         text: content,
         style: props.style,
         wrap: crate::tree::TextWrap::Clip,
         max_lines: Some(1),
-        available_width: proposal.horizontal.available(),
+        available_width: inner_width,
     };
-    ctx.content.text(&req).size
+    let size = ctx.content.text(&req).size;
+    Size::new(size.w + 2.0 * inset, size.h)
 }
 
 #[cfg(test)]

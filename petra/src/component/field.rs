@@ -1,7 +1,9 @@
 //! `field` — the one text-entry component.
 
-use super::tokens::{BORDER_SUBTLE, SHAPE_SM, SURFACE_RAISED, TEXT_MUTED, TYPOGRAPHY_BODY, t};
-use crate::tree::{Interaction, Key, NodeKind, Props, Role, ViewNode};
+use super::tokens::{
+    BORDER_SUBTLE, SHAPE_SM, SIZE_MD, SURFACE_RAISED, TEXT_MUTED, TYPOGRAPHY_BODY, t,
+};
+use crate::tree::{AxisConstraint, Constraints, Interaction, Key, NodeKind, Props, Role, ViewNode};
 
 /// An editable text field.
 ///
@@ -33,17 +35,16 @@ use crate::tree::{Interaction, Key, NodeKind, Props, Role, ViewNode};
 /// same number."* The edge is now 3.34:1 in light instead of 8.70:1: it is
 /// still an outlined field, and it is no longer as loud as its own contents.
 ///
-/// A focus-coloured underline in the Material style is **not** available and
-/// the reason is honest rather than aesthetic: this painter strokes all four
-/// sides or none, there is no bottom-edge paint slot, and inventing one is a
-/// change to `gorgon-petra-egui` that this pass did not make. The focus ring
-/// already marks the focused field.
+/// Keyboard focus on a field is two vertical bars hugging the left and
+/// right, not the underline buttons get. Geometry is `FocusRing::hugs`.
 ///
 /// `NodeKind::Input` is a leaf kind, so unlike [`super::button`] it carries
 /// no padding (`Props.padding` is refused on a leaf,
 /// `crate::tree::validate::Violation::PaddingOnLeafKind`) — but a paint
 /// slot is not a child, so the corner radius still applies directly to the
-/// field's own rect.
+/// field's own rect. The text inset lives in the painter (`spacing-04`
+/// horizontal, vertically centred) because that is the only place a leaf
+/// has a chrome rect and a content origin as two different things.
 pub fn field(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
     let label = label.into();
     let mut props = Props {
@@ -57,6 +58,14 @@ pub fn field(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
     props.tokens.insert("radius".into(), t(SHAPE_SM));
     ViewNode::new(NodeKind::Input, key)
         .with_props(props)
+        .with_constraints(Constraints {
+            vertical: AxisConstraint {
+                min: Some(SIZE_MD),
+                max: None,
+                priority: 0,
+            },
+            ..Constraints::default()
+        })
         .interactive(
             Role::TextInput,
             label,

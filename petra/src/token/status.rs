@@ -37,6 +37,8 @@ pub enum StatusShape {
     Square,
     /// A diamond.
     Diamond,
+    /// A regular octagon. The shipped Down marker: a stop-sign, not a box.
+    Octagon,
 }
 
 /// One status's colour, shape, and text, always constructed together

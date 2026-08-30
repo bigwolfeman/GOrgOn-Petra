@@ -363,6 +363,10 @@ pub fn place_collection(
                         row_size.along(axis),
                         row_size.across(axis),
                     );
+                    // Inherit the scroll's viewport clip. Overscan rows sit
+                    // outside it on purpose: they are placed so a later
+                    // frame can scroll without a hole, and they are not
+                    // visible, hittable, or Tab-reachable until they are.
                     let row_slot = Slot {
                         rect: row_rect,
                         z: slot.z,
@@ -421,7 +425,7 @@ fn axis_rect(
 
 #[cfg(test)]
 mod tests {
-    use crate::frame::placement::PlacementList;
+    use crate::frame::placement::{Placement, PlacementList};
     use crate::geom::{Axis, Rect, Size};
     use crate::layout::{MeasureCache, Proposal, SizeProposal, Slot};
     use crate::testing::{GeneratedRows, Harness, MonoContent, gap_token};
@@ -765,6 +769,44 @@ mod tests {
                 "offset {offset}: the window must sit at the offset, not at the top"
             );
         }
+    }
+
+    /// Overscan places extra rows so a later frame can scroll without a
+    /// hole. Those rows sit outside the viewport clip: they are in the
+    /// frame, and they are not visible. Tab follows [`Placement::is_visible`],
+    /// so they are not reachable until the offset moves them in.
+    #[test]
+    fn overscan_rows_sit_outside_the_viewport_clip() {
+        let mut h = Harness::with(MonoContent::new(), GeneratedRows::new("fibers", 100));
+        let tree = scroll_with_collection(100, 28.0, 64.0);
+        let mut path = KeyPath::root();
+        let mut sink = PlacementList::new();
+        let viewport = Rect::new(0.0, 0.0, 200.0, 224.0);
+        crate::layout::place(
+            &tree,
+            &mut h.ctx(),
+            &mut path,
+            Slot::new(viewport),
+            &mut sink,
+        );
+        let rows: Vec<&Placement> = sink
+            .as_slice()
+            .iter()
+            .filter(|p| p.id.contains("/row-"))
+            .collect();
+        let visible = rows.iter().filter(|p| p.is_visible()).count();
+        let hidden = rows.iter().filter(|p| !p.is_visible()).count();
+        assert!(
+            hidden > 0,
+            "overscan of 64 on 28-unit rows must place at least one row \
+             past a 224-unit viewport; placed {}",
+            rows.len()
+        );
+        assert!(
+            visible >= 7 && visible <= 9,
+            "the viewport holds eight 28-unit rows; saw {visible} visible of {}",
+            rows.len()
+        );
     }
 
     #[test]

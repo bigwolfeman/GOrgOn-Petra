@@ -49,7 +49,7 @@ use super::tokens::{
     TEXT_PRIMARY, t,
 };
 use super::{pad, stack, swatch};
-use crate::geom::Axis;
+use crate::geom::{Align, Axis};
 use crate::tree::{Interaction, Key, Role, ViewNode};
 
 const BOX: f32 = 12.0;
@@ -75,6 +75,9 @@ fn box_control(
             text("label", label.clone()),
         ],
     );
+    // Body line-height is 20, the box is 12. Start-align sits the box on the
+    // top of the line; Center puts it on the optical midline.
+    row.props.align = Some(Align::Center);
     row.props.padding = Some(pad(SPACING_02, SPACING_01));
     let mut node = row.interactive(
         Role::Button,
@@ -130,6 +133,8 @@ pub fn toggle(key: impl Into<Key>, label: impl Into<String>, on: bool) -> ViewNo
         Some(SPACING_03),
         vec![track, text("label", label.clone())],
     );
+    // Same 12-vs-20 cross-axis mismatch as [`box_control`].
+    row.props.align = Some(Align::Center);
     row.props.padding = Some(pad(SPACING_02, SPACING_01));
     let mut node = row.interactive(
         Role::Button,

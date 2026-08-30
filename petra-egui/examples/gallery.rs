@@ -362,6 +362,9 @@ struct Gallery {
     selected_row: Option<usize>,
     /// The series the registered sparkline painter draws.
     history: History,
+    /// Passes the last flying-caret hop took, copied off the host after
+    /// each pass so the telemetry band can show it.
+    last_hop: u32,
 }
 
 impl Default for Gallery {
@@ -384,6 +387,7 @@ impl Default for Gallery {
             progress: 0.62,
             selected_row: Some(3),
             history: History::default(),
+            last_hop: 0,
         }
     }
 }
@@ -786,12 +790,13 @@ impl Gallery {
                 note(
                     "last",
                     &format!(
-                        "last event: {}   ·   dismissals reported: {}",
+                        "last event: {}   ·   last hop: {} frames   ·   dismissals reported: {}",
                         if self.last_event.is_empty() {
                             "none yet — click a control or press Tab"
                         } else {
                             &self.last_event
                         },
+                        self.last_hop,
                         self.dismissals
                     ),
                 ),
@@ -985,20 +990,25 @@ impl Gallery {
                 align: Some(Align::Stretch),
                 ..Props::default()
             })
-            .child(caption("l-name", "fiber name"))
-            // A `field` is a `NodeKind::Input`, which is a leaf: padding is
-            // refused on it (`Violation::PaddingOnLeafKind`), so the only way
-            // a field gets the height of a real control is a floor on its own
-            // constraints. A paint slot is not a child, so its corner radius
-            // still applies to its own rect.
-            .child(
-                field("f-name", "supervisor/root")
-                    .with_constraints(Self::at_least(Axis::Vertical, 28.0)),
-            )
-            .child(caption("l-cap", "capability"))
-            .child(
-                field("f-cap", "fs.read").with_constraints(Self::at_least(Axis::Vertical, 28.0)),
-            );
+            // Stretch fills the row to `size-md`. A bare caption paints at
+            // `rect.min`, so the words sat on the top of the 40-unit cell
+            // while the field text sat on the midline. A one-child Center
+            // row keeps Stretch (the field still fills the track) and
+            // seats the caption on that same midline.
+            .child(Self::row(
+                "l-name",
+                None,
+                Align::Center,
+                vec![caption("l-name-text", "fiber name")],
+            ))
+            .child(field("f-name", "supervisor/root"))
+            .child(Self::row(
+                "l-cap",
+                None,
+                Align::Center,
+                vec![caption("l-cap-text", "capability")],
+            ))
+            .child(field("f-cap", "fs.read"));
 
         section(
             "form",
@@ -1167,7 +1177,7 @@ impl Gallery {
                         "note",
                         "Colour is never the only channel: every state carries its own \
                          word and its own silhouette — OK is a disc, Degraded a \
-                         triangle, Down a square — because `status` takes a whole \
+                         triangle, Down an octagon — because `status` takes a whole \
                          StatusToken and there is no way to hand it a hue on its own.",
                     ),
                 ],
@@ -2025,6 +2035,14 @@ struct GalleryWindow {
     /// [`viewport_from_env`] resolved. Held on the window rather than read
     /// per frame, so one run cannot change size underneath itself.
     viewport: (f32, f32),
+    /// Capture runs pin `screen_rect` so two PPMs are the same page.
+    /// Interactive runs do not: pinning 1200×900 inside a taller window
+    /// truncated the page and left a black band, which is what the operator
+    /// could not scroll past.
+    pin: bool,
+    /// Interactive runs ask the compositor for keyboard focus once, so Tab
+    /// is not swallowed by the terminal that launched the window.
+    grabbed_focus: bool,
 }
 
 /// The layout surface every capture of this page is taken at.
@@ -2043,6 +2061,11 @@ struct GalleryWindow {
 /// `PARITY_VIEWPORT` — see that constant for the fuller argument, and for why
 /// `safe_area_insets` has to be zeroed alongside it.
 const GALLERY_VIEWPORT: (f32, f32) = (1200.0, 900.0);
+
+/// Inner size an interactive window *asks* for. Not a layout pin: the host
+/// lays out at whatever the compositor grants. 1800 is tall enough that the
+/// page of cards is on screen without relying on wheel-scroll to find a field.
+const GALLERY_INTERACTIVE: (f32, f32) = (1200.0, 1800.0);
 
 /// The pinned surface for this run: [`GALLERY_VIEWPORT`] unless
 /// `PETRA_GALLERY_SIZE=WIDTHxHEIGHT` says otherwise.
@@ -2090,18 +2113,24 @@ fn viewport_from_env() -> (f32, f32) {
 }
 
 impl eframe::App for GalleryWindow {
-    /// Pin the layout surface to [`GALLERY_VIEWPORT`], or to whatever
-    /// `PETRA_GALLERY_SIZE` asked for, whatever the host gave.
+    /// Capture runs pin the layout surface so two PPMs are comparable.
+    /// Interactive runs take the window the compositor actually granted.
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
-        raw_input.screen_rect = Some(egui::Rect::from_min_size(
-            egui::Pos2::ZERO,
-            egui::vec2(self.viewport.0, self.viewport.1),
-        ));
         raw_input.safe_area_insets = Some(egui::SafeAreaInsets::default());
+        if self.pin {
+            raw_input.screen_rect = Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(self.viewport.0, self.viewport.1),
+            ));
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        if !self.grabbed_focus && self.shot.is_none() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            self.grabbed_focus = true;
+        }
         self.host.pass(&ctx);
 
         let seq = self.host.frame().map_or(0, |f| f.seq);
@@ -2127,6 +2156,11 @@ impl eframe::App for GalleryWindow {
         // to show this pass's own numbers this pass; the label says "previous
         // pass" rather than pretending otherwise.
         self.host.app_mut().counters = counters;
+        self.host.app_mut().last_hop = if self.host.caret().is_moving() {
+            self.host.hop_passes()
+        } else {
+            self.host.last_hop_passes()
+        };
 
         let Some(plan) = &mut self.shot else { return };
         plan.passes += 1;
@@ -2169,29 +2203,50 @@ impl eframe::App for GalleryWindow {
 }
 
 fn main() -> eframe::Result<()> {
-    let viewport = viewport_from_env();
-    let options = eframe::NativeOptions {
-        // Asked for, not relied on: `GalleryWindow::raw_input_hook` is what
-        // actually decides the layout surface. One value feeds both so a
-        // window that *is* granted the request holds no margin to explain.
-        viewport: egui::ViewportBuilder::default().with_inner_size([viewport.0, viewport.1]),
+    let shot = std::env::var_os("PETRA_GALLERY_SHOT").map(|path| ShotPlan {
+        path: std::path::PathBuf::from(path),
+        passes: 0,
+        requested: false,
+    });
+    let size_pin = std::env::var("PETRA_GALLERY_SIZE").is_ok();
+    let pin = shot.is_some() || size_pin;
+    let viewport = if pin {
+        viewport_from_env()
+    } else {
+        GALLERY_INTERACTIVE
+    };
+    // Interactive runs ask the compositor to activate the window so Tab
+    // reaches Petra instead of staying in the terminal that launched us.
+    let mut builder = egui::ViewportBuilder::default().with_inner_size([viewport.0, viewport.1]);
+    if shot.is_none() {
+        builder = builder.with_active(true);
+    }
+    let mut options = eframe::NativeOptions {
+        // Asked for, not relied on: for a capture, `raw_input_hook` is what
+        // actually decides the layout surface. Interactive runs let the
+        // compositor's window be the surface.
+        viewport: builder,
         ..eframe::NativeOptions::default()
     };
+    // Interactive hops need the swapchain to queue a frame, not stall on
+    // latency 1 (eframe's LOW_LATENCY default). Captures keep the default
+    // so a screenshot is not a different present mode than CI.
+    if shot.is_none() {
+        options.wgpu_options = eframe::WgpuConfiguration::default()
+            .with_surface_config(eframe::SurfaceConfig::HIGH_THROUGHPUT);
+    }
     eframe::run_native(
         "Petra component gallery",
         options,
-        Box::new(|cc| {
+        Box::new(move |cc| {
             let mut host = build_host(&cc.egui_ctx, presenter_from_env());
             open_from_env(host.app_mut());
-            let shot = std::env::var_os("PETRA_GALLERY_SHOT").map(|path| ShotPlan {
-                path: std::path::PathBuf::from(path),
-                passes: 0,
-                requested: false,
-            });
             Ok(Box::new(GalleryWindow {
                 host,
                 shot,
                 viewport,
+                pin,
+                grabbed_focus: false,
             }))
         }),
     )
@@ -2263,6 +2318,42 @@ mod tests {
         let (ctx, mut host) = host_with(presenter);
         step(&ctx, &mut host, RawInput::default());
         (ctx, host)
+    }
+
+    fn key_press(key: egui::Key, modifiers: Modifiers) -> RawInput {
+        let mut input = RawInput::default();
+        input.events.push(Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        });
+        input
+    }
+
+    /// Tab and Shift+Tab walk the gallery's own focus tree, not egui's.
+    #[test]
+    fn tab_and_shift_tab_walk_the_gallery() {
+        let (ctx, mut host) = settled(Presenter::new(light()));
+        let first = host
+            .state()
+            .focused
+            .clone()
+            .expect("the first pass seats a focusable");
+        step(&ctx, &mut host, key_press(egui::Key::Tab, Modifiers::NONE));
+        let second = host
+            .state()
+            .focused
+            .clone()
+            .expect("Tab must land on a focusable");
+        assert_ne!(first, second, "Tab must leave {first} for the next control");
+        step(&ctx, &mut host, key_press(egui::Key::Tab, Modifiers::SHIFT));
+        assert_eq!(
+            host.state().focused.as_deref(),
+            Some(first.as_str()),
+            "Shift+Tab must walk back to {first}"
+        );
     }
 
     /// The gallery's own tree is acceptable.

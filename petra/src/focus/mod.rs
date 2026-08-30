@@ -15,10 +15,12 @@
 //! not sort, it filters the placement slice in place.
 //!
 //! A placement is focusable when [`PlacementSemantics::actions`] contains
-//! [`Interaction::Focus`] and [`PlacementSemantics::disabled`] is `false`
-//! (data-model.md §7; disabled nodes are skipped, never removed from the
-//! tree — they can become focusable again next frame without changing
-//! identity).
+//! [`Interaction::Focus`], the node is not disabled, and
+//! [`Placement::is_visible`] — the same clip the pointer already honours
+//! (`crate::input::hit_test`). An overscan row is placed so scrolling is
+//! smooth; it is not Tab-reachable. Disabled nodes are skipped, never
+//! removed from the tree — they can become focusable again next frame
+//! without changing identity (data-model.md §7).
 //!
 //! # Overlay scopes
 //!
@@ -302,7 +304,8 @@ fn index(
     let mut scope_chain = BTreeMap::new();
     for (idx, placement) in placements.iter().enumerate() {
         let focusable = placement.semantics.actions.contains(&Interaction::Focus)
-            && !placement.semantics.disabled;
+            && !placement.semantics.disabled
+            && placement.is_visible();
         if !focusable {
             continue;
         }
@@ -440,9 +443,12 @@ mod tests {
         Placement {
             id: id.into(),
             kind: NodeKind::Text,
-            rect: Rect::ZERO,
+            // A real compositor clip: the node is on screen. `Rect::ZERO`
+            // against `Rect::ZERO` does not overlap, and would drop every
+            // fixture from the order.
+            rect: Rect::new(0.0, 0.0, 10.0, 10.0),
             z: 0,
-            clip: Rect::ZERO,
+            clip: Rect::new(0.0, 0.0, 100.0, 100.0),
             opacity: 1.0,
             paint: PaintState::default(),
             semantics: PlacementSemantics {
@@ -460,6 +466,25 @@ mod tests {
 
     fn no_scopes() -> BTreeMap<String, InputPolicy> {
         BTreeMap::new()
+    }
+
+    /// A node the composer placed in overscan (rect outside the clip) is
+    /// in the frame so scrolling stays smooth. It is not in the Tab order:
+    /// the pointer already refuses it (`hit_test`), and keyboard reach
+    /// must match.
+    #[test]
+    fn a_clipped_away_node_is_not_in_the_tab_order() {
+        let mut hidden = placement("/hidden", None, true, false);
+        hidden.rect = Rect::new(0.0, 300.0, 10.0, 10.0);
+        hidden.clip = Rect::new(0.0, 0.0, 200.0, 200.0);
+        let placements = vec![
+            placement("/a", None, true, false),
+            hidden,
+            placement("/b", None, true, false),
+        ];
+        let tree = FocusTree::from_placements(&placements, &no_scopes());
+        assert_eq!(tree.order(), ["/a", "/b"]);
+        assert_eq!(tree.current(), Some("/a"));
     }
 
     #[test]

@@ -397,15 +397,11 @@ pub struct CoverageValue {
 /// what lets one `radius` ramp serve every silhouette instead of one
 /// combined token per (figure, radius) pair.
 ///
-/// Three variants, not four, and that is deliberate. A circle is
-/// [`Silhouette::Rect`] at `shape.corner-full`: the rect family already
-/// spans every convex rounded box from a sharp square to a full disc, and
-/// adding a `Circle` variant would make the same picture reachable two
-/// ways. [`Silhouette::Triangle`] and [`Silhouette::Diamond`] are the two
-/// figures no corner radius can reach, which is the whole reason this kind
-/// exists — see `crate::component::status`, where FR-015's shape channel
-/// used to collapse to a sub-pixel difference in corner radius because a
-/// rounded rect was the only figure the painter could draw.
+/// A circle is [`Silhouette::Rect`] at `shape.corner-full`: the rect family
+/// already spans every convex rounded box from a sharp square to a full
+/// disc, and adding a `Circle` variant would make the same picture reachable
+/// two ways. The polygons are the figures no corner radius can reach, which
+/// is the whole reason this kind exists — see `crate::component::status`.
 ///
 /// The engine names the figure; a renderer decides the geometry. Nothing
 /// here is in device units and nothing here knows about a graphics API.
@@ -423,6 +419,10 @@ pub enum Silhouette {
     /// A diamond inscribed in the node's rect: one vertex at the midpoint
     /// of each edge.
     Diamond,
+    /// A regular octagon inscribed in the node's rect. The stop-sign
+    /// figure: cut corners, flats on every side. `status.down` paints this
+    /// so Down is not a square sitting next to Degraded's triangle.
+    Octagon,
 }
 
 /// A resolved token value. Exactly one variant per [`TokenKind`]; the two
@@ -548,6 +548,7 @@ mod tests {
             (Silhouette::Rect, "\"rect\""),
             (Silhouette::Triangle, "\"triangle\""),
             (Silhouette::Diamond, "\"diamond\""),
+            (Silhouette::Octagon, "\"octagon\""),
         ] {
             let encoded = serde_json::to_string(&variant).expect("a unit variant serializes");
             assert_eq!(encoded, wire, "{variant:?} changed its wire spelling");

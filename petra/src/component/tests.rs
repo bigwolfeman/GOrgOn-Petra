@@ -192,6 +192,95 @@ fn selection_is_declared_state_not_only_a_fill_colour() {
     assert!(list_row("l", "row", true).semantics.selected);
 }
 
+#[test]
+fn marker_and_label_share_a_midline() {
+    use crate::geom::Align;
+    assert_eq!(
+        checkbox("c", "Checked", false).props.align,
+        Some(Align::Center)
+    );
+    assert_eq!(radio("r", "Chosen", false).props.align, Some(Align::Center));
+    assert_eq!(toggle("t", "On", false).props.align, Some(Align::Center));
+    let down = StatusToken::new(
+        TokenName::new("status.down").unwrap(),
+        StatusShape::Square,
+        "Down",
+    )
+    .unwrap();
+    assert_eq!(status("s", &down).props.align, Some(Align::Center));
+
+    // Props.align is the declaration. The row is 12-vs-20 (10-vs-20 for
+    // status); Start would place the marker ~4 units above the words.
+    // Petrify and compare the placed midlines so a layout that ignores
+    // align cannot stay green.
+    let mid = |suffix: &str, frame: &crate::frame::PetrifiedFrame| {
+        let rect = frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with(suffix))
+            .unwrap_or_else(|| panic!("{suffix} is missing from the petrified frame"))
+            .rect;
+        rect.y + rect.h * 0.5
+    };
+    let cases: &[(&str, ViewNode, &str, &str)] = &[
+        (
+            "checkbox",
+            checkbox("c", "Checked", false),
+            "/root/c/box",
+            "/root/c/label",
+        ),
+        (
+            "radio",
+            radio("r", "Chosen", false),
+            "/root/r/box",
+            "/root/r/label",
+        ),
+        (
+            "toggle",
+            toggle("t", "On", false),
+            "/root/t/track",
+            "/root/t/label",
+        ),
+        ("status", status("s", &down), "/root/s/dot", "/root/s/label"),
+    ];
+    for (name, node, marker, label) in cases {
+        let frame = petrify_lone(node.clone());
+        let marker_mid = mid(marker, &frame);
+        let label_mid = mid(label, &frame);
+        assert!(
+            (marker_mid - label_mid).abs() < 0.5,
+            "{name}: marker midline {marker_mid} vs label midline {label_mid}"
+        );
+    }
+}
+
+/// `size-md` is 40 in the ramp; a field that spelled 40.0 at the call site
+/// would drift the first time the ramp moved. The constraint is the
+/// declaration; the placed rect is the claim.
+#[test]
+fn a_field_is_as_tall_as_size_md() {
+    assert_eq!(super::tokens::SIZE_MD, 40.0);
+    let node = field("name", "Fiber name");
+    assert_eq!(node.constraints.vertical.min, Some(super::tokens::SIZE_MD));
+    let theme = crate::token::light();
+    let value = theme
+        .value(&TokenName::new("size-md").unwrap())
+        .expect("size-md is in the vocabulary");
+    match value {
+        crate::token::TokenValue::Spacing(units) => {
+            assert_eq!(*units, super::tokens::SIZE_MD);
+        }
+        other => panic!("size-md should be a spacing value, got {other:?}"),
+    }
+    let frame = petrify_lone(node);
+    let placed = frame
+        .placements
+        .iter()
+        .find(|p| p.id.ends_with("/root/name"))
+        .expect("the field is missing from the petrified frame");
+    assert_eq!(placed.rect.h, super::tokens::SIZE_MD);
+}
+
 /// A component with more than one visual part composes it from a primitive
 /// container (`NodeKind::Stack` or `NodeKind::Grid`), never by inventing a
 /// new node kind — gate C1-10, checked structurally rather than by reading
@@ -518,6 +607,27 @@ fn the_fixture_status_tokens_are_shaped_differently() {
     )
     .unwrap();
     assert_ne!(a.shape(), b.shape());
+}
+
+/// Petrify a single component under a vertical stack root.
+fn petrify_lone(child: ViewNode) -> crate::frame::PetrifiedFrame {
+    let root = ViewNode::new(NodeKind::Stack, "root")
+        .with_props(Props {
+            axis: Some(Axis::Vertical),
+            ..Props::default()
+        })
+        .child(child);
+    let registry = Registry::with_vocabulary(standard_vocabulary());
+    let mut harness = Harness::new();
+    let viewport = Viewport::new(VIEWPORT, ThemeMode::Dark);
+    harness.scale = viewport.scale;
+    petrify(
+        1,
+        validated_with(&root, &registry),
+        &mut harness.ctx(),
+        viewport,
+        TransitionActivity::default(),
+    )
 }
 
 /// Petrify a lone [`progress`] at `value` and return the widths the frame

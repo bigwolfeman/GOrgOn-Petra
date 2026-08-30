@@ -16,11 +16,12 @@
 //! ([`FocusTree::update`] — the vanished-focus rule) and writes the result to
 //! `LayoutState::focused`, which is what [`gorgon_petra::input::route`] aims
 //! every keyboard event with — and what
-//! [`gorgon_petra::frame::PlacementSemantics::focused`], and therefore the
-//! focus ring [`crate::paint`] draws, is projected from. Tab and Shift+Tab are consumed here for
-//! traversal rather than delivered to the application; everything else is
-//! routed. That is the whole of the wiring, and it is deliberately in the
-//! host: `gorgon-petra` decides *what* focus does, this crate decides *when*.
+//! [`gorgon_petra::frame::PlacementSemantics::focused`] is projected from.
+//! [`crate::focus_caret::FocusCaret`] interpolates the underline between
+//! those targets; Tab and Shift+Tab are consumed here for traversal rather
+//! than delivered to the application; everything else is routed. That is the
+//! whole of the wiring, and it is deliberately in the host: `gorgon-petra`
+//! decides *what* focus does, this crate decides *when*.
 //!
 //! # Where the pointer lives (`contracts/interaction-state.md` §7)
 //!
@@ -41,9 +42,10 @@
 //! something (FR-009, R-A §7(a)).
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use egui::{Context, Id, LayerId, Order};
-use gorgon_petra::anim::{FrameDecision, TransitionRegistry};
+use gorgon_petra::anim::{FrameDecision, TransitionRegistry, wants_frame};
 use gorgon_petra::focus::FocusTree;
 use gorgon_petra::frame::{FrameCounter, PetrifiedFrame, TransitionActivity, Viewport, petrify};
 use gorgon_petra::geom::{Scale, Size};
@@ -59,9 +61,13 @@ use gorgon_petra::token::{
 };
 use gorgon_petra::tree::{InputPolicy, Interaction, NodeKind, Props, Registry, ViewNode, validate};
 
+use crate::focus_caret::FocusCaret;
 use crate::image::ImageSources;
 use crate::input::EventTranslator;
-use crate::paint::{CustomPainters, PaintReport, paint_frame_with_hosts};
+use crate::paint::{
+    CustomPainters, PaintReport, caret_clip_limit, caret_dest_pair, focused_caret_target,
+    paint_caret_overlay, paint_frame_with_caret,
+};
 use crate::schedule::FrameMotion;
 use crate::text::{FontFaces, GalleyShaper, Typography};
 
@@ -367,6 +373,17 @@ pub struct Host<A: App> {
     /// Where the pointer is, what it is over, and what it has captured. The
     /// pointer's peer of `focus`; see this module's doc.
     pointer: PointerState,
+    /// The underline that interpolates between focus targets. Host-owned so
+    /// it never enters petrify or the digest; see `focus_caret`.
+    caret: FocusCaret,
+    /// Tessellated picture of the last full paint, without the caret. A hop
+    /// replays these meshes instead of walking every placement; eframe
+    /// tessellates `Shape::Mesh` by pointer, not by rebuilding glyph verts.
+    scene: Vec<(egui::Rect, Arc<egui::Mesh>)>,
+    /// Passes in the hop that is still flying, including the Tab that started it.
+    hop_passes: u32,
+    /// Passes in the hop that just landed. Zero before the first hop.
+    last_hop_passes: u32,
 }
 
 impl<A: App> Host<A> {
@@ -449,6 +466,10 @@ impl<A: App> Host<A> {
             last_motion: None,
             focus: FocusTree::default(),
             pointer: PointerState::new(),
+            caret: FocusCaret::new(),
+            scene: Vec::new(),
+            hop_passes: 0,
+            last_hop_passes: 0,
         }
     }
 
@@ -716,6 +737,11 @@ impl<A: App> Host<A> {
 
     /// Run one whole pass: input, view, petrify, paint, schedule.
     ///
+    /// A caret already in flight, with no new input and no change to the
+    /// viewport, skips view and petrify and paints the last picture with a
+    /// new bar. Rebuilding the tree to move a 3 px underline is what made a
+    /// 160 ms hop show three frames on a full page.
+    ///
     /// Public and independent of `eframe` so a test or the driver can step the
     /// host without a window.
     pub fn pass(&mut self, ctx: &Context) {
@@ -733,7 +759,7 @@ impl<A: App> Host<A> {
             theme_mode: snapshot.mode(),
         };
 
-        self.deliver_input(ctx);
+        let had_input = self.deliver_input(ctx);
         // Input may have moved focus or the pointer; the negotiation below
         // reads `LayoutState`, so publish both before the frame is measured
         // rather than after it is painted. A move published here needs no
@@ -741,6 +767,11 @@ impl<A: App> Host<A> {
         // hover and all.
         let _ = self.publish_focus();
         let _ = self.publish_pointer();
+
+        if self.can_reuse_frame(&viewport, had_input) {
+            self.paint_caret_on_last_frame(ctx, snapshot.as_ref());
+            return;
+        }
 
         // Theme and scale are global inputs to every measurement, so a change
         // to either invalidates wholesale; content changes are the
@@ -825,14 +856,12 @@ impl<A: App> Host<A> {
         // to what `petrify` produced.
         let decision = self.motion.advance(ctx, &mut frame, &tree);
 
-        let report = paint_frame_with_hosts(
-            &ctx.layer_painter(petra_layer()),
-            &frame,
-            &mut self.shaper,
-            snapshot.as_ref(),
-            &self.painters,
-            &mut self.images,
-        );
+        // Tick against the frame about to be painted, not the post-petrify
+        // reconciliation: Tab is published before petrify, so this pass
+        // already names the new node and the bar can leave on the same frame.
+        let now = ctx.input(|input| input.time);
+        self.tick_caret(&frame, now);
+        let report = self.paint_and_bake_scene(ctx, &frame, snapshot.as_ref());
         debug_assert!(
             report.is_complete(),
             "a paint pass must account for every placement and leave none \
@@ -908,6 +937,9 @@ impl<A: App> Host<A> {
         }
 
         self.schedule(ctx, &frame);
+        if self.caret.is_moving() {
+            ctx.request_repaint();
+        }
         self.last_frame = Some(frame);
         // Input for the *next* pass is routed against this frame, so the
         // policies it was placed with have to survive with it. Recomputing
@@ -922,6 +954,202 @@ impl<A: App> Host<A> {
         // breaks that Petra cannot prevent, and an operator who cannot read
         // the count has no way to find out. See `Host::decision`.
         self.last_motion = Some(decision);
+    }
+
+    /// Whether this pass can paint the last petrified picture with a new
+    /// caret instead of asking the application for a tree.
+    ///
+    /// Input, a viewport change, and a running transition each need a new
+    /// petrify. A caret in flight does not: the bar is not a placement.
+    fn can_reuse_frame(&self, viewport: &Viewport, had_input: bool) -> bool {
+        if had_input || !self.caret.is_moving() {
+            return false;
+        }
+        let Some(frame) = self.last_frame.as_ref() else {
+            return false;
+        };
+        frame.viewport == *viewport && !wants_frame(frame.transitions)
+    }
+
+    /// Tick the caret against the last petrified frame and paint that
+    /// picture. The application is not asked for a view; the hop is paint
+    /// only.
+    fn paint_caret_on_last_frame(&mut self, ctx: &Context, colors: &dyn crate::paint::TokenSource) {
+        let frame = self
+            .last_frame
+            .take()
+            .expect("can_reuse_frame required a petrified frame");
+        let now = ctx.input(|input| input.time);
+        self.tick_caret(&frame, now);
+        let report = if self.scene.is_empty() {
+            self.paint_and_bake_scene(ctx, &frame, colors)
+        } else {
+            self.paint_cached_scene(ctx, &frame, colors)
+        };
+        debug_assert!(
+            report.is_complete(),
+            "a reused paint pass must still account for every placement: \
+             {} drawn + {} clipped + {} empty + {} silent of {} \
+             placement(s), desynced={}",
+            report.drawn,
+            report.skipped_clipped,
+            report.empty,
+            report.silent,
+            report.placements,
+            report.desynced
+        );
+        self.note_hop_pass();
+        if self.caret.is_moving() {
+            ctx.request_repaint();
+        } else {
+            self.scene.clear();
+        }
+        self.last_frame = Some(frame);
+        self.last_report = Some(report);
+    }
+
+    fn caret_overlay(
+        &self,
+        frame: &PetrifiedFrame,
+    ) -> Option<(Vec<egui::Rect>, egui::Rect)> {
+        let scale = frame.viewport.scale;
+        let page = egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(frame.viewport.size.w, frame.viewport.size.h),
+        );
+        self.caret.bars().map(|bars| {
+            (
+                bars,
+                caret_clip_limit(self.caret.clip(), self.caret.is_moving(), page, scale),
+            )
+        })
+    }
+
+    fn tick_caret(&mut self, frame: &PetrifiedFrame, now: f64) {
+        let scale = frame.viewport.scale;
+        match focused_caret_target(frame) {
+            Some((id, node, figure, clip)) => {
+                self.caret
+                    .tick(Some((id, caret_dest_pair(node, figure, scale), figure, clip)), now);
+            }
+            None => self.caret.tick(None, now),
+        }
+    }
+
+    /// Paint the petrified picture, tessellate it once, and keep the meshes
+    /// so a hop can replay them. The caret is drawn after the bake so it is
+    /// not frozen into the cache.
+    fn paint_and_bake_scene(
+        &mut self,
+        ctx: &Context,
+        frame: &PetrifiedFrame,
+        colors: &dyn crate::paint::TokenSource,
+    ) -> PaintReport {
+        let overlay = self.caret_overlay(frame);
+        let page = egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(frame.viewport.size.w, frame.viewport.size.h),
+        );
+        let mut report = paint_frame_with_caret(
+            &ctx.layer_painter(petra_layer()),
+            frame,
+            &mut self.shaper,
+            colors,
+            &self.painters,
+            &mut self.images,
+            Some((Vec::new(), page)),
+        );
+        if self.caret.is_moving() {
+            self.bake_scene(ctx);
+        } else {
+            self.scene.clear();
+        }
+        if let Some((bars, clip)) = overlay {
+            if paint_caret_overlay(
+                &ctx.layer_painter(petra_layer()),
+                &bars,
+                clip,
+                colors,
+                frame.viewport.scale,
+                &mut report,
+            ) {
+                report.focus_rings += 1;
+            }
+        }
+        self.note_hop_pass();
+        report
+    }
+
+    fn note_hop_pass(&mut self) {
+        if self.caret.is_moving() {
+            self.hop_passes = self.hop_passes.saturating_add(1);
+        } else if self.hop_passes > 0 {
+            self.last_hop_passes = self.hop_passes;
+            self.hop_passes = 0;
+        }
+    }
+
+    fn paint_cached_scene(
+        &mut self,
+        ctx: &Context,
+        frame: &PetrifiedFrame,
+        colors: &dyn crate::paint::TokenSource,
+    ) -> PaintReport {
+        let painter = ctx.layer_painter(petra_layer());
+        for (clip, mesh) in &self.scene {
+            painter
+                .with_clip_rect(*clip)
+                .add(egui::Shape::mesh(Arc::clone(mesh)));
+        }
+        let mut report = self.last_report.clone().unwrap_or_else(|| PaintReport {
+            placements: frame.placements.len(),
+            drawn: frame.placements.len(),
+            desynced: frame.placements.len() != frame.content.len(),
+            ..PaintReport::default()
+        });
+        report.focus_rings = 0;
+        report.blind_focus = 0;
+        if let Some((bars, clip)) = self.caret_overlay(frame) {
+            if paint_caret_overlay(
+                &painter,
+                &bars,
+                clip,
+                colors,
+                frame.viewport.scale,
+                &mut report,
+            ) {
+                report.focus_rings += 1;
+            }
+        }
+        report
+    }
+
+    fn bake_scene(&mut self, ctx: &Context) {
+        let layer = petra_layer();
+        let ppp = ctx.pixels_per_point();
+        let shapes: Vec<egui::epaint::ClippedShape> = ctx.graphics(|g| {
+            g.get(layer)
+                .map(|list| list.all_entries().cloned().collect())
+                .unwrap_or_default()
+        });
+        let primitives = ctx.tessellate(shapes, ppp);
+        self.scene.clear();
+        self.scene.reserve(primitives.len());
+        for primitive in primitives {
+            if let egui::epaint::Primitive::Mesh(mesh) = primitive.primitive {
+                self.scene.push((primitive.clip_rect, Arc::new(mesh)));
+            }
+        }
+        ctx.graphics_mut(|g| {
+            let list = g.entry(layer);
+            let n = list.all_entries().len();
+            for i in 0..n {
+                list.reset_shape(egui::layers::ShapeIdx(i));
+            }
+            for (clip, mesh) in &self.scene {
+                list.add(*clip, egui::Shape::mesh(Arc::clone(mesh)));
+            }
+        });
     }
 
     /// Seat focus inside the frontmost blocking surface when it is outside
@@ -1010,18 +1238,31 @@ impl<A: App> Host<A> {
         true
     }
 
-    fn deliver_input(&mut self, ctx: &Context) {
+    fn picture_must_rebuild(event: &InputEvent) -> bool {
+        match event {
+            // Hover is a projection. A compositor that repeats pointer
+            // position every vsync must not rebuild the gallery under a hop.
+            InputEvent::PointerMoved { .. } => false,
+            // Tab's release would otherwise petrify mid-flight.
+            InputEvent::Key { pressed: false, .. } => false,
+            _ => true,
+        }
+    }
+
+    fn deliver_input(&mut self, ctx: &Context) -> bool {
         let events = ctx.input(|i| i.events.clone());
         let translated = self.translator.translate_all(&events);
         if translated.is_empty() {
-            return;
+            return false;
         }
+        let mut invalidate = false;
         // Routing needs a frame to hit-test against. The first pass has none,
         // so its events are dropped rather than delivered to nothing — and the
         // application is told, through an `Unrouted` route, instead of the
         // event just vanishing.
         for event in &translated {
             if self.traverse(event) {
+                invalidate = true;
                 continue;
             }
             // Everything goes through `PointerState`, including the events
@@ -1066,7 +1307,11 @@ impl<A: App> Host<A> {
             if let Some(ended) = routing.ended {
                 self.app.handle(&ended.event(), &ended.route());
             }
+            if Self::picture_must_rebuild(event) {
+                invalidate = true;
+            }
         }
+        invalidate
     }
 
     /// Move focus if `event` is a traversal keystroke, and report whether it
@@ -1178,6 +1423,7 @@ impl<A: App> Host<A> {
     /// its target.
     pub fn set_reduced_motion(&mut self, on: bool) -> &mut Self {
         self.motion.set_reduced_motion(on);
+        self.caret.set_reduced_motion(on);
         self
     }
 
@@ -1185,6 +1431,31 @@ impl<A: App> Host<A> {
     #[must_use]
     pub fn motion(&self) -> &FrameMotion {
         &self.motion
+    }
+
+    /// The flying underline. Tests read this; painting reads [`FocusCaret::rect`].
+    #[must_use]
+    pub fn caret(&self) -> &FocusCaret {
+        &self.caret
+    }
+
+    /// How many tessellated meshes the last full paint kept. Tests assert a
+    /// hop has a scene to replay; zero means the bake never ran.
+    #[must_use]
+    pub fn scene_mesh_count(&self) -> usize {
+        self.scene.len()
+    }
+
+    /// Passes in the hop still in flight, or 0 when idle.
+    #[must_use]
+    pub fn hop_passes(&self) -> u32 {
+        self.hop_passes
+    }
+
+    /// Passes the last completed hop took. 0 before any hop has landed.
+    #[must_use]
+    pub fn last_hop_passes(&self) -> u32 {
+        self.last_hop_passes
     }
 }
 
@@ -1274,6 +1545,9 @@ mod tests {
         modal: bool,
         menu: bool,
         hide_run: bool,
+        /// How many times [`App::view`] ran. A caret in flight must not
+        /// increment this on every vsync.
+        view_calls: usize,
     }
 
     /// A focusable, clickable, hoverable text button — a `Role::Button` node
@@ -1302,6 +1576,7 @@ mod tests {
 
     impl App for Demo {
         fn view(&mut self) -> ViewNode {
+            self.view_calls += 1;
             if self.bad_tree {
                 // Two children with one key: a tree-acceptance violation.
                 return ViewNode::new(NodeKind::Stack, "root")
@@ -2136,6 +2411,7 @@ mod tests {
         step(&ctx, &mut host, RawInput::default());
         step(&ctx, &mut host, key_press(Key::Tab, Modifiers::NONE));
         assert_eq!(host.state().focused.as_deref(), Some("/root/run"));
+        let _ = passes_to_settle(&ctx, &mut host);
 
         host.app_mut().hide_run = true;
         step(&ctx, &mut host, RawInput::default());
@@ -2178,6 +2454,7 @@ mod tests {
         );
         step(&ctx, &mut host, key_press(Key::Tab, Modifiers::SHIFT));
         assert_eq!(host.state().focused.as_deref(), Some("/root/modal/no"));
+        let _ = passes_to_settle(&ctx, &mut host);
 
         host.app_mut().modal = false;
         step(&ctx, &mut host, RawInput::default());
@@ -2275,6 +2552,74 @@ mod tests {
         );
     }
 
+    /// The underline interpolates, then the host goes idle. A caret that kept
+    /// requesting frames after landing would break SC-002.
+    #[test]
+    fn tab_does_not_leave_the_caret_running() {
+        let ctx = headless();
+        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        settle(&ctx, &mut host, 4);
+        step(&ctx, &mut host, key_press(Key::Tab, Modifiers::NONE));
+        assert_eq!(host.state().focused.as_deref(), Some("/root/run"));
+        let n = passes_to_settle(&ctx, &mut host);
+        assert!(n <= 32, "the caret was still flying after {n} quiet passes");
+        assert!(!host.caret().is_moving());
+        let dest = settled_caret_bar(&host);
+        let landed = host.caret().rect().expect("visible once settled");
+        assert!(
+            (landed.min.x - dest.min.x).abs() < 0.5
+                && (landed.min.y - dest.min.y).abs() < 0.5
+                && (landed.width() - dest.width()).abs() < 0.5,
+            "settled caret {landed:?} must match the focused bar {dest:?}"
+        );
+    }
+
+    /// Reduced motion is a snap, not a short flight.
+    #[test]
+    fn reduced_motion_snaps_the_caret_on_tab() {
+        let ctx = headless();
+        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        settle(&ctx, &mut host, 4);
+        host.set_reduced_motion(true);
+        step(&ctx, &mut host, key_press(Key::Tab, Modifiers::NONE));
+        assert_eq!(host.state().focused.as_deref(), Some("/root/run"));
+        assert!(!host.caret().is_moving());
+        let dest = settled_caret_bar(&host);
+        assert_eq!(host.caret().rect(), Some(dest));
+    }
+
+    /// A 160 ms hop on a full page showed three frames because every vsync
+    /// rebuilt the tree. Flight paints the last petrified picture.
+    #[test]
+    fn a_flying_caret_does_not_rebuild_the_tree() {
+        let ctx = headless();
+        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        settle(&ctx, &mut host, 4);
+        step(&ctx, &mut host, key_press(Key::Tab, Modifiers::NONE));
+        assert!(host.caret().is_moving(), "Tab must start a hop");
+        assert!(
+            host.scene_mesh_count() > 0,
+            "a hop must tessellate the picture once so later vsyncs replay meshes"
+        );
+        let after_tab = host.app().view_calls;
+        let n = passes_to_settle(&ctx, &mut host);
+        assert!(
+            n >= 5,
+            "the hop must last several quiet passes so reuse is observable, got {n}"
+        );
+        let rebuilt = host.app().view_calls - after_tab;
+        assert!(
+            rebuilt <= 1,
+            "flight frames must reuse the last picture; view() ran {rebuilt} extra times over {n} passes"
+        );
+        assert!(!host.caret().is_moving());
+        assert!(
+            host.last_hop_passes() >= 5,
+            "a hop must present several times, not three; last hop was {} passes",
+            host.last_hop_passes()
+        );
+    }
+
     /// Focus that moves *after* the frame is placed — the vanished-focus rule
     /// and a modal taking focus both do — leaves that frame's ring on the
     /// wrong node. The host must ask for one more frame, or on an idle window
@@ -2329,7 +2674,7 @@ mod tests {
                 .all(|p| p.semantics.focused == (p.id == "/root/filter")),
             "this frame still rings the field behind the modal"
         );
-        settle(&ctx, &mut host, 4);
+        settle(&ctx, &mut host, 24);
         assert_eq!(
             host.report().unwrap().focus_rings,
             1,
@@ -2557,6 +2902,14 @@ mod tests {
             }
         }
         panic!("the window never settled over 32 quiet passes");
+    }
+
+    fn settled_caret_bar(host: &Host<Demo>) -> egui::Rect {
+        let frame = host.frame().expect("a frame");
+        let (node, figure) = crate::paint::focused_caret_target(frame)
+            .map(|(_, node, figure, _)| (node, figure))
+            .expect("something focused");
+        crate::paint::caret_dest_pair(node, figure, frame.viewport.scale)[0]
     }
 
     /// A press with a button held is a press, and it does not grab a control

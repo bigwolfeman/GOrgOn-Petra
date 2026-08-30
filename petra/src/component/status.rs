@@ -26,7 +26,7 @@
 //!
 //! The channel is now two token slots, not one: `silhouette` names the
 //! figure ([`crate::token::Silhouette`]) and `radius` rounds its corners.
-//! All four variants reach the screen as four different outlines —
+//! All five variants reach the screen as five different outlines —
 //! see [`marker_for`] for the mapping and `gorgon-petra-egui`'s
 //! `paint::silhouette_points` for the geometry that draws it.
 
@@ -34,9 +34,10 @@ use super::stack;
 use super::swatch;
 use super::text::text;
 use super::tokens::{
-    SHAPE_FULL, SHAPE_NONE, SILHOUETTE_DIAMOND, SILHOUETTE_RECT, SILHOUETTE_TRIANGLE, SPACING_03, t,
+    SHAPE_FULL, SHAPE_NONE, SILHOUETTE_DIAMOND, SILHOUETTE_OCTAGON, SILHOUETTE_RECT,
+    SILHOUETTE_TRIANGLE, SPACING_03, t,
 };
-use crate::geom::Axis;
+use crate::geom::{Align, Axis};
 use crate::token::{StatusShape, StatusToken};
 use crate::tree::{Key, Role, ViewNode};
 
@@ -64,6 +65,7 @@ fn marker_for(shape: StatusShape) -> (Option<&'static str>, &'static str) {
         StatusShape::Square => (Some(SHAPE_NONE), SILHOUETTE_RECT),
         StatusShape::Triangle => (None, SILHOUETTE_TRIANGLE),
         StatusShape::Diamond => (None, SILHOUETTE_DIAMOND),
+        StatusShape::Octagon => (None, SILHOUETTE_OCTAGON),
     }
 }
 
@@ -87,6 +89,9 @@ pub fn status(key: impl Into<Key>, status: &StatusToken) -> ViewNode {
         Some(SPACING_03),
         vec![dot, label_node],
     );
+    // The marker is 10 units; body line-height is 20. Start-align hangs the
+    // disc/triangle/square off the top of the words.
+    node.props.align = Some(Align::Center);
     node.semantics.role = Some(Role::Status);
     node.semantics.label = Some(status.text().to_owned());
     node

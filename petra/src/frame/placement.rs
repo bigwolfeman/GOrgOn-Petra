@@ -175,6 +175,18 @@ pub struct Placement {
     pub parent: Option<usize>,
 }
 
+impl Placement {
+    /// Whether any of this node's rect is inside the clip the composer set.
+    ///
+    /// The same test [`crate::input::hit_test`] uses for a pointer: a row
+    /// the collection placed in overscan is still in the frame, but it is
+    /// not on screen, not clickable, and not Tab-reachable.
+    #[must_use]
+    pub fn is_visible(&self) -> bool {
+        self.rect.overlaps(self.clip)
+    }
+}
+
 /// A text run a placement draws, in the form the shaper needs to reproduce
 /// exactly the galley the layout was measured against.
 ///

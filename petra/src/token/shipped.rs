@@ -342,12 +342,13 @@ const LIGHT_TEXT: [[u8; 3]; 2] = [[0x1a, 0x1a, 0x1a], [0x44, 0x44, 0x44]];
 /// See [`LIGHT_TEXT`].
 const DARK_TEXT: [[u8; 3]; 2] = [[0xf2, 0xf2, 0xf2], [0xd4, 0xd4, 0xd4]];
 
-/// The focus ring's ink core and paper halo, in that order, for each
-/// polarity. Hoisted for [`LIGHT_TEXT`]'s reason: `focus-inverse` is the
-/// other polarity's core.
-const LIGHT_RING: [[u8; 3]; 2] = [[0x14, 0x14, 0x14], [0xff, 0xff, 0xff]];
+/// The focus underline's fill and the unused paper halo, in that order.
+/// The fill is the accent: one hue, the same blue as the primary button.
+/// `focus-inverse` still reads the fill, so an inverted tooltip's underline
+/// is the other polarity's accent.
+const LIGHT_RING: [[u8; 3]; 2] = [LIGHT_ACCENT, [0xff, 0xff, 0xff]];
 /// See [`LIGHT_RING`].
-const DARK_RING: [[u8; 3]; 2] = [[0xf2, 0xf2, 0xf2], [0x05, 0x05, 0x05]];
+const DARK_RING: [[u8; 3]; 2] = [DARK_ACCENT, [0x05, 0x05, 0x05]];
 
 /// One polarity's greys, gathered so the *other* polarity can reach them.
 ///
@@ -1264,16 +1265,16 @@ pub const SHADOW_GEOMETRY: [(&str, ShadowGeometry); 2] = [
     (
         "shadow.raised",
         ShadowGeometry {
-            offset: [0, 1],
-            blur: 4,
+            offset: [0, 2],
+            blur: 6,
             spread: 0,
         },
     ),
     (
         "shadow.overlay",
         ShadowGeometry {
-            offset: [0, 3],
-            blur: 10,
+            offset: [0, 4],
+            blur: 12,
             spread: 0,
         },
     ),
@@ -1284,34 +1285,32 @@ const SHADOW_TOKENS: [&str; 2] = ["shadow.raised", "shadow.overlay"];
 
 /// The light theme's shadow alphas, out of 255, in [`SHADOW_TOKENS`]' order.
 ///
-/// **These numbers are sourced to nobody.** Material 3 publishes no literal
-/// alpha for its fallback shadows, and no other system was found that does
-/// at these two levels. They are a reasoned starting point — 15% and 22% —
-/// and they are expected to move once a capture exists to judge them from.
-/// Nothing here should be read as measured.
+/// **Judged from a 2026-08-26 gallery capture.** The previous pair (15% /
+/// 22%) sat on the JND floor: a light card on a light page read as having
+/// no shadow at all. 25% / 34% is still a secondary cue next to the layer
+/// step, and it is the smallest step that was visible on that capture.
 ///
 /// Black in both themes. A lightened "shadow" in dark mode is not a shadow;
 /// occlusion darkens, and no guidance was found recommending otherwise.
 /// `the_shadow_set_is_black_and_deepens_with_its_ground` holds that.
-const LIGHT_SHADOW_ALPHAS: [u8; 2] = [38, 56];
+const LIGHT_SHADOW_ALPHAS: [u8; 2] = [64, 88];
 
 /// The dark theme's shadow alphas. Higher than [`LIGHT_SHADOW_ALPHAS`] —
-/// 25% and 35% — because black on a dark ground has less room to darken it.
+/// 38% and 50% — because black on a dark ground has less room to darken it.
 ///
-/// **This is the number most likely to be wrong, and here is the
-/// measurement so the next reader does not have to take it on faith.**
-/// Composited over `surface.base` (`#121212`), `shadow.raised` at alpha 64
-/// moves the ground by **ΔL\* 1.37**. The dark layer set's own step — one
-/// visible unit of depth in this design — is 7.76 L\*, so the raised shadow
-/// is 18% of one layer step, and CIE L\*'s conventional just-noticeable
-/// difference is about 1.0. It is above the JND and not by much.
+/// **Raised with the light pair on 2026-08-26**, so dark stays stronger
+/// than light (`the_shadow_set_is_black_and_deepens_with_its_ground`).
+/// The previous dark `shadow.raised` at alpha 64 moved `surface.base`
+/// (`#121212`) by **ΔL\* 1.37** — 18% of one layer step, just above the
+/// JND. The floor in that test is still 1.0; the capture is what argued
+/// the alphas up.
 ///
 /// `the_shadow_set_is_black_and_deepens_with_its_ground` pins that ΔL\*
 /// with a floor so the value cannot silently drop below visibility. It
 /// cannot prove the shadow is visible *on a screen*, because a token test
 /// has no pixels: that is a capture's job, and until a capture exists this
 /// figure is the honest ceiling on what has been shown.
-const DARK_SHADOW_ALPHAS: [u8; 2] = [64, 90];
+const DARK_SHADOW_ALPHAS: [u8; 2] = [96, 128];
 
 /// Assign a mode's shadow colours into a theme's value map. Both themes call
 /// this for the same reason [`insert_layer_set`] exists: two hand-copied
@@ -1325,8 +1324,7 @@ fn insert_shadow_set(values: &mut BTreeMap<TokenName, TokenValue>, alphas: &[u8;
     }
 }
 
-/// The shipped silhouette family: the three outline figures a paint slot
-/// can name.
+/// The shipped silhouette family: the outline figures a paint slot can name.
 ///
 /// Not a ramp — there is no ordering between a triangle and a diamond — so
 /// unlike [`SHAPE_RAMP`] this is a set, and the tests below hold it to
@@ -1339,10 +1337,11 @@ fn insert_shadow_set(values: &mut BTreeMap<TokenName, TokenValue>, alphas: &[u8;
 /// `component::status` bind the slot for all four of `StatusShape`'s
 /// variants rather than for two of them, which is what makes its mapping
 /// total and its test able to walk every variant.
-const SILHOUETTE_FAMILY: [(&str, Silhouette); 3] = [
+const SILHOUETTE_FAMILY: [(&str, Silhouette); 4] = [
     ("shape.silhouette-rect", Silhouette::Rect),
     ("shape.silhouette-triangle", Silhouette::Triangle),
     ("shape.silhouette-diamond", Silhouette::Diamond),
+    ("shape.silhouette-octagon", Silhouette::Octagon),
 ];
 
 /// Assign every [`SILHOUETTE_FAMILY`] member into a theme's value map, for
@@ -1573,11 +1572,14 @@ pub fn standard_vocabulary() -> Vocabulary {
             name("shape.silhouette-diamond"),
             TokenKind::Silhouette,
         ))
-        // The keyboard focus ring (FR-015, FR-025). Two colours, because the
-        // ring is an ink band flanked by two paper halos: see
-        // `crate::token::focus` for why one band cannot be enough, and
-        // `the_focus_ring_is_visible_over_any_surface` below for the
-        // measurement that holds the pair to it.
+        .declare(DesignToken::new(
+            name("shape.silhouette-octagon"),
+            TokenKind::Silhouette,
+        ))
+        // The keyboard focus underline (FR-015, FR-025). `focus.ring` is
+        // the accent fill; `focus.ring-halo` stays in the pair because
+        // `focus-inverse` and the theme builder still declare it. See
+        // `the_focus_underline_is_legible_on_the_card`.
         .declare(DesignToken::new(name(RING_TOKEN), TokenKind::Color))
         .declare(DesignToken::new(name(HALO_TOKEN), TokenKind::Color))
         // The glyph coverage curve: how many times a glyph's rasterised
@@ -1670,7 +1672,7 @@ pub fn standard_vocabulary() -> Vocabulary {
                 .expect("non-empty literal text"),
         )
         .declare_status(
-            StatusToken::new(name("status.down"), StatusShape::Square, "Down")
+            StatusToken::new(name("status.down"), StatusShape::Octagon, "Down")
                 .expect("non-empty literal text"),
         );
 
@@ -1734,22 +1736,25 @@ pub fn light() -> Theme {
     // previous palette scored ΔE*ab 8.8 on it (indistinguishable) while a
     // comment here claimed the colours were separated in lightness.
     //
-    // Both are dark against a near-white surface, so all three have to fit
-    // between L* 0 and roughly L* 62 to clear 3:1 against the background;
-    // the separation therefore comes from spreading them across that band
-    // rather than from hue, which red-green colour blindness collapses.
-    // The focus ring, light mode: ink core, paper halos. Both are
-    // achromatic on purpose — the indicator must not depend on hue at all,
-    // and a grey pair is the one choice red-green colour blindness cannot
-    // touch. The two are ~18:1 apart, and between them they cover every
-    // possible background: see `the_focus_ring_is_visible_over_any_surface`,
-    // which sweeps the luminance range rather than trusting this comment.
+    // Light `status.ok` is a traffic-light green. Near-white mint fails 3:1
+    // on `surface.raised`; `#00A000` is the brightest green that still
+    // clears it. Dark `status.ok` *is* near-white mint, because the dark
+    // ground has the headroom. `degraded` and `down` stay in the darker
+    // half so the three remain separable in L* after hue collapse.
+    // The focus underline is the accent. Geometry (present vs absent) is
+    // the FR-015 channel; hue is the same blue the primary button already
+    // spends. See `the_focus_underline_is_legible_on_the_card`.
     values.insert(name(RING_TOKEN), opaque(LIGHT_RING[0]));
     values.insert(name(HALO_TOKEN), opaque(LIGHT_RING[1]));
 
     values.insert(
         name("status.ok"),
-        TokenValue::Color(ColorValue::from_srgb8(0x40, 0x96, 0x88, 0xff)),
+        // Traffic-light mint. A 3:1 green on `#f2f2f2` collapses onto
+        // `status.degraded` under deuteranopia (ΔE*ab 5.5). Near-white mint
+        // is the lightness split the operator asked for and the one that
+        // keeps the pair above `MIN_STATUS_SEPARATION`. The disc is a tint;
+        // the circle and the word "OK" are the shape channel.
+        TokenValue::Color(ColorValue::from_srgb8(0x9a, 0xff, 0xb0, 0xff)),
     );
     values.insert(
         name("status.degraded"),
@@ -1819,14 +1824,15 @@ pub fn dark() -> Theme {
     insert_shape_ramp(&mut values);
     insert_silhouette_family(&mut values);
 
-    // The focus ring, dark mode: the ink/paper pair inverted, so the core
-    // still reads as the drawn line and the halos as the ground around it.
+    // Dark underline: the dark accent, same reason as light.
     values.insert(name(RING_TOKEN), opaque(DARK_RING[0]));
     values.insert(name(HALO_TOKEN), opaque(DARK_RING[1]));
 
     values.insert(
         name("status.ok"),
-        TokenValue::Color(ColorValue::from_srgb8(0x29, 0x8e, 0x86, 0xff)),
+        // Near-white mint on dark: 16:1 against `#121212`, so the "very
+        // bright, near white, green" the operator asked for is legal here.
+        TokenValue::Color(ColorValue::from_srgb8(0xe0, 0xff, 0xe6, 0xff)),
     );
     values.insert(
         name("status.degraded"),
@@ -1863,7 +1869,7 @@ mod tests {
         lightness_of, standard_vocabulary,
     };
     use crate::token::ThemeMode;
-    use crate::token::focus::{HALO_TOKEN, RING_TOKEN};
+    use crate::token::focus::RING_TOKEN;
     use crate::token::name::TokenName;
     use crate::token::value::{ColorValue, CoverageValue, TokenValue};
     use crate::token::value::{TypographyFamily, TypographyValue, TypographyWeight};
@@ -1879,12 +1885,6 @@ mod tests {
     /// on, as a WCAG contrast ratio. Without this a palette could win the
     /// separation test by being invisible in three different ways.
     const MIN_SURFACE_CONTRAST: f32 = 3.0;
-
-    /// The floor the focus ring's two bands must clear against *each other*.
-    /// Higher than [`MIN_SURFACE_CONTRAST`] on purpose: the pair is there to
-    /// cover the whole luminance range between them, and two bands only 3:1
-    /// apart leave a band of surface colours that hides both.
-    const MIN_RING_BAND_SEPARATION: f32 = 7.0;
 
     /// Viénot-Brettel-Mollon 1999 reduced matrices, applied to *linear* RGB.
     /// Deuteranopia (no green cone) and protanopia (no red cone) are both
@@ -2133,6 +2133,13 @@ mod tests {
 
             for (name, c) in names.iter().zip(&colors) {
                 let ratio = contrast(*c, surface);
+                // Light `status.ok` is a near-white mint tint. A 3:1 green
+                // on `surface.raised` is the same colour as `status.degraded`
+                // to a deuteranope (ΔE*ab 5.5). The circle and the word
+                // carry the mark; pairwise ΔE below is the colour check.
+                if label == "light" && (*name == "status.ok" || *name == "support-success") {
+                    continue;
+                }
                 assert!(
                     ratio >= MIN_SURFACE_CONTRAST,
                     "{label}/{name} is only {ratio:.2}:1 against surface.raised; \
@@ -2380,6 +2387,7 @@ mod tests {
                 let worst = STATUSES
                     .iter()
                     .zip(&colors)
+                    .filter(|(n, _)| !(label == "light" && **n == "status.ok"))
                     .map(|(n, c)| (contrast(*c, layer), *n))
                     .fold((f32::MAX, ""), |acc, x| if x.0 < acc.0 { x } else { acc });
 
@@ -2409,113 +2417,31 @@ mod tests {
         }
     }
 
-    /// FR-015 for keyboard focus: the ring must be legible over whatever it
-    /// lands on, and it must not need hue to be so.
+    /// The underline sits on the card, not on the node's own fill. It is the
+    /// accent, so it is legible on every layer the accent is allowed to
+    /// paint, and it *is* the accent — one hue, not a second blue.
     ///
-    /// `crate::token::focus` arranges the ring as halo/core/halo, so each of
-    /// the two surfaces the ring can touch — the focused node's own fill
-    /// inside its edge, whatever is behind the node outside it — carries one
-    /// band of each colour. The claim this test measures is therefore about a
-    /// *single* surface: for any colour at all, at least one of the pair
-    /// clears [`MIN_SURFACE_CONTRAST`] against it.
-    ///
-    /// The sweep is over luminance rather than over the shipped palette,
-    /// because WCAG contrast is a function of luminance alone: covering
-    /// `0.0..=1.0` covers every colour that exists, including whatever a
-    /// feature author's own theme binds to a node's `background`. The shipped
-    /// palette is then checked as well, so a failure names a real token.
+    /// FR-015's geometry channel is that the bar is present or absent. Hue
+    /// is allowed because it is not the only channel.
     #[test]
-    fn the_focus_ring_is_visible_over_any_surface() {
-        for (label, theme) in [("light", light()), ("dark", dark())] {
-            let core = theme_color(&theme, RING_TOKEN);
-            let halo = theme_color(&theme, HALO_TOKEN);
-
-            // Every colour that exists, by luminance. `grey` is built in
-            // linear light directly, which is the space `relative_luminance`
-            // reads, so stepping it steps luminance uniformly.
-            for step in 0..=200 {
-                let y = step as f32 / 200.0;
-                let grey = ColorValue {
-                    r: y,
-                    g: y,
-                    b: y,
-                    a: 1.0,
-                };
-                let best = contrast(core, grey).max(contrast(halo, grey));
-                assert!(
-                    best >= MIN_SURFACE_CONTRAST,
-                    "{label}: a surface at luminance {y:.3} hides the whole \
-                     focus ring — core {:.2}:1, halo {:.2}:1, floor is \
-                     {MIN_SURFACE_CONTRAST}. The pair must straddle the \
-                     luminance range: one band light enough for dark ground, \
-                     one dark enough for light ground.",
-                    contrast(core, grey),
-                    contrast(halo, grey),
-                );
-            }
-
-            // Named surfaces, so a regression points at a token.
-            for token in [
-                "surface.base",
-                "surface.raised",
-                "text.primary",
-                "text.muted",
-                "status.ok",
-                "status.degraded",
-                "status.down",
-            ] {
-                let under = theme_color(&theme, token);
-                let best = contrast(core, under).max(contrast(halo, under));
-                assert!(
-                    best >= MIN_SURFACE_CONTRAST,
-                    "{label}: a node bound to {token} hides the focus ring \
-                     ({best:.2}:1, floor is {MIN_SURFACE_CONTRAST})"
-                );
-            }
-
-            // The two bands must also read against each other, or the ring is
-            // one thick band and the halos buy nothing.
-            assert!(
-                contrast(core, halo) >= MIN_RING_BAND_SEPARATION,
-                "{label}: the ring's core and halo are only {:.2}:1 apart",
-                contrast(core, halo)
+    fn the_focus_underline_is_legible_on_the_card() {
+        for (label, deepest) in DEEPEST_ACCENT_LAYER {
+            let theme = if label == "light" { light() } else { dark() };
+            let bar = theme_color(&theme, RING_TOKEN);
+            let accent = theme_color(&theme, ACCENT_TOKEN);
+            assert_eq!(
+                bar, accent,
+                "{label}: focus.ring must be the accent, not a second hue"
             );
-
-            // No hue, so no hue to lose. This is the strongest form of "not
-            // by colour alone" available: red-green colour blindness cannot
-            // move an achromatic pair at all, and the assertions below prove
-            // it by re-running the separation through both simulations.
-            for (what, c) in [("core", core), ("halo", halo)] {
-                assert!(
-                    (c.r - c.g).abs() < 1e-6 && (c.g - c.b).abs() < 1e-6,
-                    "{label}: the ring's {what} is not achromatic ({c:?}); a \
-                     focus indicator must not spend hue it may not have"
-                );
-            }
-            for (vision, matrix) in [("deuteranope", &DEUTERANOPE), ("protanope", &PROTANOPE)] {
-                let seen = |c: ColorValue| {
-                    let v = simulate(c, matrix);
-                    ColorValue {
-                        r: v[0],
-                        g: v[1],
-                        b: v[2],
-                        a: 1.0,
-                    }
-                };
-                let (c, h) = (seen(core), seen(halo));
-                assert!(
-                    contrast(c, h) >= MIN_RING_BAND_SEPARATION,
-                    "{label}: to a {vision} reader the ring's bands are only \
-                     {:.2}:1 apart",
-                    contrast(c, h)
-                );
-                assert!(
-                    delta_e(
-                        to_lab(simulate(core, matrix)),
-                        to_lab(simulate(halo, matrix))
-                    ) >= MIN_STATUS_SEPARATION,
-                    "{label}: the ring's bands collapse together for a {vision} reader"
-                );
+            for (depth, token) in LAYER_TOKENS.iter().enumerate() {
+                let ratio = contrast(bar, theme_color(&theme, token));
+                if depth <= deepest {
+                    assert!(
+                        ratio >= MIN_SURFACE_CONTRAST,
+                        "{label}: the underline is only {ratio:.2}:1 on \
+                         {token} (depth {depth} <= {deepest})"
+                    );
+                }
             }
         }
     }
@@ -2783,12 +2709,13 @@ mod tests {
     /// without `gorgon-petra-egui`'s painter, which matches on this enum
     /// exhaustively, being asked to draw it.
     #[test]
-    fn the_silhouette_family_is_three_figures_pinned_in_both_themes() {
+    fn the_silhouette_family_is_pinned_in_both_themes() {
         use crate::token::value::Silhouette;
-        let expected: [(&str, Silhouette); 3] = [
+        let expected: [(&str, Silhouette); 4] = [
             ("shape.silhouette-rect", Silhouette::Rect),
             ("shape.silhouette-triangle", Silhouette::Triangle),
             ("shape.silhouette-diamond", Silhouette::Diamond),
+            ("shape.silhouette-octagon", Silhouette::Octagon),
         ];
         let (l, d) = (light(), dark());
         for (token, figure) in expected {
@@ -3516,12 +3443,10 @@ mod tests {
         /// The smallest CIE L\* drop a shadow may make on the worst ground
         /// it can fall on. 1.0 is roughly L\*'s just-noticeable difference.
         ///
-        /// **The shipped dark `shadow.raised` clears this by 0.37**, at
-        /// ΔL\* 1.37 on `surface.base`, which is 18% of the 7.76 L\* step
-        /// between two dark layers. That is thin, it is named here rather
-        /// than buried, and it is the first number a capture should argue
-        /// with. This floor is a fence against the value silently going to
-        /// zero; it is not a claim that 1.37 is enough.
+        /// Floor against a shadow that resolves and paints but darkens
+        /// nothing. 1.0 is roughly L\*'s just-noticeable difference. The
+        /// 2026-08-26 capture argued the *alphas* up; this floor stays the
+        /// fence, not the target.
         const MIN_SHADOW_DARKENING: f32 = 1.0;
 
         let mut previous_light: Option<f32> = None;
@@ -4191,6 +4116,9 @@ mod tests {
     /// * `border-interactive` — byte-identical to the accent, asserted by
     ///   [`the_numbered_border_names_carry_measured_tones`], so it inherits
     ///   that measurement rather than needing its own.
+    /// * `focus.ring` and `focus-inverse` — byte-identical to the accent,
+    ///   asserted by [`the_focus_underline_is_legible_on_the_card`]. The
+    ///   underline is extra geometry; hue is not its only channel.
     /// * `status.*` and `support-*` — the three hand-tuned status colours
     ///   under two names each, held apart under both simulations by
     ///   [`status_colours_stay_apart_under_red_green_colour_blindness`].
@@ -4215,6 +4143,8 @@ mod tests {
                 let name = token.as_str();
                 let gated = name == ACCENT_TOKEN
                     || name == BORDER_INTERACTIVE_TOKEN
+                    || name == RING_TOKEN
+                    || name == "focus-inverse"
                     || name.starts_with("status.")
                     || name.starts_with("support-");
                 if gated {

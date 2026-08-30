@@ -27,7 +27,8 @@ pub enum AuditRule {
     /// Contract obligation 2: a `status` role carries a label — the
     /// shape-plus-text rule, so state is never colour alone.
     StatusNeedsLabel,
-    /// Contract obligation 3: focus order equals child order (SC-010).
+    /// Contract obligation 3: focus order equals child order of *visible*
+    /// focusables (SC-010). A clipped-away overscan row is placed, not Tab-reachable.
     FocusOrderIsChildOrder,
     /// Contract obligation 4: a `truncated` flag corresponds to a real
     /// truncation, and an `overflowed` flag to a real overflow.
@@ -326,6 +327,9 @@ fn focus_violations(tree: &SemanticTree, frame: &PetrifiedFrame) -> Vec<AuditVio
             node.state.read_only
                 && !node.state.disabled
                 && node.actions.contains(&Interaction::Focus)
+                && frame
+                    .placement(&node.id)
+                    .is_some_and(crate::frame::placement::Placement::is_visible)
                 && !expected.contains(&node.id.as_str())
         })
         .map(|node| {
@@ -338,9 +342,16 @@ fn focus_violations(tree: &SemanticTree, frame: &PetrifiedFrame) -> Vec<AuditVio
         })
         .collect();
 
+    // Same visibility the focus tree uses: a node the composer clipped
+    // away is in the semantic tree (it was placed) and not in Tab order.
     let projected: Vec<&str> = tree
         .iter()
-        .filter(|node| node.is_focusable())
+        .filter(|node| {
+            node.is_focusable()
+                && frame
+                    .placement(&node.id)
+                    .is_some_and(crate::frame::placement::Placement::is_visible)
+        })
         .map(|node| node.id.as_str())
         .collect();
     if projected == expected {

@@ -2,10 +2,11 @@
 
 use super::text::text;
 use super::tokens::{
-    SHAPE_SM, SPACING_02, SPACING_03, SURFACE_BASE, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY, t,
+    SHAPE_SM, SPACING_02, SPACING_03, SPACING_04, SURFACE_BASE, SURFACE_RAISED, TEXT_MUTED,
+    TEXT_PRIMARY, t,
 };
 use super::{pad, stack};
-use crate::geom::Axis;
+use crate::geom::{Align, Axis};
 use crate::tree::{Interaction, Key, Role, Semantics, ViewNode};
 
 /// One tab. `selected` swaps its fill *and* is declared in `Semantics`, so
@@ -21,7 +22,10 @@ pub fn tab(key: impl Into<Key>, label: impl Into<String>, selected: bool) -> Vie
     );
 
     let mut node = stack(key, Axis::Horizontal, None, vec![label_node]);
-    node.props.padding = Some(pad(SPACING_03, SPACING_02));
+    node.props.align = Some(Align::Center);
+    // 8 vertical / 12 horizontal. The previous 4-unit vertical pad plus
+    // `shape.corner-sm` (also 4) put the rounded fill through the glyphs.
+    node.props.padding = Some(pad(SPACING_04, SPACING_03));
     node.props.tokens.insert(
         "background".into(),
         t(if selected {

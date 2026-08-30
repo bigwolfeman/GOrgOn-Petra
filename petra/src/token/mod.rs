@@ -21,7 +21,7 @@ pub mod theme;
 pub mod value;
 pub mod vocabulary;
 
-pub use focus::{FocusBand, FocusRing};
+pub use focus::FocusRing;
 pub use name::{TokenName, TokenNameError};
 pub use presenter::Presenter;
 pub use selection::ThemeSelection;

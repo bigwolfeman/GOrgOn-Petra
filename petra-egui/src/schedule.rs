@@ -148,8 +148,8 @@ fn is_accounted_for(file: &str) -> bool {
         "epaint",
         "epaint_default_fonts",
     ];
-    /// This crate's own two request sites: `host.rs`'s focus-ring
-    /// reconciliation and `schedule.rs`'s motion request. Both are already
+    /// This crate's own request sites: `host.rs`'s focus-ring reconciliation
+    /// and flying caret, and `schedule.rs`'s motion request. All already
     /// accounted for by the thing that made them.
     const OURS: [&str; 2] = ["petra-egui/src/host.rs", "petra-egui/src/schedule.rs"];
 
