@@ -10,18 +10,22 @@ use std::sync::Arc;
 
 use egui::ViewportBuilder;
 use gorgon_petra::component::{
-    accordion, accordion_item, breadcrumb, breadcrumb_item, button, button_lg, button_sm, checkbox,
-    checkbox_group, checkbox_indeterminate, checkbox_readonly, clickable_tile, code_snippet,
-    code_snippet_inline, contained_list, contained_tab, contained_tab_bar, content_switcher,
-    content_switcher_item, danger_button, data_table, data_table_row, date_picker, dismissible_tag,
-    dropdown, expandable_tile, field, field_invalid, field_lg, field_readonly,
-    field_sm, file_uploader, file_uploader_item, form, ghost_button, heading, inline_loading, link,
-    list_item, list_item_with, list_row, loading, loading_sm, menu_button, menu_item, modal,
-    notification, number_input, ordered_list, pagination, primary_button, progress,
-    progress_indicator, progress_sm, progress_step, progress_with_helper, radio, radio_group,
-    search, section, select, selectable_tag, selectable_tile, slider, structured_list,
-    structured_list_row, tab, tab_bar, tag, tertiary_button, text, tile, toggle, toggle_sm,
-    toggletip, tree_item, tree_view, unordered_list, vertical_tab, vertical_tab_bar,
+    accordion, accordion_item, ai_label, ai_label_revert, breadcrumb, breadcrumb_item, button,
+    button_lg, button_sm, checkbox, checkbox_group,
+    checkbox_indeterminate, checkbox_readonly, clickable_tile, code_snippet, code_snippet_inline,
+    contained_list, contained_tab, contained_tab_bar, content_switcher, content_switcher_item,
+    danger_button, data_table, data_table_row, date_picker, dismissible_tag, dropdown,
+    expandable_tile, field, field_invalid, field_lg, field_readonly, field_sm, file_uploader,
+    file_uploader_item, form, ghost_button, heading, inline_loading, link, list_item,
+    list_item_with, list_row, loading, loading_sm, menu_button, menu_item, modal, notification,
+    number_input, ordered_list, pagination, primary_button, progress, progress_indicator,
+    progress_sm, progress_step, progress_with_helper, radio, radio_group, search, section, select,
+    selectable_tag, selectable_tile, slider, structured_list, structured_list_row, tab, tab_bar,
+    tag, tertiary_button, text, tile, toggle, toggle_sm, toggletip, tree_item, tree_view,
+    ui_shell_header, ui_shell_header_action, ui_shell_header_menu_trigger, ui_shell_header_nav_item,
+    ui_shell_left_panel, ui_shell_left_panel_item, ui_shell_left_panel_subitem,
+    ui_shell_right_panel_divider, ui_shell_switcher_item, unordered_list, vertical_tab,
+    vertical_tab_bar,
 };
 use gorgon_petra::geom::{Align, Axis};
 use gorgon_petra::input::{InputEvent, KeyCode, PointerButton, Route, activates};
@@ -283,6 +287,36 @@ impl Catalog {
                             accordion_item("acc-1", "Second section", false, "Still closed."),
                         ],
                     )],
+                )],
+            ),
+            Content::AiLabel => section(
+                "ai",
+                "Triggers (closed)",
+                vec![Self::body(
+                    "ai-body",
+                    sp("spacing.md"),
+                    vec![
+                        // Closed form only: `open: true` mounts the
+                        // explainability popover via `Anchor::Node`, which the
+                        // catalog cannot validate nested in a page (see the
+                        // Popover/Toggletip/Tooltip pages below for the same
+                        // workaround).
+                        //
+                        // `ai_label_inline` is NOT shown here: its trigger
+                        // (`ai_label.rs::inline_trigger`) sets `props.padding`
+                        // on the "AI" caption, which is a `text` leaf —
+                        // `validate` refuses a leaf declaring padding it has
+                        // no children to apply. This is a pre-existing defect
+                        // in `ai_label.rs`, which this integration task does
+                        // not own or edit; reported separately.
+                        ai_label(
+                            "ai-default",
+                            "Confidence score",
+                            false,
+                            "Trained on ticket history.",
+                        ),
+                        ai_label_revert("ai-revert", "Revert to AI suggestion"),
+                    ],
                 )],
             ),
             Content::Breadcrumb => section(
@@ -806,6 +840,79 @@ impl Catalog {
                     )],
                 )],
             ),
+            Content::UiShellHeader => section(
+                "shell-header-section",
+                "Header",
+                vec![Self::body(
+                    "shell-header-body",
+                    sp("spacing.md"),
+                    vec![ui_shell_header(
+                        "shell-header",
+                        "GOrgOn",
+                        Some(ui_shell_header_menu_trigger("shell-menu", false)),
+                        vec![
+                            ui_shell_header_nav_item("shell-nav-overview", "Overview", true),
+                            ui_shell_header_nav_item("shell-nav-fibers", "Fibers", false),
+                        ],
+                        vec![
+                            ui_shell_header_action("shell-action-notify", "Notifications", false),
+                            ui_shell_header_action("shell-action-switcher", "App switcher", false),
+                        ],
+                    )],
+                )],
+            ),
+            Content::UiShellLeftPanel => section(
+                "shell-left-section",
+                "Fixed panel",
+                vec![Self::body(
+                    "shell-left-body",
+                    sp("spacing.md"),
+                    vec![ui_shell_left_panel(
+                        "shell-left",
+                        vec![
+                            ui_shell_left_panel_item(
+                                "shell-left-kernel",
+                                "Kernel",
+                                true,
+                                false,
+                                vec![ui_shell_left_panel_subitem(
+                                    "shell-left-fibers",
+                                    "Fibers",
+                                    false,
+                                )],
+                            ),
+                            ui_shell_left_panel_item(
+                                "shell-left-petra",
+                                "Petra",
+                                false,
+                                true,
+                                vec![],
+                            ),
+                        ],
+                    )],
+                )],
+            ),
+            Content::UiShellRightPanel => section(
+                "shell-right-section",
+                "Switcher trigger and items",
+                vec![Self::body(
+                    "shell-right-body",
+                    sp("spacing.md"),
+                    vec![
+                        // `ui_shell_right_panel`/`ui_shell_switcher` build a
+                        // `Surface` anchored via `Anchor::Node`, the same
+                        // open-anchored-overlay shape the catalog cannot
+                        // validate nested in a page (see the Popover page
+                        // above). The trigger and the switcher's own rows
+                        // (plain buttons, no anchor) are shown standalone
+                        // instead of inside the anchored panel.
+                        ui_shell_header_action("shell-switcher-trigger", "App switcher", false),
+                        ui_shell_switcher_item("shell-switcher-petra", "Petra"),
+                        ui_shell_right_panel_divider("shell-switcher-div"),
+                        ui_shell_switcher_item("shell-switcher-inspector", "Inspector"),
+                    ],
+                )],
+            ),
             Content::Toggle => section(
                 "states",
                 "States",
@@ -1025,8 +1132,8 @@ pub fn run() -> eframe::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Catalog, NEXT, PREV, TOGGLE_DEFAULT_OFF, TOGGLE_DEFAULT_ON, TOGGLE_SM_OFF, TOGGLE_SM_ON,
-        WINDOW,
+        Catalog, Cell, Content, NEXT, PREV, TOGGLE_DEFAULT_OFF, TOGGLE_DEFAULT_ON, TOGGLE_SM_OFF,
+        TOGGLE_SM_ON, WINDOW,
     };
     use egui::{Context, Pos2, RawInput};
     use gorgon_petra::geom::Point;
@@ -1197,11 +1304,24 @@ mod tests {
 
     #[test]
     fn an_unbuilt_page_names_the_slice_file_and_does_not_fake_a_component() {
+        // All 42 inventory rows are built constructors as of this change
+        // (`cell::BUILT` covers every row), so there is no live unbuilt row
+        // left for the catalog to page to. The `Content::Unbuilt` arm in
+        // `page_body` and the "UNBUILT" status text are still real code
+        // paths (a future inventory addition lands unbuilt first), so this
+        // test drives them directly by substituting an unbuilt `Cell` for a
+        // real one rather than asserting on a fake component.
         let mut app = Catalog::default();
-        app.page = 1;
-        assert_eq!(app.current().row.component, "AI label");
+        let row = app.roster[0].row;
+        assert_eq!(row.component, "Accordion");
+        app.roster[0] = Cell {
+            row,
+            content: Content::Unbuilt,
+        };
+        app.page = 0;
+        assert!(!app.current().is_built());
         let tree = app.view();
-        assert!(tree_contains_text(&tree, "2  AI label"));
+        assert!(tree_contains_text(&tree, "1  Accordion"));
         assert!(tree_contains_text(&tree, "UNBUILT"));
         assert!(tree_contains_text(&tree, "slice-a.md"));
         assert!(tree_contains_text(&tree, "unbuilt"));

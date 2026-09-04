@@ -11,6 +11,7 @@ use crate::inventory::{ROWS, Row};
 /// `gorgon/xtask/src/carbon.rs` `BUILT_COMPONENTS`.
 const BUILT: &[&str] = &[
     "Accordion",
+    "AI label",
     "Breadcrumb",
     "Button",
     "Checkbox",
@@ -48,6 +49,9 @@ const BUILT: &[&str] = &[
     "Toggletip",
     "Tooltip",
     "Tree view",
+    "UI shell header",
+    "UI shell left panel",
+    "UI shell right panel",
 ];
 
 /// What a cell holds.
@@ -60,6 +64,8 @@ pub enum Content {
     Unbuilt,
     /// Carbon Accordion (inventory row 1).
     Accordion,
+    /// Carbon AI label (inventory row 2).
+    AiLabel,
     /// Carbon Breadcrumb (inventory row 3).
     Breadcrumb,
     /// Carbon Button (inventory row 4).
@@ -135,11 +141,18 @@ pub enum Content {
     Tooltip,
     /// Carbon Tree view (inventory row 39).
     TreeView,
+    /// Carbon UI shell header (inventory row 40).
+    UiShellHeader,
+    /// Carbon UI shell left panel (inventory row 41).
+    UiShellLeftPanel,
+    /// Carbon UI shell right panel (inventory row 42).
+    UiShellRightPanel,
 }
 
 fn content_for(name: &str) -> Content {
     match name {
         "Accordion" => Content::Accordion,
+        "AI label" => Content::AiLabel,
         "Breadcrumb" => Content::Breadcrumb,
         "Button" => Content::Button,
         "Checkbox" => Content::Checkbox,
@@ -177,6 +190,9 @@ fn content_for(name: &str) -> Content {
         "Toggletip" => Content::Toggletip,
         "Tooltip" => Content::Tooltip,
         "Tree view" => Content::TreeView,
+        "UI shell header" => Content::UiShellHeader,
+        "UI shell left panel" => Content::UiShellLeftPanel,
+        "UI shell right panel" => Content::UiShellRightPanel,
         _ => Content::Unbuilt,
     }
 }
@@ -256,8 +272,8 @@ mod tests {
         }
     }
 
-    /// Built constructors land thirty-eight inventory rows. Four operator
-    /// rows remain uncovered. The tally is the coverage denominator.
+    /// Built constructors land all forty-two inventory rows. The tally is
+    /// the coverage denominator.
     #[test]
     fn wave_one_rows_are_built() {
         let roster = Cell::roster();

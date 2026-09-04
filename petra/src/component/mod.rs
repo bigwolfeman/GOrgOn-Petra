@@ -79,6 +79,7 @@
 //! composed from those primitives directly, which stay public (gate C1-10).
 
 mod accordion;
+mod ai_label;
 mod breadcrumb;
 mod button;
 mod code_snippet;
@@ -120,8 +121,13 @@ mod toggletip;
 mod tokens;
 mod tooltip;
 mod tree_view;
+mod ui_shell;
 
 pub use accordion::{accordion, accordion_item, accordion_item_lg, accordion_item_sm};
+pub use ai_label::{
+    ai_label, ai_label_2xs, ai_label_inline, ai_label_inline_lg, ai_label_inline_sm, ai_label_lg,
+    ai_label_mini, ai_label_revert, ai_label_sm, ai_label_with_actions, ai_label_xl, ai_label_xs,
+};
 pub use breadcrumb::{breadcrumb, breadcrumb_item};
 pub use button::{
     button, button_lg, button_sm, button_xs, danger_button, danger_ghost_button,
@@ -175,6 +181,12 @@ pub use tile::{clickable_tile, expandable_tile, selectable_tile, tile};
 pub use toggletip::toggletip;
 pub use tooltip::tooltip;
 pub use tree_view::{tree_item, tree_item_xs, tree_view};
+pub use ui_shell::{
+    ui_shell_header, ui_shell_header_action, ui_shell_header_menu_trigger, ui_shell_header_nav_item,
+    ui_shell_left_panel, ui_shell_left_panel_divider, ui_shell_left_panel_item,
+    ui_shell_left_panel_rail, ui_shell_left_panel_subitem, ui_shell_right_panel,
+    ui_shell_right_panel_divider, ui_shell_switcher, ui_shell_switcher_item,
+};
 
 use std::sync::Arc;
 
