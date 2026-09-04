@@ -31,7 +31,8 @@ use gorgon_petra::input::{InputEvent, KeyCode, PointerButton, Route, activates};
 use gorgon_petra::layout::{ChangeSet, RowSource};
 use gorgon_petra::token::TokenName;
 use gorgon_petra::tree::{
-    AxisConstraint, Constraints, InsetRefs, NodeKind, Props, TextWrap, TrackSize, ViewNode,
+    AxisConstraint, Constraints, InsetRefs, Interaction, NodeKind, Props, Role, TextWrap,
+    TrackSize, ViewNode,
 };
 use gorgon_petra_egui::host::{App, Host, default_presenter};
 
@@ -191,12 +192,26 @@ impl Catalog {
                 list_row(key, label, i == self.page)
             })
             .collect();
-        let list = Self::column("rows", sp("spacing.2xs"), rows);
-        let mut scroll = ViewNode::new(NodeKind::Scroll, "index").with_props(Props {
-            axis: Some(Axis::Vertical),
-            overscan: Some(64.0),
-            ..Props::default()
-        });
+        let mut list = Self::column("rows", sp("spacing.2xs"), rows);
+        // Without this, `rows` is a `Grid` whose single column is a weighted
+        // track (fills `INDEX_WIDTH`) but whose *children* still align
+        // `Start` in it — each row is measured at its own text's width, not
+        // stretched to the column, so "1 Accordion" comes out narrower than
+        // "8 Content switcher" and the sidebar stair-steps.
+        list.props.align = Some(Align::Stretch);
+        let mut scroll = ViewNode::new(NodeKind::Scroll, "index")
+            .with_props(Props {
+                axis: Some(Axis::Vertical),
+                overscan: Some(64.0),
+                ..Props::default()
+            })
+            // Without `Interaction::Scroll`, `route`'s `hit_test` finds no
+            // placement at the pointer that accepts a wheel event — not
+            // even this node itself — and the event is dropped before it
+            // ever reaches a scroll offset (`input.rs`'s `hit_test` checks
+            // `semantics.actions`, which is `node.interactions`, which
+            // `with_props` never sets).
+            .interactive(Role::Scroll, "Component index", &[Interaction::Scroll]);
         scroll
             .props
             .tokens
@@ -973,27 +988,57 @@ impl App for Catalog {
         );
         main.props.padding = Some(pad("spacing.xl", "spacing.lg"));
 
+        let mut main_scroll = ViewNode::new(NodeKind::Scroll, "main-scroll")
+            .with_props(Props {
+                axis: Some(Axis::Vertical),
+                overscan: Some(64.0),
+                ..Props::default()
+            })
+            .interactive(Role::Scroll, "Page content", &[Interaction::Scroll]);
+        main_scroll = main_scroll.child(main);
+
+        // Both rows of `shell` are `Weight`, not the implicit `FitContent`
+        // an unspecified `rows` would give: a `FitContent` row takes its
+        // content's own natural height, and this cell's content is 42 nav
+        // rows — taller than the window — so the cell (and the scroll pane
+        // inside it) would just grow to fit all 42 rather than being handed
+        // a bounded viewport to scroll *within*. `Weight` makes the row's
+        // height come from what `page` offers instead, which is what lets
+        // `index_pane`'s `Scroll` report a real, shorter-than-content
+        // viewport (`layout/scroll.rs`: "an `Exact` offer is honoured
+        // exactly") and therefore actually have something to scroll.
         let mut shell = ViewNode::new(NodeKind::Grid, "shell").with_props(Props {
             columns: vec![
                 TrackSize::Fixed { value: INDEX_WIDTH },
                 TrackSize::Weight { weight: 1.0 },
             ],
+            rows: vec![TrackSize::Weight { weight: 1.0 }],
             column_spacing: sp("spacing.md"),
             ..Props::default()
         });
-        shell = shell.child(self.index_pane()).child(main);
+        shell = shell.child(self.index_pane()).child(main_scroll);
         shell
             .props
             .tokens
             .insert("background".into(), tok("surface.base"));
 
+        // `page` used to be the `Scroll`: one region, `shell` (nav and main
+        // together) as its content, so scrolling moved both — the nav list
+        // could never scroll on its own, only drag the whole page's main
+        // content along with it. A `Scroll`'s own doc is explicit that it
+        // offers its child `Unbounded` on the scrolling axis
+        // (`layout/scroll.rs`), which is exactly what defeated `shell`'s
+        // `Weight` row above: a row cannot divide an unbounded offer. `page`
+        // is now a plain 1x1 `Grid` that passes the window's own bounded
+        // size straight through to `shell`, and `index_pane` and
+        // `main_scroll` each scroll their own content independently.
         let mut page = Props {
-            axis: Some(Axis::Vertical),
-            overscan: Some(64.0),
+            columns: vec![TrackSize::Weight { weight: 1.0 }],
+            rows: vec![TrackSize::Weight { weight: 1.0 }],
             ..Props::default()
         };
         page.tokens.insert("background".into(), tok("surface.base"));
-        ViewNode::new(NodeKind::Scroll, "page")
+        ViewNode::new(NodeKind::Grid, "page")
             .with_props(page)
             .child(shell)
     }
@@ -1091,10 +1136,67 @@ impl App for Catalog {
     }
 }
 
-/// Wraps the host so the first pass can steal OS focus for Tab.
+/// Move keyboard focus onto the sidebar row for the page now on screen, if
+/// that row is currently visible.
+///
+/// [`gorgon_petra_egui::focus_caret::FocusCaret`] — the flying bar in the
+/// index pane — tracks keyboard focus, not [`Catalog::page`]. Prev/Next and
+/// the `[`/`]` shortcuts change the page without ever routing a pointer or
+/// Tab event to the sidebar, so left alone the bar stays wherever it last
+/// was (row 1, on a fresh [`Host`], since [`gorgon_petra::focus::FocusTree`]
+/// defaults to the first focusable node) while the row's own highlight jumps
+/// to the new page — two channels for "which page is open," disagreeing.
+/// The operator is red-green colour blind: a fill a shade lighter is the
+/// weak channel, the bar's position is the one that has to be trusted, so
+/// the two must never disagree. This re-seats focus onto the open page's row
+/// every time it is called; callers only call it when [`Catalog::page`]
+/// actually changed, so a user tabbing around inside the page body is left
+/// alone the rest of the time.
+///
+/// Looks the placement id up by its `idx-N` suffix rather than assuming the
+/// full path, so a later reshuffle of `index_pane`'s own nesting cannot
+/// silently turn this into a no-op.
+///
+/// **Does nothing for a row past the sidebar's fold.**
+/// [`gorgon_petra::focus::FocusTree::focus`] refuses anything not focusable
+/// this frame (`focus/mod.rs`'s doc: a placement is focusable only when
+/// [`Placement::is_visible`] holds), and there is no scroll-into-view
+/// capability this function can reach for instead: writing a new offset
+/// into [`gorgon_petra_egui::host::Host::state_mut`] moves the row on the
+/// *next* pass, by which time the row that held focus *this* pass may have
+/// scrolled out from under it — a focused-but-invisible placement is exactly
+/// what `paint.rs`'s `PaintReport::blind_focus` exists to catch, and it does
+/// (`gorgon-petra-egui/src/host.rs`'s `debug_assert!(report.is_complete())`
+/// fires on it). Closing that needs either the engine moving focus in step
+/// with a scroll offset it did not initiate, or a scroll-into-view
+/// primitive — both outside `catalog.rs`. See this audit's report.
+fn seat_index_focus(host: &mut Host<Catalog>) {
+    let Some(frame) = host.frame() else {
+        return;
+    };
+    let suffix = format!("/{IDX}{}", host.app().current().row.number);
+    let Some(row) = frame
+        .placements
+        .iter()
+        .find(|p| p.id.ends_with(suffix.as_str()))
+    else {
+        return;
+    };
+    if !row.is_visible() {
+        return;
+    }
+    let id = row.id.clone();
+    let _ = host.focus_mut().focus(&id);
+}
+
+/// Wraps the host so the first pass can steal OS focus for Tab, and so the
+/// flying focus bar can be re-seated exactly when the open page changes.
 struct CatalogWindow {
     host: Host<Catalog>,
     grabbed_focus: bool,
+    /// The page [`seat_index_focus`] last ran for. `None` until the first
+    /// pass has placed a frame for [`seat_index_focus`] to search.
+    focus_seated_for: Option<usize>,
 }
 
 impl eframe::App for CatalogWindow {
@@ -1109,6 +1211,11 @@ impl eframe::App for CatalogWindow {
             self.grabbed_focus = true;
         }
         self.host.pass_in_window(&ctx, frame);
+        let page = self.host.app().page;
+        if self.focus_seated_for != Some(page) {
+            seat_index_focus(&mut self.host);
+            self.focus_seated_for = Some(page);
+        }
     }
 }
 
@@ -1133,6 +1240,7 @@ pub fn run() -> eframe::Result<()> {
             Ok(Box::new(CatalogWindow {
                 host: Host::new(&cc.egui_ctx, Catalog::default(), default_presenter()),
                 grabbed_focus: false,
+                focus_seated_for: None,
             }))
         }),
     )
@@ -1141,8 +1249,8 @@ pub fn run() -> eframe::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Catalog, Cell, Content, NEXT, PREV, TOGGLE_DEFAULT_OFF, TOGGLE_DEFAULT_ON, TOGGLE_SM_OFF,
-        TOGGLE_SM_ON, WINDOW,
+        Catalog, Cell, Content, IDX, NEXT, PREV, TOGGLE_DEFAULT_OFF, TOGGLE_DEFAULT_ON,
+        TOGGLE_SM_OFF, TOGGLE_SM_ON, WINDOW, seat_index_focus,
     };
     use egui::{Context, Pos2, RawInput};
     use gorgon_petra::geom::Point;
@@ -1377,6 +1485,142 @@ mod tests {
         assert_eq!(app.current().row.component, "Toggle");
     }
 
+    /// `seat_index_focus` must land the flying focus bar on the row for the
+    /// page a fresh [`Host`] actually opened, not row 1 — the default
+    /// [`gorgon_petra::focus::FocusTree`] falls back to on an untouched
+    /// tree. A caret still parked on row 1 while row 36's fill is selected
+    /// is exactly the two-channels-disagree defect this exists to close.
+    #[test]
+    fn seat_index_focus_moves_the_caret_off_row_one_onto_the_open_page() {
+        // Page 23, Pagination — the exact row the audit's own before-picture
+        // named ("the highlight is correctly on 23 Pagination but the blue
+        // bar is still under 1 Accordion") and, unlike the default Toggle
+        // page, still inside the sidebar's un-scrolled fold, so this proves
+        // the fix without also depending on scrolling (`seat_index_focus`
+        // does not scroll; see its doc).
+        let mut app = Catalog::default();
+        app.go_to(23);
+        let ctx = headless();
+        let mut host = Host::new(&ctx, app, default_presenter());
+        step(&ctx, &mut host, RawInput::default());
+        assert!(
+            host.focus()
+                .current()
+                .is_some_and(|id| id.ends_with("/idx-1")),
+            "a fresh host defaults focus to the first nav row, got {:?}",
+            host.focus().current()
+        );
+
+        seat_index_focus(&mut host);
+
+        assert!(
+            host.focus()
+                .current()
+                .is_some_and(|id| id.ends_with("/idx-23")),
+            "focus must move to Pagination's own row (idx-23), the page \
+             this host actually opened; got {:?}",
+            host.focus().current()
+        );
+    }
+
+    /// `index_pane`'s `Scroll` must have a *bounded* viewport of its own to
+    /// scroll within — shorter than 42 rows — rather than growing to fit
+    /// all of them, which is what let row 42 through the window's bottom
+    /// edge with nothing to scroll. Before `shell`'s `rows` track was made
+    /// `Weight` (this file's own fix), this node measured at its full
+    /// content height instead.
+    #[test]
+    fn the_index_pane_has_a_bounded_viewport_shorter_than_its_content() {
+        let ctx = headless();
+        let mut host = Host::new(&ctx, Catalog::default(), default_presenter());
+        step(&ctx, &mut host, RawInput::default());
+
+        let frame = host.frame().expect("a completed pass has a frame");
+        let index = frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/index"))
+            .expect("the index pane is placed");
+        let last_row = frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with(&format!("/{IDX}42")))
+            .expect("row 42 is placed");
+        assert!(
+            index.rect.h < last_row.rect.y + last_row.rect.h,
+            "the index pane's own viewport ({:?}) must be shorter than its \
+             content (row 42 ends at {}), or it has nothing to scroll",
+            index.rect,
+            last_row.rect.y + last_row.rect.h
+        );
+        assert!(
+            !last_row.is_visible(),
+            "row 42 must start outside that viewport, or this test proves \
+             nothing"
+        );
+    }
+
+    /// Writing a new offset into [`gorgon_petra_egui::host::Host::state_mut`]
+    /// — the mechanism [`seat_index_focus`] itself uses once a row is
+    /// scrolled out of view — must bring row 42 into the index pane's
+    /// viewport on the next pass. This is *not* a test of the mouse wheel:
+    /// [`gorgon_petra_egui::inject::Action::Scroll`] was tried here first
+    /// and never moved `state().scroll_offsets` at all — nothing in
+    /// `gorgon-petra-egui`'s `host.rs` translates a routed
+    /// [`gorgon_petra::input::InputEvent::Scroll`] into a scroll-offset
+    /// write (`grep scroll_offsets` across the crate turns up only test
+    /// harnesses setting it directly, this one included). That gap is
+    /// outside `catalog.rs`; see this audit's report.
+    #[test]
+    fn writing_the_index_pane_scroll_offset_reveals_row_forty_two() {
+        let ctx = headless();
+        let mut host = Host::new(&ctx, Catalog::default(), default_presenter());
+        step(&ctx, &mut host, RawInput::default());
+
+        let index_id = host
+            .frame()
+            .unwrap()
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/index"))
+            .expect("the index pane is placed")
+            .id
+            .clone();
+        // A fresh host's focus defaults to row 1, which this offset is
+        // about to scroll out of view. Move focus to the always-visible
+        // Next button first: a placement that is focused this pass and then
+        // goes invisible next pass is exactly `PaintReport::blind_focus`,
+        // which `host.rs`'s own `debug_assert!(report.is_complete())` would
+        // otherwise catch on the very next `step`.
+        let next_id = host
+            .frame()
+            .unwrap()
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with(&format!("/{NEXT}")))
+            .expect("the Next button is placed")
+            .id
+            .clone();
+        host.focus_mut()
+            .focus(&next_id)
+            .expect("the Next button is focusable");
+        host.state_mut().scroll_offsets.insert(index_id, 100_000.0);
+        step(&ctx, &mut host, RawInput::default());
+
+        let row_42 = host
+            .frame()
+            .unwrap()
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with(&format!("/{IDX}42")))
+            .expect("row 42 is still placed after scrolling");
+        assert!(
+            row_42.is_visible(),
+            "a large enough offset must bring row 42 into the index pane's \
+             viewport"
+        );
+    }
+
     /// A press on a child of the toggle (the knob) must still flip it.
     #[test]
     fn a_press_on_the_knob_flips_the_toggle() {
@@ -1389,7 +1633,7 @@ mod tests {
                 modifiers: Modifiers::NONE,
             },
             &Route::Pointer {
-                node: "/page/shell/main/states/toggles/toggle-default-off/appearance/track/knob"
+                node: "/page/shell/main-scroll/main/states/toggles/toggle-default-off/appearance/track/knob"
                     .into(),
             },
         );
@@ -1401,7 +1645,7 @@ mod tests {
                 modifiers: Modifiers::NONE,
             },
             &Route::Pointer {
-                node: "/page/shell/main/states/toggles/toggle-default-off/appearance/track/knob"
+                node: "/page/shell/main-scroll/main/states/toggles/toggle-default-off/appearance/track/knob"
                     .into(),
             },
         );
@@ -1535,9 +1779,20 @@ mod tests {
 
             let ctx = headless();
             let mut host = Host::new(&ctx, app, default_presenter());
-            // Two passes: the first registers the font atlas, the second is
-            // the one with content to photograph.
+            // Two passes: the first registers the font atlas. A fresh `Host`
+            // defaults keyboard focus to the first focusable placement, row
+            // 1 in the index, whatever `page` actually is; `seat_index_focus`
+            // corrects that for pages 1-30 (still inside the sidebar's own
+            // fold). Pages 31-42's rows are past it, and `seat_index_focus`
+            // deliberately does nothing there rather than risk a focused
+            // placement going invisible under a scroll it did not settle —
+            // see that function's doc and this audit's report. The second
+            // pass is the one photographed; reduced motion makes it snap
+            // rather than fly to wherever focus landed, since a static shot
+            // cannot show a settled position for a bar still mid-flight.
             step(&ctx, &mut host, RawInput::default());
+            seat_index_focus(&mut host);
+            host.set_reduced_motion(true);
             let output = ctx.run_ui(sized(RawInput::default()), |_| host.pass(&ctx));
             let shot = shooter
                 .capture(
