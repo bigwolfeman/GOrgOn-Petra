@@ -225,7 +225,12 @@ impl FrameMemo {
 /// allocation here at all.
 fn anchored_surfaces(node: &ViewNode, path: &mut KeyPath, dirty: &mut BTreeSet<String>) {
     path.push(node.key.clone());
-    if matches!(node.props.anchor, Some(crate::tree::Anchor::Node { .. })) {
+    if node
+        .props
+        .anchor
+        .as_ref()
+        .is_some_and(crate::tree::Anchor::names_node)
+    {
         dirty.insert(path.id());
     }
     for child in &node.children {

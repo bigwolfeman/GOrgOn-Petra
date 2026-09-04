@@ -312,7 +312,9 @@ pub enum Violation {
         /// legal set for this slot.
         legal: Vec<TokenName>,
     },
-    /// A `surface`'s [`Anchor::Node`] names an id no node in the tree has.
+    /// A `surface`'s anchor names an id no node in the tree has: an
+    /// [`Anchor::Node`] whose `id` matches no node, or an
+    /// [`Anchor::Sibling`] whose `key` no sibling of the surface carries.
     ///
     /// Refused rather than resolved as [`Anchor::Viewport`]
     /// (`contracts/anchored-placement.md` §2a). A silent fallback would put a
@@ -323,7 +325,12 @@ pub enum Violation {
     /// scheme total: an anchor that names nothing has no rect to harvest, so
     /// the harvest walk would have to invent one.
     AnchorTargetMissing {
-        /// The id declared in `props.anchor`.
+        /// The canonical id the anchor resolved to: the `id` an
+        /// [`Anchor::Node`] declared verbatim, or the id an
+        /// [`Anchor::Sibling`]'s key produced against the surface's own
+        /// parent path ([`crate::tree::Anchor::target_id`]). For a sibling
+        /// anchor this is the one candidate that was tried, so an author
+        /// can see exactly which child list the key was looked for in.
         id: String,
         /// The ids the tree does have, for an author who mistyped one. Every
         /// surface anchor in a real tree names a node the author just wrote,
@@ -936,10 +943,7 @@ fn check_node(
     // token for the reason `props.spacing` is one (FR-053), so it is checked
     // exactly the way `props.spacing` is — a literal cannot arrive here at
     // all, because the field's type is `TokenName`.
-    if let Some(Anchor::Node {
-        offset: Some(name), ..
-    }) = &node.props.anchor
-    {
+    if let Some(name) = node.props.anchor.as_ref().and_then(Anchor::offset) {
         check_token_ref(
             vocabulary,
             "anchor.offset",
@@ -1135,7 +1139,10 @@ fn check_surface(node: &ViewNode, push: &mut impl FnMut(Violation)) {
 struct AnchoredSurface {
     /// This surface's own canonical key path.
     id: String,
-    /// The id its `Anchor::Node` names.
+    /// The canonical id its anchor names, already resolved: an
+    /// [`Anchor::Node`]'s `id` as declared, or an [`Anchor::Sibling`]'s key
+    /// against this surface's own parent path. Past this point the two
+    /// spellings are one thing ([`Anchor::target_id`]).
     target: String,
 }
 
@@ -1144,8 +1151,9 @@ struct AnchoredSurface {
 /// Two refusals, and both are what make `contracts/anchored-placement.md`
 /// §1's resolution scheme *total* rather than merely usual:
 ///
-/// * An [`Anchor::Node`] naming no node has no rect to harvest
-///   ([`Violation::AnchorTargetMissing`]).
+/// * An anchor naming no node — an [`Anchor::Node`] with an unknown `id`,
+///   or an [`Anchor::Sibling`] whose key no sibling carries — has no rect
+///   to harvest ([`Violation::AnchorTargetMissing`]).
 /// * A surface whose anchor leads, through the surfaces enclosing it, back to
 ///   itself can never be placed at all ([`Violation::AnchorCycle`]).
 ///
@@ -1161,15 +1169,21 @@ struct AnchoredSurface {
 /// here at all. Each surface has at most one outgoing edge, so following the
 /// chain is the whole of cycle detection.
 ///
-/// Returns immediately for a tree with no `Anchor::Node` anywhere: the walk
+/// Returns immediately for a tree with no node anchor anywhere: the walk
 /// that collects the ids is the only cost, and it is not paid twice.
+///
+/// There is one anchor system here, not two. A sibling anchor is turned into
+/// the canonical id it means at the moment the walk reaches its surface
+/// ([`collect_anchors`]), and everything after that — the id lookup, the
+/// refusal, the cycle scan — reads the resolved id and never asks which
+/// spelling produced it.
 fn check_anchors(root: &ViewNode, errors: &mut Vec<TreeError>) {
     let mut ids: BTreeSet<String> = BTreeSet::new();
     let mut surfaces: Vec<AnchoredSurface> = Vec::new();
     // Node id -> the nearest *anchored* surface enclosing it. A surface
     // anchored to a point or to the viewport is placed without reference to
     // any other node, so it does not enclose its subtree in a dependency;
-    // only an `Anchor::Node` one does.
+    // only one that names a node does.
     let mut enclosing: BTreeMap<String, String> = BTreeMap::new();
     collect_anchors(
         root,
@@ -1241,10 +1255,17 @@ fn collect_anchors(
     if let Some(owner) = owner {
         enclosing.insert(id.clone(), owner.to_owned());
     }
-    let anchored = if let Some(Anchor::Node { id: target, .. }) = &node.props.anchor {
+    // `path` is this node's own full path here, which is exactly the context
+    // a sibling anchor resolves against.
+    let target = node
+        .props
+        .anchor
+        .as_ref()
+        .and_then(|anchor| anchor.target_id(path));
+    let anchored = if let Some(target) = target {
         surfaces.push(AnchoredSurface {
             id: id.clone(),
-            target: target.clone(),
+            target,
         });
         // An anchored surface owns *itself*, not just its subtree: a surface
         // anchored to its own rect is as circular as one anchored to a node
@@ -2530,6 +2551,203 @@ mod tests {
              findable: {known:?}"
         );
         assert_eq!(err.as_slice()[0].path, "/root/popup");
+    }
+
+    // -- Anchor::Sibling: a bare key, resolved against the surface's own parent. --
+
+    /// A `bottom`-edge sibling anchor on `key`, centred with no offset: what
+    /// every component constructor in `crate::component` builds.
+    fn beside(key: &str) -> Anchor {
+        Anchor::Sibling {
+            key: key.into(),
+            edge: Edge::Bottom,
+            align: crate::tree::Align::Center,
+            offset: None,
+        }
+    }
+
+    fn sibling_popover(key: &str, target: &str) -> ViewNode {
+        ViewNode::new(NodeKind::Surface, key).with_props(Props {
+            layer: Some(Layer::Popup),
+            anchor: Some(beside(target)),
+            ..Props::default()
+        })
+    }
+
+    /// The pair a constructor builds — a trigger and a popover side by side
+    /// — wrapped in `depth` extra containers. Mount point is the caller's
+    /// business; the pair never changes.
+    fn pair_at_depth(depth: usize) -> ViewNode {
+        let mut node = stack("host")
+            .child(ViewNode::new(NodeKind::Text, "trigger"))
+            .child(sibling_popover("popup", "trigger"));
+        for level in 0..depth {
+            node = stack(&format!("level{level}")).child(node);
+        }
+        stack("root").child(node)
+    }
+
+    /// The defect this variant exists for: the same pair is accepted at the
+    /// root and three containers down, because a sibling key is resolved
+    /// against the surface's own parent path rather than compared to the
+    /// canonical id verbatim.
+    #[test]
+    fn a_sibling_anchor_is_accepted_at_every_depth() {
+        for depth in 0..4 {
+            let tree = pair_at_depth(depth);
+            assert!(
+                validate(&tree, &Registry::new()).is_ok(),
+                "depth {depth}: {:?}",
+                validate(&tree, &Registry::new()).err()
+            );
+        }
+    }
+
+    /// A key no sibling carries is refused as `AnchorTargetMissing`, and the
+    /// refusal names the one canonical id that was tried — the surface's
+    /// parent path plus the key — so an author sees which child list the
+    /// trigger was missing from.
+    #[test]
+    fn a_sibling_anchor_naming_no_sibling_is_refused_with_the_id_it_tried() {
+        let tree = stack("root").child(
+            stack("host")
+                .child(ViewNode::new(NodeKind::Text, "trigger"))
+                .child(sibling_popover("popup", "triger")),
+        );
+        let err = validate(&tree, &Registry::new()).unwrap_err();
+        let violation = &err.as_slice()[0].violation;
+        let Violation::AnchorTargetMissing { id, known } = violation else {
+            panic!("wrong violation: {violation:?}");
+        };
+        assert_eq!(id, "/root/host/triger");
+        assert!(
+            known.contains(&"/root/host/trigger".to_owned()),
+            "{known:?}"
+        );
+        assert_eq!(err.as_slice()[0].path, "/root/host/popup");
+    }
+
+    /// A sibling key reaches the surface's own child list and nothing else:
+    /// a `trigger` one level up, or one level down, is not a sibling, and
+    /// the tree is refused rather than resolved to the nearest match. This
+    /// is what makes two components at different depths that both name
+    /// `"trigger"` unable to reach each other's.
+    #[test]
+    fn a_sibling_anchor_never_resolves_to_a_cousin() {
+        let above = stack("root")
+            .child(ViewNode::new(NodeKind::Text, "trigger"))
+            .child(stack("host").child(sibling_popover("popup", "trigger")));
+        let err = validate(&above, &Registry::new()).unwrap_err();
+        assert!(
+            matches!(
+                &err.as_slice()[0].violation,
+                Violation::AnchorTargetMissing { id, .. } if id == "/root/host/trigger"
+            ),
+            "{err}"
+        );
+
+        let below = stack("root").child(
+            stack("host")
+                .child(stack("inner").child(ViewNode::new(NodeKind::Text, "trigger")))
+                .child(sibling_popover("popup", "trigger")),
+        );
+        let err = validate(&below, &Registry::new()).unwrap_err();
+        assert!(
+            matches!(
+                &err.as_slice()[0].violation,
+                Violation::AnchorTargetMissing { id, .. } if id == "/root/host/trigger"
+            ),
+            "{err}"
+        );
+    }
+
+    /// Two pairs that both key their trigger `"trigger"` coexist in one
+    /// tree: each popover resolves to the trigger beside it, and nothing
+    /// else, so the tree is accepted with no ambiguity to detect.
+    #[test]
+    fn two_sibling_anchors_sharing_a_key_at_different_depths_are_both_accepted() {
+        let tree = stack("root")
+            .child(
+                stack("a")
+                    .child(ViewNode::new(NodeKind::Text, "trigger"))
+                    .child(sibling_popover("popup", "trigger")),
+            )
+            .child(
+                stack("b").child(
+                    stack("deeper")
+                        .child(ViewNode::new(NodeKind::Text, "trigger"))
+                        .child(sibling_popover("popup", "trigger")),
+                ),
+            );
+        assert!(validate(&tree, &Registry::new()).is_ok());
+    }
+
+    /// A sibling anchor is one end of a dependency edge exactly as a node
+    /// anchor is: a cycle spelled through a sibling key is still a cycle.
+    /// Here a popover names its sibling `b`, and `b` is a surface anchored
+    /// into the first popover's subtree.
+    #[test]
+    fn a_cycle_through_a_sibling_anchor_is_refused() {
+        let tree = stack("root")
+            .child(sibling_popover("a", "b").child(ViewNode::new(NodeKind::Text, "item")))
+            .child(popover("b", "/root/a/item"));
+        let err = validate(&tree, &Registry::new()).unwrap_err();
+        assert!(
+            err.as_slice()
+                .iter()
+                .any(|e| matches!(e.violation, Violation::AnchorCycle { .. })),
+            "{err}"
+        );
+    }
+
+    /// The root has no siblings. A sibling anchor on the top-level node
+    /// resolves to `/key`, which is the root itself only when the key
+    /// matches — and that is a self-anchor, refused as a cycle — and
+    /// otherwise names nothing.
+    #[test]
+    fn a_sibling_anchor_on_the_root_names_nothing_usable() {
+        let missing = sibling_popover("root", "other");
+        let err = validate(&missing, &Registry::new()).unwrap_err();
+        assert!(
+            matches!(
+                &err.as_slice()[0].violation,
+                Violation::AnchorTargetMissing { id, .. } if id == "/other"
+            ),
+            "{err}"
+        );
+        let itself = sibling_popover("root", "root");
+        let err = validate(&itself, &Registry::new()).unwrap_err();
+        assert!(
+            matches!(&err.as_slice()[0].violation, Violation::AnchorCycle { .. }),
+            "{err}"
+        );
+    }
+
+    /// `anchor.offset` on a sibling anchor is a spacing token checked the
+    /// same way a node anchor's is.
+    #[test]
+    fn a_sibling_anchor_offset_naming_no_token_is_refused() {
+        let tree = stack("root")
+            .child(ViewNode::new(NodeKind::Text, "button"))
+            .child(ViewNode::new(NodeKind::Surface, "popup").with_props(Props {
+                layer: Some(Layer::Popup),
+                anchor: Some(Anchor::Sibling {
+                    key: "button".into(),
+                    edge: Edge::Bottom,
+                    align: crate::tree::Align::Center,
+                    offset: Some(gap_token(9.0)),
+                }),
+                ..Props::default()
+            }));
+        let err = validate(&tree, &Registry::new()).unwrap_err();
+        assert!(
+            err.as_slice().iter().any(|e| matches!(
+                &e.violation,
+                Violation::UnknownTokenRef { prop, .. } if prop == "anchor.offset"
+            )),
+            "{err}"
+        );
+        assert!(validate(&tree, &spacing_registry_with(9.0)).is_ok());
     }
 
     /// A surface anchored to its own rect is circular: its placement is what

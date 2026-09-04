@@ -71,9 +71,10 @@
 //! spec 004's shell, not to one row's anatomy. The right panel's true
 //! placement — docked to the viewport's right edge, `inset-block` from the
 //! header to the viewport bottom (slice-f "UI shell right panel" Key
-//! numbers) — is also out of reach: [`crate::tree::Anchor::Node`] anchors
-//! to a *node's rect*, not a viewport edge, so [`ui_shell_right_panel`]
-//! anchors to its trigger icon instead (`contracts/component-anatomy.md`
+//! numbers) — is also out of reach: a node anchor
+//! ([`crate::tree::Anchor::Sibling`]) anchors to a *node's rect*, not a
+//! viewport edge, so [`ui_shell_right_panel`] anchors to its trigger icon
+//! instead (`contracts/component-anatomy.md`
 //! Open §1 leaves viewport-edge docking to `contracts/anchored-placement.md`,
 //! not this contract). Responsive nav collapse below the `lg`/`md`
 //! breakpoints is skipped throughout for the same reason `ui_shell_left_panel`
@@ -542,18 +543,20 @@ pub fn ui_shell_left_panel_divider(key: impl Into<Key>) -> ViewNode {
 // ---------------------------------------------------------------------
 
 /// A generic right panel: Carbon's "empty header panel" case. Anchored to
-/// `anchor_id` (the [`ui_shell_header_action`] that opens it). `label` is
-/// the panel's accessible name (FR-058-adjacent, mirroring
-/// [`super::popover::popover_with`] — an overlay names itself even though
-/// it is not itself a click target). See the module doc for what viewport
-/// docking this anchor does not do.
+/// `anchor`, the key of the [`ui_shell_header_action`] that opens it, which
+/// must sit in the same child list as the panel: the anchor is an
+/// [`Anchor::Sibling`], resolved against wherever the caller mounts the
+/// pair, exactly as [`super::popover::popover_with`]'s is. `label` is the
+/// panel's accessible name (FR-058-adjacent, mirroring `popover_with` — an
+/// overlay names itself even though it is not itself a click target). See
+/// the module doc for what viewport docking this anchor does not do.
 pub fn ui_shell_right_panel(
     key: impl Into<Key>,
     label: impl Into<String>,
-    anchor_id: impl Into<String>,
+    anchor: impl Into<Key>,
     content: Vec<ViewNode>,
 ) -> ViewNode {
-    right_panel(key, label, anchor_id, content, Align::Start)
+    right_panel(key, label, anchor, content, Align::Start)
 }
 
 /// The Switcher: a right panel whose content is centred
@@ -563,16 +566,16 @@ pub fn ui_shell_right_panel(
 pub fn ui_shell_switcher(
     key: impl Into<Key>,
     label: impl Into<String>,
-    anchor_id: impl Into<String>,
+    anchor: impl Into<Key>,
     items: Vec<ViewNode>,
 ) -> ViewNode {
-    right_panel(key, label, anchor_id, items, Align::Center)
+    right_panel(key, label, anchor, items, Align::Center)
 }
 
 fn right_panel(
     key: impl Into<Key>,
     label: impl Into<String>,
-    anchor_id: impl Into<String>,
+    anchor: impl Into<Key>,
     content: Vec<ViewNode>,
     align: Align,
 ) -> ViewNode {
@@ -582,8 +585,8 @@ fn right_panel(
     let mut node = ViewNode::new(NodeKind::Surface, key)
         .with_props(Props {
             layer: Some(Layer::Popup),
-            anchor: Some(Anchor::Node {
-                id: anchor_id.into(),
+            anchor: Some(Anchor::Sibling {
+                key: anchor.into(),
                 edge: Edge::Bottom,
                 align: AnchorAlign::End,
                 offset: None,
@@ -1033,11 +1036,11 @@ mod tests {
         assert_eq!(node.semantics.label.as_deref(), Some("Notifications"));
         assert!(node.interactions.is_empty());
         match &node.props.anchor {
-            Some(Anchor::Node { id, edge, .. }) => {
-                assert_eq!(id, "notify");
+            Some(Anchor::Sibling { key, edge, .. }) => {
+                assert_eq!(key.as_str(), "notify");
                 assert_eq!(*edge, Edge::Bottom);
             }
-            other => panic!("expected Anchor::Node, got {other:?}"),
+            other => panic!("expected Anchor::Sibling, got {other:?}"),
         }
         assert_eq!(node.constraints.horizontal.min, Some(RIGHT_PANEL_WIDTH));
         assert_eq!(node.constraints.horizontal.max, Some(RIGHT_PANEL_WIDTH));
@@ -1072,16 +1075,53 @@ mod tests {
         assert_eq!(SWITCHER_DIVIDER_WIDTH, 224.0);
     }
 
+    /// Both right-panel constructors IS the anchored surface, naming their
+    /// trigger by bare sibling key (`Anchor::Sibling`). Placed beside a
+    /// header action carrying that key, each is accepted wherever the
+    /// caller mounts the pair — here two containers below the root, the
+    /// gallery catalog's own depth.
+    #[test]
+    fn right_panels_validate_beside_their_trigger_when_mounted_at_catalog_depth() {
+        crate::component::tests::assert_mounts_at_catalog_depth(
+            "ui_shell_right_panel",
+            vec![
+                ui_shell_header_action("notify", "Notifications", true),
+                ui_shell_right_panel(
+                    "notifications-panel",
+                    "Notifications",
+                    "notify",
+                    vec![text("note", "No new notifications.")],
+                ),
+            ],
+        );
+        crate::component::tests::assert_mounts_at_catalog_depth(
+            "ui_shell_switcher",
+            vec![
+                ui_shell_header_action("apps", "App switcher", true),
+                ui_shell_switcher(
+                    "switcher",
+                    "App switcher",
+                    "apps",
+                    vec![
+                        ui_shell_switcher_item("a", "Petra"),
+                        ui_shell_right_panel_divider("d1"),
+                        ui_shell_switcher_item("b", "Inspector"),
+                    ],
+                ),
+            ],
+        );
+    }
+
     // -- frame-level checks (geometry, focus, contrast) -----------------
     //
     // The header and both left-panel width variants carry no `anchor` of
     // their own — only [`ui_shell_right_panel`]/[`ui_shell_switcher`]'s
-    // outer `Surface` does (`Anchor::Node`, this module's own doc) — so
+    // outer `Surface` does (`Anchor::Sibling`, this module's own doc) — so
     // both petrify standalone the same way every other non-anchored
-    // component in this crate does. The right panel is the limited case:
-    // like `popover.rs`'s own `content` and `tooltip.rs`'s own `content`,
-    // what is audited below is `right_panel`'s inner `"content"` Stack,
-    // which carries no `anchor` of its own.
+    // component in this crate does. The right panel is audited the way
+    // `popover.rs`'s and `tooltip.rs`'s own `content` are: what is
+    // petrified below is `right_panel`'s inner `"content"` Stack, which
+    // carries no `anchor` of its own.
 
     const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
 
@@ -1491,7 +1531,7 @@ mod tests {
     // -- right panel: audited via its non-anchored `content` node --------
     //
     // `ui_shell_right_panel`/`ui_shell_switcher` build via `right_panel`,
-    // whose outer node IS the `Anchor::Node`-anchored `Surface` — every
+    // whose outer node IS the `Anchor::Sibling`-anchored `Surface` — every
     // constructor this half of the module exports IS the anchored surface,
     // with no separate closed trigger form (unlike Toggletip's `trigger`,
     // which stands alone). `content` — the inner `Stack` — carries no

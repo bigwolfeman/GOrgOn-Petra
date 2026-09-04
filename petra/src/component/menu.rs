@@ -104,8 +104,8 @@ mod tests {
         assert_eq!(node.semantics.label.as_deref(), Some("Actions"));
         assert!(node.interactions.is_empty());
         match &node.props.anchor {
-            Some(Anchor::Node { id, .. }) => assert_eq!(id, "trigger"),
-            other => panic!("expected Anchor::Node, got {other:?}"),
+            Some(Anchor::Sibling { key, .. }) => assert_eq!(key.as_str(), "trigger"),
+            other => panic!("expected Anchor::Sibling, got {other:?}"),
         }
         assert_eq!(node.constraints.horizontal.min, Some(MIN_INLINE));
         assert_eq!(node.constraints.horizontal.max, Some(MAX_INLINE));
@@ -134,15 +134,29 @@ mod tests {
         assert_eq!(child(&node, "label").props.text.as_deref(), Some("Rename"));
     }
 
-    // `menu()` itself is `Anchor::Node { id: "trigger", .. }`, which names a
-    // bare child key, not a full canonical path — a constructor cannot know
-    // its own mount point, so the open popover cannot be placed correctly
-    // under any parent (a known limit; see `.agents/notes/proposed/
-    // architecture/2026-09-03-anchored-components-cannot-name-their-own-
-    // anchor.md`). `menu_item` itself carries no anchor, so — unlike
-    // `date_picker`'s `day_button`, which is reachable only inside the
-    // anchored calendar — it is audited here with a real `petrify_lone`,
-    // the same as any standalone component.
+    /// `menu()` IS the anchored surface, naming a `trigger` sibling by bare
+    /// key (`Anchor::Sibling`). Placed beside a control keyed `trigger`, it
+    /// is accepted wherever the caller mounts the pair — here two
+    /// containers below the root, the gallery catalog's own depth.
+    #[test]
+    fn menu_validates_beside_its_trigger_when_mounted_at_catalog_depth() {
+        crate::component::tests::assert_mounts_at_catalog_depth(
+            "menu",
+            vec![
+                crate::component::button("trigger", "Actions"),
+                menu(
+                    "actions",
+                    "Actions",
+                    vec![menu_item("rename", "Rename"), menu_item("delete", "Delete")],
+                ),
+            ],
+        );
+    }
+
+    // `menu_item` carries no anchor, so — unlike `date_picker`'s
+    // `day_button`, which is reachable only inside the anchored calendar —
+    // it is audited below with a real `petrify_lone`, the same as any
+    // standalone component.
 
     const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
 

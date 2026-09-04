@@ -116,13 +116,40 @@ impl KeyPath {
     /// The root path prints as `/`, so an id is never the empty string.
     #[must_use]
     pub fn id(&self) -> String {
-        if self.0.is_empty() {
-            return "/".into();
-        }
+        Self::join(self.0.iter())
+    }
+
+    /// The canonical id of the node keyed `key` in the same child list as
+    /// this path's last segment: this path with its last segment replaced by
+    /// `key`.
+    ///
+    /// This is how [`crate::tree::Anchor::Sibling`] resolves — an anchored
+    /// surface names a sibling by bare key, and the surface's own path is
+    /// the only context needed to turn that key into a canonical id. No
+    /// search, no ambiguity: the answer is a function of this path and
+    /// `key` alone, so two surfaces at different depths that both name
+    /// `"trigger"` can never resolve to each other's trigger.
+    ///
+    /// The root path has no parent, so its "sibling" is the top-level id
+    /// `/key`. That names the tree's own top node only when `key` is its
+    /// key — and a surface anchored to itself is a cycle `validate`
+    /// refuses — so a `Sibling` anchor on a root surface never resolves to
+    /// a usable node, which is the right answer: a root has no siblings.
+    #[must_use]
+    pub fn sibling_id(&self, key: &Key) -> String {
+        let parent = self.0.len().saturating_sub(1);
+        Self::join(self.0[..parent].iter().chain(std::iter::once(key)))
+    }
+
+    /// `/`-joined escaped `segments`; `/` alone for none.
+    fn join<'a>(segments: impl Iterator<Item = &'a Key>) -> String {
         let mut out = String::new();
-        for key in &self.0 {
+        for key in segments {
             out.push('/');
             out.push_str(&key.escaped());
+        }
+        if out.is_empty() {
+            out.push('/');
         }
         out
     }
@@ -215,6 +242,51 @@ mod tests {
     #[test]
     fn backslashes_escape_too() {
         assert_eq!(KeyPath::root().child(&Key::new("a\\b")).id(), "/a\\\\b");
+    }
+
+    /// A sibling id is this path with its last segment swapped: the same
+    /// parent, a different key. Depth does not enter into it.
+    #[test]
+    fn sibling_id_swaps_the_last_segment_only() {
+        let surface = KeyPath::root()
+            .child(&Key::new("root"))
+            .child(&Key::new("page"))
+            .child(&Key::new("menu"));
+        assert_eq!(
+            surface.sibling_id(&Key::new("trigger")),
+            "/root/page/trigger"
+        );
+        assert_eq!(
+            surface.sibling_id(&Key::new("trigger")),
+            KeyPath::root()
+                .child(&Key::new("root"))
+                .child(&Key::new("page"))
+                .child(&Key::new("trigger"))
+                .id(),
+            "a sibling id is exactly the id the sibling's own path prints"
+        );
+    }
+
+    /// The sibling's key is escaped the way every segment is, so a key
+    /// holding a separator cannot forge a deeper path.
+    #[test]
+    fn sibling_id_escapes_the_key() {
+        let surface = KeyPath::root().child(&Key::new("a")).child(&Key::new("s"));
+        assert_eq!(surface.sibling_id(&Key::new("b/c")), "/a/b\\/c");
+    }
+
+    /// A root has no parent and so no siblings: the id it produces is a
+    /// top-level one, which names the tree's own top node only when the key
+    /// is that node's — a self-anchor, which acceptance refuses as a cycle.
+    #[test]
+    fn sibling_id_of_the_root_path_is_top_level() {
+        assert_eq!(KeyPath::root().sibling_id(&Key::new("x")), "/x");
+        assert_eq!(
+            KeyPath::root()
+                .child(&Key::new("root"))
+                .sibling_id(&Key::new("x")),
+            "/x"
+        );
     }
 
     #[test]

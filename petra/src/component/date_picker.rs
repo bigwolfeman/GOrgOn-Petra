@@ -233,8 +233,8 @@ mod tests {
         assert_eq!(calendar.kind, NodeKind::Surface);
         assert_eq!(calendar.semantics.role, Some(Role::Overlay));
         match &calendar.props.anchor {
-            Some(Anchor::Node { id, .. }) => assert_eq!(id, "field"),
-            other => panic!("expected Anchor::Node, got {other:?}"),
+            Some(Anchor::Sibling { key, .. }) => assert_eq!(key.as_str(), "field"),
+            other => panic!("expected Anchor::Sibling, got {other:?}"),
         }
         let content = child(calendar, "content");
         assert_eq!(child(content, "caret").props.text.as_deref(), Some("^"));
@@ -277,13 +277,19 @@ mod tests {
         );
     }
 
-    // Only the CLOSED field is audited at the frame level below. The open
-    // calendar's `Anchor::Node { id: "field", .. }` names a bare child key,
-    // not a full canonical path, so a constructor cannot know its own mount
-    // point and the popover cannot be placed correctly under any parent —
-    // a known limit (`.agents/notes/proposed/architecture/
-    // 2026-09-03-anchored-components-cannot-name-their-own-anchor.md`), not
-    // a defect to chase here.
+    /// `date_picker_open`'s `calendar` names its `field` sibling by bare
+    /// key (`Anchor::Sibling`), so the open form is accepted wherever a
+    /// caller mounts it — here two containers below the root, the gallery
+    /// catalog's own depth.
+    #[test]
+    fn date_picker_open_validates_when_mounted_at_catalog_depth() {
+        crate::component::tests::assert_mounts_at_catalog_depth(
+            "date_picker_open",
+            vec![date_picker_open("due", "Due date", "2026-08-30")],
+        );
+    }
+
+    // The frame-level checks below audit the CLOSED field.
 
     const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
 

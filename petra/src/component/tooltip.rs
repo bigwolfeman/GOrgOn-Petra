@@ -76,8 +76,8 @@ mod tests {
         assert_eq!(MAX_INLINE, 288.0);
         assert_eq!(SINGLE_LINE_INTENT, 208.0);
         match &node.props.anchor {
-            Some(Anchor::Node { id, .. }) => assert_eq!(id, "trigger"),
-            other => panic!("expected Anchor::Node, got {other:?}"),
+            Some(Anchor::Sibling { key, .. }) => assert_eq!(key.as_str(), "trigger"),
+            other => panic!("expected Anchor::Sibling, got {other:?}"),
         }
         let content = child(&node, "content");
         assert_eq!(child(content, "caret").props.text.as_deref(), Some("^"));
@@ -91,22 +91,28 @@ mod tests {
         );
     }
 
-    // `tooltip` itself builds via `super::popover::popover`, so `node` IS
-    // the anchored `Anchor::Node { id: "trigger", .. }` surface with no
-    // separate closed form at all — unlike Toggletip, whose `trigger`
-    // stands alone as a plain interactive node, every constructor this
-    // module exports IS the anchored bubble. `crate::tree::validate::
-    // check_anchors` refuses the WHOLE tree whenever an `Anchor::Node.id`
-    // does not resolve to some sibling's own canonical path, so `tooltip`
-    // cannot be `petrify_lone`d in ANY form — the same limit `popover.rs`'s
-    // own test-module comment documents, not this module's own bug (see
-    // `.agents/notes/proposed/architecture/
-    // 2026-09-03-anchored-components-cannot-name-their-own-anchor.md`).
-    //
-    // What CAN be audited: `content`, the inner `Stack` `popover` builds
-    // (`caret` + `body`). It carries no `anchor` of its own — only the
-    // outer `Surface` node does — so it petrifies on its own, the same
-    // technique `popover.rs`'s own `content_frame_geometry_...` test uses.
+    /// `tooltip` IS the anchored bubble, naming a `trigger` sibling by bare
+    /// key (`Anchor::Sibling`). Placed beside a control keyed `trigger`, it
+    /// is accepted wherever the caller mounts the pair — here two
+    /// containers below the root, the gallery catalog's own depth.
+    #[test]
+    fn tooltip_validates_beside_its_trigger_when_mounted_at_catalog_depth() {
+        crate::component::tests::assert_mounts_at_catalog_depth(
+            "tooltip",
+            vec![
+                crate::component::button("trigger", "Copy"),
+                tooltip("copied", "Copied", "Copied to clipboard"),
+            ],
+        );
+    }
+
+    // `tooltip` builds via `super::popover::popover`, so `node` IS the
+    // anchored surface with no separate closed form — unlike Toggletip,
+    // whose `trigger` stands alone as a plain interactive node. The
+    // frame-level checks below therefore audit `content`, the inner `Stack`
+    // `popover` builds (`caret` + `body`), which carries no `anchor` of its
+    // own and so petrifies standalone — the same technique `popover.rs`'s
+    // own `content_frame_geometry_...` test uses.
 
     const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
 

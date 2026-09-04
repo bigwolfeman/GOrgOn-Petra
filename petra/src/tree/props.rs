@@ -44,6 +44,7 @@ use serde::{Deserialize, Serialize};
 // sits along the edge of the node it is anchored to. Every use of the former
 // in this file is spelled out in full so a reader never has to guess which
 // one is meant.
+use super::key::{Key, KeyPath};
 use crate::geom::{Axis, Insets};
 use crate::token::{ThemeSnapshot, TokenName};
 
@@ -320,6 +321,17 @@ impl Align {
 }
 
 /// Where an overlay surface attaches.
+///
+/// Two of the variants name a node; they differ only in *how*. [`Anchor::Node`]
+/// carries the target's canonical key-path id verbatim, which is what a
+/// hand-written tree that knows its own shape can supply. [`Anchor::Sibling`]
+/// carries a bare [`Key`] and is resolved against the anchored surface's own
+/// parent path: it is the form a component constructor uses, because a
+/// constructor builds a node before any caller has decided where in the tree
+/// to mount it and so cannot know its canonical id ([`KeyPath::sibling_id`]).
+/// Both resolve to one canonical id before anything reads them —
+/// [`Anchor::target_id`] is the one place that happens — so acceptance, the
+/// harvest walk and placement all see a single kind of node anchor.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", tag = "type")]
 pub enum Anchor {
@@ -346,6 +358,36 @@ pub enum Anchor {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         offset: Option<TokenName>,
     },
+    /// Attached to the rect of a sibling of the anchored surface, by that
+    /// sibling's bare key.
+    ///
+    /// Resolved as "the node keyed `key` in the same child list as this
+    /// surface": the surface's own [`KeyPath`] with its last segment
+    /// replaced by `key` ([`KeyPath::sibling_id`]). Nothing else is
+    /// searched, so a key reused at another depth of the same tree can never
+    /// be reached by mistake, and a `key` no sibling has is refused at
+    /// acceptance exactly as an [`Anchor::Node`] naming nothing is
+    /// ([`crate::tree::Violation::AnchorTargetMissing`], carrying the
+    /// canonical id that was tried).
+    ///
+    /// This is the form every component constructor in
+    /// [`crate::component`] uses: a constructor places its trigger and its
+    /// popover side by side in one child list and names the trigger by the
+    /// key it just chose, which is the only id it can possibly have in hand.
+    Sibling {
+        /// Key of the sibling node this surface attaches to.
+        key: Key,
+        /// Which edge of the anchor the surface prefers.
+        edge: Edge,
+        /// Where along that edge the surface starts. Defaulted for the same
+        /// reason [`Anchor::Node`]'s is.
+        #[serde(default, skip_serializing_if = "is_default_align")]
+        align: Align,
+        /// Gap between the anchor's edge and the surface, as a spacing
+        /// token. Same rule as [`Anchor::Node`]'s.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        offset: Option<TokenName>,
+    },
     /// Attached to a point in the viewport.
     Point {
         /// Horizontal position, logical units.
@@ -355,6 +397,83 @@ pub enum Anchor {
     },
     /// Centred in the viewport.
     Viewport,
+}
+
+/// The terms an anchor that names a node declares, read the same way
+/// whichever of [`Anchor::Node`] and [`Anchor::Sibling`] declared them.
+///
+/// The placement ladder (`contracts/anchored-placement.md` §4) is a function
+/// of `(edge, align, offset)` and the harvested rect; which spelling named
+/// the rect is not one of its inputs, and this is the type that keeps it
+/// from becoming one.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NodeAnchor<'a> {
+    /// Which edge of the anchor the surface prefers.
+    pub edge: Edge,
+    /// Where along that edge the surface starts.
+    pub align: Align,
+    /// Gap between the anchor's edge and the surface, as a spacing token.
+    pub offset: Option<&'a TokenName>,
+}
+
+impl Anchor {
+    /// The canonical id of the node this anchor names, given the anchored
+    /// surface's own key path, or `None` for an anchor that names no node.
+    ///
+    /// `surface` is the path *of the surface carrying this anchor*, with the
+    /// surface's own key as its last segment — the path every tree walk in
+    /// this crate has in hand at the moment it reads `props.anchor`. It is
+    /// the only context [`Anchor::Sibling`] needs and [`Anchor::Node`]
+    /// ignores it, which is what lets every consumer resolve both through
+    /// this one call rather than matching the variants apart.
+    #[must_use]
+    pub fn target_id(&self, surface: &KeyPath) -> Option<String> {
+        match self {
+            Self::Node { id, .. } => Some(id.clone()),
+            Self::Sibling { key, .. } => Some(surface.sibling_id(key)),
+            Self::Point { .. } | Self::Viewport => None,
+        }
+    }
+
+    /// Whether this anchor names a node at all — the two variants a harvest
+    /// walk has to place first and an incremental frame has to re-resolve.
+    #[must_use]
+    pub fn names_node(&self) -> bool {
+        matches!(self, Self::Node { .. } | Self::Sibling { .. })
+    }
+
+    /// The `(edge, align, offset)` a node anchor declares; `None` for an
+    /// anchor that names no node.
+    #[must_use]
+    pub fn node_terms(&self) -> Option<NodeAnchor<'_>> {
+        match self {
+            Self::Node {
+                edge,
+                align,
+                offset,
+                ..
+            }
+            | Self::Sibling {
+                edge,
+                align,
+                offset,
+                ..
+            } => Some(NodeAnchor {
+                edge: *edge,
+                align: *align,
+                offset: offset.as_ref(),
+            }),
+            Self::Point { .. } | Self::Viewport => None,
+        }
+    }
+
+    /// The spacing token gapping this anchor from its surface, if one is
+    /// declared. The one spacing reference on a node that does not live on
+    /// a `props.*_spacing` field, which is why it has its own accessor.
+    #[must_use]
+    pub fn offset(&self) -> Option<&TokenName> {
+        self.node_terms().and_then(|terms| terms.offset)
+    }
 }
 
 /// Whether an [`Align`] is the one absence already meant.
@@ -868,7 +987,10 @@ impl Props {
 
 #[cfg(test)]
 mod tests {
-    use super::{GridSpan, InsetRefs, Layer, Props, TextWrap, TrackSize, max_row_tracks};
+    use super::{
+        Align, Anchor, Edge, GridSpan, InsetRefs, KeyPath, Layer, Props, TextWrap, TrackSize,
+        max_row_tracks,
+    };
     use crate::geom::{Axis, Insets};
     use crate::token::{ThemeSnapshot, TokenName, light};
 
@@ -1064,6 +1186,83 @@ mod tests {
     /// declared field does — pinned separately from `declared_fields_round_trip`
     /// because its serde shape (a four-edge struct, not a plain scalar) is
     /// worth checking on its own.
+    /// `Anchor::Sibling` on the wire: a `key` where `Node` has an `id`, the
+    /// same defaulted `align` and `offset`, and the same `type` tag scheme,
+    /// so a tree written by hand can use either spelling.
+    #[test]
+    fn a_sibling_anchor_round_trips_through_serde() {
+        let bare = Anchor::Sibling {
+            key: "trigger".into(),
+            edge: Edge::Bottom,
+            align: Align::default(),
+            offset: None,
+        };
+        let json = serde_json::to_string(&bare).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"sibling","key":"trigger","edge":"bottom"}"#
+        );
+        assert_eq!(serde_json::from_str::<Anchor>(&json).unwrap(), bare);
+
+        let full = Anchor::Sibling {
+            key: "trigger".into(),
+            edge: Edge::Right,
+            align: Align::End,
+            offset: Some(n("spacing.xs")),
+        };
+        let json = serde_json::to_string(&full).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"sibling","key":"trigger","edge":"right","align":"end","offset":"spacing.xs"}"#
+        );
+        assert_eq!(serde_json::from_str::<Anchor>(&json).unwrap(), full);
+    }
+
+    /// The two node-naming spellings resolve through one accessor, and the
+    /// two that name no node answer `None` to all of it.
+    #[test]
+    fn target_id_resolves_a_sibling_against_the_surfaces_parent() {
+        let surface = KeyPath::root()
+            .child(&"root".into())
+            .child(&"page".into())
+            .child(&"popup".into());
+        let sibling = Anchor::Sibling {
+            key: "trigger".into(),
+            edge: Edge::Top,
+            align: Align::Start,
+            offset: Some(n("spacing.xs")),
+        };
+        assert_eq!(
+            sibling.target_id(&surface).as_deref(),
+            Some("/root/page/trigger")
+        );
+        assert!(sibling.names_node());
+        let terms = sibling.node_terms().unwrap();
+        assert_eq!((terms.edge, terms.align), (Edge::Top, Align::Start));
+        assert_eq!(sibling.offset(), Some(&n("spacing.xs")));
+
+        let node = Anchor::Node {
+            id: "/elsewhere/entirely".into(),
+            edge: Edge::Left,
+            align: Align::Center,
+            offset: None,
+        };
+        assert_eq!(
+            node.target_id(&surface).as_deref(),
+            Some("/elsewhere/entirely"),
+            "a node anchor's id is taken as declared, wherever the surface is"
+        );
+        assert!(node.names_node());
+        assert_eq!(node.offset(), None);
+
+        for other in [Anchor::Point { x: 1.0, y: 2.0 }, Anchor::Viewport] {
+            assert_eq!(other.target_id(&surface), None);
+            assert!(!other.names_node());
+            assert!(other.node_terms().is_none());
+            assert_eq!(other.offset(), None);
+        }
+    }
+
     #[test]
     fn padding_round_trips_through_serde() {
         let props = Props {

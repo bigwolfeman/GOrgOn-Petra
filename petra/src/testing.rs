@@ -176,10 +176,7 @@ fn spacing_refs(node: &ViewNode, out: &mut Vec<TokenName>) {
     // would let a fixture name an offset token outside the pre-bound gap ramp
     // and have `extended_vocabulary` quietly not declare it — the theme would
     // then refuse a name the tree legitimately uses.
-    let anchor_offset = match &node.props.anchor {
-        Some(Anchor::Node { offset, .. }) => offset.as_ref(),
-        _ => None,
-    };
+    let anchor_offset = node.props.anchor.as_ref().and_then(Anchor::offset);
     for name in [
         &node.props.spacing,
         &node.props.column_spacing,

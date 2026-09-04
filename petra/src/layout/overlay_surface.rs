@@ -45,6 +45,14 @@
 //! subtree harvests no rect for it, and such a surface still centres in the
 //! viewport rather than guessing.
 //!
+//! [`Anchor::Sibling`] is the same anchor spelled from where a component
+//! constructor stands: a bare key, resolved against the surface's *own*
+//! parent path ([`crate::tree::Anchor::target_id`]) into the canonical id
+//! the harvest map is keyed by. The walk's `path` is that context — it is
+//! the surface's full path by the time [`place`] runs — so the lookup costs
+//! one id build and no search, and from the map onwards the two spellings
+//! are one thing: the ladder below never learns which one named the rect.
+//!
 //! ## Input policy reaching the focus scope
 //!
 //! [`crate::frame::placement::PlacementSemantics`] has no `input_policy`
@@ -138,7 +146,7 @@ pub fn place(
     // never render outside of.
     let viewport = slot.rect.intersect(slot.clip);
 
-    let plan = anchor_placement(surface.anchor, viewport, natural, ctx);
+    let plan = anchor_placement(surface.anchor, path, viewport, natural, ctx);
 
     let x = clamp_axis(plan.x, natural.w, viewport.x, viewport.w, surface.clamp);
     let y = clamp_axis(plan.y, natural.h, viewport.y, viewport.h, surface.clamp);
@@ -245,8 +253,9 @@ pub enum AnchorResolution {
     /// declared [`Edge`] picks the side, the declared [`Align`] picks where
     /// along it (`contracts/anchored-placement.md` §4 step 1).
     Node,
-    /// Declared as [`Anchor::Node`], but this walk harvested no rect for
-    /// that id, so the surface centres in the viewport instead.
+    /// Declared as [`Anchor::Node`] or [`Anchor::Sibling`], but this walk
+    /// harvested no rect for the id it resolves to, so the surface centres
+    /// in the viewport instead.
     ///
     /// Tree acceptance refuses an anchor naming no node
     /// ([`crate::tree::Violation::AnchorTargetMissing`]) and the harvest walk
@@ -259,13 +268,24 @@ pub enum AnchorResolution {
 }
 
 /// How `anchor` will be resolved by [`place`], given what `anchors` holds.
+///
+/// `surface` is the full key path of the surface carrying `anchor`: what an
+/// [`Anchor::Sibling`] resolves against, and what an [`Anchor::Node`]
+/// ignores.
 #[must_use]
-pub fn resolve_anchor_kind(anchor: &Anchor, anchors: &AnchorRects) -> AnchorResolution {
+pub fn resolve_anchor_kind(
+    anchor: &Anchor,
+    surface: &KeyPath,
+    anchors: &AnchorRects,
+) -> AnchorResolution {
     match anchor {
         Anchor::Point { .. } => AnchorResolution::Point,
         Anchor::Viewport => AnchorResolution::Viewport,
-        Anchor::Node { id, .. } => {
-            if anchors.get(id).is_some() {
+        Anchor::Node { .. } | Anchor::Sibling { .. } => {
+            let harvested = anchor
+                .target_id(surface)
+                .is_some_and(|id| anchors.get(&id).is_some());
+            if harvested {
                 AnchorResolution::Node
             } else {
                 AnchorResolution::NodeUnharvested
@@ -376,10 +396,12 @@ struct AnchorPlan {
 }
 
 /// The preferred placement of a surface of `natural` size anchored by
-/// `anchor` inside `viewport`, before clamping.
+/// `anchor` inside `viewport`, before clamping. `path` is the surface's own
+/// full key path, which an [`Anchor::Sibling`] resolves against.
 ///
-/// `Anchor::Node` grows away from the declared [`Edge`] of the harvested
-/// anchor rect, gapped by the declared `offset` token, and starts where the
+/// A node anchor (`Anchor::Node` or `Anchor::Sibling`, one thing once
+/// resolved) grows away from the declared [`Edge`] of the harvested anchor
+/// rect, gapped by the declared `offset` token, and starts where the
 /// declared [`Align`] puts it on the cross axis. The main axis is therefore a
 /// *side* — which is what gives [`ClampRule::Flip`] an opposite to try — and
 /// the cross axis is a bare origin, because sliding is the only thing the
@@ -390,10 +412,11 @@ struct AnchorPlan {
 /// on both axes: the box grows right and down from the point, so the point's
 /// other side — box ending at the point — is a real opposite for
 /// [`ClampRule::Flip`] to try. `Anchor::Viewport` centres the box and declares
-/// no side, and so does an `Anchor::Node` this walk harvested no rect for
+/// no side, and so does a node anchor this walk harvested no rect for
 /// (see [`AnchorResolution::NodeUnharvested`]).
 fn anchor_placement(
     anchor: &Anchor,
+    path: &KeyPath,
     viewport: Rect,
     natural: Size,
     ctx: &LayoutCtx<'_>,
@@ -403,7 +426,7 @@ fn anchor_placement(
         y: AxisPlacement::Centred(viewport.y + (viewport.h - natural.h) / 2.0),
         anchored: None,
     };
-    match resolve_anchor_kind(anchor, &ctx.anchors) {
+    match resolve_anchor_kind(anchor, path, &ctx.anchors) {
         AnchorResolution::Point => {
             let Anchor::Point { x, y } = anchor else {
                 unreachable!("resolve_anchor_kind returned Point for a non-Point anchor")
@@ -416,23 +439,17 @@ fn anchor_placement(
         }
         AnchorResolution::Viewport | AnchorResolution::NodeUnharvested => centred,
         AnchorResolution::Node => {
-            let Anchor::Node {
-                id,
-                edge,
-                align,
-                offset,
-            } = anchor
-            else {
-                unreachable!("resolve_anchor_kind returned Node for a non-Node anchor")
+            let (Some(id), Some(terms)) = (anchor.target_id(path), anchor.node_terms()) else {
+                unreachable!("resolve_anchor_kind returned Node for an anchor naming no node")
             };
-            let Some(harvested) = ctx.anchors.get(id) else {
+            let Some(harvested) = ctx.anchors.get(&id) else {
                 unreachable!("resolve_anchor_kind returned Node only for a harvested id")
             };
             let anchor_rect = harvested.visible();
-            let offset = ctx.spacing(offset);
-            let main = main_axis_placement(*edge, anchor_rect, offset);
-            let cross = cross_axis_placement(*edge, *align, anchor_rect, natural);
-            let (x, y) = match edge.axis() {
+            let offset = ctx.spacing(&terms.offset.cloned());
+            let main = main_axis_placement(terms.edge, anchor_rect, offset);
+            let cross = cross_axis_placement(terms.edge, terms.align, anchor_rect, natural);
+            let (x, y) = match terms.edge.axis() {
                 Axis::Vertical => (cross, main),
                 Axis::Horizontal => (main, cross),
             };
@@ -440,8 +457,8 @@ fn anchor_placement(
                 x,
                 y,
                 anchored: Some(AnchoredPlan {
-                    edge: *edge,
-                    align: *align,
+                    edge: terms.edge,
+                    align: terms.align,
                     offset,
                     anchor_rect,
                 }),
@@ -1137,7 +1154,7 @@ mod tests {
             offset: None,
         };
         assert_eq!(
-            resolve_anchor_kind(&anchor, &AnchorRects::new()),
+            resolve_anchor_kind(&anchor, &KeyPath::root(), &AnchorRects::new()),
             AnchorResolution::NodeUnharvested
         );
         let node = surface(
@@ -1155,13 +1172,187 @@ mod tests {
     #[test]
     fn point_and_viewport_anchors_resolve_to_themselves() {
         let none = AnchorRects::new();
+        let root = KeyPath::root();
         assert_eq!(
-            resolve_anchor_kind(&Anchor::Point { x: 1.0, y: 1.0 }, &none),
+            resolve_anchor_kind(&Anchor::Point { x: 1.0, y: 1.0 }, &root, &none),
             AnchorResolution::Point
         );
         assert_eq!(
-            resolve_anchor_kind(&Anchor::Viewport, &none),
+            resolve_anchor_kind(&Anchor::Viewport, &root, &none),
             AnchorResolution::Viewport
+        );
+    }
+
+    // -- Anchor::Sibling: the same rect, named from where a constructor stands. --
+
+    /// A tree whose control and surface are siblings, the shape every
+    /// component constructor builds: `root > [button, popup]`. Both sit
+    /// under an `overlay` because that is the one container that offers a
+    /// child the whole window — a stack or a grid boxes a surface to a slot
+    /// exactly its own natural size (`slot.rect ∩ slot.clip` is "the
+    /// window", this module's doc), and every anchor then lands in the same
+    /// place. An `overlay` also hands every child the whole window, which
+    /// is why the control here is itself a surface anchored to a point:
+    /// that is the one kind of `overlay` child that takes its natural size,
+    /// so it has a real rect to be anchored to. Anchoring a surface to
+    /// another anchored surface is a case the harvest walk already covers
+    /// (`an_anchor_node_naming_an_anchored_surface_itself_still_waits_for_it`).
+    /// `anchor` is whatever spelling the test wants the popup to name the
+    /// control by.
+    fn sibling_tree(anchor: Anchor) -> ViewNode {
+        let mut pinned = ViewNode::new(NodeKind::Spacer, "box");
+        pinned.constraints.horizontal.min = Some(80.0);
+        pinned.constraints.horizontal.max = Some(80.0);
+        pinned.constraints.vertical.min = Some(32.0);
+        pinned.constraints.vertical.max = Some(32.0);
+        let button = ViewNode::new(NodeKind::Surface, "button")
+            .with_props(Props {
+                layer: Some(Layer::Popup),
+                anchor: Some(Anchor::Point { x: 100.0, y: 100.0 }),
+                clamp: Some(ClampRule::Shrink),
+                input_policy: Some(InputPolicy::Block),
+                ..Props::default()
+            })
+            .child(pinned);
+        ViewNode::new(NodeKind::Overlay, "root")
+            .child(button)
+            .child(surface(
+                anchor,
+                ClampRule::Flip,
+                InputPolicy::DismissOutside,
+                Size::new(120.0, 60.0),
+            ))
+    }
+
+    /// Place `tree` from a fresh harness: everything the walk produced, and
+    /// the anchor map it harvested.
+    fn placed_with_anchors(tree: &ViewNode) -> (crate::frame::placement::PlacedTree, AnchorRects) {
+        let mut h = Harness::new();
+        let mut ctx = h.ctx();
+        let mut path = KeyPath::root();
+        let mut sink = PlacementList::new();
+        crate::layout::place(
+            tree,
+            &mut ctx,
+            &mut path,
+            Slot::new(Rect::new(0.0, 0.0, 800.0, 600.0)),
+            &mut sink,
+        );
+        let anchors = ctx.anchors.clone();
+        (sink.into_parts(), anchors)
+    }
+
+    /// The whole claim of `Anchor::Sibling`: a bare key resolved against the
+    /// surface's own parent path is *the same anchor* as the canonical id
+    /// written out by hand. Not "lands somewhere plausible" — the placement
+    /// and paint lists are equal, so the harvest, the ladder and the caret
+    /// all saw one rect and one set of terms.
+    #[test]
+    fn a_sibling_anchor_places_exactly_as_the_canonical_node_anchor_does() {
+        let by_key = Anchor::Sibling {
+            key: "button".into(),
+            edge: Edge::Bottom,
+            align: Align::Center,
+            offset: None,
+        };
+        let (a, _) = placed_with_anchors(&sibling_tree(Anchor::Node {
+            id: "/root/button".into(),
+            edge: Edge::Bottom,
+            align: Align::Center,
+            offset: None,
+        }));
+        let (b, anchors) = placed_with_anchors(&sibling_tree(by_key.clone()));
+        assert_eq!(
+            a.placements, b.placements,
+            "the two spellings of one anchor placed differently"
+        );
+        assert_eq!(
+            a.content, b.content,
+            "the two spellings of one anchor painted differently"
+        );
+
+        // And it really was anchored: the popup hangs off the button's
+        // bottom edge, centred on it — a sibling key the harvest could not
+        // resolve would have centred the surface in the window at
+        // (340, 270) instead — and it carries a caret, which `place`
+        // attaches only for an anchor that resolved to a harvested rect
+        // (`a_sibling_anchor_does_not_search_outward_for_its_key` is the
+        // other half).
+        let button = b
+            .placements
+            .iter()
+            .find(|p| p.id == "/root/button")
+            .unwrap();
+        let popup = b
+            .placements
+            .iter()
+            .position(|p| p.id == "/root/popup")
+            .unwrap();
+        assert_eq!(button.rect, Rect::new(100.0, 100.0, 80.0, 32.0));
+        assert_eq!(
+            b.placements[popup].rect,
+            Rect::new(80.0, 132.0, 120.0, 60.0)
+        );
+        assert!(
+            b.content[popup].caret.is_some(),
+            "an anchored surface points at its anchor"
+        );
+        assert_eq!(
+            anchors.get("/root/button").map(|r| r.rect),
+            Some(button.rect),
+            "the harvest keyed the sibling's rect by its canonical id"
+        );
+        let surface_path = KeyPath::root().child(&"root".into()).child(&"popup".into());
+        assert_eq!(
+            resolve_anchor_kind(&by_key, &surface_path, &anchors),
+            AnchorResolution::Node
+        );
+    }
+
+    /// A sibling key is resolved against the surface's own child list and
+    /// nowhere else. The button here is a *cousin* — one level up — and the
+    /// popup's key names nothing beside it, so the harvest has no rect for
+    /// it and the surface centres. (Acceptance refuses this tree outright;
+    /// this test places the bare subtree to show the walk agrees with the
+    /// refusal rather than quietly reaching outward.)
+    #[test]
+    fn a_sibling_anchor_does_not_search_outward_for_its_key() {
+        let mut button = ViewNode::new(NodeKind::Spacer, "button");
+        button.constraints.horizontal.min = Some(80.0);
+        button.constraints.horizontal.max = Some(80.0);
+        button.constraints.vertical.min = Some(32.0);
+        button.constraints.vertical.max = Some(32.0);
+        let tree = ViewNode::new(NodeKind::Overlay, "root")
+            .child(button)
+            .child(ViewNode::new(NodeKind::Overlay, "inner").child(surface(
+                Anchor::Sibling {
+                    key: "button".into(),
+                    edge: Edge::Bottom,
+                    align: Align::Center,
+                    offset: None,
+                },
+                ClampRule::Flip,
+                InputPolicy::DismissOutside,
+                Size::new(100.0, 50.0),
+            )));
+        let (placed, anchors) = placed_with_anchors(&tree);
+        let popup = placed
+            .placements
+            .iter()
+            .position(|p| p.id == "/root/inner/popup")
+            .unwrap();
+        assert_eq!(
+            placed.placements[popup].rect,
+            Rect::new(350.0, 275.0, 100.0, 50.0),
+            "an unresolvable sibling key centres, exactly as an unharvested node id does"
+        );
+        assert!(
+            placed.content[popup].caret.is_none(),
+            "and a centred surface has no anchor to point a caret at"
+        );
+        assert!(
+            anchors.get("/root/button").is_none() && anchors.get("/root/inner/button").is_none(),
+            "nothing was harvested: the key resolved to `/root/inner/button`, which no node has"
         );
     }
 

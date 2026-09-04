@@ -150,8 +150,8 @@ mod tests {
         assert_eq!(menu.semantics.role, Some(Role::Overlay));
         assert_eq!(menu.semantics.label.as_deref(), Some("More"));
         match &menu.props.anchor {
-            Some(Anchor::Node { id, .. }) => assert_eq!(id, "trigger"),
-            other => panic!("expected Anchor::Node, got {other:?}"),
+            Some(Anchor::Sibling { key, .. }) => assert_eq!(key.as_str(), "trigger"),
+            other => panic!("expected Anchor::Sibling, got {other:?}"),
         }
         let content = child(menu, "content");
         assert_eq!(child(content, "caret").props.text.as_deref(), Some("^"));
@@ -161,13 +161,18 @@ mod tests {
         );
     }
 
-    // Only the CLOSED trigger is audited at the frame level below. The open
-    // form's `menu("menu", ...)` child is `Anchor::Node { id: "trigger", .. }`,
-    // which names a bare child key, not a full canonical path — a
-    // constructor cannot know its own mount point, so the popover cannot
-    // be placed correctly under any parent (a known limit; see
-    // `.agents/notes/proposed/architecture/
-    // 2026-09-03-anchored-components-cannot-name-their-own-anchor.md`).
+    /// The open form's `menu` names its `trigger` sibling by bare key
+    /// (`Anchor::Sibling`), so it is accepted wherever a caller mounts it —
+    /// here two containers below the root, the gallery catalog's own depth.
+    #[test]
+    fn menu_button_open_validates_when_mounted_at_catalog_depth() {
+        crate::component::tests::assert_mounts_at_catalog_depth(
+            "menu_button open",
+            vec![menu_button("more", "More", true, items())],
+        );
+    }
+
+    // The frame-level checks below audit the CLOSED trigger.
 
     const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
 

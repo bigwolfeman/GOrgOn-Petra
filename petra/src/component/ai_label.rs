@@ -447,12 +447,8 @@ fn bullet_dot(key: impl Into<Key>, size: f32) -> ViewNode {
 /// ([`SHAPE_MD`], MEASURED SCSS) and 24px container padding
 /// ([`SPACING_06`]) in place of the generic popover's 16px
 /// ([`super::tokens::SPACING_05`]).
-fn explainability_panel(
-    label: String,
-    anchor_id: impl Into<String>,
-    rows: Vec<ViewNode>,
-) -> ViewNode {
-    let mut panel = popover_with("panel", label, anchor_id, rows);
+fn explainability_panel(label: String, anchor: impl Into<Key>, rows: Vec<ViewNode>) -> ViewNode {
+    let mut panel = popover_with("panel", label, anchor, rows);
     panel.props.tokens.insert("radius".into(), t(SHAPE_MD));
     panel.props.padding = Some(pad(SPACING_06, SPACING_06));
     panel
@@ -576,8 +572,8 @@ mod tests {
         assert_eq!(panel.semantics.role, Some(Role::Overlay));
         assert_eq!(panel.semantics.label.as_deref(), Some("Confidence score"));
         match &panel.props.anchor {
-            Some(crate::tree::Anchor::Node { id, .. }) => assert_eq!(id, "trigger"),
-            other => panic!("expected an anchored panel, got {other:?}"),
+            Some(crate::tree::Anchor::Sibling { key, .. }) => assert_eq!(key.as_str(), "trigger"),
+            other => panic!("expected a sibling-anchored panel, got {other:?}"),
         }
         assert_eq!(token(panel, "radius"), Some(SHAPE_MD));
         let pad = panel.props.padding.as_ref().expect("panel has padding");
@@ -762,26 +758,41 @@ mod tests {
     /// refused the moment a real host tried to mount it. This is exactly
     /// how `ai_label_inline`'s bad leaf padding shipped unnoticed.
     ///
-    /// Every constructor is built `open: false` here. `open: true` mounts
-    /// the explainability popover via an `Anchor::Node` whose `id` this
-    /// module (and every sibling `popover_with` caller: `menu.rs`,
-    /// `dropdown.rs`, `toggletip.rs`, `date_picker.rs`) hands over as the
-    /// trigger's bare local key rather than its canonical key-path id —
-    /// `crate::tree::validate::check_anchors` refuses that as
-    /// `AnchorTargetMissing` regardless of nesting depth, standalone
-    /// included. That is a real, separate, and already-documented gap (see
-    /// `gorgon-petra-egui`'s gallery `catalog.rs`, which keeps every
-    /// popover-hosting component in its "closed" form for exactly this
-    /// reason) — not the leaf-padding defect this test exists to catch, and
-    /// not something one component file can fix on its own (it cannot know
-    /// the canonical id its trigger will have once a caller mounts it).
-    /// `open: false` here exercises every constructor's trigger — where the
-    /// padding defect lived — without also tripping that unrelated, tracked
-    /// gap.
+    /// Both states are built: the closed trigger (where the padding defect
+    /// lived) and the open one, whose explainability panel names the
+    /// trigger by bare sibling key (`Anchor::Sibling`) and so validates
+    /// standalone as well as at depth
+    /// (`ai_label_open_validates_when_mounted_at_catalog_depth`).
     #[test]
     fn every_constructor_produces_a_tree_validate_accepts() {
         let trees: Vec<(&str, ViewNode)> = vec![
             ("ai_label", ai_label("a", "Ask AI", false, "x")),
+            ("ai_label open", ai_label("a", "Ask AI", true, "x")),
+            (
+                "ai_label_mini open",
+                ai_label_mini("a", "Ask AI", true, "x"),
+            ),
+            ("ai_label_2xs open", ai_label_2xs("a", "Ask AI", true, "x")),
+            ("ai_label_xs open", ai_label_xs("a", "Ask AI", true, "x")),
+            ("ai_label_sm open", ai_label_sm("a", "Ask AI", true, "x")),
+            ("ai_label_lg open", ai_label_lg("a", "Ask AI", true, "x")),
+            ("ai_label_xl open", ai_label_xl("a", "Ask AI", true, "x")),
+            (
+                "ai_label_with_actions open",
+                ai_label_with_actions("a", "Ask AI", true, "x", vec![]),
+            ),
+            (
+                "ai_label_inline open",
+                ai_label_inline("a", "Ask AI", true, "x"),
+            ),
+            (
+                "ai_label_inline_sm open",
+                ai_label_inline_sm("a", "Ask AI", true, "x"),
+            ),
+            (
+                "ai_label_inline_lg open",
+                ai_label_inline_lg("a", "Ask AI", true, "x"),
+            ),
             ("ai_label_mini", ai_label_mini("a", "Ask AI", false, "x")),
             ("ai_label_2xs", ai_label_2xs("a", "Ask AI", false, "x")),
             ("ai_label_xs", ai_label_xs("a", "Ask AI", false, "x")),
@@ -811,6 +822,25 @@ mod tests {
             eprintln!("validating {name}");
             let _ = validated(node);
         }
+    }
+
+    /// The open form's `panel` names its `trigger` sibling by bare key
+    /// (`Anchor::Sibling`), so it is accepted wherever a caller mounts it —
+    /// here two containers below the root, the gallery catalog's own depth.
+    #[test]
+    fn ai_label_open_validates_when_mounted_at_catalog_depth() {
+        crate::component::tests::assert_mounts_at_catalog_depth(
+            "ai_label open",
+            vec![
+                ai_label(
+                    "conf",
+                    "Confidence score",
+                    true,
+                    "Trained on ticket history.",
+                ),
+                ai_label_inline("inline", "Ask AI", true, "Trained on ticket history."),
+            ],
+        );
     }
 
     const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };

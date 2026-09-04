@@ -33,27 +33,29 @@ const _: () = assert!(MAX_INLINE == 368.0);
 
 /// An anchored popover whose body is one text run.
 ///
-/// `label` is the accessible name (required). `anchor_id` is the semantic
-/// id of the trigger node [`Anchor::Node`] names. The popover itself is
-/// not a click target.
+/// `label` is the accessible name (required). `anchor` is the key of the
+/// trigger node, which must sit in the same child list as this popover:
+/// the anchor is an [`Anchor::Sibling`], resolved against wherever the
+/// caller mounts the pair, so this constructor never needs to know its own
+/// canonical id. The popover itself is not a click target.
 pub fn popover(
     key: impl Into<Key>,
     label: impl Into<String>,
-    anchor_id: impl Into<String>,
+    anchor: impl Into<Key>,
     body: impl Into<String>,
 ) -> ViewNode {
-    popover_with(key, label, anchor_id, vec![text("body", body.into())])
+    popover_with(key, label, anchor, vec![text("body", body.into())])
 }
 
 /// An anchored popover whose body is caller-supplied children.
 ///
 /// Same chrome as [`popover`]: raised fill, subtle border, `"^"` caret,
 /// [`Role::Overlay`]. The children keep whatever roles and labels they
-/// already carry.
+/// already carry. `anchor` is the trigger's sibling key, as for [`popover`].
 pub fn popover_with(
     key: impl Into<Key>,
     label: impl Into<String>,
-    anchor_id: impl Into<String>,
+    anchor: impl Into<Key>,
     children: Vec<ViewNode>,
 ) -> ViewNode {
     let mut rows = Vec::with_capacity(children.len() + 1);
@@ -65,8 +67,8 @@ pub fn popover_with(
     let mut node = ViewNode::new(NodeKind::Surface, key)
         .with_props(Props {
             layer: Some(Layer::Popup),
-            anchor: Some(Anchor::Node {
-                id: anchor_id.into(),
+            anchor: Some(Anchor::Sibling {
+                key: anchor.into(),
                 edge: Edge::Bottom,
                 align: Align::Center,
                 offset: None,
@@ -141,18 +143,18 @@ mod tests {
         assert_eq!(node.props.clamp, Some(ClampRule::Flip));
         assert_eq!(node.props.input_policy, Some(InputPolicy::DismissOutside));
         match &node.props.anchor {
-            Some(Anchor::Node {
-                id,
+            Some(Anchor::Sibling {
+                key,
                 edge,
                 align,
                 offset,
             }) => {
-                assert_eq!(id, "filter-btn");
+                assert_eq!(key.as_str(), "filter-btn");
                 assert_eq!(*edge, Edge::Bottom);
                 assert_eq!(*align, Align::Center);
                 assert!(offset.is_none());
             }
-            other => panic!("expected Anchor::Node, got {other:?}"),
+            other => panic!("expected Anchor::Sibling, got {other:?}"),
         }
         assert_eq!(token(&node, "background"), Some(SURFACE_RAISED));
         assert_eq!(token(&node, "border"), Some(BORDER_SUBTLE));
@@ -195,27 +197,66 @@ mod tests {
         );
     }
 
-    // `popover`/`popover_with` themselves build `Anchor::Node { id:
-    // anchor_id, .. }`, a bare local key rather than a full canonical
-    // key-path. `crate::tree::validate::check_anchors` refuses the WHOLE
-    // TREE ("Tree acceptance MUST refuse ... refuse the whole tree, never
-    // a silent Anchor::Viewport fallback",
-    // `contracts/anchored-placement.md` §2) whenever an `Anchor::Node.id`
-    // does not resolve to some node's own canonical path — even a tree
-    // holding only the popover under a plain root, since no sibling named
-    // "filter-btn"/"more-btn" exists there either. So, unlike Modal and
-    // Notification (`Anchor::Viewport`, which resolves with no reference
-    // to any sibling), popover cannot be `petrify_lone`d at all in ANY
-    // form — not even closed, because it has no closed form; every
-    // constructor here IS the anchored surface (a known limit, see
-    // `.agents/notes/proposed/architecture/
-    // 2026-09-03-anchored-components-cannot-name-their-own-anchor.md`).
-    //
-    // What CAN be audited: `content`, the inner `Stack` `popover_with`
-    // builds (`caret` + body/children). It carries no `anchor` of its own
-    // — only the outer `Surface` node does — so it petrifies on its own,
-    // the same way `date_picker`'s `day_button` and `menu`'s `menu_item`
-    // are audited standalone inside an anchored parent's own module.
+    /// `popover` and `popover_with` build an `Anchor::Sibling` naming the
+    /// trigger by the bare key the caller passed. Placed beside a control
+    /// carrying that key, either is accepted wherever the caller mounts the
+    /// pair — here two containers below the root, the gallery catalog's own
+    /// depth. This is the root-cause fix for every anchored component in
+    /// this crate, since they all build on these two.
+    #[test]
+    fn popovers_validate_beside_their_trigger_when_mounted_at_catalog_depth() {
+        crate::component::tests::assert_mounts_at_catalog_depth(
+            "popover",
+            vec![
+                crate::component::button("filter-btn", "Filter"),
+                popover("help", "Filter help", "filter-btn", "Narrow the list."),
+            ],
+        );
+        crate::component::tests::assert_mounts_at_catalog_depth(
+            "popover_with",
+            vec![
+                crate::component::button("more-btn", "More"),
+                popover_with("menu", "Actions", "more-btn", vec![text("item", "Rename")]),
+            ],
+        );
+    }
+
+    /// The other half of the sibling contract: a key no sibling carries is
+    /// still refused, and the refusal names the one canonical id it looked
+    /// for — the caller's child list plus the key — so the author can see
+    /// which list the trigger was missing from.
+    #[test]
+    fn a_popover_whose_trigger_is_not_beside_it_is_refused_by_name() {
+        use crate::tree::{Registry, Violation, validate};
+        let tree = crate::component::tests::mounted_like_the_catalog(vec![popover(
+            "help",
+            "Filter help",
+            "filter-btn",
+            "Narrow the list.",
+        )]);
+        let err = validate(&tree, &Registry::with_vocabulary(standard_vocabulary())).unwrap_err();
+        let missing = err
+            .as_slice()
+            .iter()
+            .find_map(|e| match &e.violation {
+                Violation::AnchorTargetMissing { id, .. } => Some((e.path.as_str(), id.as_str())),
+                _ => None,
+            })
+            .expect("a sibling key naming nothing is AnchorTargetMissing");
+        assert_eq!(
+            missing,
+            ("/root/page/body/help", "/root/page/body/filter-btn"),
+            "the refusal names the surface and the exact sibling id it tried"
+        );
+    }
+
+    // Every constructor here IS the anchored surface — there is no closed
+    // form — so the frame-level checks below audit `content`, the inner
+    // `Stack` `popover_with` builds (`caret` + body/children). It carries no
+    // `anchor` of its own — only the outer `Surface` node does — so it
+    // petrifies on its own, the same way `date_picker`'s `day_button` and
+    // `menu`'s `menu_item` are audited standalone inside an anchored
+    // parent's own module.
 
     const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
 

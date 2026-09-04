@@ -217,8 +217,8 @@ mod tests {
         assert_eq!(menu.semantics.role, Some(Role::Overlay));
         assert_eq!(menu.semantics.label.as_deref(), Some("Theme"));
         match &menu.props.anchor {
-            Some(Anchor::Node { id, .. }) => assert_eq!(id, "field"),
-            other => panic!("expected Anchor::Node, got {other:?}"),
+            Some(Anchor::Sibling { key, .. }) => assert_eq!(key.as_str(), "field"),
+            other => panic!("expected Anchor::Sibling, got {other:?}"),
         }
         let content = child(menu, "content");
         assert_eq!(child(content, "caret").props.text.as_deref(), Some("^"));
@@ -245,16 +245,31 @@ mod tests {
         assert_eq!(off.semantics.label.as_deref(), Some("Light"));
     }
 
-    // Only the CLOSED field and standalone `dropdown_option` rows are
-    // audited at the frame level below. `dropdown_open`'s
-    // `Anchor::Node { id: "field", .. }` names a bare child key, not a full
-    // canonical path, so a constructor cannot know its own mount point and
-    // the popover cannot be placed correctly under any parent — a known
-    // limit (`.agents/notes/proposed/architecture/
-    // 2026-09-03-anchored-components-cannot-name-their-own-anchor.md`), not
-    // a defect to chase here. `dropdown_option` itself is not anchored — it
-    // is a plain interactive row a caller places inside the popover — so it
-    // is safe to audit on its own.
+    /// `dropdown_open`'s `menu` names its `field` sibling by bare key
+    /// (`Anchor::Sibling`), so the open form is accepted wherever a caller
+    /// mounts it — here two containers below the root, the gallery
+    /// catalog's own depth. (`component/tests.rs` holds the same case as
+    /// the acceptance test for `Anchor::Sibling` itself.)
+    #[test]
+    fn dropdown_open_validates_when_mounted_at_catalog_depth() {
+        crate::component::tests::assert_mounts_at_catalog_depth(
+            "dropdown_open",
+            vec![dropdown_open(
+                "theme",
+                "Theme",
+                "Dark",
+                vec![
+                    dropdown_option("dark", "Dark", true),
+                    dropdown_option("light", "Light", false),
+                ],
+            )],
+        );
+    }
+
+    // The frame-level checks below audit the CLOSED field and standalone
+    // `dropdown_option` rows. `dropdown_option` is not anchored — it is a
+    // plain interactive row a caller places inside the popover — so it is
+    // audited on its own.
 
     const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
 

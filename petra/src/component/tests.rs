@@ -21,19 +21,20 @@ use super::{
     breadcrumb_item, button, checkbox, clickable_tile, code_snippet, code_snippet_inline,
     code_snippet_multi, contained_list, contained_list_disclosed, contained_tab, contained_tab_bar,
     content_switcher, content_switcher_item, data_table, data_table_row, data_table_row_expandable,
-    data_table_sort_header, date_picker, disabled, dismissible_tag, dropdown, dropdown_option,
-    expandable_tile, field, field_fluid, field_labeled, field_lg, field_readonly, field_sm,
-    file_uploader, file_uploader_item, form, heading, inline_loading, layer_tokens, link,
-    list_item, list_item_with, list_row, loading, loading_sm, menu_button, menu_item, modal,
-    notification_actionable, notification_inline, notification_toast, number_input, on_layer,
-    ordered_list, pagination, primary_button, progress, progress_indicator, progress_sm,
-    progress_step, radio, search, section, select, select_lg, select_sm, selectable_tag,
-    selectable_tile, slider, slider_readonly, status, structured_list, structured_list_row, tab,
-    tab_bar, tag, tag_lg, tag_sm, text, tile, toggle, toggle_sm, toggletip, tree_item, tree_view,
-    ui_shell_header, ui_shell_header_action, ui_shell_header_menu_trigger,
-    ui_shell_header_nav_item, ui_shell_left_panel, ui_shell_left_panel_divider,
-    ui_shell_left_panel_item, ui_shell_left_panel_rail, ui_shell_left_panel_subitem,
-    unordered_list, vertical_tab, vertical_tab_bar,
+    data_table_sort_header, date_picker, date_picker_open, disabled, dismissible_tag, dropdown,
+    dropdown_open, dropdown_option, expandable_tile, field, field_fluid, field_labeled, field_lg,
+    field_readonly, field_sm, file_uploader, file_uploader_item, form, heading, inline_loading,
+    layer_tokens, link, list_item, list_item_with, list_row, loading, loading_sm, menu,
+    menu_button, menu_item, modal, notification_actionable, notification_inline,
+    notification_toast, number_input, on_layer, ordered_list, pagination, popover, primary_button,
+    progress, progress_indicator, progress_sm, progress_step, radio, search, section, select,
+    select_lg, select_sm, selectable_tag, selectable_tile, slider, slider_readonly, status,
+    structured_list, structured_list_row, tab, tab_bar, tag, tag_lg, tag_sm, text, tile, toggle,
+    toggle_sm, toggletip, tooltip, tree_item, tree_view, ui_shell_header, ui_shell_header_action,
+    ui_shell_header_menu_trigger, ui_shell_header_nav_item, ui_shell_left_panel,
+    ui_shell_left_panel_divider, ui_shell_left_panel_item, ui_shell_left_panel_rail,
+    ui_shell_left_panel_subitem, ui_shell_right_panel, ui_shell_right_panel_divider,
+    ui_shell_switcher, ui_shell_switcher_item, unordered_list, vertical_tab, vertical_tab_bar,
 };
 
 const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
@@ -73,11 +74,9 @@ fn full_gallery() -> ViewNode {
 
     // Group 1's own seven (accordion, AI label, breadcrumb, code snippet,
     // contained list; button and checkbox already sit in `controls` above).
-    // AI label's open form cannot mount: `Anchor::Node` needs a full
-    // canonical path and a constructor cannot know its mount point (see
-    // `.agents/notes/proposed/architecture/
-    // 2026-09-03-anchored-components-cannot-name-their-own-anchor.md`), so
-    // both AI label rows here stay closed.
+    // AI label appears closed and open: the open form's explainability
+    // panel names its trigger by bare sibling key (`Anchor::Sibling`), so
+    // it mounts at this depth like everything else.
     let carbon = section(
         "carbon",
         "Carbon (group 1)",
@@ -98,6 +97,7 @@ fn full_gallery() -> ViewNode {
                 ],
             ),
             ai_label("ai-default", "Confidence score", false, "80% confident"),
+            ai_label("ai-open", "Confidence score", true, "80% confident"),
             ai_label_inline("ai-inline", "Ask AI", false, "Trained on ticket history."),
             code_snippet("snippet-single", "fn main() {}"),
             code_snippet_inline("snippet-inline", "ViewNode"),
@@ -112,14 +112,11 @@ fn full_gallery() -> ViewNode {
     );
 
     // Group 2's own seven (content switcher, data table, date picker,
-    // dropdown, file uploader, form, inline loading). Date picker's and
-    // dropdown's open forms cannot mount here for the same reason AI
-    // label's cannot: `Anchor::Node` names a bare child key, not a full
-    // canonical path, so a constructor cannot know its own mount point
-    // (see `.agents/notes/proposed/architecture/
-    // 2026-09-03-anchored-components-cannot-name-their-own-anchor.md`), so
-    // both stay closed. `dropdown_option` is not itself anchored, so it is
-    // included standalone the way a caller would place it inside the menu.
+    // dropdown, file uploader, form, inline loading). Date picker and
+    // dropdown appear closed and open; the open forms' popovers name the
+    // `field` beside them by bare sibling key (`Anchor::Sibling`).
+    // `dropdown_option` is not itself anchored, so it is also included
+    // standalone the way a caller would place it inside the menu.
     let carbon2 = section(
         "carbon2",
         "Carbon (group 2)",
@@ -163,6 +160,16 @@ fn full_gallery() -> ViewNode {
             dropdown("dd-theme", "Theme", "Dark"),
             dropdown_option("dd-opt-a", "Dark", true),
             dropdown_option("dd-opt-b", "Light", false),
+            dropdown_open(
+                "dd-open",
+                "Theme",
+                "Dark",
+                vec![
+                    dropdown_option("dd-open-dark", "Dark", true),
+                    dropdown_option("dd-open-light", "Light", false),
+                ],
+            ),
+            date_picker_open("dp-open", "Due date", "2026-08-30"),
             file_uploader("fu-up", "Upload files"),
             file_uploader_item("fu-f0", "notes.txt", true),
             file_uploader_item("fu-f1", "report.pdf", false),
@@ -173,17 +180,13 @@ fn full_gallery() -> ViewNode {
     );
 
     // Group 3's own seven (link, list, loading, menu, menu buttons, modal,
-    // notification). Menu's and menu button's OPEN forms cannot mount here
-    // for the same `Anchor::Node` bare-key reason AI label's and date
-    // picker's cannot (see `.agents/notes/proposed/architecture/
-    // 2026-09-03-anchored-components-cannot-name-their-own-anchor.md`), so
-    // `menu_button` stays closed and `menu`'s own items are audited inside
-    // `menu.rs`'s own test module instead, with a direct `petrify_lone`.
-    // `menu_item` itself is not anchored, so a standalone item (and a
-    // disabled one) is included here the way `dropdown_option` is above.
-    // Modal and Notification are `Anchor::Viewport` surfaces, which (unlike
-    // `Anchor::Node`) resolve with no reference to any sibling, so both
-    // mount through this tree without restriction.
+    // notification). `menu` IS the anchored surface and names a sibling
+    // keyed `trigger` (`Anchor::Sibling`), so it sits beside a button
+    // carrying that key; `menu_button` appears closed and open. `menu_item`
+    // itself is not anchored, so a standalone item (and a disabled one) is
+    // included here the way `dropdown_option` is above. Modal and
+    // Notification are `Anchor::Viewport` surfaces, placed with no
+    // reference to any sibling.
     let carbon3 = section(
         "carbon3",
         "Carbon (group 3)",
@@ -222,6 +225,21 @@ fn full_gallery() -> ViewNode {
                 false,
                 vec![menu_item("mb-rename", "Rename")],
             ),
+            menu_button(
+                "mb-open",
+                "More actions",
+                true,
+                vec![menu_item("mb-open-rename", "Rename")],
+            ),
+            button("trigger", "Actions"),
+            menu(
+                "mn-actions",
+                "Actions",
+                vec![
+                    menu_item("mn-rename", "Rename"),
+                    menu_item("mn-delete", "Delete"),
+                ],
+            ),
             modal(
                 "md-retire",
                 "Retire fiber",
@@ -240,13 +258,8 @@ fn full_gallery() -> ViewNode {
 
     // Group 4's own seven (number input, pagination, popover, progress
     // bar, progress indicator, radio button, search). Popover has no
-    // closed form at all — every constructor it exports IS the anchored
-    // `Anchor::Node` surface, so unlike every other anchored component in
-    // this tree (whose *closed* trigger still mounts fine) it cannot
-    // appear here in any form; it is audited entirely inside its own
-    // module (see `popover.rs`'s own test-module comment and
-    // `.agents/notes/proposed/architecture/
-    // 2026-09-03-anchored-components-cannot-name-their-own-anchor.md`).
+    // closed form — every constructor it exports IS the anchored surface —
+    // so it sits beside the button its `Anchor::Sibling` names.
     // Number input's invalid form binds an accent `border` (`ACCENT_PRIMARY`,
     // same pattern as `field_invalid`, which for the identical reason is
     // also absent from this tree) and so is audited only inside
@@ -259,6 +272,8 @@ fn full_gallery() -> ViewNode {
             number_input("ni-count", "Replicas", "3"),
             disabled(number_input("ni-disabled", "Replicas", "3")),
             pagination("pg-first", 1, 4),
+            button("pop-anchor", "Anchor"),
+            popover("pop", "Filter help", "pop-anchor", "Narrow the list."),
             progress_sm("pb-empty", "Queued", 0.0),
             progress("pb-mid", "Rebuilding", 0.5),
             progress_sm("pb-full", "Done", 1.0),
@@ -355,20 +370,11 @@ fn full_gallery() -> ViewNode {
     // Group 6's own seven (Toggle, Toggletip, Tooltip, Tree view, UI shell
     // header, UI shell left panel, UI shell right panel). Toggle already has
     // one instance in `controls` above; this section adds the states that
-    // instance does not cover (off, disabled, small). Toggletip's OPEN form
-    // and both UI shell panels are anchored (`Anchor::Node`) the same way AI
-    // label's, date picker's, dropdown's, menu's, menu button's, popover's
-    // and number input's are, so only toggletip's CLOSED form mounts here
-    // (see `.agents/notes/proposed/architecture/
-    // 2026-09-03-anchored-components-cannot-name-their-own-anchor.md`).
-    // Tooltip and UI shell right panel are the more restrictive case popover
-    // set the precedent for: every constructor either module exports IS the
-    // anchored surface itself, with no separate closed trigger form at all,
-    // so unlike toggletip (whose `trigger` stands on its own) neither can
-    // appear here in ANY form — both are audited entirely inside their own
-    // modules' test modules, mounting the inner non-anchored `content` node
-    // directly (`tooltip.rs`'s and `ui_shell.rs`'s own test modules), the
-    // same technique `popover.rs`'s own module comment documents.
+    // instance does not cover (off, disabled, small). Toggletip appears
+    // closed and open. Tooltip and both UI shell right panels IS the
+    // anchored surface with no closed form, so each sits beside the control
+    // its `Anchor::Sibling` names: tooltip's is keyed `trigger` by
+    // construction, the panels' are whatever key the caller passes.
     let carbon6 = section(
         "carbon6",
         "Carbon (group 6)",
@@ -378,6 +384,27 @@ fn full_gallery() -> ViewNode {
             disabled(toggle("tog-disabled", "Autosave", false)),
             toggle_sm("tog-sm", "Compact mode", true),
             toggletip("help", "About filters", false, "Narrow the list."),
+            toggletip("help-open", "About filters", true, "Narrow the list."),
+            button("trigger", "Copy"),
+            tooltip("tip", "Copied", "Copied to clipboard"),
+            ui_shell_header_action("panel-trigger", "Notifications", true),
+            ui_shell_right_panel(
+                "shell-right",
+                "Notifications",
+                "panel-trigger",
+                vec![text("shell-note", "No new notifications.")],
+            ),
+            ui_shell_header_action("apps", "App switcher", true),
+            ui_shell_switcher(
+                "shell-switcher",
+                "App switcher",
+                "apps",
+                vec![
+                    ui_shell_switcher_item("sw-a", "Petra"),
+                    ui_shell_right_panel_divider("sw-d1"),
+                    ui_shell_switcher_item("sw-b", "Inspector"),
+                ],
+            ),
             tree_view(
                 "fs",
                 vec![
@@ -924,7 +951,7 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
     /// Every node in [`full_gallery`] that may draw a border, by the key
     /// path it appears at. An exact set: a node missing from here that draws
     /// one fails, and a node listed here that stops drawing one fails too.
-    const DRAWS_AN_EDGE: [&str; 55] = [
+    const DRAWS_AN_EDGE: [&str; 68] = [
         // `field`: an empty well with no boundary does not read as a place
         // to type. See `field`'s own doc for why it keeps one when `button`
         // does not.
@@ -965,6 +992,12 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         // The inline variant (`ai-inline`) is the sibling case that does
         // *not* draw one: its leading bullet dot is the boundary instead.
         "root/carbon/ai-default/trigger",
+        // The open AI label's trigger is the same `trigger_button` as the
+        // closed one — `open` changes `expanded` and nothing it draws — and
+        // its explainability `panel` is a popover: see the popover class
+        // under `root/carbon4/pop` below.
+        "root/carbon/ai-open/panel",
+        "root/carbon/ai-open/trigger",
         // Content switcher's own row: Carbon's `.cds--content-switcher`
         // 1px `$border-subtle` outline (MEASURED `_content-switcher.scss`;
         // see `content_switcher.rs`'s module doc, anatomy #1). The row is a
@@ -977,8 +1010,15 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         // enough contrast on its own (`field`'s own doc has the
         // measurement), and these are input-shaped wells before anything is
         // typed or chosen.
+        // The open forms' `field` is the same `closed_field` as the closed
+        // form (only the chevron word and `expanded` change), and their
+        // `menu`/`calendar` is a popover — see `root/carbon4/pop` below.
+        "root/carbon2/dd-open/field",
+        "root/carbon2/dd-open/menu",
         "root/carbon2/dd-theme",
         "root/carbon2/dp-due",
+        "root/carbon2/dp-open/calendar",
+        "root/carbon2/dp-open/field",
         // Data table: Carbon's own row-bottom rule (MEASURED
         // `_data-table.scss`), the same class as the Accordion item
         // divider above — a table with no rule between its rows does not
@@ -1017,7 +1057,11 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         // documents one beyond the 3px accent rail), Modal's border is a
         // real measured boundary on the dialog shell itself, the same
         // class as `field` and Content switcher's row above.
+        // Menu and the open menu button's menu are popovers — see
+        // `root/carbon4/pop` below.
+        "root/carbon3/mb-open/menu",
         "root/carbon3/md-retire",
+        "root/carbon3/mn-actions",
         // Number input's well: Carbon's `border-bottom: 1px solid
         // $border-strong` on `.cds--number` (slice-d, "Field ...
         // `border-bottom` `$border-strong`"), the same `field`-class
@@ -1060,6 +1104,18 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         "root/carbon4/pi-steps/pi-configure/head/icon-row/icon",
         "root/carbon4/pi-steps/pi-confirm/head/icon-row/icon",
         "root/carbon4/pi-steps/pi-review/head/icon-row/icon",
+        // Popover, and every surface built on `popover_with` (Menu, Menu
+        // button open, Dropdown open, Date picker open, Toggletip open,
+        // Tooltip, AI label open) plus the UI shell right panels, which
+        // bind the same pair by hand: `SURFACE_RAISED` + `BORDER_SUBTLE`.
+        // A floating surface's raised fill is one layer ahead of the page
+        // it floats over — the same 1.26:1 / 1.12:1 `field` measures
+        // against its card — so the edge is what separates the surface
+        // from the page underneath it, the same class as Modal's dialog
+        // shell above. These were unreachable from this tree until
+        // `Anchor::Sibling` let an open form mount at depth; nothing about
+        // what they draw changed.
+        "root/carbon4/pop",
         // Radio's own mark: the same `empty_mark`/`marked_box` class as
         // the checkbox boxes above, for the same reason — an unselected
         // radio is nothing but its outline, and the selected/disabled
@@ -1137,6 +1193,12 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         // section adds (off, disabled, small) — `toggle_sized` binds
         // `border` unconditionally on the track regardless of `on` or the
         // size variant, the same precedent `check`/`radio`'s boxes set.
+        // Toggletip open, both UI shell right panels and Tooltip: the
+        // popover class, see `root/carbon4/pop` above.
+        "root/carbon6/help-open/tip",
+        "root/carbon6/shell-right",
+        "root/carbon6/shell-switcher",
+        "root/carbon6/tip",
         "root/carbon6/tog-disabled/appearance/track",
         "root/carbon6/tog-off/appearance/track",
         "root/carbon6/tog-on/appearance/track",
@@ -1699,5 +1761,68 @@ fn a_state_decorated_token_always_has_a_resting_binding() {
         offences.is_empty(),
         "every state-decorated binding needs a resting one underneath it:\n{}",
         offences.join("\n")
+    );
+}
+
+// -- Anchored overlays mount at depth. ---------------------------------------
+//
+// A constructor cannot know the canonical key-path it will be mounted at, so
+// every anchored overlay in this module names its trigger by bare sibling
+// key (`Anchor::Sibling`), and `crate::tree::validate` resolves that key
+// against the surface's *own* parent path. The tests below are the claim
+// that made this necessary: an open form has to be accepted at the depth the
+// gallery catalog actually mounts pages at, not only at the tree root.
+// See `.agents/notes/implemented/architecture/
+// 2026-09-03-anchored-components-cannot-name-their-own-anchor.md`.
+
+/// `children`, mounted the way `gorgon-petra-egui`'s gallery catalog mounts
+/// every page: a body column inside a [`section`] inside the page root. Two
+/// containers stand between the root and the component, so a bare key that
+/// only resolved at the root would fail here.
+pub(super) fn mounted_like_the_catalog(children: Vec<ViewNode>) -> ViewNode {
+    let body = ViewNode::new(NodeKind::Stack, "body")
+        .with_props(Props {
+            axis: Some(Axis::Vertical),
+            ..Props::default()
+        })
+        .with_children(children);
+    let page = section("page", "Page", vec![body]);
+    ViewNode::new(NodeKind::Stack, "root")
+        .with_props(Props {
+            axis: Some(Axis::Vertical),
+            ..Props::default()
+        })
+        .child(page)
+}
+
+/// `validate`, with the shipped vocabulary, accepts `children` mounted at
+/// the catalog's depth. Panics with every violation otherwise, so a refusal
+/// names the anchor it could not resolve.
+pub(super) fn assert_mounts_at_catalog_depth(what: &str, children: Vec<ViewNode>) {
+    let tree = mounted_like_the_catalog(children);
+    let registry = Registry::with_vocabulary(standard_vocabulary());
+    if let Err(errors) = crate::tree::validate(&tree, &registry) {
+        panic!("{what}: mounted two levels deep, `validate` refused the tree:\n{errors}");
+    }
+}
+
+/// The acceptance test for the whole change: `dropdown_open`, whose popover
+/// names its `field` sibling by bare key, is accepted two containers below
+/// the root with the shipped `Registry`. Before `Anchor::Sibling` existed,
+/// this was refused as `AnchorTargetMissing` because `field` was compared
+/// against `/root/page/body/theme/field` verbatim.
+#[test]
+fn dropdown_open_validates_when_mounted_at_catalog_depth() {
+    assert_mounts_at_catalog_depth(
+        "dropdown_open",
+        vec![super::dropdown_open(
+            "theme",
+            "Theme",
+            "Dark",
+            vec![
+                dropdown_option("dark", "Dark", true),
+                dropdown_option("light", "Light", false),
+            ],
+        )],
     );
 }

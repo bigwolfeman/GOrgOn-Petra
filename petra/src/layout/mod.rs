@@ -30,7 +30,7 @@ use crate::geom::{Insets, Rect, Scale, Size};
 use crate::input::Capture;
 use crate::token::{ThemeSnapshot, TokenName};
 use crate::tree::props::ScrollProps;
-use crate::tree::{Anchor, InsetRefs, KeyPath, NodeKind, Role, TextWrap, ViewNode};
+use crate::tree::{InsetRefs, KeyPath, NodeKind, Role, TextWrap, ViewNode};
 
 pub use proposal::{ChangeSet, MeasureCache, MeasureKey, Proposal, SizeProposal};
 
@@ -236,8 +236,9 @@ pub struct LayoutCtx<'a> {
     /// from it. `None` is a full negotiation, which is what every caller
     /// outside [`crate::frame::petrify_with_memo`] wants.
     pub reuse: Option<reuse::ReuseState<'a>>,
-    /// Where every node named by an [`Anchor::Node`] was placed, harvested
-    /// before this pass's real walk.
+    /// Where every node named by an [`Anchor::Node`] or [`Anchor::Sibling`]
+    /// was placed, harvested before this pass's real walk, keyed by the
+    /// canonical id the anchor resolved to.
     ///
     /// Start it empty ([`AnchorRects::new`]); [`place`] fills it at the root
     /// of the walk and clears it again for a tree that anchors nothing. It is
@@ -358,8 +359,9 @@ impl AnchorRect {
     }
 }
 
-/// The anchor rects one pass resolves [`Anchor::Node`] against, plus the
-/// pruning set in force while they are being harvested.
+/// The anchor rects one pass resolves node anchors against, keyed by
+/// canonical id, plus the pruning set in force while they are being
+/// harvested.
 ///
 /// Ordered, and it has to be: `contracts/anchored-placement.md` §7 requires
 /// the harvest-to-place hand-off be order-independent, and a hash-keyed map
@@ -523,8 +525,10 @@ pub fn place(
     place_node(node, ctx, path, slot, sink);
 }
 
-/// Every id an [`Anchor::Node`] in this tree names, and how deeply anchored
-/// surfaces nest around those ids.
+/// Every canonical id a node anchor in this tree names — an
+/// [`Anchor::Node`]'s `id` as declared, an [`Anchor::Sibling`]'s key
+/// resolved against its surface's parent path ([`Anchor::target_id`]) — and
+/// how deeply anchored surfaces nest around those ids.
 ///
 /// The depth is the count of *anchored* surfaces enclosing an anchor target,
 /// maximised over the targets: a target inside an `Anchor::Viewport` surface
@@ -545,12 +549,19 @@ fn anchor_targets(root: &ViewNode) -> (BTreeSet<String>, usize) {
         enclosure: &mut BTreeMap<String, usize>,
     ) {
         path.push(node.key.clone());
-        let anchored = match &node.props.anchor {
-            Some(Anchor::Node { id, .. }) => {
-                targets.insert(id.clone());
+        // `path` is this node's own full path, the context a sibling anchor
+        // resolves against; a node anchor's id is taken as declared.
+        let anchored = match node
+            .props
+            .anchor
+            .as_ref()
+            .and_then(|anchor| anchor.target_id(path))
+        {
+            Some(id) => {
+                targets.insert(id);
                 true
             }
-            _ => false,
+            None => false,
         };
         // A surface counts its *own* anchor, not only its ancestors': a
         // surface anchored directly to another anchored surface's rect needs
@@ -579,7 +590,8 @@ fn anchor_targets(root: &ViewNode) -> (BTreeSet<String>, usize) {
 }
 
 /// Place the anchor set into `ctx.anchors`, so the real walk below can
-/// resolve every [`Anchor::Node`] against a rect that exists.
+/// resolve every node anchor ([`Anchor::Node`] or [`Anchor::Sibling`])
+/// against a rect that exists.
 ///
 /// This is `contracts/anchored-placement.md` §1 end to end. `1 + d` pruned
 /// walks run, each seeded by the one before it, where `d` is the surface-
@@ -1417,6 +1429,34 @@ mod tests {
             some.get("/root/b").is_some(),
             "and it is the one the anchor names"
         );
+
+        // A sibling anchor is harvested under the canonical id its key
+        // resolves to, not under the bare key: the map has one key space.
+        let by_key = ViewNode::new(NodeKind::Stack, "root")
+            .child(ViewNode::new(NodeKind::Text, "a"))
+            .child(ViewNode::new(NodeKind::Text, "b"))
+            .child(
+                ViewNode::new(NodeKind::Surface, "popup")
+                    .with_props(Props {
+                        layer: Some(Layer::Popup),
+                        anchor: Some(Anchor::Sibling {
+                            key: "b".into(),
+                            edge: Edge::Bottom,
+                            align: Align::Center,
+                            offset: None,
+                        }),
+                        ..Props::default()
+                    })
+                    .child(ViewNode::new(NodeKind::Text, "body")),
+            );
+        let sibling = harvested(&by_key);
+        assert_eq!(sibling.len(), 1);
+        assert_eq!(
+            sibling.get("/root/b"),
+            some.get("/root/b"),
+            "the same rect, under the same id, whichever spelling named it"
+        );
+        assert!(sibling.get("b").is_none(), "the bare key is not an id");
         assert!(
             some.get("/root/a").is_none(),
             "a sibling the walk had to measure past is not an anchor"

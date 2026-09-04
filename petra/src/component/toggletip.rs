@@ -130,8 +130,8 @@ mod tests {
         assert_eq!(tip.constraints.horizontal.max, Some(MAX_INLINE));
         assert_eq!(MAX_INLINE, 288.0);
         match &tip.props.anchor {
-            Some(Anchor::Node { id, .. }) => assert_eq!(id, "trigger"),
-            other => panic!("expected Anchor::Node, got {other:?}"),
+            Some(Anchor::Sibling { key, .. }) => assert_eq!(key.as_str(), "trigger"),
+            other => panic!("expected Anchor::Sibling, got {other:?}"),
         }
         let content = child(tip, "content");
         assert_eq!(child(content, "caret").props.text.as_deref(), Some("^"));
@@ -141,17 +141,22 @@ mod tests {
         );
     }
 
-    // The open form (`toggletip(..., true, ...)`) hosts an `Anchor::Node`
-    // surface naming a bare sibling key ("trigger"), the same shape AI
-    // label's, date picker's, dropdown's, menu's, menu button's, popover's
-    // and number input's open forms cannot mount through either — a
-    // constructor cannot know its own canonical mount point (see
-    // `.agents/notes/proposed/architecture/
-    // 2026-09-03-anchored-components-cannot-name-their-own-anchor.md`).
-    // Unlike Tooltip and the UI shell right panel, whose only constructor
-    // IS that anchored surface, toggletip's `trigger` stands on its own — a
-    // plain interactive `Stack` with no anchor of its own — so the CLOSED
-    // form below is what this module audits directly.
+    /// The open form's `tip` names its `trigger` sibling by bare key
+    /// (`Anchor::Sibling`), so it is accepted wherever a caller mounts the
+    /// pair — including two containers below the root, which is where the
+    /// gallery catalog puts every page.
+    #[test]
+    fn toggletip_open_validates_when_mounted_at_catalog_depth() {
+        crate::component::tests::assert_mounts_at_catalog_depth(
+            "toggletip open",
+            vec![toggletip("help", "About filters", true, "Narrow the list.")],
+        );
+    }
+
+    // The frame-level checks below audit the CLOSED form: toggletip's
+    // `trigger` stands on its own as a plain interactive `Stack`, unlike
+    // Tooltip and the UI shell right panel, whose only constructor IS the
+    // anchored surface.
 
     const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
 
