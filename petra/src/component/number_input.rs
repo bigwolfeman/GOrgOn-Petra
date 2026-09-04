@@ -351,10 +351,7 @@ mod tests {
     /// label decide the width.
     #[test]
     fn frame_geometry_has_no_degenerate_or_overflowing_placements() {
-        check_geometry(
-            &petrify_lone(number_input("count", "Replicas", "3")),
-            "md",
-        );
+        check_geometry(&petrify_lone(number_input("count", "Replicas", "3")), "md");
         check_geometry(
             &petrify_lone(number_input_sm("count", "Replicas", "3")),
             "sm",

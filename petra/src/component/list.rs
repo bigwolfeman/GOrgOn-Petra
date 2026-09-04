@@ -439,18 +439,18 @@ mod tests {
         for theme in [crate::token::light(), crate::token::dark()] {
             let bg = color(&theme, SURFACE_BASE);
             fn walk_text(node: &ViewNode, bg: ColorValue, theme: &Theme, min: f32) {
-                if node.props.text.is_some() {
-                    if let Some(fg_name) = node.props.tokens.get("foreground") {
-                        let opacity = node.props.opacity.unwrap_or(1.0);
-                        let fg = color(theme, fg_name.as_str()).faded(opacity).over(bg);
-                        let ratio = fg.contrast_ratio(bg);
-                        assert!(
-                            ratio >= min,
-                            "{:?} at {ratio:.2}:1 against {} fails AA {min}:1",
-                            node.key,
-                            fg_name.as_str()
-                        );
-                    }
+                if node.props.text.is_some()
+                    && let Some(fg_name) = node.props.tokens.get("foreground")
+                {
+                    let opacity = node.props.opacity.unwrap_or(1.0);
+                    let fg = color(theme, fg_name.as_str()).faded(opacity).over(bg);
+                    let ratio = fg.contrast_ratio(bg);
+                    assert!(
+                        ratio >= min,
+                        "{:?} at {ratio:.2}:1 against {} fails AA {min}:1",
+                        node.key,
+                        fg_name.as_str()
+                    );
                 }
                 for child in &node.children {
                     walk_text(child, bg, theme, min);

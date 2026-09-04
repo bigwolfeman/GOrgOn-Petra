@@ -423,7 +423,12 @@ mod tests {
     #[test]
     fn handle_or_control_is_reachable_by_focus_state() {
         for (label, node, suffix, should_be_focusable) in [
-            ("enabled handle", slider("vol", "Volume", 0.5), "/handle", true),
+            (
+                "enabled handle",
+                slider("vol", "Volume", 0.5),
+                "/handle",
+                true,
+            ),
             (
                 "readonly control",
                 slider_readonly("vol", "Volume", 0.5),

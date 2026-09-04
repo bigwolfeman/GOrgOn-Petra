@@ -187,7 +187,11 @@ mod tests {
         for key in ["previous", "next"] {
             let button = child(&node, key);
             assert_eq!(
-                button.props.tokens.get("background@hover").map(|t| t.as_str()),
+                button
+                    .props
+                    .tokens
+                    .get("background@hover")
+                    .map(|t| t.as_str()),
                 Some(LAYER_HOVER)
             );
             assert_eq!(
@@ -327,20 +331,18 @@ mod tests {
                     Some(name) => get_color(theme, name.as_str()),
                     None => inherited_bg,
                 };
-                if node.props.text.is_some() {
-                    if let Some(fg_name) = node.props.tokens.get("foreground") {
-                        let opacity = node.props.opacity.unwrap_or(1.0);
-                        let fg = get_color(theme, fg_name.as_str())
-                            .faded(opacity)
-                            .over(bg);
-                        let ratio = fg.contrast_ratio(bg);
-                        assert!(
-                            ratio >= min,
-                            "{:?} at {ratio:.2}:1 against {} fails AA {min}:1",
-                            node.key,
-                            fg_name.as_str()
-                        );
-                    }
+                if node.props.text.is_some()
+                    && let Some(fg_name) = node.props.tokens.get("foreground")
+                {
+                    let opacity = node.props.opacity.unwrap_or(1.0);
+                    let fg = get_color(theme, fg_name.as_str()).faded(opacity).over(bg);
+                    let ratio = fg.contrast_ratio(bg);
+                    assert!(
+                        ratio >= min,
+                        "{:?} at {ratio:.2}:1 against {} fails AA {min}:1",
+                        node.key,
+                        fg_name.as_str()
+                    );
                 }
                 for child in &node.children {
                     walk_text(child, bg, theme, min, get_color);

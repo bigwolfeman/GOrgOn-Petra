@@ -494,7 +494,7 @@ mod tests {
         named(&node, "tick");
         let off = checkbox("c", "Off", false);
         assert!(
-            named(&off, "box").props.tokens.get("background").is_none(),
+            !named(&off, "box").props.tokens.contains_key("background"),
             "unchecked box stays empty"
         );
     }
@@ -509,7 +509,7 @@ mod tests {
         );
         named(&node, "dot");
         let off = radio("r", "Off", false);
-        assert!(named(&off, "box").props.tokens.get("background").is_none());
+        assert!(!named(&off, "box").props.tokens.contains_key("background"));
     }
 
     #[test]
@@ -583,7 +583,12 @@ mod tests {
     const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
 
     fn accepting_registry() -> Registry {
-        Registry::with_vocabulary(standard_vocabulary())
+        let mut registry = Registry::with_vocabulary(standard_vocabulary());
+        // Toggle's knob carries `crate::anim::TOGGLE_KNOB`; unlike checkbox
+        // and radio (no transitions), a lone toggle needs the shipped
+        // animation registry declared or tree acceptance refuses it.
+        crate::anim::shipped_registry().declare_into(&mut registry);
+        registry
     }
 
     fn petrify_lone(node: ViewNode) -> PetrifiedFrame {
@@ -828,6 +833,129 @@ mod tests {
                     ratio >= MIN_TEXT_CONTRAST,
                     "label at {ratio:.2}:1 against page ground fails AA {MIN_TEXT_CONTRAST}:1"
                 );
+            }
+        }
+    }
+
+    // Toggle is out of scope for the checkbox/radio passes above (this
+    // module's own doc header, and the two comments before their own
+    // geometry tests); it is audited here, this group's own component.
+    // Unlike checkbox/radio, `toggle_sized` never nests a `text` node inside
+    // a pinned box either — the track's only pinned child positions are the
+    // swatch pads and the circular knob, and the label/state words sit
+    // outside any pinned `Constraints` entirely — so Class 4 does not apply
+    // structurally here, the same reasoning `controls.rs`'s radio comment
+    // already gives. Class 1 does not apply either: slice-f.md is explicit
+    // that Toggle "Does NOT have hover as a distinct documented state"
+    // (docs list only on/off/focus/disabled/read-only/skeleton; SCSS has no
+    // `:hover` rule on the switch itself), and `toggle_sized` binds no
+    // `@hover` (or any other `@state`) token at all on the track — there is
+    // no state-decorated binding to leave silent.
+
+    /// Check C/D across every toggle state and both sizes: on, off,
+    /// disabled, and the small variant on.
+    #[test]
+    fn toggle_frame_geometry_has_no_degenerate_or_overflowing_placements() {
+        let cases: Vec<(&str, ViewNode)> = vec![
+            ("on", toggle("t", "Autosave", true)),
+            ("off", toggle("t", "Autosave", false)),
+            (
+                "disabled",
+                crate::component::disabled(toggle("t", "Autosave", false)),
+            ),
+            ("small-on", toggle_sm("t", "Compact mode", true)),
+            ("small-off", toggle_sm("t", "Compact mode", false)),
+        ];
+        for (label, node) in cases {
+            let frame = petrify_lone(node);
+            assert!(!frame.placements.is_empty(), "{label}: nothing placed");
+            for p in &frame.placements {
+                assert!(
+                    p.rect.w > 0.0 && p.rect.h > 0.0,
+                    "{label}: {} placed with a degenerate rect {:?}",
+                    p.id,
+                    p.rect
+                );
+                assert!(
+                    !p.paint.overflowed,
+                    "{label}: {} drew content larger than its own rect",
+                    p.id
+                );
+                if let Some(parent_idx) = p.parent {
+                    let parent = &frame.placements[parent_idx];
+                    let fits = p.rect.x >= parent.rect.x - 0.01
+                        && p.rect.y >= parent.rect.y - 0.01
+                        && p.rect.x + p.rect.w <= parent.rect.x + parent.rect.w + 0.01
+                        && p.rect.y + p.rect.h <= parent.rect.y + parent.rect.h + 0.01;
+                    assert!(
+                        fits,
+                        "{label}: {} (rect {:?}) extends outside its parent {} (rect {:?})",
+                        p.id, p.rect, parent.id, parent.rect
+                    );
+                }
+            }
+        }
+    }
+
+    /// Check F: an enabled toggle (on or off, either size) declares `Focus`
+    /// and is reachable; a disabled one is not.
+    #[test]
+    fn toggle_focus_reachability_matches_disabled_state() {
+        for (label, node, should_be_focusable) in [
+            ("on", toggle("t", "Autosave", true), true),
+            ("off", toggle("t", "Autosave", false), true),
+            (
+                "disabled",
+                crate::component::disabled(toggle("t", "Autosave", false)),
+                false,
+            ),
+        ] {
+            let frame = petrify_lone(node);
+            let focus = crate::focus::FocusTree::from_placements(
+                &frame.placements,
+                &std::collections::BTreeMap::new(),
+            );
+            let root_placement = frame
+                .placements
+                .iter()
+                .find(|p| p.id == "/root/t")
+                .expect("toggle column is placed");
+            let reachable = focus.order().iter().any(|id| id == &root_placement.id);
+            assert_eq!(
+                reachable, should_be_focusable,
+                "{label}: focus reachability was {reachable}, expected {should_be_focusable}"
+            );
+        }
+    }
+
+    /// Check E: the label text and the On/Off state text against the page
+    /// ground the column sits on, in both themes, read through
+    /// `Props.opacity`.
+    #[test]
+    fn toggle_text_clears_aa_contrast_on_the_page_ground() {
+        const MIN_TEXT_CONTRAST: f32 = 4.5;
+        use super::super::tokens::SURFACE_BASE;
+        for theme in [crate::token::light(), crate::token::dark()] {
+            let bg = color(&theme, SURFACE_BASE);
+            for node in [
+                toggle("t", "Autosave", true),
+                toggle("t", "Autosave", false),
+            ] {
+                for key in ["label", "state"] {
+                    let text_node = named(&node, key);
+                    let fg_name = text_node
+                        .props
+                        .tokens
+                        .get("foreground")
+                        .unwrap_or_else(|| panic!("{key} binds a foreground"));
+                    let opacity = text_node.props.opacity.unwrap_or(1.0);
+                    let fg = color(&theme, fg_name.as_str()).faded(opacity).over(bg);
+                    let ratio = fg.contrast_ratio(bg);
+                    assert!(
+                        ratio >= MIN_TEXT_CONTRAST,
+                        "{key} at {ratio:.2}:1 against page ground fails AA {MIN_TEXT_CONTRAST}:1"
+                    );
+                }
             }
         }
     }

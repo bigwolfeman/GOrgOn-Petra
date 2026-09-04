@@ -803,7 +803,7 @@ mod tests {
             rows.len()
         );
         assert!(
-            visible >= 7 && visible <= 9,
+            (7..=9).contains(&visible),
             "the viewport holds eight 28-unit rows; saw {visible} visible of {}",
             rows.len()
         );

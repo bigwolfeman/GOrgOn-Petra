@@ -123,8 +123,13 @@ fn tree_item_sized(
 #[cfg(test)]
 mod tests {
     use super::{HEIGHT, HEIGHT_XS, tree_item, tree_item_xs, tree_view};
+    use crate::component::disabled;
     use crate::component::tokens::LAYER_SELECTED;
-    use crate::tree::{Interaction, Role, ViewNode};
+    use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
+    use crate::geom::{Axis, Size};
+    use crate::testing::{Harness, validated_with};
+    use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
+    use crate::tree::{Interaction, NodeKind, Props, Registry, Role, ViewNode};
 
     fn named<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         fn walk<'a>(node: &'a ViewNode, key: &str) -> Option<&'a ViewNode> {
@@ -243,5 +248,224 @@ mod tests {
         );
         assert_eq!(HEIGHT_XS, 24.0);
         no_drag(&node);
+    }
+
+    // Chevron is inline text ("expanded"/"collapsed"), never pinned inside
+    // a `Constraints` box the way Modal's `close_button` or Number input's
+    // `stepper` are — `row`'s own `Constraints` pin only the block-size
+    // (height), never the inline-size (width) — so Class 4 (an icon-only
+    // hit box pinned around a word) does not apply structurally here.
+
+    const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
+
+    fn accepting_registry() -> Registry {
+        Registry::with_vocabulary(standard_vocabulary())
+    }
+
+    fn petrify_lone(node: ViewNode) -> PetrifiedFrame {
+        let root = ViewNode::new(NodeKind::Stack, "root")
+            .with_props(Props {
+                axis: Some(Axis::Vertical),
+                ..Props::default()
+            })
+            .child(node);
+        let registry = accepting_registry();
+        let mut harness = Harness::new();
+        let viewport = Viewport::new(VIEWPORT, ThemeMode::Dark);
+        harness.scale = viewport.scale;
+        petrify(
+            1,
+            validated_with(&root, &registry),
+            &mut harness.ctx(),
+            viewport,
+            TransitionActivity::default(),
+        )
+    }
+
+    fn color(theme: &Theme, name: &str) -> ColorValue {
+        match theme.value(&TokenName::new(name).unwrap()).unwrap() {
+            TokenValue::Color(c) => *c,
+            other => panic!("{name} is not a colour: {other:?}"),
+        }
+    }
+
+    /// A two-deep tree exercising every documented state at once: an
+    /// expanded branch (`src`) holding a selected leaf (`main`) and a plain
+    /// leaf (`lib`), a collapsed branch (`build`, so its own child never
+    /// mounts), and a disabled leaf (`archived`).
+    fn sample_tree() -> ViewNode {
+        tree_view(
+            "fs",
+            vec![
+                tree_item(
+                    "src",
+                    "src",
+                    true,
+                    false,
+                    vec![
+                        tree_item("main", "main.rs", false, true, vec![]),
+                        tree_item("lib", "lib.rs", false, false, vec![]),
+                    ],
+                ),
+                tree_item(
+                    "build",
+                    "build",
+                    false,
+                    false,
+                    vec![tree_item("out", "out.o", false, false, vec![])],
+                ),
+                disabled(tree_item("archived", "archived", false, false, vec![])),
+            ],
+        )
+    }
+
+    /// Check C/D: every placement across a mixed expanded/collapsed/
+    /// selected/disabled tree at two depths places with a real rect and
+    /// draws no content larger than it.
+    #[test]
+    fn tree_frame_geometry_has_no_degenerate_or_overflowing_placements() {
+        let frame = petrify_lone(sample_tree());
+        assert!(!frame.placements.is_empty(), "nothing placed");
+        for p in &frame.placements {
+            assert!(
+                p.rect.w > 0.0 && p.rect.h > 0.0,
+                "{} placed with a degenerate rect {:?}",
+                p.id,
+                p.rect
+            );
+            assert!(
+                !p.paint.overflowed,
+                "{} drew content larger than its own rect",
+                p.id
+            );
+            if let Some(parent_idx) = p.parent {
+                let parent = &frame.placements[parent_idx];
+                let fits = p.rect.x >= parent.rect.x - 0.01
+                    && p.rect.y >= parent.rect.y - 0.01
+                    && p.rect.x + p.rect.w <= parent.rect.x + parent.rect.w + 0.01
+                    && p.rect.y + p.rect.h <= parent.rect.y + parent.rect.h + 0.01;
+                assert!(
+                    fits,
+                    "{} (rect {:?}) extends outside its parent {} (rect {:?})",
+                    p.id, p.rect, parent.id, parent.rect
+                );
+            }
+        }
+    }
+
+    /// Check F: every enabled item (branch or leaf, selected or not)
+    /// declares `Focus` and is reachable; the disabled leaf is not, and a
+    /// collapsed branch's never-mounted child is simply absent, not merely
+    /// unreachable.
+    #[test]
+    fn tree_focus_reachability_matches_disabled_state() {
+        let frame = petrify_lone(sample_tree());
+        let focus = crate::focus::FocusTree::from_placements(
+            &frame.placements,
+            &std::collections::BTreeMap::new(),
+        );
+        let reachable = |suffix: &str| {
+            let placement = frame
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with(suffix))
+                .unwrap_or_else(|| panic!("no placement ending {suffix}"));
+            focus.order().iter().any(|o| o == &placement.id)
+        };
+        assert!(reachable("/src"), "expanded branch must be reachable");
+        assert!(reachable("/main"), "selected leaf must be reachable");
+        assert!(reachable("/lib"), "plain leaf must be reachable");
+        assert!(reachable("/build"), "collapsed branch must be reachable");
+        assert!(
+            !frame.placements.iter().any(|p| p.id.ends_with("/out")),
+            "a collapsed branch's child must not mount at all"
+        );
+        assert!(
+            !reachable("/archived"),
+            "disabled leaf must not be focus reachable"
+        );
+    }
+
+    /// Check E: every item's label against its own resting fill
+    /// ([`SURFACE_BASE`]), in both themes — selected and unselected alike,
+    /// since `LAYER_SELECTED` still needs to clear AA for the label sitting
+    /// on it.
+    #[test]
+    fn tree_item_labels_clear_aa_contrast_against_their_own_fill() {
+        const MIN_TEXT_CONTRAST: f32 = 4.5;
+        for theme in [crate::token::light(), crate::token::dark()] {
+            for (label, node) in [
+                (
+                    "collapsed-branch",
+                    tree_item("b", "src", false, false, vec![]),
+                ),
+                (
+                    "expanded-branch",
+                    tree_item(
+                        "b",
+                        "src",
+                        true,
+                        false,
+                        vec![tree_item("c", "child", false, false, vec![])],
+                    ),
+                ),
+                (
+                    "selected-leaf",
+                    tree_item("l", "main.rs", false, true, vec![]),
+                ),
+                ("plain-leaf", tree_item("l", "lib.rs", false, false, vec![])),
+            ] {
+                let bg_name = node
+                    .props
+                    .tokens
+                    .get("background")
+                    .unwrap_or_else(|| panic!("{label}: item binds a resting background"));
+                let bg = color(&theme, bg_name.as_str());
+                let row = named(&node, "row");
+                let text_label = named(row, "label");
+                let fg_name = text_label
+                    .props
+                    .tokens
+                    .get("foreground")
+                    .unwrap_or_else(|| panic!("{label}: label binds a foreground"));
+                let opacity = text_label.props.opacity.unwrap_or(1.0);
+                let fg = color(&theme, fg_name.as_str()).faded(opacity).over(bg);
+                let ratio = fg.contrast_ratio(bg);
+                assert!(
+                    ratio >= MIN_TEXT_CONTRAST,
+                    "{label} at {ratio:.2}:1 against {} fails AA {MIN_TEXT_CONTRAST}:1",
+                    bg_name.as_str()
+                );
+            }
+        }
+    }
+
+    // Colour-channel finding for the operator (red-green colour blind),
+    // recorded not fixed — adding an icon channel is a feature, not an
+    // audit fix, matching group 5's identical finding on `selectable_tag`
+    // and `structured_list_row`.
+    //
+    // `tree_item`'s `selected` state is carried by `background@selected`
+    // (`LAYER_SELECTED`) alone: no icon, shape, or text-weight channel
+    // accompanies it (unlike Carbon's own tab, which changes typography
+    // weight as well as colour — the pattern `tabs.rs`'s `tab` already
+    // follows). `Semantics.selected` is set (`tree_item_declares_expanded_
+    // and_selected_never_colour_only` above already proves this much for
+    // the accessibility tree), so an assistive-technology reader is fine;
+    // a sighted, colour-blind reader looking at two rows filled with
+    // `LAYER_SELECTED` vs. resting `SURFACE_BASE` — a fill-tone difference
+    // only — is the same shape the operator flagged in group 5's UI shell
+    // sibling components below.
+    #[test]
+    fn selected_state_is_carried_by_fill_tone_alone_recorded_for_the_operator() {
+        let on = tree_item("l", "main.rs", false, true, vec![]);
+        let off = tree_item("l", "lib.rs", false, false, vec![]);
+        assert_eq!(token(&on, "background@selected"), Some(LAYER_SELECTED));
+        assert_eq!(
+            token(&off, "background@selected"),
+            Some(LAYER_SELECTED),
+            "both bind the same selected fill token; only `Semantics.selected` \
+             tells them apart, and no icon/shape/text channel does"
+        );
     }
 }

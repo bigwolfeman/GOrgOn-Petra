@@ -504,9 +504,7 @@ mod tests {
                         .get("foreground")
                         .unwrap_or_else(|| panic!("{label}: {key} binds a foreground"));
                     let opacity = text_node.props.opacity.unwrap_or(1.0);
-                    let fg = color(&theme, fg_name.as_str())
-                        .faded(opacity)
-                        .over(tile_bg);
+                    let fg = color(&theme, fg_name.as_str()).faded(opacity).over(tile_bg);
                     let ratio = fg.contrast_ratio(tile_bg);
                     assert!(
                         ratio >= MIN_TEXT_CONTRAST,

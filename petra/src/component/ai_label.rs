@@ -87,7 +87,7 @@ use super::tokens::{
     SURFACE_BASE, TEXT_PRIMARY, t,
 };
 use crate::geom::{Align, Axis};
-use crate::tree::{AxisConstraint, Constraints, Interaction, InsetRefs, Key, Role, ViewNode};
+use crate::tree::{AxisConstraint, Constraints, InsetRefs, Interaction, Key, Role, ViewNode};
 
 /// Carbon default-variant `mini`.
 const DEFAULT_MINI: f32 = 16.0;
@@ -139,42 +139,78 @@ const _: () = assert!(BULLET_SMALL == 4.0);
 const _: () = assert!(BULLET_LARGE == 8.0);
 const _: () = assert!(ACTIONS_FOOTER_HEIGHT == 48.0);
 
-const TRIGGER_INTENTS: &[Interaction] = &[Interaction::Focus, Interaction::Click, Interaction::Hover];
+const TRIGGER_INTENTS: &[Interaction] =
+    &[Interaction::Focus, Interaction::Click, Interaction::Hover];
 
 /// Default-variant AI label at Carbon `md` (40px, [`SIZE_MD`]). `label` is
 /// required (FR-058): it names both the trigger and the popover it opens.
 /// `open` shows or hides the explainability panel; `body` is its text.
-pub fn ai_label(key: impl Into<Key>, label: impl Into<String>, open: bool, body: impl Into<String>) -> ViewNode {
+pub fn ai_label(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    open: bool,
+    body: impl Into<String>,
+) -> ViewNode {
     default_sized(key, label, open, body, SIZE_MD)
 }
 
 /// [`ai_label`] at Carbon `mini` (16px).
-pub fn ai_label_mini(key: impl Into<Key>, label: impl Into<String>, open: bool, body: impl Into<String>) -> ViewNode {
+pub fn ai_label_mini(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    open: bool,
+    body: impl Into<String>,
+) -> ViewNode {
     default_sized(key, label, open, body, DEFAULT_MINI)
 }
 
 /// [`ai_label`] at Carbon `2xs` (20px).
-pub fn ai_label_2xs(key: impl Into<Key>, label: impl Into<String>, open: bool, body: impl Into<String>) -> ViewNode {
+pub fn ai_label_2xs(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    open: bool,
+    body: impl Into<String>,
+) -> ViewNode {
     default_sized(key, label, open, body, DEFAULT_2XS)
 }
 
 /// [`ai_label`] at Carbon `xs` (24px).
-pub fn ai_label_xs(key: impl Into<Key>, label: impl Into<String>, open: bool, body: impl Into<String>) -> ViewNode {
+pub fn ai_label_xs(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    open: bool,
+    body: impl Into<String>,
+) -> ViewNode {
     default_sized(key, label, open, body, DEFAULT_XS)
 }
 
 /// [`ai_label`] at Carbon `sm` (32px).
-pub fn ai_label_sm(key: impl Into<Key>, label: impl Into<String>, open: bool, body: impl Into<String>) -> ViewNode {
+pub fn ai_label_sm(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    open: bool,
+    body: impl Into<String>,
+) -> ViewNode {
     default_sized(key, label, open, body, DEFAULT_SM)
 }
 
 /// [`ai_label`] at Carbon `lg` (48px).
-pub fn ai_label_lg(key: impl Into<Key>, label: impl Into<String>, open: bool, body: impl Into<String>) -> ViewNode {
+pub fn ai_label_lg(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    open: bool,
+    body: impl Into<String>,
+) -> ViewNode {
     default_sized(key, label, open, body, DEFAULT_LG)
 }
 
 /// [`ai_label`] at Carbon `xl` (64px).
-pub fn ai_label_xl(key: impl Into<Key>, label: impl Into<String>, open: bool, body: impl Into<String>) -> ViewNode {
+pub fn ai_label_xl(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    open: bool,
+    body: impl Into<String>,
+) -> ViewNode {
     default_sized(key, label, open, body, DEFAULT_XL)
 }
 
@@ -214,10 +250,15 @@ pub fn ai_label_with_actions(
 pub fn ai_label_revert(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
     let label = label.into();
     let mut caption = text("text", "Undo");
-    caption.props.tokens.insert("foreground".into(), t(TEXT_PRIMARY));
+    caption
+        .props
+        .tokens
+        .insert("foreground".into(), t(TEXT_PRIMARY));
     let mut node = stack(key, Axis::Horizontal, None, vec![caption]);
     node.props.align = Some(Align::Center);
-    node.props.tokens.insert("background".into(), t(SURFACE_BASE));
+    node.props
+        .tokens
+        .insert("background".into(), t(SURFACE_BASE));
     node.props.tokens.insert("border".into(), t(BORDER_SUBTLE));
     node.props
         .tokens
@@ -228,18 +269,33 @@ pub fn ai_label_revert(key: impl Into<Key>, label: impl Into<String>) -> ViewNod
 
 /// Inline-variant AI label at Carbon `md` (18px, default). Leading bullet
 /// dot instead of a border (slice-a "Inline structure").
-pub fn ai_label_inline(key: impl Into<Key>, label: impl Into<String>, open: bool, body: impl Into<String>) -> ViewNode {
+pub fn ai_label_inline(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    open: bool,
+    body: impl Into<String>,
+) -> ViewNode {
     inline_sized(key, label, open, body, INLINE_MD, BULLET_SMALL)
 }
 
 /// [`ai_label_inline`] at Carbon `sm` (16px).
-pub fn ai_label_inline_sm(key: impl Into<Key>, label: impl Into<String>, open: bool, body: impl Into<String>) -> ViewNode {
+pub fn ai_label_inline_sm(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    open: bool,
+    body: impl Into<String>,
+) -> ViewNode {
     inline_sized(key, label, open, body, INLINE_SM, BULLET_SMALL)
 }
 
 /// [`ai_label_inline`] at Carbon `lg` (22px). Carbon steps the bullet to
 /// 8px here (sm/md share the 4px bullet).
-pub fn ai_label_inline_lg(key: impl Into<Key>, label: impl Into<String>, open: bool, body: impl Into<String>) -> ViewNode {
+pub fn ai_label_inline_lg(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    open: bool,
+    body: impl Into<String>,
+) -> ViewNode {
     inline_sized(key, label, open, body, INLINE_LG, BULLET_LARGE)
 }
 
@@ -287,10 +343,15 @@ fn inline_sized(
 /// module doc for why [`BORDER_SUBTLE`] stands in.
 fn trigger_button(key: impl Into<Key>, label: String, size: f32) -> ViewNode {
     let mut caption = text("text", "AI");
-    caption.props.tokens.insert("foreground".into(), t(TEXT_PRIMARY));
+    caption
+        .props
+        .tokens
+        .insert("foreground".into(), t(TEXT_PRIMARY));
     let mut node = stack(key, Axis::Horizontal, None, vec![caption]);
     node.props.align = Some(Align::Center);
-    node.props.tokens.insert("background".into(), t(SURFACE_BASE));
+    node.props
+        .tokens
+        .insert("background".into(), t(SURFACE_BASE));
     node.props.tokens.insert("border".into(), t(BORDER_SUBTLE));
     node.props
         .tokens
@@ -305,7 +366,10 @@ fn trigger_button(key: impl Into<Key>, label: String, size: f32) -> ViewNode {
 fn inline_trigger(key: impl Into<Key>, label: String, height: f32, bullet: f32) -> ViewNode {
     let dot = bullet_dot("dot", bullet);
     let mut caption = text("text", "AI");
-    caption.props.tokens.insert("foreground".into(), t(TEXT_PRIMARY));
+    caption
+        .props
+        .tokens
+        .insert("foreground".into(), t(TEXT_PRIMARY));
     // The 4px gap between the bullet and the text is spacing between two
     // siblings, not an inset carried by either — `Props.padding` only
     // applies to container kinds (`Violation::PaddingOnLeafKind`; see
@@ -352,7 +416,9 @@ fn inline_trigger(key: impl Into<Key>, label: String, height: f32, bullet: f32) 
 /// spacer.
 fn bullet_dot(key: impl Into<Key>, size: f32) -> ViewNode {
     let mut node = stack(key, Axis::Horizontal, None, vec![]);
-    node.props.tokens.insert("background".into(), t(BORDER_SUBTLE));
+    node.props
+        .tokens
+        .insert("background".into(), t(BORDER_SUBTLE));
     node.props.tokens.insert("radius".into(), t(SHAPE_FULL));
     node.constraints = square(size);
     node
@@ -363,7 +429,11 @@ fn bullet_dot(key: impl Into<Key>, size: f32) -> ViewNode {
 /// ([`SHAPE_MD`], MEASURED SCSS) and 24px container padding
 /// ([`SPACING_06`]) in place of the generic popover's 16px
 /// ([`super::tokens::SPACING_05`]).
-fn explainability_panel(label: String, anchor_id: impl Into<String>, rows: Vec<ViewNode>) -> ViewNode {
+fn explainability_panel(
+    label: String,
+    anchor_id: impl Into<String>,
+    rows: Vec<ViewNode>,
+) -> ViewNode {
     let mut panel = popover_with("panel", label, anchor_id, rows);
     panel.props.tokens.insert("radius".into(), t(SHAPE_MD));
     panel.props.padding = Some(pad(SPACING_06, SPACING_06));
@@ -451,7 +521,12 @@ mod tests {
 
     #[test]
     fn ai_label_open_hosts_an_explainability_popover() {
-        let node = ai_label("conf", "Confidence score", true, "Trained on ticket history.");
+        let node = ai_label(
+            "conf",
+            "Confidence score",
+            true,
+            "Trained on ticket history.",
+        );
         assert_eq!(node.semantics.expanded, Some(true));
 
         let panel = child(&node, "panel");
@@ -589,8 +664,11 @@ mod tests {
 
     #[test]
     fn ai_label_with_actions_places_a_48px_footer_row_inside_the_panel() {
-        let cancel = ViewNode::new(NodeKind::Stack, "cancel")
-            .interactive(Role::Button, "Keep suggestion", &[Interaction::Click]);
+        let cancel = ViewNode::new(NodeKind::Stack, "cancel").interactive(
+            Role::Button,
+            "Keep suggestion",
+            &[Interaction::Click],
+        );
         let node = ai_label_with_actions(
             "conf",
             "Confidence score",

@@ -84,7 +84,11 @@ fn pin_height(h: f32) -> Constraints {
 #[cfg(test)]
 mod tests {
     use super::{MAX_INLINE, toggletip};
-    use crate::tree::{Anchor, Interaction, NodeKind, Role, ViewNode};
+    use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
+    use crate::geom::{Axis, Size};
+    use crate::testing::{Harness, validated_with};
+    use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
+    use crate::tree::{Anchor, Interaction, NodeKind, Props, Registry, Role, ViewNode};
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         node.children
@@ -135,5 +139,136 @@ mod tests {
             child(content, "body").props.text.as_deref(),
             Some("Narrow the list.")
         );
+    }
+
+    // The open form (`toggletip(..., true, ...)`) hosts an `Anchor::Node`
+    // surface naming a bare sibling key ("trigger"), the same shape AI
+    // label's, date picker's, dropdown's, menu's, menu button's, popover's
+    // and number input's open forms cannot mount through either — a
+    // constructor cannot know its own canonical mount point (see
+    // `.agents/notes/proposed/architecture/
+    // 2026-09-03-anchored-components-cannot-name-their-own-anchor.md`).
+    // Unlike Tooltip and the UI shell right panel, whose only constructor
+    // IS that anchored surface, toggletip's `trigger` stands on its own — a
+    // plain interactive `Stack` with no anchor of its own — so the CLOSED
+    // form below is what this module audits directly.
+
+    const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
+
+    fn accepting_registry() -> Registry {
+        Registry::with_vocabulary(standard_vocabulary())
+    }
+
+    fn petrify_lone(node: ViewNode) -> PetrifiedFrame {
+        let root = ViewNode::new(NodeKind::Stack, "root")
+            .with_props(Props {
+                axis: Some(Axis::Vertical),
+                ..Props::default()
+            })
+            .child(node);
+        let registry = accepting_registry();
+        let mut harness = Harness::new();
+        let viewport = Viewport::new(VIEWPORT, ThemeMode::Dark);
+        harness.scale = viewport.scale;
+        petrify(
+            1,
+            validated_with(&root, &registry),
+            &mut harness.ctx(),
+            viewport,
+            TransitionActivity::default(),
+        )
+    }
+
+    fn color(theme: &Theme, name: &str) -> ColorValue {
+        match theme.value(&TokenName::new(name).unwrap()).unwrap() {
+            TokenValue::Color(c) => *c,
+            other => panic!("{name} is not a colour: {other:?}"),
+        }
+    }
+
+    /// Check C/D: the closed trigger places with a real rect and draws no
+    /// content larger than it.
+    #[test]
+    fn closed_trigger_frame_geometry_has_no_degenerate_or_overflowing_placements() {
+        let node = toggletip("help", "About filters", false, "Narrow the list.");
+        let frame = petrify_lone(node);
+        assert!(!frame.placements.is_empty(), "nothing placed");
+        for p in &frame.placements {
+            assert!(
+                p.rect.w > 0.0 && p.rect.h > 0.0,
+                "{} placed with a degenerate rect {:?}",
+                p.id,
+                p.rect
+            );
+            assert!(
+                !p.paint.overflowed,
+                "{} drew content larger than its own rect",
+                p.id
+            );
+            if let Some(parent_idx) = p.parent {
+                let parent = &frame.placements[parent_idx];
+                let fits = p.rect.x >= parent.rect.x - 0.01
+                    && p.rect.y >= parent.rect.y - 0.01
+                    && p.rect.x + p.rect.w <= parent.rect.x + parent.rect.w + 0.01
+                    && p.rect.y + p.rect.h <= parent.rect.y + parent.rect.h + 0.01;
+                assert!(
+                    fits,
+                    "{} (rect {:?}) extends outside its parent {} (rect {:?})",
+                    p.id, p.rect, parent.id, parent.rect
+                );
+            }
+        }
+    }
+
+    /// Check F: the closed trigger declares `Focus` and is reachable.
+    #[test]
+    fn closed_trigger_is_focus_reachable() {
+        let node = toggletip("help", "About filters", false, "Narrow the list.");
+        let frame = petrify_lone(node);
+        let focus = crate::focus::FocusTree::from_placements(
+            &frame.placements,
+            &std::collections::BTreeMap::new(),
+        );
+        let placement = frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/trigger"))
+            .expect("the trigger is placed");
+        let reachable = focus.order().iter().any(|o| o == &placement.id);
+        assert!(
+            reachable,
+            "closed toggletip trigger must be focus reachable"
+        );
+    }
+
+    /// Check E: the trigger label against its own resting fill
+    /// ([`SURFACE_BASE`], the page's own ground), in both themes.
+    #[test]
+    fn closed_trigger_label_clears_aa_contrast_against_its_own_fill() {
+        const MIN_TEXT_CONTRAST: f32 = 4.5;
+        for theme in [crate::token::light(), crate::token::dark()] {
+            let node = toggletip("help", "About filters", false, "Narrow the list.");
+            let trigger = child(&node, "trigger");
+            let bg_name = trigger
+                .props
+                .tokens
+                .get("background")
+                .expect("trigger binds a resting background");
+            let bg = color(&theme, bg_name.as_str());
+            let label = child(trigger, "label");
+            let fg_name = label
+                .props
+                .tokens
+                .get("foreground")
+                .expect("label binds a foreground");
+            let opacity = label.props.opacity.unwrap_or(1.0);
+            let fg = color(&theme, fg_name.as_str()).faded(opacity).over(bg);
+            let ratio = fg.contrast_ratio(bg);
+            assert!(
+                ratio >= MIN_TEXT_CONTRAST,
+                "trigger label at {ratio:.2}:1 against {} fails AA {MIN_TEXT_CONTRAST}:1",
+                bg_name.as_str()
+            );
+        }
     }
 }

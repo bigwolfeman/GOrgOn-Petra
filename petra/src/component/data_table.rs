@@ -470,7 +470,7 @@ mod tests {
         assert_eq!(button.semantics.label.as_deref(), Some("Sort Name"));
         assert_eq!(button.semantics.value.as_deref(), Some("ascending"));
         assert_eq!(
-            named(&button, "direction").props.text.as_deref(),
+            named(button, "direction").props.text.as_deref(),
             Some("ascending")
         );
         assert!(button.interactions.contains(&Interaction::Click));
@@ -713,18 +713,18 @@ mod tests {
                     .unwrap_or_else(|| panic!("{row_key} binds no resting background"));
                 let bg = color(&theme, bg_name.as_str());
                 fn walk_text(node: &ViewNode, bg: ColorValue, theme: &Theme, min: f32, row: &str) {
-                    if node.props.text.is_some() {
-                        if let Some(fg_name) = node.props.tokens.get("foreground") {
-                            let opacity = node.props.opacity.unwrap_or(1.0);
-                            let fg = color(theme, fg_name.as_str()).faded(opacity).over(bg);
-                            let ratio = fg.contrast_ratio(bg);
-                            assert!(
-                                ratio >= min,
-                                "{row}/{:?} at {ratio:.2}:1 against {} fails AA {min}:1",
-                                node.key,
-                                fg_name.as_str()
-                            );
-                        }
+                    if node.props.text.is_some()
+                        && let Some(fg_name) = node.props.tokens.get("foreground")
+                    {
+                        let opacity = node.props.opacity.unwrap_or(1.0);
+                        let fg = color(theme, fg_name.as_str()).faded(opacity).over(bg);
+                        let ratio = fg.contrast_ratio(bg);
+                        assert!(
+                            ratio >= min,
+                            "{row}/{:?} at {ratio:.2}:1 against {} fails AA {min}:1",
+                            node.key,
+                            fg_name.as_str()
+                        );
                     }
                     for child in &node.children {
                         walk_text(child, bg, theme, min, row);

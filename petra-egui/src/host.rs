@@ -1123,17 +1123,17 @@ impl<A: App> Host<A> {
             self.scene.clear();
             self.hop_blit = false;
         }
-        if let Some((bars, clip)) = overlay {
-            if paint_caret_overlay(
+        if let Some((bars, clip)) = overlay
+            && paint_caret_overlay(
                 &ctx.layer_painter(petra_layer()),
                 &bars,
                 clip,
                 colors,
                 frame.viewport.scale,
                 &mut report,
-            ) {
-                report.focus_rings += 1;
-            }
+            )
+        {
+            report.focus_rings += 1;
         }
         self.note_hop_pass();
         report
@@ -1194,17 +1194,17 @@ impl<A: App> Host<A> {
         });
         report.focus_rings = 0;
         report.blind_focus = 0;
-        if let Some((bars, clip)) = self.caret_overlay(frame) {
-            if paint_caret_overlay(
+        if let Some((bars, clip)) = self.caret_overlay(frame)
+            && paint_caret_overlay(
                 painter,
                 &bars,
                 clip,
                 colors,
                 frame.viewport.scale,
                 &mut report,
-            ) {
-                report.focus_rings += 1;
-            }
+            )
+        {
+            report.focus_rings += 1;
         }
         report
     }
@@ -1273,7 +1273,7 @@ impl<A: App> Host<A> {
             };
             let size = physical_window_px(ctx);
             let clear = colors.color("surface.base").unwrap_or(egui::Color32::BLACK);
-            return crate::scene_cache::SceneCache::capture(
+            crate::scene_cache::SceneCache::capture(
                 &mut self.scene_tex,
                 &gpu,
                 ctx,
@@ -1281,7 +1281,7 @@ impl<A: App> Host<A> {
                 size,
                 ctx.pixels_per_point(),
                 clear,
-            );
+            )
         }
         #[cfg(target_arch = "wasm32")]
         {
@@ -1293,10 +1293,9 @@ impl<A: App> Host<A> {
     fn scene_texture_has_front(&self) -> bool {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            return self
-                .scene_tex
+            self.scene_tex
                 .as_ref()
-                .is_some_and(|cache| cache.has_front());
+                .is_some_and(|cache| cache.has_front())
         }
         #[cfg(target_arch = "wasm32")]
         false
@@ -1305,11 +1304,10 @@ impl<A: App> Host<A> {
     fn scene_blit_shape(&self, page: egui::Rect) -> Option<egui::Shape> {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            return self
-                .scene_tex
+            self.scene_tex
                 .as_ref()
                 .filter(|cache| cache.has_front())
-                .map(|cache| cache.blit_shape(page));
+                .map(|cache| cache.blit_shape(page))
         }
         #[cfg(target_arch = "wasm32")]
         {

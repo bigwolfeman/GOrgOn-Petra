@@ -430,10 +430,7 @@ mod tests {
             ("fluid", field_fluid("name", "Fiber name")),
             ("labeled", field_labeled("name", "Fiber name")),
             ("readonly", field_readonly("name", "Fiber name")),
-            (
-                "invalid",
-                field_invalid("name", "Fiber name", "required"),
-            ),
+            ("invalid", field_invalid("name", "Fiber name", "required")),
             (
                 "disabled",
                 crate::component::disabled(field("name", "Fiber name")),
@@ -532,9 +529,7 @@ mod tests {
                     .get("foreground")
                     .unwrap_or_else(|| panic!("{label}: well binds a foreground"));
                 let opacity = node.props.opacity.unwrap_or(1.0);
-                let fg = color(&theme, fg_name.as_str())
-                    .faded(opacity)
-                    .over(well_bg);
+                let fg = color(&theme, fg_name.as_str()).faded(opacity).over(well_bg);
                 let ratio = fg.contrast_ratio(well_bg);
                 assert!(
                     ratio >= MIN_TEXT_CONTRAST,

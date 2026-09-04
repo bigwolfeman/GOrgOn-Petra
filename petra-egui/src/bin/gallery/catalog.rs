@@ -11,21 +11,20 @@ use std::sync::Arc;
 use egui::ViewportBuilder;
 use gorgon_petra::component::{
     accordion, accordion_item, ai_label, ai_label_revert, breadcrumb, breadcrumb_item, button,
-    button_lg, button_sm, checkbox, checkbox_group,
-    checkbox_indeterminate, checkbox_readonly, clickable_tile, code_snippet, code_snippet_inline,
-    contained_list, contained_tab, contained_tab_bar, content_switcher, content_switcher_item,
-    danger_button, data_table, data_table_row, date_picker, dismissible_tag, dropdown,
-    expandable_tile, field, field_invalid, field_lg, field_readonly, field_sm, file_uploader,
-    file_uploader_item, form, ghost_button, heading, inline_loading, link, list_item,
-    list_item_with, list_row, loading, loading_sm, menu_button, menu_item, modal, notification,
-    number_input, ordered_list, pagination, primary_button, progress, progress_indicator,
-    progress_sm, progress_step, progress_with_helper, radio, radio_group, search, section, select,
-    selectable_tag, selectable_tile, slider, structured_list, structured_list_row, tab, tab_bar,
-    tag, tertiary_button, text, tile, toggle, toggle_sm, toggletip, tree_item, tree_view,
-    ui_shell_header, ui_shell_header_action, ui_shell_header_menu_trigger, ui_shell_header_nav_item,
-    ui_shell_left_panel, ui_shell_left_panel_item, ui_shell_left_panel_subitem,
-    ui_shell_right_panel_divider, ui_shell_switcher_item, unordered_list, vertical_tab,
-    vertical_tab_bar,
+    button_lg, button_sm, checkbox, checkbox_group, checkbox_indeterminate, checkbox_readonly,
+    clickable_tile, code_snippet, code_snippet_inline, contained_list, contained_tab,
+    contained_tab_bar, content_switcher, content_switcher_item, danger_button, data_table,
+    data_table_row, date_picker, dismissible_tag, dropdown, expandable_tile, field, field_invalid,
+    field_lg, field_readonly, field_sm, file_uploader, file_uploader_item, form, ghost_button,
+    heading, inline_loading, link, list_item, list_item_with, list_row, loading, loading_sm,
+    menu_button, menu_item, modal, notification, number_input, ordered_list, pagination,
+    primary_button, progress, progress_indicator, progress_sm, progress_step, progress_with_helper,
+    radio, radio_group, search, section, select, selectable_tag, selectable_tile, slider,
+    structured_list, structured_list_row, tab, tab_bar, tag, tertiary_button, text, tile, toggle,
+    toggle_sm, toggletip, tree_item, tree_view, ui_shell_header, ui_shell_header_action,
+    ui_shell_header_menu_trigger, ui_shell_header_nav_item, ui_shell_left_panel,
+    ui_shell_left_panel_item, ui_shell_left_panel_subitem, ui_shell_right_panel_divider,
+    ui_shell_switcher_item, unordered_list, vertical_tab, vertical_tab_bar,
 };
 use gorgon_petra::geom::{Align, Axis};
 use gorgon_petra::input::{InputEvent, KeyCode, PointerButton, Route, activates};
@@ -468,7 +467,10 @@ impl Catalog {
                     vec![form(
                         "demo-form",
                         "Fiber",
-                        vec![field("form-name", "Name"), checkbox("form-ok", "Enabled", true)],
+                        vec![
+                            field("form-name", "Name"),
+                            checkbox("form-ok", "Enabled", true),
+                        ],
                     )],
                 )],
             ),
@@ -517,7 +519,10 @@ impl Catalog {
                 vec![Self::body(
                     "load",
                     sp("spacing.md"),
-                    vec![loading("load-lg", "Working"), loading_sm("load-sm", "Working")],
+                    vec![
+                        loading("load-lg", "Working"),
+                        loading_sm("load-sm", "Working"),
+                    ],
                 )],
             ),
             Content::List => section(
@@ -593,7 +598,11 @@ impl Catalog {
                 vec![Self::body(
                     "nt",
                     sp("spacing.md"),
-                    vec![notification("nt", "Rebuild finished", "12 fibers reloaded.")],
+                    vec![notification(
+                        "nt",
+                        "Rebuild finished",
+                        "12 fibers reloaded.",
+                    )],
                 )],
             ),
             Content::NumberInput => section(
@@ -1437,8 +1446,10 @@ mod tests {
     fn every_built_page_paints_with_nothing_silent() {
         let mut offenders: Vec<String> = Vec::new();
         for index in 0..Catalog::default().roster.len() {
-            let mut app = Catalog::default();
-            app.page = index;
+            let app = Catalog {
+                page: index,
+                ..Catalog::default()
+            };
             if !app.current().is_built() {
                 continue;
             }

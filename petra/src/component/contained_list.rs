@@ -211,7 +211,11 @@ mod tests {
         let cases: Vec<(&str, ViewNode)> = vec![
             (
                 "on-page",
-                contained_list("cl", "Related", vec![text("r0", "Alpha"), text("r1", "Bravo")]),
+                contained_list(
+                    "cl",
+                    "Related",
+                    vec![text("r0", "Alpha"), text("r1", "Bravo")],
+                ),
             ),
             (
                 "disclosed",

@@ -45,7 +45,11 @@ pub fn tooltip(key: impl Into<Key>, label: impl Into<String>, body: impl Into<St
 #[cfg(test)]
 mod tests {
     use super::{MAX_INLINE, SINGLE_LINE_INTENT, tooltip};
-    use crate::tree::{Anchor, NodeKind, Role, ViewNode};
+    use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
+    use crate::geom::{Axis, Size};
+    use crate::testing::{Harness, validated_with};
+    use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
+    use crate::tree::{Anchor, NodeKind, Props, Registry, Role, ViewNode};
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         node.children
@@ -85,5 +89,131 @@ mod tests {
             child(content, "body").interactions.is_empty(),
             "the bubble has no interactive children"
         );
+    }
+
+    // `tooltip` itself builds via `super::popover::popover`, so `node` IS
+    // the anchored `Anchor::Node { id: "trigger", .. }` surface with no
+    // separate closed form at all — unlike Toggletip, whose `trigger`
+    // stands alone as a plain interactive node, every constructor this
+    // module exports IS the anchored bubble. `crate::tree::validate::
+    // check_anchors` refuses the WHOLE tree whenever an `Anchor::Node.id`
+    // does not resolve to some sibling's own canonical path, so `tooltip`
+    // cannot be `petrify_lone`d in ANY form — the same limit `popover.rs`'s
+    // own test-module comment documents, not this module's own bug (see
+    // `.agents/notes/proposed/architecture/
+    // 2026-09-03-anchored-components-cannot-name-their-own-anchor.md`).
+    //
+    // What CAN be audited: `content`, the inner `Stack` `popover` builds
+    // (`caret` + `body`). It carries no `anchor` of its own — only the
+    // outer `Surface` node does — so it petrifies on its own, the same
+    // technique `popover.rs`'s own `content_frame_geometry_...` test uses.
+
+    const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
+
+    fn accepting_registry() -> Registry {
+        Registry::with_vocabulary(standard_vocabulary())
+    }
+
+    fn petrify_lone(node: ViewNode) -> PetrifiedFrame {
+        let root = ViewNode::new(NodeKind::Stack, "root")
+            .with_props(Props {
+                axis: Some(Axis::Vertical),
+                ..Props::default()
+            })
+            .child(node);
+        let registry = accepting_registry();
+        let mut harness = Harness::new();
+        let viewport = Viewport::new(VIEWPORT, ThemeMode::Dark);
+        harness.scale = viewport.scale;
+        petrify(
+            1,
+            validated_with(&root, &registry),
+            &mut harness.ctx(),
+            viewport,
+            TransitionActivity::default(),
+        )
+    }
+
+    fn color(theme: &Theme, name: &str) -> ColorValue {
+        match theme.value(&TokenName::new(name).unwrap()).unwrap() {
+            TokenValue::Color(c) => *c,
+            other => panic!("{name} is not a colour: {other:?}"),
+        }
+    }
+
+    /// Check C/D: the caret and body text place with real rects, none of
+    /// them outside `content`'s own rect.
+    #[test]
+    fn content_frame_geometry_has_no_degenerate_or_overflowing_placements() {
+        let node = tooltip("copied", "Copied", "Copied to clipboard");
+        let content = child(&node, "content").clone();
+        let frame = petrify_lone(content);
+        assert!(!frame.placements.is_empty(), "nothing placed");
+        for p in &frame.placements {
+            assert!(
+                p.rect.w > 0.0 && p.rect.h > 0.0,
+                "{} placed with a degenerate rect {:?}",
+                p.id,
+                p.rect
+            );
+            assert!(
+                !p.paint.overflowed,
+                "{} drew content larger than its own rect",
+                p.id
+            );
+            if let Some(parent_idx) = p.parent {
+                let parent = &frame.placements[parent_idx];
+                let fits = p.rect.x >= parent.rect.x - 0.01
+                    && p.rect.y >= parent.rect.y - 0.01
+                    && p.rect.x + p.rect.w <= parent.rect.x + parent.rect.w + 0.01
+                    && p.rect.y + p.rect.h <= parent.rect.y + parent.rect.h + 0.01;
+                assert!(
+                    fits,
+                    "{} (rect {:?}) extends outside its parent {} (rect {:?})",
+                    p.id, p.rect, parent.id, parent.rect
+                );
+            }
+        }
+    }
+
+    // Check F does not apply: the bubble has no interactive children
+    // (`tooltip_is_a_non_interactive_overlay_bubble` above already asserts
+    // this) — a tooltip is never itself a Tab stop, matching slice-f.md's
+    // "a tooltip is never itself disabled; it either doesn't render or is
+    // suppressed by its host component's disabled state."
+
+    /// Check E: the caret and body text against [`SURFACE_RAISED`], the
+    /// resting `background` the outer `Surface` node binds, in both themes.
+    #[test]
+    fn content_text_clears_aa_contrast_against_the_surface_fill() {
+        const MIN_TEXT_CONTRAST: f32 = 4.5;
+        for theme in [crate::token::light(), crate::token::dark()] {
+            let node = tooltip("copied", "Copied", "Copied to clipboard");
+            let surface_bg_name = node
+                .props
+                .tokens
+                .get("background")
+                .expect("the surface binds a resting background");
+            let surface_bg = color(&theme, surface_bg_name.as_str());
+            let content = child(&node, "content");
+            for label_key in ["caret", "body"] {
+                let label = child(content, label_key);
+                let fg_name = label
+                    .props
+                    .tokens
+                    .get("foreground")
+                    .expect("label text binds a foreground");
+                let opacity = label.props.opacity.unwrap_or(1.0);
+                let fg = color(&theme, fg_name.as_str())
+                    .faded(opacity)
+                    .over(surface_bg);
+                let ratio = fg.contrast_ratio(surface_bg);
+                assert!(
+                    ratio >= MIN_TEXT_CONTRAST,
+                    "{label_key} at {ratio:.2}:1 against {} fails AA {MIN_TEXT_CONTRAST}:1",
+                    surface_bg_name.as_str()
+                );
+            }
+        }
     }
 }

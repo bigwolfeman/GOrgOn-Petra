@@ -91,9 +91,9 @@
 use super::stack;
 use super::text::text;
 use super::tokens::{
-    ACCENT_PRIMARY, BORDER_SUBTLE, LAYER_ACTIVE, LAYER_HOVER, LAYER_SELECTED,
-    LAYER_SELECTED_HOVER, SPACING_03, SPACING_05, SPACING_07, SURFACE_BASE, SURFACE_RAISED,
-    TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_BODY, TYPOGRAPHY_HEADING_SM, t,
+    ACCENT_PRIMARY, BORDER_SUBTLE, LAYER_ACTIVE, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER,
+    SPACING_03, SPACING_05, SPACING_07, SURFACE_BASE, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY,
+    TYPOGRAPHY_BODY, TYPOGRAPHY_HEADING_SM, t,
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
@@ -227,7 +227,7 @@ pub fn ui_shell_header_menu_trigger(key: impl Into<Key>, open: bool) -> ViewNode
             ..props
         })
         .with_children(vec![caption])
-        .with_constraints(pin_square(MINI_UNIT_6));
+        .with_constraints(icon_hit_box(MINI_UNIT_6));
     let mut node = node.interactive(Role::Button, label, INTENTS);
     node.semantics.selected = open;
     node
@@ -325,7 +325,7 @@ pub fn ui_shell_header_action(
     let node = ViewNode::new(NodeKind::Stack, key)
         .with_props(props)
         .with_children(vec![caption])
-        .with_constraints(pin_square(MINI_UNIT_6));
+        .with_constraints(icon_hit_box(MINI_UNIT_6));
     let mut node = node.interactive(Role::Button, label, INTENTS);
     node.semantics.selected = active;
     node
@@ -589,9 +589,7 @@ pub fn ui_shell_switcher_item(key: impl Into<Key>, label: impl Into<String>) -> 
         }),
         ..Props::default()
     };
-    props
-        .tokens
-        .insert("background".into(), t(SURFACE_RAISED));
+    props.tokens.insert("background".into(), t(SURFACE_RAISED));
     props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
@@ -674,11 +672,27 @@ fn pin_block(h: f32) -> Constraints {
     }
 }
 
-fn pin_square(size: f32) -> Constraints {
+/// Carbon's 48x48 header hit box, with the width as a FLOOR rather than a
+/// pin.
+///
+/// Carbon sizes these boxes for an icon-only glyph. This library draws a
+/// WORD in them instead (FR-026, see this module's own doc), and a word
+/// does not fit a box measured for a 16px glyph. Pinning `max` as well as
+/// `min` on the inline axis clips the label -- the defect already found in
+/// [`super::modal`]'s close button and [`super::number_input`]'s steppers,
+/// where the label is fixed and short enough that it took a frame-level
+/// geometry test to see it.
+///
+/// Here the label is worse: it is caller-supplied
+/// ([`ui_shell_header_action`] takes it as a parameter), so no fixed
+/// measurement makes the pin safe. The block axis stays pinned because the
+/// header's own height genuinely is 48px in Carbon; the inline axis keeps
+/// 48 as the minimum tap target and lets the label decide the rest.
+fn icon_hit_box(size: f32) -> Constraints {
     Constraints {
         horizontal: AxisConstraint {
             min: Some(size),
-            max: Some(size),
+            max: None,
             priority: 0,
         },
         vertical: AxisConstraint {
@@ -710,10 +724,15 @@ mod tests {
         ui_shell_left_panel_rail, ui_shell_left_panel_subitem, ui_shell_right_panel,
         ui_shell_right_panel_divider, ui_shell_switcher, ui_shell_switcher_item,
     };
+    use crate::component::text::text;
     use crate::component::tokens::{
         ACCENT_PRIMARY, LAYER_SELECTED, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY,
     };
-    use crate::tree::{Anchor, Edge, Interaction, NodeKind, Role, ViewNode};
+    use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
+    use crate::geom::{Axis, Size};
+    use crate::testing::{Harness, validated_with};
+    use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
+    use crate::tree::{Anchor, Edge, Interaction, NodeKind, Props, Registry, Role, ViewNode};
 
     fn named<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         fn walk<'a>(node: &'a ViewNode, key: &str) -> Option<&'a ViewNode> {
@@ -836,13 +855,18 @@ mod tests {
     }
 
     #[test]
-    fn header_action_is_a_48_square_with_a_required_label() {
+    fn header_action_is_48_tall_with_a_48_floor_and_a_required_label() {
         let node = ui_shell_header_action("notify", "Notifications", false);
         assert_eq!(node.semantics.role, Some(Role::Button));
         assert_eq!(node.semantics.label.as_deref(), Some("Notifications"));
         assert!(!node.semantics.selected);
         assert_eq!(node.constraints.horizontal.min, Some(MINI_UNIT_6));
-        assert_eq!(node.constraints.horizontal.max, Some(MINI_UNIT_6));
+        assert_eq!(
+            node.constraints.horizontal.max, None,
+            "the inline axis takes Carbon's 48 as a FLOOR, never a pin: this \
+             box holds a caller-supplied word, not the icon Carbon measured \
+             it for, so pinning `max` clips the label (see `icon_hit_box`)"
+        );
         assert_eq!(node.constraints.vertical.min, Some(MINI_UNIT_6));
         assert_eq!(node.constraints.vertical.max, Some(MINI_UNIT_6));
 
@@ -874,20 +898,17 @@ mod tests {
         assert_eq!(node.semantics.expanded, Some(false));
         assert!(!has_key(&node, "chevron"));
         assert!(!has_key(&node, "children"));
-        assert_eq!(named(&node, "row").constraints.vertical.min, Some(LEFT_PANEL_ROW));
+        assert_eq!(
+            named(&node, "row").constraints.vertical.min,
+            Some(LEFT_PANEL_ROW)
+        );
         assert_eq!(LEFT_PANEL_ROW, 32.0);
     }
 
     #[test]
     fn branch_item_mounts_children_only_while_expanded() {
         let child = ui_shell_left_panel_subitem("child", "Fibers", false);
-        let expanded = ui_shell_left_panel_item(
-            "kernel",
-            "Kernel",
-            true,
-            false,
-            vec![child],
-        );
+        let expanded = ui_shell_left_panel_item("kernel", "Kernel", true, false, vec![child]);
         assert_eq!(expanded.semantics.expanded, Some(true));
         assert_eq!(
             named(&expanded, "chevron").props.text.as_deref(),
@@ -937,12 +958,7 @@ mod tests {
 
     #[test]
     fn right_panel_is_an_overlay_anchored_to_its_trigger() {
-        let node = ui_shell_right_panel(
-            "notifications-panel",
-            "Notifications",
-            "notify",
-            vec![],
-        );
+        let node = ui_shell_right_panel("notifications-panel", "Notifications", "notify", vec![]);
         assert_eq!(node.kind, NodeKind::Surface);
         assert_eq!(node.semantics.role, Some(Role::Overlay));
         assert_ne!(node.semantics.role, Some(Role::Dialog));
@@ -981,7 +997,589 @@ mod tests {
         assert_eq!(item.constraints.vertical.min, Some(SWITCHER_ROW));
         assert_eq!(SWITCHER_ROW, 32.0);
         let divider = named(&node, "d1");
-        assert_eq!(divider.constraints.horizontal.min, Some(SWITCHER_DIVIDER_WIDTH));
+        assert_eq!(
+            divider.constraints.horizontal.min,
+            Some(SWITCHER_DIVIDER_WIDTH)
+        );
         assert_eq!(SWITCHER_DIVIDER_WIDTH, 224.0);
+    }
+
+    // -- frame-level checks (geometry, focus, contrast) -----------------
+    //
+    // The header and both left-panel width variants carry no `anchor` of
+    // their own — only [`ui_shell_right_panel`]/[`ui_shell_switcher`]'s
+    // outer `Surface` does (`Anchor::Node`, this module's own doc) — so
+    // both petrify standalone the same way every other non-anchored
+    // component in this crate does. The right panel is the limited case:
+    // like `popover.rs`'s own `content` and `tooltip.rs`'s own `content`,
+    // what is audited below is `right_panel`'s inner `"content"` Stack,
+    // which carries no `anchor` of its own.
+
+    const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
+
+    fn accepting_registry() -> Registry {
+        Registry::with_vocabulary(standard_vocabulary())
+    }
+
+    fn petrify_lone(node: ViewNode) -> PetrifiedFrame {
+        let root = ViewNode::new(NodeKind::Stack, "root")
+            .with_props(Props {
+                axis: Some(Axis::Vertical),
+                ..Props::default()
+            })
+            .child(node);
+        let registry = accepting_registry();
+        let mut harness = Harness::new();
+        let viewport = Viewport::new(VIEWPORT, ThemeMode::Dark);
+        harness.scale = viewport.scale;
+        petrify(
+            1,
+            validated_with(&root, &registry),
+            &mut harness.ctx(),
+            viewport,
+            TransitionActivity::default(),
+        )
+    }
+
+    fn color(theme: &Theme, name: &str) -> ColorValue {
+        match theme.value(&TokenName::new(name).unwrap()).unwrap() {
+            TokenValue::Color(c) => *c,
+            other => panic!("{name} is not a colour: {other:?}"),
+        }
+    }
+
+    fn assert_no_degenerate_or_overflowing(label: &str, frame: &PetrifiedFrame) {
+        assert!(!frame.placements.is_empty(), "{label}: nothing placed");
+        for p in &frame.placements {
+            assert!(
+                p.rect.w > 0.0 && p.rect.h > 0.0,
+                "{label}: {} placed with a degenerate rect {:?}",
+                p.id,
+                p.rect
+            );
+            assert!(
+                !p.paint.overflowed,
+                "{label}: {} drew content larger than its own rect",
+                p.id
+            );
+            if let Some(parent_idx) = p.parent {
+                let parent = &frame.placements[parent_idx];
+                let fits = p.rect.x >= parent.rect.x - 0.01
+                    && p.rect.y >= parent.rect.y - 0.01
+                    && p.rect.x + p.rect.w <= parent.rect.x + parent.rect.w + 0.01
+                    && p.rect.y + p.rect.h <= parent.rect.y + parent.rect.h + 0.01;
+                assert!(
+                    fits,
+                    "{label}: {} (rect {:?}) extends outside its parent {} (rect {:?})",
+                    p.id, p.rect, parent.id, parent.rect
+                );
+            }
+        }
+    }
+
+    /// Check C/D: the header with a menu trigger, current and non-current
+    /// nav, and an active and an inactive action, all in one frame. This is
+    /// the class-4 suspect this group's own brief names explicitly: the
+    /// menu trigger and every header action are Carbon-sized 48×48 icon-only
+    /// hit boxes (`icon_hit_box(MINI_UNIT_6)`) that this library fills with a
+    /// WORD ("Open"/"Close", "Notifications", "Search") instead of a glyph
+    /// (FR-026, this module's own doc "What none of the three rows build").
+    #[test]
+    fn header_frame_geometry_has_no_degenerate_or_overflowing_placements() {
+        let node = ui_shell_header(
+            "header",
+            "GOrgOn",
+            Some(ui_shell_header_menu_trigger("trigger", true)),
+            vec![
+                ui_shell_header_nav_item("overview", "Overview", true),
+                ui_shell_header_nav_item("fibers", "Fibers", false),
+            ],
+            vec![
+                ui_shell_header_action("notify", "Notifications", true),
+                ui_shell_header_action("search", "Search", false),
+            ],
+        );
+        let frame = petrify_lone(node);
+        assert_no_degenerate_or_overflowing("header", &frame);
+    }
+
+    /// The class-4 guard, on the one label in this module a caller chooses.
+    ///
+    /// [`ui_shell_header_action`] takes its label as a parameter, so no
+    /// audit of Carbon's own five action names ("Notifications", "Search",
+    /// "Help", "Account", "App switcher") can prove the box is wide enough
+    /// -- the next caller picks a longer word. Under the pinned
+    /// `max == min == 48` this module shipped, a long label overflowed its
+    /// own rect and was clipped; `icon_hit_box` keeps 48 as the tap-target
+    /// floor and lets the label set the width.
+    ///
+    /// Falsify by restoring `max: Some(size)` on `icon_hit_box`'s
+    /// horizontal axis: this fails naming the label placement.
+    #[test]
+    fn a_caller_supplied_header_action_label_is_never_clipped() {
+        for label in [
+            "Notifications",
+            "App switcher",
+            "User profile and account settings",
+        ] {
+            let node = ui_shell_header(
+                "header",
+                "GOrgOn",
+                None,
+                vec![ui_shell_header_nav_item("overview", "Overview", true)],
+                vec![ui_shell_header_action("action", label, false)],
+            );
+            let frame = petrify_lone(node);
+            assert_no_degenerate_or_overflowing(label, &frame);
+        }
+    }
+
+    /// Check F: the name, an enabled nav item, and an enabled action all
+    /// declare `Focus` and are reachable; the header shell itself (a
+    /// `Role::Pane`, no interactions) is not.
+    #[test]
+    fn header_children_are_focus_reachable_and_the_shell_is_not() {
+        let node = ui_shell_header(
+            "header",
+            "GOrgOn",
+            Some(ui_shell_header_menu_trigger("trigger", false)),
+            vec![ui_shell_header_nav_item("overview", "Overview", true)],
+            vec![ui_shell_header_action("notify", "Notifications", false)],
+        );
+        let frame = petrify_lone(node);
+        let focus = crate::focus::FocusTree::from_placements(
+            &frame.placements,
+            &std::collections::BTreeMap::new(),
+        );
+        let reachable = |suffix: &str| {
+            let placement = frame
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with(suffix))
+                .unwrap_or_else(|| panic!("no placement ending {suffix}"));
+            focus.order().iter().any(|o| o == &placement.id)
+        };
+        assert!(reachable("/trigger"), "menu trigger must be reachable");
+        assert!(reachable("/name"), "product name link must be reachable");
+        assert!(reachable("/overview"), "nav item must be reachable");
+        assert!(reachable("/notify"), "header action must be reachable");
+        assert!(
+            !frame
+                .placements
+                .iter()
+                .any(|p| p.id.ends_with("/header") && focus.order().iter().any(|o| o == &p.id)),
+            "the header shell itself (Role::Pane, no interactions) must not \
+             be a Tab stop"
+        );
+    }
+
+    /// Check E: the product name, a current and a non-current nav label, a
+    /// resting and an active header action label — every text child against
+    /// the header's own resting fill, in both themes.
+    #[test]
+    fn header_text_clears_aa_contrast_against_the_header_fill() {
+        const MIN_TEXT_CONTRAST: f32 = 4.5;
+        for theme in [crate::token::light(), crate::token::dark()] {
+            let node = ui_shell_header(
+                "header",
+                "GOrgOn",
+                Some(ui_shell_header_menu_trigger("trigger", false)),
+                vec![
+                    ui_shell_header_nav_item("overview", "Overview", true),
+                    ui_shell_header_nav_item("fibers", "Fibers", false),
+                ],
+                vec![ui_shell_header_action("notify", "Notifications", true)],
+            );
+            let header_bg_name = node
+                .props
+                .tokens
+                .get("background")
+                .expect("header binds a resting background");
+            let header_bg = color(&theme, header_bg_name.as_str());
+            for (label, text_key, host_key) in [
+                ("name", "label", "name"),
+                ("current-nav", "label", "overview"),
+                ("resting-nav", "label", "fibers"),
+                ("action", "label", "notify"),
+            ] {
+                let host = named(&node, host_key);
+                let text_node = named(host, text_key);
+                let fg_name = text_node
+                    .props
+                    .tokens
+                    .get("foreground")
+                    .unwrap_or_else(|| panic!("{label}: text binds a foreground"));
+                let opacity = text_node.props.opacity.unwrap_or(1.0);
+                let fg = color(&theme, fg_name.as_str())
+                    .faded(opacity)
+                    .over(header_bg);
+                let ratio = fg.contrast_ratio(header_bg);
+                assert!(
+                    ratio >= MIN_TEXT_CONTRAST,
+                    "{label} at {ratio:.2}:1 against {} fails AA {MIN_TEXT_CONTRAST}:1",
+                    header_bg_name.as_str()
+                );
+            }
+        }
+    }
+
+    /// Class 2 falsification: the header nav item's current-state
+    /// `indicator` is an `accent_mark` — an unconstrained-along-its-axis
+    /// empty `Stack` that only paints a non-zero rect if the Grid cell's own
+    /// `Align::Stretch` fills it in (this module's own `accent_mark` doc).
+    /// The invariant under test is that a *current* item's indicator draws
+    /// a real, non-zero-width bar — proved here by reproducing the zero
+    /// rect directly rather than reading the code: strip `Align::Stretch`
+    /// from the Grid, and the indicator's width collapses to 0, the same
+    /// failure Group 5 reproduced for Tabs' selected indicator.
+    #[test]
+    fn falsification_removing_grid_stretch_collapses_the_current_nav_indicator_to_zero() {
+        let mut current = ui_shell_header_nav_item("overview", "Overview", true);
+        // The whole nav item IS the Grid (`ViewNode::new(NodeKind::Grid,
+        // key)`), so strip the align directly off its own props.
+        current.props.align = None;
+        let frame = petrify_lone(current);
+        let indicator = frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/indicator"))
+            .expect("indicator is placed");
+        assert_eq!(
+            indicator.rect.w, 0.0,
+            "removing Align::Stretch must reproduce the zero-width defect \
+             this test proves the shipped code does not have"
+        );
+    }
+
+    // -- left panel frame-level checks -----------------------------------
+
+    fn left_panel_sample() -> ViewNode {
+        ui_shell_left_panel(
+            "shell-left",
+            vec![
+                ui_shell_left_panel_item("home", "Home", false, true, vec![]),
+                ui_shell_left_panel_item(
+                    "kernel",
+                    "Kernel",
+                    true,
+                    false,
+                    vec![
+                        ui_shell_left_panel_subitem("fibers-item", "Fibers", true),
+                        ui_shell_left_panel_subitem("trace-item", "Trace", false),
+                    ],
+                ),
+                ui_shell_left_panel_divider("rule"),
+                ui_shell_left_panel_item("settings", "Settings", false, false, vec![]),
+            ],
+        )
+    }
+
+    /// Check C/D across the Fixed panel (selected leaf, expanded branch
+    /// with a selected and an unselected subitem, a divider, a plain leaf)
+    /// and the Rail panel with a real item (collapsed-width geometry).
+    ///
+    /// An *empty* Rail (`vec![]`, as `fixed_panel_is_256_and_rail_is_48`
+    /// above still constructs) is not tested for a non-degenerate rect
+    /// here: `left_panel` pins only the inline axis (this module's own
+    /// doc — the panel's block-size is spec 004's docked-viewport
+    /// concern, out of this row's anatomy), so a childless panel's height
+    /// is legitimately whatever its real parent grants it, not a defect
+    /// this component's own file can fix.
+    #[test]
+    fn left_panel_frame_geometry_has_no_degenerate_or_overflowing_placements() {
+        assert_no_degenerate_or_overflowing("fixed", &petrify_lone(left_panel_sample()));
+        assert_no_degenerate_or_overflowing(
+            "rail",
+            &petrify_lone(ui_shell_left_panel_rail(
+                "shell-rail",
+                vec![ui_shell_left_panel_item(
+                    "home",
+                    "Home",
+                    false,
+                    false,
+                    vec![],
+                )],
+            )),
+        );
+    }
+
+    /// Check F: the selected leaf, the branch, both subitems, and the
+    /// plain leaf all declare `Focus` and are reachable; a collapsed
+    /// branch's own subitems (if any existed) would not mount at all —
+    /// mirroring `tree_view`'s identical rule for the same reason.
+    #[test]
+    fn left_panel_items_are_focus_reachable() {
+        let frame = petrify_lone(left_panel_sample());
+        let focus = crate::focus::FocusTree::from_placements(
+            &frame.placements,
+            &std::collections::BTreeMap::new(),
+        );
+        for suffix in [
+            "/home",
+            "/kernel",
+            "/fibers-item",
+            "/trace-item",
+            "/settings",
+        ] {
+            let placement = frame
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with(suffix))
+                .unwrap_or_else(|| panic!("no placement ending {suffix}"));
+            assert!(
+                focus.order().iter().any(|o| o == &placement.id),
+                "{suffix} must be focus reachable"
+            );
+        }
+    }
+
+    /// Check E: a selected leaf, an expanded branch title, a selected and
+    /// an unselected subitem, and a plain leaf — every label against its
+    /// own item's resting fill, in both themes.
+    #[test]
+    fn left_panel_labels_clear_aa_contrast_against_their_own_fill() {
+        const MIN_TEXT_CONTRAST: f32 = 4.5;
+        for theme in [crate::token::light(), crate::token::dark()] {
+            for (label, node) in [
+                (
+                    "selected-leaf",
+                    ui_shell_left_panel_item("home", "Home", false, true, vec![]),
+                ),
+                (
+                    "branch",
+                    ui_shell_left_panel_item(
+                        "kernel",
+                        "Kernel",
+                        true,
+                        false,
+                        vec![ui_shell_left_panel_subitem("child", "Fibers", false)],
+                    ),
+                ),
+                (
+                    "selected-subitem",
+                    ui_shell_left_panel_subitem("child", "Fibers", true),
+                ),
+                (
+                    "resting-subitem",
+                    ui_shell_left_panel_subitem("child", "Trace", false),
+                ),
+            ] {
+                let bg_name = node
+                    .props
+                    .tokens
+                    .get("background")
+                    .unwrap_or_else(|| panic!("{label}: item binds a resting background"));
+                let bg = color(&theme, bg_name.as_str());
+                let row = named(&node, "row");
+                let text_label = named(row, "label");
+                let fg_name = text_label
+                    .props
+                    .tokens
+                    .get("foreground")
+                    .unwrap_or_else(|| panic!("{label}: label binds a foreground"));
+                let opacity = text_label.props.opacity.unwrap_or(1.0);
+                let fg = color(&theme, fg_name.as_str()).faded(opacity).over(bg);
+                let ratio = fg.contrast_ratio(bg);
+                assert!(
+                    ratio >= MIN_TEXT_CONTRAST,
+                    "{label} at {ratio:.2}:1 against {} fails AA {MIN_TEXT_CONTRAST}:1",
+                    bg_name.as_str()
+                );
+            }
+        }
+    }
+
+    /// Class 2 falsification, the left panel's own `accent` mark
+    /// (`left_panel_row`'s Grid, the same shape as the header nav item's
+    /// `indicator` above but on the other axis — `accent_mark` is built
+    /// `Axis::Vertical`, so [`LEFT_PANEL_ACCENT`] pins the *thickness*
+    /// (width) unconditionally and it is the *height* that only survives
+    /// because the row's own `Align::Stretch` fills it in): stripping
+    /// `Align::Stretch` off the row's Grid reproduces a zero-**height**
+    /// selected accent bar.
+    #[test]
+    fn falsification_removing_grid_stretch_collapses_the_selected_accent_to_zero() {
+        let mut node = ui_shell_left_panel_item("home", "Home", false, true, vec![]);
+        // `node` is the outer `Stack` `ui_shell_left_panel_item` builds;
+        // `row` (the Grid `accent` lives in) is its first child.
+        std::sync::Arc::make_mut(&mut node.children[0]).props.align = None;
+        let frame = petrify_lone(node);
+        let accent = frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/accent"))
+            .expect("accent is placed");
+        assert_eq!(
+            accent.rect.h, 0.0,
+            "removing Align::Stretch must reproduce the zero-height defect \
+             this test proves the shipped code does not have"
+        );
+        assert_eq!(
+            accent.rect.w, LEFT_PANEL_ACCENT,
+            "the thickness axis is pinned unconditionally and must not move"
+        );
+    }
+
+    // -- right panel: audited via its non-anchored `content` node --------
+    //
+    // `ui_shell_right_panel`/`ui_shell_switcher` build via `right_panel`,
+    // whose outer node IS the `Anchor::Node`-anchored `Surface` — every
+    // constructor this half of the module exports IS the anchored surface,
+    // with no separate closed trigger form (unlike Toggletip's `trigger`,
+    // which stands alone). `content` — the inner `Stack` — carries no
+    // anchor of its own and petrifies standalone, the same technique
+    // `popover.rs`'s and `tooltip.rs`'s own `content` tests use.
+
+    /// Check C/D: the Switcher's content (two items plus a divider) places
+    /// with real rects and draws nothing larger than them, and so does a
+    /// generic panel actually holding content (a caller-supplied note).
+    #[test]
+    fn right_panel_content_frame_geometry_has_no_degenerate_or_overflowing_placements() {
+        let generic = ui_shell_right_panel(
+            "notifications-panel",
+            "Notifications",
+            "notify",
+            vec![text("note", "No new notifications.")],
+        );
+        assert_no_degenerate_or_overflowing(
+            "generic",
+            &petrify_lone(named(&generic, "content").clone()),
+        );
+
+        let switcher = ui_shell_switcher(
+            "switcher",
+            "App switcher",
+            "apps",
+            vec![
+                ui_shell_switcher_item("a", "Petra"),
+                ui_shell_right_panel_divider("d1"),
+                ui_shell_switcher_item("b", "Inspector"),
+            ],
+        );
+        assert_no_degenerate_or_overflowing(
+            "switcher",
+            &petrify_lone(named(&switcher, "content").clone()),
+        );
+    }
+
+    /// Carbon's own documented base case — "empty header panel" (slice-f
+    /// "UI shell right panel" Variants: "the right panel is a generic
+    /// content container — 'empty header panel' is shown in docs as the
+    /// base case") — is a literally childless `content` with no `background`
+    /// of its own (only the outer anchored `Surface` binds one). Its
+    /// `paint.paint_hash` is 0 the same way `progress_step`'s `icon-top`
+    /// spacer's is (`PaintState`'s own doc: "zero when the node draws
+    /// nothing of its own") — a 0×0 rect here covers no fewer pixels than
+    /// any other size would, so this is the inert case, not a defect, and
+    /// is checked as such rather than skipped.
+    #[test]
+    fn the_empty_header_panel_case_is_inert_not_degenerate() {
+        let generic =
+            ui_shell_right_panel("notifications-panel", "Notifications", "notify", vec![]);
+        let content = named(&generic, "content").clone();
+        let frame = petrify_lone(content);
+        let root = frame
+            .placements
+            .iter()
+            .find(|p| p.id == "/root/content")
+            .expect("content is placed");
+        assert_eq!(
+            root.paint.paint_hash, 0,
+            "an empty content node with no background of its own must draw \
+             nothing — if this starts drawing, the degenerate-rect check \
+             above must stop excluding it"
+        );
+    }
+
+    /// Check F: switcher items declare `Focus` and are reachable — there is
+    /// no selected state to check reachability against (module doc: "ships
+    /// with no selected state").
+    #[test]
+    fn switcher_items_are_focus_reachable() {
+        let switcher = ui_shell_switcher(
+            "switcher",
+            "App switcher",
+            "apps",
+            vec![ui_shell_switcher_item("a", "Petra")],
+        );
+        let content = named(&switcher, "content").clone();
+        let frame = petrify_lone(content);
+        let focus = crate::focus::FocusTree::from_placements(
+            &frame.placements,
+            &std::collections::BTreeMap::new(),
+        );
+        let placement = frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/a"))
+            .expect("switcher item is placed");
+        assert!(
+            focus.order().iter().any(|o| o == &placement.id),
+            "switcher item must be focus reachable"
+        );
+    }
+
+    /// Check E: the switcher item label against the panel's own resting
+    /// fill ([`SURFACE_RAISED`], the fill the outer `Surface` binds and the
+    /// content sits on once mounted), in both themes.
+    #[test]
+    fn switcher_item_label_clears_aa_contrast_against_the_panel_fill() {
+        const MIN_TEXT_CONTRAST: f32 = 4.5;
+        for theme in [crate::token::light(), crate::token::dark()] {
+            let switcher = ui_shell_switcher(
+                "switcher",
+                "App switcher",
+                "apps",
+                vec![ui_shell_switcher_item("a", "Petra")],
+            );
+            let panel_bg_name = switcher
+                .props
+                .tokens
+                .get("background")
+                .expect("panel binds a resting background");
+            let panel_bg = color(&theme, panel_bg_name.as_str());
+            let item = named(&switcher, "a");
+            let text_label = named(item, "label");
+            let fg_name = text_label
+                .props
+                .tokens
+                .get("foreground")
+                .expect("label binds a foreground");
+            let opacity = text_label.props.opacity.unwrap_or(1.0);
+            let fg = color(&theme, fg_name.as_str())
+                .faded(opacity)
+                .over(panel_bg);
+            let ratio = fg.contrast_ratio(panel_bg);
+            assert!(
+                ratio >= MIN_TEXT_CONTRAST,
+                "switcher item label at {ratio:.2}:1 against {} fails AA {MIN_TEXT_CONTRAST}:1",
+                panel_bg_name.as_str()
+            );
+        }
+    }
+
+    /// Class 4 suspect sweep: every realistic Carbon action label this
+    /// module's own doc names ("What none of the three rows build" —
+    /// hamburger, search, notification, help, account, switcher/apps) run
+    /// through the pinned 48×48 [`ui_shell_header_action`] box. Carbon
+    /// names these as short, single-purpose labels (slice-f "Icons":
+    /// "search, notification, help, account/user, switcher/apps"), and
+    /// this sweep is what actually decides whether the class-4 shape
+    /// (word pinned inside an icon-only hit box) fires for the labels this
+    /// row realistically carries — not a guess from reading the code.
+    #[test]
+    fn realistic_action_labels_do_not_overflow_the_pinned_hit_box() {
+        for label in [
+            "Notifications",
+            "Search",
+            "Help",
+            "Account",
+            "User profile",
+            "App switcher",
+        ] {
+            let node = ui_shell_header_action("action", label, false);
+            let frame = petrify_lone(node);
+            assert_no_degenerate_or_overflowing(label, &frame);
+        }
     }
 }

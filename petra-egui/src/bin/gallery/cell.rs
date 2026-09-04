@@ -77,6 +77,10 @@ pub enum Content {
     /// Carbon Contained list (inventory row 7).
     ContainedList,
     /// Carbon Content switcher (inventory row 8).
+    #[allow(
+        clippy::enum_variant_names,
+        reason = "every variant is a Carbon inventory row name verbatim, so                   the catalog page and the inventory row cannot drift apart.                   That row 8 is called \"Content switcher\" and this enum is                   called `Content` is a collision with Carbon's naming, not a                   redundant prefix worth renaming a row over."
+    )]
     ContentSwitcher,
     /// Carbon Data table (inventory row 9).
     DataTable,

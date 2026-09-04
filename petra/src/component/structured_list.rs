@@ -305,9 +305,7 @@ mod tests {
             &std::collections::BTreeMap::new(),
         );
         let order = focus.order();
-        for (suffix, should_be_focusable) in
-            [("/header", false), ("/r0", true), ("/r1", true)]
-        {
+        for (suffix, should_be_focusable) in [("/header", false), ("/r0", true), ("/r1", true)] {
             let placement = frame
                 .placements
                 .iter()
@@ -355,9 +353,7 @@ mod tests {
                     .get("foreground")
                     .unwrap_or_else(|| panic!("header {cell_key} binds a foreground"));
                 let opacity = text_node.props.opacity.unwrap_or(1.0);
-                let fg = color(&theme, fg_name.as_str())
-                    .faded(opacity)
-                    .over(page_bg);
+                let fg = color(&theme, fg_name.as_str()).faded(opacity).over(page_bg);
                 let ratio = fg.contrast_ratio(page_bg);
                 assert!(
                     ratio >= MIN_TEXT_CONTRAST,
@@ -386,9 +382,7 @@ mod tests {
                         .get("foreground")
                         .unwrap_or_else(|| panic!("{row_key} {cell_key} binds a foreground"));
                     let opacity = text_node.props.opacity.unwrap_or(1.0);
-                    let fg = color(&theme, fg_name.as_str())
-                        .faded(opacity)
-                        .over(row_bg);
+                    let fg = color(&theme, fg_name.as_str()).faded(opacity).over(row_bg);
                     let ratio = fg.contrast_ratio(row_bg);
                     assert!(
                         ratio >= MIN_TEXT_CONTRAST,

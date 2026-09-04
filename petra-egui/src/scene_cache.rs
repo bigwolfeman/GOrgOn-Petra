@@ -89,7 +89,6 @@ impl SceneCache {
     }
 
     /// Fullscreen image of the **front** buffer. `rect` is the window in points.
-    #[must_use]
     pub(crate) fn blit_shape(&self, rect: Rect) -> egui::Shape {
         egui::Shape::image(
             self.targets[self.display].id,

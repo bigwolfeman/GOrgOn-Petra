@@ -395,8 +395,14 @@ mod tests {
     #[test]
     fn frame_geometry_has_no_degenerate_or_overflowing_placements() {
         let cases: Vec<(&str, ViewNode)> = vec![
-            ("md-open", accordion_item("a", "Section A", true, "The panel body.")),
-            ("md-closed", accordion_item("a", "Section A", false, "hidden")),
+            (
+                "md-open",
+                accordion_item("a", "Section A", true, "The panel body."),
+            ),
+            (
+                "md-closed",
+                accordion_item("a", "Section A", false, "hidden"),
+            ),
             (
                 "sm-open",
                 accordion_item_sm("a", "Small section", true, "body"),

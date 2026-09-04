@@ -19,18 +19,21 @@ use super::tokens::{ACCENT_PRIMARY, BORDER_SUBTLE, TEXT_ON_ACCENT};
 use super::{
     MAX_LAYER_DEPTH, accordion, accordion_item, ai_label, ai_label_inline, breadcrumb,
     breadcrumb_item, button, checkbox, clickable_tile, code_snippet, code_snippet_inline,
-    code_snippet_multi, contained_list, contained_list_disclosed, contained_tab,
-    contained_tab_bar, content_switcher, content_switcher_item, data_table, data_table_row,
-    data_table_row_expandable, data_table_sort_header, date_picker, disabled, dismissible_tag,
-    dropdown, dropdown_option, expandable_tile, field, field_fluid, field_labeled,
-    field_lg, field_readonly, field_sm, file_uploader, file_uploader_item, form, heading,
-    inline_loading, layer_tokens, link, list_item, list_item_with, list_row, loading, loading_sm,
-    menu_button, menu_item, modal, notification_actionable, notification_inline,
-    notification_toast, number_input, on_layer, ordered_list, pagination, primary_button,
-    progress, progress_indicator, progress_sm, progress_step, radio, search, section,
-    selectable_tag, selectable_tile, select, select_lg, select_sm, slider, slider_readonly,
-    status, structured_list, structured_list_row, tab, tab_bar, tag, tag_lg, tag_sm, text, tile,
-    toggle, toggle_sm, unordered_list, vertical_tab, vertical_tab_bar,
+    code_snippet_multi, contained_list, contained_list_disclosed, contained_tab, contained_tab_bar,
+    content_switcher, content_switcher_item, data_table, data_table_row, data_table_row_expandable,
+    data_table_sort_header, date_picker, disabled, dismissible_tag, dropdown, dropdown_option,
+    expandable_tile, field, field_fluid, field_labeled, field_lg, field_readonly, field_sm,
+    file_uploader, file_uploader_item, form, heading, inline_loading, layer_tokens, link,
+    list_item, list_item_with, list_row, loading, loading_sm, menu_button, menu_item, modal,
+    notification_actionable, notification_inline, notification_toast, number_input, on_layer,
+    ordered_list, pagination, primary_button, progress, progress_indicator, progress_sm,
+    progress_step, radio, search, section, select, select_lg, select_sm, selectable_tag,
+    selectable_tile, slider, slider_readonly, status, structured_list, structured_list_row, tab,
+    tab_bar, tag, tag_lg, tag_sm, text, tile, toggle, toggle_sm, toggletip, tree_item, tree_view,
+    ui_shell_header, ui_shell_header_action, ui_shell_header_menu_trigger,
+    ui_shell_header_nav_item, ui_shell_left_panel, ui_shell_left_panel_divider,
+    ui_shell_left_panel_item, ui_shell_left_panel_rail, ui_shell_left_panel_subitem,
+    unordered_list, vertical_tab, vertical_tab_bar,
 };
 
 const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
@@ -104,11 +107,7 @@ fn full_gallery() -> ViewNode {
                 "Related",
                 vec![text("cl-r0", "Alpha"), text("cl-r1", "Bravo")],
             ),
-            contained_list_disclosed(
-                "cl-disclosed",
-                "Menu",
-                vec![text("cl-r2", "Charlie")],
-            ),
+            contained_list_disclosed("cl-disclosed", "Menu", vec![text("cl-r2", "Charlie")]),
         ],
     );
 
@@ -157,11 +156,7 @@ fn full_gallery() -> ViewNode {
                         true,
                         "more detail",
                     ),
-                    disabled(data_table_row(
-                        "dt-r3",
-                        vec![text("dt-n3", "delta")],
-                        false,
-                    )),
+                    disabled(data_table_row("dt-r3", vec![text("dt-n3", "delta")], false)),
                 ],
             ),
             date_picker("dp-due", "Due date", "2026-08-30"),
@@ -197,7 +192,10 @@ fn full_gallery() -> ViewNode {
             disabled(link("lnk-archived", "Archived project")),
             unordered_list(
                 "ul-topics",
-                vec![list_item("ul-alpha", "Alpha"), list_item("ul-bravo", "Bravo")],
+                vec![
+                    list_item("ul-alpha", "Alpha"),
+                    list_item("ul-bravo", "Bravo"),
+                ],
             ),
             ordered_list(
                 "ol-steps",
@@ -224,7 +222,11 @@ fn full_gallery() -> ViewNode {
                 false,
                 vec![menu_item("mb-rename", "Rename")],
             ),
-            modal("md-retire", "Retire fiber", "Its children are retired with it."),
+            modal(
+                "md-retire",
+                "Retire fiber",
+                "Its children are retired with it.",
+            ),
             notification_toast("nt-restart", "Supervisor restarted", "Worker 3 came back."),
             notification_inline("nt-warn", "Disk filling", "Trace volume is at 80%."),
             notification_actionable(
@@ -350,6 +352,90 @@ fn full_gallery() -> ViewNode {
         ],
     );
 
+    // Group 6's own seven (Toggle, Toggletip, Tooltip, Tree view, UI shell
+    // header, UI shell left panel, UI shell right panel). Toggle already has
+    // one instance in `controls` above; this section adds the states that
+    // instance does not cover (off, disabled, small). Toggletip's OPEN form
+    // and both UI shell panels are anchored (`Anchor::Node`) the same way AI
+    // label's, date picker's, dropdown's, menu's, menu button's, popover's
+    // and number input's are, so only toggletip's CLOSED form mounts here
+    // (see `.agents/notes/proposed/architecture/
+    // 2026-09-03-anchored-components-cannot-name-their-own-anchor.md`).
+    // Tooltip and UI shell right panel are the more restrictive case popover
+    // set the precedent for: every constructor either module exports IS the
+    // anchored surface itself, with no separate closed trigger form at all,
+    // so unlike toggletip (whose `trigger` stands on its own) neither can
+    // appear here in ANY form — both are audited entirely inside their own
+    // modules' test modules, mounting the inner non-anchored `content` node
+    // directly (`tooltip.rs`'s and `ui_shell.rs`'s own test modules), the
+    // same technique `popover.rs`'s own module comment documents.
+    let carbon6 = section(
+        "carbon6",
+        "Carbon (group 6)",
+        vec![
+            toggle("tog-on", "Autosave", true),
+            toggle("tog-off", "Autosave", false),
+            disabled(toggle("tog-disabled", "Autosave", false)),
+            toggle_sm("tog-sm", "Compact mode", true),
+            toggletip("help", "About filters", false, "Narrow the list."),
+            tree_view(
+                "fs",
+                vec![
+                    tree_item(
+                        "src",
+                        "src",
+                        true,
+                        false,
+                        vec![
+                            tree_item("main", "main.rs", false, true, vec![]),
+                            tree_item("lib", "lib.rs", false, false, vec![]),
+                        ],
+                    ),
+                    tree_item(
+                        "build",
+                        "build",
+                        false,
+                        false,
+                        vec![tree_item("out", "out.o", false, false, vec![])],
+                    ),
+                    disabled(tree_item("archived", "archived", false, false, vec![])),
+                ],
+            ),
+            ui_shell_header(
+                "shell-header",
+                "GOrgOn",
+                Some(ui_shell_header_menu_trigger("trigger", false)),
+                vec![
+                    ui_shell_header_nav_item("overview", "Overview", true),
+                    ui_shell_header_nav_item("fibers", "Fibers", false),
+                ],
+                vec![
+                    ui_shell_header_action("notify", "Notifications", true),
+                    ui_shell_header_action("search-action", "Search", false),
+                ],
+            ),
+            ui_shell_left_panel(
+                "shell-left",
+                vec![
+                    ui_shell_left_panel_item("home", "Home", false, true, vec![]),
+                    ui_shell_left_panel_item(
+                        "kernel",
+                        "Kernel",
+                        true,
+                        false,
+                        vec![
+                            ui_shell_left_panel_subitem("fibers-item", "Fibers", true),
+                            ui_shell_left_panel_subitem("trace-item", "Trace", false),
+                        ],
+                    ),
+                    ui_shell_left_panel_divider("rule"),
+                    ui_shell_left_panel_item("settings", "Settings", false, false, vec![]),
+                ],
+            ),
+            ui_shell_left_panel_rail("shell-rail", vec![]),
+        ],
+    );
+
     let tabs = section(
         "tabs",
         "Tabs",
@@ -399,6 +485,7 @@ fn full_gallery() -> ViewNode {
         .child(carbon3)
         .child(carbon4)
         .child(carbon5)
+        .child(carbon6)
         .child(tabs)
         .child(readouts)
         .child(list);
@@ -837,7 +924,7 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
     /// Every node in [`full_gallery`] that may draw a border, by the key
     /// path it appears at. An exact set: a node missing from here that draws
     /// one fails, and a node listed here that stops drawing one fails too.
-    const DRAWS_AN_EDGE: [&str; 55] = [
+    const DRAWS_AN_EDGE: [&str; 60] = [
         // `field`: an empty well with no boundary does not read as a place
         // to type. See `field`'s own doc for why it keeps one when `button`
         // does not.
@@ -1031,6 +1118,23 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         "root/carbon5/txt-lg",
         "root/carbon5/txt-readonly",
         "root/carbon5/txt-sm",
+        // Toggle: the same `root/controls/toggle/appearance/track` argument
+        // as above, for the three additional states this group's own
+        // section adds (off, disabled, small) — `toggle_sized` binds
+        // `border` unconditionally on the track regardless of `on` or the
+        // size variant, the same precedent `check`/`radio`'s boxes set.
+        "root/carbon6/tog-disabled/appearance/track",
+        "root/carbon6/tog-off/appearance/track",
+        "root/carbon6/tog-on/appearance/track",
+        "root/carbon6/tog-sm/appearance/track",
+        // UI shell header: Carbon's `border-block-end: 1px solid
+        // $border-subtle` on the header bar itself (slice-f "UI shell
+        // header" Key numbers), the same `field`-class real measured
+        // boundary as Modal's dialog shell and Content switcher's row
+        // above — a container edge, not decoration over a shape that
+        // already has one (the header's own fill is `SURFACE_BASE`, the
+        // page's own ground).
+        "root/carbon6/shell-header",
     ];
 
     // `status` is not on that list, and the omission is measured rather than
@@ -1575,4 +1679,3 @@ fn a_state_decorated_token_always_has_a_resting_binding() {
         offences.join("\n")
     );
 }
-

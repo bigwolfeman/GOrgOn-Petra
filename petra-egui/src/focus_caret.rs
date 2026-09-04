@@ -173,19 +173,24 @@ impl FocusCaret {
             return;
         }
         let mut still = false;
-        for bar in 0..2 {
-            for i in 0..4 {
-                let (p, vel) =
-                    self.spring
-                        .evaluate_scalar(self.x[bar][i], self.v[bar][i], dest[bar][i], dt);
-                self.x[bar][i] = p;
-                self.v[bar][i] = vel;
-                if (p - dest[bar][i]).abs() > SETTLE_POS || vel.abs() > SETTLE_VEL {
+        // `Spring` is `Copy`, so taking it by value here splits the borrow:
+        // the loop below holds `self.x` and `self.v` mutably at the same time.
+        let spring = self.spring;
+        for (bar, (xs, vs)) in self.x.iter_mut().zip(self.v.iter_mut()).enumerate() {
+            let target = &dest[bar];
+            for (i, (x, v)) in xs.iter_mut().zip(vs.iter_mut()).enumerate() {
+                let (p, vel) = spring.evaluate_scalar(*x, *v, target[i], dt);
+                *x = p;
+                *v = vel;
+                if (p - target[i]).abs() > SETTLE_POS || vel.abs() > SETTLE_VEL {
                     still = true;
                 }
             }
-            self.x[bar][2] = self.x[bar][2].max(0.0);
-            self.x[bar][3] = self.x[bar][3].max(0.0);
+            // Width and height are extents, never negative: a spring that
+            // undershoots its target would otherwise hand the painter an
+            // inverted rect.
+            xs[2] = xs[2].max(0.0);
+            xs[3] = xs[3].max(0.0);
         }
         if !still {
             self.x = dest;

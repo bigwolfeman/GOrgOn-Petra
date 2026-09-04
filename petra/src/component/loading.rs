@@ -224,7 +224,10 @@ mod tests {
     /// non-degenerate rect, none of their parts outside their parent.
     #[test]
     fn frame_geometry_has_no_degenerate_or_overflowing_placements() {
-        for node in [loading("wait", "Loading data"), loading_sm("wait", "Loading")] {
+        for node in [
+            loading("wait", "Loading data"),
+            loading_sm("wait", "Loading"),
+        ] {
             let frame = petrify_lone(node);
             assert!(!frame.placements.is_empty(), "nothing placed");
             for p in &frame.placements {
@@ -272,7 +275,10 @@ mod tests {
         use crate::component::tokens::SURFACE_BASE;
         for theme in [crate::token::light(), crate::token::dark()] {
             let bg = color(&theme, SURFACE_BASE);
-            for node in [loading("wait", "Loading data"), loading_sm("wait", "Loading")] {
+            for node in [
+                loading("wait", "Loading data"),
+                loading_sm("wait", "Loading"),
+            ] {
                 let label = node
                     .children
                     .iter()

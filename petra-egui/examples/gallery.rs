@@ -1780,10 +1780,10 @@ impl App for Gallery {
             ),
             "modal-close" | "modal-confirm" => self.modal = false,
             "toast-body" => {
-                if let ToastMode::Live(notice) = &self.toast {
-                    if let Some(action) = notice.action {
-                        self.last_event = action.to_owned();
-                    }
+                if let ToastMode::Live(notice) = &self.toast
+                    && let Some(action) = notice.action
+                {
+                    self.last_event = action.to_owned();
                 }
                 self.archive_toast("click");
             }

@@ -271,9 +271,7 @@ mod tests {
         check_geometry(&petrify_lone(select_sm("theme", "Theme", "Dark")), "sm");
         check_geometry(&petrify_lone(select_lg("theme", "Theme", "Dark")), "lg");
         check_geometry(
-            &petrify_lone(crate::component::disabled(select(
-                "theme", "Theme", "Dark",
-            ))),
+            &petrify_lone(crate::component::disabled(select("theme", "Theme", "Dark"))),
             "disabled",
         );
     }

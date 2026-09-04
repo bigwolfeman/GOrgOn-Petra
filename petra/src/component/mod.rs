@@ -182,10 +182,10 @@ pub use toggletip::toggletip;
 pub use tooltip::tooltip;
 pub use tree_view::{tree_item, tree_item_xs, tree_view};
 pub use ui_shell::{
-    ui_shell_header, ui_shell_header_action, ui_shell_header_menu_trigger, ui_shell_header_nav_item,
-    ui_shell_left_panel, ui_shell_left_panel_divider, ui_shell_left_panel_item,
-    ui_shell_left_panel_rail, ui_shell_left_panel_subitem, ui_shell_right_panel,
-    ui_shell_right_panel_divider, ui_shell_switcher, ui_shell_switcher_item,
+    ui_shell_header, ui_shell_header_action, ui_shell_header_menu_trigger,
+    ui_shell_header_nav_item, ui_shell_left_panel, ui_shell_left_panel_divider,
+    ui_shell_left_panel_item, ui_shell_left_panel_rail, ui_shell_left_panel_subitem,
+    ui_shell_right_panel, ui_shell_right_panel_divider, ui_shell_switcher, ui_shell_switcher_item,
 };
 
 use std::sync::Arc;

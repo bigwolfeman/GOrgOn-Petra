@@ -333,8 +333,8 @@ mod tests {
         );
         assert_eq!(node.constraints.horizontal.min, Some(MIN_TRACK_WIDTH));
         assert_eq!(MIN_TRACK_WIDTH, 48.0);
-        assert!(node.props.tokens.get("background").is_none());
-        assert!(node.props.tokens.get("border").is_none());
+        assert!(!node.props.tokens.contains_key("background"));
+        assert!(!node.props.tokens.contains_key("border"));
     }
 
     #[test]

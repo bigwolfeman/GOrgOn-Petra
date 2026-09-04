@@ -68,7 +68,7 @@ mod tests {
         assert!(node.interactions.contains(&Interaction::Click));
         assert!(!node.interactions.contains(&Interaction::Drag));
         assert_eq!(token(&node, "background"), Some(SURFACE_BASE));
-        assert!(node.props.tokens.get("border").is_none());
+        assert!(!node.props.tokens.contains_key("border"));
         let caption = child(&node, "label");
         assert_eq!(caption.props.text.as_deref(), Some("Open docs"));
         assert_eq!(token(caption, "foreground"), Some(TEXT_PRIMARY));

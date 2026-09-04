@@ -212,7 +212,7 @@ mod tests {
         assert!(zone.interactions.contains(&Interaction::Focus));
         assert!(!zone.interactions.contains(&Interaction::Drag));
         assert_eq!(
-            named(&zone, "prompt").props.text.as_deref(),
+            named(zone, "prompt").props.text.as_deref(),
             Some("Drop files here")
         );
         assert_eq!(zone.constraints.vertical.min, Some(DROP_HEIGHT));
@@ -303,7 +303,10 @@ mod tests {
         let cases: Vec<(&str, ViewNode)> = vec![
             ("zone", file_uploader("up", "Upload files")),
             ("item-complete", file_uploader_item("f0", "notes.txt", true)),
-            ("item-uploading", file_uploader_item("f1", "notes.txt", false)),
+            (
+                "item-uploading",
+                file_uploader_item("f1", "notes.txt", false),
+            ),
         ];
         for (label, node) in cases {
             let frame = petrify_lone(node);
@@ -357,8 +360,10 @@ mod tests {
             "the drop zone declares Focus but is not in focus order"
         );
 
-        let disabled_frame =
-            petrify_lone(crate::component::disabled(file_uploader("up", "Upload files")));
+        let disabled_frame = petrify_lone(crate::component::disabled(file_uploader(
+            "up",
+            "Upload files",
+        )));
         let disabled_focus = crate::focus::FocusTree::from_placements(
             &disabled_frame.placements,
             &std::collections::BTreeMap::new(),
@@ -395,9 +400,7 @@ mod tests {
                 .get("foreground")
                 .expect("prompt text binds a foreground");
             let opacity = prompt.props.opacity.unwrap_or(1.0);
-            let fg = color(&theme, fg_name.as_str())
-                .faded(opacity)
-                .over(page_bg);
+            let fg = color(&theme, fg_name.as_str()).faded(opacity).over(page_bg);
             let ratio = fg.contrast_ratio(page_bg);
             assert!(
                 ratio >= MIN_TEXT_CONTRAST,
