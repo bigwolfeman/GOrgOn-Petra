@@ -20,7 +20,8 @@ use super::text::text;
 use super::tokens::{
     ACCENT_PRIMARY, BORDER_SUBTLE, SHAPE_FULL, SPACING_03, TEXT_MUTED, TEXT_PRIMARY, t,
 };
-use crate::geom::{Align, Axis};
+use crate::frame::PetrifiedFrame;
+use crate::geom::{Align, Axis, Point};
 use crate::tree::{
     AxisConstraint, Constraints, Interaction, Key, NodeKind, Props, Role, TrackSize, ViewNode,
 };
@@ -181,11 +182,52 @@ pub fn slider_readonly(key: impl Into<Key>, label: impl Into<String>, value: f32
     slider_built(key, label, value, true)
 }
 
+/// The value a pointer at `pos` names on the slider whose placement `node`
+/// belongs to, in `[0, 1]` — or `None` when `node` is not inside a slider
+/// this frame placed.
+///
+/// This is the half of a drag the engine cannot do for an application. A
+/// routed `PointerMoved` carries a window position and the id of the node
+/// holding the capture (the handle); turning that into a value needs the
+/// *rail's* rect, which only the frame has and only this module knows how
+/// to find from a handle's id. The handle's centre travels from the rail's
+/// left edge plus half a handle to its right edge minus half a handle, so
+/// the mapping puts the handle's centre under the pointer at every value
+/// rather than only at the ends.
+///
+/// `node` may be any placement id inside the slider — the handle, the rail,
+/// a track cell — since a press can land on any of them.
+#[must_use]
+pub fn slider_value_at(frame: &PetrifiedFrame, node: &str, pos: Point) -> Option<f32> {
+    let rail_id = rail_of(node)?;
+    let rail = frame.placement(rail_id)?.rect;
+    let travel = rail.w - HANDLE;
+    if travel <= 0.0 {
+        return None;
+    }
+    Some(normalise((pos.x - rail.x - HANDLE / 2.0) / travel))
+}
+
+/// The canonical id of the rail enclosing `node`, or `None` when `node` is
+/// not under a `row/rail` this module built.
+fn rail_of(node: &str) -> Option<&str> {
+    const RAIL: &str = "/row/rail";
+    let end = node.find(RAIL)? + RAIL.len();
+    if node.len() == end || node.as_bytes()[end] == b'/' {
+        Some(&node[..end])
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{HANDLE, MAX_TRACK, MIN_TRACK, TRACK_HEIGHT, slider, slider_readonly};
+    use super::{
+        HANDLE, MAX_TRACK, MIN_TRACK, TRACK_HEIGHT, slider, slider_readonly, slider_value_at,
+    };
     use crate::component::tokens::{ACCENT_PRIMARY, BORDER_SUBTLE, SHAPE_FULL};
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
+    use crate::geom::Point;
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
@@ -452,6 +494,54 @@ mod tests {
                 "{label}: focus reachability was {reachable}, expected {should_be_focusable}"
             );
         }
+    }
+
+    /// A drag is a window position and a captured node id; the value is
+    /// the pointer's position along the rail, handle-centred, from any
+    /// node inside the slider.
+    #[test]
+    fn a_pointer_position_maps_to_a_value_along_the_rail_from_any_node_inside() {
+        let frame = petrify_lone(slider("vol", "Volume", 0.4));
+        let rail_placement = frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/vol/row/rail"))
+            .expect("the rail is placed");
+        let rail = rail_placement.rect;
+        let rail_id = rail_placement.id.clone();
+        let handle = frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/rail/handle"))
+            .expect("the handle is placed")
+            .id
+            .clone();
+        let at = |x: f32| slider_value_at(&frame, &handle, Point::new(x, rail.y));
+        assert_eq!(at(rail.x + HANDLE / 2.0), Some(0.0), "left end");
+        assert_eq!(at(rail.right() - HANDLE / 2.0), Some(1.0), "right end");
+        let mid = at(rail.x + rail.w / 2.0).unwrap();
+        assert!((mid - 0.5).abs() < 1e-3, "middle is 0.5, got {mid}");
+        assert_eq!(at(rail.x - 100.0), Some(0.0), "clamped below");
+        assert_eq!(at(rail.right() + 100.0), Some(1.0), "clamped above");
+        assert!(
+            at(rail.right() - HANDLE / 2.0) > at(rail.x + rail.w / 2.0),
+            "further right is a larger value"
+        );
+        // The rail itself names the same slider.
+        assert_eq!(
+            slider_value_at(&frame, &rail_id, Point::new(rail.x + rail.w / 2.0, 0.0)),
+            at(rail.x + rail.w / 2.0)
+        );
+        assert_eq!(
+            slider_value_at(&frame, "/root/vol/label", Point::ZERO),
+            None,
+            "the caption is not inside the rail"
+        );
+        assert_eq!(
+            slider_value_at(&frame, "/root/vol/row/railway", Point::ZERO),
+            None,
+            "a key that merely starts with `rail` is not the rail"
+        );
     }
 
     /// Check E: the caption label and the min/max range labels against the

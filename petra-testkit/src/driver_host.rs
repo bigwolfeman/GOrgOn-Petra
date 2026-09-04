@@ -343,7 +343,7 @@ mod tests {
             ViewNode::new(NodeKind::Stack, "root").child(button("go", "Go"))
         }
 
-        fn handle(&mut self, event: &InputEvent, route: &Route) {
+        fn handle(&mut self, event: &InputEvent, route: &Route, _frame: Option<&PetrifiedFrame>) {
             let where_to = match route {
                 Route::Pointer { node } | Route::Keyboard { node } => node.clone(),
                 Route::Unrouted { reason } => format!("unrouted: {reason}"),

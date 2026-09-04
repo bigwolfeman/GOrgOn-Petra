@@ -1,28 +1,47 @@
 //! Overlay surfaces: anchoring, clamping, and input policy.
 //!
 //! A `surface` node floats free of ordinary flow: unlike a stack or a grid, it
-//! does not take the rect its layout parent offers. It always sizes itself to
-//! its own natural content extent (an "open probe" — every child measured
-//! with [`Proposal::Unspecified`], the union taken), positions that box at its
+//! does not take the rect its layout parent offers, and it takes no room in
+//! that parent's flow either — [`crate::layout::measure`] answers zero for
+//! it, so the trigger under an open menu keeps the neighbours it had when
+//! the menu was closed. It always sizes itself to its own natural content
+//! extent (an "open probe" — every child measured with
+//! [`Proposal::Unspecified`], the union taken), positions that box at its
 //! declared [`Anchor`], and then clamps the result into the window by its
-//! [`ClampRule`] so it never paints outside the viewport (FR-022). This is why
-//! [`measure`] ignores the `proposal` it is handed: a floating surface's
-//! answer to "how big are you" does not depend on what its parent is willing
-//! to offer, only on its own content, and [`place`] repeats the same natural-
-//! size probe rather than trusting whatever `slot` it was given.
+//! [`ClampRule`] so it never paints outside the viewport (FR-022). This is
+//! why [`place`] repeats the natural-size probe rather than trusting whatever
+//! `slot.rect` it was given: a floating surface's size does not depend on
+//! what its parent is willing to offer, only on its own content.
 //!
 //! ## What "the window" means here
 //!
-//! [`place`] treats `slot.rect` intersected with `slot.clip` as the viewport a
-//! surface must not render outside of: `slot.rect` is whatever rect the
-//! surface's placement parent offered (typically the frame root, generously,
-//! since a surface is not meant to be boxed in by an ordinary ancestor's
-//! flow), and `slot.clip` is whatever ambient clip is already in force by the
-//! time we get here (e.g. a panel's clip chain, if a surface is declared
-//! inside a clipped region). Intersecting the two means a surface never
-//! escapes a clip its ancestry already imposed, while a permissive root that
-//! hands surfaces the whole window as `slot.rect` still lets them use all of
-//! it.
+//! [`place`] treats [`Slot::window`] — the rect the root of this walk was
+//! placed into, the frame's viewport in any frame `petrify` makes — as the
+//! viewport a surface must not render outside of, at every layer and at
+//! every depth. Not `slot.rect`, and not `slot.clip`: a stack or a grid
+//! offers a child a cell, and a cell is the wrong window for a box that is
+//! supposed to float over the page. Before 2026-09-04 this read
+//! `slot.rect ∩ slot.clip`, on the argument that a surface declared inside a
+//! clipped panel should stay inside it. Two things were wrong with that.
+//! Every surface declared anywhere but the frame root was boxed to a cell
+//! exactly its own natural size, so a viewport-centred modal sat inside the
+//! card that declared it and an anchored menu was dragged back into its
+//! trigger's column, whatever its anchor said. And the surface's own
+//! placement already broke the clip the rule claimed to respect: its
+//! `clip` is its own rect, not the ancestor chain's, so the one thing the
+//! intersection did was decide *where* the box landed, never *whether* it
+//! could paint past the panel. The harvested anchor rects are in frame
+//! coordinates and `ctx.outside_scroll` already places a surface's content
+//! outside every ancestor scroll; the window is the coordinate space the
+//! rest of this module was already working in.
+//!
+//! A surface that asks for more than the window gets the window. The
+//! [`ClampRule::Shrink`] ladder keeps the anchored edge and gives the extent
+//! away until the box fits, so a viewport-centred surface whose declared
+//! minimum exceeds any window is placed exactly on the window rect. That is
+//! how a scrim is spelled (`crate::component::modal`): a node covering the
+//! viewport, painted through `background` like any other fill, with no
+//! second sizing vocabulary for "the whole screen".
 //!
 //! ## `Anchor::Node` resolves against a harvested rect
 //!
@@ -70,34 +89,12 @@ use crate::geom::{Axis, Rect, Size};
 use crate::layout::{AnchorRects, LayoutCtx, SizeProposal, Slot, semantics_of};
 use crate::tree::{Align, Anchor, ClampRule, Edge, InputPolicy, KeyPath, ViewNode};
 
-/// Measure this container under `proposal`.
+/// Place this container and everything under it against `slot.window`, and
+/// report the caret it draws back at its anchor, if it has one.
 ///
-/// `path` already names this node: the dispatcher pushed it. Child measurement
-/// goes through [`crate::layout::measure`], which pushes the child's own key.
-///
-/// The incoming `proposal` is deliberately not read: see the module doc for
-/// why a surface's size never depends on what its parent offers.
-///
-/// Padding grows this container's own natural size, exactly as it grows any
-/// other container's reported size — a surface's own placed rect is what
-/// carries the padding, never its children's (`layout-insets.md` §8 step 6).
-pub fn measure(
-    node: &ViewNode,
-    ctx: &mut LayoutCtx<'_>,
-    path: &mut KeyPath,
-    proposal: SizeProposal,
-) -> Size {
-    let _ = proposal;
-    let natural = natural_size(node, ctx, path);
-    let padding = ctx.padding(&node.props.padding);
-    Size::new(
-        natural.w + padding.along(Axis::Horizontal),
-        natural.h + padding.along(Axis::Vertical),
-    )
-}
-
-/// Place this container and everything under it into `slot`, and report the
-/// caret it draws back at its anchor, if it has one.
+/// There is no `measure` counterpart in this module: a surface's flow size
+/// is zero by the dispatcher's own rule (`crate::layout::measure`), and its
+/// floating size is probed here, from its content, at placement.
 ///
 /// The caret is returned rather than pushed because it is paint payload, and
 /// the dispatcher — not any container — is what attaches paint payload
@@ -142,9 +139,9 @@ pub fn place(
     natural.w += padding.along(Axis::Horizontal);
     natural.h += padding.along(Axis::Vertical);
 
-    // See the module doc: the intersection is "the window" a surface must
-    // never render outside of.
-    let viewport = slot.rect.intersect(slot.clip);
+    // See the module doc: the walk's window is "the window" a surface must
+    // never render outside of — never the cell its flow parent offered.
+    let viewport = slot.window;
 
     let plan = anchor_placement(surface.anchor, path, viewport, natural, ctx);
 
@@ -200,15 +197,20 @@ pub fn place(
     });
 
     // The content slot is the placed, clamped rect's own padded interior,
-    // clipped to that same placed rect — a no-op narrowing except that
-    // `content_rect` is always `rect` minus the padding, at every
-    // `ClampRule`, including `Scroll`: an overflowing surface's content no
-    // longer gets the wider unclamped natural extent to lay out into before
-    // clipping (what this slot did pre-padding); it is offered exactly the
-    // clamped, padded interior, the same "children are offered the box minus
-    // padding, never more" rule this module's padding support follows
-    // throughout.
-    let content_slot = z_slot.with_rect(content_rect).clipped_to(rect);
+    // clipped to that same placed rect. `with_clip`, not `clipped_to`: the
+    // clip the ancestry handed down is the card's, and the surface is not
+    // in the card — it is placed against the window, so its content starts
+    // a fresh clip chain at the surface's own rect, exactly as the
+    // surface's own placement above does. (Intersecting here clipped a
+    // modal's footer to a zero-height sliver of the card that declared it,
+    // which made the buttons invisible to focus and unreachable by hit
+    // test.) `content_rect` is always `rect` minus the padding, at every
+    // `ClampRule`, including `Scroll`: an overflowing surface's content
+    // never gets the wider unclamped natural extent to lay out into before
+    // clipping; it is offered exactly the clamped, padded interior, the
+    // same "children are offered the box minus padding, never more" rule
+    // this module's padding support follows throughout.
+    let content_slot = z_slot.with_rect(content_rect).with_clip(rect);
 
     sink.enter(me);
     // A surface is anchored in viewport coordinates: no ancestor `scroll`
@@ -1187,18 +1189,16 @@ mod tests {
 
     /// A tree whose control and surface are siblings, the shape every
     /// component constructor builds: `root > [button, popup]`. Both sit
-    /// under an `overlay` because that is the one container that offers a
-    /// child the whole window — a stack or a grid boxes a surface to a slot
-    /// exactly its own natural size (`slot.rect ∩ slot.clip` is "the
-    /// window", this module's doc), and every anchor then lands in the same
-    /// place. An `overlay` also hands every child the whole window, which
-    /// is why the control here is itself a surface anchored to a point:
-    /// that is the one kind of `overlay` child that takes its natural size,
-    /// so it has a real rect to be anchored to. Anchoring a surface to
+    /// under an `overlay`, which hands every child the whole window, and
+    /// that is why the control here is itself a surface anchored to a
+    /// point: it is the one kind of `overlay` child that takes its natural
+    /// size, so it has a real rect to be anchored to. Anchoring a surface to
     /// another anchored surface is a case the harvest walk already covers
     /// (`an_anchor_node_naming_an_anchored_surface_itself_still_waits_for_it`).
     /// `anchor` is whatever spelling the test wants the popup to name the
-    /// control by.
+    /// control by. (This fixture predates `Slot::window`; a stack would do
+    /// now, and `a_viewport_anchored_surface_deep_in_a_grid_cell_centres_in_the_window`
+    /// covers that shape.)
     fn sibling_tree(anchor: Anchor) -> ViewNode {
         let mut pinned = ViewNode::new(NodeKind::Spacer, "box");
         pinned.constraints.horizontal.min = Some(80.0);
@@ -2229,23 +2229,166 @@ mod tests {
         }
     }
 
-    // -- measure() ignores its proposal and answers natural size. ---------
+    // -- A surface takes no room in its parent's flow. ---------------------
 
+    /// The dispatcher answers zero for a surface under every proposal, and
+    /// its own constraints do not change that: a scrim declaring a minimum
+    /// wider than any window must not report that minimum to the card that
+    /// declares it.
     #[test]
-    fn measure_answers_natural_size_regardless_of_the_offered_proposal() {
-        let node = surface(
+    fn measure_answers_zero_to_the_flow_parent_whatever_the_constraints_say() {
+        let mut node = surface(
             Anchor::Point { x: 0.0, y: 0.0 },
             ClampRule::Shrink,
             InputPolicy::Block,
             Size::new(64.0, 64.0),
         );
+        node.constraints.horizontal.min = Some(f32::MAX);
+        node.constraints.vertical.min = Some(f32::MAX);
         let mut h = Harness::new();
         let mut path = KeyPath::root();
         let zero = crate::layout::measure(&node, &mut h.ctx(), &mut path, SizeProposal::zero());
         let unbounded =
             crate::layout::measure(&node, &mut h.ctx(), &mut path, SizeProposal::unbounded());
-        assert_eq!(zero, unbounded);
-        assert_eq!(zero, Size::new(64.0, 64.0));
+        assert_eq!(zero, Size::ZERO);
+        assert_eq!(unbounded, Size::ZERO);
+        assert!(
+            path.is_empty(),
+            "the dispatcher leaves the path as it found it"
+        );
+    }
+
+    /// A vertical stack of two 30-high rows and a surface between them: the
+    /// rows abut exactly as they would with no surface at all, and the
+    /// surface still places its own natural box.
+    #[test]
+    fn a_surface_between_two_rows_does_not_push_the_second_row_down() {
+        fn row(key: &str) -> ViewNode {
+            let mut node = ViewNode::new(NodeKind::Spacer, key);
+            node.constraints.vertical.min = Some(30.0);
+            node.constraints.vertical.max = Some(30.0);
+            node
+        }
+        let tree = ViewNode::new(NodeKind::Stack, "root")
+            .with_props(Props {
+                axis: Some(Axis::Vertical),
+                ..Props::default()
+            })
+            .child(row("a"))
+            .child(surface(
+                Anchor::Point { x: 10.0, y: 10.0 },
+                ClampRule::Shrink,
+                InputPolicy::Passthrough,
+                Size::new(64.0, 64.0),
+            ))
+            .child(row("b"));
+        let mut h = Harness::new();
+        let mut path = KeyPath::root();
+        let mut sink = PlacementList::new();
+        crate::layout::place(
+            &tree,
+            &mut h.ctx(),
+            &mut path,
+            Slot::new(Rect::new(0.0, 0.0, 400.0, 300.0)),
+            &mut sink,
+        );
+        let placed = sink.into_vec();
+        let rect_of = |id: &str| placed.iter().find(|p| p.id == id).map(|p| p.rect);
+        assert_eq!(rect_of("/root/a"), Some(Rect::new(0.0, 0.0, 400.0, 30.0)));
+        assert_eq!(
+            rect_of("/root/b"),
+            Some(Rect::new(0.0, 30.0, 400.0, 30.0)),
+            "row b sits directly under row a: the surface took no flow room"
+        );
+        assert_eq!(
+            rect_of("/root/popup"),
+            Some(Rect::new(10.0, 10.0, 64.0, 64.0)),
+            "and the surface still has its own natural box at its anchor"
+        );
+    }
+
+    // -- The window is the walk's window, not the cell a parent offered. ----
+
+    /// A viewport-anchored surface declared three containers deep, inside a
+    /// grid cell that clips it, centres in the *window* — the exact defect
+    /// that put a modal inside the page card that declared it.
+    #[test]
+    fn a_viewport_anchored_surface_deep_in_a_grid_cell_centres_in_the_window() {
+        let window = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let popup = surface(
+            Anchor::Viewport,
+            ClampRule::Shrink,
+            InputPolicy::Block,
+            Size::new(100.0, 50.0),
+        );
+        let card = ViewNode::new(NodeKind::Stack, "card")
+            .with_props(Props {
+                axis: Some(Axis::Vertical),
+                ..Props::default()
+            })
+            .child(ViewNode::new(NodeKind::Spacer, "filler"))
+            .child(popup);
+        // Two columns; the card sits in the narrow right-hand one, so its
+        // cell is nowhere near the window's centre.
+        let tree = ViewNode::new(NodeKind::Grid, "root")
+            .with_props(Props {
+                columns: vec![
+                    crate::tree::TrackSize::Weight { weight: 3.0 },
+                    crate::tree::TrackSize::Weight { weight: 1.0 },
+                ],
+                ..Props::default()
+            })
+            .child(ViewNode::new(NodeKind::Spacer, "left"))
+            .child(card);
+        let mut h = Harness::new();
+        let mut path = KeyPath::root();
+        let mut sink = PlacementList::new();
+        crate::layout::place(&tree, &mut h.ctx(), &mut path, Slot::new(window), &mut sink);
+        let placed = sink.into_vec();
+        let popup = placed
+            .iter()
+            .find(|p| p.id == "/root/card/popup")
+            .expect("the surface is placed");
+        assert_eq!(
+            popup.rect,
+            Rect::new(350.0, 275.0, 100.0, 50.0),
+            "centred in the 800x600 window, not in the 200-wide cell at x=600"
+        );
+    }
+
+    /// The scrim idiom: a viewport-centred `Shrink` surface whose declared
+    /// minimum exceeds the window is placed on the window rect exactly, from
+    /// any depth.
+    #[test]
+    fn a_shrink_surface_asking_for_more_than_the_window_gets_the_window() {
+        let window = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let mut scrim = ViewNode::new(NodeKind::Surface, "scrim").with_props(Props {
+            layer: Some(Layer::Modal),
+            anchor: Some(Anchor::Viewport),
+            clamp: Some(ClampRule::Shrink),
+            input_policy: Some(InputPolicy::Block),
+            ..Props::default()
+        });
+        scrim.constraints.horizontal.min = Some(f32::MAX);
+        scrim.constraints.vertical.min = Some(f32::MAX);
+        let tree = ViewNode::new(NodeKind::Stack, "root")
+            .with_props(Props {
+                axis: Some(Axis::Vertical),
+                ..Props::default()
+            })
+            .child(ViewNode::new(NodeKind::Spacer, "filler"))
+            .child(scrim);
+        let mut h = Harness::new();
+        let mut path = KeyPath::root();
+        let mut sink = PlacementList::new();
+        crate::layout::place(&tree, &mut h.ctx(), &mut path, Slot::new(window), &mut sink);
+        let placed = sink.into_vec();
+        let scrim = placed
+            .iter()
+            .find(|p| p.id == "/root/scrim")
+            .expect("the scrim is placed");
+        assert_eq!(scrim.rect, window);
+        assert_eq!(scrim.clip, window);
     }
 
     // -- A surface with no children is a zero-size point. -------------------

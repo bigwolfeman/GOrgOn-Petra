@@ -218,6 +218,7 @@ pub fn place(
             z: slot.z,
             clip: slot.clip,
             opacity: slot.opacity,
+            window: slot.window,
         }
         .clipped_to(content);
 
@@ -372,6 +373,7 @@ pub fn place_collection(
                         z: slot.z,
                         clip: slot.clip,
                         opacity: slot.opacity,
+                        window: slot.window,
                     };
                     crate::layout::place(row_node, ctx, path, row_slot, sink);
                 }

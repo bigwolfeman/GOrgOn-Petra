@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use egui::ViewportBuilder;
 use gorgon_petra::component::{button, heading, list_row, on_layer, text};
+use gorgon_petra::frame::PetrifiedFrame;
 use gorgon_petra::geom::{Align, Axis};
 use gorgon_petra::input::{InputEvent, KeyCode, PointerButton, Route, activates};
 use gorgon_petra::layout::{ChangeSet, RowSource};
@@ -36,7 +37,7 @@ const NEXT: &str = "next";
 /// Key prefix for a row in the left index (`idx-36` is Toggle).
 const IDX: &str = "idx-";
 /// Width of the scrolling index pane, logical units.
-const INDEX_WIDTH: f32 = 240.0;
+pub(crate) const INDEX_WIDTH: f32 = 240.0;
 
 /// Symmetric padding from two spacing steps, horizontal first — the same
 /// argument order [`InsetRefs::symmetric`] uses.
@@ -128,7 +129,7 @@ impl Catalog {
 }
 
 impl Catalog {
-    fn current(&self) -> &Cell {
+    pub(crate) fn current(&self) -> &Cell {
         &self.roster[self.page]
     }
 
@@ -377,7 +378,7 @@ impl App for Catalog {
             .child(shell)
     }
 
-    fn handle(&mut self, event: &InputEvent, route: &Route) {
+    fn handle(&mut self, event: &InputEvent, route: &Route, frame: Option<&PetrifiedFrame>) {
         if let InputEvent::Key {
             key, pressed: true, ..
         } = event
@@ -399,6 +400,19 @@ impl App for Catalog {
             Route::Pointer { node } | Route::Keyboard { node } => node.as_str(),
             Route::Unrouted { .. } => return,
         };
+        // A gesture reaches the open page before the activation filter
+        // below, with the frame it was routed against: a pointer move under
+        // capture is not an activation, and a page turning it into a value
+        // needs a rect the route does not carry (`Page::gesture`). The route
+        // named a node, so the frame is there; `App::handle`'s doc says
+        // `None` comes only with an `Unrouted` route, returned above.
+        if let Some(frame) = frame
+            && self
+                .open_page_mut()
+                .is_some_and(|page| page.gesture(event, node, frame))
+        {
+            return;
+        }
         if !activated(event) {
             return;
         }
@@ -558,11 +572,37 @@ mod tests {
     use crate::cell::Content;
     use crate::page::common::find;
     use egui::{Context, Pos2, RawInput};
+    use gorgon_petra::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use gorgon_petra::geom::{Point, Size};
     use gorgon_petra::input::{InputEvent, KeyCode, Modifiers, PointerButton, Route};
-    use gorgon_petra::tree::ViewNode;
+    use gorgon_petra::testing::{Harness, validated_with};
+    use gorgon_petra::token::{ThemeMode, standard_vocabulary};
+    use gorgon_petra::tree::{Registry, ViewNode};
     use gorgon_petra_egui::host::{App, Host, default_presenter};
     use gorgon_petra_egui::inject::{Action, Target, inject_action};
+
+    /// The frame a route into `app` would have been computed against: its
+    /// own view, petrified at the catalog window. The tests below fabricate
+    /// routes by path rather than by hit test, so what `handle` needs is a
+    /// frame from this tree, not a route that was actually found in it.
+    fn frame_of(app: &mut Catalog) -> PetrifiedFrame {
+        let root = app.view();
+        // The shipped transition registry, as `Host::new` installs it: the
+        // toggle page names `toggle-knob`, and a registry without it refuses
+        // the tree.
+        let mut registry = Registry::with_vocabulary(standard_vocabulary());
+        gorgon_petra::anim::shipped_registry().declare_into(&mut registry);
+        let mut harness = Harness::new();
+        let viewport = Viewport::new(Size::new(WINDOW[0], WINDOW[1]), ThemeMode::Dark);
+        harness.scale = viewport.scale;
+        petrify(
+            1,
+            validated_with(&root, &registry),
+            &mut harness.ctx(),
+            viewport,
+            TransitionActivity::default(),
+        )
+    }
 
     fn tree_contains_text(node: &ViewNode, needle: &str) -> bool {
         node.props
@@ -576,6 +616,7 @@ mod tests {
     }
 
     fn press(app: &mut Catalog, tail: &str) {
+        let frame = frame_of(app);
         app.handle(
             &InputEvent::PointerPressed {
                 pos: Point::ZERO,
@@ -585,10 +626,12 @@ mod tests {
             &Route::Pointer {
                 node: format!("/page/root/{tail}"),
             },
+            Some(&frame),
         );
     }
 
     fn key(app: &mut Catalog, code: KeyCode) {
+        let frame = frame_of(app);
         app.handle(
             &InputEvent::Key {
                 key: code,
@@ -599,6 +642,7 @@ mod tests {
             &Route::Unrouted {
                 reason: "catalog test",
             },
+            Some(&frame),
         );
     }
 
@@ -1310,6 +1354,7 @@ mod tests {
                 .semantics
                 .selected
         );
+        let frame = frame_of(&mut app);
         app.handle(
             &InputEvent::PointerPressed {
                 pos: Point::ZERO,
@@ -1317,6 +1362,7 @@ mod tests {
                 modifiers: Modifiers::NONE,
             },
             &Route::Pointer { node: knob.into() },
+            Some(&frame),
         );
         assert!(
             find(&app.view(), "toggle-default-off")

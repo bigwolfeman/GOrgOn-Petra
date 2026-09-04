@@ -354,6 +354,7 @@ pub fn petrify(
         z: 0,
         clip: viewport_rect,
         opacity: 1.0,
+        window: viewport_rect,
     };
     let mut sink = PlacementList::new();
     crate::layout::place(tree, ctx, &mut path, slot, &mut sink);

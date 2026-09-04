@@ -49,7 +49,7 @@
 
 use egui::{Context, Pos2, RawInput};
 use gorgon_petra::frame::PetrifiedFrame;
-use gorgon_petra::geom::Size;
+use gorgon_petra::geom::{Point, Rect, Size};
 use gorgon_petra::input::{KeyCode, Modifiers};
 use gorgon_petra_egui::host::{Host, default_presenter};
 use gorgon_petra_egui::inject::{Action, Target, inject_action};
@@ -223,13 +223,41 @@ impl Camera {
         self.act(Target::NodeId(id), &Action::Hover)
     }
 
+    /// Press the primary button on the node whose id ends `tail`, move the
+    /// pointer to `to` (through a midpoint, as `inject::push_drag` does), and
+    /// release there — the press-move-release a physical drag produces,
+    /// routed through the host's pointer capture exactly as a mouse would be.
+    ///
+    /// `to` is a window position in logical units. A caller working out
+    /// where along a rail to let go reads the rail's rect from
+    /// [`Camera::frame`] first.
+    pub fn drag(&mut self, tail: &str, to: Point) -> &mut Self {
+        let id = self.id(tail);
+        self.act(
+            Target::NodeId(id),
+            &Action::Drag {
+                to,
+                modifiers: Modifiers::default(),
+            },
+        )
+    }
+
+    /// The placed rect of the node whose id ends `tail`, in logical units.
+    ///
+    /// # Panics
+    /// As [`Camera::id`] does, on a missing or ambiguous tail.
+    pub fn rect(&self, tail: &str) -> Rect {
+        let id = self.id(tail);
+        self.frame()
+            .placement(&id)
+            .unwrap_or_else(|| panic!("{}: {id} resolved but is not placed", self.page))
+            .rect
+    }
+
     /// Move the pointer to a raw position — for leaving a node, where there is
     /// no node to name.
     pub fn hover_at(&mut self, x: f32, y: f32) -> &mut Self {
-        self.act(
-            Target::Pos(gorgon_petra::geom::Point::new(x, y)),
-            &Action::Hover,
-        )
+        self.act(Target::Pos(Point::new(x, y)), &Action::Hover)
     }
 
     /// Move keyboard focus to the node whose id ends `tail`.
@@ -362,6 +390,8 @@ fn headless() -> Context {
 #[cfg(test)]
 mod tests {
     use super::Camera;
+    use crate::catalog::WINDOW;
+    use gorgon_petra::geom::{Point, Rect};
 
     // ===== TRIAGE (temporary, 2026-09-04) — delete before merge =====
     //
@@ -533,6 +563,97 @@ mod tests {
             "clicking a toggle through the camera changed no pixel, so the \
              driver is inert and every picture taken after a driving step \
              proves nothing"
+        );
+    }
+
+    /// A drag reaches application state and moves what the page draws, in
+    /// the direction the pointer went.
+    ///
+    /// Row 30. The slider's handle declared `Interaction::Drag` and the host
+    /// granted the capture, and nothing ever moved, because `App::handle`
+    /// had no geometry to turn a pointer position into a value. This drives
+    /// the whole path — `Action::Drag` through the translator, the capture,
+    /// `App::handle` with the frame, `slider_value_at`, a rebuilt tree — and
+    /// reads the result two ways: the fill's placed width grew, and the
+    /// picture changed. Both, because a placement can move while the
+    /// picture does not (the paint pass ignoring it) and a picture can
+    /// change for reasons that are not the fill (hover lighting the
+    /// handle).
+    ///
+    /// Asserted on direction, not just difference: a drag to the right that
+    /// shrank the fill would also "change the picture".
+    #[test]
+    fn dragging_the_slider_handle_moves_the_fill_the_way_the_pointer_went() {
+        let mut cam = Camera::on("Slider");
+        let before = cam.shoot("30-slider-before-drag");
+        let fill_before = cam.rect("/rail/fill");
+        let rail = cam.rect("/row/rail");
+        let handle = cam.rect("/rail/handle");
+        assert!(
+            (fill_before.w / rail.w - 0.4).abs() < 0.05,
+            "the page opens at 40%, fill {} of rail {}",
+            fill_before.w,
+            rail.w
+        );
+        let to = Point::new(rail.x + rail.w * 0.8, handle.y + handle.h / 2.0);
+        cam.drag("/rail/handle", to);
+        let after = cam.shoot("30-slider-after-drag");
+        let fill_after = cam.rect("/rail/fill");
+        assert!(
+            fill_after.w > fill_before.w,
+            "the pointer went right, so the fill must be wider: {} -> {}",
+            fill_before.w,
+            fill_after.w
+        );
+        assert!(
+            (fill_after.w / rail.w - 0.8).abs() < 0.05,
+            "released at 80% of the rail, the fill is about 80%: {} of {}",
+            fill_after.w,
+            rail.w
+        );
+        let handle_after = cam.rect("/rail/handle");
+        assert!(
+            (handle_after.x + handle_after.w / 2.0 - to.x).abs() < 1.5,
+            "the handle's centre is under where the pointer let go: {} vs {}",
+            handle_after.x + handle_after.w / 2.0,
+            to.x
+        );
+        assert_ne!(
+            before, after,
+            "the fill's placement moved and not one pixel changed: the drag \
+             never reached the picture"
+        );
+    }
+
+    /// The modal covers the window, not the card that declares it.
+    ///
+    /// Row 20. `modal()` is a viewport-anchored `Layer::Modal` surface, and
+    /// the catalog mounts it inside a page card, three containers deep. It
+    /// used to land inside that card, a dialog the size of a paragraph. Now
+    /// its scrim is the window and its dialog is centred in the window,
+    /// over the index pane and the page chrome alike — and a press on the
+    /// dimmed index pane reaches nothing.
+    #[test]
+    fn the_modal_covers_the_window_not_the_card() {
+        let mut cam = Camera::on("Modal");
+        cam.shoot("20-modal");
+        let window = Rect::new(0.0, 0.0, WINDOW[0], WINDOW[1]);
+        assert_eq!(cam.rect("/md/md"), window, "the scrim is the window");
+        let dialog = cam.rect("/seat/dialog");
+        assert!(
+            (dialog.x - WINDOW[0] * 0.2).abs() < 0.5 && (dialog.w - WINDOW[0] * 0.6).abs() < 0.5,
+            "the dialog is the middle 60% of the window, got {dialog:?}"
+        );
+        assert!(
+            (dialog.y + dialog.h / 2.0 - WINDOW[1] / 2.0).abs() < 1.0,
+            "and vertically centred in it, got {dialog:?}"
+        );
+        let page_before = cam.host.app().current().row.number;
+        cam.click("/idx-1");
+        assert_eq!(
+            cam.host.app().current().row.number,
+            page_before,
+            "a click on the dimmed index pane must not turn the page"
         );
     }
 

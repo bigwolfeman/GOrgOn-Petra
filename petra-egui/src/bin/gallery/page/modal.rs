@@ -22,7 +22,12 @@ impl Page for Modal {
             vec![body(
                 "md",
                 sp("spacing.md"),
-                vec![modal("md", "Confirm rebuild", "This unloads the fiber.")],
+                vec![modal(
+                    "md",
+                    "Confirm rebuild",
+                    "This unloads the fiber.",
+                    "Rebuild",
+                )],
             )],
         )
     }

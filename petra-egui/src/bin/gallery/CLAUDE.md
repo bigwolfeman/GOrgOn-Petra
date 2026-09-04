@@ -39,7 +39,9 @@ with zero spacing beside another rect is a legal frame record.
     node path, not its last segment: a press on a knob names the knob, so
     match with `common::path_has`. The chrome asks the open page before its
     own Prev/Next, because Pagination's `pager/next` shares a segment with
-    the chrome's `next`.
+    the chrome's `next`. `Page::gesture` receives the same path plus the
+    frame the route was computed against, for the pages with a drag; the
+    chrome offers it before the activation filter that gates `handle`.
   - `page/common.rs` — what several pages share: `sp`, `tok`, `column`,
     `row`, `body`, `wrapped`, `path_has`, and the test-only `find`. Import
     from here; do not copy.
@@ -71,10 +73,21 @@ cam.click("dropdown-trigger");
 cam.shoot("11-dropdown-open");
 ```
 
-`click`, `hover`, `focus`, `type_into`, `key`, `scroll`. Nodes are named by the
-tail of their id, so `"btn-ghost"` finds `/page/.../kinds/btn-ghost`. A tail
-that matches nothing panics listing every placed id, which is usually the
-fastest way to learn what a page actually built.
+`click`, `hover`, `focus`, `type_into`, `key`, `scroll`, `drag`. Nodes are named
+by the tail of their id, so `"btn-ghost"` finds `/page/.../kinds/btn-ghost`. A
+tail that matches nothing panics listing every placed id, which is usually the
+fastest way to learn what a page actually built. `rect(tail)` reads a placed
+rect back, which is how a drag works out where to let go:
+
+```rust
+let rail = cam.rect("/row/rail");
+cam.drag("/rail/handle", Point::new(rail.x + rail.w * 0.8, rail.y + 1.0));
+```
+
+A drag reaches the page through `Page::gesture(event, node, frame)`, a hook
+with a default that consumes nothing; `page/slider.rs` is the one override
+and `gorgon_petra::component::slider_value_at` is the arithmetic. Verified end
+to end 2026-09-04 by `shots::tests::dragging_the_slider_handle_moves_the_fill_the_way_the_pointer_went`.
 
 Set `PETRA_SHOT_DIR` and every `shoot` writes a PNG there. **Read the PNGs.**
 

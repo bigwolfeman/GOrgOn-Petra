@@ -55,6 +55,7 @@ mod ui_shell_header;
 mod ui_shell_left_panel;
 mod ui_shell_right_panel;
 
+use gorgon_petra::frame::PetrifiedFrame;
 use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::ViewNode;
 
@@ -79,6 +80,26 @@ pub trait Page {
     /// segments (`pager` and `next`), so an implementation matches with
     /// [`common::path_has`].
     fn handle(&mut self, event: &InputEvent, node: &str) -> bool;
+
+    /// React to a pointer gesture — a press, a move or release under
+    /// capture, or the `GestureEnded` report — routed to `node`, with the
+    /// frame the route was computed against. Returns whether the page
+    /// consumed it; a consumed event is not offered to [`Page::handle`].
+    ///
+    /// Separate from `handle` because the chrome offers `handle` only
+    /// activations (a primary press, Enter, Space), and a drag is mostly
+    /// moves. The frame is here and not on `handle` because a gesture is
+    /// the one thing that needs geometry: a move is a window position, and
+    /// the value it names is that position along some rect only the frame
+    /// has (`gorgon_petra::component::slider_value_at`).
+    ///
+    /// The default consumes nothing, so the forty-one pages with no drag
+    /// declare none. A page that declares `Interaction::Drag` on a control
+    /// overrides this, or the control is dead — exactly what row 30 was.
+    fn gesture(&mut self, event: &InputEvent, node: &str, frame: &PetrifiedFrame) -> bool {
+        let _ = (event, node, frame);
+        false
+    }
 }
 
 /// Every page, in inventory order. One line per row.
@@ -113,7 +134,7 @@ pub fn all() -> Vec<Box<dyn Page>> {
         Box::new(radio_button::RadioButton::default()),
         Box::new(search::Search),
         Box::new(select::Select),
-        Box::new(slider::Slider),
+        Box::new(slider::Slider::default()),
         Box::new(structured_list::StructuredList),
         Box::new(tabs::Tabs::default()),
         Box::new(tag::Tag::default()),

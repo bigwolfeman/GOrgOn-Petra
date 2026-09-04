@@ -554,6 +554,7 @@ mod tests {
     use super::{Action, InjectError, Target, inject_action, to_egui_modifiers};
     use crate::host::{App, Host, default_presenter};
     use egui::{Context, RawInput};
+    use gorgon_petra::frame::PetrifiedFrame;
     use gorgon_petra::input::{InputEvent, Route};
     use gorgon_petra::layout::{ChangeSet, RowSource};
     use gorgon_petra::tree::{
@@ -650,7 +651,7 @@ mod tests {
             root
         }
 
-        fn handle(&mut self, event: &InputEvent, route: &Route) {
+        fn handle(&mut self, event: &InputEvent, route: &Route, _frame: Option<&PetrifiedFrame>) {
             self.seen.push((describe(event), route.clone()));
         }
 

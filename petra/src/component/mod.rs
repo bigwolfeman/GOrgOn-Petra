@@ -159,7 +159,7 @@ pub use list_row::list_row;
 pub use loading::{loading, loading_sm};
 pub use menu::{menu, menu_item};
 pub use menu_button::menu_button;
-pub use modal::modal;
+pub use modal::{modal, modal_passive};
 pub use notification::{
     notification, notification_actionable, notification_inline, notification_toast,
 };
@@ -171,7 +171,7 @@ pub use progress_indicator::{progress_indicator, progress_step};
 pub use search::{search, search_lg, search_sm};
 pub use section::section;
 pub use select::{select, select_lg, select_sm};
-pub use slider::{slider, slider_readonly};
+pub use slider::{slider, slider_readonly, slider_value_at};
 pub use status::status;
 pub use structured_list::{structured_list, structured_list_row};
 pub use tabs::{contained_tab, contained_tab_bar, tab, tab_bar, vertical_tab, vertical_tab_bar};

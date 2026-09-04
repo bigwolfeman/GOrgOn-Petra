@@ -374,18 +374,52 @@ pub fn activates(event: &InputEvent) -> bool {
 /// clicks is what the user sees. A placement is only a candidate when `pos` is
 /// inside both its rect and the clip in force: a row scrolled out of its
 /// viewport is still placed, and must not be clickable.
+///
+/// This is [`hit_test_above`] with no floor: every placement in the frame
+/// is a candidate. A host routing through [`route_with_surfaces`] or
+/// [`PointerState::route`] gets the floor an open `Block` surface imposes.
 #[must_use]
 pub fn hit_test(
     frame: &PetrifiedFrame,
     pos: Point,
     interaction: Interaction,
 ) -> Option<&Placement> {
-    frame.paint_order().into_iter().rev().find(|p| {
-        p.rect.contains(pos)
+    hit_test_above(frame, pos, interaction, None)
+}
+
+/// [`hit_test`], stopping at `floor`: the placement with that id is the last
+/// candidate considered, and nothing behind it in paint order is reachable.
+///
+/// The floor is what makes an [`InputPolicy::Block`] surface *opaque* over
+/// its own rect, the other half of "a modal makes the screen behind it
+/// inert" ([`route_with_surfaces`] swallows the outside; this closes the
+/// inside). A click on a dialog's body text, which accepts nothing, must not
+/// land on the page button the dialog happens to be covering. The floor
+/// placement itself is still a candidate — a scrim that declares `Click` to
+/// absorb it is heard — so the rule is "nothing *behind* the surface",
+/// never "nothing at or above its z".
+///
+/// A `floor` naming no placement in `frame` is the same as no floor.
+#[must_use]
+pub fn hit_test_above<'a>(
+    frame: &'a PetrifiedFrame,
+    pos: Point,
+    interaction: Interaction,
+    floor: Option<&str>,
+) -> Option<&'a Placement> {
+    for p in frame.paint_order().into_iter().rev() {
+        if p.rect.contains(pos)
             && p.clip.contains(pos)
             && p.semantics.actions.contains(&interaction)
             && !p.semantics.disabled
-    })
+        {
+            return Some(p);
+        }
+        if floor == Some(p.id.as_str()) {
+            return None;
+        }
+    }
+    None
 }
 
 /// Route one event against a frame and the current focus.
@@ -412,6 +446,18 @@ pub fn hit_test(
 /// offer of a new one it may decline.
 #[must_use]
 pub fn route(frame: &PetrifiedFrame, focused: Option<&str>, event: &InputEvent) -> Route {
+    route_above(frame, focused, event, None)
+}
+
+/// [`route`], with the positional branch hit-testing above `floor`
+/// ([`hit_test_above`]). [`route_with_surfaces`] is the caller that has a
+/// floor to pass; [`route`] passes none.
+fn route_above(
+    frame: &PetrifiedFrame,
+    focused: Option<&str>,
+    event: &InputEvent,
+    floor: Option<&str>,
+) -> Route {
     if matches!(event, InputEvent::PointerLeft) {
         return route_pointer_exit(frame, None);
     }
@@ -424,7 +470,7 @@ pub fn route(frame: &PetrifiedFrame, focused: Option<&str>, event: &InputEvent) 
         };
     };
     if let Some(pos) = event.pointer_pos() {
-        return match hit_test(frame, pos, interaction) {
+        return match hit_test_above(frame, pos, interaction, floor) {
             Some(hit) => Route::Pointer {
                 node: hit.id.clone(),
             },
@@ -874,7 +920,9 @@ impl PointerState {
         if outside_an_open_modal(frame, pos, surfaces) {
             return None;
         }
-        hit_test(frame, pos, Interaction::Hover).map(|hit| hit.id.clone())
+        let floor = block_floor(frame, pos, surfaces);
+        hit_test_above(frame, pos, Interaction::Hover, floor.map(|p| p.id.as_str()))
+            .map(|hit| hit.id.clone())
     }
 }
 
@@ -912,9 +960,19 @@ pub struct RouteOutcome {
 /// adds exactly that: a positional event outside every currently-placed
 /// `Block` surface's bounds is swallowed here before [`route`] ever runs.
 ///
+/// Inside a `Block` surface's bounds the surface is *opaque*: the positional
+/// hit test runs down to that surface and no further ([`hit_test_above`]),
+/// so a press on dialog content that accepts nothing lands nowhere rather
+/// than on the page control the dialog is covering. Together the two rules
+/// are the whole of "the screen behind a modal is inert": outside the
+/// surface the event is swallowed here, inside it the frame ends at the
+/// surface. A scrim that covers the window is therefore a `Block` surface
+/// like any other — nothing is ever outside it, and nothing behind it is
+/// ever reached.
+///
 /// [`InputPolicy::DismissOutside`] behaves like `Passthrough` for routing —
-/// it places no swallow boundary — and additionally contributes to
-/// `RouteOutcome::dismiss`.
+/// it places no swallow boundary and no floor — and additionally contributes
+/// to `RouteOutcome::dismiss`.
 #[must_use]
 pub fn route_with_surfaces(
     frame: &PetrifiedFrame,
@@ -933,10 +991,34 @@ pub fn route_with_surfaces(
             dismiss,
         };
     }
+    let floor = event
+        .pointer_pos()
+        .and_then(|pos| block_floor(frame, pos, surfaces));
     RouteOutcome {
-        route: route(frame, focused, event),
+        route: route_above(frame, focused, event, floor.map(|p| p.id.as_str())),
         dismiss,
     }
+}
+
+/// The topmost `Block` surface this frame placed whose rect contains `pos`:
+/// the floor below which [`hit_test_above`] does not look. `None` when no
+/// open `Block` surface contains the position — every placement is then a
+/// candidate, exactly as [`route`] alone treats them.
+///
+/// "Topmost" is paint order, the same order the hit test walks, so with two
+/// nested modals the inner one is the floor and the outer one's content is
+/// as unreachable as the page.
+fn block_floor<'a>(
+    frame: &'a PetrifiedFrame,
+    pos: Point,
+    surfaces: &BTreeMap<String, InputPolicy>,
+) -> Option<&'a Placement> {
+    frame.paint_order().into_iter().rev().find(|p| {
+        surfaces
+            .get(&p.id)
+            .is_some_and(|policy| blocks_positional_input(*policy))
+            && p.rect.contains(pos)
+    })
 }
 
 /// Every `DismissOutside` surface a `PointerPressed` in `event` lands outside
@@ -1369,21 +1451,114 @@ mod tests {
         assert!(outcome.dismiss.is_empty(), "Block never dismisses");
     }
 
-    /// `Block` does not touch a click that lands inside the surface's own
-    /// bounds: it routes exactly as [`route`] would (here, through to
-    /// `/backdrop`, since `/surface` declares no accepting interaction of
-    /// its own). This is what distinguishes "swallow everything outside"
-    /// from a cruder "swallow everything under the surface's z-order".
+    /// `Block` is opaque inside its own bounds: a click the surface's
+    /// content does not take stops at the surface and never reaches
+    /// `/backdrop` behind it. Until 2026-09-04 this test asserted the
+    /// opposite — that such a click "routes normally" through to the
+    /// backdrop — on the argument that anything else would be a crude
+    /// z-order swallow. It was not crude, it was the missing half of the
+    /// policy: a dialog whose body text let clicks through to the page
+    /// button under it was never inert, and a scrim covering the window
+    /// (nothing is outside it) would have blocked nothing at all.
     #[test]
-    fn block_routes_normally_inside_its_own_bounds() {
+    fn block_is_opaque_to_a_click_inside_its_bounds_that_its_content_does_not_take() {
         let f = modal_scenario();
         let surfaces = policy_map(InputPolicy::Block);
         let outcome = route_with_surfaces(&f, None, &press(Point::new(60.0, 60.0)), &surfaces);
+        assert!(
+            matches!(outcome.route, Route::Unrouted { .. }),
+            "a click inside the modal on nothing that accepts it must not reach \
+             /backdrop behind the modal, got {:?}",
+            outcome.route
+        );
+        assert!(outcome.dismiss.is_empty(), "Block never dismisses");
+    }
+
+    /// The floor is "nothing *behind* the surface", not "nothing at its z":
+    /// the surface's own content, above it in paint order, is reached, and
+    /// so is the surface itself when it declares an interaction (a scrim
+    /// absorbing clicks).
+    #[test]
+    fn block_routes_a_click_inside_its_bounds_to_its_own_content_or_itself() {
+        let surfaces = policy_map(InputPolicy::Block);
+        let with_content = frame(vec![
+            node(
+                "/backdrop",
+                Rect::new(0.0, 0.0, 200.0, 200.0),
+                0,
+                &[Interaction::Click],
+            ),
+            node("/surface", Rect::new(50.0, 50.0, 50.0, 50.0), 5, &[]),
+            node(
+                "/surface/ok",
+                Rect::new(60.0, 60.0, 20.0, 20.0),
+                5,
+                &[Interaction::Click],
+            ),
+        ]);
+        let on_content = route_with_surfaces(
+            &with_content,
+            None,
+            &press(Point::new(65.0, 65.0)),
+            &surfaces,
+        );
         assert_eq!(
-            outcome.route,
+            on_content.route,
             Route::Pointer {
-                node: "/backdrop".into()
+                node: "/surface/ok".into()
             }
+        );
+
+        let absorbing = frame(vec![
+            node(
+                "/backdrop",
+                Rect::new(0.0, 0.0, 200.0, 200.0),
+                0,
+                &[Interaction::Click],
+            ),
+            node(
+                "/surface",
+                Rect::new(50.0, 50.0, 50.0, 50.0),
+                5,
+                &[Interaction::Click],
+            ),
+        ]);
+        let on_surface =
+            route_with_surfaces(&absorbing, None, &press(Point::new(60.0, 60.0)), &surfaces);
+        assert_eq!(
+            on_surface.route,
+            Route::Pointer {
+                node: "/surface".into()
+            }
+        );
+    }
+
+    /// A `Block` surface covering the whole window: nothing is outside it,
+    /// so the swallow rule never fires, and the floor is what keeps the
+    /// backdrop unreachable. This is the scrim shape `component::modal`
+    /// builds.
+    #[test]
+    fn a_window_covering_block_surface_still_makes_the_backdrop_unreachable() {
+        let f = frame(vec![
+            node(
+                "/backdrop",
+                Rect::new(0.0, 0.0, 200.0, 200.0),
+                0,
+                &[Interaction::Click],
+            ),
+            node("/scrim", Rect::new(0.0, 0.0, 200.0, 200.0), 5, &[]),
+        ]);
+        let mut surfaces = BTreeMap::new();
+        surfaces.insert("/scrim".to_owned(), InputPolicy::Block);
+        let outcome = route_with_surfaces(&f, None, &press(Point::new(10.0, 10.0)), &surfaces);
+        assert!(
+            matches!(outcome.route, Route::Unrouted { .. }),
+            "got {:?}",
+            outcome.route
+        );
+        assert!(
+            hit_test(&f, Point::new(10.0, 10.0), Interaction::Click).is_some(),
+            "and it is the floor doing it: the plain hit test still finds /backdrop"
         );
     }
 
@@ -1449,7 +1624,9 @@ mod tests {
 
     /// Two nested `Block` surfaces: a click must land inside *both* to
     /// reach anything, since neither modal's screen may be reached through
-    /// the other.
+    /// the other — and inside both, the inner one is the floor, so only the
+    /// inner dialog's own content is reachable, never the outer dialog's
+    /// and never the page.
     #[test]
     fn nested_block_surfaces_require_being_inside_both() {
         let f = frame(vec![
@@ -1460,7 +1637,19 @@ mod tests {
                 &[Interaction::Click],
             ),
             node("/outer", Rect::new(20.0, 20.0, 150.0, 150.0), 5, &[]),
+            node(
+                "/outer/ok",
+                Rect::new(20.0, 20.0, 150.0, 150.0),
+                5,
+                &[Interaction::Click],
+            ),
             node("/inner", Rect::new(60.0, 60.0, 40.0, 40.0), 10, &[]),
+            node(
+                "/inner/ok",
+                Rect::new(60.0, 60.0, 10.0, 10.0),
+                10,
+                &[Interaction::Click],
+            ),
         ]);
         let mut surfaces = BTreeMap::new();
         surfaces.insert("/outer".to_owned(), InputPolicy::Block);
@@ -1470,12 +1659,28 @@ mod tests {
         let between = route_with_surfaces(&f, None, &press(Point::new(30.0, 30.0)), &surfaces);
         assert!(matches!(between.route, Route::Unrouted { .. }));
 
-        // Inside both: routes through to /backdrop.
-        let inside = route_with_surfaces(&f, None, &press(Point::new(70.0, 70.0)), &surfaces);
+        // Inside both, on the inner dialog's own control: reaches it.
+        let inner_ok = route_with_surfaces(&f, None, &press(Point::new(65.0, 65.0)), &surfaces);
         assert_eq!(
+            inner_ok.route,
+            Route::Pointer {
+                node: "/inner/ok".into()
+            }
+        );
+
+        // Inside both, on nothing the inner dialog accepts: the outer
+        // dialog's full-size control is right there behind it and is not
+        // reached, because the inner surface is the floor.
+        let inside = route_with_surfaces(&f, None, &press(Point::new(90.0, 90.0)), &surfaces);
+        assert!(
+            matches!(inside.route, Route::Unrouted { .. }),
+            "got {:?}",
+            inside.route
+        );
+        assert_ne!(
             inside.route,
             Route::Pointer {
-                node: "/backdrop".into()
+                node: "/outer/ok".into()
             }
         );
     }

@@ -419,7 +419,8 @@ impl AnchorRects {
     }
 }
 
-/// The rect, paint order, clip, and opacity a parent gives one child.
+/// The rect, paint order, clip, and opacity a parent gives one child, and
+/// the window every slot in the walk descends from.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Slot {
     /// Where the child goes, logical units.
@@ -430,10 +431,25 @@ pub struct Slot {
     pub clip: Rect,
     /// Cumulative opacity in `[0, 1]`.
     pub opacity: f32,
+    /// The rect the *root* of this walk was placed into: the frame's
+    /// viewport, in a frame from [`crate::frame::petrify`].
+    ///
+    /// Carried unchanged through every [`Slot::with_rect`] and
+    /// [`Slot::clipped_to`] on the way down, so a `surface` at any depth can
+    /// read the one rect a floating box is placed against
+    /// (`contracts/anchored-placement.md` §4, "V is the window"). It is a
+    /// field on the slot rather than on [`LayoutCtx`] because it is a fact
+    /// about *this walk from this root*: a walk begun on a subtree, which
+    /// this crate's own tests do, has that subtree's rect as its window, and
+    /// nothing on the context would know the difference. Being on the slot
+    /// also makes it part of the reuse test's slot equality for free — a
+    /// resized window changes every slot, and a surface centred in the old
+    /// window is never carried over into the new one.
+    pub window: Rect,
 }
 
 impl Slot {
-    /// A slot filling `rect` with no clipping beyond it.
+    /// A slot filling `rect` with no clipping beyond it, as the window.
     #[must_use]
     pub fn new(rect: Rect) -> Self {
         Self {
@@ -441,6 +457,7 @@ impl Slot {
             z: 0,
             clip: rect,
             opacity: 1.0,
+            window: rect,
         }
     }
 
@@ -457,6 +474,21 @@ impl Slot {
             clip: self.clip.intersect(clip),
             ..self
         }
+    }
+
+    /// This slot with the clip *replaced* by `clip`, discarding whatever
+    /// the ancestry had narrowed it to.
+    ///
+    /// Only a `surface` wants this. Every flow container narrows
+    /// ([`Slot::clipped_to`]) because its children live inside its
+    /// ancestors' boxes; a surface's children live inside the surface's own
+    /// placed rect, which is placed against the window and may lie wholly
+    /// outside the card that declared it. Carrying the card's clip down into
+    /// a modal's content would clip the modal's buttons to a card they are
+    /// not in.
+    #[must_use]
+    pub fn with_clip(self, clip: Rect) -> Self {
+        Self { clip, ..self }
     }
 
     /// This slot with `z` added to the paint order.
@@ -483,12 +515,25 @@ impl Slot {
 /// Applies the node's own constraints to whatever its kind answers, and
 /// memoizes the result. `path` is the walk's key path: it is pushed and popped
 /// here, so a caller passes the *parent's* path.
+///
+/// A `surface` answers zero, constraints notwithstanding. It floats
+/// (`overlay_surface`'s module doc): its box is sized in [`place`] from its
+/// own content and placed against the window, so it takes no room in the
+/// flow of whatever stack or grid declares it — an open menu does not push
+/// the paragraph under its trigger down by its own height, and a modal
+/// declared inside a card leaves no hole in the card. Its constraints bound
+/// that floating box, not a flow footprint, which is why they are not
+/// applied here: a scrim asking for more than the window would otherwise
+/// report that request to its parent.
 pub fn measure(
     node: &ViewNode,
     ctx: &mut LayoutCtx<'_>,
     path: &mut KeyPath,
     proposal: SizeProposal,
 ) -> Size {
+    if node.kind == NodeKind::Surface {
+        return Size::ZERO;
+    }
     path.push(node.key.clone());
     let key = ctx.key(path, proposal);
     let answer = if let Some(hit) = ctx.cache.peek(&key) {
@@ -815,7 +860,9 @@ fn measure_kind(
         NodeKind::Overlay => overlay::measure(node, ctx, path, proposal),
         NodeKind::Scroll => scroll::measure(node, ctx, path, proposal),
         NodeKind::Collection => scroll::measure_collection(node, ctx, path, proposal),
-        NodeKind::Surface => overlay_surface::measure(node, ctx, path, proposal),
+        // Answered before the cache in `measure`, which is the only caller
+        // of this function; see its doc for why a surface has no flow size.
+        NodeKind::Surface => Size::ZERO,
         NodeKind::Text => text::measure(node, ctx, proposal),
         NodeKind::Image
         | NodeKind::Input

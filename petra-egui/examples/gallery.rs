@@ -96,6 +96,7 @@ use gorgon_petra::component::{
     button, checkbox, disabled, field, heading, list_row, on_layer, primary_button, progress,
     radio, section, status, tab, tab_bar, text, toggle,
 };
+use gorgon_petra::frame::PetrifiedFrame;
 use gorgon_petra::geom::{Align, Axis};
 use gorgon_petra::input::{InputEvent, PointerButton, Route, activates};
 use gorgon_petra::layout::{ChangeSet, RowSource};
@@ -1747,7 +1748,7 @@ impl App for Gallery {
         shell
     }
 
-    fn handle(&mut self, event: &InputEvent, route: &Route) {
+    fn handle(&mut self, event: &InputEvent, route: &Route, _frame: Option<&PetrifiedFrame>) {
         let node = match route {
             Route::Pointer { node } | Route::Keyboard { node } => node.clone(),
             Route::Unrouted { reason } => {

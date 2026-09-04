@@ -23,7 +23,7 @@ use std::sync::Arc;
 use cat::Scene;
 use egui::{Context, RawInput};
 use gorgon_petra::draw::Command;
-use gorgon_petra::frame::{TransitionActivity, Viewport, petrify};
+use gorgon_petra::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
 use gorgon_petra::geom::{Rect as PetraRect, Scale, Size};
 use gorgon_petra::input::{InputEvent, Route};
 use gorgon_petra::layout::{ChangeSet, RowSource};
@@ -73,7 +73,7 @@ impl App for CatApp {
         tree
     }
 
-    fn handle(&mut self, _event: &InputEvent, _route: &Route) {}
+    fn handle(&mut self, _event: &InputEvent, _route: &Route, _frame: Option<&PetrifiedFrame>) {}
 
     fn take_changes(&mut self) -> ChangeSet {
         ChangeSet::All

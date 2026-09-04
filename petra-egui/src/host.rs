@@ -104,7 +104,28 @@ pub trait App: RowSource {
     /// The view tree for this frame.
     fn view(&mut self) -> ViewNode;
     /// Handle one routed input event.
-    fn handle(&mut self, event: &InputEvent, route: &Route);
+    ///
+    /// `frame` is the frame `route` was computed against — the placements
+    /// the hit test walked, with their rects. A route names a node; a
+    /// gesture needs geometry: a `PointerMoved` delivered to a slider's
+    /// handle under capture is a window position, and the value it names is
+    /// that position along the *rail's* rect, which the route does not
+    /// carry and the handle's own rect cannot give. Every drag an
+    /// application will ever turn into a value goes through this argument
+    /// (`gorgon_petra::component::slider_value_at` is the first). It is the
+    /// whole frame rather than the routed node's rect because the rect an
+    /// application needs is rarely the one that was hit.
+    ///
+    /// `None` exactly once: on the first pass, before any frame has been
+    /// placed, when `route` is `Unrouted("no frame has been placed yet")`.
+    /// Those events are still delivered rather than dropped — a silent drop
+    /// is how a "the click did nothing" bug hides — and there is nothing
+    /// to hand them with, so the type says so. A `Pointer` or `Keyboard`
+    /// route always comes with `Some`.
+    ///
+    /// Read-only. The frame is the host's; an application that wants a
+    /// different picture answers differently from [`App::view`].
+    fn handle(&mut self, event: &InputEvent, route: &Route, frame: Option<&PetrifiedFrame>);
     /// What changed behind [`App::view`] since the last call, draining it in
     /// the same motion. Must name (directly or via [`ChangeSet::All`]) every
     /// node whose measured content this frame would answer differently for.
@@ -1024,7 +1045,8 @@ impl<A: App> Host<A> {
         // from under a stationary pointer stops being hovered here, without
         // waiting for a move that may never come.
         if let Some(ended) = self.pointer.reconcile(&frame, &scopes) {
-            self.app.handle(&ended.event(), &ended.route());
+            self.app
+                .handle(&ended.event(), &ended.route(), Some(&frame));
         }
         let moved_focus = self.publish_focus();
         // `|`, not `||`: both have to run. Publishing is what writes the
@@ -1529,8 +1551,8 @@ impl<A: App> Host<A> {
         let mut invalidate = false;
         // Routing needs a frame to hit-test against. The first pass has none,
         // so its events are dropped rather than delivered to nothing — and the
-        // application is told, through an `Unrouted` route, instead of the
-        // event just vanishing.
+        // application is told, through an `Unrouted` route and a `None`
+        // frame, instead of the event just vanishing.
         for event in &translated {
             if self.traverse(event) {
                 invalidate = true;
@@ -1596,12 +1618,17 @@ impl<A: App> Host<A> {
             {
                 self.apply_scroll(node, *delta);
             }
-            self.app.handle(event, &routing.outcome.route);
+            // Re-borrowed: `seat_pointer_focus` and `apply_scroll` above took
+            // `&mut self`. Nothing between the routing and here places a
+            // frame, so this is the frame the routing was computed against,
+            // or `None` on the first pass, matching the `Unrouted` route.
+            let frame = self.last_frame.as_ref();
+            self.app.handle(event, &routing.outcome.route, frame);
             // The cause, then the consequence: a component hears the release
             // (or the blur, or the Escape) and then hears what it did to the
             // gesture, so it never has to infer the second from the first.
             if let Some(ended) = routing.ended {
-                self.app.handle(&ended.event(), &ended.route());
+                self.app.handle(&ended.event(), &ended.route(), frame);
             }
             if Self::picture_must_rebuild(event) {
                 invalidate = true;
@@ -2116,6 +2143,7 @@ mod tests {
         App, ChangeSet, Host, coverage_plan, default_presenter, petra_layer, refusal_view,
     };
     use egui::{Context, Event, Key, Modifiers, RawInput};
+    use gorgon_petra::frame::PetrifiedFrame;
     use gorgon_petra::geom::{Point, Rect};
     use gorgon_petra::input::{InputEvent, Route, route_pointer_exit};
     use gorgon_petra::layout::RowSource;
@@ -2237,7 +2265,7 @@ mod tests {
             root
         }
 
-        fn handle(&mut self, event: &InputEvent, route: &Route) {
+        fn handle(&mut self, event: &InputEvent, route: &Route, _frame: Option<&PetrifiedFrame>) {
             let kind = match event {
                 InputEvent::Key { key, .. } => format!("key:{key:?}"),
                 InputEvent::Text(_) => "text".to_owned(),

@@ -244,6 +244,7 @@ fn full_gallery() -> ViewNode {
                 "md-retire",
                 "Retire fiber",
                 "Its children are retired with it.",
+                "Retire",
             ),
             notification_toast("nt-restart", "Supervisor restarted", "Worker 3 came back."),
             notification_inline("nt-warn", "Disk filling", "Trace volume is at 80%."),
@@ -951,7 +952,7 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
     /// Every node in [`full_gallery`] that may draw a border, by the key
     /// path it appears at. An exact set: a node missing from here that draws
     /// one fails, and a node listed here that stops drawing one fails too.
-    const DRAWS_AN_EDGE: [&str; 62] = [
+    const DRAWS_AN_EDGE: [&str; 61] = [
         // `field`: an empty well with no boundary does not read as a place
         // to type. See `field`'s own doc for why it keeps one when `button`
         // does not.
@@ -1050,17 +1051,16 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         // boundary on its own (`SURFACE_BASE`, the page's own ground), the
         // same shape as AI label's trigger above.
         "root/carbon2/fu-up/zone",
-        // Modal's own dialog shell: Carbon's "Container border: 1px
-        // `$border-subtle-01`" (SOURCED style page, slice-c). Unlike
-        // Notification's card (see `notification.rs`'s `chrome`, which
-        // draws no full outline because neither notification SCSS partial
-        // documents one beyond the 3px accent rail), Modal's border is a
-        // real measured boundary on the dialog shell itself, the same
-        // class as `field` and Content switcher's row above.
+        // Modal draws no edge since 2026-09-04. Carbon's "Container
+        // border: 1px `$border-subtle-01`" (SOURCED style page, slice-c)
+        // was bound on the dialog shell until the operator's walk of the
+        // catalog refused it ("borders are a no no"); the container is a
+        // raised tone on a scrim now, which is the "containers take a
+        // tone" rule this test is named for, applied to the one container
+        // that had been exempt. See `modal.rs`'s module doc.
         // Menu and the open menu button's menu are popovers — see
         // `root/carbon4/pop` below.
         "root/carbon3/mb-open/menu",
-        "root/carbon3/md-retire",
         "root/carbon3/mn-actions",
         // Number input's well: Carbon's `border-bottom: 1px solid
         // $border-strong` on `.cds--number` (slice-d, "Field ...

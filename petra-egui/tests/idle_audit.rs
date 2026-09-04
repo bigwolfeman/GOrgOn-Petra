@@ -15,6 +15,7 @@
 //! `AmbientLedger::observe`. Nothing here reaches into the ledger directly.
 
 use egui::{Context, RawInput};
+use gorgon_petra::frame::PetrifiedFrame;
 use gorgon_petra::input::{InputEvent, Route};
 use gorgon_petra::layout::{ChangeSet, RowSource};
 use gorgon_petra::token::Presenter;
@@ -67,7 +68,7 @@ impl App for Hosted {
         )
     }
 
-    fn handle(&mut self, _event: &InputEvent, _route: &Route) {}
+    fn handle(&mut self, _event: &InputEvent, _route: &Route, _frame: Option<&PetrifiedFrame>) {}
 
     fn take_changes(&mut self) -> ChangeSet {
         ChangeSet::All
@@ -308,7 +309,7 @@ impl App for Hoverable {
         )
     }
 
-    fn handle(&mut self, _event: &InputEvent, _route: &Route) {}
+    fn handle(&mut self, _event: &InputEvent, _route: &Route, _frame: Option<&PetrifiedFrame>) {}
 
     fn take_changes(&mut self) -> ChangeSet {
         ChangeSet::All

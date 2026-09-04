@@ -39,6 +39,9 @@ pub(crate) const SPACING_04: &str = "spacing-04";
 pub(crate) const SPACING_05: &str = "spacing-05";
 /// See [`SPACING_01`]. 32 units. Carbon nested-list indent (`_list.scss`).
 pub(crate) const SPACING_07: &str = "spacing-07";
+/// See [`SPACING_01`]. 48 units. Carbon modal content bottom padding and
+/// the header's inline-end reserve for the close control (`_modal.scss`).
+pub(crate) const SPACING_09: &str = "spacing-09";
 
 /// Control height `size-md`. Numeric because `Constraints` stay extents
 /// (FR-053): the token ramp owns the number, this constant is how a
@@ -66,6 +69,12 @@ pub(crate) const TYPOGRAPHY_HEADING_SM: &str = "typography.heading-sm";
 /// both themes and a theme is the wrong place to keep a fact that does not
 /// change with the lights.
 pub(crate) const SHADOW_RAISED: &str = "shadow.raised";
+
+/// The scrim a modal lays over the page behind it: black at a theme-chosen
+/// alpha, so the page dims rather than recolours. Bound as `background` on
+/// a window-covering surface, never composited into another node's rect
+/// (`crate::token::shipped::SCRIM_TOKEN`).
+pub(crate) const OVERLAY_SCRIM: &str = "overlay.scrim";
 
 pub(crate) const SURFACE_BASE: &str = "surface.base";
 pub(crate) const SURFACE_RAISED: &str = "surface.raised";
@@ -182,6 +191,7 @@ pub(crate) const ALL: &[&str] = &[
     SPACING_04,
     SPACING_05,
     SPACING_07,
+    SPACING_09,
     SHAPE_NONE,
     SHAPE_SM,
     SHAPE_MD,
@@ -194,6 +204,7 @@ pub(crate) const ALL: &[&str] = &[
     TYPOGRAPHY_HEADING,
     TYPOGRAPHY_HEADING_SM,
     SHADOW_RAISED,
+    OVERLAY_SCRIM,
     SURFACE_BASE,
     SURFACE_RAISED,
     LAYER_ACCENT,

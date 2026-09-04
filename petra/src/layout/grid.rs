@@ -14,7 +14,7 @@ use crate::geom::{Align, Axis, Rect, Size};
 use crate::layout::constraints::FIT_EPSILON;
 use crate::layout::{LayoutCtx, Proposal, SizeProposal, Slot, semantics_of};
 use crate::tree::props::{GridSpan, max_row_tracks};
-use crate::tree::{KeyPath, TrackSize, ViewNode};
+use crate::tree::{KeyPath, NodeKind, TrackSize, ViewNode};
 
 /// Measure this container under `proposal`.
 ///
@@ -179,6 +179,13 @@ pub fn place(
                 continue;
             };
             let cell = cell.size();
+            if child.kind == NodeKind::Surface {
+                // A surface never takes the cell: it floats against the
+                // window (`overlay_surface`), and its constraints bound that
+                // floating box. A scrim asking for more than any window
+                // would otherwise report this grid as truncated.
+                continue;
+            }
             if align == Align::Stretch {
                 if child.constraints.horizontal.clamp(cell.w) > cell.w + FIT_EPSILON
                     || child.constraints.vertical.clamp(cell.h) > cell.h + FIT_EPSILON

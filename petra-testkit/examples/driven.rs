@@ -60,6 +60,7 @@ mod driven {
 
     use egui::{Context, Pos2, RawInput};
 
+    use gorgon_petra::frame::PetrifiedFrame;
     use gorgon_petra::input::{InputEvent, Route};
     use gorgon_petra::layout::{ChangeSet, RowSource};
     use gorgon_petra::token::{Presenter, dark};
@@ -88,7 +89,7 @@ mod driven {
             super::view(self.clicks)
         }
 
-        fn handle(&mut self, event: &InputEvent, route: &Route) {
+        fn handle(&mut self, event: &InputEvent, route: &Route, _frame: Option<&PetrifiedFrame>) {
             // The real-input path (T035's sabotage target): a click only
             // counts when the router itself delivered a press to this
             // node — never a shortcut that increments on the request

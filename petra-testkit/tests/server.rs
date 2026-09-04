@@ -21,6 +21,7 @@ use serde_json::{Value, json};
 use tokio::net::UnixStream;
 
 use gorgon_petra::component::button;
+use gorgon_petra::frame::PetrifiedFrame;
 use gorgon_petra::input::{InputEvent, Route};
 use gorgon_petra::layout::{ChangeSet, RowSource};
 use gorgon_petra::token::{Presenter, dark};
@@ -44,7 +45,7 @@ impl App for DemoApp {
         ViewNode::new(NodeKind::Stack, "root").child(button("go", "Go"))
     }
 
-    fn handle(&mut self, _event: &InputEvent, _route: &Route) {}
+    fn handle(&mut self, _event: &InputEvent, _route: &Route, _frame: Option<&PetrifiedFrame>) {}
 
     fn take_changes(&mut self) -> ChangeSet {
         ChangeSet::All

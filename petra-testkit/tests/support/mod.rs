@@ -42,6 +42,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 
+use gorgon_petra::frame::PetrifiedFrame;
 use gorgon_petra::input::{InputEvent, Route};
 use gorgon_petra::layout::{ChangeSet, RowSource};
 use gorgon_petra::token::{Presenter, dark};
@@ -104,7 +105,7 @@ impl App for CountingApp {
         ))
     }
 
-    fn handle(&mut self, event: &InputEvent, route: &Route) {
+    fn handle(&mut self, event: &InputEvent, route: &Route, _frame: Option<&PetrifiedFrame>) {
         // The real-input path. A click only counts when the router itself
         // — not the request that asked for one — delivered a press to
         // `/root/go`. This condition is the sabotage target: bypassing it

@@ -81,6 +81,7 @@ use gorgon_petra::component::{
     button, checkbox, field, heading, list_row, on_layer, primary_button, progress, radio, section,
     status, tab, tab_bar, text, toggle,
 };
+use gorgon_petra::frame::PetrifiedFrame;
 use gorgon_petra::geom::{Align, Axis};
 use gorgon_petra::input::{InputEvent, PointerButton, Route, activates};
 use gorgon_petra::layout::{ChangeSet, RowSource};
@@ -1477,7 +1478,7 @@ impl App for Parity {
         shell
     }
 
-    fn handle(&mut self, event: &InputEvent, route: &Route) {
+    fn handle(&mut self, event: &InputEvent, route: &Route, _frame: Option<&PetrifiedFrame>) {
         // Before anything, including `last_event`. See `Parity::frozen`: while
         // this page is being captured it must move by not one pixel, and
         // `last_event` is drawn through `note`, which wraps — a longer echo
@@ -2307,10 +2308,11 @@ mod tests {
         let (_ctx, window) = settled(Presenter::new(dark()));
         let node = bump_node(&window);
         let route = Route::Pointer { node: node.clone() };
+        let frame = window.host.frame().expect("a settled frame");
         let start = Parity::default().progress;
 
         let mut interactive = Parity::default();
-        interactive.handle(&primary_press(), &route);
+        interactive.handle(&primary_press(), &route, Some(frame));
         assert!(
             (interactive.progress - start).abs() > f32::EPSILON,
             "the interactive page must still act on a click, or this test proves nothing \
@@ -2322,7 +2324,7 @@ mod tests {
             frozen: true,
             ..Parity::default()
         };
-        frozen.handle(&primary_press(), &route);
+        frozen.handle(&primary_press(), &route, Some(frame));
         assert_eq!(
             frozen.progress, start,
             "a frozen page moved on a click; the desktop capture is no longer a pure \

@@ -362,23 +362,23 @@ mod tests {
         );
     }
 
-    /// The decision this leaf's Agent Note names: a `Layer::Popup`/
-    /// `Layer::Modal` `Surface` child sits *inside* its parent overlay's
-    /// padding, not outside it. `Overlay` hands every child — `Surface`
-    /// included — the identical padding-inset content rect, with no
-    /// kind-based special case, and a `Surface` anchors and clamps against
-    /// exactly the rect it is handed as its `slot`
-    /// (`overlay_surface.rs`'s own module doc, "what 'the window' means
-    /// here").
+    /// An overlay's padding does not box a `Surface` child. `Overlay` hands
+    /// every child — `Surface` included — the identical padding-inset
+    /// content rect, with no kind-based special case, and until 2026-09-04
+    /// a `Surface` anchored and clamped against exactly that rect, so this
+    /// test asserted x = 200, "inside the padding". A surface now floats
+    /// against the walk's window ([`Slot::window`], `overlay_surface.rs`'s
+    /// module doc, "what 'the window' means here"): the slot rect a parent
+    /// offers, padded or not, is not where a floating box is measured
+    /// against, and a padded overlay is no exception.
     ///
-    /// Asymmetric padding (only on the left) makes the two possible
-    /// outcomes distinguishable: a `Viewport`-anchored, zero-size popup
-    /// centred in the raw outer rect (0, 0, 300, 150) would land its
-    /// top-left at x = 150; centred in the padding-inset rect
-    /// (100, 0, 200, 150) it lands at x = 200 instead. This test proves it
-    /// is 200 — inside the padding.
+    /// Asymmetric padding (only on the left) keeps the two outcomes
+    /// distinguishable: a `Viewport`-anchored, zero-size popup centred in
+    /// the window (0, 0, 300, 150) lands its top-left at x = 150; centred in
+    /// the padding-inset rect (100, 0, 200, 150) it would land at x = 200.
+    /// This test proves it is 150.
     #[test]
-    fn a_padded_overlays_popup_child_is_anchored_inside_the_padding() {
+    fn a_padded_overlays_popup_child_is_anchored_in_the_window_not_the_padding() {
         let popup = ViewNode::new(NodeKind::Surface, "popup").with_props(Props {
             layer: Some(Layer::Popup),
             anchor: Some(Anchor::Viewport),
@@ -403,11 +403,11 @@ mod tests {
 
         let popup_rect = sink.as_slice()[1].rect;
         assert_eq!(
-            popup_rect.x, 200.0,
-            "a Viewport-anchored, zero-size popup centred in the \
-             padding-inset (100, 0, 200, 150) rect lands its top-left at \
-             x=200; centred in the raw outer (0, 0, 300, 150) rect it would \
-             land at x=150 instead"
+            popup_rect.x, 150.0,
+            "a Viewport-anchored, zero-size popup centred in the window \
+             (0, 0, 300, 150) lands its top-left at x=150; centred in the \
+             padding-inset (100, 0, 200, 150) rect it would land at x=200, \
+             which is the overlay's padding boxing a surface that floats"
         );
     }
 }

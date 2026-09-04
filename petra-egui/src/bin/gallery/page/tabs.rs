@@ -122,7 +122,13 @@ mod tests {
                     ],
                 )
             }
-            fn handle(&mut self, _event: &InputEvent, _route: &Route) {}
+            fn handle(
+                &mut self,
+                _event: &InputEvent,
+                _route: &Route,
+                _frame: Option<&gorgon_petra::frame::PetrifiedFrame>,
+            ) {
+            }
             fn take_changes(&mut self) -> ChangeSet {
                 ChangeSet::All
             }
