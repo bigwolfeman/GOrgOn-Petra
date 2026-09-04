@@ -12,8 +12,20 @@
 //! Read-only [`tag`] is not interactive. [`dismissible_tag`] is a labelled
 //! button `"Dismiss {label}"` with a visible `"Dismiss"` word — never an
 //! icon-only close (FR-026). [`selectable_tag`] is [`Role::Button`] plus
-//! `Semantics.selected`.
+//! `Semantics.selected`, plus [`IconMark::Check`] when selected — Carbon
+//! gives selectable tags no icon spec (unlike Structured list's own
+//! `RadioButtonChecked`, `.agents/research/08-25-2026/Carbon-Component-Inventory/slice-e.md`),
+//! but a measured render still failed the same test a spec would have
+//! caught: selectable tags carry only core tokens
+//! (`$layer`/`$border-inverse`/`$text-primary`, slice-e:150), and stepping
+//! `layer-selected` off the same `$layer` a selectable tag already rests
+//! on (`layer.raised`) is the *smallest* step this vocabulary has — a
+//! captured render measured the selected and unselected fills only 2 of
+//! 255 sRGB steps apart in the dark theme, not merely "hard for a
+//! colour-blind reader" but indistinguishable for any reader. See
+//! [`selectable_tag`]'s own doc.
 
+use super::icon::{IconMark, icon};
 use super::stack;
 use super::text::text;
 use super::tokens::{
@@ -87,16 +99,23 @@ pub fn dismissible_tag(key: impl Into<Key>, label: impl Into<String>) -> ViewNod
 
 /// Selectable tag. [`Role::Button`] + `Semantics.selected`. Outline is
 /// [`BORDER_SUBTLE`] (high-contrast/outline stand-in). No colour set.
+///
+/// Selected additionally draws [`IconMark::Check`] ahead of the title.
+/// Carbon's own anatomy names no icon for this variant — the module doc
+/// explains why this is built anyway: `layer-selected` is a measured 2-of-
+/// 255 sRGB step off the resting `layer.raised` fill in the dark theme, a
+/// render no reader recovers reliably. [`IconMark::Check`] is the
+/// vocabulary's existing "this is on" glyph
+/// ([`super::tile::selectable_tile`], the toggle, radio, checkbox), reused
+/// rather than invented.
 pub fn selectable_tag(key: impl Into<Key>, label: impl Into<String>, selected: bool) -> ViewNode {
     let label = label.into();
-    let mut node = shell(
-        key,
-        HEIGHT_MD,
-        SPACING_03,
-        vec![title_text("label", label.clone())],
-        true,
-        true,
-    );
+    let mut parts = Vec::new();
+    if selected {
+        parts.push(icon("mark", IconMark::Check));
+    }
+    parts.push(title_text("label", label.clone()));
+    let mut node = shell(key, HEIGHT_MD, SPACING_03, parts, true, true);
     node.props
         .tokens
         .insert("background@selected".into(), t(LAYER_SELECTED));
@@ -294,6 +313,25 @@ mod tests {
         let off = selectable_tag("env", "prod", false);
         assert!(!off.semantics.selected);
         assert!(off.is_interactive());
+    }
+
+    /// A5 (2026-09-04): a captured render measured `layer-selected` only 2
+    /// of 255 sRGB steps off the resting `layer.raised` fill in the dark
+    /// theme — fill tone alone does not carry this state for any reader.
+    /// Selected must carry a canvas mark; unselected must not.
+    #[test]
+    fn selectable_tag_selection_carries_a_second_channel() {
+        let on = selectable_tag("env", "prod", true);
+        assert!(
+            has_canvas(&on),
+            "layer-selected measured 2 of 255 sRGB steps off the resting \
+             fill; selection must not be fill-tone alone"
+        );
+        let off = selectable_tag("env", "prod", false);
+        assert!(
+            !has_canvas(&off),
+            "the mark is the on-state glyph, not a permanent decoration"
+        );
     }
 
     #[test]

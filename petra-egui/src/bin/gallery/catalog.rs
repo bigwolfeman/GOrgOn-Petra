@@ -829,6 +829,15 @@ impl Catalog {
                     vec![
                         tag("tag-ro", "Read only"),
                         dismissible_tag("tag-x", "Filter"),
+                        // Two fixed instances, unselected and selected: the
+                        // page's own interactive `TAG_SEL` only ever shows
+                        // one state at a time (defaults false), so a capture
+                        // could not show whether selectable_tag's selected
+                        // and unselected fills are distinguishable — the
+                        // A5 colour-channel audit's own defect in the
+                        // catalog, not the component.
+                        selectable_tag("tag-sel-off", "Unselected", false),
+                        selectable_tag("tag-sel-on", "Selected", true),
                         selectable_tag(TAG_SEL, "Selectable", self.tag_sel),
                     ],
                 )],

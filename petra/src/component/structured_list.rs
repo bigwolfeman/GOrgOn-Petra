@@ -5,7 +5,12 @@
 //! 1. Container — `display:table` → [`Role::Table`].
 //! 2. Header row — [`Role::Row`] of [`Role::Cell`]s. Not interactive.
 //! 3. Data rows — [`structured_list_row`]: [`Role::Row`], selectable,
-//!    `Semantics.selected` never colour alone.
+//!    `Semantics.selected` never colour alone — Carbon's own anatomy draws
+//!    `RadioButtonChecked` / `RadioButton` beside the row (slice-e, Icons:
+//!    "the only two icons this component ever renders"), so a row with a
+//!    fill change and nothing else is not an approximation, it is a
+//!    channel Carbon specifies and this file used to drop. See
+//!    [`with_selection_mark`].
 //!
 //! Padding is `$spacing-05` (16) inline on each cell (see
 //! `cell_padding_inline`), not a single inset on the row: each row is a
@@ -14,13 +19,16 @@
 //! defect). Default row min-height is Carbon's 60. The 10-colour tag set
 //! is unrelated; this file does not invent hues.
 
+use super::icon::{IconMark, icon};
 use super::stack;
 use super::tokens::{
-    BORDER_SUBTLE, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SPACING_05, SURFACE_BASE, t,
+    BORDER_SUBTLE, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SPACING_03, SPACING_05,
+    SURFACE_BASE, t,
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
-    InsetRefs, Interaction, Key, NodeKind, Props, Role, Semantics, TrackSize, ViewNode,
+    AxisConstraint, InsetRefs, Interaction, Key, NodeKind, Props, Role, Semantics, TrackSize,
+    ViewNode,
 };
 
 /// Carbon default structured-list row height (style page Size table).
@@ -58,10 +66,12 @@ pub fn structured_list(
 
 /// One selectable data row. Interactive, [`Role::Row`], cells stamped
 /// [`Role::Cell`]. `selected` is a declared fact plus the four-fill set
-/// [`super::list_row`] pioneered.
+/// [`super::list_row`] pioneered, plus [`with_selection_mark`]'s icon —
+/// Carbon's own second channel, not [`super::list_row`]'s.
 pub fn structured_list_row(key: impl Into<Key>, cells: Vec<ViewNode>, selected: bool) -> ViewNode {
     let key = key.into();
     let label = row_label(key.as_str(), &cells);
+    let cells = with_selection_mark(cells, selected);
     let mut node = row_shell(key, cells);
     for (slot, token) in [
         ("background", SURFACE_BASE),
@@ -75,6 +85,76 @@ pub fn structured_list_row(key: impl Into<Key>, cells: Vec<ViewNode>, selected: 
     let mut node = node.interactive(Role::Row, label, ROW_INTENTS);
     node.semantics.selected = selected;
     node
+}
+
+/// Wraps the row's leading cell with a selection mark, Carbon's own second
+/// channel for this component (slice-e Icons: `RadioButtonChecked` /
+/// `RadioButton`, "the only two icons this component ever renders").
+///
+/// [`IconMark`] has no radio-pair glyph — it is the vocabulary's existing
+/// stand-in for "this is the on state" ([`super::tile::selectable_tile`],
+/// the toggle, radio, checkbox, [`super::progress_indicator`]'s complete
+/// step), not a new SVG path, and reusing it here is the same move those
+/// made rather than new geometry for a mark this vocabulary already has
+/// one of.
+///
+/// The mark sits at the row's leading edge — Carbon's own
+/// `enable-v12-structured-list-visible-icons` placement, the one slice-e
+/// calls *visible at all times* rather than the legacy right-edge
+/// placement that stays `fill: transparent` until hover/checked, which is
+/// the same colour-only failure this fix exists to close.
+///
+/// The mark's footprint is reserved on **every** row, selected or not — a
+/// same-size transparent spacer stands in when it is absent
+/// ([`selection_mark`]). An icon that only appeared on the selected row
+/// would make row width depend on selection, which is exactly the
+/// `31-structured-list.png` raggedness [`row_shell`]'s own doc already
+/// fixed once, one level deeper (inside a cell instead of across a row).
+/// The header row does not call this — Carbon's icon is "(Selectable
+/// only)", tbody rows alone — so the header's own leading column does not
+/// reserve this width; `row_shell`'s shared `Weight` tracks still keep
+/// every column's own boundary identical column-to-column, header
+/// included, because track width comes from the Grid's weight split, not
+/// from a cell's content.
+fn with_selection_mark(cells: Vec<ViewNode>, selected: bool) -> Vec<ViewNode> {
+    let mut cells = cells.into_iter();
+    let Some(first) = cells.next() else {
+        return Vec::new();
+    };
+    let mut lead = stack(
+        "lead",
+        Axis::Horizontal,
+        Some(SPACING_03),
+        vec![selection_mark(selected), first],
+    );
+    lead.props.align = Some(Align::Center);
+    std::iter::once(lead).chain(cells).collect()
+}
+
+/// The mark itself: [`IconMark::Check`] when selected, a same-size
+/// transparent spacer when not. Sized off the icon's own constructed
+/// constraints rather than a duplicated constant — the same idiom
+/// [`super::progress_indicator::complete_mark`] uses to centre its own
+/// check without importing [`super::icon`]'s private `SIZE`.
+fn selection_mark(selected: bool) -> ViewNode {
+    let mark = icon("mark", IconMark::Check);
+    if selected {
+        return mark;
+    }
+    let w = mark.constraints.horizontal.min.unwrap_or(0.0);
+    let h = mark.constraints.vertical.min.unwrap_or(0.0);
+    let mut spacer = stack("mark", Axis::Horizontal, None, vec![]);
+    spacer.constraints.horizontal = AxisConstraint {
+        min: Some(w),
+        max: Some(w),
+        priority: 0,
+    };
+    spacer.constraints.vertical = AxisConstraint {
+        min: Some(h),
+        max: Some(h),
+        priority: 0,
+    };
+    spacer
 }
 
 fn plain_row(key: impl Into<Key>, cells: Vec<ViewNode>) -> ViewNode {
@@ -210,6 +290,10 @@ mod tests {
         node.props.tokens.get(slot).map(|name| name.as_str())
     }
 
+    fn has_canvas(node: &ViewNode) -> bool {
+        node.kind == NodeKind::Canvas || node.children.iter().any(|child| has_canvas(child))
+    }
+
     /// `31-structured-list.png` showed `NameRole` with no gap between the
     /// cells because padding lived on the whole row (a single inset around
     /// all cells at once) instead of between them. The fix moved
@@ -282,6 +366,28 @@ mod tests {
         let off = structured_list_row("r0", vec![text("p", "Alpha")], false);
         assert!(!off.semantics.selected);
         assert!(off.is_interactive());
+    }
+
+    /// A5 (2026-09-04): Carbon's own anatomy draws `RadioButtonChecked` /
+    /// `RadioButton` beside a selected row (slice-e Icons); a fill change
+    /// alone is a channel this file used to drop, not an approximation of
+    /// one Carbon never specified. Selected rows must carry a canvas mark;
+    /// unselected rows must not — the mark is the on-state glyph, not a
+    /// permanent decoration.
+    #[test]
+    fn structured_list_row_selection_carries_a_second_channel() {
+        let on = structured_list_row("r0", vec![text("p", "Alpha"), text("c", "12")], true);
+        assert!(
+            has_canvas(&on),
+            "Carbon's own anatomy draws RadioButtonChecked beside a \
+             selected row (slice-e Icons); selection must not be fill-tone \
+             alone"
+        );
+        let off = structured_list_row("r0", vec![text("p", "Alpha"), text("c", "12")], false);
+        assert!(
+            !has_canvas(&off),
+            "the mark is the on-state glyph, not a permanent decoration"
+        );
     }
 
     const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
@@ -367,6 +473,34 @@ mod tests {
         }
     }
 
+    /// A5 (2026-09-04): [`with_selection_mark`]'s own doc names the risk —
+    /// an icon that only appeared on the selected row would make that
+    /// row's leading-cell content depend on selection, the same
+    /// `31-structured-list.png` raggedness [`row_shell`]'s doc already
+    /// fixed once, one level deeper. The reserved spacer closes it: the
+    /// leading label ("Basic" in the unselected row, "Pro" in the
+    /// selected one) must land at the same x in both, because the mark's
+    /// footprint — icon or spacer — is the same size either way.
+    #[test]
+    fn selection_mark_reserves_the_same_width_selected_or_not() {
+        let frame = petrify_lone(fixture());
+        let label_x = |suffix: &str| {
+            frame
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with(suffix))
+                .unwrap_or_else(|| panic!("no placement ending {suffix}"))
+                .rect
+                .x
+        };
+        assert_eq!(
+            label_x("/r0/c0/lead/p0"),
+            label_x("/r1/c0/lead/p1"),
+            "the leading label must start at the same x whether its own \
+             row is selected or not"
+        );
+    }
+
     /// Check F: a selectable data row declares `Focus` and is reachable;
     /// the header row declares no interactions at all (slice-e: "no
     /// interactive states because it is not operable by a mouse or
@@ -405,13 +539,27 @@ mod tests {
             let node = fixture();
 
             fn cell_text<'a>(row: &'a ViewNode, cell_key: &str) -> &'a ViewNode {
-                row.children
+                let first = row
+                    .children
                     .iter()
                     .find(|c| c.key.as_str() == cell_key)
                     .unwrap_or_else(|| panic!("missing cell {cell_key}"))
                     .children
                     .first()
-                    .unwrap_or_else(|| panic!("cell {cell_key} carries no text child"))
+                    .unwrap_or_else(|| panic!("cell {cell_key} carries no text child"));
+                // A5: the leading cell now wraps its label behind the
+                // selection mark (`with_selection_mark`'s own `lead` node,
+                // children `[mark, label]`) — reach past it to the label.
+                // Other cells are untouched, so `first` is already the
+                // label there.
+                if first.key.as_str() == "lead" {
+                    first
+                        .children
+                        .last()
+                        .unwrap_or_else(|| panic!("cell {cell_key}'s lead carries no label"))
+                } else {
+                    first
+                }
             }
 
             let header = node
