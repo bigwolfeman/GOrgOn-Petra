@@ -191,7 +191,11 @@ mod tests {
         BORDER_SUBTLE, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SURFACE_RAISED,
     };
     use super::{MIN_BLOCK, MIN_INLINE, clickable_tile, expandable_tile, selectable_tile, tile};
-    use crate::tree::{Interaction, NodeKind, Role};
+    use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
+    use crate::geom::{Axis, Size};
+    use crate::testing::{Harness, validated_with};
+    use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
+    use crate::tree::{Interaction, NodeKind, Props, Registry, Role, ViewNode};
 
     fn token<'a>(node: &'a crate::tree::ViewNode, slot: &str) -> Option<&'a str> {
         node.props.tokens.get(slot).map(|name| name.as_str())
@@ -323,5 +327,194 @@ mod tests {
         );
         assert_eq!(token(&open, "border"), Some(BORDER_SUBTLE));
         assert_eq!(token(&open, "background@hover"), Some(LAYER_HOVER));
+    }
+
+    fn named<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
+        fn walk<'a>(node: &'a ViewNode, key: &str) -> Option<&'a ViewNode> {
+            if node.key.as_str() == key {
+                return Some(node);
+            }
+            node.children.iter().find_map(|child| walk(child, key))
+        }
+        walk(node, key).unwrap_or_else(|| panic!("no descendant keyed `{key}`"))
+    }
+
+    const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
+
+    fn accepting_registry() -> Registry {
+        Registry::with_vocabulary(standard_vocabulary())
+    }
+
+    fn petrify_lone(node: ViewNode) -> PetrifiedFrame {
+        let root = ViewNode::new(NodeKind::Stack, "root")
+            .with_props(Props {
+                axis: Some(Axis::Vertical),
+                ..Props::default()
+            })
+            .child(node);
+        let registry = accepting_registry();
+        let mut harness = Harness::new();
+        let viewport = Viewport::new(VIEWPORT, ThemeMode::Dark);
+        harness.scale = viewport.scale;
+        petrify(
+            1,
+            validated_with(&root, &registry),
+            &mut harness.ctx(),
+            viewport,
+            TransitionActivity::default(),
+        )
+    }
+
+    fn color(theme: &Theme, name: &str) -> ColorValue {
+        match theme.value(&TokenName::new(name).unwrap()).unwrap() {
+            TokenValue::Color(c) => *c,
+            other => panic!("{name} is not a colour: {other:?}"),
+        }
+    }
+
+    /// Check C/D across all four kinds. `selectable_tile`'s check mark
+    /// (`IconMark::Check`) and `expandable_tile`'s `"expanded"`/
+    /// `"collapsed"` word are the class-4 suspects named in this group's
+    /// brief; neither carries its own `Constraints`, unlike Modal's
+    /// `close_button` or Number input's stepper, so this is the
+    /// frame-level proof neither overflows, not a substitute for reading
+    /// the code.
+    #[test]
+    fn frame_geometry_has_no_degenerate_or_overflowing_placements() {
+        let cases: Vec<(&str, ViewNode)> = vec![
+            ("base", tile("t", "Grouped content")),
+            (
+                "clickable",
+                clickable_tile("t", "Open project", "Project Alpha"),
+            ),
+            ("selectable-on", selectable_tile("t", "Plan A", true)),
+            ("selectable-off", selectable_tile("t", "Plan A", false)),
+            (
+                "expandable-open",
+                expandable_tile("t", "Details", true, "the rest"),
+            ),
+            (
+                "expandable-shut",
+                expandable_tile("t", "Details", false, "the rest"),
+            ),
+        ];
+        for (label, node) in cases {
+            let frame = petrify_lone(node);
+            assert!(!frame.placements.is_empty(), "{label}: nothing placed");
+            for p in &frame.placements {
+                assert!(
+                    p.rect.w > 0.0 && p.rect.h > 0.0,
+                    "{label}: {} placed with a degenerate rect {:?}",
+                    p.id,
+                    p.rect
+                );
+                assert!(
+                    !p.paint.overflowed,
+                    "{label}: {} drew content larger than its own rect",
+                    p.id
+                );
+                if let Some(parent_idx) = p.parent {
+                    let parent = &frame.placements[parent_idx];
+                    let fits = p.rect.x >= parent.rect.x - 0.01
+                        && p.rect.y >= parent.rect.y - 0.01
+                        && p.rect.x + p.rect.w <= parent.rect.x + parent.rect.w + 0.01
+                        && p.rect.y + p.rect.h <= parent.rect.y + parent.rect.h + 0.01;
+                    assert!(
+                        fits,
+                        "{label}: {} (rect {:?}) extends outside its parent {} (rect {:?})",
+                        p.id, p.rect, parent.id, parent.rect
+                    );
+                }
+            }
+        }
+    }
+
+    /// Check F: the base tile is a container with no interactions and is
+    /// never reachable; the three interactive kinds declare `Focus` and
+    /// are.
+    #[test]
+    fn interactive_kinds_are_reachable_and_the_base_tile_is_not() {
+        for (label, node, should_be_focusable) in [
+            ("base", tile("t", "Grouped content"), false),
+            (
+                "clickable",
+                clickable_tile("t", "Open project", "Project Alpha"),
+                true,
+            ),
+            ("selectable", selectable_tile("t", "Plan A", false), true),
+            (
+                "expandable",
+                expandable_tile("t", "Details", false, "the rest"),
+                true,
+            ),
+        ] {
+            let frame = petrify_lone(node);
+            let focus = crate::focus::FocusTree::from_placements(
+                &frame.placements,
+                &std::collections::BTreeMap::new(),
+            );
+            let placement = frame
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with("/t"))
+                .expect("the tile is placed");
+            let reachable = focus.order().iter().any(|o| o == &placement.id);
+            assert_eq!(
+                reachable, should_be_focusable,
+                "{label}: focus reachability was {reachable}, expected {should_be_focusable}"
+            );
+        }
+    }
+
+    /// Check E: the body/label text against the tile's own resting fill,
+    /// across all four kinds, in both themes.
+    #[test]
+    fn tile_text_clears_aa_contrast_against_its_own_fill() {
+        const MIN_TEXT_CONTRAST: f32 = 4.5;
+        for theme in [crate::token::light(), crate::token::dark()] {
+            for (label, node, keys) in [
+                ("base", tile("t", "Grouped content"), vec!["body"]),
+                (
+                    "clickable",
+                    clickable_tile("t", "Open project", "Project Alpha"),
+                    vec!["body"],
+                ),
+                (
+                    "selectable",
+                    selectable_tile("t", "Plan A", true),
+                    vec!["label"],
+                ),
+                (
+                    "expandable",
+                    expandable_tile("t", "Details", true, "the rest"),
+                    vec!["label", "disclosure", "body"],
+                ),
+            ] {
+                let tile_bg_name = node
+                    .props
+                    .tokens
+                    .get("background")
+                    .unwrap_or_else(|| panic!("{label}: tile binds a resting background"));
+                let tile_bg = color(&theme, tile_bg_name.as_str());
+                for key in keys {
+                    let text_node = named(&node, key);
+                    let fg_name = text_node
+                        .props
+                        .tokens
+                        .get("foreground")
+                        .unwrap_or_else(|| panic!("{label}: {key} binds a foreground"));
+                    let opacity = text_node.props.opacity.unwrap_or(1.0);
+                    let fg = color(&theme, fg_name.as_str())
+                        .faded(opacity)
+                        .over(tile_bg);
+                    let ratio = fg.contrast_ratio(tile_bg);
+                    assert!(
+                        ratio >= MIN_TEXT_CONTRAST,
+                        "{label} {key} at {ratio:.2}:1 against {} fails AA {MIN_TEXT_CONTRAST}:1",
+                        tile_bg_name.as_str()
+                    );
+                }
+            }
+        }
     }
 }

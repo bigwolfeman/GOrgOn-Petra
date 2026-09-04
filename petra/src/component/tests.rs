@@ -18,15 +18,19 @@ use crate::tree::{NodeKind, Props, Registry, ViewNode};
 use super::tokens::{ACCENT_PRIMARY, BORDER_SUBTLE, TEXT_ON_ACCENT};
 use super::{
     MAX_LAYER_DEPTH, accordion, accordion_item, ai_label, ai_label_inline, breadcrumb,
-    breadcrumb_item, button, checkbox, code_snippet, code_snippet_inline, code_snippet_multi,
-    contained_list, contained_list_disclosed, content_switcher, content_switcher_item, data_table,
-    data_table_row, data_table_row_expandable, data_table_sort_header, date_picker, disabled,
-    dropdown, dropdown_option, field, file_uploader, file_uploader_item, form, heading,
+    breadcrumb_item, button, checkbox, clickable_tile, code_snippet, code_snippet_inline,
+    code_snippet_multi, contained_list, contained_list_disclosed, contained_tab,
+    contained_tab_bar, content_switcher, content_switcher_item, data_table, data_table_row,
+    data_table_row_expandable, data_table_sort_header, date_picker, disabled, dismissible_tag,
+    dropdown, dropdown_option, expandable_tile, field, field_fluid, field_labeled,
+    field_lg, field_readonly, field_sm, file_uploader, file_uploader_item, form, heading,
     inline_loading, layer_tokens, link, list_item, list_item_with, list_row, loading, loading_sm,
     menu_button, menu_item, modal, notification_actionable, notification_inline,
     notification_toast, number_input, on_layer, ordered_list, pagination, primary_button,
-    progress, progress_indicator, progress_sm, progress_step, radio, search, section, status, tab,
-    tab_bar, text, tile, toggle, toggle_sm, unordered_list,
+    progress, progress_indicator, progress_sm, progress_step, radio, search, section,
+    selectable_tag, selectable_tile, select, select_lg, select_sm, slider, slider_readonly,
+    status, structured_list, structured_list_row, tab, tab_bar, tag, tag_lg, tag_sm, text, tile,
+    toggle, toggle_sm, unordered_list, vertical_tab, vertical_tab_bar,
 };
 
 const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
@@ -272,6 +276,80 @@ fn full_gallery() -> ViewNode {
         ],
     );
 
+    // Group 5's own seven (Select, Slider, Structured list, Tabs, Tag,
+    // Text input, Tile). Select ships no invalid-state constructor at all
+    // (scope gap, recorded in the plan) so only the closed and disabled
+    // forms appear here. The `tabs` section below already carries Line
+    // selected/unselected, so this section covers Contained and Vertical
+    // instead. `field_invalid` binds an accent `border` (same pattern as
+    // Number input's invalid form, carbon4's own comment above) and so is
+    // audited only inside `field.rs`'s own module, to keep
+    // `containers_take_a_tone_and_controls_take_an_edge` a single-tone
+    // invariant.
+    let carbon5 = section(
+        "carbon5",
+        "Carbon (group 5)",
+        vec![
+            select("sel-theme", "Theme", "Dark"),
+            select_sm("sel-sm", "Theme", "Dark"),
+            select_lg("sel-lg", "Theme", "Dark"),
+            disabled(select("sel-disabled", "Theme", "Dark")),
+            slider("sl-min", "Volume", 0.0),
+            slider("sl-mid", "Volume", 0.5),
+            slider("sl-max", "Volume", 1.0),
+            slider_readonly("sl-readonly", "Volume", 0.5),
+            structured_list(
+                "stl-plans",
+                vec![text("stl-h0", "Plan"), text("stl-h1", "Price")],
+                vec![
+                    structured_list_row(
+                        "stl-r0",
+                        vec![text("stl-p0", "Basic"), text("stl-c0", "$12")],
+                        false,
+                    ),
+                    structured_list_row(
+                        "stl-r1",
+                        vec![text("stl-p1", "Pro"), text("stl-c1", "$24")],
+                        true,
+                    ),
+                ],
+            ),
+            contained_tab_bar(
+                "tabs-contained",
+                vec![
+                    contained_tab("tc-selected", "Fibers", true),
+                    contained_tab("tc-unselected", "Trace", false),
+                    disabled(contained_tab("tc-disabled", "Archive", false)),
+                ],
+            ),
+            vertical_tab_bar(
+                "tabs-vertical",
+                vec![
+                    vertical_tab("tv-selected", "Fibers", true),
+                    vertical_tab("tv-unselected", "Trace", false),
+                ],
+            ),
+            tag("tag-ro", "prod"),
+            tag_sm("tag-sm", "prod"),
+            tag_lg("tag-lg", "prod"),
+            dismissible_tag("tag-dismiss", "prod"),
+            selectable_tag("tag-select-on", "prod", true),
+            selectable_tag("tag-select-off", "prod", false),
+            field("txt-default", "Fiber name"),
+            disabled(field("txt-disabled", "Fiber name")),
+            field_readonly("txt-readonly", "Fiber name"),
+            field_labeled("txt-labeled", "Fiber name"),
+            field_fluid("txt-fluid", "Fiber name"),
+            field_sm("txt-sm", "Fiber name"),
+            field_lg("txt-lg", "Fiber name"),
+            clickable_tile("tile-click", "Open project", "Project Alpha"),
+            selectable_tile("tile-select-on", "Plan A", true),
+            selectable_tile("tile-select-off", "Plan A", false),
+            expandable_tile("tile-expand-open", "Details", true, "the rest"),
+            expandable_tile("tile-expand-shut", "Details", false, "the rest"),
+        ],
+    );
+
     let tabs = section(
         "tabs",
         "Tabs",
@@ -320,6 +398,7 @@ fn full_gallery() -> ViewNode {
         .child(carbon2)
         .child(carbon3)
         .child(carbon4)
+        .child(carbon5)
         .child(tabs)
         .child(readouts)
         .child(list);
@@ -758,7 +837,7 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
     /// Every node in [`full_gallery`] that may draw a border, by the key
     /// path it appears at. An exact set: a node missing from here that draws
     /// one fails, and a node listed here that stops drawing one fails too.
-    const DRAWS_AN_EDGE: [&str; 34] = [
+    const DRAWS_AN_EDGE: [&str; 55] = [
         // `field`: an empty well with no boundary does not read as a place
         // to type. See `field`'s own doc for why it keeps one when `button`
         // does not.
@@ -893,6 +972,65 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         // the same directional-rule-approximated-as-a-full-outline class
         // as Number input's well above.
         "root/carbon4/srch-filter",
+        // Select's closed field: Carbon's `border-block-end: 1px solid
+        // $border-strong` on `.cds--select-input` (slice-e, Select
+        // anatomy #3), the same `field`-class input-well pairing as
+        // `field`, Dropdown, Date picker, Number input and Search above.
+        // Every size (sm/md/lg) and the disabled form all bind it the
+        // same way `select_sized` does — `disabled()` never touches a
+        // token binding, same precedent as `ni-disabled` above.
+        "root/carbon5/sel-disabled",
+        "root/carbon5/sel-lg",
+        "root/carbon5/sel-sm",
+        "root/carbon5/sel-theme",
+        // Structured list: Carbon's own `1px solid $border-subtle` top
+        // divider between rows, with a bottom divider on the tbody's last
+        // row (slice-e, "`.cds--structured-list-row` gets a top divider;
+        // the tbody's last row additionally gets a bottom divider") — the
+        // same row-rule class as the Accordion item and Data table rows
+        // above. `plain_row` (the header) and `structured_list_row` (each
+        // data row) both bind it unconditionally.
+        "root/carbon5/stl-plans/header",
+        "root/carbon5/stl-plans/stl-r0",
+        "root/carbon5/stl-plans/stl-r1",
+        // Tag: only Selectable and Operational carry a Border — slice-e,
+        // "Selectable and Operational additionally have a Border (E) that
+        // read-only/dismissible tags do not have ... the border is the
+        // at-a-glance signal that a tag has increased interactivity."
+        // `tag-dismiss` was on this list until this group's audit: `shell`
+        // bound the edge for any interactive tag, not just the
+        // Selectable/Operational ones Carbon actually draws it on (Class 3,
+        // fixed in `tag.rs`'s own `shell` doc). Read-only tags
+        // (`tag-ro`/`tag-sm`/`tag-lg`, not on this list either) have no
+        // edge, matching the same line.
+        "root/carbon5/tag-select-off",
+        "root/carbon5/tag-select-on",
+        // Tile: the three interactive kinds each take `BORDER_SUBTLE` as
+        // the second channel beside the hover fill (`tile.rs`'s own module
+        // doc — Carbon's own `$border-tile` is a feature-flag token this
+        // library does not ship). The base tile (`root/list/tile`, not on
+        // this list) has no edge, matching slice-e's "without the flag,
+        // interactive tiles have no border at all."
+        "root/carbon5/tile-click",
+        "root/carbon5/tile-expand-open",
+        "root/carbon5/tile-expand-shut",
+        "root/carbon5/tile-select-off",
+        "root/carbon5/tile-select-on",
+        // Text input (`field`): the exact same `field()`/`field_sm`/
+        // `field_lg`/`field_readonly`/`field_fluid` well as
+        // `root/controls/name` above, for the exact same reason.
+        // `field_labeled`'s wrapper carries no token of its own — its
+        // `input` child is where the edge lives, the same anatomy as
+        // Form's `fm-name` above. `field_invalid` binds an accent border
+        // instead and is deliberately absent from this tree (see this
+        // section's own comment above `carbon5`).
+        "root/carbon5/txt-default",
+        "root/carbon5/txt-disabled",
+        "root/carbon5/txt-fluid",
+        "root/carbon5/txt-labeled/input",
+        "root/carbon5/txt-lg",
+        "root/carbon5/txt-readonly",
+        "root/carbon5/txt-sm",
     ];
 
     // `status` is not on that list, and the omission is measured rather than

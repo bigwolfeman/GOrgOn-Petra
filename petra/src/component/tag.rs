@@ -62,6 +62,9 @@ pub fn tag_lg(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
 /// Dismissible tag. The whole pill is `"Dismiss {label}"` (FR-058); the
 /// visible `"Dismiss"` word is the second channel so close is never
 /// icon-only.
+///
+/// No `border`: slice-e's anatomy line names dismissible tags explicitly
+/// among the variants that do *not* draw one — see [`shell`]'s own doc.
 pub fn dismissible_tag(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
     let label = label.into();
     let accessible = format!("Dismiss {label}");
@@ -71,7 +74,7 @@ pub fn dismissible_tag(key: impl Into<Key>, label: impl Into<String>) -> ViewNod
         .props
         .tokens
         .insert("foreground".into(), t(TEXT_PRIMARY));
-    shell(key, HEIGHT_MD, SPACING_03, vec![title, dismiss], true).interactive(
+    shell(key, HEIGHT_MD, SPACING_03, vec![title, dismiss], true, false).interactive(
         Role::Button,
         accessible,
         INTERACTIVE,
@@ -87,6 +90,7 @@ pub fn selectable_tag(key: impl Into<Key>, label: impl Into<String>, selected: b
         HEIGHT_MD,
         SPACING_03,
         vec![title_text("label", label.clone())],
+        true,
         true,
     );
     node.props
@@ -113,6 +117,7 @@ fn read_only_tag(
         inline_pad,
         vec![title_text("label", label)],
         false,
+        false,
     )
 }
 
@@ -125,12 +130,20 @@ fn title_text(key: &'static str, content: String) -> ViewNode {
     node
 }
 
+/// `hover` and `border` are independent, not one `interactive` flag: slice-e's
+/// own anatomy line splits them by variant — *"Selectable and Operational
+/// additionally have a Border (E) that read-only/dismissible tags do not
+/// have"* (SOURCED, usage page "Formatting"). Dismissible tags get hover
+/// (they are in the "enabled, hover, focus, on-click, disabled, skeleton"
+/// state list, slice-e "States") but not the border; Selectable/Operational
+/// get both.
 fn shell(
     key: impl Into<Key>,
     height: f32,
     inline_pad: &str,
     children: Vec<ViewNode>,
-    interactive: bool,
+    hover: bool,
+    border: bool,
 ) -> ViewNode {
     let mut node = stack(key, Axis::Horizontal, Some(SPACING_03), children);
     node.props.align = Some(Align::Center);
@@ -143,8 +156,10 @@ fn shell(
         .tokens
         .insert("background".into(), t(SURFACE_RAISED));
     node.props.tokens.insert("radius".into(), t(SHAPE_FULL));
-    if interactive {
+    if border {
         node.props.tokens.insert("border".into(), t(BORDER_SUBTLE));
+    }
+    if hover {
         node.props
             .tokens
             .insert("background@hover".into(), t(LAYER_HOVER));
@@ -169,8 +184,14 @@ mod tests {
         HEIGHT_LG, HEIGHT_MD, HEIGHT_SM, MAX_INLINE, MIN_INLINE, dismissible_tag, selectable_tag,
         tag, tag_lg, tag_sm,
     };
-    use crate::component::tokens::{BORDER_SUBTLE, LAYER_SELECTED, SHAPE_FULL, SURFACE_RAISED};
-    use crate::tree::{Interaction, Role, ViewNode};
+    use crate::component::tokens::{
+        BORDER_SUBTLE, LAYER_HOVER, LAYER_SELECTED, SHAPE_FULL, SURFACE_RAISED,
+    };
+    use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
+    use crate::geom::{Axis, Size};
+    use crate::testing::{Harness, validated_with};
+    use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
+    use crate::tree::{Interaction, NodeKind, Props, Registry, Role, ViewNode};
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         node.children
@@ -240,7 +261,19 @@ mod tests {
             "close is the word Dismiss, not an icon-only mark"
         );
         assert_eq!(node.constraints.vertical.min, Some(HEIGHT_MD));
-        assert_eq!(token(&node, "border"), Some(BORDER_SUBTLE));
+        assert_eq!(
+            token(&node, "border"),
+            None,
+            "dismissible tags have no border — slice-e's anatomy line names \
+             them explicitly among the variants that do not draw one, only \
+             Selectable and Operational do"
+        );
+        assert_eq!(
+            token(&node, "background@hover"),
+            Some(LAYER_HOVER),
+            "dismissible tags still get hover (slice-e States: \"enabled, \
+             hover, focus, on-click, disabled, skeleton\"), just not the edge"
+        );
     }
 
     #[test]
@@ -269,6 +302,167 @@ mod tests {
                     && !name.as_str().contains("tag-background"),
                 "skipped the 10-colour set, found {slot}={name}"
             );
+        }
+    }
+
+    const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
+
+    fn accepting_registry() -> Registry {
+        Registry::with_vocabulary(standard_vocabulary())
+    }
+
+    fn petrify_lone(node: ViewNode) -> PetrifiedFrame {
+        let root = ViewNode::new(NodeKind::Stack, "root")
+            .with_props(Props {
+                axis: Some(Axis::Vertical),
+                ..Props::default()
+            })
+            .child(node);
+        let registry = accepting_registry();
+        let mut harness = Harness::new();
+        let viewport = Viewport::new(VIEWPORT, ThemeMode::Dark);
+        harness.scale = viewport.scale;
+        petrify(
+            1,
+            validated_with(&root, &registry),
+            &mut harness.ctx(),
+            viewport,
+            TransitionActivity::default(),
+        )
+    }
+
+    fn color(theme: &Theme, name: &str) -> ColorValue {
+        match theme.value(&TokenName::new(name).unwrap()).unwrap() {
+            TokenValue::Color(c) => *c,
+            other => panic!("{name} is not a colour: {other:?}"),
+        }
+    }
+
+    /// Check C/D across every shipped constructor. `dismissible_tag`'s
+    /// `"Dismiss"` word is the class-4 suspect named in this group's brief
+    /// (an icon-only hit box pinned around a word): it carries no
+    /// `Constraints` of its own, unlike Modal's `close_button` or Number
+    /// input's stepper, and sits inside the same fluid horizontal stack as
+    /// the title rather than a box pinned to a glyph's width — this is the
+    /// frame-level proof that it does not overflow, not a substitute for
+    /// reading the code.
+    #[test]
+    fn frame_geometry_has_no_degenerate_or_overflowing_placements() {
+        let cases: Vec<(&str, ViewNode)> = vec![
+            ("read-only", tag("env", "prod")),
+            ("sm", tag_sm("env", "prod")),
+            ("lg", tag_lg("env", "prod")),
+            ("dismissible", dismissible_tag("env", "prod")),
+            ("selectable-on", selectable_tag("env", "prod", true)),
+            ("selectable-off", selectable_tag("env", "prod", false)),
+        ];
+        for (label, node) in cases {
+            let frame = petrify_lone(node);
+            assert!(!frame.placements.is_empty(), "{label}: nothing placed");
+            for p in &frame.placements {
+                assert!(
+                    p.rect.w > 0.0 && p.rect.h > 0.0,
+                    "{label}: {} placed with a degenerate rect {:?}",
+                    p.id,
+                    p.rect
+                );
+                assert!(
+                    !p.paint.overflowed,
+                    "{label}: {} drew content larger than its own rect",
+                    p.id
+                );
+                if let Some(parent_idx) = p.parent {
+                    let parent = &frame.placements[parent_idx];
+                    let fits = p.rect.x >= parent.rect.x - 0.01
+                        && p.rect.y >= parent.rect.y - 0.01
+                        && p.rect.x + p.rect.w <= parent.rect.x + parent.rect.w + 0.01
+                        && p.rect.y + p.rect.h <= parent.rect.y + parent.rect.h + 0.01;
+                    assert!(
+                        fits,
+                        "{label}: {} (rect {:?}) extends outside its parent {} (rect {:?})",
+                        p.id, p.rect, parent.id, parent.rect
+                    );
+                }
+            }
+        }
+    }
+
+    /// Check F: read-only tags declare no interactions at all and are
+    /// never reachable; dismissible and selectable tags declare `Focus`
+    /// on the whole pill and are.
+    #[test]
+    fn interactive_forms_are_reachable_and_read_only_is_not() {
+        for (label, node, should_be_focusable) in [
+            ("read-only", tag("env", "prod"), false),
+            ("dismissible", dismissible_tag("env", "prod"), true),
+            ("selectable", selectable_tag("env", "prod", false), true),
+        ] {
+            let frame = petrify_lone(node);
+            let focus = crate::focus::FocusTree::from_placements(
+                &frame.placements,
+                &std::collections::BTreeMap::new(),
+            );
+            let placement = frame
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with("/env"))
+                .expect("the tag is placed");
+            let reachable = focus.order().iter().any(|o| o == &placement.id);
+            assert_eq!(
+                reachable, should_be_focusable,
+                "{label}: focus reachability was {reachable}, expected {should_be_focusable}"
+            );
+        }
+    }
+
+    /// Check E: the title text (and the dismiss word) against the pill's
+    /// own resting fill, in both themes.
+    #[test]
+    fn title_clears_aa_contrast_against_its_own_pill_fill() {
+        const MIN_TEXT_CONTRAST: f32 = 4.5;
+        for theme in [crate::token::light(), crate::token::dark()] {
+            for (label, node, keys) in [
+                ("read-only", tag("env", "prod"), vec!["label"]),
+                (
+                    "dismissible",
+                    dismissible_tag("env", "prod"),
+                    vec!["label", "dismiss"],
+                ),
+                (
+                    "selectable",
+                    selectable_tag("env", "prod", false),
+                    vec!["label"],
+                ),
+            ] {
+                let pill_bg_name = node
+                    .props
+                    .tokens
+                    .get("background")
+                    .unwrap_or_else(|| panic!("{label}: pill binds a resting background"));
+                let pill_bg = color(&theme, pill_bg_name.as_str());
+                for key in keys {
+                    let text_node = node
+                        .children
+                        .iter()
+                        .find(|c| c.key.as_str() == key)
+                        .unwrap_or_else(|| panic!("{label}: missing child {key}"));
+                    let fg_name = text_node
+                        .props
+                        .tokens
+                        .get("foreground")
+                        .unwrap_or_else(|| panic!("{label}: {key} binds a foreground"));
+                    let opacity = text_node.props.opacity.unwrap_or(1.0);
+                    let fg = color(&theme, fg_name.as_str())
+                        .faded(opacity)
+                        .over(pill_bg);
+                    let ratio = fg.contrast_ratio(pill_bg);
+                    assert!(
+                        ratio >= MIN_TEXT_CONTRAST,
+                        "{label} {key} at {ratio:.2}:1 against {} fails AA {MIN_TEXT_CONTRAST}:1",
+                        pill_bg_name.as_str()
+                    );
+                }
+            }
         }
     }
 }

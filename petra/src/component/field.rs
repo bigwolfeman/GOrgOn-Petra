@@ -240,7 +240,11 @@ mod tests {
         SIZE_FLUID, SIZE_LG, SIZE_MD, SIZE_SM, field, field_fluid, field_invalid, field_labeled,
         field_lg, field_readonly, field_sm,
     };
-    use crate::tree::{Interaction, NodeKind, Role, ViewNode};
+    use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
+    use crate::geom::{Axis, Size};
+    use crate::testing::{Harness, validated_with};
+    use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
+    use crate::tree::{Interaction, NodeKind, Props, Registry, Role, ViewNode};
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         node.children
@@ -378,5 +382,166 @@ mod tests {
         assert_eq!(node.props.placeholder.as_deref(), Some("Fiber name"));
         assert_eq!(token(&node, "border"), Some(BORDER_SUBTLE));
         assert_eq!(token(&node, "background"), Some(SURFACE_RAISED));
+    }
+
+    const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
+
+    fn accepting_registry() -> Registry {
+        Registry::with_vocabulary(standard_vocabulary())
+    }
+
+    fn petrify_lone(node: ViewNode) -> PetrifiedFrame {
+        let root = ViewNode::new(NodeKind::Stack, "root")
+            .with_props(Props {
+                axis: Some(Axis::Vertical),
+                ..Props::default()
+            })
+            .child(node);
+        let registry = accepting_registry();
+        let mut harness = Harness::new();
+        let viewport = Viewport::new(VIEWPORT, ThemeMode::Dark);
+        harness.scale = viewport.scale;
+        petrify(
+            1,
+            validated_with(&root, &registry),
+            &mut harness.ctx(),
+            viewport,
+            TransitionActivity::default(),
+        )
+    }
+
+    fn color(theme: &Theme, name: &str) -> ColorValue {
+        match theme.value(&TokenName::new(name).unwrap()).unwrap() {
+            TokenValue::Color(c) => *c,
+            other => panic!("{name} is not a colour: {other:?}"),
+        }
+    }
+
+    /// Check C/D across every Default and Fluid form, including
+    /// `field_invalid` (which is absent from the crate-wide
+    /// `full_gallery()` tree — see `tests.rs`'s own comment above
+    /// `carbon5` — so this is its only frame-level coverage).
+    #[test]
+    fn frame_geometry_has_no_degenerate_or_overflowing_placements() {
+        let cases: Vec<(&str, ViewNode)> = vec![
+            ("default", field("name", "Fiber name")),
+            ("sm", field_sm("name", "Fiber name")),
+            ("lg", field_lg("name", "Fiber name")),
+            ("fluid", field_fluid("name", "Fiber name")),
+            ("labeled", field_labeled("name", "Fiber name")),
+            ("readonly", field_readonly("name", "Fiber name")),
+            (
+                "invalid",
+                field_invalid("name", "Fiber name", "required"),
+            ),
+            (
+                "disabled",
+                crate::component::disabled(field("name", "Fiber name")),
+            ),
+        ];
+        for (label, node) in cases {
+            let frame = petrify_lone(node);
+            assert!(!frame.placements.is_empty(), "{label}: nothing placed");
+            for p in &frame.placements {
+                assert!(
+                    p.rect.w > 0.0 && p.rect.h > 0.0,
+                    "{label}: {} placed with a degenerate rect {:?}",
+                    p.id,
+                    p.rect
+                );
+                assert!(
+                    !p.paint.overflowed,
+                    "{label}: {} drew content larger than its own rect",
+                    p.id
+                );
+                if let Some(parent_idx) = p.parent {
+                    let parent = &frame.placements[parent_idx];
+                    let fits = p.rect.x >= parent.rect.x - 0.01
+                        && p.rect.y >= parent.rect.y - 0.01
+                        && p.rect.x + p.rect.w <= parent.rect.x + parent.rect.w + 0.01
+                        && p.rect.y + p.rect.h <= parent.rect.y + parent.rect.h + 0.01;
+                    assert!(
+                        fits,
+                        "{label}: {} (rect {:?}) extends outside its parent {} (rect {:?})",
+                        p.id, p.rect, parent.id, parent.rect
+                    );
+                }
+            }
+        }
+    }
+
+    /// Check F: an enabled field and a read-only field (which keeps
+    /// `Focus`, this module's own doc) are both reachable; a disabled one
+    /// is not.
+    #[test]
+    fn field_focus_reachability_matches_disabled_state() {
+        for (label, node, suffix, should_be_focusable) in [
+            ("enabled", field("name", "Fiber name"), "/name", true),
+            (
+                "readonly",
+                field_readonly("name", "Fiber name"),
+                "/name",
+                true,
+            ),
+            (
+                "disabled",
+                crate::component::disabled(field("name", "Fiber name")),
+                "/name",
+                false,
+            ),
+        ] {
+            let frame = petrify_lone(node);
+            let focus = crate::focus::FocusTree::from_placements(
+                &frame.placements,
+                &std::collections::BTreeMap::new(),
+            );
+            let placement = frame
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with(suffix))
+                .unwrap_or_else(|| panic!("{label}: no placement ending {suffix}"));
+            let reachable = focus.order().iter().any(|o| o == &placement.id);
+            assert_eq!(
+                reachable, should_be_focusable,
+                "{label}: focus reachability was {reachable}, expected {should_be_focusable}"
+            );
+        }
+    }
+
+    /// Check E: the placeholder text against the well's own resting fill,
+    /// across Default, sm, lg and read-only, in both themes.
+    #[test]
+    fn placeholder_clears_aa_contrast_against_its_own_well_fill() {
+        const MIN_TEXT_CONTRAST: f32 = 4.5;
+        for theme in [crate::token::light(), crate::token::dark()] {
+            for (label, node) in [
+                ("default", field("name", "Fiber name")),
+                ("sm", field_sm("name", "Fiber name")),
+                ("lg", field_lg("name", "Fiber name")),
+                ("readonly", field_readonly("name", "Fiber name")),
+            ] {
+                let well_bg_name = node
+                    .props
+                    .tokens
+                    .get("background")
+                    .unwrap_or_else(|| panic!("{label}: well binds a resting background"));
+                let well_bg = color(&theme, well_bg_name.as_str());
+                let fg_name = node
+                    .props
+                    .tokens
+                    .get("foreground")
+                    .unwrap_or_else(|| panic!("{label}: well binds a foreground"));
+                let opacity = node.props.opacity.unwrap_or(1.0);
+                let fg = color(&theme, fg_name.as_str())
+                    .faded(opacity)
+                    .over(well_bg);
+                let ratio = fg.contrast_ratio(well_bg);
+                assert!(
+                    ratio >= MIN_TEXT_CONTRAST,
+                    "{label}: at {ratio:.2}:1 against {} fails AA {MIN_TEXT_CONTRAST}:1",
+                    well_bg_name.as_str()
+                );
+            }
+        }
     }
 }

@@ -112,7 +112,11 @@ fn pin_height(h: f32) -> Constraints {
 mod tests {
     use super::{SIZE_LG, SIZE_MD, SIZE_SM, select, select_lg, select_sm};
     use crate::component::tokens::{BORDER_SUBTLE, SURFACE_RAISED};
-    use crate::tree::{Interaction, Role, ViewNode};
+    use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
+    use crate::geom::{Axis, Size};
+    use crate::testing::{Harness, validated_with};
+    use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
+    use crate::tree::{Interaction, NodeKind, Props, Registry, Role, ViewNode};
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         node.children
@@ -190,5 +194,151 @@ mod tests {
         assert_eq!(SIZE_LG, 48.0);
         assert_eq!(lg.semantics.role, Some(Role::Button));
         assert_eq!(child(&lg, "chevron").props.text.as_deref(), Some("closed"));
+    }
+
+    const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
+
+    fn accepting_registry() -> Registry {
+        Registry::with_vocabulary(standard_vocabulary())
+    }
+
+    fn petrify_lone(node: ViewNode) -> PetrifiedFrame {
+        let root = ViewNode::new(NodeKind::Stack, "root")
+            .with_props(Props {
+                axis: Some(Axis::Vertical),
+                ..Props::default()
+            })
+            .child(node);
+        let registry = accepting_registry();
+        let mut harness = Harness::new();
+        let viewport = Viewport::new(VIEWPORT, ThemeMode::Dark);
+        harness.scale = viewport.scale;
+        petrify(
+            1,
+            validated_with(&root, &registry),
+            &mut harness.ctx(),
+            viewport,
+            TransitionActivity::default(),
+        )
+    }
+
+    fn color(theme: &Theme, name: &str) -> ColorValue {
+        match theme.value(&TokenName::new(name).unwrap()).unwrap() {
+            TokenValue::Color(c) => *c,
+            other => panic!("{name} is not a colour: {other:?}"),
+        }
+    }
+
+    fn check_geometry(frame: &PetrifiedFrame, label: &str) {
+        assert!(!frame.placements.is_empty(), "{label}: nothing placed");
+        for p in &frame.placements {
+            assert!(
+                p.rect.w > 0.0 && p.rect.h > 0.0,
+                "{label}: {} placed with a degenerate rect {:?}",
+                p.id,
+                p.rect
+            );
+            assert!(
+                !p.paint.overflowed,
+                "{label}: {} drew content larger than its own rect",
+                p.id
+            );
+            if let Some(parent_idx) = p.parent {
+                let parent = &frame.placements[parent_idx];
+                let fits = p.rect.x >= parent.rect.x - 0.01
+                    && p.rect.y >= parent.rect.y - 0.01
+                    && p.rect.x + p.rect.w <= parent.rect.x + parent.rect.w + 0.01
+                    && p.rect.y + p.rect.h <= parent.rect.y + parent.rect.h + 0.01;
+                assert!(
+                    fits,
+                    "{label}: {} (rect {:?}) extends outside its parent {} (rect {:?})",
+                    p.id, p.rect, parent.id, parent.rect
+                );
+            }
+        }
+    }
+
+    /// Check C/D: sm, md, lg and the disabled form all place with real
+    /// rects, none of them outside their parent, and the chevron word
+    /// never overflows its own rect (Class 4's shape: had the chevron
+    /// been an icon-only hit box pinned to a glyph's width, this is what
+    /// would have caught it — `select`'s own module doc records that the
+    /// chevron is deliberately the word "closed" rather than an icon for
+    /// exactly this reason, FR-026).
+    #[test]
+    fn frame_geometry_has_no_degenerate_or_overflowing_placements() {
+        check_geometry(&petrify_lone(select("theme", "Theme", "Dark")), "md");
+        check_geometry(&petrify_lone(select_sm("theme", "Theme", "Dark")), "sm");
+        check_geometry(&petrify_lone(select_lg("theme", "Theme", "Dark")), "lg");
+        check_geometry(
+            &petrify_lone(crate::component::disabled(select(
+                "theme", "Theme", "Dark",
+            ))),
+            "disabled",
+        );
+    }
+
+    /// Check F: the closed field declares `Focus` and is reachable; the
+    /// disabled form is not.
+    #[test]
+    fn field_focus_reachability_matches_disabled_state() {
+        for (label, node, should_be_focusable) in [
+            ("enabled", select("theme", "Theme", "Dark"), true),
+            (
+                "disabled",
+                crate::component::disabled(select("theme", "Theme", "Dark")),
+                false,
+            ),
+        ] {
+            let frame = petrify_lone(node);
+            let focus = crate::focus::FocusTree::from_placements(
+                &frame.placements,
+                &std::collections::BTreeMap::new(),
+            );
+            let root_placement = frame
+                .placements
+                .iter()
+                .find(|p| p.id == "/root/theme")
+                .expect("the field is placed");
+            let reachable = focus.order().iter().any(|id| id == &root_placement.id);
+            assert_eq!(
+                reachable, should_be_focusable,
+                "{label}: focus reachability was {reachable}, expected {should_be_focusable}"
+            );
+        }
+    }
+
+    /// Check E: the value text and the chevron word against the field's
+    /// own resting fill, in both themes.
+    #[test]
+    fn field_text_clears_aa_contrast_against_its_own_fill() {
+        const MIN_TEXT_CONTRAST: f32 = 4.5;
+        for theme in [crate::token::light(), crate::token::dark()] {
+            let node = select("theme", "Theme", "Dark");
+            let field_bg_name = node
+                .props
+                .tokens
+                .get("background")
+                .expect("the closed field binds a resting background");
+            let field_bg = color(&theme, field_bg_name.as_str());
+            for key in ["value", "chevron"] {
+                let child_node = child(&node, key);
+                let fg_name = child_node
+                    .props
+                    .tokens
+                    .get("foreground")
+                    .unwrap_or_else(|| panic!("{key} binds a foreground"));
+                let opacity = child_node.props.opacity.unwrap_or(1.0);
+                let fg = color(&theme, fg_name.as_str())
+                    .faded(opacity)
+                    .over(field_bg);
+                let ratio = fg.contrast_ratio(field_bg);
+                assert!(
+                    ratio >= MIN_TEXT_CONTRAST,
+                    "{key} at {ratio:.2}:1 against {} fails AA {MIN_TEXT_CONTRAST}:1",
+                    fg_name.as_str()
+                );
+            }
+        }
     }
 }

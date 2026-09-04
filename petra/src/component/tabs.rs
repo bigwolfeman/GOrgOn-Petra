@@ -268,10 +268,10 @@ fn indicator_bar(along: Axis, thickness: f32, fill: Option<&str>) -> ViewNode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::frame::{TransitionActivity, Viewport, petrify};
+    use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::Size;
     use crate::testing::{Harness, validated_with};
-    use crate::token::{ThemeMode, standard_vocabulary};
+    use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
     use crate::tree::{NodeKind, Registry};
 
     fn named<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
@@ -422,5 +422,144 @@ mod tests {
         assert_eq!(bar.semantics.role, Some(Role::TabList));
         assert_eq!(bar.props.axis, Some(Axis::Vertical));
         assert!(bar.interactions.is_empty());
+    }
+
+    fn color(theme: &Theme, name: &str) -> ColorValue {
+        match theme.value(&TokenName::new(name).unwrap()).unwrap() {
+            TokenValue::Color(c) => *c,
+            other => panic!("{name} is not a colour: {other:?}"),
+        }
+    }
+
+    fn check_geometry(frame: &PetrifiedFrame, label: &str) {
+        assert!(!frame.placements.is_empty(), "{label}: nothing placed");
+        for p in &frame.placements {
+            assert!(
+                p.rect.w > 0.0 && p.rect.h > 0.0,
+                "{label}: {} placed with a degenerate rect {:?}",
+                p.id,
+                p.rect
+            );
+            assert!(
+                !p.paint.overflowed,
+                "{label}: {} drew content larger than its own rect",
+                p.id
+            );
+            if let Some(parent_idx) = p.parent {
+                let parent = &frame.placements[parent_idx];
+                let fits = p.rect.x >= parent.rect.x - 0.01
+                    && p.rect.y >= parent.rect.y - 0.01
+                    && p.rect.x + p.rect.w <= parent.rect.x + parent.rect.w + 0.01
+                    && p.rect.y + p.rect.h <= parent.rect.y + parent.rect.h + 0.01;
+                assert!(
+                    fits,
+                    "{label}: {} (rect {:?}) extends outside its parent {} (rect {:?})",
+                    p.id, p.rect, parent.id, parent.rect
+                );
+            }
+        }
+    }
+
+    /// Check C/D: `indicator` is exactly the childless-swatch shape that
+    /// petrified 0px wide for the Accordion divider — `indicator_bar`
+    /// builds an empty `Stack` with no children, pins only its own
+    /// *thickness* axis via `Constraints`, and leaves the other axis to
+    /// `Align::Stretch` on the surrounding `Grid` (this module's own doc on
+    /// `indicator_bar`: "An empty stack, not a spacer ... Stretch fills the
+    /// cell"). This is the frame-level check that proves it petrifies
+    /// non-zero on both axes, across all three variants, selected and
+    /// unselected, and the disabled form — not a substitute for reading
+    /// the code.
+    #[test]
+    fn indicator_and_body_place_with_a_real_nonzero_rect_in_every_state() {
+        let cases: Vec<(&str, ViewNode)> = vec![
+            ("line-selected", tab("t", "Fibers", true)),
+            ("line-unselected", tab("t", "Fibers", false)),
+            (
+                "line-disabled",
+                crate::component::disabled(tab("t", "Fibers", false)),
+            ),
+            ("contained-selected", contained_tab("t", "Fibers", true)),
+            ("contained-unselected", contained_tab("t", "Fibers", false)),
+            ("vertical-selected", vertical_tab("t", "Fibers", true)),
+            ("vertical-unselected", vertical_tab("t", "Fibers", false)),
+        ];
+        for (label, node) in cases {
+            check_geometry(&petrify_lone(node), label);
+        }
+    }
+
+    /// Check F: an enabled tab declares `Focus` and is reachable; a
+    /// disabled one (wrapped by [`super::super::disabled`]) is not.
+    #[test]
+    fn a_disabled_tab_is_not_reachable_by_focus() {
+        for (label, node, should_be_focusable) in [
+            ("enabled", tab("t", "Fibers", true), true),
+            (
+                "disabled",
+                crate::component::disabled(tab("t", "Fibers", false)),
+                false,
+            ),
+        ] {
+            let frame = petrify_lone(node);
+            let focus = crate::focus::FocusTree::from_placements(
+                &frame.placements,
+                &std::collections::BTreeMap::new(),
+            );
+            let placement = frame
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with("/t"))
+                .expect("the tab is placed");
+            let reachable = focus.order().iter().any(|o| o == &placement.id);
+            assert_eq!(
+                reachable, should_be_focusable,
+                "{label}: focus reachability was {reachable}, expected {should_be_focusable}"
+            );
+        }
+    }
+
+    /// Check E: the label against the tab's own resting fill, selected and
+    /// unselected, in both themes. This is also the regression pin for the
+    /// type-ramp defect this module's own doc records: a selected label
+    /// bound to `TYPOGRAPHY_HEADING` (Carbon's 20px `heading-03`) instead
+    /// of `TYPOGRAPHY_HEADING_SM` (`heading-compact-01`, still 14px) grew
+    /// six units taller than the 40px tab has room for and overflowed —
+    /// `check_geometry`'s `!p.paint.overflowed` assertion above is what
+    /// would catch a repeat of it.
+    #[test]
+    fn label_clears_aa_contrast_against_its_own_tabs_resting_fill() {
+        const MIN_TEXT_CONTRAST: f32 = 4.5;
+        for theme in [crate::token::light(), crate::token::dark()] {
+            for (label, node) in [
+                ("line-selected", tab("t", "Fibers", true)),
+                ("line-unselected", tab("t", "Fibers", false)),
+                ("contained-selected", contained_tab("t", "Fibers", true)),
+                ("contained-unselected", contained_tab("t", "Fibers", false)),
+                ("vertical-selected", vertical_tab("t", "Fibers", true)),
+                ("vertical-unselected", vertical_tab("t", "Fibers", false)),
+            ] {
+                let tab_bg_name = node
+                    .props
+                    .tokens
+                    .get("background")
+                    .unwrap_or_else(|| panic!("{label}: tab binds a resting background"));
+                let tab_bg = color(&theme, tab_bg_name.as_str());
+                let text_node = named(&node, "label");
+                let fg_name = text_node
+                    .props
+                    .tokens
+                    .get("foreground")
+                    .unwrap_or_else(|| panic!("{label}: label binds a foreground"));
+                let opacity = text_node.props.opacity.unwrap_or(1.0);
+                let fg = color(&theme, fg_name.as_str()).faded(opacity).over(tab_bg);
+                let ratio = fg.contrast_ratio(tab_bg);
+                assert!(
+                    ratio >= MIN_TEXT_CONTRAST,
+                    "{label}: at {ratio:.2}:1 against {} fails AA {MIN_TEXT_CONTRAST}:1",
+                    tab_bg_name.as_str()
+                );
+            }
+        }
     }
 }
