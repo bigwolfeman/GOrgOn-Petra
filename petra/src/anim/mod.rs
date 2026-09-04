@@ -47,6 +47,7 @@ pub mod engine;
 pub mod policy;
 pub mod registry;
 pub mod scheduler;
+pub mod shipped;
 pub mod spring;
 pub mod value;
 
@@ -54,6 +55,7 @@ pub use engine::{Declarations, TransitionEngine};
 pub use policy::{AmbientLedger, ForeignRepaint, IdleReport, IdleViolation, MotionPolicy};
 pub use registry::{ExitRule, Timing, Track, TransitionDef, TransitionRegistry};
 pub use scheduler::{FrameDecision, Scheduler, wants_frame};
+pub use shipped::{TOGGLE_KNOB, registry as shipped_registry};
 pub use spring::{MotionSpeed, Regime, Spring, SpringError, spring_token, theme_spring};
 pub use value::{AnimVector, Animatable, Opacity, PropertyKind, Thresholds};
 

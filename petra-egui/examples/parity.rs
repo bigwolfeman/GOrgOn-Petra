@@ -2110,6 +2110,7 @@ mod tests {
             gorgon_petra::token::standard_vocabulary(),
         );
         registry.register_custom_kind(CUSTOM_KIND);
+        gorgon_petra::anim::shipped_registry().declare_into(&mut registry);
         if let Err(errors) = gorgon_petra::tree::validate(&tree, &registry) {
             panic!("the parity page's own tree is not acceptable: {errors}");
         }

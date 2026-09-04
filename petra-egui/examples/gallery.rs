@@ -90,6 +90,7 @@ use std::collections::VecDeque;
 use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use gorgon_petra::component::{
     button, checkbox, disabled, field, heading, list_row, on_layer, primary_button, progress,
@@ -330,6 +331,41 @@ impl History {
     }
 }
 
+/// How long a live toast stays up without hover.
+const TOAST_HOLD: Duration = Duration::from_secs(4);
+/// Extra time after the pointer last touched the toast.
+const TOAST_LINGER: Duration = Duration::from_millis(2000);
+const TOAST_SLIDE: Duration = Duration::from_millis(180);
+const TOAST_FADE: Duration = Duration::from_millis(400);
+
+/// One desktop-style notice. Click may be a no-op (`action` is `None`).
+struct Notice {
+    id: u64,
+    title: String,
+    body: String,
+    /// `None` means the click only dismisses.
+    action: Option<&'static str>,
+    shown: Instant,
+    deadline: Instant,
+    hovered: bool,
+}
+
+/// A dismissed notice, kept for audit (A-07).
+#[allow(dead_code)] // read by operators and a later inspector, not by this harness
+struct NoticeRecord {
+    id: u64,
+    title: String,
+    dismissed: &'static str,
+}
+
+enum ToastMode {
+    Off,
+    /// Times out. The Toast button on the page.
+    Live(Notice),
+    /// Capture / `PETRA_GALLERY_OPEN=toast`. No ambient, no clock.
+    Pinned,
+}
+
 struct Gallery {
     counters: Counters,
     /// What the last routed event did, echoed on screen so the input path is
@@ -337,7 +373,10 @@ struct Gallery {
     last_event: String,
     modal: bool,
     menu: bool,
-    passthrough: bool,
+    toast: ToastMode,
+    next_notice: u64,
+    notice_log: Vec<NoticeRecord>,
+    last_viewport: (f32, f32),
     /// Ids the host reported as dismissed, which is the only way a
     /// `DismissOutside` surface can close: the engine is retained and this
     /// application owns the tree.
@@ -374,7 +413,10 @@ impl Default for Gallery {
             last_event: String::new(),
             modal: false,
             menu: false,
-            passthrough: false,
+            toast: ToastMode::Off,
+            next_notice: 1,
+            notice_log: Vec::new(),
+            last_viewport: (1200.0, 1800.0),
             dismissals: 0,
             probe: None,
             tab: 0,
@@ -1245,9 +1287,9 @@ impl Gallery {
                 vec![
                     note(
                         "note",
-                        "Block swallows a click outside it · Passthrough lets it \
-                         through · DismissOutside lets it through and asks this \
-                         application to close.",
+                        "Block swallows a click outside it · DismissOutside lets \
+                         it through and asks this application to close · Toast \
+                         is a desktop notice: top-right, times out, hover holds.",
                     ),
                     Self::row(
                         "open",
@@ -1393,85 +1435,161 @@ impl Gallery {
             })
     }
 
-    fn overlay(&self) -> Option<ViewNode> {
-        if self.modal {
-            return Some(
-                Self::surface("modal", Layer::Modal, InputPolicy::Block)
-                    .with_semantics(Semantics {
-                        role: Some(Role::Dialog),
-                        label: Some("Retire fiber".to_owned()),
-                        ..Semantics::default()
-                    })
-                    .child(Self::column(
-                        "body",
-                        sp("spacing.md"),
-                        vec![
-                            heading("title", "Retire worker/indexer?"),
-                            Self::rule("rule"),
-                            note(
-                                "note",
-                                "Its three children are retired with it. A click \
-                                 outside this dialog is swallowed — that is what Block \
-                                 means.",
-                            ),
-                            Self::row(
-                                "actions",
-                                sp("spacing.md"),
-                                Align::Center,
-                                vec![
-                                    ViewNode::new(NodeKind::Spacer, "push")
-                                        .with_constraints(Self::exact(Axis::Vertical, 0.0)),
-                                    on_layer(button("modal-close", "Cancel"), 1),
-                                    on_layer(button("modal-confirm", "Retire"), 1),
-                                ],
-                            ),
-                        ],
-                    )),
-            );
+    /// Every open surface, not one of them. Overlay children share the
+    /// viewport; z-order is the `Layer` on each surface. Returning a single
+    /// child made the toast vanish whenever a modal or menu opened.
+    fn overlay_surfaces(&mut self) -> Vec<ViewNode> {
+        let mut surfaces = Vec::new();
+        if let Some(toast) = self.toast_overlay() {
+            surfaces.push(toast);
         }
         if self.menu {
-            return Some(
-                Self::surface("menu", Layer::Popup, InputPolicy::DismissOutside)
-                    .with_semantics(Semantics {
-                        role: Some(Role::List),
-                        label: Some("Fiber actions".to_owned()),
-                        ..Semantics::default()
-                    })
-                    .child(Self::column(
-                        "body",
-                        sp("spacing.2xs"),
+            surfaces.push(self.menu_surface());
+        }
+        if self.modal {
+            surfaces.push(self.modal_surface());
+        }
+        surfaces
+    }
+
+    fn modal_surface(&self) -> ViewNode {
+        Self::surface("modal", Layer::Modal, InputPolicy::Block)
+            .with_semantics(Semantics {
+                role: Some(Role::Dialog),
+                label: Some("Retire fiber".to_owned()),
+                ..Semantics::default()
+            })
+            .child(Self::column(
+                "body",
+                sp("spacing.md"),
+                vec![
+                    heading("title", "Retire worker/indexer?"),
+                    Self::rule("rule"),
+                    note(
+                        "note",
+                        "Its three children are retired with it. A click \
+                         outside this dialog is swallowed — that is what Block \
+                         means.",
+                    ),
+                    Self::row(
+                        "actions",
+                        sp("spacing.md"),
+                        Align::Center,
                         vec![
-                            caption("title", "fiber actions"),
-                            // Uniform rows, and the danger of the last one
-                            // is in its words. An earlier version painted
-                            // "Kill" in `status.down`, which is meaning
-                            // carried by hue alone — the exact thing
-                            // `status` exists to make unnecessary.
-                            on_layer(list_row("menu-inspect", "Inspect", false), 1),
-                            on_layer(list_row("menu-trace", "Follow trace", false), 1),
-                            Self::rule("rule"),
-                            on_layer(list_row("menu-kill", "Kill — cannot be undone", false), 1),
+                            ViewNode::new(NodeKind::Spacer, "push")
+                                .with_constraints(Self::exact(Axis::Vertical, 0.0)),
+                            on_layer(button("modal-close", "Cancel"), 1),
+                            on_layer(button("modal-confirm", "Retire"), 1),
                         ],
-                    )),
-            );
+                    ),
+                ],
+            ))
+    }
+
+    fn menu_surface(&self) -> ViewNode {
+        Self::surface("menu", Layer::Popup, InputPolicy::DismissOutside)
+            .with_semantics(Semantics {
+                role: Some(Role::List),
+                label: Some("Fiber actions".to_owned()),
+                ..Semantics::default()
+            })
+            .child(Self::column(
+                "body",
+                sp("spacing.2xs"),
+                vec![
+                    caption("title", "fiber actions"),
+                    on_layer(list_row("menu-inspect", "Inspect", false), 1),
+                    on_layer(list_row("menu-trace", "Follow trace", false), 1),
+                    Self::rule("rule"),
+                    on_layer(list_row("menu-kill", "Kill — cannot be undone", false), 1),
+                ],
+            ))
+    }
+
+    fn spawn_toast(&mut self, title: &str, body: &str, action: Option<&'static str>) {
+        let now = Instant::now();
+        let id = self.next_notice;
+        self.next_notice += 1;
+        self.toast = ToastMode::Live(Notice {
+            id,
+            title: title.to_owned(),
+            body: body.to_owned(),
+            action,
+            shown: now,
+            deadline: now + TOAST_HOLD,
+            hovered: false,
+        });
+    }
+
+    fn archive_toast(&mut self, reason: &'static str) {
+        if let ToastMode::Live(notice) = &self.toast {
+            self.notice_log.push(NoticeRecord {
+                id: notice.id,
+                title: notice.title.clone(),
+                dismissed: reason,
+            });
         }
-        if self.passthrough {
-            return Some(
-                Self::surface("toast", Layer::Toast, InputPolicy::Passthrough).child(Self::column(
-                    "body",
-                    sp("spacing.md"),
-                    vec![
-                        note(
-                            "note",
-                            "Passthrough: clicks reach what is underneath. Press \
-                                 its button to close.",
-                        ),
-                        on_layer(button("toast-close", "Close"), 1),
-                    ],
-                )),
-            );
+        self.toast = ToastMode::Off;
+    }
+
+    fn toast_overlay(&mut self) -> Option<ViewNode> {
+        if let ToastMode::Live(notice) = &self.toast {
+            let now = Instant::now();
+            if !notice.hovered && now >= notice.deadline + TOAST_FADE {
+                self.archive_toast("timeout");
+            }
         }
-        None
+        match &self.toast {
+            ToastMode::Off => None,
+            ToastMode::Pinned => {
+                Some(self.toast_surface(1.0, self.last_viewport.0 - 16.0, 16.0, false))
+            }
+            ToastMode::Live(notice) => {
+                let now = Instant::now();
+                let age = now.saturating_duration_since(notice.shown);
+                let slide_t = (age.as_secs_f32() / TOAST_SLIDE.as_secs_f32()).clamp(0.0, 1.0);
+                let y = 16.0 - 24.0 * (1.0 - slide_t);
+                let fading = !notice.hovered && now >= notice.deadline;
+                let fade_t = if fading {
+                    let into = now.saturating_duration_since(notice.deadline);
+                    (into.as_secs_f32() / TOAST_FADE.as_secs_f32()).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                let opacity = slide_t * (1.0 - fade_t);
+                let x = self.last_viewport.0 - 16.0;
+                Some(self.toast_surface(opacity, x, y, true))
+            }
+        }
+    }
+
+    fn toast_surface(&self, opacity: f32, x: f32, y: f32, ambient: bool) -> ViewNode {
+        let (title, body) = match &self.toast {
+            ToastMode::Live(n) => (n.title.as_str(), n.body.as_str()),
+            ToastMode::Pinned => (
+                "Supervisor restarted",
+                "Passthrough: clicks reach what is underneath.",
+            ),
+            ToastMode::Off => ("", ""),
+        };
+        let mut surface = Self::surface("toast", Layer::Toast, InputPolicy::Passthrough);
+        surface.props.anchor = Some(Anchor::Point { x, y });
+        surface.props.clamp = Some(ClampRule::Flip);
+        surface.props.opacity = Some(opacity.clamp(0.0, 1.0));
+        if ambient {
+            surface = surface.with_ambient(true);
+        }
+        let log_n = self.notice_log.len();
+        surface.child(Self::column(
+            "body",
+            sp("spacing.md"),
+            vec![
+                heading("title", title),
+                note("note", body),
+                muted("log", &format!("audit queue: {log_n}")),
+                on_layer(button("toast-body", "Open"), 1),
+            ],
+        ))
     }
 }
 
@@ -1623,8 +1741,8 @@ impl App for Gallery {
         // is on screen. `Overlay` is the container for this: every child gets
         // the container's own proposal, z-order by child order.
         let mut shell = ViewNode::new(NodeKind::Overlay, "shell").child(page);
-        if let Some(overlay) = self.overlay() {
-            shell = shell.child(overlay);
+        for surface in self.overlay_surfaces() {
+            shell = shell.child(surface);
         }
         shell
     }
@@ -1637,6 +1755,13 @@ impl App for Gallery {
                 return;
             }
         };
+        if let ToastMode::Live(notice) = &mut self.toast {
+            let on_toast = node.contains("/toast");
+            notice.hovered = on_toast;
+            if on_toast {
+                notice.deadline = Instant::now() + TOAST_LINGER;
+            }
+        }
         if !activated(event) {
             self.last_event = format!("{node} (not an activation)");
             return;
@@ -1648,9 +1773,21 @@ impl App for Gallery {
         match tail.as_str() {
             "open-modal" => self.modal = true,
             "open-menu" => self.menu = true,
-            "open-pass" => self.passthrough = true,
+            "open-pass" => self.spawn_toast(
+                "Supervisor restarted",
+                "worker-00003 came back. Click Open or wait.",
+                Some("opened the fiber log"),
+            ),
             "modal-close" | "modal-confirm" => self.modal = false,
-            "toast-close" => self.passthrough = false,
+            "toast-body" => {
+                if let ToastMode::Live(notice) = &self.toast {
+                    if let Some(action) = notice.action {
+                        self.last_event = action.to_owned();
+                    }
+                }
+                self.archive_toast("click");
+            }
+            "toast-close" => self.archive_toast("close"),
             "menu-inspect" | "menu-trace" | "menu-kill" => self.menu = false,
             "tab-fibers" => self.tab = 0,
             "tab-trace" => self.tab = 1,
@@ -1816,7 +1953,7 @@ fn open_from_env(app: &mut Gallery) {
     match std::env::var("PETRA_GALLERY_OPEN").as_deref() {
         Ok("modal") => app.modal = true,
         Ok("menu") => app.menu = true,
-        Ok("toast") => app.passthrough = true,
+        Ok("toast") => app.toast = ToastMode::Pinned,
         _ => {}
     }
 }
@@ -2125,13 +2262,13 @@ impl eframe::App for GalleryWindow {
         }
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         if !self.grabbed_focus && self.shot.is_none() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             self.grabbed_focus = true;
         }
-        self.host.pass(&ctx);
+        self.host.pass_in_window(&ctx, frame);
 
         let seq = self.host.frame().map_or(0, |f| f.seq);
         let placements = self.host.frame().map_or(0, |f| f.placements.len());
@@ -2161,6 +2298,9 @@ impl eframe::App for GalleryWindow {
         } else {
             self.host.last_hop_passes()
         };
+        if let Some(frame) = self.host.frame() {
+            self.host.app_mut().last_viewport = (frame.viewport.size.w, frame.viewport.size.h);
+        }
 
         let Some(plan) = &mut self.shot else { return };
         plan.passes += 1;
@@ -2369,6 +2509,7 @@ mod tests {
             gorgon_petra::token::standard_vocabulary(),
         );
         registry.register_custom_kind(super::CUSTOM_KIND);
+        gorgon_petra::anim::shipped_registry().declare_into(&mut registry);
         if let Err(errors) = gorgon_petra::tree::validate(&tree, &registry) {
             panic!("the gallery's own tree is not acceptable: {errors}");
         }
@@ -2737,6 +2878,68 @@ mod tests {
         );
     }
 
+    /// A click on the toggle slides the knob; it does not teleport.
+    #[test]
+    fn toggling_tracing_slides_the_knob() {
+        let (ctx, mut host) = host();
+        step(&ctx, &mut host, RawInput::default());
+        assert!(host.app().tracing, "the gallery ships with tracing on");
+
+        let knob = |host: &Host<Gallery>| {
+            host.frame()
+                .expect("a frame")
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with("/tracing/appearance/track/knob"))
+                .expect("the toggle knob was placed")
+                .rect
+        };
+        let start_x = knob(&host).x;
+        let row = host
+            .frame()
+            .expect("a frame")
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/tracing"))
+            .expect("the toggle row was placed")
+            .rect;
+        step(
+            &ctx,
+            &mut host,
+            press_at(Pos2::new(row.x + row.w / 2.0, row.y + row.h / 2.0)),
+        );
+        assert!(
+            !host.app().tracing,
+            "the press must have flipped tracing: {}",
+            host.app().last_event
+        );
+
+        let mut seen_mid = false;
+        let mut n = 0;
+        loop {
+            n += 1;
+            assert!(n <= 32, "the knob was still sliding after {n} quiet passes");
+            let x = knob(&host).x;
+            if x < start_x - 0.5
+                && gorgon_petra::anim::wants_frame(host.frame().unwrap().transitions)
+            {
+                seen_mid = true;
+            }
+            if !gorgon_petra::anim::wants_frame(host.frame().unwrap().transitions) {
+                assert!(
+                    seen_mid,
+                    "the knob jumped from {start_x} to {x} with no in-between frame"
+                );
+                assert!(
+                    x < start_x - 1.0,
+                    "off sits the knob left of on: start {start_x}, settled {x}"
+                );
+                break;
+            }
+            step(&ctx, &mut host, RawInput::default());
+        }
+    }
+
     /// Opening the `Block` modal makes the page behind it inert.
     #[test]
     fn the_block_modal_swallows_a_click_outside_itself() {
@@ -2762,6 +2965,31 @@ mod tests {
             host.app().last_event
         );
         assert!(host.app().modal, "nothing asked the modal to close");
+    }
+
+    /// Overlay children share the viewport. A toast that vanished because
+    /// a modal opened was one `Option` fighting for the only child slot.
+    #[test]
+    fn a_toast_and_a_modal_are_both_placed() {
+        let (ctx, mut host) = host();
+        host.app_mut().modal = true;
+        host.app_mut().toast = super::ToastMode::Pinned;
+        step(&ctx, &mut host, RawInput::default());
+        let ids: Vec<&str> = host
+            .frame()
+            .expect("a frame")
+            .placements
+            .iter()
+            .map(|p| p.id.as_str())
+            .collect();
+        assert!(
+            ids.iter().any(|id| id.ends_with("/modal")),
+            "modal missing from {ids:?}"
+        );
+        assert!(
+            ids.iter().any(|id| id.ends_with("/toast")),
+            "toast missing from {ids:?}"
+        );
     }
 
     /// A press outside the `DismissOutside` popup closes it, through the

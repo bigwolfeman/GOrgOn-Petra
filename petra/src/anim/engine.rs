@@ -48,6 +48,28 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::policy::MotionPolicy;
 use super::registry::{ExitRule, Timing, TransitionDef, TransitionRegistry};
 use super::value::{AnimVector, PropertyKind};
+
+/// Stuck-clock and idle-gap stand-in. Same numbers as the flying caret
+/// (`gorgon-petra-egui` `focus_caret.rs`): bigger than a 30 Hz vsync,
+/// smaller than "we were asleep". SC-002 paints nothing at idle, so the
+/// next click can carry seconds of wall time; counting that gap as curve
+/// time finishes a 140 ms slide in one frame.
+const FRAME_DT: f64 = 1.0 / 60.0;
+const IDLE_GAP: f64 = 0.04;
+
+/// The clock a new or retargeted trajectory starts from.
+///
+/// Vsync-spaced frames keep `last` so local time matches wall time.
+/// An idle gap (or a stuck clock) is replaced with one frame of
+/// progress, not the whole nap.
+fn motion_clock(last: f64, now: f64) -> f64 {
+    let gap = now - last;
+    if gap <= 0.0 || gap > IDLE_GAP {
+        now - FRAME_DT
+    } else {
+        last
+    }
+}
 use crate::frame::{PaintContent, PetrifiedFrame, Placement, TransitionActivity, digest};
 use crate::geom::Rect;
 use crate::layout::Slot;
@@ -213,11 +235,12 @@ impl TrackState {
     /// sentence; the `velocity0` line is what SC-007 measures and what T055
     /// sabotages. `self.velocity` is the closed form's own answer at
     /// `last_now`, never a difference across two frames.
-    fn retarget(&mut self, target: AnimVector) {
+    fn retarget(&mut self, target: AnimVector, now: f64) {
         self.origin = self.value;
         self.velocity0 = self.velocity;
         self.target = target;
-        self.start = self.last_now;
+        self.start = motion_clock(self.last_now, now);
+        self.last_now = self.start;
         self.settled = false;
     }
 }
@@ -419,7 +442,7 @@ impl TransitionEngine {
         if !first_frame {
             changed |=
                 self.start_and_advance(frame, declarations, &previous, &raw, now, previous_now);
-            changed |= self.collect_exits(&previous, &raw, previous_now);
+            changed |= self.collect_exits(&previous, &raw, now, previous_now);
         }
         changed |= self.apply_exits(frame, now);
         if changed {
@@ -514,7 +537,7 @@ impl TransitionEngine {
         match tracks.get_mut(&property) {
             Some(track) => {
                 if track.target != target {
-                    track.retarget(target);
+                    track.retarget(target, now);
                 }
             }
             None => {
@@ -556,6 +579,7 @@ impl TransitionEngine {
                     }
                     was
                 };
+                let clock = motion_clock(previous_now, now);
                 tracks.insert(
                     property,
                     TrackState {
@@ -564,8 +588,8 @@ impl TransitionEngine {
                         origin,
                         velocity0: AnimVector::zeros(origin.len()),
                         target,
-                        start: previous_now,
-                        last_now: previous_now,
+                        start: clock,
+                        last_now: clock,
                         value: origin,
                         velocity: AnimVector::zeros(origin.len()),
                         settled: false,
@@ -595,6 +619,7 @@ impl TransitionEngine {
         &mut self,
         previous: &BTreeMap<String, RawTarget>,
         raw: &BTreeMap<String, RawTarget>,
+        now: f64,
         previous_now: f64,
     ) -> bool {
         let gone: Vec<&str> = previous
@@ -649,6 +674,7 @@ impl TransitionEngine {
                 continue;
             }
             let recorded = read_property(&item.placement, exit.property);
+            let clock = motion_clock(previous_now, now);
             // The exit continues from the departing node's own motion: if it
             // was already moving under this property, the exit carries that
             // velocity, by the same rule a retarget does.
@@ -663,8 +689,8 @@ impl TransitionEngine {
                 origin: recorded,
                 velocity0: carried,
                 target: exit.value,
-                start: previous_now,
-                last_now: previous_now,
+                start: clock,
+                last_now: clock,
                 value: recorded,
                 velocity: carried,
                 settled: false,
@@ -1174,6 +1200,48 @@ mod tests {
             "16 ms in, the node is behind its target: {animated} vs {wanted}"
         );
         assert_ne!(frame.digest, target.digest, "the picture really moved");
+    }
+
+    /// SC-002 paints nothing at idle, so the next click can land a second
+    /// later. That gap is not curve time: a 140 ms slide must still
+    /// interpolate, not finish on the first frame.
+    #[test]
+    fn a_second_move_after_idle_still_interpolates() {
+        let mut engine = TransitionEngine::new(slide_registry());
+        let at_zero = fixtures::two_panels(0.0);
+        let moved = fixtures::two_panels(60.0);
+        let declarations_zero = Declarations::collect(&at_zero);
+        let declarations_moved = Declarations::collect(&moved);
+
+        let mut frame = fixtures::frame(&at_zero, 1, 300.0, 120.0);
+        engine.animate(&mut frame, &declarations_zero, 0.0);
+
+        let mut now = 0.016;
+        loop {
+            let mut frame = fixtures::frame(&moved, 2, 300.0, 120.0);
+            let activity = engine.animate(&mut frame, &declarations_moved, now);
+            if activity.is_settled() {
+                break;
+            }
+            now += 0.016;
+            assert!(now < 2.0, "the first slide never settled");
+        }
+
+        let idle_now = now + 1.0;
+        let target = fixtures::frame(&at_zero, 3, 300.0, 120.0)
+            .placement("/app/mover")
+            .unwrap()
+            .rect
+            .x;
+        let mut frame = fixtures::frame(&at_zero, 3, 300.0, 120.0);
+        let activity = engine.animate(&mut frame, &declarations_zero, idle_now);
+        assert_eq!(activity.running, 1, "idle must not eat the second slide");
+        assert!(!activity.is_settled());
+        let animated = frame.placement("/app/mover").unwrap().rect.x;
+        assert!(
+            (animated - target).abs() > 1.0,
+            "after 1 s idle the second slide finished in one frame: at {animated}, target {target}"
+        );
     }
 
     /// The settle-then-snap rule, end to end: run to settle and the frame is

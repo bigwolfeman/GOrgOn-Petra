@@ -49,7 +49,9 @@ use gorgon_petra::anim::{FrameDecision, TransitionRegistry, wants_frame};
 use gorgon_petra::focus::FocusTree;
 use gorgon_petra::frame::{FrameCounter, PetrifiedFrame, TransitionActivity, Viewport, petrify};
 use gorgon_petra::geom::{Scale, Size};
-use gorgon_petra::input::{InputEvent, KeyCode, PointerRouting, PointerState, Route, RouteOutcome};
+use gorgon_petra::input::{
+    InputEvent, KeyCode, PointerButton, PointerRouting, PointerState, Route, RouteOutcome,
+};
 use gorgon_petra::layout::overlay_surface::surface_scopes;
 use gorgon_petra::layout::{
     AnchorRects, ChangeSet, LayoutCtx, LayoutState, MeasureCache, RowSource, ScrollStack,
@@ -379,11 +381,27 @@ pub struct Host<A: App> {
     /// Tessellated picture of the last full paint, without the caret. A hop
     /// replays these meshes instead of walking every placement; eframe
     /// tessellates `Shape::Mesh` by pointer, not by rebuilding glyph verts.
+    /// Headless tests and wasm stay on this path.
     scene: Vec<(egui::Rect, Arc<egui::Mesh>)>,
+    /// Native wgpu state for the scene texture. Bound from `eframe::Frame`
+    /// on the window path; `None` in lib tests.
+    #[cfg(not(target_arch = "wasm32"))]
+    gpu: Option<eframe::egui_wgpu::RenderState>,
+    /// Offscreen gallery texture. `None` when there is no GPU or the last
+    /// bake failed. A hop blits this and draws only the caret.
+    #[cfg(not(target_arch = "wasm32"))]
+    scene_tex: Option<crate::scene_cache::SceneCache>,
+    /// How many times this host called [`paint_frame_with_caret`]. A hop
+    /// that reuses a cached scene must not bump this.
+    full_paints: u32,
     /// Passes in the hop that is still flying, including the Tab that started it.
     hop_passes: u32,
     /// Passes in the hop that just landed. Zero before the first hop.
     last_hop_passes: u32,
+    /// This hop presents the scene texture, not CPU meshes. Set on the Tab
+    /// that starts the hop and held until settle so a mesh→blit switch
+    /// cannot pop mid-flight.
+    hop_blit: bool,
 }
 
 impl<A: App> Host<A> {
@@ -435,8 +453,10 @@ impl<A: App> Host<A> {
         // The embedded stack has three, so `Bold` finally paints bold.
         let faces = crate::fonts::design_system_faces();
         let extra_vocabulary = Vocabulary::new();
-        let registry =
+        let mut registry =
             Registry::with_vocabulary(composed_vocabulary(snapshot.theme(), &extra_vocabulary));
+        let definitions = gorgon_petra::anim::shipped_registry();
+        definitions.declare_into(&mut registry);
         let mut shaper = GalleyShaper::new(ctx.clone());
         *shaper.typography_mut() = Typography::from_theme(snapshot.theme(), &faces);
         let bound_revision = snapshot.revision();
@@ -456,10 +476,11 @@ impl<A: App> Host<A> {
             faces,
             painters: CustomPainters::new(),
             images: ImageSources::new(),
-            // No definitions until an application declares some, which is the
-            // honest empty state: with none registered, no tree may name a
-            // transition and every frame is genuinely settled.
-            motion: FrameMotion::new(TransitionRegistry::new()),
+            // The component library names `toggle-knob`. Installing the
+            // shipped registry here is what makes a tree of library
+            // constructors validate without every application repeating the
+            // slide. `set_transitions` merges on top and does not drop it.
+            motion: FrameMotion::new(definitions),
             last_frame: None,
             last_scopes: BTreeMap::new(),
             last_report: None,
@@ -468,8 +489,14 @@ impl<A: App> Host<A> {
             pointer: PointerState::new(),
             caret: FocusCaret::new(),
             scene: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            gpu: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            scene_tex: None,
+            full_paints: 0,
             hop_passes: 0,
             last_hop_passes: 0,
+            hop_blit: false,
         }
     }
 
@@ -735,6 +762,22 @@ impl<A: App> Host<A> {
         self.last_motion
     }
 
+    /// Bind the window's wgpu state so a hop can blit a scene texture.
+    ///
+    /// Headless tests never call this. wasm is a no-op: the CPU mesh replay
+    /// stays the picture.
+    pub fn pass_in_window(&mut self, ctx: &Context, frame: &eframe::Frame) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.gpu = frame.wgpu_render_state().cloned();
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = frame;
+        }
+        self.pass(ctx);
+    }
+
     /// Run one whole pass: input, view, petrify, paint, schedule.
     ///
     /// A caret already in flight, with no new input and no change to the
@@ -743,7 +786,8 @@ impl<A: App> Host<A> {
     /// 160 ms hop show three frames on a full page.
     ///
     /// Public and independent of `eframe` so a test or the driver can step the
-    /// host without a window.
+    /// host without a window. Interactive windows call [`Self::pass_in_window`]
+    /// so the GPU cache can attach.
     pub fn pass(&mut self, ctx: &Context) {
         let snapshot = self.presenter.current();
         // Before anything reads the registry: a theme published since the
@@ -981,7 +1025,9 @@ impl<A: App> Host<A> {
             .expect("can_reuse_frame required a petrified frame");
         let now = ctx.input(|input| input.time);
         self.tick_caret(&frame, now);
-        let report = if self.scene.is_empty() {
+        let report = if self.hop_blit {
+            self.paint_scene_texture(ctx, &frame, colors)
+        } else if self.scene.is_empty() {
             self.paint_and_bake_scene(ctx, &frame, colors)
         } else {
             self.paint_cached_scene(ctx, &frame, colors)
@@ -1003,15 +1049,13 @@ impl<A: App> Host<A> {
             ctx.request_repaint();
         } else {
             self.scene.clear();
+            self.hop_blit = false;
         }
         self.last_frame = Some(frame);
         self.last_report = Some(report);
     }
 
-    fn caret_overlay(
-        &self,
-        frame: &PetrifiedFrame,
-    ) -> Option<(Vec<egui::Rect>, egui::Rect)> {
+    fn caret_overlay(&self, frame: &PetrifiedFrame) -> Option<(Vec<egui::Rect>, egui::Rect)> {
         let scale = frame.viewport.scale;
         let page = egui::Rect::from_min_size(
             egui::Pos2::ZERO,
@@ -1029,16 +1073,19 @@ impl<A: App> Host<A> {
         let scale = frame.viewport.scale;
         match focused_caret_target(frame) {
             Some((id, node, figure, clip)) => {
-                self.caret
-                    .tick(Some((id, caret_dest_pair(node, figure, scale), figure, clip)), now);
+                self.caret.tick(
+                    Some((id, caret_dest_pair(node, figure, scale), figure, clip)),
+                    now,
+                );
             }
             None => self.caret.tick(None, now),
         }
     }
 
     /// Paint the petrified picture, tessellate it once, and keep the meshes
-    /// so a hop can replay them. The caret is drawn after the bake so it is
-    /// not frozen into the cache.
+    /// so a hop can replay them. When a wgpu state is bound, also render
+    /// those primitives into an offscreen texture. The caret is drawn after
+    /// the bake so it is not frozen into the cache.
     fn paint_and_bake_scene(
         &mut self,
         ctx: &Context,
@@ -1059,10 +1106,22 @@ impl<A: App> Host<A> {
             &mut self.images,
             Some((Vec::new(), page)),
         );
+        self.full_paints = self.full_paints.saturating_add(1);
         if self.caret.is_moving() {
-            self.bake_scene(ctx);
+            let primitives = self.tessellate_layer(ctx);
+            self.store_cpu_meshes(&primitives);
+            let ready = self.capture_scene_texture(ctx, &primitives, colors);
+            self.hop_blit = ready;
+            if ready {
+                // Bake waited; the front holds this pass's picture. Blit it
+                // now so the hop never switches from meshes to a texture.
+                self.replace_layer_with_blit(ctx, page);
+            } else {
+                self.replace_layer_with_meshes(ctx);
+            }
         } else {
             self.scene.clear();
+            self.hop_blit = false;
         }
         if let Some((bars, clip)) = overlay {
             if paint_caret_overlay(
@@ -1101,6 +1160,32 @@ impl<A: App> Host<A> {
                 .with_clip_rect(*clip)
                 .add(egui::Shape::mesh(Arc::clone(mesh)));
         }
+        self.finish_cached_paint(&painter, frame, colors)
+    }
+
+    fn paint_scene_texture(
+        &mut self,
+        ctx: &Context,
+        frame: &PetrifiedFrame,
+        colors: &dyn crate::paint::TokenSource,
+    ) -> PaintReport {
+        let painter = ctx.layer_painter(petra_layer());
+        let page = egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(frame.viewport.size.w, frame.viewport.size.h),
+        );
+        if let Some(shape) = self.scene_blit_shape(page) {
+            painter.add(shape);
+        }
+        self.finish_cached_paint(&painter, frame, colors)
+    }
+
+    fn finish_cached_paint(
+        &self,
+        painter: &egui::Painter,
+        frame: &PetrifiedFrame,
+        colors: &dyn crate::paint::TokenSource,
+    ) -> PaintReport {
         let mut report = self.last_report.clone().unwrap_or_else(|| PaintReport {
             placements: frame.placements.len(),
             drawn: frame.placements.len(),
@@ -1111,7 +1196,7 @@ impl<A: App> Host<A> {
         report.blind_focus = 0;
         if let Some((bars, clip)) = self.caret_overlay(frame) {
             if paint_caret_overlay(
-                &painter,
+                painter,
                 &bars,
                 clip,
                 colors,
@@ -1124,7 +1209,7 @@ impl<A: App> Host<A> {
         report
     }
 
-    fn bake_scene(&mut self, ctx: &Context) {
+    fn tessellate_layer(&self, ctx: &Context) -> Vec<egui::epaint::ClippedPrimitive> {
         let layer = petra_layer();
         let ppp = ctx.pixels_per_point();
         let shapes: Vec<egui::epaint::ClippedShape> = ctx.graphics(|g| {
@@ -1132,14 +1217,22 @@ impl<A: App> Host<A> {
                 .map(|list| list.all_entries().cloned().collect())
                 .unwrap_or_default()
         });
-        let primitives = ctx.tessellate(shapes, ppp);
+        ctx.tessellate(shapes, ppp)
+    }
+
+    fn store_cpu_meshes(&mut self, primitives: &[egui::epaint::ClippedPrimitive]) {
         self.scene.clear();
         self.scene.reserve(primitives.len());
         for primitive in primitives {
-            if let egui::epaint::Primitive::Mesh(mesh) = primitive.primitive {
-                self.scene.push((primitive.clip_rect, Arc::new(mesh)));
+            if let egui::epaint::Primitive::Mesh(mesh) = &primitive.primitive {
+                self.scene
+                    .push((primitive.clip_rect, Arc::new(mesh.clone())));
             }
         }
+    }
+
+    fn replace_layer_with_meshes(&self, ctx: &Context) {
+        let layer = petra_layer();
         ctx.graphics_mut(|g| {
             let list = g.entry(layer);
             let n = list.all_entries().len();
@@ -1150,6 +1243,79 @@ impl<A: App> Host<A> {
                 list.add(*clip, egui::Shape::mesh(Arc::clone(mesh)));
             }
         });
+    }
+
+    fn replace_layer_with_blit(&self, ctx: &Context, page: egui::Rect) {
+        let Some(shape) = self.scene_blit_shape(page) else {
+            return;
+        };
+        let layer = petra_layer();
+        ctx.graphics_mut(|g| {
+            let list = g.entry(layer);
+            let n = list.all_entries().len();
+            for i in 0..n {
+                list.reset_shape(egui::layers::ShapeIdx(i));
+            }
+            list.add(page, shape);
+        });
+    }
+
+    fn capture_scene_texture(
+        &mut self,
+        ctx: &Context,
+        primitives: &[egui::epaint::ClippedPrimitive],
+        colors: &dyn crate::paint::TokenSource,
+    ) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let Some(gpu) = self.gpu.clone() else {
+                return false;
+            };
+            let size = physical_window_px(ctx);
+            let clear = colors.color("surface.base").unwrap_or(egui::Color32::BLACK);
+            return crate::scene_cache::SceneCache::capture(
+                &mut self.scene_tex,
+                &gpu,
+                ctx,
+                primitives,
+                size,
+                ctx.pixels_per_point(),
+                clear,
+            );
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (ctx, primitives, colors);
+            false
+        }
+    }
+
+    fn scene_texture_has_front(&self) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            return self
+                .scene_tex
+                .as_ref()
+                .is_some_and(|cache| cache.has_front());
+        }
+        #[cfg(target_arch = "wasm32")]
+        false
+    }
+
+    fn scene_blit_shape(&self, page: egui::Rect) -> Option<egui::Shape> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            return self
+                .scene_tex
+                .as_ref()
+                .filter(|cache| cache.has_front())
+                .map(|cache| cache.blit_shape(page));
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = page;
+            None
+        }
     }
 
     /// Seat focus inside the frontmost blocking surface when it is outside
@@ -1238,6 +1404,23 @@ impl<A: App> Host<A> {
         true
     }
 
+    /// Keyboard focus follows a primary press onto a focusable node so the
+    /// flying caret retargets. Walks up the id path because hit-test may
+    /// name a child (the checkbox box) of the interactive row.
+    fn seat_pointer_focus(&mut self, id: &str) {
+        let mut cur = id;
+        loop {
+            if self.focus.focus(cur).is_ok() {
+                let _ = self.publish_focus();
+                return;
+            }
+            match cur.rsplit_once('/') {
+                Some((parent, _)) if !parent.is_empty() => cur = parent,
+                _ => return,
+            }
+        }
+    }
+
     fn picture_must_rebuild(event: &InputEvent) -> bool {
         match event {
             // Hover is a projection. A compositor that repeats pointer
@@ -1299,6 +1482,16 @@ impl<A: App> Host<A> {
             };
             if !routing.outcome.dismiss.is_empty() {
                 self.app.dismissed(&routing.outcome.dismiss);
+            }
+            if let (
+                InputEvent::PointerPressed {
+                    button: PointerButton::Primary,
+                    ..
+                },
+                Route::Pointer { node },
+            ) = (event, &routing.outcome.route)
+            {
+                self.seat_pointer_focus(node);
             }
             self.app.handle(event, &routing.outcome.route);
             // The cause, then the consequence: a component hears the release
@@ -1398,12 +1591,19 @@ impl<A: App> Host<A> {
     /// tree-acceptance error, which is what
     /// `gorgon_petra::tree::TransitionRef`'s own doc promises.
     ///
-    /// Replaces whatever was declared before, and resets every trajectory in
-    /// flight — a transition already running under a definition that no longer
-    /// exists has nothing to run under.
+    /// Merges `definitions` onto the shipped registry and resets every
+    /// trajectory in flight. An application name wins when it collides with
+    /// a shipped one; a name the application does not mention stays shipped
+    /// so a `toggle` still slides after a host registers the cat walk.
     pub fn set_transitions(&mut self, definitions: TransitionRegistry) -> &mut Self {
-        definitions.declare_into(&mut self.registry);
-        self.motion = FrameMotion::new(definitions);
+        let mut merged = gorgon_petra::anim::shipped_registry();
+        for name in definitions.names() {
+            if let Some(def) = definitions.get(name) {
+                merged.register(name.to_owned(), def.clone());
+            }
+        }
+        merged.declare_into(&mut self.registry);
+        self.motion = FrameMotion::new(merged);
         self
     }
 
@@ -1446,6 +1646,20 @@ impl<A: App> Host<A> {
         self.scene.len()
     }
 
+    /// Whether a GPU scene texture is bound and ready to blit. Headless lib
+    /// tests stay `false` so they do not need a GPU.
+    #[must_use]
+    pub fn scene_texture_bound(&self) -> bool {
+        self.scene_texture_has_front()
+    }
+
+    /// How many times this host has called `paint_frame_with_caret`. A hop
+    /// that reuses a cached scene must not increment this.
+    #[must_use]
+    pub fn full_paint_count(&self) -> u32 {
+        self.full_paints
+    }
+
     /// Passes in the hop still in flight, or 0 when idle.
     #[must_use]
     pub fn hop_passes(&self) -> u32 {
@@ -1467,9 +1681,21 @@ impl<A: App> eframe::App for Host<A> {
     /// the one place a frame can be drawn. Receiving a `Ui` is not the same as
     /// laying out with one: `ui.ctx()` is the whole of what this uses, and the
     /// `Ui`'s cursor, spacing, and layout stack stay untouched.
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.pass(ui.ctx());
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        self.pass_in_window(ui.ctx(), frame);
     }
+}
+
+/// Physical pixel size of the Petra page, matching the viewport this host
+/// already measures in points. Zero when the window has no area.
+#[cfg(not(target_arch = "wasm32"))]
+fn physical_window_px(ctx: &Context) -> [u32; 2] {
+    let ppp = ctx.pixels_per_point();
+    let rect = ctx.content_rect();
+    [
+        (rect.width() * ppp).round() as u32,
+        (rect.height() * ppp).round() as u32,
+    ]
 }
 
 /// The view a refused tree is replaced with, so the violations are on screen.
@@ -2620,6 +2846,41 @@ mod tests {
         );
     }
 
+    /// Reuse must not walk placements once a scene exists. Headless lib tests
+    /// have no GPU texture; the mesh cache is the scene.
+    #[test]
+    fn a_hop_does_not_repaint_placements_once_the_scene_is_cached() {
+        let ctx = headless();
+        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        settle(&ctx, &mut host, 4);
+        step(&ctx, &mut host, key_press(Key::Tab, Modifiers::NONE));
+        assert!(host.caret().is_moving(), "Tab must start a hop");
+        assert!(
+            host.scene_mesh_count() > 0,
+            "a hop must tessellate the picture once so later vsyncs replay meshes"
+        );
+        assert!(
+            !host.scene_texture_bound(),
+            "headless lib tests must not require a GPU texture"
+        );
+        let paints = host.full_paint_count();
+        let mut n = 0;
+        while host.caret().is_moving() {
+            n += 1;
+            assert!(n <= 32, "the caret was still flying after {n} quiet passes");
+            step(&ctx, &mut host, RawInput::default());
+            assert_eq!(
+                host.full_paint_count(),
+                paints,
+                "reuse must not call paint_frame_with_caret while the scene is cached (hop pass {n})"
+            );
+        }
+        assert!(
+            n >= 5,
+            "the hop must last several quiet passes so reuse is observable, got {n}"
+        );
+    }
+
     /// Focus that moves *after* the frame is placed — the vanished-focus rule
     /// and a modal taking focus both do — leaves that frame's ring on the
     /// wrong node. The host must ask for one more frame, or on an idle window
@@ -2937,5 +3198,19 @@ mod tests {
             "nothing declared `Drag`, so nothing is captured"
         );
         assert_eq!(host.pointer().hovered(), Some("/root/run"));
+    }
+
+    /// A primary press on a focusable seats keyboard focus so the flying
+    /// caret retargets. Clicking is not a second, silent focus world.
+    #[test]
+    fn a_press_on_a_focusable_moves_the_caret() {
+        let ctx = headless();
+        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        settle(&ctx, &mut host, 4);
+        assert_eq!(host.state().focused.as_deref(), Some("/root/filter"));
+        let run = centre_of(&host, "/root/run");
+        step(&ctx, &mut host, press_at(run));
+        assert_eq!(host.state().focused.as_deref(), Some("/root/run"));
+        assert_eq!(host.caret().id(), Some("/root/run"));
     }
 }
