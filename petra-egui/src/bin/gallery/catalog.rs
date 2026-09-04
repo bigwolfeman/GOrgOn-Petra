@@ -2281,6 +2281,16 @@ mod tests {
             let number = row.number;
 
             let ctx = headless();
+            // Two device pixels per point. The catalog is read by people
+            // looking for defects a few pixels across — a snapped mark, a
+            // missing hairline, two cells touching — and a 1x page has to be
+            // magnified to see any of them, which is a resample and a
+            // resample is where a one-pixel difference goes to die. It also
+            // matches the IBM Carbon reference app under `ignored/carbon-ref/`,
+            // which captures at device pixel ratio 2, so a Petra shot and a
+            // Carbon shot of the same component are the same size and can be
+            // put side by side without touching either.
+            ctx.set_pixels_per_point(2.0);
             let mut host = Host::new(&ctx, app, default_presenter());
             // Two passes: the first registers the font atlas. A fresh `Host`
             // defaults keyboard focus to the first focusable placement, row

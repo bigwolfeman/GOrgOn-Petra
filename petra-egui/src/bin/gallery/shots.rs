@@ -57,6 +57,23 @@ use gorgon_petra_testkit::snapshot::Snapshotter;
 
 use crate::catalog::{Catalog, WINDOW};
 
+/// Device pixels per logical point for a captured page.
+///
+/// **Two reasons this is 2 and not 1.**
+///
+/// The first is that half-pixel defects only exist at 1x, and they are exactly
+/// the ones a placement rect cannot show. The radio's inner dot centred on a
+/// 4.5 inset, which is a whole 9 device pixels at 2x and a snapped-off-centre
+/// mark at 1x. Capturing at both is how a fix is told apart from a rounding
+/// accident.
+///
+/// The second is comparison. The IBM Carbon reference app under
+/// `ignored/carbon-ref/` captures at device pixel ratio 2. A Petra shot and a
+/// Carbon shot of the same component have to be the same size, or every
+/// side-by-side needs a resample first and a resample is where a one-pixel
+/// difference goes to die.
+const CAPTURE_SCALE: f32 = 2.0;
+
 /// A catalog page, a driver for it, and a camera pointed at it.
 pub struct Camera {
     ctx: Context,
@@ -79,8 +96,22 @@ impl Camera {
     /// because the usual cause is a name that differs from Carbon's by a
     /// capital letter.
     pub fn on(component: &str) -> Self {
+        Self::at_scale(component, CAPTURE_SCALE)
+    }
+
+    /// [`Camera::on`], at a chosen device pixel ratio.
+    ///
+    /// Use it to photograph the same page at 1 and at 2 when a defect is
+    /// suspected to be a rounding artifact rather than a layout one. A mark
+    /// that is centred at 2x and off centre at 1x is being snapped, not
+    /// mis-placed, and the two pictures say so where one cannot.
+    ///
+    /// # Panics
+    /// If no inventory row is named `component`.
+    pub fn at_scale(component: &str, scale: f32) -> Self {
         let app = Catalog::on_page(component);
         let ctx = headless();
+        ctx.set_pixels_per_point(scale);
         let mut host = Host::new(&ctx, app, default_presenter());
         ctx.run_ui(sized(RawInput::default()), |_| host.pass(&ctx))
             .drop_without_applying_deltas();

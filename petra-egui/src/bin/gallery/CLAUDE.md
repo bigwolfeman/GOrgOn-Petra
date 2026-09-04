@@ -62,6 +62,15 @@ fastest way to learn what a page actually built.
 
 Set `PETRA_SHOT_DIR` and every `shoot` writes a PNG there. **Read the PNGs.**
 
+Captures are **2 device pixels per point**, so a 1200x900 page is a 2400x1800
+file. Two reasons. Half-pixel defects only exist at 1x, so photographing a page
+at both scales tells a snapped mark apart from a mis-placed one — that is how
+the radio dot was diagnosed. And the IBM Carbon reference app under
+`ignored/carbon-ref/` captures at device pixel ratio 2, so a Petra shot and a
+Carbon shot of the same component are already the same size and go side by side
+without a resample. `Camera::at_scale` picks a different ratio when you want
+one.
+
 A resting-state photograph cannot tell a working dropdown from a dead one. That
 blindness is how 39 of 42 pages reached the operator broken under a green suite,
 and it is the whole reason this driver exists. Any page whose defect is "does
