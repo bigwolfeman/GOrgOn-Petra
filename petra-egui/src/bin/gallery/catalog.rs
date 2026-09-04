@@ -506,7 +506,12 @@ impl Catalog {
                     "fu",
                     sp("spacing.md"),
                     vec![
-                        file_uploader("fu", "Drop files here"),
+                        // The heading, not the zone prompt. `file_uploader`
+                        // draws "Drop files here" inside the zone itself, so
+                        // passing that same string here printed it twice on
+                        // `12-file-uploader.png`, once as a heading and once
+                        // in the box below it.
+                        file_uploader("fu", "Upload a trace"),
                         file_uploader_item("fu-0", "trace.ndjson", true),
                     ],
                 )],
