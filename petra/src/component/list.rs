@@ -307,6 +307,30 @@ mod tests {
     /// `padding-left`/`right` 16px (`$spacing-05`)". A standalone item now
     /// carries that inset itself so it lines up with the header without
     /// needing a list wrapper.
+    /// W8 audit, row 16 ("two adjacent lists run together"): measured on
+    /// `16-list.png` against Carbon's own `16-list.png`, the item pitch is
+    /// 20 logical units in both — Carbon's `$body-01` line box, with
+    /// `margin-bottom: 0` on every item at both levels (slice-c:51, SOURCED
+    /// style page). The extra air between Carbon's two demo lists is the
+    /// reference page's own `.ref-body > * + * { margin-top: 1.5rem }`, not
+    /// `_list.scss`. So the list binds no row gap, and this pins that: a
+    /// gap added here to "fix" the picture would put a number in the
+    /// component that Carbon does not have. The gap between two lists on a
+    /// page belongs to the page.
+    #[test]
+    fn items_abut_with_no_row_gap_as_carbon_gives_them_zero_margin() {
+        let unordered = unordered_list("u", vec![list_item("a", "A"), list_item("b", "B")]);
+        let ordered = ordered_list("o", vec![list_item("a", "A"), list_item("b", "B")]);
+        assert_eq!(unordered.props.spacing, None);
+        assert_eq!(ordered.props.spacing, None);
+        let item = list_item_with(
+            "a",
+            "A",
+            Some(unordered_list("n", vec![list_item("c", "C")])),
+        );
+        assert_eq!(nested_list(&item).props.spacing, None);
+    }
+
     #[test]
     fn standalone_item_carries_spacing_05_left_inset() {
         assert_eq!(

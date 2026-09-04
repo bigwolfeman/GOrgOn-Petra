@@ -951,7 +951,7 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
     /// Every node in [`full_gallery`] that may draw a border, by the key
     /// path it appears at. An exact set: a node missing from here that draws
     /// one fails, and a node listed here that stops drawing one fails too.
-    const DRAWS_AN_EDGE: [&str; 68] = [
+    const DRAWS_AN_EDGE: [&str; 62] = [
         // `field`: an empty well with no boundary does not read as a place
         // to type. See `field`'s own doc for why it keeps one when `button`
         // does not.
@@ -1073,12 +1073,15 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         // `Semantics.disabled`, it never touches a token binding.
         "root/carbon4/ni-count",
         "root/carbon4/ni-disabled",
-        // Pagination's own bar: Carbon's "Container ... `border-block-
-        // start: 1px solid $border-subtle`" (slice-d, MEASURED style
-        // page), the same class as Modal's dialog shell and Content
-        // switcher's row above — a real measured boundary on the
-        // container itself, not decoration.
-        "root/carbon4/pg-first",
+        // Pagination's own bar was here, binding a four-sided `border` to
+        // approximate Carbon's one-sided `border-block-start: 1px solid
+        // $border-subtle` (slice-d). W8 audit, `23-pagination.png`: the
+        // bar's own children fill its height and painted over the inset
+        // edge, so the top and bottom rules showed only in the gaps
+        // between cells — three boxes that did not close. The same fix as
+        // the header and the accordion item: the one edge Carbon draws is
+        // now a real 1-unit `rule` element (`pagination.rs`'s `bar`), which
+        // binds `background`, and the bar binds no `border` at all.
         // Pagination's Previous/Next used to approximate Carbon's
         // directional `border-inline-start: 1px solid $border-subtle`
         // (slice-d) as a full 4-sided `border` token, the same trade-off
@@ -1092,18 +1095,18 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         // one edge Carbon actually draws, so `previous`/`next` no longer
         // bind `border` at all — the divider binds `background`, which
         // this test does not audit.
-        // Progress indicator's current and not-started status icons:
-        // `marked_box`'s own class (unconditional `border` regardless of
-        // fill, so the ring's silhouette does not jump size between
-        // states — the same precedent `check`/`radio`'s boxes set above).
-        // The complete step's `complete_mark` is the one variant that does
-        // NOT carry a border (already filled solid, no ring silhouette to
-        // keep stable), which is why `pi-choose` (complete) is absent from
-        // this list while `pi-configure` (current), `pi-review`
-        // (not-started) and `pi-confirm` (disabled, not-started) are on it.
-        "root/carbon4/pi-steps/pi-configure/head/icon-row/icon",
-        "root/carbon4/pi-steps/pi-confirm/head/icon-row/icon",
-        "root/carbon4/pi-steps/pi-review/head/icon-row/icon",
+        // Progress indicator's not-started status icon: an empty ring,
+        // `marked_box`'s own class — with no fill at all, the outline is
+        // the whole mark (the same precedent `check`/`radio`'s boxes set
+        // above). The complete step's `complete_mark` is a solid accent
+        // disc and the current step's `current_mark` is a drawn canvas
+        // (Carbon's `Incomplete` glyph: a stroked ring with half a disc in
+        // it), so neither binds `border` and `pi-choose` (complete) and
+        // `pi-configure` (current) are absent from this list while
+        // `pi-review` (not-started) and `pi-confirm` (disabled,
+        // not-started) are on it.
+        "root/carbon4/pi-steps/pi-confirm/row/icon",
+        "root/carbon4/pi-steps/pi-review/row/icon",
         // Popover, and every surface built on `popover_with` (Menu, Menu
         // button open, Dropdown open, Date picker open, Toggletip open,
         // Tooltip, AI label open) plus the UI shell right panels, which
@@ -1162,17 +1165,19 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         // edge, matching the same line.
         "root/carbon5/tag-select-off",
         "root/carbon5/tag-select-on",
-        // Tile: the three interactive kinds each take `BORDER_SUBTLE` as
-        // the second channel beside the hover fill (`tile.rs`'s own module
-        // doc — Carbon's own `$border-tile` is a feature-flag token this
-        // library does not ship). The base tile (`root/list/tile`, not on
-        // this list) has no edge, matching slice-e's "without the flag,
-        // interactive tiles have no border at all."
-        "root/carbon5/tile-click",
-        "root/carbon5/tile-expand-open",
-        "root/carbon5/tile-expand-shut",
-        "root/carbon5/tile-select-off",
-        "root/carbon5/tile-select-on",
+        // Tile: no kind draws a resting edge any more. The three
+        // interactive kinds used to take `BORDER_SUBTLE` as a second
+        // channel beside the hover fill, which put a fill-and-no-edge base
+        // tile in a row with three fill-and-edge ones — two visual
+        // languages, W8 audit, `35-tile.png`. Carbon's own form without
+        // the contrast flag is "interactive tiles have no border at all"
+        // (slice-e) and its reference shot draws none, so every kind is
+        // now the same box. The one tile edge left is the unselected
+        // selectable tile's checkbox-shaped mark: an empty box whose
+        // outline is the whole mark, the checkbox's own class above. The
+        // selected one (`tile-select-on`) is an accent-filled box with a
+        // check and binds no border.
+        "root/carbon5/tile-select-off/row/box",
         // Text input (`field`): the exact same `field()`/`field_sm`/
         // `field_lg`/`field_readonly`/`field_fluid` well as
         // `root/controls/name` above, for the exact same reason.

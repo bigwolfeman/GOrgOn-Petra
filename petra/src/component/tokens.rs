@@ -95,6 +95,24 @@ pub(crate) const LAYER_ACCENT: &str = "layer-accent";
 pub(crate) const TEXT_PRIMARY: &str = "text.primary";
 pub(crate) const TEXT_MUTED: &str = "text.muted";
 
+/// The inverted polarity's ground and the ink that reads on it: Carbon's
+/// `$layer-selected-inverse` and `$text-inverse`. Spent by
+/// [`super::content_switcher_item`]'s selected tab, which Carbon's default
+/// (high-contrast) switcher fills with the *other* theme's surface so the
+/// selected tab is a luminance step nobody can miss, colour-blind or not.
+///
+/// Both names were in `token::shipped` before this re-export existed; the
+/// content switcher's module doc used to say the inverse family was not
+/// shipped, and that was true only of this file.
+pub(crate) const LAYER_SELECTED_INVERSE: &str = "layer-selected-inverse";
+/// See [`LAYER_SELECTED_INVERSE`].
+pub(crate) const TEXT_INVERSE: &str = "text-inverse";
+
+/// The tone a non-text glyph is drawn in when it is furniture rather than
+/// a message: Carbon's `$icon-secondary`, spent by the disclosure caret
+/// ([`super::caret`]) that a tree branch and an expandable tile carry.
+pub(crate) const ICON_SECONDARY: &str = "icon-secondary";
+
 /// The one colour a drawn boundary is allowed to be.
 ///
 /// Every border in this library bound [`TEXT_MUTED`] until 2026-08-25 —
@@ -181,6 +199,9 @@ pub(crate) const ALL: &[&str] = &[
     LAYER_ACCENT,
     TEXT_PRIMARY,
     TEXT_MUTED,
+    LAYER_SELECTED_INVERSE,
+    TEXT_INVERSE,
+    ICON_SECONDARY,
     BORDER_SUBTLE,
     ACCENT_PRIMARY,
     TEXT_ON_ACCENT,

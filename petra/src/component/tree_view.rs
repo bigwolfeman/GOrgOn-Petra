@@ -1,37 +1,71 @@
 //! Carbon Tree view (slice-f). No drag-to-reorder.
 //!
-//! Anatomy (`_treeview.scss` + usage page):
+//! Anatomy (`_treeview.scss` + usage page + `39-tree-view.png`):
 //! 1. [`tree_view`] — the hierarchy container (`Role::Tree`).
-//! 2. Branch / leaf [`tree_item`] — `Role::TreeItem`.
-//! 3. Caret as the word `"expanded"` / `"collapsed"`, never an icon-only
-//!    mark (FR-026). Present on branches only.
+//! 2. Branch / leaf [`tree_item`] — `Role::TreeItem`, a full-width row
+//!    pinned to 32 (small, the default) or 24 ([`tree_item_xs`]).
+//! 3. Caret — a [`super::caret`] on branches, down when expanded and
+//!    right when collapsed. Leaves keep the caret's slot empty so their
+//!    label lines up with a sibling branch's (docs style page: branch L1
+//!    indent 16, leaf L1 indent 40 — the 24 difference is the caret's
+//!    box). Until 2026-09-04 the caret was the literal word `expanded` or
+//!    `collapsed` in front of the label.
 //! 4. Node label.
+//! 5. Accent bar — Carbon's `.cds--tree-node--active` 4-unit
+//!    [`ACCENT_PRIMARY`] bar at the row's inline-start edge, full row
+//!    height, drawn on the selected row so selection is a shape as well
+//!    as a fill.
 //!
-//! Nested children exist in the tree only while `expanded` is true.
-//! Selection is `Semantics.selected` plus [`LAYER_SELECTED`], never colour
-//! alone. Carbon does not ship drag-to-reorder; items do not declare
-//! [`Interaction::Drag`].
+//! Nested children exist in the tree only while `expanded` is true, and
+//! that revealed content plus `Semantics.expanded` is the channel a
+//! reader who cannot see the caret still gets (FR-026). Selection is
+//! `Semantics.selected` plus [`LAYER_SELECTED`] plus the accent bar, never
+//! colour alone. Carbon does not ship drag-to-reorder; items do not
+//! declare [`Interaction::Drag`].
 //!
-//! Default node height is Carbon small: 32. Extra-small 24 is
-//! [`tree_item_xs`].
+//! # Indent arithmetic
+//!
+//! One level is `$spacing-05` (16), added to each nested row's lead by
+//! [`indent`] rather than as padding on the nested container, so a nested
+//! row's fill and accent bar still span the whole tree.
+//! Inside a row, left to right: the 4-unit accent bar (its fill only when
+//! selected, its width always, so nothing shifts on selection), 12 of
+//! lead (`$spacing-04`), the 16-unit caret box, 8 (`$spacing-03`), then
+//! the label — so a level-1 label starts at 40 and a level-2 label at 56,
+//! Carbon's own numbers for a text-only tree. Right padding is 16.
 
-use super::stack;
-use super::text::text;
+use std::sync::Arc;
+
 use super::tokens::{
-    LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SPACING_03, SPACING_05, SURFACE_BASE, t,
+    ACCENT_PRIMARY, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SPACING_05, SURFACE_BASE, t,
 };
+use super::{CARET_SIZE, CaretDirection, caret, stack, swatch};
 use crate::geom::{Align, Axis};
 use crate::tree::{
-    InsetRefs, Interaction, Key, NodeKind, Props, Role, Semantics, TrackSize, ViewNode,
+    AxisConstraint, InsetRefs, Interaction, Key, NodeKind, Props, Role, Semantics, TrackSize,
+    ViewNode,
 };
 
 /// Carbon small / default node height.
 const HEIGHT: f32 = 32.0;
 /// Carbon extra-small node height.
 const HEIGHT_XS: f32 = 24.0;
+/// Carbon `.cds--tree-node--active` bar width.
+const ACCENT_BAR: f32 = 4.0;
+/// Lead between the accent bar and the caret box, so bar + lead is the
+/// branch's 16-unit level-1 indent.
+const LEAD: f32 = 12.0;
+/// Gap between the caret box and the label (`$spacing-03`).
+const CARET_GAP: f32 = 8.0;
+/// Where a level-1 label starts: Carbon's leaf L1 indent (`$spacing-08`).
+const LABEL_START: f32 = ACCENT_BAR + LEAD + CARET_SIZE + CARET_GAP;
+/// One level of nesting (`$spacing-05`), added to a nested row's lead.
+const LEVEL_INDENT: f32 = 16.0;
 
 const _: () = assert!(HEIGHT == 32.0);
 const _: () = assert!(HEIGHT_XS == 24.0);
+const _: () = assert!(ACCENT_BAR + LEAD == 16.0);
+const _: () = assert!(LABEL_START == 40.0);
 
 const ITEM_INTENTS: &[Interaction] = &[Interaction::Focus, Interaction::Click, Interaction::Hover];
 
@@ -88,30 +122,60 @@ fn tree_item_sized(
 ) -> ViewNode {
     let label = label.into();
     let is_branch = !children.is_empty();
-    let mut row_parts = Vec::new();
-    if is_branch {
-        let disclosure = if expanded { "expanded" } else { "collapsed" };
-        row_parts.push(text("chevron", disclosure));
-    }
-    row_parts.push(text("label", label.clone()));
 
-    let mut row = stack("row", Axis::Horizontal, Some(SPACING_03), row_parts);
+    // The bar keeps its width in every state; only its fill comes and
+    // goes, so the label never shifts when the selection moves.
+    let bar_fill = selected.then_some(ACCENT_PRIMARY);
+    let disclosure = if is_branch {
+        caret(
+            "caret",
+            if expanded {
+                CaretDirection::Down
+            } else {
+                CaretDirection::Right
+            },
+        )
+    } else {
+        swatch("caret-slot", CARET_SIZE, CARET_SIZE, None, None, None)
+    };
+    let mut row = stack(
+        "row",
+        Axis::Horizontal,
+        None,
+        vec![
+            swatch("bar", ACCENT_BAR, height, bar_fill, None, None),
+            swatch("lead", LEAD, height, None, None, None),
+            disclosure,
+            swatch("gap", CARET_GAP, height, None, None, None),
+            super::text::text("label", label.clone()),
+        ],
+    );
     row.props.align = Some(Align::Center);
     row.props.padding = Some(InsetRefs {
-        left: Some(t(SPACING_05)),
         right: Some(t(SPACING_05)),
         ..InsetRefs::default()
     });
-    row.constraints.vertical.min = Some(height);
+    row.constraints.vertical = AxisConstraint {
+        min: Some(height),
+        max: Some(height),
+        priority: 0,
+    };
 
     let mut parts = vec![row];
     if expanded && is_branch {
+        // The level's indent goes into each child's row, not onto this
+        // container as padding: a padded container would start the
+        // child's fill (and its accent bar) 16 in, where Carbon's node
+        // spans the whole tree and only its content steps in.
+        let children = children
+            .into_iter()
+            .map(|mut child| {
+                indent(&mut child, LEVEL_INDENT);
+                child
+            })
+            .collect();
         let mut nest = stack("children", Axis::Vertical, None, children);
         nest.props.align = Some(Align::Stretch);
-        nest.props.padding = Some(InsetRefs {
-            left: Some(t(SPACING_05)),
-            ..InsetRefs::default()
-        });
         parts.push(nest);
     }
 
@@ -150,13 +214,45 @@ fn tree_item_sized(
     node
 }
 
+/// Step `item`'s row content in by `by`, and everything already nested
+/// under it by the same amount, by widening the row's `lead` spacer. The
+/// item's own rect is untouched, so its fill and accent bar keep spanning
+/// the tree. A child is built before its parent, so this is the parent's
+/// stamp on it, the same shape as `list.rs`'s `stamp_items`.
+fn indent(item: &mut ViewNode, by: f32) {
+    for child in &mut item.children {
+        let child = Arc::make_mut(child);
+        match child.key.as_str() {
+            "row" => {
+                for part in &mut child.children {
+                    if part.key.as_str() == "lead" {
+                        let lead = Arc::make_mut(part);
+                        let width = lead.constraints.horizontal.min.unwrap_or(0.0) + by;
+                        lead.constraints.horizontal.min = Some(width);
+                        lead.constraints.horizontal.max = Some(width);
+                    }
+                }
+            }
+            "children" => {
+                for grandchild in &mut child.children {
+                    indent(Arc::make_mut(grandchild), by);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{HEIGHT, HEIGHT_XS, tree_item, tree_item_xs, tree_view};
+    use super::{
+        ACCENT_BAR, ACCENT_PRIMARY, HEIGHT, HEIGHT_XS, LABEL_START, tree_item, tree_item_xs,
+        tree_view,
+    };
     use crate::component::disabled;
     use crate::component::tokens::LAYER_SELECTED;
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
-    use crate::geom::{Axis, Size};
+    use crate::geom::{Axis, Rect, Size};
     use crate::testing::{Harness, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
     use crate::tree::{Interaction, NodeKind, Props, Registry, Role, ViewNode};
@@ -205,6 +301,10 @@ mod tests {
         named(node, key).semantics.role.clone()
     }
 
+    /// Row 39's defect: disclosure was the literal word `expanded` placed
+    /// before the label. A branch now draws a caret canvas that points a
+    /// different way in each state, a leaf keeps the slot empty, and
+    /// `Semantics.expanded` carries the fact either way.
     #[test]
     fn tree_item_declares_expanded_and_selected_never_colour_only() {
         let on = tree_item(
@@ -219,13 +319,16 @@ mod tests {
         assert_eq!(on.semantics.expanded, Some(true));
         assert!(on.semantics.selected);
         assert_eq!(token(&on, "background@selected"), Some(LAYER_SELECTED));
-        assert_eq!(
-            named(&on, "chevron").props.text.as_deref(),
-            Some("expanded")
+        let open_caret = named(named(&on, "row"), "caret");
+        assert_eq!(open_caret.kind, NodeKind::Canvas, "a branch draws a caret");
+        assert!(
+            open_caret.props.text.is_none(),
+            "the caret is a shape, not the word `expanded`"
         );
         assert_eq!(named(&on, "label").props.text.as_deref(), Some("src"));
         assert!(has_key(&on, "lib"));
         assert_eq!(named(&on, "row").constraints.vertical.min, Some(HEIGHT));
+        assert_eq!(named(&on, "row").constraints.vertical.max, Some(HEIGHT));
         assert_eq!(HEIGHT, 32.0);
 
         let off = tree_item(
@@ -237,54 +340,79 @@ mod tests {
         );
         assert_eq!(off.semantics.expanded, Some(false));
         assert!(!off.semantics.selected);
-        assert_eq!(
-            named(&off, "chevron").props.text.as_deref(),
-            Some("collapsed")
+        let shut_caret = named(named(&off, "row"), "caret");
+        assert_eq!(shut_caret.kind, NodeKind::Canvas);
+        assert_ne!(
+            open_caret.props.canvas, shut_caret.props.canvas,
+            "expanded and collapsed carets point different ways"
         );
         assert!(
             !has_key(&off, "lib"),
-            "collapsed branch must not mount children"
+            "a collapsed branch does not mount its children"
         );
-        assert!(
-            !has_key(&off, "children"),
-            "collapsed branch must not keep an empty nest"
-        );
+        no_drag(&on);
+        no_drag(&off);
+    }
+
+    /// Selection is a shape as well as a fill: the 4-unit accent bar at
+    /// the row's start is filled on a selected row and empty otherwise,
+    /// and it keeps its width in both states so the label does not move.
+    #[test]
+    fn a_selected_row_carries_an_accent_bar_beside_its_fill() {
+        let on = tree_item("l", "main.rs", false, true, vec![]);
+        let off = tree_item("l", "lib.rs", false, false, vec![]);
+        let on_bar = named(&on, "bar");
+        let off_bar = named(&off, "bar");
+        assert_eq!(token(on_bar, "background"), Some(ACCENT_PRIMARY));
+        assert_eq!(token(off_bar, "background"), None);
+        assert_eq!(on_bar.constraints.horizontal.min, Some(ACCENT_BAR));
+        assert_eq!(off_bar.constraints.horizontal.min, Some(ACCENT_BAR));
+        assert_eq!(on_bar.constraints.vertical.min, Some(HEIGHT));
+        assert_eq!(ACCENT_BAR, 4.0);
+        assert_eq!(token(&on, "background@selected"), Some(LAYER_SELECTED));
     }
 
     #[test]
     fn tree_items_do_not_declare_drag() {
-        let node = tree_view(
+        let tree = tree_view(
             "fs",
-            vec![tree_item(
-                "src",
-                "src",
-                true,
-                false,
-                vec![tree_item("lib", "lib.rs", false, true, vec![])],
-            )],
+            vec![
+                tree_item(
+                    "src",
+                    "src",
+                    true,
+                    false,
+                    vec![tree_item("main", "main.rs", false, true, vec![])],
+                ),
+                tree_item("docs", "docs", false, false, vec![]),
+            ],
         );
-        no_drag(&node);
+        no_drag(&tree);
         let leaf = tree_item("leaf", "README", false, false, vec![]);
-        no_drag(&leaf);
-        assert!(!has_key(&leaf, "chevron"), "a leaf has no expand caret");
+        assert!(!has_key(&leaf, "caret"), "a leaf has no expand caret");
+        assert!(
+            has_key(&leaf, "caret-slot"),
+            "a leaf keeps the caret's slot so its label lines up with a branch's"
+        );
     }
 
     #[test]
     fn extra_small_item_is_24() {
-        let node = tree_item_xs("xs", "tiny", false, false, vec![]);
+        let node = tree_item_xs("n", "node", false, false, vec![]);
         assert_eq!(
             named(&node, "row").constraints.vertical.min,
             Some(HEIGHT_XS)
         );
+        assert_eq!(
+            named(&node, "row").constraints.vertical.max,
+            Some(HEIGHT_XS)
+        );
         assert_eq!(HEIGHT_XS, 24.0);
-        no_drag(&node);
+        assert_eq!(
+            named(&node, "bar").constraints.vertical.min,
+            Some(HEIGHT_XS)
+        );
     }
-
-    // Chevron is inline text ("expanded"/"collapsed"), never pinned inside
-    // a `Constraints` box the way Modal's `close_button` or Number input's
-    // `stepper` are — `row`'s own `Constraints` pin only the block-size
-    // (height), never the inline-size (width) — so Class 4 (an icon-only
-    // hit box pinned around a word) does not apply structurally here.
 
     const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
 
@@ -310,6 +438,15 @@ mod tests {
             viewport,
             TransitionActivity::default(),
         )
+    }
+
+    fn rect_of(frame: &PetrifiedFrame, suffix: &str) -> Rect {
+        frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with(suffix))
+            .unwrap_or_else(|| panic!("no placement ending in {suffix}"))
+            .rect
     }
 
     fn color(theme: &Theme, name: &str) -> ColorValue {
@@ -349,6 +486,63 @@ mod tests {
         )
     }
 
+    /// Row 39 on the placed frame: every row is exactly 32 tall and as
+    /// wide as the tree; a level-1 label starts 40 in whether its row is a
+    /// branch or a leaf, a level-2 label 16 further; the selected row's
+    /// accent bar is 4 wide, full row height, at the row's start.
+    #[test]
+    fn rows_pin_their_height_and_labels_align_across_branch_and_leaf() {
+        let frame = petrify_lone(sample_tree());
+        let tree = rect_of(&frame, "/fs");
+        for row in [
+            "/src/row",
+            "/main/row",
+            "/lib/row",
+            "/build/row",
+            "/archived/row",
+        ] {
+            let r = rect_of(&frame, row);
+            assert_eq!(r.h, HEIGHT, "{row}: row height is pinned");
+        }
+        for item in ["/fs/src", "/fs/build", "/fs/archived"] {
+            let r = rect_of(&frame, item);
+            assert_eq!(r.w, tree.w, "{item}: a row spans the tree's width");
+        }
+        let branch_label = rect_of(&frame, "/src/row/label");
+        let leaf_label = rect_of(&frame, "/archived/row/label");
+        assert_eq!(
+            branch_label.x - tree.x,
+            LABEL_START,
+            "a level-1 branch label starts at Carbon's 40"
+        );
+        assert_eq!(
+            leaf_label.x, branch_label.x,
+            "a level-1 leaf label lines up with a level-1 branch label"
+        );
+        let nested_label = rect_of(&frame, "/main/row/label");
+        assert_eq!(
+            nested_label.x - branch_label.x,
+            16.0,
+            "one level of nesting indents by spacing-05"
+        );
+        let caret = rect_of(&frame, "/src/row/caret");
+        assert_eq!(
+            caret.x - tree.x,
+            16.0,
+            "the caret box starts at the branch indent"
+        );
+        let selected = rect_of(&frame, "/fs/src/children/main");
+        assert_eq!(
+            selected.w, tree.w,
+            "a nested row spans the tree; only its content steps in"
+        );
+        assert_eq!(selected.x, tree.x);
+        let bar = rect_of(&frame, "/main/row/bar");
+        assert_eq!(bar.x, tree.x, "the accent bar sits at the tree's edge");
+        assert_eq!(bar.w, ACCENT_BAR);
+        assert_eq!(bar.h, HEIGHT, "the accent bar spans the full row height");
+    }
+
     /// Check C/D: every placement across a mixed expanded/collapsed/
     /// selected/disabled tree at two depths places with a real rect and
     /// draws no content larger than it.
@@ -366,6 +560,11 @@ mod tests {
             assert!(
                 !p.paint.overflowed,
                 "{} drew content larger than its own rect",
+                p.id
+            );
+            assert!(
+                !p.paint.truncated,
+                "{} was truncated to fit its parent",
                 p.id
             );
             if let Some(parent_idx) = p.parent {
@@ -468,34 +667,5 @@ mod tests {
                 );
             }
         }
-    }
-
-    // Colour-channel finding for the operator (red-green colour blind),
-    // recorded not fixed — adding an icon channel is a feature, not an
-    // audit fix, matching group 5's identical finding on `selectable_tag`
-    // and `structured_list_row`.
-    //
-    // `tree_item`'s `selected` state is carried by `background@selected`
-    // (`LAYER_SELECTED`) alone: no icon, shape, or text-weight channel
-    // accompanies it (unlike Carbon's own tab, which changes typography
-    // weight as well as colour — the pattern `tabs.rs`'s `tab` already
-    // follows). `Semantics.selected` is set (`tree_item_declares_expanded_
-    // and_selected_never_colour_only` above already proves this much for
-    // the accessibility tree), so an assistive-technology reader is fine;
-    // a sighted, colour-blind reader looking at two rows filled with
-    // `LAYER_SELECTED` vs. resting `SURFACE_BASE` — a fill-tone difference
-    // only — is the same shape the operator flagged in group 5's UI shell
-    // sibling components below.
-    #[test]
-    fn selected_state_is_carried_by_fill_tone_alone_recorded_for_the_operator() {
-        let on = tree_item("l", "main.rs", false, true, vec![]);
-        let off = tree_item("l", "lib.rs", false, false, vec![]);
-        assert_eq!(token(&on, "background@selected"), Some(LAYER_SELECTED));
-        assert_eq!(
-            token(&off, "background@selected"),
-            Some(LAYER_SELECTED),
-            "both bind the same selected fill token; only `Semantics.selected` \
-             tells them apart, and no icon/shape/text channel does"
-        );
     }
 }

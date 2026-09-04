@@ -4,47 +4,66 @@
 //! with four structural variants, not four sizes of the same chrome:
 //!
 //! 1. [`tile`] — base: a static container. Enabled only, no role, no
-//!    border, no interactions.
+//!    interactions.
 //! 2. [`clickable_tile`] — the whole tile is one target (`Role::Button`).
 //! 3. [`selectable_tile`] — an option. Single- vs multi-select is caller
 //!    grouping, the same line [`super::radio`] draws. Selection is never
-//!    colour alone: `Semantics.selected` plus [`IconMark::Check`] when on.
+//!    colour alone: `Semantics.selected` plus a checkbox-shaped mark at the
+//!    tile's top-right corner — an empty box when off, an accent box with
+//!    [`IconMark::Check`] when on (Carbon's `CheckboxCheckedFilled`).
 //! 4. [`expandable_tile`] — reveals a below-the-fold body. Click anywhere
-//!    on the tile (this constructor has no inner controls). Expansion is
-//!    never colour alone: `Semantics.expanded` plus the word
-//!    `"expanded"` / `"collapsed"`.
+//!    on the tile (this constructor has no inner controls). The header
+//!    ends in a [`super::caret`], down when open and right when shut;
+//!    `Semantics.expanded` plus the revealed body are the channels a
+//!    reader who cannot see the caret still gets (FR-026). Until
+//!    2026-09-04 the caret was the literal word `expanded` / `collapsed`.
 //!
 //! Geometry is the SCSS floor, not a size ramp: `min-inline-size` 128
 //! (8rem), `min-block-size` 64 (4rem), padding `$spacing-05` on both axes.
 //! There is no sm/md/lg. There is no invalid, warning, or skeleton state.
+//!
+//! # One box, four kinds
+//!
+//! Every kind is the same box: a [`SURFACE_RAISED`] fill, no resting edge,
+//! and the width of whatever it is placed in. That is Carbon's own form
+//! without the `enable-tile-contrast` flag ("interactive tiles have no
+//! border at all", slice-e) and it is what `35-tile.png` shows: four tiles
+//! at one width, one fill, no outline. Before 2026-09-04 the three
+//! interactive kinds drew a [`super::tokens::BORDER_SUBTLE`] edge as a
+//! second channel and every kind hugged its own sentence, so the row read
+//! as two visual languages in four widths. What tells the kinds apart now
+//! is what Carbon uses: the hover fill on the interactive ones, the mark
+//! on the selectable one, the caret on the expandable one.
+//!
+//! The box is a single-column `Weight` grid rather than a stack because a
+//! stack settles at its content width; a `Weight` track claims the width
+//! it is offered, which is how a tile fills its column the way Carbon's
+//! block-level tile fills its grid cell.
 //!
 //! Fill is [`SURFACE_RAISED`]. Carbon calls a tile un-elevated — they mean
 //! relative to a card, and Carbon has no Card. Petra's card is
 //! [`super::section`], which already spends `surface.raised` *and*
 //! `shadow.raised`. A tile takes the fill and leaves the shadow, so the two
 //! stay distinct on the same page.
-//!
-//! Interactive tiles take [`BORDER_SUBTLE`] as their edge. Carbon's
-//! `$border-tile` is a feature-flag token we do not ship; inventing it
-//! here would put a colour decision in a component. The border is the
-//! second channel beside the hover fill (`layer-hover`), the same job
-//! Carbon's flag-gated 1px line does: mark the tile as a target without
-//! waiting for a pointer.
 
 use super::icon::{IconMark, icon};
 use super::text::text;
 use super::tokens::{
-    BORDER_SUBTLE, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SPACING_03, SPACING_05,
-    SURFACE_RAISED, t,
+    ACCENT_PRIMARY, BORDER_SUBTLE, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SHAPE_NONE,
+    SPACING_03, SPACING_05, SURFACE_RAISED, t,
 };
-use super::{pad, stack};
+use super::{CaretDirection, caret, pad, stack, swatch};
 use crate::geom::{Align, Axis};
-use crate::tree::{AxisConstraint, Constraints, Interaction, Key, Role, ViewNode};
+use crate::tree::{
+    AxisConstraint, Constraints, Interaction, Key, NodeKind, Props, Role, TrackSize, ViewNode,
+};
 
 /// Carbon `.cds--tile` `min-inline-size: 8rem`.
 const MIN_INLINE: f32 = 128.0;
 /// Carbon `.cds--tile` `min-block-size: 4rem`.
 const MIN_BLOCK: f32 = 64.0;
+/// The selectable tile's checkbox-shaped mark: Carbon's 16px icon.
+const MARK: f32 = 16.0;
 
 const INTERACTIVE: &[Interaction] = &[Interaction::Focus, Interaction::Click, Interaction::Hover];
 
@@ -63,26 +82,37 @@ fn floor() -> Constraints {
     }
 }
 
-/// Shared box: raised fill, `$spacing-05` padding, Carbon min size.
+/// Shared box: raised fill, `$spacing-05` padding, Carbon min size, and
+/// the full width it is offered. One `FitContent` row per child, gapped
+/// by `$spacing-03`; `align: Stretch` so a header row inside it also
+/// spans the tile.
 ///
 /// No border, no role, no hover. [`tile`] returns this as-is.
-/// Interactive constructors add the edge and the state fills on top.
-fn shell(key: impl Into<Key>, axis: Axis, children: Vec<ViewNode>) -> ViewNode {
-    let mut node = stack(key, axis, Some(SPACING_03), children);
-    node.props.padding = Some(pad(SPACING_05, SPACING_05));
+/// Interactive constructors add the state fills on top.
+fn shell(key: impl Into<Key>, children: Vec<ViewNode>) -> ViewNode {
+    let rows = vec![TrackSize::FitContent; children.len().max(1)];
+    let mut node = ViewNode::new(NodeKind::Grid, key)
+        .with_props(Props {
+            columns: vec![TrackSize::Weight { weight: 1.0 }],
+            rows,
+            row_spacing: Some(t(SPACING_03)),
+            align: Some(Align::Stretch),
+            padding: Some(pad(SPACING_05, SPACING_05)),
+            ..Props::default()
+        })
+        .with_children(children);
     node.props
         .tokens
         .insert("background".into(), t(SURFACE_RAISED));
     node.with_constraints(floor())
 }
 
-/// The interactive-tile chrome: a border, a hover fill, and — when the
-/// kind can be selected — the four-fill set [`super::list_row`] pioneered.
+/// The interactive-tile chrome: a hover fill and — when the kind can be
+/// selected — the four-fill set [`super::list_row`] pioneered.
 ///
 /// `Hover` has to be declared on the node that binds `background@hover`,
 /// or the engine never hit-tests it and the token is a name nothing reads.
 fn with_interactive_chrome(mut node: ViewNode, selectable: bool) -> ViewNode {
-    node.props.tokens.insert("border".into(), t(BORDER_SUBTLE));
     node.props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
@@ -97,6 +127,22 @@ fn with_interactive_chrome(mut node: ViewNode, selectable: bool) -> ViewNode {
     node
 }
 
+/// A row with text on the left and a fixed mark pinned to the right end:
+/// `[Weight, FitContent]` columns, stretched, so the text takes the room
+/// and the mark sits at the tile's top-right corner the way Carbon's
+/// checkbox and chevron icons do.
+fn header(key: &'static str, leading: ViewNode, trailing: ViewNode) -> ViewNode {
+    ViewNode::new(NodeKind::Grid, key)
+        .with_props(Props {
+            columns: vec![TrackSize::Weight { weight: 1.0 }, TrackSize::FitContent],
+            rows: vec![TrackSize::FitContent],
+            column_spacing: Some(t(SPACING_03)),
+            align: Some(Align::Stretch),
+            ..Props::default()
+        })
+        .with_children(vec![leading, trailing])
+}
+
 /// A base tile: static container, enabled only.
 ///
 /// No role. `Role::Pane` would make a region out of a box that does not
@@ -106,7 +152,7 @@ fn with_interactive_chrome(mut node: ViewNode, selectable: bool) -> ViewNode {
 /// this constructor does not grow a children argument, because the
 /// inventory's base tile is a box around text, not a layout primitive.
 pub fn tile(key: impl Into<Key>, body: impl Into<String>) -> ViewNode {
-    shell(key, Axis::Vertical, vec![text("body", body.into())])
+    shell(key, vec![text("body", body.into())])
 }
 
 /// A clickable tile: the whole surface is one activation target.
@@ -120,11 +166,11 @@ pub fn clickable_tile(
     body: impl Into<String>,
 ) -> ViewNode {
     let label = label.into();
-    with_interactive_chrome(
-        shell(key, Axis::Vertical, vec![text("body", body.into())]),
-        false,
+    with_interactive_chrome(shell(key, vec![text("body", body.into())]), false).interactive(
+        Role::Button,
+        label,
+        INTERACTIVE,
     )
-    .interactive(Role::Button, label, INTERACTIVE)
 }
 
 /// A selectable tile: one option in a caller-grouped set.
@@ -132,32 +178,79 @@ pub fn clickable_tile(
 /// Multi-select vs radio is not two components. The caller groups these
 /// the way it groups [`super::radio`]. What this constructor guarantees
 /// is that selected is a declared fact (`Semantics.selected`) with a
-/// second visual channel ([`IconMark::Check`] when on), not a fill swap
-/// a colour-blind reader cannot recover.
+/// second visual channel (the mark's shape: empty box against filled box
+/// with a check), not a fill swap a colour-blind reader cannot recover.
 pub fn selectable_tile(key: impl Into<Key>, label: impl Into<String>, selected: bool) -> ViewNode {
     let label = label.into();
-    let mut parts = Vec::new();
-    if selected {
-        parts.push(icon("mark", IconMark::Check));
-    }
-    parts.push(text("label", label.clone()));
-
-    let mut node = with_interactive_chrome(shell(key, Axis::Horizontal, parts), true);
-    node.props.align = Some(Align::Center);
+    let row = header(
+        "row",
+        text("label", label.clone()),
+        selection_mark(selected),
+    );
+    let node = with_interactive_chrome(shell(key, vec![row]), true);
     let mut node = node.interactive(Role::Button, label, INTERACTIVE);
     node.semantics.selected = selected;
     node
+}
+
+/// The selectable tile's checkbox-shaped mark. Off: a 16-unit box with a
+/// [`BORDER_SUBTLE`] edge and no fill, the same reason the checkbox's own
+/// box keeps its edge — with nothing inside it, the outline is the whole
+/// control. On: an [`ACCENT_PRIMARY`] box with [`IconMark::Check`] centred
+/// in it, the way [`super::progress_indicator`]'s complete mark is built.
+/// Sharp corners ([`SHAPE_NONE`]), matching the checkbox.
+fn selection_mark(selected: bool) -> ViewNode {
+    if !selected {
+        return swatch(
+            "box",
+            MARK,
+            MARK,
+            None,
+            Some(BORDER_SUBTLE),
+            Some(SHAPE_NONE),
+        );
+    }
+    let tick = icon("mark", IconMark::Check);
+    let inset = ((MARK - tick.constraints.horizontal.min.unwrap_or(0.0)) * 0.5).max(0.0);
+    let mut node = stack(
+        "box",
+        Axis::Horizontal,
+        None,
+        vec![
+            swatch("inset-start", inset, MARK, None, None, None),
+            tick,
+            swatch("inset-end", inset, MARK, None, None, None),
+        ],
+    );
+    node.props.align = Some(Align::Center);
+    node.props
+        .tokens
+        .insert("background".into(), t(ACCENT_PRIMARY));
+    node.props.tokens.insert("radius".into(), t(SHAPE_NONE));
+    node.with_constraints(Constraints {
+        horizontal: AxisConstraint {
+            min: Some(MARK),
+            max: Some(MARK),
+            priority: 0,
+        },
+        vertical: AxisConstraint {
+            min: Some(MARK),
+            max: Some(MARK),
+            priority: 0,
+        },
+    })
 }
 
 /// An expandable tile: a labelled header that reveals `body` below the fold.
 ///
 /// Clicking anywhere on the tile toggles it — this constructor has no
 /// inner controls, so it does not need Carbon's "only the chevron
-/// button toggles" sub-form. The chevron's job is the second channel:
-/// the word `"expanded"` or `"collapsed"` sits beside the label. A
-/// canvas chevron without a word would be an icon carrying state alone
-/// (FR-026). `Semantics.expanded` is the fact a reader who cannot see
-/// either channel still gets.
+/// button toggles" sub-form. The caret at the header's right end points
+/// down when open and right when shut; `Semantics.expanded` and the
+/// revealed body are the fact a reader who cannot see it still gets.
+/// Carbon seats its chevron at the tile's bottom-right corner; this one
+/// sits on the header's line, because the tile has no fixed above-the-
+/// fold height to pin a bottom to.
 pub fn expandable_tile(
     key: impl Into<Key>,
     label: impl Into<String>,
@@ -165,22 +258,24 @@ pub fn expandable_tile(
     body: impl Into<String>,
 ) -> ViewNode {
     let label = label.into();
-    let disclosure = if expanded { "expanded" } else { "collapsed" };
-    let mut header = stack(
-        "header",
-        Axis::Horizontal,
-        Some(SPACING_03),
-        vec![text("label", label.clone()), text("disclosure", disclosure)],
+    let disclosure = caret(
+        "caret",
+        if expanded {
+            CaretDirection::Down
+        } else {
+            CaretDirection::Right
+        },
     );
-    header.props.align = Some(Align::Center);
-
-    let mut children = vec![header];
+    let mut children = vec![header("header", text("label", label.clone()), disclosure)];
     if expanded {
         children.push(text("body", body.into()));
     }
 
-    let mut node = with_interactive_chrome(shell(key, Axis::Vertical, children), false)
-        .interactive(Role::Button, label, INTERACTIVE);
+    let mut node = with_interactive_chrome(shell(key, children), false).interactive(
+        Role::Button,
+        label,
+        INTERACTIVE,
+    );
     node.semantics.expanded = Some(expanded);
     node
 }
@@ -188,11 +283,14 @@ pub fn expandable_tile(
 #[cfg(test)]
 mod tests {
     use super::super::tokens::{
-        BORDER_SUBTLE, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SURFACE_RAISED,
+        ACCENT_PRIMARY, BORDER_SUBTLE, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER,
+        SURFACE_RAISED,
     };
-    use super::{MIN_BLOCK, MIN_INLINE, clickable_tile, expandable_tile, selectable_tile, tile};
+    use super::{
+        MARK, MIN_BLOCK, MIN_INLINE, clickable_tile, expandable_tile, selectable_tile, tile,
+    };
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
-    use crate::geom::{Axis, Size};
+    use crate::geom::{Axis, Rect, Size};
     use crate::testing::{Harness, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
     use crate::tree::{Interaction, NodeKind, Props, Registry, Role, ViewNode};
@@ -221,43 +319,59 @@ mod tests {
         assert!(!node.semantics.selected);
         assert_eq!(node.semantics.expanded, None);
         assert_eq!(token(&node, "background"), Some(SURFACE_RAISED));
-        assert_eq!(
-            token(&node, "border"),
-            None,
-            "base tile has no interactive edge"
-        );
+        assert_eq!(token(&node, "border"), None);
         assert_eq!(token(&node, "background@hover"), None);
     }
 
     #[test]
     fn tile_min_constraints_are_the_carbon_floor() {
-        let nodes = [
-            tile("b", "body"),
-            clickable_tile("c", "Open", "body"),
-            selectable_tile("s", "Plan A", false),
-            expandable_tile("e", "Details", false, "more"),
-        ];
-        for node in nodes {
+        for (label, node) in [
+            ("base", tile("t", "x")),
+            ("clickable", clickable_tile("t", "Open", "x")),
+            ("selectable", selectable_tile("t", "Plan A", false)),
+            ("expandable", expandable_tile("t", "Details", false, "x")),
+        ] {
             assert_eq!(
                 node.constraints.horizontal.min,
                 Some(MIN_INLINE),
-                "{:?} inline min",
-                node.key
+                "{label}: min-inline-size 128"
             );
             assert_eq!(
                 node.constraints.vertical.min,
                 Some(MIN_BLOCK),
-                "{:?} block min",
-                node.key
+                "{label}: min-block-size 64"
             );
             assert_eq!(node.constraints.horizontal.max, None);
             assert_eq!(node.constraints.vertical.max, None);
+        }
+        assert_eq!(MIN_INLINE, 128.0);
+        assert_eq!(MIN_BLOCK, 64.0);
+    }
+
+    /// Row 35's defect: the base tile had a fill and no edge while the
+    /// three interactive kinds had a fill *and* an edge, two visual
+    /// languages in one row. Every kind is now the same box.
+    #[test]
+    fn every_kind_is_the_same_box_with_no_resting_edge() {
+        for (label, node) in [
+            ("base", tile("t", "x")),
+            ("clickable", clickable_tile("t", "Open", "x")),
+            ("selectable", selectable_tile("t", "Plan A", false)),
+            ("expandable", expandable_tile("t", "Details", false, "x")),
+        ] {
+            assert_eq!(node.kind, NodeKind::Grid, "{label}");
+            assert_eq!(token(&node, "background"), Some(SURFACE_RAISED), "{label}");
+            assert_eq!(
+                token(&node, "border"),
+                None,
+                "{label}: a tile draws no resting edge (Carbon without the contrast flag)"
+            );
         }
     }
 
     #[test]
     fn clickable_tile_is_interactive_with_role_and_label() {
-        let node = clickable_tile("go", "Open project", "Project Alpha");
+        let node = clickable_tile("open", "Open project", "Project Alpha");
         assert!(node.is_interactive());
         assert_eq!(node.semantics.role, Some(Role::Button));
         assert_eq!(node.semantics.label.as_deref(), Some("Open project"));
@@ -265,45 +379,45 @@ mod tests {
         assert!(node.interactions.contains(&Interaction::Click));
         assert!(
             node.interactions.contains(&Interaction::Hover),
-            "Hover is what makes background@hover reachable"
+            "Hover must be declared on the node that binds background@hover"
         );
-        assert_eq!(token(&node, "border"), Some(BORDER_SUBTLE));
         assert_eq!(token(&node, "background@hover"), Some(LAYER_HOVER));
         assert_eq!(
             token(&node, "background@selected"),
             None,
-            "clickable is not a selected kind; do not bind a slot nothing ranks into"
+            "a clickable tile has no selected state"
         );
         assert!(!node.semantics.selected);
     }
 
+    /// Selection is a shape: an empty box off, an accent box with a check
+    /// on. Both sit in the header's trailing cell, so the mark is at the
+    /// tile's top-right in either state and the label does not move.
     #[test]
     fn selectable_tile_declares_selected_and_draws_a_check() {
         let on = selectable_tile("plan", "Plan A", true);
         assert_eq!(on.semantics.role, Some(Role::Button));
         assert_eq!(on.semantics.label.as_deref(), Some("Plan A"));
-        assert!(
-            on.semantics.selected,
-            "selection is a declared fact, not a fill"
-        );
-        assert!(
-            has_canvas(&on),
-            "IconMark::Check is the second channel when selected"
-        );
+        assert!(on.semantics.selected, "selected is a declared fact");
+        assert!(has_canvas(&on), "a selected tile draws IconMark::Check");
+        let on_box = named(&on, "box");
+        assert_eq!(token(on_box, "background"), Some(ACCENT_PRIMARY));
+        assert_eq!(on_box.constraints.horizontal.min, Some(MARK));
         assert_eq!(token(&on, "background@selected"), Some(LAYER_SELECTED));
         assert_eq!(
             token(&on, "background@selected-hover"),
             Some(LAYER_SELECTED_HOVER)
         );
-        assert_eq!(token(&on, "border"), Some(BORDER_SUBTLE));
 
         let off = selectable_tile("plan", "Plan A", false);
         assert!(!off.semantics.selected);
-        assert!(
-            !has_canvas(&off),
-            "the check is the on-state mark, not a permanent glyph"
-        );
+        assert!(!has_canvas(&off), "an unselected tile draws no check");
+        let off_box = named(&off, "box");
+        assert_eq!(token(off_box, "border"), Some(BORDER_SUBTLE));
+        assert_eq!(token(off_box, "background"), None);
+        assert_eq!(off_box.constraints.horizontal.min, Some(MARK));
         assert!(off.is_interactive());
+        assert_eq!(MARK, 16.0);
     }
 
     #[test]
@@ -313,19 +427,33 @@ mod tests {
         assert_eq!(open.semantics.role, Some(Role::Button));
         assert_eq!(open.semantics.label.as_deref(), Some("Details"));
         assert_eq!(open.semantics.expanded, Some(true));
+        let open_caret = named(&open, "caret");
+        assert_eq!(
+            open_caret.kind,
+            NodeKind::Canvas,
+            "disclosure is a caret shape"
+        );
         assert!(
-            open.children.len() > 1,
-            "expanded body sits below the fold as a child"
+            open_caret.props.text.is_none(),
+            "the caret is a shape, not the word `expanded`"
+        );
+        assert_eq!(
+            named(&open, "body").props.text.as_deref(),
+            Some("the rest"),
+            "an open tile mounts its body"
         );
 
         let shut = expandable_tile("more", "Details", false, "the rest");
         assert_eq!(shut.semantics.expanded, Some(false));
-        assert_eq!(
-            shut.children.len(),
-            1,
-            "collapsed tile keeps the header and drops the body"
+        let shut_caret = named(&shut, "caret");
+        assert_ne!(
+            open_caret.props.canvas, shut_caret.props.canvas,
+            "open and shut carets point different ways"
         );
-        assert_eq!(token(&open, "border"), Some(BORDER_SUBTLE));
+        assert!(
+            !shut.children.iter().any(|c| c.key.as_str() == "body"),
+            "a shut tile does not mount its body"
+        );
         assert_eq!(token(&open, "background@hover"), Some(LAYER_HOVER));
     }
 
@@ -346,12 +474,16 @@ mod tests {
     }
 
     fn petrify_lone(node: ViewNode) -> PetrifiedFrame {
+        petrify_column(vec![node])
+    }
+
+    fn petrify_column(nodes: Vec<ViewNode>) -> PetrifiedFrame {
         let root = ViewNode::new(NodeKind::Stack, "root")
             .with_props(Props {
                 axis: Some(Axis::Vertical),
                 ..Props::default()
             })
-            .child(node);
+            .with_children(nodes);
         let registry = accepting_registry();
         let mut harness = Harness::new();
         let viewport = Viewport::new(VIEWPORT, ThemeMode::Dark);
@@ -365,6 +497,15 @@ mod tests {
         )
     }
 
+    fn rect_of(frame: &PetrifiedFrame, suffix: &str) -> Rect {
+        frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with(suffix))
+            .unwrap_or_else(|| panic!("no placement ending in {suffix}"))
+            .rect
+    }
+
     fn color(theme: &Theme, name: &str) -> ColorValue {
         match theme.value(&TokenName::new(name).unwrap()).unwrap() {
             TokenValue::Color(c) => *c,
@@ -372,13 +513,45 @@ mod tests {
         }
     }
 
-    /// Check C/D across all four kinds. `selectable_tile`'s check mark
-    /// (`IconMark::Check`) and `expandable_tile`'s `"expanded"`/
-    /// `"collapsed"` word are the class-4 suspects named in this group's
-    /// brief; neither carries its own `Constraints`, unlike Modal's
-    /// `close_button` or Number input's stepper, so this is the
-    /// frame-level proof neither overflows, not a substitute for reading
-    /// the code.
+    /// Row 35 on the placed frame: four tiles in one column place at one
+    /// width — the column's, not each sentence's — and the selectable
+    /// tile's mark sits at the tile's top-right, inside its padding.
+    #[test]
+    fn four_kinds_in_one_column_place_at_the_columns_width() {
+        let frame = petrify_column(vec![
+            tile("base", "A static tile holds related content."),
+            clickable_tile("click", "Open", "Short."),
+            selectable_tile("sel", "Select this option", false),
+            expandable_tile("exp", "More detail", false, "Below the fold."),
+        ]);
+        let widths: Vec<f32> = ["/base", "/click", "/sel", "/exp"]
+            .iter()
+            .map(|k| rect_of(&frame, k).w)
+            .collect();
+        assert!(
+            widths.iter().all(|w| (w - widths[0]).abs() < 0.01),
+            "tiles hug their own text instead of filling the column: {widths:?}"
+        );
+        assert_eq!(widths[0], VIEWPORT.w, "a tile is as wide as its column");
+        let sel = rect_of(&frame, "/sel");
+        let mark = rect_of(&frame, "/sel/row/box");
+        assert_eq!(mark.w, MARK);
+        assert_eq!(
+            mark.x + mark.w,
+            sel.x + sel.w - 16.0,
+            "the mark sits at the tile's right edge, inside the 16 padding"
+        );
+        assert_eq!(
+            mark.y,
+            sel.y + 16.0,
+            "the mark sits at the tile's top, inside the padding"
+        );
+        let label = rect_of(&frame, "/sel/row/label");
+        assert!(label.x < mark.x, "label leads, mark trails");
+    }
+
+    /// Check C/D across all four kinds: nothing overflows, nothing leaves
+    /// its parent.
     #[test]
     fn frame_geometry_has_no_degenerate_or_overflowing_placements() {
         let cases: Vec<(&str, ViewNode)> = vec![
@@ -411,6 +584,11 @@ mod tests {
                 assert!(
                     !p.paint.overflowed,
                     "{label}: {} drew content larger than its own rect",
+                    p.id
+                );
+                assert!(
+                    !p.paint.truncated,
+                    "{label}: {} was truncated to fit its parent",
                     p.id
                 );
                 if let Some(parent_idx) = p.parent {
@@ -487,7 +665,7 @@ mod tests {
                 (
                     "expandable",
                     expandable_tile("t", "Details", true, "the rest"),
-                    vec!["label", "disclosure", "body"],
+                    vec!["label", "body"],
                 ),
             ] {
                 let tile_bg_name = node

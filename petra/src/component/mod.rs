@@ -164,7 +164,7 @@ pub use notification::{
     notification, notification_actionable, notification_inline, notification_toast,
 };
 pub use number_input::{number_input, number_input_invalid, number_input_lg, number_input_sm};
-pub use pagination::pagination;
+pub use pagination::{pagination, pagination_items};
 pub use popover::{popover, popover_with};
 pub use progress::{progress, progress_sm, progress_with_helper};
 pub use progress_indicator::{progress_indicator, progress_step};
@@ -486,6 +486,89 @@ pub(crate) fn swatch(
 /// named the way `InsetRefs::symmetric` itself is: horizontal first.
 pub(crate) fn pad(horizontal: &str, vertical: &str) -> InsetRefs {
     InsetRefs::symmetric(tokens::t(horizontal), tokens::t(vertical))
+}
+
+/// Logical extent of a [`caret`] on both axes: Carbon's 16px glyph box.
+pub(crate) const CARET_SIZE: f32 = 16.0;
+
+/// Which way a [`caret`] points.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CaretDirection {
+    /// Expanded: the triangle points down.
+    Down,
+    /// Collapsed: the triangle points right.
+    Right,
+}
+
+/// A disclosure caret: one filled triangle in [`tokens::ICON_SECONDARY`] on a
+/// 16×16 canvas, pointing [`CaretDirection::Down`] when the thing it fronts
+/// is open and [`CaretDirection::Right`] when it is shut.
+///
+/// Never exported, and not an [`IconMark`]. The icon vocabulary is one
+/// variant long (`Check`) and growing it is the icon wave's job; until a
+/// `CaretDown`/`CaretRight` mark lands there, this is the shape a tree
+/// branch and an expandable tile draw instead of spelling the word
+/// `expanded` next to their label. When the mark exists, replace this with
+/// `icon(key, IconMark::CaretDown)` and delete it. Like [`swatch`] it carries
+/// no semantics of its own: the branch or tile that composes it owns the
+/// `Semantics.expanded` fact, and the revealed children are the channel a
+/// reader who cannot see the triangle still gets (FR-026).
+///
+/// Geometry, canvas-local: an 8-wide, 4-tall isoceles triangle centred in
+/// the box, which is the CaretDown glyph's own proportion. The points are
+/// whole units so nothing in the fill lands on a half-pixel edge and gets
+/// snapped off centre at 1x (see
+/// `.agents/notes/proposed/bug-fix/2026-09-04-a-half-pixel-inset-snaps-a-small-mark-off-centre.md`).
+///
+/// # Panics
+/// Never in practice: one three-vertex convex path is inside every draw-list
+/// bound. A panic here means an edit broke convexity, which is a defect.
+pub(crate) fn caret(key: impl Into<Key>, direction: CaretDirection) -> ViewNode {
+    use crate::draw::{ColorRef, Command, DrawList, Paint, PathVerb};
+    use crate::geom::Point;
+
+    let (a, b, c) = match direction {
+        CaretDirection::Down => (
+            Point::new(4.0, 6.0),
+            Point::new(12.0, 6.0),
+            Point::new(8.0, 10.0),
+        ),
+        CaretDirection::Right => (
+            Point::new(6.0, 4.0),
+            Point::new(6.0, 12.0),
+            Point::new(10.0, 8.0),
+        ),
+    };
+    let paint = Paint::filled(ColorRef::Token(
+        tokens::t(tokens::ICON_SECONDARY).as_str().to_owned(),
+    ));
+    let list = DrawList::new(vec![Command::Path {
+        verbs: vec![
+            PathVerb::MoveTo(a),
+            PathVerb::LineTo(b),
+            PathVerb::LineTo(c),
+        ],
+        closed: true,
+        paint,
+    }])
+    .unwrap_or_else(|err| panic!("caret draw list refused: {err}"));
+    ViewNode::new(NodeKind::Canvas, key)
+        .with_props(Props {
+            canvas: Some(Arc::new(list)),
+            ..Props::default()
+        })
+        .with_constraints(Constraints {
+            horizontal: AxisConstraint {
+                min: Some(CARET_SIZE),
+                max: Some(CARET_SIZE),
+                priority: 0,
+            },
+            vertical: AxisConstraint {
+                min: Some(CARET_SIZE),
+                max: Some(CARET_SIZE),
+                priority: 0,
+            },
+        })
 }
 
 #[cfg(test)]

@@ -1,128 +1,309 @@
-//! Carbon Pagination (slice-d).
+//! Carbon Pagination (slice-d), the bar variant.
 //!
-//! Anatomy of the bar variant (usage page + `_pagination.scss`):
-//! 1. Container — `$layer` fill, 1px `$border-subtle` edge, height md 40.
-//! 2. Current-page text plus `Semantics.value` (the page number). The
-//!    nested Select that Carbon uses for the page picker is Wave 3
-//!    Popover; this constructor does not fake a dropdown.
-//! 3. Previous / Next — [`Role::Button`] with labels `"Previous"` /
-//!    `"Next"`, never icon-only (FR-026). Page 1 disables Previous
-//!    via [`super::disabled`]; the last page disables Next.
+//! Anatomy (usage page + `_pagination.scss` + `23-pagination.png`):
+//! 1. Container — `$layer` fill ([`SURFACE_RAISED`]), `border-block-start:
+//!    1px solid $border-subtle`, height md 40, as wide as what it sits in.
+//!    The top edge is a real 1-unit `rule` element, not a four-sided
+//!    `border` token: a `border` is drawn inset and the bar's own children
+//!    fill the bar's height, so they painted over it and the edge showed
+//!    only in the gaps between them — the "three boxes that do not close"
+//!    of the 2026-09-04 triage.
+//! 2. Left group — "Items per page:" plus the page size
+//!    (`Semantics.value`), closed by a `border-inline-end` divider.
+//!    Built by [`pagination_items`], which knows the page size;
+//!    [`pagination`] does not and omits the group rather than invent one.
+//! 3. Range text — "1–10 of 50 items" — filling the middle so the right
+//!    group sits at the bar's end. [`pagination_items`] only.
+//! 4. Right group — a `border-inline-start` divider, the page number
+//!    (`Semantics.value`) and "of N pages", then Previous and Next, each
+//!    behind its own divider (slice-d:58). They are labelled words, never
+//!    icon-only (FR-026); Carbon's `CaretLeft`/`CaretRight` are not in the
+//!    icon vocabulary yet.
 //!
-//! Items-per-page is a Select. It is not invented here. Pagination nav
-//! (page-number buttons) is a second Carbon variant and is omitted.
+//! Carbon's two pickers are native `<select>`s. Petra has no dropdown
+//! surface for them yet, so the page size and the page number are text
+//! plus `Semantics.value` here, not dressed up as controls. Page 1
+//! disables Previous via [`super::disabled`]; the last page disables Next.
+//! Pagination nav (page-number buttons) is a second Carbon variant and is
+//! omitted.
 
 use super::stack;
 use super::text::text;
 use super::tokens::{
-    BORDER_SUBTLE, LAYER_HOVER, SIZE_MD, SPACING_03, SPACING_05, SURFACE_RAISED, TEXT_PRIMARY, t,
+    BORDER_SUBTLE, LAYER_HOVER, SIZE_MD, SPACING_03, SPACING_05, SURFACE_RAISED, TEXT_MUTED,
+    TEXT_PRIMARY, t,
 };
 use super::{disabled, pad};
 use crate::geom::{Align, Axis};
-use crate::tree::{AxisConstraint, Constraints, InsetRefs, Interaction, Key, Role, ViewNode};
+use crate::tree::{
+    AxisConstraint, Constraints, InsetRefs, Interaction, Key, NodeKind, Props, Role, TrackSize,
+    ViewNode,
+};
 
 const _: () = assert!(SIZE_MD == 40.0);
 
 const NAV_INTENTS: &[Interaction] = &[Interaction::Focus, Interaction::Click, Interaction::Hover];
 
-/// `border-inline-start: 1px solid $border-subtle` on each nav button,
-/// SOURCED `slice-d.md:57-58` ("Previous button, Next button (both ghost
-/// icon buttons, border-inline-start: 1px solid $border-subtle)"). Petra's
-/// token system has no single-side `border` slot (every other component
-/// binding `"border"` gets a 4-sided box — grep confirms it), so a real
+/// `border-inline-start: 1px solid $border-subtle` on each nav button and
+/// on the right group, `border-inline-end` on the left group, SOURCED
+/// `slice-d.md:57-58`. Petra's token system has no single-side `border`
+/// slot (every component binding `"border"` gets a 4-sided box), so a real
 /// divider element stands in for the one edge Carbon draws, the same
 /// technique [`super::accordion`]'s own `divider` uses for its horizontal
 /// line.
 const DIVIDER_WIDTH: f32 = 1.0;
+/// The container's `border-block-start`.
+const RULE_HEIGHT: f32 = 1.0;
 
-/// Pagination bar at Carbon md (40). `page` is 1-indexed.
+/// Pagination bar at Carbon md (40) with only the page controls: the
+/// right group of Carbon's anatomy, and no items-per-page group, because
+/// this constructor is not told a page size and does not invent one.
+/// `page` is 1-indexed.
 ///
 /// `page_count` is the last page number. Previous is unavailable on page
 /// 1; Next is unavailable on the last page (and when there are no pages).
 pub fn pagination(key: impl Into<Key>, page: u32, page_count: u32) -> ViewNode {
-    let mut current = text("page", format!("{page} of {page_count}"));
+    bar(key, None, page, page_count)
+}
+
+/// Carbon's full bar: items per page, the range of items on this page,
+/// and the page controls. `page` is 1-indexed; `page_size` is the number
+/// of items per page; `total_items` is the whole set.
+///
+/// The page count is `total_items / page_size` rounded up, and the range
+/// text is "first–last of total items" for this page. A `page_size` of 0
+/// is treated as 1 rather than dividing by it.
+pub fn pagination_items(
+    key: impl Into<Key>,
+    page: u32,
+    page_size: u32,
+    total_items: u32,
+) -> ViewNode {
+    let page_size = page_size.max(1);
+    let page_count = total_items.div_ceil(page_size);
+    let first = page
+        .saturating_sub(1)
+        .saturating_mul(page_size)
+        .saturating_add(1);
+    let last = page.saturating_mul(page_size).min(total_items);
+    let range = format!("{first}\u{2013}{last} of {total_items} items");
+    bar(key, Some((page_size, range)), page, page_count)
+}
+
+/// The bar: a 1-unit top rule over a 40-tall grid whose middle column is
+/// the `Weight` track that pushes the page controls to the end.
+fn bar(key: impl Into<Key>, left: Option<(u32, String)>, page: u32, page_count: u32) -> ViewNode {
+    let mut columns = Vec::with_capacity(3);
+    let mut cells = Vec::with_capacity(3);
+    match left {
+        Some((page_size, range)) => {
+            columns.push(TrackSize::FitContent);
+            cells.push(items_per_page(page_size));
+            columns.push(TrackSize::Weight { weight: 1.0 });
+            cells.push(range_cell(range));
+        }
+        None => {
+            columns.push(TrackSize::Weight { weight: 1.0 });
+            cells.push(stack("range", Axis::Horizontal, None, vec![]));
+        }
+    }
+    columns.push(TrackSize::FitContent);
+    cells.push(page_controls(page, page_count));
+
+    let mut row = ViewNode::new(NodeKind::Grid, "bar")
+        .with_props(Props {
+            columns,
+            rows: vec![TrackSize::FitContent],
+            align: Some(Align::Stretch),
+            ..Props::default()
+        })
+        .with_children(cells);
+    row.constraints.vertical = AxisConstraint {
+        min: Some(SIZE_MD),
+        max: Some(SIZE_MD),
+        priority: 0,
+    };
+
+    let mut rule = stack("rule", Axis::Horizontal, None, vec![]);
+    rule.props
+        .tokens
+        .insert("background".into(), t(BORDER_SUBTLE));
+    rule.props.align_self = Some(Align::Stretch);
+    rule.constraints.vertical = AxisConstraint {
+        min: Some(RULE_HEIGHT),
+        max: Some(RULE_HEIGHT),
+        priority: 0,
+    };
+
+    let mut node = stack(key, Axis::Vertical, None, vec![rule, row]);
+    node.props.align = Some(Align::Stretch);
+    node.props
+        .tokens
+        .insert("background".into(), t(SURFACE_RAISED));
+    node
+}
+
+/// "Items per page:" plus the page size, then the group's closing
+/// divider. Label padding 16 start (the container's `padding-inline`),
+/// value padding 8 start / 16 end (slice-d:66).
+fn items_per_page(page_size: u32) -> ViewNode {
+    let caption = cell(
+        "label-cell",
+        InsetRefs {
+            left: Some(t(SPACING_05)),
+            ..InsetRefs::default()
+        },
+        muted("label", "Items per page:"),
+    );
+    let mut value = text("page-size", page_size.to_string());
+    value
+        .props
+        .tokens
+        .insert("foreground".into(), t(TEXT_PRIMARY));
+    value.semantics.value = Some(page_size.to_string());
+    let value = cell(
+        "page-size-cell",
+        InsetRefs {
+            left: Some(t(SPACING_03)),
+            right: Some(t(SPACING_05)),
+            ..InsetRefs::default()
+        },
+        value,
+    );
+    run(
+        "items-per-page",
+        vec![caption, value, nav_divider("divider-items")],
+    )
+}
+
+/// A run of cells, each exactly as wide as it asks to be: a one-row grid
+/// of `FitContent` columns on a row fixed at [`SIZE_MD`], stretched to it.
+/// The row is fixed rather than `FitContent` because a group with no
+/// 40-tall child (the items-per-page group is two captions and a divider)
+/// would otherwise size its row to the captions and leave its divider
+/// short of the bar.
+///
+/// Not a `Stack`. A stack probes itself once for its natural width and
+/// then distributes that budget to its children, and the two do not
+/// agree to the unit — measured with real text metrics the `controls`
+/// stack came out about two units short of the sum of its children, and a
+/// stack settles a shortfall by squeezing its most flexible child, which
+/// for a text label means wrapping. `Previous` rasterized as `Previou`
+/// with its `s` on a second line, at 1x and at 2x alike. A grid probes each
+/// column on its own and hands each child exactly that width.
+fn run(key: &'static str, children: Vec<ViewNode>) -> ViewNode {
+    ViewNode::new(NodeKind::Grid, key)
+        .with_props(Props {
+            columns: vec![TrackSize::FitContent; children.len()],
+            rows: vec![TrackSize::Fixed { value: SIZE_MD }],
+            align: Some(Align::Stretch),
+            ..Props::default()
+        })
+        .with_children(children)
+}
+
+/// The range text, centred on the bar, 16 off the divider before it.
+fn range_cell(range: String) -> ViewNode {
+    cell(
+        "range",
+        InsetRefs {
+            left: Some(t(SPACING_05)),
+            ..InsetRefs::default()
+        },
+        muted("range-text", range),
+    )
+}
+
+/// One padded, vertically centred text cell. The padding lives here and
+/// not on the text because a `Text` leaf has nothing to inset and the
+/// tree validator refuses the declaration.
+fn cell(key: &'static str, padding: InsetRefs, child: ViewNode) -> ViewNode {
+    let mut node = stack(key, Axis::Horizontal, None, vec![child]);
+    node.props.align = Some(Align::Center);
+    node.props.padding = Some(padding);
+    node
+}
+
+/// The right group: divider, page number, "of N pages", divider,
+/// Previous, divider, Next. Page-select padding 16 start / 8 end
+/// (slice-d:67).
+fn page_controls(page: u32, page_count: u32) -> ViewNode {
+    let mut current = text("page", page.to_string());
     current
         .props
         .tokens
         .insert("foreground".into(), t(TEXT_PRIMARY));
     current.semantics.value = Some(page.to_string());
+    let current = cell(
+        "page-cell",
+        InsetRefs {
+            left: Some(t(SPACING_05)),
+            right: Some(t(SPACING_03)),
+            ..InsetRefs::default()
+        },
+        current,
+    );
+    let count = cell(
+        "page-count-cell",
+        InsetRefs {
+            right: Some(t(SPACING_05)),
+            ..InsetRefs::default()
+        },
+        muted("page-count", format!("of {page_count} pages")),
+    );
 
     let previous = nav_button("previous", "Previous", page <= 1);
     let next = nav_button("next", "Next", page_count == 0 || page >= page_count);
 
-    let mut node = stack(
-        key,
-        Axis::Horizontal,
-        Some(SPACING_03),
+    run(
+        "controls",
         vec![
+            nav_divider("divider-page"),
             current,
+            count,
             nav_divider("divider-previous"),
             previous,
             nav_divider("divider-next"),
             next,
         ],
-    );
-    // Center, and each `nav_divider` overrides it with `align_self:
-    // Stretch` (`Props::align_self`). Stretching the whole bar's `align`
-    // was tried first, to make `nav_divider` span the bar's full height
-    // instead of floating as a short tick, and it was reverted: `Align`
-    // used to be a property of the container only, so it also stretched
-    // the "1 of 5" cell and sent its caption to the top of the bar while
-    // the two buttons stayed centred — the picture was worse than the
-    // defect. `align_self` is the per-child override that fix needed: the
-    // dividers stretch, "1 of 5" and the two buttons stay governed by the
-    // bar's own `Center`.
-    node.props.align = Some(Align::Center);
-    node.props.padding = Some(InsetRefs {
-        left: Some(t(SPACING_05)),
-        right: Some(t(SPACING_05)),
-        ..InsetRefs::default()
-    });
-    node.props
-        .tokens
-        .insert("background".into(), t(SURFACE_RAISED));
-    node.props.tokens.insert("border".into(), t(BORDER_SUBTLE));
-    node.constraints.vertical.min = Some(SIZE_MD);
+    )
+}
+
+/// Carbon's `$text-secondary` captions.
+fn muted(key: &'static str, content: impl Into<String>) -> ViewNode {
+    let mut node = text(key, content);
+    node.props.tokens.insert("foreground".into(), t(TEXT_MUTED));
     node
 }
 
-/// A 1px vertical line pinned to the bar's own height, standing in for the
+/// A 1px vertical line spanning the row's own height, standing in for the
 /// `border-inline-start` Carbon puts on the button itself (see
 /// [`DIVIDER_WIDTH`]'s doc for why this is a sibling element and not a
 /// token binding).
 ///
-/// `align_self: Stretch` (`Props::align_self`) overrides the bar's own
-/// `Align::Center` for this one child, so the rule spans the bar's actual
-/// placed height rather than a hard-coded `SIZE_MD`. That rules out
-/// [`swatch`], which is a `Spacer`: `Stretch` only ever clamps into
-/// whatever a child's own constraint declares
-/// (`AxisConstraint::clamp` — `crate::layout::stack::place`'s Stretch
-/// arm), so a `Spacer` needs its vertical constraint *cleared* for
-/// `Stretch` to reach past a fixed height — and a `Spacer`'s own `measure`
-/// answers "whatever is offered" on an unconstrained axis (that is what
-/// makes it "empty, flexible space"). Left uncapped, that answer is not
+/// The [`run`] grid's `Align::Stretch` grows it to the row's placed
+/// height. That rules out [`super::swatch`], which is a `Spacer`: `Stretch`
+/// only ever clamps into whatever a child's own constraint declares, so a
+/// `Spacer` needs its vertical constraint *cleared* for `Stretch` to reach
+/// past a fixed height — and a `Spacer`'s own `measure` answers "whatever
+/// is offered" on an unconstrained axis. Left uncapped, that answer is not
 /// this row's true height; it is whatever vertical proposal happened to
 /// reach this node on the way down (900+ in a plain top-level probe), and
-/// `stack::measure`'s own "widest child" rule then reports *that* as the
-/// bar's own natural height, which is a real regression this fix caught
-/// live (`/root/pages` measuring 700 tall against a 700-tall viewport
-/// probe, confirmed with an ad hoc placement dump — not a picture defect,
-/// since the gallery happens to offer this row a bounded probe, but a
-/// correctness one).
+/// a container's "tallest child" rule then reports *that* as the bar's own
+/// natural height — a real regression the first version of this fix
+/// caught live.
 ///
 /// [`super::ui_shell::accent_mark`] already has the right shape for this:
 /// a **childless `Stack`**, not a `Spacer`. `stack::measure` returns
 /// `Size::ZERO` for a childless stack before it ever looks at what was
-/// offered (`layout::stack::measure`'s first line), so leaving the
-/// vertical axis unconstrained costs nothing at measure time — only
-/// `align_self: Stretch`, read at *place* time once the bar's real height
-/// is already settled, ever grows it.
+/// offered, so leaving the vertical axis unconstrained costs nothing at
+/// measure time — only `Stretch`, read at *place* time once the row's real
+/// height is already settled, ever grows it.
 fn nav_divider(key: &'static str) -> ViewNode {
     let mut node = stack(key, Axis::Vertical, None, vec![]);
     node.props
         .tokens
         .insert("background".into(), t(BORDER_SUBTLE));
-    node.props.align_self = Some(Align::Stretch);
     node.constraints.horizontal = AxisConstraint {
         min: Some(DIVIDER_WIDTH),
         max: Some(DIVIDER_WIDTH),
@@ -141,16 +322,12 @@ fn nav_button(key: &'static str, label: &'static str, unavailable: bool) -> View
     node.props.align = Some(Align::Center);
     node.props.padding = Some(pad(SPACING_05, SPACING_03));
     // No `border` token here: that would box the button on all four sides,
-    // which is what drew the phantom empty cell this fix removes — Next's
-    // own right edge plus the container's own right edge bracketed the
-    // container's trailing padding into what looked like a fourth,
-    // label-less pagination cell. Carbon draws one line, the left edge
-    // only (`border-inline-start`); [`nav_divider`] is that line.
-    // Resting background: the bar it sits on (`pagination` binds
-    // `SURFACE_RAISED`). Without this, `background@hover` has no resting
-    // `background` beneath it and resolves to nothing at rest — the
-    // Accordion/Modal/AI-label/data-table/date-picker/notification defect,
-    // generalised (see
+    // which is what drew the phantom empty cell an earlier fix removed.
+    // Carbon draws one line, the left edge only (`border-inline-start`);
+    // [`nav_divider`] is that line.
+    // Resting background: the bar it sits on. Without this,
+    // `background@hover` has no resting `background` beneath it and
+    // resolves to nothing at rest (see
     // `a_state_decorated_token_always_has_a_resting_binding`).
     node.props
         .tokens
@@ -177,20 +354,29 @@ fn pin_height(h: f32) -> Constraints {
 
 #[cfg(test)]
 mod tests {
-    use super::{SIZE_MD, pagination};
-    use crate::component::tokens::{LAYER_HOVER, SURFACE_RAISED};
+    use super::{DIVIDER_WIDTH, RULE_HEIGHT, SIZE_MD, pagination, pagination_items};
+    use crate::component::tokens::{BORDER_SUBTLE, LAYER_HOVER, SURFACE_RAISED};
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
-    use crate::geom::{Axis, Size};
+    use crate::geom::{Axis, Rect, Size};
     use crate::testing::{Harness, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
     use crate::tree::{Interaction, NodeKind, Props, Registry, Role, ViewNode};
 
-    fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
-        node.children
-            .iter()
-            .find(|c| c.key.as_str() == key)
-            .map(|c| c.as_ref())
-            .unwrap_or_else(|| panic!("missing child {key}"))
+    fn named<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
+        fn walk<'a>(node: &'a ViewNode, key: &str) -> Option<&'a ViewNode> {
+            if node.key.as_str() == key {
+                return Some(node);
+            }
+            node.children.iter().find_map(|child| walk(child, key))
+        }
+        walk(node, key).unwrap_or_else(|| panic!("no descendant keyed `{key}`"))
+    }
+
+    fn has_key(node: &ViewNode, key: &str) -> bool {
+        if node.key.as_str() == key {
+            return true;
+        }
+        node.children.iter().any(|child| has_key(child, key))
     }
 
     fn child_keys(node: &ViewNode) -> Vec<&str> {
@@ -200,32 +386,37 @@ mod tests {
     #[test]
     fn pagination_is_size_md_with_labelled_prev_next() {
         let node = pagination("pages", 2, 5);
-        assert_eq!(node.constraints.vertical.min, Some(SIZE_MD));
+        let bar = named(&node, "bar");
+        assert_eq!(bar.constraints.vertical.min, Some(SIZE_MD));
+        assert_eq!(bar.constraints.vertical.max, Some(SIZE_MD));
         assert_eq!(SIZE_MD, 40.0);
-        // V4 audit, `23-pagination.png`: nav buttons each drawing a full
-        // 4-sided `border` box left the container's own trailing padding
-        // bracketed into what looked like an empty fourth cell after
-        // "Next". The fix drops the per-button box for a single divider
-        // line before each button (Carbon's `border-inline-start`), which
-        // is now a real sibling node, not a token on `previous`/`next`.
         assert_eq!(
             child_keys(&node),
+            ["rule", "bar"],
+            "a 1-unit top rule over the 40-tall bar"
+        );
+        assert_eq!(
+            child_keys(named(&node, "controls")),
             [
-                "page",
+                "divider-page",
+                "page-cell",
+                "page-count-cell",
                 "divider-previous",
                 "previous",
                 "divider-next",
                 "next"
-            ]
+            ],
+            "Carbon's right group: divider, page, `of N pages`, then each \
+             nav button behind its own divider"
         );
 
-        let previous = child(&node, "previous");
+        let previous = named(&node, "previous");
         assert_eq!(previous.semantics.role, Some(Role::Button));
         assert_eq!(previous.semantics.label.as_deref(), Some("Previous"));
         assert!(previous.interactions.contains(&Interaction::Click));
         assert!(!previous.semantics.disabled);
 
-        let next = child(&node, "next");
+        let next = named(&node, "next");
         assert_eq!(next.semantics.role, Some(Role::Button));
         assert_eq!(next.semantics.label.as_deref(), Some("Next"));
         assert!(next.interactions.contains(&Interaction::Click));
@@ -235,28 +426,68 @@ mod tests {
     #[test]
     fn pagination_current_page_is_text_plus_value() {
         let node = pagination("pages", 3, 10);
-        let page = child(&node, "page");
-        assert_eq!(page.props.text.as_deref(), Some("3 of 10"));
+        let page = named(&node, "page");
+        assert_eq!(page.props.text.as_deref(), Some("3"));
         assert_eq!(page.semantics.value.as_deref(), Some("3"));
         assert!(
             page.interactions.is_empty(),
-            "current page is text, not a Select"
+            "the page number is a readout, not a fake select"
+        );
+        assert_eq!(
+            named(&node, "page-count").props.text.as_deref(),
+            Some("of 10 pages")
         );
         assert!(
-            !child_keys(&node).iter().any(|k| k.contains("size")
-                || *k == "items"
-                || *k == "select"
-                || *k == "page-size")
+            !has_key(&node, "items-per-page"),
+            "without a page size there is no items-per-page group to invent"
         );
+    }
+
+    /// [`pagination_items`] carries Carbon's whole anatomy: the page size
+    /// as a readout with `Semantics.value`, the range text for this page,
+    /// and the page count derived from the total.
+    #[test]
+    fn pagination_items_derives_the_range_and_the_page_count() {
+        let node = pagination_items("pages", 1, 10, 50);
+        assert_eq!(
+            child_keys(named(&node, "bar")),
+            ["items-per-page", "range", "controls"]
+        );
+        let size = named(&node, "page-size");
+        assert_eq!(size.props.text.as_deref(), Some("10"));
+        assert_eq!(size.semantics.value.as_deref(), Some("10"));
+        assert_eq!(
+            named(&node, "range-text").props.text.as_deref(),
+            Some("1\u{2013}10 of 50 items")
+        );
+        assert_eq!(
+            named(&node, "page-count").props.text.as_deref(),
+            Some("of 5 pages")
+        );
+        assert!(named(&node, "previous").semantics.disabled);
+        assert!(!named(&node, "next").semantics.disabled);
+
+        let last = pagination_items("pages", 5, 10, 47);
+        assert_eq!(
+            named(&last, "range-text").props.text.as_deref(),
+            Some("41\u{2013}47 of 47 items"),
+            "the last page's range stops at the total"
+        );
+        assert_eq!(
+            named(&last, "page-count").props.text.as_deref(),
+            Some("of 5 pages"),
+            "47 items at 10 per page is 5 pages"
+        );
+        assert!(named(&last, "next").semantics.disabled);
     }
 
     #[test]
     fn pagination_disables_prev_on_page_one() {
         let node = pagination("pages", 1, 4);
-        let previous = child(&node, "previous");
+        let previous = named(&node, "previous");
         assert!(previous.semantics.disabled);
         assert!(!previous.interactions.contains(&Interaction::Click));
-        let next = child(&node, "next");
+        let next = named(&node, "next");
         assert!(!next.semantics.disabled);
         assert!(next.interactions.contains(&Interaction::Click));
     }
@@ -264,10 +495,10 @@ mod tests {
     #[test]
     fn pagination_disables_next_on_the_last_page() {
         let node = pagination("pages", 4, 4);
-        let next = child(&node, "next");
+        let next = named(&node, "next");
         assert!(next.semantics.disabled);
         assert!(!next.interactions.contains(&Interaction::Click));
-        let previous = child(&node, "previous");
+        let previous = named(&node, "previous");
         assert!(!previous.semantics.disabled);
         assert!(previous.interactions.contains(&Interaction::Click));
     }
@@ -276,22 +507,20 @@ mod tests {
     fn nav_buttons_carry_a_resting_background_under_their_hover_state() {
         let node = pagination("pages", 2, 5);
         for key in ["previous", "next"] {
-            let button = child(&node, key);
+            let button = named(&node, key);
+            assert_eq!(
+                button.props.tokens.get("background").map(|t| t.as_str()),
+                Some(SURFACE_RAISED),
+                "{key}: resting background"
+            );
             assert_eq!(
                 button
                     .props
                     .tokens
                     .get("background@hover")
                     .map(|t| t.as_str()),
-                Some(LAYER_HOVER)
-            );
-            assert_eq!(
-                button.props.tokens.get("background").map(|t| t.as_str()),
-                Some(SURFACE_RAISED),
-                "{key}: a resting `background` must be bound alongside \
-                 `background@hover`, or the nav button paints nothing when \
-                 it is not hovered — the paint pass counts that as silent, \
-                 not empty"
+                Some(LAYER_HOVER),
+                "{key}: hover background"
             );
         }
     }
@@ -322,49 +551,80 @@ mod tests {
         )
     }
 
-    /// `nav_divider`'s `align_self: Stretch` (`Props::align_self`) spans the
-    /// bar's actual placed height, while `page` ("1 of 5") stays governed
-    /// by the bar's own `Align::Center` beside it in the same row — the
-    /// picture `23-pagination.png`'s dividers needed.
-    ///
-    /// Also pins the bar's own height at exactly [`SIZE_MD`]: an earlier
-    /// version of this fix built the divider from [`swatch`] (a `Spacer`)
-    /// with its vertical constraint simply cleared, and a `Spacer`'s
-    /// `measure` answers "whatever is offered" on an unconstrained axis —
-    /// which is not this row's true height, it is whatever vertical
-    /// proposal reached the divider on the way down, and
-    /// `stack::measure`'s "widest child" rule then reported *that* as the
-    /// bar's own natural height. This test's own root offers a 700-tall
-    /// probe (`VIEWPORT.h`), and that version measured the bar at 700, not
-    /// 40 — caught here, not in a picture, because the gallery happens to
-    /// offer this row a bounded probe. `nav_divider`'s childless-`Stack`
-    /// shape (`super::ui_shell::accent_mark`'s pattern) is immune: a
-    /// childless stack measures `Size::ZERO` before it ever looks at what
-    /// was offered.
+    fn rect_of(frame: &PetrifiedFrame, suffix: &str) -> Rect {
+        frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with(suffix))
+            .unwrap_or_else(|| panic!("no placement ends with {suffix:?}"))
+            .rect
+    }
+
+    /// Row 23's geometry defect, pinned on the placed frame: the bar's one
+    /// horizontal edge is a rule that spans the bar's whole width (before,
+    /// cell 2 drew 34 units of edge in a 208-unit cell), the bar is as wide
+    /// as its column, the page controls end at the bar's end, every divider
+    /// spans the 40-tall row, and the bar does not balloon past 40 + the
+    /// rule.
     #[test]
-    fn nav_divider_stretches_full_height_while_page_stays_centred() {
-        let frame = petrify_lone(pagination("pages", 2, 5));
-        let rect = |suffix: &str| {
-            frame
-                .placements
-                .iter()
-                .find(|p| p.id.ends_with(suffix))
-                .unwrap_or_else(|| panic!("no placement ends with {suffix:?}"))
-                .rect
-        };
-        let bar = rect("/pages");
-        assert_eq!(bar.h, SIZE_MD, "the bar's own height must not balloon");
-        for divider in ["/divider-previous", "/divider-next"] {
-            let d = rect(divider);
-            assert_eq!(d.y, bar.y, "{divider}: must start flush at the bar's top");
-            assert_eq!(d.h, bar.h, "{divider}: must span the bar's full height");
+    fn the_top_rule_spans_the_bar_and_the_dividers_span_the_row() {
+        for (label, node) in [
+            ("page-only", pagination("pages", 2, 5)),
+            ("full", pagination_items("pages", 2, 10, 50)),
+        ] {
+            let frame = petrify_lone(node);
+            let outer = rect_of(&frame, "/pages");
+            let rule = rect_of(&frame, "/pages/rule");
+            let bar = rect_of(&frame, "/pages/bar");
+            assert_eq!(
+                outer.w, VIEWPORT.w,
+                "{label}: the bar is as wide as its column"
+            );
+            assert_eq!(
+                rule.x, outer.x,
+                "{label}: rule starts at the bar's left edge"
+            );
+            assert_eq!(rule.w, outer.w, "{label}: rule spans the bar's whole width");
+            assert_eq!(rule.h, RULE_HEIGHT, "{label}");
+            assert_eq!(bar.h, SIZE_MD, "{label}: the row is exactly md");
+            assert_eq!(
+                outer.h,
+                SIZE_MD + RULE_HEIGHT,
+                "{label}: the bar's own height must not balloon"
+            );
+            let controls = rect_of(&frame, "/bar/controls");
+            assert_eq!(
+                controls.x + controls.w,
+                bar.x + bar.w,
+                "{label}: the page controls sit at the bar's end"
+            );
+            for divider in ["/divider-page", "/divider-previous", "/divider-next"] {
+                let d = rect_of(&frame, divider);
+                assert_eq!(d.w, DIVIDER_WIDTH, "{label} {divider}");
+                assert_eq!(d.y, bar.y, "{label} {divider}: flush with the row's top");
+                assert_eq!(d.h, bar.h, "{label} {divider}: spans the row's full height");
+            }
+            let page = rect_of(&frame, "/page");
+            let centred = (bar.h - page.h) / 2.0;
+            assert_eq!(
+                page.y - bar.y,
+                centred,
+                "{label}: the page number stays vertically centred, not stretched"
+            );
         }
-        let page = rect("/page");
-        let centred = (bar.h - page.h) / 2.0;
+        let frame = petrify_lone(pagination_items("pages", 2, 10, 50));
+        let items = rect_of(&frame, "/bar/items-per-page");
+        let bar = rect_of(&frame, "/pages/bar");
         assert_eq!(
-            page.y - bar.y,
-            centred,
-            "\"1 of 5\" must stay vertically centred, not stretched"
+            items.x, bar.x,
+            "the items-per-page group starts at the bar's start"
+        );
+        let d = rect_of(&frame, "/divider-items");
+        assert_eq!(d.h, bar.h, "the left group's closing divider spans the row");
+        assert_eq!(
+            d.x + d.w,
+            items.x + items.w,
+            "the left group's divider is its trailing edge"
         );
     }
 
@@ -376,14 +636,17 @@ mod tests {
     }
 
     /// Check C/D: page 1 (previous disabled), the last page (next
-    /// disabled), and a mid-run page (both enabled) all place with real
-    /// rects, none of them outside their parent.
+    /// disabled), a mid-run page (both enabled) and the full bar all
+    /// place with real rects, none of them outside their parent. The
+    /// page-only bar's empty `range` cell is the one placement that may
+    /// legitimately have no content; it still has a real rect.
     #[test]
     fn frame_geometry_has_no_degenerate_or_overflowing_placements() {
         for (label, node) in [
             ("first", pagination("pages", 1, 4)),
             ("last", pagination("pages", 4, 4)),
             ("mid", pagination("pages", 2, 5)),
+            ("full", pagination_items("pages", 3, 10, 50)),
         ] {
             let frame = petrify_lone(node);
             assert!(!frame.placements.is_empty(), "{label}: nothing placed");
@@ -397,6 +660,11 @@ mod tests {
                 assert!(
                     !p.paint.overflowed,
                     "{label}: {} drew content larger than its own rect",
+                    p.id
+                );
+                assert!(
+                    !p.paint.truncated,
+                    "{label}: {} was truncated to fit its parent",
                     p.id
                 );
                 if let Some(parent_idx) = p.parent {
@@ -444,48 +712,53 @@ mod tests {
         );
     }
 
-    /// Check E: the current-page text and both nav labels against the
-    /// bar's own resting fill, in both themes.
+    /// Check E: every caption and both nav labels against the bar's own
+    /// resting fill, in both themes, for both constructors.
     #[test]
     fn bar_text_clears_aa_contrast_against_its_own_fill() {
         const MIN_TEXT_CONTRAST: f32 = 4.5;
         for theme in [crate::token::light(), crate::token::dark()] {
-            let node = pagination("pages", 2, 5);
-            let bar_bg_name = node
-                .props
-                .tokens
-                .get("background")
-                .expect("pagination binds a resting background");
-            let bar_bg = color(&theme, bar_bg_name.as_str());
-            fn walk_text(
-                node: &ViewNode,
-                inherited_bg: ColorValue,
-                theme: &Theme,
-                min: f32,
-                get_color: &impl Fn(&Theme, &str) -> ColorValue,
-            ) {
-                let bg = match node.props.tokens.get("background") {
-                    Some(name) => get_color(theme, name.as_str()),
-                    None => inherited_bg,
-                };
-                if node.props.text.is_some()
-                    && let Some(fg_name) = node.props.tokens.get("foreground")
-                {
-                    let opacity = node.props.opacity.unwrap_or(1.0);
-                    let fg = get_color(theme, fg_name.as_str()).faded(opacity).over(bg);
-                    let ratio = fg.contrast_ratio(bg);
-                    assert!(
-                        ratio >= min,
-                        "{:?} at {ratio:.2}:1 against {} fails AA {min}:1",
-                        node.key,
-                        fg_name.as_str()
-                    );
+            for node in [
+                pagination("pages", 2, 5),
+                pagination_items("pages", 2, 10, 50),
+            ] {
+                let bar_bg_name = node
+                    .props
+                    .tokens
+                    .get("background")
+                    .expect("pagination binds a resting background");
+                let bar_bg = color(&theme, bar_bg_name.as_str());
+                fn walk_text(
+                    node: &ViewNode,
+                    inherited_bg: ColorValue,
+                    theme: &Theme,
+                    min: f32,
+                    get_color: &impl Fn(&Theme, &str) -> ColorValue,
+                ) {
+                    let bg = match node.props.tokens.get("background") {
+                        Some(name) => get_color(theme, name.as_str()),
+                        None => inherited_bg,
+                    };
+                    if node.props.text.is_some()
+                        && let Some(fg_name) = node.props.tokens.get("foreground")
+                    {
+                        let opacity = node.props.opacity.unwrap_or(1.0);
+                        let fg = get_color(theme, fg_name.as_str()).faded(opacity).over(bg);
+                        let ratio = fg.contrast_ratio(bg);
+                        assert!(
+                            ratio >= min,
+                            "{:?} at {ratio:.2}:1 against {} fails AA {min}:1",
+                            node.key,
+                            fg_name.as_str()
+                        );
+                    }
+                    for child in &node.children {
+                        walk_text(child, bg, theme, min, get_color);
+                    }
                 }
-                for child in &node.children {
-                    walk_text(child, bg, theme, min, get_color);
-                }
+                walk_text(&node, bar_bg, &theme, MIN_TEXT_CONTRAST, &color);
             }
-            walk_text(&node, bar_bg, &theme, MIN_TEXT_CONTRAST, &color);
         }
+        let _ = BORDER_SUBTLE;
     }
 }
