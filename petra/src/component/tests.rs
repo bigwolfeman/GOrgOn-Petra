@@ -1045,3 +1045,47 @@ fn every_layering_operator_name_is_in_the_standard_vocabulary() {
         }
     }
 }
+
+/// **A state-decorated binding needs a resting one underneath it.**
+///
+/// This is the rule the Accordion and Modal crash taught, generalised. A node
+/// that binds `background@hover` and no plain `background` resolves to nothing
+/// at rest: `resolve_slot` walks `slot@state -> slot`, and if neither exists it
+/// returns `None`. The painter then counts the placement **silent** rather than
+/// empty, because `PaintContent::is_empty()` only asks whether `tokens` is
+/// empty — and it is not, the `@hover` entry is sitting right there. A silent
+/// placement trips the paint-accounting assertion and takes the window down.
+///
+/// The catalog's `every_built_page_paints_with_nothing_silent` catches this too,
+/// but only for what a catalog page happens to mount. This one is structural:
+/// it needs no paint pass, no window, and no page, so it also covers a
+/// component reachable only inside another component.
+///
+/// The fix is never to delete the `@hover` binding. It is to bind the resting
+/// slot to whatever surface the control sits on, the way `button.rs`'s Ghost
+/// variant already does.
+#[test]
+fn a_state_decorated_token_always_has_a_resting_binding() {
+    use crate::token::state::STATE_SEPARATOR;
+
+    let tree = full_gallery();
+    let mut offences: Vec<String> = Vec::new();
+    walk(&tree, "", &mut |path, props| {
+        for key in props.tokens.keys() {
+            let Some((slot, state)) = key.split_once(STATE_SEPARATOR) else {
+                continue;
+            };
+            if !props.tokens.contains_key(slot) {
+                offences.push(format!(
+                    "{path}: binds {slot}{STATE_SEPARATOR}{state} with no resting {slot}, \
+                     so it resolves to nothing and paints silent"
+                ));
+            }
+        }
+    });
+    assert!(
+        offences.is_empty(),
+        "every state-decorated binding needs a resting one underneath it:\n{}",
+        offences.join("\n")
+    );
+}
