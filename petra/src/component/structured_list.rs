@@ -7,17 +7,21 @@
 //! 3. Data rows — [`structured_list_row`]: [`Role::Row`], selectable,
 //!    `Semantics.selected` never colour alone.
 //!
-//! Padding is `$spacing-05` (16) on both axes. Default row min-height is
-//! Carbon's 60. The 10-colour tag set is unrelated; this file does not
-//! invent hues.
+//! Padding is `$spacing-05` (16) inline on each cell (see
+//! `cell_padding_inline`), not a single inset on the row: each row is a
+//! `Grid` of shared-width columns so sibling rows resolve identical pixel
+//! columns (the `data_table.rs` fix, `31-structured-list.png` had the same
+//! defect). Default row min-height is Carbon's 60. The 10-colour tag set
+//! is unrelated; this file does not invent hues.
 
-use super::pad;
 use super::stack;
 use super::tokens::{
     BORDER_SUBTLE, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SPACING_05, SURFACE_BASE, t,
 };
-use crate::geom::Axis;
-use crate::tree::{Interaction, Key, Role, Semantics, ViewNode};
+use crate::geom::{Align, Axis};
+use crate::tree::{
+    InsetRefs, Interaction, Key, NodeKind, Props, Role, Semantics, TrackSize, ViewNode,
+};
 
 /// Carbon default structured-list row height (style page Size table).
 const ROW_HEIGHT: f32 = 60.0;
@@ -35,6 +39,16 @@ pub fn structured_list(
     let mut children = vec![plain_row("header", header)];
     children.extend(rows.into_iter().map(ensure_row));
     let mut node = stack(key, Axis::Vertical, None, children);
+    // Every row is a `Grid` (see `row_shell`) whose equal-weight column
+    // tracks resolve against whatever width `place` offers it. Without
+    // `Stretch` here, each row measures at its own content width and the
+    // picture (`31-structured-list.png`) showed exactly `data_table.rs`'s
+    // pre-fix defect one level up: "NameRole" cells touching with no gap,
+    // three ragged row widths, and "kernel"/"runtime" not lining up under
+    // "petra"/"layout". `Stretch` offers every row the list's own width,
+    // so the Grid tracks resolve identical pixel columns row to row — the
+    // same fix `data_table` made (commit 8778a83).
+    node.props.align = Some(Align::Stretch);
     node.semantics = Semantics {
         role: Some(Role::Table),
         ..Semantics::default()
@@ -73,16 +87,54 @@ fn plain_row(key: impl Into<Key>, cells: Vec<ViewNode>) -> ViewNode {
     node
 }
 
+/// One row's cells, laid out as a `Grid` of `ncols` equal [`TrackSize::Weight`]
+/// columns rather than a bare `Axis::Horizontal` stack.
+///
+/// The picture (`31-structured-list.png`) showed `NameRole` with no gap and
+/// `kernel`/`runtime` in row 1 not lining up under `petra`/`layout` in row
+/// 2 — a horizontal stack sizes each cell to its own text, so column 2's x
+/// depends on how wide column 1's *own row* happened to be. A `Grid` with
+/// shared column tracks fixes both at once: every cell in column *i*
+/// resolves the same width, in every row, because they are the same track.
+/// `structured_list` gives every row's `Grid` the identical `Stretch`-
+/// offered width, so the tracks resolve to identical pixels row to row.
+/// Carbon gives no per-column width for this component either, so an equal
+/// split is the least-invented default — the same reasoning `data_table.rs`
+/// used.
 fn row_shell(key: impl Into<Key>, cells: Vec<ViewNode>) -> ViewNode {
+    let ncols = cells.len().max(1);
     let cells = cells
         .into_iter()
         .enumerate()
         .map(|(i, cell)| as_cell(i, cell))
         .collect();
-    let mut node = stack(key, Axis::Horizontal, None, cells);
-    node.props.padding = Some(pad(SPACING_05, SPACING_05));
+    let mut node = ViewNode::new(NodeKind::Grid, key)
+        .with_props(Props {
+            columns: vec![TrackSize::Weight { weight: 1.0 }; ncols],
+            rows: vec![TrackSize::Weight { weight: 1.0 }],
+            align: Some(Align::Stretch),
+            ..Props::default()
+        })
+        .with_children(cells);
     node.constraints.vertical.min = Some(ROW_HEIGHT);
     node
+}
+
+/// `padding-inline: $spacing-05` on both sides. MEASURED (SCSS,
+/// `padding--data-structured-list` mixin, used by
+/// `.cds--structured-list--selection`): "selectable-row padding is
+/// `$spacing-05`(16px) on both inline sides — a different, simpler rule
+/// than the plain padding-td/padding-th mixins above"
+/// (`.agents/research/08-25-2026/Carbon-Component-Inventory/slice-e.md`
+/// line 104). Applied per cell, matching `data_table.rs`'s
+/// `cell_padding_inline`: without it the Grid's shared columns still touch
+/// at the seam, which is the second half of the `NameRole` defect.
+fn cell_padding_inline() -> InsetRefs {
+    InsetRefs {
+        left: Some(t(SPACING_05)),
+        right: Some(t(SPACING_05)),
+        ..InsetRefs::default()
+    }
 }
 
 fn as_cell(index: usize, node: ViewNode) -> ViewNode {
@@ -90,6 +142,8 @@ fn as_cell(index: usize, node: ViewNode) -> ViewNode {
         return node;
     }
     let mut wrap = stack(format!("c{index}"), Axis::Horizontal, None, vec![node]);
+    wrap.props.padding = Some(cell_padding_inline());
+    wrap.props.align = Some(Align::Center);
     wrap.semantics = Semantics {
         role: Some(Role::Cell),
         ..Semantics::default()
@@ -156,9 +210,15 @@ mod tests {
         node.props.tokens.get(slot).map(|name| name.as_str())
     }
 
-    fn padding_token(node: &ViewNode) -> Option<(&str, &str)> {
-        let pad = node.props.padding.as_ref()?;
-        Some((pad.left.as_ref()?.as_str(), pad.top.as_ref()?.as_str()))
+    /// `31-structured-list.png` showed `NameRole` with no gap between the
+    /// cells because padding lived on the whole row (a single inset around
+    /// all cells at once) instead of between them. The fix moved
+    /// `$spacing-05` to each cell's own inline padding (`cell_padding_inline`,
+    /// mirroring `data_table.rs`'s `cell_padding_inline`), so this checks the
+    /// cell, not the row.
+    fn cell_padding_inline(cell: &ViewNode) -> Option<(&str, &str)> {
+        let pad = cell.props.padding.as_ref()?;
+        Some((pad.left.as_ref()?.as_str(), pad.right.as_ref()?.as_str()))
     }
 
     #[test]
@@ -181,14 +241,24 @@ mod tests {
         assert!(header.interactions.is_empty());
         assert_eq!(header.constraints.vertical.min, Some(ROW_HEIGHT));
         assert_eq!(ROW_HEIGHT, 60.0);
-        assert_eq!(padding_token(header), Some((SPACING_05, SPACING_05)));
+        assert_eq!(header.kind, NodeKind::Grid, "shared columns need a Grid");
+        assert_eq!(header.props.align, Some(crate::geom::Align::Stretch));
         assert_eq!(child(header, "c0").semantics.role, Some(Role::Cell));
         assert_eq!(child(header, "c1").semantics.role, Some(Role::Cell));
+        assert_eq!(
+            cell_padding_inline(child(header, "c0")),
+            Some((SPACING_05, SPACING_05)),
+            "adjacent cells need inline padding or they touch"
+        );
 
         let row = child(&node, "r0");
         assert_eq!(row.semantics.role, Some(Role::Row));
         assert_eq!(child(row, "c0").semantics.role, Some(Role::Cell));
         assert_eq!(child(row, "c1").semantics.role, Some(Role::Cell));
+        assert_eq!(
+            cell_padding_inline(child(row, "c1")),
+            Some((SPACING_05, SPACING_05))
+        );
     }
 
     #[test]
@@ -202,7 +272,11 @@ mod tests {
         assert!(on.interactions.contains(&Interaction::Hover));
         assert_eq!(token(&on, "background@selected"), Some(LAYER_SELECTED));
         assert_eq!(token(&on, "border"), Some(BORDER_SUBTLE));
-        assert_eq!(padding_token(&on), Some((SPACING_05, SPACING_05)));
+        assert_eq!(on.kind, NodeKind::Grid, "shared columns need a Grid");
+        assert_eq!(
+            cell_padding_inline(child(&on, "c0")),
+            Some((SPACING_05, SPACING_05))
+        );
         assert_eq!(on.constraints.vertical.min, Some(ROW_HEIGHT));
 
         let off = structured_list_row("r0", vec![text("p", "Alpha")], false);
