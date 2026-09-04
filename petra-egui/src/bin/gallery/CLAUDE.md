@@ -37,4 +37,8 @@ with zero spacing beside another rect is a legal frame record.
 
 - **Chrome bugs read as component bugs.** A ragged nav row or a stale indicator
   is `catalog.rs`, not the component on the page.
-- The nav list does not scroll, so rows past the window height are unreachable.
+- The nav list scrolls by wheel and by Tab (`gorgon-petra-egui`'s
+  `Host::apply_scroll`/`Host::step_focus`), so all 42 rows are reachable —
+  see `catalog.rs`'s `wheeling_over_the_index_pane_...` and
+  `tab_walks_all_forty_two_index_rows_...` tests. Prev/Next's
+  `seat_index_focus` still does not scroll to an off-fold row; see its doc.

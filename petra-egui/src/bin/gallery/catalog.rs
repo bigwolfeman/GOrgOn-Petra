@@ -1203,16 +1203,20 @@ impl App for Catalog {
 /// **Does nothing for a row past the sidebar's fold.**
 /// [`gorgon_petra::focus::FocusTree::focus`] refuses anything not focusable
 /// this frame (`focus/mod.rs`'s doc: a placement is focusable only when
-/// [`Placement::is_visible`] holds), and there is no scroll-into-view
-/// capability this function can reach for instead: writing a new offset
-/// into [`gorgon_petra_egui::host::Host::state_mut`] moves the row on the
-/// *next* pass, by which time the row that held focus *this* pass may have
-/// scrolled out from under it — a focused-but-invisible placement is exactly
-/// what `paint.rs`'s `PaintReport::blind_focus` exists to catch, and it does
-/// (`gorgon-petra-egui/src/host.rs`'s `debug_assert!(report.is_complete())`
-/// fires on it). Closing that needs either the engine moving focus in step
-/// with a scroll offset it did not initiate, or a scroll-into-view
-/// primitive — both outside `catalog.rs`. See this audit's report.
+/// [`Placement::is_visible`] holds), and calling it here for such a row
+/// would simply return its error. `gorgon-petra-egui`'s `Host` now carries a
+/// scroll-into-view primitive (`Host::step_focus`, built for Tab), but nothing
+/// wires it into *this* call path: Prev/Next changes `Catalog::page` without
+/// ever routing a keystroke through `Host::deliver_input`, which is the only
+/// place `step_focus` runs. Writing an offset here directly and hoping it
+/// lands would still race `paint.rs`'s `PaintReport::blind_focus` — a
+/// focused-but-invisible placement is exactly what that check exists to
+/// catch (`gorgon-petra-egui/src/host.rs`'s `debug_assert!(report.is_complete())`
+/// fires on it) — because a bare offset write is not synchronized with
+/// petrify's own reconciliation pass the way `step_focus`'s deferred
+/// `pending_focus` is. Giving Prev/Next the same primitive is future work,
+/// out of `catalog.rs`'s own scope; see `.agents/notes/implemented/bug-fix/
+/// 2026-09-03-no-input-path-writes-a-scroll-offset.md`.
 fn seat_index_focus(host: &mut Host<Catalog>) {
     let Some(frame) = host.frame() else {
         return;
@@ -1296,10 +1300,11 @@ mod tests {
         TOGGLE_SM_OFF, TOGGLE_SM_ON, WINDOW, seat_index_focus,
     };
     use egui::{Context, Pos2, RawInput};
-    use gorgon_petra::geom::Point;
+    use gorgon_petra::geom::{Point, Size};
     use gorgon_petra::input::{InputEvent, KeyCode, Modifiers, PointerButton, Route};
     use gorgon_petra::tree::ViewNode;
     use gorgon_petra_egui::host::{App, Host, default_presenter};
+    use gorgon_petra_egui::inject::{Action, Target, inject_action};
 
     fn find<'a>(node: &'a ViewNode, key: &str) -> Option<&'a ViewNode> {
         if node.key.as_str() == key {
@@ -1344,6 +1349,26 @@ mod tests {
                 reason: "catalog test",
             },
         );
+    }
+
+    /// One Tab keystroke as the platform reports it — the real path a
+    /// physical keyboard or a driver's synthetic key takes, unlike [`key`]
+    /// above (which calls [`Catalog::handle`] directly and never reaches
+    /// [`gorgon_petra_egui::host::Host::deliver_input`]'s own traversal).
+    fn tab_key(shift: bool) -> RawInput {
+        let mut input = RawInput::default();
+        input.events.push(egui::Event::Key {
+            key: egui::Key::Tab,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: if shift {
+                egui::Modifiers::SHIFT
+            } else {
+                egui::Modifiers::NONE
+            },
+        });
+        input
     }
 
     fn sized(mut input: RawInput) -> RawInput {
@@ -1661,6 +1686,398 @@ mod tests {
             row_42.is_visible(),
             "a large enough offset must bring row 42 into the index pane's \
              viewport"
+        );
+    }
+
+    /// The real path a physical mouse takes — [`inject_action`]'s
+    /// `Action::Scroll` over the index pane — now does what the test above
+    /// did by writing `state_mut().scroll_offsets` directly.
+    /// `Host::apply_scroll` is the piece that used to be missing; see its
+    /// doc in `gorgon-petra-egui`'s `host.rs`.
+    #[test]
+    fn wheeling_over_the_index_pane_writes_a_scroll_offset_and_shifts_the_frame() {
+        let ctx = headless();
+        let mut host = Host::new(&ctx, Catalog::default(), default_presenter());
+        step(&ctx, &mut host, RawInput::default());
+
+        let index_id = host
+            .frame()
+            .unwrap()
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/index"))
+            .expect("the index pane is placed")
+            .id
+            .clone();
+        let next_id = host
+            .frame()
+            .unwrap()
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with(&format!("/{NEXT}")))
+            .expect("the Next button is placed")
+            .id
+            .clone();
+        // Same reason as the direct-write test above: row 1 holds focus by
+        // default, and a modest scroll can carry it out of view.
+        host.focus_mut()
+            .focus(&next_id)
+            .expect("the Next button is focusable");
+        let row_1_y_before = host
+            .frame()
+            .unwrap()
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with(&format!("/{IDX}1")))
+            .expect("row 1 is placed")
+            .rect
+            .y;
+
+        let mut raw = RawInput::default();
+        // egui's own doc on `Event::MouseWheel`: a *negative* Y moves the
+        // content *up* — scrolling down the list, toward row 42.
+        inject_action(
+            &mut host,
+            &Target::NodeId(index_id.clone()),
+            &Action::Scroll {
+                delta: Size::new(0.0, -200.0),
+            },
+            &mut raw,
+        )
+        .expect("the index pane resolves a point to scroll from");
+        step(&ctx, &mut host, raw);
+
+        assert_eq!(
+            host.state().scroll_offsets.get(&index_id).copied(),
+            Some(200.0),
+            "a 200-unit wheel delta must write a 200-unit offset — nothing \
+             this small should have clamped"
+        );
+        let row_1_y_after = host
+            .frame()
+            .unwrap()
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with(&format!("/{IDX}1")))
+            .expect("row 1 is still placed")
+            .rect
+            .y;
+        assert!(
+            row_1_y_after < row_1_y_before,
+            "the index pane's content must have shifted up: row 1 was at \
+             {row_1_y_before}, is now at {row_1_y_after}"
+        );
+    }
+
+    /// The offset a wheel writes clamps at both ends: it cannot scroll past
+    /// row 42, and scrolling back up cannot go negative.
+    #[test]
+    fn wheeling_past_either_end_of_the_index_pane_clamps_the_offset() {
+        let ctx = headless();
+        let mut host = Host::new(&ctx, Catalog::default(), default_presenter());
+        step(&ctx, &mut host, RawInput::default());
+
+        let index_id = host
+            .frame()
+            .unwrap()
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/index"))
+            .expect("the index pane is placed")
+            .id
+            .clone();
+        let next_id = host
+            .frame()
+            .unwrap()
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with(&format!("/{NEXT}")))
+            .expect("the Next button is placed")
+            .id
+            .clone();
+        host.focus_mut()
+            .focus(&next_id)
+            .expect("the Next button is focusable");
+
+        let mut down = RawInput::default();
+        inject_action(
+            &mut host,
+            &Target::NodeId(index_id.clone()),
+            &Action::Scroll {
+                delta: Size::new(0.0, -1_000_000.0),
+            },
+            &mut down,
+        )
+        .unwrap();
+        step(&ctx, &mut host, down);
+        let offset_at_bottom = host
+            .state()
+            .scroll_offsets
+            .get(&index_id)
+            .copied()
+            .expect("a huge downward wheel must have written an offset");
+        let row_42 = host
+            .frame()
+            .unwrap()
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with(&format!("/{IDX}42")))
+            .expect("row 42 is placed");
+        assert!(
+            row_42.is_visible(),
+            "the far end of a million-unit scroll must show the last row"
+        );
+
+        // Scrolling the same enormous amount again must land on the exact
+        // same offset — proof this is a clamp, not a number so large the
+        // picture merely happens to still show row 42.
+        let mut down_again = RawInput::default();
+        inject_action(
+            &mut host,
+            &Target::NodeId(index_id.clone()),
+            &Action::Scroll {
+                delta: Size::new(0.0, -1_000_000.0),
+            },
+            &mut down_again,
+        )
+        .unwrap();
+        step(&ctx, &mut host, down_again);
+        assert_eq!(
+            host.state().scroll_offsets.get(&index_id).copied(),
+            Some(offset_at_bottom),
+            "a second identical over-scroll must not move the offset past \
+             its clamp"
+        );
+
+        let mut up = RawInput::default();
+        inject_action(
+            &mut host,
+            &Target::NodeId(index_id.clone()),
+            &Action::Scroll {
+                delta: Size::new(0.0, 1_000_000.0),
+            },
+            &mut up,
+        )
+        .unwrap();
+        step(&ctx, &mut host, up);
+        let offset_at_top = host
+            .state()
+            .scroll_offsets
+            .get(&index_id)
+            .copied()
+            .unwrap_or(0.0);
+        assert_eq!(
+            offset_at_top, 0.0,
+            "a million-unit scroll back up must clamp at zero, not go negative"
+        );
+        let row_1 = host
+            .frame()
+            .unwrap()
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with(&format!("/{IDX}1")))
+            .expect("row 1 is placed");
+        assert!(
+            row_1.is_visible(),
+            "scrolling back to zero must show row 1 again"
+        );
+    }
+
+    /// FR-025's reachability promise, for the one part of the catalog large
+    /// enough to hide behind its own scroll: Tab from row 30 — the last row
+    /// visible on a fresh load — must reach row 31, and the index pane must
+    /// have scrolled by the time it does.
+    #[test]
+    fn tab_from_the_last_visible_row_scrolls_the_index_pane_to_reveal_row_thirty_one() {
+        let ctx = headless();
+        let mut host = Host::new(&ctx, Catalog::default(), default_presenter());
+        step(&ctx, &mut host, RawInput::default());
+
+        let row_30_id = host
+            .frame()
+            .unwrap()
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with(&format!("/{IDX}30")))
+            .expect("row 30 is placed and visible on a fresh load")
+            .id
+            .clone();
+        host.focus_mut()
+            .focus(&row_30_id)
+            .expect("row 30 is focusable before any scroll");
+        assert!(
+            host.frame()
+                .unwrap()
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with(&format!("/{IDX}31")))
+                .is_some_and(|row_31| !row_31.is_visible()),
+            "row 31 must start outside the viewport, or this test proves \
+             nothing"
+        );
+
+        step(&ctx, &mut host, tab_key(false));
+
+        assert!(
+            host.focus()
+                .current()
+                .is_some_and(|id| id.ends_with(&format!("/{IDX}31"))),
+            "Tab from row 30 must land on row 31, got {:?}",
+            host.focus().current()
+        );
+        let row_31 = host
+            .frame()
+            .unwrap()
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with(&format!("/{IDX}31")))
+            .expect("row 31 is placed after the scroll");
+        assert!(
+            row_31.is_visible(),
+            "row 31 must be on screen once Tab has moved to it, not merely \
+             focused off screen"
+        );
+
+        // One more empty pass: `Host::step_focus` defers the actual
+        // `FocusTree::focus` call to after this pass's own reconciliation
+        // (`Host::pending_focus`'s doc), so the ring itself lands one frame
+        // later — the same "seat it after petrify" shape
+        // `enter_open_modal` already uses. This pass must settle without
+        // tripping `PaintReport::blind_focus`'s `debug_assert`.
+        step(&ctx, &mut host, RawInput::default());
+        assert!(
+            host.focus()
+                .current()
+                .is_some_and(|id| id.ends_with(&format!("/{IDX}31"))),
+            "focus must still be on row 31 after the settling pass"
+        );
+    }
+
+    /// Tab alone must be able to walk every one of the 42 index rows,
+    /// scrolling the sidebar as it goes — not just the one hop across the
+    /// fold the test above pins down.
+    #[test]
+    fn tab_walks_all_forty_two_index_rows_scrolling_as_it_goes() {
+        let ctx = headless();
+        let mut host = Host::new(&ctx, Catalog::default(), default_presenter());
+        step(&ctx, &mut host, RawInput::default());
+        assert!(
+            host.focus()
+                .current()
+                .is_some_and(|id| id.ends_with(&format!("/{IDX}1"))),
+            "a fresh host starts focus on row 1"
+        );
+
+        for expected in 2..=42 {
+            step(&ctx, &mut host, tab_key(false));
+            let suffix = format!("/{IDX}{expected}");
+            assert!(
+                host.focus()
+                    .current()
+                    .is_some_and(|id| id.ends_with(suffix.as_str())),
+                "Tab number {expected} landed on {:?}, not row {expected}",
+                host.focus().current()
+            );
+            let row = host
+                .frame()
+                .unwrap()
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with(suffix.as_str()))
+                .unwrap_or_else(|| panic!("row {expected} is placed"));
+            assert!(
+                row.is_visible(),
+                "row {expected} must be visible once Tab reaches it"
+            );
+        }
+    }
+
+    /// Rasterizes the index pane after a real wheel scroll has carried it to
+    /// its far end, so a human or an agent can look at the picture rather
+    /// than trust the frame record — the same discipline
+    /// `every_built_page_rasterizes_to_more_than_one_colour` holds every
+    /// catalog page to. Set `PETRA_SHOT_DIR` to write the PNG there.
+    #[test]
+    fn the_scrolled_index_pane_rasterizes_with_row_forty_two_on_screen() {
+        let dir = std::env::var_os("PETRA_SHOT_DIR").map(std::path::PathBuf::from);
+        if let Some(dir) = &dir {
+            std::fs::create_dir_all(dir).expect("shot dir");
+        }
+
+        let ctx = headless();
+        let mut host = Host::new(&ctx, Catalog::default(), default_presenter());
+        step(&ctx, &mut host, RawInput::default());
+
+        let index_id = host
+            .frame()
+            .unwrap()
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/index"))
+            .expect("the index pane is placed")
+            .id
+            .clone();
+        let next_id = host
+            .frame()
+            .unwrap()
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with(&format!("/{NEXT}")))
+            .expect("the Next button is placed")
+            .id
+            .clone();
+        host.focus_mut()
+            .focus(&next_id)
+            .expect("the Next button is focusable");
+
+        let mut raw = RawInput::default();
+        inject_action(
+            &mut host,
+            &Target::NodeId(index_id),
+            &Action::Scroll {
+                delta: Size::new(0.0, -1_000_000.0),
+            },
+            &mut raw,
+        )
+        .unwrap();
+
+        host.set_reduced_motion(true);
+        let output = ctx.run_ui(sized(raw), |_| host.pass(&ctx));
+        let frame = host.frame().expect("the scrolling pass produced a frame");
+        let row_42 = frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with(&format!("/{IDX}42")))
+            .expect("row 42 is placed");
+        assert!(
+            row_42.is_visible(),
+            "the frame about to be photographed must actually show row 42, \
+             or the picture proves nothing"
+        );
+
+        let mut shooter = gorgon_petra_testkit::snapshot::Snapshotter::new();
+        let shot = shooter
+            .capture(&ctx, &output, frame, None)
+            .expect("capture refused");
+        output.drop_without_applying_deltas();
+
+        if let Some(dir) = &dir {
+            std::fs::write(dir.join("scrolled-index-pane.png"), &shot.png).expect("write shot");
+        }
+
+        let image = image::load_from_memory(&shot.png)
+            .expect("shot is not a PNG")
+            .to_rgba8();
+        let mut seen: std::collections::HashSet<[u8; 4]> = std::collections::HashSet::new();
+        for px in image.pixels() {
+            seen.insert(px.0);
+            if seen.len() > 1 {
+                break;
+            }
+        }
+        assert!(
+            seen.len() > 1,
+            "the scrolled index pane rasterized to a single flat colour"
         );
     }
 

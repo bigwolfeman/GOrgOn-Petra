@@ -47,8 +47,10 @@ use std::sync::Arc;
 use egui::{Context, Id, LayerId, Order};
 use gorgon_petra::anim::{FrameDecision, TransitionRegistry, wants_frame};
 use gorgon_petra::focus::FocusTree;
-use gorgon_petra::frame::{FrameCounter, PetrifiedFrame, TransitionActivity, Viewport, petrify};
-use gorgon_petra::geom::{Scale, Size};
+use gorgon_petra::frame::{
+    FrameCounter, PetrifiedFrame, Placement, TransitionActivity, Viewport, petrify,
+};
+use gorgon_petra::geom::{Axis, Rect, Scale, Size};
 use gorgon_petra::input::{
     InputEvent, KeyCode, PointerButton, PointerRouting, PointerState, Route, RouteOutcome,
 };
@@ -372,6 +374,16 @@ pub struct Host<A: App> {
     /// painter that drives repaints without declaring `ambient`.
     last_motion: Option<FrameDecision>,
     focus: FocusTree,
+    /// A `Host::step_focus` traversal target that was not yet in
+    /// [`FocusTree::order`] when Tab moved to it, so the move was deferred:
+    /// [`Host::apply_scroll`]'s sibling wrote a `scroll_offsets` entry meant
+    /// to bring it on screen this pass, and [`Host::pass`] tries the actual
+    /// [`FocusTree::focus`] call again once the new frame's `order` exists —
+    /// the same "seat it after petrify" shape [`Host::enter_open_modal`]
+    /// already uses for a modal taking focus, and for the same reason:
+    /// nothing before petrify can promise the target will really be visible
+    /// (`focus/mod.rs`'s `reachable` doc).
+    pending_focus: Option<String>,
     /// Where the pointer is, what it is over, and what it has captured. The
     /// pointer's peer of `focus`; see this module's doc.
     pointer: PointerState,
@@ -486,6 +498,7 @@ impl<A: App> Host<A> {
             last_report: None,
             last_motion: None,
             focus: FocusTree::default(),
+            pending_focus: None,
             pointer: PointerState::new(),
             caret: FocusCaret::new(),
             scene: Vec::new(),
@@ -933,6 +946,17 @@ impl<A: App> Host<A> {
         // event arriving between two frames aimed at a node that still exists.
         let scopes = surface_scopes(&tree);
         self.focus = self.focus.update(&frame.placements, &scopes);
+        // A `step_focus` that deferred its move (the target was not visible
+        // yet, only scrolled toward) tries again here, now that `order` is
+        // built from the frame the scroll actually reached. A target the
+        // scroll fell short of (see `write_scroll_offset`'s clamp doc) is
+        // left to whatever `update` above already chose, rather than erred
+        // on — the same "best effort, never broken" choice
+        // `seat_pointer_focus` makes for a press that names no focusable
+        // ancestor.
+        if let Some(target) = self.pending_focus.take() {
+            let _ = self.focus.focus(&target);
+        }
         self.enter_open_modal(&frame, &scopes);
         // The pointer's half of the same reconciliation, and it needs the new
         // placements for the same reason focus does: a captured node that is
@@ -1498,6 +1522,21 @@ impl<A: App> Host<A> {
             {
                 self.seat_pointer_focus(node);
             }
+            // A wheel routes like any other pointer event
+            // (`InputEvent::Scroll` is positional, `required_interaction`
+            // maps it to `Interaction::Scroll`) — but unlike a click or a
+            // hover, moving it is this crate's own job, not the
+            // application's: nothing in `gorgon-petra` ever turns a routed
+            // `Scroll` into a `scroll_offsets` write (see this file's
+            // `apply_scroll` doc). Before the application hears it, so a
+            // component that reads its own scroll position through
+            // `LayoutState` on the same event is reading the number this
+            // pass just wrote, not last pass's.
+            if let (InputEvent::Scroll { delta, .. }, Route::Pointer { node }) =
+                (event, &routing.outcome.route)
+            {
+                self.apply_scroll(node, *delta);
+            }
             self.app.handle(event, &routing.outcome.route);
             // The cause, then the consequence: a component hears the release
             // (or the blur, or the Escape) and then hears what it did to the
@@ -1546,8 +1585,8 @@ impl<A: App> Host<A> {
             return false;
         }
         match key {
-            KeyCode::Tab if modifiers.shift => self.focus.previous(),
-            KeyCode::Tab => self.focus.next(),
+            KeyCode::Tab if modifiers.shift => self.step_focus(-1),
+            KeyCode::Tab => self.step_focus(1),
             KeyCode::Home | KeyCode::End if modifiers.shift => return false,
             KeyCode::Home if !self.focus_accepts(Interaction::Key) => self.focus.first(),
             KeyCode::End if !self.focus_accepts(Interaction::Key) => self.focus.last(),
@@ -1558,6 +1597,244 @@ impl<A: App> Host<A> {
         // the frame about to be placed already shows it.
         let _ = self.publish_focus();
         true
+    }
+
+    /// Move focus by `dir` (`1` for Tab, `-1` for Shift+Tab), scrolling the
+    /// nearest enclosing `Scroll` into view first when the target
+    /// [`FocusTree::order`] does not have yet.
+    ///
+    /// [`FocusTree::next`]/[`FocusTree::previous`] alone cannot reach an
+    /// off-screen node: `order` only ever holds what the last frame actually
+    /// placed on screen. [`FocusTree::reachable`] answers the wider
+    /// question — what is the very next focusable node in document order,
+    /// on screen or not — and when that answer is already in `order`, this
+    /// is exactly `next`/`previous` (same candidates, same wrap, cheaper).
+    /// When it is not, [`Self::scroll_into_view`] writes a `scroll_offsets`
+    /// entry meant to bring it on screen next pass, and the actual
+    /// [`FocusTree::focus`] call is deferred to [`Self::pending_focus`],
+    /// which [`Self::pass`] retries once that frame exists.
+    ///
+    /// A no-op before the first frame, or with nothing focusable at all —
+    /// [`FocusTree::reachable`] answers `None` in both.
+    fn step_focus(&mut self, dir: isize) {
+        let Some(target) = self.last_frame.as_ref().and_then(|frame| {
+            self.focus
+                .reachable(&frame.placements, &self.last_scopes, dir)
+        }) else {
+            return;
+        };
+        if self.focus.order().contains(&target) {
+            // Already on screen: the ordinary move is enough, and it is
+            // exactly what `reachable` just computed.
+            let _ = self.focus.focus(&target);
+            return;
+        }
+        self.scroll_into_view(&target);
+        self.pending_focus = Some(target);
+    }
+
+    /// The `Placement` nearest `id`, walking upward, that is itself a
+    /// `Scroll` container — including `id`'s own placement, if it happens
+    /// to be one. `None` when `id` names no placement in `frame`, or no
+    /// `Scroll` encloses it.
+    ///
+    /// Walks `Placement::parent` the way `gorgon_petra::focus`'s
+    /// `blocking_scopes` walks it for a blocking surface's scope: `Placement`
+    /// is public with no sealed constructor, so a malformed `parent` chain
+    /// (past the slice's end, or cyclic) is refused rather than trusted —
+    /// bounded by the placement count, the same defence.
+    fn scroll_ancestor<'a>(frame: &'a PetrifiedFrame, id: &str) -> Option<&'a Placement> {
+        let start = frame.placements.iter().position(|p| p.id == id)?;
+        let mut cursor = Some(start);
+        let mut steps = 0usize;
+        while let Some(i) = cursor {
+            let placement = frame.placements.get(i)?;
+            if placement.kind == NodeKind::Scroll {
+                return Some(placement);
+            }
+            cursor = placement.parent;
+            steps += 1;
+            if steps > frame.placements.len() {
+                return None;
+            }
+        }
+        None
+    }
+
+    /// `scroll`'s own placed child, i.e. what its `scroll_offsets` entry
+    /// actually moves. A `Scroll` node has at most one child by construction
+    /// (`gorgon_petra::layout::scroll::place` only ever looks at
+    /// `node.children.first()`), so the first placement whose `parent` is
+    /// `scroll`'s own index is the whole answer.
+    fn scroll_content<'a>(frame: &'a PetrifiedFrame, scroll: &str) -> Option<&'a Placement> {
+        let idx = frame.placements.iter().position(|p| p.id == scroll)?;
+        frame.placements.iter().find(|p| p.parent == Some(idx))
+    }
+
+    /// The axis `scroll`'s content actually overflows on, inferred from
+    /// geometry rather than looked up: [`PetrifiedFrame`] carries placements,
+    /// not the `ViewNode` tree that named the axis, and `Placement` records
+    /// no `ScrollProps`.
+    ///
+    /// `gorgon_petra::layout::scroll::place`'s own doc is the invariant this
+    /// leans on: a `Scroll`'s child is placed at its full, unclipped content
+    /// size, and clipped only by the paint clip narrowed to the viewport —
+    /// so the axis whose content extent exceeds its clip is the scrolling
+    /// axis. Content that overflows on neither (nothing to scroll) defaults
+    /// to `Vertical`, which is inert either way: every caller here clamps
+    /// against that axis's own overflow, and an axis with none clamps to
+    /// `0.0`.
+    fn scroll_axis(frame: &PetrifiedFrame, scroll: &str) -> Axis {
+        let Some(content) = Self::scroll_content(frame, scroll) else {
+            return Axis::Vertical;
+        };
+        let overflow_h = content.rect.h - content.clip.h;
+        let overflow_w = content.rect.w - content.clip.w;
+        if overflow_h >= overflow_w {
+            Axis::Vertical
+        } else {
+            Axis::Horizontal
+        }
+    }
+
+    /// How far `scroll`'s content can move along `axis` past its own
+    /// viewport, from the last placed frame — `0.0` when `scroll` names no
+    /// placement, has no content, or does not overflow that axis.
+    fn scroll_overflow(frame: &PetrifiedFrame, scroll: &str, axis: Axis) -> f32 {
+        let Some(content) = Self::scroll_content(frame, scroll) else {
+            return 0.0;
+        };
+        (content.rect.size().along(axis) - content.clip.size().along(axis)).max(0.0)
+    }
+
+    /// A rect's origin along `axis`: `x` for horizontal, `y` for vertical.
+    /// `gorgon-petra`'s own `layout::scroll::origin_along`, restated here —
+    /// that one is private to its module and this crate has no `ViewNode`
+    /// tree to ask `scroll::place` to do the walk for it.
+    fn leading(rect: Rect, axis: Axis) -> f32 {
+        match axis {
+            Axis::Horizontal => rect.x,
+            Axis::Vertical => rect.y,
+        }
+    }
+
+    /// Write `desired` into `scroll`'s `scroll_offsets` entry, clamped to
+    /// `[0, overflow]` on `axis` as the *last* placed frame reports it, and
+    /// report whether the stored value changed.
+    ///
+    /// The upper clamp is one frame stale by construction: input is
+    /// delivered ahead of this pass's own `petrify`
+    /// (`Host::pass`'s ordering), so the content extent this clamps against
+    /// is whatever the previous frame measured, not the one about to be
+    /// placed. `gorgon_petra::layout::scroll::place` re-clamps against its
+    /// own frame's real extent on every placement regardless — so a view
+    /// that shrank between the write and the next placement is corrected
+    /// there, one frame later, never left stuck past its own end.
+    fn write_scroll_offset(&mut self, scroll: &str, axis: Axis, desired: f32) -> bool {
+        let max_offset = self
+            .last_frame
+            .as_ref()
+            .map_or(0.0, |frame| Self::scroll_overflow(frame, scroll, axis));
+        let next = desired.clamp(0.0, max_offset);
+        let current = self
+            .state
+            .scroll_offsets
+            .get(scroll)
+            .copied()
+            .unwrap_or(0.0);
+        if next == current {
+            return false;
+        }
+        self.state.scroll_offsets.insert(scroll.to_owned(), next);
+        true
+    }
+
+    /// Turn a routed wheel event into a `scroll_offsets` write.
+    ///
+    /// `node` is the id [`gorgon_petra::input::hit_test`] routed the event
+    /// to — a placement declaring `Interaction::Scroll`, which every node
+    /// this crate's applications build is itself a `Scroll` container (see
+    /// `catalog.rs`'s `index_pane`). A `node` that names no `Scroll`
+    /// placement in the last frame is a no-op: nothing declares that
+    /// interaction, so nothing routed here should exist, and this refuses
+    /// to invent a scroll entry under an arbitrary id.
+    ///
+    /// This is the missing half of the wiring `gorgon-petra-egui/src/input.rs`
+    /// and `gorgon-petra`'s own `input.rs` already build:
+    /// `EventTranslator::translate` turns egui's wheel into
+    /// `InputEvent::Scroll`, `route`/`hit_test` aim it at a `Scroll` node —
+    /// and until this method, nothing consumed it. `grep scroll_offsets`
+    /// across the crate used to turn up only test harnesses writing it
+    /// directly (`testing.rs`, and `catalog.rs`'s own
+    /// `writing_the_index_pane_scroll_offset_reveals_row_forty_two`).
+    fn apply_scroll(&mut self, node: &str, delta: Size) -> bool {
+        let Some(frame) = self.last_frame.as_ref() else {
+            return false;
+        };
+        let Some(placement) = frame.placement(node) else {
+            return false;
+        };
+        if placement.kind != NodeKind::Scroll {
+            return false;
+        }
+        let axis = Self::scroll_axis(frame, node);
+        let current = self.state.scroll_offsets.get(node).copied().unwrap_or(0.0);
+        // `egui::Event::MouseWheel`'s own doc: "a positive Y-value indicates
+        // the content is being moved down" — the opposite sense from this
+        // offset, which *grows* to reveal content further along the axis
+        // (`layout::scroll::place`: `main_origin = origin_along(content,
+        // axis) - offset`, so a larger offset moves the content the other
+        // way).
+        let desired = current - delta.along(axis);
+        self.write_scroll_offset(node, axis, desired)
+    }
+
+    /// Scroll `target`'s nearest enclosing `Scroll` just far enough that
+    /// `target`'s own rect is inside its clip, along whichever axis that
+    /// `Scroll` actually scrolls.
+    ///
+    /// Only reachable from off-screen: `target`'s rect and clip do not
+    /// overlap at all along the scrolling axis on entry (`step_focus` only
+    /// calls this for an id absent from `FocusTree::order`, and
+    /// `Placement::is_visible` — `rect.overlaps(clip)` — is exactly what
+    /// `order` is filtered by), so which side it fell off on is unambiguous:
+    /// there is no partial-overlap case to reconcile.
+    fn scroll_into_view(&mut self, target: &str) {
+        let Some(frame) = self.last_frame.as_ref() else {
+            return;
+        };
+        let Some(placement) = frame.placement(target) else {
+            return;
+        };
+        let (rect, clip) = (placement.rect, placement.clip);
+        let Some(scroll) = Self::scroll_ancestor(frame, target).map(|p| p.id.clone()) else {
+            return;
+        };
+        let axis = Self::scroll_axis(frame, &scroll);
+        let target_lead = Self::leading(rect, axis);
+        let target_trail = target_lead + rect.size().along(axis);
+        let view_lead = Self::leading(clip, axis);
+        let view_trail = view_lead + clip.size().along(axis);
+        let current = self
+            .state
+            .scroll_offsets
+            .get(&scroll)
+            .copied()
+            .unwrap_or(0.0);
+        let desired = if target_trail <= view_lead {
+            // Entirely above/left of the viewport: bring its leading edge
+            // to the viewport's leading edge, the least scroll that shows
+            // all of it.
+            current + (target_lead - view_lead)
+        } else if target_lead >= view_trail {
+            // Entirely below/right: align the trailing edges instead.
+            current + (target_trail - view_trail)
+        } else {
+            // Already within range on this axis — should not happen given
+            // the doc above, but this is not the place to guess.
+            return;
+        };
+        self.write_scroll_offset(&scroll, axis, desired);
     }
 
     /// Whether the focused node in the last placed frame declares

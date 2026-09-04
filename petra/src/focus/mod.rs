@@ -178,6 +178,45 @@ impl FocusTree {
         &self.order
     }
 
+    /// The next (`dir = 1`) or previous (`dir = -1`) focusable id after
+    /// `current`, from `placements`' pre-order — restricted to the active
+    /// blocking scope exactly as [`FocusTree::next`]/[`FocusTree::previous`]
+    /// are, but **not** filtered by [`Placement::is_visible`].
+    ///
+    /// [`FocusTree::order`] only ever names what a frame actually placed on
+    /// screen (the module doc's "Traversal order is visual order"), because
+    /// [`crate::input::hit_test`] and Tab reachability have to agree. A host
+    /// that wants Tab to be able to *scroll* something into view needs the
+    /// wider question answered first: what is the very next focusable node
+    /// in document order, on screen or not. This is that answer; a host
+    /// still decides what to do with a target that is not in `order` yet —
+    /// see `gorgon-petra-egui`'s `Host::step_focus`.
+    ///
+    /// Wraps exactly as `next`/`previous` do: the last candidate's successor
+    /// is the first. `None` when nothing in scope is focusable at all.
+    #[must_use]
+    pub fn reachable(
+        &self,
+        placements: &[Placement],
+        surface_scopes: &BTreeMap<String, InputPolicy>,
+        dir: isize,
+    ) -> Option<String> {
+        let scope = self.active_scope();
+        let candidates: Vec<&str> = placements
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| is_focusable(p))
+            .filter(|(idx, _)| {
+                blocking_scopes(*idx, placements, surface_scopes)
+                    .first()
+                    .map(String::as_str)
+                    == scope
+            })
+            .map(|(_, p)| p.id.as_str())
+            .collect();
+        step_over(&candidates, self.current.as_deref(), dir)
+    }
+
     /// The blocking surface `current` is trapped inside, or `None` when focus
     /// is not inside any `Block` surface.
     #[must_use]
@@ -279,20 +318,37 @@ impl FocusTree {
 
     fn step(&mut self, dir: isize) {
         let candidates = self.candidates();
-        if candidates.is_empty() {
-            return;
-        }
-        let from = self
-            .current
-            .as_deref()
-            .and_then(|c| candidates.iter().position(|x| *x == c));
-        let len = candidates.len() as isize;
-        let next = match from {
-            Some(p) => (p as isize + dir).rem_euclid(len),
-            None => 0,
-        };
-        self.current = Some(candidates[next as usize].to_owned());
+        self.current = step_over(&candidates, self.current.as_deref(), dir);
     }
+}
+
+/// Whether `placement` is a legal focus target on the terms
+/// [`Interaction::Focus`] and [`PlacementSemantics::disabled`] alone —
+/// [`Placement::is_visible`] is a separate question, deliberately not asked
+/// here: [`index`] asks both to build the on-screen order,
+/// [`FocusTree::reachable`] asks only this one to answer "is there a
+/// focusable node further out, on screen or not".
+fn is_focusable(placement: &Placement) -> bool {
+    placement.semantics.actions.contains(&Interaction::Focus) && !placement.semantics.disabled
+}
+
+/// The id at `current`'s position in `candidates`, stepped by `dir` and
+/// wrapped — [`FocusTree::next`]/[`FocusTree::previous`]'s arithmetic,
+/// shared with [`FocusTree::reachable`] so the two can never disagree about
+/// what "the next one, wrapping" means. `current` absent from `candidates`
+/// (including the none-state) starts at the first. `None` only when
+/// `candidates` itself is empty.
+fn step_over(candidates: &[&str], current: Option<&str>, dir: isize) -> Option<String> {
+    if candidates.is_empty() {
+        return None;
+    }
+    let from = current.and_then(|c| candidates.iter().position(|x| *x == c));
+    let len = candidates.len() as isize;
+    let next = match from {
+        Some(p) => (p as isize + dir).rem_euclid(len),
+        None => 0,
+    };
+    Some(candidates[next as usize].to_owned())
 }
 
 /// Build `(order, scope_chain)` from one frame's placements.
@@ -303,10 +359,7 @@ fn index(
     let mut order = Vec::new();
     let mut scope_chain = BTreeMap::new();
     for (idx, placement) in placements.iter().enumerate() {
-        let focusable = placement.semantics.actions.contains(&Interaction::Focus)
-            && !placement.semantics.disabled
-            && placement.is_visible();
-        if !focusable {
+        if !is_focusable(placement) || !placement.is_visible() {
             continue;
         }
         order.push(placement.id.clone());
