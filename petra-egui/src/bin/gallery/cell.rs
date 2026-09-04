@@ -7,8 +7,14 @@
 
 use crate::inventory::{ROWS, Row};
 
-/// Inventory names Wave 1 wired into the catalog. Keep in lockstep with
+/// Inventory names wired into the catalog. Keep in lockstep with
 /// `gorgon/xtask/src/carbon.rs` `BUILT_COMPONENTS`.
+///
+/// Test-only, and deliberately so: this list is a second, hand-written copy of
+/// a fact `Cell` already derives, kept solely to fail loudly when the two
+/// disagree. Compiling it into the shipped binary would let it drift into a
+/// second source of truth.
+#[cfg(test)]
 const BUILT: &[&str] = &[
     "Accordion",
     "AI label",
