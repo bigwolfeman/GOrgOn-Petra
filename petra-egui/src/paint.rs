@@ -3222,10 +3222,78 @@ mod tests {
     }
 
     /// The fraction of a marker's box on which two coverage maps disagree.
+    ///
+    /// Both maps must already be the same shape. Two markers with the same
+    /// nominal box size (the four `StatusShape`s below) satisfy that as-is;
+    /// two with different box sizes (checkbox 16px against radio 18px, per
+    /// Carbon's own SCSS — T070, `_checkbox.scss` vs `_radio-button.scss`)
+    /// have to go through [`normalize_square`] first.
     fn disagreement(a: &[bool], b: &[bool]) -> f64 {
         assert_eq!(a.len(), b.len(), "coverage maps must be the same shape");
         let differing = a.iter().zip(b).filter(|(x, y)| x != y).count();
         differing as f64 / a.len() as f64
+    }
+
+    /// Recover the side length of a square coverage grid.
+    ///
+    /// [`marker_coverage`] samples a marker's own (always square, for every
+    /// caller in this file) box at [`SAMPLE_PITCH`] in both dimensions, so
+    /// `map.len()` is always a perfect square; this is just that inverse,
+    /// so a flat map can be re-indexed as `[row * side + col]`.
+    fn side_of(map: &[bool]) -> usize {
+        #[allow(clippy::cast_precision_loss, clippy::cast_sign_loss)]
+        let side = (map.len() as f64).sqrt().round() as usize;
+        assert_eq!(
+            side * side,
+            map.len(),
+            "coverage map of {} samples is not a square grid",
+            map.len()
+        );
+        side
+    }
+
+    /// The common grid two differently-sized markers are normalized onto
+    /// before [`disagreement`] compares them. Picked below the smaller of
+    /// the two source grids this file ever produces (checkbox, 32×32 at
+    /// [`SAMPLE_PITCH`]) so every target cell downsamples rather than
+    /// repeating a source sample.
+    const NORMALIZED_GRID: usize = 24;
+
+    /// Resample a `side × side` boolean coverage grid onto a fixed
+    /// [`NORMALIZED_GRID`] `× NORMALIZED_GRID` grid.
+    ///
+    /// This is what makes [`disagreement`] size-independent: a checkbox's
+    /// 16px box and a radio's 18px box paint different pixel counts, but a
+    /// mark's *shape* — square corners against a round silhouette — is a
+    /// property of where coverage sits relative to the box's own bounds,
+    /// not of how many device pixels that box happens to span. Normalizing
+    /// both marks onto the same grid before diffing measures exactly that:
+    /// each target cell samples the source cell its own centre maps to
+    /// under proportional `[0, 1)` scaling (nearest-neighbour, not
+    /// area-averaged — acceptable here because the shapes under test are
+    /// coarse corner-vs-centre silhouettes, not fine detail, so resampling
+    /// aliasing does not change which cells two such figures disagree on).
+    ///
+    /// A square-vs-round diff survives normalization because it is scale
+    /// invariant: a circle's corners are empty and a square's are filled at
+    /// every scale, so shrinking or growing the sampling grid moves samples
+    /// but not which region of the box they fall in.
+    fn normalize_square(map: &[bool], side: usize) -> Vec<bool> {
+        let mut out = Vec::with_capacity(NORMALIZED_GRID * NORMALIZED_GRID);
+        for row in 0..NORMALIZED_GRID {
+            for col in 0..NORMALIZED_GRID {
+                #[allow(clippy::cast_precision_loss)]
+                let u = (col as f64 + 0.5) / NORMALIZED_GRID as f64;
+                #[allow(clippy::cast_precision_loss)]
+                let v = (row as f64 + 0.5) / NORMALIZED_GRID as f64;
+                #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                let src_col = ((u * side as f64) as usize).min(side - 1);
+                #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                let src_row = ((v * side as f64) as usize).min(side - 1);
+                out.push(map[src_row * side + src_col]);
+            }
+        }
+        out
     }
 
     /// The shipped status markers, plus diamond, paint distinguishable pictures.
@@ -3355,7 +3423,13 @@ mod tests {
 
         let cb = marker_coverage(checkbox("c", "Restart", true), "/c/box");
         let rb = marker_coverage(radio("r", "Restart", true), "/r/box");
-        let differing = disagreement(&cb, &rb);
+        // Checkbox (16px) and radio (18px) are different box sizes in
+        // Carbon's own SCSS (T070) — normalize both onto a common grid
+        // before diffing, or `disagreement`'s equal-length assertion
+        // fires on the box-size difference instead of measuring shape.
+        let cb_norm = normalize_square(&cb, side_of(&cb));
+        let rb_norm = normalize_square(&rb, side_of(&rb));
+        let differing = disagreement(&cb_norm, &rb_norm);
         #[allow(clippy::cast_precision_loss)]
         let (cb_fill, rb_fill) = (
             cb.iter().filter(|c| **c).count() as f64 / cb.len() as f64,

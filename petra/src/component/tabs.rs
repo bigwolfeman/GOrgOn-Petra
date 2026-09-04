@@ -9,7 +9,7 @@ use super::text::text;
 use super::tokens::{
     ACCENT_PRIMARY, BORDER_SUBTLE, ICON_DISABLED, LAYER_HOVER, SIZE_MD, SPACING_01, SPACING_03,
     SPACING_05, SURFACE_BASE, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_BODY,
-    TYPOGRAPHY_HEADING, t,
+    TYPOGRAPHY_HEADING_SM, t,
 };
 use super::{pad, stack};
 use crate::geom::{Align, Axis};
@@ -24,6 +24,22 @@ const LINE_INDICATOR: f32 = 2.0;
 const VERTICAL_HEIGHT: f32 = 64.0;
 /// Carbon selected vertical indicator (`border-left: 3px`).
 const VERTICAL_INDICATOR: f32 = 3.0;
+/// A selected tab's label style: Carbon's `$heading-compact-01` — 14px
+/// Medium, the *same size* as the unselected `$body-compact-01` label, with
+/// only the weight stepping up (slice-e.md T101, MEASURED from SCSS: "14px
+/// SemiBold selected vs 14px Regular unselected").
+///
+/// This is `"typography.heading-sm"` in [`super::tokens::TYPOGRAPHY_RAMP`]'s
+/// own mapping table (`heading-sm` → Carbon's `heading-compact-01`), not
+/// [`super::tokens::TYPOGRAPHY_HEADING`] — that constant is Carbon's
+/// `heading-03` (20px), a page-heading role three sizes up from a tab label.
+/// Binding it here is what made a selected tab's own label overflow its own
+/// budget: nothing shrank, the label just grew 14px → 20px, six units taller
+/// than the 40px tab has room for and wide enough to blow past its column.
+/// No shipped component binds `heading-sm` yet, so `component::tokens` does
+/// not export a constant for it; this file does not own that module, so the
+/// name is declared locally, at the exact string `component::tokens` would
+/// use if it did.
 
 #[derive(Clone, Copy)]
 enum Variant {
@@ -37,8 +53,8 @@ enum Variant {
 ///
 /// Height is [`SIZE_MD`] (40). Padding is `$spacing-05` inline / `$spacing-03`
 /// block. Unselected label is [`TEXT_MUTED`]; selected is [`TEXT_PRIMARY`]
-/// plus [`TYPOGRAPHY_HEADING`]. Fill stays [`SURFACE_BASE`] so [`super::on_layer`]
-/// can seat an unselected tab flush with its ground.
+/// plus [`TYPOGRAPHY_HEADING_SM`]. Fill stays [`SURFACE_BASE`] so
+/// [`super::on_layer`] can seat an unselected tab flush with its ground.
 ///
 /// Wrap with [`super::disabled`] for the unavailable state. The label already
 /// binds `foreground@disabled`.
@@ -91,7 +107,7 @@ fn tab_variant(
 
     let mut label_node = text("label", label.clone());
     label_node.props.style = Some(t(if selected {
-        TYPOGRAPHY_HEADING
+        TYPOGRAPHY_HEADING_SM
     } else {
         TYPOGRAPHY_BODY
     }));
@@ -359,7 +375,7 @@ mod tests {
                 .style
                 .as_ref()
                 .map(|t| t.as_str()),
-            Some(TYPOGRAPHY_HEADING)
+            Some(TYPOGRAPHY_HEADING_SM)
         );
         assert_eq!(
             named(&tab("t", "A", false), "label")

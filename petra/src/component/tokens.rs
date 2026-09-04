@@ -57,6 +57,9 @@ pub(crate) const SILHOUETTE_OCTAGON: &str = "shape.silhouette-octagon";
 
 pub(crate) const TYPOGRAPHY_BODY: &str = "typography.body";
 pub(crate) const TYPOGRAPHY_HEADING: &str = "typography.heading";
+/// Carbon `heading-compact-01`: a selected tab keeps the body size and steps
+/// the weight, so it must not borrow the 20px page-heading role.
+pub(crate) const TYPOGRAPHY_HEADING_SM: &str = "typography.heading-sm";
 
 /// The elevation a resting container casts. Colour only: the offset, blur
 /// and spread live in `token::SHADOW_GEOMETRY`, because they are the same in
@@ -148,6 +151,7 @@ pub(crate) const ALL: &[&str] = &[
     SILHOUETTE_OCTAGON,
     TYPOGRAPHY_BODY,
     TYPOGRAPHY_HEADING,
+    TYPOGRAPHY_HEADING_SM,
     SHADOW_RAISED,
     SURFACE_BASE,
     SURFACE_RAISED,
