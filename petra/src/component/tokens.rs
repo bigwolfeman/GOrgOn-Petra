@@ -69,6 +69,29 @@ pub(crate) const SHADOW_RAISED: &str = "shadow.raised";
 
 pub(crate) const SURFACE_BASE: &str = "surface.base";
 pub(crate) const SURFACE_RAISED: &str = "surface.raised";
+
+/// A recessed fill: one selected-magnitude step off the layer it sits on.
+/// Carbon's own `$layer-accent-01`.
+///
+/// **This exists because `border.subtle` cannot be both a hairline and a
+/// filled rail.** Carbon spends `$border-subtle` on both — slice-d:122 gives
+/// the progress track `background-color: $border-subtle` — and gets away with
+/// it because Carbon's g100 `$border-subtle` is `#393939`. Petra's dark layers
+/// *ramp* rather than alternate, so a hairline at that tone would vanish
+/// against `surface.layer-three` (`#444444`), and `token::shipped`'s
+/// `DARK_BORDER` is deliberately raised to `#9c9c9c` to hold 3.55:1 there.
+///
+/// That is the right call for a one-unit line and the wrong one for an
+/// eight-unit trough: filled with `#9c9c9c` a progress track reads as a second
+/// bar in a different colour, so a thirty-percent bar looks like two bars
+/// rather than one partly filled. Measured on the rasterized page, 2026-09-04:
+/// fill `#4589ff` — byte-identical to Carbon's — against a track 99 sRGB
+/// levels lighter than Carbon's.
+///
+/// So copying Carbon's token *name* was the mistake, and it was invisible
+/// while only the name was checked. Where an area is filled to recede, spend
+/// this.
+pub(crate) const LAYER_ACCENT: &str = "layer-accent";
 pub(crate) const TEXT_PRIMARY: &str = "text.primary";
 pub(crate) const TEXT_MUTED: &str = "text.muted";
 
@@ -155,6 +178,7 @@ pub(crate) const ALL: &[&str] = &[
     SHADOW_RAISED,
     SURFACE_BASE,
     SURFACE_RAISED,
+    LAYER_ACCENT,
     TEXT_PRIMARY,
     TEXT_MUTED,
     BORDER_SUBTLE,

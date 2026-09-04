@@ -5,7 +5,9 @@
 //!    accessible name on [`Role::Progress`].
 //! 2. Helper text (optional) — [`progress_with_helper`] only; the three-arg
 //!    constructor does not take one.
-//! 3. Track (`$border-subtle`) — child key `"track"`.
+//! 3. Track — child key `"track"`. Carbon says `$border-subtle`
+//!    (slice-d:122); Petra spends [`LAYER_ACCENT`], and that constant's doc
+//!    is the argument for why copying the name would have been wrong here.
 //! 4. Bar indicator (`$interactive` → [`ACCENT_PRIMARY`]) — child key `"fill"`.
 //!
 //! Carbon's fill is `transform: scaleX`. Petra keeps weighted [`Grid`]
@@ -15,7 +17,7 @@
 
 use super::swatch;
 use super::text::text;
-use super::tokens::{ACCENT_PRIMARY, BORDER_SUBTLE, SPACING_03, TEXT_MUTED, TEXT_PRIMARY, t};
+use super::tokens::{ACCENT_PRIMARY, LAYER_ACCENT, SPACING_03, TEXT_MUTED, TEXT_PRIMARY, t};
 use crate::geom::Align;
 use crate::tree::{
     AxisConstraint, Constraints, GridSpan, Key, NodeKind, Props, Role, Semantics, TrackSize,
@@ -119,7 +121,8 @@ fn full_row_span() -> GridSpan {
 ///
 /// Carbon paints the fill with `$interactive`. Petra has no interactive
 /// token; [`ACCENT_PRIMARY`] is the shipped interactive hue. The track is
-/// `$border-subtle` ([`BORDER_SUBTLE`]). Status finishes (`$support-success`
+/// [`LAYER_ACCENT`], for the reason that constant's doc gives. Status
+/// finishes (`$support-success`
 /// / `$support-error`) are not in the component token list and are not
 /// invented here.
 ///
@@ -190,7 +193,7 @@ fn progress_sized(
     caption.props.span = Some(full_row_span());
 
     let fill = bar_cell("fill", height, Some(ACCENT_PRIMARY));
-    let track = bar_cell("track", height, Some(BORDER_SUBTLE));
+    let track = bar_cell("track", height, Some(LAYER_ACCENT));
 
     let mut children = vec![caption, fill, track];
     if let Some(helper) = helper {
@@ -229,7 +232,7 @@ mod tests {
         BAR_HEIGHT, BAR_HEIGHT_SM, MIN_TRACK_WIDTH, MIN_WEIGHT, progress, progress_sm,
         progress_with_helper,
     };
-    use crate::component::tokens::{ACCENT_PRIMARY, BORDER_SUBTLE, TEXT_MUTED, TEXT_PRIMARY};
+    use crate::component::tokens::{ACCENT_PRIMARY, LAYER_ACCENT, TEXT_MUTED, TEXT_PRIMARY};
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, validated_with};
@@ -320,6 +323,16 @@ mod tests {
         );
     }
 
+    /// The fill is the accent and the track is a *recessed* tone, never the
+    /// hairline tone.
+    ///
+    /// Carbon spends `$border-subtle` on both a 1px line and this 8px rail
+    /// (slice-d:122). Petra cannot: its dark layers ramp, so `border.subtle`
+    /// is raised to `#9c9c9c` to keep a hairline visible against
+    /// `surface.layer-three`, and an 8px rail filled with that reads as a
+    /// second bar rather than an empty trough. Binding the track back to
+    /// `BORDER_SUBTLE` fails here, which is the point: the name matching
+    /// Carbon is exactly what made the defect invisible.
     #[test]
     fn carbon_colours_and_min_width() {
         let node = progress("p", "Rebuild", 0.62);
@@ -329,7 +342,7 @@ mod tests {
         );
         assert_eq!(
             token(child(&node, "track"), "background"),
-            Some(BORDER_SUBTLE)
+            Some(LAYER_ACCENT)
         );
         assert_eq!(node.constraints.horizontal.min, Some(MIN_TRACK_WIDTH));
         assert_eq!(MIN_TRACK_WIDTH, 48.0);
