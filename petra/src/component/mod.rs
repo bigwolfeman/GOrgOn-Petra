@@ -26,20 +26,25 @@
 //! | [`section`] | none | no |
 //! | [`list_row`] | `Role::ListItem` + selected | yes |
 //!
+//! [`icon`] is not a fourteenth C13 component. It is a visual part a labeled
+//! control composes (FR-026): a canvas that draws a named [`IconMark`], with
+//! no role and no interactions of its own. The control that contains it still
+//! owns the label. A swatch is not an icon.
+//!
 //! `Role::Dialog`, `Role::List`, and `Role::Table` each appear once in the
 //! gallery and stay expressed through the primitives directly — a component
 //! with one consumer is a helper, not a library member, and C13 draws the
 //! line there deliberately.
 //!
-//! Thirteen **components**, fourteen public constructors: [`primary_button`]
-//! is [`button`] with the accent spent on it, not a fourteenth thing. It has
-//! the same role, the same interactions, the same body (`button::labelled`)
-//! and the same obligations; what differs is two colours and an elevation.
-//! C13 fixed the set of *shapes an author can compose*, and emphasis is a
-//! property of one of those shapes rather than a new one. The alternative —
-//! an `emphasis: Emphasis` parameter on `button` — was refused because every
-//! existing call site would have had to name a default, which is a lot of
-//! churn to express "this one is louder".
+//! Thirteen **components**. [`primary_button`] is [`button`] with the
+//! accent spent on it, not a fourteenth thing: same role, same
+//! interactions, same body (`button::labelled`); what differs is two
+//! colours and an elevation. [`icon`] is a mark those shapes carry, not
+//! a fifteenth. C13 fixed the set of *shapes an author can compose*.
+//! Emphasis is a property of one of those shapes rather than a new one.
+//! The alternative — an `emphasis: Emphasis` parameter on `button` —
+//! was refused because every existing call site would have had to name a
+//! default, which is a lot of churn to express "this one is louder".
 //!
 //! # How FR-058 is enforced
 //!
@@ -68,32 +73,108 @@
 //! # What this module does not do
 //!
 //! It does not replace the primitives: every function here returns a
-//! `ViewNode` built from `NodeKind::Stack`, `Grid`, `Text`, `Input`, or
-//! `Spacer` — the same twelve-variant enum `crate::tree` has always had —
-//! and any layout this library does not cover (an arbitrary grid, a custom
-//! surface) is still composed from those primitives directly, which stay
-//! public (gate C1-10).
+//! `ViewNode` built from `NodeKind::Stack`, `Grid`, `Text`, `Input`,
+//! `Spacer`, or `Canvas` — kinds from `crate::tree` — and any layout this
+//! library does not cover (an arbitrary grid, a custom surface) is still
+//! composed from those primitives directly, which stay public (gate C1-10).
 
+mod accordion;
+mod breadcrumb;
 mod button;
+mod code_snippet;
+mod contained_list;
+mod content_switcher;
 mod controls;
+mod data_table;
+mod date_picker;
+mod dropdown;
 mod field;
+mod file_uploader;
+mod form;
+mod icon;
+mod inline_loading;
+mod link;
+mod list;
 mod list_row;
+mod loading;
+mod menu;
+mod menu_button;
+mod modal;
+mod notification;
+mod number_input;
+mod pagination;
+mod popover;
 mod progress;
+mod progress_indicator;
+mod search;
 mod section;
+mod select;
+mod slider;
 mod status;
+mod structured_list;
 mod tabs;
+mod tag;
 mod text;
+mod tile;
+mod toggletip;
 mod tokens;
+mod tooltip;
+mod tree_view;
 
-pub use button::{button, primary_button};
-pub use controls::{checkbox, radio, toggle};
-pub use field::field;
+pub use accordion::{accordion, accordion_item, accordion_item_lg, accordion_item_sm};
+pub use breadcrumb::{breadcrumb, breadcrumb_item};
+pub use button::{
+    button, button_lg, button_sm, button_xs, danger_button, danger_ghost_button,
+    danger_tertiary_button, ghost_button, primary_button, tertiary_button,
+};
+pub use code_snippet::{code_snippet, code_snippet_inline, code_snippet_multi};
+pub use contained_list::{contained_list, contained_list_disclosed};
+pub use content_switcher::{content_switcher, content_switcher_item};
+pub use controls::{
+    checkbox, checkbox_group, checkbox_indeterminate, checkbox_readonly, radio, radio_group,
+    toggle, toggle_sm,
+};
+pub use data_table::{
+    data_table, data_table_row, data_table_row_expandable, data_table_row_lg, data_table_row_sm,
+    data_table_row_xl, data_table_row_xs, data_table_sort_header, data_table_zebra,
+};
+pub use date_picker::{date_picker, date_picker_open};
+pub use dropdown::{dropdown, dropdown_open, dropdown_option};
+pub use field::{
+    field, field_fluid, field_invalid, field_labeled, field_lg, field_readonly, field_sm,
+};
+pub use file_uploader::{file_uploader, file_uploader_item};
+pub use form::form;
+pub use icon::{IconMark, icon};
+pub use inline_loading::inline_loading;
+pub use link::link;
+pub use list::{list_item, list_item_with, ordered_list, unordered_list};
 pub use list_row::list_row;
-pub use progress::progress;
+pub use loading::{loading, loading_sm};
+pub use menu::{menu, menu_item};
+pub use menu_button::menu_button;
+pub use modal::modal;
+pub use notification::{
+    notification, notification_actionable, notification_inline, notification_toast,
+};
+pub use number_input::{number_input, number_input_invalid, number_input_lg, number_input_sm};
+pub use pagination::pagination;
+pub use popover::{popover, popover_with};
+pub use progress::{progress, progress_sm, progress_with_helper};
+pub use progress_indicator::{progress_indicator, progress_step};
+pub use search::{search, search_lg, search_sm};
 pub use section::section;
+pub use select::{select, select_lg, select_sm};
+pub use slider::{slider, slider_readonly};
 pub use status::status;
-pub use tabs::{tab, tab_bar};
+pub use structured_list::{structured_list, structured_list_row};
+pub use tabs::{contained_tab, contained_tab_bar, tab, tab_bar, vertical_tab, vertical_tab_bar};
+pub use tag::{dismissible_tag, selectable_tag, tag, tag_lg, tag_sm};
 pub use text::{heading, text};
+pub use tile::{clickable_tile, expandable_tile, selectable_tile, tile};
+pub use toggletip::toggletip;
+pub use tooltip::tooltip;
+pub use tree_view::{tree_item, tree_item_xs, tree_view};
 
 use std::sync::Arc;
 

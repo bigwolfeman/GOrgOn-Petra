@@ -1,16 +1,50 @@
-//! `field` — the one text-entry component.
+//! `field` — Carbon Text input (slice-e).
+//!
+//! Two styles: **Default** (this module's default constructors) and **Fluid**.
+//! Default `field()` is a single `Input` of height [`SIZE_MD`] (40). Carbon's
+//! label-above anatomy lives on [`field_labeled`], not on `field()`, because
+//! `tests.rs` (`a_field_is_as_tall_as_size_md`) places `/root/name` and
+//! asserts that rect is 40 tall. A label+input wrapper would be taller.
+//!
+//! Password is skipped (needs View/ViewOff marks and host text secrecy).
+//! Focus geometry is host-owned; this file does not paint a ring.
 
+use super::stack;
+use super::text::text;
 use super::tokens::{
-    BORDER_SUBTLE, SHAPE_SM, SIZE_MD, SURFACE_RAISED, TEXT_MUTED, TYPOGRAPHY_BODY, t,
+    ACCENT_PRIMARY, BORDER_SUBTLE, SHAPE_SM, SIZE_MD, SPACING_02, SPACING_03, SURFACE_RAISED,
+    TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_BODY, t,
 };
+use crate::geom::Axis;
 use crate::tree::{AxisConstraint, Constraints, Interaction, Key, NodeKind, Props, Role, ViewNode};
 
-/// An editable text field.
+/// Carbon Default sm. `tokens` only ships [`SIZE_MD`] (md / 40).
+const SIZE_SM: f32 = 32.0;
+/// Carbon Default lg.
+const SIZE_LG: f32 = 48.0;
+/// Carbon Fluid `min-block-size`.
+const SIZE_FLUID: f32 = 64.0;
+
+/// How one input well is finished.
+#[derive(Clone, Copy)]
+enum FieldChrome {
+    /// Editable Default-style well: Petra's field/border pair.
+    Enabled,
+    /// Invalid: same well, [`ACCENT_PRIMARY`] border as the error stand-in.
+    Invalid,
+    /// Readable, not editable. Keeps Focus; drops Key and TextEdit.
+    ReadOnly,
+    /// Fluid inner input. The wrapper is the well; this node has no fill.
+    Nested,
+}
+
+/// An editable text field — Carbon Default, size md (40).
 ///
 /// `label` fills both the placeholder shown in the empty box and the
 /// accessible name announced for it — a `field` has no separate label
 /// element, so the one string an author supplies is both, and there is no
-/// path that constructs a `field` with one but not the other.
+/// path that constructs a `field` with one but not the other. Visible
+/// label-above anatomy is [`field_labeled`].
 ///
 /// # The box: a tone *and* an edge, and why it needs both
 ///
@@ -35,8 +69,14 @@ use crate::tree::{AxisConstraint, Constraints, Interaction, Key, NodeKind, Props
 /// same number."* The edge is now 3.34:1 in light instead of 8.70:1: it is
 /// still an outlined field, and it is no longer as loud as its own contents.
 ///
+/// Petra's field/border pair is [`SURFACE_RAISED`] + [`BORDER_SUBTLE`]. Carbon
+/// wants `$field` + `$border-strong`. `FIELD_TOKENS` exist on `crate::token`
+/// but `tokens.rs` does not export a field fill, so this library keeps the
+/// pairing it can name.
+///
 /// Keyboard focus on a field is two vertical bars hugging the left and
 /// right, not the underline buttons get. Geometry is `FocusRing::hugs`.
+/// This file does not paint a focus ring.
 ///
 /// `NodeKind::Input` is a leaf kind, so unlike [`super::button`] it carries
 /// no padding (`Props.padding` is refused on a leaf,
@@ -46,29 +86,297 @@ use crate::tree::{AxisConstraint, Constraints, Interaction, Key, NodeKind, Props
 /// horizontal, vertically centred) because that is the only place a leaf
 /// has a chrome rect and a content origin as two different things.
 pub fn field(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
+    input_field(key, label, SIZE_MD, FieldChrome::Enabled)
+}
+
+/// Carbon Default, size sm (32).
+pub fn field_sm(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
+    input_field(key, label, SIZE_SM, FieldChrome::Enabled)
+}
+
+/// Carbon Default, size lg (48).
+pub fn field_lg(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
+    input_field(key, label, SIZE_LG, FieldChrome::Enabled)
+}
+
+/// Carbon Fluid: 64 tall, label stacked inside the well.
+///
+/// The wrapper is the 64-unit well (fill + edge). The inner `Input` holds
+/// `Role::TextInput`; the wrapper does not steal it.
+pub fn field_fluid(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
+    let label = label.into();
+    let mut node = stack(
+        key,
+        Axis::Vertical,
+        Some(SPACING_02),
+        vec![
+            muted_label("label", label.clone()),
+            input_field("input", label, 0.0, FieldChrome::Nested),
+        ],
+    );
+    node.props
+        .tokens
+        .insert("background".into(), t(SURFACE_RAISED));
+    node.props.tokens.insert("border".into(), t(BORDER_SUBTLE));
+    node.props.tokens.insert("radius".into(), t(SHAPE_SM));
+    node.constraints.vertical.min = Some(SIZE_FLUID);
+    node
+}
+
+/// Carbon Default anatomy: muted label above a md Input.
+///
+/// The wrapper has no role. The `"input"` child is the interactive
+/// `Role::TextInput` node, 40 tall.
+pub fn field_labeled(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
+    let label = label.into();
+    stack(
+        key,
+        Axis::Vertical,
+        Some(SPACING_03),
+        vec![
+            muted_label("label", label.clone()),
+            input_field("input", label, SIZE_MD, FieldChrome::Enabled),
+        ],
+    )
+}
+
+/// Invalid Default input plus a label-adjacent helper.
+///
+/// Colour is not the only channel: the Input border is [`ACCENT_PRIMARY`]
+/// (Petra's stand-in for Carbon's invalid edge — there is no `$text-error`
+/// / `$support-error` in this library) **and** a helper child carries
+/// `Invalid: {message}` in [`TEXT_PRIMARY`].
+pub fn field_invalid(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    message: impl Into<String>,
+) -> ViewNode {
+    let message = message.into();
+    let mut helper = text("helper", format!("Invalid: {message}"));
+    helper
+        .props
+        .tokens
+        .insert("foreground".into(), t(TEXT_PRIMARY));
+    stack(
+        key,
+        Axis::Vertical,
+        Some(SPACING_02),
+        vec![
+            input_field("input", label, SIZE_MD, FieldChrome::Invalid),
+            helper,
+        ],
+    )
+}
+
+/// Read-only md input: still focusable, not editable, not [`super::disabled`].
+///
+/// Drops `TextEdit` and `Key`. Keeps `Focus` and the placeholder. Sets
+/// `Semantics.read_only` and does not set `disabled`.
+pub fn field_readonly(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
+    input_field(key, label, SIZE_MD, FieldChrome::ReadOnly)
+}
+
+fn muted_label(key: impl Into<Key>, content: impl Into<String>) -> ViewNode {
+    let mut node = text(key, content);
+    node.props.tokens.insert("foreground".into(), t(TEXT_MUTED));
+    node
+}
+
+fn input_field(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    height: f32,
+    chrome: FieldChrome,
+) -> ViewNode {
     let label = label.into();
     let mut props = Props {
         placeholder: Some(label.clone()),
         style: Some(t(TYPOGRAPHY_BODY)),
         ..Props::default()
     };
-    props.tokens.insert("background".into(), t(SURFACE_RAISED));
     props.tokens.insert("foreground".into(), t(TEXT_MUTED));
-    props.tokens.insert("border".into(), t(BORDER_SUBTLE));
-    props.tokens.insert("radius".into(), t(SHAPE_SM));
-    ViewNode::new(NodeKind::Input, key)
+    match chrome {
+        FieldChrome::Nested => {}
+        FieldChrome::Enabled | FieldChrome::ReadOnly => {
+            props.tokens.insert("background".into(), t(SURFACE_RAISED));
+            props.tokens.insert("border".into(), t(BORDER_SUBTLE));
+            props.tokens.insert("radius".into(), t(SHAPE_SM));
+        }
+        FieldChrome::Invalid => {
+            props.tokens.insert("background".into(), t(SURFACE_RAISED));
+            props.tokens.insert("border".into(), t(ACCENT_PRIMARY));
+            props.tokens.insert("radius".into(), t(SHAPE_SM));
+        }
+    }
+    let intents: &[Interaction] = match chrome {
+        FieldChrome::ReadOnly => &[Interaction::Focus],
+        FieldChrome::Enabled | FieldChrome::Invalid | FieldChrome::Nested => {
+            &[Interaction::Focus, Interaction::Key, Interaction::TextEdit]
+        }
+    };
+    let mut node = ViewNode::new(NodeKind::Input, key)
         .with_props(props)
-        .with_constraints(Constraints {
+        .interactive(Role::TextInput, label, intents);
+    if height > 0.0 {
+        node = node.with_constraints(Constraints {
             vertical: AxisConstraint {
-                min: Some(SIZE_MD),
+                min: Some(height),
                 max: None,
                 priority: 0,
             },
             ..Constraints::default()
-        })
-        .interactive(
-            Role::TextInput,
-            label,
-            &[Interaction::Focus, Interaction::Key, Interaction::TextEdit],
-        )
+        });
+    }
+    if matches!(chrome, FieldChrome::ReadOnly) {
+        node.semantics.read_only = true;
+    }
+    node
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ACCENT_PRIMARY, BORDER_SUBTLE, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY};
+    use super::{
+        SIZE_FLUID, SIZE_LG, SIZE_MD, SIZE_SM, field, field_fluid, field_invalid, field_labeled,
+        field_lg, field_readonly, field_sm,
+    };
+    use crate::tree::{Interaction, NodeKind, Role, ViewNode};
+
+    fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
+        node.children
+            .iter()
+            .find(|c| c.key.as_str() == key)
+            .map(|c| c.as_ref())
+            .unwrap_or_else(|| panic!("missing child {key}"))
+    }
+
+    fn token<'a>(node: &'a ViewNode, slot: &str) -> Option<&'a str> {
+        node.props.tokens.get(slot).map(|name| name.as_str())
+    }
+
+    #[test]
+    fn default_field_is_a_single_size_md_input() {
+        let node = field("name", "Fiber name");
+        assert_eq!(node.kind, NodeKind::Input);
+        assert_eq!(node.key.as_str(), "name");
+        assert_eq!(node.constraints.vertical.min, Some(SIZE_MD));
+        assert_eq!(SIZE_MD, 40.0);
+        assert_eq!(node.semantics.role, Some(Role::TextInput));
+        assert_eq!(node.semantics.label.as_deref(), Some("Fiber name"));
+        assert_eq!(node.props.placeholder.as_deref(), Some("Fiber name"));
+        assert_eq!(token(&node, "background"), Some(SURFACE_RAISED));
+        assert_eq!(token(&node, "border"), Some(BORDER_SUBTLE));
+        assert!(node.interactions.contains(&Interaction::Focus));
+        assert!(node.interactions.contains(&Interaction::Key));
+        assert!(node.interactions.contains(&Interaction::TextEdit));
+        assert!(!node.semantics.read_only);
+        assert!(!node.semantics.disabled);
+        assert!(node.children.is_empty(), "default field is a leaf Input");
+    }
+
+    #[test]
+    fn field_sm_is_32_tall() {
+        let node = field_sm("name", "Fiber name");
+        assert_eq!(node.kind, NodeKind::Input);
+        assert_eq!(node.constraints.vertical.min, Some(SIZE_SM));
+        assert_eq!(SIZE_SM, 32.0);
+        assert_eq!(node.semantics.role, Some(Role::TextInput));
+        assert_eq!(token(&node, "border"), Some(BORDER_SUBTLE));
+    }
+
+    #[test]
+    fn field_lg_is_48_tall() {
+        let node = field_lg("name", "Fiber name");
+        assert_eq!(node.kind, NodeKind::Input);
+        assert_eq!(node.constraints.vertical.min, Some(SIZE_LG));
+        assert_eq!(SIZE_LG, 48.0);
+        assert_eq!(node.semantics.role, Some(Role::TextInput));
+        assert_eq!(token(&node, "border"), Some(BORDER_SUBTLE));
+    }
+
+    #[test]
+    fn field_fluid_is_64_tall_with_the_label_inside() {
+        let node = field_fluid("name", "Fiber name");
+        assert_eq!(node.kind, NodeKind::Stack);
+        assert_eq!(node.constraints.vertical.min, Some(SIZE_FLUID));
+        assert_eq!(SIZE_FLUID, 64.0);
+        assert!(
+            node.semantics.role.is_none(),
+            "wrapper must not steal TextInput"
+        );
+        assert_eq!(token(&node, "background"), Some(SURFACE_RAISED));
+        assert_eq!(token(&node, "border"), Some(BORDER_SUBTLE));
+        let label = child(&node, "label");
+        assert_eq!(label.kind, NodeKind::Text);
+        assert_eq!(label.props.text.as_deref(), Some("Fiber name"));
+        assert_eq!(token(label, "foreground"), Some(TEXT_MUTED));
+        let input = child(&node, "input");
+        assert_eq!(input.kind, NodeKind::Input);
+        assert_eq!(input.semantics.role, Some(Role::TextInput));
+        assert_eq!(input.semantics.label.as_deref(), Some("Fiber name"));
+        assert!(input.interactions.contains(&Interaction::TextEdit));
+        assert!(
+            token(input, "border").is_none(),
+            "fluid chrome lives on the 64-tall wrapper"
+        );
+    }
+
+    #[test]
+    fn field_labeled_puts_a_muted_label_above_a_size_md_input() {
+        let node = field_labeled("name", "Fiber name");
+        assert_eq!(node.kind, NodeKind::Stack);
+        assert!(
+            node.semantics.role.is_none(),
+            "wrapper must not steal TextInput"
+        );
+        assert!(node.constraints.vertical.min.is_none());
+        let label = child(&node, "label");
+        assert_eq!(label.kind, NodeKind::Text);
+        assert_eq!(label.props.text.as_deref(), Some("Fiber name"));
+        assert_eq!(token(label, "foreground"), Some(TEXT_MUTED));
+        let input = child(&node, "input");
+        assert_eq!(input.kind, NodeKind::Input);
+        assert_eq!(input.constraints.vertical.min, Some(SIZE_MD));
+        assert_eq!(input.semantics.role, Some(Role::TextInput));
+        assert_eq!(input.semantics.label.as_deref(), Some("Fiber name"));
+        assert_eq!(token(input, "background"), Some(SURFACE_RAISED));
+        assert_eq!(token(input, "border"), Some(BORDER_SUBTLE));
+    }
+
+    #[test]
+    fn field_invalid_pairs_an_accent_border_with_helper_text() {
+        let node = field_invalid("name", "Fiber name", "required");
+        assert_eq!(node.kind, NodeKind::Stack);
+        assert!(
+            node.semantics.role.is_none(),
+            "wrapper must not steal TextInput"
+        );
+        let input = child(&node, "input");
+        assert_eq!(input.kind, NodeKind::Input);
+        assert_eq!(input.semantics.role, Some(Role::TextInput));
+        assert_eq!(input.constraints.vertical.min, Some(SIZE_MD));
+        assert_eq!(token(input, "border"), Some(ACCENT_PRIMARY));
+        assert_eq!(token(input, "background"), Some(SURFACE_RAISED));
+        assert!(input.interactions.contains(&Interaction::TextEdit));
+        let helper = child(&node, "helper");
+        assert_eq!(helper.kind, NodeKind::Text);
+        assert_eq!(helper.props.text.as_deref(), Some("Invalid: required"));
+        assert_eq!(token(helper, "foreground"), Some(TEXT_PRIMARY));
+    }
+
+    #[test]
+    fn field_readonly_keeps_focus_and_drops_edit() {
+        let node = field_readonly("name", "Fiber name");
+        assert_eq!(node.kind, NodeKind::Input);
+        assert_eq!(node.constraints.vertical.min, Some(SIZE_MD));
+        assert_eq!(node.semantics.role, Some(Role::TextInput));
+        assert!(node.semantics.read_only);
+        assert!(!node.semantics.disabled);
+        assert_eq!(node.interactions, vec![Interaction::Focus]);
+        assert!(!node.interactions.contains(&Interaction::TextEdit));
+        assert!(!node.interactions.contains(&Interaction::Key));
+        assert_eq!(node.props.placeholder.as_deref(), Some("Fiber name"));
+        assert_eq!(token(&node, "border"), Some(BORDER_SUBTLE));
+        assert_eq!(token(&node, "background"), Some(SURFACE_RAISED));
+    }
 }

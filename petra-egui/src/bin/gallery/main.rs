@@ -1,4 +1,4 @@
-//! The component gallery, as a binary: 42 cells, none of them built yet.
+//! The Carbon component catalog: 42 inventory rows, one page each.
 //!
 //! Run it: `cargo run -p gorgon-petra-egui --bin gallery`
 //!
@@ -19,23 +19,12 @@
 //! * `examples/gallery.rs` — the **working** page over the thirteen components
 //!   Petra ships today, with its honesty counters. It renders. A later task
 //!   migrates it here.
-//! * `src/bin/gallery/` — **this**, the scaffold for all 42. It has cell
-//!   identity and nothing else.
-//!
-//! # What this scaffold deliberately does not have
-//!
-//! **No token names, anywhere.** Not a colour, not a spacing step, not a type
-//! step. The token vocabulary is being renamed and five slots retired under the
-//! same spec; a scaffold that spelled token names would collide with that work
-//! and buy nothing, because cell identity does not need them.
-//!
-//! **No window.** It opens none. A window over 42 empty cells would look like a
-//! gallery that renders badly, when the truth is that no component exists yet —
-//! and that distinction is exactly the one a scaffold must not blur. Instead
-//! this prints the roster, prints how many cells are built, and exits non-zero
-//! while the answer is zero.
+//! * `src/bin/gallery/` — **this**, the Carbon catalog over all 42 rows. It
+//!   opens a window. Wave 1 rows are built. The rest name their slice
+//!   file and refuse to draw a stand-in.
 
 mod cat;
+mod catalog;
 mod cell;
 mod inventory;
 
@@ -50,10 +39,7 @@ fn main() -> ExitCode {
     println!("Petra component gallery — the 42 Carbon inventory rows");
     println!("{built} of {total} cells build a component.\n");
     for cell in &roster {
-        let status = match cell.render() {
-            Ok(never) => match never {},
-            Err(_) => "unbuilt",
-        };
+        let status = if cell.is_built() { "built" } else { "unbuilt" };
         println!(
             "{:>2}  {:<24} slice {}  {status}",
             cell.row.number,
@@ -62,11 +48,12 @@ fn main() -> ExitCode {
         );
     }
 
-    // The one thing in this binary that does draw: spec 005's draw-list
-    // acceptance scene (T133). It is not a Carbon inventory row, so it is
-    // reported beside the tally rather than inside it — a cat is not one of
-    // the 42, and counting it as one would be exactly the kind of borrowed
-    // credit this scaffold's own doc refuses.
+    // The one thing in this binary that does draw besides the catalog
+    // window: spec 005's draw-list acceptance scene (T133). It is not a
+    // Carbon inventory row, so it is reported beside the tally rather than
+    // inside it — a cat is not one of the 42, and counting it as one would
+    // be exactly the kind of borrowed credit this catalog's own pages
+    // refuse.
     let cat = cat::drawing();
     println!(
         "\nacceptance scene: the cat, {} draw-list command(s), {} path verb(s), \
@@ -85,14 +72,22 @@ fn main() -> ExitCode {
         );
         return ExitCode::FAILURE;
     }
-    ExitCode::SUCCESS
+
+    println!("\ngallery: opening the Carbon catalog window ({built} of {total} built).");
+    match catalog::run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("gallery: window failed: {err}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::cell::{Cell, tally};
 
-    /// The scaffold walks every row it claims to. A roster that silently lost
+    /// The catalog walks every row it claims to. A roster that silently lost
     /// a cell is the failure this whole file exists to prevent.
     #[test]
     fn the_roster_covers_the_whole_inventory() {

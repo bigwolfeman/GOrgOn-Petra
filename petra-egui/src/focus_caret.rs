@@ -150,11 +150,7 @@ impl FocusCaret {
     ///
     /// `dest` is two quads: an underline repeats the strip; a hug is left
     /// then right.
-    pub fn tick(
-        &mut self,
-        target: Option<(&str, [Rect; 2], CaretFigure, Rect)>,
-        now: f64,
-    ) {
+    pub fn tick(&mut self, target: Option<(&str, [Rect; 2], CaretFigure, Rect)>, now: f64) {
         let dt = self.take_dt(now);
         let Some((id, dest_bars, figure, clip)) = target else {
             self.id = None;
@@ -179,12 +175,9 @@ impl FocusCaret {
         let mut still = false;
         for bar in 0..2 {
             for i in 0..4 {
-                let (p, vel) = self.spring.evaluate_scalar(
-                    self.x[bar][i],
-                    self.v[bar][i],
-                    dest[bar][i],
-                    dt,
-                );
+                let (p, vel) =
+                    self.spring
+                        .evaluate_scalar(self.x[bar][i], self.v[bar][i], dest[bar][i], dt);
                 self.x[bar][i] = p;
                 self.v[bar][i] = vel;
                 if (p - dest[bar][i]).abs() > SETTLE_POS || vel.abs() > SETTLE_VEL {

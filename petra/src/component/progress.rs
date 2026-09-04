@@ -1,14 +1,36 @@
-//! `progress` — a determinate readout: a filled track plus its role, label,
-//! and formatted value.
+//! `progress` — Carbon determinate progress bar: a labelled track plus fill.
+//!
+//! Anatomy (slice-d, SCSS `_progress-bar.scss`; T070 prefers SCSS):
+//! 1. Label (required, `$text-primary`) — a visual `text` child and the
+//!    accessible name on [`Role::Progress`].
+//! 2. Helper text (optional) — [`progress_with_helper`] only; the three-arg
+//!    constructor does not take one.
+//! 3. Track (`$border-subtle`) — child key `"track"`.
+//! 4. Bar indicator (`$interactive` → [`ACCENT_PRIMARY`]) — child key `"fill"`.
+//!
+//! Carbon's fill is `transform: scaleX`. Petra keeps weighted [`Grid`]
+//! columns so the existing fill-width tests can read placed rects. Tree
+//! acceptance refuses a zero [`TrackSize::Weight`], so 0% and 100% still
+//! carry [`MIN_WEIGHT`] on the empty side.
 
 use super::swatch;
-use super::tokens::{SHAPE_FULL, SURFACE_RAISED, TEXT_PRIMARY, t};
+use super::text::text;
+use super::tokens::{ACCENT_PRIMARY, BORDER_SUBTLE, SPACING_03, TEXT_MUTED, TEXT_PRIMARY, t};
 use crate::geom::Align;
-use crate::tree::{AxisConstraint, Key, NodeKind, Props, Role, Semantics, TrackSize, ViewNode};
+use crate::tree::{
+    AxisConstraint, Constraints, GridSpan, Key, NodeKind, Props, Role, Semantics, TrackSize,
+    ViewNode,
+};
 
-/// Thickness of the drawn bar, logical units. The one number the component
-/// still owns: its width is the grid's, its colours are the theme's.
-const BAR_HEIGHT: f32 = 10.0;
+/// Carbon **big** (default, `--big` and the unmodified class): 8px track.
+/// MEASURED `_progress-bar.scss:46,52`.
+const BAR_HEIGHT: f32 = 8.0;
+
+/// Carbon **small** (`--small`): 4px track. MEASURED `_progress-bar.scss:56`.
+const BAR_HEIGHT_SM: f32 = 4.0;
+
+/// Carbon minimum track/label width. MEASURED `_progress-bar.scss:34,48`.
+const MIN_TRACK_WIDTH: f32 = 48.0;
 
 /// Smallest weight either bar track may carry.
 ///
@@ -18,22 +40,57 @@ const BAR_HEIGHT: f32 = 10.0;
 /// weight small enough to round away instead.
 const MIN_WEIGHT: f32 = 0.001;
 
+/// Track thickness. Two-step Carbon scale, not sm/md/lg.
+#[derive(Clone, Copy)]
+enum ProgressSize {
+    Big,
+    Small,
+}
+
+impl ProgressSize {
+    fn height(self) -> f32 {
+        match self {
+            Self::Big => BAR_HEIGHT,
+            Self::Small => BAR_HEIGHT_SM,
+        }
+    }
+}
+
 /// One cell of the bar: a box that takes its width from the grid track it
-/// sits in, coloured when it has something of its own to say and bare when
-/// the rail behind it is already saying it.
+/// sits in, coloured when it has something of its own to say.
 ///
 /// [`swatch`] pins both axes to the extents it is handed, which is what a
 /// checkbox box or a status dot wants — a fixed square. A progress cell is
 /// the opposite case: the whole point of the grid's weighted columns is that
 /// the fill is *as wide as the value says*, so the horizontal pin is dropped
-/// here and the grid's [`Align::Stretch`] fills the track (the same
-/// "`Stretch` is the declaration that says fill the track" idiom the
-/// gallery's two-column form uses for its fields). The vertical pin stays:
-/// the bar's thickness belongs to the component, not to the row it lands in.
-fn bar_cell(key: &'static str, background: Option<&str>) -> ViewNode {
-    let mut cell = swatch(key, 0.0, BAR_HEIGHT, background, None, None);
+/// here and the grid's [`Align::Stretch`] fills the track. The vertical pin
+/// stays: the bar's thickness belongs to the component, not to the row it
+/// lands in.
+///
+/// Do not pass `0.0` as a *kept* horizontal max. That was the original bug:
+/// both cells declared `min = max = 0.0`, the weights were right, and the
+/// placed fill was zero pixels wide.
+fn bar_cell(key: &'static str, height: f32, background: Option<&str>) -> ViewNode {
+    let mut cell = swatch(key, 0.0, height, background, None, None);
     cell.constraints.horizontal = AxisConstraint::default();
     cell
+}
+
+fn normalise(value: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
+/// Label and helper span both weighted columns so they sit above/below the
+/// whole track, not in the fill column alone.
+fn full_row_span() -> GridSpan {
+    GridSpan {
+        columns: 2,
+        rows: 1,
+    }
 }
 
 /// A progress bar.
@@ -60,22 +117,53 @@ fn bar_cell(key: &'static str, background: Option<&str>) -> ViewNode {
 /// compute is wrong in the direction that does not announce a finished job
 /// which never ran.
 ///
-/// The fill and track colours are ink-on-paper (`TEXT_PRIMARY` on
-/// `SURFACE_RAISED`), not a status colour: a `progress` bar says how much
-/// of something is done, not whether that something is healthy, and
-/// spending a status hue on it would blur that distinction the day an
-/// author puts a `status` component next to one.
+/// Carbon paints the fill with `$interactive`. Petra has no interactive
+/// token; [`ACCENT_PRIMARY`] is the shipped interactive hue. The track is
+/// `$border-subtle` ([`BORDER_SUBTLE`]). Status finishes (`$support-success`
+/// / `$support-error`) are not in the component token list and are not
+/// invented here.
+///
+/// Indeterminate (Carbon: 1400ms infinite linear sliding block) is omitted:
+/// the shipped animation registry has no such motion, and naming a new one
+/// from this module would be inventing a motion the host cannot resolve.
 pub fn progress(key: impl Into<Key>, label: impl Into<String>, value: f32) -> ViewNode {
+    progress_sized(key, label, value, ProgressSize::Big, None)
+}
+
+/// Carbon **small** progress bar: 4px track. Same anatomy as [`progress`];
+/// FR-058 still requires a label argument.
+pub fn progress_sm(key: impl Into<Key>, label: impl Into<String>, value: f32) -> ViewNode {
+    progress_sized(key, label, value, ProgressSize::Small, None)
+}
+
+/// Determinate bar plus Carbon helper text (`$text-secondary` → [`TEXT_MUTED`]).
+///
+/// The three-arg [`progress`] constructor does not take a helper. Error
+/// helper colour (`$text-error`) is not in the token list and is not
+/// invented here.
+pub fn progress_with_helper(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    value: f32,
+    helper: impl Into<String>,
+) -> ViewNode {
+    progress_sized(key, label, value, ProgressSize::Big, Some(helper.into()))
+}
+
+fn progress_sized(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    value: f32,
+    size: ProgressSize,
+    helper: Option<String>,
+) -> ViewNode {
     let key = key.into();
     let label = label.into();
-    let done = if value.is_finite() {
-        value.clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
+    let done = normalise(value);
     let rest = (1.0 - done).max(MIN_WEIGHT);
+    let height = size.height();
 
-    let mut bar_props = Props {
+    let bar_props = Props {
         columns: vec![
             TrackSize::Weight {
                 weight: done.max(MIN_WEIGHT),
@@ -83,36 +171,49 @@ pub fn progress(key: impl Into<Key>, label: impl Into<String>, value: f32) -> Vi
             TrackSize::Weight { weight: rest },
         ],
         align: Some(Align::Stretch),
+        // Label margin-bottom and helper margin-top are both `$spacing-03`
+        // (8px). One row gap covers both Carbon numbers.
+        row_spacing: Some(t(SPACING_03)),
         ..Props::default()
     };
-    // The rail. This bound `border` to `text.muted` and nothing else until
-    // 2026-08-25: a hairline box at 10.73:1 drawn around two coloured cells
-    // that already met each other at a hard edge.
-    //
-    // Dropping the border could not simply leave the node bare. A node that
-    // declares content and paints nothing is `Outcome::Silent` in
-    // `gorgon-petra-egui`'s paint pass — the one outcome `PaintReport::is_complete`
-    // refuses and a debug host asserts on — and with the border gone the grid's
-    // only remaining binding would have been `radius`, which shapes a fill
-    // that is not there. So the rail takes the track's own colour as a real
-    // fill, which is what it was drawing a box around in the first place.
-    bar_props
-        .tokens
-        .insert("background".into(), t(SURFACE_RAISED));
-    bar_props.tokens.insert("radius".into(), t(SHAPE_FULL));
+    // The grid itself does not paint. A rail fill here would sit behind the
+    // label (and helper), which Carbon draws on the page, not on the track.
+    // Radius without a fill is `Outcome::Silent` in the paint pass, so the
+    // grid stays Empty — a position for its children — and the track cell
+    // carries `$border-subtle` itself.
 
-    let fill = bar_cell("fill", Some(TEXT_PRIMARY));
-    // No colour of its own. The rail behind it is already the track tone, so
-    // a cell painted the same colour on top of it is a second shape carrying
-    // the first one's information — and an unpainted `Spacer` is
-    // `Outcome::Empty`, which is the accounted, allowed state for a node that
-    // exists to hold a grid column open rather than to be seen.
-    let track = bar_cell("track", None);
+    let mut caption = text("label", label.clone());
+    caption
+        .props
+        .tokens
+        .insert("foreground".into(), t(TEXT_PRIMARY));
+    caption.props.span = Some(full_row_span());
+
+    let fill = bar_cell("fill", height, Some(ACCENT_PRIMARY));
+    let track = bar_cell("track", height, Some(BORDER_SUBTLE));
+
+    let mut children = vec![caption, fill, track];
+    if let Some(helper) = helper {
+        let mut helper_node = text("helper", helper);
+        helper_node
+            .props
+            .tokens
+            .insert("foreground".into(), t(TEXT_MUTED));
+        helper_node.props.span = Some(full_row_span());
+        children.push(helper_node);
+    }
 
     let mut node = ViewNode::new(NodeKind::Grid, key)
         .with_props(bar_props)
-        .child(fill)
-        .child(track);
+        .with_children(children)
+        .with_constraints(Constraints {
+            horizontal: AxisConstraint {
+                min: Some(MIN_TRACK_WIDTH),
+                max: None,
+                priority: 0,
+            },
+            ..Constraints::default()
+        });
     node.semantics = Semantics {
         role: Some(Role::Progress),
         label: Some(label),
@@ -120,4 +221,155 @@ pub fn progress(key: impl Into<Key>, label: impl Into<String>, value: f32) -> Vi
         ..Semantics::default()
     };
     node
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        BAR_HEIGHT, BAR_HEIGHT_SM, MIN_TRACK_WIDTH, MIN_WEIGHT, progress, progress_sm,
+        progress_with_helper,
+    };
+    use crate::component::tokens::{ACCENT_PRIMARY, BORDER_SUBTLE, TEXT_MUTED, TEXT_PRIMARY};
+    use crate::tree::{NodeKind, Role, TrackSize, ViewNode};
+
+    fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
+        node.children
+            .iter()
+            .find(|c| c.key.as_str() == key)
+            .unwrap_or_else(|| panic!("no direct child keyed `{key}`"))
+    }
+
+    fn token<'a>(node: &'a ViewNode, slot: &str) -> Option<&'a str> {
+        node.props.tokens.get(slot).map(|name| name.as_str())
+    }
+
+    fn fill_weight(node: &ViewNode) -> f32 {
+        match node.props.columns.first() {
+            Some(TrackSize::Weight { weight }) => *weight,
+            other => panic!("fill column must be a Weight, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn default_track_is_eight_px() {
+        let node = progress("p", "Rebuild", 0.62);
+        let fill = child(&node, "fill");
+        assert_eq!(fill.constraints.vertical.min, Some(BAR_HEIGHT));
+        assert_eq!(fill.constraints.vertical.max, Some(BAR_HEIGHT));
+        assert_eq!(BAR_HEIGHT, 8.0);
+        let track = child(&node, "track");
+        assert_eq!(track.constraints.vertical.min, Some(8.0));
+        assert_eq!(track.constraints.vertical.max, Some(8.0));
+    }
+
+    #[test]
+    fn small_track_is_four_px() {
+        let node = progress_sm("p", "Rebuild", 0.62);
+        let fill = child(&node, "fill");
+        assert_eq!(fill.constraints.vertical.min, Some(BAR_HEIGHT_SM));
+        assert_eq!(fill.constraints.vertical.max, Some(BAR_HEIGHT_SM));
+        assert_eq!(BAR_HEIGHT_SM, 4.0);
+        assert_eq!(node.semantics.role, Some(Role::Progress));
+    }
+
+    #[test]
+    fn fill_and_track_keys_are_present() {
+        let node = progress("p", "Rebuild", 0.62);
+        assert_eq!(node.kind, NodeKind::Grid);
+        let _ = child(&node, "fill");
+        let _ = child(&node, "track");
+        let _ = child(&node, "label");
+    }
+
+    #[test]
+    fn role_is_progress_and_the_label_is_inside_the_function() {
+        let node = progress("p", "Rebuild", 0.62);
+        assert_eq!(node.semantics.role, Some(Role::Progress));
+        assert_eq!(node.semantics.label.as_deref(), Some("Rebuild"));
+        assert_eq!(child(&node, "label").props.text.as_deref(), Some("Rebuild"));
+        assert_eq!(
+            token(child(&node, "label"), "foreground"),
+            Some(TEXT_PRIMARY)
+        );
+    }
+
+    #[test]
+    fn a_value_of_zero_point_six_two_produces_a_non_zero_fill_weight() {
+        let node = progress("p", "Rebuild", 0.62);
+        let weight = fill_weight(&node);
+        assert!(
+            weight > 0.0,
+            "a 0.62 bar produced fill weight {weight}, which is zero"
+        );
+        assert!(
+            (weight - 0.62).abs() < f32::EPSILON,
+            "fill weight {weight} is not 0.62"
+        );
+        let fill = child(&node, "fill");
+        assert!(
+            fill.constraints.horizontal.max != Some(0.0),
+            "fill is pinned to zero width; dropping the swatch horizontal pin is the fix"
+        );
+        assert_eq!(
+            fill.constraints.horizontal.min, None,
+            "fill must take its width from the weighted column, not a min pin"
+        );
+    }
+
+    #[test]
+    fn carbon_colours_and_min_width() {
+        let node = progress("p", "Rebuild", 0.62);
+        assert_eq!(
+            token(child(&node, "fill"), "background"),
+            Some(ACCENT_PRIMARY)
+        );
+        assert_eq!(
+            token(child(&node, "track"), "background"),
+            Some(BORDER_SUBTLE)
+        );
+        assert_eq!(node.constraints.horizontal.min, Some(MIN_TRACK_WIDTH));
+        assert_eq!(MIN_TRACK_WIDTH, 48.0);
+        assert!(node.props.tokens.get("background").is_none());
+        assert!(node.props.tokens.get("border").is_none());
+    }
+
+    #[test]
+    fn nan_and_out_of_range_normalise_once() {
+        assert_eq!(
+            progress("p", "Rebuild", f32::NAN)
+                .semantics
+                .value
+                .as_deref(),
+            Some("0%")
+        );
+        assert_eq!(
+            progress("p", "Rebuild", f32::INFINITY)
+                .semantics
+                .value
+                .as_deref(),
+            Some("0%")
+        );
+        assert_eq!(
+            progress("p", "Rebuild", -0.5).semantics.value.as_deref(),
+            Some("0%")
+        );
+        assert_eq!(
+            progress("p", "Rebuild", 1.5).semantics.value.as_deref(),
+            Some("100%")
+        );
+        assert_eq!(fill_weight(&progress("p", "Rebuild", 0.0)), MIN_WEIGHT);
+        let full = fill_weight(&progress("p", "Rebuild", 1.0));
+        assert!(full >= 1.0 - MIN_WEIGHT);
+    }
+
+    #[test]
+    fn helper_is_optional_and_does_not_change_the_three_arg_signature() {
+        let node = progress_with_helper("p", "Rebuild", 0.5, "About a minute left");
+        assert_eq!(node.semantics.role, Some(Role::Progress));
+        let helper = child(&node, "helper");
+        assert_eq!(helper.props.text.as_deref(), Some("About a minute left"));
+        assert_eq!(token(helper, "foreground"), Some(TEXT_MUTED));
+        let _ = child(&node, "fill");
+        let _ = child(&node, "track");
+    }
 }

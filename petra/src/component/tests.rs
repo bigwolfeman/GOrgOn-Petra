@@ -17,8 +17,9 @@ use crate::tree::{NodeKind, Props, Registry, ViewNode};
 
 use super::tokens::{ACCENT_PRIMARY, BORDER_SUBTLE, TEXT_ON_ACCENT};
 use super::{
-    MAX_LAYER_DEPTH, button, checkbox, field, heading, layer_tokens, list_row, on_layer,
-    primary_button, progress, radio, section, status, tab, tab_bar, text, toggle,
+    MAX_LAYER_DEPTH, button, checkbox, field, heading, layer_tokens, list_item, list_row, on_layer,
+    primary_button, progress, radio, section, status, tab, tab_bar, text, tile, toggle, toggle_sm,
+    unordered_list,
 };
 
 const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
@@ -81,6 +82,11 @@ fn full_gallery() -> ViewNode {
         vec![
             list_row("row-0", "row 0", true),
             list_row("row-1", "row 1", false),
+            unordered_list(
+                "ul",
+                vec![list_item("ul-0", "Inbox"), list_item("ul-1", "Archive")],
+            ),
+            tile("tile", "A static tile."),
         ],
     );
 
@@ -106,7 +112,7 @@ fn every_component_in_one_tree_passes_the_audit_with_zero_findings() {
     // token at all — this tree needs a `Registry` that actually declares the
     // shipped vocabulary; `crate::testing::validated`'s empty `Registry::new()`
     // would refuse every one of them as unknown (`Violation::UnknownTokenRef`).
-    let registry = Registry::with_vocabulary(standard_vocabulary());
+    let registry = accepting_registry();
     let mut harness = Harness::new();
     let viewport = Viewport::new(VIEWPORT, ThemeMode::Dark);
     harness.scale = viewport.scale;
@@ -136,6 +142,7 @@ fn every_interactive_component_declares_a_role_and_a_label() {
         checkbox("c", "Checked", true),
         radio("r", "Chosen", false),
         toggle("t", "On", true),
+        toggle_sm("ts", "On", true),
         tab("tb", "Fibers", true),
         field("f", "Fiber name"),
         list_row("l", "row", false),
@@ -188,8 +195,159 @@ fn selection_is_declared_state_not_only_a_fill_colour() {
     assert!(checkbox("c", "Checked", true).semantics.selected);
     assert!(!checkbox("c", "Unchecked", false).semantics.selected);
     assert!(toggle("t", "On", true).semantics.selected);
+    assert!(toggle_sm("ts", "On", true).semantics.selected);
+    assert!(!toggle_sm("ts", "Off", false).semantics.selected);
     assert!(tab("tb", "Fibers", true).semantics.selected);
     assert!(list_row("l", "row", true).semantics.selected);
+}
+
+/// On-state marks fill with the accent, not ink. Off stays empty so the
+/// outline is the control. `Semantics.selected` still carries the state
+/// (FR-015).
+#[test]
+fn selected_marks_fill_with_accent() {
+    use super::tokens::ACCENT_PRIMARY;
+
+    let box_bg = |node: &ViewNode, child: &str| -> Option<String> {
+        named(node, child)
+            .props
+            .tokens
+            .get("background")
+            .map(|t| t.as_str().to_owned())
+    };
+    assert_eq!(
+        box_bg(&checkbox("c", "Checked", true), "box").as_deref(),
+        Some(ACCENT_PRIMARY)
+    );
+    assert_eq!(box_bg(&checkbox("c", "Unchecked", false), "box"), None);
+    assert_eq!(
+        box_bg(&radio("r", "Chosen", true), "box").as_deref(),
+        Some(ACCENT_PRIMARY)
+    );
+    assert_eq!(
+        box_bg(&toggle("t", "On", true), "track").as_deref(),
+        Some(ACCENT_PRIMARY)
+    );
+    assert_eq!(
+        box_bg(&toggle("t", "Off", false), "track").as_deref(),
+        Some(super::tokens::SURFACE_RAISED)
+    );
+    assert_eq!(
+        box_bg(&toggle_sm("ts", "On", true), "track").as_deref(),
+        Some(ACCENT_PRIMARY)
+    );
+    assert_eq!(
+        box_bg(&toggle_sm("ts", "Off", false), "track").as_deref(),
+        Some(super::tokens::SURFACE_RAISED)
+    );
+}
+
+/// The knob's identity is the same on and off, with pads on both sides, so
+/// a flip is a position trajectory rather than a child reorder.
+#[test]
+fn a_toggle_keeps_both_pads_so_the_knob_can_slide() {
+    let keys = |node: ViewNode| -> Vec<String> {
+        named(&node, "track")
+            .children
+            .iter()
+            .map(|c| c.key.as_str().to_owned())
+            .collect()
+    };
+    assert_eq!(
+        keys(toggle("t", "On", true)),
+        ["pad-start", "knob", "pad-end"]
+    );
+    assert_eq!(
+        keys(toggle("t", "On", false)),
+        ["pad-start", "knob", "pad-end"]
+    );
+    assert_eq!(
+        keys(toggle_sm("ts", "On", true)),
+        ["pad-start", "knob", "pad-end"]
+    );
+    assert_eq!(
+        keys(toggle_sm("ts", "On", false)),
+        ["pad-start", "knob", "pad-end"]
+    );
+    let on = toggle("t", "On", true);
+    let knob = named(&on, "knob");
+    assert_eq!(
+        knob.transition.as_ref().map(|t| t.name()),
+        Some(crate::anim::TOGGLE_KNOB)
+    );
+    let sm_on = toggle_sm("ts", "On", true);
+    let sm_knob = named(&sm_on, "knob");
+    assert_eq!(
+        sm_knob.transition.as_ref().map(|t| t.name()),
+        Some(crate::anim::TOGGLE_KNOB)
+    );
+}
+
+/// Off sits the knob at the start of the track; on sits it at the end.
+/// Carbon default travel is 24 (`translateX(24px)`).
+#[test]
+fn an_on_toggle_places_the_knob_to_the_right_of_an_off_toggle() {
+    let x = |on: bool| {
+        petrify_lone(toggle("t", "On", on))
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/track/knob"))
+            .expect("the knob is placed")
+            .rect
+            .x
+    };
+    let on_x = x(true);
+    let off_x = x(false);
+    let travel = on_x - off_x;
+    assert!(
+        on_x > off_x,
+        "on-knob x {on_x} must sit to the right of off-knob x {off_x}"
+    );
+    assert!(
+        (travel - 24.0).abs() < 1.0,
+        "default travel {travel} must be within 1 of 24"
+    );
+}
+
+/// Carbon small travel is 16 (`translateX(16px)`).
+#[test]
+fn a_small_on_toggle_travels_sixteen() {
+    let x = |on: bool| {
+        petrify_lone(toggle_sm("t", "On", on))
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/track/knob"))
+            .expect("the small knob is placed")
+            .rect
+            .x
+    };
+    let travel = x(true) - x(false);
+    assert!(
+        (travel - 16.0).abs() < 1.0,
+        "small travel {travel} must be within 1 of 16"
+    );
+}
+
+/// Carbon track sizes, read off placed rects: default 48×24, small 32×16.
+#[test]
+fn toggle_tracks_match_carbon_geometry() {
+    let size_of = |node: ViewNode| {
+        petrify_lone(node)
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/track") && !p.id.contains("/track/"))
+            .expect("the track is placed")
+            .rect
+    };
+    let default = size_of(toggle("t", "On", false));
+    assert_eq!(default.w, 48.0, "default track width");
+    assert_eq!(default.h, 24.0, "default track height");
+    let small = size_of(toggle_sm("t", "On", false));
+    assert_eq!(small.w, 32.0, "small track width");
+    assert_eq!(small.h, 16.0, "small track height");
+    let default_on = size_of(toggle("t", "On", true));
+    assert_eq!(default_on.w, 48.0);
+    assert_eq!(default_on.h, 24.0);
 }
 
 #[test]
@@ -200,7 +358,14 @@ fn marker_and_label_share_a_midline() {
         Some(Align::Center)
     );
     assert_eq!(radio("r", "Chosen", false).props.align, Some(Align::Center));
-    assert_eq!(toggle("t", "On", false).props.align, Some(Align::Center));
+    assert_eq!(
+        named(&toggle("t", "On", false), "appearance").props.align,
+        Some(Align::Center)
+    );
+    assert_eq!(
+        named(&toggle("t", "On", false), "track").props.align,
+        Some(Align::Center)
+    );
     let down = StatusToken::new(
         TokenName::new("status.down").unwrap(),
         StatusShape::Square,
@@ -209,8 +374,10 @@ fn marker_and_label_share_a_midline() {
     .unwrap();
     assert_eq!(status("s", &down).props.align, Some(Align::Center));
 
-    // Props.align is the declaration. The row is 12-vs-20 (10-vs-20 for
-    // status); Start would place the marker ~4 units above the words.
+    // Props.align is the declaration. Checkbox/radio/status are 12-vs-20
+    // (10-vs-20 for status); Start would place the marker ~4 units above
+    // the words. A toggle's label sits *above* the switch (Carbon anatomy);
+    // the midline that must match is track vs state text, 24-vs-20.
     // Petrify and compare the placed midlines so a layout that ignores
     // align cannot stay green.
     let mid = |suffix: &str, frame: &crate::frame::PetrifiedFrame| {
@@ -238,8 +405,8 @@ fn marker_and_label_share_a_midline() {
         (
             "toggle",
             toggle("t", "On", false),
-            "/root/t/track",
-            "/root/t/label",
+            "/root/t/appearance/track",
+            "/root/t/appearance/state",
         ),
         ("status", status("s", &down), "/root/s/dot", "/root/s/label"),
     ];
@@ -377,7 +544,7 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         // The binary controls' marks: no fill at all when they are off.
         "root/controls/check/box",
         "root/controls/radio/box",
-        "root/controls/toggle/track",
+        "root/controls/toggle/appearance/track",
     ];
 
     // `status` is not on that list, and the omission is measured rather than
@@ -609,7 +776,24 @@ fn the_fixture_status_tokens_are_shaped_differently() {
     assert_ne!(a.shape(), b.shape());
 }
 
+/// First node in `node` (inclusive) whose key is `key`.
+fn named<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
+    fn walk<'a>(node: &'a ViewNode, key: &str) -> Option<&'a ViewNode> {
+        if node.key.as_str() == key {
+            return Some(node);
+        }
+        node.children.iter().find_map(|child| walk(child, key))
+    }
+    walk(node, key).unwrap_or_else(|| panic!("no descendant keyed `{key}`"))
+}
+
 /// Petrify a single component under a vertical stack root.
+fn accepting_registry() -> Registry {
+    let mut registry = Registry::with_vocabulary(standard_vocabulary());
+    crate::anim::shipped_registry().declare_into(&mut registry);
+    registry
+}
+
 fn petrify_lone(child: ViewNode) -> crate::frame::PetrifiedFrame {
     let root = ViewNode::new(NodeKind::Stack, "root")
         .with_props(Props {
@@ -617,7 +801,7 @@ fn petrify_lone(child: ViewNode) -> crate::frame::PetrifiedFrame {
             ..Props::default()
         })
         .child(child);
-    let registry = Registry::with_vocabulary(standard_vocabulary());
+    let registry = accepting_registry();
     let mut harness = Harness::new();
     let viewport = Viewport::new(VIEWPORT, ThemeMode::Dark);
     harness.scale = viewport.scale;

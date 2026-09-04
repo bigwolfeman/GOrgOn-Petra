@@ -16,7 +16,7 @@
 
 use crate::token::TokenName;
 
-/// The five gaps the component library spends, on Carbon's ordinal ramp.
+/// The gaps the component library spends, on Carbon's ordinal ramp.
 ///
 /// These moved off the `spacing.2xs … spacing.lg` t-shirt names on
 /// 2026-08-25, when the ramp grew from eight steps to Carbon's thirteen and
@@ -37,6 +37,8 @@ pub(crate) const SPACING_03: &str = "spacing-03";
 pub(crate) const SPACING_04: &str = "spacing-04";
 /// See [`SPACING_01`]. 16 units.
 pub(crate) const SPACING_05: &str = "spacing-05";
+/// See [`SPACING_01`]. 32 units. Carbon nested-list indent (`_list.scss`).
+pub(crate) const SPACING_07: &str = "spacing-07";
 
 /// Control height `size-md`. Numeric because `Constraints` stay extents
 /// (FR-053): the token ramp owns the number, this constant is how a
@@ -135,6 +137,7 @@ pub(crate) const ALL: &[&str] = &[
     SPACING_03,
     SPACING_04,
     SPACING_05,
+    SPACING_07,
     SHAPE_NONE,
     SHAPE_SM,
     SHAPE_MD,

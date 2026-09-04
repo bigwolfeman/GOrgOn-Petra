@@ -1,23 +1,184 @@
 //! One gallery cell per inventory row, and what a cell can hand back today.
 //!
-//! Today the answer is: nothing. Every cell is [`Content::Unbuilt`], and
-//! [`Cell::render`] refuses naming its row. That is the whole point of a
-//! scaffold — the shape of the surface exists and is walkable, and not one of
-//! the 42 can be mistaken for finished.
-
-use std::convert::Infallible;
+//! Wave 1 rows are built constructors. Every other cell is
+//! [`Content::Unbuilt`], and [`Cell::render`] refuses naming its row. The
+//! catalog window builds live pages from application state; `render` on a
+//! built row succeeds and returns nothing.
 
 use crate::inventory::{ROWS, Row};
 
+/// Inventory names Wave 1 wired into the catalog. Keep in lockstep with
+/// `gorgon/xtask/src/carbon.rs` `BUILT_COMPONENTS`.
+const BUILT: &[&str] = &[
+    "Accordion",
+    "Breadcrumb",
+    "Button",
+    "Checkbox",
+    "Code snippet",
+    "Contained list",
+    "Content switcher",
+    "Data table",
+    "Date picker",
+    "Dropdown",
+    "File uploader",
+    "Form",
+    "Inline loading",
+    "Link",
+    "List",
+    "Loading",
+    "Menu",
+    "Menu buttons",
+    "Modal",
+    "Notification",
+    "Number input",
+    "Pagination",
+    "Popover",
+    "Progress bar",
+    "Progress indicator",
+    "Radio button",
+    "Search",
+    "Select",
+    "Slider",
+    "Structured list",
+    "Tabs",
+    "Tag",
+    "Text input",
+    "Tile",
+    "Toggle",
+    "Toggletip",
+    "Tooltip",
+    "Tree view",
+];
+
 /// What a cell holds.
 ///
-/// One variant, on purpose. A second variant arrives with the first built
-/// component, and it will carry that component rather than a flag saying one
-/// exists — so a cell can never claim to be built while holding nothing.
+/// A second variant is a component, not a flag that one exists — so a cell
+/// can never claim to be built while holding nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Content {
     /// No component exists for this row yet.
     Unbuilt,
+    /// Carbon Accordion (inventory row 1).
+    Accordion,
+    /// Carbon Breadcrumb (inventory row 3).
+    Breadcrumb,
+    /// Carbon Button (inventory row 4).
+    Button,
+    /// Carbon Checkbox (inventory row 5).
+    Checkbox,
+    /// Carbon Code snippet (inventory row 6).
+    CodeSnippet,
+    /// Carbon Contained list (inventory row 7).
+    ContainedList,
+    /// Carbon Content switcher (inventory row 8).
+    ContentSwitcher,
+    /// Carbon Data table (inventory row 9).
+    DataTable,
+    /// Carbon Date picker (inventory row 10).
+    DatePicker,
+    /// Carbon Dropdown (inventory row 11).
+    Dropdown,
+    /// Carbon File uploader (inventory row 12).
+    FileUploader,
+    /// Carbon Form (inventory row 13).
+    Form,
+    /// Carbon Inline loading (inventory row 14).
+    InlineLoading,
+    /// Carbon Link (inventory row 15).
+    Link,
+    /// Carbon List (inventory row 16).
+    List,
+    /// Carbon Loading (inventory row 17).
+    Loading,
+    /// Carbon Menu (inventory row 18).
+    Menu,
+    /// Carbon Menu buttons (inventory row 19).
+    MenuButtons,
+    /// Carbon Modal (inventory row 20).
+    Modal,
+    /// Carbon Notification (inventory row 21).
+    Notification,
+    /// Carbon Number input (inventory row 22).
+    NumberInput,
+    /// Carbon Pagination (inventory row 23).
+    Pagination,
+    /// Carbon Popover (inventory row 24).
+    Popover,
+    /// Carbon Progress bar (inventory row 25).
+    ProgressBar,
+    /// Carbon Progress indicator (inventory row 26).
+    ProgressIndicator,
+    /// Carbon Radio button (inventory row 27).
+    RadioButton,
+    /// Carbon Search (inventory row 28).
+    Search,
+    /// Carbon Select (inventory row 29).
+    Select,
+    /// Carbon Slider (inventory row 30).
+    Slider,
+    /// Carbon Structured list (inventory row 31).
+    StructuredList,
+    /// Carbon Tabs (inventory row 32).
+    Tabs,
+    /// Carbon Tag (inventory row 33).
+    Tag,
+    /// Carbon Text input (inventory row 34).
+    TextInput,
+    /// Carbon Tile (inventory row 35).
+    Tile,
+    /// Carbon Toggle (inventory row 36). The window builds the knobs from
+    /// application state; this tag is the roster fact.
+    Toggle,
+    /// Carbon Toggletip (inventory row 37).
+    Toggletip,
+    /// Carbon Tooltip (inventory row 38).
+    Tooltip,
+    /// Carbon Tree view (inventory row 39).
+    TreeView,
+}
+
+fn content_for(name: &str) -> Content {
+    match name {
+        "Accordion" => Content::Accordion,
+        "Breadcrumb" => Content::Breadcrumb,
+        "Button" => Content::Button,
+        "Checkbox" => Content::Checkbox,
+        "Code snippet" => Content::CodeSnippet,
+        "Contained list" => Content::ContainedList,
+        "Content switcher" => Content::ContentSwitcher,
+        "Data table" => Content::DataTable,
+        "Date picker" => Content::DatePicker,
+        "Dropdown" => Content::Dropdown,
+        "File uploader" => Content::FileUploader,
+        "Form" => Content::Form,
+        "Inline loading" => Content::InlineLoading,
+        "Link" => Content::Link,
+        "List" => Content::List,
+        "Loading" => Content::Loading,
+        "Menu" => Content::Menu,
+        "Menu buttons" => Content::MenuButtons,
+        "Modal" => Content::Modal,
+        "Notification" => Content::Notification,
+        "Number input" => Content::NumberInput,
+        "Pagination" => Content::Pagination,
+        "Popover" => Content::Popover,
+        "Progress bar" => Content::ProgressBar,
+        "Progress indicator" => Content::ProgressIndicator,
+        "Radio button" => Content::RadioButton,
+        "Search" => Content::Search,
+        "Select" => Content::Select,
+        "Slider" => Content::Slider,
+        "Structured list" => Content::StructuredList,
+        "Tabs" => Content::Tabs,
+        "Tag" => Content::Tag,
+        "Text input" => Content::TextInput,
+        "Tile" => Content::Tile,
+        "Toggle" => Content::Toggle,
+        "Toggletip" => Content::Toggletip,
+        "Tooltip" => Content::Tooltip,
+        "Tree view" => Content::TreeView,
+        _ => Content::Unbuilt,
+    }
 }
 
 /// One cell of the component gallery.
@@ -42,25 +203,24 @@ impl Cell {
         ROWS.iter()
             .map(|row| Cell {
                 row,
-                content: Content::Unbuilt,
+                content: content_for(row.component),
             })
             .collect()
     }
 
     /// Whether this cell can render a component.
     pub fn is_built(&self) -> bool {
-        match self.content {
-            Content::Unbuilt => false,
-        }
+        !matches!(self.content, Content::Unbuilt)
     }
 
-    /// Render this cell. **Refuses**, for every one of the 42.
+    /// Render this cell.
     ///
-    /// The success side is [`Infallible`] because there is no code path that
-    /// produces a rendered cell yet. When the first component lands, both the
-    /// type and the body change together; until then the compiler will not let
-    /// a caller pretend otherwise.
-    pub fn render(&self) -> Result<Infallible, String> {
+    /// [`Content::Unbuilt`] refuses, naming the row and its slice file.
+    /// [`Content::Toggle`] succeeds with no tree: the catalog window builds
+    /// the knobs from application bools so a click can flip them. The
+    /// window does not call this; the bin tests do.
+    #[allow(dead_code)]
+    pub fn render(&self) -> Result<(), String> {
         match self.content {
             Content::Unbuilt => Err(format!(
                 "gallery cell {} ({}) is unbuilt: no component exists for this inventory row, \
@@ -69,6 +229,7 @@ impl Cell {
                 self.row.component,
                 self.row.slice.letter().to_ascii_lowercase()
             )),
+            _ => Ok(()),
         }
     }
 }
@@ -83,7 +244,7 @@ pub fn tally(roster: &[Cell]) -> (usize, usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cell, Content, tally};
+    use super::{BUILT, Cell, Content, tally};
 
     #[test]
     fn there_is_one_cell_per_inventory_row_in_inventory_order() {
@@ -95,20 +256,44 @@ mod tests {
         }
     }
 
-    /// The scaffold's honest starting position, asserted rather than described.
-    /// This test is meant to fail the day a component lands — that failure is
-    /// the reminder to move the row out of "unbuilt" here and in the coverage
-    /// gate at the same time.
+    /// Built constructors land thirty-eight inventory rows. Four operator
+    /// rows remain uncovered. The tally is the coverage denominator.
     #[test]
-    fn every_cell_is_unbuilt_today() {
+    fn wave_one_rows_are_built() {
         let roster = Cell::roster();
-        assert!(roster.iter().all(|cell| cell.content == Content::Unbuilt));
-        assert_eq!(tally(&roster), (0, 42));
+        let built: Vec<_> = roster.iter().filter(|cell| cell.is_built()).collect();
+        assert_eq!(built.len(), BUILT.len(), "Wave 1 built-row count");
+        let names: Vec<_> = built.iter().map(|c| c.row.component).collect();
+        assert_eq!(names, BUILT);
+        assert_eq!(tally(&roster), (BUILT.len(), 42));
+        for cell in &roster {
+            if BUILT.contains(&cell.row.component) {
+                assert!(cell.is_built());
+                assert_ne!(cell.content, Content::Unbuilt);
+            } else {
+                assert!(!cell.is_built());
+                assert_eq!(cell.content, Content::Unbuilt);
+            }
+        }
+    }
+
+    #[test]
+    fn the_toggle_cell_render_succeeds_and_carries_no_tree() {
+        let toggle = Cell::roster()
+            .into_iter()
+            .find(|cell| cell.content == Content::Toggle)
+            .expect("Toggle is in the roster");
+        toggle
+            .render()
+            .expect("a built Toggle cell does not refuse");
     }
 
     #[test]
     fn an_unbuilt_cell_refuses_naming_its_row_and_its_slice() {
         for cell in Cell::roster() {
+            if cell.is_built() {
+                continue;
+            }
             let err = cell.render().unwrap_err();
             assert!(err.contains(cell.row.component), "{err}");
             assert!(err.contains("is unbuilt"), "{err}");
