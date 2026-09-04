@@ -63,7 +63,9 @@ use gorgon_petra::token::{
     DesignToken, Presenter, StatusToken, Theme, ThemeSnapshot, TokenName, TokenValue, Vocabulary,
     standard_vocabulary,
 };
-use gorgon_petra::tree::{InputPolicy, Interaction, NodeKind, Props, Registry, ViewNode, validate};
+use gorgon_petra::tree::{
+    InputPolicy, Interaction, NodeKind, Props, Registry, ValidatedTree, ViewNode, validate,
+};
 
 use crate::focus_caret::FocusCaret;
 use crate::image::ImageSources;
@@ -791,6 +793,46 @@ impl<A: App> Host<A> {
         self.pass(ctx);
     }
 
+    /// Measure and place `tree` against `viewport`, under `theme`.
+    ///
+    /// Split out of [`Self::pass`] so its stationary-focus reconciliation
+    /// can ask for a second petrify against the same `tree` — cheap,
+    /// `ValidatedTree` is `Copy` — once it has corrected `self.state`
+    /// (a scroll offset, or which node is focused) rather than paint a
+    /// frame that still names an off-screen node as focused.
+    fn petrify_frame(
+        &mut self,
+        tree: ValidatedTree<'_>,
+        viewport: Viewport,
+        theme: &ThemeSnapshot,
+    ) -> PetrifiedFrame {
+        let mut ctx_layout = LayoutCtx {
+            content: &mut self.shaper,
+            rows: &mut self.app,
+            cache: &mut self.cache,
+            state: &self.state,
+            theme,
+            theme_rev: viewport.theme_rev,
+            scale: viewport.scale,
+            scroll: ScrollStack::new(),
+            reuse: None,
+            anchors: AnchorRects::new(),
+        };
+        petrify(
+            self.counter.take(),
+            tree,
+            &mut ctx_layout,
+            viewport,
+            // The real count is not known until the transitions have been
+            // advanced, and they are advanced against the placements this
+            // call produces. So the frame is petrified settled and
+            // `FrameMotion::advance` writes the measured activity onto it
+            // below, along with the placements that are actually on
+            // screen and the digest of them.
+            TransitionActivity::default(),
+        )
+    }
+
     /// Run one whole pass: input, view, petrify, paint, schedule.
     ///
     /// A caret already in flight, with no new input and no change to the
@@ -874,37 +916,54 @@ impl<A: App> Host<A> {
             }
         };
 
-        let mut frame = {
-            let mut ctx_layout = LayoutCtx {
-                content: &mut self.shaper,
-                rows: &mut self.app,
-                cache: &mut self.cache,
-                state: &self.state,
-                // The same snapshot this pass paints from and reports as
-                // `viewport.theme_rev`, so a container resolving a token
-                // during measure reads the theme the frame is actually
-                // painted under.
-                theme: snapshot.as_ref(),
-                theme_rev: viewport.theme_rev,
-                scale: viewport.scale,
-                scroll: ScrollStack::new(),
-                reuse: None,
-                anchors: AnchorRects::new(),
-            };
-            petrify(
-                self.counter.take(),
-                tree,
-                &mut ctx_layout,
-                viewport,
-                // The real count is not known until the transitions have been
-                // advanced, and they are advanced against the placements this
-                // call produces. So the frame is petrified settled and
-                // `FrameMotion::advance` writes the measured activity onto it
-                // below, along with the placements that are actually on
-                // screen and the digest of them.
-                TransitionActivity::default(),
-            )
-        };
+        let scopes = surface_scopes(&tree);
+        let mut frame = self.petrify_frame(tree, viewport, snapshot.as_ref());
+
+        // `state.focused` was set from the *last* pass's reconciliation,
+        // against the *last* pass's geometry. Nothing about this pass's own
+        // layout was known then, so a stationary focus (no Tab, no pointer
+        // move — `pending_focus` is the in-flight case those two already
+        // handle, and a frame mid-transition to a *new* target already
+        // tolerates one stale-but-visible frame, see `publish_focus`'s
+        // caller below) can still come out the other side of *this*
+        // petrify sitting somewhere its own clip no longer reaches: a
+        // fiber list gaining a row while `ticker` stayed selected, a panel
+        // that used to fit its window and no longer does. Painting that is
+        // exactly the one thing `blind_focus` exists to catch, so it has
+        // to be corrected before paint, not after.
+        //
+        // Try the same fix `step_focus` already applies for Tab first —
+        // scroll the focused node's own `Scroll` ancestor back into view,
+        // keeping the operator's selection — and only fall back to
+        // `FocusTree::update`'s vanished-focus rule (moving focus to
+        // whatever is reachable instead) when there is no ancestor to
+        // scroll, or the scroll did not reach (`write_scroll_offset`'s
+        // clamp is one frame stale by construction, so it can fall short).
+        // `ValidatedTree` is `Copy`, so a second `petrify` against the same
+        // tree is the cost of re-checking, and it only runs on the rare
+        // frame this reconciliation finds something to fix.
+        if self.pending_focus.is_none()
+            && frame
+                .placements
+                .iter()
+                .any(|p| p.semantics.focused && !p.is_visible())
+        {
+            if let Some(id) = self.state.focused.clone()
+                && self.scroll_into_view(&frame, &id)
+            {
+                frame = self.petrify_frame(tree, viewport, snapshot.as_ref());
+            }
+            if frame
+                .placements
+                .iter()
+                .any(|p| p.semantics.focused && !p.is_visible())
+            {
+                self.focus = self.focus.update(&frame.placements, &scopes);
+                if self.publish_focus() {
+                    frame = self.petrify_frame(tree, viewport, snapshot.as_ref());
+                }
+            }
+        }
 
         // Layout negotiated the targets; this interpolates the result and
         // rewrites the frame into what is actually painted, activity, digest
@@ -939,12 +998,12 @@ impl<A: App> Host<A> {
             report.missing_assets
         );
 
-        // The frame is placed, so this is the first moment the new placements
-        // exist to reconcile focus against: `update` carries the focused node
-        // forward, or applies the vanished-focus rule when it is gone. Doing
-        // it here rather than at the top of the next pass is what keeps an
-        // event arriving between two frames aimed at a node that still exists.
-        let scopes = surface_scopes(&tree);
+        // The frame is placed, so this is the reconciliation point for
+        // everything the block above does not already cover: `update`
+        // carries the focused node forward, or applies the vanished-focus
+        // rule when it is gone. Doing it here rather than at the top of the
+        // next pass is what keeps an event arriving between two frames
+        // aimed at a node that still exists.
         self.focus = self.focus.update(&frame.placements, &scopes);
         // A `step_focus` that deferred its move (the target was not visible
         // yet, only scrolled toward) tries again here, now that `order` is
@@ -1629,7 +1688,17 @@ impl<A: App> Host<A> {
             let _ = self.focus.focus(&target);
             return;
         }
-        self.scroll_into_view(&target);
+        // `scroll_into_view` takes the frame by reference rather than
+        // reading `self.last_frame` itself, so `Self::pass`'s own
+        // stationary-focus reconciliation can call it against a frame it
+        // just petrified, before that frame is `self.last_frame` at all.
+        // `take`/put-back is what lets this call it against `self` too,
+        // without holding an immutable borrow of the field across the
+        // `&mut self` call.
+        if let Some(frame) = self.last_frame.take() {
+            let _ = self.scroll_into_view(&frame, &target);
+            self.last_frame = Some(frame);
+        }
         self.pending_focus = Some(target);
     }
 
@@ -1719,22 +1788,28 @@ impl<A: App> Host<A> {
     }
 
     /// Write `desired` into `scroll`'s `scroll_offsets` entry, clamped to
-    /// `[0, overflow]` on `axis` as the *last* placed frame reports it, and
-    /// report whether the stored value changed.
+    /// `[0, max_offset]`, and report whether the stored value changed.
     ///
-    /// The upper clamp is one frame stale by construction: input is
-    /// delivered ahead of this pass's own `petrify`
-    /// (`Host::pass`'s ordering), so the content extent this clamps against
-    /// is whatever the previous frame measured, not the one about to be
-    /// placed. `gorgon_petra::layout::scroll::place` re-clamps against its
-    /// own frame's real extent on every placement regardless — so a view
-    /// that shrank between the write and the next placement is corrected
-    /// there, one frame later, never left stuck past its own end.
-    fn write_scroll_offset(&mut self, scroll: &str, axis: Axis, desired: f32) -> bool {
-        let max_offset = self
-            .last_frame
-            .as_ref()
-            .map_or(0.0, |frame| Self::scroll_overflow(frame, scroll, axis));
+    /// `max_offset` is a parameter rather than read from `self.last_frame`
+    /// here: `Self::scroll_into_view`'s stationary-focus caller
+    /// (`Host::pass`) computes it against a frame it just petrified, not
+    /// yet `self.last_frame` at that point in the pass, and this must
+    /// clamp against the frame its own caller actually measured rather
+    /// than silently read a stale or absent one. Both callers that still
+    /// mean "the frame on screen" (`apply_scroll`, and
+    /// `scroll_into_view`'s `step_focus` caller) pass
+    /// `Self::scroll_overflow(self.last_frame.., ..)` themselves, so this
+    /// changes what is computed by nobody — only where.
+    ///
+    /// One frame stale by construction there, same as before: input is
+    /// delivered ahead of this pass's own `petrify` (`Host::pass`'s
+    /// ordering), so the content extent it clamps against is whatever the
+    /// previous frame measured, not the one about to be placed.
+    /// `gorgon_petra::layout::scroll::place` re-clamps against its own
+    /// frame's real extent on every placement regardless — so a view that
+    /// shrank between the write and the next placement is corrected there,
+    /// one frame later, never left stuck past its own end.
+    fn write_scroll_offset(&mut self, scroll: &str, desired: f32, max_offset: f32) -> bool {
         let next = desired.clamp(0.0, max_offset);
         let current = self
             .state
@@ -1778,6 +1853,7 @@ impl<A: App> Host<A> {
             return false;
         }
         let axis = Self::scroll_axis(frame, node);
+        let max_offset = Self::scroll_overflow(frame, node, axis);
         let current = self.state.scroll_offsets.get(node).copied().unwrap_or(0.0);
         // `egui::Event::MouseWheel`'s own doc: "a positive Y-value indicates
         // the content is being moved down" — the opposite sense from this
@@ -1786,29 +1862,32 @@ impl<A: App> Host<A> {
         // axis) - offset`, so a larger offset moves the content the other
         // way).
         let desired = current - delta.along(axis);
-        self.write_scroll_offset(node, axis, desired)
+        self.write_scroll_offset(node, desired, max_offset)
     }
 
     /// Scroll `target`'s nearest enclosing `Scroll` just far enough that
     /// `target`'s own rect is inside its clip, along whichever axis that
-    /// `Scroll` actually scrolls.
+    /// `Scroll` actually scrolls. Reports whether it wrote a new offset.
     ///
-    /// Only reachable from off-screen: `target`'s rect and clip do not
-    /// overlap at all along the scrolling axis on entry (`step_focus` only
-    /// calls this for an id absent from `FocusTree::order`, and
-    /// `Placement::is_visible` — `rect.overlaps(clip)` — is exactly what
-    /// `order` is filtered by), so which side it fell off on is unambiguous:
-    /// there is no partial-overlap case to reconcile.
-    fn scroll_into_view(&mut self, target: &str) {
-        let Some(frame) = self.last_frame.as_ref() else {
-            return;
-        };
+    /// Takes `frame` explicitly rather than reading `self.last_frame`: this
+    /// has two callers now. `step_focus` still means "the frame on screen"
+    /// (Tab is delivered before this pass's own petrify, so `last_frame` is
+    /// exactly that), and its target's rect and clip do not overlap at all
+    /// along the scrolling axis on entry — `step_focus` only calls this for
+    /// an id absent from `FocusTree::order`, and `Placement::is_visible` —
+    /// `rect.overlaps(clip)` — is exactly what `order` is filtered by — so
+    /// which side it fell off on is unambiguous there. `Host::pass`'s
+    /// stationary-focus reconciliation calls it against a frame it just
+    /// petrified, for a node that *was* on screen a moment ago and may now
+    /// only partly overlap its clip; the "already within range" arm below
+    /// is for that caller, not a case that "should not happen".
+    fn scroll_into_view(&mut self, frame: &PetrifiedFrame, target: &str) -> bool {
         let Some(placement) = frame.placement(target) else {
-            return;
+            return false;
         };
         let (rect, clip) = (placement.rect, placement.clip);
         let Some(scroll) = Self::scroll_ancestor(frame, target).map(|p| p.id.clone()) else {
-            return;
+            return false;
         };
         let axis = Self::scroll_axis(frame, &scroll);
         let target_lead = Self::leading(rect, axis);
@@ -1830,11 +1909,15 @@ impl<A: App> Host<A> {
             // Entirely below/right: align the trailing edges instead.
             current + (target_trail - view_trail)
         } else {
-            // Already within range on this axis — should not happen given
-            // the doc above, but this is not the place to guess.
-            return;
+            // Already within range on this axis: nothing to scroll for.
+            // `Host::pass`'s caller falls back to moving focus instead when
+            // this happens — a partial overlap along the *other* axis, or a
+            // clip that collapsed to zero height, is not something a scroll
+            // offset can fix.
+            return false;
         };
-        self.write_scroll_offset(&scroll, axis, desired);
+        let max_offset = Self::scroll_overflow(frame, &scroll, axis);
+        self.write_scroll_offset(&scroll, desired, max_offset)
     }
 
     /// Whether the focused node in the last placed frame declares
