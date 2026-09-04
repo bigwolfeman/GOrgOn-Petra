@@ -906,17 +906,24 @@ impl<A: App> Host<A> {
         let now = ctx.input(|input| input.time);
         self.tick_caret(&frame, now);
         let report = self.paint_and_bake_scene(ctx, &frame, snapshot.as_ref());
+        // Every field `PaintReport::is_complete` reads, including the two
+        // this message used to omit. A failure that printed "0 silent" and
+        // counts that summed correctly could not explain itself: the reader
+        // was left to rediscover that `blind_focus` and `missing_assets`
+        // are also part of the predicate.
         debug_assert!(
             report.is_complete(),
             "a paint pass must account for every placement and leave none \
              silent: {} drawn + {} clipped + {} empty + {} silent of {} \
-             placement(s), desynced={}",
+             placement(s), desynced={}, blind_focus={}, missing_assets={}",
             report.drawn,
             report.skipped_clipped,
             report.empty,
             report.silent,
             report.placements,
-            report.desynced
+            report.desynced,
+            report.blind_focus,
+            report.missing_assets
         );
 
         // The frame is placed, so this is the first moment the new placements
