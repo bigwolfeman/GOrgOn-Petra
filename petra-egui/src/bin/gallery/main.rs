@@ -27,6 +27,8 @@ mod cat;
 mod catalog;
 mod cell;
 mod inventory;
+#[cfg(test)]
+mod shots;
 
 use std::process::ExitCode;
 

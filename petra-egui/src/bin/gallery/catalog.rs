@@ -40,7 +40,7 @@ use crate::cell::{Cell, Content};
 
 /// Inner size an interactive catalog window asks for. Not a layout pin: the
 /// host lays out at whatever the compositor grants.
-const WINDOW: [f32; 2] = [1200.0, 900.0];
+pub(crate) const WINDOW: [f32; 2] = [1200.0, 900.0];
 
 const PREV: &str = "prev";
 const NEXT: &str = "next";
@@ -155,6 +155,40 @@ impl Default for Catalog {
             tag_sel: false,
             pager: 1,
         }
+    }
+}
+
+/// Test-only page selection by inventory row name.
+///
+/// `Catalog`'s fields are private and its `Default` opens the Toggle page, so
+/// a driver outside this module has no way to say which page it wants. This
+/// is that way, kept test-only because the shipped window pages by input and
+/// never by name.
+#[cfg(test)]
+impl Catalog {
+    /// Open the page whose inventory row is named `component`.
+    ///
+    /// # Panics
+    /// If no row carries that name. The message lists every row name, because
+    /// the usual cause is a spelling that differs from Carbon's by one capital
+    /// letter and is otherwise invisible at a call site.
+    pub(crate) fn on_page(component: &str) -> Self {
+        let mut app = Self::default();
+        app.page = app
+            .roster
+            .iter()
+            .position(|cell| cell.row.component == component)
+            .unwrap_or_else(|| {
+                panic!(
+                    "no inventory row is named {component:?}. Rows:\n  {}",
+                    app.roster
+                        .iter()
+                        .map(|cell| cell.row.component)
+                        .collect::<Vec<_>>()
+                        .join("\n  ")
+                )
+            });
+        app
     }
 }
 
@@ -1226,7 +1260,7 @@ impl App for Catalog {
 /// `pending_focus` is. Giving Prev/Next the same primitive is future work,
 /// out of `catalog.rs`'s own scope; see `.agents/notes/implemented/bug-fix/
 /// 2026-09-03-no-input-path-writes-a-scroll-offset.md`.
-fn seat_index_focus(host: &mut Host<Catalog>) {
+pub(crate) fn seat_index_focus(host: &mut Host<Catalog>) {
     let Some(frame) = host.frame() else {
         return;
     };
