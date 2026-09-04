@@ -1,9 +1,19 @@
 //! `tab` and `tab_bar` — Carbon Tabs (slice-e).
 //!
 //! Line is the default ([`tab`], [`tab_bar`]). Contained and Vertical are
-//! extra constructors. Dismissible chrome and overflow-nav are omitted:
-//! they need a close overlay and scroll buttons this library does not ship.
-//! Callers wrap a tab with [`super::disabled`] to make it unavailable.
+//! extra constructors. Callers wrap a tab with [`super::disabled`] to make
+//! it unavailable.
+//!
+//! A Line/Contained strip whose tabs overflow its width is Carbon's
+//! scrollable state (see [`scrollable_row`]): it clips and is reachable by
+//! wheel or Tab, never squeezes a tab under its own label. What is still
+//! missing from that state is the two overflow-nav buttons (Carbon's
+//! `ChevronLeft`/`ChevronRight`, `$spacing-08`/`09` hit targets) and their
+//! CSS-gradient edge fade — this library has no gradient primitive, and the
+//! buttons need to appear only when the strip actually overflows, which is
+//! not yet knowable at the point a `ViewNode` tree is built (before
+//! layout runs). Dismissible chrome (a close affordance per tab) is also
+//! still omitted.
 
 use super::text::text;
 use super::tokens::{
@@ -225,7 +235,25 @@ fn tab_list(
     fill: Option<&str>,
     tabs: Vec<ViewNode>,
 ) -> ViewNode {
-    let mut node = stack(key, axis, spacing, tabs);
+    let row = stack("row", axis, spacing, tabs);
+    let content = match axis {
+        // Carbon's scrollable state (slice-e.md, Tabs anatomy item D): see
+        // `scrollable_row`'s own doc for the mechanism.
+        Axis::Horizontal => scrollable_row(row),
+        // Vertical tabs overflow on the other axis and are not this fix's
+        // scope (`.agents/notes/proposed/bug-fix/2026-09-03-tab-strip-
+        // compresses-tabs-below-their-labels.md`, Risks: "Vertical tabs
+        // scroll on the other axis ... Doing only the horizontal case
+        // leaves `vertical_tab_bar` with the same defect."). Left exactly
+        // as it was before this fix.
+        Axis::Vertical => row,
+    };
+    let mut node = ViewNode::new(NodeKind::Stack, key)
+        .with_props(Props {
+            axis: Some(axis),
+            ..Props::default()
+        })
+        .child(content);
     if let Some(name) = fill {
         node.props.tokens.insert("background".into(), t(name));
     }
@@ -234,6 +262,50 @@ fn tab_list(
         ..Semantics::default()
     };
     node
+}
+
+/// Carbon's scrollable state for a Line/Contained strip (slice-e.md, Tabs
+/// anatomy item D): a real fix for the defect this module used to carry,
+/// where `TrackSize::FitContent` on a tab's own column was a *preference*
+/// the surrounding `Stack` could squeeze, not a floor
+/// (`.agents/notes/proposed/bug-fix/2026-09-03-tab-strip-compresses-tabs-
+/// below-their-labels.md`).
+///
+/// [`crate::layout::scroll::measure`] and `::place` always probe their
+/// child with `Proposal::Unbounded` on the scrolling axis (that module's
+/// own doc: "the scrolling axis always probes the content's maximum useful
+/// extent, regardless of what this container was itself offered"), so
+/// nothing downstream of this wrapper ever negotiates `row`'s width down to
+/// what the strip has left — every tab answers its own natural
+/// `FitContent` width, unconditionally. What does not fit is clipped by
+/// the `Scroll`'s own placed rect (never placed outside it — `layout::
+/// scroll::place`'s child is offset and clipped, not shrunk) and reachable
+/// by the mouse wheel (`Host::apply_scroll`) or by Tab stepping past the
+/// visible set (`FocusTree::reachable`, `Host::step_focus`) — both wired
+/// by f5fd4a4, of which this is the first component-layer caller.
+///
+/// This is a different mechanism than the Agent Note's literal proposal
+/// (a per-tab `Constraints` floor): that shape cannot work here because no
+/// tab's natural width is knowable at tree-construction time — it depends
+/// on font metrics `layout::measure` only has mid-pass. Wrapping in
+/// `Scroll` gets the same floor as an emergent property of an `Unbounded`
+/// proposal instead, and gets the "never placed outside its parent" half
+/// of the Note's proposal for free from the same wrapper, since clipping
+/// (not squeezing) is what a `Scroll` does to overflow by construction.
+///
+/// `Interaction::Scroll` is declared explicitly: a `Scroll` node gets no
+/// interactions merely from its `NodeKind` (`ViewNode::new` always starts
+/// `interactions: Vec::new()`), and without it `input::hit_test` finds no
+/// placement at the pointer that accepts a wheel event — the same gap
+/// `gallery/catalog.rs`'s `index`/`main-scroll` nodes already comment on.
+fn scrollable_row(row: ViewNode) -> ViewNode {
+    ViewNode::new(NodeKind::Scroll, "viewport")
+        .with_props(Props {
+            axis: Some(Axis::Horizontal),
+            ..Props::default()
+        })
+        .child(row)
+        .interactive(Role::Scroll, "Tab strip", &[Interaction::Scroll])
 }
 
 /// Selected (or Line-unselected) indicator. An empty stack, not a spacer:
@@ -289,6 +361,14 @@ mod tests {
     }
 
     fn petrify_lone(child: ViewNode) -> crate::frame::PetrifiedFrame {
+        petrify_lone_at(child, Size { w: 400.0, h: 200.0 })
+    }
+
+    /// [`petrify_lone`], parameterized on the viewport a lone child is
+    /// petrified against — the one number [`scrollable_row`]'s own fix
+    /// needs to control, to prove a strip narrower than its tabs clips
+    /// rather than compresses them.
+    fn petrify_lone_at(child: ViewNode, viewport_size: Size) -> crate::frame::PetrifiedFrame {
         let root = ViewNode::new(NodeKind::Stack, "root")
             .with_props(Props {
                 axis: Some(Axis::Vertical),
@@ -298,7 +378,7 @@ mod tests {
         let mut registry = Registry::with_vocabulary(standard_vocabulary());
         crate::anim::shipped_registry().declare_into(&mut registry);
         let mut harness = Harness::new();
-        let viewport = Viewport::new(Size { w: 400.0, h: 200.0 }, ThemeMode::Dark);
+        let viewport = Viewport::new(viewport_size, ThemeMode::Dark);
         harness.scale = viewport.scale;
         petrify(
             1,
@@ -561,5 +641,92 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Check G: the fix `scrollable_row` exists for
+    /// (`.agents/notes/proposed/bug-fix/2026-09-03-tab-strip-compresses-
+    /// tabs-below-their-labels.md`), reproduced directly rather than only
+    /// through the inspector's own shipped window.
+    ///
+    /// Four long labels, petrified once against a strip wide enough that
+    /// nothing overflows and once against one narrow enough that the sum
+    /// of their natural widths cannot fit. Falsified exactly as the Agent
+    /// Note asks: shrink the strip until the tabs no longer fit and check
+    /// that a clipped, unsquashed run appears rather than a compressed
+    /// label.
+    #[test]
+    fn a_strip_narrower_than_its_tabs_clips_rather_than_compresses_them() {
+        let long_tabs = || {
+            vec![
+                tab("t1", "Approvals pending review", false),
+                tab("t2", "Recent leaks and findings", true),
+                tab("t3", "History", false),
+                tab("t4", "Logs", false),
+            ]
+        };
+        let keys = ["t1", "t2", "t3", "t4"];
+
+        let wide = petrify_lone_at(
+            tab_bar("strip", long_tabs()),
+            Size {
+                w: 2000.0,
+                h: 200.0,
+            },
+        );
+        let narrow = petrify_lone_at(tab_bar("strip", long_tabs()), Size { w: 300.0, h: 200.0 });
+
+        // No label draws content larger than its own rect in either
+        // window: this is exactly `layout_overlap.rs`'s
+        // `every_text_run_in_the_shipped_window_fits_the_box_it_was_given`,
+        // reproduced at a size guaranteed to overflow rather than hoping
+        // the shipped window still does.
+        for (label, frame) in [("wide", &wide), ("narrow", &narrow)] {
+            for p in frame.placements.iter().filter(|p| p.kind == NodeKind::Text) {
+                assert!(
+                    !p.paint.overflowed,
+                    "{label}: {} drew content larger than its own rect",
+                    p.id
+                );
+            }
+        }
+
+        // The floor half of the fix: every tab keeps the same width
+        // whether the strip has room to spare or not. Before this fix the
+        // narrow frame's two widest tabs (`t1`, `t2`) came out narrower
+        // than in the wide frame — the exact squeeze the Agent Note
+        // measured (188.91/158.25 down to 156.85 at 900x700).
+        let width_of = |frame: &PetrifiedFrame, key: &str| -> f32 {
+            frame
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with(&format!("/{key}")))
+                .unwrap_or_else(|| panic!("tab `{key}` missing from the frame"))
+                .rect
+                .w
+        };
+        for key in keys {
+            assert_eq!(
+                width_of(&wide, key),
+                width_of(&narrow, key),
+                "tab `{key}`: width changed between the wide and narrow strip, so \
+                 something between them is still squeezing it"
+            );
+        }
+
+        // This is a real overflow, not a coincidence: the sum of what the
+        // tabs actually took is wider than the viewport they are clipped
+        // to, so the assertions above are proving something.
+        let viewport = narrow
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/viewport"))
+            .expect("the scroll viewport is placed");
+        let tabs_total: f32 = keys.iter().map(|key| width_of(&narrow, key)).sum();
+        assert!(
+            tabs_total > viewport.rect.w,
+            "the narrow window did not actually overflow (tabs total {tabs_total} <= \
+             viewport {}), so this test proves nothing about the fix",
+            viewport.rect.w
+        );
     }
 }
