@@ -924,7 +924,7 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
     /// Every node in [`full_gallery`] that may draw a border, by the key
     /// path it appears at. An exact set: a node missing from here that draws
     /// one fails, and a node listed here that stops drawing one fails too.
-    const DRAWS_AN_EDGE: [&str; 58] = [
+    const DRAWS_AN_EDGE: [&str; 57] = [
         // `field`: an empty well with no boundary does not read as a place
         // to type. See `field`'s own doc for why it keeps one when `button`
         // does not.
@@ -1132,14 +1132,22 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         "root/carbon6/tog-off/appearance/track",
         "root/carbon6/tog-on/appearance/track",
         "root/carbon6/tog-sm/appearance/track",
-        // UI shell header: Carbon's `border-block-end: 1px solid
-        // $border-subtle` on the header bar itself (slice-f "UI shell
-        // header" Key numbers), the same `field`-class real measured
-        // boundary as Modal's dialog shell and Content switcher's row
-        // above — a container edge, not decoration over a shape that
-        // already has one (the header's own fill is `SURFACE_BASE`, the
-        // page's own ground).
-        "root/carbon6/shell-header",
+        // UI shell header used to be on this list, binding `border`
+        // directly on the header bar for Carbon's `border-block-end: 1px
+        // solid $border-subtle` (slice-f "UI shell header" Key numbers).
+        // V6 audit, `40-ui-shell-header.png`: the shared `"border"` token
+        // always paints a 4-sided box (see Pagination's own comment
+        // above), and with the header's children packed edge-to-edge
+        // (`None` spacing) and most of them opaque, that box was invisible
+        // everywhere a child's own background covered it and showed
+        // through as a stray hairline above AND below the nav row only
+        // where a child painted no background of its own (`name`,
+        // `spacer`) — never the single bottom line Carbon actually draws.
+        // The same fix Pagination already took: a real 1px divider element
+        // (`ui_shell.rs`'s `divider`, built with `accent_mark`) stands in
+        // for the one edge Carbon draws, so the header no longer binds
+        // `border` at all — the divider binds `background`, which this
+        // test does not audit.
     ];
 
     // `status` is not on that list, and the omission is measured rather than

@@ -21,7 +21,9 @@ use super::tokens::{
     LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SPACING_03, SPACING_05, SURFACE_BASE, t,
 };
 use crate::geom::{Align, Axis};
-use crate::tree::{InsetRefs, Interaction, Key, Role, Semantics, ViewNode};
+use crate::tree::{
+    InsetRefs, Interaction, Key, NodeKind, Props, Role, Semantics, TrackSize, ViewNode,
+};
 
 /// Carbon small / default node height.
 const HEIGHT: f32 = 32.0;
@@ -34,8 +36,15 @@ const _: () = assert!(HEIGHT_XS == 24.0);
 const ITEM_INTENTS: &[Interaction] = &[Interaction::Focus, Interaction::Click, Interaction::Hover];
 
 /// A tree of items. `Role::Tree`, no interactions.
+///
+/// V6: `align = Align::Stretch` — without it every top-level [`tree_item`]
+/// measured to its own label width instead of the tree's, so a selected
+/// item's fill (bound on the item's own outer node) stopped at its own text
+/// rather than spanning the row, the same content-sized-instead-of-full-
+/// width class V2 fixed one level up in `data_table`'s row list.
 pub fn tree_view(key: impl Into<Key>, nodes: Vec<ViewNode>) -> ViewNode {
     let mut node = stack(key, Axis::Vertical, None, nodes);
+    node.props.align = Some(Align::Stretch);
     node.semantics = Semantics {
         role: Some(Role::Tree),
         ..Semantics::default()
@@ -98,6 +107,7 @@ fn tree_item_sized(
     let mut parts = vec![row];
     if expanded && is_branch {
         let mut nest = stack("children", Axis::Vertical, None, children);
+        nest.props.align = Some(Align::Stretch);
         nest.props.padding = Some(InsetRefs {
             left: Some(t(SPACING_05)),
             ..InsetRefs::default()
@@ -105,7 +115,27 @@ fn tree_item_sized(
         parts.push(nest);
     }
 
-    let mut node = stack(key, Axis::Vertical, None, parts);
+    // V6: a single-column `Grid` with a `Weight` track, not a plain
+    // `Stack` with `Align::Stretch`. Re-capturing after the `Stretch`-only
+    // attempt showed the fill widen (65px to 130px, matching its sibling
+    // "gorgon" row) but stop well short of the tree's own width: a Stack's
+    // cross-axis `Stretch` only offers a child up to the available extent
+    // as a maximum, it does not force consumption of it, so a plain-Stack
+    // item still settles at its content width. A `Weight` grid track does
+    // force it — the exact shape `ui_shell_left_panel_row`'s `body` cell
+    // already proves in this same file's sibling `ui_shell.rs` (its
+    // selected fill measurably spans the full 256px panel, not its own
+    // text). `rows` are `FitContent`: only the column needs to claim the
+    // full width, the two stacked rows (`row`, optional `children`) stay
+    // sized to their own content height.
+    let row_count = parts.len();
+    let mut node = ViewNode::new(NodeKind::Grid, key)
+        .with_props(Props {
+            columns: vec![TrackSize::Weight { weight: 1.0 }],
+            rows: vec![TrackSize::FitContent; row_count],
+            ..Props::default()
+        })
+        .with_children(parts);
     for (slot, token) in [
         ("background", SURFACE_BASE),
         ("background@hover", LAYER_HOVER),

@@ -157,19 +157,57 @@ pub fn ui_shell_header(
     children.push(nav_list);
 
     children.push(ViewNode::new(NodeKind::Spacer, "spacer"));
-    children.push(stack("actions", Axis::Horizontal, None, actions));
+    // V6: was `None` spacing, the same shape as the `NameKind`/`12Decrement
+    // Increment` defects V2 and V4 fixed — two adjacent actions ("Notifica-
+    // tions", "App switcher") rendered as one glued word,
+    // "NotificationsApp switcher". `SPACING_05` (16px) is the header's own
+    // horizontal clearance figure, SOURCED slice-f.md:157 "Header link /
+    // sub-menu / sub-menu-item padding: 0 16px (mini-units(2) = 16px)".
+    children.push(stack(
+        "actions",
+        Axis::Horizontal,
+        Some(SPACING_05),
+        actions,
+    ));
 
-    let mut node = stack(key, Axis::Horizontal, None, children);
-    node.props.align = Some(Align::Stretch);
+    let mut bar = stack("bar", Axis::Horizontal, None, children);
+    bar.props.align = Some(Align::Stretch);
+
+    // V6: a bottom-only rule, not the 4-sided box the shared `"border"`
+    // token always paints (`pagination.rs`'s own comment: "binding
+    // `\"border\"` gets a 4-sided box — grep confirms it"). The header
+    // previously bound `"border"` directly on this Stack; with every child
+    // packed edge-to-edge (`None` spacing) and most of them opaque, that box
+    // was invisible everywhere a child's own background covered it and
+    // showed through as a stray top-AND-bottom hairline only where a child
+    // painted no background of its own (`name`, `spacer`) — the "stray
+    // horizontal rules above and below the nav area" the picture showed.
+    // Carbon draws exactly one line: `border-block-end: 1px solid
+    // $border-subtle`, SOURCED slice-f.md:154. A real 1-row-tall divider,
+    // the same Grid-row shape `ui_shell_header_nav_item`'s own `indicator`
+    // already uses in this file, replaces the token.
+    let divider = accent_mark("divider", Axis::Horizontal, 1.0, Some(BORDER_SUBTLE));
+
+    let mut node = ViewNode::new(NodeKind::Grid, key)
+        .with_props(Props {
+            columns: vec![TrackSize::Weight { weight: 1.0 }],
+            rows: vec![
+                TrackSize::Weight { weight: 1.0 },
+                TrackSize::Fixed { value: 1.0 },
+            ],
+            align: Some(Align::Stretch),
+            ..Props::default()
+        })
+        .with_children(vec![bar, divider])
+        .with_constraints(pin_block(MINI_UNIT_6));
     node.props
         .tokens
         .insert("background".into(), t(SURFACE_BASE));
-    node.props.tokens.insert("border".into(), t(BORDER_SUBTLE));
     node.semantics = Semantics {
         role: Some(Role::Pane),
         ..Semantics::default()
     };
-    node.with_constraints(pin_block(MINI_UNIT_6))
+    node
 }
 
 /// The product identity link. `label` is `product_name` (FR-058). Padding
@@ -726,7 +764,7 @@ mod tests {
     };
     use crate::component::text::text;
     use crate::component::tokens::{
-        ACCENT_PRIMARY, LAYER_SELECTED, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY,
+        ACCENT_PRIMARY, BORDER_SUBTLE, LAYER_SELECTED, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY,
     };
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
@@ -770,6 +808,20 @@ mod tests {
         let name = named(&node, "name");
         assert_eq!(name.semantics.role, Some(Role::Button));
         assert_eq!(name.semantics.label.as_deref(), Some("GOrgOn"));
+
+        // V6: the header must never bind the shared `"border"` token — it
+        // always paints a 4-sided box (`pagination.rs`'s own comment), not
+        // Carbon's single `border-block-end` (slice-f.md:154). The real
+        // bottom rule is this dedicated 1px divider row instead.
+        assert!(
+            !node.props.tokens.contains_key("border"),
+            "the header must not bind \"border\" (it draws a 4-sided box); \
+             the bottom-only rule below is the `divider` child instead"
+        );
+        let divider = named(&node, "divider");
+        assert_eq!(token(divider, "background"), Some(BORDER_SUBTLE));
+        assert_eq!(divider.constraints.vertical.min, Some(1.0));
+        assert_eq!(divider.constraints.vertical.max, Some(1.0));
     }
 
     #[test]
@@ -792,7 +844,10 @@ mod tests {
             vec![ui_shell_header_nav_item("overview", "Overview", true)],
             vec![ui_shell_header_action("notify", "Notifications", false)],
         );
-        assert_eq!(node.children[0].key.as_str(), "trigger");
+        // V6: the header's outer node is now a `Grid` of [`bar`, `divider`]
+        // (the bottom-border fix above), so product-to-global order lives
+        // one level down, on `bar`'s own children, not `node`'s.
+        assert_eq!(named(&node, "bar").children[0].key.as_str(), "trigger");
         assert!(has_key(&node, "overview"));
         assert!(has_key(&node, "notify"));
     }
