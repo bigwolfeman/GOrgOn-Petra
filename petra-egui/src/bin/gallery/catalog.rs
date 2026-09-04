@@ -1493,4 +1493,89 @@ mod tests {
             offenders.join("\n")
         );
     }
+
+    /// Rasterize every catalog page on the GPU and assert it is not blank.
+    ///
+    /// Everything else in this file, and every frame-level test the component
+    /// audit added, reads the *frame record*: rects, tokens, semantics. None
+    /// of it looks at a pixel. A page whose record is perfect and whose
+    /// painter draws one flat rectangle passes all of them. This test is the
+    /// one that cannot: it runs the real pass, hands the tessellated output to
+    /// a real `wgpu` device through
+    /// [`gorgon_petra_testkit::snapshot::Snapshotter`], and reads the PNG back.
+    ///
+    /// The assertion is deliberately weak and therefore honest: a page must
+    /// contain more than one distinct colour. That catches a blank page, a
+    /// page painted entirely in its own background, and a page whose content
+    /// resolved to the ground it sits on. It does **not** catch bad spacing,
+    /// wrong alignment, or an ugly layout, and it is not meant to.
+    ///
+    /// Set `PETRA_SHOT_DIR` to also write each page's PNG there, one file per
+    /// row, for a human or an agent to look at.
+    #[test]
+    fn every_built_page_rasterizes_to_more_than_one_colour() {
+        let dir = std::env::var_os("PETRA_SHOT_DIR").map(std::path::PathBuf::from);
+        if let Some(dir) = &dir {
+            std::fs::create_dir_all(dir).expect("shot dir");
+        }
+        let mut shooter = gorgon_petra_testkit::snapshot::Snapshotter::new();
+        let mut flat: Vec<String> = Vec::new();
+
+        for index in 0..Catalog::default().roster.len() {
+            let app = Catalog {
+                page: index,
+                ..Catalog::default()
+            };
+            if !app.current().is_built() {
+                continue;
+            }
+            let row = app.current().row;
+            let name = row.component.to_owned();
+            let number = row.number;
+
+            let ctx = headless();
+            let mut host = Host::new(&ctx, app, default_presenter());
+            // Two passes: the first registers the font atlas, the second is
+            // the one with content to photograph.
+            step(&ctx, &mut host, RawInput::default());
+            let output = ctx.run_ui(sized(RawInput::default()), |_| host.pass(&ctx));
+            let shot = shooter
+                .capture(
+                    &ctx,
+                    &output,
+                    host.frame()
+                        .unwrap_or_else(|| panic!("{name}: the pass produced no frame")),
+                    None,
+                )
+                .unwrap_or_else(|err| panic!("{name}: capture refused: {err:?}"));
+            output.drop_without_applying_deltas();
+
+            let image = image::load_from_memory(&shot.png)
+                .unwrap_or_else(|err| panic!("{name}: shot is not a PNG: {err}"))
+                .to_rgba8();
+            let mut seen: std::collections::HashSet<[u8; 4]> = std::collections::HashSet::new();
+            for px in image.pixels() {
+                seen.insert(px.0);
+                if seen.len() > 1 {
+                    break;
+                }
+            }
+            if seen.len() < 2 {
+                flat.push(format!("row {number} {name}"));
+            }
+
+            if let Some(dir) = &dir {
+                let slug = name.to_lowercase().replace(' ', "-");
+                std::fs::write(dir.join(format!("{number:02}-{slug}.png")), &shot.png)
+                    .expect("write shot");
+            }
+        }
+
+        assert!(
+            flat.is_empty(),
+            "these pages rasterized to a single flat colour, so whatever their \
+             frame record says, nothing reached the screen:\n{}",
+            flat.join("\n")
+        );
+    }
 }

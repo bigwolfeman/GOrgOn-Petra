@@ -61,6 +61,16 @@ test = true
 # does not request. All three resolve to versions already in `Cargo.lock`, and
 # the `wasm-bindgen` pin must keep matching the `wasm-bindgen` CLI that
 # processes the artifact: a mismatch fails the bundle step, not the build.
+# Native-only, test-only: the headless GPU snapshotter. This is what lets the
+# gallery's own tests rasterize a catalog page to real pixels and assert about
+# them, instead of asserting about the frame record and hoping the painter
+# agrees. `gorgon-petra-testkit` depends on this crate in return, which Cargo
+# allows for a dev-dependency and which keeps the snapshotter out of every
+# shipped artifact.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+gorgon-petra-testkit = { path = "../petra-testkit", features = ["testkit"] }
+image = "0.25"
+
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen = "0.2.127"
 wasm-bindgen-futures = "0.4.77"
