@@ -24,8 +24,9 @@ use super::{
     dropdown, dropdown_option, field, file_uploader, file_uploader_item, form, heading,
     inline_loading, layer_tokens, link, list_item, list_item_with, list_row, loading, loading_sm,
     menu_button, menu_item, modal, notification_actionable, notification_inline,
-    notification_toast, on_layer, ordered_list, primary_button, progress, radio, section, status,
-    tab, tab_bar, text, tile, toggle, toggle_sm, unordered_list,
+    notification_toast, number_input, on_layer, ordered_list, pagination, primary_button,
+    progress, progress_indicator, progress_sm, progress_step, radio, search, section, status, tab,
+    tab_bar, text, tile, toggle, toggle_sm, unordered_list,
 };
 
 const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
@@ -231,6 +232,46 @@ fn full_gallery() -> ViewNode {
         ],
     );
 
+    // Group 4's own seven (number input, pagination, popover, progress
+    // bar, progress indicator, radio button, search). Popover has no
+    // closed form at all — every constructor it exports IS the anchored
+    // `Anchor::Node` surface, so unlike every other anchored component in
+    // this tree (whose *closed* trigger still mounts fine) it cannot
+    // appear here in any form; it is audited entirely inside its own
+    // module (see `popover.rs`'s own test-module comment and
+    // `.agents/notes/proposed/architecture/
+    // 2026-09-03-anchored-components-cannot-name-their-own-anchor.md`).
+    // Number input's invalid form binds an accent `border` (`ACCENT_PRIMARY`,
+    // same pattern as `field_invalid`, which for the identical reason is
+    // also absent from this tree) and so is audited only inside
+    // `number_input.rs`'s own module, to keep `containers_take_a_tone_and_
+    // controls_take_an_edge` a single-tone invariant.
+    let carbon4 = section(
+        "carbon4",
+        "Carbon (group 4)",
+        vec![
+            number_input("ni-count", "Replicas", "3"),
+            disabled(number_input("ni-disabled", "Replicas", "3")),
+            pagination("pg-first", 1, 4),
+            progress_sm("pb-empty", "Queued", 0.0),
+            progress("pb-mid", "Rebuilding", 0.5),
+            progress_sm("pb-full", "Done", 1.0),
+            progress_indicator(
+                "pi-steps",
+                vec![
+                    progress_step("pi-choose", "Choose", true, false),
+                    progress_step("pi-configure", "Configure", false, true),
+                    progress_step("pi-review", "Review", false, false),
+                    disabled(progress_step("pi-confirm", "Confirm", false, false)),
+                ],
+            ),
+            radio("radio-checked", "Chosen", true),
+            radio("radio-unchecked", "Not chosen", false),
+            disabled(radio("radio-disabled", "Unavailable", false)),
+            search("srch-filter", "Filter fibers"),
+        ],
+    );
+
     let tabs = section(
         "tabs",
         "Tabs",
@@ -278,6 +319,7 @@ fn full_gallery() -> ViewNode {
         .child(carbon)
         .child(carbon2)
         .child(carbon3)
+        .child(carbon4)
         .child(tabs)
         .child(readouts)
         .child(list);
@@ -716,7 +758,7 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
     /// Every node in [`full_gallery`] that may draw a border, by the key
     /// path it appears at. An exact set: a node missing from here that draws
     /// one fails, and a node listed here that stops drawing one fails too.
-    const DRAWS_AN_EDGE: [&str; 22] = [
+    const DRAWS_AN_EDGE: [&str; 34] = [
         // `field`: an empty well with no boundary does not read as a place
         // to type. See `field`'s own doc for why it keeps one when `button`
         // does not.
@@ -801,6 +843,56 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         // real measured boundary on the dialog shell itself, the same
         // class as `field` and Content switcher's row above.
         "root/carbon3/md-retire",
+        // Number input's well: Carbon's `border-bottom: 1px solid
+        // $border-strong` on `.cds--number` (slice-d, "Field ...
+        // `border-bottom` `$border-strong`"), the same `field`-class
+        // input-well pairing as `field`, Dropdown and Date picker above —
+        // Petra approximates the directional bottom rule as the same full
+        // `border.subtle` outline those three already use, rather than
+        // inventing a directional token. `ni-disabled` carries it too:
+        // `disabled()` only clears interactions and sets
+        // `Semantics.disabled`, it never touches a token binding.
+        "root/carbon4/ni-count",
+        "root/carbon4/ni-disabled",
+        // Pagination's own bar: Carbon's "Container ... `border-block-
+        // start: 1px solid $border-subtle`" (slice-d, MEASURED style
+        // page), the same class as Modal's dialog shell and Content
+        // switcher's row above — a real measured boundary on the
+        // container itself, not decoration.
+        "root/carbon4/pg-first",
+        // Pagination's Previous/Next: slice-d, "Next button (both ghost
+        // icon buttons, `border-inline-start: 1px solid $border-subtle`)"
+        // — a real measured boundary between the grouped nav controls
+        // (Petra's single `border` token approximates Carbon's
+        // directional `border-inline-start` as a full outline, the same
+        // trade-off as the well above), not decoration.
+        "root/carbon4/pg-first/next",
+        "root/carbon4/pg-first/previous",
+        // Progress indicator's current and not-started status icons:
+        // `marked_box`'s own class (unconditional `border` regardless of
+        // fill, so the ring's silhouette does not jump size between
+        // states — the same precedent `check`/`radio`'s boxes set above).
+        // The complete step's `complete_mark` is the one variant that does
+        // NOT carry a border (already filled solid, no ring silhouette to
+        // keep stable), which is why `pi-choose` (complete) is absent from
+        // this list while `pi-configure` (current), `pi-review`
+        // (not-started) and `pi-confirm` (disabled, not-started) are on it.
+        "root/carbon4/pi-steps/pi-configure/head/icon-row/icon",
+        "root/carbon4/pi-steps/pi-confirm/head/icon-row/icon",
+        "root/carbon4/pi-steps/pi-review/head/icon-row/icon",
+        // Radio's own mark: the same `empty_mark`/`marked_box` class as
+        // the checkbox boxes above, for the same reason — an unselected
+        // radio is nothing but its outline, and the selected/disabled
+        // forms keep the same border so the ring does not resize between
+        // states.
+        "root/carbon4/radio-checked/box",
+        "root/carbon4/radio-disabled/box",
+        "root/carbon4/radio-unchecked/box",
+        // Search's own well: Carbon's `border-block-end: 1px solid
+        // $border-strong` on `.cds--search-input` (slice-d anatomy #1),
+        // the same directional-rule-approximated-as-a-full-outline class
+        // as Number input's well above.
+        "root/carbon4/srch-filter",
     ];
 
     // `status` is not on that list, and the omission is measured rather than

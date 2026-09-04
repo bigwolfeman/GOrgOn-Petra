@@ -720,4 +720,115 @@ mod tests {
             }
         }
     }
+
+    // Radio is out of scope for the checkbox pass above (see this module's
+    // own doc header and its own comment on `checkbox_frame_geometry_has_
+    // no_degenerate_or_overflowing_placements`); it is audited here.
+    // Unlike checkbox, radio binds no `@hover` or other state-decorated
+    // token at all (slice-d.md: "Radio button does NOT define hover as a
+    // distinct rule (no `:hover` selector anywhere in the file)"), so
+    // Class 1 does not apply here, and `empty_mark`/`marked_box` never nest
+    // text inside a pinned box, so Class 4 does not apply either — both
+    // checked here structurally by the fact that `radio`'s children are a
+    // swatch and a dot swatch, never a `text` node inside a pinned box.
+
+    /// Check C/D across every radio state: selected, unselected, and
+    /// disabled.
+    #[test]
+    fn radio_frame_geometry_has_no_degenerate_or_overflowing_placements() {
+        let cases: Vec<(&str, ViewNode)> = vec![
+            ("selected", radio("r", "Chosen", true)),
+            ("unselected", radio("r", "Not chosen", false)),
+            (
+                "disabled",
+                crate::component::disabled(radio("r", "Unavailable", false)),
+            ),
+        ];
+        for (label, node) in cases {
+            let frame = petrify_lone(node);
+            assert!(!frame.placements.is_empty(), "{label}: nothing placed");
+            for p in &frame.placements {
+                assert!(
+                    p.rect.w > 0.0 && p.rect.h > 0.0,
+                    "{label}: {} placed with a degenerate rect {:?}",
+                    p.id,
+                    p.rect
+                );
+                assert!(
+                    !p.paint.overflowed,
+                    "{label}: {} drew content larger than its own rect",
+                    p.id
+                );
+                if let Some(parent_idx) = p.parent {
+                    let parent = &frame.placements[parent_idx];
+                    let fits = p.rect.x >= parent.rect.x - 0.01
+                        && p.rect.y >= parent.rect.y - 0.01
+                        && p.rect.x + p.rect.w <= parent.rect.x + parent.rect.w + 0.01
+                        && p.rect.y + p.rect.h <= parent.rect.y + parent.rect.h + 0.01;
+                    assert!(
+                        fits,
+                        "{label}: {} (rect {:?}) extends outside its parent {} (rect {:?})",
+                        p.id, p.rect, parent.id, parent.rect
+                    );
+                }
+            }
+        }
+    }
+
+    /// Check F: an enabled radio declares `Focus` and is reachable; a
+    /// disabled one is not.
+    #[test]
+    fn radio_focus_reachability_matches_disabled_state() {
+        for (label, node, should_be_focusable) in [
+            ("selected", radio("r", "Chosen", true), true),
+            ("unselected", radio("r", "Not chosen", false), true),
+            (
+                "disabled",
+                crate::component::disabled(radio("r", "Unavailable", false)),
+                false,
+            ),
+        ] {
+            let frame = petrify_lone(node);
+            let focus = crate::focus::FocusTree::from_placements(
+                &frame.placements,
+                &std::collections::BTreeMap::new(),
+            );
+            let root_placement = frame
+                .placements
+                .iter()
+                .find(|p| p.id == "/root/r")
+                .expect("radio row is placed");
+            let reachable = focus.order().iter().any(|id| id == &root_placement.id);
+            assert_eq!(
+                reachable, should_be_focusable,
+                "{label}: focus reachability was {reachable}, expected {should_be_focusable}"
+            );
+        }
+    }
+
+    /// Check E: the label text against the page ground the row sits on, in
+    /// both themes, read through `Props.opacity`.
+    #[test]
+    fn radio_text_clears_aa_contrast_on_the_page_ground() {
+        const MIN_TEXT_CONTRAST: f32 = 4.5;
+        use super::super::tokens::SURFACE_BASE;
+        for theme in [crate::token::light(), crate::token::dark()] {
+            let bg = color(&theme, SURFACE_BASE);
+            for node in [radio("r", "Chosen", true), radio("r", "Not chosen", false)] {
+                let label = named(&node, "label");
+                let fg_name = label
+                    .props
+                    .tokens
+                    .get("foreground")
+                    .expect("label binds a foreground");
+                let opacity = label.props.opacity.unwrap_or(1.0);
+                let fg = color(&theme, fg_name.as_str()).faded(opacity).over(bg);
+                let ratio = fg.contrast_ratio(bg);
+                assert!(
+                    ratio >= MIN_TEXT_CONTRAST,
+                    "label at {ratio:.2}:1 against page ground fails AA {MIN_TEXT_CONTRAST}:1"
+                );
+            }
+        }
+    }
 }

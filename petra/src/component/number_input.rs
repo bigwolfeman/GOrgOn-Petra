@@ -155,9 +155,20 @@ fn stepper(key: &'static str, label: &'static str, height: f32) -> ViewNode {
         .tokens
         .insert("background".into(), t(SURFACE_BASE));
     node.with_constraints(Constraints {
+        // Horizontal takes a floor, not a fixed width. Carbon's stepper
+        // width (md 40, `_number-input.scss:153` controls-width / 2; lg 48
+        // `:403`; sm 32 `:416`) is the hit box for an icon-only
+        // Add/Subtract glyph; FR-026 replaces the icon with the word
+        // "Increment"/"Decrement" (this module's own doc), which does not
+        // fit inside a box pinned to the icon's own width — the same
+        // Class-4 shape as Modal's `close_button` defect. `min` stays the
+        // floor so the tap target never shrinks below Carbon's number; the
+        // label decides how much wider it needs
+        // (`frame_geometry_has_no_degenerate_or_overflowing_placements`
+        // caught it once Step 0 put Number input in `full_gallery()`).
         horizontal: AxisConstraint {
             min: Some(height),
-            max: Some(height),
+            max: None,
             priority: 0,
         },
         vertical: AxisConstraint {
@@ -180,7 +191,11 @@ mod tests {
         number_input_sm,
     };
     use crate::component::tokens::{ACCENT_PRIMARY, BORDER_SUBTLE, SURFACE_RAISED, TEXT_PRIMARY};
-    use crate::tree::{Interaction, NodeKind, Role, ViewNode};
+    use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
+    use crate::geom::{Axis, Size};
+    use crate::testing::{Harness, validated_with};
+    use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
+    use crate::tree::{Interaction, NodeKind, Props, Registry, Role, ViewNode};
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         node.children
@@ -261,5 +276,181 @@ mod tests {
         assert_eq!(token(helper, "foreground"), Some(TEXT_PRIMARY));
         let _ = child(well, "increment");
         let _ = child(well, "decrement");
+    }
+
+    const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
+
+    fn accepting_registry() -> Registry {
+        Registry::with_vocabulary(standard_vocabulary())
+    }
+
+    fn petrify_lone(node: ViewNode) -> PetrifiedFrame {
+        let root = ViewNode::new(NodeKind::Stack, "root")
+            .with_props(Props {
+                axis: Some(Axis::Vertical),
+                ..Props::default()
+            })
+            .child(node);
+        let registry = accepting_registry();
+        let mut harness = Harness::new();
+        let viewport = Viewport::new(VIEWPORT, ThemeMode::Dark);
+        harness.scale = viewport.scale;
+        petrify(
+            1,
+            validated_with(&root, &registry),
+            &mut harness.ctx(),
+            viewport,
+            TransitionActivity::default(),
+        )
+    }
+
+    fn color(theme: &Theme, name: &str) -> ColorValue {
+        match theme.value(&TokenName::new(name).unwrap()).unwrap() {
+            TokenValue::Color(c) => *c,
+            other => panic!("{name} is not a colour: {other:?}"),
+        }
+    }
+
+    fn check_geometry(frame: &PetrifiedFrame, label: &str) {
+        assert!(!frame.placements.is_empty(), "{label}: nothing placed");
+        for p in &frame.placements {
+            assert!(
+                p.rect.w > 0.0 && p.rect.h > 0.0,
+                "{label}: {} placed with a degenerate rect {:?}",
+                p.id,
+                p.rect
+            );
+            assert!(
+                !p.paint.overflowed,
+                "{label}: {} drew content larger than its own rect",
+                p.id
+            );
+            if let Some(parent_idx) = p.parent {
+                let parent = &frame.placements[parent_idx];
+                let fits = p.rect.x >= parent.rect.x - 0.01
+                    && p.rect.y >= parent.rect.y - 0.01
+                    && p.rect.x + p.rect.w <= parent.rect.x + parent.rect.w + 0.01
+                    && p.rect.y + p.rect.h <= parent.rect.y + parent.rect.h + 0.01;
+                assert!(
+                    fits,
+                    "{label}: {} (rect {:?}) extends outside its parent {} (rect {:?})",
+                    p.id, p.rect, parent.id, parent.rect
+                );
+            }
+        }
+    }
+
+    /// Check C/D across sizes, plus the invalid form. Class 4: the
+    /// steppers pin `Constraints.horizontal.min == max == height`
+    /// (`stepper`'s own doc), the Carbon icon-only hit-box number
+    /// (`_number-input.scss:153,403,416`, controls width / 2). Petra draws
+    /// the word "Increment"/"Decrement" instead of an icon (FR-026), which
+    /// does not fit inside a box pinned to the icon's own width — the same
+    /// shape as Modal's `close_button` defect. `min` stays the floor so the
+    /// tap target never shrinks below Carbon's number; `max: None` lets the
+    /// label decide the width.
+    #[test]
+    fn frame_geometry_has_no_degenerate_or_overflowing_placements() {
+        check_geometry(
+            &petrify_lone(number_input("count", "Replicas", "3")),
+            "md",
+        );
+        check_geometry(
+            &petrify_lone(number_input_sm("count", "Replicas", "3")),
+            "sm",
+        );
+        check_geometry(
+            &petrify_lone(number_input_lg("count", "Replicas", "3")),
+            "lg",
+        );
+        check_geometry(
+            &petrify_lone(number_input_invalid(
+                "count",
+                "Replicas",
+                "x",
+                "must be a number",
+            )),
+            "invalid",
+        );
+    }
+
+    /// Check F: the value field and both steppers declare `Focus` and are
+    /// reachable.
+    #[test]
+    fn value_field_and_steppers_are_reachable() {
+        let frame = petrify_lone(number_input("count", "Replicas", "3"));
+        let focus = crate::focus::FocusTree::from_placements(
+            &frame.placements,
+            &std::collections::BTreeMap::new(),
+        );
+        let order = focus.order();
+        for suffix in ["/value", "/decrement", "/increment"] {
+            let placement = frame
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with(suffix))
+                .unwrap_or_else(|| panic!("no placement ending {suffix}"));
+            assert!(
+                order.iter().any(|o| o == &placement.id),
+                "{suffix} declares Focus but is not in focus order"
+            );
+        }
+    }
+
+    /// Check E: the value text and both stepper labels against the well's
+    /// own resting fill, in both themes.
+    #[test]
+    fn well_text_clears_aa_contrast_against_its_own_fill() {
+        const MIN_TEXT_CONTRAST: f32 = 4.5;
+        for theme in [crate::token::light(), crate::token::dark()] {
+            let node = number_input("count", "Replicas", "3");
+            let well_bg_name = node
+                .props
+                .tokens
+                .get("background")
+                .expect("the well binds a resting background");
+            let well_bg = color(&theme, well_bg_name.as_str());
+            let value = child(&node, "value");
+            {
+                let fg_name = value
+                    .props
+                    .tokens
+                    .get("foreground")
+                    .expect("value text binds a foreground");
+                let opacity = value.props.opacity.unwrap_or(1.0);
+                let fg = color(&theme, fg_name.as_str()).faded(opacity).over(well_bg);
+                let ratio = fg.contrast_ratio(well_bg);
+                assert!(
+                    ratio >= MIN_TEXT_CONTRAST,
+                    "value at {ratio:.2}:1 against {} fails AA {MIN_TEXT_CONTRAST}:1",
+                    fg_name.as_str()
+                );
+            }
+            for stepper_key in ["decrement", "increment"] {
+                let stepper = child(&node, stepper_key);
+                let stepper_bg_name = stepper
+                    .props
+                    .tokens
+                    .get("background")
+                    .expect("stepper binds a resting background");
+                let stepper_bg = color(&theme, stepper_bg_name.as_str());
+                let label = child(stepper, "label");
+                let fg_name = label
+                    .props
+                    .tokens
+                    .get("foreground")
+                    .expect("stepper label binds a foreground");
+                let opacity = label.props.opacity.unwrap_or(1.0);
+                let fg = color(&theme, fg_name.as_str())
+                    .faded(opacity)
+                    .over(stepper_bg);
+                let ratio = fg.contrast_ratio(stepper_bg);
+                assert!(
+                    ratio >= MIN_TEXT_CONTRAST,
+                    "{stepper_key} label at {ratio:.2}:1 against {} fails AA {MIN_TEXT_CONTRAST}:1",
+                    fg_name.as_str()
+                );
+            }
+        }
     }
 }

@@ -230,7 +230,11 @@ mod tests {
         progress_with_helper,
     };
     use crate::component::tokens::{ACCENT_PRIMARY, BORDER_SUBTLE, TEXT_MUTED, TEXT_PRIMARY};
-    use crate::tree::{NodeKind, Role, TrackSize, ViewNode};
+    use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
+    use crate::geom::{Axis, Size};
+    use crate::testing::{Harness, validated_with};
+    use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
+    use crate::tree::{NodeKind, Props, Registry, Role, TrackSize, ViewNode};
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         node.children
@@ -371,5 +375,122 @@ mod tests {
         assert_eq!(token(helper, "foreground"), Some(TEXT_MUTED));
         let _ = child(&node, "fill");
         let _ = child(&node, "track");
+    }
+
+    const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
+
+    fn accepting_registry() -> Registry {
+        Registry::with_vocabulary(standard_vocabulary())
+    }
+
+    fn petrify_lone(node: ViewNode) -> PetrifiedFrame {
+        let root = ViewNode::new(NodeKind::Stack, "root")
+            .with_props(Props {
+                axis: Some(Axis::Vertical),
+                ..Props::default()
+            })
+            .child(node);
+        let registry = accepting_registry();
+        let mut harness = Harness::new();
+        let viewport = Viewport::new(VIEWPORT, ThemeMode::Dark);
+        harness.scale = viewport.scale;
+        petrify(
+            1,
+            validated_with(&root, &registry),
+            &mut harness.ctx(),
+            viewport,
+            TransitionActivity::default(),
+        )
+    }
+
+    fn color(theme: &Theme, name: &str) -> ColorValue {
+        match theme.value(&TokenName::new(name).unwrap()).unwrap() {
+            TokenValue::Color(c) => *c,
+            other => panic!("{name} is not a colour: {other:?}"),
+        }
+    }
+
+    /// Class 2's exact suspect: `fill` and `track` are childless swatches
+    /// (`bar_cell`'s own doc), the same shape as the Accordion divider that
+    /// petrified 0px wide. This module's own fix predates this audit (see
+    /// `a_value_of_zero_point_six_two_produces_a_non_zero_fill_weight`
+    /// above), but that test reads the *weight* prop, never a placed rect —
+    /// this is the frame-level check the audit plan requires, at 0%, a mid
+    /// value, and 100%, where the empty side's weight is
+    /// [`MIN_WEIGHT`] (0.001), the case most likely to round away to a
+    /// zero-pixel placement.
+    #[test]
+    fn fill_and_track_place_with_a_real_nonzero_rect_at_every_value() {
+        for (label, value) in [("0%", 0.0), ("62%", 0.62), ("100%", 1.0)] {
+            let frame = petrify_lone(progress("p", "Rebuild", value));
+            assert!(!frame.placements.is_empty(), "{label}: nothing placed");
+            let fill = frame
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with("/fill"))
+                .unwrap_or_else(|| panic!("{label}: no placement ending /fill"));
+            let track = frame
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with("/track"))
+                .unwrap_or_else(|| panic!("{label}: no placement ending /track"));
+            assert!(
+                fill.rect.w > 0.0 && fill.rect.h > 0.0,
+                "{label}: fill placed with a degenerate rect {:?}",
+                fill.rect
+            );
+            assert!(
+                track.rect.w > 0.0 && track.rect.h > 0.0,
+                "{label}: track placed with a degenerate rect {:?}",
+                track.rect
+            );
+            for p in &frame.placements {
+                assert!(
+                    !p.paint.overflowed,
+                    "{label}: {} drew content larger than its own rect",
+                    p.id
+                );
+                if let Some(parent_idx) = p.parent {
+                    let parent = &frame.placements[parent_idx];
+                    let fits = p.rect.x >= parent.rect.x - 0.01
+                        && p.rect.y >= parent.rect.y - 0.01
+                        && p.rect.x + p.rect.w <= parent.rect.x + parent.rect.w + 0.01
+                        && p.rect.y + p.rect.h <= parent.rect.y + parent.rect.h + 0.01;
+                    assert!(
+                        fits,
+                        "{label}: {} (rect {:?}) extends outside its parent {} (rect {:?})",
+                        p.id, p.rect, parent.id, parent.rect
+                    );
+                }
+            }
+        }
+    }
+
+    /// Check E: the label and helper text against the page ground the bar
+    /// sits on (the bar itself binds no `background` — its own doc says the
+    /// grid stays `Empty`), in both themes.
+    #[test]
+    fn label_and_helper_text_clear_aa_contrast_on_the_page_ground() {
+        const MIN_TEXT_CONTRAST: f32 = 4.5;
+        use super::super::tokens::SURFACE_BASE;
+        for theme in [crate::token::light(), crate::token::dark()] {
+            let bg = color(&theme, SURFACE_BASE);
+            let node = progress_with_helper("p", "Rebuild", 0.5, "About a minute left");
+            for label_key in ["label", "helper"] {
+                let label = child(&node, label_key);
+                let fg_name = label
+                    .props
+                    .tokens
+                    .get("foreground")
+                    .expect("label text binds a foreground");
+                let opacity = label.props.opacity.unwrap_or(1.0);
+                let fg = color(&theme, fg_name.as_str()).faded(opacity).over(bg);
+                let ratio = fg.contrast_ratio(bg);
+                assert!(
+                    ratio >= MIN_TEXT_CONTRAST,
+                    "{label_key} at {ratio:.2}:1 against page ground fails AA {MIN_TEXT_CONTRAST}:1"
+                );
+            }
+        }
     }
 }

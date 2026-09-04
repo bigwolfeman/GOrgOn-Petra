@@ -170,7 +170,11 @@ mod tests {
     use super::{
         ACCENT_PRIMARY, BORDER_SUBTLE, ICON_TOP, LINE, STEP_MIN, progress_indicator, progress_step,
     };
-    use crate::tree::{NodeKind, Role, ViewNode};
+    use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
+    use crate::geom::{Axis, Size};
+    use crate::testing::{Harness, validated_with};
+    use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
+    use crate::tree::{NodeKind, Props, Registry, Role, ViewNode};
 
     fn named<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         fn walk<'a>(node: &'a ViewNode, key: &str) -> Option<&'a ViewNode> {
@@ -257,5 +261,156 @@ mod tests {
         let top = named(&node, "icon-top");
         assert_eq!(top.constraints.vertical.min, Some(ICON_TOP));
         assert_eq!(ICON_TOP, 10.0);
+    }
+
+    const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
+
+    fn accepting_registry() -> Registry {
+        Registry::with_vocabulary(standard_vocabulary())
+    }
+
+    fn petrify_lone(node: ViewNode) -> PetrifiedFrame {
+        let root = ViewNode::new(NodeKind::Stack, "root")
+            .with_props(Props {
+                axis: Some(Axis::Vertical),
+                ..Props::default()
+            })
+            .child(node);
+        let registry = accepting_registry();
+        let mut harness = Harness::new();
+        let viewport = Viewport::new(VIEWPORT, ThemeMode::Dark);
+        harness.scale = viewport.scale;
+        petrify(
+            1,
+            validated_with(&root, &registry),
+            &mut harness.ctx(),
+            viewport,
+            TransitionActivity::default(),
+        )
+    }
+
+    fn color(theme: &Theme, name: &str) -> ColorValue {
+        match theme.value(&TokenName::new(name).unwrap()).unwrap() {
+            TokenValue::Color(c) => *c,
+            other => panic!("{name} is not a colour: {other:?}"),
+        }
+    }
+
+    /// Class 2's exact suspect: `line` is a childless swatch (this
+    /// module's own doc: "Step line — 2px"), the same shape as the
+    /// Accordion divider that petrified 0px wide. Unlike that divider,
+    /// `line` already carries an explicit `constraints.horizontal.min`
+    /// ([`LINE_MIN`]) rather than relying on the stack's natural
+    /// (zero) width — this is the frame-level check the audit plan
+    /// requires, not a substitute for reading the code, across complete,
+    /// current, not-started, and a disabled step.
+    #[test]
+    fn line_and_icon_place_with_a_real_nonzero_rect_in_every_state() {
+        let cases: Vec<(&str, ViewNode)> = vec![
+            ("complete", progress_step("a", "Choose", true, false)),
+            ("current", progress_step("b", "Configure", false, true)),
+            ("not-started", progress_step("c", "Review", false, false)),
+            (
+                "disabled",
+                crate::component::disabled(progress_step("d", "Review", false, false)),
+            ),
+        ];
+        for (label, node) in cases {
+            let frame = petrify_lone(node);
+            assert!(!frame.placements.is_empty(), "{label}: nothing placed");
+            let line = frame
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with("/line"))
+                .unwrap_or_else(|| panic!("{label}: no placement ending /line"));
+            assert!(
+                line.rect.w > 0.0 && line.rect.h > 0.0,
+                "{label}: line placed with a degenerate rect {:?}",
+                line.rect
+            );
+            let icon = frame
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with("/icon"))
+                .unwrap_or_else(|| panic!("{label}: no placement ending /icon"));
+            assert!(
+                icon.rect.w > 0.0 && icon.rect.h > 0.0,
+                "{label}: icon placed with a degenerate rect {:?}",
+                icon.rect
+            );
+            for p in &frame.placements {
+                // `icon-top` is a pure vertical-margin spacer (Carbon's
+                // `margin-block-start: 10px` on the icon row): it binds no
+                // token, draws no text, and has no children, so
+                // `paint.paint_hash` is 0 ("zero when the node draws
+                // nothing of its own", `PaintState`'s own doc). Its
+                // horizontal extent petrifies to 0 the same way the
+                // Accordion divider's did, but unlike that divider it
+                // declares no paint content to cover, so a 0px-wide rect
+                // here is inert, not a missing pixel — Check C's own
+                // wording is "no placement *that declares content*". Every
+                // content-bearing placement (`line`, `icon`, `label`) still
+                // gets the strict check above and below.
+                if p.paint.paint_hash != 0 {
+                    assert!(
+                        p.rect.w > 0.0 && p.rect.h > 0.0,
+                        "{label}: {} placed with a degenerate rect {:?}",
+                        p.id,
+                        p.rect
+                    );
+                }
+                assert!(
+                    !p.paint.overflowed,
+                    "{label}: {} drew content larger than its own rect",
+                    p.id
+                );
+                if let Some(parent_idx) = p.parent {
+                    let parent = &frame.placements[parent_idx];
+                    let fits = p.rect.x >= parent.rect.x - 0.01
+                        && p.rect.y >= parent.rect.y - 0.01
+                        && p.rect.x + p.rect.w <= parent.rect.x + parent.rect.w + 0.01
+                        && p.rect.y + p.rect.h <= parent.rect.y + parent.rect.h + 0.01;
+                    assert!(
+                        fits,
+                        "{label}: {} (rect {:?}) extends outside its parent {} (rect {:?})",
+                        p.id, p.rect, parent.id, parent.rect
+                    );
+                }
+            }
+        }
+    }
+
+    /// Check E: the label against the page ground the step sits on (the
+    /// step itself binds no `background`), in both themes. Steps declare
+    /// no `Interaction` at all (this module's own tests, `assert!(node
+    /// .interactions.is_empty())`), so there is no Check F focus case here
+    /// — see this module's own doc on the interactive variant being a
+    /// scope gap, not audited here.
+    #[test]
+    fn step_label_clears_aa_contrast_on_the_page_ground() {
+        const MIN_TEXT_CONTRAST: f32 = 4.5;
+        use super::super::tokens::SURFACE_BASE;
+        for theme in [crate::token::light(), crate::token::dark()] {
+            let bg = color(&theme, SURFACE_BASE);
+            for node in [
+                progress_step("a", "Choose", true, false),
+                progress_step("b", "Configure", false, true),
+                progress_step("c", "Review", false, false),
+            ] {
+                let label = named(&node, "label");
+                let fg_name = label
+                    .props
+                    .tokens
+                    .get("foreground")
+                    .expect("label binds a foreground");
+                let opacity = label.props.opacity.unwrap_or(1.0);
+                let fg = color(&theme, fg_name.as_str()).faded(opacity).over(bg);
+                let ratio = fg.contrast_ratio(bg);
+                assert!(
+                    ratio >= MIN_TEXT_CONTRAST,
+                    "label at {ratio:.2}:1 against page ground fails AA {MIN_TEXT_CONTRAST}:1"
+                );
+            }
+        }
     }
 }
