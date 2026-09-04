@@ -15,11 +15,13 @@
 use super::stack;
 use super::text::text;
 use super::tokens::{
-    BORDER_SUBTLE, SHAPE_SM, SIZE_MD, SPACING_03, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY,
-    TYPOGRAPHY_BODY, t,
+    BORDER_SUBTLE, SHAPE_SM, SIZE_MD, SPACING_03, SPACING_04, SURFACE_RAISED, TEXT_MUTED,
+    TEXT_PRIMARY, TYPOGRAPHY_BODY, t,
 };
 use crate::geom::{Align, Axis};
-use crate::tree::{AxisConstraint, Constraints, Interaction, Key, NodeKind, Props, Role, ViewNode};
+use crate::tree::{
+    AxisConstraint, Constraints, InsetRefs, Interaction, Key, NodeKind, Props, Role, ViewNode,
+};
 
 /// Carbon Search sm. `tokens` only ships [`SIZE_MD`] (md / 40).
 const SIZE_SM: f32 = 32.0;
@@ -60,6 +62,17 @@ fn search_sized(key: impl Into<Key>, label: impl Into<String>, height: f32) -> V
         vec![magnifier, search_field("input", label, height)],
     );
     well.props.align = Some(Align::Center);
+    // `NodeKind::Input` carries its own internal inset (`search_field`'s
+    // placeholder never touches the well's right edge in the capture), but
+    // the magnifier is a plain `text()` node with none, so it sat flush on
+    // the well's left border — SOURCED
+    // `_search.scss:128`: the real icon's leading inset is
+    // `calc((layout.size('height') - 1rem) / 2)`, which at md (40px) is
+    // (40 − 16) / 2 = 12px, i.e. `SPACING_04`.
+    well.props.padding = Some(InsetRefs {
+        left: Some(t(SPACING_04)),
+        ..InsetRefs::default()
+    });
     well.props
         .tokens
         .insert("background".into(), t(SURFACE_RAISED));

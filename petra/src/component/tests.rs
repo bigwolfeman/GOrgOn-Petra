@@ -924,7 +924,7 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
     /// Every node in [`full_gallery`] that may draw a border, by the key
     /// path it appears at. An exact set: a node missing from here that draws
     /// one fails, and a node listed here that stops drawing one fails too.
-    const DRAWS_AN_EDGE: [&str; 60] = [
+    const DRAWS_AN_EDGE: [&str; 58] = [
         // `field`: an empty well with no boundary does not read as a place
         // to type. See `field`'s own doc for why it keeps one when `button`
         // does not.
@@ -1026,14 +1026,19 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         // switcher's row above — a real measured boundary on the
         // container itself, not decoration.
         "root/carbon4/pg-first",
-        // Pagination's Previous/Next: slice-d, "Next button (both ghost
-        // icon buttons, `border-inline-start: 1px solid $border-subtle`)"
-        // — a real measured boundary between the grouped nav controls
-        // (Petra's single `border` token approximates Carbon's
-        // directional `border-inline-start` as a full outline, the same
-        // trade-off as the well above), not decoration.
-        "root/carbon4/pg-first/next",
-        "root/carbon4/pg-first/previous",
+        // Pagination's Previous/Next used to approximate Carbon's
+        // directional `border-inline-start: 1px solid $border-subtle`
+        // (slice-d) as a full 4-sided `border` token, the same trade-off
+        // as the well above. V4 audit, `23-pagination.png`: on a lone box
+        // that trade-off is harmless, but on two adjacent boxed buttons it
+        // drew a real defect — Next's own right edge plus the container's
+        // own right edge bracketed the container's trailing padding into
+        // what read as an empty fourth pagination cell. The fix is a real
+        // 1px divider element (`pagination.rs`'s `nav_divider`, the same
+        // technique `accordion`'s own `divider` uses) standing in for the
+        // one edge Carbon actually draws, so `previous`/`next` no longer
+        // bind `border` at all — the divider binds `background`, which
+        // this test does not audit.
         // Progress indicator's current and not-started status icons:
         // `marked_box`'s own class (unconditional `border` regardless of
         // fill, so the ring's silhouette does not jump size between

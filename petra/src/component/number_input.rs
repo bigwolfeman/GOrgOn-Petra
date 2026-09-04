@@ -12,8 +12,8 @@
 use super::stack;
 use super::text::text;
 use super::tokens::{
-    ACCENT_PRIMARY, BORDER_SUBTLE, SHAPE_SM, SIZE_MD, SURFACE_BASE, SURFACE_RAISED, TEXT_PRIMARY,
-    TYPOGRAPHY_BODY, t,
+    ACCENT_PRIMARY, BORDER_SUBTLE, SHAPE_SM, SIZE_MD, SPACING_05, SURFACE_BASE, SURFACE_RAISED,
+    TEXT_PRIMARY, TYPOGRAPHY_BODY, t,
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{AxisConstraint, Constraints, Interaction, Key, NodeKind, Props, Role, ViewNode};
@@ -92,10 +92,19 @@ fn number_sized(
 ) -> ViewNode {
     let label = label.into();
     let value = value.into();
+    // `None` spacing drew the value and both stepper captions flush against
+    // each other — the value "12" ran straight into the caption
+    // "Decrement" with no gap, and "Decrement" ran straight into
+    // "Increment". Carbon's own field clears `padding-inline-end:
+    // $spacing-05` (16px, MEASURED `_number-input.scss:59-66`) for its
+    // absolutely-positioned controls; FR-026 makes Petra's steppers inline
+    // siblings instead of an overlay (this module's own doc), so that same
+    // 16px becomes a real gap between each of the three cells rather than
+    // reserved padding under an overlay.
     let mut well = stack(
         key,
         Axis::Horizontal,
-        None,
+        Some(SPACING_05),
         vec![
             value_field("value", label.clone(), value, height),
             stepper("decrement", "Decrement", height),

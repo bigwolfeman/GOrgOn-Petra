@@ -13,6 +13,7 @@
 //! (page-number buttons) is a second Carbon variant and is omitted.
 
 use super::stack;
+use super::swatch;
 use super::text::text;
 use super::tokens::{
     BORDER_SUBTLE, LAYER_HOVER, SIZE_MD, SPACING_03, SPACING_05, SURFACE_RAISED, TEXT_PRIMARY, t,
@@ -24,6 +25,16 @@ use crate::tree::{AxisConstraint, Constraints, InsetRefs, Interaction, Key, Role
 const _: () = assert!(SIZE_MD == 40.0);
 
 const NAV_INTENTS: &[Interaction] = &[Interaction::Focus, Interaction::Click, Interaction::Hover];
+
+/// `border-inline-start: 1px solid $border-subtle` on each nav button,
+/// SOURCED `slice-d.md:57-58` ("Previous button, Next button (both ghost
+/// icon buttons, border-inline-start: 1px solid $border-subtle)"). Petra's
+/// token system has no single-side `border` slot (every other component
+/// binding `"border"` gets a 4-sided box — grep confirms it), so a real
+/// divider element stands in for the one edge Carbon draws, the same
+/// technique [`super::accordion`]'s own `divider` uses for its horizontal
+/// line.
+const DIVIDER_WIDTH: f32 = 1.0;
 
 /// Pagination bar at Carbon md (40). `page` is 1-indexed.
 ///
@@ -44,8 +55,23 @@ pub fn pagination(key: impl Into<Key>, page: u32, page_count: u32) -> ViewNode {
         key,
         Axis::Horizontal,
         Some(SPACING_03),
-        vec![current, previous, next],
+        vec![
+            current,
+            nav_divider("divider-previous"),
+            previous,
+            nav_divider("divider-next"),
+            next,
+        ],
     );
+    // Center, not Stretch. Stretching was tried, to make `nav_divider`
+    // span the bar's full height instead of floating as a short tick, and
+    // it was reverted: `Align` is a property of the container, not of one
+    // child, so it also stretched the "1 of 5" cell and sent its caption
+    // to the top of the bar while the two buttons stayed centred. The
+    // picture was worse than the defect. Making the rule full height
+    // needs per-child cross-axis alignment, which this engine does not
+    // have — the same gap `ai_label`'s `centered_caption` works around on
+    // the main axis.
     node.props.align = Some(Align::Center);
     node.props.padding = Some(InsetRefs {
         left: Some(t(SPACING_05)),
@@ -60,6 +86,14 @@ pub fn pagination(key: impl Into<Key>, page: u32, page_count: u32) -> ViewNode {
     node
 }
 
+/// A 1px vertical line pinned to the bar's own height, standing in for the
+/// `border-inline-start` Carbon puts on the button itself (see
+/// [`DIVIDER_WIDTH`]'s doc for why this is a sibling element and not a
+/// token binding).
+fn nav_divider(key: &'static str) -> ViewNode {
+    swatch(key, DIVIDER_WIDTH, SIZE_MD, Some(BORDER_SUBTLE), None, None)
+}
+
 fn nav_button(key: &'static str, label: &'static str, unavailable: bool) -> ViewNode {
     let mut caption = text("label", label);
     caption
@@ -69,7 +103,12 @@ fn nav_button(key: &'static str, label: &'static str, unavailable: bool) -> View
     let mut node = stack(key, Axis::Horizontal, None, vec![caption]);
     node.props.align = Some(Align::Center);
     node.props.padding = Some(pad(SPACING_05, SPACING_03));
-    node.props.tokens.insert("border".into(), t(BORDER_SUBTLE));
+    // No `border` token here: that would box the button on all four sides,
+    // which is what drew the phantom empty cell this fix removes — Next's
+    // own right edge plus the container's own right edge bracketed the
+    // container's trailing padding into what looked like a fourth,
+    // label-less pagination cell. Carbon draws one line, the left edge
+    // only (`border-inline-start`); [`nav_divider`] is that line.
     // Resting background: the bar it sits on (`pagination` binds
     // `SURFACE_RAISED`). Without this, `background@hover` has no resting
     // `background` beneath it and resolves to nothing at rest — the
@@ -126,7 +165,22 @@ mod tests {
         let node = pagination("pages", 2, 5);
         assert_eq!(node.constraints.vertical.min, Some(SIZE_MD));
         assert_eq!(SIZE_MD, 40.0);
-        assert_eq!(child_keys(&node), ["page", "previous", "next"]);
+        // V4 audit, `23-pagination.png`: nav buttons each drawing a full
+        // 4-sided `border` box left the container's own trailing padding
+        // bracketed into what looked like an empty fourth cell after
+        // "Next". The fix drops the per-button box for a single divider
+        // line before each button (Carbon's `border-inline-start`), which
+        // is now a real sibling node, not a token on `previous`/`next`.
+        assert_eq!(
+            child_keys(&node),
+            [
+                "page",
+                "divider-previous",
+                "previous",
+                "divider-next",
+                "next"
+            ]
+        );
 
         let previous = child(&node, "previous");
         assert_eq!(previous.semantics.role, Some(Role::Button));
