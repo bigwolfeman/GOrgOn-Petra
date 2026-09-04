@@ -28,7 +28,9 @@ use super::tokens::{
     SPACING_05, SURFACE_BASE, SURFACE_RAISED, TEXT_PRIMARY, t,
 };
 use crate::geom::{Align, Axis};
-use crate::tree::{Interaction, Key, Role, Semantics, ViewNode};
+use crate::tree::{
+    InsetRefs, Interaction, Key, NodeKind, Props, Role, Semantics, TrackSize, ViewNode,
+};
 
 /// Carbon extra-small row height.
 const HEIGHT_XS: f32 = 24.0;
@@ -74,6 +76,15 @@ pub fn data_table(key: impl Into<Key>, header: Vec<ViewNode>, rows: Vec<ViewNode
     let mut children = vec![header_row("header", header, RowSize::Md)];
     children.extend(rows.into_iter().map(ensure_row));
     let mut node = stack(key, Axis::Vertical, None, children);
+    // Every row is a `Grid` (see `row_shell`) whose equal-weight column
+    // tracks resolve against whatever width `place` offers it. Without
+    // `Stretch` here, each row is measured at its own natural content
+    // width — the picture showed three different row widths stair-
+    // stepping ("kernelruntime" 160px wide, "petralayout" 145px, the
+    // header 120px). `Stretch` offers every row the table's own width,
+    // so sibling rows resolve the *same* column pixel widths: the same
+    // fix `accordion.rs`/`contained_list.rs` used for a ragged list.
+    node.props.align = Some(Align::Stretch);
     node.semantics = Semantics {
         role: Some(Role::Table),
         ..Semantics::default()
@@ -224,6 +235,12 @@ pub fn data_table_sort_header(
     button.semantics.value = Some(direction.into());
 
     let mut cell = stack(key, Axis::Horizontal, None, vec![button]);
+    // `as_cell` (`row_shell`) leaves a pre-built `Role::Cell` node alone,
+    // so this cell needs the same `padding-inline: $spacing-05` every
+    // other cell gets, or the sort header would be the one column in the
+    // table with its text flush against the next column's gap.
+    cell.props.padding = Some(cell_padding_inline());
+    cell.props.align = Some(Align::Center);
     cell.semantics = Semantics {
         role: Some(Role::Cell),
         ..Semantics::default()
@@ -267,17 +284,52 @@ fn header_row(key: impl Into<Key>, cells: Vec<ViewNode>, size: RowSize) -> ViewN
     node
 }
 
+/// One row's cells, laid out as a `Grid` of `ncols` equal [`TrackSize::Weight`]
+/// columns rather than a bare `Axis::Horizontal` stack.
+///
+/// The picture (`09-data-table.png`) showed `NameKind` with no gap and
+/// `kernel`/`runtime` in row 1 not lining up under `petra`/`layout` in row
+/// 2: a horizontal stack sizes each cell to its own text, so column 2's x
+/// depends on how wide column 1's *own row* happened to be. A `Grid` with
+/// shared column tracks fixes both at once — every cell in column *i*
+/// resolves the same width, in every row, because they are the same track.
+/// `data_table` gives every row's `Grid` the identical `Stretch`-offered
+/// width, so the tracks resolve to identical pixels row to row. Carbon
+/// gives no per-column width (usage/style pages), so an equal split is the
+/// least-invented default.
 fn row_shell(key: impl Into<Key>, cells: Vec<ViewNode>, size: RowSize) -> ViewNode {
+    let ncols = cells.len().max(1);
     let cells = cells
         .into_iter()
         .enumerate()
         .map(|(i, cell)| as_cell(i, cell))
         .collect();
-    let mut node = stack(key, Axis::Horizontal, None, cells);
-    node.props.align = Some(Align::Center);
-    node.props.padding = Some(pad(SPACING_05, SPACING_03));
+    let mut node = ViewNode::new(NodeKind::Grid, key)
+        .with_props(Props {
+            columns: vec![TrackSize::Weight { weight: 1.0 }; ncols],
+            rows: vec![TrackSize::Weight { weight: 1.0 }],
+            align: Some(Align::Stretch),
+            ..Props::default()
+        })
+        .with_children(cells);
     node.constraints.vertical.min = Some(size.height());
     node
+}
+
+/// `padding-inline: $spacing-05 $spacing-05` (MEASURED
+/// `th, td { padding-inline: $spacing-05 $spacing-05 }`,
+/// `.agents/research/08-25-2026/Carbon-Component-Inventory/slice-b.md`
+/// line 81). Block (top/bottom) is unset: the row's own fixed height
+/// plus `Align::Center` on the cell (vertical centering, cross-axis of
+/// its horizontal stack) does that job, matching the style page's "row/
+/// column-header text vertically centered" rather than double-padding
+/// a fixed-height row.
+fn cell_padding_inline() -> InsetRefs {
+    InsetRefs {
+        left: Some(t(SPACING_05)),
+        right: Some(t(SPACING_05)),
+        ..InsetRefs::default()
+    }
 }
 
 fn as_cell(index: usize, node: ViewNode) -> ViewNode {
@@ -285,6 +337,8 @@ fn as_cell(index: usize, node: ViewNode) -> ViewNode {
         return node;
     }
     let mut wrap = stack(format!("c{index}"), Axis::Horizontal, None, vec![node]);
+    wrap.props.padding = Some(cell_padding_inline());
+    wrap.props.align = Some(Align::Center);
     wrap.semantics = Semantics {
         role: Some(Role::Cell),
         ..Semantics::default()
