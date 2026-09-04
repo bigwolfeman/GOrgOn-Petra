@@ -25,13 +25,29 @@ with zero spacing beside another rect is a legal frame record.
 ## Layout
 
 - `main.rs` — the eframe entry point.
-- `catalog.rs` — `Catalog`, the application: roster, page state, chrome (nav
-  list, Prev/Next, the page header). Parent-owned; component groups do not
-  edit it.
+- `catalog.rs` — `Catalog`, the chrome only: roster, open page, index pane,
+  Prev/Next, the page header, `seat_index_focus`. It holds no control state
+  and names no component; it reaches the open page through `page::Page`.
+  Parent-owned; component groups do not edit it.
+- `page/` — one module per inventory row (`page/toggle.rs` is row 36). Each
+  module owns its state struct (private fields), its node-id constants, its
+  `body()`, its `handle()` and its own tests. A fix to one row edits that
+  row's file and nothing else.
+  - `page/mod.rs` — the `Page` trait, and `all()`, the roster of pages in
+    inventory order. Adding a row is one new file, one line in `all()`, and
+    the row in `inventory.rs`. `Page::handle` receives the **full** routed
+    node path, not its last segment: a press on a knob names the knob, so
+    match with `common::path_has`. The chrome asks the open page before its
+    own Prev/Next, because Pagination's `pager/next` shares a segment with
+    the chrome's `next`.
+  - `page/common.rs` — what several pages share: `sp`, `tok`, `column`,
+    `row`, `body`, `wrapped`, `path_has`, and the test-only `find`. Import
+    from here; do not copy.
 - `cell.rs` — one `Cell` per inventory row, and `Content` saying what that row
   can hand back. `BUILT` is a test-only hand-written cross-check against
   `xtask`'s `BUILT_COMPONENTS`; keep the two in lockstep.
 - `inventory.rs` — the 42 rows, in order. The source of truth for row numbers.
+- `shots.rs` — the headless `Camera` driver (test-only); see below.
 
 ## Watch for
 

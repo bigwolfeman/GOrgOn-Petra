@@ -4,39 +4,28 @@
 //! Petra ships today. This binary is the 42-row Carbon inventory. Wave 1
 //! rows (Wave 1 and Wave 2) are built constructors. The rest say so in
 //! words rather than drawing a stand-in.
+//!
+//! This file is the chrome only: the roster, the open page, the index pane,
+//! Prev/Next and the page header. Every row's own page — its state, node
+//! ids, body and handler — is a module under `page/`, reached through
+//! [`Page`].
 
 use std::ops::Range;
 use std::sync::Arc;
 
 use egui::ViewportBuilder;
-use gorgon_petra::component::{
-    accordion, accordion_item, ai_label, ai_label_revert, breadcrumb, breadcrumb_item, button,
-    button_lg, button_sm, checkbox, checkbox_group, checkbox_indeterminate, checkbox_readonly,
-    clickable_tile, code_snippet, code_snippet_inline, contained_list, contained_tab,
-    contained_tab_bar, content_switcher, content_switcher_item, danger_button, data_table,
-    data_table_row, date_picker, dismissible_tag, dropdown, expandable_tile, field, field_invalid,
-    field_lg, field_readonly, field_sm, file_uploader, file_uploader_item, form, ghost_button,
-    heading, inline_loading, link, list_item, list_item_with, list_row, loading, loading_sm,
-    menu_button, menu_item, modal, notification, number_input, on_layer, ordered_list, pagination,
-    primary_button, progress, progress_indicator, progress_sm, progress_step, progress_with_helper,
-    radio, radio_group, search, section, select, selectable_tag, selectable_tile, slider,
-    structured_list, structured_list_row, tab, tab_bar, tag, tertiary_button, text, tile, toggle,
-    toggle_sm, toggletip, tree_item, tree_view, ui_shell_header, ui_shell_header_action,
-    ui_shell_header_menu_trigger, ui_shell_header_nav_item, ui_shell_left_panel,
-    ui_shell_left_panel_item, ui_shell_left_panel_subitem, ui_shell_right_panel_divider,
-    ui_shell_switcher_item, unordered_list, vertical_tab, vertical_tab_bar,
-};
+use gorgon_petra::component::{button, heading, list_row, on_layer, text};
 use gorgon_petra::geom::{Align, Axis};
 use gorgon_petra::input::{InputEvent, KeyCode, PointerButton, Route, activates};
 use gorgon_petra::layout::{ChangeSet, RowSource};
-use gorgon_petra::token::TokenName;
 use gorgon_petra::tree::{
-    AxisConstraint, Constraints, InsetRefs, Interaction, NodeKind, Props, Role, TextWrap,
-    TrackSize, ViewNode,
+    AxisConstraint, Constraints, InsetRefs, Interaction, NodeKind, Props, Role, TrackSize, ViewNode,
 };
 use gorgon_petra_egui::host::{App, Host, default_presenter};
 
-use crate::cell::{Cell, Content};
+use crate::cell::Cell;
+use crate::page::common::{column, path_has, row, sp, tok, wrapped};
+use crate::page::{self, Page};
 
 /// Inner size an interactive catalog window asks for. Not a layout pin: the
 /// host lays out at whatever the compositor grants.
@@ -44,38 +33,10 @@ pub(crate) const WINDOW: [f32; 2] = [1200.0, 900.0];
 
 const PREV: &str = "prev";
 const NEXT: &str = "next";
-const TOGGLE_DEFAULT_OFF: &str = "toggle-default-off";
-const TOGGLE_DEFAULT_ON: &str = "toggle-default-on";
-const TOGGLE_SM_OFF: &str = "toggle-sm-off";
-const TOGGLE_SM_ON: &str = "toggle-sm-on";
-const CHECK_A: &str = "check-a";
-const CHECK_B: &str = "check-b";
-const RADIO_A: &str = "radio-a";
-const RADIO_B: &str = "radio-b";
-const TAB_LINE_0: &str = "tab-line-0";
-const TAB_LINE_1: &str = "tab-line-1";
-const TAB_CONT_0: &str = "tab-cont-0";
-const TAB_CONT_1: &str = "tab-cont-1";
-const TILE_SEL: &str = "tile-sel";
-const TILE_EXP: &str = "tile-exp";
-const ACC_0: &str = "acc-0";
-const SW_0: &str = "sw-0";
-const SW_1: &str = "sw-1";
-const TAG_SEL: &str = "tag-sel";
 /// Key prefix for a row in the left index (`idx-36` is Toggle).
 const IDX: &str = "idx-";
 /// Width of the scrolling index pane, logical units.
 const INDEX_WIDTH: f32 = 240.0;
-
-/// A spacing token reference, for the styling props that take one (FR-053).
-fn sp(name: &str) -> Option<TokenName> {
-    Some(TokenName::new(name).expect("catalog spacing tokens are well-formed"))
-}
-
-/// A colour or type token reference, for `props.tokens` values.
-fn tok(name: &str) -> TokenName {
-    TokenName::new(name).expect("catalog style tokens are well-formed")
-}
 
 /// Symmetric padding from two spacing steps, horizontal first — the same
 /// argument order [`InsetRefs::symmetric`] uses.
@@ -99,61 +60,35 @@ fn activated(event: &InputEvent) -> bool {
         )
 }
 
-fn path_has(node: &str, key: &str) -> bool {
-    node.split('/').any(|part| part == key)
-}
-
 fn path_idx(node: &str) -> Option<u8> {
     node.split('/')
         .find_map(|part| part.strip_prefix(IDX)?.parse().ok())
 }
 
-/// The catalog application: paging chrome plus live control state.
+/// The catalog application: the paging chrome over the 42 pages.
+///
+/// Holds no control state of its own. Every control lives in the page
+/// module that draws it (`page/`), and this struct reaches it only through
+/// [`Page`].
 pub struct Catalog {
     roster: Vec<Cell>,
+    /// Index into `roster` of the open row.
     page: usize,
-    default_off: bool,
-    default_on: bool,
-    small_off: bool,
-    small_on: bool,
-    check_a: bool,
-    check_b: bool,
-    radio: u8,
-    line_tab: u8,
-    contained_tab: u8,
-    tile_sel: bool,
-    tile_exp: bool,
-    acc_open: bool,
-    switcher: u8,
-    tag_sel: bool,
-    pager: u32,
+    /// One page per row, from [`page::all`], found by [`Page::row`].
+    pages: Vec<Box<dyn Page>>,
 }
 
 impl Default for Catalog {
     fn default() -> Self {
         let roster = Cell::roster();
-        let page = roster
+        let open = roster
             .iter()
             .position(|cell| cell.row.component == "Toggle")
             .expect("the Toggle row is in the inventory");
         Self {
             roster,
-            page,
-            default_off: false,
-            default_on: true,
-            small_off: false,
-            small_on: true,
-            check_a: true,
-            check_b: false,
-            radio: 0,
-            line_tab: 0,
-            contained_tab: 0,
-            tile_sel: false,
-            tile_exp: false,
-            acc_open: true,
-            switcher: 0,
-            tag_sel: false,
-            pager: 1,
+            page: open,
+            pages: page::all(),
         }
     }
 }
@@ -197,6 +132,41 @@ impl Catalog {
         &self.roster[self.page]
     }
 
+    /// Where in `pages` the open row's page is, or `None` when the row is
+    /// unbuilt and there is no page to show.
+    ///
+    /// # Panics
+    /// If the row is built and no module in [`page::all`] claims it. That
+    /// is a wiring error `page::tests` catches before it can happen live,
+    /// and drawing nothing in its place would hide it.
+    fn open_page_index(&self) -> Option<usize> {
+        let cell = self.current();
+        if !cell.is_built() {
+            return None;
+        }
+        let index = self
+            .pages
+            .iter()
+            .position(|page| page.row() == cell.row.component)
+            .unwrap_or_else(|| {
+                panic!(
+                    "row {} ({}) is built but no module in page::all claims it",
+                    cell.row.number, cell.row.component
+                )
+            });
+        Some(index)
+    }
+
+    fn open_page(&self) -> Option<&dyn Page> {
+        let index = self.open_page_index()?;
+        Some(self.pages[index].as_ref())
+    }
+
+    fn open_page_mut(&mut self) -> Option<&mut dyn Page> {
+        let index = self.open_page_index()?;
+        Some(self.pages[index].as_mut())
+    }
+
     fn prev(&mut self) {
         self.page = if self.page == 0 {
             self.roster.len() - 1
@@ -226,7 +196,7 @@ impl Catalog {
                 list_row(key, label, i == self.page)
             })
             .collect();
-        let mut list = Self::column("rows", sp("spacing.2xs"), rows);
+        let mut list = column("rows", sp("spacing.2xs"), rows);
         // Without this, `rows` is a `Grid` whose single column is a weighted
         // track (fills `INDEX_WIDTH`) but whose *children* still align
         // `Start` in it — each row is measured at its own text's width, not
@@ -259,52 +229,6 @@ impl Catalog {
             },
             ..Constraints::default()
         })
-    }
-
-    /// A vertical run of blocks, each as tall as it needs to be.
-    ///
-    /// A single-column `Grid`, not a `Stack`. A vertical `Stack` placed at
-    /// an exact height divides that height among its children by equal
-    /// share; a `Grid`'s implicit rows are `FitContent`. See
-    /// `examples/gallery.rs` `Gallery::column`.
-    fn column(key: &str, spacing: Option<TokenName>, children: Vec<ViewNode>) -> ViewNode {
-        ViewNode::new(NodeKind::Grid, key)
-            .with_props(Props {
-                columns: vec![TrackSize::Weight { weight: 1.0 }],
-                row_spacing: spacing,
-                ..Props::default()
-            })
-            .with_children(children)
-    }
-
-    fn row(key: &str, spacing: Option<TokenName>, children: Vec<ViewNode>) -> ViewNode {
-        ViewNode::new(NodeKind::Stack, key)
-            .with_props(Props {
-                axis: Some(Axis::Horizontal),
-                spacing,
-                align: Some(Align::Center),
-                ..Props::default()
-            })
-            .with_children(children)
-    }
-
-    /// The body of a [`section`]: a column that outranks the section's title
-    /// when the section divides its height.
-    fn body(key: &str, spacing: Option<TokenName>, children: Vec<ViewNode>) -> ViewNode {
-        Self::column(key, spacing, children).with_constraints(Constraints {
-            vertical: AxisConstraint {
-                min: None,
-                max: None,
-                priority: 1,
-            },
-            ..Constraints::default()
-        })
-    }
-
-    fn wrapped(key: &str, content: impl Into<String>) -> ViewNode {
-        let mut node = text(key, content);
-        node.props.wrap = Some(TextWrap::Wrap);
-        node
     }
 
     /// Re-seat a mounted component's fills against the card it sits on.
@@ -347,10 +271,10 @@ impl Catalog {
 
     fn page_body_raw(&self) -> ViewNode {
         let cell = self.current();
-        match cell.content {
-            Content::Unbuilt => {
+        match self.open_page() {
+            None => {
                 let letter = cell.row.slice.letter().to_ascii_lowercase();
-                Self::wrapped(
+                wrapped(
                     "unbuilt",
                     format!(
                         "This inventory row is unbuilt. No Petra component exists for {}. \
@@ -360,683 +284,7 @@ impl Catalog {
                     ),
                 )
             }
-            Content::Accordion => section(
-                "items",
-                "Items",
-                vec![Self::body(
-                    "accordion",
-                    sp("spacing.md"),
-                    vec![accordion(
-                        "acc",
-                        vec![
-                            accordion_item(ACC_0, "First section", self.acc_open, "Hidden body."),
-                            accordion_item("acc-1", "Second section", false, "Still closed."),
-                        ],
-                    )],
-                )],
-            ),
-            Content::AiLabel => section(
-                "ai",
-                "Triggers (closed)",
-                vec![Self::body(
-                    "ai-body",
-                    sp("spacing.md"),
-                    vec![
-                        // Closed form only: `open: true` mounts the
-                        // explainability popover via `Anchor::Node`, which the
-                        // catalog cannot validate nested in a page (see the
-                        // Popover/Toggletip/Tooltip pages below for the same
-                        // workaround).
-                        //
-                        // `ai_label_inline` is NOT shown here: its trigger
-                        // (`ai_label.rs::inline_trigger`) sets `props.padding`
-                        // on the "AI" caption, which is a `text` leaf —
-                        // `validate` refuses a leaf declaring padding it has
-                        // no children to apply. This is a pre-existing defect
-                        // in `ai_label.rs`, which this integration task does
-                        // not own or edit; reported separately.
-                        ai_label(
-                            "ai-default",
-                            "Confidence score",
-                            false,
-                            "Trained on ticket history.",
-                        ),
-                        ai_label_revert("ai-revert", "Revert to AI suggestion"),
-                    ],
-                )],
-            ),
-            Content::Breadcrumb => section(
-                "trail",
-                "Trail",
-                vec![Self::body(
-                    "crumbs",
-                    sp("spacing.md"),
-                    vec![breadcrumb(
-                        "crumbs",
-                        vec![
-                            breadcrumb_item("bc-0", "Workspace"),
-                            breadcrumb_item("bc-1", "Fibers"),
-                            breadcrumb_item("bc-2", "Rebuild"),
-                        ],
-                    )],
-                )],
-            ),
-            Content::Button => section(
-                "variants",
-                "Variants and sizes",
-                vec![Self::body(
-                    "buttons",
-                    sp("spacing.md"),
-                    vec![
-                        Self::row(
-                            "kinds",
-                            sp("spacing.md"),
-                            vec![
-                                primary_button("btn-primary", "Primary"),
-                                button("btn-default", "Default"),
-                                tertiary_button("btn-tertiary", "Tertiary"),
-                                ghost_button("btn-ghost", "Ghost"),
-                                danger_button("btn-danger", "Danger"),
-                            ],
-                        ),
-                        Self::row(
-                            "sizes",
-                            sp("spacing.md"),
-                            vec![
-                                button_sm("btn-sm", "Small 32"),
-                                button("btn-md", "Medium 40"),
-                                button_lg("btn-lg", "Large 48"),
-                            ],
-                        ),
-                    ],
-                )],
-            ),
-            Content::CodeSnippet => section(
-                "snippets",
-                "Single, inline",
-                vec![Self::body(
-                    "code",
-                    sp("spacing.md"),
-                    vec![
-                        code_snippet("snip", "pcargo test -p gorgon-petra --lib"),
-                        code_snippet_inline("snip-in", "Role::List"),
-                    ],
-                )],
-            ),
-            Content::ContainedList => section(
-                "on-page",
-                "On-page header",
-                vec![Self::body(
-                    "contained",
-                    sp("spacing.md"),
-                    vec![contained_list(
-                        "cl",
-                        "Recent",
-                        vec![list_item("cl-0", "Trace"), list_item("cl-1", "Store")],
-                    )],
-                )],
-            ),
-            Content::ContentSwitcher => section(
-                "switcher",
-                "Switcher",
-                vec![Self::body(
-                    "switch",
-                    sp("spacing.md"),
-                    vec![content_switcher(
-                        "sw",
-                        vec![
-                            content_switcher_item(SW_0, "List", self.switcher == 0),
-                            content_switcher_item(SW_1, "Grid", self.switcher == 1),
-                        ],
-                    )],
-                )],
-            ),
-            Content::DataTable => section(
-                "table",
-                "Data table",
-                vec![Self::body(
-                    "dt",
-                    sp("spacing.md"),
-                    vec![data_table(
-                        "dt",
-                        vec![text("h0", "Name"), text("h1", "Kind")],
-                        vec![
-                            data_table_row(
-                                "dt-0",
-                                vec![text("c0", "kernel"), text("c1", "runtime")],
-                                false,
-                            ),
-                            data_table_row(
-                                "dt-1",
-                                vec![text("c0", "petra"), text("c1", "layout")],
-                                true,
-                            ),
-                        ],
-                    )],
-                )],
-            ),
-            Content::DatePicker => section(
-                "date",
-                "Closed date picker",
-                vec![Self::body(
-                    "dp",
-                    sp("spacing.md"),
-                    vec![date_picker("when", "Date", "2026-08-30")],
-                )],
-            ),
-            Content::Dropdown => section(
-                "drop",
-                "Closed dropdown",
-                vec![Self::body(
-                    "dd",
-                    sp("spacing.md"),
-                    vec![dropdown("dd", "Theme", "Dark")],
-                )],
-            ),
-            Content::FileUploader => section(
-                "files",
-                "Uploader",
-                vec![Self::body(
-                    "fu",
-                    sp("spacing.md"),
-                    vec![
-                        // The heading, not the zone prompt. `file_uploader`
-                        // draws "Drop files here" inside the zone itself, so
-                        // passing that same string here printed it twice on
-                        // `12-file-uploader.png`, once as a heading and once
-                        // in the box below it.
-                        file_uploader("fu", "Upload a trace"),
-                        file_uploader_item("fu-0", "trace.ndjson", true),
-                    ],
-                )],
-            ),
-            Content::Form => section(
-                "form",
-                "Form",
-                vec![Self::body(
-                    "form-body",
-                    sp("spacing.md"),
-                    vec![form(
-                        "demo-form",
-                        "Fiber",
-                        vec![
-                            field("form-name", "Name"),
-                            checkbox("form-ok", "Enabled", true),
-                        ],
-                    )],
-                )],
-            ),
-            Content::InlineLoading => section(
-                "inline",
-                "Inline loading",
-                vec![Self::body(
-                    "il",
-                    sp("spacing.md"),
-                    vec![
-                        inline_loading("il-on", "Saving", true),
-                        inline_loading("il-off", "Saved", false),
-                    ],
-                )],
-            ),
-            Content::Link => section(
-                "links",
-                "Link",
-                vec![Self::body(
-                    "link-row",
-                    sp("spacing.md"),
-                    vec![link("docs", "Open the spec")],
-                )],
-            ),
-            Content::Checkbox => section(
-                "states",
-                "States",
-                vec![Self::body(
-                    "checks",
-                    sp("spacing.md"),
-                    vec![checkbox_group(
-                        "check-group",
-                        "Notifications",
-                        vec![
-                            checkbox(CHECK_A, "Email", self.check_a),
-                            checkbox(CHECK_B, "Push", self.check_b),
-                            checkbox_indeterminate("check-mixed", "Mixed"),
-                            checkbox_readonly("check-ro", "Read only", true),
-                        ],
-                    )],
-                )],
-            ),
-            Content::Loading => section(
-                "spinner",
-                "Loading",
-                vec![Self::body(
-                    "load",
-                    sp("spacing.md"),
-                    vec![
-                        loading("load-lg", "Working"),
-                        loading_sm("load-sm", "Working"),
-                    ],
-                )],
-            ),
-            Content::List => section(
-                "kinds",
-                "Ordered, unordered, nested",
-                vec![Self::body(
-                    "lists",
-                    sp("spacing.md"),
-                    vec![
-                        unordered_list(
-                            "ul",
-                            vec![
-                                list_item("ul-0", "Inbox"),
-                                list_item_with(
-                                    "ul-1",
-                                    "Archive",
-                                    Some(unordered_list(
-                                        "ul-nested",
-                                        vec![
-                                            list_item("ul-1-0", "2025"),
-                                            list_item("ul-1-1", "2026"),
-                                        ],
-                                    )),
-                                ),
-                            ],
-                        ),
-                        ordered_list(
-                            "ol",
-                            vec![
-                                list_item("ol-0", "Clone"),
-                                list_item("ol-1", "Build"),
-                                list_item("ol-2", "Run"),
-                            ],
-                        ),
-                    ],
-                )],
-            ),
-            Content::Menu => section(
-                "menu",
-                "Menu items",
-                vec![Self::body(
-                    "mn",
-                    sp("spacing.md"),
-                    vec![menu_item("mn-0", "Rename"), menu_item("mn-1", "Delete")],
-                )],
-            ),
-            Content::MenuButtons => section(
-                "mb",
-                "Menu button",
-                vec![Self::body(
-                    "mb-body",
-                    sp("spacing.md"),
-                    vec![menu_button(
-                        "mb",
-                        "More",
-                        false,
-                        vec![menu_item("mb-0", "Duplicate")],
-                    )],
-                )],
-            ),
-            Content::Modal => section(
-                "dialog",
-                "Modal",
-                vec![Self::body(
-                    "md",
-                    sp("spacing.md"),
-                    vec![modal("md", "Confirm rebuild", "This unloads the fiber.")],
-                )],
-            ),
-            Content::Notification => section(
-                "note",
-                "Notification",
-                vec![Self::body(
-                    "nt",
-                    sp("spacing.md"),
-                    vec![notification(
-                        "nt",
-                        "Rebuild finished",
-                        "12 fibers reloaded.",
-                    )],
-                )],
-            ),
-            Content::NumberInput => section(
-                "number",
-                "Number input",
-                vec![Self::body(
-                    "num",
-                    sp("spacing.md"),
-                    vec![number_input("n-md", "Count", "12")],
-                )],
-            ),
-            Content::Pagination => section(
-                "pager",
-                "Pagination",
-                vec![Self::body(
-                    "pages",
-                    sp("spacing.md"),
-                    vec![pagination("pager", self.pager, 5)],
-                )],
-            ),
-            Content::Popover => section(
-                "pop",
-                "Popover chrome",
-                vec![Self::body(
-                    "po",
-                    sp("spacing.md"),
-                    vec![
-                        button("pop-anchor", "Anchor"),
-                        Self::wrapped("pop-body", "Anchored note (constructor sets Anchor::Node)."),
-                    ],
-                )],
-            ),
-            Content::ProgressBar => section(
-                "bars",
-                "Determinate",
-                vec![Self::body(
-                    "progress",
-                    sp("spacing.md"),
-                    vec![
-                        progress("prog-big", "Rebuild", 0.62),
-                        progress_sm("prog-sm", "Upload", 0.25),
-                        progress_with_helper("prog-help", "Index", 1.0, "Complete"),
-                    ],
-                )],
-            ),
-            Content::ProgressIndicator => section(
-                "steps",
-                "Steps",
-                vec![Self::body(
-                    "pi",
-                    sp("spacing.md"),
-                    vec![progress_indicator(
-                        "pi",
-                        vec![
-                            progress_step("st-0", "Clone", true, false),
-                            progress_step("st-1", "Build", false, true),
-                            progress_step("st-2", "Run", false, false),
-                        ],
-                    )],
-                )],
-            ),
-            Content::RadioButton => section(
-                "group",
-                "Group",
-                vec![Self::body(
-                    "radios",
-                    sp("spacing.md"),
-                    vec![radio_group(
-                        "radio-group",
-                        "Theme",
-                        vec![
-                            radio(RADIO_A, "Dark", self.radio == 0),
-                            radio(RADIO_B, "Light", self.radio == 1),
-                        ],
-                    )],
-                )],
-            ),
-            Content::Search => section(
-                "search",
-                "Search",
-                vec![Self::body(
-                    "q",
-                    sp("spacing.md"),
-                    vec![search("q", "Filter fibers")],
-                )],
-            ),
-            Content::Select => section(
-                "select",
-                "Closed select",
-                vec![Self::body(
-                    "sel",
-                    sp("spacing.md"),
-                    vec![select("theme", "Theme", "Dark")],
-                )],
-            ),
-            Content::Slider => section(
-                "slide",
-                "Slider",
-                vec![Self::body(
-                    "slid",
-                    sp("spacing.md"),
-                    vec![slider("vol", "Volume", 0.4)],
-                )],
-            ),
-            Content::StructuredList => section(
-                "table",
-                "Structured list",
-                vec![Self::body(
-                    "sl",
-                    sp("spacing.md"),
-                    vec![structured_list(
-                        "sl",
-                        vec![text("h0", "Name"), text("h1", "Role")],
-                        vec![
-                            structured_list_row(
-                                "sl-0",
-                                vec![text("c0", "kernel"), text("c1", "runtime")],
-                                false,
-                            ),
-                            structured_list_row(
-                                "sl-1",
-                                vec![text("c0", "petra"), text("c1", "layout")],
-                                true,
-                            ),
-                        ],
-                    )],
-                )],
-            ),
-            Content::Tabs => section(
-                "strips",
-                "Line, contained, vertical",
-                vec![Self::body(
-                    "tabs",
-                    sp("spacing.md"),
-                    vec![
-                        tab_bar(
-                            "line-strip",
-                            vec![
-                                tab(TAB_LINE_0, "Fibers", self.line_tab == 0),
-                                tab(TAB_LINE_1, "Trace", self.line_tab == 1),
-                            ],
-                        ),
-                        contained_tab_bar(
-                            "cont-strip",
-                            vec![
-                                contained_tab(TAB_CONT_0, "One", self.contained_tab == 0),
-                                contained_tab(TAB_CONT_1, "Two", self.contained_tab == 1),
-                            ],
-                        ),
-                        vertical_tab_bar(
-                            "vert-strip",
-                            vec![
-                                vertical_tab("tab-vert-0", "North", true),
-                                vertical_tab("tab-vert-1", "South", false),
-                            ],
-                        ),
-                    ],
-                )],
-            ),
-            Content::Tag => section(
-                "tags",
-                "Tags",
-                vec![Self::body(
-                    "tag-row",
-                    sp("spacing.md"),
-                    vec![
-                        tag("tag-ro", "Read only"),
-                        dismissible_tag("tag-x", "Filter"),
-                        // Two fixed instances, unselected and selected: the
-                        // page's own interactive `TAG_SEL` only ever shows
-                        // one state at a time (defaults false), so a capture
-                        // could not show whether selectable_tag's selected
-                        // and unselected fills are distinguishable — the
-                        // A5 colour-channel audit's own defect in the
-                        // catalog, not the component.
-                        selectable_tag("tag-sel-off", "Unselected", false),
-                        selectable_tag("tag-sel-on", "Selected", true),
-                        selectable_tag(TAG_SEL, "Selectable", self.tag_sel),
-                    ],
-                )],
-            ),
-            Content::TextInput => section(
-                "fields",
-                "Default sizes and states",
-                vec![Self::body(
-                    "inputs",
-                    sp("spacing.md"),
-                    vec![
-                        field("field-md", "Fiber name"),
-                        field_sm("field-sm", "Small"),
-                        field_lg("field-lg", "Large"),
-                        field_invalid("field-bad", "Port", "must be a number"),
-                        field_readonly("field-ro", "Read only"),
-                    ],
-                )],
-            ),
-            Content::Tile => section(
-                "kinds",
-                "Base, clickable, selectable, expandable",
-                vec![Self::body(
-                    "tiles",
-                    sp("spacing.md"),
-                    vec![
-                        tile("tile-base", "A static tile holds related content."),
-                        clickable_tile(
-                            "tile-click",
-                            "Open workspace",
-                            "Clickable tile — one target.",
-                        ),
-                        selectable_tile(TILE_SEL, "Select this option", self.tile_sel),
-                        expandable_tile(
-                            TILE_EXP,
-                            "More detail",
-                            self.tile_exp,
-                            "Below-the-fold body.",
-                        ),
-                    ],
-                )],
-            ),
-            Content::Toggletip => section(
-                "tt",
-                "Toggletip",
-                vec![Self::body(
-                    "tt-body",
-                    sp("spacing.md"),
-                    vec![toggletip("tt", "Why", false, "Because the spec says so.")],
-                )],
-            ),
-            Content::Tooltip => section(
-                "tip",
-                "Tooltip",
-                vec![Self::body(
-                    "tip-body",
-                    sp("spacing.md"),
-                    vec![Self::wrapped("tip-text", "Save writes the composition.")],
-                )],
-            ),
-            Content::TreeView => section(
-                "tree",
-                "Tree view",
-                vec![Self::body(
-                    "tv",
-                    sp("spacing.md"),
-                    vec![tree_view(
-                        "tv",
-                        vec![tree_item(
-                            "tv-0",
-                            "gorgon",
-                            true,
-                            false,
-                            vec![tree_item("tv-0-0", "petra", false, true, vec![])],
-                        )],
-                    )],
-                )],
-            ),
-            Content::UiShellHeader => section(
-                "shell-header-section",
-                "Header",
-                vec![Self::body(
-                    "shell-header-body",
-                    sp("spacing.md"),
-                    vec![ui_shell_header(
-                        "shell-header",
-                        "GOrgOn",
-                        Some(ui_shell_header_menu_trigger("shell-menu", false)),
-                        vec![
-                            ui_shell_header_nav_item("shell-nav-overview", "Overview", true),
-                            ui_shell_header_nav_item("shell-nav-fibers", "Fibers", false),
-                        ],
-                        vec![
-                            ui_shell_header_action("shell-action-notify", "Notifications", false),
-                            ui_shell_header_action("shell-action-switcher", "App switcher", false),
-                        ],
-                    )],
-                )],
-            ),
-            Content::UiShellLeftPanel => section(
-                "shell-left-section",
-                "Fixed panel",
-                vec![Self::body(
-                    "shell-left-body",
-                    sp("spacing.md"),
-                    vec![ui_shell_left_panel(
-                        "shell-left",
-                        vec![
-                            ui_shell_left_panel_item(
-                                "shell-left-kernel",
-                                "Kernel",
-                                true,
-                                false,
-                                vec![ui_shell_left_panel_subitem(
-                                    "shell-left-fibers",
-                                    "Fibers",
-                                    false,
-                                )],
-                            ),
-                            ui_shell_left_panel_item(
-                                "shell-left-petra",
-                                "Petra",
-                                false,
-                                true,
-                                vec![],
-                            ),
-                        ],
-                    )],
-                )],
-            ),
-            Content::UiShellRightPanel => section(
-                "shell-right-section",
-                "Switcher trigger and items",
-                vec![Self::body(
-                    "shell-right-body",
-                    sp("spacing.md"),
-                    vec![
-                        // `ui_shell_right_panel`/`ui_shell_switcher` build a
-                        // `Surface` anchored via `Anchor::Node`, the same
-                        // open-anchored-overlay shape the catalog cannot
-                        // validate nested in a page (see the Popover page
-                        // above). The trigger and the switcher's own rows
-                        // (plain buttons, no anchor) are shown standalone
-                        // instead of inside the anchored panel.
-                        ui_shell_header_action("shell-switcher-trigger", "App switcher", false),
-                        ui_shell_switcher_item("shell-switcher-petra", "Petra"),
-                        ui_shell_right_panel_divider("shell-switcher-div"),
-                        ui_shell_switcher_item("shell-switcher-inspector", "Inspector"),
-                    ],
-                )],
-            ),
-            Content::Toggle => section(
-                "states",
-                "States",
-                vec![Self::body(
-                    "toggles",
-                    sp("spacing.md"),
-                    vec![
-                        toggle(TOGGLE_DEFAULT_OFF, "Default off", self.default_off),
-                        toggle(TOGGLE_DEFAULT_ON, "Default on", self.default_on),
-                        toggle_sm(TOGGLE_SM_OFF, "Small off", self.small_off),
-                        toggle_sm(TOGGLE_SM_ON, "Small on", self.small_on),
-                    ],
-                )],
-            ),
+            Some(page) => page.body(),
         }
     }
 }
@@ -1054,17 +302,17 @@ impl App for Catalog {
         let slice = format!("slice {}", cell.row.slice.letter());
         let status = if cell.is_built() { "BUILT" } else { "UNBUILT" };
 
-        let mut main = Self::column(
+        let mut main = column(
             "main",
             sp("spacing.xl"),
             vec![
                 heading("title", title),
-                Self::column(
+                column(
                     "meta",
                     sp("spacing.sm"),
                     vec![text("slice", slice), text("status", status)],
                 ),
-                Self::row(
+                row(
                     "nav",
                     sp("spacing.md"),
                     vec![button(PREV, "Prev"), button(NEXT, "Next")],
@@ -1162,54 +410,22 @@ impl App for Catalog {
             self.go_to(number);
             return;
         }
-        if path_has(node, "pager") && path_has(node, "previous") {
-            if self.pager > 1 {
-                self.pager -= 1;
-            }
-        } else if path_has(node, "pager") && path_has(node, "next") {
-            if self.pager < 5 {
-                self.pager += 1;
-            }
-        } else if path_has(node, PREV) {
+        // The open page is asked before the chrome's own Prev/Next, not
+        // after. Pagination's own next button routes as `pager/next` and
+        // `NEXT` is `next`, so a chrome-first `path_has` would page the
+        // catalog on a press meant for the pager. That is the precedence
+        // the one `else if` chain had before the split into `page/`, kept
+        // rather than re-decided.
+        if self
+            .open_page_mut()
+            .is_some_and(|page| page.handle(event, node))
+        {
+            return;
+        }
+        if path_has(node, PREV) {
             self.prev();
         } else if path_has(node, NEXT) {
             self.next();
-        } else if path_has(node, TOGGLE_DEFAULT_OFF) {
-            self.default_off = !self.default_off;
-        } else if path_has(node, TOGGLE_DEFAULT_ON) {
-            self.default_on = !self.default_on;
-        } else if path_has(node, TOGGLE_SM_OFF) {
-            self.small_off = !self.small_off;
-        } else if path_has(node, TOGGLE_SM_ON) {
-            self.small_on = !self.small_on;
-        } else if path_has(node, CHECK_A) {
-            self.check_a = !self.check_a;
-        } else if path_has(node, CHECK_B) {
-            self.check_b = !self.check_b;
-        } else if path_has(node, RADIO_A) {
-            self.radio = 0;
-        } else if path_has(node, RADIO_B) {
-            self.radio = 1;
-        } else if path_has(node, TAB_LINE_0) {
-            self.line_tab = 0;
-        } else if path_has(node, TAB_LINE_1) {
-            self.line_tab = 1;
-        } else if path_has(node, TAB_CONT_0) {
-            self.contained_tab = 0;
-        } else if path_has(node, TAB_CONT_1) {
-            self.contained_tab = 1;
-        } else if path_has(node, TILE_SEL) {
-            self.tile_sel = !self.tile_sel;
-        } else if path_has(node, TILE_EXP) {
-            self.tile_exp = !self.tile_exp;
-        } else if path_has(node, ACC_0) {
-            self.acc_open = !self.acc_open;
-        } else if path_has(node, SW_0) {
-            self.switcher = 0;
-        } else if path_has(node, SW_1) {
-            self.switcher = 1;
-        } else if path_has(node, TAG_SEL) {
-            self.tag_sel = !self.tag_sel;
         }
     }
 
@@ -1338,23 +554,15 @@ pub fn run() -> eframe::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        Catalog, Cell, Content, IDX, NEXT, PREV, TOGGLE_DEFAULT_OFF, TOGGLE_DEFAULT_ON,
-        TOGGLE_SM_OFF, TOGGLE_SM_ON, WINDOW, seat_index_focus,
-    };
+    use super::{Catalog, Cell, IDX, NEXT, PREV, WINDOW, seat_index_focus};
+    use crate::cell::Content;
+    use crate::page::common::find;
     use egui::{Context, Pos2, RawInput};
     use gorgon_petra::geom::{Point, Size};
     use gorgon_petra::input::{InputEvent, KeyCode, Modifiers, PointerButton, Route};
     use gorgon_petra::tree::ViewNode;
     use gorgon_petra_egui::host::{App, Host, default_presenter};
     use gorgon_petra_egui::inject::{Action, Target, inject_action};
-
-    fn find<'a>(node: &'a ViewNode, key: &str) -> Option<&'a ViewNode> {
-        if node.key.as_str() == key {
-            return Some(node);
-        }
-        node.children.iter().find_map(|child| find(child, key))
-    }
 
     fn tree_contains_text(node: &ViewNode, needle: &str) -> bool {
         node.props
@@ -1454,10 +662,11 @@ mod tests {
         assert!(tree_contains_text(&tree, "36  Toggle"));
         assert!(tree_contains_text(&tree, "slice F"));
         assert!(tree_contains_text(&tree, "BUILT"));
-        assert!(find(&tree, TOGGLE_DEFAULT_OFF).is_some());
-        assert!(find(&tree, TOGGLE_DEFAULT_ON).is_some());
-        assert!(find(&tree, TOGGLE_SM_OFF).is_some());
-        assert!(find(&tree, TOGGLE_SM_ON).is_some());
+        // The page body is the Toggle page's: `page::toggle` owns these ids.
+        assert!(find(&tree, "toggle-default-off").is_some());
+        assert!(find(&tree, "toggle-default-on").is_some());
+        assert!(find(&tree, "toggle-sm-off").is_some());
+        assert!(find(&tree, "toggle-sm-on").is_some());
     }
 
     #[test]
@@ -1492,45 +701,6 @@ mod tests {
     }
 
     #[test]
-    fn clicking_a_toggle_flips_application_state() {
-        let mut app = Catalog::default();
-        assert!(
-            !find(&app.view(), TOGGLE_DEFAULT_OFF)
-                .unwrap()
-                .semantics
-                .selected
-        );
-        assert!(
-            find(&app.view(), TOGGLE_DEFAULT_ON)
-                .unwrap()
-                .semantics
-                .selected
-        );
-        assert!(!find(&app.view(), TOGGLE_SM_OFF).unwrap().semantics.selected);
-        assert!(find(&app.view(), TOGGLE_SM_ON).unwrap().semantics.selected);
-
-        press(&mut app, TOGGLE_DEFAULT_OFF);
-        press(&mut app, TOGGLE_DEFAULT_ON);
-        press(&mut app, TOGGLE_SM_OFF);
-        press(&mut app, TOGGLE_SM_ON);
-
-        assert!(
-            find(&app.view(), TOGGLE_DEFAULT_OFF)
-                .unwrap()
-                .semantics
-                .selected
-        );
-        assert!(
-            !find(&app.view(), TOGGLE_DEFAULT_ON)
-                .unwrap()
-                .semantics
-                .selected
-        );
-        assert!(find(&app.view(), TOGGLE_SM_OFF).unwrap().semantics.selected);
-        assert!(!find(&app.view(), TOGGLE_SM_ON).unwrap().semantics.selected);
-    }
-
-    #[test]
     fn an_unbuilt_page_names_the_slice_file_and_does_not_fake_a_component() {
         // All 42 inventory rows are built constructors as of this change
         // (`cell::BUILT` covers every row), so there is no live unbuilt row
@@ -1553,7 +723,7 @@ mod tests {
         assert!(tree_contains_text(&tree, "UNBUILT"));
         assert!(tree_contains_text(&tree, "slice-a.md"));
         assert!(tree_contains_text(&tree, "unbuilt"));
-        assert!(find(&tree, TOGGLE_DEFAULT_OFF).is_none());
+        assert!(find(&tree, "toggle-default-off").is_none());
         accepted(&tree);
     }
 
@@ -2124,38 +1294,50 @@ mod tests {
         );
     }
 
-    /// A press on a child of the toggle (the knob) must still flip it.
+    /// A routed press inside the open page reaches that page's handler,
+    /// through the real full path a physical pointer produces and on a
+    /// descendant (the knob), not the interactive root. This is the
+    /// delegation seam the split into `page/` introduced; that the page
+    /// itself flips is `page::toggle`'s own test.
     #[test]
-    fn a_press_on_the_knob_flips_the_toggle() {
+    fn a_routed_press_inside_the_open_page_reaches_that_page() {
         let mut app = Catalog::default();
-        assert!(!app.default_off);
-        app.handle(
-            &InputEvent::PointerPressed {
-                pos: Point::ZERO,
-                button: PointerButton::Primary,
-                modifiers: Modifiers::NONE,
-            },
-            &Route::Pointer {
-                node: "/page/shell/main-scroll/main/states/toggles/toggle-default-off/appearance/track/knob"
-                    .into(),
-            },
+        let knob =
+            "/page/shell/main-scroll/main/states/toggles/toggle-default-off/appearance/track/knob";
+        assert!(
+            !find(&app.view(), "toggle-default-off")
+                .unwrap()
+                .semantics
+                .selected
         );
-        assert!(app.default_off, "a press on the knob must flip the control");
         app.handle(
             &InputEvent::PointerPressed {
                 pos: Point::ZERO,
                 button: PointerButton::Primary,
                 modifiers: Modifiers::NONE,
             },
-            &Route::Pointer {
-                node: "/page/shell/main-scroll/main/states/toggles/toggle-default-off/appearance/track/knob"
-                    .into(),
-            },
+            &Route::Pointer { node: knob.into() },
         );
         assert!(
-            !app.default_off,
-            "a second press on the same knob must flip again"
+            find(&app.view(), "toggle-default-off")
+                .unwrap()
+                .semantics
+                .selected,
+            "the chrome accepted the press but never handed it to the open page"
         );
+    }
+
+    /// Pagination's own next button routes as `.../pager/next`, and the
+    /// chrome's Next is `next`. The page must win, or a press on the pager
+    /// turns the page of the catalog instead. Pins the precedence the split
+    /// preserved from the old `else if` chain.
+    #[test]
+    fn a_press_on_the_pagers_own_next_does_not_page_the_catalog() {
+        let mut app = Catalog::on_page("Pagination");
+        press(&mut app, "pager/pages/pager/next");
+        assert_eq!(app.current().row.component, "Pagination");
+        press(&mut app, NEXT);
+        assert_eq!(app.current().row.component, "Popover");
     }
 
     #[test]
@@ -2344,96 +1526,6 @@ mod tests {
             "these pages rasterized to a single flat colour, so whatever their \
              frame record says, nothing reached the screen:\n{}",
             flat.join("\n")
-        );
-    }
-
-    /// A strip too narrow for its tabs clips, and never clips a label.
-    ///
-    /// This is the falsification for `component::tabs::scrollable_row`. The
-    /// defect it guards shipped for months and read as a normal tab bar: a
-    /// tab's `TrackSize::FitContent` column was a preference the strip
-    /// could squeeze, so at 900x700 the inspector's own tab labels were
-    /// silently cut with no ellipsis and no sign anything was missing.
-    ///
-    /// The assertion is on `paint.overflowed`, the same flag
-    /// `gorgon-inspector`'s `layout_overlap` census reads: a text run that
-    /// drew more than its own rect is lost text. Revert `scrollable_row`
-    /// to a plain `Stack` and this fails naming the label.
-    ///
-    /// `PETRA_SHOT_DIR` also writes the picture, because the frame record
-    /// cannot show that a clipped strip still looks like a tab bar.
-    #[test]
-    fn a_strip_too_narrow_for_its_tabs_clips_without_clipping_a_label() {
-        use gorgon_petra::component::{tab, tab_bar};
-        use gorgon_petra::layout::{ChangeSet, RowSource};
-        use std::ops::Range;
-        use std::sync::Arc;
-
-        struct Probe;
-        impl RowSource for Probe {
-            fn rows(&mut self, _source: &str, _range: Range<usize>) -> Vec<Arc<ViewNode>> {
-                Vec::new()
-            }
-        }
-        impl App for Probe {
-            fn view(&mut self) -> ViewNode {
-                tab_bar(
-                    "strip",
-                    vec![
-                        tab("t1", "Approvals pending review", false),
-                        tab("t2", "Recent leaks and findings", true),
-                        tab("t3", "History", false),
-                        tab("t4", "Logs", false),
-                    ],
-                )
-            }
-            fn handle(&mut self, _event: &InputEvent, _route: &Route) {}
-            fn take_changes(&mut self) -> ChangeSet {
-                ChangeSet::All
-            }
-        }
-
-        let dir = std::env::var_os("PETRA_SHOT_DIR").map(std::path::PathBuf::from);
-        if let Some(dir) = &dir {
-            std::fs::create_dir_all(dir).expect("shot dir");
-        }
-        let narrow = egui::vec2(340.0, 120.0);
-        let input = RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, narrow)),
-            ..RawInput::default()
-        };
-
-        let ctx = Context::default();
-        ctx.run_ui(input.clone(), |_| {})
-            .drop_without_applying_deltas();
-        let mut host = Host::new(&ctx, Probe, default_presenter());
-        ctx.run_ui(input.clone(), |_| host.pass(&ctx))
-            .drop_without_applying_deltas();
-        host.set_reduced_motion(true);
-        let output = ctx.run_ui(input, |_| host.pass(&ctx));
-
-        let mut shooter = gorgon_petra_testkit::snapshot::Snapshotter::new();
-        let shot = shooter
-            .capture(&ctx, &output, host.frame().expect("a frame"), None)
-            .expect("capture refused");
-        output.drop_without_applying_deltas();
-
-        if let Some(dir) = &dir {
-            std::fs::write(dir.join("narrow-tab-strip.png"), &shot.png).expect("write shot");
-        }
-
-        let frame = host.frame().expect("a frame");
-        let clipped: Vec<&str> = frame
-            .placements
-            .iter()
-            .filter(|p| p.paint.overflowed)
-            .map(|p| p.id.as_str())
-            .collect();
-        assert!(
-            clipped.is_empty(),
-            "a strip narrower than its tabs must clip the STRIP, never a \
-             label: these drew more than their own rect and lost text:\n{}",
-            clipped.join("\n")
         );
     }
 }

@@ -27,6 +27,7 @@ mod cat;
 mod catalog;
 mod cell;
 mod inventory;
+mod page;
 #[cfg(test)]
 mod shots;
 
