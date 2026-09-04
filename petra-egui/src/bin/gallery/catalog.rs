@@ -17,7 +17,7 @@ use gorgon_petra::component::{
     data_table_row, date_picker, dismissible_tag, dropdown, expandable_tile, field, field_invalid,
     field_lg, field_readonly, field_sm, file_uploader, file_uploader_item, form, ghost_button,
     heading, inline_loading, link, list_item, list_item_with, list_row, loading, loading_sm,
-    menu_button, menu_item, modal, notification, number_input, ordered_list, pagination,
+    menu_button, menu_item, modal, notification, number_input, on_layer, ordered_list, pagination,
     primary_button, progress, progress_indicator, progress_sm, progress_step, progress_with_helper,
     radio, radio_group, search, section, select, selectable_tag, selectable_tile, slider,
     structured_list, structured_list_row, tab, tab_bar, tag, tertiary_button, text, tile, toggle,
@@ -273,7 +273,45 @@ impl Catalog {
         node
     }
 
+    /// Re-seat a mounted component's fills against the card it sits on.
+    ///
+    /// Components that mean "disappear into the page ground" bind
+    /// `surface.base`, and `component::on_layer` is the documented way a
+    /// caller re-seats that against the surface it actually placed the
+    /// control on. This catalog puts every component inside a
+    /// `surface.raised` card and never called it, so `15-link.png` drew a
+    /// dark patch behind "Open the spec" and `18-menu.png` drew one behind
+    /// each menu item: base-coloured fills sitting on a raised ground.
+    ///
+    /// `on_layer` re-seats one node, so this walks. Depth is a flat 1 for
+    /// the whole subtree rather than counting nesting, which is honest
+    /// about what it is: the card is one step up from the page, and a
+    /// component that nests its own surfaces deeper needs the `Surface`
+    /// node kind `on_layer`'s own doc names as the real fix.
+    fn seated(mut node: ViewNode, depth: usize) -> ViewNode {
+        node.children = node
+            .children
+            .into_iter()
+            .map(|child| Arc::new(Self::seated(ViewNode::clone(&child), depth)))
+            .collect();
+        on_layer(node, depth)
+    }
+
+    /// The card's own contents, re-seated; the card itself keeps its fill.
+    fn seat_card(mut card: ViewNode) -> ViewNode {
+        card.children = card
+            .children
+            .into_iter()
+            .map(|child| Arc::new(Self::seated(ViewNode::clone(&child), 1)))
+            .collect();
+        card
+    }
+
     fn page_body(&self) -> ViewNode {
+        Self::seat_card(self.page_body_raw())
+    }
+
+    fn page_body_raw(&self) -> ViewNode {
         let cell = self.current();
         match cell.content {
             Content::Unbuilt => {

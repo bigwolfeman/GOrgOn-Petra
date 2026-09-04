@@ -43,12 +43,18 @@ const CLOSE_INTENTS: &[Interaction] = &[Interaction::Focus, Interaction::Click, 
 /// `body` is the message. Close is a labelled button, not an icon.
 pub fn modal(key: impl Into<Key>, label: impl Into<String>, body: impl Into<String>) -> ViewNode {
     let label = label.into();
-    let header = stack(
+    let mut header = stack(
         "header",
         Axis::Horizontal,
         Some(SPACING_05),
         vec![heading("title", label.clone()), close_button()],
     );
+    // `V3 visual audit, 20-modal.png`: without this the header's default
+    // top alignment left `title` (a single line of text) pinned to the
+    // row's top edge while `close_button`'s 48px-tall hit box centred its
+    // own caption inside itself — same pattern `contained_list.rs`'s
+    // `header` already guards against with the identical call.
+    header.props.align = Some(Align::Center);
     let mut content = stack(
         "content",
         Axis::Vertical,

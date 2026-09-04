@@ -32,7 +32,10 @@ enum Level {
 }
 
 /// An unordered list. Level-1 markers are en dashes. `Role::List`, no
-/// interactions, container `margin-inline-start` [`SPACING_05`].
+/// interactions. Indent is per-item ([`SPACING_05`] on each
+/// [`list_item`]/[`list_item_with`], see that doc), not a container margin —
+/// a bare `list_item` reused as a [`super::contained_list`] row needs the
+/// same inset without an `unordered_list` wrapper.
 pub fn unordered_list(key: impl Into<Key>, items: Vec<ViewNode>) -> ViewNode {
     let mut node = stack(
         key,
@@ -40,7 +43,6 @@ pub fn unordered_list(key: impl Into<Key>, items: Vec<ViewNode>) -> ViewNode {
         None,
         stamp_items(items, Kind::Unordered, Level::One),
     );
-    pad_inline_start(&mut node, SPACING_05);
     node.semantics = Semantics {
         role: Some(Role::List),
         ..Semantics::default()
@@ -73,6 +75,16 @@ pub fn list_item(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
 
 /// [`list_item`] plus an optional nested [`unordered_list`] / [`ordered_list`].
 ///
+/// Every top-level item gets [`SPACING_05`] `padding-left`, SOURCED
+/// `slice-a.md` Contained list "Key numbers": "List item: `padding-left`/
+/// `right` 16px (`$spacing-05`)" — the same figure list.rs's own container
+/// used to carry (see `unordered_list`'s history), now moved onto the item
+/// so a bare [`list_item`] lines up whether it sits under `unordered_list`,
+/// `ordered_list`, or a [`super::contained_list`] header (both get
+/// `padding-left: $spacing-05`, so a raw row and the header it sits under
+/// now share one left edge). [`stamp_items`] overwrites this to
+/// [`SPACING_02`] for a nested (level-2) item, so the two never stack.
+///
 /// Nested indent is Carbon's 32px (`spacing-07`) on the nested container and
 /// [`SPACING_02`] on each nested item (T070: SCSS wins over the style-page
 /// `$spacing-05`). Nested unordered markers become the small square; nested
@@ -84,15 +96,22 @@ pub fn list_item_with(
 ) -> ViewNode {
     let label = label.into();
     match nested {
-        None => with_list_item_role(item_row(key, MARKER_UNORDERED_L1, &label), label),
+        None => with_list_item_role(pad_item(item_row(key, MARKER_UNORDERED_L1, &label)), label),
         Some(nested) => {
             let row = item_row("row", MARKER_UNORDERED_L1, &label);
             with_list_item_role(
-                stack(key, Axis::Vertical, None, vec![row, nest(nested)]),
+                pad_item(stack(key, Axis::Vertical, None, vec![row, nest(nested)])),
                 label,
             )
         }
     }
+}
+
+/// Default level-1 item inset. See [`list_item_with`] doc for the source
+/// and why [`stamp_items`]'s level-2 override is safe against this.
+fn pad_item(mut node: ViewNode) -> ViewNode {
+    pad_inline_start(&mut node, SPACING_05);
+    node
 }
 
 fn with_list_item_role(mut node: ViewNode, label: String) -> ViewNode {
@@ -222,7 +241,7 @@ fn pad_inline_start(node: &mut ViewNode, token: &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        MARKER_UNORDERED_L1, MARKER_UNORDERED_L2, SPACING_02, SPACING_07, list_item,
+        MARKER_UNORDERED_L1, MARKER_UNORDERED_L2, SPACING_02, SPACING_05, SPACING_07, list_item,
         list_item_with, marker_text, ordered_list, unordered_list,
     };
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
@@ -278,6 +297,22 @@ mod tests {
         assert!(node.interactions.is_empty());
         assert!(!node.is_interactive());
         assert_eq!(marker_text(&node), Some(MARKER_UNORDERED_L1));
+    }
+
+    /// V3 visual audit, `07-contained-list.png`: `contained_list`'s header
+    /// carries `padding-left: SPACING_05` (`contained_list.rs`), but a row
+    /// built from a bare `list_item` (as the catalog does, not wrapped in
+    /// `unordered_list`) had none, so "Recent" sat 17px right of "Trace" /
+    /// "Store". SOURCED `slice-a.md` Contained list: "List item:
+    /// `padding-left`/`right` 16px (`$spacing-05`)". A standalone item now
+    /// carries that inset itself so it lines up with the header without
+    /// needing a list wrapper.
+    #[test]
+    fn standalone_item_carries_spacing_05_left_inset() {
+        assert_eq!(
+            padding_left(&super::list_item("a", "Alpha")),
+            Some(SPACING_05)
+        );
     }
 
     #[test]
