@@ -63,8 +63,6 @@ const CHECKBOX_BOX: f32 = 16.0;
 /// Carbon radio appearance (`_radio-button.scss`): 18×18. T070 prefers SCSS
 /// over the style-page 20.
 const RADIO_BOX: f32 = 18.0;
-/// Carbon selected-dot is `transform: scale(0.5)` of the 18px circle.
-const RADIO_DOT: f32 = 9.0;
 /// Indeterminate dash inside the 16px box: a short bar, not a tick.
 const CHECKBOX_DASH_W: f32 = 8.0;
 const CHECKBOX_DASH_H: f32 = 2.0;
@@ -247,24 +245,39 @@ pub fn checkbox_group(
 
 /// A radio button: one choice among a group, drawn as an 18×18 circle.
 ///
-/// Selected: the keyed `"box"` fills with [`ACCENT_PRIMARY`] (Petra/tests
-/// contract) and nests an inner dot as Carbon's second channel. The inner
-/// dot binds [`TEXT_PRIMARY`] (`$icon-primary`). Unselected: fill `None`,
-/// outline [`BORDER_SUBTLE`] (the 2026-08-25 edge contract).
+/// Selected: the keyed `"box"` fills solid with [`ACCENT_PRIMARY`].
+/// Unselected: fill `None`, outline [`BORDER_SUBTLE`] (the 2026-08-25 edge
+/// contract). So the two states differ as **solid disc against empty ring**,
+/// which is a shape channel and survives greyscale — it does not lean on the
+/// blue at all.
+///
+/// # Why there is no inner dot
+///
+/// Carbon draws the selected radio as a ring with a concentric dot, scaling
+/// the 18px circle by `0.5` to get a 9px one. Petra drew that, and it came out
+/// visibly wrong: 18 minus 9 is 9, so the centring inset is **4.5**, the dot
+/// lands on a half-pixel, and at 1x the painter snaps it up and to the left.
+/// On a 9px mark half a pixel is an eighth of its width, and the operator read
+/// it as an off-centre dot on 2026-09-04 — correctly. The layout was exact
+/// (box and dot both centred on 305.0, both axes); only the rasterization was
+/// not, which is why every frame-record assertion over this component passed
+/// while it looked broken.
+///
+/// Filling the circle is the operator's call and it removes the odd inset
+/// rather than rounding it away, so there is no half-pixel left to snap.
+/// Carbon's own ring-plus-dot is the thing given up. Restoring it needs either
+/// an even dot size, which stops being Carbon's `scale(0.5)`, or pixel
+/// snapping for small marks in the painter — see
+/// `.agents/notes/proposed/bug-fix/2026-09-04-a-half-pixel-inset-snaps-a-small-mark-off-centre.md`.
 pub fn radio(key: impl Into<Key>, label: impl Into<String>, selected: bool) -> ViewNode {
     let box_node = if selected {
-        marked_box(
+        swatch(
+            "box",
             RADIO_BOX,
-            ACCENT_PRIMARY,
-            SHAPE_FULL,
-            swatch(
-                "dot",
-                RADIO_DOT,
-                RADIO_DOT,
-                Some(TEXT_PRIMARY),
-                None,
-                Some(SHAPE_FULL),
-            ),
+            RADIO_BOX,
+            Some(ACCENT_PRIMARY),
+            Some(BORDER_SUBTLE),
+            Some(SHAPE_FULL),
         )
     } else {
         empty_mark(RADIO_BOX, SHAPE_FULL)
@@ -499,17 +512,47 @@ mod tests {
         );
     }
 
+    /// A selected radio is a solid accent disc; an unselected one is an empty
+    /// ring. The two states must differ by **fill**, not only by hue.
+    ///
+    /// The operator is red-green colour blind, so a difference carried by
+    /// colour alone is a difference he cannot see. Filled against empty is a
+    /// shape channel: it survives greyscale, and it is what this asserts.
+    ///
+    /// It also asserts the box has no children, which is the [`radio`] doc's
+    /// half-pixel argument made executable. Nesting a 9px dot in the 18px
+    /// circle puts the centring inset on 4.5 and the painter snaps the mark
+    /// off-centre at 1x. Any future child here reintroduces that unless its
+    /// size keeps `(18 - size) / 2` whole, so the assertion names the
+    /// constraint rather than the one shape that happened to break it.
     #[test]
-    fn a_selected_radio_keeps_accent_on_the_box_and_nests_a_dot() {
-        let node = radio("r", "On", true);
-        let box_node = named(&node, "box");
+    fn a_selected_radio_is_a_solid_disc_and_an_unselected_one_is_an_empty_ring() {
+        let on = radio("r", "On", true);
+        let box_node = named(&on, "box");
         assert_eq!(
             box_node.props.tokens.get("background").map(|t| t.as_str()),
             Some(ACCENT_PRIMARY)
         );
-        named(&node, "dot");
+        assert!(
+            box_node.children.is_empty(),
+            "the selected radio nests {} child(ren). An inner mark of width w \
+             centres on an inset of (18 - w) / 2, and any odd w puts that on a \
+             half-pixel the 1x painter snaps away from centre — the defect the \
+             operator reported on 2026-09-04.",
+            box_node.children.len()
+        );
+
         let off = radio("r", "Off", false);
-        assert!(!named(&off, "box").props.tokens.contains_key("background"));
+        let off_box = named(&off, "box");
+        assert!(
+            !off_box.props.tokens.contains_key("background"),
+            "an unselected radio must stay unfilled, or selection is carried \
+             by hue alone and a colour blind reader loses it"
+        );
+        assert!(
+            off_box.props.tokens.contains_key("border"),
+            "an unfilled radio still has to be visible, so it keeps its ring"
+        );
     }
 
     #[test]
