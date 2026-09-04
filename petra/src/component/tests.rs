@@ -19,9 +19,11 @@ use super::tokens::{ACCENT_PRIMARY, BORDER_SUBTLE, TEXT_ON_ACCENT};
 use super::{
     MAX_LAYER_DEPTH, accordion, accordion_item, ai_label, ai_label_inline, breadcrumb,
     breadcrumb_item, button, checkbox, code_snippet, code_snippet_inline, code_snippet_multi,
-    contained_list, contained_list_disclosed, disabled, field, heading, layer_tokens, list_item,
-    list_row, on_layer, primary_button, progress, radio, section, status, tab, tab_bar, text, tile,
-    toggle, toggle_sm, unordered_list,
+    contained_list, contained_list_disclosed, content_switcher, content_switcher_item, data_table,
+    data_table_row, data_table_row_expandable, data_table_sort_header, date_picker, disabled,
+    dropdown, dropdown_option, field, file_uploader, file_uploader_item, form, heading,
+    inline_loading, layer_tokens, list_item, list_row, on_layer, primary_button, progress, radio,
+    section, status, tab, tab_bar, text, tile, toggle, toggle_sm, unordered_list,
 };
 
 const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
@@ -103,6 +105,71 @@ fn full_gallery() -> ViewNode {
         ],
     );
 
+    // Group 2's own seven (content switcher, data table, date picker,
+    // dropdown, file uploader, form, inline loading). Date picker's and
+    // dropdown's open forms cannot mount here for the same reason AI
+    // label's cannot: `Anchor::Node` names a bare child key, not a full
+    // canonical path, so a constructor cannot know its own mount point
+    // (see `.agents/notes/proposed/architecture/
+    // 2026-09-03-anchored-components-cannot-name-their-own-anchor.md`), so
+    // both stay closed. `dropdown_option` is not itself anchored, so it is
+    // included standalone the way a caller would place it inside the menu.
+    let carbon2 = section(
+        "carbon2",
+        "Carbon (group 2)",
+        vec![
+            content_switcher(
+                "cs",
+                vec![
+                    content_switcher_item("cs-list", "List", true),
+                    content_switcher_item("cs-grid", "Grid", false),
+                    disabled(content_switcher_item("cs-detail", "Detail", false)),
+                ],
+            ),
+            data_table(
+                "dt-jobs",
+                vec![
+                    data_table_sort_header("dt-h0", "Name", true),
+                    text("dt-h1", "Status"),
+                ],
+                vec![
+                    data_table_row(
+                        "dt-r0",
+                        vec![text("dt-n0", "alpha"), text("dt-s0", "ready")],
+                        false,
+                    ),
+                    data_table_row(
+                        "dt-r1",
+                        vec![text("dt-n1", "bravo"), text("dt-s1", "ready")],
+                        true,
+                    ),
+                    data_table_row_expandable(
+                        "dt-r2",
+                        vec![text("dt-n2", "charlie")],
+                        false,
+                        true,
+                        "more detail",
+                    ),
+                    disabled(data_table_row(
+                        "dt-r3",
+                        vec![text("dt-n3", "delta")],
+                        false,
+                    )),
+                ],
+            ),
+            date_picker("dp-due", "Due date", "2026-08-30"),
+            dropdown("dd-theme", "Theme", "Dark"),
+            dropdown_option("dd-opt-a", "Dark", true),
+            dropdown_option("dd-opt-b", "Light", false),
+            file_uploader("fu-up", "Upload files"),
+            file_uploader_item("fu-f0", "notes.txt", true),
+            file_uploader_item("fu-f1", "report.pdf", false),
+            form("fm-signup", "Account", vec![field("fm-name", "Name")]),
+            inline_loading("il-save", "Saving", true),
+            inline_loading("il-saved", "Saved", false),
+        ],
+    );
+
     let tabs = section(
         "tabs",
         "Tabs",
@@ -148,6 +215,7 @@ fn full_gallery() -> ViewNode {
         .child(text("intro", "every shipped component, once"))
         .child(controls)
         .child(carbon)
+        .child(carbon2)
         .child(tabs)
         .child(readouts)
         .child(list);
@@ -586,7 +654,7 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
     /// Every node in [`full_gallery`] that may draw a border, by the key
     /// path it appears at. An exact set: a node missing from here that draws
     /// one fails, and a node listed here that stops drawing one fails too.
-    const DRAWS_AN_EDGE: [&str; 9] = [
+    const DRAWS_AN_EDGE: [&str; 21] = [
         // `field`: an empty well with no boundary does not read as a place
         // to type. See `field`'s own doc for why it keeps one when `button`
         // does not.
@@ -618,6 +686,51 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         // The inline variant (`ai-inline`) is the sibling case that does
         // *not* draw one: its leading bullet dot is the boundary instead.
         "root/carbon/ai-default/trigger",
+        // Content switcher's own row: Carbon's `.cds--content-switcher`
+        // 1px `$border-subtle` outline (MEASURED `_content-switcher.scss`;
+        // see `content_switcher.rs`'s module doc, anatomy #1). The row is a
+        // container, but this is a real measured boundary, not decoration —
+        // the same class as `field` rather than a card or a strip.
+        "root/carbon2/cs",
+        // Dropdown's and date picker's closed fields: `SURFACE_RAISED` +
+        // `BORDER_SUBTLE`, the same `field`-class pairing and the same
+        // reason — a raised fill one layer ahead of its ground is not
+        // enough contrast on its own (`field`'s own doc has the
+        // measurement), and these are input-shaped wells before anything is
+        // typed or chosen.
+        "root/carbon2/dd-theme",
+        "root/carbon2/dp-due",
+        // Data table: Carbon's own row-bottom rule (MEASURED
+        // `_data-table.scss`), the same class as the Accordion item
+        // divider above — a table with no rule between its rows does not
+        // read as a table. `header` (raised) and every body row (base,
+        // selected, expandable, disabled) all carry it; `data_table_row_sized`
+        // and `header_row` bind it unconditionally, same as the checkbox
+        // marks above.
+        "root/carbon2/dt-jobs/dt-r0",
+        "root/carbon2/dt-jobs/dt-r1",
+        "root/carbon2/dt-jobs/dt-r2",
+        "root/carbon2/dt-jobs/dt-r3",
+        "root/carbon2/dt-jobs/header",
+        // Form's field child: the exact same `field()` component as
+        // `root/controls/name`, for the exact same reason.
+        "root/carbon2/fm-signup/fm-name",
+        // File uploader's incomplete-item mark and Inline loading's active
+        // mark: both are a static ring standing in for Carbon's spinning
+        // loader (the shipped animation registry has no spinner track). Like
+        // the binary controls' marks above, this shape has **no fill at
+        // all** — the border is not decoration on top of a boundary, it is
+        // the whole ring.
+        "root/carbon2/fu-f1/mark",
+        "root/carbon2/il-save/mark",
+        // File uploader's drop zone: Carbon draws `border: 1px dashed
+        // $border-strong` (MEASURED `_file-uploader.scss:425`); Petra has no
+        // dashed stroke and substitutes a solid `BORDER_SUBTLE` rather than
+        // inventing one — see `file_uploader.rs`'s module doc. The zone is
+        // also a click target with no fill loud enough to read as a
+        // boundary on its own (`SURFACE_BASE`, the page's own ground), the
+        // same shape as AI label's trigger above.
+        "root/carbon2/fu-up/zone",
     ];
 
     // `status` is not on that list, and the omission is measured rather than

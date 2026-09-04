@@ -102,8 +102,11 @@ mod tests {
     use super::{
         BORDER_SUBTLE, LAYER_SELECTED, SHAPE_SM, SIZE_MD, content_switcher, content_switcher_item,
     };
-    use crate::geom::Axis;
-    use crate::tree::{Interaction, Role, ViewNode};
+    use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
+    use crate::geom::{Axis, Size};
+    use crate::testing::{Harness, validated_with};
+    use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
+    use crate::tree::{Interaction, NodeKind, Props, Registry, Role, ViewNode};
 
     fn named<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         fn walk<'a>(node: &'a ViewNode, key: &str) -> Option<&'a ViewNode> {
@@ -172,5 +175,149 @@ mod tests {
                 .map(|n| n.as_str()),
             Some(super::TYPOGRAPHY_BODY)
         );
+    }
+
+    const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
+
+    fn accepting_registry() -> Registry {
+        Registry::with_vocabulary(standard_vocabulary())
+    }
+
+    fn petrify_lone(node: ViewNode) -> PetrifiedFrame {
+        let root = ViewNode::new(NodeKind::Stack, "root")
+            .with_props(Props {
+                axis: Some(Axis::Vertical),
+                ..Props::default()
+            })
+            .child(node);
+        let registry = accepting_registry();
+        let mut harness = Harness::new();
+        let viewport = Viewport::new(VIEWPORT, ThemeMode::Dark);
+        harness.scale = viewport.scale;
+        petrify(
+            1,
+            validated_with(&root, &registry),
+            &mut harness.ctx(),
+            viewport,
+            TransitionActivity::default(),
+        )
+    }
+
+    fn color(theme: &Theme, name: &str) -> ColorValue {
+        match theme.value(&TokenName::new(name).unwrap()).unwrap() {
+            TokenValue::Color(c) => *c,
+            other => panic!("{name} is not a colour: {other:?}"),
+        }
+    }
+
+    /// Check C/D: the switcher row and every item place with a real rect,
+    /// none of them outside the row, whichever item is selected.
+    #[test]
+    fn frame_geometry_has_no_degenerate_or_overflowing_placements() {
+        let node = content_switcher(
+            "sw",
+            vec![
+                content_switcher_item("a", "List", true),
+                content_switcher_item("b", "Grid", false),
+                content_switcher_item("c", "Table", false),
+            ],
+        );
+        let frame = petrify_lone(node);
+        assert!(!frame.placements.is_empty(), "nothing placed");
+        for p in &frame.placements {
+            assert!(
+                p.rect.w > 0.0 && p.rect.h > 0.0,
+                "{} placed with a degenerate rect {:?}",
+                p.id,
+                p.rect
+            );
+            assert!(
+                !p.paint.overflowed,
+                "{} drew content larger than its own rect",
+                p.id
+            );
+            if let Some(parent_idx) = p.parent {
+                let parent = &frame.placements[parent_idx];
+                let fits = p.rect.x >= parent.rect.x - 0.01
+                    && p.rect.y >= parent.rect.y - 0.01
+                    && p.rect.x + p.rect.w <= parent.rect.x + parent.rect.w + 0.01
+                    && p.rect.y + p.rect.h <= parent.rect.y + parent.rect.h + 0.01;
+                assert!(
+                    fits,
+                    "{} (rect {:?}) extends outside its parent {} (rect {:?})",
+                    p.id, p.rect, parent.id, parent.rect
+                );
+            }
+        }
+    }
+
+    /// Check F: an enabled item is reachable in focus order; a disabled one
+    /// is not.
+    #[test]
+    fn enabled_items_are_reachable_and_disabled_ones_are_not() {
+        let node = content_switcher(
+            "sw",
+            vec![
+                content_switcher_item("a", "List", true),
+                crate::component::disabled(content_switcher_item("b", "Grid", false)),
+            ],
+        );
+        let frame = petrify_lone(node);
+        let focus = crate::focus::FocusTree::from_placements(
+            &frame.placements,
+            &std::collections::BTreeMap::new(),
+        );
+        let a = frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/a"))
+            .expect("item a is placed");
+        let b = frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/b"))
+            .expect("item b is placed");
+        assert!(
+            focus.order().iter().any(|o| o == &a.id),
+            "enabled item a declares Focus but is not in focus order"
+        );
+        assert!(
+            !focus.order().iter().any(|o| o == &b.id),
+            "disabled item b must not be reachable"
+        );
+    }
+
+    /// Check E: label ink against the item's own resting fill, in both
+    /// themes, at both selection states — selected swaps to
+    /// [`LAYER_SELECTED`]/heading type, so the ground and the ink both
+    /// change together.
+    #[test]
+    fn item_label_clears_aa_contrast_against_its_own_fill() {
+        const MIN_TEXT_CONTRAST: f32 = 4.5;
+        for theme in [crate::token::light(), crate::token::dark()] {
+            for selected in [true, false] {
+                let item = content_switcher_item("a", "List", selected);
+                let bg_name = item
+                    .props
+                    .tokens
+                    .get("background")
+                    .expect("item binds a resting background");
+                let bg = color(&theme, bg_name.as_str());
+                let label = named(&item, "label");
+                let fg_name = label
+                    .props
+                    .tokens
+                    .get("foreground")
+                    .expect("label binds a foreground");
+                let opacity = label.props.opacity.unwrap_or(1.0);
+                let fg = color(&theme, fg_name.as_str()).faded(opacity).over(bg);
+                let ratio = fg.contrast_ratio(bg);
+                assert!(
+                    ratio >= MIN_TEXT_CONTRAST,
+                    "selected={selected} at {ratio:.2}:1 against {} fails AA {MIN_TEXT_CONTRAST}:1",
+                    bg_name.as_str()
+                );
+            }
+        }
     }
 }

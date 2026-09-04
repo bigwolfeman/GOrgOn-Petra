@@ -207,6 +207,15 @@ pub fn data_table_sort_header(
         vec![caption, dir],
     );
     button.props.align = Some(Align::Center);
+    // Resting background: the same ground the sort button sits on
+    // (`header_row` binds `SURFACE_RAISED`). Without this, `background@hover`
+    // has no resting `background` beneath it and resolves to nothing at
+    // rest — the Accordion/Modal/AI-label defect, generalised (see
+    // `a_state_decorated_token_always_has_a_resting_binding`).
+    button
+        .props
+        .tokens
+        .insert("background".into(), t(SURFACE_RAISED));
     button
         .props
         .tokens
@@ -328,7 +337,11 @@ mod tests {
     };
     use crate::component::text::text;
     use crate::component::tokens::{LAYER_SELECTED, SURFACE_BASE, SURFACE_RAISED};
-    use crate::tree::{Interaction, Role, ViewNode};
+    use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
+    use crate::geom::{Axis, Size};
+    use crate::testing::{Harness, validated_with};
+    use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
+    use crate::tree::{Interaction, NodeKind, Props, Registry, Role, ViewNode};
 
     fn named<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         fn walk<'a>(node: &'a ViewNode, key: &str) -> Option<&'a ViewNode> {
@@ -462,6 +475,13 @@ mod tests {
         );
         assert!(button.interactions.contains(&Interaction::Click));
         assert!(!button.interactions.contains(&Interaction::Drag));
+        assert_eq!(
+            token(button, "background"),
+            Some(SURFACE_RAISED),
+            "the sort button needs a resting `background` under its \
+             `background@hover`, or the hover binding resolves to nothing \
+             and paints silent"
+        );
 
         let desc = data_table_sort_header("col-name", "Name", false);
         assert_eq!(
@@ -533,5 +553,185 @@ mod tests {
             Some(SURFACE_RAISED)
         );
         no_drag(&node);
+    }
+
+    const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
+
+    fn accepting_registry() -> Registry {
+        Registry::with_vocabulary(standard_vocabulary())
+    }
+
+    fn petrify_lone(node: ViewNode) -> PetrifiedFrame {
+        let root = ViewNode::new(NodeKind::Stack, "root")
+            .with_props(Props {
+                axis: Some(Axis::Vertical),
+                ..Props::default()
+            })
+            .child(node);
+        let registry = accepting_registry();
+        let mut harness = Harness::new();
+        let viewport = Viewport::new(VIEWPORT, ThemeMode::Dark);
+        harness.scale = viewport.scale;
+        petrify(
+            1,
+            validated_with(&root, &registry),
+            &mut harness.ctx(),
+            viewport,
+            TransitionActivity::default(),
+        )
+    }
+
+    fn color(theme: &Theme, name: &str) -> ColorValue {
+        match theme.value(&TokenName::new(name).unwrap()).unwrap() {
+            TokenValue::Color(c) => *c,
+            other => panic!("{name} is not a colour: {other:?}"),
+        }
+    }
+
+    fn sample_table_with_states() -> ViewNode {
+        data_table(
+            "jobs",
+            vec![
+                data_table_sort_header("h0", "Name", true),
+                text("h1", "Status"),
+            ],
+            vec![
+                data_table_row("r0", vec![text("n0", "alpha"), text("s0", "ready")], false),
+                data_table_row("r1", vec![text("n1", "bravo"), text("s1", "ready")], true),
+                data_table_row_xs("r2", vec![text("n2", "charlie")], false),
+                data_table_row_lg("r3", vec![text("n3", "delta")], false),
+                data_table_row_expandable(
+                    "r4",
+                    vec![text("n4", "echo")],
+                    false,
+                    true,
+                    "more detail",
+                ),
+                super::super::disabled(data_table_row("r5", vec![text("n5", "foxtrot")], false)),
+            ],
+        )
+    }
+
+    /// Check C/D: header (with a sort button), every row height, an
+    /// expanded expandable row, and a disabled row all place with real
+    /// rects, none of them outside their row.
+    #[test]
+    fn frame_geometry_has_no_degenerate_or_overflowing_placements() {
+        let frame = petrify_lone(sample_table_with_states());
+        assert!(!frame.placements.is_empty(), "nothing placed");
+        for p in &frame.placements {
+            assert!(
+                p.rect.w > 0.0 && p.rect.h > 0.0,
+                "{} placed with a degenerate rect {:?}",
+                p.id,
+                p.rect
+            );
+            assert!(
+                !p.paint.overflowed,
+                "{} drew content larger than its own rect",
+                p.id
+            );
+            if let Some(parent_idx) = p.parent {
+                let parent = &frame.placements[parent_idx];
+                let fits = p.rect.x >= parent.rect.x - 0.01
+                    && p.rect.y >= parent.rect.y - 0.01
+                    && p.rect.x + p.rect.w <= parent.rect.x + parent.rect.w + 0.01
+                    && p.rect.y + p.rect.h <= parent.rect.y + parent.rect.h + 0.01;
+                assert!(
+                    fits,
+                    "{} (rect {:?}) extends outside its parent {} (rect {:?})",
+                    p.id, p.rect, parent.id, parent.rect
+                );
+            }
+        }
+    }
+
+    /// Check F: enabled rows and the sort button are reachable; a disabled
+    /// row is not.
+    #[test]
+    fn rows_and_the_sort_button_are_reachable_unless_disabled() {
+        let frame = petrify_lone(sample_table_with_states());
+        let focus = crate::focus::FocusTree::from_placements(
+            &frame.placements,
+            &std::collections::BTreeMap::new(),
+        );
+        let order = focus.order();
+        for suffix in ["/r0", "/r1", "/r2", "/r3", "/r4"] {
+            let p = frame
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with(suffix))
+                .unwrap_or_else(|| panic!("{suffix} is missing from the petrified frame"));
+            assert!(
+                order.iter().any(|o| o == &p.id),
+                "{suffix} declares Focus but is not in focus order"
+            );
+        }
+        let sort = frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/h0/sort"))
+            .expect("the sort button is placed");
+        assert!(
+            order.iter().any(|o| o == &sort.id),
+            "the sort button declares Focus but is not in focus order"
+        );
+        let disabled_row = frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/r5"))
+            .expect("the disabled row is placed");
+        assert!(
+            !order.iter().any(|o| o == &disabled_row.id),
+            "a disabled row must not be reachable"
+        );
+    }
+
+    /// Check E: every cell's text against the resting fill of the row it is
+    /// read on — header (raised), a plain body row (base), a selected row
+    /// (the selected layer), and a zebra-striped odd row (raised) — read
+    /// through `Props.opacity`.
+    #[test]
+    fn cell_text_clears_aa_contrast_against_its_own_rows_fill() {
+        const MIN_TEXT_CONTRAST: f32 = 4.5;
+        for theme in [crate::token::light(), crate::token::dark()] {
+            let table = data_table_zebra(
+                "jobs",
+                vec![text("h0", "Name")],
+                vec![
+                    data_table_row("r0", vec![text("n0", "alpha")], false),
+                    data_table_row("r1", vec![text("n1", "bravo")], false),
+                    data_table_row("r2", vec![text("n2", "charlie")], true),
+                ],
+            );
+            for row_key in ["header", "r0", "r1", "r2"] {
+                let row = named(&table, row_key);
+                let bg_name = row
+                    .props
+                    .tokens
+                    .get("background")
+                    .unwrap_or_else(|| panic!("{row_key} binds no resting background"));
+                let bg = color(&theme, bg_name.as_str());
+                fn walk_text(node: &ViewNode, bg: ColorValue, theme: &Theme, min: f32, row: &str) {
+                    if node.props.text.is_some() {
+                        if let Some(fg_name) = node.props.tokens.get("foreground") {
+                            let opacity = node.props.opacity.unwrap_or(1.0);
+                            let fg = color(theme, fg_name.as_str()).faded(opacity).over(bg);
+                            let ratio = fg.contrast_ratio(bg);
+                            assert!(
+                                ratio >= min,
+                                "{row}/{:?} at {ratio:.2}:1 against {} fails AA {min}:1",
+                                node.key,
+                                fg_name.as_str()
+                            );
+                        }
+                    }
+                    for child in &node.children {
+                        walk_text(child, bg, theme, min, row);
+                    }
+                }
+                walk_text(row, bg, &theme, MIN_TEXT_CONTRAST, row_key);
+            }
+        }
     }
 }

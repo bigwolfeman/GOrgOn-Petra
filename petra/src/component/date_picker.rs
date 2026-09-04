@@ -147,6 +147,15 @@ fn day_button(day: u32) -> ViewNode {
         .insert("foreground".into(), t(TEXT_PRIMARY));
     let mut node = stack(format!("day-{day}"), Axis::Horizontal, None, vec![caption]);
     node.props.align = Some(Align::Center);
+    // Resting background: the calendar popover's own content fill
+    // (`popover_with` binds `SURFACE_RAISED`), the ground every day cell
+    // sits on. Without this, `background@hover` has no resting `background`
+    // beneath it and resolves to nothing at rest — the Accordion/Modal/AI-
+    // label defect, generalised (see
+    // `a_state_decorated_token_always_has_a_resting_binding`).
+    node.props
+        .tokens
+        .insert("background".into(), t(SURFACE_RAISED));
     node.props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
@@ -171,7 +180,11 @@ mod tests {
         CALENDAR_H, CALENDAR_W, SIZE_MD, VISIBLE_DAYS, WEEKDAYS, date_picker, date_picker_open,
     };
     use crate::component::tokens::{BORDER_SUBTLE, SURFACE_RAISED};
-    use crate::tree::{Anchor, Interaction, NodeKind, Role, ViewNode};
+    use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
+    use crate::geom::{Axis, Size};
+    use crate::testing::{Harness, validated_with};
+    use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
+    use crate::tree::{Anchor, Interaction, NodeKind, Props, Registry, Role, ViewNode};
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         node.children
@@ -248,6 +261,13 @@ mod tests {
                 Some(day.to_string().as_str())
             );
             assert!(cell.interactions.contains(&Interaction::Click));
+            assert_eq!(
+                token(cell, "background"),
+                Some(SURFACE_RAISED),
+                "day-{day} needs a resting `background` under its \
+                 `background@hover`, or the hover binding resolves to \
+                 nothing and paints silent"
+            );
         }
         assert!(
             days.children
@@ -255,5 +275,132 @@ mod tests {
                 .all(|c| c.key.as_str() != "day-29" && c.key.as_str() != "day-31"),
             "anatomy grid stops at 28; this is not a date library"
         );
+    }
+
+    // Only the CLOSED field is audited at the frame level below. The open
+    // calendar's `Anchor::Node { id: "field", .. }` names a bare child key,
+    // not a full canonical path, so a constructor cannot know its own mount
+    // point and the popover cannot be placed correctly under any parent —
+    // a known limit (`.agents/notes/proposed/architecture/
+    // 2026-09-03-anchored-components-cannot-name-their-own-anchor.md`), not
+    // a defect to chase here.
+
+    const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
+
+    fn accepting_registry() -> Registry {
+        Registry::with_vocabulary(standard_vocabulary())
+    }
+
+    fn petrify_lone(node: ViewNode) -> PetrifiedFrame {
+        let root = ViewNode::new(NodeKind::Stack, "root")
+            .with_props(Props {
+                axis: Some(Axis::Vertical),
+                ..Props::default()
+            })
+            .child(node);
+        let registry = accepting_registry();
+        let mut harness = Harness::new();
+        let viewport = Viewport::new(VIEWPORT, ThemeMode::Dark);
+        harness.scale = viewport.scale;
+        petrify(
+            1,
+            validated_with(&root, &registry),
+            &mut harness.ctx(),
+            viewport,
+            TransitionActivity::default(),
+        )
+    }
+
+    fn color(theme: &Theme, name: &str) -> ColorValue {
+        match theme.value(&TokenName::new(name).unwrap()).unwrap() {
+            TokenValue::Color(c) => *c,
+            other => panic!("{name} is not a colour: {other:?}"),
+        }
+    }
+
+    /// Check C/D: the closed field places with a real rect, none of its
+    /// parts outside it.
+    #[test]
+    fn frame_geometry_has_no_degenerate_or_overflowing_placements() {
+        let node = date_picker("due", "Due date", "2026-08-30");
+        let frame = petrify_lone(node);
+        assert!(!frame.placements.is_empty(), "nothing placed");
+        for p in &frame.placements {
+            assert!(
+                p.rect.w > 0.0 && p.rect.h > 0.0,
+                "{} placed with a degenerate rect {:?}",
+                p.id,
+                p.rect
+            );
+            assert!(
+                !p.paint.overflowed,
+                "{} drew content larger than its own rect",
+                p.id
+            );
+            if let Some(parent_idx) = p.parent {
+                let parent = &frame.placements[parent_idx];
+                let fits = p.rect.x >= parent.rect.x - 0.01
+                    && p.rect.y >= parent.rect.y - 0.01
+                    && p.rect.x + p.rect.w <= parent.rect.x + parent.rect.w + 0.01
+                    && p.rect.y + p.rect.h <= parent.rect.y + parent.rect.h + 0.01;
+                assert!(
+                    fits,
+                    "{} (rect {:?}) extends outside its parent {} (rect {:?})",
+                    p.id, p.rect, parent.id, parent.rect
+                );
+            }
+        }
+    }
+
+    /// Check F: the closed field declares `Focus` and is reachable.
+    #[test]
+    fn the_closed_field_is_reachable_in_focus_order() {
+        let node = date_picker("due", "Due date", "2026-08-30");
+        let frame = petrify_lone(node);
+        let focus = crate::focus::FocusTree::from_placements(
+            &frame.placements,
+            &std::collections::BTreeMap::new(),
+        );
+        let field = frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/due"))
+            .expect("the field is placed");
+        assert!(
+            focus.order().iter().any(|o| o == &field.id),
+            "the closed field declares Focus but is not in focus order"
+        );
+    }
+
+    /// Check E: the value text and the "calendar" mark against the field's
+    /// own resting fill, in both themes.
+    #[test]
+    fn closed_field_text_clears_aa_contrast_against_its_own_fill() {
+        const MIN_TEXT_CONTRAST: f32 = 4.5;
+        for theme in [crate::token::light(), crate::token::dark()] {
+            let node = date_picker("due", "Due date", "2026-08-30");
+            let bg_name = node
+                .props
+                .tokens
+                .get("background")
+                .expect("the field binds a resting background");
+            let bg = color(&theme, bg_name.as_str());
+            for label_key in ["value", "calendar-mark"] {
+                let label = child(&node, label_key);
+                let fg_name = label
+                    .props
+                    .tokens
+                    .get("foreground")
+                    .expect("label text binds a foreground");
+                let opacity = label.props.opacity.unwrap_or(1.0);
+                let fg = color(&theme, fg_name.as_str()).faded(opacity).over(bg);
+                let ratio = fg.contrast_ratio(bg);
+                assert!(
+                    ratio >= MIN_TEXT_CONTRAST,
+                    "{label_key} at {ratio:.2}:1 against {} fails AA {MIN_TEXT_CONTRAST}:1",
+                    bg_name.as_str()
+                );
+            }
+        }
     }
 }

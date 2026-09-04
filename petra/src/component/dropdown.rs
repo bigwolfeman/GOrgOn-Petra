@@ -154,7 +154,11 @@ fn pin_height(h: f32) -> Constraints {
 mod tests {
     use super::{SIZE_MD, dropdown, dropdown_open, dropdown_option};
     use crate::component::tokens::{BORDER_SUBTLE, LAYER_SELECTED, SURFACE_RAISED};
-    use crate::tree::{Anchor, Interaction, NodeKind, Role, ViewNode};
+    use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
+    use crate::geom::{Axis, Size};
+    use crate::testing::{Harness, validated_with};
+    use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
+    use crate::tree::{Anchor, Interaction, NodeKind, Props, Registry, Role, ViewNode};
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         node.children
@@ -239,5 +243,193 @@ mod tests {
         let off = dropdown_option("light", "Light", false);
         assert!(!off.semantics.selected);
         assert_eq!(off.semantics.label.as_deref(), Some("Light"));
+    }
+
+    // Only the CLOSED field and standalone `dropdown_option` rows are
+    // audited at the frame level below. `dropdown_open`'s
+    // `Anchor::Node { id: "field", .. }` names a bare child key, not a full
+    // canonical path, so a constructor cannot know its own mount point and
+    // the popover cannot be placed correctly under any parent — a known
+    // limit (`.agents/notes/proposed/architecture/
+    // 2026-09-03-anchored-components-cannot-name-their-own-anchor.md`), not
+    // a defect to chase here. `dropdown_option` itself is not anchored — it
+    // is a plain interactive row a caller places inside the popover — so it
+    // is safe to audit on its own.
+
+    const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
+
+    fn accepting_registry() -> Registry {
+        Registry::with_vocabulary(standard_vocabulary())
+    }
+
+    fn petrify_lone(node: ViewNode) -> PetrifiedFrame {
+        let root = ViewNode::new(NodeKind::Stack, "root")
+            .with_props(Props {
+                axis: Some(Axis::Vertical),
+                ..Props::default()
+            })
+            .child(node);
+        let registry = accepting_registry();
+        let mut harness = Harness::new();
+        let viewport = Viewport::new(VIEWPORT, ThemeMode::Dark);
+        harness.scale = viewport.scale;
+        petrify(
+            1,
+            validated_with(&root, &registry),
+            &mut harness.ctx(),
+            viewport,
+            TransitionActivity::default(),
+        )
+    }
+
+    fn color(theme: &Theme, name: &str) -> ColorValue {
+        match theme.value(&TokenName::new(name).unwrap()).unwrap() {
+            TokenValue::Color(c) => *c,
+            other => panic!("{name} is not a colour: {other:?}"),
+        }
+    }
+
+    /// Check C/D: the closed field and both option states place with a
+    /// real rect, none of them outside their own row.
+    #[test]
+    fn frame_geometry_has_no_degenerate_or_overflowing_placements() {
+        let cases: Vec<(&str, ViewNode)> = vec![
+            ("closed", dropdown("theme", "Theme", "Dark")),
+            ("option-selected", dropdown_option("dark", "Dark", true)),
+            ("option-plain", dropdown_option("light", "Light", false)),
+        ];
+        for (label, node) in cases {
+            let frame = petrify_lone(node);
+            assert!(!frame.placements.is_empty(), "{label}: nothing placed");
+            for p in &frame.placements {
+                assert!(
+                    p.rect.w > 0.0 && p.rect.h > 0.0,
+                    "{label}: {} placed with a degenerate rect {:?}",
+                    p.id,
+                    p.rect
+                );
+                assert!(
+                    !p.paint.overflowed,
+                    "{label}: {} drew content larger than its own rect",
+                    p.id
+                );
+                if let Some(parent_idx) = p.parent {
+                    let parent = &frame.placements[parent_idx];
+                    let fits = p.rect.x >= parent.rect.x - 0.01
+                        && p.rect.y >= parent.rect.y - 0.01
+                        && p.rect.x + p.rect.w <= parent.rect.x + parent.rect.w + 0.01
+                        && p.rect.y + p.rect.h <= parent.rect.y + parent.rect.h + 0.01;
+                    assert!(
+                        fits,
+                        "{label}: {} (rect {:?}) extends outside its parent {} (rect {:?})",
+                        p.id, p.rect, parent.id, parent.rect
+                    );
+                }
+            }
+        }
+    }
+
+    /// Check F: the closed field and an enabled option are reachable; a
+    /// disabled option is not.
+    #[test]
+    fn field_and_enabled_options_are_reachable_and_disabled_ones_are_not() {
+        let field_frame = petrify_lone(dropdown("theme", "Theme", "Dark"));
+        let focus = crate::focus::FocusTree::from_placements(
+            &field_frame.placements,
+            &std::collections::BTreeMap::new(),
+        );
+        let field = field_frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/theme"))
+            .expect("the field is placed");
+        assert!(
+            focus.order().iter().any(|o| o == &field.id),
+            "the closed field declares Focus but is not in focus order"
+        );
+
+        let opt_frame = petrify_lone(crate::component::disabled(dropdown_option(
+            "dark", "Dark", true,
+        )));
+        let opt_focus = crate::focus::FocusTree::from_placements(
+            &opt_frame.placements,
+            &std::collections::BTreeMap::new(),
+        );
+        let option = opt_frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/dark"))
+            .expect("the option is placed");
+        assert!(
+            !opt_focus.order().iter().any(|o| o == &option.id),
+            "a disabled option must not be reachable"
+        );
+    }
+
+    /// Check E: the field's value/chevron and both option states' label
+    /// (and "selected" mark) against their own resting fill, in both
+    /// themes.
+    #[test]
+    fn text_clears_aa_contrast_against_its_own_fill() {
+        const MIN_TEXT_CONTRAST: f32 = 4.5;
+        for theme in [crate::token::light(), crate::token::dark()] {
+            let field = dropdown("theme", "Theme", "Dark");
+            let field_bg = color(
+                &theme,
+                field
+                    .props
+                    .tokens
+                    .get("background")
+                    .expect("the field binds a resting background")
+                    .as_str(),
+            );
+            for label_key in ["value", "chevron"] {
+                let label = child(&field, label_key);
+                let fg_name = label
+                    .props
+                    .tokens
+                    .get("foreground")
+                    .expect("label text binds a foreground");
+                let opacity = label.props.opacity.unwrap_or(1.0);
+                let fg = color(&theme, fg_name.as_str())
+                    .faded(opacity)
+                    .over(field_bg);
+                let ratio = fg.contrast_ratio(field_bg);
+                assert!(
+                    ratio >= MIN_TEXT_CONTRAST,
+                    "field {label_key} at {ratio:.2}:1 against {} fails AA {MIN_TEXT_CONTRAST}:1",
+                    field.props.tokens.get("background").unwrap().as_str()
+                );
+            }
+
+            for selected in [true, false] {
+                let option = dropdown_option("opt", "Dark", selected);
+                let bg_name = option
+                    .props
+                    .tokens
+                    .get("background")
+                    .expect("option binds a resting background");
+                let bg = color(&theme, bg_name.as_str());
+                fn walk_text(node: &ViewNode, bg: ColorValue, theme: &Theme, min: f32) {
+                    if node.props.text.is_some() {
+                        if let Some(fg_name) = node.props.tokens.get("foreground") {
+                            let opacity = node.props.opacity.unwrap_or(1.0);
+                            let fg = color(theme, fg_name.as_str()).faded(opacity).over(bg);
+                            let ratio = fg.contrast_ratio(bg);
+                            assert!(
+                                ratio >= min,
+                                "{:?} at {ratio:.2}:1 against {} fails AA {min}:1",
+                                node.key,
+                                fg_name.as_str()
+                            );
+                        }
+                    }
+                    for child in &node.children {
+                        walk_text(child, bg, theme, min);
+                    }
+                }
+                walk_text(&option, bg, &theme, MIN_TEXT_CONTRAST);
+            }
+        }
     }
 }
