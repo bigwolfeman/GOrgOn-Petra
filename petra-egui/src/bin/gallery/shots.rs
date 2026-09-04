@@ -363,6 +363,153 @@ fn headless() -> Context {
 mod tests {
     use super::Camera;
 
+    // ===== TRIAGE (temporary, 2026-09-04) — delete before merge =====
+    //
+    // Prints, per page, how many placements existed before a driving step and
+    // after it, plus any ids that appeared or vanished, and writes a PNG.
+    // Asserts nothing: the picture and the id delta are the evidence.
+
+    fn report(page: &str, before: Vec<String>, cam: &Camera) {
+        let after = cam.ids();
+        let gained: Vec<&String> = after.iter().filter(|i| !before.contains(i)).collect();
+        let lost: Vec<&String> = before.iter().filter(|i| !after.contains(i)).collect();
+        println!(
+            "TRIAGE {page}: {} placements -> {} ({} gained, {} lost)",
+            before.len(),
+            after.len(),
+            gained.len(),
+            lost.len()
+        );
+        for id in gained {
+            println!("TRIAGE   + {id}");
+        }
+        for id in lost {
+            println!("TRIAGE   - {id}");
+        }
+    }
+
+    /// Is the stuck focus bar a device-pixel-ratio bug?
+    ///
+    /// At 2x the bar tracks the selected row for pages 1-15 and sticks under
+    /// row 1 from page 16 on. If the boundary moves to 31 at 1x, the lookup is
+    /// dividing by pixels-per-point once too often. If it stays at 16, it is
+    /// not a scale bug.
+    #[test]
+    fn triage_focus_bar_boundary_by_scale() {
+        for scale in [1.0_f32, 2.0] {
+            let mut stuck = Vec::new();
+            for row in 1..=42u32 {
+                let name = crate::inventory::ROWS[(row - 1) as usize].component;
+                let mut cam = Camera::at_scale(name, scale);
+                let png = cam.shoot("_triage-scale");
+                let img = image::load_from_memory(&png).expect("png").to_rgba8();
+                let (w, h) = img.dimensions();
+                let rail = (240.0 * scale) as u32;
+                let mut ys = Vec::new();
+                for y in 0..h {
+                    for x in 0..rail.min(w) {
+                        let p = img.get_pixel(x, y).0;
+                        if p[2] > 200 && p[0] < 120 && p[1] < 180 {
+                            ys.push(y);
+                            break;
+                        }
+                    }
+                }
+                let bar_row = ys.first().map(|y| (*y as f32 / (30.0 * scale)) as u32 + 1);
+                if bar_row != Some(row) {
+                    stuck.push((row, bar_row));
+                }
+            }
+            println!(
+                "TRIAGE scale {scale}: {} rows where the bar is not on the open page",
+                stuck.len()
+            );
+            for (row, at) in &stuck {
+                println!("TRIAGE   page {row} -> bar on row {at:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn triage_drive_every_dead_page() {
+        struct Step(&'static str, &'static str, &'static str, &'static str);
+        // page, action, node tail, shot name
+        let steps = [
+            Step("Date picker", "click", "dp/when", "10-date-picker-open"),
+            Step("Dropdown", "click", "drop/dd/dd", "11-dropdown-open"),
+            Step("Select", "click", "sel/theme", "29-select-open"),
+            Step(
+                "Menu buttons",
+                "click",
+                "mb/trigger",
+                "19-menu-buttons-open",
+            ),
+            Step("Toggletip", "click", "tt/trigger", "37-toggletip-open"),
+            Step("Popover", "click", "pop-anchor", "24-popover-open"),
+            Step("Modal", "click", "header/close", "20-modal-closed"),
+            Step("Menu", "click", "mn-0", "18-menu-clicked"),
+            Step(
+                "Checkbox",
+                "click",
+                "check-mixed",
+                "05-checkbox-mixed-clicked",
+            ),
+            Step("Content switcher", "click", "sw-1", "08-switcher-grid"),
+            Step("Tabs", "click", "tab-line-1", "32-tabs-second"),
+            Step(
+                "Accordion",
+                "click",
+                "acc-1/header",
+                "01-accordion-second-open",
+            ),
+            Step("Link", "hover", "docs", "15-link-hover"),
+            Step("Form", "type", "form-name", "13-form-typed"),
+            Step("Search", "type", "search/q/q/input", "28-search-typed"),
+        ];
+        for Step(page, action, tail, shot) in steps {
+            let mut cam = Camera::on(page);
+            let before = cam.ids();
+            let png_before = cam.shoot("_triage-before");
+            match action {
+                "click" => {
+                    cam.click(tail);
+                }
+                "hover" => {
+                    cam.hover(tail);
+                }
+                "type" => {
+                    cam.type_into(tail, "zzq");
+                }
+                _ => unreachable!(),
+            }
+            report(page, before, &cam);
+            let png_after = cam.shoot(shot);
+            println!(
+                "TRIAGE {page}: pixels {}",
+                if png_before == png_after {
+                    "IDENTICAL"
+                } else {
+                    "changed"
+                }
+            );
+        }
+        // Row 38 has no trigger at all; photograph a hover on its only node.
+        let mut cam = Camera::on("Tooltip");
+        let before = cam.ids();
+        let png_before = cam.shoot("_triage-before");
+        cam.hover("tip-text");
+        report("Tooltip(hover its only node)", before, &cam);
+        let png_after = cam.shoot("38-tooltip-hovered");
+        println!(
+            "TRIAGE Tooltip: pixels {}",
+            if png_before == png_after {
+                "IDENTICAL"
+            } else {
+                "changed"
+            }
+        );
+    }
+
     /// The camera's click reaches application state.
     ///
     /// This is the falsification for the whole module. Every later wave proves
