@@ -609,6 +609,16 @@ fn right_panel(
 /// One switcher row. No `selected` parameter — see the module doc for why.
 /// Type is [`TYPOGRAPHY_HEADING_SM`] (Carbon `$heading-compact-01`, slice-f
 /// "Key numbers").
+///
+/// `align_self: Stretch` (`Props::align_self`) overrides `right_panel`'s own
+/// `Align::Center` (`ui_shell_switcher` builds its `content` stack with
+/// `align: Center` — Carbon's `.cds--switcher { align-items: center }`) so
+/// this row is full width, per slice-f.md:227, while
+/// [`ui_shell_right_panel_divider`] beside it keeps the container's own
+/// `Center` and stays the narrower, centred rule it already is. `align`
+/// here (`Align::Center`) is a different fact: it governs how *this* row
+/// centres its own child (`caption`) on its own cross axis, unrelated to
+/// how the row sits in somebody else's.
 pub fn ui_shell_switcher_item(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
     let label = label.into();
     let mut caption = text("label", label.clone());
@@ -620,6 +630,7 @@ pub fn ui_shell_switcher_item(key: impl Into<Key>, label: impl Into<String>) -> 
     let mut props = Props {
         axis: Some(Axis::Horizontal),
         align: Some(Align::Center),
+        align_self: Some(Align::Stretch),
         padding: Some(InsetRefs {
             left: Some(t(SPACING_05)),
             right: Some(t(SPACING_05)),
@@ -770,7 +781,9 @@ mod tests {
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
-    use crate::tree::{Anchor, Edge, Interaction, NodeKind, Props, Registry, Role, ViewNode};
+    use crate::tree::{
+        Anchor, AxisConstraint, Edge, Interaction, NodeKind, Props, Registry, Role, ViewNode,
+    };
 
     fn named<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         fn walk<'a>(node: &'a ViewNode, key: &str) -> Option<&'a ViewNode> {
@@ -1571,6 +1584,71 @@ mod tests {
         assert!(
             focus.order().iter().any(|o| o == &placement.id),
             "switcher item must be focus reachable"
+        );
+    }
+
+    /// `ui_shell_switcher_item`'s `align_self: Stretch` (`Props::align_self`)
+    /// makes the row span `content`'s own resolved width, per
+    /// slice-f.md:227, while [`ui_shell_right_panel_divider`] beside it
+    /// keeps `content`'s own `Align::Center` and stays the narrower,
+    /// centred rule it already was — the property `VISUAL-AUDIT.md`'s
+    /// "Still open" list named as unverifiable because the catalog cannot
+    /// mount this nested composition (no anchored surface renders in the
+    /// gallery). Checked in placed geometry instead, the same way
+    /// `pagination`'s equivalent fix is.
+    #[test]
+    fn switcher_item_stretches_full_width_while_the_divider_stays_centred() {
+        let switcher = ui_shell_switcher(
+            "switcher",
+            "App switcher",
+            "apps",
+            vec![
+                ui_shell_switcher_item("a", "Petra"),
+                ui_shell_right_panel_divider("d1"),
+                ui_shell_switcher_item("b", "Inspector"),
+            ],
+        );
+        // `right_panel`'s outer `Surface` pins `content` to
+        // `RIGHT_PANEL_WIDTH` (256) in the real embedding — its `Anchor`
+        // needs a target elsewhere in the tree to petrify, which is why
+        // every other test here extracts `content` on its own (see the
+        // section comment above). Pinning that same width directly is the
+        // faithful stand-in: without it, `content`'s own natural width in
+        // this isolated tree is whatever its widest child measures (the
+        // divider's fixed 224), which would make the divider and a
+        // full-width item the same width and prove nothing.
+        let mut content = named(&switcher, "content").clone();
+        content.constraints.horizontal = AxisConstraint {
+            min: Some(RIGHT_PANEL_WIDTH),
+            max: Some(RIGHT_PANEL_WIDTH),
+            priority: 0,
+        };
+        let frame = petrify_lone(content);
+        let rect = |suffix: &str| {
+            frame
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with(suffix))
+                .unwrap_or_else(|| panic!("no placement ends with {suffix:?}"))
+                .rect
+        };
+        let outer = rect("/content");
+        assert_eq!(outer.w, RIGHT_PANEL_WIDTH);
+        for item in ["/a", "/b"] {
+            let r = rect(item);
+            assert_eq!(r.x, outer.x, "{item}: must be flush at the leading edge");
+            assert_eq!(r.w, outer.w, "{item}: must span the content's full width");
+        }
+        let divider = rect("/d1");
+        assert_eq!(
+            divider.w, SWITCHER_DIVIDER_WIDTH,
+            "the divider's own declared width must not be affected by its \
+             sibling's `align_self`"
+        );
+        assert!(
+            divider.w < outer.w,
+            "the divider must stay narrower than a full-width item, or this \
+             test proves nothing about the two behaving differently"
         );
     }
 

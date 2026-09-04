@@ -13,7 +13,6 @@
 //! (page-number buttons) is a second Carbon variant and is omitted.
 
 use super::stack;
-use super::swatch;
 use super::text::text;
 use super::tokens::{
     BORDER_SUBTLE, LAYER_HOVER, SIZE_MD, SPACING_03, SPACING_05, SURFACE_RAISED, TEXT_PRIMARY, t,
@@ -63,15 +62,16 @@ pub fn pagination(key: impl Into<Key>, page: u32, page_count: u32) -> ViewNode {
             next,
         ],
     );
-    // Center, not Stretch. Stretching was tried, to make `nav_divider`
-    // span the bar's full height instead of floating as a short tick, and
-    // it was reverted: `Align` is a property of the container, not of one
-    // child, so it also stretched the "1 of 5" cell and sent its caption
-    // to the top of the bar while the two buttons stayed centred. The
-    // picture was worse than the defect. Making the rule full height
-    // needs per-child cross-axis alignment, which this engine does not
-    // have — the same gap `ai_label`'s `centered_caption` works around on
-    // the main axis.
+    // Center, and each `nav_divider` overrides it with `align_self:
+    // Stretch` (`Props::align_self`). Stretching the whole bar's `align`
+    // was tried first, to make `nav_divider` span the bar's full height
+    // instead of floating as a short tick, and it was reverted: `Align`
+    // used to be a property of the container only, so it also stretched
+    // the "1 of 5" cell and sent its caption to the top of the bar while
+    // the two buttons stayed centred — the picture was worse than the
+    // defect. `align_self` is the per-child override that fix needed: the
+    // dividers stretch, "1 of 5" and the two buttons stay governed by the
+    // bar's own `Center`.
     node.props.align = Some(Align::Center);
     node.props.padding = Some(InsetRefs {
         left: Some(t(SPACING_05)),
@@ -90,8 +90,45 @@ pub fn pagination(key: impl Into<Key>, page: u32, page_count: u32) -> ViewNode {
 /// `border-inline-start` Carbon puts on the button itself (see
 /// [`DIVIDER_WIDTH`]'s doc for why this is a sibling element and not a
 /// token binding).
+///
+/// `align_self: Stretch` (`Props::align_self`) overrides the bar's own
+/// `Align::Center` for this one child, so the rule spans the bar's actual
+/// placed height rather than a hard-coded `SIZE_MD`. That rules out
+/// [`swatch`], which is a `Spacer`: `Stretch` only ever clamps into
+/// whatever a child's own constraint declares
+/// (`AxisConstraint::clamp` — `crate::layout::stack::place`'s Stretch
+/// arm), so a `Spacer` needs its vertical constraint *cleared* for
+/// `Stretch` to reach past a fixed height — and a `Spacer`'s own `measure`
+/// answers "whatever is offered" on an unconstrained axis (that is what
+/// makes it "empty, flexible space"). Left uncapped, that answer is not
+/// this row's true height; it is whatever vertical proposal happened to
+/// reach this node on the way down (900+ in a plain top-level probe), and
+/// `stack::measure`'s own "widest child" rule then reports *that* as the
+/// bar's own natural height, which is a real regression this fix caught
+/// live (`/root/pages` measuring 700 tall against a 700-tall viewport
+/// probe, confirmed with an ad hoc placement dump — not a picture defect,
+/// since the gallery happens to offer this row a bounded probe, but a
+/// correctness one).
+///
+/// [`super::ui_shell::accent_mark`] already has the right shape for this:
+/// a **childless `Stack`**, not a `Spacer`. `stack::measure` returns
+/// `Size::ZERO` for a childless stack before it ever looks at what was
+/// offered (`layout::stack::measure`'s first line), so leaving the
+/// vertical axis unconstrained costs nothing at measure time — only
+/// `align_self: Stretch`, read at *place* time once the bar's real height
+/// is already settled, ever grows it.
 fn nav_divider(key: &'static str) -> ViewNode {
-    swatch(key, DIVIDER_WIDTH, SIZE_MD, Some(BORDER_SUBTLE), None, None)
+    let mut node = stack(key, Axis::Vertical, None, vec![]);
+    node.props
+        .tokens
+        .insert("background".into(), t(BORDER_SUBTLE));
+    node.props.align_self = Some(Align::Stretch);
+    node.constraints.horizontal = AxisConstraint {
+        min: Some(DIVIDER_WIDTH),
+        max: Some(DIVIDER_WIDTH),
+        priority: 0,
+    };
+    node
 }
 
 fn nav_button(key: &'static str, label: &'static str, unavailable: bool) -> ViewNode {
@@ -283,6 +320,52 @@ mod tests {
             viewport,
             TransitionActivity::default(),
         )
+    }
+
+    /// `nav_divider`'s `align_self: Stretch` (`Props::align_self`) spans the
+    /// bar's actual placed height, while `page` ("1 of 5") stays governed
+    /// by the bar's own `Align::Center` beside it in the same row — the
+    /// picture `23-pagination.png`'s dividers needed.
+    ///
+    /// Also pins the bar's own height at exactly [`SIZE_MD`]: an earlier
+    /// version of this fix built the divider from [`swatch`] (a `Spacer`)
+    /// with its vertical constraint simply cleared, and a `Spacer`'s
+    /// `measure` answers "whatever is offered" on an unconstrained axis —
+    /// which is not this row's true height, it is whatever vertical
+    /// proposal reached the divider on the way down, and
+    /// `stack::measure`'s "widest child" rule then reported *that* as the
+    /// bar's own natural height. This test's own root offers a 700-tall
+    /// probe (`VIEWPORT.h`), and that version measured the bar at 700, not
+    /// 40 — caught here, not in a picture, because the gallery happens to
+    /// offer this row a bounded probe. `nav_divider`'s childless-`Stack`
+    /// shape (`super::ui_shell::accent_mark`'s pattern) is immune: a
+    /// childless stack measures `Size::ZERO` before it ever looks at what
+    /// was offered.
+    #[test]
+    fn nav_divider_stretches_full_height_while_page_stays_centred() {
+        let frame = petrify_lone(pagination("pages", 2, 5));
+        let rect = |suffix: &str| {
+            frame
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with(suffix))
+                .unwrap_or_else(|| panic!("no placement ends with {suffix:?}"))
+                .rect
+        };
+        let bar = rect("/pages");
+        assert_eq!(bar.h, SIZE_MD, "the bar's own height must not balloon");
+        for divider in ["/divider-previous", "/divider-next"] {
+            let d = rect(divider);
+            assert_eq!(d.y, bar.y, "{divider}: must start flush at the bar's top");
+            assert_eq!(d.h, bar.h, "{divider}: must span the bar's full height");
+        }
+        let page = rect("/page");
+        let centred = (bar.h - page.h) / 2.0;
+        assert_eq!(
+            page.y - bar.y,
+            centred,
+            "\"1 of 5\" must stay vertically centred, not stretched"
+        );
     }
 
     fn color(theme: &Theme, name: &str) -> ColorValue {

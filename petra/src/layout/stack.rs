@@ -92,6 +92,7 @@ pub fn place(
 ) {
     let main = node.props.axis.unwrap_or(Axis::Vertical);
     let align = node.props.align.unwrap_or_default();
+    let justify = node.props.justify.unwrap_or_default();
     // Padding is inside the box: the stack's own placed rect (pushed below,
     // `rect: slot.rect`) never moves or shrinks because of its own padding —
     // only what it offers its children does. `content` floors at zero rather
@@ -209,13 +210,24 @@ pub fn place(
     // — and where the gap is not zero the rects do not abut, so there is no
     // seam to close. `gorgon/petra/tests/layout_matrix.rs`'s
     // `abutting_rows_share_a_device_edge_from_a_shifted_origin` pins it.
+    // `justify` only ever moves this starting point. It never changes how
+    // much room a child got — `extents` is already final, concede included
+    // — so a container that ran out of room (`final_wanted >= main_extent`)
+    // computes a leading offset of zero either way (`Align::offset` floors
+    // at zero) and packs exactly as it always did.
+    let final_wanted = spacing + extents.iter().sum::<f32>();
+    let leading = justify.offset(main_extent, final_wanted);
     let mut cursor = match main {
-        Axis::Horizontal => content.x,
-        Axis::Vertical => content.y,
+        Axis::Horizontal => content.x + leading,
+        Axis::Vertical => content.y + leading,
     };
     for (i, child) in node.children.iter().enumerate() {
         let extent = extents[i];
-        let across = match align {
+        // `align_self` overrides the container's own `align` for this one
+        // child (CSS `align-self`); absent, the container's `align` decides,
+        // which is the only behaviour a `stack` had before the field existed.
+        let child_align = child.props.align_self.unwrap_or(align);
+        let across = match child_align {
             // Stretch fills the cross extent, but a declared maximum on the
             // child's own cross axis still wins (2026-08-22: constraints beat
             // Stretch, see `.agents/tallies/QUESTIONS.md` Round 3 item 2 and
@@ -239,7 +251,7 @@ pub fn place(
                 .min(cross_extent),
             _ => plan.taken[i].across(main).min(cross_extent),
         };
-        let offset = align.offset(cross_extent, across);
+        let offset = child_align.offset(cross_extent, across);
         let rect = match main {
             Axis::Horizontal => Rect::new(cursor, content.y + offset, extent, across),
             Axis::Vertical => Rect::new(content.x + offset, cursor, across, extent),
@@ -851,6 +863,82 @@ mod tests {
             out[0].paint.truncated,
             "the oversized minimum must still be flagged as lost room"
         );
+    }
+
+    /// A lone child narrower than the row sits flush at the leading edge by
+    /// default (`Align::Start`, unchanged), and `justify` moves it within
+    /// whatever main-axis space is left over — the exact defect
+    /// `ai_label`'s `centered_caption` spacer-pair workaround exists for.
+    #[test]
+    fn justify_moves_the_leftover_main_axis_space() {
+        let tree = |justify: Option<Align>| {
+            let mut node = stack(
+                Axis::Horizontal,
+                0.0,
+                Align::Start,
+                vec![ViewNode::new(NodeKind::Image, Key::new("icon"))],
+            );
+            node.props.justify = justify;
+            node
+        };
+        let rect = Rect::new(0.0, 0.0, 200.0, 64.0);
+        // Undeclared `justify` is `Align::Start`, unchanged: the leftover
+        // 136 units trail after the 64-wide image, exactly as every `stack`
+        // placed it before this field existed.
+        assert_eq!(placements(&tree(None), rect)[1].rect.x, 0.0);
+        assert_eq!(placements(&tree(Some(Align::Start)), rect)[1].rect.x, 0.0);
+        assert_eq!(placements(&tree(Some(Align::Center)), rect)[1].rect.x, 68.0);
+        assert_eq!(placements(&tree(Some(Align::End)), rect)[1].rect.x, 136.0);
+        // `Stretch` has no main-axis meaning and resolves through the same
+        // zero-offset arm as `Start`.
+        assert_eq!(placements(&tree(Some(Align::Stretch)), rect)[1].rect.x, 0.0);
+        // `justify` never changes how much room the child got.
+        assert_eq!(placements(&tree(Some(Align::Center)), rect)[1].rect.w, 64.0);
+    }
+
+    /// `justify` only ever moves the starting cursor; a container that ran
+    /// out of room still concedes exactly as it always did; the leading
+    /// offset floors at zero rather than pushing an already-oversized run
+    /// further past the container's own edge.
+    #[test]
+    fn justify_does_nothing_once_the_row_has_no_slack_left() {
+        let mut node = stack(
+            Axis::Horizontal,
+            0.0,
+            Align::Start,
+            vec![rigid("a"), rigid("b"), rigid("c")],
+        );
+        node.props.justify = Some(Align::Center);
+        let rect = Rect::new(0.0, 0.0, 100.0, 64.0);
+        let out = placements(&node, rect);
+        // Three 64-wide rigid images in a 100-wide row: this already
+        // truncates, and `justify: Center` must not move that truncated run
+        // any further than an undeclared `justify` would.
+        assert_eq!(out[1].rect.x, 0.0);
+        assert!(out[0].paint.truncated);
+    }
+
+    /// One child's `align_self` overrides the container's own `align`,
+    /// leaving every other child governed by it — the shape
+    /// `pagination`'s `nav_divider` needs (full-height rule) beside a
+    /// centred sibling in the same bar.
+    #[test]
+    fn align_self_overrides_the_containers_align_for_one_child() {
+        let sibling = ViewNode::new(NodeKind::Image, Key::new("label"));
+        let mut divider = ViewNode::new(NodeKind::Image, Key::new("divider"));
+        divider.props.align_self = Some(Align::Stretch);
+        let tree = stack(Axis::Horizontal, 0.0, Align::Center, vec![sibling, divider]);
+        let rect = Rect::new(0.0, 0.0, 200.0, 100.0);
+        let out = placements(&tree, rect);
+        // `label` declares no `align_self`, so the container's own
+        // `Align::Center` still decides it: a 64-tall image centred in a
+        // 100-tall row sits at y = 18.
+        assert_eq!(out[1].rect.h, 64.0);
+        assert_eq!(out[1].rect.y, 18.0);
+        // `divider`'s `align_self` overrides `Center` with `Stretch`: full
+        // 100, flush at y = 0, in the very same row.
+        assert_eq!(out[2].rect.h, 100.0);
+        assert_eq!(out[2].rect.y, 0.0);
     }
 
     #[derive(Clone, Copy, Debug)]

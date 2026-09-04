@@ -472,6 +472,41 @@ pub struct Props {
     /// Cross-axis alignment of children.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub align: Option<crate::geom::Align>,
+    /// Main-axis placement of a `stack`'s children within whatever extent is
+    /// left over once distribution has given every child its answer.
+    ///
+    /// Absence is [`crate::geom::Align::Start`], which is the behaviour a
+    /// `stack` had before this field existed: leftover main-axis space
+    /// trails after the last child, because `stack::place` walked declaration
+    /// order from `content`'s own leading edge with no offset. A declared
+    /// value only ever moves that starting cursor — it changes nothing about
+    /// how much room each child gets, only where the whole run sits inside
+    /// the row. [`crate::geom::Align::Stretch`] has no main-axis meaning
+    /// (there is nothing left to stretch once distribution has run) and
+    /// resolves to the same zero offset as `Start`, through the same
+    /// [`crate::geom::Align::offset`] arm both share.
+    ///
+    /// Only `stack` honours this; a `grid`'s tracks are already sized by
+    /// their own column/row rule, so there is no leftover extent for this to
+    /// move.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub justify: Option<crate::geom::Align>,
+    /// This node's own cross-axis alignment inside the space its `stack`
+    /// parent gives it, overriding the parent's [`Props::align`] for this
+    /// child alone — the same relationship CSS's `align-self` has to
+    /// `align-items`.
+    ///
+    /// Declared on the **child**, read by the `stack` **parent**
+    /// (`stack::place`), which is why it lives beside `align` rather than
+    /// inside it: one node's `align` governs its own children, and a
+    /// different node's `align_self` governs how *it* sits in somebody
+    /// else's row. Absent means the parent's own `align` decides, exactly
+    /// the behaviour every `stack` had before this field existed.
+    ///
+    /// Only a `stack` parent honours this today; a `grid` parent still
+    /// places every cell by its own single `align`, uniformly.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub align_self: Option<crate::geom::Align>,
     /// Grid column tracks, leading to trailing.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub columns: Vec<TrackSize>,
@@ -607,6 +642,8 @@ pub struct StackProps {
     pub spacing: f32,
     /// Cross-axis alignment.
     pub align: crate::geom::Align,
+    /// Main-axis placement of the whole run within any leftover extent.
+    pub justify: crate::geom::Align,
 }
 
 /// Resolved `grid` parameters.
@@ -745,6 +782,7 @@ impl Props {
             axis: self.axis.unwrap_or(Axis::Vertical),
             spacing: resolve_spacing(theme, &self.spacing),
             align: self.align.unwrap_or_default(),
+            justify: self.justify.unwrap_or_default(),
         }
     }
 
