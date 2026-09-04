@@ -22,8 +22,10 @@ use super::{
     contained_list, contained_list_disclosed, content_switcher, content_switcher_item, data_table,
     data_table_row, data_table_row_expandable, data_table_sort_header, date_picker, disabled,
     dropdown, dropdown_option, field, file_uploader, file_uploader_item, form, heading,
-    inline_loading, layer_tokens, list_item, list_row, on_layer, primary_button, progress, radio,
-    section, status, tab, tab_bar, text, tile, toggle, toggle_sm, unordered_list,
+    inline_loading, layer_tokens, link, list_item, list_item_with, list_row, loading, loading_sm,
+    menu_button, menu_item, modal, notification_actionable, notification_inline,
+    notification_toast, on_layer, ordered_list, primary_button, progress, radio, section, status,
+    tab, tab_bar, text, tile, toggle, toggle_sm, unordered_list,
 };
 
 const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
@@ -170,6 +172,65 @@ fn full_gallery() -> ViewNode {
         ],
     );
 
+    // Group 3's own seven (link, list, loading, menu, menu buttons, modal,
+    // notification). Menu's and menu button's OPEN forms cannot mount here
+    // for the same `Anchor::Node` bare-key reason AI label's and date
+    // picker's cannot (see `.agents/notes/proposed/architecture/
+    // 2026-09-03-anchored-components-cannot-name-their-own-anchor.md`), so
+    // `menu_button` stays closed and `menu`'s own items are audited inside
+    // `menu.rs`'s own test module instead, with a direct `petrify_lone`.
+    // `menu_item` itself is not anchored, so a standalone item (and a
+    // disabled one) is included here the way `dropdown_option` is above.
+    // Modal and Notification are `Anchor::Viewport` surfaces, which (unlike
+    // `Anchor::Node`) resolve with no reference to any sibling, so both
+    // mount through this tree without restriction.
+    let carbon3 = section(
+        "carbon3",
+        "Carbon (group 3)",
+        vec![
+            link("lnk-docs", "Open docs"),
+            disabled(link("lnk-archived", "Archived project")),
+            unordered_list(
+                "ul-topics",
+                vec![list_item("ul-alpha", "Alpha"), list_item("ul-bravo", "Bravo")],
+            ),
+            ordered_list(
+                "ol-steps",
+                vec![
+                    list_item("ol-first", "First"),
+                    list_item("ol-second", "Second"),
+                ],
+            ),
+            list_item_with(
+                "li-nested",
+                "Parent",
+                Some(unordered_list(
+                    "li-nested-inner",
+                    vec![list_item("li-nested-child", "Child")],
+                )),
+            ),
+            loading("ld-large", "Loading fibers"),
+            loading_sm("ld-small", "Saving"),
+            menu_item("mi-rename", "Rename"),
+            disabled(menu_item("mi-delete", "Delete")),
+            menu_button(
+                "mb-more",
+                "More actions",
+                false,
+                vec![menu_item("mb-rename", "Rename")],
+            ),
+            modal("md-retire", "Retire fiber", "Its children are retired with it."),
+            notification_toast("nt-restart", "Supervisor restarted", "Worker 3 came back."),
+            notification_inline("nt-warn", "Disk filling", "Trace volume is at 80%."),
+            notification_actionable(
+                "nt-action",
+                "Update available",
+                "A new build is ready.",
+                "Reload",
+            ),
+        ],
+    );
+
     let tabs = section(
         "tabs",
         "Tabs",
@@ -216,6 +277,7 @@ fn full_gallery() -> ViewNode {
         .child(controls)
         .child(carbon)
         .child(carbon2)
+        .child(carbon3)
         .child(tabs)
         .child(readouts)
         .child(list);
@@ -654,7 +716,7 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
     /// Every node in [`full_gallery`] that may draw a border, by the key
     /// path it appears at. An exact set: a node missing from here that draws
     /// one fails, and a node listed here that stops drawing one fails too.
-    const DRAWS_AN_EDGE: [&str; 21] = [
+    const DRAWS_AN_EDGE: [&str; 22] = [
         // `field`: an empty well with no boundary does not read as a place
         // to type. See `field`'s own doc for why it keeps one when `button`
         // does not.
@@ -731,6 +793,14 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         // boundary on its own (`SURFACE_BASE`, the page's own ground), the
         // same shape as AI label's trigger above.
         "root/carbon2/fu-up/zone",
+        // Modal's own dialog shell: Carbon's "Container border: 1px
+        // `$border-subtle-01`" (SOURCED style page, slice-c). Unlike
+        // Notification's card (see `notification.rs`'s `chrome`, which
+        // draws no full outline because neither notification SCSS partial
+        // documents one beyond the 3px accent rail), Modal's border is a
+        // real measured boundary on the dialog shell itself, the same
+        // class as `field` and Content switcher's row above.
+        "root/carbon3/md-retire",
     ];
 
     // `status` is not on that list, and the omission is measured rather than

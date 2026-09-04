@@ -102,9 +102,18 @@ fn close_button() -> ViewNode {
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
     node.with_constraints(Constraints {
+        // Horizontal takes a floor, not a fixed width. Carbon's 48px is the
+        // hit box for an *icon-only* close glyph; FR-026 replaces the icon
+        // with the word "Close" (see this module's own doc), which needs
+        // more than the 16px `pad(SPACING_05, SPACING_03)` leaves inside a
+        // pinned 48px box. Pinning both `min` and `max` here clipped the
+        // label — `frame_geometry_has_no_degenerate_or_overflowing_placements`
+        // caught it once Step 0 put Modal in `full_gallery()` for the first
+        // time. 48 stays the floor so the tap target never shrinks below
+        // Carbon's own number; the label decides how much wider it needs.
         horizontal: AxisConstraint {
             min: Some(CLOSE_HIT),
-            max: Some(CLOSE_HIT),
+            max: None,
             priority: 0,
         },
         vertical: AxisConstraint {
@@ -120,7 +129,13 @@ fn close_button() -> ViewNode {
 mod tests {
     use super::{CLOSE_HIT, CLOSE_ICON, modal};
     use crate::component::tokens::{LAYER_HOVER, SURFACE_RAISED};
-    use crate::tree::{Anchor, InputPolicy, Interaction, Layer, NodeKind, Role, ViewNode};
+    use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
+    use crate::geom::{Axis, Size};
+    use crate::testing::{Harness, validated_with};
+    use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
+    use crate::tree::{
+        Anchor, InputPolicy, Interaction, Layer, NodeKind, Props, Registry, Role, ViewNode,
+    };
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         node.children
@@ -203,5 +218,153 @@ mod tests {
              or the close button paints nothing when it is not hovered — the \
              paint pass counts that as silent, not empty"
         );
+    }
+
+    const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
+
+    fn accepting_registry() -> Registry {
+        Registry::with_vocabulary(standard_vocabulary())
+    }
+
+    fn petrify_lone(node: ViewNode) -> PetrifiedFrame {
+        let root = ViewNode::new(NodeKind::Stack, "root")
+            .with_props(Props {
+                axis: Some(Axis::Vertical),
+                ..Props::default()
+            })
+            .child(node);
+        let registry = accepting_registry();
+        let mut harness = Harness::new();
+        let viewport = Viewport::new(VIEWPORT, ThemeMode::Dark);
+        harness.scale = viewport.scale;
+        petrify(
+            1,
+            validated_with(&root, &registry),
+            &mut harness.ctx(),
+            viewport,
+            TransitionActivity::default(),
+        )
+    }
+
+    fn color(theme: &Theme, name: &str) -> ColorValue {
+        match theme.value(&TokenName::new(name).unwrap()).unwrap() {
+            TokenValue::Color(c) => *c,
+            other => panic!("{name} is not a colour: {other:?}"),
+        }
+    }
+
+    /// Check C/D: the dialog shell, its header, body and close button all
+    /// place with real rects, none of them outside their parent.
+    #[test]
+    fn frame_geometry_has_no_degenerate_or_overflowing_placements() {
+        let node = modal(
+            "retire",
+            "Retire fiber",
+            "Its children are retired with it.",
+        );
+        let frame = petrify_lone(node);
+        assert!(!frame.placements.is_empty(), "nothing placed");
+        for p in &frame.placements {
+            assert!(
+                p.rect.w > 0.0 && p.rect.h > 0.0,
+                "{} placed with a degenerate rect {:?}",
+                p.id,
+                p.rect
+            );
+            assert!(
+                !p.paint.overflowed,
+                "{} drew content larger than its own rect",
+                p.id
+            );
+            if let Some(parent_idx) = p.parent {
+                let parent = &frame.placements[parent_idx];
+                let fits = p.rect.x >= parent.rect.x - 0.01
+                    && p.rect.y >= parent.rect.y - 0.01
+                    && p.rect.x + p.rect.w <= parent.rect.x + parent.rect.w + 0.01
+                    && p.rect.y + p.rect.h <= parent.rect.y + parent.rect.h + 0.01;
+                assert!(
+                    fits,
+                    "{} (rect {:?}) extends outside its parent {} (rect {:?})",
+                    p.id, p.rect, parent.id, parent.rect
+                );
+            }
+        }
+    }
+
+    /// Check F: the close button declares Focus and must be reachable.
+    #[test]
+    fn the_close_button_is_reachable() {
+        let node = modal(
+            "retire",
+            "Retire fiber",
+            "Its children are retired with it.",
+        );
+        let frame = petrify_lone(node);
+        let focus = crate::focus::FocusTree::from_placements(
+            &frame.placements,
+            &std::collections::BTreeMap::new(),
+        );
+        let order = focus.order();
+        let close = frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/close"))
+            .expect("the close button is placed");
+        assert!(
+            order.iter().any(|o| o == &close.id),
+            "the close button declares Focus but is not in focus order"
+        );
+    }
+
+    /// Check E: title, body and the close label against the surface each
+    /// actually sits on — the dialog shell's own fill for title/body, the
+    /// close button's own resting fill for its label — in both themes.
+    #[test]
+    fn dialog_text_clears_aa_contrast_against_its_own_fill() {
+        const MIN_TEXT_CONTRAST: f32 = 4.5;
+        for theme in [crate::token::light(), crate::token::dark()] {
+            let node = modal(
+                "retire",
+                "Retire fiber",
+                "Its children are retired with it.",
+            );
+            let shell_bg_name = node
+                .props
+                .tokens
+                .get("background")
+                .expect("modal binds a resting background");
+            let shell_bg = color(&theme, shell_bg_name.as_str());
+            fn walk_text(
+                node: &ViewNode,
+                inherited_bg: ColorValue,
+                theme: &Theme,
+                min: f32,
+                get_color: &impl Fn(&Theme, &str) -> ColorValue,
+            ) {
+                let bg = match node.props.tokens.get("background") {
+                    Some(name) => get_color(theme, name.as_str()),
+                    None => inherited_bg,
+                };
+                if node.props.text.is_some() {
+                    if let Some(fg_name) = node.props.tokens.get("foreground") {
+                        let opacity = node.props.opacity.unwrap_or(1.0);
+                        let fg = get_color(theme, fg_name.as_str())
+                            .faded(opacity)
+                            .over(bg);
+                        let ratio = fg.contrast_ratio(bg);
+                        assert!(
+                            ratio >= min,
+                            "{:?} at {ratio:.2}:1 against {} fails AA {min}:1",
+                            node.key,
+                            fg_name.as_str()
+                        );
+                    }
+                }
+                for child in &node.children {
+                    walk_text(child, bg, theme, min, get_color);
+                }
+            }
+            walk_text(&node, shell_bg, &theme, MIN_TEXT_CONTRAST, &color);
+        }
     }
 }

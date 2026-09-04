@@ -225,7 +225,11 @@ mod tests {
         MARKER_UNORDERED_L1, MARKER_UNORDERED_L2, SPACING_02, SPACING_07, list_item,
         list_item_with, marker_text, ordered_list, unordered_list,
     };
-    use crate::tree::{Role, ViewNode};
+    use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
+    use crate::geom::{Axis, Size};
+    use crate::testing::{Harness, validated_with};
+    use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
+    use crate::tree::{NodeKind, Props, Registry, Role, ViewNode};
 
     fn padding_left(node: &ViewNode) -> Option<&str> {
         node.props
@@ -326,5 +330,133 @@ mod tests {
         assert_eq!(marker_text(&nested.children[0]), Some("a."));
         assert_eq!(marker_text(&nested.children[1]), Some("b."));
         assert_eq!(padding_left(&nested.children[0]), Some(SPACING_02));
+    }
+
+    const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
+
+    fn accepting_registry() -> Registry {
+        Registry::with_vocabulary(standard_vocabulary())
+    }
+
+    fn petrify_lone(node: ViewNode) -> PetrifiedFrame {
+        let root = ViewNode::new(NodeKind::Stack, "root")
+            .with_props(Props {
+                axis: Some(Axis::Vertical),
+                ..Props::default()
+            })
+            .child(node);
+        let registry = accepting_registry();
+        let mut harness = Harness::new();
+        let viewport = Viewport::new(VIEWPORT, ThemeMode::Dark);
+        harness.scale = viewport.scale;
+        petrify(
+            1,
+            validated_with(&root, &registry),
+            &mut harness.ctx(),
+            viewport,
+            TransitionActivity::default(),
+        )
+    }
+
+    fn color(theme: &Theme, name: &str) -> ColorValue {
+        match theme.value(&TokenName::new(name).unwrap()).unwrap() {
+            TokenValue::Color(c) => *c,
+            other => panic!("{name} is not a colour: {other:?}"),
+        }
+    }
+
+    fn sample_lists() -> ViewNode {
+        let nested = unordered_list("nested", vec![list_item("n0", "Nested")]);
+        super::stack(
+            "lists",
+            Axis::Vertical,
+            None,
+            vec![
+                unordered_list(
+                    "ul",
+                    vec![list_item("ul-0", "Alpha"), list_item("ul-1", "Bravo")],
+                ),
+                ordered_list(
+                    "ol",
+                    vec![list_item("ol-0", "First"), list_item("ol-1", "Second")],
+                ),
+                list_item_with("with-nested", "Parent", Some(nested)),
+            ],
+        )
+    }
+
+    /// Check C/D: unordered, ordered, and a nested list all place with real
+    /// rects, none of them outside their parent.
+    #[test]
+    fn frame_geometry_has_no_degenerate_or_overflowing_placements() {
+        let frame = petrify_lone(sample_lists());
+        assert!(!frame.placements.is_empty(), "nothing placed");
+        for p in &frame.placements {
+            assert!(
+                p.rect.w > 0.0 && p.rect.h > 0.0,
+                "{} placed with a degenerate rect {:?}",
+                p.id,
+                p.rect
+            );
+            assert!(
+                !p.paint.overflowed,
+                "{} drew content larger than its own rect",
+                p.id
+            );
+            if let Some(parent_idx) = p.parent {
+                let parent = &frame.placements[parent_idx];
+                let fits = p.rect.x >= parent.rect.x - 0.01
+                    && p.rect.y >= parent.rect.y - 0.01
+                    && p.rect.x + p.rect.w <= parent.rect.x + parent.rect.w + 0.01
+                    && p.rect.y + p.rect.h <= parent.rect.y + parent.rect.h + 0.01;
+                assert!(
+                    fits,
+                    "{} (rect {:?}) extends outside its parent {} (rect {:?})",
+                    p.id, p.rect, parent.id, parent.rect
+                );
+            }
+        }
+    }
+
+    /// Check F is vacuous here: `_list.scss` defines no interaction state
+    /// at all (slice-c), so `list_item` declares no `Interaction::Focus`
+    /// and there is nothing for a focus tree to reach. Confirmed rather
+    /// than assumed:
+    #[test]
+    fn list_items_declare_no_interaction() {
+        assert!(!list_item("a", "Alpha").is_interactive());
+        assert!(!unordered_list("u", vec![]).is_interactive());
+        assert!(!ordered_list("o", vec![]).is_interactive());
+    }
+
+    /// Check E: marker and label text against the page ground (`surface.base`,
+    /// matching how `text()` itself is styled — `list.rs` binds no
+    /// `background` of its own anywhere), read through `Props.opacity`.
+    #[test]
+    fn marker_and_label_text_clears_aa_contrast_on_the_page_ground() {
+        const MIN_TEXT_CONTRAST: f32 = 4.5;
+        use crate::component::tokens::SURFACE_BASE;
+        for theme in [crate::token::light(), crate::token::dark()] {
+            let bg = color(&theme, SURFACE_BASE);
+            fn walk_text(node: &ViewNode, bg: ColorValue, theme: &Theme, min: f32) {
+                if node.props.text.is_some() {
+                    if let Some(fg_name) = node.props.tokens.get("foreground") {
+                        let opacity = node.props.opacity.unwrap_or(1.0);
+                        let fg = color(theme, fg_name.as_str()).faded(opacity).over(bg);
+                        let ratio = fg.contrast_ratio(bg);
+                        assert!(
+                            ratio >= min,
+                            "{:?} at {ratio:.2}:1 against {} fails AA {min}:1",
+                            node.key,
+                            fg_name.as_str()
+                        );
+                    }
+                }
+                for child in &node.children {
+                    walk_text(child, bg, theme, min);
+                }
+            }
+            walk_text(&sample_lists(), bg, &theme, MIN_TEXT_CONTRAST);
+        }
     }
 }
