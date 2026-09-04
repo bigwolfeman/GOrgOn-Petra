@@ -81,6 +81,11 @@ fn contained(
     children.extend(items);
 
     let mut node = stack(key, Axis::Vertical, None, children);
+    // `Align::Stretch`: the same stair-step fix as `accordion` (see that
+    // module's doc). Without it the header (sized to its own title text) and
+    // each caller-supplied row measure to their own intrinsic widths and the
+    // list's edges do not line up.
+    node.props.align = Some(Align::Stretch);
     node.semantics = Semantics {
         role: Some(Role::List),
         label: Some(title),

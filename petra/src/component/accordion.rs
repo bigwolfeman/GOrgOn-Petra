@@ -46,8 +46,18 @@ const HEADER_INTENTS: &[Interaction] =
     &[Interaction::Focus, Interaction::Click, Interaction::Hover];
 
 /// A vertical stack of accordion items. `Role::List`, no interactions.
+///
+/// `Align::Stretch` here is the container-level half of the same fix the
+/// item already applies to its own header/panel/divider (module doc above):
+/// without it, each item measures to its own intrinsic content width and the
+/// list stair-steps — the header text "First section  expanded" one width,
+/// the body panel another, "Second section  collapsed" a third. Stretch
+/// propagates the widest resolved width back down to every item so the list
+/// reads as one column, matching `_accordion.scss`'s `width: 100%` on
+/// `.cds--accordion`.
 pub fn accordion(key: impl Into<Key>, items: Vec<ViewNode>) -> ViewNode {
     let mut node = stack(key, Axis::Vertical, None, items);
+    node.props.align = Some(Align::Stretch);
     node.semantics = Semantics {
         role: Some(Role::List),
         ..Semantics::default()

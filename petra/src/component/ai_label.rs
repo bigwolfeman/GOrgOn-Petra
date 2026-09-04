@@ -87,7 +87,9 @@ use super::tokens::{
     SURFACE_BASE, TEXT_PRIMARY, t,
 };
 use crate::geom::{Align, Axis};
-use crate::tree::{AxisConstraint, Constraints, InsetRefs, Interaction, Key, Role, ViewNode};
+use crate::tree::{
+    AxisConstraint, Constraints, InsetRefs, Interaction, Key, NodeKind, Role, TextWrap, ViewNode,
+};
 
 /// Carbon default-variant `mini`.
 const DEFAULT_MINI: f32 = 16.0;
@@ -249,12 +251,12 @@ pub fn ai_label_with_actions(
 /// terminal action, not a fresh trigger for the explainability panel.
 pub fn ai_label_revert(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
     let label = label.into();
-    let mut caption = text("text", "Undo");
-    caption
-        .props
-        .tokens
-        .insert("foreground".into(), t(TEXT_PRIMARY));
-    let mut node = stack(key, Axis::Horizontal, None, vec![caption]);
+    let mut node = stack(
+        key,
+        Axis::Horizontal,
+        None,
+        centered_caption("Undo", SIZE_MD),
+    );
     node.props.align = Some(Align::Center);
     node.props
         .tokens
@@ -342,12 +344,7 @@ fn inline_sized(
 /// wrapping the `"AI"` text). `border-inverse` has no token; see the
 /// module doc for why [`BORDER_SUBTLE`] stands in.
 fn trigger_button(key: impl Into<Key>, label: String, size: f32) -> ViewNode {
-    let mut caption = text("text", "AI");
-    caption
-        .props
-        .tokens
-        .insert("foreground".into(), t(TEXT_PRIMARY));
-    let mut node = stack(key, Axis::Horizontal, None, vec![caption]);
+    let mut node = stack(key, Axis::Horizontal, None, centered_caption("AI", size));
     node.props.align = Some(Align::Center);
     node.props
         .tokens
@@ -358,6 +355,55 @@ fn trigger_button(key: impl Into<Key>, label: String, size: f32) -> ViewNode {
         .insert("background@hover".into(), t(LAYER_HOVER));
     node.with_constraints(square(size))
         .interactive(Role::Button, label, TRIGGER_INTENTS)
+}
+
+/// Below this box size, `centered_caption` gives up on the spacer pair and
+/// falls back to the plain, uncentred single child ([`inline_trigger`]'s
+/// shape). "AI" (2 chars) exhausts [`DEFAULT_MINI`] (16px) exactly under
+/// this crate's synthetic test shaper — a childless spacer with no
+/// leftover to take resolves to a genuinely empty placement, the same
+/// "silent geometry" shape [`super::accordion`]'s divider doc warns about,
+/// just with no paint content this time to make it a false positive rather
+/// than a real defect. Centring has nothing to add when there is no slack
+/// to distribute, so the fallback below costs nothing at that size — mini
+/// was already flush before this fix and stays flush now.
+const CENTERING_FLOOR: f32 = DEFAULT_2XS;
+
+/// A short caption, centred on *both* axes inside a box the caller pins
+/// square (`trigger_button`, [`ai_label_revert`]) once there is enough
+/// `size` to make centring meaningful (see [`CENTERING_FLOOR`]).
+///
+/// `Align::Center` on the row only ever resolves the cross axis (here,
+/// vertical); the main axis has no such knob, and `stack::place` walks
+/// declaration order left to right, so a lone child narrower than the row
+/// sits flush at the row's leading edge — measured at 40×40 with `"AI"`,
+/// this painted the glyph flush top-left, not centred. `AxisConstraint`'s
+/// own `priority` is the fix (`crate::tree::node::AxisConstraint`:
+/// "Higher groups negotiate first and give last"): giving the caption
+/// priority 1 puts it alone in `stack::distribute`'s first group, so it is
+/// offered the *whole* row and answers its own true width (Clip, not the
+/// default Wrap — a two-word wrap has nothing to prove here and Wrap's
+/// `Zero`-probe floor would still be 0, but Clip is the policy this label
+/// actually wants: never break "AI"/"Undo" onto a second line). Only the
+/// leftover then reaches the two default-priority spacers, split by the
+/// same equal-share/surplus-roll-forward rule that already centers a
+/// `ui_shell` trailing spacer.
+fn centered_caption(label: &str, size: f32) -> Vec<ViewNode> {
+    let mut caption = text("text", label);
+    caption.props.wrap = Some(TextWrap::Clip);
+    caption
+        .props
+        .tokens
+        .insert("foreground".into(), t(TEXT_PRIMARY));
+    if size < CENTERING_FLOOR {
+        return vec![caption];
+    }
+    caption.constraints.horizontal.priority = 1;
+    vec![
+        ViewNode::new(NodeKind::Spacer, "lead"),
+        caption,
+        ViewNode::new(NodeKind::Spacer, "trail"),
+    ]
 }
 
 /// The inline trigger: leading bullet dot, then the `"AI"` text, no border
@@ -440,6 +486,24 @@ fn explainability_panel(
     panel
 }
 
+/// Carbon's square glyph box, pinned on BOTH axes.
+///
+/// This is the one place the "keep the Carbon number as `min`, drop `max`"
+/// fix used by [`super::modal`]'s close button, [`super::number_input`]'s
+/// steppers and [`super::ui_shell`]'s header actions is the WRONG fix, and
+/// it was tried and reverted rather than reasoned about: with `max: None`
+/// the trigger stopped being a button and stretched to the full width of
+/// whatever row held it, caption flush against the far edge. The picture is
+/// in this repo's history; the box went from 40px to ~460px.
+///
+/// Those three are controls inside a row that sizes to its own content. A
+/// trigger is a lone child of a stretching container, so an unbounded
+/// inline axis is an invitation, not a floor.
+///
+/// The cost of keeping the pin is that `"Undo"` — the word this library
+/// draws where Carbon draws a revert arrow (FR-026) — very nearly fills 40
+/// device pixels and sits with almost no padding. That is snug and legible.
+/// The alternative was a full-width button.
 fn square(size: f32) -> Constraints {
     Constraints {
         horizontal: AxisConstraint {
@@ -510,7 +574,13 @@ mod tests {
         assert!(trigger.interactions.contains(&Interaction::Click));
         assert!(trigger.interactions.contains(&Interaction::Hover));
         assert_eq!(trigger.constraints.horizontal.min, Some(SIZE_MD));
-        assert_eq!(trigger.constraints.horizontal.max, Some(SIZE_MD));
+        assert_eq!(
+            trigger.constraints.horizontal.max,
+            Some(SIZE_MD),
+            "pinned on purpose, and the one box in this workspace where \
+             dropping `max` is wrong: see `square`'s own doc for the picture \
+             that proved it"
+        );
         assert_eq!(trigger.constraints.vertical.min, Some(SIZE_MD));
         assert_eq!(SIZE_MD, 40.0);
         assert_eq!(token(trigger, "border"), Some(BORDER_SUBTLE));
