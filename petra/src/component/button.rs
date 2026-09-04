@@ -425,7 +425,7 @@ mod tests {
     use crate::frame::{TransitionActivity, Viewport, petrify};
     use crate::geom::{Align, Axis, Size};
     use crate::testing::{Harness, validated_with};
-    use crate::token::{ThemeMode, TokenName, standard_vocabulary};
+    use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
     use crate::tree::{Interaction, NodeKind, Props, Registry, Role, ViewNode};
 
     const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
@@ -638,5 +638,130 @@ mod tests {
         let label = node.children.first().expect("label");
         assert_eq!(label.kind, NodeKind::Text);
         assert_eq!(label.props.text.as_deref(), Some("Save"));
+    }
+
+    fn color(theme: &Theme, name: &str) -> ColorValue {
+        match theme.value(&TokenName::new(name).unwrap()).unwrap() {
+            TokenValue::Color(c) => *c,
+            other => panic!("{name} is not a colour: {other:?}"),
+        }
+    }
+
+    /// Check C/D across every variant, every size, and a disabled state:
+    /// no degenerate rect, no child placed outside its parent.
+    #[test]
+    fn frame_geometry_has_no_degenerate_or_overflowing_placements() {
+        let cases: Vec<(&str, ViewNode)> = vec![
+            ("secondary-xs", button_xs("b", "Save")),
+            ("secondary-sm", button_sm("b", "Save")),
+            ("secondary-md", button("b", "Save")),
+            ("secondary-lg", button_lg("b", "Save")),
+            ("primary", primary_button("b", "Save")),
+            ("tertiary", tertiary_button("b", "Save")),
+            ("ghost", ghost_button("b", "Save")),
+            ("danger", danger_button("b", "Delete")),
+            ("danger-tertiary", danger_tertiary_button("b", "Delete")),
+            ("danger-ghost", danger_ghost_button("b", "Delete")),
+            (
+                "disabled",
+                crate::component::disabled(button("b", "Unavailable")),
+            ),
+        ];
+        for (label, node) in cases {
+            let frame = petrify_lone(node);
+            assert!(!frame.placements.is_empty(), "{label}: nothing placed");
+            for p in &frame.placements {
+                assert!(
+                    p.rect.w > 0.0 && p.rect.h > 0.0,
+                    "{label}: {} placed with a degenerate rect {:?}",
+                    p.id,
+                    p.rect
+                );
+                assert!(
+                    !p.paint.overflowed,
+                    "{label}: {} drew content larger than its own rect",
+                    p.id
+                );
+                if let Some(parent_idx) = p.parent {
+                    let parent = &frame.placements[parent_idx];
+                    let fits = p.rect.x >= parent.rect.x - 0.01
+                        && p.rect.y >= parent.rect.y - 0.01
+                        && p.rect.x + p.rect.w <= parent.rect.x + parent.rect.w + 0.01
+                        && p.rect.y + p.rect.h <= parent.rect.y + parent.rect.h + 0.01;
+                    assert!(
+                        fits,
+                        "{label}: {} (rect {:?}) extends outside its parent {} (rect {:?})",
+                        p.id, p.rect, parent.id, parent.rect
+                    );
+                }
+            }
+        }
+    }
+
+    /// Check F: an enabled button is reachable; a disabled one is not.
+    #[test]
+    fn focus_reachability_matches_disabled_state() {
+        for (label, node, should_be_focusable) in [
+            ("enabled", button("b", "Save"), true),
+            (
+                "disabled",
+                crate::component::disabled(button("b", "Unavailable")),
+                false,
+            ),
+        ] {
+            let frame = petrify_lone(node);
+            let focus = crate::focus::FocusTree::from_placements(
+                &frame.placements,
+                &std::collections::BTreeMap::new(),
+            );
+            let root_placement = frame
+                .placements
+                .iter()
+                .find(|p| p.id == "/root/b")
+                .expect("button is placed");
+            let reachable = focus.order().iter().any(|id| id == &root_placement.id);
+            assert_eq!(
+                reachable, should_be_focusable,
+                "{label}: focus reachability was {reachable}, expected {should_be_focusable}"
+            );
+        }
+    }
+
+    /// Check E: every variant's label against its own resting fill, in both
+    /// themes, read through `Props.opacity`.
+    #[test]
+    fn label_text_clears_aa_contrast_against_its_own_fill() {
+        const MIN_TEXT_CONTRAST: f32 = 4.5;
+        for theme in [crate::token::light(), crate::token::dark()] {
+            for (label, node) in [
+                ("secondary", button("b", "Save")),
+                ("primary", primary_button("b", "Save")),
+                ("tertiary", tertiary_button("b", "Save")),
+                ("ghost", ghost_button("b", "Save")),
+                ("danger", danger_button("b", "Delete")),
+                ("danger-tertiary", danger_tertiary_button("b", "Delete")),
+                ("danger-ghost", danger_ghost_button("b", "Delete")),
+            ] {
+                let bg_name = node
+                    .props
+                    .tokens
+                    .get("background")
+                    .unwrap_or_else(|| panic!("{label}: button has no resting background"));
+                let bg = color(&theme, bg_name.as_str());
+                let text = node.children.first().expect("label child");
+                let fg_name = text
+                    .props
+                    .tokens
+                    .get("foreground")
+                    .expect("label binds a foreground");
+                let opacity = text.props.opacity.unwrap_or(1.0);
+                let fg = color(&theme, fg_name.as_str()).faded(opacity).over(bg);
+                let ratio = fg.contrast_ratio(bg);
+                assert!(
+                    ratio >= MIN_TEXT_CONTRAST,
+                    "{label}: label at {ratio:.2}:1 against {bg_name} fails AA {MIN_TEXT_CONTRAST}:1"
+                );
+            }
+        }
     }
 }

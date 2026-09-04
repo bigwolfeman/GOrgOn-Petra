@@ -106,7 +106,11 @@ mod tests {
     use super::{
         HEADER_DISCLOSED, HEADER_ON_PAGE, SURFACE_RAISED, contained_list, contained_list_disclosed,
     };
-    use crate::tree::{Role, ViewNode};
+    use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
+    use crate::geom::{Axis, Size};
+    use crate::testing::{Harness, validated_with};
+    use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
+    use crate::tree::{NodeKind, Props, Registry, Role, ViewNode};
 
     fn named<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         fn walk<'a>(node: &'a ViewNode, key: &str) -> Option<&'a ViewNode> {
@@ -163,5 +167,132 @@ mod tests {
             named(&disclosed, "title").props.text.as_deref(),
             Some("Inbox")
         );
+    }
+
+    const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
+
+    fn accepting_registry() -> Registry {
+        Registry::with_vocabulary(standard_vocabulary())
+    }
+
+    fn petrify_lone(node: ViewNode) -> PetrifiedFrame {
+        let root = ViewNode::new(NodeKind::Stack, "root")
+            .with_props(Props {
+                axis: Some(Axis::Vertical),
+                ..Props::default()
+            })
+            .child(node);
+        let registry = accepting_registry();
+        let mut harness = Harness::new();
+        let viewport = Viewport::new(VIEWPORT, ThemeMode::Dark);
+        harness.scale = viewport.scale;
+        petrify(
+            1,
+            validated_with(&root, &registry),
+            &mut harness.ctx(),
+            viewport,
+            TransitionActivity::default(),
+        )
+    }
+
+    fn color(theme: &Theme, name: &str) -> ColorValue {
+        match theme.value(&TokenName::new(name).unwrap()).unwrap() {
+            TokenValue::Color(c) => *c,
+            other => panic!("{name} is not a colour: {other:?}"),
+        }
+    }
+
+    /// Check C/D across both header heights: no degenerate rect, no child
+    /// placed outside its parent. Neither variant declares an interaction
+    /// of its own (`Role::List` on the container, caller-supplied rows), so
+    /// there is no Check F for this file — nothing here declares `Focus`.
+    #[test]
+    fn frame_geometry_has_no_degenerate_or_overflowing_placements() {
+        let cases: Vec<(&str, ViewNode)> = vec![
+            (
+                "on-page",
+                contained_list("cl", "Related", vec![text("r0", "Alpha"), text("r1", "Bravo")]),
+            ),
+            (
+                "disclosed",
+                contained_list_disclosed("cl", "Menu", vec![text("r0", "Charlie")]),
+            ),
+        ];
+        for (label, node) in cases {
+            let frame = petrify_lone(node);
+            assert!(!frame.placements.is_empty(), "{label}: nothing placed");
+            for p in &frame.placements {
+                assert!(
+                    p.rect.w > 0.0 && p.rect.h > 0.0,
+                    "{label}: {} placed with a degenerate rect {:?}",
+                    p.id,
+                    p.rect
+                );
+                assert!(
+                    !p.paint.overflowed,
+                    "{label}: {} drew content larger than its own rect",
+                    p.id
+                );
+                if let Some(parent_idx) = p.parent {
+                    let parent = &frame.placements[parent_idx];
+                    let fits = p.rect.x >= parent.rect.x - 0.01
+                        && p.rect.y >= parent.rect.y - 0.01
+                        && p.rect.x + p.rect.w <= parent.rect.x + parent.rect.w + 0.01
+                        && p.rect.y + p.rect.h <= parent.rect.y + parent.rect.h + 0.01;
+                    assert!(
+                        fits,
+                        "{label}: {} (rect {:?}) extends outside its parent {} (rect {:?})",
+                        p.id, p.rect, parent.id, parent.rect
+                    );
+                }
+            }
+        }
+    }
+
+    /// Check E: the on-page title (`heading`) and the disclosed title
+    /// (muted `text`) against their own header fill -- the on-page header
+    /// has none, so it inherits the page ground (`surface.base`); the
+    /// disclosed header binds `surface.raised`. Both in both themes, read
+    /// through `Props.opacity`.
+    #[test]
+    fn header_title_clears_aa_contrast_against_its_own_fill() {
+        const MIN_TEXT_CONTRAST: f32 = 4.5;
+        use super::super::tokens::SURFACE_BASE;
+        for theme in [crate::token::light(), crate::token::dark()] {
+            for (label, node, page_ground) in [
+                ("on-page", contained_list("cl", "Related", vec![]), true),
+                (
+                    "disclosed",
+                    contained_list_disclosed("cl", "Menu", vec![]),
+                    false,
+                ),
+            ] {
+                let header = named(&node, "header");
+                let bg = if page_ground {
+                    color(&theme, SURFACE_BASE)
+                } else {
+                    let bg_name = header
+                        .props
+                        .tokens
+                        .get("background")
+                        .expect("disclosed header binds a background");
+                    color(&theme, bg_name.as_str())
+                };
+                let title = named(header, "title");
+                let fg_name = title
+                    .props
+                    .tokens
+                    .get("foreground")
+                    .expect("title binds a foreground");
+                let opacity = title.props.opacity.unwrap_or(1.0);
+                let fg = color(&theme, fg_name.as_str()).faded(opacity).over(bg);
+                let ratio = fg.contrast_ratio(bg);
+                assert!(
+                    ratio >= MIN_TEXT_CONTRAST,
+                    "{label}: title at {ratio:.2}:1 against {} fails AA {MIN_TEXT_CONTRAST}:1",
+                    fg_name.as_str()
+                );
+            }
+        }
     }
 }

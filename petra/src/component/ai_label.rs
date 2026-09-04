@@ -321,6 +321,14 @@ fn inline_trigger(key: impl Into<Key>, label: String, height: f32, bullet: f32) 
         right: Some(t(SPACING_02)),
         ..InsetRefs::default()
     });
+    // Resting fill matches the page it sits on ([`SURFACE_BASE`]), the same
+    // fix `accordion.rs`'s header and this file's own `trigger_button`
+    // already carry: an unbound `background` beside `background@hover` is
+    // exactly the "declares content, resolves to nothing" shape the paint
+    // accounting counts as silent, not empty (Accordion/Modal's crash cause).
+    node.props
+        .tokens
+        .insert("background".into(), t(SURFACE_BASE));
     node.props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
@@ -387,8 +395,11 @@ mod tests {
         ai_label_xs,
     };
     use crate::component::tokens::{BORDER_SUBTLE, SHAPE_FULL, SHAPE_MD, SIZE_MD};
-    use crate::testing::validated;
-    use crate::tree::{Interaction, NodeKind, Role, ViewNode};
+    use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
+    use crate::geom::{Axis, Size};
+    use crate::testing::{Harness, validated, validated_with};
+    use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
+    use crate::tree::{Interaction, NodeKind, Props, Registry, Role, ViewNode};
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         node.children
@@ -516,6 +527,17 @@ mod tests {
         assert!(
             token(trigger, "border").is_none(),
             "inline trigger has a bullet, not a border"
+        );
+        assert_eq!(
+            token(trigger, "background@hover"),
+            Some(crate::component::tokens::LAYER_HOVER)
+        );
+        assert_eq!(
+            token(trigger, "background"),
+            Some(crate::component::tokens::SURFACE_BASE),
+            "a resting `background` must be bound alongside `background@hover`, \
+             or the trigger paints nothing when it is not hovered -- the paint \
+             pass counts that as silent, not empty"
         );
 
         let sm = ai_label_inline_sm("a", "Ask AI", false, "x");
@@ -668,6 +690,166 @@ mod tests {
         for (name, node) in &trees {
             eprintln!("validating {name}");
             let _ = validated(node);
+        }
+    }
+
+    const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
+
+    fn accepting_registry() -> Registry {
+        Registry::with_vocabulary(standard_vocabulary())
+    }
+
+    fn petrify_lone(node: ViewNode) -> PetrifiedFrame {
+        let root = ViewNode::new(NodeKind::Stack, "root")
+            .with_props(Props {
+                axis: Some(Axis::Vertical),
+                ..Props::default()
+            })
+            .child(node);
+        let registry = accepting_registry();
+        let mut harness = Harness::new();
+        let viewport = Viewport::new(VIEWPORT, ThemeMode::Dark);
+        harness.scale = viewport.scale;
+        petrify(
+            1,
+            validated_with(&root, &registry),
+            &mut harness.ctx(),
+            viewport,
+            TransitionActivity::default(),
+        )
+    }
+
+    fn color(theme: &Theme, name: &str) -> ColorValue {
+        match theme.value(&TokenName::new(name).unwrap()).unwrap() {
+            TokenValue::Color(c) => *c,
+            other => panic!("{name} is not a colour: {other:?}"),
+        }
+    }
+
+    /// Check C/D across the closed forms of every size ramp and every
+    /// variant (default, inline, revert): no degenerate rect, no child
+    /// outside its parent. Open forms are excluded — see this module's own
+    /// `every_constructor_produces_a_tree_validate_accepts` doc for why the
+    /// anchor gap makes an open popover unmountable here.
+    #[test]
+    fn frame_geometry_has_no_degenerate_or_overflowing_placements() {
+        let cases: Vec<(&str, ViewNode)> = vec![
+            ("mini", ai_label_mini("a", "Ask AI", false, "x")),
+            ("2xs", ai_label_2xs("a", "Ask AI", false, "x")),
+            ("xs", ai_label_xs("a", "Ask AI", false, "x")),
+            ("sm", ai_label_sm("a", "Ask AI", false, "x")),
+            ("md", ai_label("a", "Ask AI", false, "x")),
+            ("lg", ai_label_lg("a", "Ask AI", false, "x")),
+            ("xl", ai_label_xl("a", "Ask AI", false, "x")),
+            ("inline-sm", ai_label_inline_sm("a", "Ask AI", false, "x")),
+            ("inline-md", ai_label_inline("a", "Ask AI", false, "x")),
+            ("inline-lg", ai_label_inline_lg("a", "Ask AI", false, "x")),
+            ("revert", ai_label_revert("a", "Revert to AI suggestion")),
+        ];
+        for (label, node) in cases {
+            let frame = petrify_lone(node);
+            assert!(!frame.placements.is_empty(), "{label}: nothing placed");
+            for p in &frame.placements {
+                assert!(
+                    p.rect.w > 0.0 && p.rect.h > 0.0,
+                    "{label}: {} placed with a degenerate rect {:?}",
+                    p.id,
+                    p.rect
+                );
+                assert!(
+                    !p.paint.overflowed,
+                    "{label}: {} drew content larger than its own rect",
+                    p.id
+                );
+                if let Some(parent_idx) = p.parent {
+                    let parent = &frame.placements[parent_idx];
+                    let fits = p.rect.x >= parent.rect.x - 0.01
+                        && p.rect.y >= parent.rect.y - 0.01
+                        && p.rect.x + p.rect.w <= parent.rect.x + parent.rect.w + 0.01
+                        && p.rect.y + p.rect.h <= parent.rect.y + parent.rect.h + 0.01;
+                    assert!(
+                        fits,
+                        "{label}: {} (rect {:?}) extends outside its parent {} (rect {:?})",
+                        p.id, p.rect, parent.id, parent.rect
+                    );
+                }
+            }
+        }
+    }
+
+    /// Check F: every trigger declares `Focus` and must be reachable;
+    /// AI label is never disabled (module doc), so there is no negative
+    /// case here.
+    #[test]
+    fn every_trigger_is_reachable_in_focus_order() {
+        for (label, node) in [
+            ("default", ai_label("a", "Ask AI", false, "x")),
+            ("inline", ai_label_inline("a", "Ask AI", false, "x")),
+            ("revert", ai_label_revert("a", "Undo AI edit")),
+        ] {
+            let frame = petrify_lone(node);
+            let focus = crate::focus::FocusTree::from_placements(
+                &frame.placements,
+                &std::collections::BTreeMap::new(),
+            );
+            let trigger_id = frame
+                .placements
+                .iter()
+                .find(|p| p.semantics.role == Some(Role::Button))
+                .unwrap_or_else(|| panic!("{label}: no Button placement"))
+                .id
+                .clone();
+            assert!(
+                focus.order().iter().any(|id| id == &trigger_id),
+                "{label}: trigger declares Focus but is not in focus order"
+            );
+        }
+    }
+
+    /// Check E: the `"AI"` / `"Undo"` glyph and the inline `"AI"` text
+    /// against each trigger's own resting fill, in both themes, read
+    /// through `Props.opacity`.
+    #[test]
+    fn trigger_text_clears_aa_contrast_against_its_own_fill() {
+        const MIN_TEXT_CONTRAST: f32 = 4.5;
+        for theme in [crate::token::light(), crate::token::dark()] {
+            for (label, node) in [
+                ("default", ai_label("a", "Ask AI", false, "x")),
+                // The inline trigger's own resting `background` is the fix
+                // under test elsewhere in this file; read it from the node
+                // rather than assume it, so this measures what is bound.
+                ("inline", ai_label_inline("a", "Ask AI", false, "x")),
+                ("revert", ai_label_revert("a", "Undo AI edit")),
+            ] {
+                // `revert`'s trigger *is* the returned node (keyed by the
+                // caller's key, not "trigger"); `default`/`inline` nest a
+                // child keyed "trigger". `named` finds either: the caller's
+                // node for `revert`, the descendant for the others.
+                let trigger = if node.key.as_str() == "trigger" || label == "revert" {
+                    &node
+                } else {
+                    named(&node, "trigger")
+                };
+                let bg_name = trigger
+                    .props
+                    .tokens
+                    .get("background")
+                    .unwrap_or_else(|| panic!("{label}: trigger has no resting background"));
+                let bg = color(&theme, bg_name.as_str());
+                let text_node = named(trigger, "text");
+                let fg_name = text_node
+                    .props
+                    .tokens
+                    .get("foreground")
+                    .expect("text binds a foreground");
+                let opacity = text_node.props.opacity.unwrap_or(1.0);
+                let fg = color(&theme, fg_name.as_str()).faded(opacity).over(bg);
+                let ratio = fg.contrast_ratio(bg);
+                assert!(
+                    ratio >= MIN_TEXT_CONTRAST,
+                    "{label}: trigger text at {ratio:.2}:1 against {bg_name} fails AA {MIN_TEXT_CONTRAST}:1"
+                );
+            }
         }
     }
 }

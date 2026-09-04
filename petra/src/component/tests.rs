@@ -17,9 +17,11 @@ use crate::tree::{NodeKind, Props, Registry, ViewNode};
 
 use super::tokens::{ACCENT_PRIMARY, BORDER_SUBTLE, TEXT_ON_ACCENT};
 use super::{
-    MAX_LAYER_DEPTH, button, checkbox, field, heading, layer_tokens, list_item, list_row, on_layer,
-    primary_button, progress, radio, section, status, tab, tab_bar, text, tile, toggle, toggle_sm,
-    unordered_list,
+    MAX_LAYER_DEPTH, accordion, accordion_item, ai_label, ai_label_inline, breadcrumb,
+    breadcrumb_item, button, checkbox, code_snippet, code_snippet_inline, code_snippet_multi,
+    contained_list, contained_list_disclosed, disabled, field, heading, layer_tokens, list_item,
+    list_row, on_layer, primary_button, progress, radio, section, status, tab, tab_bar, text, tile,
+    toggle, toggle_sm, unordered_list,
 };
 
 const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
@@ -46,11 +48,58 @@ fn full_gallery() -> ViewNode {
         "Controls",
         vec![
             checkbox("check", "Checked", true),
+            checkbox("check-off", "Unchecked", false),
+            disabled(checkbox("check-disabled", "Unavailable", false)),
             radio("radio", "Chosen", false),
             toggle("toggle", "On", true),
             primary_button("primary", "Save"),
             button("secondary", "Cancel"),
+            disabled(button("secondary-disabled", "Unavailable")),
             field("name", "Fiber name"),
+        ],
+    );
+
+    // Group 1's own seven (accordion, AI label, breadcrumb, code snippet,
+    // contained list; button and checkbox already sit in `controls` above).
+    // AI label's open form cannot mount: `Anchor::Node` needs a full
+    // canonical path and a constructor cannot know its mount point (see
+    // `.agents/notes/proposed/architecture/
+    // 2026-09-03-anchored-components-cannot-name-their-own-anchor.md`), so
+    // both AI label rows here stay closed.
+    let carbon = section(
+        "carbon",
+        "Carbon (group 1)",
+        vec![
+            breadcrumb(
+                "trail",
+                vec![
+                    breadcrumb_item("home", "Home"),
+                    breadcrumb_item("docs", "Docs"),
+                    breadcrumb_item("here", "Here"),
+                ],
+            ),
+            accordion(
+                "acc",
+                vec![
+                    accordion_item("acc-open", "Open section", true, "The panel body."),
+                    accordion_item("acc-shut", "Closed section", false, "hidden"),
+                ],
+            ),
+            ai_label("ai-default", "Confidence score", false, "80% confident"),
+            ai_label_inline("ai-inline", "Ask AI", false, "Trained on ticket history."),
+            code_snippet("snippet-single", "fn main() {}"),
+            code_snippet_inline("snippet-inline", "ViewNode"),
+            code_snippet_multi("snippet-multi", "line 1\nline 2\nline 3"),
+            contained_list(
+                "cl-onpage",
+                "Related",
+                vec![text("cl-r0", "Alpha"), text("cl-r1", "Bravo")],
+            ),
+            contained_list_disclosed(
+                "cl-disclosed",
+                "Menu",
+                vec![text("cl-r2", "Charlie")],
+            ),
         ],
     );
 
@@ -98,6 +147,7 @@ fn full_gallery() -> ViewNode {
         .child(heading("title", "Component gallery"))
         .child(text("intro", "every shipped component, once"))
         .child(controls)
+        .child(carbon)
         .child(tabs)
         .child(readouts)
         .child(list);
@@ -536,15 +586,38 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
     /// Every node in [`full_gallery`] that may draw a border, by the key
     /// path it appears at. An exact set: a node missing from here that draws
     /// one fails, and a node listed here that stops drawing one fails too.
-    const DRAWS_AN_EDGE: [&str; 4] = [
+    const DRAWS_AN_EDGE: [&str; 9] = [
         // `field`: an empty well with no boundary does not read as a place
         // to type. See `field`'s own doc for why it keeps one when `button`
         // does not.
         "root/controls/name",
         // The binary controls' marks: no fill at all when they are off.
+        // `check`, `check-off` and `check-disabled` are the same box shape
+        // at three different `Semantics` states — `empty_mark`/`marked_box`
+        // bind `border` unconditionally, so all three carry it regardless
+        // of checked or disabled.
         "root/controls/check/box",
+        "root/controls/check-off/box",
+        "root/controls/check-disabled/box",
         "root/controls/radio/box",
         "root/controls/toggle/appearance/track",
+        // Accordion item: Carbon's own `border-top: 1px solid $border-subtle`
+        // divider between rows (`_accordion.scss`), not decoration over a
+        // shape that already has a boundary — a list with no rule between
+        // its rows does not read as a list. See
+        // `accordion_item_owns_a_one_px_border_subtle_divider`.
+        "root/carbon/acc/acc-open",
+        "root/carbon/acc/acc-shut",
+        // AI label's default-variant trigger: Carbon's `border-inverse`
+        // (`.cds--ai-label`, MEASURED SCSS; see `ai_label.rs`'s module doc
+        // for why `BORDER_SUBTLE` stands in for the missing token). Unlike
+        // a filled `button`, which trades its edge for `shadow.raised`, this
+        // trigger has no fill loud enough to read as a boundary on its own —
+        // its background is `SURFACE_BASE`, the page's own ground — so the
+        // edge is the only thing that identifies it as a control at rest.
+        // The inline variant (`ai-inline`) is the sibling case that does
+        // *not* draw one: its leading bullet dot is the boundary instead.
+        "root/carbon/ai-default/trigger",
     ];
 
     // `status` is not on that list, and the omission is measured rather than
@@ -1089,3 +1162,4 @@ fn a_state_decorated_token_always_has_a_resting_binding() {
         offences.join("\n")
     );
 }
+

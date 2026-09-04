@@ -59,8 +59,11 @@ pub fn breadcrumb_item(key: impl Into<Key>, label: impl Into<String>) -> ViewNod
 #[cfg(test)]
 mod tests {
     use super::{SPACING_03, breadcrumb, breadcrumb_item};
-    use crate::geom::Axis;
-    use crate::tree::{Interaction, Role, ViewNode};
+    use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
+    use crate::geom::{Axis, Size};
+    use crate::testing::{Harness, validated_with};
+    use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
+    use crate::tree::{Interaction, NodeKind, Props, Registry, Role, ViewNode};
 
     fn named<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         fn walk<'a>(node: &'a ViewNode, key: &str) -> Option<&'a ViewNode> {
@@ -135,5 +138,144 @@ mod tests {
     fn breadcrumb_with_one_item_has_no_separator() {
         let node = breadcrumb("trail", vec![breadcrumb_item("only", "Only")]);
         assert_eq!(child_keys(&node), ["only"]);
+    }
+
+    const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
+
+    fn accepting_registry() -> Registry {
+        Registry::with_vocabulary(standard_vocabulary())
+    }
+
+    fn petrify_lone(node: ViewNode) -> PetrifiedFrame {
+        let root = ViewNode::new(NodeKind::Stack, "root")
+            .with_props(Props {
+                axis: Some(Axis::Vertical),
+                ..Props::default()
+            })
+            .child(node);
+        let registry = accepting_registry();
+        let mut harness = Harness::new();
+        let viewport = Viewport::new(VIEWPORT, ThemeMode::Dark);
+        harness.scale = viewport.scale;
+        petrify(
+            1,
+            validated_with(&root, &registry),
+            &mut harness.ctx(),
+            viewport,
+            TransitionActivity::default(),
+        )
+    }
+
+    fn color(theme: &Theme, name: &str) -> ColorValue {
+        match theme.value(&TokenName::new(name).unwrap()).unwrap() {
+            TokenValue::Color(c) => *c,
+            other => panic!("{name} is not a colour: {other:?}"),
+        }
+    }
+
+    /// Check C/D: every crumb, its separators, and the trail itself place
+    /// with a real rect, none of them outside their parent.
+    #[test]
+    fn frame_geometry_has_no_degenerate_or_overflowing_placements() {
+        let node = breadcrumb(
+            "trail",
+            vec![
+                breadcrumb_item("home", "Home"),
+                breadcrumb_item("docs", "Docs"),
+                breadcrumb_item("here", "Here"),
+            ],
+        );
+        let frame = petrify_lone(node);
+        assert!(!frame.placements.is_empty(), "nothing placed");
+        for p in &frame.placements {
+            assert!(
+                p.rect.w > 0.0 && p.rect.h > 0.0,
+                "{} placed with a degenerate rect {:?}",
+                p.id,
+                p.rect
+            );
+            assert!(
+                !p.paint.overflowed,
+                "{} drew content larger than its own rect",
+                p.id
+            );
+            if let Some(parent_idx) = p.parent {
+                let parent = &frame.placements[parent_idx];
+                let fits = p.rect.x >= parent.rect.x - 0.01
+                    && p.rect.y >= parent.rect.y - 0.01
+                    && p.rect.x + p.rect.w <= parent.rect.x + parent.rect.w + 0.01
+                    && p.rect.y + p.rect.h <= parent.rect.y + parent.rect.h + 0.01;
+                assert!(
+                    fits,
+                    "{} (rect {:?}) extends outside its parent {} (rect {:?})",
+                    p.id, p.rect, parent.id, parent.rect
+                );
+            }
+        }
+    }
+
+    /// Check F: every crumb declares `Focus` and must be reachable; a
+    /// breadcrumb has no disabled crumb, so there is no negative case.
+    #[test]
+    fn every_crumb_is_reachable_in_focus_order() {
+        let node = breadcrumb(
+            "trail",
+            vec![breadcrumb_item("home", "Home"), breadcrumb_item("here", "Here")],
+        );
+        let frame = petrify_lone(node);
+        let focus = crate::focus::FocusTree::from_placements(
+            &frame.placements,
+            &std::collections::BTreeMap::new(),
+        );
+        let crumb_ids: Vec<&str> = frame
+            .placements
+            .iter()
+            .filter(|p| p.semantics.role == Some(Role::Button))
+            .map(|p| p.id.as_str())
+            .collect();
+        assert_eq!(crumb_ids.len(), 2, "expected both crumbs placed");
+        let order = focus.order();
+        for id in crumb_ids {
+            assert!(
+                order.iter().any(|o| o == id),
+                "{id} declares Focus but is not in focus order"
+            );
+        }
+    }
+
+    /// Check E: crumb labels and the `"/"` separator against the page
+    /// ground they are read on (`surface.base`, matching how `text()`
+    /// itself is styled to sit on the base layer), read through
+    /// `Props.opacity`.
+    #[test]
+    fn crumb_and_separator_text_clears_aa_contrast_on_the_page_ground() {
+        const MIN_TEXT_CONTRAST: f32 = 4.5;
+        use crate::component::tokens::SURFACE_BASE;
+        for theme in [crate::token::light(), crate::token::dark()] {
+            let bg = color(&theme, SURFACE_BASE);
+            let node = breadcrumb(
+                "trail",
+                vec![breadcrumb_item("home", "Home"), breadcrumb_item("here", "Here")],
+            );
+            fn walk_text(node: &ViewNode, bg: ColorValue, theme: &Theme, min: f32) {
+                if node.props.text.is_some() {
+                    if let Some(fg_name) = node.props.tokens.get("foreground") {
+                        let opacity = node.props.opacity.unwrap_or(1.0);
+                        let fg = color(theme, fg_name.as_str()).faded(opacity).over(bg);
+                        let ratio = fg.contrast_ratio(bg);
+                        assert!(
+                            ratio >= min,
+                            "{:?} at {ratio:.2}:1 against {} fails AA {min}:1",
+                            node.key,
+                            fg_name.as_str()
+                        );
+                    }
+                }
+                for child in &node.children {
+                    walk_text(child, bg, theme, min);
+                }
+            }
+            walk_text(&node, bg, &theme, MIN_TEXT_CONTRAST);
+        }
     }
 }

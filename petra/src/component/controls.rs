@@ -425,8 +425,11 @@ mod tests {
         TOGGLE_TRACK_W, checkbox, checkbox_group, checkbox_indeterminate, checkbox_readonly, radio,
         radio_group, toggle, toggle_sm,
     };
-    use crate::geom::Axis;
-    use crate::tree::{Interaction, ViewNode};
+    use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
+    use crate::geom::{Axis, Size};
+    use crate::testing::{Harness, validated_with};
+    use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
+    use crate::tree::{Interaction, NodeKind, Props, Registry, ViewNode};
 
     fn named<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         fn walk<'a>(node: &'a ViewNode, key: &str) -> Option<&'a ViewNode> {
@@ -575,5 +578,146 @@ mod tests {
             .map(|c| c.key.as_str())
             .collect();
         assert_eq!(keys, ["pad-start", "knob", "pad-end"]);
+    }
+
+    const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
+
+    fn accepting_registry() -> Registry {
+        Registry::with_vocabulary(standard_vocabulary())
+    }
+
+    fn petrify_lone(node: ViewNode) -> PetrifiedFrame {
+        let root = ViewNode::new(NodeKind::Stack, "root")
+            .with_props(Props {
+                axis: Some(Axis::Vertical),
+                ..Props::default()
+            })
+            .child(node);
+        let registry = accepting_registry();
+        let mut harness = Harness::new();
+        let viewport = Viewport::new(VIEWPORT, ThemeMode::Dark);
+        harness.scale = viewport.scale;
+        petrify(
+            1,
+            validated_with(&root, &registry),
+            &mut harness.ctx(),
+            viewport,
+            TransitionActivity::default(),
+        )
+    }
+
+    fn color(theme: &Theme, name: &str) -> ColorValue {
+        match theme.value(&TokenName::new(name).unwrap()).unwrap() {
+            TokenValue::Color(c) => *c,
+            other => panic!("{name} is not a colour: {other:?}"),
+        }
+    }
+
+    /// Check C/D across every checkbox state: checked, unchecked,
+    /// indeterminate, read-only, and disabled. Radio and toggle are out of
+    /// scope for this pass (see this module's own doc header).
+    #[test]
+    fn checkbox_frame_geometry_has_no_degenerate_or_overflowing_placements() {
+        let cases: Vec<(&str, ViewNode)> = vec![
+            ("checked", checkbox("c", "Checked", true)),
+            ("unchecked", checkbox("c", "Unchecked", false)),
+            ("indeterminate", checkbox_indeterminate("c", "Partial")),
+            ("readonly", checkbox_readonly("c", "Locked", true)),
+            (
+                "disabled",
+                crate::component::disabled(checkbox("c", "Unavailable", false)),
+            ),
+        ];
+        for (label, node) in cases {
+            let frame = petrify_lone(node);
+            assert!(!frame.placements.is_empty(), "{label}: nothing placed");
+            for p in &frame.placements {
+                assert!(
+                    p.rect.w > 0.0 && p.rect.h > 0.0,
+                    "{label}: {} placed with a degenerate rect {:?}",
+                    p.id,
+                    p.rect
+                );
+                assert!(
+                    !p.paint.overflowed,
+                    "{label}: {} drew content larger than its own rect",
+                    p.id
+                );
+                if let Some(parent_idx) = p.parent {
+                    let parent = &frame.placements[parent_idx];
+                    let fits = p.rect.x >= parent.rect.x - 0.01
+                        && p.rect.y >= parent.rect.y - 0.01
+                        && p.rect.x + p.rect.w <= parent.rect.x + parent.rect.w + 0.01
+                        && p.rect.y + p.rect.h <= parent.rect.y + parent.rect.h + 0.01;
+                    assert!(
+                        fits,
+                        "{label}: {} (rect {:?}) extends outside its parent {} (rect {:?})",
+                        p.id, p.rect, parent.id, parent.rect
+                    );
+                }
+            }
+        }
+    }
+
+    /// Check F: an enabled checkbox (checked, unchecked, indeterminate,
+    /// read-only) declares `Focus` and is reachable; a disabled one is not.
+    #[test]
+    fn checkbox_focus_reachability_matches_disabled_state() {
+        for (label, node, should_be_focusable) in [
+            ("checked", checkbox("c", "Checked", true), true),
+            ("readonly", checkbox_readonly("c", "Locked", true), true),
+            (
+                "disabled",
+                crate::component::disabled(checkbox("c", "Unavailable", false)),
+                false,
+            ),
+        ] {
+            let frame = petrify_lone(node);
+            let focus = crate::focus::FocusTree::from_placements(
+                &frame.placements,
+                &std::collections::BTreeMap::new(),
+            );
+            let root_placement = frame
+                .placements
+                .iter()
+                .find(|p| p.id == "/root/c")
+                .expect("checkbox row is placed");
+            let reachable = focus.order().iter().any(|id| id == &root_placement.id);
+            assert_eq!(
+                reachable, should_be_focusable,
+                "{label}: focus reachability was {reachable}, expected {should_be_focusable}"
+            );
+        }
+    }
+
+    /// Check E: the label text and (for checked/indeterminate) the mark
+    /// inside the box, against the page ground the row sits on, in both
+    /// themes, read through `Props.opacity`.
+    #[test]
+    fn checkbox_text_clears_aa_contrast_on_the_page_ground() {
+        const MIN_TEXT_CONTRAST: f32 = 4.5;
+        use super::super::tokens::SURFACE_BASE;
+        for theme in [crate::token::light(), crate::token::dark()] {
+            let bg = color(&theme, SURFACE_BASE);
+            for node in [
+                checkbox("c", "Checked", true),
+                checkbox("c", "Unchecked", false),
+                checkbox_indeterminate("c", "Partial"),
+            ] {
+                let label = named(&node, "label");
+                let fg_name = label
+                    .props
+                    .tokens
+                    .get("foreground")
+                    .expect("label binds a foreground");
+                let opacity = label.props.opacity.unwrap_or(1.0);
+                let fg = color(&theme, fg_name.as_str()).faded(opacity).over(bg);
+                let ratio = fg.contrast_ratio(bg);
+                assert!(
+                    ratio >= MIN_TEXT_CONTRAST,
+                    "label at {ratio:.2}:1 against page ground fails AA {MIN_TEXT_CONTRAST}:1"
+                );
+            }
+        }
     }
 }
