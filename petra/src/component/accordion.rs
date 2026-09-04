@@ -3,7 +3,8 @@
 //! Anatomy (docs + `_accordion.scss`; T070 prefers SCSS):
 //! 1. [`accordion`] — the list container (`Role::List`).
 //! 2. [`accordion_item`] — one `<li>`; owns the 1px [`BORDER_SUBTLE`]
-//!    divider.
+//!    divider, drawn by its own [`divider`] child rather than by binding
+//!    `"border"` on the item — see that function's doc for why.
 //! 3. Header button — the whole click/focus target (`Role::Button`).
 //! 4. Chevron as text (`"expanded"` / `"collapsed"`), not an icon-only
 //!    mark (FR-026).
@@ -170,12 +171,30 @@ fn accordion_item_sized(
         label: Some(label),
         ..Semantics::default()
     };
-    item.props.tokens.insert("border".into(), t(BORDER_SUBTLE));
     item
 }
 
 /// 1px hairline. An empty stack, not a spacer: a spacer answers Unbounded
 /// with 65535 and would blow the item to viewport-width.
+///
+/// This is the item's *whole* edge, not decoration alongside another one.
+/// Until the A3 audit pass `accordion_item` bound the shared `"border"`
+/// token on itself as well — a 4-sided box wrapping [header, panel,
+/// divider] — trying to approximate Carbon's `border-top` divider the same
+/// way `field`/Dropdown/Data table approximate their own directional rules
+/// (see `component::tests::DRAWS_AN_EDGE`'s doc). Unlike those, an
+/// accordion item is not a lone box: `header` paints an opaque
+/// `SURFACE_BASE` fill *after* the item's own border (children paint over
+/// their parent), which hid the box's top edge and the header-height slice
+/// of its left/right edges entirely, while `panel` paints nothing and let
+/// the same left/right edges show through underneath it — two vertical
+/// hairlines that start mid-item with no visible top, exactly the shape
+/// `pagination`'s old `nav_button` and `ui_shell`'s old header binding drew
+/// (`23-pagination.png`/`40-ui-shell-header.png`, V4/V6). `01-accordion.png`
+/// caught the same defect on the expanded row. The fix is the same one
+/// those two took: delete the binding. This divider was already the real
+/// element standing in for Carbon's one edge; the item's own border was
+/// pure redundancy that happened to also be wrong.
 fn divider() -> ViewNode {
     let mut node = stack("divider", Axis::Horizontal, None, vec![]);
     node.props
@@ -322,7 +341,19 @@ mod tests {
     #[test]
     fn accordion_item_owns_a_one_px_border_subtle_divider() {
         let item = accordion_item("a", "Section A", false, "hidden");
-        assert_eq!(token(&item, "border"), Some(BORDER_SUBTLE));
+        // A3 (2026-09-04): the item itself no longer binds "border". It used
+        // to, as a 4-sided box wrapping [header, panel, divider], and the
+        // header's own opaque fill hid the top edge while the transparent
+        // panel let the left/right edges show through as two stray
+        // hairlines with no visible top (`01-accordion.png`) — the same
+        // defect class `pagination`'s old `nav_button` and `ui_shell`'s old
+        // header binding drew. `divider` below was already the real element
+        // standing in for Carbon's own `border-top`; see its doc.
+        assert!(
+            token(&item, "border").is_none(),
+            "the item's own border was redundant with, and hid worse than, \
+             its own divider child"
+        );
         let line = named(&item, "divider");
         assert_eq!(token(line, "background"), Some(BORDER_SUBTLE));
         assert_eq!(line.constraints.vertical.min, Some(DIVIDER));

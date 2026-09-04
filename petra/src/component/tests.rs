@@ -924,7 +924,7 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
     /// Every node in [`full_gallery`] that may draw a border, by the key
     /// path it appears at. An exact set: a node missing from here that draws
     /// one fails, and a node listed here that stops drawing one fails too.
-    const DRAWS_AN_EDGE: [&str; 57] = [
+    const DRAWS_AN_EDGE: [&str; 55] = [
         // `field`: an empty well with no boundary does not read as a place
         // to type. See `field`'s own doc for why it keeps one when `button`
         // does not.
@@ -939,13 +939,22 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         "root/controls/check-disabled/box",
         "root/controls/radio/box",
         "root/controls/toggle/appearance/track",
-        // Accordion item: Carbon's own `border-top: 1px solid $border-subtle`
-        // divider between rows (`_accordion.scss`), not decoration over a
-        // shape that already has a boundary — a list with no rule between
-        // its rows does not read as a list. See
+        // Accordion item used to be here, binding `border` on the whole
+        // item as an approximation of Carbon's own `border-top: 1px solid
+        // $border-subtle` divider between rows (`_accordion.scss`). A3
+        // audit, `01-accordion.png`: unlike a lone box, the item's own
+        // `header` child paints an opaque fill *after* the item's border
+        // (children paint over their parent) and hid the top edge
+        // entirely, while the transparent `panel` child let the left/right
+        // edges show through underneath it as two stray hairlines with no
+        // visible top — the same defect class `pagination`'s old
+        // `nav_button` and `ui_shell`'s old header binding drew, both
+        // fixed the same way (V4/V6, see their own comments below). The
+        // fix is identical: the binding is gone, and `accordion_item`'s own
+        // `divider` child — already a real element, not new machinery — is
+        // the one edge Carbon actually draws. See
         // `accordion_item_owns_a_one_px_border_subtle_divider`.
-        "root/carbon/acc/acc-open",
-        "root/carbon/acc/acc-shut",
+        //
         // AI label's default-variant trigger: Carbon's `border-inverse`
         // (`.cds--ai-label`, MEASURED SCSS; see `ai_label.rs`'s module doc
         // for why `BORDER_SUBTLE` stands in for the missing token). Unlike
