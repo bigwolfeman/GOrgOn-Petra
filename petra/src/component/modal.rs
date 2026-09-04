@@ -90,6 +90,14 @@ fn close_button() -> ViewNode {
     let mut node = stack("close", Axis::Horizontal, None, vec![caption]);
     node.props.align = Some(Align::Center);
     node.props.padding = Some(pad(SPACING_05, SPACING_03));
+    // Resting fill matches the dialog surface it sits on ([`SURFACE_RAISED`])
+    // rather than binding no `background` at all: an unbound slot with only
+    // `background@hover` beside it declares content the paint pass cannot
+    // resolve at rest, which the accounting counts as silent
+    // (`gorgon_petra_egui::paint::PaintReport::silent`).
+    node.props
+        .tokens
+        .insert("background".into(), t(SURFACE_RAISED));
     node.props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
@@ -111,7 +119,7 @@ fn close_button() -> ViewNode {
 #[cfg(test)]
 mod tests {
     use super::{CLOSE_HIT, CLOSE_ICON, modal};
-    use crate::component::tokens::SURFACE_RAISED;
+    use crate::component::tokens::{LAYER_HOVER, SURFACE_RAISED};
     use crate::tree::{Anchor, InputPolicy, Interaction, Layer, NodeKind, Role, ViewNode};
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
@@ -186,6 +194,14 @@ mod tests {
         assert!(
             close.props.text.is_none(),
             "Close is a labelled control, not an icon-only leaf"
+        );
+        assert_eq!(token(close, "background@hover"), Some(LAYER_HOVER));
+        assert_eq!(
+            token(close, "background"),
+            Some(SURFACE_RAISED),
+            "a resting `background` must be bound alongside `background@hover`, \
+             or the close button paints nothing when it is not hovered — the \
+             paint pass counts that as silent, not empty"
         );
     }
 }

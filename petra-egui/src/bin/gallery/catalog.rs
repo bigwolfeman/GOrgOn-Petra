@@ -1412,4 +1412,74 @@ mod tests {
             "a headless pass must still produce a petrified frame"
         );
     }
+
+    /// `every_built_page_tree_is_accepted` above only proves a page's tree is
+    /// structurally valid (`tree::validate`) — it never paints a pixel. A
+    /// page whose interaction-state tokens do not resolve at rest (Accordion's
+    /// item headers used to bind only `background@hover`, with no resting
+    /// `background`; Modal's close button had the same defect) sailed through
+    /// that gate and every other gate, and only surfaced live, as
+    /// `gorgon-petra-egui::host::Host::pass`'s
+    /// `report.is_complete()` `debug_assert!` firing the first time an
+    /// operator opened the page. This test runs the real paint pass over
+    /// every built page and names every one that leaves a placement
+    /// undrawn-but-declared — the gate that should have caught the bug this
+    /// test guards against.
+    ///
+    /// `catch_unwind` is required, not merely convenient: in a debug build
+    /// `Host::pass` panics via that same `debug_assert!` before
+    /// `Host::report()` is ever populated for the offending pass, so the
+    /// panic message is the only way to read that pass's counts. A release
+    /// build compiles the `debug_assert!` out, so the `Ok` arm below checks
+    /// `PaintReport::is_complete` directly — either way a silent placement
+    /// fails this test and names its page.
+    #[test]
+    fn every_built_page_paints_with_nothing_silent() {
+        let mut offenders: Vec<String> = Vec::new();
+        for index in 0..Catalog::default().roster.len() {
+            let mut app = Catalog::default();
+            app.page = index;
+            if !app.current().is_built() {
+                continue;
+            }
+            let component = app.current().row.component.to_string();
+            let ctx = headless();
+            let mut host = Host::new(&ctx, app, default_presenter());
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                step(&ctx, &mut host, RawInput::default());
+            }));
+            match outcome {
+                Ok(()) => {
+                    let report = host
+                        .report()
+                        .expect("a completed pass without a panic records a report");
+                    if !report.is_complete() {
+                        offenders.push(format!(
+                            "{index} {component}: {} drawn + {} clipped + {} empty + \
+                             {} silent of {} placement(s), desynced={}",
+                            report.drawn,
+                            report.skipped_clipped,
+                            report.empty,
+                            report.silent,
+                            report.placements,
+                            report.desynced,
+                        ));
+                    }
+                }
+                Err(payload) => {
+                    let msg = payload
+                        .downcast_ref::<String>()
+                        .cloned()
+                        .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+                        .unwrap_or_else(|| "<non-string panic payload>".to_owned());
+                    offenders.push(format!("{index} {component}: {msg}"));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "these catalog pages paint at least one silent placement:\n{}",
+            offenders.join("\n")
+        );
+    }
 }

@@ -16,7 +16,7 @@
 
 use super::stack;
 use super::text::text;
-use super::tokens::{BORDER_SUBTLE, LAYER_HOVER, SIZE_MD, SPACING_03, SPACING_05, t};
+use super::tokens::{BORDER_SUBTLE, LAYER_HOVER, SIZE_MD, SPACING_03, SPACING_05, SURFACE_BASE, t};
 use crate::geom::{Align, Axis};
 use crate::tree::{
     AxisConstraint, Constraints, InsetRefs, Interaction, Key, Role, Semantics, ViewNode,
@@ -103,6 +103,17 @@ fn accordion_item_sized(
         right: Some(t(SPACING_05)),
         ..InsetRefs::default()
     });
+    // Resting fill matches the page it sits on ([`SURFACE_BASE`]) rather than
+    // binding no `background` at all: an unbound slot with only
+    // `background@hover` beside it declares content the paint pass cannot
+    // resolve at rest, which the accounting counts as silent
+    // (`gorgon_petra_egui::paint::PaintReport::silent`) — the same "no fill
+    // fallthrough" every `chrome()` variant in [`super::button`] already
+    // avoids by binding `SURFACE_BASE` under `Variant::Ghost`.
+    header
+        .props
+        .tokens
+        .insert("background".into(), t(SURFACE_BASE));
     header
         .props
         .tokens
@@ -222,6 +233,13 @@ mod tests {
             "Hover is what makes background@hover reachable"
         );
         assert_eq!(token(header, "background@hover"), Some(LAYER_HOVER));
+        assert_eq!(
+            token(header, "background"),
+            Some(super::SURFACE_BASE),
+            "a resting `background` must be bound alongside `background@hover`, \
+             or the header paints nothing when it is not hovered — the paint \
+             pass counts that as silent, not empty"
+        );
     }
 
     #[test]
