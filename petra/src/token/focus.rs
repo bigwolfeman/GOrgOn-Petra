@@ -18,7 +18,9 @@
 //! | `BarUnder` | [`FocusRing::bar`] | one strip **below** the rect |
 //! | `Sides` | [`FocusRing::sides`] | two strips **outside** the left and right edges |
 //!
-//! `Border` is Carbon's and is the default: `@include focus-outline('outline')`
+//! `Border` is Carbon's, and Petra's **exception** rather than its default —
+//! [`crate::tree::FocusFigure`] carries the policy and the operator's rule
+//! behind it. `@include focus-outline('outline')`
 //! is `outline: 2px solid $focus; outline-offset: -2px`
 //! (`@carbon/styles/scss/utilities/_focus-outline.scss` line 29), used 75
 //! times across 62 component files, and no Carbon rule anywhere produces an
@@ -33,10 +35,12 @@
 //! control is exactly invisible.
 //!
 //! `BarUnder` and `Sides` have no Carbon citation as focus figures. They are
-//! Petra's, kept because a control that already paints an accent band on one
-//! of its own edges has nowhere inside its rect for a ring (a tab), and
-//! because a well a person types into should not read the same as a button
-//! they press.
+//! Petra's, and `BarUnder` is the default one: the operator's rule is that
+//! underlines are preferred to boxes, and a box is what a control wears only
+//! when it is packed tightly enough that a bar hung below it would land on
+//! its neighbour. `Sides` is for a well a person types into and for a
+//! standalone control they press, which should not read the same as a row in
+//! a list.
 //!
 //! # Whose rect
 //!

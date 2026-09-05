@@ -7,7 +7,7 @@ use super::tokens::{
 };
 use super::{pad, stack};
 use crate::geom::Axis;
-use crate::tree::{Interaction, Key, Role, ViewNode};
+use crate::tree::{FocusFigure, Interaction, Key, Role, ViewNode};
 
 /// One row of a list: a label, `Role::ListItem`, and a declared `selected`
 /// state that is never the only way a reader can tell a row is selected —
@@ -63,6 +63,9 @@ pub fn list_row(key: impl Into<Key>, label: impl Into<String>, selected: bool) -
         // bindings are tokens nothing reads.
         &[Interaction::Focus, Interaction::Click, Interaction::Hover],
     );
+    // `Border`, for the reason `component::menu` gives: list rows stack
+    // flush, so a bar under one lands on the next.
+    node.semantics.focus_figure = FocusFigure::Border;
     node.semantics.selected = selected;
     node
 }

@@ -94,8 +94,8 @@ use std::sync::Arc;
 use crate::frame::PetrifiedFrame;
 use crate::geom::{Align, Axis, Point};
 use crate::tree::{
-    AxisConstraint, Constraints, InsetRefs, Interaction, Justify, Key, NodeKind, Props, Role,
-    Semantics, TrackSize, ViewNode,
+    AxisConstraint, Constraints, FocusFigure, InsetRefs, Interaction, Justify, Key, NodeKind,
+    Props, Role, Semantics, TrackSize, ViewNode,
 };
 
 /// Carbon default structured-list row height (style page Size table). Not
@@ -236,7 +236,9 @@ pub fn structured_list_row(key: impl Into<Key>, cells: Vec<ViewNode>, selected: 
     node.props
         .tokens
         .insert("border-top".into(), t(BORDER_SUBTLE));
-    let mut node = node.interactive(Role::Row, label, ROW_INTENTS);
+    let mut node = node
+        .interactive(Role::Row, label, ROW_INTENTS)
+        .with_focus_figure(FocusFigure::Border);
     node.semantics.selected = selected;
     node
 }
@@ -399,6 +401,7 @@ fn column_divider(index: usize, name: Option<&String>) -> ViewNode {
     // eight-unit target rather than against its leading edge.
     node.props.justify = Some(Justify::Center);
     node.interactive(Role::Separator, label, DIVIDER_INTENTS)
+        .with_focus_figure(FocusFigure::Border)
 }
 
 /// The trailing selection cell: the mark when the row is selected, a

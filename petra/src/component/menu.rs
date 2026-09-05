@@ -23,7 +23,7 @@ use super::tokens::{
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
-    AxisConstraint, Constraints, InsetRefs, Interaction, Key, Role, TextWrap, ViewNode,
+    AxisConstraint, Constraints, FocusFigure, InsetRefs, Interaction, Key, Role, TextWrap, ViewNode,
 };
 
 /// Carbon menu min-inline (`10rem`). Also the menu button trigger's
@@ -97,8 +97,12 @@ pub fn menu_item(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
     node.props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
+    // `Border`. Menu items stack flush at `SIZE_MD` with no gap between
+    // them, so the default bar — five units below the bottom edge — would
+    // paint on the next item rather than in empty space.
     node.with_constraints(pin_height(SIZE_MD))
         .interactive(Role::Button, label, ITEM_INTENTS)
+        .with_focus_figure(FocusFigure::Border)
 }
 
 fn pin_height(h: f32) -> Constraints {

@@ -85,7 +85,7 @@ use super::tokens::{
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
-    AxisConstraint, Constraints, Interaction, Justify, Key, NodeKind, Role, ViewNode,
+    AxisConstraint, Constraints, FocusFigure, Interaction, Justify, Key, NodeKind, Role, ViewNode,
 };
 
 /// MEASURED `_file-uploader.scss:425` drop-container `block-size`.
@@ -193,7 +193,13 @@ fn build_uploader(
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
     zone.constraints = pin(ZONE_WIDTH, DROP_HEIGHT);
-    let zone = zone.interactive(Role::Button, label.clone(), ZONE_INTENTS);
+    let zone = zone
+        .interactive(Role::Button, label.clone(), ZONE_INTENTS)
+        // `Border`. The drop zone's bottom edge is where the selected-file
+        // list starts, so a bar hung two units below it lands on the first
+        // file row and reads as marking that row instead — photographed on
+        // 2026-09-05 before this line existed.
+        .with_focus_figure(FocusFigure::Border);
 
     let mut children = vec![heading];
     if let Some(description) = description {
@@ -288,7 +294,9 @@ pub fn file_uploader_item_edit(key: impl Into<Key>, name: impl Into<String>) -> 
         .insert("background@hover".into(), t(LAYER_HOVER));
     let remove = remove
         .with_constraints(pin(STATE_BOX, STATE_BOX))
-        .interactive(Role::Button, format!("Remove {name}"), REMOVE_INTENTS);
+        .interactive(Role::Button, format!("Remove {name}"), REMOVE_INTENTS)
+        // A button: `Sides`, per the operator's rule. See `component::button`.
+        .with_focus_figure(FocusFigure::Sides);
     item_row(key, name, remove, "ready", None)
 }
 

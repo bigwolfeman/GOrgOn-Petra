@@ -58,8 +58,8 @@ use super::tokens::{
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
-    AxisConstraint, InsetRefs, Interaction, Key, NodeKind, Props, Role, Semantics, TrackSize,
-    ViewNode,
+    AxisConstraint, FocusFigure, InsetRefs, Interaction, Key, NodeKind, Props, Role, Semantics,
+    TrackSize, ViewNode,
 };
 
 /// Carbon extra-small row height.
@@ -256,7 +256,12 @@ pub fn data_table_row_expandable(
     let mut node = stack(key, Axis::Vertical, None, parts);
     node.props.align = Some(Align::Stretch);
     bind_row_fills(&mut node);
-    let mut node = node.interactive(Role::Row, label, ROW_INTENTS);
+    // `Border` on every control this module builds: a table is rows packed
+    // flush and cells packed flush inside them, so the default bar under any
+    // of them would paint on a neighbour.
+    let mut node = node
+        .interactive(Role::Row, label, ROW_INTENTS)
+        .with_focus_figure(FocusFigure::Border);
     node.semantics.selected = selected;
     node.semantics.expanded = Some(expanded);
     node
@@ -297,7 +302,9 @@ pub fn data_table_sort_header(
         .props
         .tokens
         .insert("background@hover".into(), t(LAYER_ACCENT_HOVER));
-    let mut button = button.interactive(Role::Button, accessible, SORT_INTENTS);
+    let mut button = button
+        .interactive(Role::Button, accessible, SORT_INTENTS)
+        .with_focus_figure(FocusFigure::Border);
     button.semantics.value = Some(direction.into());
 
     let mut cell = stack(key, Axis::Horizontal, None, vec![button]);
@@ -328,7 +335,9 @@ fn data_table_row_sized(
         size.height(),
     );
     bind_row_fills(&mut node);
-    let mut node = node.interactive(Role::Row, label, ROW_INTENTS);
+    let mut node = node
+        .interactive(Role::Row, label, ROW_INTENTS)
+        .with_focus_figure(FocusFigure::Border);
     node.semantics.selected = selected;
     node
 }
@@ -380,7 +389,9 @@ fn header_row(
 fn select_all(all: CheckState) -> ViewNode {
     let mut node = stack(SELECT_ALL, Axis::Horizontal, None, vec![checkbox_box(all)]);
     node.props.align = Some(Align::Center);
-    let mut node = node.interactive(Role::Button, SELECT_ALL_LABEL, ROW_INTENTS);
+    let mut node = node
+        .interactive(Role::Button, SELECT_ALL_LABEL, ROW_INTENTS)
+        .with_focus_figure(FocusFigure::Border);
     node.semantics.selected = all == CheckState::Checked;
     if all == CheckState::Mixed {
         node.semantics.value = Some("mixed".into());

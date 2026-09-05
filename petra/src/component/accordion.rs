@@ -31,7 +31,8 @@ use super::text::text;
 use super::tokens::{BORDER_SUBTLE, LAYER_HOVER, SIZE_MD, SPACING_03, SPACING_05, SURFACE_BASE, t};
 use crate::geom::{Align, Axis};
 use crate::tree::{
-    AxisConstraint, Constraints, InsetRefs, Interaction, Key, NodeKind, Role, Semantics, ViewNode,
+    AxisConstraint, Constraints, FocusFigure, InsetRefs, Interaction, Key, NodeKind, Role,
+    Semantics, ViewNode,
 };
 
 /// Carbon accordion header `sm` (`layout.use` min).
@@ -206,6 +207,9 @@ fn accordion_item_content(
         label.clone(),
         HEADER_INTENTS,
     );
+    // `Border`: collapsed headers stack flush against each other, so the
+    // default bar would land on the next header rather than in empty space.
+    header.semantics.focus_figure = FocusFigure::Border;
     header.semantics.expanded = Some(expanded);
 
     let mut children = vec![header];

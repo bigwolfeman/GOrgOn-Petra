@@ -29,8 +29,8 @@ use super::tooltip::tooltip_anchored;
 use crate::geom::{Align, Axis};
 use crate::token::TokenName;
 use crate::tree::{
-    AxisConstraint, Constraints, FocusShownOn, InsetRefs, Interaction, Justify, Key, Role, TextRun,
-    ViewNode,
+    AxisConstraint, Constraints, FocusFigure, FocusShownOn, InsetRefs, Interaction, Justify, Key,
+    Role, TextRun, ViewNode,
 };
 
 /// Carbon `.cds--snippet--multi` `min-block-size`.
@@ -407,6 +407,14 @@ fn selectable_code(mut node: ViewNode) -> ViewNode {
     let mut node = node.interactive(Role::TextInput, CODE_LABEL, CODE_INTENTS);
     // The run holds focus; the well shows it. See `paint_well`.
     node.semantics.focus_shown_on = FocusShownOn::OnWell;
+    // The same figure the well declares. The host reads the figure off the
+    // node focus is *shown on*, so this line draws nothing — but a reader
+    // finding `OnWell` here and no figure has to go and look at the well to
+    // learn what shape this control wears, and a reader finding a
+    // *different* figure here would be told something false.
+    // `a_control_and_the_node_it_shows_focus_on_agree_about_the_figure`
+    // holds the pair together.
+    node.semantics.focus_figure = FocusFigure::Sides;
     // Carbon's `aria-readonly`. A code well takes a selection and a copy and
     // never a keystroke, and a reader told it is an editable field would be
     // told something false about every one of these forty-two rows.
@@ -436,6 +444,8 @@ fn copy_button() -> ViewNode {
     node.props.align = Some(Align::Center);
     node.props.padding = Some(pad(SPACING_03, SPACING_02));
     node.interactive(Role::Button, "Copy", COPY_INTENTS)
+        // A button: `Sides`, per the operator's rule. See `component::button`.
+        .with_focus_figure(FocusFigure::Sides)
 }
 
 fn paint_well(mut node: ViewNode) -> ViewNode {
@@ -454,6 +464,11 @@ fn paint_well(mut node: ViewNode) -> ViewNode {
     // around the whole line at the moment the operator dragged across part
     // of it, fighting the selection band inside it.
     node.semantics.focus_shown_on = FocusShownOn::Well;
+    // `Sides`, the same figure `component::field` wears: a code well is a
+    // region a person drags a text selection through, so it should read as a
+    // well and not as a pressed control. The bar under would also collide
+    // with the multi-line well's own expand row.
+    node.semantics.focus_figure = FocusFigure::Sides;
     node
 }
 

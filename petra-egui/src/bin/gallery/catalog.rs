@@ -14,16 +14,18 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use egui::ViewportBuilder;
-use gorgon_petra::component::{button, heading, list_row, on_layer, text};
+use gorgon_petra::component::{
+    button, content_switcher, content_switcher_item, heading, list_row, on_layer, text,
+};
 use gorgon_petra::frame::PetrifiedFrame;
 use gorgon_petra::geom::{Align, Axis};
 use gorgon_petra::input::{InputEvent, KeyCode, PointerButton, Route, activates};
 use gorgon_petra::layout::{ChangeSet, RowSource};
-use gorgon_petra::token::{Theme, ThemeMode};
+use gorgon_petra::token::{Presenter, Theme, ThemeMode};
 use gorgon_petra::tree::{
     AxisConstraint, Constraints, InsetRefs, Interaction, NodeKind, Props, Role, TrackSize, ViewNode,
 };
-use gorgon_petra_egui::host::{App, FilePick, Host, default_presenter};
+use gorgon_petra_egui::host::{App, FilePick, Host};
 
 use crate::cell::Cell;
 use crate::page::common::{column, path_has, row, sp, tok, wrapped};
@@ -35,6 +37,61 @@ pub(crate) const WINDOW: [f32; 2] = [1200.0, 900.0];
 
 const PREV: &str = "prev";
 const NEXT: &str = "next";
+/// The chrome's own theme switcher, and its two segments.
+///
+/// Deliberately specific ids. `Catalog::press` asks the open page before it
+/// asks the chrome — `NEXT` is `next` and Pagination's own button routes as
+/// `pager/next`, which is the collision that ordering exists to avoid — so a
+/// chrome control has to carry a name no page would reuse.
+const THEME: &str = "theme";
+pub(crate) const THEME_DARK: &str = "theme-dark";
+pub(crate) const THEME_LIGHT: &str = "theme-light";
+
+/// Environment variable naming the theme the catalog opens in.
+///
+/// Same spelling as `examples/gallery.rs`'s, because it is the same binary
+/// name to the hand that types it. Until 2026-09-05 this binary read no
+/// theme variable at all: `catalog::run` built its presenter from
+/// `default_presenter()`, which is dark and nothing else, so
+/// `PETRA_GALLERY_THEME=light` in front of `--bin gallery` did exactly
+/// nothing and gave no sign that it had. The operator: *"Light mode no
+/// longer loads from any place I select it."*
+const THEME_VAR: &str = "PETRA_GALLERY_THEME";
+
+/// The theme the catalog opens in.
+///
+/// `light` opens light; `dark`, anything else, and unset open dark. An
+/// unrecognised value is reported on stderr rather than silently ignored —
+/// a typo that opens the wrong theme with no message is the defect this
+/// function was added to fix, one layer down.
+fn initial_theme_mode() -> ThemeMode {
+    theme_mode_named(std::env::var(THEME_VAR).ok().as_deref())
+}
+
+/// [`initial_theme_mode`] without the environment read, so it is testable.
+///
+/// Setting a process-wide variable from a test is `unsafe` under the 2024
+/// edition and races every other test in the binary; splitting the decision
+/// out is what lets the decision be gated at all.
+fn theme_mode_named(value: Option<&str>) -> ThemeMode {
+    match value {
+        Some("light") => ThemeMode::Light,
+        Some("dark") | None => ThemeMode::Dark,
+        Some(other) => {
+            eprintln!("gallery: {THEME_VAR}={other:?} is not `light` or `dark`; opening dark");
+            ThemeMode::Dark
+        }
+    }
+}
+
+/// The shipped theme a [`ThemeMode`] names. One place, so the two shipped
+/// constructors are spelled once.
+fn theme_of(mode: ThemeMode) -> Theme {
+    match mode {
+        ThemeMode::Light => gorgon_petra::token::light(),
+        ThemeMode::Dark => gorgon_petra::token::dark(),
+    }
+}
 /// Key prefix for a row in the left index (`idx-36` is Toggle).
 const IDX: &str = "idx-";
 /// Width of the scrolling index pane, logical units.
@@ -100,6 +157,17 @@ pub struct Catalog {
     /// held until the open page has seen the press. See
     /// [`Page::dismissed`] for why the order is inverted from the host's.
     pending_dismiss: Vec<String>,
+    /// Which theme the chrome's switcher shows as chosen. The presenter is
+    /// the theme's real home; this is what the two segments are drawn from,
+    /// so the control and the window can never disagree about which one is
+    /// on.
+    theme: ThemeMode,
+    /// Set by a press on the switcher, taken by the host on the next pass.
+    /// `None` between presses so the theme is published once rather than
+    /// republished every frame — `Presenter::publish` moves the revision on
+    /// every call, and `Host::rebind_theme_if_stale` rebinds and clears the
+    /// shaper cache on every move of it.
+    pending_theme: Option<ThemeMode>,
 }
 
 impl Default for Catalog {
@@ -114,6 +182,15 @@ impl Default for Catalog {
             page: open,
             pages: page::all(),
             pending_dismiss: Vec::new(),
+            theme: initial_theme_mode(),
+            // Not `Some(theme)`. `catalog::run` builds the presenter from
+            // the same `initial_theme_mode()`, so the window is already in
+            // that theme on its first pass and a publication here would be
+            // a redundant rebind. The tests that build a `Catalog` without
+            // `run` rely on this too: `default_presenter()` is dark and
+            // `initial_theme_mode()` is dark unless the environment says
+            // otherwise, so the two agree.
+            pending_theme: None,
         }
     }
 }
@@ -213,6 +290,20 @@ impl Catalog {
 
     fn next(&mut self) {
         self.page = (self.page + 1) % self.roster.len();
+    }
+
+    /// Choose `mode`, unless it is already chosen.
+    ///
+    /// The guard is not an optimisation. `Presenter::publish` moves the
+    /// revision on every call including one that republishes an identical
+    /// theme, and `Host::rebind_theme_if_stale` answers that move by
+    /// recomposing the vocabulary, rebuilding the typography and clearing
+    /// every shaped galley. Pressing the segment that is already on would
+    /// pay all of that for no change on screen.
+    fn set_theme(&mut self, mode: ThemeMode) {
+        if self.theme != mode {
+            self.pending_theme = Some(mode);
+        }
     }
 
     fn go_to(&mut self, number: u8) {
@@ -388,12 +479,22 @@ impl App for Catalog {
         }
     }
 
+    /// The chrome's own switcher first, then the open page's.
+    ///
+    /// Both exist on purpose. The switcher in the nav row is reachable from
+    /// all forty-two pages; row 27's radio group is a *demonstration* that a
+    /// radio group can drive something real, and a control that names a
+    /// thing and does not do it is the defect that page was built to avoid.
+    /// Whichever fired last wins, and `self.theme` is written from both, so
+    /// the switcher's segments still show the truth after the radio moves
+    /// it.
     fn theme_request(&mut self) -> Option<Theme> {
-        let mode = self.open_page_mut()?.theme_request()?;
-        Some(match mode {
-            ThemeMode::Light => gorgon_petra::token::light(),
-            ThemeMode::Dark => gorgon_petra::token::dark(),
-        })
+        let mode = match self.pending_theme.take() {
+            Some(mode) => mode,
+            None => self.open_page_mut()?.theme_request()?,
+        };
+        self.theme = mode;
+        Some(theme_of(mode))
     }
 
     fn view(&mut self) -> ViewNode {
@@ -415,7 +516,25 @@ impl App for Catalog {
                 row(
                     "nav",
                     sp("spacing.md"),
-                    vec![button(PREV, "Prev"), button(NEXT, "Next")],
+                    vec![
+                        button(PREV, "Prev"),
+                        button(NEXT, "Next"),
+                        content_switcher(
+                            THEME,
+                            vec![
+                                content_switcher_item(
+                                    THEME_DARK,
+                                    "Dark",
+                                    self.theme == ThemeMode::Dark,
+                                ),
+                                content_switcher_item(
+                                    THEME_LIGHT,
+                                    "Light",
+                                    self.theme == ThemeMode::Light,
+                                ),
+                            ],
+                        ),
+                    ],
                 ),
                 self.page_body(),
             ],
@@ -623,6 +742,10 @@ impl Catalog {
             self.prev();
         } else if path_has(node, NEXT) {
             self.next();
+        } else if path_has(node, THEME_DARK) {
+            self.set_theme(ThemeMode::Dark);
+        } else if path_has(node, THEME_LIGHT) {
+            self.set_theme(ThemeMode::Light);
         }
     }
 }
@@ -754,8 +877,15 @@ pub fn run() -> eframe::Result<()> {
         "Petra Carbon catalog",
         options,
         Box::new(|cc| {
+            // The presenter is built from the same `initial_theme_mode()`
+            // `Catalog::default` reads, so the window opens in the theme the
+            // environment asked for rather than always in dark.
             Ok(Box::new(CatalogWindow {
-                host: Host::new(&cc.egui_ctx, Catalog::default(), default_presenter()),
+                host: Host::new(
+                    &cc.egui_ctx,
+                    Catalog::default(),
+                    Presenter::new(theme_of(initial_theme_mode())),
+                ),
                 grabbed_focus: false,
                 focus_seated_for: None,
             }))
@@ -765,7 +895,9 @@ pub fn run() -> eframe::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Catalog, Cell, IDX, NEXT, PREV, WINDOW, seat_index_focus};
+    use super::{
+        Catalog, Cell, IDX, NEXT, PREV, THEME_VAR, WINDOW, seat_index_focus, theme_mode_named,
+    };
     use crate::cell::Content;
     use crate::page::common::find;
     use egui::{Context, Pos2, RawInput};
@@ -777,6 +909,34 @@ mod tests {
     use gorgon_petra::tree::{Registry, ViewNode};
     use gorgon_petra_egui::host::{App, Host, default_presenter};
     use gorgon_petra_egui::inject::{Action, Target, inject_action};
+
+    /// `PETRA_GALLERY_THEME` decides the theme the window opens in.
+    ///
+    /// The environment read is split into [`theme_mode_named`] so it can be
+    /// gated at all: setting a process variable from a test is `unsafe`
+    /// under the 2024 edition and races every other test in this binary.
+    #[test]
+    fn the_theme_variable_names_the_theme_the_catalog_opens_in() {
+        assert_eq!(theme_mode_named(Some("light")), ThemeMode::Light);
+        assert_eq!(theme_mode_named(Some("dark")), ThemeMode::Dark);
+        assert_eq!(
+            theme_mode_named(None),
+            ThemeMode::Dark,
+            "unset opens dark, which is what the catalog did before the \
+             variable was read at all"
+        );
+        assert_eq!(
+            theme_mode_named(Some("Light")),
+            ThemeMode::Dark,
+            "and an unrecognised value opens dark rather than guessing; it \
+             says so on stderr"
+        );
+        assert_eq!(
+            THEME_VAR, "PETRA_GALLERY_THEME",
+            "same spelling as `examples/gallery.rs`, because it is the same \
+             binary name to the hand that types it"
+        );
+    }
 
     /// The frame a route into `app` would have been computed against: its
     /// own view, petrified at the catalog window. The tests below fabricate

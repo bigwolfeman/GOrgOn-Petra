@@ -534,6 +534,25 @@ impl<A: App> Camera<A> {
             .clone()
     }
 
+    /// Whether the frame carries the node whose id ends `tail` as selected.
+    ///
+    /// The declared fact, not the fill. Two controls that write one piece of
+    /// state — the chrome's theme switcher and row 27's radio group — are
+    /// how a control comes to show the wrong answer, and the fill is the
+    /// weaker channel for an operator who is red-green colour blind. This
+    /// reads the channel that is supposed to be authoritative.
+    ///
+    /// # Panics
+    /// As [`Camera::id`] does, on a missing or ambiguous tail.
+    pub fn selected(&self, tail: &str) -> bool {
+        let id = self.id(tail);
+        self.frame()
+            .placement(&id)
+            .unwrap_or_else(|| panic!("{}: {id} resolved but is not placed", self.page))
+            .semantics
+            .selected
+    }
+
     /// The caret the engine draws for the anchored surface whose id ends
     /// `tail`: `None` for a surface declared `Tip::Flush`, or for one that
     /// is not anchored at all.
@@ -3298,6 +3317,260 @@ mod tests {
         );
     }
 
+    /// The theme switcher in the nav row lights the catalog from **any**
+    /// page, not just row 27.
+    ///
+    /// The operator, 2026-09-05: *"Light mode no longer loads from any place
+    /// I select it."* Two places were broken and neither was the mechanism.
+    /// `catalog::run` built its presenter from `default_presenter()`, which
+    /// is dark and reads no environment, so `PETRA_GALLERY_THEME=light` in
+    /// front of `--bin gallery` did nothing at all — and the only control
+    /// that could move the theme was a radio group on one page out of
+    /// forty-two, which the operator had to page to before he could use it.
+    /// `choosing_light_on_the_radio_row_turns_the_whole_catalog_light` was
+    /// green through both, because it starts on row 27.
+    ///
+    /// So this one starts somewhere else on purpose.
+    #[test]
+    fn the_nav_row_theme_switcher_lights_the_catalog_from_any_page() {
+        let mut cam = Camera::on("Button");
+        let dark = cam.mean_luma();
+        assert!(
+            dark < 0.25,
+            "the catalog opens dark with no environment set, mean luma {dark}"
+        );
+
+        cam.click(crate::catalog::THEME_LIGHT);
+        let light = cam.mean_luma();
+        cam.shoot("00-chrome-theme-light");
+        assert!(
+            light > dark + 0.3,
+            "the chrome switcher must light the page from row 04: {dark} -> {light}"
+        );
+
+        cam.click(crate::catalog::THEME_DARK);
+        let back = cam.mean_luma();
+        assert!(back < dark + 0.05, "and put it back: {light} -> {back}");
+    }
+
+    /// The switcher's two segments report the theme that is actually on,
+    /// including after row 27's radio group moved it.
+    ///
+    /// Two controls writing one piece of state is how a control comes to
+    /// lie about it. `Catalog::theme_request` writes `self.theme` from
+    /// whichever fired, which is what keeps them agreeing.
+    #[test]
+    fn the_switcher_segments_follow_the_radio_row_that_also_moves_the_theme() {
+        let mut cam = Camera::on("Radio button");
+        assert!(
+            cam.selected(crate::catalog::THEME_DARK) && !cam.selected(crate::catalog::THEME_LIGHT),
+            "the catalog opens dark and the switcher says so"
+        );
+
+        cam.click("radio-b");
+        assert!(cam.mean_luma() > 0.5, "the radio group lit the catalog");
+        assert!(
+            cam.selected(crate::catalog::THEME_LIGHT) && !cam.selected(crate::catalog::THEME_DARK),
+            "and the chrome switcher moved with it, rather than still \
+             claiming Dark on a light window"
+        );
+    }
+
+    /// A control that shows its focus on another node and that node agree
+    /// about the figure.
+    ///
+    /// `FocusFigure` and `FocusShownOn` are orthogonal by design, and the
+    /// host resolves them in that order: `focused_caret_target` finds the
+    /// rect from the *holder's* `focus_shown_on`, then reads the figure off
+    /// the node it landed on — `paint.rs`, `let figure =
+    /// shown_on.semantics.focus_figure`. So declaring a figure on the holder
+    /// and not on the target is a silent no-op, and the holder's
+    /// declaration is the one a reader believes.
+    ///
+    /// It has bitten twice in two days. `code_snippet` gave its code run
+    /// `OnWell` while the well kept the default, and `tree_view` gave the
+    /// item `Border` while its head row — the node every tree figure is
+    /// actually drawn on — kept whatever the default happened to be, which
+    /// changed under it when the default moved on 2026-09-05.
+    ///
+    /// `Well` is an ancestor and `Head` a descendant, so the two links are
+    /// walked in opposite directions.
+    ///
+    /// # How this goes red
+    ///
+    /// Drop `row.semantics.focus_figure` from `component::tree_view` and
+    /// every tree page names the row.
+    #[test]
+    fn a_control_and_the_node_it_shows_focus_on_agree_about_the_figure() {
+        use gorgon_petra::tree::FocusShownOn;
+
+        let mut wrong: Vec<String> = Vec::new();
+        for cell in crate::cell::Cell::roster() {
+            if !cell.is_built() {
+                continue;
+            }
+            let cam = Camera::on(cell.row.component);
+            let places = &cam.frame().placements;
+            for (i, node) in places.iter().enumerate() {
+                let target = match node.semantics.focus_shown_on {
+                    // Up the parent chain to the nearest `Well`.
+                    FocusShownOn::OnWell => {
+                        let mut up = places[i].parent;
+                        let mut found = None;
+                        while let Some(k) = up {
+                            if places[k].semantics.focus_shown_on == FocusShownOn::Well {
+                                found = Some(k);
+                                break;
+                            }
+                            up = places[k].parent;
+                        }
+                        found
+                    }
+                    // Down into the subtree to the nearest `Head`.
+                    FocusShownOn::OnHead => places.iter().enumerate().find_map(|(k, p)| {
+                        if p.semantics.focus_shown_on != FocusShownOn::Head {
+                            return None;
+                        }
+                        let mut up = p.parent;
+                        while let Some(a) = up {
+                            if a == i {
+                                return Some(k);
+                            }
+                            up = places[a].parent;
+                        }
+                        None
+                    }),
+                    _ => None,
+                };
+                let Some(k) = target else {
+                    continue;
+                };
+                if node.semantics.focus_figure != places[k].semantics.focus_figure {
+                    wrong.push(format!(
+                        "{}: {} declares {:?} but its figure is drawn on {}, \
+                         which declares {:?}",
+                        cell.row.component,
+                        node.id,
+                        node.semantics.focus_figure,
+                        places[k].id,
+                        places[k].semantics.focus_figure,
+                    ));
+                }
+            }
+        }
+        assert!(
+            wrong.is_empty(),
+            "the figure is read off the node focus is shown on, so these \
+             holders declare a shape nothing draws:\n{}",
+            wrong.join("\n")
+        );
+    }
+
+    /// Every control that wears `FocusFigure::BarUnder` has somewhere to
+    /// put the bar.
+    ///
+    /// The operator's rule, 2026-09-05: *"underlines are preferred to boxes,
+    /// boxes are just for when underlines stick too far off and look bad."*
+    /// The second half is a measurement, not a taste: a bar sits
+    /// `FocusRing::gap` below the node's bottom edge and is
+    /// `FocusRing::thickness` tall, so it needs **five** units of clear run
+    /// under the control. Less than that and it paints on whatever is next,
+    /// which is how the checkbox group read before this test existed —
+    /// `check-a`'s bottom at 308.0, `check-b`'s top at 312.0, and a bar
+    /// occupying 310.0 to 313.0, so its last unit was inside the next row's
+    /// box and no one could tell which of the two rows it marked.
+    ///
+    /// Walks all forty-two pages, because the run below a control is a fact
+    /// about the *page* that laid it out, not about the component: `toggle`
+    /// and `checkbox` are built by neighbouring functions in one file and
+    /// their pages leave 12 units and 4.
+    ///
+    /// Ancestors and descendants are exempt. A control's own label is inside
+    /// it and its column contains it; neither is something the bar could be
+    /// mistaken for.
+    ///
+    /// # How this goes red
+    ///
+    /// Take `FocusFigure::Border` off `component::controls`' `labelled_box`
+    /// and the Checkbox and Radio button pages both name a collision.
+    #[test]
+    fn every_bar_under_has_five_units_of_clear_run_below_it() {
+        let ring = FocusRing::STANDARD;
+        let mut collisions: Vec<String> = Vec::new();
+        for cell in crate::cell::Cell::roster() {
+            if !cell.is_built() {
+                continue;
+            }
+            let cam = Camera::on(cell.row.component);
+            let frame = cam.frame();
+            let places = &frame.placements;
+            // Ancestry by index, walked through `Placement::parent`.
+            let is_kin = |a: usize, b: usize| {
+                let mut up = Some(a);
+                while let Some(i) = up {
+                    if i == b {
+                        return true;
+                    }
+                    up = places[i].parent;
+                }
+                let mut up = Some(b);
+                while let Some(i) = up {
+                    if i == a {
+                        return true;
+                    }
+                    up = places[i].parent;
+                }
+                false
+            };
+            for (i, node) in places.iter().enumerate() {
+                if node.semantics.focus_figure != FocusFigure::BarUnder
+                    || !node
+                        .semantics
+                        .actions
+                        .contains(&gorgon_petra::tree::Interaction::Focus)
+                    || !node.is_visible()
+                {
+                    continue;
+                }
+                let bar = ring.bar(node.rect);
+                for (k, other) in places.iter().enumerate() {
+                    // Only another *control* counts. A bar over a label or a
+                    // rule is a cosmetic overlap; a bar over the next thing
+                    // the operator can focus is the ambiguity this gate is
+                    // about.
+                    if k == i
+                        || !other
+                            .semantics
+                            .actions
+                            .contains(&gorgon_petra::tree::Interaction::Focus)
+                        || !other.is_visible()
+                        || is_kin(i, k)
+                    {
+                        continue;
+                    }
+                    if overlaps(bar, other.rect) {
+                        collisions.push(format!(
+                            "{}: {}'s bar {bar:?} lands on {}",
+                            cell.row.component, node.id, other.id
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(
+            collisions.is_empty(),
+            "a bar under needs {} units of clear run and these do not have \
+             it, so they want FocusFigure::Border instead:\n{}",
+            ring.gap + ring.thickness,
+            collisions.join("\n")
+        );
+    }
+
+    /// Do two rects share any area?
+    fn overlaps(a: Rect, b: Rect) -> bool {
+        a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
+    }
+
     /// Row 6's Copy button dropped every press and looked exactly like a
     /// working one. The operator: *"copy button does not work"*.
     ///
@@ -3932,28 +4205,33 @@ mod tests {
         );
     }
 
-    /// Row 18. A menu's trigger is a button, so it wears
-    /// `FocusFigure::Border`, and the ring lands on the trigger's own edge.
-    /// Opening the menu hands keyboard focus to the menu's first item
+    /// Row 18. Two figures on one gesture: the trigger is a button, so it is
+    /// bracketed (`FocusFigure::Sides`), and the menu items it opens are
+    /// packed rows, so they are ringed (`FocusFigure::Border`). Opening the
+    /// menu hands keyboard focus to the first item
     /// (`../../.agents/notes/implemented/bug-fix/2026-09-05-an-open-menu-takes-keyboard-focus.md`),
-    /// so the ring moves there with it.
+    /// so the indicator both **moves** and **changes shape**.
     ///
-    /// This test used to assert something else and it was right to at the
-    /// time: the trigger underlined, the bar hung two units below it, an
-    /// open menu sits on exactly those two units, and the indicator was
-    /// **withheld** — no focus indicator anywhere on the page. That is the
-    /// cost a figure reaching outside its node pays, and
+    /// A menu trigger is the sharpest case for the operator's rule that a
+    /// bar under is the default and a box is for where a bar would not fit.
+    /// This test twice asserted something else, and both times it was right
+    /// at the time. First: the trigger underlined, the bar hung two units
+    /// below it, an open menu sits on exactly those two units, and the
+    /// indicator was **withheld** — no focus indicator anywhere on the page.
+    /// Then: a ring on the trigger, which fixed that by containment.
+    /// `Sides` fixes it the same way and keeps the trigger reading as a
+    /// control you press rather than a row in a list — the bars stand left
+    /// and right, and the menu opens downward past them.
     /// `paint.rs`'s `a_caret_crossing_a_surface_above_its_node_is_withheld`
-    /// still holds it for `BarUnder` and now holds the contained half too.
-    /// Here the question is what the operator sees, and the answer is a ring
-    /// on the trigger, then a ring on `mn-0`.
+    /// still holds the withholding rule for `BarUnder`.
     ///
     /// # How this goes red
     ///
-    /// Give `button` `FocusFigure::BarUnder` and the first assertion fails
-    /// on the trigger's own top edge, because a bar is not there.
+    /// Give `button` `FocusFigure::Border` and the trigger grows an accent
+    /// band on its own top edge, which the second assertion refuses; give it
+    /// `BarUnder` and `assert_hugs_well` finds no bar beside it at all.
     #[test]
-    fn a_menu_triggers_border_moves_into_the_menu_it_opened() {
+    fn a_menu_trigger_is_bracketed_and_the_ring_moves_into_the_menu() {
         let mut cam = Camera::on("Menu");
         cam.click("mn-pair/trigger");
         assert!(
@@ -3972,20 +4250,22 @@ mod tests {
             "focus is not on the trigger after two clicks: {:?}",
             cam.focused()
         );
-        let trigger = cam.rect("mn-pair/trigger");
         let ring = FocusRing::STANDARD;
-        // The middle of the accent band on the trigger's own top edge — a
-        // row that carries the button's fill when nothing is focused, and a
-        // row a bar under the button could never reach.
-        let band_y = trigger.y + ring.stroke / 2.0;
+        // The whole `Sides` figure, checked band by band: a bar of one
+        // accent `hug_gap` outside each edge, exactly the trigger's height,
+        // with clean ground in the gap and under each foot.
+        let accent = assert_hugs_well(&mut cam, "mn-pair/trigger", "18-menu-shut-focused");
+        let trigger = cam.rect("mn-pair/trigger");
         let mid_x = trigger.x + trigger.w / 2.0;
-
+        // The middle of where a ring's accent band would be, on the
+        // trigger's own top edge. A bracketed control must leave it alone.
+        let band_y = trigger.y + ring.stroke / 2.0;
         let shut = raster(&mut cam, "18-menu-shut-focused");
-        let accent = px(&shut, mid_x, band_y);
-        assert!(
-            accent[2] > accent[0] && accent[2] > accent[1],
-            "with the menu shut the trigger has no ring on its top edge: \
-             {accent:?}"
+        assert_ne!(
+            px(&shut, mid_x, band_y),
+            accent,
+            "a button is bracketed, not ringed: nothing may paint the accent \
+             on the trigger's own top edge"
         );
 
         cam.click("mn-pair/trigger");
@@ -4008,12 +4288,14 @@ mod tests {
         let on_item = px(&open, item.x + item.w / 2.0, item.y + ring.stroke / 2.0);
         assert_eq!(
             on_item, accent,
-            "the ring did not follow focus onto the menu's first item"
+            "the menu's first item did not take a ring in the same accent the \
+             trigger's brackets were drawn in"
         );
+        let [left, _] = ring.sides(trigger);
         assert_ne!(
-            px(&open, mid_x, band_y),
+            px(&open, left.x + left.w / 2.0, trigger.y + trigger.h / 2.0),
             accent,
-            "the trigger still wears the ring while the menu holds focus"
+            "the trigger still wears its brackets while the menu holds focus"
         );
     }
 

@@ -192,7 +192,9 @@ use super::tokens::{
     SPACING_05, SURFACE_BASE, SURFACE_RAISED, TEXT_ON_ACCENT, TEXT_ON_COLOR, TEXT_PRIMARY, t,
 };
 use crate::geom::{Align, Axis};
-use crate::tree::{AxisConstraint, Constraints, InsetRefs, Interaction, Key, Role, ViewNode};
+use crate::tree::{
+    AxisConstraint, Constraints, FocusFigure, InsetRefs, Interaction, Key, Role, ViewNode,
+};
 
 /// Carbon `.cds--btn--xs` height. Numeric because `Constraints` stay extents
 /// (FR-053); [`super::tokens`] only ships [`SIZE_MD`].
@@ -612,6 +614,14 @@ fn labelled(
             // `crate::token::shipped` counts, aimed at the slot channel.
             &[Interaction::Focus, Interaction::Click, Interaction::Hover],
         )
+        // *"side bars on toggle tip and buttons"* — the operator, 2026-09-05.
+        // A button stands in a row of buttons with clear space above and
+        // below, so a bar under it would fit; the sides are chosen because
+        // they read harder against a button's own filled edge than a strip
+        // hung in the gap under it, and because the primary button's fill is
+        // `accent.primary`, byte-identical to `focus.ring`, so the figure has
+        // to break the silhouette rather than sit inside it.
+        .with_focus_figure(FocusFigure::Sides)
         // The crunch. Round 4, row 04: *"we need to give these an on click
         // animation so it is like it is crunching down on the click"*.
         //

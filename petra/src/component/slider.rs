@@ -46,7 +46,8 @@ use super::tokens::{
 use crate::frame::PetrifiedFrame;
 use crate::geom::{Align, Axis, Point};
 use crate::tree::{
-    AxisConstraint, Constraints, Interaction, Key, NodeKind, Props, Role, TrackSize, ViewNode,
+    AxisConstraint, Constraints, FocusFigure, Interaction, Key, NodeKind, Props, Role, TrackSize,
+    ViewNode,
 };
 
 /// MEASURED `_slider.scss` track height. Style page lists 4px; T070 is 2.
@@ -160,7 +161,13 @@ fn handle_node(label: String, value: String, size: f32, live: bool) -> ViewNode 
     );
     handle = handle.with_constraints(pin_extent(size, size));
     if live {
-        handle = handle.interactive(Role::Button, label, HANDLE_INTENTS);
+        handle = handle
+            .interactive(Role::Button, label, HANDLE_INTENTS)
+            // `Border`, not the default bar. The handle is a `SHAPE_FULL`
+            // circle riding the rail, so a bar hung under it would cross the
+            // rail it is sliding along; a ring follows the circle's own
+            // radius and stays on the control.
+            .with_focus_figure(FocusFigure::Border);
         handle.semantics.value = Some(value);
     }
     handle
@@ -184,7 +191,9 @@ fn input_node(label: &str, value: f32, read_only: bool) -> ViewNode {
     let mut node = ViewNode::new(NodeKind::Input, "input")
         .with_props(props)
         .with_constraints(pin_extent(INPUT_WIDTH, SIZE_MD))
-        .interactive(Role::TextInput, format!("{label} value"), intents);
+        .interactive(Role::TextInput, format!("{label} value"), intents)
+        // A well a person types into: `Sides`, the same as `component::field`.
+        .with_focus_figure(FocusFigure::Sides);
     node.semantics.read_only = read_only;
     node
 }

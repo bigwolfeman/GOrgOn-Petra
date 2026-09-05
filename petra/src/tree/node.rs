@@ -377,7 +377,34 @@ impl<'de> Deserialize<'de> for Role {
 /// and it is [`FocusShownOn`]'s. The two are orthogonal: a node declares a
 /// shape and a target, and every pairing is legal.
 ///
-/// Wire form is the kebab-case variant name; absent means [`Self::Border`].
+/// # Which figure a control wears
+///
+/// The operator set this policy on 2026-09-05, after a pass that left all
+/// forty-two rows wearing [`Self::Border`] by inheriting it: *"it varies by
+/// type (and should be overloadable per element) ... side bars on text
+/// inputs. side bars on toggle tip and buttons. underlines are preferred to
+/// boxes, boxes are just for when underlines stick too far off and look
+/// bad."*
+///
+/// * [`Self::Sides`] — anything a person types into, and anything they press
+///   that stands on its own: a field, a search, a button, a toggletip
+///   trigger, a link.
+/// * [`Self::BarUnder`] — **the default**, and what everything else wears: a
+///   control with clear run below it, a checkbox row, a tag, a tile.
+/// * [`Self::Border`] — the exception, for a control packed against a
+///   neighbour. A bar hangs five units below the bottom edge
+///   ([`crate::token::FocusRing::gap`] plus
+///   [`crate::token::FocusRing::thickness`]), so on a stacked row it lands
+///   *on* the next row instead of in empty space. That is the operator's
+///   "sticks too far off": a menu item, a table row, a tab, a calendar cell.
+///
+/// The preference is the default on purpose. A component that declares
+/// nothing gets the figure asked for most often, and every departure carries
+/// its reason at the declaration — which is the opposite of the state this
+/// policy replaced, where the exception was the default and no shipped
+/// component declared anything.
+///
+/// Wire form is the kebab-case variant name; absent means [`Self::BarUnder`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum FocusFigure {
@@ -385,10 +412,13 @@ pub enum FocusFigure {
     /// accent band with a [`crate::token::FocusRing::halo`] ground band
     /// immediately inside it, both following the node's corner radius.
     ///
-    /// Carbon's one focus figure, and so this one's default:
-    /// `@include focus-outline('outline')` is `outline: 2px solid $focus;
-    /// outline-offset: -2px` (`utilities/_focus-outline.scss:29`), used 75
-    /// times across 62 component files. The halo is Carbon's too — a primary
+    /// Carbon's one focus figure: `@include focus-outline('outline')` is
+    /// `outline: 2px solid $focus; outline-offset: -2px`
+    /// (`utilities/_focus-outline.scss:29`), used 75 times across 62
+    /// component files. Petra keeps it as the **exception** rather than the
+    /// default, per the policy above: it is what a control wears when it is
+    /// packed against a neighbour and a bar under it would land on that
+    /// neighbour. The halo is Carbon's too — a primary
     /// button focuses with `box-shadow: inset 0 0 0 $button-outline-width
     /// $button-focus-color, inset 0 0 0 $button-border-width $background`
     /// (`components/button/_mixins.scss:133`) — and Petra needs it more
@@ -396,20 +426,23 @@ pub enum FocusFigure {
     /// and a primary button's fill *is* `accent.primary`.
     ///
     /// Contained by construction: neither band leaves the rect, so a row in
-    /// a dense list shows focus without painting into its neighbours.
-    #[default]
+    /// a dense list shows focus without painting into its neighbours. That
+    /// containment is the whole reason it is the figure for packed rows.
     Border,
     /// A bar under the rect: [`crate::token::FocusRing::thickness`] tall,
     /// [`crate::token::FocusRing::gap`] below the bottom edge,
     /// [`crate::token::FocusRing::WIDTH_FRACTION`] of the width, centred.
     ///
-    /// Carbon has no focus underline anywhere, so this is a Petra figure and
-    /// wants a reason each time it is declared.
+    /// Carbon has no focus underline anywhere, so this is a Petra figure.
+    /// It is nonetheless **the default**: the operator's rule is *"underlines
+    /// are preferred to boxes"*, and the figure a component gets by
+    /// declaring nothing should be the one wanted most often. A departure
+    /// from it wants a reason; staying on it does not.
     ///
-    /// **No shipped component declares it today.** The operator asked for
-    /// three figures by name on 2026-09-05 and "bar under" is one of them,
-    /// so it is in the vocabulary and a caller may declare it. What it does
-    /// not have is a Carbon rule behind it or a control that needs it.
+    /// It needs run below the node. Five units of it — [`crate::token::FocusRing::gap`]
+    /// plus [`crate::token::FocusRing::thickness`] — and a control that does
+    /// not have that much clear space under it wants [`Self::Border`]
+    /// instead.
     ///
     /// It was briefly on all three tab variants, on a misread of
     /// `components/tabs/_tabs.scss:596`. That line is under `// Item
@@ -418,16 +451,24 @@ pub enum FocusFigure {
     /// apart, told apart only by width, was the result. See
     /// `component::tabs`' `a_tabs_ring_marks_edges_its_indicator_does_not`
     /// for why an indicator on one edge does not crowd a ring on four.
+    #[default]
     BarUnder,
     /// Bars outside the rect's left and right edges:
     /// [`crate::token::FocusRing::thickness`] wide,
     /// [`crate::token::FocusRing::hug_gap`] clear of each edge, exactly the
     /// rect's height.
     ///
-    /// A field well. Also a Petra figure: Carbon puts `focus-outline('outline')`
-    /// on a text input too (`components/text-input/_text-input.scss:55`).
-    /// Petra keeps the departure so a well a person types into does not read
-    /// the same as a button they press.
+    /// A field well, and — by the operator's rule of 2026-09-05 — a button,
+    /// a toggletip trigger and a link as well. Also a Petra figure: Carbon
+    /// puts `focus-outline('outline')` on a text input too
+    /// (`components/text-input/_text-input.scss:55`).
+    ///
+    /// Its virtue on a standalone control is that it takes no vertical room.
+    /// A button in a row of buttons has neighbours to its left and right and
+    /// clear space above and below; a bar under it is fine, but the sides
+    /// read harder against the button's own filled edge, and on an inline
+    /// link the bar would sit exactly where `link_inline`'s own underline
+    /// already is.
     Sides,
 }
 
@@ -435,7 +476,7 @@ impl FocusFigure {
     /// Whether this is the default figure, so the wire form can omit it.
     #[must_use]
     pub fn is_default(&self) -> bool {
-        *self == Self::Border
+        *self == Self::BarUnder
     }
 }
 
@@ -724,6 +765,30 @@ impl ViewNode {
         self.semantics.role = Some(role);
         self.semantics.label = Some(label.into());
         self.interactions = intents.to_vec();
+        self
+    }
+
+    /// Declare the **shape** keyboard focus takes on this node.
+    ///
+    /// Chainable counterpart to writing `semantics.focus_figure` directly,
+    /// so a component built in expression position can state its figure at
+    /// the point it declares its interactions rather than needing a `let
+    /// mut` binding to reach back into. Omitting it leaves
+    /// [`FocusFigure::BarUnder`], which is the operator's preferred figure —
+    /// see [`FocusFigure`] for which control wears which.
+    #[must_use]
+    pub fn with_focus_figure(mut self, figure: FocusFigure) -> Self {
+        self.semantics.focus_figure = figure;
+        self
+    }
+
+    /// Declare **whose** rect this node's focus figure is drawn on.
+    ///
+    /// Chainable counterpart to writing `semantics.focus_shown_on` directly,
+    /// for the same reason as [`Self::with_focus_figure`].
+    #[must_use]
+    pub fn with_focus_shown_on(mut self, shown_on: FocusShownOn) -> Self {
+        self.semantics.focus_shown_on = shown_on;
         self
     }
 

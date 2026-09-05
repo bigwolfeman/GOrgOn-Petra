@@ -62,8 +62,9 @@ use super::tokens::{
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
-    Anchor, AxisConstraint, ClampRule, Constraints, InputPolicy, InsetRefs, Interaction, Justify,
-    Key, Layer, NodeKind, Props, Role, Semantics, TextWrap, TrackSize, ViewNode,
+    Anchor, AxisConstraint, ClampRule, Constraints, FocusFigure, InputPolicy, InsetRefs,
+    Interaction, Justify, Key, Layer, NodeKind, Props, Role, Semantics, TextWrap, TrackSize,
+    ViewNode,
 };
 
 /// Carbon close-button hit box (`3rem`).
@@ -333,6 +334,8 @@ fn close_button() -> ViewNode {
         },
     })
     .interactive(Role::Button, "Close", CLOSE_INTENTS)
+    // A button: `Sides`, per the operator's rule. See `component::button`.
+    .with_focus_figure(FocusFigure::Sides)
 }
 
 #[cfg(test)]

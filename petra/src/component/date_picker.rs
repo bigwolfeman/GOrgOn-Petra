@@ -486,11 +486,11 @@ fn step_control(key: &str, label: &str, mark: IconMark) -> ViewNode {
     node.props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
-    node.with_constraints(pin_height(SIZE_MD)).interactive(
-        Role::Button,
-        label.to_owned(),
-        FIELD_INTENTS,
-    )
+    // `Border`: calendar chrome is a packed grid of cells and a flush strip
+    // of nav buttons, so the default bar would land on the row beneath.
+    node.with_constraints(pin_height(SIZE_MD))
+        .interactive(Role::Button, label.to_owned(), FIELD_INTENTS)
+        .with_focus_figure(FocusFigure::Border)
 }
 
 /// The full form's month control: the same caption, plus a chevron saying
@@ -522,11 +522,14 @@ fn month_button(caption: ViewNode, name: String, choosing: bool) -> ViewNode {
     node.props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
-    let mut node = node.with_constraints(pin_height(SIZE_MD)).interactive(
-        Role::Button,
-        format!("{name}, choose month and year"),
-        FIELD_INTENTS,
-    );
+    let mut node = node
+        .with_constraints(pin_height(SIZE_MD))
+        .interactive(
+            Role::Button,
+            format!("{name}, choose month and year"),
+            FIELD_INTENTS,
+        )
+        .with_focus_figure(FocusFigure::Border);
     node.semantics.expanded = Some(choosing);
     node
 }
@@ -710,11 +713,10 @@ fn month_cell(month: u32, selected: bool) -> ViewNode {
     node.props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
-    let mut node = node.with_constraints(pin_height(MONTH_CELL_H)).interactive(
-        Role::Button,
-        name.to_owned(),
-        FIELD_INTENTS,
-    );
+    let mut node = node
+        .with_constraints(pin_height(MONTH_CELL_H))
+        .interactive(Role::Button, name.to_owned(), FIELD_INTENTS)
+        .with_focus_figure(FocusFigure::Border);
     node.semantics.selected = selected;
     node
 }

@@ -89,7 +89,7 @@ use super::tokens::{
 };
 use super::{pad, stack, swatch};
 use crate::geom::{Align, Axis};
-use crate::tree::{AxisConstraint, Constraints, Interaction, Key, Role, ViewNode};
+use crate::tree::{AxisConstraint, Constraints, FocusFigure, Interaction, Key, Role, ViewNode};
 
 /// Carbon checkbox box (`_checkbox.scss` / style-page Structure): 16×16.
 const CHECKBOX_BOX: f32 = 16.0;
@@ -156,6 +156,21 @@ fn labelled_box(
     row.props.align = Some(Align::Center);
     row.props.padding = Some(pad(SPACING_02, SPACING_01));
     let mut node = row.interactive(Role::Button, label, intents);
+    // `Border`, measured rather than guessed. A `BarUnder` needs
+    // `FocusRing::gap` + `FocusRing::thickness` = 5 units of clear run below
+    // the node. `checkbox_group` and `radio_group` leave **4**
+    // (`shots::tests::probe`, 2026-09-05: check-a's bottom is 308.0 and
+    // check-b's top is 312.0), so the bar's last unit paints inside the next
+    // row's box and the operator cannot tell which of the two it marks. That
+    // is the operator's "underlines stick too far off and look bad", and it
+    // is the one case in the library where the measurement decides it
+    // instead of taste. `toggle` keeps the bar: its rows are 12 apart.
+    //
+    // Carbon rings the 16-unit box itself, not the label row
+    // (`_checkbox.scss`), and this rings the row. That gap is open and
+    // tracked; a ring on the row is at least contained and unambiguous,
+    // which the bar was not.
+    node.semantics.focus_figure = FocusFigure::Border;
     node.semantics.selected = selected;
     node
 }

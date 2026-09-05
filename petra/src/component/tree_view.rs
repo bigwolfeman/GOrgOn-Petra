@@ -42,8 +42,8 @@ use super::tokens::{
 use super::{CARET_SIZE, CaretDirection, caret, stack, swatch};
 use crate::geom::{Align, Axis};
 use crate::tree::{
-    AxisConstraint, FocusShownOn, InsetRefs, Interaction, Key, NodeKind, Props, Role, Semantics,
-    TrackSize, ViewNode,
+    AxisConstraint, FocusFigure, FocusShownOn, InsetRefs, Interaction, Key, NodeKind, Props, Role,
+    Semantics, TrackSize, ViewNode,
 };
 
 /// Carbon small / default node height.
@@ -166,6 +166,12 @@ fn tree_item_sized(
     // .cds--tree-node__label`, `_treeview.scss:59` — and this pair of
     // declarations is that selector.
     row.semantics.focus_shown_on = FocusShownOn::Head;
+    // The figure is read off the node focus is *shown on*, not the node that
+    // holds it (`gorgon-petra-egui`'s `focused_caret_target`), so the head
+    // row carries it and the item's own declaration below is only there to
+    // keep the two from disagreeing if the `OnHead` link is ever dropped.
+    // `Border` for the reason the item gives: tree rows stack flush.
+    row.semantics.focus_figure = FocusFigure::Border;
 
     let mut parts = vec![row];
     if expanded && is_branch {
@@ -233,6 +239,11 @@ fn tree_item_sized(
     }
     let mut node = node.interactive(Role::TreeItem, label, ITEM_INTENTS);
     node.semantics.focus_shown_on = FocusShownOn::OnHead;
+    // `Border`: tree rows stack flush, so the default bar would land on the
+    // row below. It is also the figure that can share a rect with the
+    // selected row's leading accent bar without reading as a second mark —
+    // a ring has four bands and the accent has one.
+    node.semantics.focus_figure = FocusFigure::Border;
     node.semantics.selected = selected;
     node.semantics.expanded = Some(expanded);
     node

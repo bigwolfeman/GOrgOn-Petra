@@ -511,10 +511,16 @@ mod tests {
             ("labeled", field_labeled("f", "Name")),
             ("invalid", field_invalid("f", "Name", "required")),
         ] {
-            assert_eq!(
-                node.semantics.focus_figure,
-                FocusFigure::Border,
-                "{label}: the wrapper is a label seat, not a well"
+            // The seat carries no figure assertion because it carries no
+            // focus: `labeled` gives the wrapper no role and no
+            // interactions, so whatever `focus_figure` holds on it is never
+            // read. Asserting the inherited default here is what this line
+            // used to do, and it broke the day the default moved — a test
+            // watching a value nothing draws.
+            assert!(
+                node.interactions.is_empty() && node.semantics.role.is_none(),
+                "{label}: the wrapper is a label seat, so it must not be \
+                 focusable at all"
             );
             assert_eq!(
                 node.semantics.focus_shown_on,

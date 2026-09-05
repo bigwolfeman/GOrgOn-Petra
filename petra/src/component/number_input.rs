@@ -249,6 +249,12 @@ fn stepper(key: &'static str, label: &'static str, mark: IconMark, height: f32) 
         label,
         &[Interaction::Focus, Interaction::Click, Interaction::Hover],
     )
+    // `Border`, declared rather than inherited. The two steppers stack flush
+    // against each other and against the well's trailing edge, each half the
+    // field's height, so a bar under the decrement would paint on the
+    // increment. Carbon outlines the stepper itself
+    // (`_number-input.scss`), which is the same answer.
+    .with_focus_figure(FocusFigure::Border)
 }
 
 #[cfg(test)]

@@ -34,7 +34,9 @@ use super::tokens::{
     TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_BODY_COMPACT, TYPOGRAPHY_LABEL, t,
 };
 use crate::geom::{Align, Axis};
-use crate::tree::{AxisConstraint, Constraints, Interaction, Key, Role, TextWrap, ViewNode};
+use crate::tree::{
+    AxisConstraint, Constraints, FocusFigure, Interaction, Key, Role, TextWrap, ViewNode,
+};
 
 const _: () = assert!(SIZE_MD == 40.0);
 
@@ -146,9 +148,12 @@ pub fn dropdown_option(key: impl Into<Key>, label: impl Into<String>, selected: 
     node.props
         .tokens
         .insert("background@selected-hover".into(), t(LAYER_SELECTED_HOVER));
-    let mut node =
-        node.with_constraints(pin_height(SIZE_MD))
-            .interactive(Role::Button, label, OPTION_INTENTS);
+    let mut node = node
+        .with_constraints(pin_height(SIZE_MD))
+        .interactive(Role::Button, label, OPTION_INTENTS)
+        // `Border`: options stack flush in the open menu, so the default bar
+        // under one would land on the next option.
+        .with_focus_figure(FocusFigure::Border);
     node.semantics.selected = selected;
     node
 }

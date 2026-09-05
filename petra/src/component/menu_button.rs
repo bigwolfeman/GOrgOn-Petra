@@ -33,7 +33,9 @@ use super::tokens::{
     ACCENT_PRIMARY, ICON_ON_COLOR_DISABLED, SIZE_MD, TEXT_ON_ACCENT, TYPOGRAPHY_BODY_COMPACT, t,
 };
 use crate::geom::Axis;
-use crate::tree::{AxisConstraint, Constraints, Interaction, Key, Role, TextWrap, ViewNode};
+use crate::tree::{
+    AxisConstraint, Constraints, FocusFigure, Interaction, Key, Role, TextWrap, ViewNode,
+};
 
 const _: () = assert!(SIZE_MD == 40.0);
 const _: () = assert!(MIN_INLINE == 160.0);
@@ -100,7 +102,8 @@ fn trigger(key: impl Into<Key>, label: String, open: bool) -> ViewNode {
                 priority: 0,
             },
         })
-        .interactive(Role::Button, label, TRIGGER_INTENTS);
+        .interactive(Role::Button, label, TRIGGER_INTENTS)
+        .with_focus_figure(FocusFigure::Sides);
     node.semantics.expanded = Some(open);
     node
 }

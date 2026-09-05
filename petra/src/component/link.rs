@@ -26,7 +26,7 @@
 
 use super::text::text;
 use super::tokens::{LINK_PRIMARY, t};
-use crate::tree::{Interaction, Key, Role, ViewNode};
+use crate::tree::{FocusFigure, Interaction, Key, Role, ViewNode};
 
 /// What a link answers to. `Hover` is here because the underline is
 /// revealed by it: a node that does not declare `Hover` is never hovered
@@ -62,7 +62,15 @@ fn link_built(key: impl Into<Key>, label: impl Into<String>, underline_slot: &st
     node.props
         .tokens
         .insert(underline_slot.into(), t(LINK_PRIMARY));
+    // `Sides`, not the default `BarUnder`. `link_inline` paints its own
+    // underline at rest and `link` grows one under the pointer, both in the
+    // `underline` slot bound just above, so a focus bar two units below the
+    // text box would be a second line under the same words told apart only
+    // by thickness. That is the operator's *"underlines stick too far off and
+    // look bad"* case, and it is also the rule that puts a button on `Sides`:
+    // a link declares `Role::Button` because that is what it is.
     node.interactive(Role::Button, label, LINK_INTENTS)
+        .with_focus_figure(FocusFigure::Sides)
 }
 
 #[cfg(test)]

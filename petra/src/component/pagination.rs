@@ -46,8 +46,8 @@ use super::tokens::{
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
-    AxisConstraint, Constraints, InsetRefs, Interaction, Justify, Key, NodeKind, Props, Role,
-    TrackSize, ViewNode,
+    AxisConstraint, Constraints, FocusFigure, InsetRefs, Interaction, Justify, Key, NodeKind,
+    Props, Role, TrackSize, ViewNode,
 };
 
 const _: () = assert!(SIZE_MD == 40.0);
@@ -380,9 +380,10 @@ fn picker(
     node.props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
-    let mut node =
-        node.with_constraints(pin_height(SIZE_MD))
-            .interactive(Role::Button, label, NAV_INTENTS);
+    let mut node = node
+        .with_constraints(pin_height(SIZE_MD))
+        .interactive(Role::Button, label, NAV_INTENTS)
+        .with_focus_figure(FocusFigure::Border);
     node.semantics.value = Some(value);
     node.semantics.expanded = Some(open);
     node
@@ -507,9 +508,10 @@ fn nav_button(
     node.props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
-    let node =
-        node.with_constraints(pin_square(SIZE_MD))
-            .interactive(Role::Button, label, NAV_INTENTS);
+    let node = node
+        .with_constraints(pin_square(SIZE_MD))
+        .interactive(Role::Button, label, NAV_INTENTS)
+        .with_focus_figure(FocusFigure::Border);
     if unavailable { disabled(node) } else { node }
 }
 

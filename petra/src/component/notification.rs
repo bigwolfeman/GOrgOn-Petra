@@ -111,8 +111,8 @@ use crate::geom::{Align, Axis};
 // `crate::geom::Align` is a child's alignment inside its parent's cell. Both
 // are used in this module, so the anchor one is spelled out at every use.
 use crate::tree::{
-    Anchor, AxisConstraint, ClampRule, Edge, InputPolicy, InsetRefs, Interaction, Key, Layer,
-    NodeKind, Props, Role, Semantics, TextWrap, TrackSize, ViewNode,
+    Anchor, AxisConstraint, ClampRule, Edge, FocusFigure, InputPolicy, InsetRefs, Interaction, Key,
+    Layer, NodeKind, Props, Role, Semantics, TextWrap, TrackSize, ViewNode,
 };
 
 /// Carbon toast `inline-size` below the `max` breakpoint (`18rem`).
@@ -455,6 +455,8 @@ fn action_button(key: impl Into<Key>, label: String) -> ViewNode {
         priority: 0,
     };
     node.interactive(Role::Button, label, ACTION_INTENTS)
+        // A button: `Sides`, per the operator's rule. See `component::button`.
+        .with_focus_figure(FocusFigure::Sides)
 }
 
 #[cfg(test)]

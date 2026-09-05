@@ -115,8 +115,8 @@ use super::tokens::{
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
-    AxisConstraint, Constraints, InsetRefs, Interaction, Justify, Key, NodeKind, Props, Role,
-    Semantics, TextWrap, TrackSize, ViewNode,
+    AxisConstraint, Constraints, FocusFigure, InsetRefs, Interaction, Justify, Key, NodeKind,
+    Props, Role, Semantics, TextWrap, TrackSize, ViewNode,
 };
 
 /// Carbon `mini-units(6)` (`_functions.scss`): the header's block-size,
@@ -264,7 +264,13 @@ fn header_name(key: &'static str, product_name: impl Into<String>) -> ViewNode {
         right: Some(t(SPACING_07)),
         ..InsetRefs::default()
     });
+    // `Border` on every control this module builds. The header is a 48-unit
+    // bar with its items flush against each other and the page starting
+    // immediately below it, and the side nav is a flush column of rows: in
+    // both, the default bar would hang outside its own control onto a
+    // neighbour or onto the page.
     node.interactive(Role::Button, product_name, INTENTS)
+        .with_focus_figure(FocusFigure::Border)
 }
 
 /// The hamburger / menu trigger. Not a caller-labelled control: the
@@ -350,7 +356,9 @@ pub fn ui_shell_header_nav_item(
         .with_props(props)
         .with_children(vec![body, mark])
         .with_constraints(pin_block(MINI_UNIT_6));
-    let mut node = node.interactive(Role::Button, label, INTENTS);
+    let mut node = node
+        .interactive(Role::Button, label, INTENTS)
+        .with_focus_figure(FocusFigure::Border);
     node.semantics.selected = current;
     node
 }
@@ -486,7 +494,9 @@ fn header_action_sized(
             HeaderActionFit::Square => square_hit_box(MINI_UNIT_6),
             HeaderActionFit::Word => icon_hit_box(MINI_UNIT_6),
         });
-    let mut node = node.interactive(Role::Button, label, INTENTS);
+    let mut node = node
+        .interactive(Role::Button, label, INTENTS)
+        .with_focus_figure(FocusFigure::Border);
     node.semantics.selected = active;
     node
 }
@@ -712,7 +722,9 @@ fn left_panel_item(
     // puts it, and a selected row's fill stopped at the end of its word.
     node.props.align = Some(Align::Stretch);
     bind_row_states(&mut node);
-    let mut node = node.interactive(Role::Button, label, INTENTS);
+    let mut node = node
+        .interactive(Role::Button, label, INTENTS)
+        .with_focus_figure(FocusFigure::Border);
     node.semantics.selected = marked;
     node.semantics.expanded = Some(expanded);
     node
@@ -773,7 +785,9 @@ fn left_panel_subitem(
     let mut node = stack(key, Axis::Vertical, None, vec![row]);
     node.props.align = Some(Align::Stretch);
     bind_row_states(&mut node);
-    let mut node = node.interactive(Role::Button, label, INTENTS);
+    let mut node = node
+        .interactive(Role::Button, label, INTENTS)
+        .with_focus_figure(FocusFigure::Border);
     node.semantics.selected = selected;
     node
 }
@@ -1107,7 +1121,9 @@ pub fn ui_shell_switcher_item(
         .with_props(props)
         .with_children(vec![caption])
         .with_constraints(pin_block(SWITCHER_ROW));
-    let mut node = node.interactive(Role::Button, label, INTENTS);
+    let mut node = node
+        .interactive(Role::Button, label, INTENTS)
+        .with_focus_figure(FocusFigure::Border);
     node.semantics.selected = selected;
     node
 }

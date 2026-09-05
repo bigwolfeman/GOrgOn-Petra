@@ -90,7 +90,8 @@ use super::tokens::{
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
-    AxisConstraint, Constraints, InsetRefs, Interaction, Justify, Key, Role, TextWrap, ViewNode,
+    AxisConstraint, Constraints, FocusFigure, InsetRefs, Interaction, Justify, Key, Role, TextWrap,
+    ViewNode,
 };
 
 /// Carbon default-variant `mini`.
@@ -318,6 +319,8 @@ pub fn ai_label_revert(key: impl Into<Key>, label: impl Into<String>) -> ViewNod
         .insert("background@hover".into(), t(LAYER_HOVER));
     node.with_constraints(revert_box())
         .interactive(Role::Button, label, TRIGGER_INTENTS)
+        // A button: `Sides`, per the operator's rule. See `component::button`.
+        .with_focus_figure(FocusFigure::Sides)
 }
 
 /// [`ai_label_revert`]'s box: Carbon's 40 height pinned, width free above a
@@ -429,6 +432,8 @@ fn trigger_button(key: impl Into<Key>, label: String, size: f32) -> ViewNode {
         .insert("background@hover".into(), t(LAYER_HOVER));
     node.with_constraints(square(size))
         .interactive(Role::Button, label, TRIGGER_INTENTS)
+        // A button: `Sides`, per the operator's rule. See `component::button`.
+        .with_focus_figure(FocusFigure::Sides)
 }
 
 /// A short caption, centred on *both* axes inside a box the caller pins
@@ -510,6 +515,8 @@ fn inline_trigger(key: impl Into<Key>, label: String, height: f32, bullet: f32) 
         ..Constraints::default()
     })
     .interactive(Role::Button, label, TRIGGER_INTENTS)
+    // A button: `Sides`, per the operator's rule. See `component::button`.
+    .with_focus_figure(FocusFigure::Sides)
 }
 
 /// The type step Carbon pairs with an inline trigger of `height`
