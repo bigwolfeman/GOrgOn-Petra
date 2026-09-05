@@ -426,9 +426,25 @@ impl Catalog {
     /// handler, then the chrome's Prev/Next. Split from `handle` so every
     /// early return here still lands on the dismissal delivery there.
     fn route_event(&mut self, event: &InputEvent, route: &Route, frame: Option<&PetrifiedFrame>) {
-        if let InputEvent::Key {
-            key, pressed: true, ..
-        } = event
+        // Whether this keystroke is aimed at something that accepts text.
+        // The chrome pages on `[`, `]` and the arrows, and a text field has
+        // to be able to *contain* those characters — a page shortcut that
+        // eats what the operator is typing is a worse bug than no shortcut.
+        // So the field wins whenever the route names a `Role::TextInput`,
+        // and the shortcut keeps working everywhere else.
+        let editing = match route {
+            Route::Keyboard { node } => frame.is_some_and(|frame| {
+                frame
+                    .placements
+                    .iter()
+                    .any(|p| p.id == *node && p.semantics.role == Some(Role::TextInput))
+            }),
+            _ => false,
+        };
+        if !editing
+            && let InputEvent::Key {
+                key, pressed: true, ..
+            } = event
         {
             match key {
                 KeyCode::Left | KeyCode::Char('[') => {
@@ -468,6 +484,27 @@ impl Catalog {
                 .open_page_mut()
                 .is_some_and(|page| page.gesture(event, node, frame))
         {
+            return;
+        }
+        // Typing is not an activation, so it never passes the filter below
+        // and never reached a page. Deliver it here, and return either way:
+        // an edit must never fall through to the chrome's navigation, or a
+        // keystroke meant for a field would page the catalog.
+        if matches!(event, InputEvent::Text(_))
+            || matches!(
+                event,
+                InputEvent::Key {
+                    key: KeyCode::Backspace,
+                    pressed: true,
+                    ..
+                }
+            )
+        {
+            if !node.is_empty()
+                && let Some(page) = self.open_page_mut()
+            {
+                page.handle(event, node);
+            }
             return;
         }
         if node.is_empty() || !activated(event) {

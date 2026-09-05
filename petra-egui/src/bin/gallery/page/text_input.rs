@@ -1,14 +1,59 @@
 //! Inventory row 34, Text input.
 
-use gorgon_petra::component::{field, field_invalid, field_lg, field_readonly, field_sm, section};
-use gorgon_petra::input::InputEvent;
+use gorgon_petra::component::{
+    field, field_invalid, field_lg, field_readonly, field_sm, section, valued,
+};
+use gorgon_petra::input::{InputEvent, KeyCode};
 use gorgon_petra::tree::ViewNode;
 
 use super::Page;
-use super::common::{body, sp};
+use super::common::{filled_body, path_has, sp};
 
-/// The Text input page. It holds no live state.
-pub struct TextInput;
+const MD: &str = "field-md";
+const SM: &str = "field-sm";
+const LG: &str = "field-lg";
+
+/// The Text input page.
+///
+/// It holds a value per editable field, which is the whole of what row 34
+/// was missing. Every field constructor takes `(key, label)` and writes only
+/// `props.placeholder`, so before this the page could not have contained
+/// anything: the operator saw five empty wells and called them broken, which
+/// they were.
+pub struct TextInput {
+    md: String,
+    sm: String,
+    lg: String,
+}
+
+impl Default for TextInput {
+    fn default() -> Self {
+        // The medium field starts with content and the other two start
+        // empty, so one page shows both states side by side. A catalog page
+        // where every field is empty cannot show that a value renders at all,
+        // and a page where every field is full cannot show the placeholder.
+        Self {
+            md: "kernel-boot".to_owned(),
+            sm: String::new(),
+            lg: String::new(),
+        }
+    }
+}
+
+impl TextInput {
+    /// The field the route names, if it names one of the three editable ones.
+    fn target(&mut self, node: &str) -> Option<&mut String> {
+        if path_has(node, MD) {
+            Some(&mut self.md)
+        } else if path_has(node, SM) {
+            Some(&mut self.sm)
+        } else if path_has(node, LG) {
+            Some(&mut self.lg)
+        } else {
+            None
+        }
+    }
+}
 
 impl Page for TextInput {
     fn row(&self) -> &'static str {
@@ -19,13 +64,13 @@ impl Page for TextInput {
         section(
             "fields",
             "Default sizes and states",
-            vec![body(
+            vec![filled_body(
                 "inputs",
                 sp("spacing.md"),
                 vec![
-                    field("field-md", "Fiber name"),
-                    field_sm("field-sm", "Small"),
-                    field_lg("field-lg", "Large"),
+                    valued(field(MD, "Fiber name"), self.md.clone()),
+                    valued(field_sm(SM, "Small"), self.sm.clone()),
+                    valued(field_lg(LG, "Large"), self.lg.clone()),
                     field_invalid("field-bad", "Port", "must be a number"),
                     field_readonly("field-ro", "Read only"),
                 ],
@@ -33,7 +78,27 @@ impl Page for TextInput {
         )
     }
 
-    fn handle(&mut self, _event: &InputEvent, _node: &str) -> bool {
-        false
+    fn handle(&mut self, event: &InputEvent, node: &str) -> bool {
+        match event {
+            InputEvent::Text(typed) => {
+                let Some(value) = self.target(node) else {
+                    return false;
+                };
+                value.push_str(typed);
+                true
+            }
+            InputEvent::Key {
+                key: KeyCode::Backspace,
+                pressed: true,
+                ..
+            } => {
+                let Some(value) = self.target(node) else {
+                    return false;
+                };
+                value.pop();
+                true
+            }
+            _ => false,
+        }
     }
 }

@@ -82,6 +82,22 @@ pub fn body(key: &str, spacing: Option<TokenName>, children: Vec<ViewNode>) -> V
     })
 }
 
+/// [`body`], with its children filled to the column's width.
+///
+/// A Carbon text field fills its container; ours hugged its own placeholder,
+/// so row 34 showed five fields at five different widths and each one changed
+/// width as the operator typed. `body`'s `Grid` places its cells by one
+/// container-wide `align`, and the default leaves them at their natural size.
+///
+/// A separate helper rather than a change to [`body`]: every one of the 42
+/// pages calls `body`, and stretching all of them is a decision about 42
+/// pictures rather than about text fields. Pages that want it ask for it.
+pub fn filled_body(key: &str, spacing: Option<TokenName>, children: Vec<ViewNode>) -> ViewNode {
+    let mut node = body(key, spacing, children);
+    node.props.align = Some(Align::Stretch);
+    node
+}
+
 /// A text leaf that wraps at its width instead of overflowing it.
 pub fn wrapped(key: &str, content: impl Into<String>) -> ViewNode {
     let mut node = text(key, content);

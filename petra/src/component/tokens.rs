@@ -101,6 +101,25 @@ pub(crate) const SURFACE_RAISED: &str = "surface.raised";
 /// while only the name was checked. Where an area is filled to recede, spend
 /// this.
 pub(crate) const LAYER_ACCENT: &str = "layer-accent";
+
+/// The error hue. Carbon's `$support-error`, which `token::shipped` aliases
+/// onto `status.down`.
+///
+/// **The third token found missing that was never missing.** Like
+/// [`LAYER_ACCENT`] and unlike a real gap, the name has always been in
+/// `standard_vocabulary` — `SUPPORT_ALIASES` registers it and every theme
+/// assigns it. Only this re-export was absent, so a component author reading
+/// `tokens.rs` concluded the library had no error colour and reached for
+/// [`ACCENT_PRIMARY`] instead. That is how `field_invalid` came to draw its
+/// border in the same blue a focused field uses, which made the invalid state
+/// and the focused state pixel-identical.
+///
+/// **It is never the only channel.** The operator is red-green colour blind,
+/// so a red edge alone is not a signal he can rely on; `field_invalid` pairs
+/// it with the word "Invalid" in the helper text, and Carbon additionally puts
+/// an error glyph in the field. `IconMark` has no warning glyph yet, so that
+/// third channel is still owed.
+pub(crate) const SUPPORT_ERROR: &str = "support-error";
 pub(crate) const TEXT_PRIMARY: &str = "text.primary";
 pub(crate) const TEXT_MUTED: &str = "text.muted";
 
@@ -217,6 +236,7 @@ pub(crate) const ALL: &[&str] = &[
     SURFACE_BASE,
     SURFACE_RAISED,
     LAYER_ACCENT,
+    SUPPORT_ERROR,
     TEXT_PRIMARY,
     TEXT_MUTED,
     LAYER_SELECTED_INVERSE,

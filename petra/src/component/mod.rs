@@ -147,7 +147,7 @@ pub use data_table::{
 pub use date_picker::{date_picker, date_picker_open};
 pub use dropdown::{dropdown, dropdown_open, dropdown_option};
 pub use field::{
-    field, field_fluid, field_invalid, field_labeled, field_lg, field_readonly, field_sm,
+    field, field_fluid, field_invalid, field_labeled, field_lg, field_readonly, field_sm, valued,
 };
 pub use file_uploader::{file_uploader, file_uploader_item};
 pub use form::form;

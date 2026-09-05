@@ -300,8 +300,27 @@ impl Camera {
     }
 
     /// A full keystroke to whatever holds focus.
+    ///
+    /// Aimed at the focused placement, or at the first one when nothing has
+    /// focus. `inject_action` routes a key by focus exactly as a physical
+    /// keyboard does and checks the target only for staleness, so the target
+    /// is a liveness token rather than an address. It used to be the literal
+    /// `"/root"`, which is not this catalog's root — its tree is rooted at
+    /// `/page` — so every call panicked before delivering anything.
+    ///
+    /// # Panics
+    /// If the frame holds no placements at all, which cannot happen after
+    /// [`Camera::on`].
     pub fn key(&mut self, key: KeyCode) -> &mut Self {
-        let id = self.id("/root");
+        let frame = self.frame();
+        let id = frame
+            .placements
+            .iter()
+            .find(|p| p.semantics.focused)
+            .or_else(|| frame.placements.first())
+            .unwrap_or_else(|| panic!("{}: the frame holds no placements", self.page))
+            .id
+            .clone();
         self.act(
             Target::NodeId(id),
             &Action::Key {
@@ -1059,6 +1078,67 @@ mod tests {
         assert!(
             !cam.has("shell-right/shell-switcher"),
             "choosing an app did not close it"
+        );
+    }
+
+    /// Typing into a text field puts the characters on screen.
+    ///
+    /// Row 34, and the reason the operator called four separate pages broken.
+    /// Every field constructor writes only `props.placeholder`; nothing ever
+    /// wrote `props.text`, so no field in this library could contain anything.
+    /// `layout::paint_content_of` had always been ready to paint a value.
+    ///
+    /// Driven, not inspected. A state field holding "hello" proves the
+    /// handler ran; it does not prove a single pixel changed, and the whole
+    /// reason this catalog reached the operator broken under a green suite is
+    /// that nobody was looking at pixels.
+    #[test]
+    fn typing_into_a_text_field_changes_what_the_page_rasterizes() {
+        let mut cam = Camera::on("Text input");
+        let before = cam.shoot("34-text-input-empty");
+        cam.type_into("field-sm", "gorgon");
+        let after = cam.shoot("34-text-input-typed");
+        assert_ne!(
+            before, after,
+            "six characters were typed into a focused field and not one pixel \
+             changed: either the text never reached the page or the value \
+             never reached the paint pass"
+        );
+    }
+
+    /// Backspace takes a character back off.
+    ///
+    /// The other half of the round trip. A field that only grows is not an
+    /// editable field, and a page that appends without ever removing would
+    /// pass the test above forever.
+    #[test]
+    fn backspace_shortens_a_field_and_the_page_shows_it() {
+        let mut cam = Camera::on("Search");
+        cam.type_into("query/input", "fiber");
+        let full = cam.shoot("28-search-typed");
+        cam.key(gorgon_petra::input::KeyCode::Backspace);
+        let shorter = cam.shoot("28-search-backspaced");
+        assert_ne!(
+            full, shorter,
+            "backspace on a focused field changed nothing on screen"
+        );
+    }
+
+    /// A bracket typed into a field stays in the field.
+    ///
+    /// The catalog pages on `[` and `]`, so before this a keystroke meant for
+    /// a text field navigated the whole application away from the page the
+    /// operator was typing on. A shortcut that eats what is being typed is a
+    /// worse defect than no shortcut, so the field wins whenever the route
+    /// names a `Role::TextInput`.
+    #[test]
+    fn a_bracket_typed_into_a_field_does_not_page_the_catalog() {
+        let mut cam = Camera::on("Search");
+        cam.type_into("query/input", "[");
+        assert!(
+            cam.has("/query"),
+            "the catalog navigated away from the Search page while a bracket \
+             was being typed into its field"
         );
     }
 }

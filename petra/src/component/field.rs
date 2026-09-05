@@ -9,13 +9,15 @@
 //! Password is skipped (needs View/ViewOff marks and host text secrecy).
 //! Focus geometry is host-owned; this file does not paint a ring.
 
+use std::sync::Arc;
+
 use super::stack;
 use super::text::text;
 use super::tokens::{
-    ACCENT_PRIMARY, BORDER_SUBTLE, SHAPE_SM, SIZE_MD, SPACING_02, SPACING_03, SURFACE_RAISED,
+    BORDER_SUBTLE, SHAPE_SM, SIZE_MD, SPACING_02, SPACING_03, SUPPORT_ERROR, SURFACE_RAISED,
     TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_BODY, t,
 };
-use crate::geom::Axis;
+use crate::geom::{Align, Axis};
 use crate::tree::{AxisConstraint, Constraints, Interaction, Key, NodeKind, Props, Role, ViewNode};
 
 /// Carbon Default sm. `tokens` only ships [`SIZE_MD`] (md / 40).
@@ -153,11 +155,15 @@ pub fn field_invalid(
 ) -> ViewNode {
     let message = message.into();
     let mut helper = text("helper", format!("Invalid: {message}"));
+    // The word carries the state as well as the hue does, which is the point:
+    // the operator is red-green colour blind and a red edge on its own is not
+    // a channel he can read. Ink stays primary so the message is legible;
+    // tinting it would trade a channel he has for one he does not.
     helper
         .props
         .tokens
         .insert("foreground".into(), t(TEXT_PRIMARY));
-    stack(
+    let mut node = stack(
         key,
         Axis::Vertical,
         Some(SPACING_02),
@@ -165,7 +171,13 @@ pub fn field_invalid(
             input_field("input", label, SIZE_MD, FieldChrome::Invalid),
             helper,
         ],
-    )
+    );
+    // A vertical stack's cross axis is the width, so this is what passes a
+    // caller's width down to the well. Without it the field hugged its own
+    // placeholder while its plain siblings filled the column, and row 34
+    // showed five fields at five widths.
+    node.props.align = Some(Align::Stretch);
+    node
 }
 
 /// Read-only md input: still focusable, not editable, not [`super::disabled`].
@@ -174,6 +186,63 @@ pub fn field_invalid(
 /// `Semantics.read_only` and does not set `disabled`.
 pub fn field_readonly(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
     input_field(key, label, SIZE_MD, FieldChrome::ReadOnly)
+}
+
+/// Put a value in a field.
+///
+/// Every field constructor in this library takes `(key, label)` and nothing
+/// else, so until now no field could contain anything: the engine paints
+/// `props.text` when it is non-empty and falls back to `props.placeholder`
+/// otherwise (`layout::paint_content_of`), and no constructor ever wrote
+/// `text`. Four of the operator's rows on 2026-09-04 — Form, Number input,
+/// Search and Text input — were all the same empty well seen four times.
+///
+/// A modifier rather than seven more constructors, and rather than a third
+/// parameter on the seven that exist. [`super::disabled`] and
+/// [`super::on_layer`] already establish the shape: a fact the *caller* knows
+/// and the constructor cannot is stamped on afterwards. A value is exactly
+/// that — the same `field("email", "you@example.com")` is empty on a fresh
+/// form and full on a loaded one, and the constructor cannot tell which.
+///
+/// **It also swaps the ink.** A placeholder is a hint and takes
+/// [`TEXT_MUTED`]; a value is content and takes [`TEXT_PRIMARY`]. Leaving the
+/// muted tone on real content would make a filled field read as an empty one,
+/// which is the defect this function exists to fix, wearing a hat.
+///
+/// Finds the first [`NodeKind::Input`] in the subtree, itself included, so it
+/// works on the flat forms ([`field`], [`field_sm`]) and on the wrapped ones
+/// ([`field_labeled`], [`field_fluid`]) without the caller knowing which shape
+/// it holds. Passing a node with no `Input` in it returns the node unchanged:
+/// there is nothing to fill, and panicking would make the modifier harder to
+/// compose than the problem it solves.
+///
+/// Children are cloned out of their `Arc`s for [`super::disabled`]'s reason —
+/// a shared subtree filled in one place and empty in another has to become two
+/// subtrees.
+#[must_use]
+pub fn valued(mut node: ViewNode, value: impl Into<String>) -> ViewNode {
+    fn fill(node: &mut ViewNode, value: &str) -> bool {
+        if node.kind == NodeKind::Input {
+            node.props.text = Some(value.to_owned());
+            if !value.is_empty() {
+                node.props
+                    .tokens
+                    .insert("foreground".into(), t(TEXT_PRIMARY));
+            }
+            return true;
+        }
+        for child in &mut node.children {
+            let mut owned = Arc::unwrap_or_clone(Arc::clone(child));
+            if fill(&mut owned, value) {
+                *child = Arc::new(owned);
+                return true;
+            }
+        }
+        false
+    }
+    let value = value.into();
+    fill(&mut node, &value);
+    node
 }
 
 fn muted_label(key: impl Into<Key>, content: impl Into<String>) -> ViewNode {
@@ -204,7 +273,12 @@ fn input_field(
         }
         FieldChrome::Invalid => {
             props.tokens.insert("background".into(), t(SURFACE_RAISED));
-            props.tokens.insert("border".into(), t(ACCENT_PRIMARY));
+            // The error hue, not the accent. These were the same token, so
+            // an invalid field and a focused field drew the identical blue
+            // edge and the error state had no visual channel at all beyond
+            // its helper text. `SUPPORT_ERROR`'s doc says why the name looked
+            // missing when it never was.
+            props.tokens.insert("border".into(), t(SUPPORT_ERROR));
             props.tokens.insert("radius".into(), t(SHAPE_SM));
         }
     }
@@ -235,11 +309,18 @@ fn input_field(
 
 #[cfg(test)]
 mod tests {
-    use super::{ACCENT_PRIMARY, BORDER_SUBTLE, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY};
+    use super::valued;
+
+    use super::{BORDER_SUBTLE, SUPPORT_ERROR, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY};
+    // Not from `super`: no shipped code in this file names the accent any
+    // more, and that is the change. The invalid field used to bind it, which
+    // made it identical to a focused field. It survives here only so the test
+    // can assert the two differ.
     use super::{
         SIZE_FLUID, SIZE_LG, SIZE_MD, SIZE_SM, field, field_fluid, field_invalid, field_labeled,
         field_lg, field_readonly, field_sm,
     };
+    use crate::component::tokens::ACCENT_PRIMARY;
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, validated_with};
@@ -347,8 +428,21 @@ mod tests {
         assert_eq!(token(input, "border"), Some(BORDER_SUBTLE));
     }
 
+    /// An invalid field's edge is the error hue, never the accent, and the
+    /// helper text says so in words as well.
+    ///
+    /// Both halves matter and the first is the one that shipped broken.
+    /// `field_invalid` bound `ACCENT_PRIMARY` because `tokens.rs` had no
+    /// error name re-exported, so an invalid field and a focused field drew
+    /// the **identical** blue edge: the state had no visual channel at all
+    /// beyond its message. Asserting the border merely "is not the default"
+    /// would have passed the whole time.
+    ///
+    /// The inequality is asserted explicitly rather than left implied by the
+    /// two token names, because the defect was precisely that two names which
+    /// should differ resolved to one.
     #[test]
-    fn field_invalid_pairs_an_accent_border_with_helper_text() {
+    fn field_invalid_draws_the_error_hue_and_says_so_in_words() {
         let node = field_invalid("name", "Fiber name", "required");
         assert_eq!(node.kind, NodeKind::Stack);
         assert!(
@@ -359,11 +453,26 @@ mod tests {
         assert_eq!(input.kind, NodeKind::Input);
         assert_eq!(input.semantics.role, Some(Role::TextInput));
         assert_eq!(input.constraints.vertical.min, Some(SIZE_MD));
-        assert_eq!(token(input, "border"), Some(ACCENT_PRIMARY));
+        assert_eq!(token(input, "border"), Some(SUPPORT_ERROR));
+        assert_ne!(
+            token(input, "border"),
+            Some(ACCENT_PRIMARY),
+            "an invalid field must not wear the accent: a focused field wears \
+             it too, and the two states became pixel-identical"
+        );
         assert_eq!(token(input, "background"), Some(SURFACE_RAISED));
         assert!(input.interactions.contains(&Interaction::TextEdit));
         let helper = child(&node, "helper");
         assert_eq!(helper.kind, NodeKind::Text);
+        assert!(
+            helper
+                .props
+                .text
+                .as_deref()
+                .is_some_and(|t| t.contains("Invalid")),
+            "the error must be carried by a word as well as a hue: the \
+             operator is red-green colour blind and cannot rely on the edge"
+        );
         assert_eq!(helper.props.text.as_deref(), Some("Invalid: required"));
         assert_eq!(token(helper, "foreground"), Some(TEXT_PRIMARY));
     }
@@ -538,5 +647,76 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A field with a value paints the value, not the placeholder, and paints
+    /// it in content ink.
+    ///
+    /// This is the whole of what was missing. `layout::paint_content_of`
+    /// already prefers a non-empty `props.text` over `props.placeholder` for
+    /// every `NodeKind::Input`; no constructor had ever written `text`, so
+    /// four of the operator's rows were the same empty well seen four times.
+    ///
+    /// Asserts the ink as well as the string. A value left in `TEXT_MUTED`
+    /// still reads as a placeholder, so painting the right characters in the
+    /// wrong tone would satisfy a text-only assertion and keep the defect.
+    #[test]
+    fn a_valued_field_paints_its_value_in_content_ink() {
+        let empty = field("f", "you@example.com");
+        assert_eq!(empty.props.text, None);
+        assert_eq!(
+            empty.props.tokens.get("foreground").map(TokenName::as_str),
+            Some(TEXT_MUTED),
+            "an empty field's placeholder is a hint and takes the muted tone"
+        );
+
+        let full = valued(field("f", "you@example.com"), "wolfe@gorgon.dev");
+        assert_eq!(full.props.text.as_deref(), Some("wolfe@gorgon.dev"));
+        assert_eq!(
+            full.props.tokens.get("foreground").map(TokenName::as_str),
+            Some(TEXT_PRIMARY),
+            "a value is content, not a hint: leaving it muted makes a filled \
+             field read as an empty one, which is the defect this fixes"
+        );
+        assert_eq!(
+            full.props.placeholder.as_deref(),
+            Some("you@example.com"),
+            "the placeholder survives, so clearing the value restores the hint"
+        );
+    }
+
+    /// `valued` reaches the `Input` inside a wrapper, so a caller does not
+    /// have to know which shape a constructor returned.
+    ///
+    /// `field` is an `Input` at its root; `field_labeled` and `field_fluid`
+    /// wrap one in a stack. A modifier that only handled the flat case would
+    /// silently do nothing for two of the seven constructors — silently, which
+    /// is why this asserts rather than trusting the walk.
+    #[test]
+    fn valued_reaches_the_input_inside_a_wrapper() {
+        for node in [
+            valued(field_labeled("f", "Name"), "Wolfe"),
+            valued(field_fluid("f", "Name"), "Wolfe"),
+        ] {
+            let input = child(&node, "input");
+            assert_eq!(input.kind, NodeKind::Input);
+            assert_eq!(
+                input.props.text.as_deref(),
+                Some("Wolfe"),
+                "the wrapper's Input child never received the value"
+            );
+        }
+    }
+
+    /// A node with no `Input` comes back untouched rather than panicking.
+    ///
+    /// Composing modifiers is the point of this shape, and a modifier that
+    /// panics on a tree it does not recognise is harder to compose than
+    /// writing the field out by hand.
+    #[test]
+    fn valued_on_a_tree_with_no_input_is_a_no_op() {
+        let plain = super::text("t", "not a field");
+        let after = valued(plain.clone(), "ignored");
+        assert_eq!(after.props.text, plain.props.text);
     }
 }
