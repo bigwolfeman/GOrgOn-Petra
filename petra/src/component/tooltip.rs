@@ -5,15 +5,29 @@
 //! is **not** this constructor — it lives on the host control. This node is
 //! the bubble only.
 //!
-//! What makes it a tooltip and not a popover is the polarity. Carbon's
-//! bubble is `$background-inverse` with `$text-inverse` — light on the dark
-//! theme, dark on the light one — so it is a step *across* the page's
-//! polarity rather than one grey step off it, and it reads as a note laid on
-//! the page rather than as another card. The caret is engine-drawn in the
-//! surface's own fill (`contracts/anchored-placement.md` §5), so it inverts
-//! with the box. Padding is [`SPACING_05`] on every side
-//! (`tooltip-padding-block` / `tooltip-padding-inline`); text is `body-01`,
-//! [`super::text::text`]'s own step.
+//! # A departure from Carbon, on the operator's instruction
+//!
+//! Carbon's bubble is `$background-inverse` with `$text-inverse` — light on
+//! the dark theme, dark on the light one — a step *across* the page's
+//! polarity rather than one grey step off it. This shipped that way, and the
+//! operator's round-3 note was *"tooltip: white background in dark mode,
+//! change it."* Put to him with Carbon's own reference shot beside ours, he
+//! chose to change it anyway. So this is a **deliberate departure**, not a
+//! defect, and `ignored/carbon-ref/shots/38-tooltip-open.png` is what we gave
+//! up.
+//!
+//! What replaces the polarity is the **top of the layer ramp**,
+//! [`SURFACE_LAYER_THREE`] (`#444444` dark). A bubble is dragged over
+//! whatever happens to be under the pointer and cannot know what that is: the
+//! page is `#121212` and a card is `#222222`, and one grey step off either
+//! one is invisible against the other. The ramp's last rung is a step away
+//! from both. Ink is [`TEXT_PRIMARY`], which measures about 9:1 there.
+//!
+//! The caret is engine-drawn in the surface's own fill
+//! (`contracts/anchored-placement.md` §5), so it follows the box. Padding is
+//! [`SPACING_05`] on every side (`tooltip-padding-block` /
+//! `tooltip-padding-inline`); text is `body-01`, [`super::text::text`]'s own
+//! step.
 //!
 //! Distinction from [`super::toggletip`]: a tooltip discloses on hover or
 //! focus and MUST NOT contain interactive elements. A toggletip discloses
@@ -27,7 +41,7 @@
 
 use super::popover::popover_with;
 use super::text::text;
-use super::tokens::{BACKGROUND_INVERSE, TEXT_INVERSE, t};
+use super::tokens::{SURFACE_LAYER_THREE, TEXT_PRIMARY, t};
 use crate::tree::{Key, Role, ViewNode};
 
 /// Carbon default tooltip `max-inline-size`.
@@ -47,11 +61,11 @@ pub fn tooltip(key: impl Into<Key>, label: impl Into<String>, body: impl Into<St
     let mut run = text("body", body.clone());
     run.props
         .tokens
-        .insert("foreground".into(), t(TEXT_INVERSE));
+        .insert("foreground".into(), t(TEXT_PRIMARY));
     let mut node = popover_with(key, body.clone(), "trigger", vec![run]);
     node.props
         .tokens
-        .insert("background".into(), t(BACKGROUND_INVERSE));
+        .insert("background".into(), t(SURFACE_LAYER_THREE));
     node.constraints.horizontal.max = Some(MAX_INLINE);
     node.semantics.role = Some(Role::Overlay);
     node.semantics.label = Some(body);
@@ -65,7 +79,9 @@ pub fn tooltip(key: impl Into<Key>, label: impl Into<String>, body: impl Into<St
 #[cfg(test)]
 mod tests {
     use super::{MAX_INLINE, SINGLE_LINE_INTENT, tooltip};
-    use crate::component::tokens::{BACKGROUND_INVERSE, SHADOW_OVERLAY, TEXT_INVERSE};
+    use crate::component::tokens::{
+        SHADOW_OVERLAY, SURFACE_LAYER_THREE, SURFACE_RAISED, TEXT_PRIMARY,
+    };
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, validated_with};
@@ -119,18 +135,30 @@ mod tests {
         );
     }
 
-    /// The bubble is the *inverse* polarity — Carbon's `$background-inverse`
-    /// under `$text-inverse` — and not another raised grey. Falsify by
+    /// The bubble takes the ramp's last rung, not the popover's own grey.
+    ///
+    /// It carried Carbon's inverse polarity until 2026-09-05; the operator
+    /// asked for a dark bubble in the dark theme and, shown Carbon's own
+    /// reference beside ours, chose the departure. What replaces the polarity
+    /// still has to be a step away from **both** grounds a bubble can be
+    /// dragged over — the page and a card — which `SURFACE_RAISED` is not:
+    /// it *is* the card, so a bubble over a card would vanish. Falsify by
     /// leaving `popover_with`'s `SURFACE_RAISED` in place.
     #[test]
-    fn the_bubble_is_the_inverse_polarity_not_a_raised_card() {
+    fn the_bubble_takes_the_last_rung_of_the_ramp_not_the_card_it_floats_over() {
         let node = tooltip("copied", "Copied", "Copied to clipboard");
-        assert_eq!(token(&node, "background"), Some(BACKGROUND_INVERSE));
+        assert_eq!(token(&node, "background"), Some(SURFACE_LAYER_THREE));
+        assert_ne!(
+            token(&node, "background"),
+            Some(SURFACE_RAISED),
+            "a bubble the same tone as a card disappears the moment it is \
+             dragged over one"
+        );
         assert_eq!(token(&node, "shadow"), Some(SHADOW_OVERLAY));
         assert_eq!(token(&node, "border"), None);
         assert_eq!(
             token(child(child(&node, "content"), "body"), "foreground"),
-            Some(TEXT_INVERSE)
+            Some(TEXT_PRIMARY)
         );
         assert_eq!(
             node.props.tip, None,
@@ -235,13 +263,16 @@ mod tests {
     // "a tooltip is never itself disabled; it either doesn't render or is
     // suppressed by its host component's disabled state."
 
-    /// Check E: the body text against [`BACKGROUND_INVERSE`], the resting
-    /// `background` the outer `Surface` node binds, in both themes. The
-    /// inverse pair is the *other* theme's ink on the other theme's ground,
-    /// so this is the same measurement that theme makes for its own body
-    /// text.
+    /// Check E: the body text against the resting `background` the outer
+    /// `Surface` node binds, in both themes.
+    ///
+    /// It was the inverse pair until 2026-09-05 — the *other* theme's ink on
+    /// the other theme's ground, so the measurement that theme already makes
+    /// for its own body text. It is now `text.primary` on
+    /// `surface.layer-three`, which is a pairing no theme makes for itself,
+    /// so this check earns its keep rather than restating one.
     #[test]
-    fn content_text_clears_aa_contrast_against_the_inverse_fill() {
+    fn content_text_clears_aa_contrast_against_the_bubble_fill() {
         const MIN_TEXT_CONTRAST: f32 = 4.5;
         for theme in [crate::token::light(), crate::token::dark()] {
             let node = tooltip("copied", "Copied", "Copied to clipboard");

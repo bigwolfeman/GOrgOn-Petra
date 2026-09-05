@@ -1105,7 +1105,7 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
     /// Every node in [`full_gallery`] that may draw a border, by the key
     /// path it appears at. An exact set: a node missing from here that draws
     /// one fails, and a node listed here that stops drawing one fails too.
-    const DRAWS_AN_EDGE: [&str; 29] = [
+    const DRAWS_AN_EDGE: [&str; 27] = [
         // `field`: an empty well with no boundary does not read as a place
         // to type. See `field`'s own doc for why it keeps one when `button`
         // does not.
@@ -1171,8 +1171,15 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         // field) and nothing around it; its open `menu` is a `list_box`,
         // which Carbon casts with a shadow and no outline. Select's field
         // is the same node, so it left this list with it.
-        "root/carbon2/dp-due/field",
-        "root/carbon2/dp-open/field",
+        //
+        // The date picker's field left too, on 2026-09-05. It bound a
+        // four-sided `BORDER_SUBTLE` box with a 2-unit radius while every
+        // other well in the library had already moved to a fill and one
+        // rule, which is what the operator meant by "there is still a
+        // border on the date picker itself, remove it". Carbon's
+        // `.cds--date-picker__input` **is** `.cds--text-input` (slice-c),
+        // so it calls `field::bind_field_chrome` now and turns up in
+        // `RULED` instead.
         // Data table rows used to be here, binding the four-sided `border`
         // as an approximation of Carbon's row-bottom rule
         // (`td { border-block-end }`, slice-b:76). On adjacent rows that
@@ -1406,7 +1413,7 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
 fn carbon_fields_are_a_fill_with_a_bottom_rule() {
     /// Every node in [`full_gallery`] that draws a bottom rule, with the
     /// rule's tone and whether the well is filled.
-    const RULED: [(&str, &str, bool); 25] = [
+    const RULED: [(&str, &str, bool); 27] = [
         // Not fields. A data-table row and a structured-list row draw
         // Carbon's own row boundary with the same slot, so they turn up in
         // this sweep; they are declared here rather than filtered out,
@@ -1431,6 +1438,10 @@ fn carbon_fields_are_a_fill_with_a_bottom_rule() {
         ("root/carbon4/ni-disabled/decrement", BORDER_STRONG, true),
         ("root/carbon4/ni-disabled/increment", BORDER_STRONG, true),
         ("root/carbon4/srch-filter", BORDER_STRONG, true),
+        // Carbon's date input is `.cds--text-input`, so the closed field and
+        // the open form's field wear the same well as every other one.
+        ("root/carbon2/dp-due/field", BORDER_STRONG, true),
+        ("root/carbon2/dp-open/field", BORDER_STRONG, true),
         ("root/carbon5/sl-max/row/input", BORDER_STRONG, true),
         ("root/carbon5/sl-mid/row/input", BORDER_STRONG, true),
         ("root/carbon5/sl-min/row/input", BORDER_STRONG, true),

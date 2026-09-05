@@ -5,7 +5,7 @@ use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::ViewNode;
 
 use super::Page;
-use super::common::{body, path_has, sp};
+use super::common::{filled_body, path_has, sp};
 
 /// The single-line sample. A const because the Copy button has to hand back
 /// the same string the well shows, and two copies of it would drift.
@@ -58,7 +58,7 @@ impl Page for CodeSnippet {
         section(
             "snippets",
             "Single, multi-line, inline",
-            vec![body(
+            vec![filled_body(
                 "code",
                 sp("spacing.md"),
                 vec![

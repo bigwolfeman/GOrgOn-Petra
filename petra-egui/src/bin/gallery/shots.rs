@@ -898,8 +898,9 @@ mod tests {
             well.h
         );
         assert!(
-            cam.has("snip-multi/copy"),
-            "the well carries its Copy button"
+            cam.has("snip-multi/copy-row/copy"),
+            "the well carries its Copy button, in the trailing-aligned row \
+             that pins it to the right the way Carbon does"
         );
     }
 
@@ -1491,8 +1492,11 @@ mod tests {
         assert_ne!(resting, hovered);
         assert_eq!(
             cam.token("bubble", "background").as_deref(),
-            Some("background-inverse"),
-            "a Carbon tooltip is the inverse polarity, not a raised card"
+            Some("surface.layer-three"),
+            "the bubble takes the ramp's last rung: a step away from both the \
+             page and a card, because it can be dragged over either. Carbon's \
+             own answer is the inverse polarity, which the operator asked us \
+             to drop on 2026-09-05"
         );
         assert_eq!(
             cam.caret("bubble").map(|c| c.side),
@@ -2443,7 +2447,7 @@ mod tests {
             "the single-line well copies its own one line"
         );
 
-        cam.click("snip-multi/copy");
+        cam.click("snip-multi/copy-row/copy");
         let last = cam.clipboard().last().expect("a second copy");
         assert!(
             last.lines().count() > 5 && last.contains("xtask verify-notes"),

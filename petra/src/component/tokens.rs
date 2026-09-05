@@ -77,6 +77,10 @@ pub(crate) const TYPOGRAPHY_HEADING_SM: &str = "typography.heading-sm";
 pub(crate) const TYPOGRAPHY_BODY_COMPACT: &str = "typography.body-compact";
 /// Carbon `label-01` (12/16): the label above a field.
 pub(crate) const TYPOGRAPHY_LABEL: &str = "typography.label";
+/// The one MONO step in the ramp (`shipped.rs`: 12/16, mono). Code is code:
+/// a snippet set in the sans body face is not a code snippet, and columns
+/// that do not line up are the first thing a reader notices.
+pub(crate) const TYPOGRAPHY_CODE: &str = "typography.code";
 
 /// The elevation a resting container casts. Colour only: the offset, blur
 /// and spread live in `token::SHADOW_GEOMETRY`, because they are the same in
@@ -104,6 +108,12 @@ pub(crate) const OVERLAY_SCRIM: &str = "overlay.scrim";
 
 pub(crate) const SURFACE_BASE: &str = "surface.base";
 pub(crate) const SURFACE_RAISED: &str = "surface.raised";
+/// The top of the layer ramp (`token::shipped::LAYER_TOKENS[3]`, `#444444`
+/// dark). A floating note that must separate itself from *whatever* it was
+/// dragged over -- the page at `#121212` or a card at `#222222` -- and
+/// cannot know which, so it takes the one tone that is a step away from
+/// both.
+pub(crate) const SURFACE_LAYER_THREE: &str = "surface.layer-three";
 
 /// A recessed fill: one selected-magnitude step off the layer it sits on.
 /// Carbon's own `$layer-accent-01`.
@@ -164,13 +174,6 @@ pub(crate) const TEXT_MUTED: &str = "text.muted";
 pub(crate) const LAYER_SELECTED_INVERSE: &str = "layer-selected-inverse";
 /// See [`LAYER_SELECTED_INVERSE`].
 pub(crate) const TEXT_INVERSE: &str = "text-inverse";
-/// The inverted polarity's page ground: Carbon's `$background-inverse`, the
-/// fill of a tooltip bubble (`_tooltip.scss`, slice-f) — light on the dark
-/// theme, dark on the light one, so the bubble is a polarity step off the
-/// page and not a grey step off it. Its ink is [`TEXT_INVERSE`]. In the
-/// vocabulary since 2026-08-25 with nothing in this library reading it.
-pub(crate) const BACKGROUND_INVERSE: &str = "background-inverse";
-
 /// The tone a non-text glyph is drawn in when it is the control's own mark
 /// on a layer ground: Carbon's `$icon-primary`, the fill SCSS names for the
 /// accordion arrow, the list-box chevron, the snippet's copy, the number
@@ -296,7 +299,6 @@ pub(crate) const ALL: &[&str] = &[
     TEXT_MUTED,
     LAYER_SELECTED_INVERSE,
     TEXT_INVERSE,
-    BACKGROUND_INVERSE,
     ICON_PRIMARY,
     ICON_SECONDARY,
     BORDER_SUBTLE,

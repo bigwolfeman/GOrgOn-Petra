@@ -2,7 +2,8 @@
 //! popover. No date library.
 //!
 //! Anatomy (`_date-picker.scss` + `_flatpickr.scss`):
-//! 1. Field — [`SURFACE_RAISED`] + [`BORDER_SUBTLE`], height md 40.
+//! 1. Field — the shared field well ([`super::field::bind_field_chrome`]:
+//!    a fill and a bottom rule, no box, no radius), height md 40.
 //! 2. Current value (visible text).
 //! 3. Calendar mark — [`IconMark::Calendar`] in [`IconTone::Primary`]
 //!    (`.cds--date-picker__icon`, `fill: $icon-primary`, 16×16, slice-b),
@@ -52,13 +53,14 @@ use super::pad;
 use super::stack;
 use super::text::text;
 use super::tokens::{
-    ACCENT_PRIMARY, BORDER_SUBTLE, LAYER_HOVER, SHADOW_OVERLAY, SHAPE_SM, SIZE_MD, SPACING_03,
-    SPACING_05, SURFACE_RAISED, TEXT_MUTED, TEXT_ON_ACCENT, TEXT_PRIMARY, TYPOGRAPHY_HEADING_SM, t,
+    ACCENT_PRIMARY, LAYER_HOVER, SHADOW_OVERLAY, SIZE_MD, SPACING_03, SPACING_05, SURFACE_RAISED,
+    TEXT_MUTED, TEXT_ON_ACCENT, TEXT_PRIMARY, TYPOGRAPHY_HEADING_SM, t,
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
     Align as PropAlign, Anchor, AxisConstraint, ClampRule, Constraints, Edge, FocusFigure,
-    InputPolicy, Interaction, Justify, Key, Layer, NodeKind, Props, Role, TrackSize, ViewNode,
+    InputPolicy, Interaction, Justify, Key, Layer, NodeKind, Props, Role, Tip, TrackSize,
+    ViewNode,
 };
 
 /// Carbon calendar menu width (`18rem`). Independent of field size.
@@ -167,11 +169,17 @@ fn closed_field(
     );
     node.props.align = Some(Align::Center);
     node.props.padding = Some(pad(SPACING_05, SPACING_03));
-    node.props
-        .tokens
-        .insert("background".into(), t(SURFACE_RAISED));
-    node.props.tokens.insert("border".into(), t(BORDER_SUBTLE));
-    node.props.tokens.insert("radius".into(), t(SHAPE_SM));
+    // The same well every text-shaped control in this library wears: a fill
+    // and a bottom rule, and nothing on the other three sides.
+    //
+    // It drew a full `BORDER_SUBTLE` box with a 2-unit radius until
+    // 2026-09-05, which is what the operator meant by *"there is still a
+    // border on the date picker itself, remove it"* -- round 2 took the box
+    // off the text input, the search well and the number well and left this
+    // one behind. Carbon's `.cds--date-picker__input` **is**
+    // `.cds--text-input` (slice-c), so this calls the same binder rather
+    // than restating its two lines and drifting from them a second time.
+    super::field::bind_field_chrome(&mut node.props);
     node.props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
@@ -259,6 +267,14 @@ fn calendar_surface(label: String, year: i32, month: u32, selected: u32) -> View
             clamp: Some(ClampRule::Flip),
             input_policy: Some(InputPolicy::DismissOutside),
             align: Some(Align::Stretch),
+            // Flush, and said out loud: `Tip::Caret` is the *default*, so a
+            // surface that names no tip grows a beak. This one did, and the
+            // beak poked up through the field's bottom rule and broke it in
+            // two. Carbon's `.cds--date-picker__calendar` is a plain panel
+            // under the input -- a beak belongs to a tooltip or a toggletip,
+            // which point at something, not to a menu that hangs off an edge
+            // it already touches.
+            tip: Some(Tip::Flush),
             ..Props::default()
         })
         .child(content);
@@ -497,13 +513,13 @@ mod tests {
         CALENDAR_H, CALENDAR_W, PropAlign, SIZE_MD, WEEK_ROWS, WEEKDAYS, date_picker,
         date_picker_open, days_in_month, first_weekday, parse_date,
     };
-    use crate::component::tokens::{ACCENT_PRIMARY, BORDER_SUBTLE, SURFACE_RAISED};
+    use crate::component::tokens::{ACCENT_PRIMARY, BORDER_STRONG, SURFACE_RAISED};
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
     use crate::tree::{
-        Anchor, FocusFigure, Interaction, NodeKind, Props, Registry, Role, ViewNode,
+        Anchor, FocusFigure, Interaction, NodeKind, Props, Registry, Role, Tip, ViewNode,
     };
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
@@ -539,7 +555,13 @@ mod tests {
         assert_eq!(field.constraints.vertical.max, Some(SIZE_MD));
         assert!(field.interactions.contains(&Interaction::Click));
         assert_eq!(token(field, "background"), Some(SURFACE_RAISED));
-        assert_eq!(token(field, "border"), Some(BORDER_SUBTLE));
+        assert_eq!(
+            token(field, "border"),
+            None,
+            "Carbon's date input is `.cds--text-input`, and that is a fill \
+             with one rule under it, not a box"
+        );
+        assert_eq!(token(field, "border-bottom"), Some(BORDER_STRONG));
         assert_eq!(
             child(field, "value").props.text.as_deref(),
             Some("2026-08-30")
@@ -590,6 +612,15 @@ mod tests {
         let calendar = child(&node, "calendar");
         assert_eq!(calendar.kind, NodeKind::Surface);
         assert_eq!(calendar.semantics.role, Some(Role::Overlay));
+        // `Tip::Caret` is the default, so a surface that names no tip grows a
+        // beak. This one did, and it poked up through the field's bottom rule
+        // and broke it in two. A beak points at something; a menu hanging off
+        // an edge it already touches has nothing to point at.
+        assert_eq!(
+            calendar.props.tip,
+            Some(Tip::Flush),
+            "Carbon's date picker calendar is a plain panel under the input"
+        );
         match &calendar.props.anchor {
             Some(Anchor::Sibling { key, align, .. }) => {
                 assert_eq!(key.as_str(), "field");

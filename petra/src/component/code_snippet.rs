@@ -19,9 +19,13 @@ use super::icon::{IconMark, IconTone, icon_toned};
 use super::pad;
 use super::stack;
 use super::text::text;
-use super::tokens::{SHAPE_SM, SIZE_MD, SPACING_02, SPACING_03, SPACING_05, SURFACE_RAISED, t};
+use super::tokens::{
+    SHAPE_SM, SIZE_MD, SPACING_02, SPACING_03, SPACING_05, SURFACE_RAISED, TYPOGRAPHY_CODE, t,
+};
 use crate::geom::{Align, Axis};
-use crate::tree::{AxisConstraint, Constraints, InsetRefs, Interaction, Key, Role, ViewNode};
+use crate::tree::{
+    AxisConstraint, Constraints, InsetRefs, Interaction, Justify, Key, Role, ViewNode,
+};
 
 /// Carbon `.cds--snippet--multi` `min-block-size`.
 const MULTI_MIN: f32 = 288.0;
@@ -43,6 +47,12 @@ pub fn code_snippet(key: impl Into<Key>, code: impl Into<String>) -> ViewNode {
         vec![code_text(code.into()), copy_button()],
     );
     node.props.align = Some(Align::Center);
+    // Carbon pins the control to the trailing edge in every variant
+    // (`.cds--snippet-button` is absolutely positioned right). Ours sat
+    // immediately after the text on the single line and at the top *left* of
+    // the multi-line well, which is what the operator meant by "inconsistent
+    // placement": the same control in two different corners.
+    node.props.justify = Some(Justify::SpaceBetween);
     node.props.padding = Some(InsetRefs {
         left: Some(t(SPACING_05)),
         right: Some(t(SPACING_05)),
@@ -57,8 +67,9 @@ pub fn code_snippet_multi(key: impl Into<Key>, code: impl Into<String>) -> ViewN
         key,
         Axis::Vertical,
         Some(SPACING_03),
-        vec![copy_button(), code_text(code.into())],
+        vec![copy_row(), code_text(code.into())],
     );
+    node.props.align = Some(Align::Stretch);
     node.props.padding = Some(pad(SPACING_05, SPACING_05));
     paint_well(node).with_constraints(Constraints {
         vertical: AxisConstraint {
@@ -85,7 +96,27 @@ pub fn code_snippet_inline(key: impl Into<Key>, code: impl Into<String>) -> View
 }
 
 fn code_text(code: String) -> ViewNode {
-    text("code", code)
+    let mut node = text("code", code);
+    // Carbon sets every snippet in `$code-01` / `$code-02`, which is IBM
+    // Plex Mono. This bound nothing until 2026-09-05, so the catalog's code
+    // snippet was set in the sans body face -- a code snippet whose columns
+    // do not line up, which is the first thing a reader notices and the
+    // hardest to name. `typography.code` is the ramp's one MONO step and it
+    // shipped from the start.
+    node.props.style = Some(t(TYPOGRAPHY_CODE));
+    node
+}
+
+/// The multi-line well's copy control, pushed to the trailing edge.
+///
+/// A row with the button and `Justify::End`, rather than the button alone:
+/// Carbon positions `.cds--snippet-button` absolutely at the top right, and
+/// the nearest thing this layout engine has is a full-width row that spends
+/// its leftover before its one child.
+fn copy_row() -> ViewNode {
+    let mut row = stack("copy-row", Axis::Horizontal, None, vec![copy_button()]);
+    row.props.justify = Some(Justify::End);
+    row
 }
 
 fn copy_button() -> ViewNode {
