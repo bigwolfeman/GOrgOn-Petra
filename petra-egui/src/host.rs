@@ -203,6 +203,23 @@ pub trait App: RowSource {
     fn theme_request(&mut self) -> Option<Theme> {
         None
     }
+
+    /// Text the application wants put on the system clipboard, taken and
+    /// cleared.
+    ///
+    /// Asked once per pass, right after the input for that pass has been
+    /// delivered, so a press handled this pass copies on this pass.
+    ///
+    /// The host asks because the clipboard is the *window's*, not the
+    /// application's: `egui::Context::copy_text` is the only path to it and
+    /// an application that held a `Context` would be holding the host's own
+    /// handle to the backend. A Copy button with nowhere to put its string is
+    /// how catalog row 6 shipped a control that looked like it worked.
+    ///
+    /// The default copies nothing.
+    fn clipboard_request(&mut self) -> Option<String> {
+        None
+    }
 }
 
 /// Point egui's glyph rasteriser at the coverage curve its own documentation
@@ -943,6 +960,12 @@ impl<A: App> Host<A> {
         };
 
         let had_input = self.deliver_input(ctx);
+        // After the input, not before: a press handled by this pass has to be
+        // able to copy on this pass, or the operator's second press is what
+        // copies what his first one selected.
+        if let Some(text) = self.app.clipboard_request() {
+            ctx.copy_text(text);
+        }
         // Input may have moved focus or the pointer; the negotiation below
         // reads `LayoutState`, so publish both before the frame is measured
         // rather than after it is painted. A move published here needs no
@@ -2236,6 +2259,8 @@ mod tests {
         /// How many times [`App::view`] ran. A caret in flight must not
         /// increment this on every vsync.
         view_calls: usize,
+        /// Text this app wants copied on its next pass.
+        copy: Option<String>,
     }
 
     /// A focusable, clickable, hoverable text button — a `Role::Button` node
@@ -2263,6 +2288,10 @@ mod tests {
     }
 
     impl App for Demo {
+        fn clipboard_request(&mut self) -> Option<String> {
+            self.copy.take()
+        }
+
         fn view(&mut self) -> ViewNode {
             self.view_calls += 1;
             if self.bad_tree {
@@ -2897,6 +2926,52 @@ mod tests {
             "the title, the field's placeholder, and the button"
         );
         assert!(report.unresolved_tokens.is_empty(), "{report:?}");
+    }
+
+    /// The host is what reaches the clipboard, because the application has
+    /// no `Context`.
+    ///
+    /// Catalog row 6's Copy button dropped every press and looked exactly
+    /// like a working one. `egui::Context::copy_text` was always there; the
+    /// missing part was a channel to it. This asserts the whole channel, not
+    /// the half the application owns: the string has to come out the far side
+    /// as an `OutputCommand::CopyText`.
+    #[test]
+    fn a_string_the_application_asks_to_copy_reaches_egui_as_a_copy_command() {
+        let ctx = Context::default();
+        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        host.app_mut().copy = Some("pcargo test -p gorgon-petra --lib".to_owned());
+
+        let out = ctx.run_ui(RawInput::default(), |_| host.pass(&ctx));
+        let copied: Vec<&String> = out
+            .platform_output
+            .commands
+            .iter()
+            .filter_map(|cmd| match cmd {
+                egui::OutputCommand::CopyText(text) => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            copied.as_slice(),
+            [&"pcargo test -p gorgon-petra --lib".to_owned()],
+            "the host must hand the application's string to egui, {:?}",
+            out.platform_output.commands
+        );
+        out.drop_without_applying_deltas();
+
+        // Taken, not read: a second pass with nothing newly asked for must
+        // not copy the same string again.
+        let again = ctx.run_ui(RawInput::default(), |_| host.pass(&ctx));
+        assert!(
+            !again
+                .platform_output
+                .commands
+                .iter()
+                .any(|cmd| matches!(cmd, egui::OutputCommand::CopyText(_))),
+            "a pass that asked for nothing must copy nothing"
+        );
+        again.drop_without_applying_deltas();
     }
 
     #[test]

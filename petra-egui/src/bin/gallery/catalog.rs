@@ -344,6 +344,11 @@ impl App for Catalog {
     /// [`Theme`], so `token::light()` and `token::dark()` are named in one
     /// place rather than in whichever page happens to offer the switch. The
     /// host publishes it; see `App::theme_request`.
+    /// Forward the open page's clipboard text.
+    fn clipboard_request(&mut self) -> Option<String> {
+        self.open_page_mut()?.clipboard_request()
+    }
+
     fn theme_request(&mut self) -> Option<Theme> {
         let mode = self.open_page_mut()?.theme_request()?;
         Some(match mode {

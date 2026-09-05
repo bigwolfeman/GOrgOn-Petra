@@ -99,6 +99,19 @@ pub trait Page {
         None
     }
 
+    /// Text this page wants on the system clipboard, taken and cleared.
+    ///
+    /// Row 6's Copy button had nowhere to put a string: `Page::handle` sees a
+    /// route and an event and holds no handle to the window, so the control
+    /// looked like it worked and dropped every press. The chrome forwards
+    /// this to `App::clipboard_request`, which the host answers with
+    /// `egui::Context::copy_text`.
+    ///
+    /// The default copies nothing.
+    fn clipboard_request(&mut self) -> Option<String> {
+        None
+    }
+
     /// React to an activation routed to `node`, the full id path of the node
     /// the press or key landed on. Returns whether the page consumed it.
     ///
@@ -178,7 +191,7 @@ pub fn all() -> Vec<Box<dyn Page>> {
         Box::new(breadcrumb::Breadcrumb),
         Box::new(button::Button),
         Box::new(checkbox::Checkbox::default()),
-        Box::new(code_snippet::CodeSnippet),
+        Box::new(code_snippet::CodeSnippet::default()),
         Box::new(contained_list::ContainedList::default()),
         Box::new(content_switcher::ContentSwitcher::default()),
         Box::new(data_table::DataTable::default()),

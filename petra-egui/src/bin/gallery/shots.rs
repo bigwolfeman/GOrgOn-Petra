@@ -81,6 +81,10 @@ pub struct Camera {
     shooter: Snapshotter,
     /// The page's row name, so a failure says which page it was on.
     page: String,
+    /// Everything the app has asked egui to put on the clipboard since this
+    /// camera opened. A driven `Copy` control is otherwise invisible: the
+    /// string leaves through `PlatformOutput`, not through the frame.
+    clipboard: Vec<String>,
 }
 
 impl Camera {
@@ -122,6 +126,7 @@ impl Camera {
             host,
             shooter: Snapshotter::new(),
             page: component.to_owned(),
+            clipboard: Vec::new(),
         };
         cam.settle();
         cam
@@ -200,9 +205,22 @@ impl Camera {
             panic!("{}: {action:?} refused: {err:?}", self.page);
         });
         let ctx = self.ctx.clone();
-        ctx.run_ui(sized(raw), |_| self.host.pass(&ctx))
-            .drop_without_applying_deltas();
+        let out = ctx.run_ui(sized(raw), |_| self.host.pass(&ctx));
+        self.clipboard
+            .extend(out.platform_output.commands.iter().filter_map(|cmd| {
+                match cmd {
+                    egui::OutputCommand::CopyText(text) => Some(text.clone()),
+                    _ => None,
+                }
+            }));
+        out.drop_without_applying_deltas();
         self
+    }
+
+    /// Everything the page has put on the clipboard since this camera opened.
+    #[must_use]
+    pub fn clipboard(&self) -> &[String] {
+        &self.clipboard
     }
 
     /// A primary-button press and release on the node whose id ends `tail`.
@@ -2399,6 +2417,36 @@ mod tests {
         assert!(
             back < dark + 0.05,
             "and choosing Dark must put it back: {light} -> {back}"
+        );
+    }
+
+    /// Row 6's Copy button dropped every press and looked exactly like a
+    /// working one. The operator: *"copy button does not work"*.
+    ///
+    /// Driven from a click, and read where the string actually leaves — the
+    /// `PlatformOutput` command, not the frame. A page-level assertion that
+    /// `clipboard_request` returns something would pass with the host wiring
+    /// missing, which is the state this row shipped in.
+    #[test]
+    fn pressing_copy_puts_that_snippet_on_the_clipboard() {
+        let mut cam = Camera::on("Code snippet");
+        assert!(
+            cam.clipboard().is_empty(),
+            "nothing is copied before anything is pressed"
+        );
+
+        cam.click("snip/copy");
+        assert_eq!(
+            cam.clipboard(),
+            ["pcargo test -p gorgon-petra --lib".to_owned()],
+            "the single-line well copies its own one line"
+        );
+
+        cam.click("snip-multi/copy");
+        let last = cam.clipboard().last().expect("a second copy");
+        assert!(
+            last.lines().count() > 5 && last.contains("xtask verify-notes"),
+            "the multi-line well copies its own many lines, got {last:?}"
         );
     }
 }
