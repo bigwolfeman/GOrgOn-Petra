@@ -2867,6 +2867,40 @@ mod tests {
         assert!(validate(&tree, &spacing_registry_with(9.0)).is_ok());
     }
 
+    /// A viewport edge adds no refusal of its own — there is no illegal
+    /// `(edge, align)` pair and no node to fail to find — but its offset is
+    /// a spacing token and is checked exactly as `Anchor::Node`'s is.
+    ///
+    /// This is the whole of acceptance's part in the variant, and it runs
+    /// through [`crate::tree::Anchor::offset`]. A surface docked to a window
+    /// edge is otherwise legal wherever a viewport-centred one is: it names
+    /// no node, so it can neither miss a target nor close a cycle.
+    #[test]
+    fn a_viewport_edge_offset_naming_no_token_is_refused() {
+        let tree =
+            stack("root").child(ViewNode::new(NodeKind::Surface, "toast").with_props(Props {
+                layer: Some(Layer::Toast),
+                anchor: Some(crate::tree::Anchor::ViewportEdge {
+                    edge: Edge::Top,
+                    align: crate::tree::Align::End,
+                    offset: Some(gap_token(9.0)),
+                }),
+                ..Props::default()
+            }));
+        let err = validate(&tree, &Registry::new()).unwrap_err();
+        assert!(
+            err.as_slice().iter().any(|e| matches!(
+                &e.violation,
+                Violation::UnknownTokenRef { prop, .. } if prop == "anchor.offset"
+            )),
+            "a docked surface's offset token went unchecked: {err}"
+        );
+        assert!(
+            validate(&tree, &spacing_registry_with(9.0)).is_ok(),
+            "and with the token declared, a docked surface is accepted"
+        );
+    }
+
     /// A surface anchored to its own rect is circular: its placement is what
     /// decides the rect its placement is resolved against.
     #[test]

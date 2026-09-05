@@ -426,6 +426,49 @@ pub enum Anchor {
     },
     /// Centred in the viewport.
     Viewport,
+    /// Docked *inside* an edge of the viewport, inset from it.
+    ///
+    /// [`Anchor::Viewport`] is the centre of the window and nothing else,
+    /// which is the right answer for a modal and the wrong one for every
+    /// region a design system pins to a window edge: Carbon's toast region
+    /// is top-trailing, its side navigation is a left dock, its header
+    /// panel is pinned to the trailing edge. Those were unspellable until
+    /// this variant existed, and the standing workaround was to build a
+    /// stand-in frame node the size of the window and seat the region in a
+    /// cell of it.
+    ///
+    /// The pair `(edge, align)` reads exactly as it does on
+    /// [`Anchor::Node`] — `{ edge: Top, align: End }` is "top-trailing" —
+    /// with one deliberate difference in what `edge` means. A node anchor
+    /// puts the surface *outside* the named edge, because a menu belongs
+    /// beside its trigger and not on top of it. A viewport edge puts the
+    /// surface *inside* it, because outside the window is nowhere.
+    ///
+    /// Additive on purpose: a variant name no tree written before it can
+    /// carry cannot change how any of those trees parse, where widening
+    /// [`Anchor::Viewport`] from a unit variant into a struct one would
+    /// have rewritten its serde form for every tree that already spells it.
+    ViewportEdge {
+        /// Which edge of the window the surface docks against.
+        edge: Edge,
+        /// Where along that edge it sits. Defaulted, and read exactly as
+        /// [`Anchor::Node`]'s is.
+        #[serde(default, skip_serializing_if = "is_default_align")]
+        align: Align,
+        /// How far in from the window the surface is held, as a spacing
+        /// token — a token reference and never a literal, for the reason
+        /// [`Anchor::Node`]'s `offset` is one (FR-053).
+        ///
+        /// One number for both axes, because a docked region is inset from
+        /// a *corner*: Carbon's toast is 16 down from the top and 16 in
+        /// from the trailing edge, not 16 from one and flush against the
+        /// other. It insets the docked edge, and it insets whichever end of
+        /// that edge [`Align`] chose; [`Align::Center`] has no end to be
+        /// held off, so a centred surface stays exactly centred whatever
+        /// the offset says.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        offset: Option<TokenName>,
+    },
 }
 
 /// The terms an anchor that names a node declares, read the same way
@@ -460,7 +503,7 @@ impl Anchor {
         match self {
             Self::Node { id, .. } => Some(id.clone()),
             Self::Sibling { key, .. } => Some(surface.sibling_id(key)),
-            Self::Point { .. } | Self::Viewport => None,
+            Self::Point { .. } | Self::Viewport | Self::ViewportEdge { .. } => None,
         }
     }
 
@@ -492,16 +535,37 @@ impl Anchor {
                 align: *align,
                 offset: offset.as_ref(),
             }),
-            Self::Point { .. } | Self::Viewport => None,
+            // A viewport edge declares the same three terms and is
+            // deliberately not one of these: `NodeAnchor` is what the
+            // *node* ladder reads, and handing it a reading with no
+            // harvested rect behind it is how a caret ends up aimed at a
+            // window edge. [`Anchor::ViewportEdge`] is destructured where
+            // it is placed, the way [`Anchor::Point`] is.
+            Self::Point { .. } | Self::Viewport | Self::ViewportEdge { .. } => None,
         }
     }
 
-    /// The spacing token gapping this anchor from its surface, if one is
-    /// declared. The one spacing reference on a node that does not live on
-    /// a `props.*_spacing` field, which is why it has its own accessor.
+    /// The spacing token gapping this anchor from whatever it is anchored
+    /// to, if one is declared. The one spacing reference on a node that does
+    /// not live on a `props.*_spacing` field, which is why it has its own
+    /// accessor.
+    ///
+    /// Every variant that can carry an offset answers here, not just the two
+    /// that name a node: this is what tree acceptance checks the token
+    /// reference through (`crate::tree::validate`) and what the test
+    /// harness collects a fixture's spacing names through
+    /// (`crate::testing`). A variant missing from this match would carry an
+    /// unchecked, unbound token name — accepted by acceptance, then resolved
+    /// to zero at placement, which is a dock silently flush against the
+    /// window edge.
     #[must_use]
     pub fn offset(&self) -> Option<&TokenName> {
-        self.node_terms().and_then(|terms| terms.offset)
+        match self {
+            Self::Node { offset, .. }
+            | Self::Sibling { offset, .. }
+            | Self::ViewportEdge { offset, .. } => offset.as_ref(),
+            Self::Point { .. } | Self::Viewport => None,
+        }
     }
 }
 
@@ -1405,12 +1469,91 @@ mod tests {
         assert!(node.names_node());
         assert_eq!(node.offset(), None);
 
-        for other in [Anchor::Point { x: 1.0, y: 2.0 }, Anchor::Viewport] {
+        for other in [
+            Anchor::Point { x: 1.0, y: 2.0 },
+            Anchor::Viewport,
+            Anchor::ViewportEdge {
+                edge: Edge::Top,
+                align: Align::End,
+                offset: None,
+            },
+        ] {
             assert_eq!(other.target_id(&surface), None);
             assert!(!other.names_node());
             assert!(other.node_terms().is_none());
             assert_eq!(other.offset(), None);
         }
+    }
+
+    /// A viewport edge names no node, so it never reaches the harvest walk,
+    /// the cycle scan, or the node ladder — but it *does* carry a spacing
+    /// token, and [`Anchor::offset`] is the one accessor that has to see it.
+    ///
+    /// Acceptance checks the token reference through this accessor
+    /// (`crate::tree::validate`) and the test harness collects a fixture's
+    /// spacing names through it (`crate::testing`). Reading the offset off
+    /// `node_terms` instead — which is what it did until this variant
+    /// existed — leaves a docked surface naming a token nothing declares and
+    /// nothing checks, resolved to zero at placement: a dock silently flush
+    /// against the window edge.
+    #[test]
+    fn a_viewport_edge_names_no_node_but_still_carries_its_offset() {
+        let surface = KeyPath::root().child(&"root".into()).child(&"toast".into());
+        let docked = Anchor::ViewportEdge {
+            edge: Edge::Top,
+            align: Align::End,
+            offset: Some(n("spacing.xs")),
+        };
+        assert_eq!(docked.target_id(&surface), None);
+        assert!(!docked.names_node());
+        assert!(
+            docked.node_terms().is_none(),
+            "a window edge is not a node, and the node ladder must not read it as one"
+        );
+        assert_eq!(
+            docked.offset(),
+            Some(&n("spacing.xs")),
+            "the offset accessor is what acceptance and the fixture harness \
+             both check the token reference through"
+        );
+    }
+
+    /// `Anchor::ViewportEdge` on the wire, and the reason it is additive:
+    /// its `type` tag is a name no tree written before it can carry, so
+    /// every anchor already in a file parses exactly as it did. Widening
+    /// `Anchor::Viewport` from a unit variant into a struct one would have
+    /// rewritten `{"type":"viewport"}` for every tree that spells it.
+    #[test]
+    fn a_viewport_edge_anchor_round_trips_through_serde() {
+        let bare = Anchor::ViewportEdge {
+            edge: Edge::Top,
+            align: Align::default(),
+            offset: None,
+        };
+        let json = serde_json::to_string(&bare).unwrap();
+        assert_eq!(json, r#"{"type":"viewport-edge","edge":"top"}"#);
+        assert_eq!(serde_json::from_str::<Anchor>(&json).unwrap(), bare);
+
+        let full = Anchor::ViewportEdge {
+            edge: Edge::Top,
+            align: Align::End,
+            offset: Some(n("spacing.xs")),
+        };
+        let json = serde_json::to_string(&full).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"viewport-edge","edge":"top","align":"end","offset":"spacing.xs"}"#
+        );
+        assert_eq!(serde_json::from_str::<Anchor>(&json).unwrap(), full);
+
+        // The variant beside it is untouched: the unit form still reads and
+        // writes as the bare tag it always did.
+        let json = serde_json::to_string(&Anchor::Viewport).unwrap();
+        assert_eq!(json, r#"{"type":"viewport"}"#);
+        assert_eq!(
+            serde_json::from_str::<Anchor>(r#"{"type":"viewport"}"#).unwrap(),
+            Anchor::Viewport
+        );
     }
 
     #[test]

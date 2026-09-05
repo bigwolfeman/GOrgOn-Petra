@@ -59,10 +59,19 @@
 //! [`Edge`] is the side of the harvested rect the surface is placed against,
 //! the declared [`Align`] is where along that side it starts, and the ladder
 //! below flips, shifts and shrinks from there. [`resolve_anchor_kind`] is
-//! still the public seam that says which of those happened, and it now has a
-//! fourth answer for the one case left: a walk begun below the anchor's own
+//! still the public seam that says which of those happened, and it has an
+//! answer for the one case left: a walk begun below the anchor's own
 //! subtree harvests no rect for it, and such a surface still centres in the
 //! viewport rather than guessing.
+//!
+//! ## `Anchor::ViewportEdge` docks inside the window
+//!
+//! [`Anchor::ViewportEdge`] reads the window's own edge as an anchor:
+//! `{ edge: Top, align: End }` is the top-trailing region Carbon puts a
+//! toast in. It is the mirror of a node anchor — a node anchor places the
+//! surface *outside* the edge it names, a window edge places it *inside*,
+//! because outside the window is nowhere — and it carries no anchor rect,
+//! so it draws no caret. See [`viewport_edge_main_axis`].
 //!
 //! [`Anchor::Sibling`] is the same anchor spelled from where a component
 //! constructor stands: a bare key, resolved against the surface's *own*
@@ -286,7 +295,7 @@ fn natural_size(node: &ViewNode, ctx: &mut LayoutCtx<'_>, path: &mut KeyPath) ->
 
 /// How [`place`] resolves one [`Anchor`] variant.
 ///
-/// Exposed so a caller (or a test) can see which of the four readings a
+/// Exposed so a caller (or a test) can see which of the five readings a
 /// surface got rather than infer it from behaviour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AnchorResolution {
@@ -294,6 +303,16 @@ pub enum AnchorResolution {
     Point,
     /// Resolved to the viewport centre, as declared.
     Viewport,
+    /// Docked inside the declared edge of the viewport, inset by the
+    /// declared offset, and started along that edge by the declared
+    /// [`Align`] (`contracts/anchored-placement.md` §3a).
+    ///
+    /// A *side* on the main axis, like [`AnchorResolution::Node`], so
+    /// [`ClampRule::Flip`] has the opposite window edge to try; a bare
+    /// origin on the cross axis, like every other anchor, because sliding
+    /// is all the ladder does to a cross axis. It carries no anchor rect,
+    /// so it draws no caret: see [`AnchorPlan::anchored`].
+    ViewportEdge,
     /// Resolved against the harvested rect of the node it names: the
     /// declared [`Edge`] picks the side, the declared [`Align`] picks where
     /// along it (`contracts/anchored-placement.md` §4 step 1).
@@ -326,6 +345,7 @@ pub fn resolve_anchor_kind(
     match anchor {
         Anchor::Point { .. } => AnchorResolution::Point,
         Anchor::Viewport => AnchorResolution::Viewport,
+        Anchor::ViewportEdge { .. } => AnchorResolution::ViewportEdge,
         Anchor::Node { .. } | Anchor::Sibling { .. } => {
             let harvested = anchor
                 .target_id(surface)
@@ -478,6 +498,12 @@ struct AnchorPlan {
 /// [`ClampRule::Flip`] to try. `Anchor::Viewport` centres the box and declares
 /// no side, and so does a node anchor this walk harvested no rect for
 /// (see [`AnchorResolution::NodeUnharvested`]).
+///
+/// `Anchor::ViewportEdge` reads the window's own edge the way a node anchor
+/// reads its target's, inwards rather than outwards: see
+/// [`viewport_edge_main_axis`] and [`viewport_edge_cross_axis`]. It carries
+/// no [`AnchoredPlan`], because there is no rect under it to point a caret
+/// at or to fit to.
 fn anchor_placement(
     anchor: &Anchor,
     path: &KeyPath,
@@ -502,6 +528,31 @@ fn anchor_placement(
             }
         }
         AnchorResolution::Viewport | AnchorResolution::NodeUnharvested => centred,
+        AnchorResolution::ViewportEdge => {
+            let Anchor::ViewportEdge {
+                edge,
+                align,
+                offset,
+            } = anchor
+            else {
+                unreachable!("resolve_anchor_kind returned ViewportEdge for another anchor")
+            };
+            let inset = ctx.spacing(&offset.clone());
+            let main = viewport_edge_main_axis(*edge, viewport, inset);
+            let cross = viewport_edge_cross_axis(*edge, *align, viewport, inset, natural);
+            let (x, y) = match edge.axis() {
+                Axis::Vertical => (cross, main),
+                Axis::Horizontal => (main, cross),
+            };
+            // No `anchored`: there is no anchor rect, so there is no caret
+            // to point at one and no extent for `Fit::Anchor` to match. See
+            // [`AnchorPlan::anchored`].
+            AnchorPlan {
+                x,
+                y,
+                anchored: None,
+            }
+        }
         AnchorResolution::Node => {
             let (Some(id), Some(terms)) = (anchor.target_id(path), anchor.node_terms()) else {
                 unreachable!("resolve_anchor_kind returned Node for an anchor naming no node")
@@ -554,6 +605,74 @@ fn main_axis_placement(edge: Edge, anchor_rect: Rect, offset: f32) -> AxisPlacem
             grow: Grow::Forward,
         },
     }
+}
+
+/// The main axis of a surface docked to a viewport edge: the declared side
+/// of the window, pulled `inset` *inwards*, carrying the window's opposite
+/// side across.
+///
+/// The mirror image of [`main_axis_placement`], and the difference is the
+/// whole of what [`Anchor::ViewportEdge`] means. A node anchor puts the box
+/// outside the named edge, so `Edge::Top` grows *backwards* from the
+/// anchor's top; a window edge puts the box inside it, so `Edge::Top` grows
+/// *forwards* from the window's top. Outside the window is nowhere.
+///
+/// [`AxisPlacement::Sided`] rather than a bare origin, for the shrink and
+/// not for the flip. `ClampRule::Flip`'s opposite-side step is unreachable
+/// here by construction — one inset holds both sides, so the two have
+/// exactly equal [`AxisPlacement::room`] and the ladder's documented tie
+/// keeps the declared side. What `Sided` buys is [`shrink_at`]: a
+/// bottom-docked surface too tall for the window keeps its *bottom* edge
+/// where it was docked and gives the room away at the top, where a
+/// [`AxisPlacement::Centred`] origin would keep the top edge and let the
+/// box run off the bottom of the screen.
+fn viewport_edge_main_axis(edge: Edge, viewport: Rect, inset: f32) -> AxisPlacement {
+    let (near, far) = match edge.axis() {
+        Axis::Vertical => (viewport.y + inset, viewport.bottom() - inset),
+        Axis::Horizontal => (viewport.x + inset, viewport.right() - inset),
+    };
+    match edge {
+        Edge::Top | Edge::Left => AxisPlacement::Sided {
+            at: near,
+            across: far,
+            grow: Grow::Forward,
+        },
+        Edge::Bottom | Edge::Right => AxisPlacement::Sided {
+            at: far,
+            across: near,
+            grow: Grow::Backward,
+        },
+    }
+}
+
+/// The cross axis of a surface docked to a viewport edge: where along that
+/// edge the declared [`Align`] holds it, inset from *both* ends by the same
+/// `inset` the main axis used.
+///
+/// The window narrowed by the inset on each end is the "anchor" the declared
+/// [`Align`] reads, through the same [`Align::leading`] a node anchor uses —
+/// so `Start` is held off the leading end, `End` off the trailing one, and
+/// `Center` lands on `viewport.x + (viewport.w - natural.w) / 2.0` with the
+/// inset cancelling out of both sides, exactly the coordinate
+/// [`Anchor::Viewport`] would have produced. A centred dock has no end to be
+/// held off; a corner dock has one, and Carbon's toast is 16 down from the
+/// top *and* 16 in from the trailing edge.
+///
+/// [`AxisPlacement::Centred`] for the reason [`cross_axis_placement`] is:
+/// `Start` and `End` are two ends of one edge, not two sides to flip
+/// between, and the ladder slides this axis instead.
+fn viewport_edge_cross_axis(
+    edge: Edge,
+    align: Align,
+    viewport: Rect,
+    inset: f32,
+    natural: Size,
+) -> AxisPlacement {
+    let (at, window_extent, surface_extent) = match edge.axis() {
+        Axis::Vertical => (viewport.x, viewport.w, natural.w),
+        Axis::Horizontal => (viewport.y, viewport.h, natural.h),
+    };
+    AxisPlacement::Centred(align.leading(at + inset, window_extent - 2.0 * inset, surface_extent))
 }
 
 /// The cross axis of an anchored surface: where along the anchor's edge the
@@ -668,8 +787,10 @@ impl Grow {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum AxisPlacement {
     /// The box is centred on this axis and declares no side, so there is
-    /// nothing to flip to. This is what an `Anchor::Viewport` surface (and,
-    /// today, an `Anchor::Node` one) gets on both axes.
+    /// nothing to flip to. An `Anchor::Viewport` surface gets this on both
+    /// axes; an anchored or docked surface gets it on the cross axis, where
+    /// `Start` and `End` are two ends of one edge and not two sides to flip
+    /// between.
     Centred(f32),
     /// The box's near-in-`grow` edge sits at `at`, so `Flip` may put the box
     /// against `across` instead, growing the other way.
@@ -2546,5 +2667,225 @@ mod tests {
             place_surface(&node, Rect::new(0.0, 0.0, 10.0, 10.0)).rect
         };
         assert_eq!(placed_center.origin(), Point::new(5.0, 5.0));
+    }
+
+    // ===== Wave ANCHOR: `Anchor::ViewportEdge`, a dock inside a window edge =====
+
+    /// A `surface` docked to a viewport edge, with one spacer child of
+    /// `size`. Same shape as [`surface`], spelled through the new variant so
+    /// every case below reads its three terms in one place.
+    fn docked(
+        edge: Edge,
+        align: Align,
+        offset: Option<f32>,
+        clamp: ClampRule,
+        size: Size,
+    ) -> ViewNode {
+        surface(
+            Anchor::ViewportEdge {
+                edge,
+                align,
+                offset: offset.map(crate::testing::gap_token),
+            },
+            clamp,
+            InputPolicy::Passthrough,
+            size,
+        )
+    }
+
+    /// [`place_surface`] plus the surface's own paint payload, which is where
+    /// the caret rides.
+    fn place_surface_payload(
+        node: &ViewNode,
+        viewport: Rect,
+    ) -> (
+        crate::frame::placement::Placement,
+        crate::frame::placement::PaintContent,
+    ) {
+        let mut h = Harness::new();
+        let mut path = KeyPath::root();
+        let mut sink = PlacementList::new();
+        crate::layout::place(
+            node,
+            &mut h.ctx(),
+            &mut path,
+            Slot::new(viewport),
+            &mut sink,
+        );
+        let parts = sink.into_parts();
+        (parts.placements[0].clone(), parts.content[0].clone())
+    }
+
+    /// The whole claim: a docked surface sits *inside* the edge it names,
+    /// held off it by its offset, and never at the window's centre.
+    ///
+    /// Hand-computed against a 800x600 window, a 100x50 surface and a 16
+    /// offset, one number per edge. `Anchor::Viewport` would answer
+    /// `(350, 275)` for all four, which is exactly the reading this variant
+    /// exists because `Anchor::Viewport` cannot stop giving.
+    #[test]
+    fn a_viewport_edge_surface_docks_inside_that_edge_held_off_it_by_its_offset() {
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let size = Size::new(100.0, 50.0);
+        for (edge, want) in [
+            (Edge::Top, Rect::new(350.0, 16.0, 100.0, 50.0)),
+            (Edge::Bottom, Rect::new(350.0, 534.0, 100.0, 50.0)),
+            (Edge::Left, Rect::new(16.0, 275.0, 100.0, 50.0)),
+            (Edge::Right, Rect::new(684.0, 275.0, 100.0, 50.0)),
+        ] {
+            let node = docked(edge, Align::Center, Some(16.0), ClampRule::Shrink, size);
+            let placed = place_surface(&node, viewport);
+            assert_eq!(
+                placed.rect, want,
+                "a surface docked {edge:?} of an 800x600 window, inset 16"
+            );
+        }
+    }
+
+    /// The offset holds the surface off the window on the cross axis too,
+    /// at whichever end [`Align`] chose — a docked region is inset from a
+    /// *corner*, not flush along one side of it. `Center` has no end to be
+    /// held off, so it is exactly centred whatever the offset says.
+    ///
+    /// This is the pair that spells Carbon's toast region: `Top` + `End` is
+    /// top-trailing.
+    #[test]
+    fn the_align_of_a_viewport_edge_holds_the_surface_off_the_end_it_names() {
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let size = Size::new(100.0, 50.0);
+        for (align, want_x) in [
+            (Align::Start, 16.0),
+            (Align::Center, 350.0),
+            (Align::End, 684.0),
+        ] {
+            let node = docked(Edge::Top, align, Some(16.0), ClampRule::Shrink, size);
+            let placed = place_surface(&node, viewport);
+            assert_eq!(
+                (placed.rect.x, placed.rect.y),
+                (want_x, 16.0),
+                "a {align:?}-aligned surface docked to the top edge"
+            );
+        }
+        // The cross axis of a left dock is vertical, and reads the same way.
+        for (align, want_y) in [
+            (Align::Start, 16.0),
+            (Align::Center, 275.0),
+            (Align::End, 534.0),
+        ] {
+            let node = docked(Edge::Left, align, Some(16.0), ClampRule::Shrink, size);
+            let placed = place_surface(&node, viewport);
+            assert_eq!(
+                (placed.rect.x, placed.rect.y),
+                (16.0, want_y),
+                "a {align:?}-aligned surface docked to the left edge"
+            );
+        }
+    }
+
+    /// No offset means flush with the window, which is what absence meant
+    /// before the field existed on `Anchor::Node` and means here too.
+    #[test]
+    fn a_viewport_edge_with_no_offset_is_flush_with_the_window() {
+        let node = docked(
+            Edge::Right,
+            Align::End,
+            None,
+            ClampRule::Shrink,
+            Size::new(100.0, 50.0),
+        );
+        let placed = place_surface(&node, Rect::new(0.0, 0.0, 800.0, 600.0));
+        assert_eq!(placed.rect, Rect::new(700.0, 550.0, 100.0, 50.0));
+    }
+
+    /// The docked edge is the edge that survives the shrink.
+    ///
+    /// This is why the main axis is [`AxisPlacement::Sided`] and not a bare
+    /// [`AxisPlacement::Centred`] origin: a bottom-docked surface taller
+    /// than the window keeps its *bottom* edge 16 off the window's, and
+    /// gives the room away at the top. A centred origin would keep the top
+    /// and let the box run off the bottom of the window, which puts the
+    /// dismiss control of an over-tall toast off screen.
+    #[test]
+    fn a_bottom_docked_surface_too_tall_for_the_window_keeps_its_bottom_edge() {
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let node = docked(
+            Edge::Bottom,
+            Align::Center,
+            Some(16.0),
+            ClampRule::Shrink,
+            Size::new(100.0, 900.0),
+        );
+        let placed = place_surface(&node, viewport);
+        assert_eq!(
+            placed.rect.bottom(),
+            584.0,
+            "the docked edge stays 16 off the window's bottom: {:?}",
+            placed.rect
+        );
+        assert_eq!(placed.rect.y, 0.0, "the room is given away at the top");
+    }
+
+    /// A docked surface draws no caret, whatever its [`Tip`] says.
+    ///
+    /// There is no anchor node under it to point at. `caret_of` projects the
+    /// *anchor rect's* centre onto the surface's near edge, so handing this
+    /// reading an anchor rect at all — the window, say — would draw a beak
+    /// on the toast aimed at the middle of the page. Withholding
+    /// [`AnchorPlan::anchored`] is how that is said, and it also makes
+    /// [`Fit::Anchor`] a no-op here for the same reason: "as wide as the
+    /// window" is `ClampRule::Shrink` against a maximum, not a fit.
+    #[test]
+    fn a_viewport_edge_surface_draws_no_caret() {
+        let node = docked(
+            Edge::Top,
+            Align::End,
+            Some(16.0),
+            ClampRule::Flip,
+            Size::new(100.0, 50.0),
+        );
+        let (placed, content) = place_surface_payload(&node, Rect::new(0.0, 0.0, 800.0, 600.0));
+        assert_eq!(placed.rect, Rect::new(684.0, 16.0, 100.0, 50.0));
+        assert_eq!(
+            content.caret, None,
+            "a window edge is not a thing on screen to point at"
+        );
+    }
+
+    /// The resolution seam names the new reading rather than folding it into
+    /// the centred one, so a caller can see which of the five a surface got.
+    #[test]
+    fn resolve_anchor_kind_tells_a_viewport_edge_from_the_viewport_centre() {
+        let path = KeyPath::root();
+        let anchors = AnchorRects::default();
+        assert_eq!(
+            resolve_anchor_kind(&Anchor::Viewport, &path, &anchors),
+            AnchorResolution::Viewport
+        );
+        assert_eq!(
+            resolve_anchor_kind(
+                &Anchor::ViewportEdge {
+                    edge: Edge::Top,
+                    align: Align::End,
+                    offset: None,
+                },
+                &path,
+                &anchors
+            ),
+            AnchorResolution::ViewportEdge
+        );
+    }
+
+    /// `Anchor::Viewport` still means the centre of the window and nothing
+    /// else. The variant beside it must not have moved it.
+    #[test]
+    fn the_viewport_anchor_still_centres_on_both_axes() {
+        let node = surface(
+            Anchor::Viewport,
+            ClampRule::Shrink,
+            InputPolicy::Block,
+            Size::new(100.0, 50.0),
+        );
+        let placed = place_surface(&node, Rect::new(0.0, 0.0, 800.0, 600.0));
+        assert_eq!(placed.rect, Rect::new(350.0, 275.0, 100.0, 50.0));
     }
 }
