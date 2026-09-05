@@ -13,6 +13,15 @@ egui = "0.36.1"
 gorgon-petra = { path = "../petra" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The system file dialog, and the only host-facing crate in this workspace
+# that opens one. `xdg-portal` rather than the default `gtk3`: the portal is
+# what a Wayland session actually uses, it needs no GTK at build time, and it
+# is the path a sandboxed build would have to take anyway. Native-only for
+# eframe's reason — a browser has its own picker and no path to hand back.
+rfd = { version = "0.15", default-features = false, features = [
+    "xdg-portal",
+    "tokio",
+] }
 # `accesskit` enables `egui-winit/accesskit`, the platform-adapter feature
 # that actually publishes an `accesskit::TreeUpdate` to the OS screen
 # reader. `egui-winit` is native-only (see eframe's own target split), so

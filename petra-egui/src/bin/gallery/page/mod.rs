@@ -55,10 +55,13 @@ mod ui_shell_header;
 mod ui_shell_left_panel;
 mod ui_shell_right_panel;
 
+use std::path::PathBuf;
+
 use gorgon_petra::frame::PetrifiedFrame;
 use gorgon_petra::input::InputEvent;
 use gorgon_petra::token::ThemeMode;
 use gorgon_petra::tree::ViewNode;
+use gorgon_petra_egui::host::FilePick;
 
 /// One catalog page: the state, body and handler for one inventory row.
 ///
@@ -110,6 +113,26 @@ pub trait Page {
     /// The default copies nothing.
     fn clipboard_request(&mut self) -> Option<String> {
         None
+    }
+
+    /// A system file dialog this page wants opened, taken and cleared.
+    ///
+    /// Row 12's ask: *"should open file explorer for searching too when
+    /// clicked"*. The page's `handle` sees the press on the drop zone and
+    /// records the request; the chrome takes it on the same pass and the host
+    /// opens the dialog. Same shape as [`Page::clipboard_request`], and for
+    /// the same reason — a page holds no window.
+    fn file_request(&mut self) -> Option<FilePick> {
+        None
+    }
+
+    /// Files the operator chose, by path, whether by dropping them on the
+    /// window or by picking them from the dialog above.
+    ///
+    /// One door for both, so a page cannot come to depend on which way a file
+    /// arrived.
+    fn files_dropped(&mut self, paths: &[PathBuf]) {
+        let _ = paths;
     }
 
     /// React to an activation routed to `node`, the full id path of the node

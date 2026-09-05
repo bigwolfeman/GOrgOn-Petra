@@ -23,7 +23,7 @@ use gorgon_petra::token::{Theme, ThemeMode};
 use gorgon_petra::tree::{
     AxisConstraint, Constraints, InsetRefs, Interaction, NodeKind, Props, Role, TrackSize, ViewNode,
 };
-use gorgon_petra_egui::host::{App, Host, default_presenter};
+use gorgon_petra_egui::host::{App, FilePick, Host, default_presenter};
 
 use crate::cell::Cell;
 use crate::page::common::{column, path_has, row, sp, tok, wrapped};
@@ -347,6 +347,19 @@ impl App for Catalog {
     /// Forward the open page's clipboard text.
     fn clipboard_request(&mut self) -> Option<String> {
         self.open_page_mut()?.clipboard_request()
+    }
+
+    fn file_request(&mut self) -> Option<FilePick> {
+        self.open_page_mut()?.file_request()
+    }
+
+    /// Forwarded to the open page only. A drop lands on the window, not on a
+    /// row, and delivering it to all forty-two would have forty-one pages
+    /// react to a file the operator was not looking at.
+    fn files_dropped(&mut self, paths: &[std::path::PathBuf]) {
+        if let Some(page) = self.open_page_mut() {
+            page.files_dropped(paths);
+        }
     }
 
     fn theme_request(&mut self) -> Option<Theme> {

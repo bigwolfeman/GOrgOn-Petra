@@ -225,6 +225,31 @@ impl Camera {
         &self.clipboard
     }
 
+    /// Drop files on the window, the way a file manager does.
+    ///
+    /// The one thing that makes `App::files_dropped` testable. `Host::pass`
+    /// reads `RawInput::dropped_files`, so a drop is expressible as raw
+    /// input and needs no window, no file manager and no real file — which
+    /// is exactly why the seam was put in `Host::pass` and not in the
+    /// `eframe` layer, where nothing headless could ever reach it.
+    ///
+    /// The paths need not exist. Only the name crosses the seam.
+    pub fn drop_files(&mut self, paths: &[&str]) -> &mut Self {
+        let raw = RawInput {
+            dropped_files: paths
+                .iter()
+                .map(|path| -> egui::DroppedFileHandle {
+                    std::sync::Arc::new(TestDrop(std::path::PathBuf::from(path)))
+                })
+                .collect(),
+            ..RawInput::default()
+        };
+        let ctx = self.ctx.clone();
+        let out = ctx.run_ui(sized(raw), |_| self.host.pass(&ctx));
+        out.drop_without_applying_deltas();
+        self
+    }
+
     /// A primary-button press and release on the node whose id ends `tail`.
     pub fn click(&mut self, tail: &str) -> &mut Self {
         let id = self.id(tail);
@@ -539,6 +564,24 @@ impl Camera {
             }
         }
         seen.len()
+    }
+}
+
+/// A dropped file that is only a path.
+///
+/// `egui::DroppedFile` can also read its own bytes; nothing on Petra's side
+/// of the seam may, so this refuses. A test that started depending on the
+/// bytes would be testing something the contract does not offer.
+#[derive(Debug)]
+struct TestDrop(std::path::PathBuf);
+
+impl egui::DroppedFile for TestDrop {
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+
+    fn bytes(&self) -> Result<Vec<u8>, String> {
+        Err("a dropped path carries no bytes across this seam".to_owned())
     }
 }
 
@@ -4223,6 +4266,80 @@ mod tests {
             differing(&crop, &vec![crop[0]; crop.len()]) > crop.len() / 8,
             "the trigger's mark box is one flat colour: the glyph is not \
              reaching the picture"
+        );
+    }
+
+    // ================================================================
+    // The file seam, 2026-09-05. Row 12's other half: "should open file
+    // explorer for searching too when clicked". Appended as one block.
+    // ================================================================
+
+    /// A file dropped on the window reaches the open page and the picture.
+    ///
+    /// This is the whole reason `Host::pass` reads `RawInput::dropped_files`
+    /// rather than the `eframe` layer doing it: the hook only runs under a
+    /// real window, and this test has none. It drives the seam the way the
+    /// window drives it and then reads the raster, because a page that
+    /// records a file it never draws is the exact defect this round kept
+    /// finding.
+    #[test]
+    fn a_file_dropped_on_the_window_joins_the_uploader_list() {
+        let mut cam = Camera::on("File uploader");
+        let before = cam.shoot("12-file-uploader");
+        let rows_before = cam.ids().iter().filter(|id| id.contains("/fu-")).count();
+
+        cam.drop_files(&["/tmp/kernel-boot.ndjson", "/tmp/second.ndjson"]);
+
+        let after = cam.shoot("12-file-uploader-dropped");
+        let rows_after = cam.ids().iter().filter(|id| id.contains("/fu-")).count();
+        assert!(
+            rows_after > rows_before,
+            "a drop of two files left the list at {rows_before} rows: the \
+             seam does not reach the page"
+        );
+        assert_ne!(
+            before, after,
+            "the dropped files reached the page and never reached the picture"
+        );
+        assert!(
+            cam.ids().iter().any(|id| id.ends_with("fu-2")),
+            "the first dropped file did not become a row"
+        );
+    }
+
+    /// Focus on an expanded tree item puts the bar on its own head row.
+    ///
+    /// The frame-level arithmetic is pinned in `paint.rs`; what this adds is
+    /// the picture, because the focus indicator is painted by the host and
+    /// never enters the frame record — no assertion on placements can see
+    /// it. Row 39's item `tv-gorgon` holds two open levels, so a bar on the
+    /// item's own rect lands roughly 200 points down, under `inspector.rs`.
+    ///
+    /// Read `39-tree-view-focused.png` beside `39-tree-view.png`.
+    #[test]
+    fn focusing_an_expanded_tree_item_changes_what_the_page_draws() {
+        let mut cam = Camera::on("Tree view");
+        let before = cam.shoot("39-tree-view");
+
+        cam.focus("tv-gorgon");
+        assert_eq!(
+            cam.focused().as_deref(),
+            Some(cam.id("tv-gorgon").as_str()),
+            "the driver did not seat focus on the item"
+        );
+        let after = cam.shoot("39-tree-view-focused");
+        assert_ne!(
+            before, after,
+            "focus reached the item and no focus indicator was drawn"
+        );
+
+        let item = cam.rect("tv-gorgon");
+        let head = cam.rect("tv-gorgon/row");
+        assert!(
+            item.h > head.h * 4.0,
+            "the fixture must have two levels open: item {} high, head {} high",
+            item.h,
+            head.h
         );
     }
 }

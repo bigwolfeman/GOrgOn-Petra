@@ -865,7 +865,12 @@ pub(crate) struct CaretTarget<'a> {
 #[must_use]
 pub(crate) fn caret_figure(semantics: &PlacementSemantics) -> CaretFigure {
     match semantics.focus_figure {
-        FocusFigure::Underline => CaretFigure::Underline,
+        // `UnderlineHead` and `Head` are the same bar as `Underline`; they
+        // differ only in *whose* rect it goes under, which is
+        // `focused_caret_target`'s question, not this one's.
+        FocusFigure::Underline | FocusFigure::UnderlineHead | FocusFigure::Head => {
+            CaretFigure::Underline
+        }
         FocusFigure::Hug | FocusFigure::HugWell => CaretFigure::Hug,
     }
 }
@@ -891,16 +896,19 @@ pub(crate) fn focused_caret_target(frame: &PetrifiedFrame) -> Option<CaretTarget
         return None;
     }
     let lineage: Vec<usize> = ancestors(placements, index).collect();
-    let hull = if focused.semantics.focus_figure == FocusFigure::HugWell {
-        lineage
+    // Two figures show focus somewhere other than the focused node's own
+    // rect, and they point opposite ways: `HugWell` up to the well it sits
+    // in, `UnderlineHead` down to the head row it spans. Both fall back to
+    // the focused node rather than going blind.
+    let elsewhere = match focused.semantics.focus_figure {
+        FocusFigure::HugWell => lineage
             .iter()
             .copied()
-            .find(|&i| placements[i].semantics.focus_figure == FocusFigure::Hug)
-            .map(|i| &placements[i])
-    } else {
-        None
+            .find(|&i| placements[i].semantics.focus_figure == FocusFigure::Hug),
+        FocusFigure::UnderlineHead => head_of(placements, index),
+        _ => None,
     };
-    let shown_on = hull.unwrap_or(focused);
+    let shown_on = elsewhere.map_or(focused, |i| &placements[i]);
     if !shown_on.is_visible() {
         return None;
     }
@@ -946,6 +954,31 @@ fn ancestors(placements: &[Placement], index: usize) -> impl Iterator<Item = usi
         cursor = placements.get(i).and_then(|p| p.parent);
         Some(i)
     })
+}
+
+/// The nearest descendant of `index` declaring [`FocusFigure::Head`].
+///
+/// Nearest by depth, counted in steps up the parent chain — not by position
+/// in the array. A tree item's own head row is one step down; the head row
+/// of a child item nested under it is three or more, and must never win.
+/// Carbon narrows the same way, with a direct-child selector:
+/// `.cds--tree-node:focus > .cds--tree-node__label`.
+///
+/// Depth rather than array order because nothing in `PetrifiedFrame`'s
+/// contract promises the placements arrive in tree order, and a rule that
+/// silently leaned on it would break the day that stopped being true.
+fn head_of(placements: &[Placement], index: usize) -> Option<usize> {
+    placements
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.semantics.focus_figure == FocusFigure::Head)
+        .filter_map(|(i, _)| {
+            ancestors(placements, i)
+                .position(|a| a == index)
+                .map(|steps| (steps, i))
+        })
+        .min()
+        .map(|(_, i)| i)
 }
 
 /// Whether two rects share any area. Touching edges do not count: a list
@@ -3119,6 +3152,81 @@ mod tests {
             target.node,
             to_egui_snapped(well.rect, frame.viewport.scale),
             "the bars bracket the well, not the leaf"
+        );
+    }
+
+    /// An expanded tree item shows its focus on its own head row, not on
+    /// the subtree its rect spans.
+    ///
+    /// The mirror of the well test above, pointing the other way. A tree
+    /// item's rect covers its head row *and* every descendant it has
+    /// expanded, so an underline on that rect lands beneath the last
+    /// grandchild — feet away from the row the operator is standing on.
+    /// Carbon narrows the same way, with a direct-child selector:
+    /// `.cds--tree-node:focus > .cds--tree-node__label`
+    /// (`_treeview.scss:59`).
+    ///
+    /// Falsify by dropping `UnderlineHead`'s arm in `focused_caret_target`,
+    /// or the `Head` declaration on `tree_view.rs`'s row.
+    #[test]
+    fn an_expanded_tree_item_is_underlined_on_its_head_row() {
+        use super::focused_caret_target;
+        use crate::focus_caret::CaretFigure;
+        use gorgon_petra::component::{tree_item, tree_view};
+
+        let root = tree_view(
+            "tree",
+            vec![tree_item(
+                "src",
+                "src",
+                true,
+                false,
+                vec![
+                    tree_item("a", "kernel.rs", false, false, vec![]),
+                    tree_item("b", "fiber.rs", false, false, vec![]),
+                ],
+            )],
+        );
+        let host = Headless::new();
+        let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
+        h.state.focused = Some("/tree/src".to_owned());
+        let frame = frame_of(&root, &mut h);
+
+        let item = frame.placement("/tree/src").expect("the item is placed");
+        let head = frame
+            .placement("/tree/src/row")
+            .expect("the head row is placed");
+        let last = frame
+            .placement("/tree/src/children/b")
+            .expect("the last child is placed");
+        assert!(
+            item.rect.h > head.rect.h * 2.0,
+            "the fixture must be expanded: item {} high, head row {} high",
+            item.rect.h,
+            head.rect.h
+        );
+
+        // The two child items carry head rows of their own, so this fixture
+        // exercises the "nearest" rule and not merely "any descendant".
+        assert!(
+            frame.placement("/tree/src/children/a/row").is_some(),
+            "the fixture must nest head rows under the focused item's own"
+        );
+
+        let target = focused_caret_target(&frame).expect("focused and on screen");
+        assert_eq!(target.id, "/tree/src", "the spring keys on the item");
+        assert_eq!(target.figure, CaretFigure::Underline);
+        assert_eq!(
+            target.node,
+            to_egui_snapped(head.rect, frame.viewport.scale),
+            "the bar underlines the head row, not the whole subtree"
+        );
+        assert!(
+            target.node.bottom() < last.rect.y,
+            "the bar landed at or below the last child, which is the defect \
+             this test exists for (bar bottom {}, last child top {})",
+            target.node.bottom(),
+            last.rect.y
         );
     }
 

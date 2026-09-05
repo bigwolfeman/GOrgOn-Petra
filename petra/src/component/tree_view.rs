@@ -42,8 +42,8 @@ use super::tokens::{
 use super::{CARET_SIZE, CaretDirection, caret, stack, swatch};
 use crate::geom::{Align, Axis};
 use crate::tree::{
-    AxisConstraint, InsetRefs, Interaction, Key, NodeKind, Props, Role, Semantics, TrackSize,
-    ViewNode,
+    AxisConstraint, FocusFigure, InsetRefs, Interaction, Key, NodeKind, Props, Role, Semantics,
+    TrackSize, ViewNode,
 };
 
 /// Carbon small / default node height.
@@ -160,6 +160,12 @@ fn tree_item_sized(
         max: Some(height),
         priority: 0,
     };
+    // The item below holds focus and its rect spans the whole expanded
+    // subtree, so its own underline would land beneath the last grandchild.
+    // Carbon puts the ring here instead — `.cds--tree-node:focus >
+    // .cds--tree-node__label`, `_treeview.scss:59` — and this pair of
+    // declarations is that selector.
+    row.semantics.focus_figure = FocusFigure::Head;
 
     let mut parts = vec![row];
     if expanded && is_branch {
@@ -209,6 +215,7 @@ fn tree_item_sized(
         node.props.tokens.insert(slot.into(), t(token));
     }
     let mut node = node.interactive(Role::TreeItem, label, ITEM_INTENTS);
+    node.semantics.focus_figure = FocusFigure::UnderlineHead;
     node.semantics.selected = selected;
     node.semantics.expanded = Some(expanded);
     node
@@ -246,8 +253,8 @@ fn indent(item: &mut ViewNode, by: f32) {
 #[cfg(test)]
 mod tests {
     use super::{
-        ACCENT_BAR, ACCENT_PRIMARY, HEIGHT, HEIGHT_XS, LABEL_START, tree_item, tree_item_xs,
-        tree_view,
+        ACCENT_BAR, ACCENT_PRIMARY, FocusFigure, HEIGHT, HEIGHT_XS, LABEL_START, tree_item,
+        tree_item_xs, tree_view,
     };
     use crate::component::disabled;
     use crate::component::tokens::LAYER_SELECTED;
@@ -299,6 +306,37 @@ mod tests {
 
     fn child_role(node: &ViewNode, key: &str) -> Option<Role> {
         named(node, key).semantics.role.clone()
+    }
+
+    /// The focus ring is declared on the item and drawn on its head row.
+    ///
+    /// Carbon's selector is `.cds--tree-node:focus > .cds--tree-node__label`
+    /// (`_treeview.scss:59`), with `:focus { outline: none }` on the node
+    /// itself the line above. This pair of figures is that selector, and it
+    /// matters because an expanded item's rect spans its whole subtree: the
+    /// item's own underline would land under the last grandchild.
+    ///
+    /// Every item declares it, leaf or branch. A leaf's rect is its row, so
+    /// the two agree there and the declaration costs nothing; a leaf that
+    /// later grows children would otherwise start pointing at its subtree.
+    #[test]
+    fn a_tree_item_shows_focus_on_its_head_row() {
+        for (expanded, children) in [
+            (false, vec![]),
+            (true, vec![tree_item("lib", "lib.rs", false, false, vec![])]),
+        ] {
+            let node = tree_item("src", "src", expanded, false, children);
+            assert_eq!(
+                node.semantics.focus_figure,
+                FocusFigure::UnderlineHead,
+                "the item points at its head row (expanded {expanded})"
+            );
+            assert_eq!(
+                named(&node, "row").semantics.focus_figure,
+                FocusFigure::Head,
+                "the head row is the one pointed at (expanded {expanded})"
+            );
+        }
     }
 
     /// Row 39's defect: disclosure was the literal word `expanded` placed

@@ -396,6 +396,26 @@ pub enum FocusFigure {
     /// (`_number-input.scss:178`). With no such ancestor the leaf hugs
     /// itself rather than going blind.
     HugWell,
+    /// A bar under the nearest descendant declaring [`Self::Head`], not
+    /// under this node's own rect.
+    ///
+    /// A tree item: the item holds focus and its rect spans its whole
+    /// expanded subtree, so an underline on its own rect lands beneath the
+    /// last grandchild. Carbon draws the ring on the item's head row and
+    /// never on the item — `.cds--tree-node:focus > .cds--tree-node__label`
+    /// (`_treeview.scss:59`), a direct-child selector, with `:focus` itself
+    /// given `outline: none` on the line above.
+    ///
+    /// The mirror of [`Self::HugWell`], which points at an ancestor. With no
+    /// such descendant the node underlines itself rather than going blind.
+    UnderlineHead,
+    /// The head row a focused ancestor declaring [`Self::UnderlineHead`]
+    /// draws its bar under.
+    ///
+    /// A marker and nothing more: the node carrying it is not interactive
+    /// and never holds focus itself. Focused anyway, it underlines its own
+    /// rect, which is what it is.
+    Head,
 }
 
 impl FocusFigure {

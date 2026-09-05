@@ -220,6 +220,80 @@ pub trait App: RowSource {
     fn clipboard_request(&mut self) -> Option<String> {
         None
     }
+
+    /// Files the window is handing the application, by path.
+    ///
+    /// One door, two sources. A file dropped on the window arrives here, and
+    /// so does a file the operator picked from the system dialog
+    /// ([`App::file_request`]) — the application cannot tell them apart, and
+    /// should not need to: both mean "the operator chose this file".
+    ///
+    /// **Paths, never bytes and never a handle.** `egui` delivers a drop as
+    /// an `Arc<dyn DroppedFile>` that can read its own contents; letting that
+    /// cross would put host I/O inside an application and make
+    /// `gorgon-petra`'s tree depend on a file system. A path is a name, and
+    /// naming is all this seam is for. An application that wants the bytes
+    /// opens the path itself, where its own error handling lives.
+    ///
+    /// Read in [`Host::pass`] rather than in the `eframe` layer, for
+    /// [`App::clipboard_request`]'s reason turned around: the `eframe` hook
+    /// only runs under a real window, and the testkit driver steps
+    /// `Host::pass` directly. A drop read anywhere else could never be tested
+    /// headlessly, and an untested seam is one that works until the day it is
+    /// needed.
+    fn files_dropped(&mut self, paths: &[std::path::PathBuf]) {
+        let _ = paths;
+    }
+
+    /// A system file dialog the application wants opened, taken and cleared.
+    ///
+    /// Asked once per pass right after [`App::clipboard_request`], and for
+    /// the same reason: the press that produced the request has already been
+    /// delivered this pass, so a click on the drop zone opens the dialog on
+    /// the pass that handled the click.
+    ///
+    /// The host answers through [`App::files_dropped`], not through a return
+    /// value, because a dialog is not a function call — the operator may
+    /// browse for a minute, or cancel. `None` is the answer for "no dialog",
+    /// and cancelling is the answer that never arrives.
+    fn file_request(&mut self) -> Option<FilePick> {
+        None
+    }
+}
+
+/// What an application wants a system file dialog to ask for.
+///
+/// Deliberately small. What Carbon's `FileUploader` exposes that a dialog can
+/// honour is here (`accept`, `multiple`) and nothing that it cannot: there is
+/// no "start in this directory", because the XDG portal does not promise to
+/// honour one and a field a host may silently ignore is a field that lies.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FilePick {
+    /// Whether the operator may choose more than one file.
+    pub multiple: bool,
+    /// Extensions to offer, without the dot — `["ndjson", "json"]`. Empty
+    /// offers every file. This is Carbon's `accept` prop, which is a hint to
+    /// the dialog and never a guarantee: a portal may hand back a path
+    /// outside the list, so an application still has to check what it got.
+    pub extensions: Vec<String>,
+}
+
+/// The paths egui took from a drop this pass, in the order the window gave
+/// them.
+///
+/// `RawInput::dropped_files` is a list of `Arc<dyn DroppedFile>`, and a
+/// handle can read its own bytes. Only the path crosses — see
+/// [`App::files_dropped`] — the handle itself, and the bytes it could read,
+/// stay on this side of it.
+fn dropped_paths(ctx: &Context) -> Vec<std::path::PathBuf> {
+    ctx.input(|input| {
+        input
+            .raw
+            .dropped_files
+            .iter()
+            .map(|file| file.path().to_path_buf())
+            .collect()
+    })
 }
 
 /// Point egui's glyph rasteriser at the coverage curve its own documentation
@@ -481,6 +555,21 @@ pub struct Host<A: App> {
     /// nothing before petrify can promise the target will really be visible
     /// (`focus/mod.rs`'s `reachable` doc).
     pending_focus: Option<String>,
+    /// A system file dialog this host opened and has not yet heard back
+    /// from.
+    ///
+    /// The dialog runs on its own thread and answers down a channel, so a
+    /// pass never blocks on it. `None` means no dialog is open — and the
+    /// receiver is dropped the moment it answers or its thread dies, so a
+    /// cancelled dialog (rfd returns `None`, the thread exits) frees itself
+    /// with no timeout and no bookkeeping.
+    ///
+    /// One at a time: while this is `Some`, a further [`App::file_request`]
+    /// is refused rather than queued. Two portal dialogs over one window is
+    /// a picture with no right answer, and an application that asks twice has
+    /// a bug this makes visible instead of hiding.
+    #[cfg(not(target_arch = "wasm32"))]
+    picking: Option<std::sync::mpsc::Receiver<Vec<std::path::PathBuf>>>,
     /// Where the pointer is, what it is over, and what it has captured. The
     /// pointer's peer of `focus`; see this module's doc.
     pointer: PointerState,
@@ -596,6 +685,8 @@ impl<A: App> Host<A> {
             last_motion: None,
             focus: FocusTree::default(),
             pending_focus: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            picking: None,
             pointer: PointerState::new(),
             caret: FocusCaret::new(),
             scene: Vec::new(),
@@ -966,6 +1057,14 @@ impl<A: App> Host<A> {
         if let Some(text) = self.app.clipboard_request() {
             ctx.copy_text(text);
         }
+        // Same pass, same reason. A drop is input the window took before this
+        // pass began, so the application sees it before it builds the view it
+        // will be judged on.
+        let dropped = dropped_paths(ctx);
+        if !dropped.is_empty() {
+            self.app.files_dropped(&dropped);
+        }
+        self.serve_file_dialog(ctx);
         // Input may have moved focus or the pointer; the negotiation below
         // reads `LayoutState`, so publish both before the frame is measured
         // rather than after it is painted. A move published here needs no
@@ -1602,6 +1701,105 @@ impl<A: App> Host<A> {
     /// `bool`, because they move together: a press sets `pressed` and
     /// `capture` in the same event, and asking for a repaint once per member
     /// would ask three times for one picture.
+    /// Open a dialog the application asked for, and deliver one that has
+    /// answered.
+    ///
+    /// Both halves in one place because they are one story told over several
+    /// passes: a press asks, a thread browses, and some later pass hands the
+    /// paths to [`App::files_dropped`] — the same door a drop comes through,
+    /// so an application cannot tell a picked file from a dropped one.
+    ///
+    /// **The dialog runs on its own thread.** `rfd`'s blocking API on the
+    /// frame thread would stop the window for as long as the operator
+    /// browses, which on a portal dialog is unbounded. A `std` thread and an
+    /// `mpsc` channel rather than an async runtime: this host has no
+    /// executor, and pulling one in to await a single dialog would be the
+    /// larger change.
+    ///
+    /// The repaint request on delivery is not optional. Nothing else wakes
+    /// the window when a thread finishes minutes after the last input, so
+    /// without it the picked files sit in the channel until the operator
+    /// happens to move the mouse.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn serve_file_dialog(&mut self, ctx: &Context) {
+        if let Some(rx) = self.picking.as_ref() {
+            match rx.try_recv() {
+                Ok(paths) => {
+                    self.picking = None;
+                    if !paths.is_empty() {
+                        self.app.files_dropped(&paths);
+                        ctx.request_repaint();
+                    }
+                }
+                // The thread ended without sending: the operator cancelled,
+                // or the portal failed. Either way there is nothing to
+                // deliver and the slot is free again.
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.picking = None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        let Some(pick) = self.app.file_request() else {
+            return;
+        };
+        if self.picking.is_some() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx = ctx.clone();
+        let spawned = std::thread::Builder::new()
+            .name("petra-file-dialog".to_owned())
+            .spawn(move || {
+                let mut dialog = rfd::FileDialog::new();
+                if !pick.extensions.is_empty() {
+                    let names: Vec<&str> = pick.extensions.iter().map(String::as_str).collect();
+                    dialog = dialog.add_filter("files", &names);
+                }
+                let picked = if pick.multiple {
+                    dialog.pick_files().unwrap_or_default()
+                } else {
+                    dialog.pick_file().into_iter().collect()
+                };
+                // Send before the repaint: the pass this wakes has to find
+                // the paths already in the channel, or it wakes for nothing
+                // and the next delivery waits for the pass after that.
+                let _ = tx.send(picked);
+                ctx.request_repaint();
+            });
+        // A host that cannot spawn a thread is a host under a resource limit,
+        // and the honest answer is that no dialog opened. Dropping `rx` on
+        // that path leaves `picking` at `None`, so the next request tries
+        // again rather than being wedged behind a dialog that never was.
+        if spawned.is_ok() {
+            self.picking = Some(rx);
+        }
+    }
+
+    /// Seat an already-answered dialog: the picking thread has sent its
+    /// paths and ended, which is the state the operator leaves behind by
+    /// choosing files.
+    ///
+    /// Test-only, and it exists because the thread that normally fills this
+    /// slot opens a window on the operator's desktop. No automated check in
+    /// this workspace may do that, so the half that *can* be driven — the
+    /// drain in [`Host::serve_file_dialog`], which is what actually reaches
+    /// [`App::files_dropped`] — is driven from here instead. The spawn
+    /// itself stays unverified, and is documented as such.
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    fn seat_picked_dialog(&mut self, paths: Vec<std::path::PathBuf>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(paths).expect("the receiver is alive on this line");
+        self.picking = Some(rx);
+    }
+
+    /// wasm has no `rfd` and no threads to run one on. A page asking for a
+    /// dialog gets none, and says so by nothing arriving at
+    /// [`App::files_dropped`] — the same answer a cancelled dialog gives, so
+    /// an application needs no second code path for the browser.
+    #[cfg(target_arch = "wasm32")]
+    fn serve_file_dialog(&mut self, _ctx: &Context) {
+        let _ = self.app.file_request();
+    }
+
     fn publish_pointer(&mut self) -> bool {
         let hovered = self.pointer.hovered().map(str::to_owned);
         let pressed = self.pointer.pressed().map(str::to_owned);
@@ -2273,6 +2471,8 @@ mod tests {
         view_calls: usize,
         /// Text this app wants copied on its next pass.
         copy: Option<String>,
+        /// Paths this app has been handed, dropped or picked, in order.
+        dropped: Vec<std::path::PathBuf>,
     }
 
     /// A focusable, clickable, hoverable text button — a `Role::Button` node
@@ -2302,6 +2502,10 @@ mod tests {
     impl App for Demo {
         fn clipboard_request(&mut self) -> Option<String> {
             self.copy.take()
+        }
+
+        fn files_dropped(&mut self, paths: &[std::path::PathBuf]) {
+            self.dropped.extend_from_slice(paths);
         }
 
         fn view(&mut self) -> ViewNode {
@@ -2437,6 +2641,85 @@ mod tests {
     /// `InputPolicy::Block` reaching the host: a press outside an open modal
     /// never gets to the page behind it.
     ///
+    /// A file dropped on the window reaches the application on the same pass.
+    ///
+    /// `Host::pass` reads `RawInput::dropped_files` itself rather than
+    /// letting the `eframe` layer do it, and this is why: raw input is
+    /// drivable with no window, so the seam has a test. The `eframe` hook is
+    /// not.
+    #[test]
+    fn a_dropped_file_reaches_the_application_on_the_pass_that_took_it() {
+        let ctx = headless();
+        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        step(&ctx, &mut host, RawInput::default());
+        assert!(host.app().dropped.is_empty(), "nothing was dropped yet");
+
+        let input = RawInput {
+            dropped_files: vec![
+                std::sync::Arc::new(Dropped("/tmp/first.ndjson".into())),
+                std::sync::Arc::new(Dropped("/tmp/second.yaml".into())),
+            ],
+            ..RawInput::default()
+        };
+        step(&ctx, &mut host, input);
+
+        assert_eq!(
+            host.app().dropped,
+            vec![
+                std::path::PathBuf::from("/tmp/first.ndjson"),
+                std::path::PathBuf::from("/tmp/second.yaml"),
+            ],
+            "the window's drop did not reach the application, or lost its order"
+        );
+    }
+
+    /// Files chosen in a dialog arrive by the same door a drop arrives by,
+    /// and the dialog slot frees for the next request.
+    ///
+    /// What is driven here is the drain, which is the half that reaches the
+    /// application. The spawn above it opens a real portal window and no
+    /// check in this workspace may do that, so it stays unverified — see
+    /// [`Host::seat_picked_dialog`].
+    #[test]
+    fn a_finished_dialog_delivers_its_files_and_frees_the_slot() {
+        let ctx = headless();
+        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        step(&ctx, &mut host, RawInput::default());
+
+        host.seat_picked_dialog(vec![std::path::PathBuf::from("/tmp/picked.ndjson")]);
+        step(&ctx, &mut host, RawInput::default());
+
+        assert_eq!(
+            host.app().dropped,
+            vec![std::path::PathBuf::from("/tmp/picked.ndjson")],
+            "the dialog's answer never reached the application"
+        );
+        assert!(
+            host.picking.is_none(),
+            "the answered dialog still holds the slot, so no second dialog \
+             could ever open"
+        );
+    }
+
+    /// A path a dropped file carries, with no bytes behind it.
+    ///
+    /// `egui`'s trait wants a reader too; nothing on this seam reads one,
+    /// because Petra hands the application paths and lets it open what it
+    /// likes. Saying so out loud beats returning an empty buffer that a
+    /// caller would read as an empty file.
+    #[derive(Debug)]
+    struct Dropped(std::path::PathBuf);
+
+    impl egui::DroppedFile for Dropped {
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+
+        fn bytes(&self) -> Result<Vec<u8>, String> {
+            Err("a dropped path carries no bytes across this seam".to_owned())
+        }
+    }
+
     /// The z-order walk alone would have delivered this press to whatever it
     /// hit, because a modal is not obliged to cover the screen. Swallowing it
     /// is the whole difference between a modal and a floating panel.
