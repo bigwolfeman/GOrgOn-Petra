@@ -117,9 +117,18 @@ pub(crate) const LAYER_SELECTED_INVERSE: &str = "layer-selected-inverse";
 /// See [`LAYER_SELECTED_INVERSE`].
 pub(crate) const TEXT_INVERSE: &str = "text-inverse";
 
+/// The tone a non-text glyph is drawn in when it is the control's own mark
+/// on a layer ground: Carbon's `$icon-primary`, the fill SCSS names for the
+/// accordion arrow, the list-box chevron, the snippet's copy, the number
+/// input's steppers, the date picker's calendar and the tag's close. Spent
+/// through [`super::IconTone::Primary`].
+pub(crate) const ICON_PRIMARY: &str = "icon-primary";
+
 /// The tone a non-text glyph is drawn in when it is furniture rather than
 /// a message: Carbon's `$icon-secondary`, spent by the disclosure caret
-/// ([`super::caret`]) that a tree branch and an expandable tile carry.
+/// ([`super::caret`]) that a tree branch and an expandable tile carry, and
+/// through [`super::IconTone::Secondary`] by the search magnifier and a
+/// resting header action.
 pub(crate) const ICON_SECONDARY: &str = "icon-secondary";
 
 /// The one colour a drawn boundary is allowed to be.
@@ -212,6 +221,7 @@ pub(crate) const ALL: &[&str] = &[
     TEXT_MUTED,
     LAYER_SELECTED_INVERSE,
     TEXT_INVERSE,
+    ICON_PRIMARY,
     ICON_SECONDARY,
     BORDER_SUBTLE,
     ACCENT_PRIMARY,

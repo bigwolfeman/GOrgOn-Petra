@@ -10,8 +10,10 @@
 //! [`SHAPE_FULL`]. `min-inline-size` 32, `max-inline-size` 208.
 //!
 //! Read-only [`tag`] is not interactive. [`dismissible_tag`] is a labelled
-//! button `"Dismiss {label}"` with a visible `"Dismiss"` word — never an
-//! icon-only close (FR-026). [`selectable_tag`] is [`Role::Button`] plus
+//! button `"Dismiss {label}"` drawing [`IconMark::Close`] (Carbon's
+//! `.cds--tag__close-icon`, `color: $icon-primary`, 16px glyph, slice-e);
+//! the label is what makes the close never icon-only (FR-026).
+//! [`selectable_tag`] is [`Role::Button`] plus
 //! `Semantics.selected`, plus [`IconMark::Check`] when selected — Carbon
 //! gives selectable tags no icon spec (unlike Structured list's own
 //! `RadioButtonChecked`, `.agents/research/08-25-2026/Carbon-Component-Inventory/slice-e.md`),
@@ -25,7 +27,7 @@
 //! colour-blind reader" but indistinguishable for any reader. See
 //! [`selectable_tag`]'s own doc.
 
-use super::icon::{IconMark, icon};
+use super::icon::{IconMark, IconTone, icon_toned};
 use super::stack;
 use super::text::text;
 use super::tokens::{
@@ -71,8 +73,8 @@ pub fn tag_lg(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
     read_only_tag(key, label, HEIGHT_LG, SPACING_04)
 }
 
-/// Dismissible tag. The whole pill is `"Dismiss {label}"` (FR-058); the
-/// visible `"Dismiss"` word is the second channel so close is never
+/// Dismissible tag. The whole pill is `"Dismiss {label}"` (FR-058); that
+/// name is the second channel, so the [`IconMark::Close`] glyph is never
 /// icon-only.
 ///
 /// No `border`: slice-e's anatomy line names dismissible tags explicitly
@@ -81,11 +83,7 @@ pub fn dismissible_tag(key: impl Into<Key>, label: impl Into<String>) -> ViewNod
     let label = label.into();
     let accessible = format!("Dismiss {label}");
     let title = title_text("label", label);
-    let mut dismiss = text("dismiss", "Dismiss");
-    dismiss
-        .props
-        .tokens
-        .insert("foreground".into(), t(TEXT_PRIMARY));
+    let dismiss = icon_toned("dismiss", IconMark::Close, IconTone::Primary);
     shell(
         key,
         HEIGHT_MD,
@@ -100,7 +98,10 @@ pub fn dismissible_tag(key: impl Into<Key>, label: impl Into<String>) -> ViewNod
 /// Selectable tag. [`Role::Button`] + `Semantics.selected`. Outline is
 /// [`BORDER_SUBTLE`] (high-contrast/outline stand-in). No colour set.
 ///
-/// Selected additionally draws [`IconMark::Check`] ahead of the title.
+/// Selected additionally draws [`IconMark::Check`] ahead of the title, in
+/// [`IconTone::Primary`]: the pill is a layer, not an accent track, and the
+/// default `text.on-accent` fill measured 1.44:1 against it — the only
+/// thing marking selection on this page, and invisible.
 /// Carbon's own anatomy names no icon for this variant — the module doc
 /// explains why this is built anyway: `layer-selected` is a measured 2-of-
 /// 255 sRGB step off the resting `layer.raised` fill in the dark theme, a
@@ -112,7 +113,7 @@ pub fn selectable_tag(key: impl Into<Key>, label: impl Into<String>, selected: b
     let label = label.into();
     let mut parts = Vec::new();
     if selected {
-        parts.push(icon("mark", IconMark::Check));
+        parts.push(icon_toned("mark", IconMark::Check, IconTone::Primary));
     }
     parts.push(title_text("label", label.clone()));
     let mut node = shell(key, HEIGHT_MD, SPACING_03, parts, true, true);
@@ -204,15 +205,15 @@ fn shell(
 #[cfg(test)]
 mod tests {
     use super::{
-        HEIGHT_LG, HEIGHT_MD, HEIGHT_SM, MAX_INLINE, MIN_INLINE, dismissible_tag, selectable_tag,
-        tag, tag_lg, tag_sm,
+        HEIGHT_LG, HEIGHT_MD, HEIGHT_SM, IconMark, IconTone, MAX_INLINE, MIN_INLINE,
+        dismissible_tag, icon_toned, selectable_tag, tag, tag_lg, tag_sm,
     };
     use crate::component::tokens::{
         BORDER_SUBTLE, LAYER_HOVER, LAYER_SELECTED, SHAPE_FULL, SURFACE_RAISED,
     };
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
-    use crate::testing::{Harness, validated_with};
+    use crate::testing::{Harness, inks, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
     use crate::tree::{Interaction, NodeKind, Props, Registry, Role, ViewNode};
 
@@ -275,13 +276,22 @@ mod tests {
         assert_eq!(node.semantics.label.as_deref(), Some("Dismiss prod"));
         assert!(node.interactions.contains(&Interaction::Click));
         assert_eq!(child(&node, "label").props.text.as_deref(), Some("prod"));
+        let dismiss = child(&node, "dismiss");
+        assert_eq!(dismiss.kind, crate::tree::NodeKind::Canvas);
         assert_eq!(
-            child(&node, "dismiss").props.text.as_deref(),
-            Some("Dismiss")
+            dismiss.props.text, None,
+            "close is a glyph, not the word Dismiss"
+        );
+        assert_eq!(
+            dismiss.props.canvas,
+            icon_toned("dismiss", IconMark::Close, IconTone::Primary)
+                .props
+                .canvas,
+            "close draws Carbon's Close in the layer's icon tone"
         );
         assert!(
-            !has_canvas(&node),
-            "close is the word Dismiss, not an icon-only mark"
+            has_canvas(&node),
+            "the close glyph is drawn; the pill's own label keeps it from being icon-only"
         );
         assert_eq!(node.constraints.vertical.min, Some(HEIGHT_MD));
         assert_eq!(
@@ -381,13 +391,11 @@ mod tests {
     }
 
     /// Check C/D across every shipped constructor. `dismissible_tag`'s
-    /// `"Dismiss"` word is the class-4 suspect named in this group's brief
-    /// (an icon-only hit box pinned around a word): it carries no
-    /// `Constraints` of its own, unlike Modal's `close_button` or Number
-    /// input's stepper, and sits inside the same fluid horizontal stack as
-    /// the title rather than a box pinned to a glyph's width — this is the
-    /// frame-level proof that it does not overflow, not a substitute for
-    /// reading the code.
+    /// close was the class-4 suspect named in this group's brief while it
+    /// was the word `"Dismiss"` (an icon-only hit box pinned around a
+    /// word); it is a 16px glyph now and sits inside the same fluid
+    /// horizontal stack as the title — this is the frame-level proof that
+    /// it does not overflow, not a substitute for reading the code.
     #[test]
     fn frame_geometry_has_no_degenerate_or_overflowing_placements() {
         let cases: Vec<(&str, ViewNode)> = vec![
@@ -488,19 +496,19 @@ mod tests {
                         .iter()
                         .find(|c| c.key.as_str() == key)
                         .unwrap_or_else(|| panic!("{label}: missing child {key}"));
-                    let fg_name = text_node
-                        .props
-                        .tokens
-                        .get("foreground")
-                        .unwrap_or_else(|| panic!("{label}: {key} binds a foreground"));
+                    let inks = inks(text_node);
+                    assert!(!inks.is_empty(), "{label}: {key} binds an ink");
                     let opacity = text_node.props.opacity.unwrap_or(1.0);
-                    let fg = color(&theme, fg_name.as_str()).faded(opacity).over(pill_bg);
-                    let ratio = fg.contrast_ratio(pill_bg);
-                    assert!(
-                        ratio >= MIN_TEXT_CONTRAST,
-                        "{label} {key} at {ratio:.2}:1 against {} fails AA {MIN_TEXT_CONTRAST}:1",
-                        pill_bg_name.as_str()
-                    );
+                    for fg_name in inks {
+                        let fg = color(&theme, fg_name.as_str()).faded(opacity).over(pill_bg);
+                        let ratio = fg.contrast_ratio(pill_bg);
+                        assert!(
+                            ratio >= MIN_TEXT_CONTRAST,
+                            "{label} {key} at {ratio:.2}:1 against {} fails AA \
+                             {MIN_TEXT_CONTRAST}:1",
+                            pill_bg_name.as_str()
+                        );
+                    }
                 }
             }
         }

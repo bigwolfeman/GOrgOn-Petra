@@ -5,18 +5,21 @@
 //! until a Clear control is wired; expandable is omitted (width animation
 //! plus a collapsed icon-button).
 //!
-//! The magnifier is **not** the only channel: the field has a label
+//! The magnifier is [`IconMark::Search`] in [`IconTone::Secondary`]
+//! (`.cds--search-magnifier-icon`, `fill: $icon-secondary`, 16×16,
+//! slice-d) and is **not** the only channel: the field has a label, and
+//! the mark carries the word `Search` as its own accessible name
 //! (FR-026). The magnifier itself has no role and no interactions.
 //! `NodeKind::Input` is a leaf, so the magnifier sits as a sibling in the
 //! well the way Number input's steppers do.
 //!
 //! Sizes: sm 32, md 40 (default), lg 48. Fill/edge is Petra's field pair.
 
+use super::icon::{IconMark, IconTone, icon_toned};
 use super::stack;
-use super::text::text;
 use super::tokens::{
-    BORDER_SUBTLE, SHAPE_SM, SIZE_MD, SPACING_03, SPACING_04, SURFACE_RAISED, TEXT_MUTED,
-    TEXT_PRIMARY, TYPOGRAPHY_BODY, t,
+    BORDER_SUBTLE, SHAPE_SM, SIZE_MD, SPACING_03, SPACING_04, SURFACE_RAISED, TEXT_PRIMARY,
+    TYPOGRAPHY_BODY, t,
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
@@ -49,11 +52,8 @@ pub fn search_lg(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
 
 fn search_sized(key: impl Into<Key>, label: impl Into<String>, height: f32) -> ViewNode {
     let label = label.into();
-    let mut magnifier = text("magnifier", "Search");
-    magnifier
-        .props
-        .tokens
-        .insert("foreground".into(), t(TEXT_MUTED));
+    let mut magnifier = icon_toned("magnifier", IconMark::Search, IconTone::Secondary);
+    magnifier.semantics.label = Some("Search".to_owned());
 
     let mut well = stack(
         key,
@@ -64,7 +64,7 @@ fn search_sized(key: impl Into<Key>, label: impl Into<String>, height: f32) -> V
     well.props.align = Some(Align::Center);
     // `NodeKind::Input` carries its own internal inset (`search_field`'s
     // placeholder never touches the well's right edge in the capture), but
-    // the magnifier is a plain `text()` node with none, so it sat flush on
+    // the magnifier is a bare glyph node with none, so it sat flush on
     // the well's left border — SOURCED
     // `_search.scss:128`: the real icon's leading inset is
     // `calc((layout.size('height') - 1rem) / 2)`, which at md (40px) is
@@ -112,7 +112,7 @@ mod tests {
     use crate::component::tokens::{BORDER_SUBTLE, SURFACE_RAISED};
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
-    use crate::testing::{Harness, validated_with};
+    use crate::testing::{Harness, inks, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
     use crate::tree::{Interaction, NodeKind, Props, Registry, Role, ViewNode};
 
@@ -162,7 +162,16 @@ mod tests {
         );
         assert!(magnifier.interactions.is_empty());
         assert!(!magnifier.is_interactive());
-        assert_eq!(magnifier.props.text.as_deref(), Some("Search"));
+        assert_eq!(magnifier.kind, NodeKind::Canvas);
+        assert_eq!(
+            magnifier.props.text, None,
+            "the magnifier is a glyph, not the word"
+        );
+        assert_eq!(
+            magnifier.semantics.label.as_deref(),
+            Some("Search"),
+            "the word survives as the mark's accessible name"
+        );
         assert_eq!(
             child(&node, "input").semantics.label.as_deref(),
             Some("Filter fibers"),
@@ -289,19 +298,18 @@ mod tests {
                 .expect("the well binds a resting background");
             let well_bg = color(&theme, well_bg_name.as_str());
             let magnifier = child(&node, "magnifier");
-            let fg_name = magnifier
-                .props
-                .tokens
-                .get("foreground")
-                .expect("magnifier binds a foreground");
+            let inks = inks(magnifier);
+            assert!(!inks.is_empty(), "magnifier binds an ink");
             let opacity = magnifier.props.opacity.unwrap_or(1.0);
-            let fg = color(&theme, fg_name.as_str()).faded(opacity).over(well_bg);
-            let ratio = fg.contrast_ratio(well_bg);
-            assert!(
-                ratio >= MIN_TEXT_CONTRAST,
-                "magnifier at {ratio:.2}:1 against {} fails AA {MIN_TEXT_CONTRAST}:1",
-                fg_name.as_str()
-            );
+            for fg_name in inks {
+                let fg = color(&theme, fg_name.as_str()).faded(opacity).over(well_bg);
+                let ratio = fg.contrast_ratio(well_bg);
+                assert!(
+                    ratio >= MIN_TEXT_CONTRAST,
+                    "magnifier at {ratio:.2}:1 against {} fails AA {MIN_TEXT_CONTRAST}:1",
+                    fg_name.as_str()
+                );
+            }
         }
     }
 }

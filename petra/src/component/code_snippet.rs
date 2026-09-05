@@ -10,9 +10,12 @@
 //!   (SCSS 4px; style-page 2px is stale).
 //!
 //! Ink is [`super::tokens::TEXT_PRIMARY`]. Do not invent syntax colours.
-//! Copy is a labelled [`Role::Button`] (`"Copy"`), never icon-only
-//! (FR-058, FR-026).
+//! Copy is a labelled [`Role::Button`] (`"Copy"`) drawing
+//! [`IconMark::Copy`] in [`IconTone::Primary`] (`.cds--snippet__icon`,
+//! `fill: $icon-primary`, 16×16); the label is its name, so the glyph is
+//! never the only channel (FR-058, FR-026).
 
+use super::icon::{IconMark, IconTone, icon_toned};
 use super::pad;
 use super::stack;
 use super::text::text;
@@ -90,7 +93,7 @@ fn copy_button() -> ViewNode {
         "copy",
         Axis::Horizontal,
         None,
-        vec![text("copy-label", "Copy")],
+        vec![icon_toned("copy-icon", IconMark::Copy, IconTone::Primary)],
     );
     node.props.align = Some(Align::Center);
     node.props.padding = Some(pad(SPACING_03, SPACING_02));
@@ -162,6 +165,12 @@ mod tests {
         let copy = named(&node, "copy");
         assert_eq!(copy.semantics.role, Some(Role::Button));
         assert_eq!(copy.semantics.label.as_deref(), Some("Copy"));
+        let glyph = named(copy, "copy-icon");
+        assert_eq!(glyph.kind, crate::tree::NodeKind::Canvas);
+        assert_eq!(
+            glyph.props.text, None,
+            "the copy control is a glyph, not the word"
+        );
         assert!(copy.interactions.contains(&Interaction::Focus));
         assert!(copy.interactions.contains(&Interaction::Click));
         assert!(copy.is_interactive());

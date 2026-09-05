@@ -6,8 +6,10 @@
 //!    divider, drawn by its own [`divider`] child rather than by binding
 //!    `"border"` on the item — see that function's doc for why.
 //! 3. Header button — the whole click/focus target (`Role::Button`).
-//! 4. Chevron as text (`"expanded"` / `"collapsed"`), not an icon-only
-//!    mark (FR-026).
+//! 4. Chevron — [`IconMark::ChevronUp`] open, [`IconMark::ChevronDown`]
+//!    shut, in [`IconTone::Primary`] (`fill: $icon-primary`, SCSS). Never
+//!    the only channel: `Semantics.expanded` is declared and the body is
+//!    mounted only while open (FR-026).
 //! 5. Title — the label, `body` type.
 //! 6. Body — present only while expanded.
 //!
@@ -23,6 +25,7 @@
 //! `the_divider_spans_the_full_item_width_not_a_zero_intrinsic_one` in this
 //! module's own tests.
 
+use super::icon::{IconMark, IconTone, icon_toned};
 use super::stack;
 use super::text::text;
 use super::tokens::{BORDER_SUBTLE, LAYER_HOVER, SIZE_MD, SPACING_03, SPACING_05, SURFACE_BASE, t};
@@ -70,7 +73,7 @@ pub fn accordion(key: impl Into<Key>, items: Vec<ViewNode>) -> ViewNode {
 ///
 /// `label` is the header's accessible name (FR-058). `body` is shown only
 /// when `expanded` is true. Expansion is a declared fact
-/// (`Semantics.expanded`) plus the word `"expanded"` / `"collapsed"`.
+/// (`Semantics.expanded`) plus the chevron glyph and the mounted body.
 pub fn accordion_item(
     key: impl Into<Key>,
     label: impl Into<String>,
@@ -108,13 +111,23 @@ fn accordion_item_sized(
     header_h: f32,
 ) -> ViewNode {
     let label = label.into();
-    let disclosure = if expanded { "expanded" } else { "collapsed" };
+    // Carbon's `.cds--accordion__arrow` is `ChevronRight` turned -270°
+    // shut / -90° open, which lands on ChevronDown / ChevronUp.
+    let chevron = icon_toned(
+        "chevron",
+        if expanded {
+            IconMark::ChevronUp
+        } else {
+            IconMark::ChevronDown
+        },
+        IconTone::Primary,
+    );
 
     let mut header = stack(
         "header",
         Axis::Horizontal,
         Some(SPACING_03),
-        vec![text("title", label.clone()), text("chevron", disclosure)],
+        vec![text("title", label.clone()), chevron],
     );
     header.props.align = Some(Align::Center);
     header.props.padding = Some(InsetRefs {
@@ -223,12 +236,12 @@ fn pin_height(h: f32) -> Constraints {
 mod tests {
     use super::{BORDER_SUBTLE, LAYER_HOVER};
     use super::{
-        DIVIDER, HEIGHT_LG, HEIGHT_SM, SIZE_MD, accordion, accordion_item, accordion_item_lg,
-        accordion_item_sm,
+        DIVIDER, HEIGHT_LG, HEIGHT_SM, IconMark, IconTone, SIZE_MD, accordion, accordion_item,
+        accordion_item_lg, accordion_item_sm, icon_toned,
     };
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
-    use crate::testing::{Harness, validated_with};
+    use crate::testing::{Harness, inks, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
     use crate::tree::{Interaction, NodeKind, Props, Registry, Role, ViewNode};
 
@@ -310,13 +323,22 @@ mod tests {
     }
 
     #[test]
-    fn accordion_item_declares_expanded_and_keeps_a_text_chevron() {
+    fn accordion_item_declares_expanded_and_draws_a_chevron_glyph() {
         let open = accordion_item("a", "Section A", true, "the rest");
         let header = named(&open, "header");
         assert_eq!(header.semantics.expanded, Some(true));
+        let chevron = named(&open, "chevron");
+        assert_eq!(chevron.kind, crate::tree::NodeKind::Canvas);
         assert_eq!(
-            named(&open, "chevron").props.text.as_deref(),
-            Some("expanded")
+            chevron.props.text, None,
+            "the chevron is a glyph, not the word `expanded`"
+        );
+        assert_eq!(
+            chevron.props.canvas,
+            icon_toned("chevron", IconMark::ChevronUp, IconTone::Primary)
+                .props
+                .canvas,
+            "an open item points its chevron up"
         );
         named(&open, "body");
         assert!(
@@ -327,8 +349,11 @@ mod tests {
         let shut = accordion_item("a", "Section A", false, "the rest");
         assert_eq!(named(&shut, "header").semantics.expanded, Some(false));
         assert_eq!(
-            named(&shut, "chevron").props.text.as_deref(),
-            Some("collapsed")
+            named(&shut, "chevron").props.canvas,
+            icon_toned("chevron", IconMark::ChevronDown, IconTone::Primary)
+                .props
+                .canvas,
+            "a shut item points its chevron down"
         );
         assert!(
             shut.children
@@ -523,18 +548,18 @@ mod tests {
             let bg = color(&theme, bg_name.as_str());
             for label_key in ["title", "chevron"] {
                 let label = named(header, label_key);
-                let fg_name = label
-                    .props
-                    .tokens
-                    .get("foreground")
-                    .expect("label text binds a foreground");
+                let inks = inks(label);
+                assert!(!inks.is_empty(), "{label_key} binds an ink");
                 let opacity = label.props.opacity.unwrap_or(1.0);
-                let fg = color(&theme, fg_name.as_str()).faded(opacity).over(bg);
-                let ratio = fg.contrast_ratio(bg);
-                assert!(
-                    ratio >= MIN_TEXT_CONTRAST,
-                    "{label_key} at {ratio:.2}:1 against {bg_name} fails AA {MIN_TEXT_CONTRAST}:1"
-                );
+                for fg_name in inks {
+                    let fg = color(&theme, fg_name.as_str()).faded(opacity).over(bg);
+                    let ratio = fg.contrast_ratio(bg);
+                    assert!(
+                        ratio >= MIN_TEXT_CONTRAST,
+                        "{label_key} at {ratio:.2}:1 against {bg_name} fails AA \
+                         {MIN_TEXT_CONTRAST}:1"
+                    );
+                }
             }
         }
     }

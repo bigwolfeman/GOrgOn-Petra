@@ -3,17 +3,19 @@
 //! Anatomy (`_menu-button.scss`): trigger button + caret + Menu. Combo
 //! button and Overflow menu are omitted (split trigger / icon-only).
 //!
-//! The caret is the word `"open"` / `"closed"`, never an icon-only mark
-//! (FR-026). Carbon rotates a chevron 180°; the word is the second channel
-//! that rotation cannot be.
+//! The caret is [`IconMark::ChevronDown`] shut and [`IconMark::ChevronUp`]
+//! open (Carbon turns `.cds--menu-button__trigger--open svg` 180°), in
+//! [`IconTone::Primary`]. Never the only channel: `Semantics.expanded` is
+//! declared and the menu is mounted only while open (FR-026).
 
+use super::icon::{IconMark, IconTone, icon_toned};
 use super::menu::menu;
 use super::pad;
 use super::stack;
 use super::text::text;
 use super::tokens::{
     LAYER_HOVER, SHADOW_RAISED, SHAPE_MD, SIZE_MD, SPACING_03, SPACING_05, SURFACE_RAISED,
-    TEXT_MUTED, TEXT_PRIMARY, t,
+    TEXT_PRIMARY, t,
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{AxisConstraint, Constraints, Interaction, Key, Role, ViewNode};
@@ -43,17 +45,20 @@ pub fn menu_button(
 }
 
 fn trigger(key: impl Into<Key>, label: String, open: bool) -> ViewNode {
-    let caret = if open { "open" } else { "closed" };
     let mut caption = text("label", label.clone());
     caption
         .props
         .tokens
         .insert("foreground".into(), t(TEXT_PRIMARY));
-    let mut chevron = text("caret", caret);
-    chevron
-        .props
-        .tokens
-        .insert("foreground".into(), t(TEXT_MUTED));
+    let chevron = icon_toned(
+        "caret",
+        if open {
+            IconMark::ChevronUp
+        } else {
+            IconMark::ChevronDown
+        },
+        IconTone::Primary,
+    );
     let mut node = stack(
         key,
         Axis::Horizontal,
@@ -92,12 +97,12 @@ fn pin_height(h: f32) -> Constraints {
 
 #[cfg(test)]
 mod tests {
-    use super::{SIZE_MD, menu_button};
+    use super::{IconMark, IconTone, SIZE_MD, icon_toned, menu_button};
     use crate::component::disabled;
     use crate::component::menu::menu_item;
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
-    use crate::testing::{Harness, validated_with};
+    use crate::testing::{Harness, inks, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
     use crate::tree::{Anchor, Interaction, NodeKind, Props, Registry, Role, ViewNode};
 
@@ -125,9 +130,15 @@ mod tests {
         assert_eq!(trigger.constraints.vertical.min, Some(SIZE_MD));
         assert!(trigger.interactions.contains(&Interaction::Click));
         assert_eq!(child(trigger, "label").props.text.as_deref(), Some("More"));
+        let caret = child(trigger, "caret");
+        assert_eq!(caret.kind, NodeKind::Canvas);
+        assert_eq!(caret.props.text, None, "the caret is a glyph, not a word");
         assert_eq!(
-            child(trigger, "caret").props.text.as_deref(),
-            Some("closed")
+            caret.props.canvas,
+            icon_toned("caret", IconMark::ChevronDown, IconTone::Primary)
+                .props
+                .canvas,
+            "a closed trigger points its caret down"
         );
         assert!(
             node.children
@@ -143,7 +154,13 @@ mod tests {
         let trigger = child(&node, "trigger");
         assert_eq!(trigger.semantics.role, Some(Role::Button));
         assert_eq!(trigger.semantics.expanded, Some(true));
-        assert_eq!(child(trigger, "caret").props.text.as_deref(), Some("open"));
+        assert_eq!(
+            child(trigger, "caret").props.canvas,
+            icon_toned("caret", IconMark::ChevronUp, IconTone::Primary)
+                .props
+                .canvas,
+            "an open trigger points its caret up"
+        );
 
         let menu = child(&node, "menu");
         assert_eq!(menu.kind, NodeKind::Surface);
@@ -300,20 +317,19 @@ mod tests {
             let bg = color(&theme, bg_name.as_str());
             for key in ["label", "caret"] {
                 let part = child(trigger, key);
-                let fg_name = part
-                    .props
-                    .tokens
-                    .get("foreground")
-                    .unwrap_or_else(|| panic!("{key} binds a foreground"));
+                let inks = inks(part);
+                assert!(!inks.is_empty(), "trigger/{key} binds an ink");
                 let opacity = part.props.opacity.unwrap_or(1.0);
-                let fg = color(&theme, fg_name.as_str()).faded(opacity).over(bg);
-                let ratio = fg.contrast_ratio(bg);
-                assert!(
-                    ratio >= MIN_TEXT_CONTRAST,
-                    "trigger/{key} at {ratio:.2}:1 against {} fails AA \
-                     {MIN_TEXT_CONTRAST}:1",
-                    fg_name.as_str()
-                );
+                for fg_name in inks {
+                    let fg = color(&theme, fg_name.as_str()).faded(opacity).over(bg);
+                    let ratio = fg.contrast_ratio(bg);
+                    assert!(
+                        ratio >= MIN_TEXT_CONTRAST,
+                        "trigger/{key} at {ratio:.2}:1 against {} fails AA \
+                         {MIN_TEXT_CONTRAST}:1",
+                        fg_name.as_str()
+                    );
+                }
             }
         }
     }

@@ -864,6 +864,126 @@ fn a_field_is_as_tall_as_size_md() {
     assert_eq!(placed.rect.h, super::tokens::SIZE_MD);
 }
 
+/// **No shipped component spells an icon as its name.** Until 2026-09-04
+/// `IconMark` had one variant, so every other Carbon glyph in this library
+/// was drawn as its word in body text — `closed`, `Dismiss`, `Increment` —
+/// which is most of what made the catalog read as unfinished. The word now
+/// lives in `Semantics.label` (or in `Semantics.expanded`, for a state), and
+/// the eye gets the glyph.
+///
+/// Every constructor that used to spell one is built here in every state
+/// that chose a different word, and no text node anywhere under any of them
+/// may be one of the literals. `select`, `tile` and `tree_view` are not in
+/// this fixture: their carets are `component::caret` and `select`'s word is
+/// another wave's row (see `icon.rs`'s module doc).
+///
+/// Falsify by putting one word back — `text("chevron", "closed")` in
+/// `dropdown::closed_field` — and this names the path it reappeared at.
+#[test]
+fn no_shipped_component_spells_an_icon_as_its_name() {
+    const ICON_NAMES: [&str; 15] = [
+        "calendar",
+        "closed",
+        "open",
+        "Copy",
+        "Decrement",
+        "Increment",
+        "Search",
+        "Dismiss",
+        "collapsed",
+        "expanded",
+        "Open",
+        "Close",
+        "Notifications",
+        "App switcher",
+        "Menu",
+    ];
+    let fixture = section(
+        "icons",
+        "Every part that used to be a word",
+        vec![
+            accordion(
+                "acc",
+                vec![
+                    accordion_item("open", "Open section", true, "body"),
+                    accordion_item("shut", "Closed section", false, "body"),
+                ],
+            ),
+            data_table(
+                "dt",
+                vec![data_table_sort_header("h", "Name", false)],
+                vec![
+                    data_table_row_expandable("r-open", vec![text("c", "a")], false, true, "more"),
+                    data_table_row_expandable("r-shut", vec![text("c", "a")], false, false, "more"),
+                ],
+            ),
+            date_picker("dp", "Due date", "2026-09-04"),
+            date_picker_open("dp-open", "Due date", "2026-09-04"),
+            dropdown("dd", "Theme", "Dark"),
+            dropdown_open(
+                "dd-open",
+                "Theme",
+                "Dark",
+                vec![dropdown_option("dark", "Dark", true)],
+            ),
+            menu_button("mb", "More", false, vec![menu_item("rename", "Rename")]),
+            menu_button("mb-open", "More", true, vec![menu_item("rename", "Rename")]),
+            code_snippet("snip", "let x = 1;"),
+            code_snippet_multi("snip-multi", "a\nb"),
+            number_input("n", "Count", "12"),
+            search("q", "Filter fibers"),
+            dismissible_tag("tag-x", "Filter"),
+            selectable_tag("tag-on", "Selected", true),
+            ui_shell_header(
+                "header",
+                "GOrgOn",
+                Some(ui_shell_header_menu_trigger("trigger-shut", false)),
+                vec![ui_shell_header_nav_item("overview", "Overview", true)],
+                vec![
+                    ui_shell_header_action("notify", "Notifications", false),
+                    ui_shell_header_action("search", "Search", true),
+                    ui_shell_header_action("apps", "App switcher", false),
+                ],
+            ),
+            ui_shell_header_menu_trigger("trigger-open", true),
+            ui_shell_left_panel(
+                "nav",
+                vec![
+                    ui_shell_left_panel_item(
+                        "kernel-open",
+                        "Kernel",
+                        true,
+                        false,
+                        vec![ui_shell_left_panel_subitem("fibers", "Fibers", false)],
+                    ),
+                    ui_shell_left_panel_item(
+                        "kernel-shut",
+                        "Kernel",
+                        false,
+                        false,
+                        vec![ui_shell_left_panel_subitem("fibers", "Fibers", false)],
+                    ),
+                ],
+            ),
+        ],
+    );
+
+    let mut spelled: Vec<String> = Vec::new();
+    walk(&fixture, "", &mut |path, props| {
+        if let Some(word) = props.text.as_deref()
+            && ICON_NAMES.contains(&word)
+        {
+            spelled.push(format!("{path}: {word:?}"));
+        }
+    });
+    assert!(
+        spelled.is_empty(),
+        "an icon is spelled as its name in body text; the word belongs in \
+         `Semantics.label` and the eye gets an `IconMark`:\n{}",
+        spelled.join("\n")
+    );
+}
+
 /// A component with more than one visual part composes it from a primitive
 /// container (`NodeKind::Stack` or `NodeKind::Grid`), never by inventing a
 /// new node kind — gate C1-10, checked structurally rather than by reading

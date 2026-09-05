@@ -28,6 +28,32 @@ use crate::tree::{
     Anchor, InsetRefs, Key, NodeKind, Props, Registry, TextWrap, ValidatedTree, ViewNode, validate,
 };
 
+/// Every token `node` draws its own ink in: the `foreground` binding of a
+/// text node, or every fill and stroke token of a canvas's draw list.
+///
+/// A contrast check over a labelled control walks its parts and measures
+/// each part's ink against the control's fill. Before 2026-09-04 every part
+/// was text and the check read `foreground`; now a part may be a glyph
+/// (`component::icon`), whose ink is in its draw list instead. One accessor
+/// for both keeps the check honest for either — a glyph that binds no ink
+/// at all returns an empty list, which a caller should treat as the failure
+/// it is rather than as a pass.
+#[must_use]
+pub fn inks(node: &ViewNode) -> Vec<TokenName> {
+    if let Some(list) = node.props.canvas.as_deref() {
+        return list
+            .color_tokens()
+            .filter_map(|name| TokenName::new(name).ok())
+            .collect();
+    }
+    node.props
+        .tokens
+        .get("foreground")
+        .cloned()
+        .into_iter()
+        .collect()
+}
+
 /// Accept `tree` against [`extended_vocabulary`]`(tree)` — the shipped
 /// vocabulary plus this tree's own [`gap_token`] spacings — and mint the
 /// token [`crate::frame::petrify`] requires, panicking with the named

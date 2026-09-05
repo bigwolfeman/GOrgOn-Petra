@@ -1,14 +1,18 @@
 //! `number_input` — Carbon Number input (slice-d).
 //!
 //! Anatomy: label-adjacent well + numeric value + two labelled stepper
-//! buttons. Steppers are discrete Click targets; there is no pointer-drag
-//! and no hold-to-repeat. Carbon overlay-positioned controls become a
-//! trailing pair of [`Role::Button`] children because `NodeKind::Input` is
-//! a leaf.
+//! buttons drawing Carbon's `Subtract` / `Add` ([`IconMark::Subtract`],
+//! [`IconMark::Add`], `fill: $icon-primary`, slice-d). Steppers are
+//! discrete Click targets; there is no pointer-drag and no hold-to-repeat.
+//! Carbon overlay-positioned controls become a trailing pair of
+//! [`Role::Button`] children because `NodeKind::Input` is a leaf. Each
+//! stepper's accessible name is the word (`"Decrement"` / `"Increment"`),
+//! so the glyph is never the only channel (FR-026).
 //!
 //! Sizes MEASURED `_number-input.scss`: sm 32, md 40 (default), lg 48.
 //! Fill/edge is Petra's field pair: [`SURFACE_RAISED`] + [`BORDER_SUBTLE`].
 
+use super::icon::{IconMark, IconTone, icon_toned};
 use super::stack;
 use super::text::text;
 use super::tokens::{
@@ -107,8 +111,8 @@ fn number_sized(
         Some(SPACING_05),
         vec![
             value_field("value", label.clone(), value, height),
-            stepper("decrement", "Decrement", height),
-            stepper("increment", "Increment", height),
+            stepper("decrement", "Decrement", IconMark::Subtract, height),
+            stepper("increment", "Increment", IconMark::Add, height),
         ],
     );
     well.props.align = Some(Align::Center);
@@ -152,13 +156,9 @@ fn value_field(key: &'static str, label: String, value: String, height: f32) -> 
         })
 }
 
-fn stepper(key: &'static str, label: &'static str, height: f32) -> ViewNode {
-    let mut caption = text("label", label);
-    caption
-        .props
-        .tokens
-        .insert("foreground".into(), t(TEXT_PRIMARY));
-    let mut node = stack(key, Axis::Horizontal, None, vec![caption]);
+fn stepper(key: &'static str, label: &'static str, mark: IconMark, height: f32) -> ViewNode {
+    let glyph = icon_toned("glyph", mark, IconTone::Primary);
+    let mut node = stack(key, Axis::Horizontal, None, vec![glyph]);
     node.props.align = Some(Align::Center);
     node.props
         .tokens
@@ -167,14 +167,12 @@ fn stepper(key: &'static str, label: &'static str, height: f32) -> ViewNode {
         // Horizontal takes a floor, not a fixed width. Carbon's stepper
         // width (md 40, `_number-input.scss:153` controls-width / 2; lg 48
         // `:403`; sm 32 `:416`) is the hit box for an icon-only
-        // Add/Subtract glyph; FR-026 replaces the icon with the word
-        // "Increment"/"Decrement" (this module's own doc), which does not
-        // fit inside a box pinned to the icon's own width — the same
-        // Class-4 shape as Modal's `close_button` defect. `min` stays the
-        // floor so the tap target never shrinks below Carbon's number; the
-        // label decides how much wider it needs
-        // (`frame_geometry_has_no_degenerate_or_overflowing_placements`
-        // caught it once Step 0 put Number input in `full_gallery()`).
+        // Add/Subtract glyph. Until 2026-09-04 the stepper held the word
+        // "Increment"/"Decrement" instead, which did not fit a box pinned
+        // to the icon's width (the same Class-4 shape as Modal's
+        // `close_button` defect), so `max` was lifted and the label decided
+        // the width. The glyph fits the pin again; restoring `max:
+        // Some(height)` is this row's owner's call, not the icon wave's.
         horizontal: AxisConstraint {
             min: Some(height),
             max: None,
@@ -196,13 +194,13 @@ fn stepper(key: &'static str, label: &'static str, height: f32) -> ViewNode {
 #[cfg(test)]
 mod tests {
     use super::{
-        SIZE_LG, SIZE_MD, SIZE_SM, number_input, number_input_invalid, number_input_lg,
-        number_input_sm,
+        IconMark, IconTone, SIZE_LG, SIZE_MD, SIZE_SM, icon_toned, number_input,
+        number_input_invalid, number_input_lg, number_input_sm,
     };
     use crate::component::tokens::{ACCENT_PRIMARY, BORDER_SUBTLE, SURFACE_RAISED, TEXT_PRIMARY};
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
-    use crate::testing::{Harness, validated_with};
+    use crate::testing::{Harness, inks, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
     use crate::tree::{Interaction, NodeKind, Props, Registry, Role, ViewNode};
 
@@ -240,12 +238,32 @@ mod tests {
         let dec = child(&node, "decrement");
         assert_eq!(dec.semantics.role, Some(Role::Button));
         assert_eq!(dec.semantics.label.as_deref(), Some("Decrement"));
+        let glyph = child(dec, "glyph");
+        assert_eq!(glyph.kind, NodeKind::Canvas);
+        assert_eq!(
+            glyph.props.text, None,
+            "the stepper is a glyph, not the word"
+        );
+        assert_eq!(
+            glyph.props.canvas,
+            icon_toned("glyph", IconMark::Subtract, IconTone::Primary)
+                .props
+                .canvas,
+            "decrement draws Carbon's Subtract"
+        );
         assert!(dec.interactions.contains(&Interaction::Click));
         assert!(!dec.interactions.contains(&Interaction::Drag));
 
         let inc = child(&node, "increment");
         assert_eq!(inc.semantics.role, Some(Role::Button));
         assert_eq!(inc.semantics.label.as_deref(), Some("Increment"));
+        assert_eq!(
+            child(inc, "glyph").props.canvas,
+            icon_toned("glyph", IconMark::Add, IconTone::Primary)
+                .props
+                .canvas,
+            "increment draws Carbon's Add"
+        );
         assert!(inc.interactions.contains(&Interaction::Click));
         assert!(!inc.interactions.contains(&Interaction::Drag));
     }
@@ -350,14 +368,10 @@ mod tests {
     }
 
     /// Check C/D across sizes, plus the invalid form. Class 4: the
-    /// steppers pin `Constraints.horizontal.min == max == height`
+    /// steppers take `Constraints.horizontal.min == height` as a floor
     /// (`stepper`'s own doc), the Carbon icon-only hit-box number
-    /// (`_number-input.scss:153,403,416`, controls width / 2). Petra draws
-    /// the word "Increment"/"Decrement" instead of an icon (FR-026), which
-    /// does not fit inside a box pinned to the icon's own width — the same
-    /// shape as Modal's `close_button` defect. `min` stays the floor so the
-    /// tap target never shrinks below Carbon's number; `max: None` lets the
-    /// label decide the width.
+    /// (`_number-input.scss:153,403,416`, controls width / 2), and `max:
+    /// None` — lifted while the stepper held a word instead of a glyph.
     #[test]
     fn frame_geometry_has_no_degenerate_or_overflowing_placements() {
         check_geometry(&petrify_lone(number_input("count", "Replicas", "3")), "md");
@@ -403,8 +417,8 @@ mod tests {
         }
     }
 
-    /// Check E: the value text and both stepper labels against the well's
-    /// own resting fill, in both themes.
+    /// Check E: the value text against the well's own resting fill and both
+    /// stepper glyphs against the stepper's, in both themes.
     #[test]
     fn well_text_clears_aa_contrast_against_its_own_fill() {
         const MIN_TEXT_CONTRAST: f32 = 4.5;
@@ -440,22 +454,22 @@ mod tests {
                     .get("background")
                     .expect("stepper binds a resting background");
                 let stepper_bg = color(&theme, stepper_bg_name.as_str());
-                let label = child(stepper, "label");
-                let fg_name = label
-                    .props
-                    .tokens
-                    .get("foreground")
-                    .expect("stepper label binds a foreground");
-                let opacity = label.props.opacity.unwrap_or(1.0);
-                let fg = color(&theme, fg_name.as_str())
-                    .faded(opacity)
-                    .over(stepper_bg);
-                let ratio = fg.contrast_ratio(stepper_bg);
-                assert!(
-                    ratio >= MIN_TEXT_CONTRAST,
-                    "{stepper_key} label at {ratio:.2}:1 against {} fails AA {MIN_TEXT_CONTRAST}:1",
-                    fg_name.as_str()
-                );
+                let glyph = child(stepper, "glyph");
+                let inks = inks(glyph);
+                assert!(!inks.is_empty(), "{stepper_key} glyph binds an ink");
+                let opacity = glyph.props.opacity.unwrap_or(1.0);
+                for fg_name in inks {
+                    let fg = color(&theme, fg_name.as_str())
+                        .faded(opacity)
+                        .over(stepper_bg);
+                    let ratio = fg.contrast_ratio(stepper_bg);
+                    assert!(
+                        ratio >= MIN_TEXT_CONTRAST,
+                        "{stepper_key} glyph at {ratio:.2}:1 against {} fails AA \
+                         {MIN_TEXT_CONTRAST}:1",
+                        fg_name.as_str()
+                    );
+                }
             }
         }
     }

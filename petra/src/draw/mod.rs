@@ -772,6 +772,33 @@ impl DrawList {
     pub fn assets(&self) -> impl Iterator<Item = &AssetRef> {
         self.commands.iter().filter_map(Command::asset)
     }
+
+    /// Every theme token this list paints with — each fill and each stroke
+    /// that is a [`ColorRef::Token`] — in command order, with duplicates.
+    ///
+    /// A literal [`ColorRef::Rgba`] is not a token and is skipped. This is
+    /// how a contrast check reads a glyph's ink the way it reads a text
+    /// node's `foreground` binding.
+    pub fn color_tokens(&self) -> impl Iterator<Item = &str> {
+        self.commands
+            .iter()
+            .filter_map(|command| match command {
+                Command::Rect { paint, .. }
+                | Command::Ellipse { paint, .. }
+                | Command::Path { paint, .. } => Some(paint),
+                Command::Push { .. } | Command::Pop | Command::Sprite { .. } => None,
+            })
+            .flat_map(|paint| {
+                paint
+                    .fill
+                    .iter()
+                    .chain(paint.stroke.as_ref().map(|stroke| &stroke.color))
+            })
+            .filter_map(|reference| match reference {
+                ColorRef::Token(name) => Some(name.as_str()),
+                ColorRef::Rgba(_) => None,
+            })
+    }
 }
 
 /// Refuse a filled closed path whose control polygon is not convex.

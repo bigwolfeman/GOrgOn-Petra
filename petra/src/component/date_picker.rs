@@ -4,8 +4,10 @@
 //! Anatomy (`_date-picker.scss` + `_flatpickr.scss`):
 //! 1. Field — [`SURFACE_RAISED`] + [`BORDER_SUBTLE`], height md 40.
 //! 2. Current value (visible text).
-//! 3. Calendar mark as the word `"calendar"` — never an icon-only glyph
-//!    (FR-026).
+//! 3. Calendar mark — [`IconMark::Calendar`] in [`IconTone::Primary`]
+//!    (`.cds--date-picker__icon`, `fill: $icon-primary`, 16×16, slice-b),
+//!    carrying the word `calendar` as its accessible name so the glyph is
+//!    never the only channel (FR-026).
 //! 4. Open calendar — [`super::popover::popover_with`] hosting a 7-column
 //!    weekday-initial row plus day buttons `1..=28`.
 //!
@@ -13,6 +15,7 @@
 //! Day cells are 40×40 ([`SIZE_MD`]). Previous/next month and a real
 //! Gregorian grid are omitted: 28 days is enough to prove the anatomy.
 
+use super::icon::{IconMark, IconTone, icon_toned};
 use super::pad;
 use super::popover::popover_with;
 use super::stack;
@@ -82,8 +85,8 @@ fn closed_field(
         .props
         .tokens
         .insert("foreground".into(), t(TEXT_PRIMARY));
-    let mut mark = text("calendar-mark", "calendar");
-    mark.props.tokens.insert("foreground".into(), t(TEXT_MUTED));
+    let mut mark = icon_toned("calendar-mark", IconMark::Calendar, IconTone::Primary);
+    mark.semantics.label = Some("calendar".to_owned());
 
     let mut node = stack(
         key,
@@ -212,11 +215,15 @@ mod tests {
             child(&node, "value").props.text.as_deref(),
             Some("2026-08-30")
         );
+        let mark = child(&node, "calendar-mark");
+        assert_eq!(mark.kind, crate::tree::NodeKind::Canvas);
+        assert_eq!(mark.props.text, None, "the calendar is a glyph, not a word");
         assert_eq!(
-            child(&node, "calendar-mark").props.text.as_deref(),
-            Some("calendar")
+            mark.semantics.label.as_deref(),
+            Some("calendar"),
+            "the word survives as the mark's accessible name"
         );
-        assert!(child(&node, "calendar-mark").semantics.role.is_none());
+        assert!(mark.semantics.role.is_none());
         assert_eq!(node.semantics.expanded, None);
         assert_ne!(node.semantics.role, Some(Role::Overlay));
     }
@@ -378,11 +385,12 @@ mod tests {
         );
     }
 
-    /// Check E: the value text and the "calendar" mark against the field's
-    /// own resting fill, in both themes.
+    /// Check E: the value text (AA, 4.5:1) and the calendar glyph (WCAG
+    /// non-text, 3:1) against the field's own resting fill, in both themes.
     #[test]
     fn closed_field_text_clears_aa_contrast_against_its_own_fill() {
         const MIN_TEXT_CONTRAST: f32 = 4.5;
+        const MIN_GLYPH_CONTRAST: f32 = 3.0;
         for theme in [crate::token::light(), crate::token::dark()] {
             let node = date_picker("due", "Due date", "2026-08-30");
             let bg_name = node
@@ -391,22 +399,41 @@ mod tests {
                 .get("background")
                 .expect("the field binds a resting background");
             let bg = color(&theme, bg_name.as_str());
-            for label_key in ["value", "calendar-mark"] {
-                let label = child(&node, label_key);
-                let fg_name = label
-                    .props
-                    .tokens
-                    .get("foreground")
-                    .expect("label text binds a foreground");
-                let opacity = label.props.opacity.unwrap_or(1.0);
-                let fg = color(&theme, fg_name.as_str()).faded(opacity).over(bg);
-                let ratio = fg.contrast_ratio(bg);
+            let value = child(&node, "value");
+            let fg_name = value
+                .props
+                .tokens
+                .get("foreground")
+                .expect("value text binds a foreground");
+            let opacity = value.props.opacity.unwrap_or(1.0);
+            let fg = color(&theme, fg_name.as_str()).faded(opacity).over(bg);
+            let ratio = fg.contrast_ratio(bg);
+            assert!(
+                ratio >= MIN_TEXT_CONTRAST,
+                "value at {ratio:.2}:1 against {} fails AA {MIN_TEXT_CONTRAST}:1",
+                bg_name.as_str()
+            );
+
+            let mark = child(&node, "calendar-mark");
+            let list = mark.props.canvas.as_ref().expect("the calendar is drawn");
+            let mut fills = 0;
+            for command in list.commands() {
+                let crate::draw::Command::Rect { paint, .. } = command else {
+                    continue;
+                };
+                let Some(crate::draw::ColorRef::Token(name)) = paint.fill.as_ref() else {
+                    panic!("the calendar's bars bind a token fill");
+                };
+                let ratio = color(&theme, name).over(bg).contrast_ratio(bg);
                 assert!(
-                    ratio >= MIN_TEXT_CONTRAST,
-                    "{label_key} at {ratio:.2}:1 against {} fails AA {MIN_TEXT_CONTRAST}:1",
+                    ratio >= MIN_GLYPH_CONTRAST,
+                    "calendar-mark ({name}) at {ratio:.2}:1 against {} fails \
+                     non-text {MIN_GLYPH_CONTRAST}:1",
                     bg_name.as_str()
                 );
+                fills += 1;
             }
+            assert!(fills > 0, "the calendar draws at least one bar");
         }
     }
 }

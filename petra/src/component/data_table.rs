@@ -9,8 +9,8 @@
 //! 3. Body rows — [`data_table_row`]: [`Role::Row`], selectable,
 //!    `Semantics.selected` plus [`LAYER_SELECTED`].
 //! 4. Expandable row — [`data_table_row_expandable`]: `Semantics.expanded`
-//!    plus the word `"expanded"` / `"collapsed"`, body child only while
-//!    open.
+//!    plus a chevron glyph ([`IconMark::ChevronUp`] open,
+//!    [`IconMark::ChevronDown`] shut), body child only while open.
 //!
 //! Five row heights (style-page Rows table): xs 24, sm 32, md 40, lg 48,
 //! xl 64. Petra default is md (40), matching [`SIZE_MD`]. Carbon's
@@ -20,6 +20,7 @@
 //! no sticky), column resize (Carbon v11 does not ship it). Zebra is
 //! [`data_table_zebra`].
 
+use super::icon::{IconMark, IconTone, icon_toned};
 use super::pad;
 use super::stack;
 use super::text::text;
@@ -150,12 +151,19 @@ pub fn data_table_row_expandable(
     body: impl Into<String>,
 ) -> ViewNode {
     let key = key.into();
-    let disclosure = if expanded { "expanded" } else { "collapsed" };
-    let mut chevron = text("chevron", disclosure);
-    chevron
-        .props
-        .tokens
-        .insert("foreground".into(), t(TEXT_PRIMARY));
+    // Carbon's `.cds--table-expand__svg` is `ChevronRight` turned 90° shut
+    // / 270° open (`_data-table-expandable.scss`), which lands on
+    // ChevronDown / ChevronUp, filled `$layer-selected-inverse` — the same
+    // value every Carbon theme gives `$icon-primary`.
+    let chevron = icon_toned(
+        "chevron",
+        if expanded {
+            IconMark::ChevronUp
+        } else {
+            IconMark::ChevronDown
+        },
+        IconTone::Primary,
+    );
     let mut cells_with_caret = vec![chevron];
     cells_with_caret.extend(cells);
     let label = row_label(key.as_str(), &cells_with_caret);
@@ -385,9 +393,9 @@ fn collect_text(node: &ViewNode) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        HEIGHT_LG, HEIGHT_SM, HEIGHT_XL, HEIGHT_XS, SIZE_MD, data_table, data_table_row,
-        data_table_row_expandable, data_table_row_lg, data_table_row_sm, data_table_row_xl,
-        data_table_row_xs, data_table_sort_header, data_table_zebra,
+        HEIGHT_LG, HEIGHT_SM, HEIGHT_XL, HEIGHT_XS, IconMark, IconTone, SIZE_MD, data_table,
+        data_table_row, data_table_row_expandable, data_table_row_lg, data_table_row_sm,
+        data_table_row_xl, data_table_row_xs, data_table_sort_header, data_table_zebra, icon_toned,
     };
     use crate::component::text::text;
     use crate::component::tokens::{LAYER_SELECTED, SURFACE_BASE, SURFACE_RAISED};
@@ -567,9 +575,17 @@ mod tests {
             data_table_row_expandable("r0", vec![text("n", "alpha")], false, true, "more detail");
         assert_eq!(open.semantics.role, Some(Role::Row));
         assert_eq!(open.semantics.expanded, Some(true));
+        let chevron = named(&open, "chevron");
+        assert_eq!(chevron.kind, crate::tree::NodeKind::Canvas);
         assert_eq!(
-            named(&open, "chevron").props.text.as_deref(),
-            Some("expanded")
+            chevron.props.text, None,
+            "the chevron is a glyph, not a word"
+        );
+        assert_eq!(
+            chevron.props.canvas,
+            icon_toned("chevron", IconMark::ChevronUp, IconTone::Primary)
+                .props
+                .canvas
         );
         assert_eq!(
             named(&open, "body-text").props.text.as_deref(),
@@ -581,8 +597,10 @@ mod tests {
             data_table_row_expandable("r0", vec![text("n", "alpha")], false, false, "more detail");
         assert_eq!(shut.semantics.expanded, Some(false));
         assert_eq!(
-            named(&shut, "chevron").props.text.as_deref(),
-            Some("collapsed")
+            named(&shut, "chevron").props.canvas,
+            icon_toned("chevron", IconMark::ChevronDown, IconTone::Primary)
+                .props
+                .canvas
         );
         assert!(
             shut.children.iter().all(|c| c.key.as_str() != "body"),

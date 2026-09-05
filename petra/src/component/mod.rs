@@ -151,7 +151,7 @@ pub use field::{
 };
 pub use file_uploader::{file_uploader, file_uploader_item};
 pub use form::form;
-pub use icon::{IconMark, icon};
+pub use icon::{IconBox, IconMark, IconTone, icon, icon_in, icon_toned};
 pub use inline_loading::inline_loading;
 pub use link::link;
 pub use list::{list_item, list_item_with, ordered_list, unordered_list};
@@ -182,10 +182,11 @@ pub use toggletip::toggletip;
 pub use tooltip::tooltip;
 pub use tree_view::{tree_item, tree_item_xs, tree_view};
 pub use ui_shell::{
-    ui_shell_header, ui_shell_header_action, ui_shell_header_menu_trigger,
-    ui_shell_header_nav_item, ui_shell_left_panel, ui_shell_left_panel_divider,
-    ui_shell_left_panel_item, ui_shell_left_panel_rail, ui_shell_left_panel_subitem,
-    ui_shell_right_panel, ui_shell_right_panel_divider, ui_shell_switcher, ui_shell_switcher_item,
+    ui_shell_header, ui_shell_header_action, ui_shell_header_action_icon,
+    ui_shell_header_menu_trigger, ui_shell_header_nav_item, ui_shell_left_panel,
+    ui_shell_left_panel_divider, ui_shell_left_panel_item, ui_shell_left_panel_rail,
+    ui_shell_left_panel_subitem, ui_shell_right_panel, ui_shell_right_panel_divider,
+    ui_shell_switcher, ui_shell_switcher_item,
 };
 
 use std::sync::Arc;
@@ -504,12 +505,14 @@ pub(crate) enum CaretDirection {
 /// 16×16 canvas, pointing [`CaretDirection::Down`] when the thing it fronts
 /// is open and [`CaretDirection::Right`] when it is shut.
 ///
-/// Never exported, and not an [`IconMark`]. The icon vocabulary is one
-/// variant long (`Check`) and growing it is the icon wave's job; until a
-/// `CaretDown`/`CaretRight` mark lands there, this is the shape a tree
-/// branch and an expandable tile draw instead of spelling the word
-/// `expanded` next to their label. When the mark exists, replace this with
-/// `icon(key, IconMark::CaretDown)` and delete it. Like [`swatch`] it carries
+/// Never exported, and not an [`IconMark`]. It predates the icon vocabulary
+/// growing past `Check`: [`IconMark::ChevronDown`] and
+/// [`IconMark::ChevronUp`] exist now (2026-09-04), and this is the shape a
+/// tree branch and an expandable tile still draw instead of spelling the
+/// word `expanded` next to their label. The pending swap is
+/// `icon_toned(key, IconMark::ChevronDown, IconTone::Secondary)` for the
+/// tile and a `ChevronRight` mark for the tree, then delete this; that is
+/// the tile and tree rows' owners' change. Like [`swatch`] it carries
 /// no semantics of its own: the branch or tile that composes it owns the
 /// `Semantics.expanded` fact, and the revealed children are the channel a
 /// reader who cannot see the triangle still gets (FR-026).

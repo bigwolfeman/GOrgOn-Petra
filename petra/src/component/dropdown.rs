@@ -3,8 +3,11 @@
 //! Anatomy (`_dropdown.scss` + `_list-box.scss`):
 //! 1. Field — [`SURFACE_RAISED`] + [`BORDER_SUBTLE`], height md 40.
 //! 2. Current value (visible text).
-//! 3. Chevron as the word `"closed"` / `"open"` — never an icon-only mark
-//!    (FR-026).
+//! 3. Chevron — [`IconMark::ChevronDown`] shut, [`IconMark::ChevronUp`]
+//!    open (Carbon turns `.cds--list-box__menu-icon--open` 180°), in
+//!    [`IconTone::Primary`] (`fill: $icon-primary`). Never the only
+//!    channel: `Semantics.expanded` is declared on the open field and the
+//!    menu is mounted only while open (FR-026).
 //! 4. Open menu — [`super::popover::popover_with`] listing option rows.
 //! 5. Option — [`Role::Button`] + `Semantics.selected`. Selected is also
 //!    the word `"selected"` and [`LAYER_SELECTED`], never a hue alone.
@@ -13,6 +16,7 @@
 //! wraps that field and a popover of caller-supplied option nodes. Combo box
 //! and Multiselect are omitted (clear icon + tags).
 
+use super::icon::{IconMark, IconTone, icon_toned};
 use super::pad;
 use super::popover::popover_with;
 use super::stack;
@@ -35,7 +39,7 @@ pub fn dropdown(
     label: impl Into<String>,
     value: impl Into<String>,
 ) -> ViewNode {
-    closed_field(key, label, value, "closed", None)
+    closed_field(key, label, value, IconMark::ChevronDown, None)
 }
 
 /// Open dropdown: the closed field plus a popover listing `options`.
@@ -50,7 +54,13 @@ pub fn dropdown_open(
     options: Vec<ViewNode>,
 ) -> ViewNode {
     let label = label.into();
-    let field = closed_field("field", label.clone(), value, "open", Some(true));
+    let field = closed_field(
+        "field",
+        label.clone(),
+        value,
+        IconMark::ChevronUp,
+        Some(true),
+    );
     let menu = popover_with("menu", label, "field", options);
     let mut node = stack(key, Axis::Vertical, None, vec![field, menu]);
     node.semantics.expanded = Some(true);
@@ -101,7 +111,7 @@ fn closed_field(
     key: impl Into<Key>,
     label: impl Into<String>,
     value: impl Into<String>,
-    chevron: &'static str,
+    chevron: IconMark,
     expanded: Option<bool>,
 ) -> ViewNode {
     let label = label.into();
@@ -110,11 +120,7 @@ fn closed_field(
         .props
         .tokens
         .insert("foreground".into(), t(TEXT_PRIMARY));
-    let mut chevron_node = text("chevron", chevron);
-    chevron_node
-        .props
-        .tokens
-        .insert("foreground".into(), t(TEXT_MUTED));
+    let chevron_node = icon_toned("chevron", chevron, IconTone::Primary);
 
     let mut node = stack(
         key,
@@ -152,11 +158,13 @@ fn pin_height(h: f32) -> Constraints {
 
 #[cfg(test)]
 mod tests {
-    use super::{SIZE_MD, dropdown, dropdown_open, dropdown_option};
+    use super::{
+        IconMark, IconTone, SIZE_MD, dropdown, dropdown_open, dropdown_option, icon_toned,
+    };
     use crate::component::tokens::{BORDER_SUBTLE, LAYER_SELECTED, SURFACE_RAISED};
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
-    use crate::testing::{Harness, validated_with};
+    use crate::testing::{Harness, inks, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
     use crate::tree::{Anchor, Interaction, NodeKind, Props, Registry, Role, ViewNode};
 
@@ -185,11 +193,20 @@ mod tests {
         assert_eq!(token(&node, "background"), Some(SURFACE_RAISED));
         assert_eq!(token(&node, "border"), Some(BORDER_SUBTLE));
         assert_eq!(child(&node, "value").props.text.as_deref(), Some("Dark"));
+        let chevron = child(&node, "chevron");
+        assert_eq!(chevron.kind, NodeKind::Canvas);
         assert_eq!(
-            child(&node, "chevron").props.text.as_deref(),
-            Some("closed")
+            chevron.props.text, None,
+            "the chevron is a glyph, not a word"
         );
-        assert!(child(&node, "chevron").semantics.role.is_none());
+        assert_eq!(
+            chevron.props.canvas,
+            icon_toned("chevron", IconMark::ChevronDown, IconTone::Primary)
+                .props
+                .canvas,
+            "a closed field points its chevron down"
+        );
+        assert!(chevron.semantics.role.is_none());
         assert_eq!(node.semantics.expanded, None);
         assert_ne!(node.semantics.role, Some(Role::Overlay));
     }
@@ -210,7 +227,13 @@ mod tests {
         assert_eq!(field.semantics.role, Some(Role::Button));
         assert_eq!(field.semantics.label.as_deref(), Some("Theme"));
         assert_eq!(field.semantics.expanded, Some(true));
-        assert_eq!(child(field, "chevron").props.text.as_deref(), Some("open"));
+        assert_eq!(
+            child(field, "chevron").props.canvas,
+            icon_toned("chevron", IconMark::ChevronUp, IconTone::Primary)
+                .props
+                .canvas,
+            "an open field points its chevron up"
+        );
 
         let menu = child(&node, "menu");
         assert_eq!(menu.kind, NodeKind::Surface);
@@ -400,21 +423,21 @@ mod tests {
             );
             for label_key in ["value", "chevron"] {
                 let label = child(&field, label_key);
-                let fg_name = label
-                    .props
-                    .tokens
-                    .get("foreground")
-                    .expect("label text binds a foreground");
+                let inks = inks(label);
+                assert!(!inks.is_empty(), "field {label_key} binds an ink");
                 let opacity = label.props.opacity.unwrap_or(1.0);
-                let fg = color(&theme, fg_name.as_str())
-                    .faded(opacity)
-                    .over(field_bg);
-                let ratio = fg.contrast_ratio(field_bg);
-                assert!(
-                    ratio >= MIN_TEXT_CONTRAST,
-                    "field {label_key} at {ratio:.2}:1 against {} fails AA {MIN_TEXT_CONTRAST}:1",
-                    field.props.tokens.get("background").unwrap().as_str()
-                );
+                for fg_name in inks {
+                    let fg = color(&theme, fg_name.as_str())
+                        .faded(opacity)
+                        .over(field_bg);
+                    let ratio = fg.contrast_ratio(field_bg);
+                    assert!(
+                        ratio >= MIN_TEXT_CONTRAST,
+                        "field {label_key} at {ratio:.2}:1 against {} fails AA \
+                         {MIN_TEXT_CONTRAST}:1",
+                        field.props.tokens.get("background").unwrap().as_str()
+                    );
+                }
             }
 
             for selected in [true, false] {

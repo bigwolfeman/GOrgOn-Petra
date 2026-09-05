@@ -52,17 +52,20 @@
 //! flags but does not settle; the stronger, general, explicitly-worded
 //! usage-page rule is the one this file honours.
 //!
-//! # What none of the three rows build
+//! # Glyphs
 //!
-//! No icon glyph exists for hamburger, search, notification, help,
-//! account, or switcher/apps — [`super::icon::IconMark`] ships exactly one
-//! mark (a toggle tick) and inventing five more here would be exactly the
-//! guessed-asset problem `contracts/component-anatomy.md` §3 exists to
-//! stop. Every control that Carbon draws icon-only therefore surfaces its
-//! *word* instead ([`ui_shell_header_menu_trigger`]'s "Open"/"Close",
-//! [`ui_shell_left_panel_item`]'s "expanded"/"collapsed" — the same
-//! second-channel convention [`super::tree_view`] and [`super::menu_button`]
-//! already use for exactly this reason).
+//! The controls Carbon draws icon-only draw Carbon's own glyphs
+//! ([`super::icon::IconMark`], traced from `@carbon/icons-react`) and keep
+//! their word as the accessible name, never as body text:
+//! [`ui_shell_header_menu_trigger`] is `Menu` / `Close` at Carbon's 20px
+//! header box (`HeaderMenuButton.tsx` renders both at `size={20}`), a
+//! [`ui_shell_header_action`] is `Notification`, `Search` or `Switcher` at
+//! the same box, and [`ui_shell_left_panel_item`]'s sub-menu chevron is
+//! `ChevronDown` / `ChevronUp` at 16 (`.cds--side-nav__submenu-chevron >
+//! svg`, `convert.to-rem(16px)`, turned 180° when expanded). Help and
+//! account have no glyph yet; a header action with any other label still
+//! surfaces the word, the second-channel convention [`super::tree_view`]
+//! uses for its caret.
 //!
 //! The skip-to-content link (slice-f "Browser assumptions": a CSS
 //! `clip: rect(0,0,0,0)`-until-focus idiom with no retained-mode
@@ -89,6 +92,7 @@
 //! the header or left panel shells themselves; undocumented for right
 //! panel items), so none is built here.
 
+use super::icon::{IconBox, IconMark, IconTone, icon_in, icon_toned};
 use super::stack;
 use super::text::text;
 use super::tokens::{
@@ -234,18 +238,25 @@ fn header_name(key: &'static str, product_name: impl Into<String>) -> ViewNode {
 }
 
 /// The hamburger / menu trigger. Not a caller-labelled control: the
-/// accessible name and the visible second-channel word are both derived
-/// from `open`, never taken as a parameter that could go stale against the
-/// state that drives them. `Semantics.selected` carries the persistent
-/// "panel is open" condition Carbon expresses as the `--active` class.
+/// accessible name and the glyph ([`IconMark::Menu`] shut,
+/// [`IconMark::Close`] open, Carbon's `HeaderMenuButton` at `size={20}`)
+/// are both derived from `open`, never taken as a parameter that could go
+/// stale against the state that drives them. `Semantics.selected` carries
+/// the persistent "panel is open" condition Carbon expresses as the
+/// `--active` class.
 pub fn ui_shell_header_menu_trigger(key: impl Into<Key>, open: bool) -> ViewNode {
     let state_word = if open { "Close" } else { "Open" };
     let label = format!("{state_word} navigation menu");
-    let mut caption = text("label", state_word);
-    caption
-        .props
-        .tokens
-        .insert("foreground".into(), t(TEXT_PRIMARY));
+    let caption = icon_in(
+        "glyph",
+        if open {
+            IconMark::Close
+        } else {
+            IconMark::Menu
+        },
+        IconBox::Header,
+        IconTone::Primary,
+    );
     let mut props = Props {
         align: Some(Align::Center),
         ..Props::default()
@@ -328,24 +339,77 @@ pub fn ui_shell_header_nav_item(
     node
 }
 
-/// One header global/utility action. `label` names what the icon would
-/// have said (there is no shipped icon vocabulary for it, module doc). A
-/// [`MINI_UNIT_6`] square. `active` is the persistent "this action's panel
-/// is open" condition (Carbon's `--active` class, `background: $layer`),
-/// not a momentary press — that is `background@active` composing
-/// automatically through `crate::token::state`.
+/// One header global/utility action, named by one of Carbon's documented
+/// utility labels. A [`MINI_UNIT_6`] square. `active` is the persistent
+/// "this action's panel is open" condition (Carbon's `--active` class,
+/// `background: $layer`), not a momentary press — that is
+/// `background@active` composing automatically through
+/// `crate::token::state`.
+///
+/// The glyph follows the label through [`header_action_mark`]:
+/// `"Notifications"`, `"Search"` and `"App switcher"` draw Carbon's
+/// `Notification`, `Search` and `Switcher`; any other label is drawn as its
+/// word, since there is no glyph for it yet. A caller that already knows
+/// its glyph names it with [`ui_shell_header_action_icon`] instead; this
+/// constructor exists so the label alone still produces the right picture.
 pub fn ui_shell_header_action(
     key: impl Into<Key>,
     label: impl Into<String>,
     active: bool,
 ) -> ViewNode {
     let label = label.into();
-    let mut caption = text("label", label.clone());
-    caption.props.style = Some(t(TYPOGRAPHY_BODY));
-    caption
-        .props
-        .tokens
-        .insert("foreground".into(), t(TEXT_PRIMARY));
+    match header_action_mark(&label) {
+        Some(mark) => ui_shell_header_action_icon(key, label, mark, active),
+        None => {
+            let mut caption = text("label", label.clone());
+            caption.props.style = Some(t(TYPOGRAPHY_BODY));
+            caption
+                .props
+                .tokens
+                .insert("foreground".into(), t(TEXT_PRIMARY));
+            header_action(key, label, caption, active)
+        }
+    }
+}
+
+/// [`ui_shell_header_action`] with the glyph chosen by the caller.
+///
+/// The glyph is drawn at [`IconBox::Header`] (Carbon's 20px header box) in
+/// `$icon-secondary` at rest and `$icon-primary` while `active`
+/// (`_header.scss`: `.cds--header__action svg { fill: $icon-secondary }`,
+/// `.cds--header__action--active > svg { fill: $icon-primary }`). `label`
+/// is the accessible name and the only channel besides the picture.
+pub fn ui_shell_header_action_icon(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    mark: IconMark,
+    active: bool,
+) -> ViewNode {
+    let label = label.into();
+    let tone = if active {
+        IconTone::Primary
+    } else {
+        IconTone::Secondary
+    };
+    let glyph = icon_in("glyph", mark, IconBox::Header, tone);
+    header_action(key, label, glyph, active)
+}
+
+/// The glyph Carbon's documented header utilities draw, by their label.
+///
+/// Carbon's own five names are "Notifications", "Search", "Help",
+/// "Account" and "App switcher" (slice-f). Help and account have no mark in
+/// the vocabulary yet, so they fall through to the word.
+fn header_action_mark(label: &str) -> Option<IconMark> {
+    match label {
+        "Notifications" => Some(IconMark::Notification),
+        "Search" => Some(IconMark::Search),
+        "App switcher" => Some(IconMark::Switcher),
+        _ => None,
+    }
+}
+
+fn header_action(key: impl Into<Key>, label: String, caption: ViewNode, active: bool) -> ViewNode {
     let mut props = Props {
         axis: Some(Axis::Horizontal),
         align: Some(Align::Center),
@@ -403,8 +467,9 @@ fn left_panel(key: impl Into<Key>, items: Vec<ViewNode>, width: f32) -> ViewNode
 /// A top-level left-panel row: a flat link when `children` is empty, a
 /// sub-menu title when it is not. `expanded` only matters for a sub-menu —
 /// its nested children mount only while `expanded` is true, and the caret
-/// is the word `"expanded"`/`"collapsed"` (FR-026, matching
-/// [`super::tree_view::tree_item`]'s convention). `selected` shows
+/// is [`IconMark::ChevronUp`] / [`IconMark::ChevronDown`] beside the
+/// declared `Semantics.expanded` and the mounted children (FR-026).
+/// `selected` shows
 /// [`LEFT_PANEL_ACCENT`] at the inline-start edge plus `Semantics.selected`.
 /// Title type is [`TYPOGRAPHY_HEADING_SM`] (Carbon `$heading-compact-01`).
 pub fn ui_shell_left_panel_item(
@@ -474,8 +539,17 @@ fn left_panel_row(
 
     let mut row_parts = vec![caption];
     if is_branch {
-        let disclosure = if expanded { "expanded" } else { "collapsed" };
-        row_parts.push(text("chevron", disclosure));
+        // `.cds--side-nav__submenu-chevron > svg`: `ChevronDown`, 16px,
+        // `$icon-secondary`, turned 180° while `aria-expanded`.
+        row_parts.push(icon_toned(
+            "chevron",
+            if expanded {
+                IconMark::ChevronUp
+            } else {
+                IconMark::ChevronDown
+            },
+            IconTone::Secondary,
+        ));
     }
     let mut body = stack("body", Axis::Horizontal, Some(SPACING_03), row_parts);
     body.props.align = Some(Align::Center);
@@ -769,12 +843,13 @@ fn pin_inline(w: f32) -> Constraints {
 #[cfg(test)]
 mod tests {
     use super::{
-        HEADER_ACCENT, LEFT_PANEL_ACCENT, LEFT_PANEL_ROW, LEFT_PANEL_WIDTH, MINI_UNIT_6,
-        RIGHT_PANEL_WIDTH, SWITCHER_DIVIDER_WIDTH, SWITCHER_ROW, ui_shell_header,
-        ui_shell_header_action, ui_shell_header_menu_trigger, ui_shell_header_nav_item,
-        ui_shell_left_panel, ui_shell_left_panel_divider, ui_shell_left_panel_item,
-        ui_shell_left_panel_rail, ui_shell_left_panel_subitem, ui_shell_right_panel,
-        ui_shell_right_panel_divider, ui_shell_switcher, ui_shell_switcher_item,
+        HEADER_ACCENT, IconBox, IconMark, IconTone, LEFT_PANEL_ACCENT, LEFT_PANEL_ROW,
+        LEFT_PANEL_WIDTH, MINI_UNIT_6, RIGHT_PANEL_WIDTH, SWITCHER_DIVIDER_WIDTH, SWITCHER_ROW,
+        icon_in, icon_toned, ui_shell_header, ui_shell_header_action, ui_shell_header_action_icon,
+        ui_shell_header_menu_trigger, ui_shell_header_nav_item, ui_shell_left_panel,
+        ui_shell_left_panel_divider, ui_shell_left_panel_item, ui_shell_left_panel_rail,
+        ui_shell_left_panel_subitem, ui_shell_right_panel, ui_shell_right_panel_divider,
+        ui_shell_switcher, ui_shell_switcher_item,
     };
     use crate::component::text::text;
     use crate::component::tokens::{
@@ -782,7 +857,7 @@ mod tests {
     };
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
-    use crate::testing::{Harness, validated_with};
+    use crate::testing::{Harness, inks, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
     use crate::tree::{
         Anchor, AxisConstraint, Edge, Interaction, NodeKind, Props, Registry, Role, ViewNode,
@@ -877,7 +952,19 @@ mod tests {
             Some("Open navigation menu")
         );
         assert!(!closed.semantics.selected);
-        assert_eq!(named(&closed, "label").props.text.as_deref(), Some("Open"));
+        let glyph = named(&closed, "glyph");
+        assert_eq!(glyph.kind, NodeKind::Canvas);
+        assert_eq!(
+            glyph.props.text, None,
+            "the trigger is a glyph, not the word Open"
+        );
+        assert_eq!(
+            glyph.props.canvas,
+            icon_in("glyph", IconMark::Menu, IconBox::Header, IconTone::Primary)
+                .props
+                .canvas,
+            "a shut trigger draws Carbon's Menu"
+        );
         assert_eq!(closed.constraints.horizontal.min, Some(MINI_UNIT_6));
         assert_eq!(closed.constraints.vertical.min, Some(MINI_UNIT_6));
 
@@ -887,7 +974,13 @@ mod tests {
             Some("Close navigation menu")
         );
         assert!(open.semantics.selected);
-        assert_eq!(named(&open, "label").props.text.as_deref(), Some("Close"));
+        assert_eq!(
+            named(&open, "glyph").props.canvas,
+            icon_in("glyph", IconMark::Close, IconBox::Header, IconTone::Primary)
+                .props
+                .canvas,
+            "an open trigger draws Carbon's Close"
+        );
         assert_eq!(token(&open, "background@selected"), Some(SURFACE_RAISED));
     }
 
@@ -931,6 +1024,24 @@ mod tests {
         assert_eq!(node.semantics.role, Some(Role::Button));
         assert_eq!(node.semantics.label.as_deref(), Some("Notifications"));
         assert!(!node.semantics.selected);
+        let glyph = named(&node, "glyph");
+        assert_eq!(glyph.kind, NodeKind::Canvas);
+        assert_eq!(
+            glyph.props.text, None,
+            "the action is a glyph, not the word"
+        );
+        assert_eq!(
+            glyph.props.canvas,
+            icon_in(
+                "glyph",
+                IconMark::Notification,
+                IconBox::Header,
+                IconTone::Secondary
+            )
+            .props
+            .canvas,
+            "a resting action draws its glyph in $icon-secondary"
+        );
         assert_eq!(node.constraints.horizontal.min, Some(MINI_UNIT_6));
         assert_eq!(
             node.constraints.horizontal.max, None,
@@ -944,6 +1055,62 @@ mod tests {
         let active = ui_shell_header_action("notify", "Notifications", true);
         assert!(active.semantics.selected);
         assert_eq!(token(&active, "background@selected"), Some(SURFACE_RAISED));
+        assert_eq!(
+            named(&active, "glyph").props.canvas,
+            icon_in(
+                "glyph",
+                IconMark::Notification,
+                IconBox::Header,
+                IconTone::Primary
+            )
+            .props
+            .canvas,
+            "an active action draws its glyph in $icon-primary"
+        );
+    }
+
+    /// Carbon's three documented utilities with a glyph in the vocabulary
+    /// draw it by label; a label with no glyph still surfaces its word, and
+    /// the explicit constructor draws whatever it is handed.
+    #[test]
+    fn header_action_glyph_follows_carbons_documented_labels() {
+        for (label, mark) in [
+            ("Notifications", IconMark::Notification),
+            ("Search", IconMark::Search),
+            ("App switcher", IconMark::Switcher),
+        ] {
+            let node = ui_shell_header_action("a", label, false);
+            assert_eq!(node.semantics.label.as_deref(), Some(label));
+            assert_eq!(
+                named(&node, "glyph").props.canvas,
+                icon_in("glyph", mark, IconBox::Header, IconTone::Secondary)
+                    .props
+                    .canvas,
+                "{label} draws {mark:?}"
+            );
+            assert!(!has_key(&node, "label"), "{label} is not also spelled out");
+        }
+
+        let help = ui_shell_header_action("help", "Help", false);
+        assert_eq!(named(&help, "label").props.text.as_deref(), Some("Help"));
+        assert!(
+            !has_key(&help, "glyph"),
+            "Help has no glyph yet and says so"
+        );
+
+        let explicit = ui_shell_header_action_icon("x", "Anything", IconMark::Close, false);
+        assert_eq!(explicit.semantics.label.as_deref(), Some("Anything"));
+        assert_eq!(
+            named(&explicit, "glyph").props.canvas,
+            icon_in(
+                "glyph",
+                IconMark::Close,
+                IconBox::Header,
+                IconTone::Secondary
+            )
+            .props
+            .canvas
+        );
     }
 
     // -- left panel ------------------------------------------------------
@@ -981,9 +1148,18 @@ mod tests {
         let child = ui_shell_left_panel_subitem("child", "Fibers", false);
         let expanded = ui_shell_left_panel_item("kernel", "Kernel", true, false, vec![child]);
         assert_eq!(expanded.semantics.expanded, Some(true));
+        let chevron = named(&expanded, "chevron");
+        assert_eq!(chevron.kind, NodeKind::Canvas);
         assert_eq!(
-            named(&expanded, "chevron").props.text.as_deref(),
-            Some("expanded")
+            chevron.props.text, None,
+            "the chevron is a glyph, not a word"
+        );
+        assert_eq!(
+            chevron.props.canvas,
+            icon_toned("chevron", IconMark::ChevronUp, IconTone::Secondary)
+                .props
+                .canvas,
+            "an expanded sub-menu points its chevron up"
         );
         assert!(has_key(&expanded, "child"));
 
@@ -995,8 +1171,11 @@ mod tests {
             vec![ui_shell_left_panel_subitem("child", "Fibers", false)],
         );
         assert_eq!(
-            named(&collapsed, "chevron").props.text.as_deref(),
-            Some("collapsed")
+            named(&collapsed, "chevron").props.canvas,
+            icon_toned("chevron", IconMark::ChevronDown, IconTone::Secondary)
+                .props
+                .canvas,
+            "a collapsed sub-menu points its chevron down"
         );
         assert!(!has_key(&collapsed, "child"));
         assert!(!has_key(&collapsed, "children"));
@@ -1189,9 +1368,10 @@ mod tests {
     /// nav, and an active and an inactive action, all in one frame. This is
     /// the class-4 suspect this group's own brief names explicitly: the
     /// menu trigger and every header action are Carbon-sized 48×48 icon-only
-    /// hit boxes (`icon_hit_box(MINI_UNIT_6)`) that this library fills with a
-    /// WORD ("Open"/"Close", "Notifications", "Search") instead of a glyph
-    /// (FR-026, this module's own doc "What none of the three rows build").
+    /// hit boxes (`icon_hit_box(MINI_UNIT_6)`) that this library filled with
+    /// a WORD ("Open"/"Close", "Notifications", "Search") until 2026-09-04;
+    /// they draw Carbon's 20px glyphs now, and a label with no glyph still
+    /// surfaces its word (this module's own doc "Glyphs").
     #[test]
     fn header_frame_geometry_has_no_degenerate_or_overflowing_placements() {
         let node = ui_shell_header(
@@ -1308,25 +1488,25 @@ mod tests {
                 ("name", "label", "name"),
                 ("current-nav", "label", "overview"),
                 ("resting-nav", "label", "fibers"),
-                ("action", "label", "notify"),
+                ("action", "glyph", "notify"),
+                ("trigger", "glyph", "trigger"),
             ] {
                 let host = named(&node, host_key);
                 let text_node = named(host, text_key);
-                let fg_name = text_node
-                    .props
-                    .tokens
-                    .get("foreground")
-                    .unwrap_or_else(|| panic!("{label}: text binds a foreground"));
+                let inks = inks(text_node);
+                assert!(!inks.is_empty(), "{label}: binds an ink");
                 let opacity = text_node.props.opacity.unwrap_or(1.0);
-                let fg = color(&theme, fg_name.as_str())
-                    .faded(opacity)
-                    .over(header_bg);
-                let ratio = fg.contrast_ratio(header_bg);
-                assert!(
-                    ratio >= MIN_TEXT_CONTRAST,
-                    "{label} at {ratio:.2}:1 against {} fails AA {MIN_TEXT_CONTRAST}:1",
-                    header_bg_name.as_str()
-                );
+                for fg_name in inks {
+                    let fg = color(&theme, fg_name.as_str())
+                        .faded(opacity)
+                        .over(header_bg);
+                    let ratio = fg.contrast_ratio(header_bg);
+                    assert!(
+                        ratio >= MIN_TEXT_CONTRAST,
+                        "{label} at {ratio:.2}:1 against {} fails AA {MIN_TEXT_CONTRAST}:1",
+                        header_bg_name.as_str()
+                    );
+                }
             }
         }
     }
