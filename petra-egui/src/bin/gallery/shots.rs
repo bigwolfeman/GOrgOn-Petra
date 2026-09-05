@@ -2293,5 +2293,49 @@ mod tests {
              of {width} marked"
         );
     }
-}
 
+    /// Row 34's Port field validated nothing.
+    ///
+    /// It was a `field_invalid` built with a constant message, so it said
+    /// "must be a number" while the operator typed numbers into it. His
+    /// words: *"port doesnt work, i put in numbers and it complains theyre
+    /// not numbers."*
+    ///
+    /// Driven the way a hand drives it: click into the well, backspace the
+    /// four wrong characters away, type digits, and read the frame back. The
+    /// error edge is `support.error`; a legal value binds no `border` at all.
+    #[test]
+    fn typing_digits_into_the_port_field_clears_its_complaint() {
+        let mut cam = Camera::on("Text input");
+        let edge = cam.token("field-port/input", "border");
+        assert_eq!(
+            edge.as_deref(),
+            Some("support-error"),
+            "the page opens on the invalid state, so the row shows one"
+        );
+
+        cam.click("field-port/input");
+        for _ in 0.."http".len() {
+            cam.key(KeyCode::Backspace);
+        }
+        cam.type_here("8080");
+
+        assert_eq!(
+            cam.token("field-port/input", "border"),
+            None,
+            "a port of 8080 is a number, so the field must stop saying it is not"
+        );
+        assert!(
+            !cam.has("field-port/helper"),
+            "and the helper line must go with it"
+        );
+        cam.shoot("34-text-input-port-fixed");
+
+        cam.type_here("x");
+        assert_eq!(
+            cam.token("field-port/input", "border").as_deref(),
+            Some("support-error"),
+            "and it must come back the moment the value stops being a number"
+        );
+    }
+}

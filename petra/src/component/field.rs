@@ -208,25 +208,46 @@ pub fn field_invalid(
     label: impl Into<String>,
     message: impl Into<String>,
 ) -> ViewNode {
-    let message = message.into();
-    let mut helper = text("helper", format!("Invalid: {message}"));
-    // The word carries the state as well as the hue does, which is the point:
-    // the operator is red-green colour blind and a red edge on its own is not
-    // a channel he can read. Ink stays primary so the message is legible;
-    // tinting it would trade a channel he has for one he does not.
-    helper
-        .props
-        .tokens
-        .insert("foreground".into(), t(TEXT_PRIMARY));
-    let mut node = stack(
-        key,
-        Axis::Vertical,
-        Some(SPACING_02),
-        vec![
-            input_field("input", label, SIZE_MD, FieldChrome::Invalid),
-            helper,
-        ],
-    );
+    field_validated(key, label, Some(message.into()))
+}
+
+/// A Default input that carries its own validity.
+///
+/// `None` builds the enabled well; `Some(message)` builds
+/// [`field_invalid`]'s well plus its helper line.
+///
+/// **Both builds have the same shape**, so the well's id is `{key}/input`
+/// either way. That is the whole reason this constructor exists rather than
+/// the caller branching between [`field`] and [`field_invalid`]: those two
+/// place the well at different depths, so the keystroke that made a value
+/// legal would re-key the node under the operator's cursor and drop his
+/// focus mid-edit. A one-child stack costs nothing — a vertical stack's
+/// spacing only applies *between* children.
+pub fn field_validated(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    message: Option<String>,
+) -> ViewNode {
+    let chrome = if message.is_some() {
+        FieldChrome::Invalid
+    } else {
+        FieldChrome::Enabled
+    };
+    let mut children = vec![input_field("input", label, SIZE_MD, chrome)];
+    if let Some(message) = message {
+        let mut helper = text("helper", format!("Invalid: {message}"));
+        // The word carries the state as well as the hue does, which is the
+        // point: the operator is red-green colour blind and a red edge on
+        // its own is not a channel he can read. Ink stays primary so the
+        // message is legible; tinting it would trade a channel he has for
+        // one he does not.
+        helper
+            .props
+            .tokens
+            .insert("foreground".into(), t(TEXT_PRIMARY));
+        children.push(helper);
+    }
+    let mut node = stack(key, Axis::Vertical, Some(SPACING_02), children);
     // A vertical stack's cross axis is the width, so this is what passes a
     // caller's width down to the well. Without it the field hugged its own
     // placeholder while its plain siblings filled the column, and row 34
@@ -379,7 +400,7 @@ mod tests {
     // can assert the two differ.
     use super::{
         SIZE_FLUID, SIZE_LG, SIZE_MD, SIZE_SM, field, field_fluid, field_invalid, field_labeled,
-        field_lg, field_readonly, field_sm, labeled,
+        field_lg, field_readonly, field_sm, field_validated, labeled,
     };
     use crate::component::tokens::{ACCENT_PRIMARY, SURFACE_BASE};
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
@@ -847,5 +868,39 @@ mod tests {
         let plain = super::text("t", "not a field");
         let after = valued(plain.clone(), "ignored");
         assert_eq!(after.props.text, plain.props.text);
+    }
+
+    /// A validating field must not move its own well when the value becomes
+    /// legal.
+    ///
+    /// The gallery's Port row branched between `field` and `field_invalid`,
+    /// which place the well at `{key}` and at `{key}/input` respectively.
+    /// The keystroke that made the value a number therefore re-keyed the
+    /// node the operator's cursor was sitting in, and focus went with it.
+    /// Both builds are one shape now, and this is the assertion that keeps
+    /// them one shape.
+    #[test]
+    fn a_validating_field_keeps_its_well_at_the_same_key_either_way() {
+        let bad = field_validated("port", "Port", Some("must be a number".to_owned()));
+        let good = field_validated("port", "Port", None);
+
+        for (node, what) in [(&bad, "invalid"), (&good, "valid")] {
+            assert_eq!(node.key.as_str(), "port", "{what}: wrapper key");
+            assert_eq!(
+                node.children[0].key.as_str(),
+                "input",
+                "{what}: the well is the first child, at the same key"
+            );
+            assert_eq!(node.children[0].kind, NodeKind::Input, "{what}");
+        }
+
+        assert_eq!(bad.children.len(), 2, "the invalid build carries a helper");
+        assert_eq!(good.children.len(), 1, "the valid build carries none");
+        assert_eq!(
+            token(&bad.children[0], "border"),
+            Some(SUPPORT_ERROR),
+            "and only the invalid build binds the error edge"
+        );
+        assert_eq!(good.children[0].props.tokens.get("border"), None);
     }
 }
