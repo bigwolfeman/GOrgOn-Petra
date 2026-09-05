@@ -187,8 +187,8 @@ pub trait Page {
 pub fn all() -> Vec<Box<dyn Page>> {
     vec![
         Box::new(accordion::Accordion::default()),
-        Box::new(ai_label::AiLabel),
-        Box::new(breadcrumb::Breadcrumb),
+        Box::new(ai_label::AiLabel::default()),
+        Box::new(breadcrumb::Breadcrumb::default()),
         Box::new(button::Button),
         Box::new(checkbox::Checkbox::default()),
         Box::new(code_snippet::CodeSnippet::default()),
@@ -224,7 +224,7 @@ pub fn all() -> Vec<Box<dyn Page>> {
         Box::new(toggle::Toggle::default()),
         Box::new(toggletip::Toggletip::default()),
         Box::new(tooltip::Tooltip::default()),
-        Box::new(tree_view::TreeView),
+        Box::new(tree_view::TreeView::default()),
         Box::new(ui_shell_header::UiShellHeader::default()),
         Box::new(ui_shell_left_panel::UiShellLeftPanel::default()),
         Box::new(ui_shell_right_panel::UiShellRightPanel::default()),

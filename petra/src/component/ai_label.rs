@@ -37,11 +37,13 @@
 //! [`super::disabled`] should not be composed onto anything this module
 //! returns. **Revert** ([`ai_label_revert`]) is the one state unique to
 //! this component: Carbon swaps the whole trigger for an icon-only "Undo"
-//! button (`.cds--ai-label--revert`). [`icon`](super::icon) ships no
-//! `Undo` mark (this file does not own `icon.rs`), and FR-026/FR-058
-//! forbid an icon-only control regardless, so the swapped trigger here
-//! carries the visible word `"Undo"` instead of a mark — a labelled
-//! control, never an icon alone.
+//! button (`.cds--ai-label--revert`), a bare curved arrow with no box at
+//! all — measured off `02-ai-label.png`, a 24x21 device-pixel glyph run
+//! with no border anywhere near it. [`icon`](super::icon) ships no `Undo`
+//! mark (this file does not own `icon.rs`), and FR-026/FR-058 forbid an
+//! icon-only control regardless, so the swapped trigger here carries the
+//! visible word `"Undo"` instead of a mark — a labelled control, never an
+//! icon alone — in a box that is Carbon's height and its label's width.
 //!
 //! # T070 (SCSS wins)
 //! Slice-a's `SYNTHESIS.md` §5 eight-item docs-vs-SCSS list does not name
@@ -83,8 +85,8 @@ use super::popover::popover_with;
 use super::stack;
 use super::text::text;
 use super::tokens::{
-    BORDER_SUBTLE, LAYER_HOVER, SHAPE_FULL, SHAPE_MD, SIZE_MD, SPACING_02, SPACING_03,
-    SURFACE_BASE, TEXT_PRIMARY, t,
+    BORDER_SUBTLE, LAYER_HOVER, SHAPE_FULL, SHAPE_MD, SIZE_MD, SPACING_02, SPACING_03, SPACING_05,
+    SURFACE_BASE, TEXT_PRIMARY, TYPOGRAPHY_LABEL, t,
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
@@ -126,6 +128,28 @@ const ACTIONS_FOOTER_HEIGHT: f32 = 48.0;
 /// that a local `const` may name any token already in the shipped
 /// vocabulary (`token::shipped::SPACING_SCALE` carries `spacing-06`).
 const SPACING_06: &str = "spacing-06";
+
+/// Carbon `body-02` (16/22), the type the **inline lg** trigger is paired
+/// with. Not one of [`super::tokens`]'s re-exports — named locally under the
+/// same house rule as [`SPACING_06`], because `token::shipped`'s type ramp
+/// carries `typography.body-lg`.
+const TYPOGRAPHY_BODY_LG: &str = "typography.body-lg";
+
+/// The default-variant size at and below which the `"AI"` glyph steps down
+/// to [`TYPOGRAPHY_LABEL`].
+///
+/// Carbon's `$sizes` map scales the box and the docs do not record what it
+/// does to `.cds--ai-label__text`; slice-a's "Key numbers" has no per-size
+/// font pairing for the default variant, so there is no Carbon figure to
+/// copy here. What there is, is a measurement: at `mini` (16), body type
+/// (14/20) puts the `"AI"` run 2.5 points off the left border and 1.5 off
+/// the right, sitting on the bottom rule — read off `02-ai-label.png` on
+/// 2026-09-05, glyph run 591..610 device pixels inside a well of 586..613.
+/// [`TYPOGRAPHY_LABEL`] is Carbon `label-01` (12/16) and is the smallest
+/// step this library ships, so it is what the two small boxes get. The
+/// **inline** ramp needs no such judgement: slice-a SOURCES its pairing
+/// outright (16/18/22 boxes against 12/14/16 text).
+const SMALL_GLYPH_BELOW: f32 = DEFAULT_XS;
 
 const _: () = assert!(DEFAULT_MINI == 16.0);
 const _: () = assert!(DEFAULT_2XS == 20.0);
@@ -249,11 +273,36 @@ pub fn ai_label_with_actions(
 /// Revert-state trigger (`.cds--ai-label--revert`): the whole trigger
 /// swapped for a labelled "Undo" control. No popover — reverting is a
 /// terminal action, not a fresh trigger for the explainability panel.
+///
+/// # Why this one is not square
+///
+/// Carbon's revert is an icon-only `Undo` glyph in a 40 box, and
+/// [`icon`](super::icon) ships no `Undo` mark (this file does not own
+/// `icon.rs`), so what stands in its place is the **word**. Pinned square
+/// at 40 the word had 3 points of air on its left and 2.5 on its right —
+/// measured off `02-ai-label.png` on 2026-09-05, glyph run 592..656 device
+/// pixels inside a well of 586..662 — and the operator's report on the row
+/// was *"it looks bad whatever it is"*. A word crammed edge to edge inside
+/// a box built for a glyph is what that looks like.
+///
+/// So this control keeps Carbon's **height** (40, [`SIZE_MD`], the same
+/// pin every other trigger has) and takes its width from its label plus
+/// [`SPACING_05`] on each side, exactly as [`super::button`] does. The
+/// floor stays at 40 so it is never *narrower* than the square it replaces.
+/// It is a labelled button that happens to be the revert control, which is
+/// what FR-026/FR-058 leave available until an `Undo` mark exists.
 pub fn ai_label_revert(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
     let label = label.into();
-    let mut node = stack(key, Axis::Horizontal, None, centered_caption("Undo"));
+    let mut node = stack(key, Axis::Horizontal, None, centered_caption("Undo", None));
     node.props.align = Some(Align::Center);
     node.props.justify = Some(Justify::Center);
+    // A container, not a leaf, so `Props.padding` is legal here
+    // (`Violation::PaddingOnLeafKind`); the caption inside it is the leaf.
+    node.props.padding = Some(InsetRefs {
+        left: Some(t(SPACING_05)),
+        right: Some(t(SPACING_05)),
+        ..InsetRefs::default()
+    });
     node.props
         .tokens
         .insert("background".into(), t(SURFACE_BASE));
@@ -261,8 +310,29 @@ pub fn ai_label_revert(key: impl Into<Key>, label: impl Into<String>) -> ViewNod
     node.props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
-    node.with_constraints(square(SIZE_MD))
+    node.with_constraints(revert_box())
         .interactive(Role::Button, label, TRIGGER_INTENTS)
+}
+
+/// [`ai_label_revert`]'s box: Carbon's 40 height pinned, width free above a
+/// 40 floor.
+///
+/// The mirror image of [`square`], and the two docs belong together: a
+/// trigger holding a two-glyph mark must not be allowed to stretch, and a
+/// control holding a word must not be forbidden to fit it.
+fn revert_box() -> Constraints {
+    Constraints {
+        horizontal: AxisConstraint {
+            min: Some(SIZE_MD),
+            max: None,
+            priority: 0,
+        },
+        vertical: AxisConstraint {
+            min: Some(SIZE_MD),
+            max: Some(SIZE_MD),
+            priority: 0,
+        },
+    }
 }
 
 /// Inline-variant AI label at Carbon `md` (18px, default). Leading bullet
@@ -340,7 +410,8 @@ fn inline_sized(
 /// wrapping the `"AI"` text). `border-inverse` has no token; see the
 /// module doc for why [`BORDER_SUBTLE`] stands in.
 fn trigger_button(key: impl Into<Key>, label: String, size: f32) -> ViewNode {
-    let mut node = stack(key, Axis::Horizontal, None, centered_caption("AI"));
+    let style = (size < SMALL_GLYPH_BELOW).then_some(TYPOGRAPHY_LABEL);
+    let mut node = stack(key, Axis::Horizontal, None, centered_caption("AI", style));
     node.props.align = Some(Align::Center);
     node.props.justify = Some(Justify::Center);
     node.props
@@ -365,12 +436,15 @@ fn trigger_button(key: impl Into<Key>, label: String, size: f32) -> ViewNode {
 /// only ever resolved the cross axis and the main axis had no such knob.
 /// `Props::justify` is that knob now: a lone child, centred on both axes,
 /// with no spacer pair and no priority trick.
-fn centered_caption(label: &str) -> Vec<ViewNode> {
+fn centered_caption(label: &str, style: Option<&str>) -> Vec<ViewNode> {
     let mut caption = text("text", label);
     // Clip, not the default Wrap: a two-word caption ("AI", "Undo") has
     // nothing to prove by wrapping, and this is the policy the label
     // actually wants — never break onto a second line.
     caption.props.wrap = Some(TextWrap::Clip);
+    if let Some(style) = style {
+        caption.props.style = Some(t(style));
+    }
     caption
         .props
         .tokens
@@ -384,6 +458,12 @@ fn centered_caption(label: &str) -> Vec<ViewNode> {
 fn inline_trigger(key: impl Into<Key>, label: String, height: f32, bullet: f32) -> ViewNode {
     let dot = bullet_dot("dot", bullet);
     let mut caption = text("text", "AI");
+    // Slice-a SOURCES the pairing outright: the 16/18/22 inline boxes go
+    // with 12/14/16 text. `text()` already binds the middle one, so only
+    // the ends are named here.
+    if let Some(style) = inline_type(height) {
+        caption.props.style = Some(t(style));
+    }
     caption
         .props
         .tokens
@@ -424,6 +504,19 @@ fn inline_trigger(key: impl Into<Key>, label: String, height: f32, bullet: f32) 
         ..Constraints::default()
     })
     .interactive(Role::Button, label, TRIGGER_INTENTS)
+}
+
+/// The type step Carbon pairs with an inline trigger of `height`
+/// (slice-a "Sizes": sm 16 with 12px text, md 18 with 14px, lg 22 with
+/// 16px). `None` is the md step, which [`super::text::text`] already binds.
+fn inline_type(height: f32) -> Option<&'static str> {
+    if height <= INLINE_SM {
+        Some(TYPOGRAPHY_LABEL)
+    } else if height >= INLINE_LG {
+        Some(TYPOGRAPHY_BODY_LG)
+    } else {
+        None
+    }
 }
 
 /// The leading bullet: a filled, fully-rounded square. Decorative — it
@@ -468,10 +561,9 @@ fn explainability_panel(label: String, anchor: impl Into<Key>, rows: Vec<ViewNod
 /// trigger is a lone child of a stretching container, so an unbounded
 /// inline axis is an invitation, not a floor.
 ///
-/// The cost of keeping the pin is that `"Undo"` — the word this library
-/// draws where Carbon draws a revert arrow (FR-026) — very nearly fills 40
-/// device pixels and sits with almost no padding. That is snug and legible.
-/// The alternative was a full-width button.
+/// This is the box for the **glyph** triggers, the ones holding `"AI"`.
+/// [`ai_label_revert`] holds a word and takes [`revert_box`] instead; its
+/// doc has the measurement that separated the two.
 fn square(size: f32) -> Constraints {
     Constraints {
         horizontal: AxisConstraint {
@@ -496,7 +588,7 @@ mod tests {
         ai_label_mini, ai_label_revert, ai_label_sm, ai_label_with_actions, ai_label_xl,
         ai_label_xs,
     };
-    use crate::component::tokens::{BORDER_SUBTLE, SHAPE_FULL, SHAPE_MD, SIZE_MD};
+    use crate::component::tokens::{BORDER_SUBTLE, SHAPE_FULL, SHAPE_MD, SIZE_MD, SPACING_05};
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, validated, validated_with};
@@ -686,6 +778,97 @@ mod tests {
             "revert is the word Undo, never an icon-only mark"
         );
         assert!(!node.semantics.disabled);
+    }
+
+    /// The `"AI"` glyph steps down with the box it sits in.
+    ///
+    /// The inline half is Carbon's own pairing (slice-a "Sizes": 16/18/22
+    /// boxes against 12/14/16 text). The default half is a measurement, not
+    /// a Carbon figure — see [`super::SMALL_GLYPH_BELOW`]'s doc — and it is
+    /// asserted here so the judgement is visible rather than buried.
+    ///
+    /// Falsify by dropping the `style` argument from `centered_caption`:
+    /// mini and 2xs go back to body type and the glyph sits on its own
+    /// bottom rule.
+    #[test]
+    fn the_ai_glyph_steps_down_with_the_box_it_sits_in() {
+        fn style(node: &ViewNode) -> Option<&str> {
+            named(node, "text").props.style.as_ref().map(|s| s.as_str())
+        }
+        const LABEL: &str = "typography.label";
+        const BODY: &str = "typography.body";
+        const BODY_LG: &str = "typography.body-lg";
+
+        assert_eq!(
+            style(&ai_label_mini("a", "Ask AI", false, "x")),
+            Some(LABEL)
+        );
+        assert_eq!(style(&ai_label_2xs("a", "Ask AI", false, "x")), Some(LABEL));
+        assert_eq!(style(&ai_label_xs("a", "Ask AI", false, "x")), Some(BODY));
+        assert_eq!(style(&ai_label_sm("a", "Ask AI", false, "x")), Some(BODY));
+        assert_eq!(style(&ai_label("a", "Ask AI", false, "x")), Some(BODY));
+        assert_eq!(style(&ai_label_lg("a", "Ask AI", false, "x")), Some(BODY));
+        assert_eq!(style(&ai_label_xl("a", "Ask AI", false, "x")), Some(BODY));
+
+        assert_eq!(
+            style(&ai_label_inline_sm("a", "Ask AI", false, "x")),
+            Some(LABEL)
+        );
+        assert_eq!(
+            style(&ai_label_inline("a", "Ask AI", false, "x")),
+            Some(BODY)
+        );
+        assert_eq!(
+            style(&ai_label_inline_lg("a", "Ask AI", false, "x")),
+            Some(BODY_LG)
+        );
+
+        // The revert control holds a word, not a glyph, and keeps body type.
+        assert_eq!(style(&ai_label_revert("a", "Undo AI edit")), Some(BODY));
+    }
+
+    /// The revert control keeps Carbon's height and gets its width from
+    /// the word it has to hold.
+    ///
+    /// Pinned square at 40 the word `"Undo"` had 3 points of air on one
+    /// side and 2.5 on the other (measured off `02-ai-label.png`,
+    /// 2026-09-05), which is the "looks bad" half of the operator's report
+    /// on this row. Falsify by putting `square(SIZE_MD)` back on it: the
+    /// `max` and the padding assertions both fail, and the picture goes
+    /// back to a word wedged against two borders.
+    #[test]
+    fn the_revert_control_is_as_tall_as_carbon_and_as_wide_as_its_word() {
+        let node = ai_label_revert("conf", "Revert to AI suggestion");
+        assert_eq!(node.constraints.vertical.min, Some(SIZE_MD));
+        assert_eq!(
+            node.constraints.vertical.max,
+            Some(SIZE_MD),
+            "Carbon's revert is 40 tall like every other trigger"
+        );
+        assert_eq!(
+            node.constraints.horizontal.min,
+            Some(SIZE_MD),
+            "never narrower than the square it replaces"
+        );
+        assert_eq!(
+            node.constraints.horizontal.max, None,
+            "a word needs room; pinning the inline axis is what crammed it"
+        );
+        let pad = node
+            .props
+            .padding
+            .as_ref()
+            .expect("revert has inline padding");
+        assert_eq!(pad.left.as_ref().map(|n| n.as_str()), Some(SPACING_05));
+        assert_eq!(pad.right.as_ref().map(|n| n.as_str()), Some(SPACING_05));
+        assert!(
+            pad.top.is_none() && pad.bottom.is_none(),
+            "height is the pinned constraint, as it is on `button`"
+        );
+
+        // The glyph triggers are unchanged and stay pinned on both axes.
+        let trigger = child(&ai_label("a", "Ask AI", false, "x"), "trigger").clone();
+        assert_eq!(trigger.constraints.horizontal.max, Some(SIZE_MD));
     }
 
     #[test]

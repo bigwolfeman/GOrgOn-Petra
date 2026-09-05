@@ -129,7 +129,7 @@ pub use ai_label::{
     ai_label, ai_label_2xs, ai_label_inline, ai_label_inline_lg, ai_label_inline_sm, ai_label_lg,
     ai_label_mini, ai_label_revert, ai_label_sm, ai_label_with_actions, ai_label_xl, ai_label_xs,
 };
-pub use breadcrumb::{breadcrumb, breadcrumb_item};
+pub use breadcrumb::{breadcrumb, breadcrumb_item, breadcrumb_item_current};
 pub use button::{
     button, button_lg, button_sm, button_xs, danger_button, danger_ghost_button,
     danger_tertiary_button, ghost_button, primary_button, tertiary_button,
