@@ -12,7 +12,7 @@
 //!    `Semantics.selected` never colour alone — Carbon's own anatomy draws
 //!    `RadioButtonChecked` / `RadioButton` beside the row (slice-e, Icons:
 //!    "the only two icons this component ever renders"); see
-//!    [`with_selection_mark`]. Cell padding is the `padding-td` mixin: 16
+//!    [`selection_cell`]. Cell padding is the `padding-td` mixin: 16
 //!    top, 24 bottom, so a one-line row comes out at Carbon's 60 without a
 //!    pinned height, and the text sits in the upper part of the row the
 //!    way the reference shows it, not centred.
@@ -29,6 +29,58 @@
 //! of shared-width columns so sibling rows resolve identical pixel columns
 //! (the `data_table.rs` fix). The 10-colour tag set is unrelated; this file
 //! does not invent hues.
+//!
+//! # The selection mark is a cell of its own, at the row's trailing edge
+//!
+//! Round 3, the operator: *"the padding on the structured list is wack."*
+//! Measured against `ignored/carbon-ref/shots/31-structured-list.png`, both
+//! halves of that were one defect. Carbon puts its header caption and its
+//! row text at the **same** inset — 98 device pixels at dpr 2, so 16 units
+//! plus the glyph's own bearing. Ours put the header at 17 and the row text
+//! at 35, because the mark was prepended *inside* the leading data cell
+//! (an extra `lead` stack) and the header, which has no mark, had no such
+//! stack. Two columns that claimed to be one.
+//!
+//! The mark is now its own [`Role::Cell`] in its own grid track, present
+//! and empty on the header, which is how Carbon composes it: the icon lives
+//! in a `StructuredListCell` and the head row carries a matching empty one.
+//! It sits at the **trailing** edge, which is Carbon's documented default
+//! placement — slice-e:97, *"Positioned on the right of the row content by
+//! default, or the left when the v12 visible-icons flag is enabled"* — and
+//! is what puts the first column's text back at Carbon's 16.
+//!
+//! # Draggable column dividers, and the departure they are
+//!
+//! **Carbon does not ship column resize.** slice-b:59 verified it absent
+//! from `@carbon/react`'s DataTable and says a from-scratch port *"should
+//! not build column-resize ... unless it is deliberately adding a feature
+//! Carbon v11 does not ship"*. The operator asked for it by name in round 3
+//! — *"we should probably let the column spacers always we draggable
+//! (toggled off in code)"* — so this is that deliberate addition, and
+//! [`structured_list_sized`]'s `dividers` flag is the "toggled off in code"
+//! half. [`structured_list`] passes `true`.
+//!
+//! A divider is a [`DIVIDER`]-wide grid track carrying a [`DIVIDER_RULE`]-wide
+//! rule down its centre. **The hit area is eight times the mark on purpose**:
+//! a one-unit drag target is not a thing a hand can hit, and the engine has
+//! no way to widen a node's hit rect past its own placement, so the target
+//! *is* the track and the rule is what the eye gets. It declares
+//! [`Interaction::Drag`] and nothing else — not `Hover`, for the reason
+//! `slider.rs` gives on its rail: a hovered node reports every pointer move
+//! to the page as a position the page never asked for, which is how round 2
+//! shipped a slider that moved when the pointer merely passed it.
+//!
+//! It declares no `Focus` either, so it never enters Tab order. That is a
+//! real gap and it is named rather than hidden: a keyboard has no way to
+//! resize a column here. Carbon has no keyboard model to copy, because
+//! Carbon has no such control.
+//!
+//! [`structured_list_weights_at`] is the arithmetic, the peer of
+//! [`super::slider_value_at`]: it takes the frame, the divider a gesture is
+//! on, and the pointer, and answers the column weights that put the
+//! boundary under the pointer. The weights are the *caller's* state, exactly
+//! as a slider's value is, because a component builds a tree and holds
+//! nothing.
 
 use super::icon::{IconMark, IconTone, icon_toned};
 use super::stack;
@@ -37,10 +89,13 @@ use super::tokens::{
     BORDER_SUBTLE, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SPACING_03, SPACING_05,
     SPACING_06, SURFACE_BASE, t,
 };
-use crate::geom::{Align, Axis};
+use std::sync::Arc;
+
+use crate::frame::PetrifiedFrame;
+use crate::geom::{Align, Axis, Point};
 use crate::tree::{
-    AxisConstraint, InsetRefs, Interaction, Key, NodeKind, Props, Role, Semantics, TrackSize,
-    ViewNode,
+    AxisConstraint, Constraints, InsetRefs, Interaction, Justify, Key, NodeKind, Props, Role,
+    Semantics, TrackSize, ViewNode,
 };
 
 /// Carbon default structured-list row height (style page Size table). Not
@@ -50,7 +105,44 @@ const ROW_HEIGHT: f32 = 60.0;
 
 const _: () = assert!(ROW_HEIGHT == 60.0);
 
+/// The width of a column divider's grid track, and so of its drag target.
+///
+/// Not a Carbon number — Carbon has no such control (slice-b:59). It is
+/// `$spacing-03` (8) expressed as a length rather than a token, because a
+/// track size is a number in this engine and not a token reference, and 8
+/// is the smallest step in Carbon's own spacing set that is still a target
+/// a pointer can land on. The rule the eye sees is [`DIVIDER_RULE`], so the
+/// target is eight times the mark.
+const DIVIDER: f32 = 8.0;
+
+/// The drawn width of the rule inside a divider: one unit, the same rule
+/// weight `border-top` gives a row, so a vertical seam and a horizontal one
+/// read as the same line.
+const DIVIDER_RULE: f32 = 1.0;
+
+/// The narrowest a column may be dragged.
+///
+/// A cell carries `$spacing-05` (16) of inline padding on each side
+/// ([`cell_padding`]), so 32 is the width at which a column is all padding
+/// and no content. Dragging past that would hide text behind the next
+/// column rather than narrow it, so the drag stops there.
+const MIN_COLUMN: f32 = 32.0;
+
+const _: () = assert!(MIN_COLUMN == 2.0 * 16.0);
+
+/// The key prefix every divider carries: `div0` is the boundary between
+/// column 0 and column 1.
+const DIVIDER_KEY: &str = "div";
+
+/// The key of every row's selection cell, and of the mark inside it.
+const SELECT_CELL: &str = "sel";
+/// The mark itself, inside [`SELECT_CELL`].
+const MARK: &str = "mark";
+
 const ROW_INTENTS: &[Interaction] = &[Interaction::Focus, Interaction::Click, Interaction::Hover];
+
+/// What a column divider declares. `Drag` alone: see the module doc.
+const DIVIDER_INTENTS: &[Interaction] = &[Interaction::Drag];
 
 /// Which padding mixin a cell takes.
 #[derive(Clone, Copy)]
@@ -61,13 +153,40 @@ enum CellKind {
     Data,
 }
 
-/// Structured list: header + rows under [`Role::Table`]. The last data row
-/// gets the tbody's closing rule.
+/// Structured list: header + rows under [`Role::Table`], equal columns,
+/// draggable dividers between them.
+///
+/// The last data row gets the tbody's closing rule. For a list whose
+/// columns a caller sizes — which is what a drag needs, since the weights
+/// are the caller's state — see [`structured_list_sized`].
 pub fn structured_list(
     key: impl Into<Key>,
     header: Vec<ViewNode>,
     rows: Vec<ViewNode>,
 ) -> ViewNode {
+    let ncols = header.len().max(1);
+    structured_list_sized(key, header, rows, &vec![1.0; ncols], true)
+}
+
+/// [`structured_list`] with the column weights and the divider policy the
+/// caller chooses.
+///
+/// `weights` is one entry per data column; a shorter or longer vector is
+/// padded or truncated to the header's column count, because a mismatch is
+/// a caller bug that must not silently drop a column. `dividers` is the
+/// "toggled off in code" half of the operator's round-3 request: `false`
+/// builds the same table with no divider tracks and nothing draggable.
+pub fn structured_list_sized(
+    key: impl Into<Key>,
+    header: Vec<ViewNode>,
+    rows: Vec<ViewNode>,
+    weights: &[f32],
+    dividers: bool,
+) -> ViewNode {
+    let ncols = header.len().max(1);
+    let names: Vec<String> = header.iter().map(collect_text).collect();
+    let weights = normalise_weights(weights, ncols);
+
     let mut rows: Vec<ViewNode> = rows.into_iter().map(ensure_row).collect();
     if let Some(last) = rows.last_mut() {
         last.props
@@ -76,11 +195,15 @@ pub fn structured_list(
     }
     let mut children = vec![header_row("header", header)];
     children.extend(rows);
+    for row in &mut children {
+        lay_out_columns(row, &weights, dividers, &names);
+    }
+
     let mut node = stack(key, Axis::Vertical, None, children);
-    // Every row is a `Grid` (see `row_shell`) whose equal-weight column
-    // tracks resolve against whatever width `place` offers it. `Stretch`
-    // offers every row the list's own width, so the Grid tracks resolve
-    // identical pixel columns row to row.
+    // Every row is a `Grid` (see `row_shell`) whose column tracks resolve
+    // against whatever width `place` offers it. `Stretch` offers every row
+    // the list's own width, so the Grid tracks resolve identical pixel
+    // columns row to row.
     node.props.align = Some(Align::Stretch);
     node.semantics = Semantics {
         role: Some(Role::Table),
@@ -91,13 +214,17 @@ pub fn structured_list(
 
 /// One selectable data row. Interactive, [`Role::Row`], cells stamped
 /// [`Role::Cell`]. `selected` is a declared fact plus the four-fill set
-/// [`super::list_row`] pioneered, plus [`with_selection_mark`]'s icon —
-/// Carbon's own second channel.
+/// [`super::list_row`] pioneered, plus the trailing [`selection_cell`]'s
+/// icon — Carbon's own second channel.
 pub fn structured_list_row(key: impl Into<Key>, cells: Vec<ViewNode>, selected: bool) -> ViewNode {
     let key = key.into();
     let label = row_label(key.as_str(), &cells);
-    let cells = with_selection_mark(cells, selected);
-    let mut node = row_shell(key, cells, CellKind::Data);
+    let mut node = row_shell(
+        key,
+        cells,
+        CellKind::Data,
+        Some(selection_cell(selected, CellKind::Data)),
+    );
     for (slot, token) in [
         ("background", SURFACE_BASE),
         ("background@hover", LAYER_HOVER),
@@ -114,9 +241,168 @@ pub fn structured_list_row(key: impl Into<Key>, cells: Vec<ViewNode>, selected: 
     node
 }
 
-/// Wraps the row's leading cell with a selection mark, Carbon's own second
-/// channel for this component (slice-e Icons: `RadioButtonChecked` /
-/// `RadioButton`, "the only two icons this component ever renders").
+/// The column weights a drag on the divider `node` to `pos` asks for.
+///
+/// The peer of [`super::slider_value_at`], and the same division of labour:
+/// the component owns the geometry, the page owns the state. `node` is any
+/// placement id inside a divider this module built — the divider or its
+/// rule. `weights` is what the caller is drawing with now.
+///
+/// Answers `None` when `node` names no divider, when the frame has not
+/// placed the two columns the divider sits between, or when those two
+/// columns have less room between them than two [`MIN_COLUMN`]s. A `None`
+/// is "this drag changes nothing", never a silent zero.
+///
+/// Only the two columns either side of the divider move, and their weights
+/// sum to what they summed to before, so every other column keeps the pixel
+/// width it had.
+#[must_use]
+pub fn structured_list_weights_at(
+    frame: &PetrifiedFrame,
+    node: &str,
+    pos: Point,
+    weights: &[f32],
+) -> Option<Vec<f32>> {
+    let (row, index) = divider_of(node)?;
+    if index + 1 >= weights.len() {
+        return None;
+    }
+    let left = frame.placement(&format!("{row}/c{index}"))?.rect;
+    let right = frame.placement(&format!("{row}/c{}", index + 1))?.rect;
+    // The two column tracks with the divider track between them.
+    let travel = right.right() - left.x - DIVIDER;
+    if travel <= 2.0 * MIN_COLUMN {
+        return None;
+    }
+    // `pos.x` is where the *middle* of the divider should land.
+    let want = (pos.x - DIVIDER / 2.0 - left.x).clamp(MIN_COLUMN, travel - MIN_COLUMN);
+    let pair = weights[index] + weights[index + 1];
+    let mut out = weights.to_vec();
+    out[index] = pair * want / travel;
+    out[index + 1] = pair - out[index];
+    Some(out)
+}
+
+/// The row id and the column index of the divider `node` names, or `None`.
+///
+/// By segment rather than by suffix, because a gesture can be routed to the
+/// divider itself or to the `rule` leaf inside it, and both have to answer
+/// the same boundary.
+fn divider_of(node: &str) -> Option<(&str, usize)> {
+    let mut offset = 0usize;
+    for segment in node.split('/') {
+        let start = offset;
+        offset += segment.len() + 1;
+        if let Some(index) = segment
+            .strip_prefix(DIVIDER_KEY)
+            .and_then(|digits| digits.parse::<usize>().ok())
+        {
+            return Some((&node[..start.saturating_sub(1)], index));
+        }
+    }
+    None
+}
+
+/// `weights` at exactly `ncols` entries, every one strictly positive.
+///
+/// A non-positive weight is a tree-acceptance error
+/// (`TrackSize::Weight`'s own contract), so a caller handing one in would
+/// get a refused tree rather than a narrow column; 1.0 is the equal-columns
+/// default the same caller would have got from [`structured_list`].
+fn normalise_weights(weights: &[f32], ncols: usize) -> Vec<f32> {
+    (0..ncols)
+        .map(|i| match weights.get(i) {
+            Some(w) if *w > 0.0 && w.is_finite() => *w,
+            _ => 1.0,
+        })
+        .collect()
+}
+
+/// Rewrite one row's grid tracks and interleave the dividers.
+///
+/// The container does this rather than [`structured_list_row`], because
+/// only the container knows how many columns the table has, what the
+/// columns are called, and whether the caller wanted dividers. A row built
+/// on its own is still a legal grid — [`row_shell`] gives it equal columns
+/// — and this re-seats it into the table's.
+fn lay_out_columns(row: &mut ViewNode, weights: &[f32], dividers: bool, names: &[String]) {
+    // A row's children are the data cells in column order, then the
+    // trailing selection cell. Anything that is not a `Grid` this module
+    // built is a row a caller composed itself, and is left alone.
+    if row.kind != NodeKind::Grid {
+        return;
+    }
+    let trailing = row
+        .children
+        .last()
+        .is_some_and(|c| c.key.as_str() == SELECT_CELL);
+    let ndata = row.children.len() - usize::from(trailing);
+    if ndata == 0 {
+        return;
+    }
+    let old = std::mem::take(&mut row.children);
+    let mut children: Vec<Arc<ViewNode>> = Vec::with_capacity(old.len() + ndata);
+    let mut columns: Vec<TrackSize> = Vec::with_capacity(old.len() + ndata);
+    for (i, cell) in old.into_iter().enumerate() {
+        if i == ndata {
+            children.push(cell);
+            columns.push(TrackSize::FitContent);
+            break;
+        }
+        if i > 0 && dividers {
+            children.push(Arc::new(column_divider(i - 1, names.get(i - 1))));
+            columns.push(TrackSize::Fixed { value: DIVIDER });
+        }
+        children.push(cell);
+        columns.push(TrackSize::Weight {
+            weight: weights.get(i).copied().unwrap_or(1.0),
+        });
+    }
+    row.props.columns = columns;
+    row.children = children;
+}
+
+/// One draggable column boundary: a [`DIVIDER`]-wide target with a
+/// [`DIVIDER_RULE`]-wide rule down its centre.
+///
+/// `name` is the caption of the column to its left, so the accessible name
+/// says which boundary this is. A divider with no name to its left still
+/// gets a non-empty label, because an interactive node without one is an
+/// audit violation (`ActionableNeedsRoleAndLabel`) and a blank string is
+/// not a name.
+fn column_divider(index: usize, name: Option<&String>) -> ViewNode {
+    let mut rule = ViewNode::new(NodeKind::Spacer, "rule").with_constraints(Constraints {
+        horizontal: AxisConstraint {
+            min: Some(DIVIDER_RULE),
+            max: Some(DIVIDER_RULE),
+            priority: 0,
+        },
+        ..Constraints::default()
+    });
+    rule.props
+        .tokens
+        .insert("background".into(), t(BORDER_SUBTLE));
+
+    let label = match name {
+        Some(name) if !name.trim().is_empty() => format!("Resize column {name}"),
+        _ => format!("Resize column {}", index + 1),
+    };
+    let mut node = stack(
+        format!("{DIVIDER_KEY}{index}"),
+        Axis::Horizontal,
+        None,
+        vec![rule],
+    );
+    // Cross axis is the height: the rule runs the full height of the row.
+    node.props.align = Some(Align::Stretch);
+    // Main axis is the width: the one-unit rule sits in the middle of the
+    // eight-unit target rather than against its leading edge.
+    node.props.justify = Some(Justify::Center);
+    node.interactive(Role::Separator, label, DIVIDER_INTENTS)
+}
+
+/// The trailing selection cell: the mark when the row is selected, a
+/// same-size blank when it is not.
 ///
 /// [`IconMark`] has no radio-pair glyph — [`IconMark::Check`] is the
 /// vocabulary's existing stand-in for "this is the on state", drawn in
@@ -125,56 +411,50 @@ pub fn structured_list_row(key: impl Into<Key>, cells: Vec<ViewNode>, selected: 
 /// tone, which on the row's own layer measured 1.44:1 and was a mark
 /// nobody could see.
 ///
-/// The mark sits at the row's leading edge — Carbon's own
-/// `enable-v12-structured-list-visible-icons` placement, the one slice-e
-/// calls *visible at all times*.
-///
-/// The mark's footprint is reserved on **every** row, selected or not — a
-/// same-size transparent spacer stands in when it is absent
-/// ([`selection_mark`]), so row width does not depend on selection. The
-/// header row does not call this — Carbon's icon is "(Selectable only)".
-fn with_selection_mark(cells: Vec<ViewNode>, selected: bool) -> Vec<ViewNode> {
-    let mut cells = cells.into_iter();
-    let Some(first) = cells.next() else {
-        return Vec::new();
+/// The blank keeps the column one width down the whole table, so a row's
+/// text does not shift when its selection changes.
+fn selection_cell(selected: bool, kind: CellKind) -> ViewNode {
+    let mark = icon_toned(MARK, IconMark::Check, IconTone::Primary);
+    let mark = if selected {
+        mark
+    } else {
+        let w = mark.constraints.horizontal.min.unwrap_or(0.0);
+        let h = mark.constraints.vertical.min.unwrap_or(0.0);
+        let mut blank = stack(MARK, Axis::Horizontal, None, vec![]);
+        blank.constraints.horizontal = AxisConstraint {
+            min: Some(w),
+            max: Some(w),
+            priority: 0,
+        };
+        blank.constraints.vertical = AxisConstraint {
+            min: Some(h),
+            max: Some(h),
+            priority: 0,
+        };
+        blank
     };
-    let mut lead = stack(
-        "lead",
-        Axis::Horizontal,
-        Some(SPACING_03),
-        vec![selection_mark(selected), first],
-    );
-    lead.props.align = Some(Align::Center);
-    std::iter::once(lead).chain(cells).collect()
+    let mut cell = stack(SELECT_CELL, Axis::Horizontal, None, vec![mark]);
+    // The same padding mixin its row's data cells take, so the mark sits on
+    // the row's own text baseline band rather than floating in a taller box.
+    cell.props.padding = Some(cell_padding(kind));
+    cell.props.align = Some(Align::Start);
+    cell.semantics = Semantics {
+        role: Some(Role::Cell),
+        ..Semantics::default()
+    };
+    cell
 }
 
-/// The mark itself: [`IconMark::Check`] in the primary icon tone when
-/// selected, a same-size transparent spacer when not.
-fn selection_mark(selected: bool) -> ViewNode {
-    let mark = icon_toned("mark", IconMark::Check, IconTone::Primary);
-    if selected {
-        return mark;
-    }
-    let w = mark.constraints.horizontal.min.unwrap_or(0.0);
-    let h = mark.constraints.vertical.min.unwrap_or(0.0);
-    let mut spacer = stack("mark", Axis::Horizontal, None, vec![]);
-    spacer.constraints.horizontal = AxisConstraint {
-        min: Some(w),
-        max: Some(w),
-        priority: 0,
-    };
-    spacer.constraints.vertical = AxisConstraint {
-        min: Some(h),
-        max: Some(h),
-        priority: 0,
-    };
-    spacer
-}
-
-/// The column header row: compact-heading text, no fill, no rule.
+/// The column header row: compact-heading text, no fill, no rule, and an
+/// empty selection cell so its columns are the data rows' columns.
 fn header_row(key: impl Into<Key>, cells: Vec<ViewNode>) -> ViewNode {
     let cells = cells.into_iter().map(as_compact_heading).collect();
-    let mut node = row_shell(key, cells, CellKind::Header);
+    let mut node = row_shell(
+        key,
+        cells,
+        CellKind::Header,
+        Some(selection_cell(false, CellKind::Header)),
+    );
     node.semantics = Semantics {
         role: Some(Role::Row),
         ..Semantics::default()
@@ -185,21 +465,35 @@ fn header_row(key: impl Into<Key>, cells: Vec<ViewNode>) -> ViewNode {
 /// One row's cells, laid out as a `Grid` of `ncols` equal [`TrackSize::Weight`]
 /// columns rather than a bare `Axis::Horizontal` stack, so every cell in
 /// column *i* resolves the same width in every row.
-fn row_shell(key: impl Into<Key>, cells: Vec<ViewNode>, kind: CellKind) -> ViewNode {
+///
+/// `trailing` is the selection cell, in its own `FitContent` track at the
+/// end. [`lay_out_columns`] rewrites both lists once the container knows
+/// the table's real weights and divider policy.
+fn row_shell(
+    key: impl Into<Key>,
+    cells: Vec<ViewNode>,
+    kind: CellKind,
+    trailing: Option<ViewNode>,
+) -> ViewNode {
     let ncols = cells.len().max(1);
-    let cells = cells
+    let mut children: Vec<ViewNode> = cells
         .into_iter()
         .enumerate()
         .map(|(i, cell)| as_cell(i, cell, kind))
         .collect();
+    let mut columns = vec![TrackSize::Weight { weight: 1.0 }; ncols];
+    if let Some(trailing) = trailing {
+        children.push(trailing);
+        columns.push(TrackSize::FitContent);
+    }
     ViewNode::new(NodeKind::Grid, key)
         .with_props(Props {
-            columns: vec![TrackSize::Weight { weight: 1.0 }; ncols],
+            columns,
             rows: vec![TrackSize::FitContent],
             align: Some(Align::Stretch),
             ..Props::default()
         })
-        .with_children(cells)
+        .with_children(children)
 }
 
 /// Inline `$spacing-05` on both sides (MEASURED, `padding--data-structured-list`
@@ -241,7 +535,12 @@ fn ensure_row(node: ViewNode) -> ViewNode {
     if node.semantics.role == Some(Role::Row) {
         return node;
     }
-    let mut row = row_shell(node.key.clone(), vec![node], CellKind::Data);
+    let mut row = row_shell(
+        node.key.clone(),
+        vec![node],
+        CellKind::Data,
+        Some(selection_cell(false, CellKind::Data)),
+    );
     row.semantics = Semantics {
         role: Some(Role::Row),
         ..Semantics::default()
@@ -283,13 +582,15 @@ fn collect_text(node: &ViewNode) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ROW_HEIGHT, SPACING_03, SPACING_05, SPACING_06, structured_list, structured_list_row,
+        DIVIDER, DIVIDER_KEY, MARK, MIN_COLUMN, ROW_HEIGHT, SELECT_CELL, SPACING_03, SPACING_05,
+        SPACING_06, structured_list, structured_list_row, structured_list_sized,
+        structured_list_weights_at,
     };
     use crate::component::icon::{IconMark, IconTone, icon_toned};
     use crate::component::text::text;
     use crate::component::tokens::{BORDER_SUBTLE, LAYER_SELECTED, TYPOGRAPHY_HEADING_SM};
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
-    use crate::geom::{Axis, Size};
+    use crate::geom::{Axis, Point, Size};
     use crate::testing::{Harness, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
     use crate::tree::{Interaction, NodeKind, Props, Registry, Role, ViewNode};
@@ -427,7 +728,7 @@ mod tests {
     fn structured_list_row_selection_carries_a_visible_second_channel() {
         let on = structured_list_row("r0", vec![text("p", "Alpha"), text("c", "12")], true);
         assert!(has_canvas(&on));
-        let mark = child(child(child(&on, "c0"), "lead"), "mark");
+        let mark = child(child(&on, SELECT_CELL), MARK);
         assert_eq!(
             mark.props.canvas,
             icon_toned("mark", IconMark::Check, IconTone::Primary)
@@ -537,7 +838,7 @@ mod tests {
     fn a_one_line_row_measures_carbons_default_height_from_its_padding() {
         let frame = petrify_lone(fixture());
         let row = rect_of(&frame, "/plans/r0");
-        let label = rect_of(&frame, "/r0/c0/lead/p0");
+        let label = rect_of(&frame, "/r0/c0/p0");
         assert_eq!(
             row.h,
             16.0 + label.h + 24.0,
@@ -556,16 +857,59 @@ mod tests {
         );
     }
 
-    /// The reserved spacer: the leading label lands at the same x whether
-    /// its own row is selected or not.
+    /// The reserved blank: the selection column is one width down the
+    /// whole table, so no row's text shifts when its selection changes.
     #[test]
     fn selection_mark_reserves_the_same_width_selected_or_not() {
         let frame = petrify_lone(fixture());
         assert_eq!(
-            rect_of(&frame, "/r0/c0/lead/p0").x,
-            rect_of(&frame, "/r1/c0/lead/p1").x,
+            rect_of(&frame, "/r0/c0/p0").x,
+            rect_of(&frame, "/r1/c0/p1").x,
             "the leading label must start at the same x whether its own \
              row is selected or not"
+        );
+        assert_eq!(
+            rect_of(&frame, "/r0/sel").w,
+            rect_of(&frame, "/r1/sel").w,
+            "the unselected row's blank is not the selected row's mark width"
+        );
+    }
+
+    /// Row 31, round 3 ("the padding is wack"). Carbon puts the header
+    /// caption and the row text at the **same** inset —
+    /// `31-structured-list.png`, both at x=98 device at dpr 2. Ours put the
+    /// header at 17 and the rows at 35 because the mark rode inside the
+    /// leading data cell. It is a cell of its own now, at the trailing edge
+    /// where slice-e:97 puts Carbon's default.
+    #[test]
+    fn the_header_caption_and_the_row_text_share_one_left_inset() {
+        let frame = petrify_lone(fixture());
+        let header = rect_of(&frame, "/header/c0/h0").x;
+        for label in ["/r0/c0/p0", "/r1/c0/p1"] {
+            assert_eq!(
+                rect_of(&frame, label).x,
+                header,
+                "{label} does not start where the header caption does"
+            );
+        }
+        // And the second column agrees too, which is what the shared grid
+        // tracks are for.
+        let header1 = rect_of(&frame, "/header/c1/h1").x;
+        assert_eq!(rect_of(&frame, "/r0/c1/c0").x, header1);
+        assert_eq!(rect_of(&frame, "/r1/c1/c1").x, header1);
+    }
+
+    /// The mark is at the row's **trailing** edge, not its leading one:
+    /// slice-e:97, "positioned on the right of the row content by default".
+    #[test]
+    fn the_selection_mark_sits_after_the_last_data_column() {
+        let frame = petrify_lone(fixture());
+        let last_column = rect_of(&frame, "/r1/c1");
+        let mark_cell = rect_of(&frame, "/r1/sel");
+        assert!(
+            mark_cell.x >= last_column.right() - 0.01,
+            "the mark cell ({mark_cell:?}) is not after the last data \
+             column ({last_column:?})"
         );
     }
 
@@ -678,5 +1022,198 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Round 3, the operator: *"we should probably let the column spacers
+    /// always we draggable (toggled off in code)."* A divider is a real
+    /// control, so it declares `Drag`, a role and a name — and **not**
+    /// `Hover`, which would report every pointer move over it to the page
+    /// as a position the page never asked for (the round-2 slider bug), and
+    /// not `Focus`, which would put it in Tab order with no keyboard model
+    /// behind it.
+    #[test]
+    fn a_column_divider_declares_drag_and_nothing_that_reports_a_stray_move() {
+        let node = structured_list(
+            "plans",
+            vec![text("h0", "Plan"), text("h1", "Price")],
+            vec![structured_list_row(
+                "r0",
+                vec![text("p0", "Basic"), text("c0", "$12")],
+                false,
+            )],
+        );
+        for row in ["header", "r0"] {
+            let div = child(child(&node, row), &format!("{DIVIDER_KEY}0"));
+            assert_eq!(div.semantics.role, Some(Role::Separator));
+            assert_eq!(
+                div.semantics.label.as_deref(),
+                Some("Resize column Plan"),
+                "the divider names the column to its left"
+            );
+            assert!(div.interactions.contains(&Interaction::Drag));
+            assert!(
+                !div.interactions.contains(&Interaction::Hover),
+                "a hovered divider hands the page a position it never asked for"
+            );
+            assert!(!div.interactions.contains(&Interaction::Focus));
+            assert_eq!(
+                token(child(div, "rule"), "background"),
+                Some(BORDER_SUBTLE),
+                "the rule is the same tone as a row's own"
+            );
+        }
+        // One divider per boundary, never one per column.
+        assert!(
+            child(&node, "r0")
+                .children
+                .iter()
+                .filter(|c| c.key.as_str().starts_with(DIVIDER_KEY))
+                .count()
+                == 1
+        );
+    }
+
+    /// The hit area is the whole track and the drawn rule is one unit
+    /// inside it, centred. A one-unit drag target is not a thing a hand can
+    /// hit; this is the number that makes the control usable and it is
+    /// measured in the frame, not asserted off the constant.
+    #[test]
+    fn the_divider_target_is_eight_times_the_rule_it_draws() {
+        let frame = petrify_lone(fixture());
+        let target = rect_of(&frame, "/r0/div0");
+        let rule = rect_of(&frame, "/r0/div0/rule");
+        assert_eq!(target.w, DIVIDER);
+        assert_eq!(rule.w, 1.0);
+        assert_eq!(target.w, 8.0 * rule.w);
+        assert!(
+            (rule.x - (target.x + (target.w - rule.w) / 2.0)).abs() < 0.51,
+            "the rule ({rule:?}) is not centred in its target ({target:?})"
+        );
+        assert_eq!(rule.h, target.h, "the rule runs the row's full height");
+    }
+
+    /// "Toggled off in code": the same table with `dividers: false` builds
+    /// no divider at all, and nothing in it declares `Drag`.
+    #[test]
+    fn dividers_can_be_turned_off_and_then_nothing_drags() {
+        fn any_drag(node: &ViewNode) -> bool {
+            node.interactions.contains(&Interaction::Drag)
+                || node.children.iter().any(|c| any_drag(c))
+        }
+        let off = structured_list_sized(
+            "plans",
+            vec![text("h0", "Plan"), text("h1", "Price")],
+            vec![structured_list_row(
+                "r0",
+                vec![text("p0", "Basic"), text("c0", "$12")],
+                false,
+            )],
+            &[1.0, 1.0],
+            false,
+        );
+        assert!(!any_drag(&off), "a divider survived `dividers: false`");
+        assert!(
+            !child(&off, "r0")
+                .children
+                .iter()
+                .any(|c| c.key.as_str().starts_with(DIVIDER_KEY))
+        );
+        // And on by default, which is the other half of the operator's ask.
+        let on = structured_list(
+            "plans",
+            vec![text("h0", "Plan"), text("h1", "Price")],
+            vec![structured_list_row(
+                "r0",
+                vec![text("p0", "Basic"), text("c0", "$12")],
+                false,
+            )],
+        );
+        assert!(any_drag(&on), "dividers are meant to be on by default");
+    }
+
+    /// The arithmetic: a drag to `x` puts the divider's **middle** at `x`,
+    /// moves only the two columns either side, and stops at
+    /// [`MIN_COLUMN`] rather than letting a column vanish.
+    #[test]
+    fn dragging_a_divider_moves_the_boundary_and_stops_at_the_minimum() {
+        let frame = petrify_lone(fixture());
+        let node = frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/r0/div0"))
+            .expect("the divider is placed")
+            .id
+            .clone();
+        let left = rect_of(&frame, "/r0/c0");
+        let right = rect_of(&frame, "/r0/c1");
+        let travel = right.right() - left.x - DIVIDER;
+        let weights = [1.0f32, 1.0];
+
+        let at = |x: f32| {
+            structured_list_weights_at(&frame, &node, Point::new(x, left.y + 1.0), &weights)
+                .expect("the divider resolves")
+        };
+
+        // Equal columns to start with: the boundary is at the middle.
+        let quarter = at(left.x + travel * 0.25 + DIVIDER / 2.0);
+        assert!(
+            (quarter[0] / (quarter[0] + quarter[1]) - 0.25).abs() < 1e-3,
+            "a drag to the quarter mark gave {quarter:?}"
+        );
+        assert!(
+            (quarter[0] + quarter[1] - 2.0).abs() < 1e-4,
+            "the pair's total weight changed, so the other columns moved"
+        );
+        let three_quarters = at(left.x + travel * 0.75 + DIVIDER / 2.0);
+        assert!(
+            three_quarters[0] > quarter[0],
+            "further right is a wider first column"
+        );
+
+        // Clamped: dragging off the left end leaves MIN_COLUMN behind.
+        let squashed = at(left.x - 1000.0);
+        let width = 2.0 * squashed[0] / (squashed[0] + squashed[1]) * travel / 2.0;
+        assert!(
+            (width - MIN_COLUMN).abs() < 1e-2,
+            "the first column was dragged to {width}, past the {MIN_COLUMN} floor"
+        );
+
+        // A node that is not a divider resolves to nothing at all.
+        assert!(
+            structured_list_weights_at(
+                &frame,
+                &rect_id(&frame, "/r0/c0"),
+                Point::new(left.x, left.y),
+                &weights,
+            )
+            .is_none()
+        );
+    }
+
+    /// The rule reaches the gesture from the leaf as well as from the
+    /// target: a press can land on either and both name the same boundary.
+    #[test]
+    fn a_press_on_the_rule_resolves_the_same_boundary_as_the_target() {
+        let frame = petrify_lone(fixture());
+        let weights = [1.0f32, 1.0];
+        let left = rect_of(&frame, "/r0/c0");
+        let pos = Point::new(left.x + 100.0, left.y + 1.0);
+        let by_target =
+            structured_list_weights_at(&frame, &rect_id(&frame, "/r0/div0"), pos, &weights);
+        let by_rule =
+            structured_list_weights_at(&frame, &rect_id(&frame, "/r0/div0/rule"), pos, &weights);
+        assert!(by_target.is_some());
+        assert_eq!(by_target, by_rule);
+    }
+
+    /// The id of the placement whose id ends `suffix`.
+    fn rect_id(frame: &PetrifiedFrame, suffix: &str) -> String {
+        frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with(suffix))
+            .unwrap_or_else(|| panic!("no placement ending {suffix}"))
+            .id
+            .clone()
     }
 }
