@@ -237,6 +237,16 @@ pub enum IconMark {
     /// o'clock. The half disc is one closed path of two quarter arcs; the
     /// dashes are stroked arcs.
     Incomplete,
+    /// Carbon `Checkmark` (the selected option of a list box: dropdown,
+    /// select, selectable menu item). Not [`IconMark::Check`], which is the
+    /// toggle handle's own 6×5 tick in its 10-unit box; this is the 16-unit
+    /// glyph a row carries.
+    ///
+    /// Source path, viewBox `0 0 32 32`:
+    /// `M13 24L4 15 5.414 13.586 13 21.171 26.586 5.586 28 7z`. A thick
+    /// chevron, split at the inner V into two convex quads the same way the
+    /// toggle's tick is.
+    Checkmark,
 }
 
 /// The box a mark is drawn in: which of Carbon's two glyph sizes.
@@ -372,6 +382,7 @@ fn draw_list(mark: IconMark, boxed: IconBox, tone: IconTone) -> DrawList {
         IconMark::CheckmarkOutline => checkmark_outline(size / 32.0, color),
         IconMark::CircleDash => circle_dash(size / 32.0, color),
         IconMark::Incomplete => incomplete(size / 32.0, color),
+        IconMark::Checkmark => checkmark(size / 32.0, color),
     };
     DrawList::new(commands).unwrap_or_else(|err| panic!("{mark:?} draw list refused: {err}"))
 }
@@ -401,6 +412,24 @@ fn check_mark(color: ColorRef) -> Vec<Command> {
     vec![
         filled_quad([a, b, c, d], 1.0, paint.clone()),
         filled_quad([a, d, e, f], 1.0, paint),
+    ]
+}
+
+/// Carbon `Checkmark` as two convex filled quads, split on the inner V to
+/// bottom-tip diagonal exactly as [`check_mark`] is. Vertex letters follow
+/// the Carbon path order: A bottom tip, B outer left end, C inner left end,
+/// D inner V, E inner right end, F outer right end.
+fn checkmark(s: f32, color: ColorRef) -> Vec<Command> {
+    let a = pt(13.0, 24.0);
+    let b = pt(4.0, 15.0);
+    let c = pt(5.414, 13.586);
+    let d = pt(13.0, 21.171);
+    let e = pt(26.586, 5.586);
+    let f = pt(28.0, 7.0);
+    let paint = Paint::filled(color);
+    vec![
+        filled_quad([a, b, c, d], s, paint.clone()),
+        filled_quad([a, d, e, f], s, paint),
     ]
 }
 
@@ -951,13 +980,14 @@ mod tests {
     use crate::draw::{ColorRef, Command, DrawList};
     use crate::tree::NodeKind;
 
-    const EVERY_MARK: [IconMark; 19] = [
+    const EVERY_MARK: [IconMark; 20] = [
         IconMark::CaretLeft,
         IconMark::CaretRight,
         IconMark::CheckmarkOutline,
         IconMark::CircleDash,
         IconMark::Incomplete,
         IconMark::Check,
+        IconMark::Checkmark,
         IconMark::Calendar,
         IconMark::ChevronDown,
         IconMark::ChevronUp,

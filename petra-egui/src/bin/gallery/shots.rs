@@ -48,7 +48,7 @@
 #![allow(dead_code)]
 
 use egui::{Context, Pos2, RawInput};
-use gorgon_petra::frame::PetrifiedFrame;
+use gorgon_petra::frame::{CaretPaint, PaintContent, PetrifiedFrame};
 use gorgon_petra::geom::{Point, Rect, Size};
 use gorgon_petra::input::{KeyCode, Modifiers};
 use gorgon_petra_egui::host::{Host, default_presenter};
@@ -254,6 +254,38 @@ impl Camera {
             .rect
     }
 
+    /// What the node whose id ends `tail` paints: its token bindings, its
+    /// engine caret, its text run. The peer of [`Camera::rect`] for the
+    /// questions geometry cannot answer — which fill a bubble binds, and
+    /// whether the engine drew a beak back at the anchor.
+    ///
+    /// # Panics
+    /// As [`Camera::id`] does, on a missing or ambiguous tail.
+    pub fn paint(&self, tail: &str) -> &PaintContent {
+        let id = self.id(tail);
+        let frame = self.frame();
+        let index = frame
+            .placements
+            .iter()
+            .position(|p| p.id == id)
+            .unwrap_or_else(|| panic!("{}: {id} resolved but is not placed", self.page));
+        &frame.content[index]
+    }
+
+    /// The caret the engine draws for the anchored surface whose id ends
+    /// `tail`: `None` for a surface declared `Tip::Flush`, or for one that
+    /// is not anchored at all.
+    pub fn caret(&self, tail: &str) -> Option<CaretPaint> {
+        self.paint(tail).caret
+    }
+
+    /// The token the node whose id ends `tail` binds to `slot`, verbatim
+    /// from its props — `"background"`, `"background@hover"` — or `None`
+    /// when it binds nothing there.
+    pub fn token(&self, tail: &str, slot: &str) -> Option<String> {
+        self.paint(tail).tokens.get(slot).cloned()
+    }
+
     /// Move the pointer to a raw position — for leaving a node, where there is
     /// no node to name.
     pub fn hover_at(&mut self, x: f32, y: f32) -> &mut Self {
@@ -382,6 +414,22 @@ impl Camera {
         self.host.focus().current().map(str::to_owned)
     }
 
+    /// Which placement the frame paints the focus ring on, per its own
+    /// `semantics.focused` flag; `None` when no placed node is focused.
+    ///
+    /// Stricter than [`Camera::focused`], which reads the focus tree's id
+    /// and keeps answering it after the node it names has left the frame.
+    /// A test that wants to know whether focus *survived* a rebuild — the
+    /// trigger of a list box that just opened — has to ask the frame, or
+    /// it passes on a stale id while the ring has gone.
+    pub fn ring(&self) -> Option<String> {
+        self.frame()
+            .placements
+            .iter()
+            .find(|p| p.semantics.focused)
+            .map(|p| p.id.clone())
+    }
+
     /// The frame as it now stands.
     ///
     /// # Panics
@@ -465,6 +513,8 @@ mod tests {
     use super::Camera;
     use crate::catalog::WINDOW;
     use gorgon_petra::geom::{Point, Rect};
+    use gorgon_petra::input::KeyCode;
+    use gorgon_petra::tree::Edge;
 
     // ===== TRIAGE (temporary, 2026-09-04) — delete before merge =====
     //
@@ -1108,6 +1158,12 @@ mod tests {
     }
 
     /// Row 18. A menu with something to open it, floating over the page.
+    ///
+    /// A Carbon menu is a list box (slice-b §18): a `$layer` panel flush
+    /// under its trigger with no caret, at least 160 wide, whose items are
+    /// full-width 40-tall rows with the label 16 in. The wave-7 menu was a
+    /// `popover_with` — a beaked, content-hugging card — so every item
+    /// hugged its own text and a caret pointed at the trigger.
     #[test]
     fn the_menu_opens_over_the_page_and_an_item_closes_it() {
         let mut cam = Camera::on("Menu");
@@ -1123,6 +1179,31 @@ mod tests {
             "Carbon's menu is at least 160 wide, got {menu:?}"
         );
         assert!(cam.has("menu/content/mn-0") && cam.has("menu/content/mn-1"));
+        assert!(
+            cam.caret("mn-pair/menu").is_none(),
+            "a Carbon menu is a flush list box: the engine must draw no beak \
+             back at the trigger"
+        );
+        let trigger = cam.rect("mn-pair/trigger");
+        assert!(
+            (menu.y - (trigger.y + trigger.h)).abs() < 0.5,
+            "the list box sits flush under its trigger, no air gap: {menu:?} \
+             under {trigger:?}"
+        );
+        assert!(
+            (menu.x - trigger.x).abs() < 0.5,
+            "the list box's leading edge is the trigger's: {menu:?} under {trigger:?}"
+        );
+        let item = cam.rect("mn-0");
+        assert!(
+            (item.w - menu.w).abs() < 0.5 && (item.h - 40.0).abs() < 0.5,
+            "an item spans the list box at Carbon's 40: {item:?} in {menu:?}"
+        );
+        let label = cam.rect("mn-0/label");
+        assert!(
+            (label.x - item.x - 16.0).abs() < 0.5,
+            "the item label sits 16 in from the row's edge: {label:?} in {item:?}"
+        );
         cam.click("mn-1");
         cam.shoot("18-menu-after-delete");
         assert!(
@@ -1132,10 +1213,26 @@ mod tests {
     }
 
     /// Row 19. The trigger opens its menu over the page.
+    ///
+    /// A Carbon menu button is a primary button at least 160 wide with its
+    /// chevron on the trailing edge, and its menu is a list box flush under
+    /// it with no caret, leading edges aligned (slice-b §19). Opening the
+    /// menu leaves keyboard focus on the trigger — the recorded defect was
+    /// focus falling off it, because the open form was a different node.
     #[test]
     fn the_menu_button_opens_its_menu_over_the_page() {
         let mut cam = Camera::on("Menu buttons");
-        opens_over_the_page(
+        let trigger = cam.rect("mb/trigger");
+        assert!(
+            trigger.w >= 160.0 && (trigger.h - 40.0).abs() < 0.5,
+            "the trigger is a primary button at Carbon's 160 by 40 minimum: {trigger:?}"
+        );
+        let chevron = cam.rect("mb/trigger/caret");
+        assert!(
+            (trigger.x + trigger.w - (chevron.x + chevron.w) - 16.0).abs() < 0.5,
+            "the chevron ends 16 in from the trigger's trailing edge: {chevron:?} in {trigger:?}"
+        );
+        let menu = opens_over_the_page(
             &mut cam,
             "mb/trigger",
             "mb/menu",
@@ -1143,6 +1240,25 @@ mod tests {
             "19-menu-buttons-open",
         );
         assert!(cam.has("menu/content/mb-0"));
+        assert!(
+            cam.caret("mb/menu").is_none(),
+            "a menu button's menu is a flush list box: no beak"
+        );
+        assert!(
+            (menu.x - trigger.x).abs() < 0.5 && (menu.y - (trigger.y + trigger.h)).abs() < 0.5,
+            "the menu hangs flush under the trigger, leading edges aligned: \
+             {menu:?} under {trigger:?}"
+        );
+        assert!(
+            menu.w >= trigger.w - 0.5,
+            "the menu is at least as wide as its trigger: {menu:?} under {trigger:?}"
+        );
+        assert!(
+            cam.ring().is_some_and(|id| id.ends_with("mb/trigger")),
+            "opening the menu moved keyboard focus off the trigger: the ring \
+             is on {:?}",
+            cam.ring()
+        );
         cam.click("mb-0");
         assert!(
             !cam.has("mb/menu"),
@@ -1157,10 +1273,16 @@ mod tests {
 
     /// Row 24. The note is a floating surface anchored to the button, not a
     /// paragraph printed under it.
+    ///
+    /// Carbon's popover is a `$layer` panel with a drawn 12-wide caret on
+    /// the edge that faces the anchor, its body left-aligned (slice-b §24).
+    /// The wave-7 popover spelled its caret as the word `^` in a text node
+    /// and centred everything, so the picture carried two beaks — the
+    /// engine's and the word — and a centred paragraph.
     #[test]
     fn the_popover_opens_over_the_page_and_dismisses_outside() {
         let mut cam = Camera::on("Popover");
-        opens_over_the_page(
+        let note = opens_over_the_page(
             &mut cam,
             "po-pair/pop-anchor",
             "po-pair/pop-note",
@@ -1168,8 +1290,32 @@ mod tests {
             "24-popover-open",
         );
         assert!(
-            cam.has("pop-note/content/caret"),
-            "the popover has its caret"
+            !cam.has("pop-note/content/caret"),
+            "the caret is drawn by the engine, not spelled as a text node"
+        );
+        let caret = cam
+            .caret("po-pair/pop-note")
+            .expect("the engine draws the popover's caret back at its anchor");
+        assert_eq!(
+            caret.side,
+            Edge::Bottom,
+            "the note hangs under the anchor, so the caret is on its top edge"
+        );
+        assert!(
+            (caret.w - 12.0).abs() < 0.5,
+            "Carbon's caret is 12 wide at its base: {caret:?}"
+        );
+        let anchor = cam.rect("po-pair/pop-anchor");
+        assert!(
+            (note.y - (anchor.y + anchor.h) - 8.0).abs() < 0.5,
+            "the note stands off its anchor by the caret's depth, 8: \
+             {note:?} under {anchor:?}"
+        );
+        let body = cam.rect("pop-note/content/body");
+        let content = cam.rect("pop-note/content");
+        assert!(
+            (body.x - content.x).abs() < 0.5,
+            "the body is left-aligned in the note, not centred: {body:?} in {content:?}"
         );
         press_empty_ground(&mut cam);
         cam.shoot("24-popover-dismissed");
@@ -1179,12 +1325,71 @@ mod tests {
         );
     }
 
-    /// Row 29. `select_open` is new this wave: the field opens a list over
-    /// the page and an option becomes the value.
+    /// Row 29. The field opens a list over the page and an option becomes
+    /// the value.
+    ///
+    /// A Carbon select is a label over a `$field` box the full width of its
+    /// container, 40 tall, closed by a 1-unit `$border-strong` rule along
+    /// its bottom edge only, with the chevron 16 in from the trailing edge
+    /// (slice-b §29). Its list is a list box: flush under the field, the
+    /// field's width, no caret, the current option marked with a check
+    /// glyph. Pressing the field keeps keyboard focus on it — the recorded
+    /// defect was focus falling off, because the open form replaced the
+    /// button with a column and the focused id vanished.
     #[test]
     fn the_select_opens_its_list_over_the_page_and_an_option_selects() {
         let mut cam = Camera::on("Select");
-        opens_over_the_page(&mut cam, "sel/theme", "theme/menu", 100.0, "29-select-open");
+        let column = cam.rect("select/sel");
+        let label = cam.rect("theme/label");
+        let field = cam.rect("theme/field");
+        assert!(
+            label.y + label.h <= field.y + 0.5,
+            "the label sits above the field: {label:?} over {field:?}"
+        );
+        assert!(
+            (field.w - column.w).abs() < 0.5 && (field.h - 40.0).abs() < 0.5,
+            "the field fills its column at Carbon's 40: {field:?} in {column:?}"
+        );
+        let rule = cam.rect("field/rule");
+        assert!(
+            (rule.h - 1.0).abs() < 0.5
+                && (rule.w - field.w).abs() < 0.5
+                && (rule.y + rule.h - (field.y + field.h)).abs() < 0.5,
+            "the field's only border is a 1-unit rule along its bottom edge: \
+             {rule:?} in {field:?}"
+        );
+        let chevron = cam.rect("field/row/chevron");
+        assert!(
+            (field.x + field.w - (chevron.x + chevron.w) - 16.0).abs() < 0.5,
+            "the chevron ends 16 in from the field's trailing edge: {chevron:?} in {field:?}"
+        );
+        let menu = opens_over_the_page(
+            &mut cam,
+            "theme/field",
+            "theme/menu",
+            100.0,
+            "29-select-open",
+        );
+        assert!(
+            cam.ring().is_some_and(|id| id.ends_with("theme/field")),
+            "opening the list moved keyboard focus off the field: the ring is \
+             on {:?}",
+            cam.ring()
+        );
+        assert!(
+            cam.caret("theme/menu").is_none(),
+            "a select's list is a flush list box: no beak"
+        );
+        assert!(
+            (menu.x - field.x).abs() < 0.5
+                && (menu.w - field.w).abs() < 0.5
+                && (menu.y - (field.y + field.h)).abs() < 0.5,
+            "the list box is the field's width, flush under it: {menu:?} under {field:?}"
+        );
+        assert!(
+            cam.has("opt-dark/mark") && !cam.has("opt-light/mark"),
+            "the current option, and only it, carries the check glyph"
+        );
         cam.click("opt-system");
         cam.shoot("29-select-system");
         assert!(
@@ -1192,6 +1397,11 @@ mod tests {
             "choosing an option did not close the list"
         );
         assert_eq!(leaf_text(&cam, "value"), "System");
+        cam.click("theme/field");
+        assert!(
+            cam.has("opt-system/mark") && !cam.has("opt-dark/mark"),
+            "the check glyph follows the chosen option"
+        );
     }
 
     /// Row 37. The toggletip opens on press and a second press on its own
@@ -1231,11 +1441,66 @@ mod tests {
             "the bubble hangs under the trigger over the page: {bubble:?} under {trigger:?}"
         );
         assert_ne!(resting, hovered);
+        assert_eq!(
+            cam.token("bubble", "background").as_deref(),
+            Some("background-inverse"),
+            "a Carbon tooltip is the inverse polarity, not a raised card"
+        );
+        assert_eq!(
+            cam.caret("bubble").map(|c| c.side),
+            Some(Edge::Bottom),
+            "the bubble points back up at its trigger"
+        );
         cam.hover_at(WINDOW[0] - 8.0, WINDOW[1] - 8.0);
         cam.shoot("38-tooltip-left");
         assert!(
             !cam.has("bubble"),
             "the pointer left the trigger for empty ground and the bubble stayed"
+        );
+    }
+
+    /// Row 38. Carbon reveals a tooltip on keyboard focus as well as on
+    /// hover (slice-c §38), and hides it when focus moves on. Focus is
+    /// driven from the keyboard: Tab, from wherever the chrome seats it,
+    /// until the trigger has it; never [`Camera::focus`], which would prove
+    /// only that a driver can seat focus, not that a keyboard can.
+    #[test]
+    fn the_tooltip_appears_on_keyboard_focus_and_leaves_with_it() {
+        let mut cam = Camera::on("Tooltip");
+        assert!(!cam.has("bubble"), "no bubble at rest");
+        // Tab visits every focusable node once before it wraps, and the
+        // chrome seats it in the index, forty-two rows ahead of the page,
+        // so the bound is the placement count, not a guess.
+        let bound = cam.ids().len();
+        let mut tabs = 0;
+        while !cam
+            .focused()
+            .is_some_and(|id| id.ends_with("tip-pair/trigger"))
+        {
+            assert!(
+                tabs < bound,
+                "Tab never reached the trigger; focus rests on {:?}",
+                cam.focused()
+            );
+            cam.key(KeyCode::Tab);
+            tabs += 1;
+        }
+        cam.shoot("38-tooltip-focused");
+        assert!(
+            cam.has("bubble"),
+            "focus landed on the trigger and no bubble was placed"
+        );
+        let trigger = cam.rect("tip-pair/trigger");
+        let bubble = cam.rect("bubble");
+        assert!(
+            bubble.y >= trigger.y + trigger.h - 1.0,
+            "the bubble hangs under the trigger: {bubble:?} under {trigger:?}"
+        );
+        cam.key(KeyCode::Tab);
+        cam.shoot("38-tooltip-focus-left");
+        assert!(
+            !cam.has("bubble"),
+            "focus left the trigger and the bubble stayed"
         );
     }
 

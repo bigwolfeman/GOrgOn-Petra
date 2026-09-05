@@ -37,7 +37,7 @@
 use super::disabled;
 use super::dropdown::dropdown_option;
 use super::icon::{IconMark, IconTone, icon_toned};
-use super::list_box::list_box;
+use super::list_box::{Dividers, list_box};
 use super::stack;
 use super::text::text;
 use super::tokens::{
@@ -46,8 +46,8 @@ use super::tokens::{
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
-    AxisConstraint, Constraints, InsetRefs, Interaction, Key, NodeKind, Props, Role, TrackSize,
-    ViewNode,
+    AxisConstraint, Constraints, InsetRefs, Interaction, Justify, Key, NodeKind, Props, Role,
+    TrackSize, ViewNode,
 };
 
 const _: () = assert!(SIZE_MD == 40.0);
@@ -255,6 +255,7 @@ fn items_per_page(page_size: u32, open_sizes: Option<&[u32]>) -> ViewNode {
                 .iter()
                 .map(|n| dropdown_option(format!("size-{n}"), n.to_string(), *n == page_size))
                 .collect(),
+            Dividers::Between,
         )
     });
     run(
@@ -326,8 +327,15 @@ fn pad_inline(start: &str, end: &str) -> InsetRefs {
 fn picker_cell(key: &'static str, trigger: ViewNode, menu: Option<ViewNode>) -> ViewNode {
     let mut parts = vec![trigger];
     parts.extend(menu);
-    let mut node = stack(key, Axis::Horizontal, None, parts);
-    node.props.align = Some(Align::Center);
+    // A column, the same shape `dropdown` and `select` give their own pair,
+    // and for the same reason: the list is a floating `Surface` that
+    // `Anchor::Sibling` lifts out, but before the overlay pass runs it is
+    // still a child of this stack. Laid out along a *horizontal* stack it
+    // took a share of the row's width, and `Fit::Anchor` then widened it
+    // from 0 rather than from the trigger — the panel came out 32 wide and
+    // its dividers had no interior left to draw in.
+    let mut node = stack(key, Axis::Vertical, None, parts);
+    node.props.align = Some(Align::Start);
     node
 }
 
@@ -400,6 +408,7 @@ fn page_controls(page: u32, page_count: u32, pages_open: bool) -> ViewNode {
             (1..=page_count.max(1))
                 .map(|n| dropdown_option(format!("page-{n}"), n.to_string(), n == page))
                 .collect(),
+            Dividers::Between,
         )
     });
     let count = cell(
@@ -487,7 +496,7 @@ fn nav_button(
         vec![icon_toned("caret", mark, tone)],
     );
     node.props.align = Some(Align::Center);
-    node.props.justify = Some(Align::Center);
+    node.props.justify = Some(Justify::Center);
     // Resting background: the bar it sits on. Without this,
     // `background@hover` has no resting `background` beneath it and
     // resolves to nothing at rest (see
@@ -719,10 +728,14 @@ mod tests {
         let menu = named(cell, "menu");
         assert_eq!(menu.kind, NodeKind::Surface);
         assert_eq!(menu.semantics.role, Some(Role::Overlay));
+        // A picker is a select's list box, so `Dividers::Between` rules
+        // between each pair. This asserted the three options alone until
+        // the wave that built `list_box` landed; that wave read Carbon's
+        // `.cds--list-box__menu-item` boundary and this one shares it.
         let rows = &named(menu, "content").children;
         assert_eq!(
             rows.iter().map(|r| r.key.as_str()).collect::<Vec<_>>(),
-            ["size-10", "size-20", "size-30"]
+            ["size-10", "div-1", "size-20", "div-2", "size-30"]
         );
         assert!(
             named(menu, "size-10").semantics.selected,
@@ -743,7 +756,10 @@ mod tests {
         let rows = &named(named(cell, "menu"), "content").children;
         assert_eq!(
             rows.iter().map(|r| r.key.as_str()).collect::<Vec<_>>(),
-            ["page-1", "page-2", "page-3", "page-4", "page-5"]
+            [
+                "page-1", "div-1", "page-2", "div-2", "page-3", "div-3", "page-4", "div-4",
+                "page-5"
+            ]
         );
         assert!(named(cell, "page-2").semantics.selected);
         assert!(!has_key(named(&pages, "items-per-page"), "menu"));

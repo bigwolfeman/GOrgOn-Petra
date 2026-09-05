@@ -42,8 +42,8 @@ use super::tokens::{
 use super::{pad, stack, swatch};
 use crate::geom::{Align, Axis};
 use crate::tree::{
-    AxisConstraint, Constraints, Interaction, Key, NodeKind, Props, Role, Semantics, TrackSize,
-    ViewNode,
+    AxisConstraint, Constraints, Interaction, Justify, Key, NodeKind, Props, Role, Semantics,
+    TrackSize, ViewNode,
 };
 
 const _: () = assert!(SIZE_MD == 40.0);
@@ -107,7 +107,7 @@ fn divider(index: usize, hidden: bool) -> ViewNode {
     let fill = if hidden { None } else { Some(BORDER_SUBTLE) };
     let line = swatch("line", DIVIDER_WIDTH, DIVIDER_HEIGHT, fill, None, None);
     let mut node = stack(format!("divider-{index}"), Axis::Vertical, None, vec![line]);
-    node.props.justify = Some(Align::Center);
+    node.props.justify = Some(Justify::Center);
     node
 }
 

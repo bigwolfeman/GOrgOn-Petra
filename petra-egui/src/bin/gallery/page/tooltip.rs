@@ -12,23 +12,36 @@ use super::common::{body, column, path_has, sp};
 const TRIGGER: &str = "trigger";
 const BUBBLE: &str = "bubble";
 
-/// Live state of the Tooltip page: whether the pointer is on the trigger.
+/// Live state of the Tooltip page: whether the pointer is on the trigger,
+/// and whether keyboard focus is.
 ///
-/// A tooltip is revealed by hover, and hover is the engine's, not the
-/// application's (`contracts/interaction-state.md` §1): the *lit* state
-/// of the trigger is derived by the host's hit test and painted through
-/// `background@hover`, and this page never touches it. What the page owns
-/// is the tree, and a bubble is a node, so whether the bubble is in the
-/// tree is a fact only the page can hold. It is set from the routed
-/// pointer events the chrome offers [`Page::gesture`] — the engine's own
-/// route, not a second hit test — and cleared by a pointer-exit or by a
-/// move that routed nowhere.
+/// Carbon reveals a tooltip on hover and on focus, and hides it when both
+/// are gone (slice-c §38). Both states are the engine's, not the
+/// application's (`contracts/interaction-state.md` §1): the trigger's *lit*
+/// state is derived by the host's hit test and painted through
+/// `background@hover`, and the focus ring is painted from the host's focus
+/// tree; this page never touches either. What the page owns is the tree,
+/// and a bubble is a node, so whether the bubble is in the tree is a fact
+/// only the page can hold. `hovered` is set from the routed pointer events
+/// the chrome offers [`Page::gesture`] — the engine's own route, not a
+/// second hit test — and cleared by a pointer-exit or by a move that routed
+/// nowhere. `focused` is set from [`Page::focused`], the host's own focus
+/// tree reporting a move.
 ///
-/// Not built: revealing on keyboard focus, which Carbon also does. Focus
-/// is host-owned and no routed event tells the page it arrived.
+/// Two flags and not one, because they leave separately: the pointer can
+/// wander off while the trigger still has focus, and Tab can move focus on
+/// while the pointer sits on the trigger. The bubble stays until both are
+/// gone.
 #[derive(Default)]
 pub struct Tooltip {
-    open: bool,
+    hovered: bool,
+    focused: bool,
+}
+
+impl Tooltip {
+    fn open(&self) -> bool {
+        self.hovered || self.focused
+    }
 }
 
 impl Page for Tooltip {
@@ -41,7 +54,7 @@ impl Page for Tooltip {
         // to be a hit-test candidate for a pointer move, and `link` does
         // not. Carbon's own tooltip demo hangs off a ghost button too.
         let mut pair = vec![ghost_button(TRIGGER, "Save")];
-        if self.open {
+        if self.open() {
             pair.push(tooltip(BUBBLE, "Save", "Save writes the composition."));
         }
         section(
@@ -61,14 +74,20 @@ impl Page for Tooltip {
 
     /// A move that routed to the trigger shows the bubble; a move that
     /// routed anywhere else, or nowhere (`node` empty), or a pointer-exit,
-    /// hides it. Nothing is consumed: a move is not an activation, and a
-    /// press on the trigger is still the button's to take.
+    /// drops the hover reason for it. Nothing is consumed: a move is not an
+    /// activation, and a press on the trigger is still the button's to take.
     fn gesture(&mut self, event: &InputEvent, node: &str, _frame: &PetrifiedFrame) -> bool {
         match event {
-            InputEvent::PointerMoved { .. } => self.open = path_has(node, TRIGGER),
-            InputEvent::PointerLeft => self.open = false,
+            InputEvent::PointerMoved { .. } => self.hovered = path_has(node, TRIGGER),
+            InputEvent::PointerLeft => self.hovered = false,
             _ => {}
         }
         false
+    }
+
+    /// Focus landing on the trigger shows the bubble; focus landing
+    /// anywhere else, or nowhere, drops the focus reason for it.
+    fn focused(&mut self, node: Option<&str>) {
+        self.focused = node.is_some_and(|node| path_has(node, TRIGGER));
     }
 }

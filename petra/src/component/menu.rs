@@ -1,23 +1,34 @@
-//! Carbon Menu (slice-c). Floating action list on Popover.
+//! Carbon Menu (slice-c). Floating action list on a list box.
 //!
 //! Anatomy (`_menu.scss`):
-//! 1. Menu container — [`super::popover::popover_with`], [`Role::Overlay`].
-//! 2. Action item — [`menu_item`]: [`Role::Button`], height md 40.
+//! 1. Menu container — [`super::list_box::list_box`], [`Role::Overlay`]:
+//!    `$layer` fill, `0 2px 6px 0 rgba(0,0,0,.2)` shadow, **no caret**,
+//!    flush under its trigger and at least as wide as it. Until 2026-09-04
+//!    this was [`super::popover::popover_with`], which put a beak on it,
+//!    padded it 16 on every side and centred the rows in the box — what
+//!    the operator read as "menu button does the same thing as popover".
+//! 2. Action item — [`menu_item`]: [`Role::Button`], height md 40, the
+//!    full width of the container, label at the leading edge behind
+//!    [`SPACING_05`] of inline padding, `body-compact-01`.
 //!
 //! Container width is min 160 / max 288 (SCSS `$supported-sizes` map and
-//! style-page). Item padding is [`SPACING_05`] inline. Submenus, danger
-//! hover, and the `--with-icons` column are omitted.
+//! style-page). Submenus, danger hover, and the `--with-icons` column are
+//! omitted.
 
-use super::pad;
-use super::popover::popover_with;
+use super::list_box::{Dividers, list_box};
 use super::stack;
 use super::text::text;
-use super::tokens::{LAYER_HOVER, SIZE_MD, SPACING_03, SPACING_05, SURFACE_BASE, TEXT_PRIMARY, t};
+use super::tokens::{
+    LAYER_HOVER, SIZE_MD, SPACING_05, SURFACE_RAISED, TEXT_PRIMARY, TYPOGRAPHY_BODY_COMPACT, t,
+};
 use crate::geom::{Align, Axis};
-use crate::tree::{AxisConstraint, Constraints, Interaction, Key, Role, ViewNode};
+use crate::tree::{
+    AxisConstraint, Constraints, InsetRefs, Interaction, Key, Role, TextWrap, ViewNode,
+};
 
-/// Carbon menu min-inline (`10rem`).
-const MIN_INLINE: f32 = 160.0;
+/// Carbon menu min-inline (`10rem`). Also the menu button trigger's
+/// minimum, which is how Carbon's shot has the two the same width.
+pub(crate) const MIN_INLINE: f32 = 160.0;
 /// Carbon menu max-inline (`18rem`).
 const MAX_INLINE: f32 = 288.0;
 
@@ -27,12 +38,14 @@ const _: () = assert!(MAX_INLINE == 288.0);
 
 const ITEM_INTENTS: &[Interaction] = &[Interaction::Focus, Interaction::Click, Interaction::Hover];
 
-/// A floating menu of `items`, hosted on a popover.
+/// A floating menu of `items`, hosted on a list box.
 ///
 /// Anchored to a sibling keyed `"trigger"` (the key [`super::menu_button`]
 /// uses for its button). `label` is the accessible name of the overlay.
+/// The min/max here bound the content; a trigger wider than 160 still gets
+/// a menu its own width (`Fit::Anchor`).
 pub fn menu(key: impl Into<Key>, label: impl Into<String>, items: Vec<ViewNode>) -> ViewNode {
-    let mut node = popover_with(key, label, "trigger", items);
+    let mut node = list_box(key, label, "trigger", items, Dividers::None);
     node.constraints.horizontal = AxisConstraint {
         min: Some(MIN_INLINE),
         max: Some(MAX_INLINE),
@@ -42,19 +55,38 @@ pub fn menu(key: impl Into<Key>, label: impl Into<String>, items: Vec<ViewNode>)
 }
 
 /// One action row. `label` is required (FR-058).
+///
+/// The label takes the row's whole width (priority 1 on the main axis) so
+/// the row is as wide as its container and the text sits at the leading
+/// edge; a single line, clipped rather than wrapped, because a menu item
+/// is a verb and not a paragraph.
 pub fn menu_item(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
     let label = label.into();
     let mut caption = text("label", label.clone());
+    caption.props.style = Some(t(TYPOGRAPHY_BODY_COMPACT));
+    caption.props.wrap = Some(TextWrap::Ellipsis);
     caption
         .props
         .tokens
         .insert("foreground".into(), t(TEXT_PRIMARY));
-    let mut node = stack(key, Axis::Horizontal, Some(SPACING_03), vec![caption]);
+    caption.constraints.horizontal = AxisConstraint {
+        min: None,
+        max: None,
+        priority: 1,
+    };
+    let mut node = stack(key, Axis::Horizontal, None, vec![caption]);
     node.props.align = Some(Align::Center);
-    node.props.padding = Some(pad(SPACING_05, SPACING_03));
+    node.props.padding = Some(InsetRefs {
+        left: Some(t(SPACING_05)),
+        right: Some(t(SPACING_05)),
+        ..InsetRefs::default()
+    });
+    // `$layer`, the same fill as the container: a row is a region of the
+    // panel, not a card on it. `SURFACE_BASE` here painted every item as a
+    // dark pill on the lighter panel.
     node.props
         .tokens
-        .insert("background".into(), t(SURFACE_BASE));
+        .insert("background".into(), t(SURFACE_RAISED));
     node.props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
@@ -77,11 +109,12 @@ fn pin_height(h: f32) -> Constraints {
 mod tests {
     use super::{MAX_INLINE, MIN_INLINE, SIZE_MD, menu, menu_item};
     use crate::component::disabled;
+    use crate::component::tokens::{SPACING_05, SURFACE_RAISED, TYPOGRAPHY_BODY_COMPACT};
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
-    use crate::tree::{Anchor, Interaction, NodeKind, Props, Registry, Role, ViewNode};
+    use crate::tree::{Anchor, Fit, Interaction, NodeKind, Props, Registry, Role, Tip, ViewNode};
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         node.children
@@ -92,7 +125,7 @@ mod tests {
     }
 
     #[test]
-    fn menu_is_an_overlay_popover_not_a_dialog() {
+    fn menu_is_a_flush_list_box_not_a_popover() {
         let node = menu(
             "actions",
             "Actions",
@@ -111,8 +144,18 @@ mod tests {
         assert_eq!(node.constraints.horizontal.max, Some(MAX_INLINE));
         assert_eq!(MIN_INLINE, 160.0);
         assert_eq!(MAX_INLINE, 288.0);
+        assert_eq!(
+            node.props.tip,
+            Some(Tip::Flush),
+            "Carbon's menu has no beak"
+        );
+        assert_eq!(node.props.fit, Some(Fit::Anchor));
+        assert!(node.props.padding.is_none(), "rows run edge to edge");
         let content = child(&node, "content");
-        assert_eq!(child(content, "caret").props.text.as_deref(), Some("^"));
+        assert!(
+            content.children.iter().all(|c| c.key.as_str() != "caret"),
+            "no caret word in a menu"
+        );
         let rename = child(content, "rename");
         assert_eq!(rename.semantics.role, Some(Role::Button));
         assert_eq!(rename.semantics.label.as_deref(), Some("Rename"));
@@ -131,7 +174,25 @@ mod tests {
         assert_eq!(node.constraints.vertical.max, Some(SIZE_MD));
         assert!(node.interactions.contains(&Interaction::Click));
         assert!(node.interactions.contains(&Interaction::Focus));
-        assert_eq!(child(&node, "label").props.text.as_deref(), Some("Rename"));
+        let label = child(&node, "label");
+        assert_eq!(label.props.text.as_deref(), Some("Rename"));
+        assert_eq!(
+            label.props.style.as_ref().map(|t| t.as_str()),
+            Some(TYPOGRAPHY_BODY_COMPACT)
+        );
+        assert_eq!(
+            label.constraints.horizontal.priority, 1,
+            "the label wins the row so the text sits at the leading edge"
+        );
+        let pad = node.props.padding.as_ref().expect("inline padding");
+        assert_eq!(pad.left.as_ref().map(|t| t.as_str()), Some(SPACING_05));
+        assert_eq!(pad.right.as_ref().map(|t| t.as_str()), Some(SPACING_05));
+        assert!(pad.top.is_none() && pad.bottom.is_none());
+        assert_eq!(
+            node.props.tokens.get("background").map(|t| t.as_str()),
+            Some(SURFACE_RAISED),
+            "a row is a region of the `$layer` panel, not a darker pill on it"
+        );
     }
 
     /// `menu()` IS the anchored surface, naming a `trigger` sibling by bare

@@ -88,7 +88,7 @@ use super::tokens::{
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
-    AxisConstraint, Constraints, InsetRefs, Interaction, Key, Role, TextWrap, ViewNode,
+    AxisConstraint, Constraints, InsetRefs, Interaction, Justify, Key, Role, TextWrap, ViewNode,
 };
 
 /// Carbon default-variant `mini`.
@@ -253,7 +253,7 @@ pub fn ai_label_revert(key: impl Into<Key>, label: impl Into<String>) -> ViewNod
     let label = label.into();
     let mut node = stack(key, Axis::Horizontal, None, centered_caption("Undo"));
     node.props.align = Some(Align::Center);
-    node.props.justify = Some(Align::Center);
+    node.props.justify = Some(Justify::Center);
     node.props
         .tokens
         .insert("background".into(), t(SURFACE_BASE));
@@ -342,7 +342,7 @@ fn inline_sized(
 fn trigger_button(key: impl Into<Key>, label: String, size: f32) -> ViewNode {
     let mut node = stack(key, Axis::Horizontal, None, centered_caption("AI"));
     node.props.align = Some(Align::Center);
-    node.props.justify = Some(Align::Center);
+    node.props.justify = Some(Justify::Center);
     node.props
         .tokens
         .insert("background".into(), t(SURFACE_BASE));

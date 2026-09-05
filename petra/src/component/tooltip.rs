@@ -1,8 +1,19 @@
-//! Carbon Tooltip (slice-f). Hover-triggered, non-interactive bubble.
+//! Carbon Tooltip (slice-f). Hover- or focus-triggered, non-interactive
+//! bubble.
 //!
-//! Anatomy (`_tooltip.scss`): caret + content box. The trigger is **not**
-//! this constructor — it lives on the host control. This node is the
-//! bubble only.
+//! Anatomy (`_tooltip.scss`): caret + content box, on Popover. The trigger
+//! is **not** this constructor — it lives on the host control. This node is
+//! the bubble only.
+//!
+//! What makes it a tooltip and not a popover is the polarity. Carbon's
+//! bubble is `$background-inverse` with `$text-inverse` — light on the dark
+//! theme, dark on the light one — so it is a step *across* the page's
+//! polarity rather than one grey step off it, and it reads as a note laid on
+//! the page rather than as another card. The caret is engine-drawn in the
+//! surface's own fill (`contracts/anchored-placement.md` §5), so it inverts
+//! with the box. Padding is [`SPACING_05`] on every side
+//! (`tooltip-padding-block` / `tooltip-padding-inline`); text is `body-01`,
+//! [`super::text::text`]'s own step.
 //!
 //! Distinction from [`super::toggletip`]: a tooltip discloses on hover or
 //! focus and MUST NOT contain interactive elements. A toggletip discloses
@@ -14,7 +25,9 @@
 //! Default/multi-line max-inline is 288 (SCSS). Single-line 208 is
 //! style-page only and is not bound.
 
-use super::popover::popover;
+use super::popover::popover_with;
+use super::text::text;
+use super::tokens::{BACKGROUND_INVERSE, TEXT_INVERSE, t};
 use crate::tree::{Key, Role, ViewNode};
 
 /// Carbon default tooltip `max-inline-size`.
@@ -31,7 +44,14 @@ const _: () = assert!(SINGLE_LINE_INTENT == 208.0);
 pub fn tooltip(key: impl Into<Key>, label: impl Into<String>, body: impl Into<String>) -> ViewNode {
     let _label = label.into();
     let body = body.into();
-    let mut node = popover(key, body.clone(), "trigger", body.clone());
+    let mut run = text("body", body.clone());
+    run.props
+        .tokens
+        .insert("foreground".into(), t(TEXT_INVERSE));
+    let mut node = popover_with(key, body.clone(), "trigger", vec![run]);
+    node.props
+        .tokens
+        .insert("background".into(), t(BACKGROUND_INVERSE));
     node.constraints.horizontal.max = Some(MAX_INLINE);
     node.semantics.role = Some(Role::Overlay);
     node.semantics.label = Some(body);
@@ -45,6 +65,7 @@ pub fn tooltip(key: impl Into<Key>, label: impl Into<String>, body: impl Into<St
 #[cfg(test)]
 mod tests {
     use super::{MAX_INLINE, SINGLE_LINE_INTENT, tooltip};
+    use crate::component::tokens::{BACKGROUND_INVERSE, SHADOW_OVERLAY, TEXT_INVERSE};
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, validated_with};
@@ -57,6 +78,10 @@ mod tests {
             .find(|c| c.key.as_str() == key)
             .map(|c| c.as_ref())
             .unwrap_or_else(|| panic!("missing child {key}"))
+    }
+
+    fn token<'a>(node: &'a ViewNode, slot: &str) -> Option<&'a str> {
+        node.props.tokens.get(slot).map(|name| name.as_str())
     }
 
     #[test]
@@ -80,7 +105,10 @@ mod tests {
             other => panic!("expected Anchor::Sibling, got {other:?}"),
         }
         let content = child(&node, "content");
-        assert_eq!(child(content, "caret").props.text.as_deref(), Some("^"));
+        assert!(
+            content.children.iter().all(|c| c.key.as_str() != "caret"),
+            "the caret is the engine's; no `^` word stands in for it"
+        );
         assert_eq!(
             child(content, "body").props.text.as_deref(),
             Some("Copied to clipboard")
@@ -88,6 +116,25 @@ mod tests {
         assert!(
             child(content, "body").interactions.is_empty(),
             "the bubble has no interactive children"
+        );
+    }
+
+    /// The bubble is the *inverse* polarity — Carbon's `$background-inverse`
+    /// under `$text-inverse` — and not another raised grey. Falsify by
+    /// leaving `popover_with`'s `SURFACE_RAISED` in place.
+    #[test]
+    fn the_bubble_is_the_inverse_polarity_not_a_raised_card() {
+        let node = tooltip("copied", "Copied", "Copied to clipboard");
+        assert_eq!(token(&node, "background"), Some(BACKGROUND_INVERSE));
+        assert_eq!(token(&node, "shadow"), Some(SHADOW_OVERLAY));
+        assert_eq!(token(&node, "border"), None);
+        assert_eq!(
+            token(child(child(&node, "content"), "body"), "foreground"),
+            Some(TEXT_INVERSE)
+        );
+        assert_eq!(
+            node.props.tip, None,
+            "absent is `Tip::Caret`: a tooltip points at its trigger"
         );
     }
 
@@ -106,13 +153,13 @@ mod tests {
         );
     }
 
-    // `tooltip` builds via `super::popover::popover`, so `node` IS the
+    // `tooltip` builds via `super::popover::popover_with`, so `node` IS the
     // anchored surface with no separate closed form — unlike Toggletip,
     // whose `trigger` stands alone as a plain interactive node. The
     // frame-level checks below therefore audit `content`, the inner `Stack`
-    // `popover` builds (`caret` + `body`), which carries no `anchor` of its
-    // own and so petrifies standalone — the same technique `popover.rs`'s
-    // own `content_frame_geometry_...` test uses.
+    // `popover_with` builds (`body`), which carries no `anchor` of its own
+    // and so petrifies standalone — the same technique `popover.rs`'s own
+    // `content_frame_geometry_...` test uses.
 
     const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
 
@@ -147,8 +194,8 @@ mod tests {
         }
     }
 
-    /// Check C/D: the caret and body text place with real rects, none of
-    /// them outside `content`'s own rect.
+    /// Check C/D: the body text places with a real rect inside `content`'s
+    /// own rect.
     #[test]
     fn content_frame_geometry_has_no_degenerate_or_overflowing_placements() {
         let node = tooltip("copied", "Copied", "Copied to clipboard");
@@ -188,10 +235,13 @@ mod tests {
     // "a tooltip is never itself disabled; it either doesn't render or is
     // suppressed by its host component's disabled state."
 
-    /// Check E: the caret and body text against [`SURFACE_RAISED`], the
-    /// resting `background` the outer `Surface` node binds, in both themes.
+    /// Check E: the body text against [`BACKGROUND_INVERSE`], the resting
+    /// `background` the outer `Surface` node binds, in both themes. The
+    /// inverse pair is the *other* theme's ink on the other theme's ground,
+    /// so this is the same measurement that theme makes for its own body
+    /// text.
     #[test]
-    fn content_text_clears_aa_contrast_against_the_surface_fill() {
+    fn content_text_clears_aa_contrast_against_the_inverse_fill() {
         const MIN_TEXT_CONTRAST: f32 = 4.5;
         for theme in [crate::token::light(), crate::token::dark()] {
             let node = tooltip("copied", "Copied", "Copied to clipboard");
@@ -202,24 +252,22 @@ mod tests {
                 .expect("the surface binds a resting background");
             let surface_bg = color(&theme, surface_bg_name.as_str());
             let content = child(&node, "content");
-            for label_key in ["caret", "body"] {
-                let label = child(content, label_key);
-                let fg_name = label
-                    .props
-                    .tokens
-                    .get("foreground")
-                    .expect("label text binds a foreground");
-                let opacity = label.props.opacity.unwrap_or(1.0);
-                let fg = color(&theme, fg_name.as_str())
-                    .faded(opacity)
-                    .over(surface_bg);
-                let ratio = fg.contrast_ratio(surface_bg);
-                assert!(
-                    ratio >= MIN_TEXT_CONTRAST,
-                    "{label_key} at {ratio:.2}:1 against {} fails AA {MIN_TEXT_CONTRAST}:1",
-                    surface_bg_name.as_str()
-                );
-            }
+            let label = child(content, "body");
+            let fg_name = label
+                .props
+                .tokens
+                .get("foreground")
+                .expect("body text binds a foreground");
+            let opacity = label.props.opacity.unwrap_or(1.0);
+            let fg = color(&theme, fg_name.as_str())
+                .faded(opacity)
+                .over(surface_bg);
+            let ratio = fg.contrast_ratio(surface_bg);
+            assert!(
+                ratio >= MIN_TEXT_CONTRAST,
+                "body at {ratio:.2}:1 against {} fails AA {MIN_TEXT_CONTRAST}:1",
+                surface_bg_name.as_str()
+            );
         }
     }
 }

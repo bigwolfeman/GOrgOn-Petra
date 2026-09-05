@@ -19,8 +19,8 @@ pub use node::{
 // parent. Two vocabularies over one word, kept apart by the module they are
 // reached through; `props::Align`'s own doc comment says which is which.
 pub use props::{
-    Align, Anchor, ClampRule, CollectionProps, Edge, GridProps, GridSpan, InputPolicy, InsetRefs,
-    Layer, NodeAnchor, Props, ScrollProps, StackProps, SurfaceProps, TextProps, TextWrap,
-    TrackSize, resolve_insets, resolve_spacing,
+    Align, Anchor, ClampRule, CollectionProps, Edge, Fit, GridProps, GridSpan, InputPolicy,
+    InsetRefs, Justify, Layer, NodeAnchor, Props, ScrollProps, StackProps, SurfaceProps, TextProps,
+    TextWrap, Tip, TrackSize, resolve_insets, resolve_spacing,
 };
 pub use validate::{Registry, TreeError, TreeErrors, ValidatedTree, Violation, validate};

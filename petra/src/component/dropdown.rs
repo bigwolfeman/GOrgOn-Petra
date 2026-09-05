@@ -1,90 +1,134 @@
-//! Carbon Dropdown (slice-b). Closed field plus an open list on Popover.
+//! Carbon Dropdown (slice-b). A labelled field plus an open list box.
 //!
 //! Anatomy (`_dropdown.scss` + `_list-box.scss`):
-//! 1. Field — [`SURFACE_RAISED`] + [`BORDER_SUBTLE`], height md 40.
-//! 2. Current value (visible text).
+//! 1. Label — `.cds--label`, `label-01` in `$text-secondary`, 8 above the
+//!    field.
+//! 2. Field — `.cds--list-box__field`: [`super::list_box::list_box_field`],
+//!    `$field` under a one-unit `$border-strong` rule, square, value at
+//!    `padding-left: 16px`, height md 40. The same node Select's field is.
 //! 3. Chevron — [`IconMark::ChevronDown`] shut, [`IconMark::ChevronUp`]
 //!    open (Carbon turns `.cds--list-box__menu-icon--open` 180°), in
-//!    [`IconTone::Primary`] (`fill: $icon-primary`). Never the only
-//!    channel: `Semantics.expanded` is declared on the open field and the
-//!    menu is mounted only while open (FR-026).
-//! 4. Open menu — [`super::popover::popover_with`] listing option rows.
-//! 5. Option — [`Role::Button`] + `Semantics.selected`. Selected is also
-//!    the word `"selected"` and [`LAYER_SELECTED`], never a hue alone.
+//!    [`IconTone::Primary`] (`fill: $icon-primary`), 16 in from the
+//!    trailing edge. Never the only channel: `Semantics.expanded` is
+//!    declared on the field and the list is mounted only while open
+//!    (FR-026).
+//! 4. Open menu — [`super::list_box::list_box`], flush under the field and
+//!    the field's width, a hairline between rows, **no caret**.
+//! 5. Option — [`dropdown_option`]: [`Role::Button`] + `Semantics.selected`,
+//!    height md 40, label at the leading edge, and when selected Carbon's
+//!    `Checkmark` glyph at the trailing edge plus [`LAYER_SELECTED`] — a
+//!    glyph and a fill, never a hue alone. Until 2026-09-04 the glyph was
+//!    the literal word `selected` printed beside the label.
 //!
-//! [`dropdown`] is the closed field (like [`super::select`]). [`dropdown_open`]
-//! wraps that field and a popover of caller-supplied option nodes. Combo box
-//! and Multiselect are omitted (clear icon + tags).
+//! [`dropdown`] is the closed column, [`dropdown_open`] the same column with
+//! the list. The field is keyed `"field"` in both, so keyboard focus seated
+//! on it survives the open. Combo box and Multiselect are omitted (clear
+//! icon + tags).
 
 use super::icon::{IconMark, IconTone, icon_toned};
-use super::pad;
-use super::popover::popover_with;
+use super::list_box::{Dividers, edge_row, list_box, list_box_field};
 use super::stack;
 use super::text::text;
 use super::tokens::{
-    BORDER_SUBTLE, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SHAPE_SM, SIZE_MD,
-    SPACING_03, SPACING_05, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY, t,
+    LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SIZE_MD, SPACING_03, SURFACE_RAISED,
+    TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_BODY_COMPACT, TYPOGRAPHY_LABEL, t,
 };
 use crate::geom::{Align, Axis};
-use crate::tree::{AxisConstraint, Constraints, Interaction, Key, Role, ViewNode};
+use crate::tree::{AxisConstraint, Constraints, Interaction, Key, Role, TextWrap, ViewNode};
 
 const _: () = assert!(SIZE_MD == 40.0);
 
-const FIELD_INTENTS: &[Interaction] = &[Interaction::Focus, Interaction::Click, Interaction::Hover];
+const OPTION_INTENTS: &[Interaction] =
+    &[Interaction::Focus, Interaction::Click, Interaction::Hover];
 
-/// Closed dropdown at Carbon md (40). `label` is the accessible name;
-/// `value` is the visible current option.
+/// Closed dropdown at Carbon md (40). `label` is the visible label above
+/// the field and the field's accessible name; `value` is the visible
+/// current option.
 pub fn dropdown(
     key: impl Into<Key>,
     label: impl Into<String>,
     value: impl Into<String>,
 ) -> ViewNode {
-    closed_field(key, label, value, IconMark::ChevronDown, None)
+    labelled(key, label, value, None)
 }
 
-/// Open dropdown: the closed field plus a popover listing `options`.
+/// Open dropdown: the labelled field plus a list box of `options`.
 ///
-/// The field child is keyed `"field"`; the popover is keyed `"menu"` and
-/// anchored to `"field"`. Callers that place this node under a parent must
-/// keep that child key so [`Anchor::Node`](crate::tree::Anchor) can name it.
+/// The field child is keyed `"field"` in both forms; the list box is keyed
+/// `"menu"` and anchored to `"field"` by sibling key, so the pair is
+/// accepted wherever a caller mounts it.
 pub fn dropdown_open(
     key: impl Into<Key>,
     label: impl Into<String>,
     value: impl Into<String>,
     options: Vec<ViewNode>,
 ) -> ViewNode {
+    labelled(key, label, value, Some(options))
+}
+
+/// The column: label above field, plus the list box when `options` is
+/// `Some`. One builder for both forms so their ids cannot drift apart.
+fn labelled(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    value: impl Into<String>,
+    options: Option<Vec<ViewNode>>,
+) -> ViewNode {
     let label = label.into();
-    let field = closed_field(
-        "field",
-        label.clone(),
-        value,
-        IconMark::ChevronUp,
-        Some(true),
-    );
-    let menu = popover_with("menu", label, "field", options);
-    let mut node = stack(key, Axis::Vertical, None, vec![field, menu]);
-    node.semantics.expanded = Some(true);
+    let open = options.is_some();
+    let mut caption = text("label", label.clone());
+    caption.props.style = Some(t(TYPOGRAPHY_LABEL));
+    caption
+        .props
+        .tokens
+        .insert("foreground".into(), t(TEXT_MUTED));
+    let chevron = if open {
+        IconMark::ChevronUp
+    } else {
+        IconMark::ChevronDown
+    };
+    let field = list_box_field("field", label.clone(), value, SIZE_MD, chevron, open);
+    let mut children = vec![caption, field];
+    if let Some(options) = options {
+        children.push(list_box("menu", label, "field", options, Dividers::Between));
+    }
+    let mut node = stack(key, Axis::Vertical, Some(SPACING_03), children);
+    node.props.align = Some(Align::Stretch);
+    node.semantics.expanded = Some(open);
     node
 }
 
-/// One option row. `selected` is a declared fact plus the word `"selected"`
-/// and [`LAYER_SELECTED`] — never colour alone.
+/// The `field` child of a column built by [`labelled`] — this module's and
+/// [`super::select`]'s alike — for tests that audit the field on its own.
+///
+/// # Panics
+/// If `node` has no child keyed `field`, which no column here lacks.
+#[cfg(test)]
+pub(crate) fn open_field_of(node: &ViewNode) -> &ViewNode {
+    node.children
+        .iter()
+        .find(|c| c.key.as_str() == "field")
+        .map(|c| c.as_ref())
+        .expect("a labelled column carries its field")
+}
+
+/// One option row. `selected` is a declared fact plus Carbon's `Checkmark`
+/// glyph at the trailing edge and [`LAYER_SELECTED`] — never colour alone.
+///
+/// An [`edge_row`]: the text sits at the leading edge and the glyph at the
+/// trailing one; one line, ellipsised, as
+/// `.cds--list-box__menu-item__option` is.
 pub fn dropdown_option(key: impl Into<Key>, label: impl Into<String>, selected: bool) -> ViewNode {
     let label = label.into();
     let mut caption = text("label", label.clone());
+    caption.props.style = Some(t(TYPOGRAPHY_BODY_COMPACT));
+    caption.props.wrap = Some(TextWrap::Ellipsis);
     caption
         .props
         .tokens
         .insert("foreground".into(), t(TEXT_PRIMARY));
-    let mut parts = vec![caption];
-    if selected {
-        let mut mark = text("mark", "selected");
-        mark.props.tokens.insert("foreground".into(), t(TEXT_MUTED));
-        parts.push(mark);
-    }
-    let mut node = stack(key, Axis::Horizontal, Some(SPACING_03), parts);
-    node.props.align = Some(Align::Center);
-    node.props.padding = Some(pad(SPACING_05, SPACING_03));
+    let mark = selected.then(|| icon_toned("mark", IconMark::Checkmark, IconTone::Primary));
+    let mut node = edge_row(key, caption, mark);
     node.props.tokens.insert(
         "background".into(),
         t(if selected {
@@ -102,46 +146,10 @@ pub fn dropdown_option(key: impl Into<Key>, label: impl Into<String>, selected: 
     node.props
         .tokens
         .insert("background@selected-hover".into(), t(LAYER_SELECTED_HOVER));
-    let mut node = node.interactive(Role::Button, label, FIELD_INTENTS);
-    node.semantics.selected = selected;
-    node
-}
-
-fn closed_field(
-    key: impl Into<Key>,
-    label: impl Into<String>,
-    value: impl Into<String>,
-    chevron: IconMark,
-    expanded: Option<bool>,
-) -> ViewNode {
-    let label = label.into();
-    let mut value_node = text("value", value.into());
-    value_node
-        .props
-        .tokens
-        .insert("foreground".into(), t(TEXT_PRIMARY));
-    let chevron_node = icon_toned("chevron", chevron, IconTone::Primary);
-
-    let mut node = stack(
-        key,
-        Axis::Horizontal,
-        Some(SPACING_03),
-        vec![value_node, chevron_node],
-    );
-    node.props.align = Some(Align::Center);
-    node.props.padding = Some(pad(SPACING_05, SPACING_03));
-    node.props
-        .tokens
-        .insert("background".into(), t(SURFACE_RAISED));
-    node.props.tokens.insert("border".into(), t(BORDER_SUBTLE));
-    node.props.tokens.insert("radius".into(), t(SHAPE_SM));
-    node.props
-        .tokens
-        .insert("background@hover".into(), t(LAYER_HOVER));
     let mut node =
         node.with_constraints(pin_height(SIZE_MD))
-            .interactive(Role::Button, label, FIELD_INTENTS);
-    node.semantics.expanded = expanded;
+            .interactive(Role::Button, label, OPTION_INTENTS);
+    node.semantics.selected = selected;
     node
 }
 
@@ -160,13 +168,16 @@ fn pin_height(h: f32) -> Constraints {
 mod tests {
     use super::{
         IconMark, IconTone, SIZE_MD, dropdown, dropdown_open, dropdown_option, icon_toned,
+        open_field_of,
     };
-    use crate::component::tokens::{BORDER_SUBTLE, LAYER_SELECTED, SURFACE_RAISED};
+    use crate::component::tokens::{
+        BORDER_STRONG, LAYER_SELECTED, SURFACE_RAISED, TEXT_MUTED, TYPOGRAPHY_LABEL,
+    };
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, inks, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
-    use crate::tree::{Anchor, Interaction, NodeKind, Props, Registry, Role, ViewNode};
+    use crate::tree::{Anchor, Interaction, NodeKind, Props, Registry, Role, Tip, ViewNode};
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         node.children
@@ -181,19 +192,37 @@ mod tests {
     }
 
     #[test]
-    fn dropdown_is_a_closed_button_at_height_40() {
+    fn dropdown_is_a_label_over_a_closed_field_at_height_40() {
         let node = dropdown("theme", "Theme", "Dark");
-        assert_eq!(node.semantics.role, Some(Role::Button));
-        assert_eq!(node.semantics.label.as_deref(), Some("Theme"));
-        assert_eq!(node.constraints.vertical.min, Some(SIZE_MD));
-        assert_eq!(node.constraints.vertical.max, Some(SIZE_MD));
+        assert_eq!(node.semantics.role, None, "the column is not the control");
+        let label = child(&node, "label");
+        assert_eq!(label.props.text.as_deref(), Some("Theme"));
+        assert_eq!(
+            label.props.style.as_ref().map(|t| t.as_str()),
+            Some(TYPOGRAPHY_LABEL)
+        );
+        assert_eq!(token(label, "foreground"), Some(TEXT_MUTED));
+        let field = open_field_of(&node);
+        assert_eq!(field.semantics.role, Some(Role::Button));
+        assert_eq!(field.semantics.label.as_deref(), Some("Theme"));
+        assert_eq!(field.constraints.vertical.min, Some(SIZE_MD));
+        assert_eq!(field.constraints.vertical.max, Some(SIZE_MD));
         assert_eq!(SIZE_MD, 40.0);
-        assert!(node.interactions.contains(&Interaction::Click));
-        assert!(node.interactions.contains(&Interaction::Focus));
-        assert_eq!(token(&node, "background"), Some(SURFACE_RAISED));
-        assert_eq!(token(&node, "border"), Some(BORDER_SUBTLE));
-        assert_eq!(child(&node, "value").props.text.as_deref(), Some("Dark"));
-        let chevron = child(&node, "chevron");
+        assert!(field.interactions.contains(&Interaction::Click));
+        assert!(field.interactions.contains(&Interaction::Focus));
+        assert_eq!(token(field, "background"), Some(SURFACE_RAISED));
+        assert_eq!(
+            token(field, "border"),
+            None,
+            "no box: the rule under the field is its whole boundary"
+        );
+        assert_eq!(
+            token(child(field, "rule"), "background"),
+            Some(BORDER_STRONG)
+        );
+        let row = child(field, "row");
+        assert_eq!(child(row, "value").props.text.as_deref(), Some("Dark"));
+        let chevron = child(row, "chevron");
         assert_eq!(chevron.kind, NodeKind::Canvas);
         assert_eq!(
             chevron.props.text, None,
@@ -207,12 +236,12 @@ mod tests {
             "a closed field points its chevron down"
         );
         assert!(chevron.semantics.role.is_none());
-        assert_eq!(node.semantics.expanded, None);
+        assert_eq!(field.semantics.expanded, Some(false));
         assert_ne!(node.semantics.role, Some(Role::Overlay));
     }
 
     #[test]
-    fn dropdown_open_hosts_options_in_a_popover() {
+    fn dropdown_open_hosts_options_in_a_flush_list_box() {
         let node = dropdown_open(
             "theme",
             "Theme",
@@ -228,7 +257,7 @@ mod tests {
         assert_eq!(field.semantics.label.as_deref(), Some("Theme"));
         assert_eq!(field.semantics.expanded, Some(true));
         assert_eq!(
-            child(field, "chevron").props.canvas,
+            child(child(field, "row"), "chevron").props.canvas,
             icon_toned("chevron", IconMark::ChevronUp, IconTone::Primary)
                 .props
                 .canvas,
@@ -239,16 +268,29 @@ mod tests {
         assert_eq!(menu.kind, NodeKind::Surface);
         assert_eq!(menu.semantics.role, Some(Role::Overlay));
         assert_eq!(menu.semantics.label.as_deref(), Some("Theme"));
+        assert_eq!(menu.props.tip, Some(Tip::Flush), "a list box has no beak");
         match &menu.props.anchor {
             Some(Anchor::Sibling { key, .. }) => assert_eq!(key.as_str(), "field"),
             other => panic!("expected Anchor::Sibling, got {other:?}"),
         }
         let content = child(menu, "content");
-        assert_eq!(child(content, "caret").props.text.as_deref(), Some("^"));
+        assert!(content.children.iter().all(|c| c.key.as_str() != "caret"));
         let dark = child(content, "dark");
         assert_eq!(dark.semantics.role, Some(Role::Button));
         assert!(dark.semantics.selected);
-        assert_eq!(child(dark, "mark").props.text.as_deref(), Some("selected"));
+        let mark = child(dark, "mark");
+        assert_eq!(
+            mark.kind,
+            NodeKind::Canvas,
+            "a glyph, not the word `selected`"
+        );
+        assert_eq!(mark.props.text, None);
+        assert_eq!(
+            mark.props.canvas,
+            icon_toned("mark", IconMark::Checkmark, IconTone::Primary)
+                .props
+                .canvas
+        );
         assert_eq!(token(dark, "background"), Some(LAYER_SELECTED));
         let light = child(content, "light");
         assert_eq!(light.semantics.role, Some(Role::Button));
@@ -327,7 +369,7 @@ mod tests {
         }
     }
 
-    /// Check C/D: the closed field and both option states place with a
+    /// Check C/D: the closed column and both option states place with a
     /// real rect, none of them outside their own row.
     #[test]
     fn frame_geometry_has_no_degenerate_or_overflowing_placements() {
@@ -379,7 +421,7 @@ mod tests {
         let field = field_frame
             .placements
             .iter()
-            .find(|p| p.id.ends_with("/theme"))
+            .find(|p| p.id.ends_with("/theme/field"))
             .expect("the field is placed");
         assert!(
             focus.order().iter().any(|o| o == &field.id),
@@ -405,13 +447,13 @@ mod tests {
     }
 
     /// Check E: the field's value/chevron and both option states' label
-    /// (and "selected" mark) against their own resting fill, in both
-    /// themes.
+    /// (and check mark) against their own resting fill, in both themes.
     #[test]
     fn text_clears_aa_contrast_against_its_own_fill() {
         const MIN_TEXT_CONTRAST: f32 = 4.5;
         for theme in [crate::token::light(), crate::token::dark()] {
-            let field = dropdown("theme", "Theme", "Dark");
+            let column = dropdown("theme", "Theme", "Dark");
+            let field = open_field_of(&column);
             let field_bg = color(
                 &theme,
                 field
@@ -422,7 +464,7 @@ mod tests {
                     .as_str(),
             );
             for label_key in ["value", "chevron"] {
-                let label = child(&field, label_key);
+                let label = child(child(field, "row"), label_key);
                 let inks = inks(label);
                 assert!(!inks.is_empty(), "field {label_key} binds an ink");
                 let opacity = label.props.opacity.unwrap_or(1.0);

@@ -45,7 +45,7 @@ use super::tokens::{
 use crate::geom::{Align, Axis};
 use crate::tree::{
     Align as PropAlign, Anchor, AxisConstraint, ClampRule, Constraints, Edge, InputPolicy,
-    Interaction, Key, Layer, NodeKind, Props, Role, TrackSize, ViewNode,
+    Interaction, Justify, Key, Layer, NodeKind, Props, Role, TrackSize, ViewNode,
 };
 
 /// Carbon calendar menu width (`18rem`). Independent of field size.
@@ -238,7 +238,10 @@ fn calendar_surface(label: String, year: i32, month: u32, selected: u32) -> View
     node.props
         .tokens
         .insert("background".into(), t(SURFACE_RAISED));
-    node.props.tokens.insert("border".into(), t(BORDER_SUBTLE));
+    // No edge. A surface floating over the page is lifted by its shadow —
+    // Carbon's `.cds--date-picker__calendar` has `box-shadow` and no border,
+    // and `containers_take_a_tone_and_controls_take_an_edge` is where that
+    // rule is kept.
     node.props.tokens.insert("shadow".into(), t(SHADOW_OVERLAY));
     node.semantics.role = Some(Role::Overlay);
     node.semantics.label = Some(label);
@@ -270,7 +273,7 @@ fn month_header(year: i32, month: u32) -> ViewNode {
 
     let mut seat = stack("month-seat", Axis::Horizontal, None, vec![caption]);
     seat.props.align = Some(Align::Center);
-    seat.props.justify = Some(Align::Center);
+    seat.props.justify = Some(Justify::Center);
 
     let mut row = ViewNode::new(NodeKind::Grid, "month-header")
         .with_props(Props {
@@ -297,7 +300,7 @@ fn month_step(key: &str, label: &str, mark: IconMark) -> ViewNode {
     let glyph = icon_toned("glyph", mark, IconTone::Primary);
     let mut node = stack(key, Axis::Horizontal, None, vec![glyph]);
     node.props.align = Some(Align::Center);
-    node.props.justify = Some(Align::Center);
+    node.props.justify = Some(Justify::Center);
     node.props
         .tokens
         .insert("background".into(), t(SURFACE_RAISED));
@@ -388,7 +391,7 @@ fn day_button(day: u32, selected: bool) -> ViewNode {
     );
     let mut node = stack(format!("day-{day}"), Axis::Horizontal, None, vec![caption]);
     node.props.align = Some(Align::Center);
-    node.props.justify = Some(Align::Center);
+    node.props.justify = Some(Justify::Center);
     // Resting background: the calendar's own content fill, the ground every
     // day cell sits on. Without this, `background@hover` has no resting
     // `background` beneath it and resolves to nothing at rest — the
@@ -446,7 +449,7 @@ fn adjacent_cell(slot: usize, lead: usize, count: u32, prev_count: u32) -> ViewN
 fn centred(key: String, child: ViewNode) -> ViewNode {
     let mut node = stack(key, Axis::Horizontal, None, vec![child]);
     node.props.align = Some(Align::Center);
-    node.props.justify = Some(Align::Center);
+    node.props.justify = Some(Justify::Center);
     node
 }
 

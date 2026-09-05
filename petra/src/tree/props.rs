@@ -569,6 +569,113 @@ pub enum InputPolicy {
     DismissOutside,
 }
 
+/// Main-axis placement of a `stack`'s children within whatever extent is
+/// left over once distribution has given every child its answer — CSS
+/// `justify-content`, for a stack.
+///
+/// The first three are [`crate::geom::Align`]'s three positions and read the
+/// same way: they move the whole run's starting cursor and nothing else.
+/// [`Justify::SpaceBetween`] is the one that has no cross-axis twin, which
+/// is why this is its own enum rather than a fourth `Align` variant: it
+/// spends the leftover *between* the children, growing every gap equally,
+/// so the first child sits at the leading edge and the last at the
+/// trailing one. Carbon's button with an icon is exactly this
+/// (`.cds--btn { justify-content: space-between }`): label at the start,
+/// glyph at the end, whatever the button's width. With one child there is
+/// nothing to spread between and it reads as [`Justify::Start`].
+///
+/// None of these changes how much room a child got; a container that ran
+/// out of room packs exactly as it always did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Justify {
+    /// Leftover trails after the last child.
+    #[default]
+    Start,
+    /// Leftover splits evenly before the first child and after the last.
+    Center,
+    /// Leftover leads before the first child.
+    End,
+    /// Leftover is spent evenly between adjacent children.
+    SpaceBetween,
+}
+
+impl Justify {
+    /// Where the run starts: the leading offset of the first child inside
+    /// `available` when the run wants `wanted`. Floors at zero, so an
+    /// oversized run is never pushed further past the container's edge.
+    #[must_use]
+    pub fn offset(self, available: f32, wanted: f32) -> f32 {
+        match self {
+            Self::Start | Self::SpaceBetween => 0.0,
+            Self::Center => ((available - wanted) / 2.0).max(0.0),
+            Self::End => (available - wanted).max(0.0),
+        }
+    }
+
+    /// How much every one of `gaps` gaps grows: the leftover shared out
+    /// between adjacent children for [`Justify::SpaceBetween`], nothing for
+    /// the rest. Zero when there are no gaps to grow.
+    #[must_use]
+    pub fn spread(self, available: f32, wanted: f32, gaps: f32) -> f32 {
+        match self {
+            Self::SpaceBetween if gaps > 0.0 => ((available - wanted) / gaps).max(0.0),
+            _ => 0.0,
+        }
+    }
+}
+
+/// Whether an anchored `surface` draws a caret back at its anchor.
+///
+/// Carbon's popover comes in a **caret tip** form and a **no tip** form
+/// (`_popover.scss`, `--caret`), and the two are not interchangeable: a
+/// tooltip, a popover and a toggletip point at the control that opened them,
+/// while a list box — dropdown, select, menu, date picker — butts flush
+/// against its field with no pointer at all. The engine computes the caret's
+/// geometry (`contracts/anchored-placement.md` §5) and it used to compute one
+/// for every anchored surface, so every list box in the library grew a beak
+/// nobody asked for. This is the author's half of that decision: *whether*
+/// there is a caret. *Where* it goes stays the engine's.
+///
+/// Absent means [`Tip::Caret`], which is what every anchored surface drew
+/// before this field existed. Declared on a kind other than `surface`, or on
+/// a surface whose anchor names no node, it changes nothing — there is no
+/// caret to suppress — the same way `canvas` on a non-canvas paints nothing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Tip {
+    /// A caret grows out of the surface's near edge towards the anchor.
+    #[default]
+    Caret,
+    /// No caret: the surface's near edge is a plain edge.
+    Flush,
+}
+
+/// How broad an anchored `surface` is along the edge it hangs off.
+///
+/// Carbon's list box menu is `inline-size: 100%` of the field that opened
+/// it, and a menu button's menu is at least as wide as its trigger. A
+/// surface's own content cannot know its anchor's width — the field is
+/// stretched by whatever column it sits in — so this is a relationship the
+/// engine has to resolve at placement, after the anchor's rect is harvested.
+///
+/// Absent means [`Fit::Content`]: the surface is as broad as its content and
+/// its constraints say, which is what every anchored surface was before this
+/// field existed. Declared on a non-surface, or on a surface whose anchor
+/// names no node, it changes nothing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Fit {
+    /// As broad as the content and the surface's own constraints decide.
+    #[default]
+    Content,
+    /// At least as broad as the anchor's edge; broader only if the content
+    /// needs it. The anchor's extent wins over the surface's own `max`
+    /// constraint, because a list narrower than its field is the defect this
+    /// exists to prevent.
+    Anchor,
+}
+
 /// Every kind-specific parameter a built-in node can carry.
 ///
 /// Absent fields serialize away, so the JSON of a plain stack is three keys,
@@ -592,24 +699,21 @@ pub struct Props {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub align: Option<crate::geom::Align>,
     /// Main-axis placement of a `stack`'s children within whatever extent is
-    /// left over once distribution has given every child its answer.
+    /// left over once distribution has given every child its answer. See
+    /// [`Justify`].
     ///
-    /// Absence is [`crate::geom::Align::Start`], which is the behaviour a
-    /// `stack` had before this field existed: leftover main-axis space
-    /// trails after the last child, because `stack::place` walked declaration
-    /// order from `content`'s own leading edge with no offset. A declared
-    /// value only ever moves that starting cursor — it changes nothing about
-    /// how much room each child gets, only where the whole run sits inside
-    /// the row. [`crate::geom::Align::Stretch`] has no main-axis meaning
-    /// (there is nothing left to stretch once distribution has run) and
-    /// resolves to the same zero offset as `Start`, through the same
-    /// [`crate::geom::Align::offset`] arm both share.
+    /// Absence is [`Justify::Start`], which is the behaviour a `stack` had
+    /// before this field existed: leftover main-axis space trails after the
+    /// last child, because `stack::place` walked declaration order from
+    /// `content`'s own leading edge with no offset. A declared value only
+    /// ever moves the starting cursor, or — for [`Justify::SpaceBetween`] —
+    /// the gaps; it changes nothing about how much room each child gets.
     ///
     /// Only `stack` honours this; a `grid`'s tracks are already sized by
     /// their own column/row rule, so there is no leftover extent for this to
     /// move.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub justify: Option<crate::geom::Align>,
+    pub justify: Option<Justify>,
     /// This node's own cross-axis alignment inside the space its `stack`
     /// parent gives it, overriding the parent's [`Props::align`] for this
     /// child alone — the same relationship CSS's `align-self` has to
@@ -702,6 +806,13 @@ pub struct Props {
     /// Outside-input rule for `surface`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_policy: Option<InputPolicy>,
+    /// Whether an anchored `surface` draws a caret. See [`Tip`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tip: Option<Tip>,
+    /// How broad an anchored `surface` is along its anchor's edge. See
+    /// [`Fit`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fit: Option<Fit>,
     /// The picture a `canvas` draws.
     ///
     /// Behind an `Arc` for the same reason [`crate::tree::ViewNode::children`]
@@ -762,7 +873,7 @@ pub struct StackProps {
     /// Cross-axis alignment.
     pub align: crate::geom::Align,
     /// Main-axis placement of the whole run within any leftover extent.
-    pub justify: crate::geom::Align,
+    pub justify: Justify,
 }
 
 /// Resolved `grid` parameters.
@@ -829,6 +940,10 @@ pub struct SurfaceProps<'a> {
     pub clamp: ClampRule,
     /// What it does with outside input.
     pub input_policy: InputPolicy,
+    /// Whether it draws a caret back at a node anchor.
+    pub tip: Tip,
+    /// How broad it is along a node anchor's edge.
+    pub fit: Fit,
 }
 
 /// Default gap between stack children when none is declared.
@@ -981,6 +1096,8 @@ impl Props {
             anchor: self.anchor.as_ref()?,
             clamp: self.clamp.unwrap_or_default(),
             input_policy: self.input_policy.unwrap_or_default(),
+            tip: self.tip.unwrap_or_default(),
+            fit: self.fit.unwrap_or_default(),
         })
     }
 }

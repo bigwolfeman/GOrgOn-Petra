@@ -163,6 +163,28 @@ pub trait App: RowSource {
     fn dismissed(&mut self, ids: &[String]) {
         let _ = ids;
     }
+    /// Keyboard focus moved to `focused`, or to nothing when `None`.
+    ///
+    /// Focus is the host's (`contracts/interaction-state.md` §1): the focus
+    /// tree owns it, the painter draws its ring from the published
+    /// projection, and an application never asks for it. What an
+    /// application does own is the tree, and some of the tree is a fact
+    /// about focus — a Carbon tooltip is revealed on focus as well as on
+    /// hover, and the bubble is a node only the application can mount. No
+    /// routed event carries "focus arrived": Tab never reaches
+    /// [`App::handle`], and a click that seats focus is routed as a click.
+    /// So the host reports the move here, from the one place it publishes
+    /// it, and the application answers on its next [`App::view`].
+    ///
+    /// Called once per change, never per pass, and only after the move is
+    /// already the host's own state: reading focus back through the
+    /// projection during this call returns `focused`.
+    ///
+    /// The default ignores it, for the applications whose trees do not
+    /// depend on where focus is — which is most of them.
+    fn focus_changed(&mut self, focused: Option<&str>) {
+        let _ = focused;
+    }
 }
 
 /// Point egui's glyph rasteriser at the coverage curve its own documentation
@@ -1506,6 +1528,9 @@ impl<A: App> Host<A> {
             return false;
         }
         self.state.focused = current;
+        // After the projection is written, so an application that reads
+        // focus back during the call sees the node it is being told about.
+        self.app.focus_changed(self.state.focused.as_deref());
         true
     }
 

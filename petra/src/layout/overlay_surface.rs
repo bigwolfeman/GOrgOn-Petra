@@ -87,7 +87,7 @@ use std::collections::BTreeMap;
 use crate::frame::placement::{CaretPaint, PaintState, Placement, PlacementSink};
 use crate::geom::{Axis, Rect, Size};
 use crate::layout::{AnchorRects, LayoutCtx, SizeProposal, Slot, semantics_of};
-use crate::tree::{Align, Anchor, ClampRule, Edge, InputPolicy, KeyPath, ViewNode};
+use crate::tree::{Align, Anchor, ClampRule, Edge, Fit, InputPolicy, KeyPath, Tip, ViewNode};
 
 /// Place this container and everything under it against `slot.window`, and
 /// report the caret it draws back at its anchor, if it has one.
@@ -143,7 +143,21 @@ pub fn place(
     // never render outside of — never the cell its flow parent offered.
     let viewport = slot.window;
 
-    let plan = anchor_placement(surface.anchor, path, viewport, natural, ctx);
+    let mut plan = anchor_placement(surface.anchor, path, viewport, natural, ctx);
+    // `Fit::Anchor`: a list box is as broad as the field that opened it
+    // (`contracts/anchored-placement.md` §4, "Fit"). The anchor's rect is
+    // only known once the plan has harvested it, and the cross-axis origin
+    // the plan chose depends on the surface's extent, so the plan is redone
+    // against the broadened size rather than patched. After `clamp_size`,
+    // deliberately: a surface's own `max` describes its content, and a
+    // menu narrower than its trigger is exactly the picture this exists to
+    // rule out.
+    if let Some(broadened) = fit_to_anchor(surface.fit, &plan, natural)
+        && broadened != natural
+    {
+        natural = broadened;
+        plan = anchor_placement(surface.anchor, path, viewport, natural, ctx);
+    }
 
     let x = clamp_axis(plan.x, natural.w, viewport.x, viewport.w, surface.clamp);
     let y = clamp_axis(plan.y, natural.h, viewport.y, viewport.h, surface.clamp);
@@ -153,10 +167,17 @@ pub fn place(
     // One record, read by the rect above and by the caret below, so the two
     // cannot disagree about which side the box landed on
     // (`contracts/anchored-placement.md` §4, "Resolution record").
-    let caret = plan
-        .anchored
-        .map(|anchored| anchored.resolve(&plan, x, y, natural))
-        .and_then(|resolved| caret_of(&resolved, rect, corner_radius(node, ctx)));
+    //
+    // `Tip::Flush` is the author saying there is no pointer to draw: the
+    // resolution record is still produced — the rect read it — and only the
+    // caret payload is withheld (`contracts/anchored-placement.md` §5).
+    let caret = match surface.tip {
+        Tip::Caret => plan
+            .anchored
+            .map(|anchored| anchored.resolve(&plan, x, y, natural))
+            .and_then(|resolved| caret_of(&resolved, rect, corner_radius(node, ctx))),
+        Tip::Flush => None,
+    };
     // Padding is inside the box: children are offered the placed, clamped
     // rect minus the surface's own padding — never the wider unclamped
     // extent `clamp_axis` tracked for the scroll affordance (`_content_w`/
@@ -293,6 +314,25 @@ pub fn resolve_anchor_kind(
                 AnchorResolution::NodeUnharvested
             }
         }
+    }
+}
+
+/// The size a surface declaring `fit` takes against the anchor `plan`
+/// harvested, or `None` when the plan harvested no anchor and there is
+/// nothing to fit to.
+///
+/// [`Fit::Anchor`] widens the cross axis — the axis that runs along the
+/// anchor's edge — to at least the anchor's own extent on it. The main axis
+/// is never touched: how far a menu hangs down is its content's business,
+/// not its trigger's. [`Fit::Content`] returns the size unchanged.
+fn fit_to_anchor(fit: Fit, plan: &AnchorPlan, natural: Size) -> Option<Size> {
+    let anchored = plan.anchored?;
+    match fit {
+        Fit::Content => Some(natural),
+        Fit::Anchor => Some(match anchored.edge.axis() {
+            Axis::Vertical => Size::new(natural.w.max(anchored.anchor_rect.w), natural.h),
+            Axis::Horizontal => Size::new(natural.w, natural.h.max(anchored.anchor_rect.h)),
+        }),
     }
 }
 

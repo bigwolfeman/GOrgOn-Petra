@@ -134,7 +134,6 @@ mod tests {
             other => panic!("expected Anchor::Sibling, got {other:?}"),
         }
         let content = child(tip, "content");
-        assert_eq!(child(content, "caret").props.text.as_deref(), Some("^"));
         assert_eq!(
             child(content, "body").props.text.as_deref(),
             Some("Narrow the list.")

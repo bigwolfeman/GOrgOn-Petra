@@ -1105,7 +1105,7 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
     /// Every node in [`full_gallery`] that may draw a border, by the key
     /// path it appears at. An exact set: a node missing from here that draws
     /// one fails, and a node listed here that stops drawing one fails too.
-    const DRAWS_AN_EDGE: [&str; 55] = [
+    const DRAWS_AN_EDGE: [&str; 41] = [
         // `field`: an empty well with no boundary does not read as a place
         // to type. See `field`'s own doc for why it keeps one when `button`
         // does not.
@@ -1148,9 +1148,8 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         "root/carbon/ai-default/trigger",
         // The open AI label's trigger is the same `trigger_button` as the
         // closed one — `open` changes `expanded` and nothing it draws — and
-        // its explainability `panel` is a popover: see the popover class
-        // under `root/carbon4/pop` below.
-        "root/carbon/ai-open/panel",
+        // its explainability `panel` is a popover, which draws no edge
+        // since 2026-09-04 (see the popover note below).
         "root/carbon/ai-open/trigger",
         // Content switcher's own row: Carbon's `.cds--content-switcher`
         // 1px `$border-subtle` outline (MEASURED `_content-switcher.scss`;
@@ -1158,20 +1157,22 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         // container, but this is a real measured boundary, not decoration —
         // the same class as `field` rather than a card or a strip.
         "root/carbon2/cs",
-        // Dropdown's and date picker's closed fields: `SURFACE_RAISED` +
-        // `BORDER_SUBTLE`, the same `field`-class pairing and the same
-        // reason — a raised fill one layer ahead of its ground is not
-        // enough contrast on its own (`field`'s own doc has the
-        // measurement), and these are input-shaped wells before anything is
-        // typed or chosen.
-        // The open forms' `field` is the same `closed_field` as the closed
-        // form (only the chevron word and `expanded` change), and their
-        // `menu`/`calendar` is a popover — see `root/carbon4/pop` below.
-        "root/carbon2/dd-open/field",
-        "root/carbon2/dd-open/menu",
-        "root/carbon2/dd-theme",
+        // Date picker's closed field: `SURFACE_RAISED` + `BORDER_SUBTLE`,
+        // the same `field`-class pairing and the same reason — a raised
+        // fill one layer ahead of its ground is not enough contrast on its
+        // own (`field`'s own doc has the measurement), and this is an
+        // input-shaped well before anything is chosen. The open form's
+        // `field` is the same `closed_field` as the closed form, and its
+        // `calendar` is a popover, edgeless since 2026-09-04 (below).
+        //
+        // Dropdown is **not** on this list since 2026-09-04. Its field is
+        // `list_box::list_box_field`, Carbon's `.cds--list-box__field`,
+        // whose boundary is the one-unit `$border-strong` rule *under* it
+        // (a `rule` child binding `background`, not a `border` slot on the
+        // field) and nothing around it; its open `menu` is a `list_box`,
+        // which Carbon casts with a shadow and no outline. Select's field
+        // is the same node, so it left this list with it.
         "root/carbon2/dp-due",
-        "root/carbon2/dp-open/calendar",
         "root/carbon2/dp-open/field",
         // Data table rows used to be here, binding the four-sided `border`
         // as an approximation of Carbon's row-bottom rule
@@ -1217,10 +1218,10 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         // raised tone on a scrim now, which is the "containers take a
         // tone" rule this test is named for, applied to the one container
         // that had been exempt. See `modal.rs`'s module doc.
-        // Menu and the open menu button's menu are popovers — see
-        // `root/carbon4/pop` below.
-        "root/carbon3/mb-open/menu",
-        "root/carbon3/mn-actions",
+        // Menu and the open menu button's menu are `list_box`es since
+        // 2026-09-04: `$layer` under `0 2px 6px 0 rgba(0,0,0,.2)`
+        // (slice-c), no outline — `_menu.scss` draws one only under
+        // `--border`, which nothing here asks for.
         // Number input's well: Carbon's `border-bottom: 1px solid
         // $border-strong` on `.cds--number` (slice-d, "Field ...
         // `border-bottom` `$border-strong`"), the same `field`-class
@@ -1270,7 +1271,6 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         // shell above. These were unreachable from this tree until
         // `Anchor::Sibling` let an open form mount at depth; nothing about
         // what they draw changed.
-        "root/carbon4/pop",
         // Radio's own mark: the same `empty_mark`/`marked_box` class as
         // the checkbox boxes above, for the same reason — an unselected
         // radio is nothing but its outline, and the selected/disabled
@@ -1291,10 +1291,6 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         // Every size (sm/md/lg) and the disabled form all bind it the
         // same way `select_sized` does — `disabled()` never touches a
         // token binding, same precedent as `ni-disabled` above.
-        "root/carbon5/sel-disabled",
-        "root/carbon5/sel-lg",
-        "root/carbon5/sel-sm",
-        "root/carbon5/sel-theme",
         // Structured list rows used to be here for the same reason and
         // with the same defect as the Data table rows above (round 2 row
         // 31, "has all the problems of the data table"). Each data row now
@@ -1346,12 +1342,11 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         // section adds (off, disabled, small) — `toggle_sized` binds
         // `border` unconditionally on the track regardless of `on` or the
         // size variant, the same precedent `check`/`radio`'s boxes set.
-        // Toggletip open, both UI shell right panels and Tooltip: the
-        // popover class, see `root/carbon4/pop` above.
-        "root/carbon6/help-open/tip",
+        // Both UI shell right panels bind `SURFACE_RAISED` +
+        // `BORDER_SUBTLE` by hand (the popover note above). Toggletip open
+        // and Tooltip are popovers and draw no edge.
         "root/carbon6/shell-right",
         "root/carbon6/shell-switcher",
-        "root/carbon6/tip",
         "root/carbon6/tog-disabled/appearance/track",
         "root/carbon6/tog-off/appearance/track",
         "root/carbon6/tog-on/appearance/track",

@@ -210,13 +210,16 @@ pub fn place(
     // — and where the gap is not zero the rects do not abut, so there is no
     // seam to close. `gorgon/petra/tests/layout_matrix.rs`'s
     // `abutting_rows_share_a_device_edge_from_a_shifted_origin` pins it.
-    // `justify` only ever moves this starting point. It never changes how
-    // much room a child got — `extents` is already final, concede included
-    // — so a container that ran out of room (`final_wanted >= main_extent`)
-    // computes a leading offset of zero either way (`Align::offset` floors
-    // at zero) and packs exactly as it always did.
+    // `justify` only ever moves this starting point, or — `SpaceBetween` —
+    // grows every gap by the same `spread`. It never changes how much room
+    // a child got — `extents` is already final, concede included — so a
+    // container that ran out of room (`final_wanted >= main_extent`)
+    // computes a leading offset and a spread of zero either way
+    // (`Justify::offset` and `Justify::spread` floor at zero) and packs
+    // exactly as it always did.
     let final_wanted = spacing + extents.iter().sum::<f32>();
     let leading = justify.offset(main_extent, final_wanted);
+    let spread = justify.spread(main_extent, final_wanted, gaps);
     let mut cursor = match main {
         Axis::Horizontal => content.x + leading,
         Axis::Vertical => content.y + leading,
@@ -257,7 +260,7 @@ pub fn place(
             Axis::Vertical => Rect::new(content.x + offset, cursor, across, extent),
         };
         crate::layout::place(child, ctx, path, slot.with_rect(rect), sink);
-        cursor += extent + gap;
+        cursor += extent + gap + spread;
     }
 
     sink.leave();
@@ -385,7 +388,9 @@ mod tests {
     use crate::geom::{Align, Axis, Insets, Rect, Size};
     use crate::layout::{SizeProposal, Slot};
     use crate::testing::{Harness, gap};
-    use crate::tree::{AxisConstraint, Constraints, Key, KeyPath, NodeKind, Props, ViewNode};
+    use crate::tree::{
+        AxisConstraint, Constraints, Justify, Key, KeyPath, NodeKind, Props, ViewNode,
+    };
 
     /// Constraints that touch one axis only, so a test says what it means
     /// about the main axis without accidentally pinning the cross axis.
@@ -871,7 +876,7 @@ mod tests {
     /// `ai_label`'s `centered_caption` spacer-pair workaround exists for.
     #[test]
     fn justify_moves_the_leftover_main_axis_space() {
-        let tree = |justify: Option<Align>| {
+        let tree = |justify: Option<Justify>| {
             let mut node = stack(
                 Axis::Horizontal,
                 0.0,
@@ -886,14 +891,62 @@ mod tests {
         // 136 units trail after the 64-wide image, exactly as every `stack`
         // placed it before this field existed.
         assert_eq!(placements(&tree(None), rect)[1].rect.x, 0.0);
-        assert_eq!(placements(&tree(Some(Align::Start)), rect)[1].rect.x, 0.0);
-        assert_eq!(placements(&tree(Some(Align::Center)), rect)[1].rect.x, 68.0);
-        assert_eq!(placements(&tree(Some(Align::End)), rect)[1].rect.x, 136.0);
-        // `Stretch` has no main-axis meaning and resolves through the same
-        // zero-offset arm as `Start`.
-        assert_eq!(placements(&tree(Some(Align::Stretch)), rect)[1].rect.x, 0.0);
+        assert_eq!(placements(&tree(Some(Justify::Start)), rect)[1].rect.x, 0.0);
+        assert_eq!(
+            placements(&tree(Some(Justify::Center)), rect)[1].rect.x,
+            68.0
+        );
+        assert_eq!(placements(&tree(Some(Justify::End)), rect)[1].rect.x, 136.0);
+        // A lone child has no gap to spread into, so `SpaceBetween` reads
+        // as `Start`.
+        assert_eq!(
+            placements(&tree(Some(Justify::SpaceBetween)), rect)[1]
+                .rect
+                .x,
+            0.0
+        );
         // `justify` never changes how much room the child got.
-        assert_eq!(placements(&tree(Some(Align::Center)), rect)[1].rect.w, 64.0);
+        assert_eq!(
+            placements(&tree(Some(Justify::Center)), rect)[1].rect.w,
+            64.0
+        );
+    }
+
+    /// `SpaceBetween` spends the leftover in the gaps: the first child
+    /// stays at the leading edge, the last lands on the trailing one, and
+    /// the declared spacing is the floor every gap grows from. The shape a
+    /// field's value-and-chevron row and a menu button's label-and-caret
+    /// row need, whatever width they are stretched to.
+    #[test]
+    fn space_between_pushes_the_last_child_to_the_trailing_edge() {
+        let mut node = stack(
+            Axis::Horizontal,
+            8.0,
+            Align::Start,
+            vec![rigid("a"), rigid("b"), rigid("c")],
+        );
+        node.props.justify = Some(Justify::SpaceBetween);
+        // Three 64-wide images and two 8-unit gaps want 208 of 400: 192
+        // left over, 96 more in each gap.
+        let out = placements(&node, Rect::new(0.0, 0.0, 400.0, 64.0));
+        assert_eq!(
+            out[1].rect.x, 0.0,
+            "the first child stays at the leading edge"
+        );
+        assert_eq!(out[2].rect.x, 64.0 + 8.0 + 96.0);
+        assert_eq!(
+            out[3].rect.x + out[3].rect.w,
+            400.0,
+            "the last child ends on the trailing edge"
+        );
+        assert!(
+            out.iter().skip(1).all(|p| p.rect.w == 64.0),
+            "no child grew"
+        );
+        // With no slack it packs as `Start` does.
+        let tight = placements(&node, Rect::new(0.0, 0.0, 208.0, 64.0));
+        assert_eq!(tight[2].rect.x, 72.0);
+        assert_eq!(tight[3].rect.x, 144.0);
     }
 
     /// `justify` only ever moves the starting cursor; a container that ran
@@ -908,7 +961,7 @@ mod tests {
             Align::Start,
             vec![rigid("a"), rigid("b"), rigid("c")],
         );
-        node.props.justify = Some(Align::Center);
+        node.props.justify = Some(Justify::Center);
         let rect = Rect::new(0.0, 0.0, 100.0, 64.0);
         let out = placements(&node, rect);
         // Three 64-wide rigid images in a 100-wide row: this already

@@ -435,6 +435,12 @@ impl App for Catalog {
         self.pending_dismiss.extend_from_slice(ids);
     }
 
+    fn focus_changed(&mut self, focused: Option<&str>) {
+        if let Some(page) = self.open_page_mut() {
+            page.focused(focused);
+        }
+    }
+
     fn take_changes(&mut self) -> ChangeSet {
         // The catalog rebuilds its whole tree every pass, so `All` is the
         // only honest answer. Naming individual nodes while handing back

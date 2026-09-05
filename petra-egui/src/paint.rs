@@ -1153,10 +1153,21 @@ fn paint_one(
     // `background@hover` would otherwise grow a caret in its resting colour,
     // and a caret that disagrees with the shape it continues is worse than no
     // caret at all.
+    //
+    // Through a widened clip, for the shadow's reason: the caret is the
+    // other thing on this page that draws *outside* the node it belongs to
+    // (`caret_of` puts the tip `h` past the surface's near edge, back at the
+    // anchor), and every placement arrives here clipped to its own bounds.
+    // Painted through the inherited clip the caret drew nothing: the report
+    // counted a fill, `every_built_page_paints_with_nothing_silent` was
+    // green, and rows 24 and 38 showed a bubble with no beak. Widened by
+    // the caret's own depth and no further, and never past the page.
     if let Some(caret) = &content.caret {
         let fill = resolve_slot(&content.tokens, BACKGROUND_SLOT, state)
             .and_then(|token| resolve_or_record(env.colors, token, report));
-        if crate::triangle::paint_caret(painter, caret, fill, env.scale) {
+        let mut cast = painter.clone();
+        cast.set_clip_rect(painter.clip_rect().expand(caret.h).intersect(env.page));
+        if crate::triangle::paint_caret(&cast, caret, fill, env.scale) {
             report.fills += 1;
             shapes += 1;
         } else {
@@ -1745,6 +1756,81 @@ mod tests {
              surface -- see the shadow block's own comment for the lane that \
              catches this when the assertion does not.",
             escaped.len()
+        );
+    }
+
+    /// A caret may leave its surface. It may not leave the page.
+    ///
+    /// # The bug this is the guard for
+    ///
+    /// `overlay_surface::caret_of` puts the caret's tip `h` units past the
+    /// surface's near edge, back at the anchor, and the surface placement's
+    /// clip is its own rect. Painted through that clip the caret was cut
+    /// off entirely: `paint_caret` returned `true`, the report counted a
+    /// fill, and the popover and tooltip pages rasterized a bubble with no
+    /// beak. The pixels were the only thing that said so.
+    ///
+    /// # What is asserted
+    ///
+    /// The fixture is a shipped `popover` under a shipped `button`, so the
+    /// caret is the engine's own. The caret is the one convex polygon the
+    /// painter emits, and its clip must contain every one of its vertices,
+    /// the tip included, while staying inside the page. Reading the clip
+    /// rather than the pixels is deliberate: the clip is what the bug was.
+    #[test]
+    fn a_caret_may_leave_its_surface_but_never_leaves_the_page() {
+        use gorgon_petra::component::{button, popover};
+
+        const PAGE: Size = Size { w: 240.0, h: 120.0 };
+
+        let host = Headless::new();
+        let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
+        let tree = ViewNode::new(NodeKind::Stack, "root")
+            .child(button("anchor", "Anchor"))
+            .child(popover("note", "Note", "anchor", "Hi"));
+        let frame = frame_of(&tree, &mut h);
+        let caret = frame
+            .drawn()
+            .find_map(|(_, content)| content.caret)
+            .expect("the popover carries an engine caret");
+
+        let mut shaper = host.shaper();
+        let report = paint_frame(&host.painter(), &frame, &mut shaper, &snapshot());
+        assert!(report.unresolved_tokens.is_empty(), "{report:?}");
+        assert!(
+            !report.undrawn.contains("caret"),
+            "the caret must draw, or this test passes by drawing nothing: {report:?}"
+        );
+
+        let page = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(PAGE.w, PAGE.h));
+        let out = host.0.run_ui(RawInput::default(), |_| {});
+        let polygons: Vec<(egui::Rect, Vec<egui::Pos2>)> = out
+            .shapes
+            .iter()
+            .filter_map(|cs| match &cs.shape {
+                Shape::Path(path) => Some((cs.clip_rect, path.points.clone())),
+                _ => None,
+            })
+            .collect();
+        out.drop_without_applying_deltas();
+
+        let [(clip, points)] = polygons.as_slice() else {
+            panic!("expected the caret to be the one polygon painted, got {polygons:?}");
+        };
+        assert!(
+            page.contains_rect(*clip),
+            "the caret's clip {clip:?} reaches outside the {PAGE:?} page"
+        );
+        let tip = egui::pos2(caret.tip_x, caret.tip_y);
+        assert!(
+            points.iter().any(|p| (*p - tip).length() < 1.0),
+            "the polygon is not the caret: {points:?} has no vertex at the tip {tip:?}"
+        );
+        assert!(
+            points.iter().all(|p| clip.contains(*p)),
+            "the caret's clip {clip:?} cuts off its own vertices {points:?}: it \
+             was painted through the surface's clip, which ends at the edge the \
+             caret reaches out of"
         );
     }
 

@@ -52,6 +52,10 @@ pub(crate) const SPACING_09: &str = "spacing-09";
 pub(crate) const SIZE_MD: f32 = 40.0;
 
 pub(crate) const SHAPE_NONE: &str = "shape.corner-none";
+/// Carbon's popover corner (`$popover-border-radius`, 2px) — the one
+/// rounded corner a floating surface has. Carbon's fields, list boxes and
+/// menus are square.
+pub(crate) const SHAPE_XS: &str = "shape.corner-xs";
 pub(crate) const SHAPE_SM: &str = "shape.corner-sm";
 pub(crate) const SHAPE_MD: &str = "shape.corner-md";
 pub(crate) const SHAPE_FULL: &str = "shape.corner-full";
@@ -66,6 +70,13 @@ pub(crate) const TYPOGRAPHY_HEADING: &str = "typography.heading";
 /// Carbon `heading-compact-01`: a selected tab keeps the body size and steps
 /// the weight, so it must not borrow the 20px page-heading role.
 pub(crate) const TYPOGRAPHY_HEADING_SM: &str = "typography.heading-sm";
+/// Carbon `body-compact-01` (14/18): the text of a field value, a list box
+/// option and a menu item. [`TYPOGRAPHY_BODY`] is `body-01` (14/20), the
+/// paragraph step; a 40-unit row built on it reads two units looser than
+/// Carbon's.
+pub(crate) const TYPOGRAPHY_BODY_COMPACT: &str = "typography.body-compact";
+/// Carbon `label-01` (12/16): the label above a field.
+pub(crate) const TYPOGRAPHY_LABEL: &str = "typography.label";
 
 /// The elevation a resting container casts. Colour only: the offset, blur
 /// and spread live in `token::SHADOW_GEOMETRY`, because they are the same in
@@ -77,6 +88,12 @@ pub(crate) const SHADOW_RAISED: &str = "shadow.raised";
 /// popover. Present in the shipped vocabulary since it was written; only
 /// the re-export was missing, which is the fourth token found that way and
 /// the reason the module doc now says to check `token/shipped.rs` first.
+/// The elevation a surface that has left the page casts: a popover, a
+/// tooltip, a list box. Carbon gives every floating panel one shadow
+/// (`0 2px 6px 0 rgba(0,0,0,.2)`, slice-b, slice-c) and gives a resting
+/// container none, which is the difference between these two names.
+/// `token::shipped` pins `shadow.overlay` to fall further and soften more
+/// than [`SHADOW_RAISED`].
 pub(crate) const SHADOW_OVERLAY: &str = "shadow.overlay";
 
 /// The scrim a modal lays over the page behind it: black at a theme-chosen
@@ -147,6 +164,12 @@ pub(crate) const TEXT_MUTED: &str = "text.muted";
 pub(crate) const LAYER_SELECTED_INVERSE: &str = "layer-selected-inverse";
 /// See [`LAYER_SELECTED_INVERSE`].
 pub(crate) const TEXT_INVERSE: &str = "text-inverse";
+/// The inverted polarity's page ground: Carbon's `$background-inverse`, the
+/// fill of a tooltip bubble (`_tooltip.scss`, slice-f) — light on the dark
+/// theme, dark on the light one, so the bubble is a polarity step off the
+/// page and not a grey step off it. Its ink is [`TEXT_INVERSE`]. In the
+/// vocabulary since 2026-08-25 with nothing in this library reading it.
+pub(crate) const BACKGROUND_INVERSE: &str = "background-inverse";
 
 /// The tone a non-text glyph is drawn in when it is the control's own mark
 /// on a layer ground: Carbon's `$icon-primary`, the fill SCSS names for the
@@ -171,6 +194,14 @@ pub(crate) const ICON_SECONDARY: &str = "icon-secondary";
 /// that survive are the ones where the edge *is* the control (an unchecked
 /// checkbox is nothing but its outline), and they bind this.
 pub(crate) const BORDER_SUBTLE: &str = "border.subtle";
+
+/// The one-unit rule under a Carbon field: `border-block-end: 1px solid
+/// $border-strong` on a text input, a select and a list box field (slice-e,
+/// slice-b). A field's boundary in Carbon is that rule and nothing else — no
+/// box, no radius — and the rule is one step louder than
+/// [`BORDER_SUBTLE`] because it is the whole edge. `token::shipped` pins it
+/// at the CIE L\* midpoint between the subtle border and the primary text.
+pub(crate) const BORDER_STRONG: &str = "border-strong";
 
 /// The accent fill, and the ink that goes on top of it.
 ///
@@ -233,6 +264,7 @@ pub(crate) const ALL: &[&str] = &[
     SPACING_07,
     SPACING_09,
     SHAPE_NONE,
+    SHAPE_XS,
     SHAPE_SM,
     SHAPE_MD,
     SHAPE_FULL,
@@ -244,7 +276,10 @@ pub(crate) const ALL: &[&str] = &[
     TYPOGRAPHY_HEADING,
     TYPOGRAPHY_HEADING_SM,
     SHADOW_OVERLAY,
+    TYPOGRAPHY_BODY_COMPACT,
+    TYPOGRAPHY_LABEL,
     SHADOW_RAISED,
+    SHADOW_OVERLAY,
     OVERLAY_SCRIM,
     SURFACE_BASE,
     SURFACE_RAISED,
@@ -254,9 +289,11 @@ pub(crate) const ALL: &[&str] = &[
     TEXT_MUTED,
     LAYER_SELECTED_INVERSE,
     TEXT_INVERSE,
+    BACKGROUND_INVERSE,
     ICON_PRIMARY,
     ICON_SECONDARY,
     BORDER_SUBTLE,
+    BORDER_STRONG,
     ACCENT_PRIMARY,
     TEXT_ON_ACCENT,
     LAYER_HOVER,

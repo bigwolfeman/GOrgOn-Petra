@@ -62,8 +62,8 @@ use super::tokens::{
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
-    Anchor, AxisConstraint, ClampRule, Constraints, InputPolicy, InsetRefs, Interaction, Key,
-    Layer, NodeKind, Props, Role, Semantics, TextWrap, TrackSize, ViewNode,
+    Anchor, AxisConstraint, ClampRule, Constraints, InputPolicy, InsetRefs, Interaction, Justify,
+    Key, Layer, NodeKind, Props, Role, Semantics, TextWrap, TrackSize, ViewNode,
 };
 
 /// Carbon close-button hit box (`3rem`).
@@ -130,7 +130,7 @@ fn build(key: Key, title: String, body: String, primary: Option<String>) -> View
         None,
         vec![dialog(&title, body, primary)],
     );
-    seat.props.justify = Some(Align::Center);
+    seat.props.justify = Some(Justify::Center);
     seat.props.align = Some(Align::Stretch);
 
     // One row the height of the window, three columns: the dialog's width

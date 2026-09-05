@@ -1,32 +1,48 @@
 //! Carbon Menu buttons (slice-c). A labelled button that opens a Menu.
 //!
-//! Anatomy (`_menu-button.scss`): trigger button + caret + Menu. Combo
-//! button and Overflow menu are omitted (split trigger / icon-only).
+//! Anatomy (`_menu-button.scss`, a thin composition over `button` +
+//! `menu`): trigger button + caret + Menu. Combo button and Overflow menu
+//! are omitted (split trigger / icon-only).
+//!
+//! The trigger is Carbon's **primary** button (`kind="primary"` is the
+//! default): [`ACCENT_PRIMARY`] fill, [`TEXT_ON_ACCENT`] label at the
+//! leading edge, the chevron at the trailing edge, `min-inline-size` 160 —
+//! the same 160 as the menu's own minimum, which is why Carbon's reference
+//! shot has the two exactly one width. Square corners, as every Carbon
+//! button is. Height md 40. No hover fill, for the reason
+//! [`super::primary_button`] has none: the vocabulary has no
+//! `accent.primary-hover`, and inventing the tone here would put a colour
+//! decision in a component.
 //!
 //! The caret is [`IconMark::ChevronDown`] shut and [`IconMark::ChevronUp`]
 //! open (Carbon turns `.cds--menu-button__trigger--open svg` 180°), in
-//! [`IconTone::Primary`]. Never the only channel: `Semantics.expanded` is
+//! [`IconTone::OnAccent`]. Never the only channel: `Semantics.expanded` is
 //! declared and the menu is mounted only while open (FR-026).
+//!
+//! The menu hangs flush under the trigger at its leading edge and is at
+//! least the trigger's width ([`super::list_box`]'s `Fit::Anchor`). Until
+//! 2026-09-04 it was a centred, padded popover with a beak, and the
+//! operator could not tell the page from the Popover page.
 
 use super::icon::{IconMark, IconTone, icon_toned};
-use super::menu::menu;
-use super::pad;
+use super::list_box::edge_row;
+use super::menu::{MIN_INLINE, menu};
 use super::stack;
 use super::text::text;
 use super::tokens::{
-    LAYER_HOVER, SHADOW_RAISED, SHAPE_MD, SIZE_MD, SPACING_03, SPACING_05, SURFACE_RAISED,
-    TEXT_PRIMARY, t,
+    ACCENT_PRIMARY, ICON_ON_COLOR_DISABLED, SIZE_MD, TEXT_ON_ACCENT, TYPOGRAPHY_BODY_COMPACT, t,
 };
-use crate::geom::{Align, Axis};
-use crate::tree::{AxisConstraint, Constraints, Interaction, Key, Role, ViewNode};
+use crate::geom::Axis;
+use crate::tree::{AxisConstraint, Constraints, Interaction, Key, Role, TextWrap, ViewNode};
 
 const _: () = assert!(SIZE_MD == 40.0);
+const _: () = assert!(MIN_INLINE == 160.0);
 
 const TRIGGER_INTENTS: &[Interaction] =
     &[Interaction::Focus, Interaction::Click, Interaction::Hover];
 
 /// A labelled menu trigger. When `open` is true the node also carries a
-/// [`menu`] popover of `items`. `label` is required (FR-058).
+/// [`menu`] list box of `items`. `label` is required (FR-058).
 pub fn menu_button(
     key: impl Into<Key>,
     label: impl Into<String>,
@@ -46,10 +62,16 @@ pub fn menu_button(
 
 fn trigger(key: impl Into<Key>, label: String, open: bool) -> ViewNode {
     let mut caption = text("label", label.clone());
+    caption.props.style = Some(t(TYPOGRAPHY_BODY_COMPACT));
+    caption.props.wrap = Some(TextWrap::Clip);
     caption
         .props
         .tokens
-        .insert("foreground".into(), t(TEXT_PRIMARY));
+        .insert("foreground".into(), t(TEXT_ON_ACCENT));
+    caption
+        .props
+        .tokens
+        .insert("foreground@disabled".into(), t(ICON_ON_COLOR_DISABLED));
     let chevron = icon_toned(
         "caret",
         if open {
@@ -57,54 +79,45 @@ fn trigger(key: impl Into<Key>, label: String, open: bool) -> ViewNode {
         } else {
             IconMark::ChevronDown
         },
-        IconTone::Primary,
+        IconTone::OnAccent,
     );
-    let mut node = stack(
-        key,
-        Axis::Horizontal,
-        Some(SPACING_03),
-        vec![caption, chevron],
-    );
-    node.props.align = Some(Align::Center);
-    node.props.padding = Some(pad(SPACING_05, SPACING_03));
+    // Label at the leading edge, chevron at the trailing one, whatever the
+    // trigger's width (`edge_row`).
+    let mut node = edge_row(key, caption, Some(chevron));
     node.props
         .tokens
-        .insert("background".into(), t(SURFACE_RAISED));
-    node.props
-        .tokens
-        .insert("background@hover".into(), t(LAYER_HOVER));
-    node.props.tokens.insert("radius".into(), t(SHAPE_MD));
-    node.props.tokens.insert("shadow".into(), t(SHADOW_RAISED));
-    let mut node = node.with_constraints(pin_height(SIZE_MD)).interactive(
-        Role::Button,
-        label,
-        TRIGGER_INTENTS,
-    );
+        .insert("background".into(), t(ACCENT_PRIMARY));
+    let mut node = node
+        .with_constraints(Constraints {
+            horizontal: AxisConstraint {
+                min: Some(MIN_INLINE),
+                max: None,
+                priority: 0,
+            },
+            vertical: AxisConstraint {
+                min: Some(SIZE_MD),
+                max: Some(SIZE_MD),
+                priority: 0,
+            },
+        })
+        .interactive(Role::Button, label, TRIGGER_INTENTS);
     node.semantics.expanded = Some(open);
     node
 }
 
-fn pin_height(h: f32) -> Constraints {
-    Constraints {
-        vertical: AxisConstraint {
-            min: Some(h),
-            max: Some(h),
-            priority: 0,
-        },
-        ..Constraints::default()
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{IconMark, IconTone, SIZE_MD, icon_toned, menu_button};
+    use super::{IconMark, IconTone, MIN_INLINE, SIZE_MD, icon_toned, menu_button};
     use crate::component::disabled;
     use crate::component::menu::menu_item;
+    use crate::component::tokens::{ACCENT_PRIMARY, TEXT_ON_ACCENT};
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, inks, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
-    use crate::tree::{Anchor, Interaction, NodeKind, Props, Registry, Role, ViewNode};
+    use crate::tree::{
+        Anchor, Interaction, Justify, NodeKind, Props, Registry, Role, Tip, ViewNode,
+    };
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         node.children
@@ -122,7 +135,7 @@ mod tests {
     fn menu_button_closed_is_a_labelled_trigger_without_a_menu() {
         let node = menu_button("more", "More", false, items());
         assert_eq!(node.semantics.expanded, Some(false));
-        assert_eq!(node.children.len(), 1, "closed trigger has no popover");
+        assert_eq!(node.children.len(), 1, "closed trigger has no list box");
         let trigger = child(&node, "trigger");
         assert_eq!(trigger.semantics.role, Some(Role::Button));
         assert_eq!(trigger.semantics.label.as_deref(), Some("More"));
@@ -135,7 +148,7 @@ mod tests {
         assert_eq!(caret.props.text, None, "the caret is a glyph, not a word");
         assert_eq!(
             caret.props.canvas,
-            icon_toned("caret", IconMark::ChevronDown, IconTone::Primary)
+            icon_toned("caret", IconMark::ChevronDown, IconTone::OnAccent)
                 .props
                 .canvas,
             "a closed trigger points its caret down"
@@ -147,8 +160,41 @@ mod tests {
         );
     }
 
+    /// The trigger is Carbon's primary button: accent fill, on-accent
+    /// label and caret, at least 160 wide, square. Falsify by handing the
+    /// trigger `SURFACE_RAISED` and a radius again.
     #[test]
-    fn menu_button_open_includes_a_menu_popover() {
+    fn the_trigger_is_a_primary_button_at_least_160_wide() {
+        let node = menu_button("more", "More", false, items());
+        let trigger = child(&node, "trigger");
+        assert_eq!(
+            trigger.props.tokens.get("background").map(|t| t.as_str()),
+            Some(ACCENT_PRIMARY)
+        );
+        assert_eq!(
+            child(trigger, "label")
+                .props
+                .tokens
+                .get("foreground")
+                .map(|t| t.as_str()),
+            Some(TEXT_ON_ACCENT)
+        );
+        assert_eq!(trigger.constraints.horizontal.min, Some(MIN_INLINE));
+        assert_eq!(MIN_INLINE, 160.0);
+        assert!(
+            !trigger.props.tokens.contains_key("radius"),
+            "Carbon buttons are square"
+        );
+        assert_eq!(
+            trigger.props.justify,
+            Some(Justify::SpaceBetween),
+            "an `edge_row`: the slack goes between label and caret, so the \
+             caret sits at the trailing edge"
+        );
+    }
+
+    #[test]
+    fn menu_button_open_includes_a_flush_menu() {
         let node = menu_button("more", "More", true, items());
         assert_eq!(node.semantics.expanded, Some(true));
         let trigger = child(&node, "trigger");
@@ -156,7 +202,7 @@ mod tests {
         assert_eq!(trigger.semantics.expanded, Some(true));
         assert_eq!(
             child(trigger, "caret").props.canvas,
-            icon_toned("caret", IconMark::ChevronUp, IconTone::Primary)
+            icon_toned("caret", IconMark::ChevronUp, IconTone::OnAccent)
                 .props
                 .canvas,
             "an open trigger points its caret up"
@@ -166,12 +212,13 @@ mod tests {
         assert_eq!(menu.kind, NodeKind::Surface);
         assert_eq!(menu.semantics.role, Some(Role::Overlay));
         assert_eq!(menu.semantics.label.as_deref(), Some("More"));
+        assert_eq!(menu.props.tip, Some(Tip::Flush), "a menu has no beak");
         match &menu.props.anchor {
             Some(Anchor::Sibling { key, .. }) => assert_eq!(key.as_str(), "trigger"),
             other => panic!("expected Anchor::Sibling, got {other:?}"),
         }
         let content = child(menu, "content");
-        assert_eq!(child(content, "caret").props.text.as_deref(), Some("^"));
+        assert!(content.children.iter().all(|c| c.key.as_str() != "caret"));
         assert_eq!(
             child(content, "rename").semantics.label.as_deref(),
             Some("Rename")
@@ -225,7 +272,8 @@ mod tests {
     }
 
     /// Check C/D: the closed trigger places with a real rect, none of its
-    /// parts outside it.
+    /// parts outside it, and the caret ends where the trigger's inline
+    /// padding begins.
     #[test]
     fn frame_geometry_has_no_degenerate_or_overflowing_placements() {
         let node = menu_button("more", "More", false, vec![menu_item("rename", "Rename")]);
@@ -256,6 +304,19 @@ mod tests {
                 );
             }
         }
+        let trigger = frame.placement("/root/more/trigger").expect("trigger");
+        let caret = frame.placement("/root/more/trigger/caret").expect("caret");
+        assert!(
+            (trigger.rect.w - MIN_INLINE).abs() < 0.5,
+            "a short label leaves the trigger at its 160 minimum: {:?}",
+            trigger.rect
+        );
+        assert!(
+            ((trigger.rect.x + trigger.rect.w - 16.0) - (caret.rect.x + caret.rect.w)).abs() < 0.5,
+            "the caret's trailing edge is 16 in from the trigger's: trigger {:?}, caret {:?}",
+            trigger.rect,
+            caret.rect
+        );
     }
 
     /// Check F: an enabled trigger is reachable; a disabled one is not.
@@ -302,7 +363,7 @@ mod tests {
     }
 
     /// Check E: the trigger's label and caret against the trigger's own
-    /// resting fill, in both themes.
+    /// resting fill — the accent — in both themes.
     #[test]
     fn trigger_text_clears_aa_contrast_against_its_own_resting_fill() {
         const MIN_TEXT_CONTRAST: f32 = 4.5;

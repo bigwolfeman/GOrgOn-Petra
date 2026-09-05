@@ -5,7 +5,7 @@ use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::ViewNode;
 
 use super::Page;
-use super::common::{body, dismisses, path_has, sp};
+use super::common::{dismisses, filled_body, path_has, sp};
 
 const THEME: &str = "theme";
 /// The option list's key inside `select_open`.
@@ -31,6 +31,8 @@ impl Page for Select {
 
     fn body(&self) -> ViewNode {
         let value = OPTIONS[self.selected].1;
+        // `filled_body`, not `body`: a Carbon select is 100% of its
+        // container's width (slice-b §29), so the column stretches it.
         let field = if self.open {
             select_open(
                 THEME,
@@ -48,7 +50,7 @@ impl Page for Select {
         section(
             "select",
             "Select",
-            vec![body("sel", sp("spacing.md"), vec![field])],
+            vec![filled_body("sel", sp("spacing.md"), vec![field])],
         )
     }
 

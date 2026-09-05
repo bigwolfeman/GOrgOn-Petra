@@ -1,34 +1,37 @@
-//! Carbon Select (slice-e). Closed field plus an open list on Popover.
+//! Carbon Select (slice-e). A labelled field plus an open list box.
 //!
-//! Anatomy of the closed field (`_select.scss`):
-//! 1. Field — [`SURFACE_RAISED`] + [`BORDER_SUBTLE`], height md 40.
-//! 2. Current value (visible text).
-//! 3. Chevron as the word `"closed"` / `"open"` — never an icon-only mark
-//!    (FR-026).
-//! 4. Open menu — [`super::popover::popover_with`] listing caller-supplied
-//!    option rows ([`select_open`]).
-//!
-//! `Role::Button` is the closed field: it is what opens the menu.
-//! `select_sm` 32 / `select_lg` 48 follow the shared layout scale.
+//! Anatomy (`_select.scss`, Default style):
+//! 1. Label — `.cds--label`, `label-01` in `$text-secondary`, 8 above the
+//!    field (`margin-bottom: $spacing-03`).
+//! 2. Field — `.cds--select-input`: [`super::list_box::list_box_field`],
+//!    which is `$field` under a one-unit `$border-strong` rule, square,
+//!    value at `padding-left: 16px`, 16-unit chevron 16 in from the
+//!    trailing edge, height md 40 (`select_sm` 32 / `select_lg` 48). It is
+//!    the same node Dropdown's field is, because in Carbon they are the
+//!    same field. Until 2026-09-04 this was a rounded, outlined pill that
+//!    hugged the word `closed` — the row the operator called "not carbon
+//!    style".
+//! 3. Open list — [`super::list_box::list_box`] anchored flush under the
+//!    field, the field's width, option rows built with
+//!    [`super::dropdown::dropdown_option`] and a hairline between rows.
 //!
 //! Carbon's Select is the browser's native `<select>`, so Carbon draws no
-//! open list of its own; the open form here is the same shape as
-//! [`super::dropdown::dropdown_open`], and a caller builds the rows with
-//! [`super::dropdown::dropdown_option`] — one option-row anatomy, not two.
+//! open list of its own and the reference has no open shot; the open form
+//! here is [`super::dropdown::dropdown_open`]'s, which is the nearest
+//! ground truth Carbon offers (`ignored/carbon-ref/shots/11-dropdown-open.png`).
 //!
-//! The field label is the accessible name. Carbon's label-above anatomy
-//! would make the control taller than 40; it is not stacked here.
+//! The closed and open forms are one shape — a column keyed `key` holding
+//! `label` and `field`, plus `menu` while open — so the field's id does not
+//! change when the list opens and keyboard focus stays on it, which is
+//! Carbon's behaviour and was not this component's.
 
-use super::pad;
-use super::popover::popover_with;
+use super::icon::IconMark;
+use super::list_box::{Dividers, list_box, list_box_field};
 use super::stack;
 use super::text::text;
-use super::tokens::{
-    BORDER_SUBTLE, LAYER_HOVER, SHAPE_SM, SIZE_MD, SPACING_03, SPACING_05, SURFACE_RAISED,
-    TEXT_MUTED, TEXT_PRIMARY, t,
-};
+use super::tokens::{SIZE_MD, SPACING_03, TEXT_MUTED, TYPOGRAPHY_LABEL, t};
 use crate::geom::{Align, Axis};
-use crate::tree::{AxisConstraint, Constraints, Interaction, Key, Role, ViewNode};
+use crate::tree::{Key, ViewNode};
 
 /// Carbon Default sm.
 const SIZE_SM: f32 = 32.0;
@@ -39,13 +42,11 @@ const _: () = assert!(SIZE_SM == 32.0);
 const _: () = assert!(SIZE_MD == 40.0);
 const _: () = assert!(SIZE_LG == 48.0);
 
-const CLOSED_INTENTS: &[Interaction] =
-    &[Interaction::Focus, Interaction::Click, Interaction::Hover];
-
-/// Closed select at Carbon md (40). `label` is the accessible name;
-/// `value` is the visible current option.
+/// Closed select at Carbon md (40). `label` is the visible label above the
+/// field and the field's accessible name; `value` is the visible current
+/// option.
 pub fn select(key: impl Into<Key>, label: impl Into<String>, value: impl Into<String>) -> ViewNode {
-    select_sized(key, label, value, SIZE_MD, "closed", None)
+    labelled(key, label, value, SIZE_MD, None)
 }
 
 /// Carbon sm (32).
@@ -54,7 +55,7 @@ pub fn select_sm(
     label: impl Into<String>,
     value: impl Into<String>,
 ) -> ViewNode {
-    select_sized(key, label, value, SIZE_SM, "closed", None)
+    labelled(key, label, value, SIZE_SM, None)
 }
 
 /// Carbon lg (48).
@@ -63,14 +64,14 @@ pub fn select_lg(
     label: impl Into<String>,
     value: impl Into<String>,
 ) -> ViewNode {
-    select_sized(key, label, value, SIZE_LG, "closed", None)
+    labelled(key, label, value, SIZE_LG, None)
 }
 
-/// Open select: the md field plus a popover listing `options`.
+/// Open select: the labelled md field plus a list box of `options`.
 ///
-/// The field child is keyed `"field"`; the popover is keyed `"menu"` and
-/// anchored to `"field"` by sibling key, so the pair is accepted wherever
-/// a caller mounts it. Build `options` with
+/// The field child is keyed `"field"` in both forms; the list box is keyed
+/// `"menu"` and anchored to `"field"` by sibling key, so the pair is
+/// accepted wherever a caller mounts it. Build `options` with
 /// [`super::dropdown::dropdown_option`].
 pub fn select_open(
     key: impl Into<Key>,
@@ -78,78 +79,52 @@ pub fn select_open(
     value: impl Into<String>,
     options: Vec<ViewNode>,
 ) -> ViewNode {
-    let label = label.into();
-    let field = select_sized("field", label.clone(), value, SIZE_MD, "open", Some(true));
-    let menu = popover_with("menu", label, "field", options);
-    let mut node = stack(key, Axis::Vertical, None, vec![field, menu]);
-    node.semantics.expanded = Some(true);
-    node
+    labelled(key, label, value, SIZE_MD, Some(options))
 }
 
-fn select_sized(
+/// The column: label above field, plus the list box when `options` is
+/// `Some`. One builder for both forms so their ids cannot drift apart.
+fn labelled(
     key: impl Into<Key>,
     label: impl Into<String>,
     value: impl Into<String>,
     height: f32,
-    chevron_word: &'static str,
-    expanded: Option<bool>,
+    options: Option<Vec<ViewNode>>,
 ) -> ViewNode {
     let label = label.into();
-    let mut value_node = text("value", value.into());
-    value_node
-        .props
-        .tokens
-        .insert("foreground".into(), t(TEXT_PRIMARY));
-    let mut chevron = text("chevron", chevron_word);
-    chevron
+    let open = options.is_some();
+    let mut caption = text("label", label.clone());
+    caption.props.style = Some(t(TYPOGRAPHY_LABEL));
+    caption
         .props
         .tokens
         .insert("foreground".into(), t(TEXT_MUTED));
-
-    let mut node = stack(
-        key,
-        Axis::Horizontal,
-        Some(SPACING_03),
-        vec![value_node, chevron],
-    );
-    node.props.align = Some(Align::Center);
-    node.props.padding = Some(pad(SPACING_05, SPACING_03));
-    node.props
-        .tokens
-        .insert("background".into(), t(SURFACE_RAISED));
-    node.props.tokens.insert("border".into(), t(BORDER_SUBTLE));
-    node.props.tokens.insert("radius".into(), t(SHAPE_SM));
-    node.props
-        .tokens
-        .insert("background@hover".into(), t(LAYER_HOVER));
-    let mut node =
-        node.with_constraints(pin_height(height))
-            .interactive(Role::Button, label, CLOSED_INTENTS);
-    node.semantics.expanded = expanded;
-    node
-}
-
-fn pin_height(h: f32) -> Constraints {
-    Constraints {
-        vertical: AxisConstraint {
-            min: Some(h),
-            max: Some(h),
-            priority: 0,
-        },
-        ..Constraints::default()
+    let chevron = if open {
+        IconMark::ChevronUp
+    } else {
+        IconMark::ChevronDown
+    };
+    let field = list_box_field("field", label.clone(), value, height, chevron, open);
+    let mut children = vec![caption, field];
+    if let Some(options) = options {
+        children.push(list_box("menu", label, "field", options, Dividers::Between));
     }
+    let mut node = stack(key, Axis::Vertical, Some(SPACING_03), children);
+    node.props.align = Some(Align::Stretch);
+    node.semantics.expanded = Some(open);
+    node
 }
 
 #[cfg(test)]
 mod tests {
     use super::{SIZE_LG, SIZE_MD, SIZE_SM, select, select_lg, select_open, select_sm};
-    use crate::component::dropdown::dropdown_option;
-    use crate::component::tokens::{BORDER_SUBTLE, SURFACE_RAISED};
+    use crate::component::dropdown::{dropdown_option, open_field_of as field_of};
+    use crate::component::tokens::{BORDER_STRONG, SURFACE_RAISED, TEXT_MUTED, TYPOGRAPHY_LABEL};
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
-    use crate::tree::{Anchor, Interaction, NodeKind, Props, Registry, Role, ViewNode};
+    use crate::tree::{Anchor, Interaction, NodeKind, Props, Registry, Role, Tip, ViewNode};
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         node.children
@@ -174,34 +149,55 @@ mod tests {
         roles
     }
 
+    /// The closed form is a label over a bottom-ruled field, and the field
+    /// is the button.
     #[test]
-    fn select_is_a_closed_button_at_height_40() {
+    fn select_is_a_label_over_a_closed_field_at_height_40() {
         let node = select("theme", "Theme", "Dark");
-        assert_eq!(node.semantics.role, Some(Role::Button));
-        assert_eq!(node.semantics.label.as_deref(), Some("Theme"));
-        assert_eq!(node.constraints.vertical.min, Some(SIZE_MD));
-        assert_eq!(node.constraints.vertical.max, Some(SIZE_MD));
+        assert_eq!(node.kind, NodeKind::Stack);
+        assert_eq!(node.semantics.role, None, "the column is not the control");
+        assert_eq!(node.semantics.expanded, Some(false));
+        let label = child(&node, "label");
+        assert_eq!(label.props.text.as_deref(), Some("Theme"));
+        assert_eq!(
+            label.props.style.as_ref().map(|t| t.as_str()),
+            Some(TYPOGRAPHY_LABEL)
+        );
+        assert_eq!(token(label, "foreground"), Some(TEXT_MUTED));
+        let field = field_of(&node);
+        assert_eq!(field.semantics.role, Some(Role::Button));
+        assert_eq!(field.semantics.label.as_deref(), Some("Theme"));
+        assert_eq!(field.semantics.expanded, Some(false));
+        assert_eq!(field.constraints.vertical.min, Some(SIZE_MD));
+        assert_eq!(field.constraints.vertical.max, Some(SIZE_MD));
         assert_eq!(SIZE_MD, 40.0);
-        assert!(node.interactions.contains(&Interaction::Click));
-        assert!(node.interactions.contains(&Interaction::Focus));
-        assert_eq!(token(&node, "background"), Some(SURFACE_RAISED));
-        assert_eq!(token(&node, "border"), Some(BORDER_SUBTLE));
-        assert_eq!(child(&node, "value").props.text.as_deref(), Some("Dark"));
+        assert!(field.interactions.contains(&Interaction::Click));
+        assert!(field.interactions.contains(&Interaction::Focus));
+        assert_eq!(token(field, "background"), Some(SURFACE_RAISED));
         assert_eq!(
-            child(&node, "chevron").props.text.as_deref(),
-            Some("closed")
-        );
-        assert_eq!(
-            child(&node, "chevron").semantics.role,
+            token(field, "border"),
             None,
-            "chevron is a second channel, not its own control"
+            "no box around the field: Carbon's boundary is the rule under it"
         );
+        assert_eq!(
+            token(child(field, "rule"), "background"),
+            Some(BORDER_STRONG)
+        );
+        let row = child(field, "row");
+        assert_eq!(child(row, "value").props.text.as_deref(), Some("Dark"));
+        let chevron = child(row, "chevron");
+        assert_eq!(
+            chevron.kind,
+            NodeKind::Canvas,
+            "a glyph, not the word `closed`"
+        );
+        assert_eq!(chevron.props.text, None);
+        assert!(chevron.semantics.role.is_none());
     }
 
     #[test]
     fn select_does_not_fake_an_open_menu() {
         let node = select("theme", "Theme", "Dark");
-        assert_eq!(node.semantics.expanded, None);
         assert!(
             !descendant_roles(&node)
                 .iter()
@@ -210,23 +206,22 @@ mod tests {
         assert_eq!(
             node.children.len(),
             2,
-            "closed field is value + chevron only"
+            "the closed form is label + field only"
         );
     }
 
     #[test]
     fn select_sm_is_32_and_lg_is_48() {
         let sm = select_sm("theme", "Theme", "Dark");
-        assert_eq!(sm.constraints.vertical.min, Some(SIZE_SM));
-        assert_eq!(sm.constraints.vertical.max, Some(SIZE_SM));
+        assert_eq!(field_of(&sm).constraints.vertical.min, Some(SIZE_SM));
+        assert_eq!(field_of(&sm).constraints.vertical.max, Some(SIZE_SM));
         assert_eq!(SIZE_SM, 32.0);
-        assert_eq!(sm.semantics.role, Some(Role::Button));
+        assert_eq!(field_of(&sm).semantics.role, Some(Role::Button));
         let lg = select_lg("theme", "Theme", "Dark");
-        assert_eq!(lg.constraints.vertical.min, Some(SIZE_LG));
-        assert_eq!(lg.constraints.vertical.max, Some(SIZE_LG));
+        assert_eq!(field_of(&lg).constraints.vertical.min, Some(SIZE_LG));
+        assert_eq!(field_of(&lg).constraints.vertical.max, Some(SIZE_LG));
         assert_eq!(SIZE_LG, 48.0);
-        assert_eq!(lg.semantics.role, Some(Role::Button));
-        assert_eq!(child(&lg, "chevron").props.text.as_deref(), Some("closed"));
+        assert_eq!(field_of(&lg).semantics.role, Some(Role::Button));
     }
 
     const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
@@ -292,12 +287,7 @@ mod tests {
     }
 
     /// Check C/D: sm, md, lg and the disabled form all place with real
-    /// rects, none of them outside their parent, and the chevron word
-    /// never overflows its own rect (Class 4's shape: had the chevron
-    /// been an icon-only hit box pinned to a glyph's width, this is what
-    /// would have caught it — `select`'s own module doc records that the
-    /// chevron is deliberately the word "closed" rather than an icon for
-    /// exactly this reason, FR-026).
+    /// rects, none of them outside their parent.
     #[test]
     fn frame_geometry_has_no_degenerate_or_overflowing_placements() {
         check_geometry(&petrify_lone(select("theme", "Theme", "Dark")), "md");
@@ -309,8 +299,8 @@ mod tests {
         );
     }
 
-    /// Check F: the closed field declares `Focus` and is reachable; the
-    /// disabled form is not.
+    /// Check F: the field declares `Focus` and is reachable; the disabled
+    /// form is not. The column above it is never a stop.
     #[test]
     fn field_focus_reachability_matches_disabled_state() {
         for (label, node, should_be_focusable) in [
@@ -326,50 +316,44 @@ mod tests {
                 &frame.placements,
                 &std::collections::BTreeMap::new(),
             );
-            let root_placement = frame
-                .placements
-                .iter()
-                .find(|p| p.id == "/root/theme")
-                .expect("the field is placed");
-            let reachable = focus.order().iter().any(|id| id == &root_placement.id);
+            let reachable = focus.order().iter().any(|id| id == "/root/theme/field");
             assert_eq!(
                 reachable, should_be_focusable,
                 "{label}: focus reachability was {reachable}, expected {should_be_focusable}"
             );
+            assert!(
+                !focus.order().iter().any(|id| id == "/root/theme"),
+                "{label}: the column is not a stop"
+            );
         }
     }
 
-    /// Check E: the value text and the chevron word against the field's
-    /// own resting fill, in both themes.
+    /// Check E: the value text against the field's own resting fill, and
+    /// the label against the page, in both themes.
     #[test]
     fn field_text_clears_aa_contrast_against_its_own_fill() {
         const MIN_TEXT_CONTRAST: f32 = 4.5;
         for theme in [crate::token::light(), crate::token::dark()] {
             let node = select("theme", "Theme", "Dark");
-            let field_bg_name = node
-                .props
-                .tokens
-                .get("background")
-                .expect("the closed field binds a resting background");
-            let field_bg = color(&theme, field_bg_name.as_str());
-            for key in ["value", "chevron"] {
-                let child_node = child(&node, key);
-                let fg_name = child_node
-                    .props
-                    .tokens
-                    .get("foreground")
-                    .unwrap_or_else(|| panic!("{key} binds a foreground"));
-                let opacity = child_node.props.opacity.unwrap_or(1.0);
-                let fg = color(&theme, fg_name.as_str())
-                    .faded(opacity)
-                    .over(field_bg);
-                let ratio = fg.contrast_ratio(field_bg);
-                assert!(
-                    ratio >= MIN_TEXT_CONTRAST,
-                    "{key} at {ratio:.2}:1 against {} fails AA {MIN_TEXT_CONTRAST}:1",
-                    fg_name.as_str()
-                );
-            }
+            let field = field_of(&node);
+            let field_bg = color(&theme, token(field, "background").expect("field fill"));
+            let value = child(child(field, "row"), "value");
+            let fg_name = token(value, "foreground").expect("value binds a foreground");
+            let opacity = value.props.opacity.unwrap_or(1.0);
+            let fg = color(&theme, fg_name).faded(opacity).over(field_bg);
+            let ratio = fg.contrast_ratio(field_bg);
+            assert!(
+                ratio >= MIN_TEXT_CONTRAST,
+                "value at {ratio:.2}:1 against {fg_name} fails AA {MIN_TEXT_CONTRAST}:1"
+            );
+            let page = color(&theme, crate::component::tokens::SURFACE_BASE);
+            let label = child(&node, "label");
+            let fg = color(&theme, token(label, "foreground").expect("label ink")).over(page);
+            let ratio = fg.contrast_ratio(page);
+            assert!(
+                ratio >= MIN_TEXT_CONTRAST,
+                "label at {ratio:.2}:1 against the page fails AA {MIN_TEXT_CONTRAST}:1"
+            );
         }
     }
 
@@ -385,11 +369,11 @@ mod tests {
         )
     }
 
-    /// The open form is the closed field, expanded and reading `"open"`,
-    /// beside a popover of the caller's rows anchored to that field by its
-    /// bare sibling key.
+    /// The open form is the same column, its field expanded and pointing
+    /// up, beside a flush list box of the caller's rows anchored to that
+    /// field by its bare sibling key.
     #[test]
-    fn select_open_hosts_options_in_a_popover() {
+    fn select_open_hosts_options_in_a_flush_list_box() {
         let node = open_theme();
         assert_eq!(node.semantics.expanded, Some(true));
         let field = child(&node, "field");
@@ -397,12 +381,12 @@ mod tests {
         assert_eq!(field.semantics.label.as_deref(), Some("Theme"));
         assert_eq!(field.semantics.expanded, Some(true));
         assert_eq!(field.constraints.vertical.min, Some(SIZE_MD));
-        assert_eq!(child(field, "chevron").props.text.as_deref(), Some("open"));
 
         let menu = child(&node, "menu");
         assert_eq!(menu.kind, NodeKind::Surface);
         assert_eq!(menu.semantics.role, Some(Role::Overlay));
         assert_eq!(menu.semantics.label.as_deref(), Some("Theme"));
+        assert_eq!(menu.props.tip, Some(Tip::Flush), "a list box has no beak");
         match &menu.props.anchor {
             Some(Anchor::Sibling { key, .. }) => assert_eq!(key.as_str(), "field"),
             other => panic!("expected Anchor::Sibling, got {other:?}"),
@@ -410,6 +394,16 @@ mod tests {
         let content = child(menu, "content");
         assert!(child(content, "dark").semantics.selected);
         assert!(!child(content, "light").semantics.selected);
+    }
+
+    /// The field's key is the same in both forms, so the id focus sits on
+    /// survives the open. Falsify by keying the open field `"field-open"`.
+    #[test]
+    fn the_field_keeps_its_key_across_open_and_closed() {
+        let closed = select("theme", "Theme", "Dark");
+        let open = open_theme();
+        assert_eq!(field_of(&closed).key, field_of(&open).key);
+        assert_eq!(closed.key, open.key);
     }
 
     /// Accepted two containers below the root with the shipped `Registry`,

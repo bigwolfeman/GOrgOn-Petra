@@ -138,6 +138,19 @@ pub trait Page {
     fn dismissed(&mut self, ids: &[String]) {
         let _ = ids;
     }
+
+    /// Keyboard focus moved: `node` is the canonical placement id that now
+    /// holds it, `None` when nothing does. Delivered from the host's own
+    /// focus tree (`App::focus_changed`), so a page never keeps a second
+    /// copy of who is focused; it reacts to the move.
+    ///
+    /// Focus is host-owned and painted by the engine, so the forty pages
+    /// with nothing revealed by focus declare none. The one that does is
+    /// row 38 (Tooltip): Carbon reveals the bubble on hover *and* on focus,
+    /// and the bubble is a node only the page can mount.
+    fn focused(&mut self, node: Option<&str>) {
+        let _ = node;
+    }
 }
 
 /// Every page, in inventory order. One line per row.

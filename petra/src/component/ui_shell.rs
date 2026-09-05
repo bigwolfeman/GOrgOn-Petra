@@ -103,8 +103,8 @@ use super::tokens::{
 use crate::geom::{Align, Axis};
 use crate::tree::{
     Align as AnchorAlign, Anchor, AxisConstraint, ClampRule, Constraints, Edge, InputPolicy,
-    InsetRefs, Interaction, Key, Layer, NodeKind, Props, Role, Semantics, TextWrap, TrackSize,
-    ViewNode,
+    InsetRefs, Interaction, Justify, Key, Layer, NodeKind, Props, Role, Semantics, TextWrap,
+    TrackSize, ViewNode,
 };
 
 /// Carbon `mini-units(6)` (`_functions.scss`): the header's block-size,
@@ -427,7 +427,7 @@ fn header_action_sized(
         // sat flush against the inline-start edge of its own 48px box —
         // measured at 14px left of centre, and reported as "these buttons are
         // not properly centred in their button".
-        justify: Some(Align::Center),
+        justify: Some(Justify::Center),
         ..Props::default()
     };
     if matches!(fit, HeaderActionFit::Word) {
@@ -903,11 +903,12 @@ mod tests {
         TEXT_PRIMARY,
     };
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
-    use crate::geom::{Align, Axis, Size};
+    use crate::geom::{Axis, Size};
     use crate::testing::{Harness, inks, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
     use crate::tree::{
-        Anchor, AxisConstraint, Edge, Interaction, NodeKind, Props, Registry, Role, ViewNode,
+        Anchor, AxisConstraint, Edge, Interaction, Justify, NodeKind, Props, Registry, Role,
+        ViewNode,
     };
 
     fn named<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
@@ -1103,7 +1104,7 @@ mod tests {
         assert_eq!(node.constraints.vertical.max, Some(MINI_UNIT_6));
         assert_eq!(
             node.props.justify,
-            Some(Align::Center),
+            Some(Justify::Center),
             "the glyph centres on the main axis too. `align` is the cross \
              one, and with only that set the glyph sat flush against the \
              inline-start edge, 14px left of centre in its own 48px button"
