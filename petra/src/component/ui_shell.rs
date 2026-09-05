@@ -168,12 +168,14 @@ pub fn ui_shell_header(
     // "NotificationsApp switcher". `SPACING_05` (16px) is the header's own
     // horizontal clearance figure, SOURCED slice-f.md:157 "Header link /
     // sub-menu / sub-menu-item padding: 0 16px (mini-units(2) = 16px)".
-    children.push(stack(
-        "actions",
-        Axis::Horizontal,
-        Some(SPACING_05),
-        actions,
-    ));
+    // No gap. Carbon's `.cds--header__global` is a plain flex row with
+    // `justify-content: flex-end` and no `gap`, and its actions are 48x48
+    // cells butted against each other (slice-f.md:150). The `SPACING_05` that
+    // used to be here was V6's fix for two *word* actions rendering as one
+    // glued "NotificationsApp switcher"; that padding now lives on the word
+    // action itself, where Carbon puts it, so the row does not have to push
+    // two icons 16px apart to keep two words legible.
+    children.push(stack("actions", Axis::Horizontal, None, actions));
 
     let mut bar = stack("bar", Axis::Horizontal, None, children);
     bar.props.align = Some(Align::Stretch);
@@ -257,30 +259,12 @@ pub fn ui_shell_header_menu_trigger(key: impl Into<Key>, open: bool) -> ViewNode
         IconBox::Header,
         IconTone::Primary,
     );
-    let mut props = Props {
-        align: Some(Align::Center),
-        ..Props::default()
-    };
-    props.tokens.insert("background".into(), t(SURFACE_BASE));
-    props
-        .tokens
-        .insert("background@hover".into(), t(LAYER_HOVER));
-    props
-        .tokens
-        .insert("background@active".into(), t(LAYER_ACTIVE));
-    props
-        .tokens
-        .insert("background@selected".into(), t(SURFACE_RAISED));
-    let node = ViewNode::new(NodeKind::Stack, key)
-        .with_props(Props {
-            axis: Some(Axis::Horizontal),
-            ..props
-        })
-        .with_children(vec![caption])
-        .with_constraints(icon_hit_box(MINI_UNIT_6));
-    let mut node = node.interactive(Role::Button, label, INTENTS);
-    node.semantics.selected = open;
-    node
+    // The same 48x48 icon button as any other header utility (slice-f.md:155
+    // measures the trigger and the action with one figure), so it is built by
+    // the same function rather than by a copy of it: the copy had drifted, and
+    // was still parking its glyph flush against the button's inline-start
+    // edge after the actions were centred.
+    header_action_sized(key, label, caption, open, HeaderActionFit::Square)
 }
 
 /// One header nav link. `current` sets `Semantics.selected` and shows a
@@ -367,7 +351,7 @@ pub fn ui_shell_header_action(
                 .props
                 .tokens
                 .insert("foreground".into(), t(TEXT_PRIMARY));
-            header_action(key, label, caption, active)
+            header_action_sized(key, label, caption, active, HeaderActionFit::Word)
         }
     }
 }
@@ -410,11 +394,49 @@ fn header_action_mark(label: &str) -> Option<IconMark> {
 }
 
 fn header_action(key: impl Into<Key>, label: String, caption: ViewNode, active: bool) -> ViewNode {
+    header_action_sized(key, label, caption, active, HeaderActionFit::Square)
+}
+
+/// How wide a header action is allowed to be.
+///
+/// Carbon's `.cds--header__action` is an icon button and is `48x48px` on both
+/// axes, flush against its neighbour (slice-f.md:150, :155). Our text
+/// fallback exists only because two of Carbon's five documented utilities
+/// ("Help", "Account") have no glyph in the vocabulary yet, and a word does
+/// not fit in 48px; it takes the header link's own `0 16px` padding instead
+/// (slice-f.md:148), so it separates itself from its neighbour rather than
+/// asking the row for a gap.
+enum HeaderActionFit {
+    /// 48x48 exactly. Carbon's icon action.
+    Square,
+    /// 48 tall, at least 48 wide, 16px of inline padding. The word fallback.
+    Word,
+}
+
+fn header_action_sized(
+    key: impl Into<Key>,
+    label: String,
+    caption: ViewNode,
+    active: bool,
+    fit: HeaderActionFit,
+) -> ViewNode {
     let mut props = Props {
         axis: Some(Axis::Horizontal),
         align: Some(Align::Center),
+        // The main axis. `align` is the cross one, so without this the glyph
+        // sat flush against the inline-start edge of its own 48px box —
+        // measured at 14px left of centre, and reported as "these buttons are
+        // not properly centred in their button".
+        justify: Some(Align::Center),
         ..Props::default()
     };
+    if matches!(fit, HeaderActionFit::Word) {
+        props.padding = Some(InsetRefs {
+            left: Some(t(SPACING_05)),
+            right: Some(t(SPACING_05)),
+            ..InsetRefs::default()
+        });
+    }
     props.tokens.insert("background".into(), t(SURFACE_BASE));
     props
         .tokens
@@ -428,7 +450,10 @@ fn header_action(key: impl Into<Key>, label: String, caption: ViewNode, active: 
     let node = ViewNode::new(NodeKind::Stack, key)
         .with_props(props)
         .with_children(vec![caption])
-        .with_constraints(icon_hit_box(MINI_UNIT_6));
+        .with_constraints(match fit {
+            HeaderActionFit::Square => square_hit_box(MINI_UNIT_6),
+            HeaderActionFit::Word => icon_hit_box(MINI_UNIT_6),
+        });
     let mut node = node.interactive(Role::Button, label, INTENTS);
     node.semantics.selected = active;
     node
@@ -814,6 +839,27 @@ fn pin_block(h: f32) -> Constraints {
 /// measurement makes the pin safe. The block axis stays pinned because the
 /// header's own height genuinely is 48px in Carbon; the inline axis keeps
 /// 48 as the minimum tap target and lets the label decide the rest.
+/// A box that is exactly `size` on both axes — Carbon's `.cds--header__action`.
+///
+/// [`icon_hit_box`]'s peer, and the difference is the horizontal `max`: that
+/// one names a *minimum* target, so the row's spare width can stretch it. An
+/// icon action must not stretch, because a centred glyph in a stretched box
+/// no longer sits under the pointer where the picture says it does.
+fn square_hit_box(size: f32) -> Constraints {
+    Constraints {
+        horizontal: AxisConstraint {
+            min: Some(size),
+            max: Some(size),
+            priority: 0,
+        },
+        vertical: AxisConstraint {
+            min: Some(size),
+            max: Some(size),
+            priority: 0,
+        },
+    }
+}
+
 fn icon_hit_box(size: f32) -> Constraints {
     Constraints {
         horizontal: AxisConstraint {
@@ -853,10 +899,11 @@ mod tests {
     };
     use crate::component::text::text;
     use crate::component::tokens::{
-        ACCENT_PRIMARY, BORDER_SUBTLE, LAYER_SELECTED, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY,
+        ACCENT_PRIMARY, BORDER_SUBTLE, LAYER_SELECTED, SPACING_05, SURFACE_RAISED, TEXT_MUTED,
+        TEXT_PRIMARY,
     };
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
-    use crate::geom::{Axis, Size};
+    use crate::geom::{Align, Axis, Size};
     use crate::testing::{Harness, inks, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
     use crate::tree::{
@@ -1044,13 +1091,43 @@ mod tests {
         );
         assert_eq!(node.constraints.horizontal.min, Some(MINI_UNIT_6));
         assert_eq!(
-            node.constraints.horizontal.max, None,
-            "the inline axis takes Carbon's 48 as a FLOOR, never a pin: this \
-             box holds a caller-supplied word, not the icon Carbon measured \
-             it for, so pinning `max` clips the label (see `icon_hit_box`)"
+            node.constraints.horizontal.max,
+            Some(MINI_UNIT_6),
+            "an icon action is 48x48 exactly (slice-f.md:150), pinned on both \
+             axes. This used to take 48 as a floor with no ceiling, on the \
+             reasoning that the box held a caller-supplied word — but a \
+             labelled utility resolves to the glyph path and holds no word at \
+             all, so the row's spare width was free to stretch it"
         );
         assert_eq!(node.constraints.vertical.min, Some(MINI_UNIT_6));
         assert_eq!(node.constraints.vertical.max, Some(MINI_UNIT_6));
+        assert_eq!(
+            node.props.justify,
+            Some(Align::Center),
+            "the glyph centres on the main axis too. `align` is the cross \
+             one, and with only that set the glyph sat flush against the \
+             inline-start edge, 14px left of centre in its own 48px button"
+        );
+
+        // The word fallback is the case the pin would break, and it is a
+        // different case: "Help" has no glyph in the vocabulary, so it keeps
+        // 48 as a floor and carries the header link's own 16px inline padding
+        // (slice-f.md:148) rather than asking the actions row for a gap.
+        let word = ui_shell_header_action("help", "Help", false);
+        assert_eq!(word.constraints.horizontal.min, Some(MINI_UNIT_6));
+        assert_eq!(
+            word.constraints.horizontal.max, None,
+            "a word does not fit in 48px; pinning `max` here would clip it"
+        );
+        let padding = word.props.padding.as_ref().expect("a word action pads");
+        assert_eq!(
+            padding.left.as_ref().map(TokenName::as_str),
+            Some(SPACING_05)
+        );
+        assert_eq!(
+            padding.right.as_ref().map(TokenName::as_str),
+            Some(SPACING_05)
+        );
 
         let active = ui_shell_header_action("notify", "Notifications", true);
         assert!(active.semantics.selected);

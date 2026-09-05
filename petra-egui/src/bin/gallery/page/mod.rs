@@ -172,8 +172,8 @@ pub fn all() -> Vec<Box<dyn Page>> {
         Box::new(toggletip::Toggletip::default()),
         Box::new(tooltip::Tooltip::default()),
         Box::new(tree_view::TreeView),
-        Box::new(ui_shell_header::UiShellHeader),
-        Box::new(ui_shell_left_panel::UiShellLeftPanel),
+        Box::new(ui_shell_header::UiShellHeader::default()),
+        Box::new(ui_shell_left_panel::UiShellLeftPanel::default()),
         Box::new(ui_shell_right_panel::UiShellRightPanel::default()),
     ]
 }

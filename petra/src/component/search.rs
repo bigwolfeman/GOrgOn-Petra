@@ -22,9 +22,7 @@ use super::tokens::{
     TYPOGRAPHY_BODY, t,
 };
 use crate::geom::{Align, Axis};
-use crate::tree::{
-    AxisConstraint, Constraints, InsetRefs, Key, NodeKind, Props, Role, ViewNode,
-};
+use crate::tree::{AxisConstraint, Constraints, InsetRefs, Key, NodeKind, Props, Role, ViewNode};
 
 /// Carbon Search sm. `tokens` only ships [`SIZE_MD`] (md / 40).
 const SIZE_SM: f32 = 32.0;

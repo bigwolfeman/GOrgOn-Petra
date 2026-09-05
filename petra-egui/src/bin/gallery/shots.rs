@@ -1202,4 +1202,107 @@ mod tests {
              characters changed nothing on screen"
         );
     }
+
+    /// Every icon button in the shell header centres its glyph.
+    ///
+    /// The operator's words were "these buttons on the shell (notably the
+    /// notification one) are not probably centered in their button". They
+    /// were not: `header_action` set `align`, which is the *cross* axis, and
+    /// left `justify` unset, so each 20px glyph sat flush against the
+    /// inline-start edge of its own 48px button — 14px left of centre,
+    /// measured. The trigger was a copy of the same code and had the same
+    /// defect.
+    #[test]
+    fn every_header_icon_button_centres_its_glyph() {
+        let cam = Camera::on("UI shell header");
+        for button in ["shell-menu", "shell-action-notify", "shell-action-switcher"] {
+            let outer = cam.rect(button);
+            let glyph = cam.rect(&format!("{button}/glyph"));
+            let dx = (glyph.x + glyph.w / 2.0) - (outer.x + outer.w / 2.0);
+            let dy = (glyph.y + glyph.h / 2.0) - (outer.y + outer.h / 2.0);
+            assert!(
+                dx.abs() < 0.51 && dy.abs() < 0.51,
+                "{button}: the glyph sits {dx:+.1},{dy:+.1} off the centre of \
+                 its own button ({outer:?} vs {glyph:?})"
+            );
+            assert!(
+                (outer.w - 48.0).abs() < 0.01,
+                "{button}: a header icon button is 48 wide (slice-f.md:150), \
+                 this one is {:.1} — a stretched button moves the centred \
+                 glyph away from where the picture says to press",
+                outer.w
+            );
+        }
+    }
+
+    /// Clicking a header nav item makes it the current page.
+    ///
+    /// Row 40 held no state at all: every control was built from a literal,
+    /// so the page drew one fixed picture and swallowed every press. That is
+    /// what "none of the elements actually do anything" meant.
+    #[test]
+    fn clicking_a_header_nav_item_moves_the_current_page_indicator() {
+        let mut cam = Camera::on("UI shell header");
+        let before = cam.shoot("40-ui-shell-header");
+        cam.click("shell-nav-fibers");
+        let after = cam.shoot("40-ui-shell-header-fibers");
+        assert_ne!(
+            before, after,
+            "the second nav item was pressed and the header did not change: \
+             the current-page indicator never moved"
+        );
+    }
+
+    /// Pressing a header utility opens it, and pressing it again closes it.
+    ///
+    /// Every shot is taken after a press, so the focus ring is in all three
+    /// and the comparison is about the toggle alone. Comparing against the
+    /// untouched page would fail on the ring, which is a real difference and
+    /// not the one under test.
+    #[test]
+    fn a_header_utility_toggles_on_its_own_press() {
+        let mut cam = Camera::on("UI shell header");
+        cam.click("shell-action-notify");
+        let open = cam.shoot("40-ui-shell-header-notify-active");
+        cam.click("shell-action-notify");
+        let shut = cam.shoot("40-ui-shell-header-notify-closed");
+        cam.click("shell-action-notify");
+        let open_again = cam.shoot("40-ui-shell-header-notify-reopened");
+        assert!(
+            open != shut,
+            "a second press on an open utility must close it"
+        );
+        assert!(
+            open == open_again,
+            "a third press must reopen it to exactly the state the first \
+             press produced"
+        );
+    }
+
+    /// Collapsing the left panel's sub-menu takes its nested row off screen.
+    ///
+    /// A stronger assertion than "the pixels changed": the child mounts only
+    /// while its parent is expanded (FR-026), so if the press was heard the
+    /// row is not in the frame at all.
+    #[test]
+    fn collapsing_the_left_panel_sub_menu_unmounts_its_nested_row() {
+        let mut cam = Camera::on("UI shell left panel");
+        assert!(
+            cam.has("shell-left-fibers"),
+            "the sub-menu starts open, so its nested row starts placed"
+        );
+        // `shell-left-kernel/row`, not `shell-left-kernel`. The parent item's
+        // placement is 64 tall — its own 32px row plus the 32px block its
+        // children occupy — so its centre is the first pixel row of "Fibers",
+        // and a click aimed at the parent's centre correctly hits the child.
+        // A person presses the title row.
+        cam.click("shell-left-kernel/row");
+        assert!(
+            !cam.has("shell-left-fibers"),
+            "the sub-menu was pressed and its nested row is still placed: the \
+             caret says collapsed and the panel says otherwise"
+        );
+        cam.click("shell-left-kernel/row");
+        assert!(cam.has("shell-left-fibers"), "and it opens again");
+    }
 }
