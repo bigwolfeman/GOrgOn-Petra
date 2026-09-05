@@ -28,7 +28,13 @@ impl Page for Popover {
                 NOTE,
                 "Note",
                 ANCHOR,
-                "This note is anchored to the button above it.",
+                // Long enough to need two lines at the 368-unit ceiling, so the
+                // row demonstrates that a bubble wraps. A one-line note
+                // cannot show that, and a one-line note is why the cut-text
+                // defect fixed on 2026-09-05 survived four rounds unseen.
+                "This note is anchored to the button above it, and it is long \
+                 enough to need a second line, which is how you can see that \
+                 a bubble wraps its body instead of cutting it.",
             ));
         }
         section(

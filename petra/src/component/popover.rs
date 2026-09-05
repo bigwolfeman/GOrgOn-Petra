@@ -35,7 +35,7 @@ use super::tokens::{SHADOW_OVERLAY, SHAPE_XS, SPACING_03, SPACING_05, SURFACE_RA
 use crate::geom::Axis;
 use crate::tree::{
     Align, Anchor, AxisConstraint, ClampRule, Constraints, Edge, InputPolicy, Key, Layer, NodeKind,
-    Props, Role, Semantics, ViewNode,
+    Props, Role, Semantics, TextWrap, ViewNode,
 };
 
 /// Carbon `.cds--popover-content` `max-inline-size`. T070 prefers SCSS
@@ -57,7 +57,27 @@ pub fn popover(
     anchor: impl Into<Key>,
     body: impl Into<String>,
 ) -> ViewNode {
-    popover_with(key, label, anchor, vec![text("body", body.into())])
+    popover_with(key, label, anchor, vec![bubble_text(body.into())])
+}
+
+/// The body run every anchored bubble in this library shares: a text leaf
+/// that **wraps**.
+///
+/// A bubble declares `constraints.horizontal.max` — 368 here, 288 on a
+/// tooltip — and a run that does not wrap answers with one unbroken line
+/// whatever it is offered. The box is then clamped to the ceiling and the
+/// tail of the sentence is cut mid-word. Both halves had to change on
+/// 2026-09-05: `layout::overlay_surface::natural_size` now *offers* the
+/// ceiling instead of clamping after the fact, and this is the run that can
+/// take the offer.
+///
+/// Shared by [`popover`], [`super::toggletip`] and [`super::tooltip`] rather
+/// than written three times, because all three are the same bubble with
+/// three different tones and they have drifted from each other before.
+pub(super) fn bubble_text(body: String) -> ViewNode {
+    let mut node = text("body", body);
+    node.props.wrap = Some(TextWrap::Wrap);
+    node
 }
 
 /// An anchored popover whose body is caller-supplied children.

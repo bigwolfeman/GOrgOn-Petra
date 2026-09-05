@@ -40,7 +40,6 @@
 //! style-page only and is not bound.
 
 use super::popover::popover_with;
-use super::text::text;
 use super::tokens::{SURFACE_LAYER_THREE, TEXT_PRIMARY, t};
 use crate::tree::{Key, Role, ViewNode};
 
@@ -58,7 +57,7 @@ const _: () = assert!(SINGLE_LINE_INTENT == 208.0);
 pub fn tooltip(key: impl Into<Key>, label: impl Into<String>, body: impl Into<String>) -> ViewNode {
     let _label = label.into();
     let body = body.into();
-    let mut run = text("body", body.clone());
+    let mut run = super::popover::bubble_text(body.clone());
     run.props
         .tokens
         .insert("foreground".into(), t(TEXT_PRIMARY));

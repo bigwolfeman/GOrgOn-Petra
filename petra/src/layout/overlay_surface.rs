@@ -86,7 +86,7 @@ use std::collections::BTreeMap;
 
 use crate::frame::placement::{CaretPaint, PaintState, Placement, PlacementSink};
 use crate::geom::{Axis, Rect, Size};
-use crate::layout::{AnchorRects, LayoutCtx, SizeProposal, Slot, semantics_of};
+use crate::layout::{AnchorRects, LayoutCtx, Proposal, SizeProposal, Slot, semantics_of};
 use crate::tree::{Align, Anchor, ClampRule, Edge, Fit, InputPolicy, KeyPath, Tip, ViewNode};
 
 /// Place this container and everything under it against `slot.window`, and
@@ -247,15 +247,37 @@ pub fn place(
 }
 
 /// The bounding box of this node's children, each probed at its own natural
-/// (`Unspecified`) extent. A surface with no children is a zero-size point at
-/// its anchor.
+/// extent — under the surface's own horizontal ceiling when it declares one.
+/// A surface with no children is a zero-size point at its anchor.
+///
+/// # Why the ceiling is offered and not applied afterwards
+///
+/// A surface that declares `constraints.horizontal.max` has to **offer** it
+/// to its children. Every child was probed at `Unspecified` until
+/// 2026-09-05, so a wrapping text run answered with one unwrapped line, the
+/// placement clamped the box to the ceiling after the fact, and the run's
+/// tail was cut mid-word. `popover_with` sets a 368-unit ceiling, so that
+/// hit the popover, the toggletip, the tooltip and the AI label panel; only
+/// bodies short enough to fit one line escaped, which is why every one of
+/// those rows shipped looking fine.
+///
+/// The vertical axis stays `Unspecified`: a bubble grows downward as far as
+/// its content needs, and there is no ceiling to offer.
 fn natural_size(node: &ViewNode, ctx: &mut LayoutCtx<'_>, path: &mut KeyPath) -> Size {
+    let offer = SizeProposal {
+        horizontal: node
+            .constraints
+            .horizontal
+            .max
+            .map_or(Proposal::Unspecified, Proposal::Exact),
+        vertical: Proposal::Unspecified,
+    };
     // Measured under the same empty scroll context `place` uses, so a
     // surface's natural size and its placement agree about what encloses it.
     ctx.outside_scroll(|ctx| {
         let mut size = Size::ZERO;
         for child in &node.children {
-            let child_size = crate::layout::measure(child, ctx, path, SizeProposal::unspecified());
+            let child_size = crate::layout::measure(child, ctx, path, offer);
             size = size.max(child_size);
         }
         size
@@ -969,7 +991,7 @@ mod tests {
     use crate::testing::Harness;
     use crate::tree::{
         Align, Anchor, ClampRule, Edge, InputPolicy, Interaction, KeyPath, Layer, NodeKind, Props,
-        Role, ViewNode,
+        Role, TextWrap, ViewNode,
     };
 
     /// A `surface` node with one `spacer` child of `size`, anchored and
@@ -1068,6 +1090,54 @@ mod tests {
     /// landing exactly on the child's own 40x20 natural size, round-tripped
     /// through "add before clamp, inset content_rect after"
     /// (`layout-insets.md` §8 step 6).
+    /// A surface offers its own horizontal ceiling to its children.
+    ///
+    /// Every child was probed at `Unspecified` until 2026-09-05, so a
+    /// wrapping run answered with one unwrapped line, the placement clamped
+    /// the box to the ceiling afterwards, and the run's tail was cut
+    /// mid-word. `popover_with` sets a 368-unit ceiling, so it hit the
+    /// popover, the toggletip, the tooltip and the AI label panel alike; only
+    /// bodies short enough for one line escaped, which is why all four rows
+    /// shipped looking fine.
+    ///
+    /// `MonoContent` is 8 units a character and 16 a line, so twenty
+    /// characters under an 80-unit ceiling is ten a line and two lines: 32
+    /// tall. Under the old open probe the run answered 160x16 and the box
+    /// came out 80 **by 16** — one line's worth of room for two lines of
+    /// text. Falsify by putting `SizeProposal::unspecified()` back.
+    #[test]
+    fn a_surface_offers_its_own_width_ceiling_to_a_wrapping_child() {
+        let mut body = ViewNode::new(NodeKind::Text, "body").with_props(Props {
+            text: Some("abcdefghijklmnopqrst".to_owned()),
+            wrap: Some(TextWrap::Wrap),
+            ..Props::default()
+        });
+        body.constraints.horizontal.max = Some(80.0);
+
+        let mut node = ViewNode::new(NodeKind::Surface, "popup")
+            .with_props(Props {
+                layer: Some(Layer::Popup),
+                anchor: Some(Anchor::Viewport),
+                clamp: Some(ClampRule::Shrink),
+                ..Props::default()
+            })
+            .child(body);
+        node.constraints.horizontal.max = Some(80.0);
+
+        let placed = place_surface(&node, Rect::new(0.0, 0.0, 600.0, 400.0));
+        assert_eq!(
+            placed.rect.w, 80.0,
+            "the ceiling still caps the box: {:?}",
+            placed.rect
+        );
+        assert_eq!(
+            placed.rect.h, 32.0,
+            "twenty characters at ten a line is two lines, and the box has to \
+             be tall enough to hold both: {:?}",
+            placed.rect
+        );
+    }
+
     #[test]
     fn a_padded_surface_pads_inside_its_clamped_rect() {
         let node = padded_surface(
