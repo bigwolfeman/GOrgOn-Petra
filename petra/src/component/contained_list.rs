@@ -14,11 +14,14 @@
 
 use super::stack;
 use super::text::{heading, text};
-use super::tokens::{SPACING_05, SURFACE_RAISED, TEXT_MUTED, t};
+use super::tokens::{BORDER_SUBTLE, SPACING_05, SURFACE_RAISED, TEXT_MUTED, t};
 use crate::geom::{Align, Axis};
 use crate::tree::{AxisConstraint, Constraints, InsetRefs, Key, Role, Semantics, ViewNode};
 
 /// Carbon on-page header height (`$spacing-07` = 32).
+/// Carbon's boundary between rows: `1px solid $border-subtle`.
+const RULE: f32 = 1.0;
+
 const HEADER_ON_PAGE: f32 = 32.0;
 /// Carbon disclosed header height (style-page Structure: `$spacing-09` = 48).
 const HEADER_DISCLOSED: f32 = 48.0;
@@ -76,9 +79,21 @@ fn contained(
     }
     let header = header.with_constraints(pin_height(header_h));
 
-    let mut children = Vec::with_capacity(items.len() + 1);
+    // Carbon separates the header from the first row and each row from the
+    // next with `1px solid $border-subtle`
+    // (`.cds--contained-list-item { border-block-end }`). Without them the
+    // list is three lines of prose in a box, which is what "this is just
+    // markdown, wtf" was about — the round 1 fix put each entry on its own
+    // line and stopped there.
+    //
+    // Between, not after: a rule under the last row would draw a boundary
+    // with nothing on the far side of it.
+    let mut children = Vec::with_capacity(items.len() * 2 + 1);
     children.push(header);
-    children.extend(items);
+    for (i, item) in items.into_iter().enumerate() {
+        children.push(super::rule(format!("rule-{i}"), RULE, BORDER_SUBTLE));
+        children.push(item);
+    }
 
     let mut node = stack(key, Axis::Vertical, None, children);
     // `Align::Stretch`: the same stair-step fix as `accordion` (see that

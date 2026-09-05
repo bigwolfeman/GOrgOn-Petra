@@ -45,6 +45,24 @@ fn pad(horizontal: &str, vertical: &str) -> InsetRefs {
     InsetRefs::symmetric(tok(horizontal), tok(vertical))
 }
 
+/// One row of the 42-row index pane.
+///
+/// [`list_row`] with the pane's own density put back over it. The index is
+/// the gallery's chrome, not a Carbon contained list on display, and the two
+/// want different things: Carbon's item is `padding: $spacing-04 $spacing-05`
+/// so a list of three reads as a list of three, and this pane has 42 rows to
+/// fit in 900 logical units. They were one decision until `list_row` was
+/// given Carbon's real inset for row 7, at which point six rows fell off the
+/// bottom of the pane and two of this module's own tests went red.
+///
+/// Only the padding is restated. The four selection-state fills stay in the
+/// component, where a fifth state would be added once rather than twice.
+fn index_row(key: String, label: String, selected: bool) -> ViewNode {
+    let mut node = list_row(key, label, selected);
+    node.props.padding = Some(pad("spacing-03", "spacing-02"));
+    node
+}
+
 /// Whether `event` should act on the node it routed to.
 ///
 /// [`activates`] answers only for Enter or Space on the focused node. A
@@ -210,7 +228,7 @@ impl Catalog {
             .map(|(i, cell)| {
                 let key = format!("{IDX}{}", cell.row.number);
                 let label = format!("{:>2}  {}", cell.row.number, cell.row.component);
-                list_row(key, label, i == self.page)
+                index_row(key, label, i == self.page)
             })
             .collect();
         let mut list = column("rows", sp("spacing.2xs"), rows);

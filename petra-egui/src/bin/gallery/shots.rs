@@ -1383,4 +1383,74 @@ mod tests {
         );
         image.get_pixel(px, py)[0]
     }
+
+    /// The accordion's chevron sits at the trailing edge of a full-width row.
+    ///
+    /// It followed the title by one 8px gap, in a row that hugged its own
+    /// text rather than filling the container. Carbon's
+    /// `.cds--accordion__heading` is full width with `justify-content:
+    /// space-between`, and `Align` has no such variant, so the free space is
+    /// a `Spacer` child.
+    #[test]
+    fn the_accordion_chevron_sits_at_the_trailing_edge_of_a_full_width_row() {
+        let cam = Camera::on("Accordion");
+        let list = cam.rect("accordion/acc");
+        let header = cam.rect("acc-0/header");
+        let chevron = cam.rect("acc-0/header/chevron");
+        assert!(
+            (header.w - list.w).abs() < 0.5,
+            "the item's header is {:.1} wide inside a {:.1} list: an \
+             accordion row fills its container",
+            header.w,
+            list.w
+        );
+        let gap = (header.x + header.w) - (chevron.x + chevron.w);
+        assert!(
+            (gap - 16.0).abs() < 1.0,
+            "the chevron's trailing edge is {gap:.1} from the row's, and \
+             Carbon's inline pad is 16"
+        );
+    }
+
+    /// A contained list's header and its rows start on the same inset, with
+    /// a rule between each pair.
+    ///
+    /// Row 7 was "this is just markdown, wtf" twice. Round 1 put each entry
+    /// on its own line; it still had no rules, the list hugged its own text
+    /// instead of filling the card, and the rows sat 8px inside the header's
+    /// 16px so nothing lined up with anything.
+    #[test]
+    fn a_contained_list_lines_its_header_up_with_its_rows_and_rules_between() {
+        let cam = Camera::on("Contained list");
+        let card = cam.rect("contained");
+        let list = cam.rect("contained/cl");
+        assert!(
+            (list.w - card.w).abs() < 0.5,
+            "the list is {:.1} wide in a {:.1} card",
+            list.w,
+            card.w
+        );
+        let header = cam.rect("cl/header/title");
+        for row in ["cl-0", "cl-1"] {
+            let label = cam.rect(&format!("{row}/label"));
+            assert!(
+                (label.x - header.x).abs() < 0.5,
+                "{row}'s label starts at {:.1} and the header's at {:.1}",
+                label.x,
+                header.x
+            );
+        }
+        // One rule per row: between the header and the first, and between
+        // the two rows. None after the last, which would border nothing.
+        for i in 0..2 {
+            let rule = cam.rect(&format!("cl/rule-{i}"));
+            assert!(
+                (rule.h - 1.0).abs() < 0.01,
+                "a Carbon boundary is 1px, this one is {:.2}",
+                rule.h
+            );
+            assert!((rule.w - list.w).abs() < 0.5, "and spans the list");
+        }
+        assert!(!cam.has("cl/rule-2"), "no rule after the last row");
+    }
 }

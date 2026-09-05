@@ -5,7 +5,7 @@ use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::ViewNode;
 
 use super::Page;
-use super::common::{body, path_has, sp};
+use super::common::{filled_body, path_has, sp};
 
 const ROWS: [(&str, &str); 2] = [("cl-0", "Trace"), ("cl-1", "Store")];
 
@@ -28,7 +28,7 @@ impl Page for ContainedList {
         section(
             "on-page",
             "On-page header",
-            vec![body(
+            vec![filled_body(
                 "contained",
                 sp("spacing.md"),
                 vec![contained_list(

@@ -374,6 +374,36 @@ pub fn on_layer(mut node: ViewNode, depth: usize) -> ViewNode {
     node
 }
 
+/// A hairline rule across the inline axis, in `fill`.
+///
+/// Carbon draws a `1px solid $border-subtle` boundary between the rows of
+/// most of its list-shaped components, and binding the shared `"border"`
+/// token instead gets a four-sided box — `pagination.rs`'s own comment says
+/// so, and the UI shell header had exactly that defect. This is the one
+/// shape that draws one line.
+///
+/// An empty `Stack`, not a `Spacer`: a spacer answers an unbounded query at
+/// a huge extent and would blow a `FitContent` grid track out to the
+/// viewport, where an empty stack measures zero on its main axis and lets
+/// [`crate::geom::Align::Stretch`] fill the cell it sits in.
+///
+/// `ui_shell::accent_mark`, `tabs::indicator_bar` and two places in
+/// `pagination.rs` each grew their own copy of this before it had a home.
+/// They should come here; they are held open by other work as this lands.
+#[must_use]
+pub fn rule(key: impl Into<Key>, thickness: f32, fill: &str) -> ViewNode {
+    let mut node = stack(key, crate::geom::Axis::Horizontal, None, vec![]);
+    node.props
+        .tokens
+        .insert("background".into(), tokens::t(fill));
+    node.constraints.vertical = crate::tree::AxisConstraint {
+        min: Some(thickness),
+        max: Some(thickness),
+        priority: 0,
+    };
+    node
+}
+
 /// The three token names one seat in the layer stack binds.
 ///
 /// Returned as a triple rather than three separate calls because the two

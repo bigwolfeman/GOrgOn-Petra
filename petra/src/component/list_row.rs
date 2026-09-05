@@ -2,8 +2,8 @@
 
 use super::text::text;
 use super::tokens::{
-    LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SHAPE_SM, SPACING_02, SPACING_03,
-    SURFACE_BASE, t,
+    LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SHAPE_SM, SPACING_03, SPACING_04,
+    SPACING_05, SURFACE_BASE, t,
 };
 use super::{pad, stack};
 use crate::geom::Axis;
@@ -39,7 +39,12 @@ pub fn list_row(key: impl Into<Key>, label: impl Into<String>, selected: bool) -
         Some(SPACING_03),
         vec![text("label", label.clone())],
     );
-    node.props.padding = Some(pad(SPACING_03, SPACING_02));
+    // Carbon's `.cds--contained-list-item__content`: `padding: $spacing-04
+    // $spacing-05`. It was `$spacing-03 $spacing-02` (8 and 4), which put
+    // the rows 8px inside the header's own 16px inset — the two lined up
+    // nowhere, and a list whose header does not share an edge with its rows
+    // reads as two things rather than one.
+    node.props.padding = Some(pad(SPACING_05, SPACING_04));
     for (slot, token) in [
         ("background", SURFACE_BASE),
         ("background@hover", LAYER_HOVER),

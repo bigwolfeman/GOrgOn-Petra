@@ -31,7 +31,7 @@ use super::text::text;
 use super::tokens::{BORDER_SUBTLE, LAYER_HOVER, SIZE_MD, SPACING_03, SPACING_05, SURFACE_BASE, t};
 use crate::geom::{Align, Axis};
 use crate::tree::{
-    AxisConstraint, Constraints, InsetRefs, Interaction, Key, Role, Semantics, ViewNode,
+    AxisConstraint, Constraints, InsetRefs, Interaction, Key, NodeKind, Role, Semantics, ViewNode,
 };
 
 /// Carbon accordion header `sm` (`layout.use` min).
@@ -123,11 +123,20 @@ fn accordion_item_sized(
         IconTone::Primary,
     );
 
+    // A spacer between them, so the chevron sits at the trailing edge:
+    // Carbon's `.cds--accordion__heading` is `justify-content:
+    // space-between` and `Align` has no such variant, so the free space is
+    // a child. It used to follow the title by one `SPACING_03` gap, which
+    // put it in the middle of a full-width row pointing at nothing.
     let mut header = stack(
         "header",
         Axis::Horizontal,
         Some(SPACING_03),
-        vec![text("title", label.clone()), chevron],
+        vec![
+            text("title", label.clone()),
+            ViewNode::new(NodeKind::Spacer, "spacer"),
+            chevron,
+        ],
     );
     header.props.align = Some(Align::Center);
     header.props.padding = Some(InsetRefs {

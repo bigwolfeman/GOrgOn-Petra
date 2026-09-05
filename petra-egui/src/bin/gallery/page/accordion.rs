@@ -5,7 +5,7 @@ use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::ViewNode;
 
 use super::Page;
-use super::common::{body, path_has, sp};
+use super::common::{filled_body, path_has, sp};
 
 const ACC_0: &str = "acc-0";
 const ACC_1: &str = "acc-1";
@@ -34,7 +34,7 @@ impl Page for Accordion {
         section(
             "items",
             "Items",
-            vec![body(
+            vec![filled_body(
                 "accordion",
                 sp("spacing.md"),
                 vec![accordion(
