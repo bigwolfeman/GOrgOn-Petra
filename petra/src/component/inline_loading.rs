@@ -26,7 +26,7 @@ use super::stack;
 use super::text::text;
 use super::tokens::{ACCENT_PRIMARY, SHAPE_FULL, SPACING_03, TEXT_MUTED, t};
 use crate::geom::{Align, Axis};
-use crate::tree::{AxisConstraint, Constraints, Key, Role, Semantics, ViewNode};
+use crate::tree::{AxisConstraint, Constraints, Justify, Key, Role, Semantics, ViewNode};
 
 /// Carbon small loading spinner, the only size Inline loading uses.
 const SPINNER: f32 = 16.0;
@@ -51,7 +51,15 @@ pub fn inline_loading_finished(key: impl Into<Key>, label: impl Into<String>) ->
         None,
         vec![icon("tick", IconMark::Check)],
     );
+    // `align` is the *cross* axis and `justify` is the main one. With only
+    // `align` set, the 10-unit tick packed against the disc's leading edge
+    // — 3 units left of centre inside the 16 disc, measured off
+    // `14-inline-loading.png` on 2026-09-05 — and read as a mark falling out
+    // of its own badge. That is the same one-line defect
+    // `every_header_icon_button_centres_its_glyph` already pins on the shell
+    // header's 20-unit glyphs.
     badge.props.align = Some(Align::Center);
+    badge.props.justify = Some(Justify::Center);
     badge
         .props
         .tokens
@@ -259,6 +267,45 @@ mod tests {
                 focus.order()
             );
         }
+    }
+
+    /// The finished tick sits in the middle of its own disc.
+    ///
+    /// Asserted on the **placed rects**, because the defect it pins is a
+    /// layout one and every `ViewNode`-level fact about it was already true
+    /// while the mark sat 3 units left of centre: the badge declared its
+    /// 16x16, the tick declared its 10x10, and neither says where the tick
+    /// landed. Measured off `14-inline-loading.png` on 2026-09-05 before the
+    /// fix, the tick's ink ran from 2 to 7.5 across a 16 disc.
+    #[test]
+    fn the_finished_tick_is_centred_in_its_disc() {
+        let frame = petrify_lone(inline_loading_finished("save", "Saved"));
+        let placed = |tail: &str| {
+            frame
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with(tail))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{tail} is not placed; placed: {:?}",
+                        frame
+                            .placements
+                            .iter()
+                            .map(|p| p.id.as_str())
+                            .collect::<Vec<_>>()
+                    )
+                })
+                .rect
+        };
+        let disc = placed("/mark");
+        let tick = placed("/mark/tick");
+        assert_eq!((disc.w, disc.h), (SPINNER, SPINNER));
+        let dx = (tick.x + tick.w / 2.0) - (disc.x + disc.w / 2.0);
+        let dy = (tick.y + tick.h / 2.0) - (disc.y + disc.h / 2.0);
+        assert!(
+            dx.abs() < 0.01 && dy.abs() < 0.01,
+            "the tick sits {dx:+} , {dy:+} off the centre of its own disc              ({disc:?} vs {tick:?})"
+        );
     }
 
     /// Check E: the label against the page ground it is read on

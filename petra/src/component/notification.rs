@@ -9,28 +9,52 @@
 //!
 //! Title and body are centred in the card, on both axes.
 //!
-//! # No rail
+//! # No rail, and a glyph instead
 //!
-//! Carbon draws a `border-left: 3px` in the status colour. This library
+//! Carbon draws a `border-inline-start: 3px` in the status colour
+//! (`_notification.scss`'s `notification--experimental` mixin). This library
 //! drew that rail in the accent, and the operator asked twice for it to go
 //! (`.agents/carbon-waves/ROUND2-DEFECTS.md`, "Decisions the operator has
-//! now made twice": *"remove the handle, center the text"*). It is gone.
-//! Nothing here depends on it: this constructor has no status kind, so
-//! there is no state the rail was the channel for. If a status kind is
-//! added, Carbon's channel for it is the leading status glyph
-//! (`InformationFilled`, `CheckmarkFilled`, `WarningFilled`,
-//! `ErrorFilled`), and [`super::IconMark`] has none of the four yet.
+//! now made twice": *"remove the handle, center the text"*). It is gone and
+//! it stays gone.
+//!
+//! That left the card with no status channel at all, which is what the
+//! operator's round-3 line — *"give it an icon field"* — is about.
+//! [`NotificationKind`] is that field, and its channel is Carbon's own
+//! second one: the leading status glyph. `Notification.js` maps
+//! `kind -> icon` as `error: ErrorFilled`, `success: CheckmarkFilled`,
+//! `warning: WarningFilled`, `info: InformationFilled`, drawn at
+//! `size: 20` — MEASURED
+//! `ignored/carbon-ref/node_modules/@carbon/react/lib/components/
+//! Notification/Notification.js:139-152`.
+//!
+//! # The glyph is a shape, never a hue
+//!
+//! Carbon tints that glyph with `$support-error` / `-success` / `-warning`
+//! / `-info` and puts it at the card's leading edge. Neither is copied:
+//!
+//! - **Tone.** [`super::IconTone`] carries no status tone, so all four
+//!   glyphs draw in `icon-primary`. That is not a loss. The four marks are
+//!   four different pictures — a slash, a bang, an `i`, a tick — so the
+//!   kind survives with the colour turned off, which is FR-015 for a
+//!   red-green colourblind reader and is stricter than Carbon's own
+//!   hue-plus-shape pairing. The word is a third channel:
+//!   [`Semantics.value`] carries the kind.
+//! - **Placement.** Carbon puts the glyph inline-start of a left-aligned
+//!   title. The operator asked twice for the text to be centred, and a
+//!   leading glyph and a card-centred title cannot both be true, so the
+//!   glyph sits **above** the title in the same centred column. That is a
+//!   departure from Carbon's anatomy, taken because his instruction is
+//!   newer than the conformance target on this one row.
 //!
 //! Carbon's alert palette (`$notification-background-error` / success
-//! green / warning yellow) is **not** used. Those names are not in
-//! [`super::tokens`], and painting red/green would fail FR-015 for a
-//! red-green colourblind operator. Meaning lives in the title and body.
-//! [`crate::token::StatusToken`] is not assembled here: this constructor
-//! has no kind to pair with a shape.
+//! green / warning yellow) is **not** used either. Those names are not in
+//! [`super::tokens`], and painting red/green would fail FR-015.
 //!
 //! [`notification`] / [`notification_toast`] are a [`Role::Toast`]
 //! surface. [`notification_inline`] is in-flow [`Role::Status`].
 
+use super::icon::{IconBox, IconMark, IconTone, icon_in};
 use super::pad;
 use super::stack;
 use super::text::text;
@@ -55,8 +79,54 @@ const _: () = assert!(INLINE_MIN_BLOCK == 48.0);
 const ACTION_INTENTS: &[Interaction] =
     &[Interaction::Focus, Interaction::Click, Interaction::Hover];
 
-/// Toast notification. `title` is the accessible name; `body` is the
-/// message. Neither channel is a hue.
+/// Carbon's notification status field: which of the four things happened.
+///
+/// The field the operator asked for on 2026-09-05. Each kind names one of
+/// Carbon's four status glyphs (`Notification.js`'s `kind -> icon` map) and
+/// one word. Both reach the card; the hue does not, for the reason the
+/// module doc gives.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum NotificationKind {
+    /// Carbon `kind: 'error'`, `ErrorFilled` — a ring around a slash.
+    Error,
+    /// Carbon `kind: 'warning'`, `WarningFilled` — a ring around a bang.
+    Warning,
+    /// Carbon `kind: 'info'`, `InformationFilled` — a ring around an `i`.
+    /// Carbon's own `InlineNotification` default is `error`; this library's
+    /// is the quiet one, so a caller that names no kind never shouts.
+    #[default]
+    Info,
+    /// Carbon `kind: 'success'`, `CheckmarkFilled` — a ring around a tick.
+    Success,
+}
+
+impl NotificationKind {
+    /// The Carbon glyph for this kind. MEASURED `Notification.js:139-144`.
+    #[must_use]
+    pub fn glyph(self) -> IconMark {
+        match self {
+            Self::Error => IconMark::ErrorFilled,
+            Self::Warning => IconMark::WarningFilled,
+            Self::Info => IconMark::InformationFilled,
+            Self::Success => IconMark::CheckmarkFilled,
+        }
+    }
+
+    /// The kind as a word, for [`Semantics.value`] — the channel that
+    /// survives both the hue and the picture.
+    #[must_use]
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Warning => "warning",
+            Self::Info => "info",
+            Self::Success => "success",
+        }
+    }
+}
+
+/// Toast notification at [`NotificationKind::Info`]. `title` is the
+/// accessible name; `body` is the message. Neither channel is a hue.
 pub fn notification(
     key: impl Into<Key>,
     title: impl Into<String>,
@@ -65,44 +135,80 @@ pub fn notification(
     notification_toast(key, title, body)
 }
 
-/// Toast form: [`Role::Toast`] on [`Layer::Toast`].
+/// Toast form: [`Role::Toast`] on [`Layer::Toast`], at
+/// [`NotificationKind::Info`].
 pub fn notification_toast(
     key: impl Into<Key>,
     title: impl Into<String>,
     body: impl Into<String>,
 ) -> ViewNode {
-    toast_surface(key, title, body, None)
+    notification_toast_kind(key, NotificationKind::default(), title, body)
 }
 
-/// In-flow form: [`Role::Status`], not a floating surface.
+/// [`notification_toast`] with the status field named.
+pub fn notification_toast_kind(
+    key: impl Into<Key>,
+    kind: NotificationKind,
+    title: impl Into<String>,
+    body: impl Into<String>,
+) -> ViewNode {
+    toast_surface(key, kind, title, body, None)
+}
+
+/// In-flow form: [`Role::Status`], not a floating surface, at
+/// [`NotificationKind::Info`].
 pub fn notification_inline(
     key: impl Into<Key>,
     title: impl Into<String>,
     body: impl Into<String>,
 ) -> ViewNode {
+    notification_inline_kind(key, NotificationKind::default(), title, body)
+}
+
+/// [`notification_inline`] with the status field named.
+pub fn notification_inline_kind(
+    key: impl Into<Key>,
+    kind: NotificationKind,
+    title: impl Into<String>,
+    body: impl Into<String>,
+) -> ViewNode {
     let title = title.into();
-    let mut node = chrome(key, title.clone(), body, Vec::new());
+    let mut node = chrome(key, kind, title.clone(), body, Vec::new());
     node.constraints.vertical.min = Some(INLINE_MIN_BLOCK);
     node.semantics = Semantics {
         role: Some(Role::Status),
         label: Some(title),
+        value: Some(kind.word().to_owned()),
         ..Semantics::default()
     };
     node
 }
 
-/// Toast with one labelled action button (Carbon Actionable / Toast pairing).
+/// Toast with one labelled action button (Carbon Actionable / Toast
+/// pairing), at [`NotificationKind::Info`].
 pub fn notification_actionable(
     key: impl Into<Key>,
     title: impl Into<String>,
     body: impl Into<String>,
     action: impl Into<String>,
 ) -> ViewNode {
-    toast_surface(key, title, body, Some(action.into()))
+    notification_actionable_kind(key, NotificationKind::default(), title, body, action)
+}
+
+/// [`notification_actionable`] with the status field named.
+pub fn notification_actionable_kind(
+    key: impl Into<Key>,
+    kind: NotificationKind,
+    title: impl Into<String>,
+    body: impl Into<String>,
+    action: impl Into<String>,
+) -> ViewNode {
+    toast_surface(key, kind, title, body, Some(action.into()))
 }
 
 fn toast_surface(
     key: impl Into<Key>,
+    kind: NotificationKind,
     title: impl Into<String>,
     body: impl Into<String>,
     action: Option<String>,
@@ -112,7 +218,7 @@ fn toast_surface(
         Some(label) => vec![action_button("action", label)],
         None => Vec::new(),
     };
-    let inner = chrome("panel", title.clone(), body, extras);
+    let inner = chrome("panel", kind, title.clone(), body, extras);
     let mut node = ViewNode::new(NodeKind::Surface, key)
         .with_props(Props {
             layer: Some(Layer::Toast),
@@ -130,22 +236,28 @@ fn toast_surface(
     node.semantics = Semantics {
         role: Some(Role::Toast),
         label: Some(title),
+        value: Some(kind.word().to_owned()),
         ..Semantics::default()
     };
     node
 }
 
-/// The card: title over body over any extras, every line centred, on the
-/// raised surface with its shadow.
+/// The card: the status glyph over the title over the body over any
+/// extras, every line centred, on the raised surface with its shadow.
 fn chrome(
     key: impl Into<Key>,
+    kind: NotificationKind,
     title: String,
     body: impl Into<String>,
     extras: Vec<ViewNode>,
 ) -> ViewNode {
+    // Carbon's `NotificationIcon` renders at `size: 20`, which is
+    // [`IconBox::Header`]'s extent. `IconTone::Primary` is `$icon-primary`,
+    // not the kind's hue — see the module doc.
+    let glyph = icon_in("glyph", kind.glyph(), IconBox::Header, IconTone::Primary);
     let mut heading = text("title", title);
     heading.props.style = Some(t(TYPOGRAPHY_HEADING_SM));
-    let mut copy = vec![heading, text("body", body.into())];
+    let mut copy = vec![glyph, heading, text("body", body.into())];
     copy.extend(extras);
     let mut node = stack(key, Axis::Vertical, Some(SPACING_03), copy);
     // Cross-axis centre: each line sits in the middle of the card's width.
@@ -299,8 +411,13 @@ mod tests {
                 Some(Align::Center),
                 "title and body sit in the middle of the card"
             );
-            assert_eq!(card.children[0].key.as_str(), "title");
-            assert_eq!(card.children[1].key.as_str(), "body");
+            assert_eq!(
+                card.children[0].key.as_str(),
+                "glyph",
+                "the status glyph leads the centred column"
+            );
+            assert_eq!(card.children[1].key.as_str(), "title");
+            assert_eq!(card.children[2].key.as_str(), "body");
             assert_eq!(
                 found(&node, "title")
                     .props

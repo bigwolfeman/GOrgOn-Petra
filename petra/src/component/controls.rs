@@ -411,6 +411,24 @@ fn toggle_sized(
     } else {
         TOGGLE_INSET + travel
     };
+    // DEPARTURE FROM CARBON, operator decision 2026-09-05: no check mark.
+    //
+    // Carbon's small toggle **has** one. `Toggle.js` renders
+    // `.cds--toggle__check` under `isSm && !readOnly`, and `_toggle.scss`
+    // gives it `inline-size: 6px; block-size: 5px; inset-block-start: 6px;
+    // inset-inline-end: 5px` in `fill: $support-success` — which, against
+    // the 32x16 switch with its checked 10x10 handle at x 19..29 / y 3..13,
+    // is a 6x5 tick at x 21..27 / y 6..11: centred inside the white handle
+    // to within half a unit. `ignored/carbon-ref/shots/36-toggle.png` shows
+    // exactly that, and `super::icon`'s [`IconMark::Check`] is already that
+    // same path in a 10-unit node, so putting it back is a one-line change.
+    //
+    // This library shipped the tick in `pad-start` instead, which floated it
+    // in the track's leading gap with nothing around it. The operator asked
+    // twice for it to go rather than to move, and chose deletion over
+    // Carbon's placement when both were put to him with the reference shot.
+    // So the small on-toggle is the default size's anatomy at a smaller
+    // scale: a pill and a plain knob, no mark.
     let knob = swatch(
         "knob",
         handle,
@@ -421,19 +439,7 @@ fn toggle_sized(
     )
     .with_transition(crate::anim::TOGGLE_KNOB);
 
-    let pad_start = match (size, on) {
-        (ToggleSize::Small, true) => {
-            let mut pad = stack(
-                "pad-start",
-                Axis::Horizontal,
-                None,
-                vec![icon("tick", IconMark::Check)],
-            );
-            pad.props.align = Some(Align::Center);
-            pad.with_constraints(pinned(start, track_h))
-        }
-        _ => swatch("pad-start", start, track_h, None, None, None),
-    };
+    let pad_start = swatch("pad-start", start, track_h, None, None, None);
 
     let mut track = stack(
         "track",
@@ -675,6 +681,51 @@ mod tests {
             .map(|c| c.key.as_str())
             .collect();
         assert_eq!(keys, ["pad-start", "knob", "pad-end"]);
+    }
+
+    /// DEPARTURE FROM CARBON, operator decision 2026-09-05: no toggle draws
+    /// a check mark, in any size or state.
+    ///
+    /// Carbon's small on-toggle does — `Toggle.js` renders
+    /// `.cds--toggle__check` under `isSm && !readOnly`, and
+    /// `ignored/carbon-ref/shots/36-toggle.png` shows the tick inside the
+    /// white knob. The operator asked twice for it to go and chose deletion
+    /// over Carbon's placement when both were put to him. This pins the
+    /// decision so a later Carbon-conformance pass has to argue with a named
+    /// test rather than quietly put the mark back.
+    ///
+    /// Asserted as "no canvas anywhere under the appearance", not as "no
+    /// node keyed tick": the mark could come back under any key, and a
+    /// `NodeKind::Canvas` is the only way a toggle can draw a glyph at all.
+    #[test]
+    fn no_toggle_draws_a_glyph_in_any_size_or_state() {
+        fn canvases(node: &ViewNode, into: &mut Vec<String>) {
+            if node.kind == NodeKind::Canvas {
+                into.push(node.key.as_str().to_owned());
+            }
+            for child in &node.children {
+                canvases(child, into);
+            }
+        }
+        for (name, node) in [
+            ("default off", toggle("t", "Toggle", false)),
+            ("default on", toggle("t", "Toggle", true)),
+            ("small off", toggle_sm("t", "Toggle", false)),
+            ("small on", toggle_sm("t", "Toggle", true)),
+        ] {
+            let mut found = Vec::new();
+            canvases(&node, &mut found);
+            assert!(
+                found.is_empty(),
+                "{name} draws {found:?}; the operator asked for a bare pill                  and knob"
+            );
+            let knob = named(&node, "knob");
+            assert!(
+                knob.children.is_empty(),
+                "{name}: the knob is a leaf, not a carrier"
+            );
+            assert_eq!(pin(knob).0, pin(knob).1, "{name}: the knob is square");
+        }
     }
 
     const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };

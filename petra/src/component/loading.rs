@@ -37,6 +37,39 @@
 //! Carbon keeps spinning under `prefers-reduced-motion`: the `spin` mixin's
 //! reduced-motion branch stops only the 10ms stroke-init keyframe, not the
 //! rotation. So does this.
+//!
+//! # Carbon runs one motion, not two, and so does this
+//!
+//! `_animation.scss`'s `spin` mixin declares two animations and only one of
+//! them is continuous:
+//!
+//! ```scss
+//! animation-duration: 690ms;              // --rotate, infinite, linear
+//! svg circle {
+//!   animation-duration: 10ms;             // --init-stroke
+//!   animation-name: #{$prefix}--init-stroke;
+//! }
+//! ```
+//!
+//! `--init-stroke` carries no `animation-iteration-count`, so it defaults to
+//! `1`: it runs for **ten milliseconds, once, at mount**, walking
+//! `stroke-dashoffset` from `loading-progress($circumference, 0)` to
+//! `loading-progress($circumference, 81)`. That is the arc growing in as the
+//! spinner appears. From 10 ms onward the dash offset is the static value
+//! `.cds--loading__stroke` binds, and the only thing moving is the container's
+//! rotation.
+//!
+//! So the ink fraction is a constant, not an animation, and Carbon's steady
+//! state is one rigid picture turning — exactly this file's shape. The
+//! suspicion that we ran one motion where Carbon ran two is **refuted**;
+//! there is no second continuous animation to build. The ink fractions match
+//! too: `loading-progress($c, 81) = $c - 0.81 * $c`, and with
+//! `stroke-dasharray: $c $c` an offset of `0.19 * $c` leaves `0.81 * $c` of
+//! ink — [`INK_LG`], and [`INK_SM`] by the same arithmetic at 48.
+//!
+//! # The turn is slower than Carbon's, on purpose
+//!
+//! [`TURN_SECONDS`] is **not** Carbon's number. See its doc.
 
 use std::sync::Arc;
 
@@ -63,12 +96,39 @@ const STROKE_SM: f32 = 16.0;
 const INK_LG: f32 = 0.81;
 /// MEASURED `--small .cds--loading__stroke`: `loading-progress($circumference, 48)`.
 const INK_SM: f32 = 0.48;
-/// One full turn. MEASURED `_animation.scss` `animation-duration: 690ms`.
-const TURN_SECONDS: f64 = 0.69;
+/// Carbon's own turn. MEASURED `_animation.scss` `animation-duration: 690ms`
+/// on the `spin` mixin, which is `linear` and `infinite`.
+///
+/// Kept as a named constant even though nothing draws at this rate, because
+/// it is the conformance target and [`TURN_SECONDS`] is stated as a multiple
+/// of it: a reader can see the size of the departure, and undoing it is
+/// changing the multiplier back to 1.
+const CARBON_TURN_SECONDS: f64 = 0.69;
+
+/// DEPARTURE FROM CARBON, operator decision 2026-09-05: one full turn takes
+/// **twice** Carbon's 690 ms, so 1.38 s.
+///
+/// This is a preference, not a correction. The 690 ms above is measured, we
+/// drew at it, and the module doc records that we also match Carbon on the
+/// ink fraction and on running one continuous motion rather than two — there
+/// was no second animation missing and nothing else to blame for the rate.
+/// The operator walked the catalog three times and asked twice for the
+/// spinner to slow down; put the choice between "keep Carbon's rate" and
+/// "slow it anyway", he chose to slow it.
+///
+/// Two, and not some other factor, because a plain doubling is the only
+/// multiplier that stays legible: 1.45 turns a second reads as alarm, 0.72
+/// reads as work in progress, and anyone who wants Carbon's rate back
+/// changes one `2.0` rather than re-deriving a number. Row 14's inline
+/// spinner turns on this same constant, which is the operator's other
+/// "spinning too fast" line.
+const TURN_SECONDS: f64 = CARBON_TURN_SECONDS * 2.0;
 
 const _: () = assert!(SIZE_LG == 88.0);
 const _: () = assert!(SIZE_SM == 16.0);
-const _: () = assert!(TURN_SECONDS == 0.69);
+/// Carbon's measurement stays pinned; the departure is the multiplier alone.
+const _: () = assert!(CARBON_TURN_SECONDS == 0.69);
+const _: () = assert!(TURN_SECONDS == 1.38);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LoadingSize {
@@ -219,7 +279,8 @@ fn spinner(key: impl Into<Key>, size: LoadingSize, now: f64) -> ViewNode {
 #[cfg(test)]
 mod tests {
     use super::{
-        INK_LG, INK_SM, SIZE_LG, SIZE_SM, TURN_SECONDS, loading, loading_sm, spinner_phase,
+        CARBON_TURN_SECONDS, INK_LG, INK_SM, SIZE_LG, SIZE_SM, TURN_SECONDS, loading, loading_sm,
+        spinner_phase,
     };
     use crate::component::tokens::{ACCENT_PRIMARY, LAYER_ACCENT};
     use crate::draw::{ColorRef, Command, DrawList, PathVerb};
@@ -433,6 +494,37 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The operator's rate, pinned against the wall clock rather than
+    /// against itself.
+    ///
+    /// Every other motion assertion in this file is relative — "a tenth of a
+    /// turn later" — so all of them stay green at any `TURN_SECONDS`,
+    /// including the 690 ms this row departed from. This one names real
+    /// seconds: at Carbon's 690 ms the spinner is exactly **half** way round,
+    /// and a full second is a little over two thirds. Put 0.69 back and both
+    /// go red.
+    #[test]
+    fn one_turn_takes_twice_carbon_s_690ms_of_real_time() {
+        assert!(
+            (spinner_phase(CARBON_TURN_SECONDS) - 0.5).abs() < 1e-6,
+            "Carbon's own turn must leave this spinner half way round, got {}",
+            spinner_phase(CARBON_TURN_SECONDS)
+        );
+        assert!(
+            (spinner_phase(1.0) - (1.0 / 1.38)).abs() < 1e-6,
+            "one wall-clock second is {} of a turn",
+            spinner_phase(1.0)
+        );
+        // Turns per second, the number the operator was reacting to.
+        let rate = 1.0 / TURN_SECONDS;
+        assert!(
+            (0.7..0.75).contains(&rate),
+            "the spinner turns {rate} times a second"
+        );
+        assert_eq!(TURN_SECONDS, 1.38);
+        assert_eq!(CARBON_TURN_SECONDS, 0.69);
     }
 
     /// Check F is vacuous here: slice-c states Loading is "non-interactive
