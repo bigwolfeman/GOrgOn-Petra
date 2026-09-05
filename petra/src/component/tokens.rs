@@ -70,6 +70,12 @@ pub(crate) const TYPOGRAPHY_HEADING_SM: &str = "typography.heading-sm";
 /// change with the lights.
 pub(crate) const SHADOW_RAISED: &str = "shadow.raised";
 
+/// The deeper elevation a floating surface casts — a menu, a calendar, a
+/// popover. Present in the shipped vocabulary since it was written; only
+/// the re-export was missing, which is the fourth token found that way and
+/// the reason the module doc now says to check `token/shipped.rs` first.
+pub(crate) const SHADOW_OVERLAY: &str = "shadow.overlay";
+
 /// The scrim a modal lays over the page behind it: black at a theme-chosen
 /// alpha, so the page dims rather than recolours. Bound as `background` on
 /// a window-covering surface, never composited into another node's rect
@@ -231,6 +237,7 @@ pub(crate) const ALL: &[&str] = &[
     TYPOGRAPHY_BODY,
     TYPOGRAPHY_HEADING,
     TYPOGRAPHY_HEADING_SM,
+    SHADOW_OVERLAY,
     SHADOW_RAISED,
     OVERLAY_SCRIM,
     SURFACE_BASE,

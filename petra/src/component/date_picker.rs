@@ -8,40 +8,77 @@
 //!    (`.cds--date-picker__icon`, `fill: $icon-primary`, 16×16, slice-b),
 //!    carrying the word `calendar` as its accessible name so the glyph is
 //!    never the only channel (FR-026).
-//! 4. Open calendar — [`super::popover::popover_with`] hosting a 7-column
-//!    weekday-initial row plus day buttons `1..=28`.
+//! 4. Open calendar — a `Layer::Popup` surface flush under the field:
+//!    a month header (`< August 2026 >`), a 7-column weekday-initial row,
+//!    and six week rows of the real Gregorian month.
 //!
-//! Calendar menu is a fixed 288×336 box (SCSS), independent of field size.
-//! Day cells are 40×40 ([`SIZE_MD`]). Previous/next month and a real
-//! Gregorian grid are omitted: 28 days is enough to prove the anatomy.
+//! Calendar menu is a fixed 288 wide (SCSS), independent of field size.
+//! Day cells are 40x40 ([`SIZE_MD`]).
+//!
+//! # What this used to be, and why none of it survived
+//!
+//! Day buttons `1..=28`, on the reasoning that "28 days is enough to prove
+//! the anatomy". Measured on the capture, it proved something else. The
+//! grid declared seven 40px columns and the cells inside them were **8px
+//! wide** — a `Grid` leaves a cell at its natural size unless told to
+//! stretch, so every day was a hit box the width of its own digits and the
+//! four columns of whitespace between them answered nothing. The panel hung
+//! 92px to the inline-start of the field, because it borrowed
+//! [`super::popover::popover_with`], which centres on its anchor; Carbon's
+//! calendar is flush under the field's leading edge. And that popover put
+//! its `"^"` caret — a *text glyph* — where Carbon puts the month and year.
+//! Four weeks of 1..28 also matches no month that has ever existed, so the
+//! weekday initials sat above the wrong columns.
+//!
+//! The month now comes from `value`, which is already `YYYY-MM-DD`: the
+//! component reads the month it is being asked to show rather than being
+//! told twice.
 
 use super::icon::{IconMark, IconTone, icon_toned};
 use super::pad;
-use super::popover::popover_with;
 use super::stack;
 use super::text::text;
 use super::tokens::{
-    BORDER_SUBTLE, LAYER_HOVER, SHAPE_SM, SIZE_MD, SPACING_03, SPACING_05, SURFACE_RAISED,
-    TEXT_MUTED, TEXT_PRIMARY, t,
+    ACCENT_PRIMARY, BORDER_SUBTLE, LAYER_HOVER, SHADOW_OVERLAY, SHAPE_SM, SIZE_MD, SPACING_03,
+    SPACING_05, SURFACE_RAISED, TEXT_MUTED, TEXT_ON_ACCENT, TEXT_PRIMARY, TYPOGRAPHY_HEADING_SM, t,
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
-    AxisConstraint, Constraints, Interaction, Key, NodeKind, Props, Role, TrackSize, ViewNode,
+    Align as PropAlign, Anchor, AxisConstraint, ClampRule, Constraints, Edge, InputPolicy,
+    Interaction, Key, Layer, NodeKind, Props, Role, TrackSize, ViewNode,
 };
 
 /// Carbon calendar menu width (`18rem`). Independent of field size.
 const CALENDAR_W: f32 = 288.0;
 /// Carbon calendar menu height (`21rem`). Style-page and SCSS agree.
 const CALENDAR_H: f32 = 336.0;
-/// Days shown to prove the grid. Four weeks; not a real month length.
-const VISIBLE_DAYS: u32 = 28;
+/// Week rows Carbon always draws, whatever the month's length. Six is what
+/// it takes for a 31-day month that starts on a Saturday, and a calendar
+/// whose height changed with the month would move the ground under the
+/// pointer.
+const WEEK_ROWS: usize = 6;
 
 const WEEKDAYS: [&str; 7] = ["S", "M", "T", "W", "T", "F", "S"];
+
+const MONTHS: [&str; 12] = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+];
 
 const _: () = assert!(SIZE_MD == 40.0);
 const _: () = assert!(CALENDAR_W == 288.0);
 const _: () = assert!(CALENDAR_H == 336.0);
-const _: () = assert!(VISIBLE_DAYS == 28);
+const _: () = assert!(WEEK_ROWS == 6);
 
 const FIELD_INTENTS: &[Interaction] = &[Interaction::Focus, Interaction::Click, Interaction::Hover];
 
@@ -55,19 +92,29 @@ pub fn date_picker(
     closed_field(key, label, value, None)
 }
 
-/// Open calendar: the closed field plus a popover with weekday initials
-/// and day buttons `1..=28`.
+/// Open calendar: the closed field plus the month `value` names, flush
+/// under the field's leading edge.
 ///
-/// The field child is keyed `"field"`; the popover is keyed `"calendar"`
-/// and anchored to `"field"`.
+/// The field child is keyed `"field"`; the calendar is keyed `"calendar"`
+/// and anchored to `"field"`. A day cell is keyed `day-<n>` and an
+/// adjacent-month cell `adj-<i>`, so a caller matching `day-` picks up
+/// exactly the days of the month on show.
+///
+/// `value` is read as `YYYY-MM-DD`. A value that does not parse still
+/// draws a calendar — the current month cannot be known here, so it falls
+/// back to the month in the field's own text being unreadable and shows
+/// January 1970 with nothing selected, which is visibly wrong rather than
+/// quietly wrong.
 pub fn date_picker_open(
     key: impl Into<Key>,
     label: impl Into<String>,
     value: impl Into<String>,
 ) -> ViewNode {
     let label = label.into();
+    let value = value.into();
+    let (year, month, day) = parse_date(&value).unwrap_or((1970, 1, 0));
     let field = closed_field("field", label.clone(), value, Some(true));
-    let calendar = popover_with("calendar", label, "field", vec![month_grid()]);
+    let calendar = calendar_surface(label, year, month, day);
     let mut node = stack(key, Axis::Vertical, None, vec![field, calendar]);
     node.semantics.expanded = Some(true);
     node
@@ -111,22 +158,91 @@ fn closed_field(
     node
 }
 
-fn month_grid() -> ViewNode {
-    let mut children = Vec::with_capacity(7 + VISIBLE_DAYS as usize);
-    for (i, name) in WEEKDAYS.iter().enumerate() {
-        let mut cell = text(format!("dow-{i}"), (*name).to_owned());
-        cell.props.tokens.insert("foreground".into(), t(TEXT_MUTED));
-        children.push(cell);
+/// `YYYY-MM-DD` as a triple, or `None` if it is not that.
+///
+/// Deliberately not a date library and deliberately not lenient: the only
+/// producer is a caller that already formats the field's own text, so a
+/// string this refuses is a caller bug and should look like one.
+fn parse_date(value: &str) -> Option<(i32, u32, u32)> {
+    let mut parts = value.split('-');
+    let year = parts.next()?.parse().ok()?;
+    let month = parts.next()?.parse().ok()?;
+    let day = parts.next()?.parse().ok()?;
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || parts.next().is_some() {
+        return None;
     }
-    for day in 1..=VISIBLE_DAYS {
-        children.push(day_button(day));
+    Some((year, month, day))
+}
+
+/// Days in `month` of `year`, Gregorian.
+fn days_in_month(year: i32, month: u32) -> u32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        _ => {
+            if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) {
+                29
+            } else {
+                28
+            }
+        }
     }
-    let mut grid = ViewNode::new(NodeKind::Grid, "days").with_props(Props {
-        columns: vec![TrackSize::Fixed { value: SIZE_MD }; 7],
-        rows: vec![TrackSize::Fixed { value: SIZE_MD }; 5],
-        ..Props::default()
-    });
-    grid.constraints = Constraints {
+}
+
+/// The weekday of `year-month-01`, `0` for Sunday — Sakamoto's method.
+///
+/// Chosen over Zeller because it is a single table lookup and needs no
+/// month/year shifting beyond January and February, which is the whole of
+/// the correction below. Checked against known dates in this module's
+/// tests rather than trusted.
+fn first_weekday(year: i32, month: u32) -> usize {
+    const OFFSETS: [i32; 12] = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
+    let y = if month < 3 { year - 1 } else { year };
+    let dow = (y + y / 4 - y / 100 + y / 400 + OFFSETS[(month - 1) as usize] + 1).rem_euclid(7);
+    // `rem_euclid` is in `0..7`, so this is total rather than a cast that
+    // happens to work.
+    usize::try_from(dow).unwrap_or(0)
+}
+
+/// The whole calendar: a `Layer::Popup` surface under the field.
+///
+/// Built here rather than through [`super::popover::popover_with`], which
+/// centres on its anchor and draws a caret. Carbon's calendar is neither:
+/// `.cds--date-picker__calendar` is flush under the field's leading edge
+/// and has no beak, because it is a panel belonging to the field rather
+/// than a bubble pointing at it.
+fn calendar_surface(label: String, year: i32, month: u32, selected: u32) -> ViewNode {
+    let mut content = stack(
+        "content",
+        Axis::Vertical,
+        None,
+        vec![month_header(year, month), month_grid(year, month, selected)],
+    );
+    content.props.align = Some(Align::Stretch);
+
+    let mut node = ViewNode::new(NodeKind::Surface, "calendar")
+        .with_props(Props {
+            layer: Some(Layer::Popup),
+            anchor: Some(Anchor::Sibling {
+                key: Key::new("field"),
+                edge: Edge::Bottom,
+                align: PropAlign::Start,
+                offset: None,
+            }),
+            clamp: Some(ClampRule::Flip),
+            input_policy: Some(InputPolicy::DismissOutside),
+            align: Some(Align::Stretch),
+            ..Props::default()
+        })
+        .child(content);
+    node.props
+        .tokens
+        .insert("background".into(), t(SURFACE_RAISED));
+    node.props.tokens.insert("border".into(), t(BORDER_SUBTLE));
+    node.props.tokens.insert("shadow".into(), t(SHADOW_OVERLAY));
+    node.semantics.role = Some(Role::Overlay);
+    node.semantics.label = Some(label);
+    node.with_constraints(Constraints {
         horizontal: AxisConstraint {
             min: Some(CALENDAR_W),
             max: Some(CALENDAR_W),
@@ -137,33 +253,201 @@ fn month_grid() -> ViewNode {
             max: Some(CALENDAR_H),
             priority: 0,
         },
-    };
-    grid.with_children(children)
+    })
 }
 
-fn day_button(day: u32) -> ViewNode {
-    let label = day.to_string();
-    let mut caption = text("label", label.clone());
+/// `< August 2026 >` — Carbon's `.cds--date-picker__month`.
+fn month_header(year: i32, month: u32) -> ViewNode {
+    let mut caption = text(
+        "month",
+        format!("{} {year}", MONTHS[(month - 1) as usize % 12]),
+    );
+    caption.props.style = Some(t(TYPOGRAPHY_HEADING_SM));
     caption
         .props
         .tokens
         .insert("foreground".into(), t(TEXT_PRIMARY));
-    let mut node = stack(format!("day-{day}"), Axis::Horizontal, None, vec![caption]);
+
+    let mut seat = stack("month-seat", Axis::Horizontal, None, vec![caption]);
+    seat.props.align = Some(Align::Center);
+    seat.props.justify = Some(Align::Center);
+
+    let mut row = ViewNode::new(NodeKind::Grid, "month-header")
+        .with_props(Props {
+            columns: vec![
+                TrackSize::Fixed { value: SIZE_MD },
+                TrackSize::Weight { weight: 1.0 },
+                TrackSize::Fixed { value: SIZE_MD },
+            ],
+            rows: vec![TrackSize::Fixed { value: SIZE_MD }],
+            align: Some(Align::Stretch),
+            ..Props::default()
+        })
+        .with_children(vec![
+            month_step("prev-month", "Previous month", IconMark::ChevronLeft),
+            seat,
+            month_step("next-month", "Next month", IconMark::ChevronRight),
+        ]);
+    row.constraints = pin_height(SIZE_MD);
+    row
+}
+
+/// One of the two month controls: a 40x40 icon button.
+fn month_step(key: &str, label: &str, mark: IconMark) -> ViewNode {
+    let glyph = icon_toned("glyph", mark, IconTone::Primary);
+    let mut node = stack(key, Axis::Horizontal, None, vec![glyph]);
     node.props.align = Some(Align::Center);
-    // Resting background: the calendar popover's own content fill
-    // (`popover_with` binds `SURFACE_RAISED`), the ground every day cell
-    // sits on. Without this, `background@hover` has no resting `background`
-    // beneath it and resolves to nothing at rest — the Accordion/Modal/AI-
-    // label defect, generalised (see
-    // `a_state_decorated_token_always_has_a_resting_binding`).
+    node.props.justify = Some(Align::Center);
     node.props
         .tokens
         .insert("background".into(), t(SURFACE_RAISED));
     node.props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
-    node.with_constraints(pin_height(SIZE_MD))
-        .interactive(Role::Button, label, FIELD_INTENTS)
+    node.with_constraints(pin_height(SIZE_MD)).interactive(
+        Role::Button,
+        label.to_owned(),
+        FIELD_INTENTS,
+    )
+}
+
+/// The weekday row plus six week rows of the real month.
+fn month_grid(year: i32, month: u32, selected: u32) -> ViewNode {
+    let lead = first_weekday(year, month);
+    let count = days_in_month(year, month);
+    let (prev_year, prev_month) = if month == 1 {
+        (year - 1, 12)
+    } else {
+        (year, month - 1)
+    };
+    let prev_count = days_in_month(prev_year, prev_month);
+    let mut children = Vec::with_capacity(7 + WEEK_ROWS * 7);
+    for (i, name) in WEEKDAYS.iter().enumerate() {
+        let mut caption = text("label", (*name).to_owned());
+        caption
+            .props
+            .tokens
+            .insert("foreground".into(), t(TEXT_MUTED));
+        // Centred by a seat, not by `align` on the text itself: the grid
+        // stretches a cell to its track, and a bare text node then draws
+        // from the track's leading edge. The initials sat 30px to the
+        // inline-start of the column they name.
+        children.push(centred(format!("dow-{i}"), caption));
+    }
+    for slot in 0..WEEK_ROWS * 7 {
+        // `slot` counts cells from the first weekday column; `lead` is how
+        // many of them belong to the month before this one.
+        let day = (slot as i64) - (lead as i64) + 1;
+        if day >= 1 && day <= i64::from(count) {
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "bounded by the branch: 1 <= day <= 31"
+            )]
+            let day = day as u32;
+            children.push(day_button(day, day == selected));
+        } else {
+            children.push(adjacent_cell(slot, lead, count, prev_count));
+        }
+    }
+    let mut grid = ViewNode::new(NodeKind::Grid, "days").with_props(Props {
+        columns: vec![TrackSize::Fixed { value: SIZE_MD }; 7],
+        rows: vec![TrackSize::Fixed { value: SIZE_MD }; WEEK_ROWS + 1],
+        // Without this a cell keeps its natural size, so a day was a hit
+        // box the width of its own digits sitting in a 40px track.
+        align: Some(Align::Stretch),
+        ..Props::default()
+    });
+    grid.constraints = Constraints {
+        horizontal: AxisConstraint {
+            min: Some(CALENDAR_W),
+            max: Some(CALENDAR_W),
+            priority: 0,
+        },
+        vertical: AxisConstraint {
+            min: None,
+            max: None,
+            priority: 1,
+        },
+    };
+    grid.with_children(children)
+}
+
+/// A day of the month on show. `selected` fills it with the accent, which
+/// is Carbon's `.cds--date-picker__day--selected`.
+fn day_button(day: u32, selected: bool) -> ViewNode {
+    let label = day.to_string();
+    let mut caption = text("label", label.clone());
+    caption.props.tokens.insert(
+        "foreground".into(),
+        t(if selected {
+            TEXT_ON_ACCENT
+        } else {
+            TEXT_PRIMARY
+        }),
+    );
+    let mut node = stack(format!("day-{day}"), Axis::Horizontal, None, vec![caption]);
+    node.props.align = Some(Align::Center);
+    node.props.justify = Some(Align::Center);
+    // Resting background: the calendar's own content fill, the ground every
+    // day cell sits on. Without this, `background@hover` has no resting
+    // `background` beneath it and resolves to nothing at rest — the
+    // Accordion/Modal/AI-label defect, generalised (see
+    // `a_state_decorated_token_always_has_a_resting_binding`).
+    node.props.tokens.insert(
+        "background".into(),
+        t(if selected {
+            ACCENT_PRIMARY
+        } else {
+            SURFACE_RAISED
+        }),
+    );
+    node.props
+        .tokens
+        .insert("background@hover".into(), t(LAYER_HOVER));
+    let mut node =
+        node.with_constraints(pin_height(SIZE_MD))
+            .interactive(Role::Button, label, FIELD_INTENTS);
+    node.semantics.selected = selected;
+    node
+}
+
+/// A cell belonging to the month either side of the one on show.
+///
+/// Carries its real number, in [`TEXT_MUTED`], because Carbon draws them
+/// and a six-row grid with holes in it reads as a broken grid rather than
+/// as a month. Not interactive: Carbon lets a press here step the month,
+/// and this component has no month state to step. That is a stated gap.
+///
+/// `slot` counts cells from the first weekday column, `lead` is how many of
+/// them belong to the month before, and `count` is this month's length —
+/// the same three numbers [`month_grid`] placed the day by.
+fn adjacent_cell(slot: usize, lead: usize, count: u32, prev_count: u32) -> ViewNode {
+    let number = if slot < lead {
+        // Trailing days of the month before: the last `lead` of them.
+        prev_count - (lead - slot - 1) as u32
+    } else {
+        // Leading days of the month after.
+        (slot - lead) as u32 - count + 1
+    };
+    let mut caption = text("label", number.to_string());
+    caption
+        .props
+        .tokens
+        .insert("foreground".into(), t(TEXT_MUTED));
+    let mut cell = centred(format!("adj-{slot}"), caption);
+    cell.props
+        .tokens
+        .insert("background".into(), t(SURFACE_RAISED));
+    cell.with_constraints(pin_height(SIZE_MD))
+}
+
+/// `child` in a seat that centres it on both axes inside its grid track.
+fn centred(key: String, child: ViewNode) -> ViewNode {
+    let mut node = stack(key, Axis::Horizontal, None, vec![child]);
+    node.props.align = Some(Align::Center);
+    node.props.justify = Some(Align::Center);
+    node
 }
 
 fn pin_height(h: f32) -> Constraints {
@@ -180,9 +464,10 @@ fn pin_height(h: f32) -> Constraints {
 #[cfg(test)]
 mod tests {
     use super::{
-        CALENDAR_H, CALENDAR_W, SIZE_MD, VISIBLE_DAYS, WEEKDAYS, date_picker, date_picker_open,
+        CALENDAR_H, CALENDAR_W, PropAlign, SIZE_MD, WEEK_ROWS, WEEKDAYS, date_picker,
+        date_picker_open, days_in_month, first_weekday, parse_date,
     };
-    use crate::component::tokens::{BORDER_SUBTLE, SURFACE_RAISED};
+    use crate::component::tokens::{ACCENT_PRIMARY, BORDER_SUBTLE, SURFACE_RAISED};
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, validated_with};
@@ -229,7 +514,10 @@ mod tests {
     }
 
     #[test]
-    fn date_picker_open_hosts_weekdays_and_day_buttons_in_a_popover() {
+    fn the_open_calendar_shows_the_real_month_its_value_names() {
+        // August 2026 starts on a Saturday and has 31 days, so the grid
+        // leads with six adjacent cells and the 1st lands in the last
+        // column. That is the arrangement being asserted, not "some grid".
         let node = date_picker_open("due", "Due date", "2026-08-30");
         assert_eq!(node.semantics.expanded, Some(true));
         let field = child(&node, "field");
@@ -240,48 +528,138 @@ mod tests {
         assert_eq!(calendar.kind, NodeKind::Surface);
         assert_eq!(calendar.semantics.role, Some(Role::Overlay));
         match &calendar.props.anchor {
-            Some(Anchor::Sibling { key, .. }) => assert_eq!(key.as_str(), "field"),
+            Some(Anchor::Sibling { key, align, .. }) => {
+                assert_eq!(key.as_str(), "field");
+                assert_eq!(
+                    *align,
+                    PropAlign::Start,
+                    "Carbon's calendar is flush under the field's leading \
+                     edge. Centred, it hung 92px off the side of it"
+                );
+            }
             other => panic!("expected Anchor::Sibling, got {other:?}"),
         }
-        let content = child(calendar, "content");
-        assert_eq!(child(content, "caret").props.text.as_deref(), Some("^"));
-        let days = child(content, "days");
-        assert_eq!(days.kind, NodeKind::Grid);
-        assert_eq!(days.props.columns.len(), 7);
-        assert_eq!(days.constraints.horizontal.max, Some(CALENDAR_W));
-        assert_eq!(days.constraints.vertical.max, Some(CALENDAR_H));
+        assert_eq!(calendar.constraints.horizontal.max, Some(CALENDAR_W));
+        assert_eq!(calendar.constraints.vertical.max, Some(CALENDAR_H));
         assert_eq!(CALENDAR_W, 288.0);
         assert_eq!(CALENDAR_H, 336.0);
 
+        let content = child(calendar, "content");
+        assert!(
+            content.children.iter().all(|c| c.key.as_str() != "caret"),
+            "Carbon's calendar is a panel belonging to the field, not a \
+             bubble pointing at it, and has no beak. The one that was here \
+             was the text glyph `^`, sitting where the month goes"
+        );
+        let header = child(content, "month-header");
+        assert_eq!(
+            child(child(header, "month-seat"), "month")
+                .props
+                .text
+                .as_deref(),
+            Some("August 2026")
+        );
+        for step in ["prev-month", "next-month"] {
+            assert_eq!(child(header, step).semantics.role, Some(Role::Button));
+        }
+
+        let days = child(content, "days");
+        assert_eq!(days.kind, NodeKind::Grid);
+        assert_eq!(days.props.columns.len(), 7);
+        assert_eq!(days.props.rows.len(), WEEK_ROWS + 1);
+        assert_eq!(
+            days.props.align,
+            Some(crate::geom::Align::Stretch),
+            "a Grid leaves a cell at its natural size otherwise, and every \
+             day was a hit box the width of its own digits in a 40px track"
+        );
+
         for (i, name) in WEEKDAYS.iter().enumerate() {
             let cell = child(days, &format!("dow-{i}"));
-            assert_eq!(cell.props.text.as_deref(), Some(*name));
+            assert_eq!(child(cell, "label").props.text.as_deref(), Some(*name));
             assert!(cell.semantics.role.is_none());
             assert!(cell.interactions.is_empty());
         }
-        assert_eq!(VISIBLE_DAYS, 28);
-        for day in 1..=VISIBLE_DAYS {
+
+        // The whole month, and nothing past it.
+        for day in 1..=31_u32 {
             let cell = child(days, &format!("day-{day}"));
             assert_eq!(cell.semantics.role, Some(Role::Button));
-            assert_eq!(
-                cell.semantics.label.as_deref(),
-                Some(day.to_string().as_str())
-            );
             assert!(cell.interactions.contains(&Interaction::Click));
-            assert_eq!(
-                token(cell, "background"),
-                Some(SURFACE_RAISED),
-                "day-{day} needs a resting `background` under its \
-                 `background@hover`, or the hover binding resolves to \
-                 nothing and paints silent"
-            );
         }
         assert!(
-            days.children
-                .iter()
-                .all(|c| c.key.as_str() != "day-29" && c.key.as_str() != "day-31"),
-            "anatomy grid stops at 28; this is not a date library"
+            days.children.iter().all(|c| c.key.as_str() != "day-32"),
+            "August has 31 days"
         );
+
+        // The value's own day is the selected one, in the accent.
+        let thirtieth = child(days, "day-30");
+        assert!(thirtieth.semantics.selected);
+        assert_eq!(token(thirtieth, "background"), Some(ACCENT_PRIMARY));
+        let other = child(days, "day-12");
+        assert!(!other.semantics.selected);
+        assert_eq!(
+            token(other, "background"),
+            Some(SURFACE_RAISED),
+            "an unselected day needs a resting `background` under its \
+             `background@hover`, or the hover binding resolves to nothing \
+             and paints silent"
+        );
+
+        // Six adjacent-month cells lead, because 2026-08-01 is a Saturday,
+        // and they carry July's last six days rather than being holes.
+        for (slot, day) in (0..6).zip(26..=31) {
+            assert_eq!(
+                child(child(days, &format!("adj-{slot}")), "label")
+                    .props
+                    .text
+                    .as_deref(),
+                Some(day.to_string().as_str()),
+                "July 2026 has 31 days, so the lead-in runs 26..31"
+            );
+        }
+        // And the trailing cells are September's first days. Six rows of
+        // seven is 42 cells; 6 lead plus 31 of August leaves 5.
+        assert_eq!(
+            child(child(days, "adj-37"), "label").props.text.as_deref(),
+            Some("1"),
+            "the cell after the 31st is the 1st of September"
+        );
+        assert!(
+            days.children.iter().all(|c| c.key.as_str() != "adj-6"),
+            "slot 6 is the 1st of August"
+        );
+    }
+
+    /// The two calendar facts, against dates whose weekday is known.
+    #[test]
+    fn the_calendar_arithmetic_agrees_with_dates_anyone_can_check() {
+        // Sundays: 2026-08-02, 2000-01-02, 1970-01-04. `first_weekday`
+        // answers for the 1st, so these are the offsets that follow.
+        assert_eq!(first_weekday(2026, 8), 6, "2026-08-01 is a Saturday");
+        assert_eq!(first_weekday(2000, 1), 6, "2000-01-01 is a Saturday");
+        assert_eq!(first_weekday(1970, 1), 4, "1970-01-01 is a Thursday");
+        assert_eq!(first_weekday(2024, 2), 4, "2024-02-01 is a Thursday");
+
+        assert_eq!(days_in_month(2026, 2), 28);
+        assert_eq!(days_in_month(2024, 2), 29, "2024 is a leap year");
+        assert_eq!(days_in_month(1900, 2), 28, "1900 is not: divisible by 100");
+        assert_eq!(days_in_month(2000, 2), 29, "2000 is: divisible by 400");
+        assert_eq!(days_in_month(2026, 4), 30);
+        assert_eq!(days_in_month(2026, 12), 31);
+    }
+
+    #[test]
+    fn a_value_that_is_not_a_date_is_refused_rather_than_guessed_at() {
+        assert_eq!(parse_date("2026-08-30"), Some((2026, 8, 30)));
+        assert_eq!(parse_date("2026-8-3"), Some((2026, 8, 3)));
+        assert_eq!(parse_date(""), None);
+        assert_eq!(parse_date("2026-08"), None);
+        assert_eq!(parse_date("2026-13-01"), None, "no thirteenth month");
+        assert_eq!(parse_date("2026-00-01"), None);
+        assert_eq!(parse_date("2026-08-32"), None);
+        assert_eq!(parse_date("2026-08-30-01"), None);
+        assert_eq!(parse_date("today"), None);
     }
 
     /// `date_picker_open`'s `calendar` names its `field` sibling by bare

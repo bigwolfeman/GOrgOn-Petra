@@ -117,6 +117,21 @@ pub enum IconMark {
     /// `M8 5L13 10 12.3 10.7 8 6.4 3.7 10.7 3 10z`; at 32, viewBox `0 0 32 32`:
     /// `M16 10L26 20 24.6 21.4 16 12.8 7.4 21.4 6 20z`.
     ChevronUp,
+    /// Carbon `ChevronLeft` (a calendar's previous-month control).
+    ///
+    /// Source path at 16, viewBox `0 0 16 16`:
+    /// `M10 13L5 8 10 3 10.7 3.7 6.4 8 10.7 12.3z`; at 32, viewBox
+    /// `0 0 32 32`: `M20 26L10 16 20 6 21.4 7.4 12.8 16 21.4 24.6z`. Two
+    /// parallelograms split at the vertex, the same anatomy as
+    /// [`IconMark::ChevronDown`].
+    ChevronLeft,
+    /// Carbon `ChevronRight` (a calendar's next-month control, and the
+    /// glyph Carbon rotates for the collapsed accordion and table row).
+    ///
+    /// Source path at 16, viewBox `0 0 16 16`:
+    /// `M6 13L5.3 12.3 9.6 8 5.3 3.7 6 3 11 8z`; at 32, viewBox
+    /// `0 0 32 32`: `M12 26L10.6 24.6 19.2 16 10.6 7.4 12 6 22 16z`.
+    ChevronRight,
     /// Carbon `Close` (a dismissible tag's remove control, the open UI
     /// shell menu trigger).
     ///
@@ -286,6 +301,8 @@ fn draw_list(mark: IconMark, boxed: IconBox, tone: IconTone) -> DrawList {
         IconMark::Calendar => calendar(size / 32.0, color),
         IconMark::ChevronDown => chevron_down(boxed, color),
         IconMark::ChevronUp => chevron_up(boxed, color),
+        IconMark::ChevronLeft => chevron_left(boxed, color),
+        IconMark::ChevronRight => chevron_right(boxed, color),
         IconMark::Close => close(size / 32.0, color),
         IconMark::Copy => copy(size / 32.0, color),
         IconMark::Add => add(size / 32.0, color),
@@ -374,6 +391,84 @@ fn chevron_down(boxed: IconBox, color: ColorRef) -> Vec<Command> {
                         pt(16.0, 19.2),
                         pt(24.6, 10.6),
                         pt(26.0, 12.0),
+                    ],
+                    s,
+                    paint,
+                ),
+            ]
+        }
+    }
+}
+
+/// Carbon `ChevronLeft`, split at its vertex the way [`chevron_down`] is.
+fn chevron_left(boxed: IconBox, color: ColorRef) -> Vec<Command> {
+    let paint = Paint::filled(color);
+    match boxed {
+        IconBox::Glyph => vec![
+            filled_quad(
+                [pt(10.0, 3.0), pt(10.7, 3.7), pt(6.4, 8.0), pt(5.0, 8.0)],
+                1.0,
+                paint.clone(),
+            ),
+            filled_quad(
+                [pt(5.0, 8.0), pt(6.4, 8.0), pt(10.7, 12.3), pt(10.0, 13.0)],
+                1.0,
+                paint,
+            ),
+        ],
+        IconBox::Header => {
+            let s = HEADER_BOX / 32.0;
+            vec![
+                filled_quad(
+                    [pt(20.0, 6.0), pt(21.4, 7.4), pt(12.8, 16.0), pt(10.0, 16.0)],
+                    s,
+                    paint.clone(),
+                ),
+                filled_quad(
+                    [
+                        pt(10.0, 16.0),
+                        pt(12.8, 16.0),
+                        pt(21.4, 24.6),
+                        pt(20.0, 26.0),
+                    ],
+                    s,
+                    paint,
+                ),
+            ]
+        }
+    }
+}
+
+/// Carbon `ChevronRight`, split at its vertex the way [`chevron_down`] is.
+fn chevron_right(boxed: IconBox, color: ColorRef) -> Vec<Command> {
+    let paint = Paint::filled(color);
+    match boxed {
+        IconBox::Glyph => vec![
+            filled_quad(
+                [pt(6.0, 3.0), pt(11.0, 8.0), pt(9.6, 8.0), pt(5.3, 3.7)],
+                1.0,
+                paint.clone(),
+            ),
+            filled_quad(
+                [pt(11.0, 8.0), pt(6.0, 13.0), pt(5.3, 12.3), pt(9.6, 8.0)],
+                1.0,
+                paint,
+            ),
+        ],
+        IconBox::Header => {
+            let s = HEADER_BOX / 32.0;
+            vec![
+                filled_quad(
+                    [pt(12.0, 6.0), pt(22.0, 16.0), pt(19.2, 16.0), pt(10.6, 7.4)],
+                    s,
+                    paint.clone(),
+                ),
+                filled_quad(
+                    [
+                        pt(22.0, 16.0),
+                        pt(12.0, 26.0),
+                        pt(10.6, 24.6),
+                        pt(19.2, 16.0),
                     ],
                     s,
                     paint,
@@ -680,11 +775,13 @@ mod tests {
     use crate::draw::{ColorRef, Command, DrawList};
     use crate::tree::NodeKind;
 
-    const EVERY_MARK: [IconMark; 12] = [
+    const EVERY_MARK: [IconMark; 14] = [
         IconMark::Check,
         IconMark::Calendar,
         IconMark::ChevronDown,
         IconMark::ChevronUp,
+        IconMark::ChevronLeft,
+        IconMark::ChevronRight,
         IconMark::Close,
         IconMark::Copy,
         IconMark::Add,
