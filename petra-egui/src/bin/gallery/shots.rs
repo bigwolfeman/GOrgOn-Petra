@@ -4395,4 +4395,87 @@ mod tests {
              on both sides of {panel:?}"
         );
     }
+
+    // ===== Wave ANCHOR: a surface docked to a viewport edge =====
+
+    /// Carbon's toast region inset, `$spacing-05` = 16
+    /// (`gorgon/petra/src/token/shipped.rs:994`, `("spacing-05", 16.0)`).
+    const TOAST_DOCK_INSET: f32 = 16.0;
+
+    /// Row 21. Carbon puts a toast in a top-trailing region. `Anchor::Viewport`
+    /// could only put it in the middle of the page, so it landed on top of the
+    /// inline cards the row exists to show.
+    ///
+    /// Three claims, and the first two are pixels because the frame record
+    /// could not make them. A toast overlapping a card is legal at every
+    /// level the frame knows about — both are placed, both carry their
+    /// semantics, both bind their tokens — and the toast paints the *same*
+    /// `$layer` fill the cards do, so it does not even show up as a colour
+    /// change across the middle of one. What it does do is put its own edge,
+    /// its shadow and its own text through the card under it.
+    ///
+    /// 1. **The trailing edge of every inline card is the same picture.** The
+    ///    four cards are one component at one width on one fill, laid out one
+    ///    under the other, so the trailing 40 units of each must rasterize
+    ///    identically to the trailing 40 of the first. Anything lying over one
+    ///    of them breaks that, whatever colour it is.
+    /// 2. **The window's top-trailing corner is not bare page.** The toast is
+    ///    somewhere, and this says where.
+    /// 3. The geometry, last: 16 down and 16 in, and no caret.
+    #[test]
+    fn the_toast_docks_top_trailing_and_leaves_the_inline_cards_readable() {
+        let cards = ["nt-error", "nt-warning", "nt-info", "nt-success"];
+        let mut cam = Camera::on("Notification");
+        let shot = raster(&mut cam, "21-notification-docked");
+
+        let strips: Vec<Vec<[u8; 4]>> = cards
+            .iter()
+            .map(|card| {
+                let rect = cam.rect(card);
+                inset_pixels(
+                    &shot,
+                    Rect::new(rect.right() - 40.0, rect.y, 40.0, rect.h),
+                    0,
+                )
+            })
+            .collect();
+        for (card, pixels) in cards.iter().zip(&strips).skip(1) {
+            assert_eq!(
+                differing(pixels, &strips[0]),
+                0,
+                "{card}: {} of {} pixels up its trailing edge differ from \
+                 {}'s, which is the same card at the same width on the same \
+                 fill — something is drawn over it",
+                differing(pixels, &strips[0]),
+                pixels.len(),
+                cards[0]
+            );
+        }
+
+        let corner = inset_pixels(&shot, Rect::new(WINDOW[0] - 320.0, 0.0, 320.0, 148.0), 0);
+        let bare = vec![corner[0]; corner.len()];
+        assert!(
+            differing(&corner, &bare) > corner.len() / 8,
+            "the window's top-trailing corner is one flat colour: nothing is \
+             docked there"
+        );
+
+        let toast = cam.rect("nt");
+        assert!(
+            (toast.y - TOAST_DOCK_INSET).abs() <= 0.5,
+            "the toast is {} down from the window's top, not Carbon's 16: {toast:?}",
+            toast.y
+        );
+        assert!(
+            (WINDOW[0] - toast.right() - TOAST_DOCK_INSET).abs() <= 0.5,
+            "the toast's trailing edge is {} in from the window's, not \
+             Carbon's 16: {toast:?}",
+            WINDOW[0] - toast.right()
+        );
+        assert_eq!(
+            cam.caret("nt"),
+            None,
+            "a docked toast points at a window edge, so it draws no beak"
+        );
+    }
 }

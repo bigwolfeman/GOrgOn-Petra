@@ -64,9 +64,12 @@ use super::tokens::{
     TEXT_PRIMARY, TYPOGRAPHY_HEADING_SM, t,
 };
 use crate::geom::{Align, Axis};
+// `crate::tree::Align` is the cross-axis half of an anchor and
+// `crate::geom::Align` is a child's alignment inside its parent's cell. Both
+// are used in this module, so the anchor one is spelled out at every use.
 use crate::tree::{
-    Anchor, AxisConstraint, ClampRule, InputPolicy, Interaction, Key, Layer, NodeKind, Props, Role,
-    Semantics, ViewNode,
+    Anchor, AxisConstraint, ClampRule, Edge, InputPolicy, Interaction, Key, Layer, NodeKind, Props,
+    Role, Semantics, ViewNode,
 };
 
 /// Carbon toast `inline-size` below the `max` breakpoint (`18rem`).
@@ -85,6 +88,18 @@ const INLINE_MIN_INLINE: f32 = 288.0;
 /// narrowest cap is the one that never lets a card run the width of a
 /// desktop page.
 const INLINE_MAX_INLINE: f32 = 608.0;
+
+/// Carbon's toast region inset from the window, `$spacing-05` = 16.
+///
+/// MEASURED `gorgon/petra/src/token/shipped.rs:994`, `("spacing-05", 16.0)`,
+/// which is this library's copy of `@carbon/layout`'s spacing ramp. The
+/// region itself is SOURCED: slice-c Notification records the toast as
+/// "non-modal, time-based, **top-of-screen**" and its motion as "slides in
+/// and out from the **top right**"
+/// (`.agents/research/08-25-2026/Carbon-Component-Inventory/slice-c.md:189`,
+/// `:217`), and the shipped `padding-right`/`margin` figures on that row are
+/// all `$spacing-05`.
+const TOAST_DOCK: &str = SPACING_05;
 
 const _: () = assert!(TOAST_INLINE == 288.0);
 const _: () = assert!(INLINE_MIN_BLOCK == 48.0);
@@ -239,7 +254,18 @@ fn toast_surface(
     let mut node = ViewNode::new(NodeKind::Surface, key)
         .with_props(Props {
             layer: Some(Layer::Toast),
-            anchor: Some(Anchor::Viewport),
+            // Top-trailing, 16 off both edges, which is where Carbon's toast
+            // region is and where every product puts one. `Anchor::Viewport`
+            // stood here until 2026-09-05 and it has exactly one reading —
+            // the centre of the window — so every consumer of this
+            // constructor got a toast dead centre of the page, over whatever
+            // it was notifying about. See
+            // `contracts/anchored-placement.md` §3a.
+            anchor: Some(Anchor::ViewportEdge {
+                edge: Edge::Top,
+                align: crate::tree::Align::End,
+                offset: Some(t(TOAST_DOCK)),
+            }),
             clamp: Some(ClampRule::Flip),
             input_policy: Some(InputPolicy::Passthrough),
             ..Props::default()
