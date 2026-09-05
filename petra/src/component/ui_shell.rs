@@ -22,35 +22,47 @@
 //! 5. `actions` — already-built [`ui_shell_header_action`]s, pushed to the
 //!    trailing edge by the spacer.
 //!
-//! # UI shell left panel ([`ui_shell_left_panel`], [`ui_shell_left_panel_rail`])
+//! # UI shell left panel ([`ui_shell_left_panel_in`])
 //!
-//! Two of Carbon's three width variants: **Fixed** (256px, the default) and
-//! **Rail** (48px, [`MINI_UNIT_6`] again — Carbon's rail width and header
-//! height are the same `mini-units(6)`). **UX** is not built: its defining
-//! behaviour is collapsing to zero width below the `lg` breakpoint
-//! (slice-f "UI shell left panel" Variants), and a fixed-size pane has no
-//! viewport breakpoint to collapse at — that is spec 004's layout call, not
-//! this row's anatomy. [`ui_shell_left_panel_item`] is a branch (sub-menu,
-//! children non-empty) or a leaf (flat link); [`ui_shell_left_panel_subitem`]
-//! is the plain-link row inside an expanded branch — a separate constructor
-//! because its type is different (`$body-compact-01` vs. the branch's
-//! `$heading-compact-01`, slice-f "Key numbers"), not a variant of the same
-//! row.
+//! **A docked navigation region with width modes**, not a list in a box.
+//! Every modifier in `_side-nav.scss:65-117` sets `inline-size` and nothing
+//! else, so [`LeftPanelMode`] is the component: Rail 48, Fixed 256,
+//! Expandable 0↔256 on the header hamburger's one boolean
+//! (`HeaderContainer.js:24-35`), Hidden 0. One tree, four widths, and
+//! `overflow: hidden` deciding how much of each row survives — which the
+//! panel gets from being a `Grid`, whose cells clip.
+//!
+//! Rail's hover-to-expand (`SideNav.js:34-102`, a 100 ms `enterDelayMs`) is
+//! not built: nothing in the interaction layer expresses a delayed state
+//! transition yet. **UX** is not built either — its defining behaviour is
+//! collapsing to zero width below the `lg` breakpoint, and a fixed-size
+//! pane has no viewport breakpoint to collapse at. Both are spec 004's
+//! layout call, not this row's anatomy.
+//!
+//! [`ui_shell_left_panel_item`] is a branch (sub-menu, children non-empty)
+//! or a leaf (flat link), and [`ui_shell_left_panel_icon_item`] is the same
+//! row with Carbon's `__icon` slot filled — the one Rail needs, because 48px
+//! of clipped label is nothing to look at.
+//! [`ui_shell_left_panel_subitem`] is the plain-link row inside an expanded
+//! branch — a separate constructor because its type is different
+//! (`$body-compact-01` vs. the branch's `$heading-compact-01`, slice-f "Key
+//! numbers"), not a variant of the same row.
 //!
 //! # UI shell right panel ([`ui_shell_right_panel`], [`ui_shell_switcher`])
 //!
-//! One anchored surface, Carbon's generic "empty header panel" case
-//! ([`ui_shell_right_panel`]) or its one named content type, the
-//! **Switcher** ([`ui_shell_switcher`], centred children per
-//! `.cds--switcher { align-items: center }`). [`ui_shell_switcher_item`]
-//! ships with **no selected state**: the docs usage page states flatly
-//! "there is no selected state for right panel items… the item remains
-//! unselected" even for the current view, while the switcher's own SCSS
-//! carries a `--selected` link style the two docs pages never reconcile
-//! (slice-f "UI shell right panel" States, Unverified). Building a selected
-//! state here would pick a side of an unresolved tension the ground truth
-//! flags but does not settle; the stronger, general, explicitly-worded
-//! usage-page rule is the one this file honours.
+//! **A docked region on the trailing edge**, opened by a header action:
+//! `position: fixed; inset-block: mini-units(6) 0; inset-inline-end: 0`,
+//! width 0 shut and 256 open (`_header-panel.scss`). It is not a popover,
+//! which is what this file built until the operator said so; see
+//! [`right_panel`] for what changed and what the change costs. Carbon's
+//! generic "empty header panel" case is [`ui_shell_right_panel`]; its one
+//! named content type is the **Switcher** ([`ui_shell_switcher`], centred
+//! children per `.cds--switcher { align-items: center }`), a flat list of
+//! destinations you pick one of.
+//!
+//! [`ui_shell_switcher_item`] **does** carry a selected state, reversing
+//! this module's earlier reading of the docs usage page; the reasoning, and
+//! the sentence it outranks, are on that function.
 //!
 //! # Glyphs
 //!
@@ -71,18 +83,19 @@
 //! `clip: rect(0,0,0,0)`-until-focus idiom with no retained-mode
 //! equivalent) is not part of any row here — a keyboard "jump to content"
 //! affordance is a whole-application focus-order fact, and belongs to
-//! spec 004's shell, not to one row's anatomy. The right panel's true
-//! placement — docked to the viewport's right edge, `inset-block` from the
-//! header to the viewport bottom (slice-f "UI shell right panel" Key
-//! numbers) — is also out of reach: a node anchor
-//! ([`crate::tree::Anchor::Sibling`]) anchors to a *node's rect*, not a
-//! viewport edge, so [`ui_shell_right_panel`] anchors to its trigger icon
-//! instead (`contracts/component-anatomy.md`
-//! Open §1 leaves viewport-edge docking to `contracts/anchored-placement.md`,
-//! not this contract). Responsive nav collapse below the `lg`/`md`
-//! breakpoints is skipped throughout for the same reason `ui_shell_left_panel`
-//! skips UX: a fixed-size pane has no breakpoint. All of the above are
-//! spec 004 application-shell concerns, not Petra component vocabulary.
+//! spec 004's shell, not to one row's anatomy.
+//!
+//! Neither panel pins itself to a viewport edge, and neither should:
+//! `crate::tree::Anchor` has `Node`, `Sibling`, `Point` and `Viewport`, and
+//! `Viewport` centres — there is no viewport-edge dock
+//! (`contracts/component-anatomy.md` Open §1 leaves that to
+//! `contracts/anchored-placement.md`). Both panels are therefore plain flow
+//! nodes with Carbon's own extents, and the caller states where the region
+//! goes. A gallery page does that with one `Grid` standing in for the
+//! viewport, a 48-unit header row over a content row; the real application
+//! shell (spec 004) does it with the window. Responsive nav collapse below
+//! the `lg`/`md` breakpoints is skipped throughout for the same reason
+//! `LeftPanelMode` skips UX: a fixed-size pane has no breakpoint.
 //!
 //! Every interactive constructor sets role, label, and interactions inside
 //! itself (FR-058); none takes an optional builder step to unset them.
@@ -102,9 +115,8 @@ use super::tokens::{
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
-    Align as AnchorAlign, Anchor, AxisConstraint, ClampRule, Constraints, Edge, InputPolicy,
-    InsetRefs, Interaction, Justify, Key, Layer, NodeKind, Props, Role, Semantics, TextWrap,
-    TrackSize, ViewNode,
+    AxisConstraint, Constraints, InsetRefs, Interaction, Justify, Key, NodeKind, Props, Role,
+    Semantics, TextWrap, TrackSize, ViewNode,
 };
 
 /// Carbon `mini-units(6)` (`_functions.scss`): the header's block-size,
@@ -123,6 +135,22 @@ const LEFT_PANEL_WIDTH: f32 = 256.0;
 const LEFT_PANEL_ROW: f32 = 32.0;
 /// Left panel selected accent bar thickness (`3px`, full item block-size).
 const LEFT_PANEL_ACCENT: f32 = 3.0;
+/// A left-panel row's own inline padding (`padding: 0 mini-units(2)`,
+/// `_side-nav.scss:214` and `:350`) = 16, and therefore the inline offset a
+/// top-level label sits at.
+const LEFT_PANEL_INSET: f32 = 16.0;
+/// A nested link's `padding-inline-start` (`mini-units(4)`,
+/// `_side-nav.scss:314-318`) = 32.
+const LEFT_PANEL_NEST_INSET: f32 = 32.0;
+/// A nested link's `padding-inline-start` **inside an icon-bearing item**
+/// (`mini-units(9)`, `_side-nav.scss:321-324`) = 72. Off the shipped
+/// spacing ramp on purpose: Carbon states the side nav's boxes in
+/// `mini-units`, not in `$spacing-*`, and 72 has no ramp step
+/// (`token/shipped.rs` runs 48, 64, 80). See [`gutter`].
+const LEFT_PANEL_ICON_NEST_INSET: f32 = 72.0;
+/// A row icon's trailing margin (`mini-units(3)`, `_side-nav.scss:415-417`)
+/// = 24.
+const LEFT_PANEL_ICON_GAP: f32 = 24.0;
 
 /// Right panel fixed width (`mini-units(32)` = 256px — `_header-panel.scss`
 /// and the docs style page agree; no min/max spread, one width).
@@ -304,6 +332,10 @@ pub fn ui_shell_header_nav_item(
             },
         ],
         align: Some(Align::Stretch),
+        padding: Some(InsetRefs {
+            top: Some(t(SPACING_05)),
+            ..InsetRefs::default()
+        }),
         ..Props::default()
     };
     props.tokens.insert("background".into(), t(SURFACE_BASE));
@@ -463,25 +495,124 @@ fn header_action_sized(
 // UI shell left panel (row 41)
 // ---------------------------------------------------------------------
 
+/// Carbon's four side-nav width modes. Every modifier in
+/// `_side-nav.scss:65-117` sets `inline-size` and nothing else, so the mode
+/// *is* a width — the tree, the current mark and the interaction states are
+/// identical across all four.
+///
+/// | Mode | Width | Carbon |
+/// |---|---|---|
+/// | [`LeftPanelMode::Rail`] | [`MINI_UNIT_6`] (48) | `--rail`, `:65-67` |
+/// | [`LeftPanelMode::Fixed`] | [`LEFT_PANEL_WIDTH`] (256) | `--fixed`, `:108-110` |
+/// | [`LeftPanelMode::Expandable`] | 0 or 256 | `--expanded`, `:73-75`; the boolean `HeaderContainer.js:24-35` hands both to [`ui_shell_header_menu_trigger`] and to here |
+/// | [`LeftPanelMode::Hidden`] | 0 | `--hidden`, `:69-71` |
+///
+/// Rail and Hidden are widths, not different trees: Carbon's
+/// `.cds--side-nav { overflow: hidden }` (`:30-46`) is what turns 48 into an
+/// icon-only column and 0 into nothing, and [`left_panel`] gets the same
+/// effect from a `Grid`, whose cells clip (`layout/grid.rs`). So a caller
+/// hands the same items to every mode and the panel's own width decides how
+/// much of each row survives — which is also why [`ui_shell_left_panel_icon_item`]
+/// exists: without an icon there is nothing left inside 48 to see.
+///
+/// Rail's hover-to-expand (`SideNav.js:34-102`, `enterDelayMs = 100`) is not
+/// built. It needs a delayed state transition, and nothing in the
+/// interaction layer expresses a delay yet; the collapsed geometry is here
+/// and the timer is a later row's problem.
+///
+/// **UX is not a fifth mode.** `--ux` is `inline-size: 256` plus
+/// `inset-block-start: $spacing-09` (`_side-nav.scss:48-56`), and
+/// `$spacing-09` is `3rem` = **48**
+/// (`@carbon/layout/scss/generated/_spacing.scss:52`), which is exactly the
+/// header's own block-size. slice-f.md:196 reads that as 32; under T070 the
+/// SCSS wins. So `--ux` says "sit under the header" rather than "offset by
+/// an arbitrary amount" — `SideNav.js:56` agrees, defaulting
+/// `isChildOfHeader` to true — and where a panel sits is the caller's fact,
+/// not a width. Below `lg` it collapses to 0, which is a viewport
+/// breakpoint a fixed-size pane does not have.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LeftPanelMode {
+    /// 48: icon-only.
+    Rail,
+    /// 256, always.
+    #[default]
+    Fixed,
+    /// 0 or 256, driven by the header's hamburger.
+    Expandable {
+        /// Whether the hamburger is currently open.
+        expanded: bool,
+    },
+    /// 0.
+    Hidden,
+}
+
+impl LeftPanelMode {
+    /// This mode's `inline-size`, the only thing a modifier sets.
+    #[must_use]
+    pub fn width(self) -> f32 {
+        match self {
+            Self::Rail => MINI_UNIT_6,
+            Self::Fixed => LEFT_PANEL_WIDTH,
+            Self::Expandable { expanded: true } => LEFT_PANEL_WIDTH,
+            Self::Expandable { expanded: false } | Self::Hidden => 0.0,
+        }
+    }
+}
+
+/// The left panel in `mode`.
+pub fn ui_shell_left_panel_in(
+    key: impl Into<Key>,
+    mode: LeftPanelMode,
+    items: Vec<ViewNode>,
+) -> ViewNode {
+    left_panel(key, items, mode.width())
+}
+
 /// The Fixed left panel: [`LEFT_PANEL_WIDTH`] (256), non-collapsible.
 pub fn ui_shell_left_panel(key: impl Into<Key>, items: Vec<ViewNode>) -> ViewNode {
-    left_panel(key, items, LEFT_PANEL_WIDTH)
+    ui_shell_left_panel_in(key, LeftPanelMode::Fixed, items)
 }
 
 /// The Rail left panel: collapsed to [`MINI_UNIT_6`] (48), icon-only width.
-/// Hover-to-expand is pointer-capture behaviour this constructor does not
+/// Hover-to-expand is a delayed state transition this constructor does not
 /// drive; it ships the collapsed geometry the anatomy needs to exist at
-/// all.
+/// all. Build its items with [`ui_shell_left_panel_icon_item`], or 48px of
+/// clipped label is all there is to see.
 pub fn ui_shell_left_panel_rail(key: impl Into<Key>, items: Vec<ViewNode>) -> ViewNode {
-    left_panel(key, items, MINI_UNIT_6)
+    ui_shell_left_panel_in(key, LeftPanelMode::Rail, items)
 }
 
+/// A `Grid`, not a `Stack`, for two reasons that are really one.
+///
+/// A grid **clips its cells** (`layout/grid.rs`'s `clipped_to(cell)`), which
+/// is Carbon's `.cds--side-nav { overflow: hidden }` (`_side-nav.scss:33`).
+/// That is the whole of Rail and Hidden: at 48 a row's label runs off the
+/// end and is cut, at 0 the entire row is, and neither mode needs the items
+/// rebuilt. A stack passes its own clip straight through
+/// (`layout/stack.rs:170`), so the 0-width panel this file used to build
+/// would have painted its rows across the page beside it.
+///
+/// A grid's implicit rows are also `FitContent` (`page/common.rs`'s
+/// `column`), which is what a run of 32-tall rows wants; a vertical stack
+/// placed at an exact height divides that height among its children
+/// instead.
 fn left_panel(key: impl Into<Key>, items: Vec<ViewNode>, width: f32) -> ViewNode {
-    let mut node = stack(key, Axis::Vertical, None, items);
-    node.props.align = Some(Align::Stretch);
-    node.props
-        .tokens
-        .insert("background".into(), t(SURFACE_BASE));
+    let mut props = Props {
+        columns: vec![TrackSize::Weight { weight: 1.0 }],
+        align: Some(Align::Stretch),
+        // `.cds--side-nav__items { padding: 1rem 0 0 }`
+        // (`_side-nav.scss:130-135`): 16 before the first row, and nothing
+        // on the other three edges.
+        padding: Some(InsetRefs {
+            top: Some(t(SPACING_05)),
+            ..InsetRefs::default()
+        }),
+        ..Props::default()
+    };
+    props.tokens.insert("background".into(), t(SURFACE_BASE));
+    let mut node = ViewNode::new(NodeKind::Grid, key)
+        .with_props(props)
+        .with_children(items);
     node.semantics = Semantics {
         role: Some(Role::Pane),
         ..Semantics::default()
@@ -497,6 +628,9 @@ fn left_panel(key: impl Into<Key>, items: Vec<ViewNode>, width: f32) -> ViewNode
 /// `selected` shows
 /// [`LEFT_PANEL_ACCENT`] at the inline-start edge plus `Semantics.selected`.
 /// Title type is [`TYPOGRAPHY_HEADING_SM`] (Carbon `$heading-compact-01`).
+///
+/// No icon: see [`ui_shell_left_panel_icon_item`], which is the same row
+/// with Carbon's `__icon` slot filled.
 pub fn ui_shell_left_panel_item(
     key: impl Into<Key>,
     label: impl Into<String>,
@@ -504,66 +638,216 @@ pub fn ui_shell_left_panel_item(
     selected: bool,
     children: Vec<ViewNode>,
 ) -> ViewNode {
+    left_panel_item(key, label, None, expanded, selected, children)
+}
+
+/// [`ui_shell_left_panel_item`] with Carbon's `__icon` slot filled: `mark`
+/// at 16 ([`IconBox::Glyph`], `.cds--side-nav__icon > svg { block-size:
+/// mini-units(2) }`), [`IconTone::Secondary`] at rest and
+/// [`IconTone::Primary`] when this row or a child of it is the current page
+/// (`_side-nav.scss:296-298`), with [`LEFT_PANEL_ICON_GAP`] (24) after it.
+///
+/// This is the constructor [`LeftPanelMode::Rail`] needs. A 48px panel clips
+/// every row at 48, and 16 padding plus a 16 glyph centres the mark in
+/// exactly that column; a row with no icon clips to blank.
+pub fn ui_shell_left_panel_icon_item(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    mark: IconMark,
+    expanded: bool,
+    selected: bool,
+    children: Vec<ViewNode>,
+) -> ViewNode {
+    left_panel_item(key, label, Some(mark), expanded, selected, children)
+}
+
+fn left_panel_item(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    icon: Option<IconMark>,
+    expanded: bool,
+    selected: bool,
+    children: Vec<ViewNode>,
+) -> ViewNode {
     let label = label.into();
     let is_branch = !children.is_empty();
-    let row = left_panel_row(&label, TYPOGRAPHY_HEADING_SM, is_branch, expanded, selected);
+    // `.cds--side-nav__item--active`: React sets it on the item whose
+    // *descendant* is the current page, and Carbon reads it twice.
+    // `_side-nav.scss:283-298` fills the title and draws its accent only
+    // while `aria-expanded="false"` — an open branch shows the mark on the
+    // child itself — but `:290-298` steps the title's ink and the icon's
+    // fill either way. Collapsing "Kernel" over a current "Fibers" used to
+    // leave nothing on screen saying which page was open.
+    let child_current = children.iter().any(|child| child.semantics.selected);
+    let marked = selected || (child_current && !expanded);
+    let row = left_panel_row(&RowShape {
+        label: &label,
+        typography: TYPOGRAPHY_HEADING_SM,
+        icon,
+        inset: LEFT_PANEL_INSET,
+        branch: is_branch.then_some(expanded),
+        marked,
+        emphasised: selected || child_current,
+    });
 
     let mut parts = vec![row];
     if expanded && is_branch {
+        // No padding on the list. The indent is the *row's* own
+        // `padding-inline-start` (`_side-nav.scss:314-324`), built into
+        // [`ui_shell_left_panel_subitem`]: Carbon's current-page accent is
+        // an absolutely positioned `::before` at `inset-inline-start: 0` of
+        // a full-width link, so a nested current row's bar still sits on
+        // the panel's own edge. The `spacing.07` inset this list used to
+        // carry moved the bar in with it, and pushed the label to 51.
         let mut nest = stack("children", Axis::Vertical, None, children);
-        nest.props.padding = Some(InsetRefs {
-            left: Some(t(SPACING_07)),
-            ..InsetRefs::default()
-        });
+        nest.props.align = Some(Align::Stretch);
         parts.push(nest);
     }
 
     let mut node = stack(key, Axis::Vertical, None, parts);
+    // Every row spans the panel, at every width. Without it a vertical
+    // stack leaves each child at its natural size, so the sub-menu's
+    // chevron parked itself against the end of its own label instead of at
+    // the panel's trailing edge where `.cds--side-nav__submenu`'s flex row
+    // puts it, and a selected row's fill stopped at the end of its word.
+    node.props.align = Some(Align::Stretch);
     bind_row_states(&mut node);
     let mut node = node.interactive(Role::Button, label, INTENTS);
-    node.semantics.selected = selected;
+    node.semantics.selected = marked;
     node.semantics.expanded = Some(expanded);
     node
 }
 
 /// A plain link nested one level under an expanded
-/// [`ui_shell_left_panel_item`] sub-menu. Indent is the parent's job (the
-/// nested list's own [`SPACING_07`] left inset); this row is a leaf and
-/// never grows further children (Carbon documents one nesting level).
+/// [`ui_shell_left_panel_item`] sub-menu, at [`LEFT_PANEL_NEST_INSET`] (32,
+/// `_side-nav.scss:314-318`). This row is a leaf and never grows further
+/// children (Carbon documents one nesting level).
 /// Type is [`TYPOGRAPHY_BODY`] (Carbon `$body-compact-01`) — a step lighter
 /// than a top-level [`ui_shell_left_panel_item`] title, which is the one
 /// documented difference between the two rows (slice-f "Key numbers").
+///
+/// Under an icon-bearing branch, use
+/// [`ui_shell_left_panel_icon_subitem`] instead.
 pub fn ui_shell_left_panel_subitem(
     key: impl Into<Key>,
     label: impl Into<String>,
     selected: bool,
 ) -> ViewNode {
+    left_panel_subitem(key, label, selected, LEFT_PANEL_NEST_INSET)
+}
+
+/// [`ui_shell_left_panel_subitem`] nested under an
+/// [`ui_shell_left_panel_icon_item`]: [`LEFT_PANEL_ICON_NEST_INSET`] (72)
+/// rather than 32 (`_side-nav.scss:321-324`).
+///
+/// It carries no icon of its own — Carbon gives the icon to the top-level
+/// item only. The name says which branch it nests under, because that is
+/// the only thing the two constructors differ on and Carbon states it as a
+/// class on the *ancestor* (`.__item--icon a.__link`), which a child node
+/// cannot read for itself. A caller that already chose
+/// [`ui_shell_left_panel_icon_item`] knows the answer.
+pub fn ui_shell_left_panel_icon_subitem(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    selected: bool,
+) -> ViewNode {
+    left_panel_subitem(key, label, selected, LEFT_PANEL_ICON_NEST_INSET)
+}
+
+fn left_panel_subitem(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    selected: bool,
+    inset: f32,
+) -> ViewNode {
     let label = label.into();
-    let row = left_panel_row(&label, TYPOGRAPHY_BODY, false, false, selected);
+    let row = left_panel_row(&RowShape {
+        label: &label,
+        typography: TYPOGRAPHY_BODY,
+        icon: None,
+        inset,
+        branch: None,
+        marked: selected,
+        emphasised: selected,
+    });
     let mut node = stack(key, Axis::Vertical, None, vec![row]);
+    node.props.align = Some(Align::Stretch);
     bind_row_states(&mut node);
     let mut node = node.interactive(Role::Button, label, INTENTS);
     node.semantics.selected = selected;
     node
 }
 
-fn left_panel_row(
-    label: &str,
-    typography: &str,
-    is_branch: bool,
-    expanded: bool,
-    selected: bool,
-) -> ViewNode {
-    let mut caption = text("label", label.to_string());
-    caption.props.style = Some(t(typography));
-    caption.props.wrap = Some(TextWrap::Ellipsis);
-    caption
-        .props
-        .tokens
-        .insert("foreground".into(), t(TEXT_PRIMARY));
+/// Everything one left-panel row is, gathered so the builder takes one
+/// argument instead of seven.
+struct RowShape<'a> {
+    /// The row's text, and its accessible name.
+    label: &'a str,
+    /// Carbon's type step for this level.
+    typography: &'static str,
+    /// Carbon's `__icon` slot; `None` for a row without one.
+    icon: Option<IconMark>,
+    /// The label's inline offset from the panel edge — Carbon's
+    /// `padding-inline-start` on the link.
+    inset: f32,
+    /// `Some(expanded)` for a sub-menu title, `None` for a leaf.
+    branch: Option<bool>,
+    /// Fill this row `layer-selected` and draw its accent bar.
+    marked: bool,
+    /// Step the label and the icon to their primary tones.
+    emphasised: bool,
+}
 
-    let mut row_parts = vec![caption];
-    if is_branch {
+/// One row: the body, with the current-page accent laid **over** it.
+///
+/// The accent used to be a 3-unit `Fixed` grid track beside the body, which
+/// is a track the body then started after — so a top-level label sat at 19
+/// and a nested one at 51, against Carbon's 16 and 32. Carbon's bar is
+/// `position: absolute` (`_side-nav.scss:392-402`) and takes no flow space
+/// at all, so this is a [`NodeKind::Overlay`]: every child gets the
+/// container's whole rect (`layout/overlay.rs`), the body pads itself off
+/// the panel edge, and the bar sits on top of the first three units of it.
+fn left_panel_row(shape: &RowShape<'_>) -> ViewNode {
+    let mut caption = text("label", shape.label.to_string());
+    caption.props.style = Some(t(shape.typography));
+    caption.props.wrap = Some(TextWrap::Ellipsis);
+    // `.cds--side-nav__link-text { color: $text-secondary }`
+    // (`_side-nav.scss:365-375`), stepping to `$text-primary` for the
+    // current page (`:381-385`) and for an item holding it (`:290-293`).
+    // Both rows bound `text.primary` at rest, which spent the loudest ink
+    // in the theme on every row and left the current one with nowhere to go.
+    caption.props.tokens.insert(
+        "foreground".into(),
+        t(if shape.emphasised {
+            TEXT_PRIMARY
+        } else {
+            TEXT_MUTED
+        }),
+    );
+
+    let mut lead = Vec::new();
+    if shape.inset > LEFT_PANEL_INSET {
+        lead.push(gutter("indent", shape.inset - LEFT_PANEL_INSET));
+    }
+    if let Some(mark) = shape.icon {
+        lead.push(icon_in(
+            "icon",
+            mark,
+            IconBox::Glyph,
+            if shape.emphasised {
+                IconTone::Primary
+            } else {
+                IconTone::Secondary
+            },
+        ));
+        lead.push(gutter("icon-gap", LEFT_PANEL_ICON_GAP));
+    }
+    lead.push(caption);
+    let mut lead = stack("lead", Axis::Horizontal, None, lead);
+    lead.props.align = Some(Align::Center);
+
+    let mut row_parts = vec![lead];
+    if let Some(expanded) = shape.branch {
         // `.cds--side-nav__submenu-chevron > svg`: `ChevronDown`, 16px,
         // `$icon-secondary`, turned 180° while `aria-expanded`.
         row_parts.push(icon_toned(
@@ -576,30 +860,35 @@ fn left_panel_row(
             IconTone::Secondary,
         ));
     }
-    let mut body = stack("body", Axis::Horizontal, Some(SPACING_03), row_parts);
+    let mut body = stack("body", Axis::Horizontal, None, row_parts);
     body.props.align = Some(Align::Center);
+    // Two children at most, so `SpaceBetween` reads as "label at the
+    // inline-start edge, chevron at the inline-end one" — Carbon's flex row
+    // with a truncating `__link-text` and the chevron last. The old
+    // `SPACING_03` gap parked the chevron against the label instead, which
+    // is what the reference shot shows it is not.
+    body.props.justify = Some(Justify::SpaceBetween);
     body.props.padding = Some(InsetRefs {
         left: Some(t(SPACING_05)),
         right: Some(t(SPACING_05)),
         ..InsetRefs::default()
     });
 
-    let fill = selected.then_some(ACCENT_PRIMARY);
-    let mark = accent_mark("accent", Axis::Vertical, LEFT_PANEL_ACCENT, fill);
+    let fill = shape.marked.then_some(ACCENT_PRIMARY);
+    let mut accent = stack(
+        "accent",
+        Axis::Horizontal,
+        None,
+        vec![accent_mark("bar", Axis::Vertical, LEFT_PANEL_ACCENT, fill)],
+    );
+    accent.props.align = Some(Align::Stretch);
 
-    ViewNode::new(NodeKind::Grid, "row")
+    ViewNode::new(NodeKind::Overlay, "row")
         .with_props(Props {
-            columns: vec![
-                TrackSize::Fixed {
-                    value: LEFT_PANEL_ACCENT,
-                },
-                TrackSize::Weight { weight: 1.0 },
-            ],
-            rows: vec![TrackSize::Weight { weight: 1.0 }],
             align: Some(Align::Stretch),
             ..Props::default()
         })
-        .with_children(vec![mark, body])
+        .with_children(vec![body, accent])
         .with_constraints(pin_block(LEFT_PANEL_ROW))
 }
 
@@ -641,21 +930,25 @@ pub fn ui_shell_left_panel_divider(key: impl Into<Key>) -> ViewNode {
 // UI shell right panel (row 42)
 // ---------------------------------------------------------------------
 
-/// A generic right panel: Carbon's "empty header panel" case. Anchored to
-/// `anchor`, the key of the [`ui_shell_header_action`] that opens it, which
-/// must sit in the same child list as the panel: the anchor is an
-/// [`Anchor::Sibling`], resolved against wherever the caller mounts the
-/// pair, exactly as [`super::popover::popover_with`]'s is. `label` is the
-/// panel's accessible name (FR-058-adjacent, mirroring `popover_with` — an
-/// overlay names itself even though it is not itself a click target). See
-/// the module doc for what viewport docking this anchor does not do.
+/// A generic right panel: Carbon's "empty header panel" case.
+///
+/// `open` is the whole of Carbon's open/shut state:
+/// `.cds--header-panel` is `inline-size: 0` and
+/// `.cds--header-panel--expanded` is `mini-units(32)` = 256
+/// (`_header-panel.scss`, the file entire). Shut is a zero-width panel that
+/// is still mounted, never an unmounted one — which is why this takes a
+/// boolean rather than leaving the caller to mount it conditionally, and
+/// why the panel clips (see [`right_panel`]).
+///
+/// `label` is the panel's accessible name: a region names itself even
+/// though it is not itself a click target.
 pub fn ui_shell_right_panel(
     key: impl Into<Key>,
     label: impl Into<String>,
-    anchor: impl Into<Key>,
+    open: bool,
     content: Vec<ViewNode>,
 ) -> ViewNode {
-    right_panel(key, label, anchor, content, Align::Start)
+    right_panel(key, label, open, content, Align::Start)
 }
 
 /// The Switcher: a right panel whose content is centred
@@ -665,52 +958,105 @@ pub fn ui_shell_right_panel(
 pub fn ui_shell_switcher(
     key: impl Into<Key>,
     label: impl Into<String>,
-    anchor: impl Into<Key>,
+    open: bool,
     items: Vec<ViewNode>,
 ) -> ViewNode {
-    right_panel(key, label, anchor, items, Align::Center)
+    right_panel(key, label, open, items, Align::Center)
 }
 
+/// A **docked region**, not a floating surface.
+///
+/// This was a `NodeKind::Surface` on [`Layer::Popup`], anchored to a
+/// sibling's bottom edge with its height set by its own content — a
+/// popover, which is the one shape Carbon is not using here.
+/// `_header-panel.scss` is eleven declarations long and every one of them
+/// is about a box pinned to two edges of the viewport:
+/// `position: fixed; inset-block: mini-units(6) 0; inset-inline-end: 0`,
+/// which reads "from the bottom of the header to the bottom of the screen,
+/// on the trailing edge". Height comes from the viewport, not from the
+/// items; the transition is on `width` alone; and shut is width 0.
+///
+/// So it is a plain flow node the caller drops into a cell of its own shell
+/// layout, and a `Grid` at that, because a grid clips its cells
+/// (`layout/grid.rs`) and Carbon's `overflow: hidden` is what makes the
+/// shut panel's content disappear rather than spill across the page.
+///
+/// What is lost with the surface is `InputPolicy::DismissOutside`, which
+/// only a surface can declare. Carbon dismisses this panel on any click
+/// that is neither inside it nor on a header action
+/// (`HeaderPanel.js:31-66`); a docked region has to be closed by its own
+/// trigger, by a sibling trigger, or by picking an item. See this row's
+/// Agent Note.
 fn right_panel(
     key: impl Into<Key>,
     label: impl Into<String>,
-    anchor: impl Into<Key>,
+    open: bool,
     content: Vec<ViewNode>,
     align: Align,
 ) -> ViewNode {
     let mut inner = stack("content", Axis::Vertical, None, content);
     inner.props.align = Some(align);
+    // `.cds--switcher__item:nth-child(1) { margin-block-start: $spacing-05 }`
+    // (`_switcher.scss`): 16 before the first row. Stated on the container
+    // rather than on the first child, the same way the left panel's
+    // `__items` states its own (`_side-nav.scss:130-135`) — one inset, one
+    // place, and it cannot drift as items are added.
+    inner.props.padding = Some(InsetRefs {
+        top: Some(t(SPACING_05)),
+        ..InsetRefs::default()
+    });
 
-    let mut node = ViewNode::new(NodeKind::Surface, key)
-        .with_props(Props {
-            layer: Some(Layer::Popup),
-            anchor: Some(Anchor::Sibling {
-                key: anchor.into(),
-                edge: Edge::Bottom,
-                align: AnchorAlign::End,
-                offset: None,
-            }),
-            clamp: Some(ClampRule::Flip),
-            input_policy: Some(InputPolicy::DismissOutside),
-            ..Props::default()
-        })
-        .child(inner);
-    node.props
-        .tokens
-        .insert("background".into(), t(SURFACE_RAISED));
-    node.props.tokens.insert("border".into(), t(BORDER_SUBTLE));
-    node.constraints = pin_inline(RIGHT_PANEL_WIDTH);
+    // `border-inline-start`, as a node rather than as a `border` binding.
+    // `.cds--header-panel--expanded` puts a rule on its two *inline* edges
+    // and none on its block ones; a `border` token draws a box, which laid
+    // a bright rule across the foot of the panel where Carbon has open
+    // viewport. This is the same trick `ui_shell_header` uses for its own
+    // bottom rule, for the same reason.
+    let rule = accent_mark("rule", Axis::Vertical, 1.0, Some(BORDER_SUBTLE));
+
+    let mut props = Props {
+        columns: vec![
+            TrackSize::Fixed { value: 1.0 },
+            TrackSize::Weight { weight: 1.0 },
+        ],
+        rows: vec![TrackSize::Weight { weight: 1.0 }],
+        align: Some(Align::Stretch),
+        ..Props::default()
+    };
+    // `$layer` on a `$background` page, plus the rule above: a fill step
+    // *and* a boundary, so the panel's edge does not rest on colour alone
+    // (FR-010).
+    props.tokens.insert("background".into(), t(SURFACE_RAISED));
+    let mut node = ViewNode::new(NodeKind::Grid, key)
+        .with_props(props)
+        .with_children(vec![rule, inner]);
+    node.constraints = pin_inline(if open { RIGHT_PANEL_WIDTH } else { 0.0 });
     node.semantics = Semantics {
-        role: Some(Role::Overlay),
+        role: Some(Role::Pane),
         label: Some(label.into()),
         ..Semantics::default()
     };
     node
 }
 
-/// One switcher row. No `selected` parameter — see the module doc for why.
-/// Type is [`TYPOGRAPHY_HEADING_SM`] (Carbon `$heading-compact-01`, slice-f
-/// "Key numbers").
+/// One switcher row. Type is [`TYPOGRAPHY_HEADING_SM`] (Carbon
+/// `$heading-compact-01`, slice-f "Key numbers"), ink
+/// [`TEXT_MUTED`] at rest and [`TEXT_PRIMARY`] when `selected`
+/// (`.cds--switcher__item-link { color: $text-secondary }`,
+/// `--selected { background: $layer-selected; color: $text-primary }`).
+///
+/// **`selected` reverses a decision this module argued in writing.** It
+/// used to have no such parameter, on the strength of the docs usage page:
+/// *"there is no selected state for right panel items… the item remains
+/// unselected"*. That was one source out of three, and the weakest one.
+/// `_switcher.scss` carries `.cds--switcher__item-link--selected` and
+/// `SwitcherItem.js:29` carries an `isSelected` prop, so the SCSS and the
+/// React API agree with each other and disagree with the prose — and T070
+/// ranks the SCSS first when they disagree. slice-f.md:228 and :242 flag
+/// the tension as unresolved; it is resolved, two to one, and this is the
+/// side it lands on. The old reasoning is kept here rather than deleted
+/// because the next reader will find the same usage-page sentence and needs
+/// to know it was read and outranked.
 ///
 /// `align_self: Stretch` (`Props::align_self`) overrides `right_panel`'s own
 /// `Align::Center` (`ui_shell_switcher` builds its `content` stack with
@@ -721,14 +1067,18 @@ fn right_panel(
 /// here (`Align::Center`) is a different fact: it governs how *this* row
 /// centres its own child (`caption`) on its own cross axis, unrelated to
 /// how the row sits in somebody else's.
-pub fn ui_shell_switcher_item(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
+pub fn ui_shell_switcher_item(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    selected: bool,
+) -> ViewNode {
     let label = label.into();
     let mut caption = text("label", label.clone());
     caption.props.style = Some(t(TYPOGRAPHY_HEADING_SM));
-    caption
-        .props
-        .tokens
-        .insert("foreground".into(), t(TEXT_PRIMARY));
+    caption.props.tokens.insert(
+        "foreground".into(),
+        t(if selected { TEXT_PRIMARY } else { TEXT_MUTED }),
+    );
     let mut props = Props {
         axis: Some(Axis::Horizontal),
         align: Some(Align::Center),
@@ -747,22 +1097,37 @@ pub fn ui_shell_switcher_item(key: impl Into<Key>, label: impl Into<String>) -> 
     props
         .tokens
         .insert("background@active".into(), t(LAYER_ACTIVE));
+    props
+        .tokens
+        .insert("background@selected".into(), t(LAYER_SELECTED));
+    props
+        .tokens
+        .insert("background@selected-hover".into(), t(LAYER_SELECTED_HOVER));
     let node = ViewNode::new(NodeKind::Stack, key)
         .with_props(props)
         .with_children(vec![caption])
         .with_constraints(pin_block(SWITCHER_ROW));
-    node.interactive(Role::Button, label, INTENTS)
+    let mut node = node.interactive(Role::Button, label, INTENTS);
+    node.semantics.selected = selected;
+    node
 }
 
 /// A divider between switcher rows. [`SWITCHER_DIVIDER_WIDTH`] (224) wide,
 /// deliberately narrower than the 256px panel — Carbon leaves a margin on
 /// both sides rather than running the rule edge to edge.
+///
+/// The rule is 1 unit; the node is 17, because
+/// `.cds--switcher__item--divider` carries `margin: $spacing-03 $spacing-05`
+/// and the block half of that is 8 above and 8 below. A margin has no
+/// retained-mode equivalent, so the gap is padding on a wrapper — which is
+/// why the rule is a child and not the node itself. Flush against the rows
+/// above and below is what the reference shot says it is not.
 pub fn ui_shell_right_panel_divider(key: impl Into<Key>) -> ViewNode {
-    let mut node = stack(key, Axis::Horizontal, None, vec![]);
-    node.props
+    let mut rule = stack("rule", Axis::Horizontal, None, vec![]);
+    rule.props
         .tokens
         .insert("background".into(), t(BORDER_SUBTLE));
-    node.constraints = Constraints {
+    rule.constraints = Constraints {
         horizontal: AxisConstraint {
             min: Some(SWITCHER_DIVIDER_WIDTH),
             max: Some(SWITCHER_DIVIDER_WIDTH),
@@ -774,6 +1139,13 @@ pub fn ui_shell_right_panel_divider(key: impl Into<Key>) -> ViewNode {
             priority: 0,
         },
     };
+    let mut node = stack(key, Axis::Vertical, None, vec![rule]);
+    node.props.align = Some(Align::Center);
+    node.props.padding = Some(InsetRefs {
+        top: Some(t(SPACING_03)),
+        bottom: Some(t(SPACING_03)),
+        ..InsetRefs::default()
+    });
     node
 }
 
@@ -788,6 +1160,32 @@ pub fn ui_shell_right_panel_divider(key: impl Into<Key>) -> ViewNode {
 /// `FitContent` grid track out to the viewport; an empty stack measures
 /// zero on its main axis and lets [`Align::Stretch`] fill the cell it sits
 /// in instead.
+/// A fixed-width empty column inside a row's body: `width` of nothing.
+///
+/// Carbon states the two gaps this covers as box properties — a nested
+/// link's `padding-inline-start` (`_side-nav.scss:314-324`) and the
+/// `__icon`'s `margin-inline-end` (`:415-417`) — and one of the values,
+/// `mini-units(9)` = 72, has no step on the shipped spacing ramp, which
+/// runs 48, 64, 80 (`token/shipped.rs`). Carbon sizes the side nav in
+/// `mini-units`, not in `$spacing-*`, so the ramp is not going to grow one.
+/// A pinned extent states the gap in the units [`Constraints`] already
+/// carry (FR-053) instead of inventing a token name for it, which is the
+/// one thing this file must never do.
+///
+/// [`accent_mark`] with no fill, and for the same reason it is a `Stack`
+/// and not a `Spacer`: a spacer answers an unbounded query at a huge
+/// extent.
+fn gutter(key: &'static str, width: f32) -> ViewNode {
+    let mut node = accent_mark(key, Axis::Vertical, width, None);
+    // An empty vertical stack measures zero on its own main axis, and a
+    // zero-height placement is what `assert_no_degenerate_or_overflowing`
+    // is for. It costs nothing to be the row's full height — the node
+    // paints nothing either way — and a gap that is a real rect is a gap
+    // the frame record can be read for.
+    node.props.align_self = Some(Align::Stretch);
+    node
+}
+
 fn accent_mark(key: &'static str, along: Axis, thickness: f32, fill: Option<&str>) -> ViewNode {
     let mut node = stack(key, along, None, vec![]);
     if let Some(name) = fill {
@@ -889,13 +1287,15 @@ fn pin_inline(w: f32) -> Constraints {
 #[cfg(test)]
 mod tests {
     use super::{
-        HEADER_ACCENT, IconBox, IconMark, IconTone, LEFT_PANEL_ACCENT, LEFT_PANEL_ROW,
-        LEFT_PANEL_WIDTH, MINI_UNIT_6, RIGHT_PANEL_WIDTH, SWITCHER_DIVIDER_WIDTH, SWITCHER_ROW,
-        icon_in, icon_toned, ui_shell_header, ui_shell_header_action, ui_shell_header_action_icon,
-        ui_shell_header_menu_trigger, ui_shell_header_nav_item, ui_shell_left_panel,
-        ui_shell_left_panel_divider, ui_shell_left_panel_item, ui_shell_left_panel_rail,
-        ui_shell_left_panel_subitem, ui_shell_right_panel, ui_shell_right_panel_divider,
-        ui_shell_switcher, ui_shell_switcher_item,
+        HEADER_ACCENT, IconBox, IconMark, IconTone, LEFT_PANEL_ACCENT, LEFT_PANEL_ICON_GAP,
+        LEFT_PANEL_ICON_NEST_INSET, LEFT_PANEL_INSET, LEFT_PANEL_NEST_INSET, LEFT_PANEL_ROW,
+        LEFT_PANEL_WIDTH, LeftPanelMode, MINI_UNIT_6, RIGHT_PANEL_WIDTH, SWITCHER_DIVIDER_WIDTH,
+        SWITCHER_ROW, icon_in, icon_toned, ui_shell_header, ui_shell_header_action,
+        ui_shell_header_action_icon, ui_shell_header_menu_trigger, ui_shell_header_nav_item,
+        ui_shell_left_panel, ui_shell_left_panel_divider, ui_shell_left_panel_icon_item,
+        ui_shell_left_panel_icon_subitem, ui_shell_left_panel_in, ui_shell_left_panel_item,
+        ui_shell_left_panel_rail, ui_shell_left_panel_subitem, ui_shell_right_panel,
+        ui_shell_right_panel_divider, ui_shell_switcher, ui_shell_switcher_item,
     };
     use crate::component::text::text;
     use crate::component::tokens::{
@@ -907,7 +1307,7 @@ mod tests {
     use crate::testing::{Harness, inks, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
     use crate::tree::{
-        Anchor, AxisConstraint, Edge, Interaction, Justify, NodeKind, Props, Registry, Role,
+        Interaction, Justify, NodeKind, Props, Registry, Role,
         ViewNode,
     };
 
@@ -1193,17 +1593,53 @@ mod tests {
 
     // -- left panel ------------------------------------------------------
 
+    /// Every one of Carbon's four modifiers sets `inline-size` and nothing
+    /// else (`_side-nav.scss:65-117`), so the four modes are four widths on
+    /// one tree — including the two that are zero, which stay mounted the
+    /// way `--hidden` does rather than being dropped by the caller.
     #[test]
-    fn fixed_panel_is_256_and_rail_is_48() {
-        let fixed = ui_shell_left_panel("nav", vec![]);
-        assert_eq!(fixed.semantics.role, Some(Role::Pane));
-        assert_eq!(fixed.constraints.horizontal.min, Some(LEFT_PANEL_WIDTH));
-        assert_eq!(fixed.constraints.horizontal.max, Some(LEFT_PANEL_WIDTH));
+    fn each_width_mode_pins_carbons_own_inline_size() {
+        for (mode, want) in [
+            (LeftPanelMode::Rail, MINI_UNIT_6),
+            (LeftPanelMode::Fixed, LEFT_PANEL_WIDTH),
+            (LeftPanelMode::Expandable { expanded: true }, LEFT_PANEL_WIDTH),
+            (LeftPanelMode::Expandable { expanded: false }, 0.0),
+            (LeftPanelMode::Hidden, 0.0),
+        ] {
+            let panel = ui_shell_left_panel_in("nav", mode, vec![]);
+            assert_eq!(panel.semantics.role, Some(Role::Pane), "{mode:?}");
+            assert_eq!(panel.constraints.horizontal.min, Some(want), "{mode:?}");
+            assert_eq!(panel.constraints.horizontal.max, Some(want), "{mode:?}");
+        }
         assert_eq!(LEFT_PANEL_WIDTH, 256.0);
+        assert_eq!(MINI_UNIT_6, 48.0);
 
-        let rail = ui_shell_left_panel_rail("nav", vec![]);
-        assert_eq!(rail.constraints.horizontal.min, Some(MINI_UNIT_6));
-        assert_eq!(rail.constraints.horizontal.max, Some(MINI_UNIT_6));
+        // The two named entry points are the two named modes.
+        assert_eq!(
+            ui_shell_left_panel("nav", vec![]).constraints.horizontal.min,
+            Some(LEFT_PANEL_WIDTH)
+        );
+        assert_eq!(
+            ui_shell_left_panel_rail("nav", vec![])
+                .constraints
+                .horizontal
+                .min,
+            Some(MINI_UNIT_6)
+        );
+    }
+
+    /// Rail and Hidden are widths, and the clip is what makes them read as
+    /// modes. A `Stack` passes its parent's clip straight through
+    /// (`layout/stack.rs:170`), so the 0-width panel this file used to
+    /// build would have painted its rows across the page beside it; a
+    /// `Grid` clips each cell (`layout/grid.rs`).
+    #[test]
+    fn the_panel_clips_its_rows_so_a_narrow_mode_hides_them() {
+        assert_eq!(
+            ui_shell_left_panel_in("nav", LeftPanelMode::Hidden, vec![]).kind,
+            NodeKind::Grid,
+            "a panel that does not clip cannot have a zero-width mode"
+        );
     }
 
     #[test]
@@ -1263,7 +1699,7 @@ mod tests {
     fn selected_item_shows_the_accent_and_the_flag() {
         let node = ui_shell_left_panel_item("home", "Home", false, true, vec![]);
         assert!(node.semantics.selected);
-        let mark = named(&node, "accent");
+        let mark = named(&node, "bar");
         assert_eq!(token(mark, "background"), Some(ACCENT_PRIMARY));
         assert_eq!(mark.constraints.horizontal.min, Some(LEFT_PANEL_ACCENT));
         assert_eq!(LEFT_PANEL_ACCENT, 3.0);
@@ -1284,39 +1720,51 @@ mod tests {
 
     // -- right panel -------------------------------------------------
 
+    /// `_header-panel.scss` entire: width 0 shut, `mini-units(32)` = 256
+    /// open, and no anchor of any kind. It used to be an
+    /// `Anchor::Sibling`-anchored `Layer::Popup` `Surface` — a popover,
+    /// which is the one shape Carbon is not using here.
     #[test]
-    fn right_panel_is_an_overlay_anchored_to_its_trigger() {
-        let node = ui_shell_right_panel("notifications-panel", "Notifications", "notify", vec![]);
-        assert_eq!(node.kind, NodeKind::Surface);
-        assert_eq!(node.semantics.role, Some(Role::Overlay));
-        assert_ne!(node.semantics.role, Some(Role::Dialog));
-        assert_eq!(node.semantics.label.as_deref(), Some("Notifications"));
-        assert!(node.interactions.is_empty());
-        match &node.props.anchor {
-            Some(Anchor::Sibling { key, edge, .. }) => {
-                assert_eq!(key.as_str(), "notify");
-                assert_eq!(*edge, Edge::Bottom);
-            }
-            other => panic!("expected Anchor::Sibling, got {other:?}"),
-        }
-        assert_eq!(node.constraints.horizontal.min, Some(RIGHT_PANEL_WIDTH));
-        assert_eq!(node.constraints.horizontal.max, Some(RIGHT_PANEL_WIDTH));
+    fn the_right_panel_is_a_docked_region_that_is_256_open_and_0_shut() {
+        let open = ui_shell_right_panel("notifications-panel", "Notifications", true, vec![]);
+        assert_eq!(
+            open.kind,
+            NodeKind::Grid,
+            "a docked region is a flow node, not a floating surface"
+        );
+        assert_eq!(open.props.layer, None, "nothing about it floats");
+        assert_eq!(open.props.anchor, None, "and nothing about it anchors");
+        assert_eq!(open.semantics.role, Some(Role::Pane));
+        assert_eq!(open.semantics.label.as_deref(), Some("Notifications"));
+        assert!(open.interactions.is_empty());
+        assert_eq!(open.constraints.horizontal.min, Some(RIGHT_PANEL_WIDTH));
+        assert_eq!(open.constraints.horizontal.max, Some(RIGHT_PANEL_WIDTH));
         assert_eq!(RIGHT_PANEL_WIDTH, 256.0);
+
+        let shut = ui_shell_right_panel("notifications-panel", "Notifications", false, vec![]);
+        assert_eq!(
+            shut.constraints.horizontal.max,
+            Some(0.0),
+            "shut is width 0 and still mounted, never unmounted"
+        );
     }
 
+    /// The switcher's rows, its rule, and the selected state the SCSS and
+    /// the React API both carry (`ui_shell_switcher_item`'s doc for why
+    /// this reverses an earlier decision).
     #[test]
-    fn switcher_hosts_items_and_dividers_with_no_selected_state() {
+    fn switcher_hosts_items_and_dividers_and_carries_a_selected_state() {
         let node = ui_shell_switcher(
             "switcher",
             "App switcher",
-            "apps",
+            true,
             vec![
-                ui_shell_switcher_item("a", "Petra"),
+                ui_shell_switcher_item("a", "Petra", true),
                 ui_shell_right_panel_divider("d1"),
-                ui_shell_switcher_item("b", "Inspector"),
+                ui_shell_switcher_item("b", "Inspector", false),
             ],
         );
-        assert_eq!(node.semantics.role, Some(Role::Overlay));
+        assert_eq!(node.semantics.role, Some(Role::Pane));
         assert!(has_key(&node, "a"));
         assert!(has_key(&node, "b"));
         let item = named(&node, "a");
@@ -1324,19 +1772,31 @@ mod tests {
         assert_eq!(item.semantics.label.as_deref(), Some("Petra"));
         assert_eq!(item.constraints.vertical.min, Some(SWITCHER_ROW));
         assert_eq!(SWITCHER_ROW, 32.0);
+
+        // Two channels, not one: the flag the engine paints
+        // `layer-selected` from, and the ink step on the label itself.
+        assert!(item.semantics.selected);
+        assert_eq!(token(item, "background@selected"), Some(LAYER_SELECTED));
+        assert_eq!(token(named(item, "label"), "foreground"), Some(TEXT_PRIMARY));
+        let rest = named(&node, "b");
+        assert!(!rest.semantics.selected);
+        assert_eq!(token(named(rest, "label"), "foreground"), Some(TEXT_MUTED));
+
+        // The rule is 224 wide inside a 17-tall block: 1 unit of rule plus
+        // `$spacing-03` above and below (`_switcher.scss`).
         let divider = named(&node, "d1");
-        assert_eq!(
-            divider.constraints.horizontal.min,
-            Some(SWITCHER_DIVIDER_WIDTH)
-        );
+        let rule = named(divider, "rule");
+        assert_eq!(rule.constraints.horizontal.min, Some(SWITCHER_DIVIDER_WIDTH));
+        assert_eq!(rule.constraints.vertical.max, Some(1.0));
         assert_eq!(SWITCHER_DIVIDER_WIDTH, 224.0);
     }
 
-    /// Both right-panel constructors IS the anchored surface, naming their
-    /// trigger by bare sibling key (`Anchor::Sibling`). Placed beside a
-    /// header action carrying that key, each is accepted wherever the
-    /// caller mounts the pair — here two containers below the root, the
-    /// gallery catalog's own depth.
+    /// Both right-panel constructors mount beside the header action Carbon
+    /// says opens them, wherever the caller puts the pair — here two
+    /// containers below the root, the gallery catalog's own depth. They no
+    /// longer *anchor* to that action (they are docked regions now), but
+    /// the pairing is still the composition every caller writes, so it is
+    /// still the one checked.
     #[test]
     fn right_panels_validate_beside_their_trigger_when_mounted_at_catalog_depth() {
         crate::component::tests::assert_mounts_at_catalog_depth(
@@ -1346,7 +1806,7 @@ mod tests {
                 ui_shell_right_panel(
                     "notifications-panel",
                     "Notifications",
-                    "notify",
+                    true,
                     vec![text("note", "No new notifications.")],
                 ),
             ],
@@ -1358,11 +1818,11 @@ mod tests {
                 ui_shell_switcher(
                     "switcher",
                     "App switcher",
-                    "apps",
+                    true,
                     vec![
-                        ui_shell_switcher_item("a", "Petra"),
+                        ui_shell_switcher_item("a", "Petra", false),
                         ui_shell_right_panel_divider("d1"),
-                        ui_shell_switcher_item("b", "Inspector"),
+                        ui_shell_switcher_item("b", "Inspector", false),
                     ],
                 ),
             ],
@@ -1371,14 +1831,13 @@ mod tests {
 
     // -- frame-level checks (geometry, focus, contrast) -----------------
     //
-    // The header and both left-panel width variants carry no `anchor` of
-    // their own — only [`ui_shell_right_panel`]/[`ui_shell_switcher`]'s
-    // outer `Surface` does (`Anchor::Sibling`, this module's own doc) — so
-    // both petrify standalone the same way every other non-anchored
-    // component in this crate does. The right panel is audited the way
-    // `popover.rs`'s and `tooltip.rs`'s own `content` are: what is
-    // petrified below is `right_panel`'s inner `"content"` Stack, which
-    // carries no `anchor` of its own.
+    // Nothing in this module anchors any more. The header, all four
+    // left-panel width modes and both right panels are plain flow nodes,
+    // so every one of them petrifies standalone the same way every other
+    // non-anchored component in this crate does. The right-panel checks
+    // below used to extract `right_panel`'s inner `"content"` Stack,
+    // because the outer node was an `Anchor::Sibling` `Surface` that could
+    // not petrify without a target; they petrify the whole panel now.
 
     const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
 
@@ -1669,6 +2128,157 @@ mod tests {
         );
     }
 
+    /// Where Carbon puts the four inline offsets a left-panel row has, in
+    /// placed geometry rather than in props.
+    ///
+    /// Every one of them was wrong. The accent bar was a 3-unit `Fixed`
+    /// grid track that the body started *after*, so a top-level label sat
+    /// at 19 against Carbon's 16; the nested list carried a `spacing.07`
+    /// left inset on top of that, so a nested label sat at 51 against
+    /// Carbon's 32; and the whole run started flush against the panel's top
+    /// edge, with no `__items { padding: 1rem 0 0 }`.
+    #[test]
+    fn a_left_panel_row_places_its_label_where_carbon_states_it() {
+        let panel = ui_shell_left_panel(
+            "nav",
+            vec![
+                ui_shell_left_panel_item(
+                    "kernel",
+                    "Kernel",
+                    true,
+                    false,
+                    vec![ui_shell_left_panel_subitem("fibers", "Fibers", true)],
+                ),
+                ui_shell_left_panel_icon_item(
+                    "petra",
+                    "Petra",
+                    IconMark::Edit,
+                    true,
+                    false,
+                    vec![ui_shell_left_panel_icon_subitem("trace", "Trace", false)],
+                ),
+            ],
+        );
+        let frame = petrify_lone(panel);
+        let rect = |suffix: &str| {
+            frame
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with(suffix))
+                .unwrap_or_else(|| panic!("no placement ends with {suffix:?}"))
+                .rect
+        };
+        let panel_rect = rect("/nav");
+        let at = |suffix: &str| rect(suffix).x - panel_rect.x;
+
+        assert!(
+            (at("/kernel/row/body/lead/label") - LEFT_PANEL_INSET).abs() < 0.01,
+            "a top-level label sits at {} , Carbon's `padding: 0 mini-units(2)` \
+             says {LEFT_PANEL_INSET}",
+            at("/kernel/row/body/lead/label")
+        );
+        assert!(
+            (at("/fibers/row/body/lead/label") - LEFT_PANEL_NEST_INSET).abs() < 0.01,
+            "a nested label sits at {}, `__menu a.__link \
+             {{ padding-inline-start: mini-units(4) }}` says {LEFT_PANEL_NEST_INSET}",
+            at("/fibers/row/body/lead/label")
+        );
+        assert!(
+            (at("/trace/row/body/lead/label") - LEFT_PANEL_ICON_NEST_INSET).abs() < 0.01,
+            "a nested label under an icon-bearing item sits at {}, \
+             `.__item--icon a.__link` says {LEFT_PANEL_ICON_NEST_INSET}",
+            at("/trace/row/body/lead/label")
+        );
+        assert!(
+            (at("/petra/row/body/lead/icon") - LEFT_PANEL_INSET).abs() < 0.01,
+            "the icon starts at the row's own inset, not after it"
+        );
+        assert!(
+            (at("/petra/row/body/lead/label")
+                - (LEFT_PANEL_INSET + IconMark::Edit.extent(IconBox::Glyph) + LEFT_PANEL_ICON_GAP))
+                .abs()
+                < 0.01,
+            "an icon-bearing row's label sits {} past the panel edge, wanted \
+             16 + a 16 glyph + a {LEFT_PANEL_ICON_GAP} margin",
+            at("/petra/row/body/lead/label")
+        );
+
+        // The current-page bar overlays the row rather than reserving a
+        // track: it starts on the panel's own edge even for the nested row
+        // Carbon indents by 32, because `::before` is `inset-inline-start: 0`
+        // of a full-width link.
+        assert!(
+            at("/fibers/row/accent/bar").abs() < 0.01,
+            "the nested current row's accent is at {}, not on the panel edge",
+            at("/fibers/row/accent/bar")
+        );
+        assert!(
+            (rect("/fibers/row/accent/bar").w - LEFT_PANEL_ACCENT).abs() < 0.01,
+            "and it is still 3 wide"
+        );
+
+        // `.cds--side-nav__items { padding: 1rem 0 0 }`.
+        assert!(
+            (rect("/kernel/row").y - panel_rect.y - LEFT_PANEL_INSET).abs() < 0.01,
+            "the first row starts {} below the panel's top edge, Carbon says 16",
+            rect("/kernel/row").y - panel_rect.y
+        );
+    }
+
+    /// A collapsed branch whose child is the current page keeps the mark.
+    ///
+    /// `_side-nav.scss:283-289`: `--item--active __submenu[aria-expanded='false']`
+    /// takes `$background-selected` and its own 3px `::before`. Collapsing
+    /// "Kernel" over a current "Fibers" used to unmount the child and leave
+    /// nothing on screen saying which page was open.
+    #[test]
+    fn a_collapsed_branch_wears_its_current_childs_mark() {
+        let current = || ui_shell_left_panel_subitem("fibers", "Fibers", true);
+
+        let collapsed =
+            ui_shell_left_panel_item("kernel", "Kernel", false, false, vec![current()]);
+        assert!(
+            !has_key(&collapsed, "fibers"),
+            "the child is unmounted, which is the whole reason the parent has \
+             to carry the mark"
+        );
+        assert!(collapsed.semantics.selected, "so the fill fires");
+        assert_eq!(
+            token(named(&collapsed, "bar"), "background"),
+            Some(ACCENT_PRIMARY),
+            "and the accent is drawn"
+        );
+        assert_eq!(
+            token(named(&collapsed, "label"), "foreground"),
+            Some(TEXT_PRIMARY),
+            "and the title steps to primary ink (`:290-293`)"
+        );
+
+        // Expanded, the mark belongs to the child; the title still steps.
+        let expanded = ui_shell_left_panel_item("kernel", "Kernel", true, false, vec![current()]);
+        assert!(
+            !expanded.semantics.selected,
+            "an open branch must not fill: the child is on screen wearing the \
+             mark itself, and filling both says two pages are current"
+        );
+        assert_eq!(token(named(&expanded, "bar"), "background"), None);
+        assert_eq!(
+            token(named(&expanded, "label"), "foreground"),
+            Some(TEXT_PRIMARY)
+        );
+
+        // A branch with no current child is plain, open or shut.
+        let plain = ui_shell_left_panel_item(
+            "kernel",
+            "Kernel",
+            false,
+            false,
+            vec![ui_shell_left_panel_subitem("fibers", "Fibers", false)],
+        );
+        assert!(!plain.semantics.selected);
+        assert_eq!(token(named(&plain, "label"), "foreground"), Some(TEXT_MUTED));
+    }
+
     /// Check F: the selected leaf, the branch, both subitems, and the
     /// plain leaf all declare `Focus` and are reachable; a collapsed
     /// branch's own subitems (if any existed) would not mount at all —
@@ -1755,46 +2365,42 @@ mod tests {
         }
     }
 
-    /// Class 2 falsification, the left panel's own `accent` mark
-    /// (`left_panel_row`'s Grid, the same shape as the header nav item's
-    /// `indicator` above but on the other axis — `accent_mark` is built
-    /// `Axis::Vertical`, so [`LEFT_PANEL_ACCENT`] pins the *thickness*
-    /// (width) unconditionally and it is the *height* that only survives
-    /// because the row's own `Align::Stretch` fills it in): stripping
-    /// `Align::Stretch` off the row's Grid reproduces a zero-**height**
-    /// selected accent bar.
+    /// Class 2 falsification, the left panel's own accent bar.
+    ///
+    /// `accent_mark` is built `Axis::Vertical`, so [`LEFT_PANEL_ACCENT`]
+    /// pins the *thickness* (width) unconditionally and it is the *height*
+    /// that only survives because the bar's own carrier declares
+    /// `Align::Stretch`. The carrier is a one-child `Stack` laid over the
+    /// row by a [`NodeKind::Overlay`], rather than a `Fixed` grid track
+    /// beside the body, so the bar takes no flow space and the label sits
+    /// where Carbon puts it; stripping the stretch reproduces a
+    /// zero-**height** bar.
     #[test]
-    fn falsification_removing_grid_stretch_collapses_the_selected_accent_to_zero() {
+    fn falsification_removing_carrier_stretch_collapses_the_selected_accent_to_zero() {
         let mut node = ui_shell_left_panel_item("home", "Home", false, true, vec![]);
         // `node` is the outer `Stack` `ui_shell_left_panel_item` builds;
-        // `row` (the Grid `accent` lives in) is its first child.
-        std::sync::Arc::make_mut(&mut node.children[0]).props.align = None;
+        // `row` is its first child, and the accent carrier is `row`'s
+        // second (`body` is the first, and paints under it).
+        let row = std::sync::Arc::make_mut(&mut node.children[0]);
+        std::sync::Arc::make_mut(&mut row.children[1]).props.align = None;
         let frame = petrify_lone(node);
-        let accent = frame
+        let bar = frame
             .placements
             .iter()
-            .find(|p| p.id.ends_with("/accent"))
-            .expect("accent is placed");
+            .find(|p| p.id.ends_with("/accent/bar"))
+            .expect("bar is placed");
         assert_eq!(
-            accent.rect.h, 0.0,
+            bar.rect.h, 0.0,
             "removing Align::Stretch must reproduce the zero-height defect \
              this test proves the shipped code does not have"
         );
         assert_eq!(
-            accent.rect.w, LEFT_PANEL_ACCENT,
+            bar.rect.w, LEFT_PANEL_ACCENT,
             "the thickness axis is pinned unconditionally and must not move"
         );
     }
 
-    // -- right panel: audited via its non-anchored `content` node --------
-    //
-    // `ui_shell_right_panel`/`ui_shell_switcher` build via `right_panel`,
-    // whose outer node IS the `Anchor::Sibling`-anchored `Surface` — every
-    // constructor this half of the module exports IS the anchored surface,
-    // with no separate closed trigger form (unlike Toggletip's `trigger`,
-    // which stands alone). `content` — the inner `Stack` — carries no
-    // anchor of its own and petrifies standalone, the same technique
-    // `popover.rs`'s and `tooltip.rs`'s own `content` tests use.
+    // -- right panel ----------------------------------------------------
 
     /// Check C/D: the Switcher's content (two items plus a divider) places
     /// with real rects and draws nothing larger than them, and so does a
@@ -1804,28 +2410,22 @@ mod tests {
         let generic = ui_shell_right_panel(
             "notifications-panel",
             "Notifications",
-            "notify",
+            true,
             vec![text("note", "No new notifications.")],
         );
-        assert_no_degenerate_or_overflowing(
-            "generic",
-            &petrify_lone(named(&generic, "content").clone()),
-        );
+        assert_no_degenerate_or_overflowing("generic", &petrify_lone(generic));
 
         let switcher = ui_shell_switcher(
             "switcher",
             "App switcher",
-            "apps",
+            true,
             vec![
-                ui_shell_switcher_item("a", "Petra"),
+                ui_shell_switcher_item("a", "Petra", true),
                 ui_shell_right_panel_divider("d1"),
-                ui_shell_switcher_item("b", "Inspector"),
+                ui_shell_switcher_item("b", "Inspector", false),
             ],
         );
-        assert_no_degenerate_or_overflowing(
-            "switcher",
-            &petrify_lone(named(&switcher, "content").clone()),
-        );
+        assert_no_degenerate_or_overflowing("switcher", &petrify_lone(switcher));
     }
 
     /// Carbon's own documented base case — "empty header panel" (slice-f
@@ -1840,8 +2440,7 @@ mod tests {
     /// is checked as such rather than skipped.
     #[test]
     fn the_empty_header_panel_case_is_inert_not_degenerate() {
-        let generic =
-            ui_shell_right_panel("notifications-panel", "Notifications", "notify", vec![]);
+        let generic = ui_shell_right_panel("notifications-panel", "Notifications", true, vec![]);
         let content = named(&generic, "content").clone();
         let frame = petrify_lone(content);
         let root = frame
@@ -1857,19 +2456,19 @@ mod tests {
         );
     }
 
-    /// Check F: switcher items declare `Focus` and are reachable — there is
-    /// no selected state to check reachability against (module doc: "ships
-    /// with no selected state").
+    /// Check F: switcher items declare `Focus` and are reachable, selected
+    /// and not. `Switcher.js:33-71` gives the list roving arrow-key focus;
+    /// what is checked here is the weaker property the focus tree can see,
+    /// that both rows are in the order at all.
     #[test]
     fn switcher_items_are_focus_reachable() {
         let switcher = ui_shell_switcher(
             "switcher",
             "App switcher",
-            "apps",
-            vec![ui_shell_switcher_item("a", "Petra")],
+            true,
+            vec![ui_shell_switcher_item("a", "Petra", true)],
         );
-        let content = named(&switcher, "content").clone();
-        let frame = petrify_lone(content);
+        let frame = petrify_lone(switcher);
         let focus = crate::focus::FocusTree::from_placements(
             &frame.placements,
             &std::collections::BTreeMap::new(),
@@ -1899,29 +2498,19 @@ mod tests {
         let switcher = ui_shell_switcher(
             "switcher",
             "App switcher",
-            "apps",
+            true,
             vec![
-                ui_shell_switcher_item("a", "Petra"),
+                ui_shell_switcher_item("a", "Petra", false),
                 ui_shell_right_panel_divider("d1"),
-                ui_shell_switcher_item("b", "Inspector"),
+                ui_shell_switcher_item("b", "Inspector", false),
             ],
         );
-        // `right_panel`'s outer `Surface` pins `content` to
-        // `RIGHT_PANEL_WIDTH` (256) in the real embedding — its `Anchor`
-        // needs a target elsewhere in the tree to petrify, which is why
-        // every other test here extracts `content` on its own (see the
-        // section comment above). Pinning that same width directly is the
-        // faithful stand-in: without it, `content`'s own natural width in
-        // this isolated tree is whatever its widest child measures (the
-        // divider's fixed 224), which would make the divider and a
-        // full-width item the same width and prove nothing.
-        let mut content = named(&switcher, "content").clone();
-        content.constraints.horizontal = AxisConstraint {
-            min: Some(RIGHT_PANEL_WIDTH),
-            max: Some(RIGHT_PANEL_WIDTH),
-            priority: 0,
-        };
-        let frame = petrify_lone(content);
+        // The open panel pins itself to `RIGHT_PANEL_WIDTH` (256), so the
+        // whole thing petrifies as it ships. It used to need `content`
+        // extracted and that width pinned onto it by hand, because the
+        // outer node was an anchored `Surface` with no target in an
+        // isolated tree.
+        let frame = petrify_lone(switcher);
         let rect = |suffix: &str| {
             frame
                 .placements
@@ -1930,8 +2519,10 @@ mod tests {
                 .unwrap_or_else(|| panic!("no placement ends with {suffix:?}"))
                 .rect
         };
+        // 255, not 256: the panel spends one unit on its own
+        // `border-inline-start` rule, exactly as Carbon's border box does.
         let outer = rect("/content");
-        assert_eq!(outer.w, RIGHT_PANEL_WIDTH);
+        assert_eq!(outer.w, RIGHT_PANEL_WIDTH - 1.0);
         for item in ["/a", "/b"] {
             let r = rect(item);
             assert_eq!(r.x, outer.x, "{item}: must be flush at the leading edge");
@@ -1960,8 +2551,8 @@ mod tests {
             let switcher = ui_shell_switcher(
                 "switcher",
                 "App switcher",
-                "apps",
-                vec![ui_shell_switcher_item("a", "Petra")],
+                true,
+                vec![ui_shell_switcher_item("a", "Petra", false)],
             );
             let panel_bg_name = switcher
                 .props

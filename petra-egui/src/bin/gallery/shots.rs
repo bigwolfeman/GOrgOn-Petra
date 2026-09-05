@@ -1558,32 +1558,43 @@ mod tests {
         );
     }
 
-    /// Row 42. The switcher opens from the header action, docked under the
-    /// header's trailing edge at Carbon's 256, over the page.
+    /// Row 42, replacing `the_right_panel_opens_under_the_header_over_the_page`.
+    ///
+    /// That test asserted the panel hung *over* the page under its trigger
+    /// and was as tall as its own content — which is a popover, and the one
+    /// shape `_header-panel.scss` is not. Every assertion in it passed on
+    /// the anatomy the operator called conceptually wrong. What Carbon
+    /// states is a region docked to the trailing edge, running the header's
+    /// bottom rule to the bottom of the viewport, 256 wide.
     #[test]
-    fn the_right_panel_opens_under_the_header_over_the_page() {
-        let mut cam = Camera::on("UI shell right panel");
-        let panel = opens_over_the_page(
-            &mut cam,
-            "shell-switcher-trigger",
-            "shell-right/shell-switcher",
-            60.0,
-            "42-ui-shell-right-panel-open",
-        );
-        let header = cam.rect("shell-right/shell-header");
+    fn the_right_panel_docks_from_the_header_to_the_foot_of_the_frame() {
+        let cam = Camera::on("UI shell right panel");
+        let frame = cam.rect("shell-frame");
+        let header = cam.rect("shell-frame/shell-header");
+        let panel = cam.rect("shell-content/shell-switcher");
         assert!(
             (panel.w - 256.0).abs() < 0.5,
-            "the panel is Carbon's 256 wide, got {panel:?}"
+            "the panel is Carbon's mini-units(32) = 256 wide, got {panel:?}"
         );
         assert!(
-            (panel.x + panel.w - (header.x + header.w)).abs() < 1.0,
-            "the panel's trailing edge is the header's: panel {panel:?}, header {header:?}"
+            (panel.y - (header.y + header.h)).abs() < 1.0,
+            "`inset-block-start: mini-units(6)`: the panel starts at the \
+             header's bottom edge. panel {panel:?}, header {header:?}"
         );
-        assert!(cam.has("shell-switcher-petra") && cam.has("shell-switcher-inspector"));
-        cam.click("shell-switcher-inspector");
         assert!(
-            !cam.has("shell-right/shell-switcher"),
-            "choosing an app did not close it"
+            (panel.y + panel.h - (frame.y + frame.h)).abs() < 1.0,
+            "`inset-block-end: 0`: and runs to the foot of the viewport. \
+             panel {panel:?}, frame {frame:?}"
+        );
+        assert!(
+            (panel.x + panel.w - (frame.x + frame.w)).abs() < 1.0,
+            "`inset-inline-end: 0`: on the trailing edge. panel {panel:?}, \
+             frame {frame:?}"
+        );
+        assert!(
+            panel.h > header.h * 2.0,
+            "a panel as tall as its own two items is the popover this row \
+             used to be: {panel:?}"
         );
     }
 
@@ -3551,5 +3562,260 @@ mod tests {
             inner_header.x,
             outer_header.x
         );
+    }
+
+    // ------------------------------------------------------------------
+    // Wave C, round 3: rows 41 and 42. One contiguous block, appended.
+    // ------------------------------------------------------------------
+
+    /// Row 41. Picking a width mode changes the panel's width, and the
+    /// picture with it.
+    ///
+    /// The page shipped one mode, titled "Fixed panel", and Carbon's left
+    /// panel *is* its width modes — every modifier in `_side-nav.scss:65-117`
+    /// sets `inline-size` and nothing else. A page showing one of four
+    /// shows none of the component, which is what "you kinda fucked this up
+    /// on a conceptual level" meant.
+    ///
+    /// Driven from a click on the mode selector, and the widths are read
+    /// out of placed geometry, not out of the mode enum.
+    #[test]
+    fn picking_a_left_panel_width_mode_resizes_the_panel_and_repaints_it() {
+        let mut cam = Camera::on("UI shell left panel");
+        let mut pictures = Vec::new();
+        for (control, want, shot) in [
+            ("shell-left-rail", 48.0, "41-ui-shell-left-panel-rail"),
+            ("shell-left-fixed", 256.0, "41-ui-shell-left-panel"),
+            (
+                "shell-left-expandable",
+                256.0,
+                "41-ui-shell-left-panel-expandable",
+            ),
+            ("shell-left-hidden", 0.0, "41-ui-shell-left-panel-hidden"),
+        ] {
+            cam.click(control);
+            let rect = cam.rect("shell-left-content/shell-left");
+            assert!(
+                (rect.w - want).abs() < 0.5,
+                "{control}: Carbon's own inline-size for this mode is {want}, \
+                 the panel placed {rect:?}"
+            );
+            pictures.push((control, cam.shoot(shot)));
+        }
+        for (i, (a, pa)) in pictures.iter().enumerate() {
+            for (b, pb) in &pictures[i + 1..] {
+                assert_ne!(
+                    pa, pb,
+                    "{a} and {b} rasterize identically: the mode selector \
+                     moved a dot and nothing else"
+                );
+            }
+        }
+    }
+
+    /// Row 41. The rail keeps the icon and loses the label, on the same
+    /// rows the other three modes draw in full.
+    ///
+    /// This is the mode `ui_shell_left_panel_rail` has never been able to
+    /// show. No item constructor had an icon slot, so 48px of squeezed
+    /// label was the whole picture, and no catalog page mounted it. The
+    /// glyph is the only channel a 48px column has.
+    #[test]
+    fn the_rail_keeps_its_icons_and_loses_its_labels() {
+        let mut cam = Camera::on("UI shell left panel");
+
+        cam.click("shell-left-fixed");
+        let wide = cam.rect("shell-left-petra/row/body/lead/label");
+        assert!(
+            wide.w > 8.0,
+            "at 256 the label is drawn: {wide:?} — otherwise the rail proves \
+             nothing"
+        );
+
+        cam.click("shell-left-rail");
+        let panel = cam.rect("shell-left-content/shell-left");
+        let icon = cam.rect("shell-left-petra/row/body/lead/icon");
+        let label = cam.rect("shell-left-petra/row/body/lead/label");
+        assert!(
+            (panel.w - 48.0).abs() < 0.5,
+            "the rail is Carbon's mini-units(6): {panel:?}"
+        );
+        assert!(
+            (icon.x - panel.x - 16.0).abs() < 0.5 && (icon.w - 16.0).abs() < 0.5,
+            "the 16px glyph keeps its full size at the row's own 16 inset, \
+             which centres it in a 48 rail: panel {panel:?}, icon {icon:?}"
+        );
+        assert!(
+            icon.x + icon.w <= panel.x + panel.w + 0.5,
+            "and it fits inside the rail: icon {icon:?}, panel {panel:?}"
+        );
+        assert!(
+            label.w < 0.5,
+            "the label has to go: 16 + 16 + 16 leaves it nothing, and the \
+             panel clips whatever is left. Got {label:?} in {panel:?}"
+        );
+        cam.shoot("41-ui-shell-left-panel-rail-icons");
+    }
+
+    /// Row 41. The hamburger is the Expandable panel's one control, and
+    /// pressing it opens and shuts the panel.
+    ///
+    /// Carbon keeps one boolean and hands it to `HeaderMenuButton` as
+    /// `isActive` and to `SideNav` as `expanded` (`HeaderContainer.js:24-35`).
+    /// Row 40's complaint — "the 4 parallel bars on the left side has no
+    /// children to display" — is that same button with the second consumer
+    /// missing. Here it has one.
+    #[test]
+    fn the_hamburger_opens_and_shuts_the_expandable_left_panel() {
+        let mut cam = Camera::on("UI shell left panel");
+        cam.click("shell-left-expandable");
+        let open = cam.shoot("41-ui-shell-left-panel-expandable-open");
+        assert!(
+            (cam.rect("shell-left-content/shell-left").w - 256.0).abs() < 0.5,
+            "Expandable starts open"
+        );
+        cam.click("shell-left-menu");
+        let shut = cam.shoot("41-ui-shell-left-panel-expandable-shut");
+        assert!(
+            cam.rect("shell-left-content/shell-left").w < 0.5,
+            "pressing the hamburger must take the panel to width 0, got {:?}",
+            cam.rect("shell-left-content/shell-left")
+        );
+        assert_ne!(
+            open, shut,
+            "the panel closed in the tree and not one pixel moved"
+        );
+        cam.click("shell-left-menu");
+        assert!(
+            (cam.rect("shell-left-content/shell-left").w - 256.0).abs() < 0.5,
+            "and a second press must reopen it"
+        );
+    }
+
+    /// Row 41. Collapsing a branch over the current page keeps the mark on
+    /// the branch.
+    ///
+    /// `_side-nav.scss:283-289`: `--item--active __submenu[aria-expanded='false']`
+    /// takes `$background-selected` and its own 3px `::before`. The nested
+    /// row unmounts when the branch shuts (FR-026), so without this the
+    /// operator collapses "Kernel" over a current "Fibers" and nothing on
+    /// screen says which page is open.
+    ///
+    /// The comparison is between two *collapsed* Kernels — one over a
+    /// current child, one not — so the only difference in the picture is
+    /// the mark itself, not the sub-menu opening and closing.
+    #[test]
+    fn a_collapsed_left_panel_branch_wears_its_current_childs_mark() {
+        let mut cam = Camera::on("UI shell left panel");
+        cam.click("shell-left-fibers");
+        cam.click("shell-left-kernel/row");
+        assert!(
+            !cam.has("shell-left-fibers"),
+            "the branch is collapsed, so the current row is off screen"
+        );
+        let over_current = cam.shoot("41-ui-shell-left-panel-collapsed-current");
+        assert!(
+            selected_ids(&cam)
+                .iter()
+                .any(|id| id.ends_with("shell-left-kernel")),
+            "the collapsed branch does not carry the flag the `layer-selected` \
+             fill and the accent bar are painted from. Selected: {:?}",
+            selected_ids(&cam)
+        );
+
+        cam.click("shell-left-kernel/row");
+        cam.click("shell-left-petra");
+        cam.click("shell-left-kernel/row");
+        assert!(!cam.has("shell-left-fibers"), "collapsed again");
+        let over_nothing = cam.shoot("41-ui-shell-left-panel-collapsed-plain");
+        assert!(
+            !selected_ids(&cam)
+                .iter()
+                .any(|id| id.ends_with("shell-left-kernel")),
+            "and a collapsed branch over no current page must not wear the \
+             mark, or the mark says nothing"
+        );
+
+        assert_ne!(
+            over_current, over_nothing,
+            "a collapsed branch holding the current page looks the same as \
+             one that is not: the current page has vanished from the picture"
+        );
+    }
+
+    /// Row 42. Pressing the header action shuts the panel and pressing it
+    /// again reopens it, and shut is width 0 rather than unmounted.
+    ///
+    /// `_header-panel.scss` transitions `width` alone and never unmounts;
+    /// this page used to mount the panel conditionally, so its resting
+    /// photograph was a header and an empty card.
+    #[test]
+    fn the_right_panels_trigger_shuts_it_to_width_zero_and_reopens_it() {
+        let mut cam = Camera::on("UI shell right panel");
+        let open = cam.shoot("42-ui-shell-right-panel-open");
+        assert!(
+            (cam.rect("shell-content/shell-switcher").w - 256.0).abs() < 0.5,
+            "the row rests open, so the row's own subject is in its own picture"
+        );
+        cam.click("shell-switcher-trigger");
+        let shut = cam.shoot("42-ui-shell-right-panel-shut");
+        let rect = cam.rect("shell-content/shell-switcher");
+        assert!(
+            rect.w < 0.5,
+            "shut is `inline-size: 0`, still placed, got {rect:?}"
+        );
+        assert_ne!(open, shut, "the trigger fired and nothing moved");
+        cam.click("shell-switcher-trigger");
+        assert!(
+            (cam.rect("shell-content/shell-switcher").w - 256.0).abs() < 0.5,
+            "a second press must reopen it"
+        );
+    }
+
+    /// Row 42. Choosing an app marks it and shuts the panel.
+    ///
+    /// The selected state is the one this module argued in writing that
+    /// Carbon does not have. It does: `_switcher.scss` carries
+    /// `--switcher__item-link--selected` and `SwitcherItem.js:29` carries
+    /// `isSelected`, against one sentence of usage-page prose, and T070
+    /// ranks the SCSS first.
+    #[test]
+    fn choosing_an_app_in_the_switcher_marks_it_and_shuts_the_panel() {
+        let mut cam = Camera::on("UI shell right panel");
+        let first = cam.shoot("42-ui-shell-right-panel-petra-current");
+        assert!(
+            selected_ids(&cam).iter().any(|id| id.ends_with("petra")),
+            "the first app rests current. Selected: {:?}",
+            selected_ids(&cam)
+        );
+        cam.click("shell-switcher-inspector");
+        assert!(
+            cam.rect("shell-content/shell-switcher").w < 0.5,
+            "picking a destination shuts the panel"
+        );
+        cam.click("shell-switcher-trigger");
+        let second = cam.shoot("42-ui-shell-right-panel-inspector-current");
+        let marked = selected_ids(&cam);
+        assert!(
+            marked.iter().any(|id| id.ends_with("inspector"))
+                && !marked.iter().any(|id| id.ends_with("petra")),
+            "the mark did not move to the app that was pressed. Selected: {marked:?}"
+        );
+        assert_ne!(
+            first, second,
+            "the mark moved in the tree and not one pixel changed"
+        );
+    }
+
+    /// Every placement the frame reports as selected. For asserting a mark
+    /// moved, where the mark is a `semantics.selected` flag the engine
+    /// paints rather than a node of its own.
+    fn selected_ids(cam: &Camera) -> Vec<String> {
+        cam.frame()
+            .placements
+            .iter()
+            .filter(|p| p.semantics.selected)
+            .map(|p| p.id.clone())
+            .collect()
     }
 }
