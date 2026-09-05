@@ -48,6 +48,35 @@ use super::key::{Key, KeyPath};
 use crate::geom::{Axis, Insets};
 use crate::token::{ThemeSnapshot, TokenName};
 
+/// One coloured stretch of a text node's content.
+///
+/// A run changes the **ink and nothing else**. It carries no font, no size
+/// and no weight, because the thing this exists for — syntax colour, and
+/// later an LSP `textDocument/semanticTokens` response — is a colour per
+/// token over one face. Keeping it to colour is what makes it cheap: text is
+/// shaped through [`crate::layout::ContentMeasure::text`], whose request
+/// carries the string, the typography token, the wrap policy and the line
+/// cap, so a run touches none of a measurement's inputs and every placed
+/// rect on the page is the rect it was before.
+///
+/// `len` is a **byte** count, and the runs of a node cover its text exactly:
+/// acceptance refuses a list that overruns, underruns, or splits a `char`
+/// ([`crate::tree::Violation::TextRunsDoNotCoverTheText`]). A half-covering
+/// list would paint a colour onto whatever followed it, which is a wrong
+/// picture that nothing downstream could notice.
+///
+/// `foreground` is `None` for "the node's own ink", so a highlighter names
+/// only the stretches it has an opinion about and the gaps between them cost
+/// one entry each rather than a token lookup.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct TextRun {
+    /// Length of this run in bytes of the node's `text`.
+    pub len: usize,
+    /// Ink for this run, or `None` to take the node's own `foreground`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub foreground: Option<TokenName>,
+}
+
 /// How a text node handles content it cannot fit.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -788,6 +817,10 @@ pub struct Props {
     /// Typography token reference, or `None` for the theme's body style.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub style: Option<TokenName>,
+    /// Per-stretch ink over `text`, or empty for one run in the node's own
+    /// `foreground` ([`TextRun`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runs: Vec<TextRun>,
     /// Image source identifier.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,

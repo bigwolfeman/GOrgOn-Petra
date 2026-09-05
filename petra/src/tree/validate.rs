@@ -240,6 +240,26 @@ pub enum Violation {
         /// The leaf kind that declared it.
         kind: NodeKind,
     },
+    /// A node's `props.runs` do not cover its `props.text` exactly.
+    ///
+    /// A [`crate::tree::TextRun`] carries a byte length, and the list must
+    /// tile the string: every byte in exactly one run, no run ending inside a
+    /// `char`. Refused rather than clamped or padded, for the reason
+    /// [`Violation::GridSpanOutOfRange`] is refused — a shortened list is a
+    /// silent recolour. Runs that stop early leave the tail in whatever ink
+    /// the last section happened to hold, runs that overrun colour bytes that
+    /// are not there, and a split `char` hands the shaper half a codepoint.
+    /// None of the three is visible to anything downstream: the frame is
+    /// legal, the digest is stable, and the picture is wrong.
+    TextRunsDoNotCoverTheText {
+        /// Bytes the runs claim, summed.
+        claimed: usize,
+        /// Bytes the node's `text` actually holds.
+        text_len: usize,
+        /// Byte offset of the first run boundary that split a `char`, if the
+        /// lengths summed correctly and a boundary was the problem instead.
+        split_at: Option<usize>,
+    },
     /// A grid child declares a span of no tracks, or of more tracks than the
     /// grid has on that axis.
     ///
@@ -476,6 +496,20 @@ impl fmt::Display for Violation {
                 "kind `{}` is a leaf and declares props.padding; a leaf has no children to inset, so the declaration would be ignored — declare padding on a container ancestor instead",
                 kind.as_str()
             ),
+            Self::TextRunsDoNotCoverTheText {
+                claimed,
+                text_len,
+                split_at,
+            } => match split_at {
+                Some(at) => write!(
+                    f,
+                    "props.runs end inside a character at byte {at}; a run boundary must be a char boundary, or the shaper is handed half a codepoint"
+                ),
+                None => write!(
+                    f,
+                    "props.runs claim {claimed} bytes of a {text_len}-byte props.text; the runs of a node must tile its text exactly, or the uncovered part takes whatever ink the last run left behind"
+                ),
+            },
             Self::GridSpanOutOfRange {
                 prop,
                 count,
@@ -849,6 +883,31 @@ fn check_node(
     // pins it.
     if node.props.padding.is_some() && !node.kind.is_container() {
         push(Violation::PaddingOnLeafKind { kind: node.kind });
+    }
+
+    if !node.props.runs.is_empty() {
+        let text = node.props.text.as_deref().unwrap_or_default();
+        let claimed: usize = node.props.runs.iter().map(|run| run.len).sum();
+        if claimed != text.len() {
+            push(Violation::TextRunsDoNotCoverTheText {
+                claimed,
+                text_len: text.len(),
+                split_at: None,
+            });
+        } else {
+            let mut at = 0usize;
+            for run in &node.props.runs {
+                at += run.len;
+                if at < text.len() && !text.is_char_boundary(at) {
+                    push(Violation::TextRunsDoNotCoverTheText {
+                        claimed,
+                        text_len: text.len(),
+                        split_at: Some(at),
+                    });
+                    break;
+                }
+            }
+        }
     }
 
     if let Some(name) = node.transition.as_ref().map(|t| t.name().to_owned())
@@ -1377,7 +1436,9 @@ mod tests {
         standard_vocabulary,
     };
     use crate::tree::node::{Interaction, NodeKind, Role, Semantics, ViewNode};
-    use crate::tree::props::{Anchor, Edge, GridSpan, InsetRefs, Layer, Props, TrackSize};
+    use crate::tree::props::{
+        Anchor, Edge, GridSpan, InsetRefs, Layer, Props, TextRun, TrackSize,
+    };
 
     fn stack(key: &str) -> ViewNode {
         ViewNode::new(NodeKind::Stack, key)
@@ -1752,6 +1813,64 @@ mod tests {
             err.to_string().contains("has no children to inset"),
             "{err}"
         );
+    }
+
+    /// Colour runs must tile the text they colour.
+    ///
+    /// Three ways to get it wrong and all three are refused, because none of
+    /// them is visible downstream: the tree is otherwise legal, the digest is
+    /// stable, and only the pixels are wrong.
+    #[test]
+    fn colour_runs_must_cover_their_text_exactly() {
+        let coloured = |text: &str, lens: &[usize]| {
+            ViewNode::new(NodeKind::Text, "t").with_props(Props {
+                text: Some(text.to_owned()),
+                runs: lens
+                    .iter()
+                    .map(|len| TextRun {
+                        len: *len,
+                        foreground: None,
+                    })
+                    .collect(),
+                ..Props::default()
+            })
+        };
+
+        // Exact cover, in any number of pieces.
+        assert!(validate(&coloured("let x", &[3, 2]), &Registry::new()).is_ok());
+        assert!(validate(&coloured("let x", &[5]), &Registry::new()).is_ok());
+        // No runs at all is the default and always legal.
+        assert!(validate(&coloured("let x", &[]), &Registry::new()).is_ok());
+
+        for (lens, claimed) in [(&[3, 1][..], 4usize), (&[3, 9][..], 12)] {
+            let err = validate(&coloured("let x", lens), &Registry::new()).unwrap_err();
+            assert_eq!(err.len(), 1, "{err}");
+            assert_eq!(
+                err.as_slice()[0].violation,
+                Violation::TextRunsDoNotCoverTheText {
+                    claimed,
+                    text_len: 5,
+                    split_at: None,
+                },
+                "runs claiming {claimed} of 5 bytes were accepted"
+            );
+            assert!(err.to_string().contains("tile its text exactly"), "{err}");
+        }
+
+        // Right total, wrong boundary: "é" is two bytes and a run may not
+        // stop between them.
+        let err = validate(&coloured("é!", &[1, 2]), &Registry::new()).unwrap_err();
+        assert_eq!(
+            err.as_slice()[0].violation,
+            Violation::TextRunsDoNotCoverTheText {
+                claimed: 3,
+                text_len: 3,
+                split_at: Some(1),
+            }
+        );
+        assert!(err.to_string().contains("inside a character"), "{err}");
+        // The same two bytes taken whole are fine.
+        assert!(validate(&coloured("é!", &[2, 1]), &Registry::new()).is_ok());
     }
 
     /// A container kind is exactly where `padding` is meaningful, and it must

@@ -21,6 +21,6 @@ pub use node::{
 pub use props::{
     Align, Anchor, ClampRule, CollectionProps, Edge, Fit, GridProps, GridSpan, InputPolicy,
     InsetRefs, Justify, Layer, NodeAnchor, Props, ScrollProps, StackProps, SurfaceProps, TextProps,
-    TextWrap, Tip, TrackSize, resolve_insets, resolve_spacing,
+    TextRun, TextWrap, Tip, TrackSize, resolve_insets, resolve_spacing,
 };
 pub use validate::{Registry, TreeError, TreeErrors, ValidatedTree, Violation, validate};
