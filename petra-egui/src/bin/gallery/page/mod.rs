@@ -197,7 +197,7 @@ pub fn all() -> Vec<Box<dyn Page>> {
         Box::new(data_table::DataTable::default()),
         Box::new(date_picker::DatePicker::default()),
         Box::new(dropdown::Dropdown::default()),
-        Box::new(file_uploader::FileUploader),
+        Box::new(file_uploader::FileUploader::default()),
         Box::new(form::Form::default()),
         Box::new(inline_loading::InlineLoading::default()),
         Box::new(link::Link),

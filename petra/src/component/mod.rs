@@ -154,7 +154,10 @@ pub use field::{
     field, field_fluid, field_invalid, field_labeled, field_lg, field_readonly, field_sm,
     field_validated, hinted, labeled, valued,
 };
-pub use file_uploader::{file_uploader, file_uploader_item};
+pub use file_uploader::{
+    file_uploader, file_uploader_item, file_uploader_item_edit, file_uploader_item_invalid,
+    file_uploader_with,
+};
 pub use form::form;
 pub use icon::{IconBox, IconMark, IconTone, icon, icon_in, icon_toned};
 pub use inline_loading::{inline_loading, inline_loading_finished};
@@ -188,7 +191,7 @@ pub use tabs::{contained_tab, contained_tab_bar, tab, tab_bar, vertical_tab, ver
 pub use tag::{dismissible_tag, selectable_tag, tag, tag_lg, tag_sm};
 pub use text::{heading, text};
 pub use tile::{clickable_tile, expandable_tile, selectable_tile, tile};
-pub use toggletip::toggletip;
+pub use toggletip::{toggletip, toggletip_with};
 pub use tooltip::tooltip;
 pub use tree_view::{tree_item, tree_item_xs, tree_view};
 pub use ui_shell::{
