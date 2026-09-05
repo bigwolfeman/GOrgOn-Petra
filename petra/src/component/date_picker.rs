@@ -59,7 +59,8 @@ use super::tokens::{
 use crate::geom::{Align, Axis};
 use crate::tree::{
     Align as PropAlign, Anchor, AxisConstraint, ClampRule, Constraints, Edge, FocusFigure,
-    InputPolicy, Interaction, Justify, Key, Layer, NodeKind, Props, Role, Tip, TrackSize, ViewNode,
+    FocusShownOn, InputPolicy, Interaction, Justify, Key, Layer, NodeKind, Props, Role, Tip,
+    TrackSize, ViewNode,
 };
 
 /// Carbon calendar menu width (`18rem`). Independent of field size.
@@ -298,7 +299,8 @@ fn closed_field(
     node.semantics.expanded = Some(expanded);
     // A well a person picks into: focus brackets its sides, as on a text
     // input, and never underlines into the calendar flush beneath it.
-    node.semantics.focus_figure = FocusFigure::Hug;
+    node.semantics.focus_figure = FocusFigure::Sides;
+    node.semantics.focus_shown_on = FocusShownOn::Well;
     node
 }
 
@@ -880,7 +882,8 @@ mod tests {
     use crate::testing::{Harness, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
     use crate::tree::{
-        Anchor, ClampRule, FocusFigure, Interaction, NodeKind, Props, Registry, Role, Tip, ViewNode,
+        Anchor, ClampRule, FocusFigure, FocusShownOn, Interaction, NodeKind, Props, Registry, Role,
+        Tip, ViewNode,
     };
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
@@ -908,8 +911,13 @@ mod tests {
         assert_eq!(field.semantics.role, Some(Role::Button));
         assert_eq!(
             field.semantics.focus_figure,
-            FocusFigure::Hug,
+            FocusFigure::Sides,
             "a well a person picks into: focus brackets its sides"
+        );
+        assert_eq!(
+            field.semantics.focus_shown_on,
+            FocusShownOn::Well,
+            "and the field is the hull, so it is shown on the field itself"
         );
         assert_eq!(field.semantics.label.as_deref(), Some("Due date"));
         assert_eq!(field.constraints.vertical.min, Some(SIZE_MD));

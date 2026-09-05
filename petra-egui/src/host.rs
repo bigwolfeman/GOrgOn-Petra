@@ -69,12 +69,12 @@ use gorgon_petra::tree::{
     InputPolicy, Interaction, NodeKind, Props, Registry, ValidatedTree, ViewNode, validate,
 };
 
-use crate::focus_caret::{CaretFigure, FocusCaret};
+use crate::focus_caret::FocusCaret;
 use crate::image::ImageSources;
 use crate::input::EventTranslator;
 use crate::paint::{
-    CaretOverlay, CustomPainters, PaintReport, SELECTION_SLOT, caret_clip_limit, caret_dest_pair,
-    focused_caret_target, paint_caret_overlay, paint_frame_with_caret,
+    CaretOverlay, CaretPicture, CustomPainters, PaintReport, SELECTION_SLOT, caret_bands,
+    caret_clip_limit, focused_caret_target, paint_caret_overlay, paint_frame_with_caret,
 };
 use crate::schedule::FrameMotion;
 use crate::text::{FontFaces, GalleyShaper, Typography};
@@ -1442,11 +1442,18 @@ impl<A: App> Host<A> {
             egui::Pos2::ZERO,
             egui::vec2(frame.viewport.size.w, frame.viewport.size.h),
         );
-        self.caret.bars().map(|bars| CaretOverlay {
-            bars,
-            clip: caret_clip_limit(self.caret.clip(), self.caret.is_moving(), page, scale),
-            figure: self.caret.figure(),
-        })
+        let clip = caret_clip_limit(self.caret.clip(), self.caret.is_moving(), page, scale);
+        let bands = self.caret.bands()?;
+        let picture = if self.caret.is_moving() {
+            CaretPicture::Flying(bands)
+        } else {
+            CaretPicture::Settled {
+                node: self.caret.node(),
+                figure: self.caret.figure(),
+                radius: self.caret.radius().map(str::to_owned),
+            }
+        };
+        Some(CaretOverlay { picture, clip })
     }
 
     fn tick_caret(&mut self, frame: &PetrifiedFrame, now: f64) {
@@ -1454,12 +1461,14 @@ impl<A: App> Host<A> {
         match focused_caret_target(frame) {
             Some(target) => {
                 self.caret.tick(
-                    Some((
-                        target.id,
-                        caret_dest_pair(target.node, target.figure, scale),
-                        target.figure,
-                        target.clip,
-                    )),
+                    Some(crate::focus_caret::CaretDest {
+                        id: target.id,
+                        node: target.node,
+                        bands: caret_bands(target.node, target.figure, scale),
+                        figure: target.figure,
+                        radius: target.radius,
+                        clip: target.clip,
+                    }),
                     now,
                 );
             }
@@ -1492,9 +1501,8 @@ impl<A: App> Host<A> {
             // An empty overlay: the frame painter draws no settled ring,
             // because the caret is drawn below, after the bake.
             Some(CaretOverlay {
-                bars: Vec::new(),
+                picture: CaretPicture::Hidden,
                 clip: page,
-                figure: CaretFigure::Underline,
             }),
         );
         self.full_paints = self.full_paints.saturating_add(1);
@@ -1517,9 +1525,7 @@ impl<A: App> Host<A> {
         if let Some(overlay) = overlay
             && paint_caret_overlay(
                 &ctx.layer_painter(petra_layer()),
-                &overlay.bars,
-                overlay.clip,
-                overlay.figure,
+                &overlay,
                 colors,
                 frame.viewport.scale,
                 &mut report,
@@ -1587,15 +1593,7 @@ impl<A: App> Host<A> {
         report.focus_rings = 0;
         report.blind_focus = 0;
         if let Some(overlay) = self.caret_overlay(frame)
-            && paint_caret_overlay(
-                painter,
-                &overlay.bars,
-                overlay.clip,
-                overlay.figure,
-                colors,
-                frame.viewport.scale,
-                &mut report,
-            )
+            && paint_caret_overlay(painter, &overlay, colors, frame.viewport.scale, &mut report)
         {
             report.focus_rings += 1;
         }
@@ -4533,10 +4531,15 @@ mod tests {
         panic!("the window never settled over 32 quiet passes");
     }
 
+    /// The first band a settled caret paints, for the tests that track one
+    /// rectangle through a hop.
     fn settled_caret_bar(host: &Host<Demo>) -> egui::Rect {
         let frame = host.frame().expect("a frame");
         let target = crate::paint::focused_caret_target(frame).expect("something focused");
-        crate::paint::caret_dest_pair(target.node, target.figure, frame.viewport.scale)[0]
+        crate::paint::caret_bands(target.node, target.figure, frame.viewport.scale)
+            .into_iter()
+            .find(|band| band.width() > 0.0 && band.height() > 0.0)
+            .expect("a figure paints at least one band")
     }
 
     /// A press with a button held is a press. It does **not** grab a

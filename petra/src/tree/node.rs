@@ -363,66 +363,135 @@ impl<'de> Deserialize<'de> for Role {
     }
 }
 
-/// How keyboard focus is drawn on a node, and on which rect.
+/// The **shape** keyboard focus takes on a node.
 ///
-/// The indicator's geometry is [`crate::token::FocusRing`]; this is the
-/// choice between its two figures, and it is made by the component that
-/// builds the node. A host must not guess it from the role: a select field,
-/// a dropdown field, a date field and a toggletip trigger are all
-/// [`Role::Button`] and are all wells a person picks into, while a menu item
-/// is [`Role::Button`] and is not. Until 2026-09-05 `gorgon-petra-egui`
-/// decided the figure from `role == TextInput`, in two places, and every
-/// field-shaped button underlined into the surface it had just opened.
+/// Three figures, and the choice is made by the component that builds the
+/// node. A host must not guess it from the role: a select field, a dropdown
+/// field, a date field and a toggletip trigger are all [`Role::Button`] and
+/// are all wells a person picks into, while a menu item is [`Role::Button`]
+/// and is not. Until 2026-09-05 `gorgon-petra-egui` decided the figure from
+/// `role == TextInput`, in two places, and every field-shaped button
+/// underlined into the surface it had just opened.
 ///
-/// Wire form is the kebab-case variant name; absent means
-/// [`Self::Underline`].
+/// *Whose* rect the figure is drawn on is the other half of the question,
+/// and it is [`FocusShownOn`]'s. The two are orthogonal: a node declares a
+/// shape and a target, and every pairing is legal.
+///
+/// Wire form is the kebab-case variant name; absent means [`Self::Border`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum FocusFigure {
-    /// A bar under this node's own rect. Buttons, tabs, radios, menu items.
+    /// A closed ring on the rect's own edge: a [`crate::token::FocusRing::stroke`]
+    /// accent band with a [`crate::token::FocusRing::halo`] ground band
+    /// immediately inside it, both following the node's corner radius.
+    ///
+    /// Carbon's one focus figure, and so this one's default:
+    /// `@include focus-outline('outline')` is `outline: 2px solid $focus;
+    /// outline-offset: -2px` (`utilities/_focus-outline.scss:29`), used 75
+    /// times across 62 component files. The halo is Carbon's too — a primary
+    /// button focuses with `box-shadow: inset 0 0 0 $button-outline-width
+    /// $button-focus-color, inset 0 0 0 $button-border-width $background`
+    /// (`components/button/_mixins.scss:133`) — and Petra needs it more
+    /// sharply, because `focus.ring` is byte-identical to `accent.primary`
+    /// and a primary button's fill *is* `accent.primary`.
+    ///
+    /// Contained by construction: neither band leaves the rect, so a row in
+    /// a dense list shows focus without painting into its neighbours.
     #[default]
-    Underline,
-    /// Bars outside this node's own left and right edges. A field well: a
-    /// text input, a select or dropdown field, a date field, a toggletip
-    /// trigger. A node declaring this is also the **hull** any descendant
-    /// declaring [`Self::HugWell`] is shown on.
-    Hug,
-    /// Bars hugging the nearest ancestor declaring [`Self::Hug`], not this
-    /// node. The `Input` leaf inside a search or number well: the leaf holds
-    /// focus and the well shows it, the way Carbon's `:focus-within` puts
-    /// `.cds--search--focus` on the wrapper and never on the `<input>`. A
-    /// button inside the same well — a number stepper — keeps its own
-    /// [`Self::Underline`], because Carbon gives it its own outline
-    /// (`_number-input.scss:178`). With no such ancestor the leaf hugs
-    /// itself rather than going blind.
-    HugWell,
-    /// A bar under the nearest descendant declaring [`Self::Head`], not
-    /// under this node's own rect.
+    Border,
+    /// A bar under the rect: [`crate::token::FocusRing::thickness`] tall,
+    /// [`crate::token::FocusRing::gap`] below the bottom edge,
+    /// [`crate::token::FocusRing::WIDTH_FRACTION`] of the width, centred.
     ///
-    /// A tree item: the item holds focus and its rect spans its whole
-    /// expanded subtree, so an underline on its own rect lands beneath the
-    /// last grandchild. Carbon draws the ring on the item's head row and
-    /// never on the item — `.cds--tree-node:focus > .cds--tree-node__label`
-    /// (`_treeview.scss:59`), a direct-child selector, with `:focus` itself
-    /// given `outline: none` on the line above.
+    /// Carbon has no focus underline anywhere, so this is a Petra figure and
+    /// wants a reason each time it is declared.
     ///
-    /// The mirror of [`Self::HugWell`], which points at an ancestor. With no
-    /// such descendant the node underlines itself rather than going blind.
-    UnderlineHead,
-    /// The head row a focused ancestor declaring [`Self::UnderlineHead`]
-    /// draws its bar under.
+    /// **No shipped component declares it today.** The operator asked for
+    /// three figures by name on 2026-09-05 and "bar under" is one of them,
+    /// so it is in the vocabulary and a caller may declare it. What it does
+    /// not have is a Carbon rule behind it or a control that needs it.
     ///
-    /// A marker and nothing more: the node carrying it is not interactive
-    /// and never holds focus itself. Focused anyway, it underlines its own
-    /// rect, which is what it is.
-    Head,
+    /// It was briefly on all three tab variants, on a misread of
+    /// `components/tabs/_tabs.scss:596`. That line is under `// Item
+    /// Selected` and binds `$border-interactive`; Carbon focuses a tab with
+    /// `focus-outline('outline')` at `:497-499`. Two accent marks two units
+    /// apart, told apart only by width, was the result. See
+    /// `component::tabs`' `a_tabs_ring_marks_edges_its_indicator_does_not`
+    /// for why an indicator on one edge does not crowd a ring on four.
+    BarUnder,
+    /// Bars outside the rect's left and right edges:
+    /// [`crate::token::FocusRing::thickness`] wide,
+    /// [`crate::token::FocusRing::hug_gap`] clear of each edge, exactly the
+    /// rect's height.
+    ///
+    /// A field well. Also a Petra figure: Carbon puts `focus-outline('outline')`
+    /// on a text input too (`components/text-input/_text-input.scss:55`).
+    /// Petra keeps the departure so a well a person types into does not read
+    /// the same as a button they press.
+    Sides,
 }
 
 impl FocusFigure {
     /// Whether this is the default figure, so the wire form can omit it.
     #[must_use]
     pub fn is_default(&self) -> bool {
-        *self == Self::Underline
+        *self == Self::Border
+    }
+}
+
+/// **Whose** rect a node's [`FocusFigure`] is drawn on.
+///
+/// Orthogonal to the shape. Two of these point away from the node that holds
+/// focus, and they point opposite ways: [`Self::OnWell`] up the ancestor
+/// chain, [`Self::OnHead`] down into the subtree. Both fall back to the
+/// focused node's own rect rather than going blind.
+///
+/// Wire form is the kebab-case variant name; absent means [`Self::Own`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FocusShownOn {
+    /// This node's own rect. Buttons, tabs, radios, menu items, list rows.
+    #[default]
+    Own,
+    /// This node's own rect, and this node is the **hull** any descendant
+    /// declaring [`Self::OnWell`] is shown on. A field well: a text input,
+    /// a select or dropdown field, a date field, a toggletip trigger.
+    Well,
+    /// The nearest ancestor declaring [`Self::Well`], not this node.
+    ///
+    /// The `Input` leaf inside a search or number well: the leaf holds focus
+    /// and the well shows it, the way Carbon's `:focus-within` puts
+    /// `.cds--search--focus` on the wrapper and never on the `<input>`. A
+    /// button inside the same well — a number stepper — keeps [`Self::Own`],
+    /// because Carbon gives it its own outline (`_number-input.scss:178`).
+    /// With no such ancestor the leaf shows focus on itself rather than
+    /// going blind.
+    OnWell,
+    /// The nearest descendant declaring [`Self::Head`], not this node.
+    ///
+    /// A tree item: the item holds focus and its rect spans its whole
+    /// expanded subtree, so an indicator on its own rect wraps the last
+    /// grandchild. Carbon draws the ring on the item's head row and never on
+    /// the item — `.cds--tree-node:focus > .cds--tree-node__label`
+    /// (`_treeview.scss:59`), a direct-child selector, with `:focus` itself
+    /// given `outline: none` on the line above.
+    ///
+    /// The mirror of [`Self::OnWell`], which points at an ancestor. With no
+    /// such descendant the node shows focus on itself rather than going blind.
+    OnHead,
+    /// The head row a focused ancestor declaring [`Self::OnHead`] draws on.
+    ///
+    /// A marker and nothing more: the node carrying it is not interactive
+    /// and never holds focus itself. Focused anyway, it shows focus on its
+    /// own rect, which is what it is.
+    Head,
+}
+
+impl FocusShownOn {
+    /// Whether this is the default target, so the wire form can omit it.
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == Self::Own
     }
 }
 
@@ -476,11 +545,14 @@ pub struct Semantics {
     /// freshness bound.
     #[serde(skip_serializing_if = "is_false")]
     pub stale: bool,
-    /// The figure keyboard focus takes on this node, and which rect shows
-    /// it. Declared by the component, never inferred from [`Self::role`];
-    /// see [`FocusFigure`].
+    /// The shape keyboard focus takes on this node. Declared by the
+    /// component, never inferred from [`Self::role`]; see [`FocusFigure`].
     #[serde(skip_serializing_if = "FocusFigure::is_default")]
     pub focus_figure: FocusFigure,
+    /// Which rect that shape is drawn on. Orthogonal to the shape; see
+    /// [`FocusShownOn`].
+    #[serde(skip_serializing_if = "FocusShownOn::is_default")]
+    pub focus_shown_on: FocusShownOn,
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)]

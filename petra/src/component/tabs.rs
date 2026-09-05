@@ -24,8 +24,8 @@ use super::tokens::{
 use super::{pad, stack};
 use crate::geom::{Align, Axis};
 use crate::tree::{
-    AxisConstraint, Constraints, Interaction, Key, NodeKind, Props, Role, Semantics, TrackSize,
-    ViewNode,
+    AxisConstraint, Constraints, FocusFigure, Interaction, Key, NodeKind, Props, Role, Semantics,
+    TrackSize, ViewNode,
 };
 
 /// Carbon line/contained tab height (`2.5rem`). [`SIZE_MD`] is that number.
@@ -225,6 +225,29 @@ fn tab_variant(
         })
         .interactive(Role::Tab, label, intents);
     node.semantics.selected = selected;
+    // Carbon focuses a tab with the ring: `.cds--tabs__nav-link:focus` is
+    // `@include focus-outline('outline')` — `outline: 2px solid $focus;
+    // outline-offset: -2px`, a 2-unit stroke inside the tab's own edge
+    // (`components/tabs/_tabs.scss:497-499`, and the same mixin again at
+    // `:140`, `:421-423`, `:727-728` for the close button, the scroll
+    // buttons and the panel).
+    //
+    // `mark` is a different rule. It is pinned to one of the tab's own
+    // edges — 2 units at the bottom (Line), 2 at the top (Contained), 3 at
+    // the left (Vertical) — from `.cds--tabs__nav-item--selected`'s
+    // `border-block-end: 2px solid $border-interactive` under `// Item
+    // Selected` (`_tabs.scss:593-596`). It says *which tab is current*, not
+    // *where the keyboard is*.
+    //
+    // The two coexist even though `$focus` and `$border-interactive` are the
+    // same value in the light themes (`#0f62fe`, `@carbon/themes` generated
+    // `_themes.scss` `$white` and `$g10`), because a ring has four edges and
+    // an indicator has one. Wherever the ring's bottom band lands on a Line
+    // tab's indicator, its top, left and right bands are on pixels the
+    // indicator never touches. Containment is the whole reason `Border` is
+    // the default figure; a selected tab does not suspend it.
+    // `a_tabs_ring_marks_edges_its_indicator_does_not` measures that.
+    node.semantics.focus_figure = FocusFigure::Border;
     node
 }
 
@@ -431,6 +454,101 @@ mod tests {
             .find(|p| p.id.ends_with("/root/t"))
             .expect("the tab is missing from the petrified frame");
         assert_eq!(placed.rect.h, SIZE_MD);
+    }
+
+    /// Why a tab keeps `FocusFigure::Border` even when it is the selected
+    /// tab, whose own indicator is the same accent.
+    ///
+    /// Carbon's answer, and the citation this file used to get wrong:
+    /// `.cds--tabs__nav-link:focus` is `focus-outline('outline')`
+    /// (`_tabs.scss:497-499`). `_tabs.scss:596` is `// Item Selected`, a
+    /// different rule for a different meaning.
+    ///
+    /// The property that makes the two legible together is **not** that
+    /// their colours differ; in the white and g10 themes `$focus` and
+    /// `$border-interactive` are both `#0f62fe`. It is that the ring marks
+    /// three edges the indicator does not. So that is what this measures:
+    /// for each variant, the ring's four edges, minus whichever one the
+    /// indicator shares, must be clear of the indicator entirely.
+    ///
+    /// # How this goes red
+    ///
+    /// Trim `FocusRing::border_edges` to the one edge an indicator sits on
+    /// — which is what "focus is a bar under the tab" amounted to — and the
+    /// count of clear edges drops below three.
+    #[test]
+    fn a_tabs_ring_marks_edges_its_indicator_does_not() {
+        use crate::geom::Rect;
+        use crate::token::FocusRing;
+
+        let ring = FocusRing::STANDARD;
+        for (label, node, held) in [
+            ("line", tab("t", "Fibers", true), "bottom"),
+            ("contained", contained_tab("t", "Fibers", true), "top"),
+            ("vertical", vertical_tab("t", "Fibers", true), "left"),
+        ] {
+            assert_eq!(
+                node.semantics.focus_figure,
+                FocusFigure::Border,
+                "{label}: Carbon rings a tab, it does not underline it"
+            );
+            let frame = petrify_lone(node);
+            let find = |suffix: &str| -> Rect {
+                frame
+                    .placements
+                    .iter()
+                    .find(|p| p.id.ends_with(suffix))
+                    .unwrap_or_else(|| panic!("{label}: no placement ending in {suffix}"))
+                    .rect
+            };
+            let tab_rect = find("/root/t");
+            let mark = find("/root/t/indicator");
+            let edges = ring.border_edges(tab_rect);
+            let names = ["top", "right", "bottom", "left"];
+            let area = |r: Rect| r.w * r.h;
+
+            // Exactly one band is swallowed by the indicator: the one on the
+            // edge this variant pins it to. Corners belong to two bands, so
+            // the side bands do clip the indicator's ends — that is a few
+            // square units out of a full-height band, not a covered band,
+            // and the distinction is the whole point.
+            let swallowed: Vec<&str> = names
+                .iter()
+                .zip(edges)
+                .filter(|(_, edge)| area(edge.intersect(mark)) >= area(*edge))
+                .map(|(name, _)| *name)
+                .collect();
+            assert_eq!(
+                swallowed,
+                vec![held],
+                "{label}: the indicator {mark:?} swallows {swallowed:?} of \
+                 the ring on {tab_rect:?}. One band may coincide with the \
+                 selection mark; the rest are what focus has left to show."
+            );
+
+            // And each of the other three keeps pixels the indicator can
+            // never paint, which is what tells the two marks apart on a tab
+            // that is selected *and* focused. `$focus` and
+            // `$border-interactive` are the same colour in the light themes,
+            // so shape is the only channel carrying this, per FR-015.
+            for (name, edge) in names.iter().zip(edges) {
+                if *name == held {
+                    continue;
+                }
+                assert!(
+                    area(edge) > 0.0,
+                    "{label}: the ring's {name} band is degenerate \
+                     ({edge:?}), so the ring is not closed"
+                );
+                let own = area(edge) - area(edge.intersect(mark));
+                assert!(
+                    own > 0.0,
+                    "{label}: the ring's {name} band {edge:?} is entirely \
+                     inside the indicator {mark:?}, so focus paints nothing \
+                     selection does not already paint"
+                );
+            }
+        }
     }
 
     #[test]

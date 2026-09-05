@@ -29,7 +29,8 @@ use super::tooltip::tooltip_anchored;
 use crate::geom::{Align, Axis};
 use crate::token::TokenName;
 use crate::tree::{
-    AxisConstraint, Constraints, InsetRefs, Interaction, Justify, Key, Role, TextRun, ViewNode,
+    AxisConstraint, Constraints, FocusShownOn, InsetRefs, Interaction, Justify, Key, Role, TextRun,
+    ViewNode,
 };
 
 /// Carbon `.cds--snippet--multi` `min-block-size`.
@@ -404,6 +405,8 @@ fn selectable_code(mut node: ViewNode) -> ViewNode {
         .tokens
         .insert("selection-ink".into(), t(TEXT_PRIMARY));
     let mut node = node.interactive(Role::TextInput, CODE_LABEL, CODE_INTENTS);
+    // The run holds focus; the well shows it. See `paint_well`.
+    node.semantics.focus_shown_on = FocusShownOn::OnWell;
     // Carbon's `aria-readonly`. A code well takes a selection and a copy and
     // never a keystroke, and a reader told it is an editable field would be
     // told something false about every one of these forty-two rows.
@@ -439,6 +442,18 @@ fn paint_well(mut node: ViewNode) -> ViewNode {
     node.props
         .tokens
         .insert("background".into(), t(SURFACE_RAISED));
+    // The well is the hull the code run's focus is shown on. Carbon treats
+    // focus inside a snippet at the container: `.cds--snippet--single
+    // :focus-within .cds--snippet-container` (`_code-snippet.scss:500`), and
+    // its `focus-outline('outline')` calls sit on the snippet and its
+    // buttons, never on the text run inside.
+    //
+    // Without this the run rings itself, because `FocusFigure::Border` is
+    // the default and the run is focusable — it declares `Interaction::Drag`
+    // so a selection gesture can reach it. The picture was a blue box drawn
+    // around the whole line at the moment the operator dragged across part
+    // of it, fighting the selection band inside it.
+    node.semantics.focus_shown_on = FocusShownOn::Well;
     node
 }
 
@@ -722,6 +737,48 @@ mod tests {
             "the inline run is not a control"
         );
         assert_eq!(token(code, "selection"), None);
+    }
+
+    /// The code run holds focus and the **well** shows it.
+    ///
+    /// Carbon treats focus inside a snippet at the container:
+    /// `.cds--snippet--single:focus-within .cds--snippet-container`
+    /// (`_code-snippet.scss:500`), and every `focus-outline('outline')` in
+    /// that file is on the snippet or one of its buttons, never on the text
+    /// run.
+    ///
+    /// This is not decoration. `FocusFigure::Border` is the default and the
+    /// run is focusable — it declares `Interaction::Drag` so a selection
+    /// gesture can reach it — so without the pointing the run rings *itself*.
+    /// The picture that produced was a blue box drawn around the whole line
+    /// at the moment a fragment of it was dragged over, fighting the
+    /// selection band inside it. `paint.rs` takes the figure from the node
+    /// focus is shown on, so pointing the run at its well is what puts the
+    /// ring on the container.
+    ///
+    /// # How this goes red
+    ///
+    /// Drop either assignment in `selectable_code` or `paint_well`.
+    #[test]
+    fn a_code_run_shows_its_focus_on_the_well_and_never_on_itself() {
+        for (label, node) in [
+            ("single", code_snippet("s", "pcargo test")),
+            ("multi", code_snippet_multi("m", "pcargo test")),
+        ] {
+            assert_eq!(
+                node.semantics.focus_shown_on,
+                crate::tree::FocusShownOn::Well,
+                "{label}: the well is not the hull, so a descendant \
+                 pointing at it has nothing to be shown on"
+            );
+            let code = named(&node, "code");
+            assert_eq!(
+                code.semantics.focus_shown_on,
+                crate::tree::FocusShownOn::OnWell,
+                "{label}: the code run shows focus on itself, so dragging a \
+                 selection across it rings the whole line"
+            );
+        }
     }
 
     /// The selection ground is a step a reader can see, in both themes, and

@@ -31,7 +31,8 @@ use super::tokens::{
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
-    AxisConstraint, Constraints, FocusFigure, InsetRefs, Key, NodeKind, Props, Role, ViewNode,
+    AxisConstraint, Constraints, FocusFigure, FocusShownOn, InsetRefs, Key, NodeKind, Props, Role,
+    ViewNode,
 };
 
 /// Carbon Search sm. `tokens` only ships [`SIZE_MD`] (md / 40).
@@ -98,7 +99,8 @@ fn search_sized(key: impl Into<Key>, label: impl Into<String>, height: f32) -> V
         ..InsetRefs::default()
     });
     bind_field_chrome(&mut well.props);
-    well.semantics.focus_figure = FocusFigure::Hug;
+    well.semantics.focus_figure = FocusFigure::Sides;
+    well.semantics.focus_shown_on = FocusShownOn::Well;
     well.constraints.vertical.min = Some(height);
     well
 }
@@ -121,7 +123,8 @@ fn search_field(key: &'static str, label: String, height: f32) -> ViewNode {
             },
             ..Constraints::default()
         });
-    node.semantics.focus_figure = FocusFigure::HugWell;
+    node.semantics.focus_figure = FocusFigure::Sides;
+    node.semantics.focus_shown_on = FocusShownOn::OnWell;
     node
 }
 
@@ -135,7 +138,9 @@ mod tests {
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, inks, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
-    use crate::tree::{FocusFigure, Interaction, NodeKind, Props, Registry, Role, ViewNode};
+    use crate::tree::{
+        FocusFigure, FocusShownOn, Interaction, NodeKind, Props, Registry, Role, ViewNode,
+    };
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         node.children
@@ -159,14 +164,14 @@ mod tests {
             search("q", "Filter"),
             search_lg("q", "Filter"),
         ] {
-            assert_eq!(node.semantics.focus_figure, FocusFigure::Hug);
+            assert_eq!(node.semantics.focus_figure, FocusFigure::Sides);
+            assert_eq!(node.semantics.focus_shown_on, FocusShownOn::Well);
+            let input = child(&node, "input");
+            assert_eq!(input.semantics.focus_figure, FocusFigure::Sides);
+            assert_eq!(input.semantics.focus_shown_on, FocusShownOn::OnWell);
             assert_eq!(
-                child(&node, "input").semantics.focus_figure,
-                FocusFigure::HugWell
-            );
-            assert_eq!(
-                child(&node, "magnifier").semantics.focus_figure,
-                FocusFigure::Underline,
+                child(&node, "magnifier").semantics.focus_shown_on,
+                FocusShownOn::Own,
                 "the glyph declares nothing; it is never focused"
             );
         }

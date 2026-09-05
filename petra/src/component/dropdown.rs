@@ -178,7 +178,8 @@ mod tests {
     use crate::testing::{Harness, inks, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
     use crate::tree::{
-        Anchor, FocusFigure, Interaction, NodeKind, Props, Registry, Role, Tip, ViewNode,
+        Anchor, FocusFigure, FocusShownOn, Interaction, NodeKind, Props, Registry, Role, Tip,
+        ViewNode,
     };
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
@@ -208,9 +209,10 @@ mod tests {
         assert_eq!(field.semantics.role, Some(Role::Button));
         assert_eq!(
             field.semantics.focus_figure,
-            FocusFigure::Hug,
-            "the field is a well: focus hugs its sides, as a text input's does"
+            FocusFigure::Sides,
+            "the field is a well: focus brackets its sides, as a text input's does"
         );
+        assert_eq!(field.semantics.focus_shown_on, FocusShownOn::Well);
         assert_eq!(field.semantics.label.as_deref(), Some("Theme"));
         assert_eq!(field.constraints.vertical.min, Some(SIZE_MD));
         assert_eq!(field.constraints.vertical.max, Some(SIZE_MD));
@@ -269,9 +271,10 @@ mod tests {
         assert_eq!(field.semantics.role, Some(Role::Button));
         assert_eq!(
             field.semantics.focus_figure,
-            FocusFigure::Hug,
-            "open, the field still hugs: an underline would cross the list"
+            FocusFigure::Sides,
+            "open, the field keeps its sides: a bar under would cross the list"
         );
+        assert_eq!(field.semantics.focus_shown_on, FocusShownOn::Well);
         assert_eq!(field.semantics.label.as_deref(), Some("Theme"));
         assert_eq!(field.semantics.expanded, Some(true));
         assert_eq!(
@@ -322,8 +325,13 @@ mod tests {
         assert_eq!(on.semantics.role, Some(Role::Button));
         assert_eq!(
             on.semantics.focus_figure,
-            FocusFigure::Underline,
-            "an option row is a button, not a well: it keeps the underline"
+            FocusFigure::Border,
+            "an option row is a button, not a well: it takes Carbon's ring"
+        );
+        assert_eq!(
+            on.semantics.focus_shown_on,
+            FocusShownOn::Own,
+            "and it shows that ring on its own rect"
         );
         assert_eq!(on.semantics.label.as_deref(), Some("Dark"));
         assert!(on.semantics.selected);

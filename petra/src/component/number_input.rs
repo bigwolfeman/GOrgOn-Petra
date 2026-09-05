@@ -50,8 +50,8 @@ use super::tokens::{
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
-    AxisConstraint, Constraints, FocusFigure, Interaction, Justify, Key, NodeKind, Props, Role,
-    ViewNode,
+    AxisConstraint, Constraints, FocusFigure, FocusShownOn, Interaction, Justify, Key, NodeKind,
+    Props, Role, ViewNode,
 };
 
 /// Carbon Default sm. `tokens` only ships [`SIZE_MD`] (md / 40).
@@ -151,7 +151,8 @@ fn number_sized(
         ],
     );
     well.props.align = Some(Align::Center);
-    well.semantics.focus_figure = FocusFigure::Hug;
+    well.semantics.focus_figure = FocusFigure::Sides;
+    well.semantics.focus_shown_on = FocusShownOn::Well;
     match chrome {
         Chrome::Enabled => bind_field_chrome(&mut well.props),
         Chrome::Invalid => {
@@ -200,7 +201,8 @@ fn value_field(key: &'static str, label: String, value: String, height: f32) -> 
             },
             ..Constraints::default()
         });
-    node.semantics.focus_figure = FocusFigure::HugWell;
+    node.semantics.focus_figure = FocusFigure::Sides;
+    node.semantics.focus_shown_on = FocusShownOn::OnWell;
     node
 }
 
@@ -263,7 +265,9 @@ mod tests {
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, inks, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
-    use crate::tree::{FocusFigure, Interaction, NodeKind, Props, Registry, Role, ViewNode};
+    use crate::tree::{
+        FocusFigure, FocusShownOn, Interaction, NodeKind, Props, Registry, Role, ViewNode,
+    };
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         node.children
@@ -287,25 +291,31 @@ mod tests {
             number_input("n", "Replicas", "3"),
             number_input_lg("n", "Replicas", "3"),
         ] {
-            assert_eq!(node.semantics.focus_figure, FocusFigure::Hug);
-            assert_eq!(
-                child(&node, "value").semantics.focus_figure,
-                FocusFigure::HugWell
-            );
+            assert_eq!(node.semantics.focus_figure, FocusFigure::Sides);
+            assert_eq!(node.semantics.focus_shown_on, FocusShownOn::Well);
+            let value = child(&node, "value");
+            assert_eq!(value.semantics.focus_figure, FocusFigure::Sides);
+            assert_eq!(value.semantics.focus_shown_on, FocusShownOn::OnWell);
             for key in ["decrement", "increment"] {
                 assert_eq!(
                     child(&node, key).semantics.focus_figure,
-                    FocusFigure::Underline,
+                    FocusFigure::Border,
                     "{key}: Carbon outlines the stepper itself"
+                );
+                assert_eq!(
+                    child(&node, key).semantics.focus_shown_on,
+                    FocusShownOn::Own,
+                    "{key}: on its own rect, not the well's"
                 );
             }
         }
         let invalid = number_input_invalid("n", "Replicas", "x", "must be a number");
         let well = child(&invalid, "input");
-        assert_eq!(well.semantics.focus_figure, FocusFigure::Hug);
+        assert_eq!(well.semantics.focus_figure, FocusFigure::Sides);
+        assert_eq!(well.semantics.focus_shown_on, FocusShownOn::Well);
         assert_eq!(
-            child(well, "value").semantics.focus_figure,
-            FocusFigure::HugWell
+            child(well, "value").semantics.focus_shown_on,
+            FocusShownOn::OnWell
         );
     }
 

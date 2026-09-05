@@ -11,8 +11,8 @@ pub mod validate;
 
 pub use key::{Key, KeyPath};
 pub use node::{
-    AxisConstraint, Constraints, FocusFigure, Interaction, NodeKind, ROLE_NAMES, Role, Semantics,
-    TransitionRef, ViewNode,
+    AxisConstraint, Constraints, FocusFigure, FocusShownOn, Interaction, NodeKind, ROLE_NAMES,
+    Role, Semantics, TransitionRef, ViewNode,
 };
 // `Align` here is the anchor alignment `props` declares, not
 // `crate::geom::Align`, which is a child's cross-axis placement inside its

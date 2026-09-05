@@ -613,13 +613,16 @@ fn leaf_bytes(scale: Scale, p: &Placement) -> Vec<u8> {
                 ambient: _,
                 actions: _,
                 total_count: _,
-                // Decides where the focus indicator is drawn, and is held
-                // out the way `role` is: `role` decided the same figure
-                // before this field existed and was never hashed either,
-                // so the hole is unchanged. Closing it means hashing both
-                // and bumping `DOMAIN`, which is a contract change owed
-                // separately (`contracts/frame-identity.md`, "Not covered").
+                // These two decide what the focus indicator looks like
+                // and which rect it is drawn on. Both are held out the way
+                // `role` is: `role` decided the same figure before either
+                // field existed and was never hashed either, so the hole is
+                // unchanged and `DOMAIN` does not move. Closing it means
+                // hashing them and bumping `DOMAIN`, which is a contract
+                // change owed separately
+                // (`contracts/frame-identity.md`, "Not covered").
                 focus_figure: _,
+                focus_shown_on: _,
             },
         // Rewritable, not merely redundant: a subtree a reuse pass copies
         // from the previous frame is rebased onto its new position, and
@@ -1016,7 +1019,7 @@ mod tests {
     use crate::geom::Point;
     use crate::geom::{Rect, Scale, Size};
     use crate::token::ThemeMode;
-    use crate::tree::{Edge, FocusFigure, Interaction, NodeKind, Role, TextWrap};
+    use crate::tree::{Edge, FocusFigure, FocusShownOn, Interaction, NodeKind, Role, TextWrap};
 
     fn viewport() -> Viewport {
         Viewport {
@@ -1113,9 +1116,10 @@ mod tests {
                 disabled: false,
                 selected: false,
                 // Non-default on purpose, like the flags above: a fixture
-                // that only ever carries the default cannot show that the
-                // field is held out of the stream.
-                focus_figure: FocusFigure::Hug,
+                // that only ever carries the default cannot show that these
+                // two are held out of the stream.
+                focus_figure: FocusFigure::Sides,
+                focus_shown_on: FocusShownOn::Well,
                 expanded: Some(true),
                 stale: false,
                 ambient: false,
@@ -1383,7 +1387,8 @@ mod tests {
         resemanticked.semantics.actions = vec![Interaction::Scroll];
         resemanticked.semantics.total_count = Some(4);
         resemanticked.semantics.role = Some(Role::Label);
-        resemanticked.semantics.focus_figure = FocusFigure::Underline;
+        resemanticked.semantics.focus_figure = FocusFigure::BarUnder;
+        resemanticked.semantics.focus_shown_on = FocusShownOn::OnHead;
         assert_ne!(resemanticked, base);
         assert_eq!(
             digest(&vp, &[resemanticked]),
