@@ -1,7 +1,7 @@
 //! Inventory row 34, Text input.
 
 use gorgon_petra::component::{
-    field, field_invalid, field_lg, field_readonly, field_sm, section, valued,
+    field, field_invalid, field_lg, field_readonly, field_sm, labeled, section, valued,
 };
 use gorgon_petra::input::{InputEvent, KeyCode};
 use gorgon_petra::tree::ViewNode;
@@ -20,6 +20,11 @@ const LG: &str = "field-lg";
 /// `props.placeholder`, so before this the page could not have contained
 /// anything: the operator saw five empty wells and called them broken, which
 /// they were.
+///
+/// Every field sits under Carbon's label (`labeled`), the way
+/// `34-text-input.png` shows all five: label above, then the well. A bare
+/// well with its name inside it as a placeholder is a search box, not a
+/// text input.
 pub struct TextInput {
     md: String,
     sm: String,
@@ -68,11 +73,31 @@ impl Page for TextInput {
                 "inputs",
                 sp("spacing.md"),
                 vec![
-                    valued(field(MD, "Fiber name"), self.md.clone()),
-                    valued(field_sm(SM, "Small"), self.sm.clone()),
-                    valued(field_lg(LG, "Large"), self.lg.clone()),
-                    field_invalid("field-bad", "Port", "must be a number"),
-                    field_readonly("field-ro", "Read only"),
+                    labeled(
+                        "fiber-name",
+                        "Fiber name",
+                        valued(field(MD, "Fiber name"), self.md.clone()),
+                    ),
+                    labeled(
+                        "small",
+                        "Small",
+                        valued(field_sm(SM, "Small input"), self.sm.clone()),
+                    ),
+                    labeled(
+                        "large",
+                        "Large",
+                        valued(field_lg(LG, "Large input"), self.lg.clone()),
+                    ),
+                    labeled(
+                        "port",
+                        "Port",
+                        field_invalid("field-bad", "Port", "must be a number"),
+                    ),
+                    labeled(
+                        "read-only",
+                        "Read only",
+                        field_readonly("field-ro", "Read-only value"),
+                    ),
                 ],
             )],
         )

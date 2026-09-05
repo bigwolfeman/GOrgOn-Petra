@@ -1,24 +1,47 @@
 //! Carbon Slider (slice-e). Track 2px T070. Two-handle omitted.
 //!
 //! Anatomy of the default (single-handle) slider, style page +
-//! `_slider.scss`:
+//! `_slider.scss`, checked against `30-slider.png` on 2026-09-04:
 //! 1. Label — required, above the rail ([`Role::Button`] lives on the
 //!    handle, FR-058).
 //! 2. Track — unfilled rail, [`BORDER_SUBTLE`], height **2px** (SCSS;
-//!    style-page 4px is design intent, T070 prefers SCSS).
+//!    style-page 4px is design intent, T070 prefers SCSS). Accepts a
+//!    press: Carbon jumps the value to wherever the track is clicked and
+//!    drags from there, so the rail declares [`Interaction::Drag`] too.
 //! 3. Min value — leftmost range label (`"0"`).
-//! 4. Handle — 14×14 circle ([`SHAPE_FULL`]), [`Interaction::Drag`] plus
-//!    Focus and Click.
+//! 4. Handle — 14×14 circle ([`SHAPE_FULL`]) in [`LAYER_SELECTED_INVERSE`]
+//!    (SCSS `background: $layer-selected-inverse`; the style page's
+//!    `$icon-primary` is the documentation side of a T070 disagreement),
+//!    [`Interaction::Drag`] plus Focus, Click and Hover. The filled track
+//!    is the same tone.
 //! 5. Max value — rightmost range label (`"100"`).
+//! 6. Number input — 64 wide, 40 tall, showing the value as an integer on
+//!    the `0`–`100` range the labels name, in Carbon's field chrome
+//!    (`_slider.scss` `.cds--slider-text-input`, style page "number input
+//!    40px tall × 64px wide"). Editable: the page that owns the slider hears
+//!    its keystrokes the way it hears a text field's.
 //!
-//! Number input is omitted (constructor has no field). Range (two-handle)
-//! is omitted. Read-only collapses the handle to zero size, not a dim.
+//! Range (two-handle) is omitted. Read-only collapses the handle to zero
+//! size, not a dim, and drops the number input's editing intents.
+//!
+//! # Why the fill is not the accent
+//!
+//! It was, until 2026-09-04, because the accent is the one blue this library
+//! spends and a filled track looked like a place to spend it. Carbon's g100
+//! filled track and handle are white (`$layer-selected-inverse`), its white
+//! theme's are near-black, and the accent appears only under focus
+//! (`.cds--slider__thumb:focus ~ .cds--slider__filled-track {
+//! background: $border-interactive }`). The inverse tone is a luminance
+//! step against the rail nobody can miss, which is the property a
+//! colour-blind reader needs and a blue-on-grey track has less of.
 
+use super::field::{EDITABLE_TEXT_INTENTS, bind_field_chrome};
 use super::stack;
 use super::swatch;
 use super::text::text;
 use super::tokens::{
-    ACCENT_PRIMARY, BORDER_SUBTLE, SHAPE_FULL, SPACING_03, TEXT_MUTED, TEXT_PRIMARY, t,
+    BORDER_SUBTLE, LAYER_SELECTED_INVERSE, SHAPE_FULL, SIZE_MD, SPACING_03, SPACING_05, TEXT_MUTED,
+    TEXT_PRIMARY, TYPOGRAPHY_BODY, t,
 };
 use crate::frame::PetrifiedFrame;
 use crate::geom::{Align, Axis, Point};
@@ -37,10 +60,15 @@ const MAX_TRACK: f32 = 640.0;
 /// Smallest weight either rail track may carry (tree acceptance refuses 0).
 const MIN_WEIGHT: f32 = 0.001;
 
+/// SOURCED style page: the paired number input is 64 wide × 40 tall.
+const INPUT_WIDTH: f32 = 64.0;
+
 const _: () = assert!(TRACK_HEIGHT == 2.0);
 const _: () = assert!(HANDLE == 14.0);
 const _: () = assert!(MIN_TRACK == 200.0);
 const _: () = assert!(MAX_TRACK == 640.0);
+const _: () = assert!(INPUT_WIDTH == 64.0);
+const _: () = assert!(SIZE_MD == 40.0);
 
 const HANDLE_INTENTS: &[Interaction] = &[
     Interaction::Drag,
@@ -48,6 +76,13 @@ const HANDLE_INTENTS: &[Interaction] = &[
     Interaction::Click,
     Interaction::Hover,
 ];
+
+/// What the rail answers to: a press anywhere on the track starts a drag
+/// from that point (Carbon: "clicking anywhere on the track jumps the value
+/// to that point"). No `Hover`: the rail has no hover picture, and a rail
+/// that were hovered would be reported to the page as a pointer position
+/// it never asked for.
+const RAIL_INTENTS: &[Interaction] = &[Interaction::Drag, Interaction::Click];
 
 fn normalise(value: f32) -> f32 {
     if value.is_finite() {
@@ -59,6 +94,28 @@ fn normalise(value: f32) -> f32 {
 
 fn percent(done: f32) -> String {
     format!("{:.0}%", done * 100.0)
+}
+
+/// The integer the number input shows for `done`, on the `0`–`100` range
+/// the min and max labels name.
+#[must_use]
+pub fn slider_input_text(value: f32) -> String {
+    format!("{:.0}", normalise(value) * 100.0)
+}
+
+/// The normalised value an integer typed into the number input names:
+/// `"40"` is `0.4`. Digits only; anything else, or nothing, is `None`, so a
+/// page can leave the value where it was rather than jump to zero on a
+/// stray keystroke.
+#[must_use]
+pub fn slider_value_of_input(text: &str) -> Option<f32> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() || !trimmed.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let n: u32 = trimmed.parse().ok()?;
+    #[allow(clippy::cast_precision_loss)]
+    Some(normalise(n as f32 / 100.0))
 }
 
 fn pin_extent(w: f32, h: f32) -> Constraints {
@@ -94,7 +151,7 @@ fn handle_node(label: String, value: String, size: f32, live: bool) -> ViewNode 
         size,
         size,
         if size > 0.0 {
-            Some(ACCENT_PRIMARY)
+            Some(LAYER_SELECTED_INVERSE)
         } else {
             None
         },
@@ -107,6 +164,29 @@ fn handle_node(label: String, value: String, size: f32, live: bool) -> ViewNode 
         handle.semantics.value = Some(value);
     }
     handle
+}
+
+/// The paired number input: Carbon's field chrome, 64 × 40, showing the
+/// value as an integer. Editable unless the slider is read-only.
+fn input_node(label: &str, value: f32, read_only: bool) -> ViewNode {
+    let mut props = Props {
+        text: Some(slider_input_text(value)),
+        style: Some(t(TYPOGRAPHY_BODY)),
+        ..Props::default()
+    };
+    props.tokens.insert("foreground".into(), t(TEXT_PRIMARY));
+    bind_field_chrome(&mut props);
+    let intents: &[Interaction] = if read_only {
+        &[Interaction::Focus]
+    } else {
+        EDITABLE_TEXT_INTENTS
+    };
+    let mut node = ViewNode::new(NodeKind::Input, "input")
+        .with_props(props)
+        .with_constraints(pin_extent(INPUT_WIDTH, SIZE_MD))
+        .interactive(Role::TextInput, format!("{label} value"), intents);
+    node.semantics.read_only = read_only;
+    node
 }
 
 fn slider_built(
@@ -128,7 +208,7 @@ fn slider_built(
         .tokens
         .insert("foreground".into(), t(TEXT_PRIMARY));
 
-    let fill = rail_cell("fill", ACCENT_PRIMARY);
+    let fill = rail_cell("fill", LAYER_SELECTED_INVERSE);
     let track = rail_cell("track", BORDER_SUBTLE);
     let handle = handle_node(label.clone(), reported.clone(), handle_size, !read_only);
 
@@ -147,12 +227,27 @@ fn slider_built(
         max: Some(MAX_TRACK),
         priority: 0,
     };
+    if !read_only {
+        // A press on the track, not only on the 14-unit handle, starts the
+        // gesture. The handle is painted after the rail, so a press on the
+        // handle still names the handle (`input::hit_test` walks paint
+        // order back to front); the rail catches the rest of the track.
+        rail = rail.interactive(Role::Pane, format!("{label} track"), RAIL_INTENTS);
+    }
 
+    // SOURCED style page: range labels carry `margin-right: 16px`, and the
+    // Carbon shot has 16 between "0" and the rail and between "100" and the
+    // number input.
     let row = stack(
         "row",
         Axis::Horizontal,
-        Some(SPACING_03),
-        vec![range_label("min", "0"), rail, range_label("max", "100")],
+        Some(SPACING_05),
+        vec![
+            range_label("min", "0"),
+            rail,
+            range_label("max", "100"),
+            input_node(&label, done, read_only),
+        ],
     );
 
     let mut node = stack(key, Axis::Vertical, Some(SPACING_03), vec![caption, row]);
@@ -223,9 +318,13 @@ fn rail_of(node: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::{
-        HANDLE, MAX_TRACK, MIN_TRACK, TRACK_HEIGHT, slider, slider_readonly, slider_value_at,
+        HANDLE, INPUT_WIDTH, MAX_TRACK, MIN_TRACK, TRACK_HEIGHT, slider, slider_input_text,
+        slider_readonly, slider_value_at, slider_value_of_input,
     };
-    use crate::component::tokens::{ACCENT_PRIMARY, BORDER_SUBTLE, SHAPE_FULL};
+    use crate::component::tokens::{
+        ACCENT_PRIMARY, BORDER_STRONG, BORDER_SUBTLE, LAYER_SELECTED_INVERSE, SHAPE_FULL, SIZE_MD,
+        SPACING_05, SURFACE_RAISED,
+    };
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::Point;
     use crate::geom::{Axis, Size};
@@ -258,8 +357,96 @@ mod tests {
         assert_eq!(track.constraints.vertical.max, Some(TRACK_HEIGHT));
         assert_eq!(TRACK_HEIGHT, 2.0);
         assert_ne!(TRACK_HEIGHT, 4.0);
-        assert_eq!(token(fill, "background"), Some(ACCENT_PRIMARY));
+        // SCSS: `.cds--slider__filled-track { background:
+        // $layer-selected-inverse }`. The accent is the *focused* fill
+        // (`$border-interactive`) and was wrong at rest; asserted away by
+        // name so it cannot come back as a "fix".
+        assert_eq!(token(fill, "background"), Some(LAYER_SELECTED_INVERSE));
+        assert_ne!(token(fill, "background"), Some(ACCENT_PRIMARY));
         assert_eq!(token(track, "background"), Some(BORDER_SUBTLE));
+    }
+
+    /// The rail accepts a press: Carbon jumps the value to wherever the
+    /// track is clicked and drags from there. Without `Drag` on the rail a
+    /// press on the track routed nowhere and only the 14-unit handle was
+    /// a place to start.
+    #[test]
+    fn the_rail_accepts_a_press_so_a_click_on_the_track_starts_a_drag() {
+        let node = slider("vol", "Volume", 0.4);
+        let rail = named(&node, "rail");
+        assert!(rail.interactions.contains(&Interaction::Drag));
+        assert!(rail.interactions.contains(&Interaction::Click));
+        assert!(
+            !rail.interactions.contains(&Interaction::Hover),
+            "a hovered rail would be reported to the page as a position it \
+             never asked for"
+        );
+        assert_eq!(rail.semantics.label.as_deref(), Some("Volume track"));
+        let readonly = slider_readonly("vol", "Volume", 0.4);
+        assert!(
+            named(&readonly, "rail").interactions.is_empty(),
+            "a read-only slider's track does not start a drag"
+        );
+    }
+
+    /// The paired number input: 64 × 40, Carbon's field chrome, the value
+    /// as an integer on the labels' 0–100 range, editable, and 16 from the
+    /// max label (the row's spacing, style page `margin-right: 16px`).
+    #[test]
+    fn the_number_input_shows_the_value_as_an_integer_in_a_carbon_well() {
+        let node = slider("vol", "Volume", 0.4);
+        let row = named(&node, "row");
+        let keys: Vec<&str> = row.children.iter().map(|c| c.key.as_str()).collect();
+        assert_eq!(keys, ["min", "rail", "max", "input"]);
+        assert_eq!(
+            row.props.spacing.as_ref().map(TokenName::as_str),
+            Some(SPACING_05)
+        );
+        let input = named(&node, "input");
+        assert_eq!(input.kind, NodeKind::Input);
+        assert_eq!(input.props.text.as_deref(), Some("40"));
+        assert_eq!(input.constraints.horizontal.min, Some(INPUT_WIDTH));
+        assert_eq!(input.constraints.horizontal.max, Some(INPUT_WIDTH));
+        assert_eq!(input.constraints.vertical.min, Some(SIZE_MD));
+        assert_eq!(input.constraints.vertical.max, Some(SIZE_MD));
+        assert_eq!(token(input, "background"), Some(SURFACE_RAISED));
+        assert_eq!(token(input, "border-bottom"), Some(BORDER_STRONG));
+        assert_eq!(token(input, "border"), None);
+        assert_eq!(input.semantics.role, Some(Role::TextInput));
+        assert_eq!(input.semantics.label.as_deref(), Some("Volume value"));
+        assert!(input.interactions.contains(&Interaction::TextEdit));
+        assert!(input.interactions.contains(&Interaction::Click));
+        assert!(!input.semantics.read_only);
+
+        let readonly_slider = slider_readonly("vol", "Volume", 0.4);
+        let readonly = named(&readonly_slider, "input");
+        assert!(readonly.semantics.read_only);
+        assert!(!readonly.interactions.contains(&Interaction::TextEdit));
+        assert_eq!(readonly.props.text.as_deref(), Some("40"));
+    }
+
+    /// The integer the input shows and the value it names round-trip, and
+    /// a non-number names nothing rather than zero.
+    #[test]
+    fn the_input_text_and_the_value_round_trip() {
+        assert_eq!(slider_input_text(0.4), "40");
+        assert_eq!(slider_input_text(0.0), "0");
+        assert_eq!(slider_input_text(1.0), "100");
+        assert_eq!(slider_input_text(f32::NAN), "0");
+        assert_eq!(slider_value_of_input("40"), Some(0.4));
+        assert_eq!(slider_value_of_input("0"), Some(0.0));
+        assert_eq!(
+            slider_value_of_input("250"),
+            Some(1.0),
+            "clamped to the range"
+        );
+        assert_eq!(
+            slider_value_of_input(""),
+            None,
+            "nothing typed names nothing"
+        );
+        assert_eq!(slider_value_of_input("4x"), None);
+        assert_eq!(slider_value_of_input("-4"), None);
     }
 
     #[test]
@@ -275,7 +462,8 @@ mod tests {
         assert_eq!(handle.constraints.horizontal.min, Some(HANDLE));
         assert_eq!(handle.constraints.vertical.min, Some(HANDLE));
         assert_eq!(HANDLE, 14.0);
-        assert_eq!(token(handle, "background"), Some(ACCENT_PRIMARY));
+        // SCSS: `.cds--slider__thumb { background: $layer-selected-inverse }`.
+        assert_eq!(token(handle, "background"), Some(LAYER_SELECTED_INVERSE));
         assert_eq!(token(handle, "radius"), Some(SHAPE_FULL));
         assert_eq!(named(&node, "label").props.text.as_deref(), Some("Volume"));
         assert_eq!(named(&node, "min").props.text.as_deref(), Some("0"));

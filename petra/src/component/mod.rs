@@ -149,13 +149,14 @@ pub use data_table::{
 pub use date_picker::{date_picker, date_picker_open};
 pub use dropdown::{dropdown, dropdown_open, dropdown_option};
 pub use field::{
-    field, field_fluid, field_invalid, field_labeled, field_lg, field_readonly, field_sm, valued,
+    field, field_fluid, field_invalid, field_labeled, field_lg, field_readonly, field_sm, labeled,
+    valued,
 };
 pub use file_uploader::{file_uploader, file_uploader_item};
 pub use form::form;
 pub use icon::{IconBox, IconMark, IconTone, icon, icon_in, icon_toned};
 pub use inline_loading::{inline_loading, inline_loading_finished};
-pub use link::link;
+pub use link::{link, link_inline};
 pub use list::{list_item, list_item_with, ordered_list, unordered_list};
 pub use list_row::list_row;
 pub use loading::{loading, loading_sm, spinner_phase};
@@ -173,7 +174,9 @@ pub use progress_indicator::{progress_indicator, progress_step};
 pub use search::{search, search_lg, search_sm};
 pub use section::section;
 pub use select::{select, select_lg, select_open, select_sm};
-pub use slider::{slider, slider_readonly, slider_value_at};
+pub use slider::{
+    slider, slider_input_text, slider_readonly, slider_value_at, slider_value_of_input,
+};
 pub use status::status;
 pub use structured_list::{structured_list, structured_list_row};
 pub use tabs::{contained_tab, contained_tab_bar, tab, tab_bar, vertical_tab, vertical_tab_bar};

@@ -69,6 +69,12 @@ const EDGE_SLOTS: [(&str, Edge); 4] = [
 ];
 /// Token slot used for a node's text.
 pub const FOREGROUND_SLOT: &str = "foreground";
+/// Token slot painted as a one-unit rule under each row of a node's text,
+/// in the slot's own colour. Absent means no rule. Carbon's Link is
+/// `text-decoration: underline` on hover, and always for its inline form;
+/// this is that channel, and it takes `underline@hover` like any other slot.
+pub const UNDERLINE_SLOT: &str = "underline";
+
 /// Token slot painted as the corner radius of a node's background and
 /// border. Resolves through a `shape.*` token (FR-053, C17); a node that
 /// binds no `radius` paints square corners, the same default it had before
@@ -108,6 +114,7 @@ const KNOWN_SLOTS: &[&str] = &[
     BORDER_BOTTOM_SLOT,
     BORDER_LEFT_SLOT,
     FOREGROUND_SLOT,
+    UNDERLINE_SLOT,
     RADIUS_SLOT,
     SHADOW_SLOT,
     SILHOUETTE_SLOT,
@@ -1308,6 +1315,31 @@ fn paint_one(
         }
         report.texts += 1;
         shapes += 1;
+        // The underline is a strip one snapped unit deep under each row,
+        // as wide as that row's glyphs, in the slot's own colour rather
+        // than the text's: Carbon's link underline is `currentColor`, but a
+        // slot that carried its own colour costs nothing more and is what
+        // lets `underline@hover` name a tone. Drawn after the glyphs so a
+        // descender crossing it stays legible.
+        if let Some(token) = resolve_slot(&content.tokens, UNDERLINE_SLOT, state)
+            && let Some(color) = resolve_or_record(env.colors, token, report)
+        {
+            let depth = device_snapped_width(1.0, env.scale);
+            for row in &galley.rows {
+                let run = row
+                    .rect_without_leading_space()
+                    .translate(text_pos.to_vec2());
+                if run.width() <= 0.0 {
+                    continue;
+                }
+                let strip = egui::Rect::from_min_size(
+                    egui::pos2(run.min.x, run.max.y - depth),
+                    egui::vec2(run.width(), depth),
+                );
+                painter.rect_filled(strip, 0.0, color);
+                shapes += 1;
+            }
+        }
     }
 
     if let Some(source) = &content.image {
@@ -2552,7 +2584,7 @@ mod tests {
     ///
     /// This assertion has to live in `gorgon-petra-egui`, because
     /// `gorgon-petra` does not depend on it and so cannot see `KNOWN_SLOTS`.
-    /// Its sibling half — that the schema is exactly six named entries — is
+    /// Its sibling half — that the schema is exactly eleven named entries — is
     /// `token::slot::tests::the_shipped_schema_is_exactly_what_the_painter_draws`.
     #[test]
     fn the_painter_draws_every_slot_the_schema_declares() {
@@ -2569,6 +2601,158 @@ mod tests {
              drifted apart. A slot only one side knows is either a promise to \
              an author the painter cannot keep, or a painter feature tree \
              acceptance will not let anybody bind."
+        );
+    }
+
+    /// Every filled, unstroked rect egui received, in paint order. What a
+    /// side rule and an underline are made of, and what a full `border`
+    /// (a stroke) and a fill (a rect with a background token) are not.
+    fn filled_rects(out: &egui::FullOutput) -> Vec<egui::Rect> {
+        out.shapes
+            .iter()
+            .filter_map(|cs| match &cs.shape {
+                Shape::Rect(r) if r.stroke.width == 0.0 && r.fill != Color32::TRANSPARENT => {
+                    Some(r.rect)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// `border-bottom` is one strip along the bottom edge and nothing on the
+    /// other three: no stroke, no top, no sides.
+    ///
+    /// Carbon's field is a fill with a bottom rule (slice-e "Text input"),
+    /// and until this slot existed the only edge this painter could draw
+    /// was a box, so every field in the catalog drew one. Read from the
+    /// shapes egui received, at a fractional scale so the rule's depth has
+    /// to be snapped to be one crisp row of device pixels.
+    #[test]
+    fn a_bottom_border_is_one_strip_on_the_bottom_edge_and_no_box() {
+        let scale = Scale::new(1.5).unwrap();
+        let host = Headless::new();
+        let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
+        let mut props = Props::default();
+        props
+            .tokens
+            .insert("border-bottom".into(), tok("border.subtle"));
+        let node = ViewNode::new(NodeKind::Stack, "root").with_props(props);
+        let frame = petrify(
+            1,
+            validated(&node),
+            &mut h.ctx(),
+            Viewport::new(Size::new(240.0, 40.0), ThemeMode::Dark).with_scale(scale),
+            TransitionActivity::default(),
+        );
+        let mut shaper = host.shaper();
+        let report = paint_frame(&host.painter(), &frame, &mut shaper, &snapshot());
+        assert!(
+            !report.unknown_slots.contains("border-bottom"),
+            "the painter does not know the slot: {report:?}"
+        );
+        assert!(report.unresolved_tokens.is_empty(), "{report:?}");
+
+        let out = host.0.run_ui(RawInput::default(), |_| {});
+        let stroked = out
+            .shapes
+            .iter()
+            .any(|cs| matches!(&cs.shape, Shape::Rect(r) if r.stroke.width > 0.0));
+        assert!(!stroked, "a bottom rule must not paint a box stroke");
+        // A line segment, not a filled strip. Two waves wrote this slot the
+        // same day and the landed painter is the one that strokes a segment
+        // down the inside of the edge, which puts it on the same device
+        // pixels `StrokeKind::Inside` gives the four-sided outline. This
+        // test asserts the geometry either shape has to satisfy.
+        let segments: Vec<_> = out
+            .shapes
+            .iter()
+            .filter_map(|cs| match &cs.shape {
+                Shape::LineSegment { points, stroke } => Some((*points, *stroke)),
+                _ => None,
+            })
+            .collect();
+        out.drop_without_applying_deltas();
+        assert_eq!(segments.len(), 1, "exactly one strip: {segments:?}");
+        let ([a, b], stroke) = segments[0];
+        let node_rect = to_egui_snapped(frame.placements[0].rect, scale);
+        let depth = device_snapped_width(1.0, scale);
+        assert!(
+            (a.y - (node_rect.max.y - depth / 2.0)).abs() < 1e-4 && (a.y - b.y).abs() < 1e-4,
+            "the strip sits on the bottom edge, inside it: {a:?} {b:?} in {node_rect:?}"
+        );
+        assert!(
+            (a.x - node_rect.min.x).abs() < 1e-4 && (b.x - node_rect.max.x).abs() < 1e-4,
+            "and spans the full width"
+        );
+        assert!(
+            (stroke.width - depth).abs() < 1e-4,
+            "one snapped unit deep: {} vs {depth}",
+            stroke.width
+        );
+        let device = stroke.width * scale.factor();
+        assert!(
+            (device - device.round()).abs() < 1e-4,
+            "the rule is {device} device pixels, not a whole number"
+        );
+    }
+
+    /// `underline` paints one strip under the text run, as wide as the
+    /// glyphs and no wider than the node, and nothing when the slot is not
+    /// bound.
+    ///
+    /// The link's accessible channel for an operator who cannot read the
+    /// hue. Proved by difference: the same text with and without the slot,
+    /// and the one extra shape has to be a strip that sits under the run.
+    #[test]
+    fn an_underline_is_one_strip_under_the_text_run() {
+        let scale = Scale::new(2.0).unwrap();
+        let paint = |underline: bool| -> (Vec<egui::Rect>, egui::Rect) {
+            let host = Headless::new();
+            let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
+            let mut props = Props {
+                text: Some("Open the spec".to_owned()),
+                ..Props::default()
+            };
+            if underline {
+                props
+                    .tokens
+                    .insert("underline".into(), tok("accent.primary"));
+            }
+            let node = ViewNode::new(NodeKind::Text, "root").with_props(props);
+            let frame = petrify(
+                1,
+                validated(&node),
+                &mut h.ctx(),
+                Viewport::new(Size::new(240.0, 40.0), ThemeMode::Dark).with_scale(scale),
+                TransitionActivity::default(),
+            );
+            let mut shaper = host.shaper();
+            let report = paint_frame(&host.painter(), &frame, &mut shaper, &snapshot());
+            assert!(report.unknown_slots.is_empty(), "{report:?}");
+            assert!(report.unresolved_tokens.is_empty(), "{report:?}");
+            let out = host.0.run_ui(RawInput::default(), |_| {});
+            let strips = filled_rects(&out);
+            out.drop_without_applying_deltas();
+            (strips, to_egui_snapped(frame.placements[0].rect, scale))
+        };
+        let (plain, _) = paint(false);
+        assert!(plain.is_empty(), "plain text paints no strip: {plain:?}");
+        let (strips, node_rect) = paint(true);
+        assert_eq!(strips.len(), 1, "one line of text, one strip: {strips:?}");
+        let strip = strips[0];
+        let depth = device_snapped_width(1.0, scale);
+        assert!(
+            (strip.height() - depth).abs() < 1e-4,
+            "one snapped unit deep: {}",
+            strip.height()
+        );
+        assert!(
+            strip.width() > 0.0 && strip.max.x <= node_rect.max.x + 1e-3,
+            "as wide as the run and inside the node: {strip:?} in {node_rect:?}"
+        );
+        assert!(
+            strip.max.y <= node_rect.max.y + 1e-3 && strip.min.y > node_rect.min.y,
+            "under the glyphs, inside the node: {strip:?} in {node_rect:?}"
         );
     }
 

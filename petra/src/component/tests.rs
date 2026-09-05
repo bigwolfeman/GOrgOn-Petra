@@ -15,7 +15,7 @@ use crate::testing::{Harness, validated_with};
 use crate::token::{StatusShape, StatusToken, ThemeMode, TokenName, standard_vocabulary};
 use crate::tree::{Interaction, NodeKind, Props, Registry, ViewNode};
 
-use super::tokens::{ACCENT_PRIMARY, BORDER_SUBTLE, TEXT_ON_ACCENT};
+use super::tokens::{ACCENT_PRIMARY, BORDER_STRONG, BORDER_SUBTLE, TEXT_ON_ACCENT};
 use super::{
     MAX_LAYER_DEPTH, accordion, accordion_item, ai_label, ai_label_inline, breadcrumb,
     breadcrumb_item, button, checkbox, clickable_tile, code_snippet, code_snippet_inline,
@@ -261,7 +261,7 @@ fn full_gallery() -> ViewNode {
     // bar, progress indicator, radio button, search). Popover has no
     // closed form — every constructor it exports IS the anchored surface —
     // so it sits beside the button its `Anchor::Sibling` names.
-    // Number input's invalid form binds an accent `border` (`ACCENT_PRIMARY`,
+    // Number input's invalid form binds an error `border` (`SUPPORT_ERROR`,
     // same pattern as `field_invalid`, which for the identical reason is
     // also absent from this tree) and so is audited only inside
     // `number_input.rs`'s own module, to keep `containers_take_a_tone_and_
@@ -299,7 +299,7 @@ fn full_gallery() -> ViewNode {
     // (scope gap, recorded in the plan) so only the closed and disabled
     // forms appear here. The `tabs` section below already carries Line
     // selected/unselected, so this section covers Contained and Vertical
-    // instead. `field_invalid` binds an accent `border` (same pattern as
+    // instead. `field_invalid` binds an error `border` (same pattern as
     // Number input's invalid form, carbon4's own comment above) and so is
     // audited only inside `field.rs`'s own module, to keep
     // `containers_take_a_tone_and_controls_take_an_edge` a single-tone
@@ -1105,11 +1105,10 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
     /// Every node in [`full_gallery`] that may draw a border, by the key
     /// path it appears at. An exact set: a node missing from here that draws
     /// one fails, and a node listed here that stops drawing one fails too.
-    const DRAWS_AN_EDGE: [&str; 41] = [
+    const DRAWS_AN_EDGE: [&str; 29] = [
         // `field`: an empty well with no boundary does not read as a place
         // to type. See `field`'s own doc for why it keeps one when `button`
         // does not.
-        "root/controls/name",
         // The binary controls' marks: no fill at all when they are off.
         // `check`, `check-off` and `check-disabled` are the same box shape
         // at three different `Semantics` states — `empty_mark`/`marked_box`
@@ -1194,7 +1193,6 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         "root/carbon2/dt-jobs/header/select/select-all/box",
         // Form's field child: the exact same `field()` component as
         // `root/controls/name`, for the exact same reason.
-        "root/carbon2/fm-signup/fm-name",
         // File uploader's incomplete-item mark: a static ring standing in
         // for Carbon's spinning loader. Like the binary controls' marks
         // above, this shape has **no fill at all** — the border is not
@@ -1231,8 +1229,6 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         // inventing a directional token. `ni-disabled` carries it too:
         // `disabled()` only clears interactions and sets
         // `Semantics.disabled`, it never touches a token binding.
-        "root/carbon4/ni-count",
-        "root/carbon4/ni-disabled",
         // Pagination's own bar was here, binding a four-sided `border` to
         // approximate Carbon's one-sided `border-block-start: 1px solid
         // $border-subtle` (slice-d). W8 audit, `23-pagination.png`: the
@@ -1279,11 +1275,6 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         "root/carbon4/radio-checked/box",
         "root/carbon4/radio-disabled/box",
         "root/carbon4/radio-unchecked/box",
-        // Search's own well: Carbon's `border-block-end: 1px solid
-        // $border-strong` on `.cds--search-input` (slice-d anatomy #1),
-        // the same directional-rule-approximated-as-a-full-outline class
-        // as Number input's well above.
-        "root/carbon4/srch-filter",
         // Select's closed field: Carbon's `border-block-end: 1px solid
         // $border-strong` on `.cds--select-input` (slice-e, Select
         // anatomy #3), the same `field`-class input-well pairing as
@@ -1322,21 +1313,6 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         // selected one (`tile-select-on`) is an accent-filled box with a
         // check and binds no border.
         "root/carbon5/tile-select-off/row/box",
-        // Text input (`field`): the exact same `field()`/`field_sm`/
-        // `field_lg`/`field_readonly`/`field_fluid` well as
-        // `root/controls/name` above, for the exact same reason.
-        // `field_labeled`'s wrapper carries no token of its own — its
-        // `input` child is where the edge lives, the same anatomy as
-        // Form's `fm-name` above. `field_invalid` binds an accent border
-        // instead and is deliberately absent from this tree (see this
-        // section's own comment above `carbon5`).
-        "root/carbon5/txt-default",
-        "root/carbon5/txt-disabled",
-        "root/carbon5/txt-fluid",
-        "root/carbon5/txt-labeled/input",
-        "root/carbon5/txt-lg",
-        "root/carbon5/txt-readonly",
-        "root/carbon5/txt-sm",
         // Toggle: the same `root/controls/toggle/appearance/track` argument
         // as above, for the three additional states this group's own
         // section adds (off, disabled, small) — `toggle_sized` binds
@@ -1403,6 +1379,138 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
          and controls take an edge -- read this test's doc before widening \
          the list, and if a node genuinely needs an edge, say which of the \
          two measured reasons applies to it."
+    );
+}
+
+/// **Every text-shaped well in the library is Carbon's: a fill with a
+/// bottom rule and no box.** The sibling of
+/// [`containers_take_a_tone_and_controls_take_an_edge`] for the one slot
+/// that test does not read.
+///
+/// Carbon's text input, search, number input and the slider's number input
+/// all draw `background-color: $field; border-block-end: 1px solid
+/// $border-strong` and nothing on the other three sides (slice-e "Text
+/// input", slice-d "Search" and "Number input"). Until 2026-09-04 every one
+/// of them drew a `border.subtle` box with a radius, because a box was the
+/// only edge the painter had, and the operator called the five rows "not
+/// Carbon style" together. The exact set is asserted, not an allow-list: a
+/// well that goes back to binding `border` fails the negative half here and
+/// the exact-set half above, and a new text well that forgets its rule
+/// fails the set below.
+///
+/// Read-only is the one form whose rule is `border.subtle`
+/// (`.cds--text-input--readonly`), and it is the one form with no fill,
+/// which is how a field that cannot be typed into stops looking like one
+/// that can.
+#[test]
+fn carbon_fields_are_a_fill_with_a_bottom_rule() {
+    /// Every node in [`full_gallery`] that draws a bottom rule, with the
+    /// rule's tone and whether the well is filled.
+    const RULED: [(&str, &str, bool); 25] = [
+        // Not fields. A data-table row and a structured-list row draw
+        // Carbon's own row boundary with the same slot, so they turn up in
+        // this sweep; they are declared here rather than filtered out,
+        // because the whole value of the membership check is that a node
+        // cannot start drawing a rule without somebody saying so. The
+        // field anatomy asserted inside the walk applies to the field
+        // entries only.
+        ("root/carbon2/dt-jobs/dt-r0", BORDER_SUBTLE, true),
+        ("root/carbon2/dt-jobs/dt-r1", BORDER_SUBTLE, true),
+        ("root/carbon2/dt-jobs/dt-r2", BORDER_SUBTLE, true),
+        ("root/carbon2/dt-jobs/dt-r3", BORDER_SUBTLE, true),
+        ("root/carbon2/dt-jobs/header", BORDER_SUBTLE, true),
+        ("root/carbon5/stl-plans/stl-r1", BORDER_SUBTLE, true),
+        ("root/controls/name", BORDER_STRONG, true),
+        ("root/carbon2/fm-signup/fm-name", BORDER_STRONG, true),
+        // Number input's steppers are as tall as the well and paint after
+        // it, so each carries the well's rule to keep it unbroken.
+        ("root/carbon4/ni-count", BORDER_STRONG, true),
+        ("root/carbon4/ni-count/decrement", BORDER_STRONG, true),
+        ("root/carbon4/ni-count/increment", BORDER_STRONG, true),
+        ("root/carbon4/ni-disabled", BORDER_STRONG, true),
+        ("root/carbon4/ni-disabled/decrement", BORDER_STRONG, true),
+        ("root/carbon4/ni-disabled/increment", BORDER_STRONG, true),
+        ("root/carbon4/srch-filter", BORDER_STRONG, true),
+        ("root/carbon5/sl-max/row/input", BORDER_STRONG, true),
+        ("root/carbon5/sl-mid/row/input", BORDER_STRONG, true),
+        ("root/carbon5/sl-min/row/input", BORDER_STRONG, true),
+        ("root/carbon5/sl-readonly/row/input", BORDER_STRONG, true),
+        ("root/carbon5/txt-default", BORDER_STRONG, true),
+        ("root/carbon5/txt-disabled", BORDER_STRONG, true),
+        ("root/carbon5/txt-fluid", BORDER_STRONG, true),
+        ("root/carbon5/txt-labeled/input", BORDER_STRONG, true),
+        ("root/carbon5/txt-lg", BORDER_STRONG, true),
+        ("root/carbon5/txt-sm", BORDER_STRONG, true),
+    ];
+    /// The read-only forms: a subtle rule and no fill.
+    const RULED_READ_ONLY: [&str; 1] = ["root/carbon5/txt-readonly"];
+    /// The entries of [`RULED`] that are not fields: a table's own row
+    /// boundary, which uses the same slot and answers to Carbon's table
+    /// anatomy rather than to its field anatomy.
+    const RULED_NOT_FIELDS: [&str; 6] = [
+        "root/carbon2/dt-jobs/dt-r0",
+        "root/carbon2/dt-jobs/dt-r1",
+        "root/carbon2/dt-jobs/dt-r2",
+        "root/carbon2/dt-jobs/dt-r3",
+        "root/carbon2/dt-jobs/header",
+        "root/carbon5/stl-plans/stl-r1",
+    ];
+
+    let mut ruled: Vec<(String, String, bool)> = Vec::new();
+    walk(&full_gallery(), "", &mut |path, props| {
+        if let Some(rule) = props.tokens.get("border-bottom") {
+            // The three rules below are about a **field**, not about every
+            // node that draws a bottom rule. A structured-list row draws one
+            // on top *and*, for the last row, one underneath, which is what
+            // Carbon's `border-block-start` per row plus a closing rule
+            // means; asserting a field's anatomy over that row said the
+            // table was wrong when it was right. The membership check under
+            // this walk is what keeps the field set honest.
+            let is_field = !RULED_NOT_FIELDS.contains(&path)
+                && (RULED.iter().any(|(id, _, _)| *id == path) || RULED_READ_ONLY.contains(&path));
+            if is_field {
+                assert!(
+                    !props.tokens.contains_key("border"),
+                    "{path} binds a bottom rule and a box: Carbon's field is \
+                     one or the other, and a box under a rule is the old \
+                     picture with a rule painted over it"
+                );
+                assert!(
+                    !props.tokens.contains_key("radius"),
+                    "{path} binds a radius: Carbon's field has square corners"
+                );
+                for side in ["border-top", "border-left", "border-right"] {
+                    assert!(
+                        !props.tokens.contains_key(side),
+                        "{path} binds {side}: a field's one edge is the bottom"
+                    );
+                }
+            }
+            ruled.push((
+                path.to_owned(),
+                rule.as_str().to_owned(),
+                props.tokens.contains_key("background"),
+            ));
+        }
+    });
+    ruled.sort();
+
+    let mut expected: Vec<(String, String, bool)> = RULED
+        .iter()
+        .map(|(p, tone, filled)| ((*p).to_owned(), (*tone).to_owned(), *filled))
+        .chain(
+            RULED_READ_ONLY
+                .iter()
+                .map(|p| ((*p).to_owned(), BORDER_SUBTLE.to_owned(), false)),
+        )
+        .collect();
+    expected.sort();
+    assert_eq!(
+        ruled, expected,
+        "the set of Carbon wells changed. A text-shaped well binds \
+         `background` and `border-bottom` = border-strong (read-only: no \
+         fill, border-subtle) and nothing else on its edges; see \
+         `field::bind_field_chrome`."
     );
 }
 
@@ -1917,6 +2025,20 @@ fn every_layering_operator_name_is_in_the_standard_vocabulary() {
 /// The fix is never to delete the `@hover` binding. It is to bind the resting
 /// slot to whatever surface the control sits on, the way `button.rs`'s Ghost
 /// variant already does.
+///
+/// # The one slot that has no resting surface to bind
+///
+/// `underline` draws a rule **on a text run**, and the run is the resting
+/// picture: a node binding `underline@hover` and `text` paints its words at
+/// rest and adds the rule under the pointer, which is Carbon's standalone
+/// link (`_link.scss`: `text-decoration: none`, `:hover { text-decoration:
+/// underline }`). There is no tone a resting `underline` could take that
+/// draws nothing — every colour token is a visible rule — so the per-slot
+/// rule above would force either a rule Carbon does not draw or no hover
+/// rule at all. The invariant this test exists for is silence, and a node
+/// with a text run is never silent, so a state-only `underline` on a node
+/// that carries text is not an offence. On a node with no text it still is:
+/// the rule would have nothing to sit under and the node nothing to paint.
 #[test]
 fn a_state_decorated_token_always_has_a_resting_binding() {
     use crate::token::state::STATE_SEPARATOR;
@@ -1928,6 +2050,9 @@ fn a_state_decorated_token_always_has_a_resting_binding() {
             let Some((slot, state)) = key.split_once(STATE_SEPARATOR) else {
                 continue;
             };
+            if slot == "underline" && props.text.is_some() {
+                continue;
+            }
             if !props.tokens.contains_key(slot) {
                 offences.push(format!(
                     "{path}: binds {slot}{STATE_SEPARATOR}{state} with no resting {slot}, \

@@ -13,13 +13,14 @@
 //! `NodeKind::Input` is a leaf, so the magnifier sits as a sibling in the
 //! well the way Number input's steppers do.
 //!
-//! Sizes: sm 32, md 40 (default), lg 48. Fill/edge is Petra's field pair.
+//! Sizes: sm 32, md 40 (default), lg 48. The well is Carbon's field chrome
+//! ([`super::field::bind_field_chrome`]): a fill and a bottom rule.
 
+use super::field::bind_field_chrome;
 use super::icon::{IconMark, IconTone, icon_toned};
 use super::stack;
 use super::tokens::{
-    BORDER_SUBTLE, SHAPE_SM, SIZE_MD, SPACING_03, SPACING_04, SURFACE_RAISED, TEXT_PRIMARY,
-    TYPOGRAPHY_BODY, t,
+    SIZE_MD, SPACING_03, SPACING_04, SPACING_05, TEXT_PRIMARY, TYPOGRAPHY_BODY, t,
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{AxisConstraint, Constraints, InsetRefs, Key, NodeKind, Props, Role, ViewNode};
@@ -48,34 +49,46 @@ pub fn search_lg(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
     search_sized(key, label, SIZE_LG)
 }
 
+/// The magnifier's leading inset at `height`: SOURCED `_search.scss:128`,
+/// `calc((layout.size('height') - 1rem) / 2)`, so the 16-unit glyph is
+/// centred in a `height × height` square at the well's leading edge.
+/// sm (32 − 16) / 2 = 8, md (40 − 16) / 2 = 12, lg (48 − 16) / 2 = 16.
+///
+/// Spelt as the spacing token each number is, rather than computed, because
+/// `Props.padding` takes token references (FR-053) and the three sizes are
+/// the three the constructors offer.
+fn magnifier_inset(height: f32) -> &'static str {
+    if height <= SIZE_SM {
+        SPACING_03
+    } else if height <= SIZE_MD {
+        SPACING_04
+    } else {
+        SPACING_05
+    }
+}
+
 fn search_sized(key: impl Into<Key>, label: impl Into<String>, height: f32) -> ViewNode {
     let label = label.into();
     let mut magnifier = icon_toned("magnifier", IconMark::Search, IconTone::Secondary);
     magnifier.semantics.label = Some("Search".to_owned());
 
+    // No gap between the glyph and the input: Carbon's field text starts
+    // `padding-inline-start: layout.size('height')` in from the well's edge
+    // (`_search.scss:64`), which at md is 40 = the 12-unit inset, the
+    // 16-unit glyph, and the input's own 12-unit painter inset, with nothing
+    // in between. A `spacing-03` gap here put the text at 48.
     let mut well = stack(
         key,
         Axis::Horizontal,
-        Some(SPACING_03),
+        None,
         vec![magnifier, search_field("input", label, height)],
     );
     well.props.align = Some(Align::Center);
-    // `NodeKind::Input` carries its own internal inset (`search_field`'s
-    // placeholder never touches the well's right edge in the capture), but
-    // the magnifier is a bare glyph node with none, so it sat flush on
-    // the well's left border — SOURCED
-    // `_search.scss:128`: the real icon's leading inset is
-    // `calc((layout.size('height') - 1rem) / 2)`, which at md (40px) is
-    // (40 − 16) / 2 = 12px, i.e. `SPACING_04`.
     well.props.padding = Some(InsetRefs {
-        left: Some(t(SPACING_04)),
+        left: Some(t(magnifier_inset(height))),
         ..InsetRefs::default()
     });
-    well.props
-        .tokens
-        .insert("background".into(), t(SURFACE_RAISED));
-    well.props.tokens.insert("border".into(), t(BORDER_SUBTLE));
-    well.props.tokens.insert("radius".into(), t(SHAPE_SM));
+    bind_field_chrome(&mut well.props);
     well.constraints.vertical.min = Some(height);
     well
 }
@@ -103,7 +116,9 @@ fn search_field(key: &'static str, label: String, height: f32) -> ViewNode {
 #[cfg(test)]
 mod tests {
     use super::{SIZE_LG, SIZE_MD, SIZE_SM, search, search_lg, search_sm};
-    use crate::component::tokens::{BORDER_SUBTLE, SURFACE_RAISED};
+    use crate::component::tokens::{
+        BORDER_STRONG, SPACING_03, SPACING_04, SPACING_05, SURFACE_RAISED,
+    };
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, inks, validated_with};
@@ -129,7 +144,19 @@ mod tests {
         assert_eq!(node.constraints.vertical.min, Some(SIZE_MD));
         assert_eq!(SIZE_MD, 40.0);
         assert_eq!(token(&node, "background"), Some(SURFACE_RAISED));
-        assert_eq!(token(&node, "border"), Some(BORDER_SUBTLE));
+        // Carbon's search well is a fill with a bottom rule and nothing on
+        // the other three sides (`_search.scss` `.cds--search-input`:
+        // `border-block-end: 1px solid $border-strong`). A `border` here is
+        // the box the operator called "not carbon style".
+        assert_eq!(token(&node, "border-bottom"), Some(BORDER_STRONG));
+        assert_eq!(token(&node, "border"), None, "the search well is not boxed");
+        assert_eq!(token(&node, "radius"), None, "square corners");
+        assert_eq!(
+            node.props.spacing, None,
+            "nothing between the glyph and the input: the text starts at \
+             `height` from the edge, which the inset, the glyph and the \
+             input's own inset add up to"
+        );
         assert!(
             node.semantics.role.is_none(),
             "wrapper must not steal TextInput"
@@ -183,6 +210,31 @@ mod tests {
         assert_eq!(lg.constraints.vertical.min, Some(SIZE_LG));
         assert_eq!(SIZE_LG, 48.0);
         assert_eq!(child(&lg, "magnifier").semantics.role, None);
+    }
+
+    /// The magnifier sits `(height − 16) / 2` in from the well's edge at
+    /// every size (`_search.scss:128`), so the glyph is centred in a
+    /// `height × height` square: 8 at sm, 12 at md, 16 at lg.
+    #[test]
+    fn the_magnifier_inset_centres_the_glyph_in_a_square_the_size_of_the_well() {
+        for (node, inset) in [
+            (search_sm("q", "Filter"), SPACING_03),
+            (search("q", "Filter"), SPACING_04),
+            (search_lg("q", "Filter"), SPACING_05),
+        ] {
+            let left = node
+                .props
+                .padding
+                .as_ref()
+                .and_then(|p| p.left.as_ref())
+                .map(TokenName::as_str);
+            assert_eq!(
+                left,
+                Some(inset),
+                "well {:?}",
+                node.constraints.vertical.min
+            );
+        }
     }
 
     const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };

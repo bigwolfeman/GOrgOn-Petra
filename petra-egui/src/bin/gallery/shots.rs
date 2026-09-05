@@ -510,7 +510,7 @@ fn headless() -> Context {
 
 #[cfg(test)]
 mod tests {
-    use super::Camera;
+    use super::{CAPTURE_SCALE, Camera};
     use crate::catalog::WINDOW;
     use gorgon_petra::geom::{Point, Rect};
     use gorgon_petra::input::KeyCode;
@@ -1983,5 +1983,314 @@ mod tests {
             assert!((rule.w - list.w).abs() < 0.5, "and spans the list");
         }
         assert!(!cam.has("cl/rule-2"), "no rule after the last row");
+    }
+
+    // ===== Wave R4: form controls against Carbon's field anatomy =====
+    //
+    // Carbon's field is a fill with a single rule along its bottom edge
+    // (`_text-input.scss`: `border-block-end: 1px solid $border-strong`,
+    // `border-radius: 0`). The rows below read that off the raster, not off
+    // the token bindings: a `border-bottom` slot the painter ignored would
+    // pass every tree-level test and still draw a box.
+
+    /// The raster of the current frame, for reading pixels back.
+    fn raster(cam: &mut Camera, name: &str) -> image::RgbaImage {
+        let png = cam.shoot(name);
+        image::load_from_memory(&png)
+            .unwrap_or_else(|err| panic!("shot {name:?} is not a PNG: {err}"))
+            .to_rgba8()
+    }
+
+    /// One pixel of `img` at a logical position, at the capture scale.
+    fn px(img: &image::RgbaImage, x: f32, y: f32) -> [u8; 4] {
+        let (dx, dy) = ((x * CAPTURE_SCALE) as u32, (y * CAPTURE_SCALE) as u32);
+        img.get_pixel(dx.min(img.width() - 1), dy.min(img.height() - 1))
+            .0
+    }
+
+    /// The pixels along one device row across a logical x span.
+    fn device_row(img: &image::RgbaImage, x0: f32, x1: f32, dy: u32) -> Vec<[u8; 4]> {
+        let (dx0, dx1) = ((x0 * CAPTURE_SCALE) as u32, (x1 * CAPTURE_SCALE) as u32);
+        (dx0..dx1.min(img.width()))
+            .map(|dx| img.get_pixel(dx, dy.min(img.height() - 1)).0)
+            .collect()
+    }
+
+    /// The last device row inside a logical rect.
+    fn bottom_device_row(rect: Rect) -> u32 {
+        ((rect.y + rect.h) * CAPTURE_SCALE).round() as u32 - 1
+    }
+
+    /// Assert a field keyed `tail` is a Carbon well: a fill, one rule along
+    /// its bottom edge, and nothing drawn on its other three edges.
+    ///
+    /// Sampled at each edge's midpoint, so a rule and a box are told apart
+    /// by the top edge and the two sides reading as fill. `filled` says
+    /// whether the fill differs from the ground above the field (a read-only
+    /// field is transparent).
+    fn assert_carbon_well(cam: &mut Camera, tail: &str, shot: &str, filled: bool) {
+        let rect = cam.rect(tail);
+        let img = raster(cam, shot);
+        let (mid_x, mid_y) = (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
+        let inside = px(&img, mid_x, mid_y);
+        let top = px(&img, mid_x, rect.y);
+        let left = px(&img, rect.x, mid_y);
+        let right = px(&img, rect.x + rect.w - 0.5, mid_y);
+        let above = px(&img, mid_x, rect.y - 2.0);
+        assert_eq!(
+            top, inside,
+            "{tail}: the top edge is drawn; a Carbon field has no box"
+        );
+        assert_eq!(
+            left, inside,
+            "{tail}: the left edge is drawn; a Carbon field has no box"
+        );
+        assert_eq!(
+            right, inside,
+            "{tail}: the right edge is drawn; a Carbon field has no box"
+        );
+        let rule_row = bottom_device_row(rect);
+        let rule = device_row(&img, rect.x, rect.x + rect.w, rule_row);
+        assert!(
+            rule.iter().all(|p| *p == rule[0]),
+            "{tail}: the bottom rule is not one colour end to end"
+        );
+        assert_ne!(
+            rule[0], inside,
+            "{tail}: there is no rule along the bottom edge"
+        );
+        let fill_row = device_row(&img, rect.x, rect.x + rect.w, rule_row - 3);
+        assert!(
+            fill_row.iter().filter(|p| **p == inside).count() * 10 > fill_row.len() * 9,
+            "{tail}: the rule is thicker than one snapped pixel"
+        );
+        if filled {
+            assert_ne!(above, inside, "{tail}: the field has no fill of its own");
+        } else {
+            assert_eq!(above, inside, "{tail}: a read-only field is not filled");
+        }
+    }
+
+    /// Row 34. Every text input on the page is a Carbon well.
+    ///
+    /// Before this the fields carried a `border` slot and a `radius`, so the
+    /// painter stroked a rounded box around each one: the operator's
+    /// "frames are not IBM carbon style". `34-text-input.png` in the
+    /// reference set shows a flat fill, square, with one rule under it.
+    #[test]
+    fn a_text_field_is_a_fill_with_one_rule_under_it_and_no_box() {
+        let mut cam = Camera::on("Text input");
+        for tail in ["field-md", "field-sm", "field-lg"] {
+            assert_carbon_well(&mut cam, tail, "34-text-input-wells", true);
+        }
+        assert_carbon_well(&mut cam, "field-ro", "34-text-input-wells", false);
+    }
+
+    /// Row 28. The search well is the same anatomy, with the glass inset.
+    #[test]
+    fn the_search_field_is_a_carbon_well_with_the_glass_inside_it() {
+        let mut cam = Camera::on("Search");
+        assert_carbon_well(&mut cam, "/query", "28-search-well", true);
+        let well = cam.rect("/query");
+        let glass = cam.rect("query/magnifier");
+        assert!(
+            glass.x > well.x && glass.x + glass.w < well.x + well.w,
+            "the glass sits inside the well: {glass:?} in {well:?}"
+        );
+        let inset = glass.x - well.x;
+        assert!(
+            ((glass.y - well.y) - (well.h - glass.h) / 2.0).abs() < 0.5,
+            "the glass is centred on the well's height: {glass:?} in {well:?}"
+        );
+        assert!(
+            (inset - (well.h - glass.h) / 2.0).abs() < 0.5,
+            "the glass is inset from the left by the same amount it is inset \
+             from the top ({inset}), Carbon's square icon cell"
+        );
+    }
+
+    /// Row 22. The number input is one well: the value cell takes the row,
+    /// the two steppers are unfilled squares on its right with a rule
+    /// divider between them, and the bottom rule runs unbroken under all of
+    /// it. A press on a stepper moves the number the page shows.
+    ///
+    /// The operator's "visually broken": the value cell hugged its digits,
+    /// the steppers sat in the middle of the well, and a stepper's own fill
+    /// painted over the rule under it.
+    #[test]
+    fn the_number_input_is_one_well_and_its_steppers_step() {
+        let mut cam = Camera::on("Number input");
+        assert_carbon_well(&mut cam, "/n-md", "22-number-input-well", true);
+        let well = cam.rect("/n-md");
+        let value = cam.rect("n-md/value");
+        let dec = cam.rect("n-md/decrement");
+        let inc = cam.rect("n-md/increment");
+        let divider = cam.rect("n-md/divider");
+        assert!(
+            value.w > well.w / 2.0,
+            "the value cell takes the remainder of the well: {value:?} in {well:?}"
+        );
+        assert_eq!(
+            inc.x + inc.w,
+            well.x + well.w,
+            "the increment is flush right"
+        );
+        assert_eq!(
+            dec.x + dec.w,
+            divider.x,
+            "the decrement is flush against the divider"
+        );
+        assert_eq!(
+            divider.x + divider.w,
+            inc.x,
+            "the divider is flush against the increment"
+        );
+        assert_eq!(
+            (dec.w, dec.h, inc.w, inc.h),
+            (well.h, well.h, well.h, well.h)
+        );
+        let img = raster(&mut cam, "22-number-input-well");
+        let fill = px(&img, value.x + value.w / 2.0, value.y + value.h / 2.0);
+        assert_eq!(
+            px(&img, dec.x + 2.0, dec.y + 2.0),
+            fill,
+            "a resting stepper has the well's own fill, not a fill of its own"
+        );
+        assert_ne!(
+            px(&img, divider.x, divider.y + divider.h / 2.0),
+            fill,
+            "the divider is drawn"
+        );
+        assert_eq!(leaf_text(&cam, "value"), "12");
+        cam.click("n-md/increment");
+        assert_eq!(leaf_text(&cam, "value"), "13", "a press on + adds one");
+        cam.click("n-md/decrement");
+        cam.click("n-md/decrement");
+        assert_eq!(leaf_text(&cam, "value"), "11", "two presses on - take two");
+        cam.shoot("22-number-input-stepped");
+    }
+
+    /// Row 30. Moving the pointer across the rail with no button down moves
+    /// nothing; a press on the track jumps the value there; and a drag that
+    /// leaves the rail keeps dragging until the button comes up.
+    ///
+    /// The operator's report: "wants to drag when my mouse is close to it,
+    /// whether I click it or not. But if I move too fast it stops dragging."
+    /// The page was applying every routed pointer move, and hover routes a
+    /// move to the node under the pointer; so a hover dragged and a fast
+    /// move that left the handle stopped. The page now mirrors the engine's
+    /// capture: a press opens the drag and only `GestureEnded` closes it.
+    #[test]
+    fn the_slider_moves_on_press_and_drag_but_never_on_hover() {
+        let mut cam = Camera::on("Slider");
+        let rail = cam.rect("/row/rail");
+        let mid_y = rail.y + rail.h / 2.0;
+        let at_rest = cam.rect("/rail/fill");
+        let handle = cam.rect("/rail/handle");
+        // Across the track, then across the handle from its left edge to its
+        // right. The handle is the one node here that declares `Hover`, and
+        // a page that applied hover-routed moves would read the pointer's x
+        // off the handle's edge and nudge the value by half a handle: the
+        // exact "wants to drag when my mouse is close to it". Its centre
+        // would not do, since the pointer there names the value already set.
+        for frac in [0.1, 0.3, 0.45, 0.7, 0.95] {
+            cam.hover_at(rail.x + rail.w * frac, mid_y);
+        }
+        for x in [handle.x + 1.0, handle.x + handle.w - 1.0, handle.x + 1.0] {
+            cam.hover_at(x, mid_y);
+            assert_eq!(
+                cam.rect("/rail/fill"),
+                at_rest,
+                "the pointer crossed the rail and the handle with no button \
+                 down and the fill moved: the page is dragging on hover"
+            );
+            assert!(
+                cam.hovered()
+                    .as_deref()
+                    .is_some_and(|id| id.ends_with("/handle")),
+                "the pointer at {x} is over the handle {handle:?} and the host \
+                 did not register it"
+            );
+        }
+        cam.shoot("30-slider-hovered");
+        cam.click_at(rail.x + rail.w * 0.8, mid_y);
+        let jumped = cam.rect("/rail/fill");
+        assert!(
+            (jumped.w / rail.w - 0.8).abs() < 0.05,
+            "a press on the track jumps the value there: fill {} of {}",
+            jumped.w,
+            rail.w
+        );
+        cam.shoot("30-slider-jumped");
+        let far_below = Point::new(rail.x + rail.w * 0.2, mid_y + 200.0);
+        cam.drag("/rail/handle", far_below);
+        let dragged = cam.rect("/rail/fill");
+        assert!(
+            (dragged.w / rail.w - 0.2).abs() < 0.05,
+            "the pointer left the rail 200 units below it and let go at 20%; \
+             capture holds the drag, so the fill follows: {} of {}",
+            dragged.w,
+            rail.w
+        );
+        cam.shoot("30-slider-dragged-off-rail");
+    }
+
+    /// The most device pixels that are not `ground` on any one of the
+    /// `rows` device rows up from the bottom of `rect`.
+    fn widest_mark_under(img: &image::RgbaImage, rect: Rect, ground: [u8; 4], rows: u32) -> usize {
+        let bottom = bottom_device_row(rect);
+        (0..rows)
+            .map(|up| {
+                device_row(img, rect.x, rect.x + rect.w, bottom - up)
+                    .iter()
+                    .filter(|p| **p != ground)
+                    .count()
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Row 15. A standalone link underlines under the pointer; an inline
+    /// link is underlined at rest.
+    ///
+    /// The operator's "does nothing or has any indication what it is, just
+    /// looks like a text label". The ink is now `link-primary` and the
+    /// underline is the second channel, the one that survives red-green
+    /// colour blindness; Carbon underlines a standalone link on hover and an
+    /// inline one always (`_link.scss`).
+    #[test]
+    fn a_link_underlines_on_hover_and_an_inline_link_is_underlined_at_rest() {
+        let mut cam = Camera::on("Link");
+        let link = cam.rect("/docs");
+        let inline = cam.rect("/docs-inline");
+        let resting = raster(&mut cam, "15-link-resting");
+        let ground = px(&resting, link.x + link.w / 2.0, link.y + link.h + 2.0);
+        let width = (link.w * CAPTURE_SCALE) as usize;
+        let descenders = widest_mark_under(&resting, link, ground, 3);
+        assert!(
+            descenders * 2 < width,
+            "at rest the standalone link's bottom rows hold only glyph \
+             descenders, got {descenders} of {width} marked"
+        );
+        let inline_width = (inline.w * CAPTURE_SCALE) as usize;
+        let inline_rule = widest_mark_under(&resting, inline, ground, 3);
+        assert!(
+            inline_rule * 10 >= inline_width * 9,
+            "an inline link is underlined at rest: {inline_rule} of {inline_width} marked"
+        );
+        cam.hover("/docs");
+        assert!(
+            cam.hovered()
+                .as_deref()
+                .is_some_and(|id| id.ends_with("/docs")),
+            "the host did not register the pointer over the link"
+        );
+        let hovered = raster(&mut cam, "15-link-hovered");
+        let underline = widest_mark_under(&hovered, link, ground, 3);
+        assert!(
+            underline * 10 >= width * 9,
+            "under the pointer the link is underlined end to end: {underline} \
+             of {width} marked"
+        );
     }
 }

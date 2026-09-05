@@ -160,13 +160,73 @@ fn measure_input(node: &ViewNode, ctx: &mut LayoutCtx<'_>, proposal: SizeProposa
         available_width: inner_width,
     };
     let size = ctx.content.text(&req).size;
-    Size::new(size.w + 2.0 * inset, size.h)
+    // A field fills the width it is given and asks for all the width there
+    // is: Carbon's input is `inline-size: 100%` of its form item, and a
+    // field beside two fixed steppers in a row takes the rest of the row
+    // (`_number-input.scss`). Only the ideal and minimum probes answer with
+    // the content's own width, which is what keeps a fresh field from
+    // collapsing under an open cross-axis offer and jumping on the first
+    // keystroke. `Exact` answers the offer even when the offer is narrower
+    // than the run: a parent places, it does not force, and a field clipped
+    // to its slot is what a field does with a run longer than itself.
+    let width = match proposal.horizontal {
+        Proposal::Exact(w) => w.max(0.0),
+        Proposal::Unbounded => SPACER_MAX_EXTENT,
+        Proposal::Zero | Proposal::Unspecified => size.w + 2.0 * inset,
+    };
+    Size::new(width, size.h)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{SEPARATOR_THICKNESS, SPACER_MAX_EXTENT, canvas_extent, spacer_extent};
-    use crate::layout::Proposal;
+    use crate::geom::Size;
+    use crate::layout::{Proposal, SizeProposal};
+    use crate::testing::Harness;
+    use crate::tree::{KeyPath, NodeKind, Props, ViewNode};
+
+    fn measured(node: &ViewNode, horizontal: Proposal) -> Size {
+        let mut h = Harness::new();
+        let mut ctx = h.ctx();
+        let mut path = KeyPath::root();
+        let proposal = SizeProposal::both(Proposal::Unspecified)
+            .with_axis(crate::geom::Axis::Horizontal, horizontal);
+        crate::layout::measure(node, &mut ctx, &mut path, proposal)
+    }
+
+    /// A field fills the width it is offered and asks for all the width
+    /// there is; only the ideal probe answers with its content.
+    ///
+    /// The number input is the case: a value cell beside two fixed steppers
+    /// in a row. A field that hugged its text under an exact offer left the
+    /// row's remainder trailing after the steppers, so the controls sat in
+    /// the middle of the well and the empty right half of the field was
+    /// dead to a click (`22-number-input.png`, 2026-09-04).
+    #[test]
+    fn a_field_fills_its_offer_and_hugs_only_its_ideal() {
+        let field = ViewNode::new(NodeKind::Input, "f").with_props(Props {
+            placeholder: Some("Count".into()),
+            ..Props::default()
+        });
+        let ideal = measured(&field, Proposal::Unspecified);
+        assert!(
+            ideal.w > 0.0 && ideal.w < 300.0,
+            "ideal hugs the placeholder: {ideal:?}"
+        );
+        let exact = measured(&field, Proposal::Exact(300.0));
+        assert_eq!(exact.w, 300.0, "an exact offer is taken whole");
+        assert_eq!(exact.h, ideal.h, "the height is the run's");
+        let narrow = measured(&field, Proposal::Exact(10.0));
+        assert_eq!(
+            narrow.w, 10.0,
+            "a narrow offer is taken too: a parent places"
+        );
+        let unbounded = measured(&field, Proposal::Unbounded);
+        assert_eq!(
+            unbounded.w, SPACER_MAX_EXTENT,
+            "asked how wide it would like to be, a field wants the row"
+        );
+    }
 
     #[test]
     fn a_spacer_is_the_most_flexible_child_in_the_room() {

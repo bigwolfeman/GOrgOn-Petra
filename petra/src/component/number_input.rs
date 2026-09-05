@@ -10,22 +10,49 @@
 //! so the glyph is never the only channel (FR-026).
 //!
 //! Sizes MEASURED `_number-input.scss`: sm 32, md 40 (default), lg 48.
-//! Fill/edge is Petra's field pair: [`SURFACE_RAISED`] + [`BORDER_SUBTLE`].
+//!
+//! # The well, as Carbon draws it (`22-number-input.png`, 2026-09-04)
+//!
+//! One filled well ([`super::field::bind_field_chrome`]: `$field` under a
+//! `$border-strong` bottom rule, square) holding, left to right: the value,
+//! then at the trailing edge the Subtract button, a one-unit
+//! [`BORDER_SUBTLE`] rule divider 16 tall (`_number-input.scss:285-286`),
+//! and the Add button. Each stepper is a `height × height` square resting
+//! in the well's own tone — flush with the well, no box — and a
+//! [`LAYER_HOVER`] fill under the pointer (`.cds--number__control-btn:hover
+//! { background-color: $field-hover }`). Nothing separates the value from
+//! the controls but the value cell's own width: Carbon reserves
+//! `padding-inline-end` under an overlay, and here the steppers are inline
+//! siblings that take exactly their square and leave the value the rest.
+//!
+//! Before this the well was a `border.subtle` box with a radius, the
+//! steppers were `surface.base` boxes with a 16-unit gap between every
+//! cell, and the whole well hugged the value's width so the steppers hung
+//! outside it. The operator's word was "visually broken", and it was.
 
+use super::field::bind_field_chrome;
 use super::icon::{IconMark, IconTone, icon_toned};
 use super::stack;
+use super::swatch;
 use super::text::text;
 use super::tokens::{
-    ACCENT_PRIMARY, BORDER_SUBTLE, SHAPE_SM, SIZE_MD, SPACING_05, SURFACE_BASE, SURFACE_RAISED,
-    TEXT_PRIMARY, TYPOGRAPHY_BODY, t,
+    BORDER_SUBTLE, LAYER_HOVER, SIZE_MD, SUPPORT_ERROR, SURFACE_RAISED, TEXT_PRIMARY,
+    TYPOGRAPHY_BODY, t,
 };
 use crate::geom::{Align, Axis};
-use crate::tree::{AxisConstraint, Constraints, Interaction, Key, NodeKind, Props, Role, ViewNode};
+use crate::tree::{
+    AxisConstraint, Constraints, Interaction, Justify, Key, NodeKind, Props, Role, ViewNode,
+};
 
 /// Carbon Default sm. `tokens` only ships [`SIZE_MD`] (md / 40).
 const SIZE_SM: f32 = 32.0;
 /// Carbon Default lg.
 const SIZE_LG: f32 = 48.0;
+/// MEASURED `_number-input.scss:285-286`: the rule divider between the two
+/// steppers is 1 wide and 16 tall.
+const DIVIDER_WIDTH: f32 = 1.0;
+/// See [`DIVIDER_WIDTH`].
+const DIVIDER_HEIGHT: f32 = 16.0;
 
 #[derive(Clone, Copy)]
 enum Chrome {
@@ -62,8 +89,8 @@ pub fn number_input_lg(
     number_sized(key, label, value, SIZE_LG, Chrome::Enabled)
 }
 
-/// Invalid md well: accent border plus helper text, same pattern as
-/// [`super::field::field_invalid`].
+/// Invalid md well: a [`SUPPORT_ERROR`] outline plus helper text, the same
+/// two channels as [`super::field::field_invalid`].
 pub fn number_input_invalid(
     key: impl Into<Key>,
     label: impl Into<String>,
@@ -96,39 +123,51 @@ fn number_sized(
 ) -> ViewNode {
     let label = label.into();
     let value = value.into();
-    // `None` spacing drew the value and both stepper captions flush against
-    // each other — the value "12" ran straight into the caption
-    // "Decrement" with no gap, and "Decrement" ran straight into
-    // "Increment". Carbon's own field clears `padding-inline-end:
-    // $spacing-05` (16px, MEASURED `_number-input.scss:59-66`) for its
-    // absolutely-positioned controls; FR-026 makes Petra's steppers inline
-    // siblings instead of an overlay (this module's own doc), so that same
-    // 16px becomes a real gap between each of the three cells rather than
-    // reserved padding under an overlay.
+    // No spacing: the steppers are glyph squares that butt against each
+    // other with the rule divider between them, and the value cell takes
+    // whatever width the well has left. The stack distributes an exact
+    // budget least-flexible first, so the two pinned squares and the
+    // one-unit divider land before the flexible value cell is offered the
+    // remainder (`layout::stack`).
     let mut well = stack(
         key,
         Axis::Horizontal,
-        Some(SPACING_05),
+        None,
         vec![
             value_field("value", label.clone(), value, height),
             stepper("decrement", "Decrement", IconMark::Subtract, height),
+            divider(),
             stepper("increment", "Increment", IconMark::Add, height),
         ],
     );
     well.props.align = Some(Align::Center);
-    well.props
-        .tokens
-        .insert("background".into(), t(SURFACE_RAISED));
-    well.props.tokens.insert(
-        "border".into(),
-        t(match chrome {
-            Chrome::Enabled => BORDER_SUBTLE,
-            Chrome::Invalid => ACCENT_PRIMARY,
-        }),
-    );
-    well.props.tokens.insert("radius".into(), t(SHAPE_SM));
+    match chrome {
+        Chrome::Enabled => bind_field_chrome(&mut well.props),
+        Chrome::Invalid => {
+            well.props
+                .tokens
+                .insert("background".into(), t(SURFACE_RAISED));
+            // The error hue on all four sides, as `field_invalid` does, and
+            // never the accent: the accent is the focus ring, and an invalid
+            // well in the accent was indistinguishable from a focused one.
+            well.props.tokens.insert("border".into(), t(SUPPORT_ERROR));
+        }
+    }
     well.constraints.vertical.min = Some(height);
     well
+}
+
+/// The one-unit rule between the two steppers: `.cds--number__rule-divider`,
+/// `$border-subtle`, 1 × 16 (`_number-input.scss:285-286`).
+fn divider() -> ViewNode {
+    swatch(
+        "divider",
+        DIVIDER_WIDTH,
+        DIVIDER_HEIGHT,
+        Some(BORDER_SUBTLE),
+        None,
+        None,
+    )
 }
 
 fn value_field(key: &'static str, label: String, value: String, height: f32) -> ViewNode {
@@ -152,26 +191,36 @@ fn value_field(key: &'static str, label: String, value: String, height: f32) -> 
         })
 }
 
+/// One stepper: a `height × height` square holding a centred glyph, resting
+/// in the well's own tone so it is flush with the well, and lifting to
+/// [`LAYER_HOVER`] under the pointer.
+///
+/// The resting fill is [`SURFACE_RAISED`] and not absent: a state-decorated
+/// binding needs a resting one under it
+/// (`tests::a_state_decorated_token_always_has_a_resting_binding`), and the
+/// well's tone is the one that draws nothing a reader can see.
+///
+/// Pinned on both axes. Carbon's stepper width (md 40,
+/// `_number-input.scss:153` controls-width / 2; lg 48 `:403`; sm 32 `:416`)
+/// is the hit box for an icon-only Add/Subtract glyph, and the glyph fits
+/// it. Before the glyph the square held the word "Increment", which did not
+/// fit and forced `max` open; the square is closed again.
 fn stepper(key: &'static str, label: &'static str, mark: IconMark, height: f32) -> ViewNode {
     let glyph = icon_toned("glyph", mark, IconTone::Primary);
     let mut node = stack(key, Axis::Horizontal, None, vec![glyph]);
     node.props.align = Some(Align::Center);
+    node.props.justify = Some(Justify::Center);
+    // The square is as tall as the well and paints after it, so its fill
+    // would cover the well's bottom rule; it carries the same rule itself,
+    // and the rule runs unbroken under the value and both controls.
+    bind_field_chrome(&mut node.props);
     node.props
         .tokens
-        .insert("background".into(), t(SURFACE_BASE));
+        .insert("background@hover".into(), t(LAYER_HOVER));
     node.with_constraints(Constraints {
-        // Horizontal takes a floor, not a fixed width. Carbon's stepper
-        // width (md 40, `_number-input.scss:153` controls-width / 2; lg 48
-        // `:403`; sm 32 `:416`) is the hit box for an icon-only
-        // Add/Subtract glyph. Until 2026-09-04 the stepper held the word
-        // "Increment"/"Decrement" instead, which did not fit a box pinned
-        // to the icon's width (the same Class-4 shape as Modal's
-        // `close_button` defect), so `max` was lifted and the label decided
-        // the width. The glyph fits the pin again; restoring `max:
-        // Some(height)` is this row's owner's call, not the icon wave's.
         horizontal: AxisConstraint {
             min: Some(height),
-            max: None,
+            max: Some(height),
             priority: 0,
         },
         vertical: AxisConstraint {
@@ -183,7 +232,7 @@ fn stepper(key: &'static str, label: &'static str, mark: IconMark, height: f32) 
     .interactive(
         Role::Button,
         label,
-        &[Interaction::Focus, Interaction::Click],
+        &[Interaction::Focus, Interaction::Click, Interaction::Hover],
     )
 }
 
@@ -193,7 +242,10 @@ mod tests {
         IconMark, IconTone, SIZE_LG, SIZE_MD, SIZE_SM, icon_toned, number_input,
         number_input_invalid, number_input_lg, number_input_sm,
     };
-    use crate::component::tokens::{ACCENT_PRIMARY, BORDER_SUBTLE, SURFACE_RAISED, TEXT_PRIMARY};
+    use crate::component::tokens::{
+        ACCENT_PRIMARY, BORDER_STRONG, BORDER_SUBTLE, LAYER_HOVER, SUPPORT_ERROR, SURFACE_RAISED,
+        TEXT_PRIMARY,
+    };
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, inks, validated_with};
@@ -219,7 +271,17 @@ mod tests {
         assert_eq!(node.constraints.vertical.min, Some(SIZE_MD));
         assert_eq!(SIZE_MD, 40.0);
         assert_eq!(token(&node, "background"), Some(SURFACE_RAISED));
-        assert_eq!(token(&node, "border"), Some(BORDER_SUBTLE));
+        // Carbon's `.cds--number` well: a fill under a `$border-strong`
+        // bottom rule and nothing on the other sides. A `border` here is
+        // the box that read as "visually broken".
+        assert_eq!(token(&node, "border-bottom"), Some(BORDER_STRONG));
+        assert_eq!(token(&node, "border"), None, "the well is not boxed");
+        assert_eq!(token(&node, "radius"), None, "square corners");
+        assert_eq!(
+            node.props.spacing, None,
+            "the steppers butt against the divider and the value cell takes \
+             the rest; a gap between the cells is not Carbon's anatomy"
+        );
         assert!(!node.interactions.contains(&Interaction::Drag));
 
         let input = child(&node, "value");
@@ -264,6 +326,63 @@ mod tests {
         assert!(!inc.interactions.contains(&Interaction::Drag));
     }
 
+    /// The controls are Carbon's: two `height × height` squares flush with
+    /// the well, a hover fill, and a one-unit `$border-subtle` rule 16 tall
+    /// between them (`_number-input.scss:153, 285-286`).
+    ///
+    /// "Flush with the well" is the assertion that catches the old picture:
+    /// each stepper used to be a `surface.base` box, which painted two dark
+    /// squares over the well's fill, and the glyphs sat outside them.
+    #[test]
+    fn steppers_are_unfilled_squares_either_side_of_a_rule_divider() {
+        for (node, size) in [
+            (number_input_sm("n", "Replicas", "3"), SIZE_SM),
+            (number_input("n", "Replicas", "3"), SIZE_MD),
+            (number_input_lg("n", "Replicas", "3"), SIZE_LG),
+        ] {
+            let keys: Vec<&str> = node.children.iter().map(|c| c.key.as_str()).collect();
+            assert_eq!(
+                keys,
+                ["value", "decrement", "divider", "increment"],
+                "value, then the controls at the trailing edge with the rule \
+                 between them"
+            );
+            for key in ["decrement", "increment"] {
+                let stepper = child(&node, key);
+                assert_eq!(stepper.constraints.horizontal.min, Some(size));
+                assert_eq!(stepper.constraints.horizontal.max, Some(size));
+                assert_eq!(stepper.constraints.vertical.min, Some(size));
+                assert_eq!(stepper.constraints.vertical.max, Some(size));
+                assert_eq!(
+                    token(stepper, "background"),
+                    token(&node, "background"),
+                    "{key}: a resting stepper is flush with the well"
+                );
+                assert_eq!(token(stepper, "background"), Some(SURFACE_RAISED));
+                assert_eq!(
+                    token(stepper, "border-bottom"),
+                    Some(BORDER_STRONG),
+                    "{key}: the well's rule runs under the control, which \
+                     paints over the well"
+                );
+                assert_eq!(token(stepper, "background@hover"), Some(LAYER_HOVER));
+                assert!(stepper.interactions.contains(&Interaction::Hover));
+                assert_eq!(
+                    stepper.props.justify,
+                    Some(crate::tree::Justify::Center),
+                    "{key}: the glyph is centred in its square"
+                );
+            }
+            let divider = child(&node, "divider");
+            assert_eq!(divider.constraints.horizontal.min, Some(1.0));
+            assert_eq!(divider.constraints.horizontal.max, Some(1.0));
+            assert_eq!(divider.constraints.vertical.min, Some(16.0));
+            assert_eq!(divider.constraints.vertical.max, Some(16.0));
+            assert_eq!(token(divider, "background"), Some(BORDER_SUBTLE));
+            assert!(!divider.is_interactive());
+        }
+    }
+
     #[test]
     fn number_input_sm_is_32_and_lg_is_48() {
         let sm = number_input_sm("count", "Replicas", "3");
@@ -279,13 +398,22 @@ mod tests {
         );
     }
 
+    /// An invalid well is outlined in the error hue on all four sides and
+    /// says so in words. Never the accent: that is the focus ring's colour,
+    /// and an invalid well in it was indistinguishable from a focused one.
     #[test]
-    fn number_input_invalid_pairs_accent_border_with_helper_text() {
+    fn number_input_invalid_pairs_an_error_outline_with_helper_text() {
         let node = number_input_invalid("count", "Replicas", "x", "must be a number");
         assert_eq!(node.kind, NodeKind::Stack);
         assert!(node.semantics.role.is_none());
         let well = child(&node, "input");
-        assert_eq!(token(well, "border"), Some(ACCENT_PRIMARY));
+        assert_eq!(token(well, "border"), Some(SUPPORT_ERROR));
+        assert_ne!(token(well, "border"), Some(ACCENT_PRIMARY));
+        assert_eq!(
+            token(well, "border-bottom"),
+            None,
+            "the outline replaces the resting rule"
+        );
         assert_eq!(token(well, "background"), Some(SURFACE_RAISED));
         assert_eq!(well.constraints.vertical.min, Some(SIZE_MD));
         let input = child(well, "value");

@@ -239,6 +239,16 @@ impl SlotSchema {
 /// Adding them cost no `Props` field, no `PaintContent` field and no digest
 /// bump: `props.tokens` is already a map keyed by slot name, and
 /// `frame::digest::hash_paint_content` hashes every entry it holds.
+///
+/// # `underline`
+///
+/// The colour of a rule drawn under each row of this node's text, or absent
+/// for none. Carbon's Link is `text-decoration: underline` on hover and, for
+/// the inline variant, at rest (slice-c "Link"). For an operator who is
+/// red-green colour blind the underline is not decoration: it is the channel
+/// that says "this is a link" when the hue cannot. A slot, for the same
+/// reasons the side borders are slots, and because `underline@hover` is
+/// exactly Carbon's standalone link with nothing further to build.
 #[must_use]
 pub fn standard_slots() -> SlotSchema {
     let mut s = SlotSchema::new();
@@ -249,6 +259,7 @@ pub fn standard_slots() -> SlotSchema {
         .declare(SlotSpec::new("border-bottom", TokenKind::Color, false))
         .declare(SlotSpec::new("border-left", TokenKind::Color, false))
         .declare(SlotSpec::new("foreground", TokenKind::Color, false))
+        .declare(SlotSpec::new("underline", TokenKind::Color, false))
         .declare(SlotSpec::new("shadow", TokenKind::Color, false))
         .declare(SlotSpec::new("radius", TokenKind::Shape, false))
         .declare(SlotSpec::new("silhouette", TokenKind::Silhouette, false));
@@ -260,14 +271,14 @@ mod tests {
     use super::{SlotSpec, standard_slots};
     use crate::token::value::TokenKind;
 
-    /// The shipped schema is exactly the ten slots the painter draws, at
+    /// The shipped schema is exactly the eleven slots the painter draws, at
     /// the kinds it draws them.
     ///
     /// The count is the load-bearing assertion, not the membership list. This
-    /// schema carried eleven entries against a six-entry painter for as long
-    /// as nothing compared the two, and every one of the five extras read as
-    /// a considered commitment rather than as a gap. A test that only checked
-    /// membership would have passed the whole time.
+    /// schema once carried eleven entries against a six-entry painter for as
+    /// long as nothing compared the two, and every one of the five extras
+    /// read as a considered commitment rather than as a gap. A test that only
+    /// checked membership would have passed the whole time.
     ///
     /// The other half of the claim — that the painter's own `KNOWN_SLOTS`
     /// is this same set — cannot be made from this crate, which does not
@@ -284,6 +295,7 @@ mod tests {
             ("border-bottom", TokenKind::Color),
             ("border-left", TokenKind::Color),
             ("foreground", TokenKind::Color),
+            ("underline", TokenKind::Color),
             ("shadow", TokenKind::Color),
             ("radius", TokenKind::Shape),
             ("silhouette", TokenKind::Silhouette),

@@ -296,6 +296,29 @@ const ACCENT_TOKEN: &str = "accent.primary";
 /// habit.
 const ON_ACCENT_TOKEN: &str = "text.on-accent";
 
+/// The ink a link is written in: Carbon's `$link-primary`.
+///
+/// **Not an alias of the accent, and the reason is a measurement.** Carbon
+/// gives links their own step of the blue ramp (blue 40 in g100, blue 60 in
+/// white) because the accent is tuned as a *fill* under `text.on-accent`,
+/// not as *text* on a layer: dark `#4589ff` is 2.9:1 on `surface.layer-three`
+/// and 4.5:1 is the floor for body text. A link that only differed from prose
+/// by a hue nobody can read at 2.9:1 would be the "just looks like a text
+/// label" the operator reported on row 15, with a colour bolted on.
+///
+/// The value is derived rather than chosen: [`insert_accent`] walks the
+/// accent toward the theme's `text.primary` and stops at the first step that
+/// clears the floor on the deepest layer, so the token cannot drift away
+/// from the accent's hue and cannot fall below AA on any ground a link can
+/// be placed on. In light the accent already clears the floor and the walk
+/// stops at step zero; in dark it lightens. Neither theme carries a literal
+/// for it.
+///
+/// Hue is never the only channel: `component::link` pairs this ink with the
+/// `underline` slot (`token::slot::standard_slots`), which is the channel a
+/// red-green colour-blind reader has.
+const LINK_TOKEN: &str = "link-primary";
+
 /// Assign a mode's [`BORDER_TOKEN`] into a theme's value map.
 fn insert_border(values: &mut BTreeMap<TokenName, TokenValue>, border: &[u8; 3]) {
     values.insert(
@@ -306,23 +329,28 @@ fn insert_border(values: &mut BTreeMap<TokenName, TokenValue>, border: &[u8; 3])
     );
 }
 
-/// Assign a mode's accent pair into a theme's value map.
+/// Assign a mode's accent pair, and the link ink derived from it, into a
+/// theme's value map.
 ///
-/// `layers` is the same array [`insert_layer_set`] takes, and only
-/// `layers[0]` is read: [`ON_ACCENT_TOKEN`] *is* `surface.base`, and taking
-/// it from the layer set rather than repeating the literal is what stops the
-/// two from drifting into two different whites.
+/// `layers` is the same array [`insert_layer_set`] takes. `layers[0]` is
+/// read for [`ON_ACCENT_TOKEN`], which *is* `surface.base`, and taking it
+/// from the layer set rather than repeating the literal is what stops the
+/// two from drifting into two different whites. `layers[3]` is read for
+/// [`LINK_TOKEN`]: the deepest layer is the hardest ground a link can be
+/// written on, so an ink that clears the floor there clears it everywhere.
+///
+/// `ink` is the theme's `text.primary`, the direction the link tone walks
+/// in: toward the page's own text colour, which is the one direction that
+/// is guaranteed to end above the floor, because `text.primary` clears it
+/// itself (`every_text_tone_clears_aa_on_every_surface_it_can_be_painted_on`).
 fn insert_accent(
     values: &mut BTreeMap<TokenName, TokenValue>,
     accent: &[u8; 3],
     layers: &[[u8; 3]; 4],
+    ink: [u8; 3],
 ) {
-    values.insert(
-        name(ACCENT_TOKEN),
-        TokenValue::Color(ColorValue::from_srgb8(
-            accent[0], accent[1], accent[2], 0xff,
-        )),
-    );
+    let accent_value = ColorValue::from_srgb8(accent[0], accent[1], accent[2], 0xff);
+    values.insert(name(ACCENT_TOKEN), TokenValue::Color(accent_value));
     let ground = layers[0];
     values.insert(
         name(ON_ACCENT_TOKEN),
@@ -330,6 +358,40 @@ fn insert_accent(
             ground[0], ground[1], ground[2], 0xff,
         )),
     );
+    values.insert(
+        name(LINK_TOKEN),
+        TokenValue::Color(link_ink(
+            accent_value,
+            opaque_value(ink),
+            opaque_value(layers[3]),
+        )),
+    );
+}
+
+/// WCAG 2.x AA for body text, the floor [`link_ink`] walks up to.
+const LINK_MIN_TEXT_CONTRAST: f32 = 4.5;
+/// How finely [`link_ink`] steps from the accent toward the ink. Twenty
+/// steps of five percent: fine enough that the first passing step is
+/// within a hair of the floor, coarse enough to be exact in `f32`.
+const LINK_WALK_STEPS: u32 = 20;
+
+/// The first colour on the walk from `accent` toward `ink` that clears
+/// [`LINK_MIN_TEXT_CONTRAST`] on `deepest`, or `ink` itself if none does.
+///
+/// `ink` is the far end for the reason [`insert_accent`] gives: it clears
+/// the floor on its own, so the walk always terminates on a passing tone.
+fn link_ink(accent: ColorValue, ink: ColorValue, deepest: ColorValue) -> ColorValue {
+    #[allow(clippy::cast_precision_loss)]
+    (0..=LINK_WALK_STEPS)
+        .map(|step| accent.lerp(ink, step as f32 / LINK_WALK_STEPS as f32))
+        .find(|candidate| candidate.contrast_ratio(deepest) >= LINK_MIN_TEXT_CONTRAST)
+        .unwrap_or(ink)
+}
+
+/// An opaque [`ColorValue`] from an sRGB triple. The value-typed twin of
+/// [`opaque`], for arithmetic that wants a colour rather than a token.
+fn opaque_value(rgb: [u8; 3]) -> ColorValue {
+    ColorValue::from_srgb8(rgb[0], rgb[1], rgb[2], 0xff)
 }
 
 /// The two text tones, primary first, for each polarity.
@@ -1521,6 +1583,9 @@ pub fn standard_vocabulary() -> Vocabulary {
         // `ON_ACCENT_TOKEN` for why the pair is two names rather than one.
         .declare(DesignToken::new(name(ACCENT_TOKEN), TokenKind::Color))
         .declare(DesignToken::new(name(ON_ACCENT_TOKEN), TokenKind::Color))
+        // The link ink, derived from the accent by `link_ink`. See
+        // `LINK_TOKEN` for why it is not the accent itself.
+        .declare(DesignToken::new(name(LINK_TOKEN), TokenKind::Color))
         // The one drawn boundary. Judged against SC 1.4.11's 3:1 and held
         // *below* both text tones, because the defect this replaced was a
         // border that was too loud rather than one that was too faint.
@@ -1689,7 +1754,7 @@ pub fn light() -> Theme {
     let mut values = BTreeMap::new();
 
     insert_layer_set(&mut values, &LIGHT_LAYERS);
-    insert_accent(&mut values, &LIGHT_ACCENT, &LIGHT_LAYERS);
+    insert_accent(&mut values, &LIGHT_ACCENT, &LIGHT_LAYERS, LIGHT_TEXT[0]);
     insert_border(&mut values, &LIGHT_BORDER);
     insert_shadow_set(&mut values, &LIGHT_SHADOW_ALPHAS);
     values.insert(name("text.primary"), opaque(LIGHT_TEXT[0]));
@@ -1786,7 +1851,7 @@ pub fn dark() -> Theme {
     let mut values = BTreeMap::new();
 
     insert_layer_set(&mut values, &DARK_LAYERS);
-    insert_accent(&mut values, &DARK_ACCENT, &DARK_LAYERS);
+    insert_accent(&mut values, &DARK_ACCENT, &DARK_LAYERS, DARK_TEXT[0]);
     insert_border(&mut values, &DARK_BORDER);
     insert_shadow_set(&mut values, &DARK_SHADOW_ALPHAS);
     values.insert(name("text.primary"), opaque(DARK_TEXT[0]));
@@ -1862,11 +1927,11 @@ mod tests {
     use super::{
         ACCENT_TOKEN, ACTIVE_STEP, ACTIVE_TOKEN, BORDER_INTERACTIVE_TOKEN, BORDER_STRONG_TOKEN,
         BORDER_SUBTLE_TOKENS, BORDER_TOKEN, CornerRole, DARK_LAYERS, FIELD_TOKENS, HOVER_STEP,
-        ICON_TOKENS, LAYER_ACCENT_STATE_TOKENS, LAYER_ACCENT_TOKEN, LAYER_TOKENS, LIGHT_LAYERS, M,
-        MONO, ON_ACCENT_TOKEN, R, RAISED_ALIAS, SANS, SCRIM_TOKEN, SELECTED_HOVER_STEP,
-        SELECTED_STEP, SHADOW_GEOMETRY, SHADOW_TOKENS, SHAPE_RAMP, SIZE_RAMP, SPACING_ALIASES,
-        SPACING_RAMP, SPRING_SET, SUPPORT_ALIASES, TYPOGRAPHY_RAMP, corner_for, dark, light,
-        lightness_of, standard_vocabulary,
+        ICON_TOKENS, LAYER_ACCENT_STATE_TOKENS, LAYER_ACCENT_TOKEN, LAYER_TOKENS, LIGHT_LAYERS,
+        LINK_TOKEN, M, MONO, ON_ACCENT_TOKEN, R, RAISED_ALIAS, SANS, SCRIM_TOKEN,
+        SELECTED_HOVER_STEP, SELECTED_STEP, SHADOW_GEOMETRY, SHADOW_TOKENS, SHAPE_RAMP, SIZE_RAMP,
+        SPACING_ALIASES, SPACING_RAMP, SPRING_SET, SUPPORT_ALIASES, TYPOGRAPHY_RAMP, corner_for,
+        dark, light, lightness_of, standard_vocabulary,
     };
     use crate::token::ThemeMode;
     use crate::token::focus::RING_TOKEN;
@@ -2998,6 +3063,44 @@ mod tests {
     /// type ramp has one tone with two names and every "de-emphasised" label
     /// on every page silently shouts.
     ///
+    /// The link ink clears AA on every layer, in both themes, and is still
+    /// blue.
+    ///
+    /// Both halves. The first is the floor [`LINK_TOKEN`]'s doc gives the
+    /// reason for: the accent it is derived from is 2.9:1 on dark's deepest
+    /// layer, so an alias would have shipped a link nobody could read on a
+    /// card. The second is what stops [`link_ink`] from "passing" by walking
+    /// all the way to `text.primary`: a link that is the text colour is the
+    /// row-15 defect this token exists to fix. Blue is asserted as the blue
+    /// channel leading the red one by a margin, which is the property the
+    /// accent has and a grey does not.
+    #[test]
+    fn the_link_ink_clears_aa_on_every_layer_and_is_still_blue() {
+        const MIN_TEXT_CONTRAST: f32 = 4.5;
+        for (label, theme) in [("light", light()), ("dark", dark())] {
+            let link = theme_color(&theme, LINK_TOKEN);
+            for surface in LAYER_TOKENS.iter().chain(std::iter::once(&RAISED_ALIAS)) {
+                let ground = theme_color(&theme, surface);
+                let ratio = contrast(link, ground);
+                assert!(
+                    ratio >= MIN_TEXT_CONTRAST,
+                    "{label}: {LINK_TOKEN} on {surface} is {ratio:.2}:1, below the \
+                     {MIN_TEXT_CONTRAST}:1 AA floor for text"
+                );
+            }
+            assert!(
+                link.b > link.r * 2.0,
+                "{label}: {LINK_TOKEN} has stopped being blue ({link:?}); the walk \
+                 toward text.primary went too far and the link is prose again"
+            );
+            let accent = theme_color(&theme, ACCENT_TOKEN);
+            assert!(
+                (link.b - link.r) > 0.5 * (accent.b - accent.r),
+                "{label}: {LINK_TOKEN} kept under half the accent's blue lead"
+            );
+        }
+    }
+
     /// The two themes are tuned to *different* steps on purpose — see
     /// [`DARK_STEP`] inside the test for why one number could not serve
     /// both, and what it cost to find that out.
@@ -3168,24 +3271,34 @@ mod tests {
     /// (ΔE\*ab 68.4 under deuteranopia) — both sit on the blue-green side,
     /// which is exactly where a red-green deficiency has the least room, so
     /// it is the pair to watch when either colour is retuned.
+    ///
+    /// [`LINK_TOKEN`] is measured here too, under the same transform against
+    /// the same marks: it is the accent's hue walked toward the page's ink
+    /// ([`link_ink`]), which is a second blue on the page and therefore a
+    /// second thing a reader must not mistake for a status marker. It is
+    /// this measurement that lets
+    /// [`no_shipped_colour_carries_a_hue_that_is_not_already_gated`] admit
+    /// it.
     #[test]
     fn the_accent_survives_red_green_colour_blindness() {
         const STATUSES: [&str; 3] = ["status.ok", "status.degraded", "status.down"];
         for (label, theme) in [("light", light()), ("dark", dark())] {
-            let accent = theme_color(&theme, ACCENT_TOKEN);
-            for (vision, matrix) in [("deuteranope", &DEUTERANOPE), ("protanope", &PROTANOPE)] {
-                let seen_accent = to_lab(simulate(accent, matrix));
-                for status in STATUSES {
-                    let seen = to_lab(simulate(theme_color(&theme, status), matrix));
-                    let d = delta_e(seen_accent, seen);
-                    assert!(
-                        d >= MIN_STATUS_SEPARATION,
-                        "{label}: {ACCENT_TOKEN} and {status} are only ΔE*ab \
-                         {d:.1} apart to a {vision} reader (floor is \
-                         {MIN_STATUS_SEPARATION}). An accent a reader cannot \
-                         tell from a state marker turns every selected tab \
-                         into a status report."
-                    );
+            for blue in [ACCENT_TOKEN, LINK_TOKEN] {
+                let hue = theme_color(&theme, blue);
+                for (vision, matrix) in [("deuteranope", &DEUTERANOPE), ("protanope", &PROTANOPE)] {
+                    let seen_hue = to_lab(simulate(hue, matrix));
+                    for status in STATUSES {
+                        let seen = to_lab(simulate(theme_color(&theme, status), matrix));
+                        let d = delta_e(seen_hue, seen);
+                        assert!(
+                            d >= MIN_STATUS_SEPARATION,
+                            "{label}: {blue} and {status} are only ΔE*ab \
+                             {d:.1} apart to a {vision} reader (floor is \
+                             {MIN_STATUS_SEPARATION}). A blue a reader cannot \
+                             tell from a state marker turns every selected tab \
+                             and every link into a status report."
+                        );
+                    }
                 }
             }
         }
@@ -4122,6 +4235,14 @@ mod tests {
     /// * `status.*` and `support-*` — the three hand-tuned status colours
     ///   under two names each, held apart under both simulations by
     ///   [`status_colours_stay_apart_under_red_green_colour_blindness`].
+    /// * `link-primary` — the accent's hue walked toward the page ink until
+    ///   it clears AA as text ([`link_ink`]); measured under both simulations
+    ///   against the status marks by
+    ///   [`the_accent_survives_red_green_colour_blindness`], and held to the
+    ///   text floor on every layer by
+    ///   [`the_link_ink_clears_aa_on_every_layer_and_is_still_blue`]. Its
+    ///   component pairs it with an underline, so hue is not its only
+    ///   channel either.
     ///
     /// Anything else with chroma fails here, naming itself. Adding a hue is
     /// then a deliberate act that has to come with a gate, which is the whole
@@ -4142,6 +4263,7 @@ mod tests {
                 }
                 let name = token.as_str();
                 let gated = name == ACCENT_TOKEN
+                    || name == LINK_TOKEN
                     || name == BORDER_INTERACTIVE_TOKEN
                     || name == RING_TOKEN
                     || name == "focus-inverse"

@@ -14,7 +14,7 @@ use std::sync::Arc;
 use super::stack;
 use super::text::text;
 use super::tokens::{
-    BORDER_SUBTLE, SHAPE_SM, SIZE_MD, SPACING_02, SPACING_03, SUPPORT_ERROR, SURFACE_RAISED,
+    BORDER_STRONG, BORDER_SUBTLE, SIZE_MD, SPACING_02, SPACING_03, SUPPORT_ERROR, SURFACE_RAISED,
     TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_BODY, t,
 };
 use crate::geom::{Align, Axis};
@@ -51,14 +51,65 @@ const SIZE_FLUID: f32 = 64.0;
 /// How one input well is finished.
 #[derive(Clone, Copy)]
 enum FieldChrome {
-    /// Editable Default-style well: Petra's field/border pair.
+    /// Editable Default-style well: a fill and a bottom rule.
     Enabled,
-    /// Invalid: same well, [`ACCENT_PRIMARY`] border as the error stand-in.
+    /// Invalid: same fill, a [`SUPPORT_ERROR`] outline on all four sides.
     Invalid,
-    /// Readable, not editable. Keeps Focus; drops Key and TextEdit.
+    /// Readable, not editable. Keeps Focus; drops Key and TextEdit. No fill,
+    /// a subtle bottom rule.
     ReadOnly,
     /// Fluid inner input. The wrapper is the well; this node has no fill.
     Nested,
+}
+
+/// Bind Carbon's field chrome onto `props`: the well every text-shaped
+/// control in this library shares.
+///
+/// **A fill and a bottom rule, and nothing on the other three sides.** This
+/// is `_text-input.scss`'s `.cds--text-input` — `background-color: $field`,
+/// `border-block-end: 1px solid $border-strong` — and `_search.scss` and
+/// `_number-input.scss` say the same of their wells (slice-e "Text input",
+/// slice-d "Search", "Number input"). Square corners: Carbon's field has no
+/// radius. Until 2026-09-04 every one of those wells drew a full
+/// [`BORDER_SUBTLE`] box with a 2-unit radius, because a box was the only
+/// edge the painter could draw, and the operator called all five rows "not
+/// Carbon style" in one breath. `border-bottom` is the slot that exists so
+/// this function can say what Carbon says.
+///
+/// `pub(super)` so [`super::search`] and [`super::number_input`] bind the
+/// same three lines rather than three copies of them that drift; the
+/// editable-intent list already went that way once
+/// ([`EDITABLE_TEXT_INTENTS`]).
+pub(super) fn bind_field_chrome(props: &mut Props) {
+    props.tokens.insert("background".into(), t(SURFACE_RAISED));
+    props
+        .tokens
+        .insert("border-bottom".into(), t(BORDER_STRONG));
+}
+
+/// A muted label above `control`, Carbon's `.cds--label` (slice-e "Text
+/// input": `$text-secondary`, `margin-bottom: 8px`).
+///
+/// The one label shape every form control in the inventory shares, so it is
+/// one function and not one per control. `key` names the wrapper; the
+/// control keeps the key it was built with, and a route to the control
+/// still names the wrapper's key in its path, so a page matching with
+/// `path_has` on either works.
+///
+/// The wrapper has no role: it must not steal the control's.
+#[must_use]
+pub fn labeled(key: impl Into<Key>, label: impl Into<String>, control: ViewNode) -> ViewNode {
+    let mut node = stack(
+        key,
+        Axis::Vertical,
+        Some(SPACING_03),
+        vec![muted_label("label", label), control],
+    );
+    // A vertical stack's cross axis is the width. Stretch passes a caller's
+    // width down to the control, so a labelled field fills its column the
+    // way a bare one does under `filled_body`.
+    node.props.align = Some(Align::Stretch);
+    node
 }
 
 /// An editable text field — Carbon Default, size md (40).
@@ -69,37 +120,28 @@ enum FieldChrome {
 /// path that constructs a `field` with one but not the other. Visible
 /// label-above anatomy is [`field_labeled`].
 ///
-/// # The box: a tone *and* an edge, and why it needs both
+/// # The well: a fill and a bottom rule
 ///
 /// A field drew a `text.muted` box until 2026-08-25 — the same tone as the
 /// placeholder text inside it, which is the specific way an outlined field
 /// reads badly: the frame and the content are the same weight, and the frame
-/// is longer.
+/// is longer. It then drew a [`BORDER_SUBTLE`] box with a 2-unit radius
+/// until 2026-09-04, because that was the only edge the painter had, and the
+/// operator called it "not IBM Carbon style" twice.
 ///
-/// The first attempt at fixing that deleted the border outright and leaned on
-/// the fill, since [`super::on_layer`] seats a field one step ahead of
-/// whatever it is placed on. A capture and a measurement both said that was
-/// not enough. **A one-layer step is 1.26:1 in dark and 1.12:1 in light**,
-/// against WCAG 2.1 SC 1.4.11's 3:1 floor for the visual information that
-/// identifies a control — see [`super::button`]'s `Chrome::Edged` for the
-/// full table. Light is the worse case because its layer set alternates
-/// rather than ramps, so the step is `#f2f2f2` to `#ffffff` and there is
-/// nowhere further to go.
-///
-/// So the tone carries the depth and [`BORDER_SUBTLE`] carries the boundary,
-/// which is M-Carbon's own rule for exactly this pairing — `LAYER_TOKENS`'
-/// doc in `crate::token::shipped` records it as *"Borders pair with their
-/// same number."* The edge is now 3.34:1 in light instead of 8.70:1: it is
-/// still an outlined field, and it is no longer as loud as its own contents.
-///
-/// Petra's field/border pair is [`SURFACE_RAISED`] + [`BORDER_SUBTLE`]. Carbon
-/// wants `$field` + `$border-strong`. `FIELD_TOKENS` exist on `crate::token`
-/// but `tokens.rs` does not export a field fill, so this library keeps the
-/// pairing it can name.
+/// Carbon's field is [`bind_field_chrome`]: `$field` under a
+/// `1px solid $border-strong` bottom rule, square, and nothing on the other
+/// three sides. The fill is [`SURFACE_RAISED`] — `field-01` is `layer-01` by
+/// definition (`FIELD_TOKENS` in `crate::token::shipped`), and `surface.raised`
+/// is the name [`super::on_layer`] knows how to reseat — and the rule is
+/// [`BORDER_STRONG`] through the `border-bottom` slot. The one-layer step
+/// alone is 1.26:1 in dark and 1.12:1 in light, under SC 1.4.11's 3:1, which
+/// is why the rule is there: it is the edge that identifies the control.
 ///
 /// Keyboard focus on a field is two vertical bars hugging the left and
 /// right, not the underline buttons get. Geometry is `FocusRing::hugs`.
-/// This file does not paint a focus ring.
+/// This file does not paint a focus ring. Carbon's is a 2px outline on all
+/// four sides; that is the host's figure to change, not this file's.
 ///
 /// `NodeKind::Input` is a leaf kind, so unlike [`super::button`] it carries
 /// no padding (`Props.padding` is refused on a leaf,
@@ -137,38 +179,30 @@ pub fn field_fluid(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
             input_field("input", label, 0.0, FieldChrome::Nested),
         ],
     );
-    node.props
-        .tokens
-        .insert("background".into(), t(SURFACE_RAISED));
-    node.props.tokens.insert("border".into(), t(BORDER_SUBTLE));
-    node.props.tokens.insert("radius".into(), t(SHAPE_SM));
+    bind_field_chrome(&mut node.props);
     node.constraints.vertical.min = Some(SIZE_FLUID);
     node
 }
 
 /// Carbon Default anatomy: muted label above a md Input.
 ///
-/// The wrapper has no role. The `"input"` child is the interactive
-/// `Role::TextInput` node, 40 tall.
+/// [`labeled`] over [`field`]. The wrapper has no role. The `"input"` child
+/// is the interactive `Role::TextInput` node, 40 tall.
 pub fn field_labeled(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
     let label = label.into();
-    stack(
+    labeled(
         key,
-        Axis::Vertical,
-        Some(SPACING_03),
-        vec![
-            muted_label("label", label.clone()),
-            input_field("input", label, SIZE_MD, FieldChrome::Enabled),
-        ],
+        label.clone(),
+        input_field("input", label, SIZE_MD, FieldChrome::Enabled),
     )
 }
 
 /// Invalid Default input plus a label-adjacent helper.
 ///
-/// Colour is not the only channel: the Input border is [`ACCENT_PRIMARY`]
-/// (Petra's stand-in for Carbon's invalid edge — there is no `$text-error`
-/// / `$support-error` in this library) **and** a helper child carries
-/// `Invalid: {message}` in [`TEXT_PRIMARY`].
+/// Colour is not the only channel: the Input outline is [`SUPPORT_ERROR`]
+/// on all four sides (Carbon's invalid field is a 2px `$support-error`
+/// outline, slice-e; this painter's edge is one unit) **and** a helper child
+/// carries `Invalid: {message}` in [`TEXT_PRIMARY`].
 pub fn field_invalid(
     key: impl Into<Key>,
     label: impl Into<String>,
@@ -287,20 +321,26 @@ fn input_field(
     props.tokens.insert("foreground".into(), t(TEXT_MUTED));
     match chrome {
         FieldChrome::Nested => {}
-        FieldChrome::Enabled | FieldChrome::ReadOnly => {
-            props.tokens.insert("background".into(), t(SURFACE_RAISED));
-            props.tokens.insert("border".into(), t(BORDER_SUBTLE));
-            props.tokens.insert("radius".into(), t(SHAPE_SM));
+        FieldChrome::Enabled => bind_field_chrome(&mut props),
+        FieldChrome::ReadOnly => {
+            // Carbon's read-only field has no fill and a `$border-subtle`
+            // rule (`_text-input.scss` `--readonly`: `background:
+            // transparent`, `border-block-end-color: $border-subtle`). The
+            // missing fill is the channel: a field you cannot type into
+            // does not look like a well you could.
+            props
+                .tokens
+                .insert("border-bottom".into(), t(BORDER_SUBTLE));
         }
         FieldChrome::Invalid => {
             props.tokens.insert("background".into(), t(SURFACE_RAISED));
-            // The error hue, not the accent. These were the same token, so
-            // an invalid field and a focused field drew the identical blue
-            // edge and the error state had no visual channel at all beyond
-            // its helper text. `SUPPORT_ERROR`'s doc says why the name looked
-            // missing when it never was.
+            // The error hue, not the accent, and on all four sides: Carbon's
+            // invalid field is an outline, the one state where the field is
+            // boxed. These were the same token as the accent once, so an
+            // invalid field and a focused field drew the identical blue
+            // edge. `SUPPORT_ERROR`'s doc says why the name looked missing
+            // when it never was.
             props.tokens.insert("border".into(), t(SUPPORT_ERROR));
-            props.tokens.insert("radius".into(), t(SHAPE_SM));
         }
     }
     let intents: &[Interaction] = match chrome {
@@ -330,16 +370,18 @@ fn input_field(
 mod tests {
     use super::valued;
 
-    use super::{BORDER_SUBTLE, SUPPORT_ERROR, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY};
+    use super::{
+        BORDER_STRONG, BORDER_SUBTLE, SUPPORT_ERROR, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY,
+    };
     // Not from `super`: no shipped code in this file names the accent any
     // more, and that is the change. The invalid field used to bind it, which
     // made it identical to a focused field. It survives here only so the test
     // can assert the two differ.
     use super::{
         SIZE_FLUID, SIZE_LG, SIZE_MD, SIZE_SM, field, field_fluid, field_invalid, field_labeled,
-        field_lg, field_readonly, field_sm,
+        field_lg, field_readonly, field_sm, labeled,
     };
-    use crate::component::tokens::ACCENT_PRIMARY;
+    use crate::component::tokens::{ACCENT_PRIMARY, SURFACE_BASE};
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, validated_with};
@@ -368,14 +410,47 @@ mod tests {
         assert_eq!(node.semantics.role, Some(Role::TextInput));
         assert_eq!(node.semantics.label.as_deref(), Some("Fiber name"));
         assert_eq!(node.props.placeholder.as_deref(), Some("Fiber name"));
-        assert_eq!(token(&node, "background"), Some(SURFACE_RAISED));
-        assert_eq!(token(&node, "border"), Some(BORDER_SUBTLE));
+        assert_carbon_well(&node, "default");
         assert!(node.interactions.contains(&Interaction::Focus));
         assert!(node.interactions.contains(&Interaction::Key));
         assert!(node.interactions.contains(&Interaction::TextEdit));
         assert!(!node.semantics.read_only);
         assert!(!node.semantics.disabled);
         assert!(node.children.is_empty(), "default field is a leaf Input");
+    }
+
+    /// Carbon's field is a fill with a bottom rule: `$field` under
+    /// `border-block-end: 1px solid $border-strong`, square, and **no** edge
+    /// on the other three sides. Every editable well in this file binds
+    /// exactly that, so it is one assertion and not five copies.
+    ///
+    /// The negative half is the one that catches the defect coming back: a
+    /// well that binds `border` or `radius` again is the box the operator
+    /// called "not IBM Carbon style" twice.
+    fn assert_carbon_well(node: &ViewNode, label: &str) {
+        assert_eq!(
+            token(node, "background"),
+            Some(SURFACE_RAISED),
+            "{label}: the well is filled"
+        );
+        assert_eq!(
+            token(node, "border-bottom"),
+            Some(BORDER_STRONG),
+            "{label}: the well's one edge is a strong bottom rule"
+        );
+        assert_eq!(
+            token(node, "border"),
+            None,
+            "{label}: a Carbon field is not boxed"
+        );
+        assert_eq!(
+            token(node, "radius"),
+            None,
+            "{label}: a Carbon field has square corners"
+        );
+        for side in ["border-top", "border-left", "border-right"] {
+            assert_eq!(token(node, side), None, "{label}: no {side}");
+        }
     }
 
     #[test]
@@ -385,7 +460,7 @@ mod tests {
         assert_eq!(node.constraints.vertical.min, Some(SIZE_SM));
         assert_eq!(SIZE_SM, 32.0);
         assert_eq!(node.semantics.role, Some(Role::TextInput));
-        assert_eq!(token(&node, "border"), Some(BORDER_SUBTLE));
+        assert_carbon_well(&node, "sm");
     }
 
     #[test]
@@ -395,7 +470,28 @@ mod tests {
         assert_eq!(node.constraints.vertical.min, Some(SIZE_LG));
         assert_eq!(SIZE_LG, 48.0);
         assert_eq!(node.semantics.role, Some(Role::TextInput));
-        assert_eq!(token(&node, "border"), Some(BORDER_SUBTLE));
+        assert_carbon_well(&node, "lg");
+    }
+
+    /// `labeled` puts Carbon's muted label over any control and stretches
+    /// the control to the column, without taking the control's role.
+    #[test]
+    fn labeled_puts_a_muted_label_over_any_control_and_keeps_its_role() {
+        let node = labeled("port", "Port", field_sm("input", "Port"));
+        assert_eq!(node.kind, NodeKind::Stack);
+        assert_eq!(node.props.axis, Some(Axis::Vertical));
+        assert!(node.semantics.role.is_none(), "the wrapper has no role");
+        assert_eq!(
+            node.props.align,
+            Some(crate::geom::Align::Stretch),
+            "the control fills the column the wrapper is given"
+        );
+        let label = child(&node, "label");
+        assert_eq!(label.props.text.as_deref(), Some("Port"));
+        assert_eq!(token(label, "foreground"), Some(TEXT_MUTED));
+        let input = child(&node, "input");
+        assert_eq!(input.semantics.role, Some(Role::TextInput));
+        assert_eq!(input.constraints.vertical.min, Some(SIZE_SM));
     }
 
     #[test]
@@ -408,8 +504,7 @@ mod tests {
             node.semantics.role.is_none(),
             "wrapper must not steal TextInput"
         );
-        assert_eq!(token(&node, "background"), Some(SURFACE_RAISED));
-        assert_eq!(token(&node, "border"), Some(BORDER_SUBTLE));
+        assert_carbon_well(&node, "fluid wrapper");
         let label = child(&node, "label");
         assert_eq!(label.kind, NodeKind::Text);
         assert_eq!(label.props.text.as_deref(), Some("Fiber name"));
@@ -420,7 +515,7 @@ mod tests {
         assert_eq!(input.semantics.label.as_deref(), Some("Fiber name"));
         assert!(input.interactions.contains(&Interaction::TextEdit));
         assert!(
-            token(input, "border").is_none(),
+            token(input, "border").is_none() && token(input, "border-bottom").is_none(),
             "fluid chrome lives on the 64-tall wrapper"
         );
     }
@@ -443,8 +538,7 @@ mod tests {
         assert_eq!(input.constraints.vertical.min, Some(SIZE_MD));
         assert_eq!(input.semantics.role, Some(Role::TextInput));
         assert_eq!(input.semantics.label.as_deref(), Some("Fiber name"));
-        assert_eq!(token(input, "background"), Some(SURFACE_RAISED));
-        assert_eq!(token(input, "border"), Some(BORDER_SUBTLE));
+        assert_carbon_well(input, "labeled input");
     }
 
     /// An invalid field's edge is the error hue, never the accent, and the
@@ -479,6 +573,12 @@ mod tests {
             "an invalid field must not wear the accent: a focused field wears \
              it too, and the two states became pixel-identical"
         );
+        assert_eq!(
+            token(input, "border-bottom"),
+            None,
+            "the invalid outline replaces the resting rule rather than \
+             stacking on it: Carbon's invalid field is one red box"
+        );
         assert_eq!(token(input, "background"), Some(SURFACE_RAISED));
         assert!(input.interactions.contains(&Interaction::TextEdit));
         let helper = child(&node, "helper");
@@ -508,8 +608,15 @@ mod tests {
         assert!(!node.interactions.contains(&Interaction::TextEdit));
         assert!(!node.interactions.contains(&Interaction::Key));
         assert_eq!(node.props.placeholder.as_deref(), Some("Fiber name"));
-        assert_eq!(token(&node, "border"), Some(BORDER_SUBTLE));
-        assert_eq!(token(&node, "background"), Some(SURFACE_RAISED));
+        // Carbon `--readonly`: transparent, `$border-subtle` rule. No fill
+        // is the channel that says "not a well you can type into".
+        assert_eq!(token(&node, "border-bottom"), Some(BORDER_SUBTLE));
+        assert_eq!(token(&node, "border"), None);
+        assert_eq!(
+            token(&node, "background"),
+            None,
+            "a read-only field has no fill"
+        );
     }
 
     const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
@@ -635,6 +742,10 @@ mod tests {
 
     /// Check E: the placeholder text against the well's own resting fill,
     /// across Default, sm, lg and read-only, in both themes.
+    ///
+    /// A read-only field has no fill of its own (Carbon `--readonly` is
+    /// transparent), so its placeholder is judged against the base surface
+    /// it shows through.
     #[test]
     fn placeholder_clears_aa_contrast_against_its_own_well_fill() {
         const MIN_TEXT_CONTRAST: f32 = 4.5;
@@ -649,8 +760,8 @@ mod tests {
                     .props
                     .tokens
                     .get("background")
-                    .unwrap_or_else(|| panic!("{label}: well binds a resting background"));
-                let well_bg = color(&theme, well_bg_name.as_str());
+                    .map_or(SURFACE_BASE, TokenName::as_str);
+                let well_bg = color(&theme, well_bg_name);
                 let fg_name = node
                     .props
                     .tokens
@@ -661,8 +772,7 @@ mod tests {
                 let ratio = fg.contrast_ratio(well_bg);
                 assert!(
                     ratio >= MIN_TEXT_CONTRAST,
-                    "{label}: at {ratio:.2}:1 against {} fails AA {MIN_TEXT_CONTRAST}:1",
-                    well_bg_name.as_str()
+                    "{label}: at {ratio:.2}:1 against {well_bg_name} fails AA {MIN_TEXT_CONTRAST}:1"
                 );
             }
         }

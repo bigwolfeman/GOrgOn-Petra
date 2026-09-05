@@ -247,6 +247,13 @@ pub(crate) const ICON_DISABLED: &str = "icon-disabled";
 /// page's ink would be a different hue as well as a different lightness.
 pub(crate) const ICON_ON_COLOR_DISABLED: &str = "icon-on-color-disabled";
 
+/// The ink a link is written in: Carbon's `$link-primary`, derived in
+/// `token::shipped` from the accent so it clears AA as *text* on every layer
+/// (the accent itself does not, on dark's deepest layers). Spent by
+/// [`super::link`] on the label and on the `underline` slot, so the hue and
+/// the rule are one colour.
+pub(crate) const LINK_PRIMARY: &str = "link-primary";
+
 /// Every constant above, for the completeness proof. A name added above and
 /// left out of this list would silently stop being covered, so the list is
 /// what the test walks rather than the component source.
@@ -302,6 +309,8 @@ pub(crate) const ALL: &[&str] = &[
     LAYER_SELECTED_HOVER,
     ICON_DISABLED,
     ICON_ON_COLOR_DISABLED,
+    BORDER_STRONG,
+    LINK_PRIMARY,
 ];
 
 /// `name` as a [`TokenName`].
