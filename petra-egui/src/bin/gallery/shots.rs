@@ -206,13 +206,15 @@ impl Camera {
         });
         let ctx = self.ctx.clone();
         let out = ctx.run_ui(sized(raw), |_| self.host.pass(&ctx));
-        self.clipboard
-            .extend(out.platform_output.commands.iter().filter_map(|cmd| {
-                match cmd {
+        self.clipboard.extend(
+            out.platform_output
+                .commands
+                .iter()
+                .filter_map(|cmd| match cmd {
                     egui::OutputCommand::CopyText(text) => Some(text.clone()),
                     _ => None,
-                }
-            }));
+                }),
+        );
         out.drop_without_applying_deltas();
         self
     }
@@ -1032,7 +1034,7 @@ mod tests {
             mark_is_glyph(&cam, "sl-1") && !mark_is_glyph(&cam, "sl-0"),
             "the mark is on the selected row alone"
         );
-        cam.click("sl-0/c0/lead/c0");
+        cam.click("sl-0/c0/name");
         let moved = cam.shoot("31-structured-list-first-selected");
         assert!(
             selected(&cam, "sl-0"),
@@ -2778,5 +2780,212 @@ mod tests {
             cam.focused()
         );
         assert_hugs_well(&mut cam, "field-md", "34-text-input-md-focused");
+    }
+
+    // ======================================================================
+    // Wave B, round 3 — rows 31 (Structured list), 09 (Data table) and
+    // 13 (Form). One contiguous block: three waves edit this file in three
+    // worktrees and the merge is done by hand.
+    // ======================================================================
+
+    /// The text a node keyed `key` in the open page's tree carries — its
+    /// `props.text`, which is where `valued` writes a field's value.
+    fn text_of(cam: &Camera, key: &str) -> String {
+        crate::page::common::find(&cam.tree(), key)
+            .unwrap_or_else(|| panic!("no node keyed {key:?} in the page tree"))
+            .props
+            .text
+            .clone()
+            .unwrap_or_default()
+    }
+
+    /// Row 31, round 3: *"we should probably let the column spacers always
+    /// we draggable."*
+    ///
+    /// Driven the way a hand drives it — press on the divider, move, let go
+    /// — and read off the **placed column rects**, not off the page's own
+    /// weights: a weight that changes while the columns do not is exactly
+    /// the class of green test this catalog shipped a round of.
+    #[test]
+    fn dragging_a_structured_list_divider_moves_the_column_boundary() {
+        let mut cam = Camera::on("Structured list");
+        let before = cam.shoot("31-structured-list");
+        let first = cam.rect("/sl/header/c0");
+        let second = cam.rect("/sl/header/c1");
+        let divider = cam.rect("/sl/header/div0");
+        assert!(
+            (divider.w - 8.0).abs() < 0.01,
+            "the divider's drag target is {} wide, not the 8 that makes it \
+             a thing a hand can hit",
+            divider.w
+        );
+
+        // Drag the boundary a quarter of the pair's width to the left.
+        let travel = second.right() - first.x - divider.w;
+        let target = first.x + travel * 0.25 + divider.w / 2.0;
+        cam.drag("/sl/header/div0", Point::new(target, divider.y + 2.0));
+        let after = cam.shoot("31-structured-list-column-dragged");
+
+        let moved = cam.rect("/sl/header/c0");
+        assert!(
+            moved.w < first.w - 10.0,
+            "the first column went from {} to {}, so the drag did not reach \
+             the columns",
+            first.w,
+            moved.w
+        );
+        assert!(
+            (moved.w - travel * 0.25).abs() < 2.0,
+            "the boundary landed at {} where the pointer asked for {}",
+            moved.w,
+            travel * 0.25
+        );
+        // Every row's column 0 follows, not just the header's: the grid
+        // tracks are what keep a table's columns one width.
+        for row in ["sl-0", "sl-1"] {
+            assert!(
+                (cam.rect(&format!("/{row}/c0")).w - moved.w).abs() < 0.01,
+                "{row}'s first column did not follow the header's"
+            );
+        }
+        assert_ne!(before, after, "the drag never reached the picture");
+    }
+
+    /// The round-2 slider bug, asserted away on the new control before it
+    /// can happen again: **a pointer that merely passes a divider does not
+    /// resize anything.** Only a press opens the gesture.
+    ///
+    /// Two shipped decisions hold that, and this covers both. The divider
+    /// declares no `Interaction::Hover`, so a button-up move never names it
+    /// at all; and the page's `gesture` ignores a positional event with no
+    /// drag open. The sweep deliberately stops on the divider's **leading
+    /// edge** rather than its middle: a hover in the middle would compute
+    /// the boundary it is already at, so a test that hovered there would go
+    /// green whether the guard was there or not. Falsified 2026-09-05 by
+    /// adding `Hover` to the divider and taking the guard out; it moves the
+    /// column by half the target's width.
+    #[test]
+    fn a_pointer_passing_a_structured_list_divider_moves_no_column() {
+        let mut cam = Camera::on("Structured list");
+        let before = cam.rect("/sl/header/c0");
+        let divider = cam.rect("/sl/header/div0");
+        // Straight across the divider, left to right, button up.
+        cam.hover_at(divider.x - 40.0, divider.y + 2.0);
+        cam.hover_at(divider.x + 0.5, divider.y + 2.0);
+        cam.hover_at(divider.right() - 0.5, divider.y + 2.0);
+        cam.hover_at(divider.x + 40.0, divider.y + 2.0);
+        assert_eq!(
+            cam.rect("/sl/header/c0").w,
+            before.w,
+            "the pointer passing the divider resized a column, which is the \
+             round-2 slider bug wearing a different hat"
+        );
+    }
+
+    /// Row 9, round 3: *"neither it or the other table like structure is
+    /// editable."*
+    ///
+    /// Carbon v11 core ships no inline-edit anatomy; what slice-b:69 does
+    /// sanction is a form control placed in a cell, so the Kind column is a
+    /// `field_sm` well per row. Driven the way a hand drives it: **click,
+    /// then type**. `Camera::type_into` would move focus with an action no
+    /// person has, which is how a whole round of green tests shipped over a
+    /// field nobody could click into.
+    #[test]
+    fn clicking_a_data_table_cell_and_typing_changes_the_value() {
+        let mut cam = Camera::on("Data table");
+        let before = cam.shoot("09-data-table");
+        assert_eq!(text_of(&cam, "dt-kind-0"), "runtime");
+
+        cam.click("dt-kind-0");
+        assert!(
+            cam.focused()
+                .as_deref()
+                .is_some_and(|id| id.ends_with("dt-kind-0")),
+            "the click did not seat the caret in the cell: {:?}",
+            cam.focused()
+        );
+        cam.type_here("!");
+        let after = cam.shoot("09-data-table-cell-edited");
+
+        assert_eq!(
+            text_of(&cam, "dt-kind-0"),
+            "runtime!",
+            "the keystroke did not reach the cell"
+        );
+        assert_eq!(
+            text_of(&cam, "dt-kind-1"),
+            "layout",
+            "the keystroke reached a cell it was not aimed at"
+        );
+        cam.key(KeyCode::Backspace);
+        cam.key(KeyCode::Backspace);
+        assert_eq!(
+            text_of(&cam, "dt-kind-0"),
+            "runtim",
+            "backspace did not reach the cell"
+        );
+        assert_ne!(before, after, "the edit never reached the picture");
+    }
+
+    /// A press meant to put the caret in a cell must not also select the
+    /// row it is in. Every route into a cell names its row too, so this is
+    /// a real ordering hazard and not a hypothetical one.
+    #[test]
+    fn clicking_a_data_table_cell_does_not_select_its_row() {
+        let mut cam = Camera::on("Data table");
+        assert!(!selected(&cam, "dt-0"));
+        cam.click("dt-kind-0");
+        assert!(
+            !selected(&cam, "dt-0"),
+            "clicking into the cell selected the row underneath it"
+        );
+        // The row itself still selects, so nothing was swallowed wholesale.
+        cam.click("dt-0/c0/name");
+        assert!(selected(&cam, "dt-0"), "the row stopped being selectable");
+    }
+
+    /// Row 13, round 3: *"broken elements."* The page was a unit struct
+    /// whose `handle` returned `false`, so the field took no keystroke and
+    /// the checkbox never moved. Both are driven here from a click.
+    #[test]
+    fn the_form_field_takes_a_keystroke_after_a_click() {
+        let mut cam = Camera::on("Form");
+        let before = cam.shoot("13-form");
+        assert_eq!(text_of(&cam, "form-name"), "");
+
+        cam.click("form-name");
+        assert!(
+            cam.focused()
+                .as_deref()
+                .is_some_and(|id| id.ends_with("form-name")),
+            "the click did not seat the caret in the form field: {:?}",
+            cam.focused()
+        );
+        cam.type_here("fiber-0");
+        let after = cam.shoot("13-form-typed");
+        assert_eq!(
+            text_of(&cam, "form-name"),
+            "fiber-0",
+            "the form field took no keystroke"
+        );
+        assert_ne!(before, after, "the typing never reached the picture");
+    }
+
+    /// The other half of row 13: the checkbox held no state either.
+    #[test]
+    fn the_form_checkbox_toggles_when_it_is_pressed() {
+        let mut cam = Camera::on("Form");
+        assert!(selected(&cam, "form-ok"), "the page opens with it checked");
+        let on = cam.shoot("13-form-checked");
+        cam.click("form-ok");
+        let off = cam.shoot("13-form-unchecked");
+        assert!(
+            !selected(&cam, "form-ok"),
+            "pressing the form checkbox did not unset it"
+        );
+        assert_ne!(on, off, "the toggle never reached the picture");
+        cam.click("form-ok");
+        assert!(selected(&cam, "form-ok"), "it does not come back on");
     }
 }

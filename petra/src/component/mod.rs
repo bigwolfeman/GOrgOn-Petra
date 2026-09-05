@@ -179,7 +179,9 @@ pub use slider::{
     slider, slider_input_text, slider_readonly, slider_value_at, slider_value_of_input,
 };
 pub use status::status;
-pub use structured_list::{structured_list, structured_list_row};
+pub use structured_list::{
+    structured_list, structured_list_row, structured_list_sized, structured_list_weights_at,
+};
 pub use tabs::{contained_tab, contained_tab_bar, tab, tab_bar, vertical_tab, vertical_tab_bar};
 pub use tag::{dismissible_tag, selectable_tag, tag, tag_lg, tag_sm};
 pub use text::{heading, text};
