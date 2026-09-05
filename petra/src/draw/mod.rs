@@ -744,6 +744,42 @@ impl DrawList {
         &self.commands
     }
 
+    /// Every theme token this list paints with, fills and strokes alike, in
+    /// command order, duplicates kept.
+    ///
+    /// The one place a caller asks *what colours does this picture use*. A
+    /// contrast check written against `Props.text` sees nothing at all once
+    /// a mark moves from a text leaf to a canvas — which is exactly what
+    /// happened to `component::list`'s unordered markers on 2026-09-05 — so
+    /// the walk belongs next to the list rather than copied into every test
+    /// module that needs it.
+    ///
+    /// A [`ColorRef::Rgba`] literal has no token name and is skipped;
+    /// nothing in this library's shipped components paints one, and gate
+    /// C1-8 is what keeps it that way.
+    #[must_use]
+    pub fn token_colours(&self) -> Vec<&str> {
+        let mut out = Vec::new();
+        for command in &self.commands {
+            let paint = match command {
+                Command::Rect { paint, .. }
+                | Command::Ellipse { paint, .. }
+                | Command::Path { paint, .. } => paint,
+                _ => continue,
+            };
+            for reference in paint
+                .fill
+                .iter()
+                .chain(paint.stroke.as_ref().map(|s| &s.color))
+            {
+                if let ColorRef::Token(name) = reference {
+                    out.push(name.as_str());
+                }
+            }
+        }
+        out
+    }
+
     /// How many commands the list carries.
     #[must_use]
     pub fn len(&self) -> usize {

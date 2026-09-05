@@ -73,6 +73,30 @@ const GLYPH_BOX: f32 = 16.0;
 /// render their icons at `size={20}` (`ignored/carbon-ref/src/pages.jsx`).
 const HEADER_BOX: f32 = 20.0;
 
+/// The box every [`IconMark::BulletDisc`]-family mark draws in, whichever
+/// [`IconBox`] a caller names: 16, which is `list.rs`'s
+/// `MARKER_COLUMN_UNORDERED` — Carbon's `$spacing-05` hang
+/// (`_list.scss:87`). The mark and the column it hangs in are one number,
+/// so a bullet is centred in its own column by construction. The same
+/// arrangement, and the same reason, as [`CHECK_BOX`].
+const BULLET_BOX: f32 = 16.0;
+
+/// The centre of [`BULLET_BOX`]. Every bullet is symmetric about it and
+/// every edge lands on a whole unit, so nothing snaps off centre at 1x
+/// (`.agents/notes/proposed/bug-fix/2026-09-04-a-half-pixel-inset-snaps-a-\
+/// small-mark-off-centre.md`).
+const BULLET_CENTER: Point = Point { x: 8.0, y: 8.0 };
+
+/// Half the extent of a filled bullet: a disc of radius 3 and a 6×6 square
+/// both span 5 to 11, which is the mass Carbon's own `\0025AA` renders at
+/// `$body-01`.
+const BULLET_RADIUS: f32 = 3.0;
+
+/// The stroke [`IconMark::BulletCircle`] rings with, and half the height of
+/// [`IconMark::BulletDash`]'s bar. One unit, so the mark reads at 1x without
+/// the ring closing up.
+const BULLET_BAND: f32 = 1.0;
+
 /// Bézier handle length for a quarter circle of unit radius.
 const KAPPA: f32 = 0.552_284_8;
 
@@ -344,6 +368,53 @@ pub enum IconMark {
     /// source units, one logical unit at [`GLYPH_BOX`] — which this file
     /// leaves as Carbon states it rather than closing.
     Edit,
+    /// A list's unordered marker, a **filled disc** — CSS
+    /// `list-style-type: disc`, Word's first bullet level, and org-mode's
+    /// first `org-superstar` glyph.
+    ///
+    /// **Not a Carbon icon, and deliberately so.** `_list.scss` writes its
+    /// two markers as `::before` *text* — `content: '\002013'` (en dash) at
+    /// level 1 and `'\0025AA\00FE0E'` (black small square) at level 2,
+    /// MEASURED
+    /// `ignored/carbon-ref/node_modules/@carbon/styles/scss/components/list/
+    /// _list.scss:85,91` — and ships no disc and no ring at all. The
+    /// operator asked for the Word / org-mode set on 2026-09-05
+    /// (`.agents/carbon-waves/ROUND4-DEFECTS.md` R7); this and its three
+    /// siblings are that set, drawn rather than typed for the reason every
+    /// other mark in this file is drawn. A marker that is a character in a
+    /// string cannot be sized, centred or snapped apart from the label's
+    /// font, and `list.rs`'s module doc records what that looked like: the
+    /// operator called row 16 "badly formatted markdown", twice.
+    ///
+    /// Geometry, canvas-local in [`BULLET_BOX`]: a disc of
+    /// [`BULLET_RADIUS`] on [`BULLET_CENTER`], edges on whole units at 5
+    /// and 11.
+    BulletDisc,
+    /// A list's unordered marker, a **hollow ring** — CSS
+    /// `list-style-type: circle`, Word's and org-mode's second level. Same
+    /// source and the same reasoning as [`IconMark::BulletDisc`].
+    ///
+    /// Geometry: a ring of radius 2.5 on [`BULLET_CENTER`], stroked
+    /// [`BULLET_BAND`] wide, so the band's own edges land on 5/6 and 10/11
+    /// and the outer extent matches [`IconMark::BulletDisc`]'s 6.
+    BulletCircle,
+    /// A list's unordered marker, a **filled square** — CSS
+    /// `list-style-type: square`, Word's third level, and the drawn form of
+    /// Carbon's own nested `'\0025AA\00FE0E'` (`_list.scss:91`). Same
+    /// source and the same reasoning as [`IconMark::BulletDisc`].
+    ///
+    /// Geometry: a snapped 6×6 rectangle from (5, 5) to (11, 11), the same
+    /// span as [`IconMark::BulletDisc`]'s diameter.
+    BulletSquare,
+    /// A list's unordered marker, an **en dash** — the drawn form of
+    /// Carbon's own level-1 `content: '\002013'` (`_list.scss:85`), and
+    /// org-mode's plain `-`. Same source and the same reasoning as
+    /// [`IconMark::BulletDisc`].
+    ///
+    /// Geometry: a snapped bar from (4, 7) to (12, 9), 8 wide and
+    /// [`BULLET_BAND`]×2 tall, which is the proportion an en dash renders at
+    /// in `$body-01`.
+    BulletDash,
 }
 
 /// The box a mark is drawn in: which of Carbon's two glyph sizes.
@@ -402,6 +473,9 @@ impl IconMark {
     pub fn extent(self, boxed: IconBox) -> f32 {
         match (self, boxed) {
             (Self::Check, _) => CHECK_BOX,
+            (Self::BulletDisc | Self::BulletCircle | Self::BulletSquare | Self::BulletDash, _) => {
+                BULLET_BOX
+            }
             (_, IconBox::Glyph) => GLYPH_BOX,
             (_, IconBox::Header) => HEADER_BOX,
         }
@@ -486,6 +560,10 @@ fn draw_list(mark: IconMark, boxed: IconBox, tone: IconTone) -> DrawList {
         IconMark::CheckmarkFilled => checkmark_filled(size / 32.0, color),
         IconMark::CaretDown => caret_down(size / 32.0, color),
         IconMark::Edit => edit(size / 32.0, color),
+        IconMark::BulletDisc => bullet_disc(color),
+        IconMark::BulletCircle => bullet_circle(color),
+        IconMark::BulletSquare => bullet_square(color),
+        IconMark::BulletDash => bullet_dash(color),
     };
     DrawList::new(commands).unwrap_or_else(|err| panic!("{mark:?} draw list refused: {err}"))
 }
@@ -1160,6 +1238,51 @@ fn edit(s: f32, color: ColorRef) -> Vec<Command> {
     ]
 }
 
+/// [`IconMark::BulletDisc`]: one filled disc.
+fn bullet_disc(color: ColorRef) -> Vec<Command> {
+    vec![Command::Ellipse {
+        center: BULLET_CENTER,
+        radii: Size::new(BULLET_RADIUS, BULLET_RADIUS),
+        paint: Paint::filled(color),
+    }]
+}
+
+/// [`IconMark::BulletCircle`]: one stroked ring at the same outer extent as
+/// [`bullet_disc`], so a level of nesting changes the mark's *shape* and not
+/// its size.
+fn bullet_circle(color: ColorRef) -> Vec<Command> {
+    let radius = BULLET_RADIUS - BULLET_BAND / 2.0;
+    vec![Command::Ellipse {
+        center: BULLET_CENTER,
+        radii: Size::new(radius, radius),
+        paint: Paint::stroked(Stroke {
+            width: Width::Logical(BULLET_BAND),
+            color,
+        }),
+    }]
+}
+
+/// [`IconMark::BulletSquare`]: one snapped square, Carbon's `\0025AA` drawn.
+fn bullet_square(color: ColorRef) -> Vec<Command> {
+    let (lo, hi) = (
+        BULLET_CENTER.x - BULLET_RADIUS,
+        BULLET_CENTER.x + BULLET_RADIUS,
+    );
+    vec![snapped_bar(lo, lo, hi, hi, 1.0, Paint::filled(color))]
+}
+
+/// [`IconMark::BulletDash`]: one snapped bar, Carbon's `\002013` drawn.
+fn bullet_dash(color: ColorRef) -> Vec<Command> {
+    vec![snapped_bar(
+        BULLET_CENTER.x - 4.0,
+        BULLET_CENTER.y - BULLET_BAND,
+        BULLET_CENTER.x + 4.0,
+        BULLET_CENTER.y + BULLET_BAND,
+        1.0,
+        Paint::filled(color),
+    )]
+}
+
 fn pt(x: f32, y: f32) -> Point {
     Point::new(x, y)
 }
@@ -1232,14 +1355,16 @@ fn snapped_bar(x0: f32, y0: f32, x1: f32, y1: f32, s: f32, paint: Paint) -> Comm
 
 #[cfg(test)]
 mod tests {
-    use super::{CHECK_BOX, GLYPH_BOX, HEADER_BOX, IconBox, IconMark, IconTone, icon, icon_in};
+    use super::{
+        BULLET_BOX, CHECK_BOX, GLYPH_BOX, HEADER_BOX, IconBox, IconMark, IconTone, icon, icon_in,
+    };
     use crate::component::tokens::{
         ACCENT_PRIMARY, ICON_DISABLED, ICON_PRIMARY, ICON_SECONDARY, TEXT_ON_ACCENT,
     };
     use crate::draw::{ColorRef, Command, DrawList};
     use crate::tree::NodeKind;
 
-    const EVERY_MARK: [IconMark; 26] = [
+    const EVERY_MARK: [IconMark; 30] = [
         IconMark::CaretLeft,
         IconMark::CaretRight,
         IconMark::CaretDown,
@@ -1266,6 +1391,10 @@ mod tests {
         IconMark::InformationFilled,
         IconMark::CheckmarkFilled,
         IconMark::Edit,
+        IconMark::BulletDisc,
+        IconMark::BulletCircle,
+        IconMark::BulletSquare,
+        IconMark::BulletDash,
     ];
 
     fn list(node: &crate::tree::ViewNode) -> &DrawList {
@@ -1365,6 +1494,15 @@ mod tests {
                 assert_eq!(node.kind, NodeKind::Canvas, "{mark:?}");
                 let expected = match (mark, boxed) {
                     (IconMark::Check, _) => CHECK_BOX,
+                    // A bullet ignores the box a caller names, so its mark
+                    // and `list.rs`'s marker column stay one number.
+                    (
+                        IconMark::BulletDisc
+                        | IconMark::BulletCircle
+                        | IconMark::BulletSquare
+                        | IconMark::BulletDash,
+                        _,
+                    ) => BULLET_BOX,
                     (_, IconBox::Glyph) => GLYPH_BOX,
                     (_, IconBox::Header) => HEADER_BOX,
                 };
