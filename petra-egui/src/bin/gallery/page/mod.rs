@@ -206,7 +206,7 @@ pub fn all() -> Vec<Box<dyn Page>> {
         Box::new(menu::Menu::default()),
         Box::new(menu_buttons::MenuButtons::default()),
         Box::new(modal::Modal::default()),
-        Box::new(notification::Notification),
+        Box::new(notification::Notification::default()),
         Box::new(number_input::NumberInput::default()),
         Box::new(pagination::Pagination::default()),
         Box::new(popover::Popover::default()),

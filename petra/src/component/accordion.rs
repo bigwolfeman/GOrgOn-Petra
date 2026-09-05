@@ -103,11 +103,53 @@ pub fn accordion_item_lg(
     accordion_item_sized(key, label, expanded, body, HEIGHT_LG)
 }
 
+/// [`accordion_item`] whose panel holds nodes rather than one string.
+///
+/// This is what nests an accordion inside an accordion, which the operator
+/// asked to see on 2026-09-05. **Carbon writes no rule for it**, either way:
+/// the usage, style and code pages carry no nesting guidance, no depth
+/// limit and no nested styling rule, `_accordion.scss` has no
+/// accordion-inside-accordion selector, and no checked-in story nests one.
+/// The one adjacent sentence is in `Accordion.mdx`, about the `align` prop:
+/// *"This prop must not be used to create a tree view or set of nested
+/// accordions"* — which forbids faking a tree by flipping the chevron to
+/// the leading edge, not nesting itself. Carbon's own steer for deep
+/// hierarchy is Tree view (usage page, "When not to use"). So a nested
+/// accordion here is off the conformance target rather than against it, and
+/// the geometry is this library's choice: the inner list is a normal child
+/// of the panel, so it inherits the panel's [`SPACING_05`] inline padding
+/// and each level indents by 16, the same step Carbon's own
+/// `.cds--accordion__content` spends.
+pub fn accordion_item_with(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    expanded: bool,
+    content: Vec<ViewNode>,
+) -> ViewNode {
+    accordion_item_content(key, label, expanded, content, SIZE_MD)
+}
+
 fn accordion_item_sized(
     key: impl Into<Key>,
     label: impl Into<String>,
     expanded: bool,
     body: impl Into<String>,
+    header_h: f32,
+) -> ViewNode {
+    accordion_item_content(
+        key,
+        label,
+        expanded,
+        vec![text("body-text", body.into())],
+        header_h,
+    )
+}
+
+fn accordion_item_content(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    expanded: bool,
+    content: Vec<ViewNode>,
     header_h: f32,
 ) -> ViewNode {
     let label = label.into();
@@ -168,12 +210,11 @@ fn accordion_item_sized(
 
     let mut children = vec![header];
     if expanded {
-        let mut panel = stack(
-            "body",
-            Axis::Vertical,
-            None,
-            vec![text("body-text", body.into())],
-        );
+        let mut panel = stack("body", Axis::Vertical, None, content);
+        // The same stretch the list and the item already declare, for the
+        // same reason (module doc): a nested `accordion` measures to its own
+        // widest header otherwise, and its dividers stop short of the panel.
+        panel.props.align = Some(Align::Stretch);
         // Carbon panel: padding-top 8 (`$spacing-03`), padding-inline 16
         // (`$spacing-05`). `$spacing-06` (24) bottom is not in `tokens`.
         panel.props.padding = Some(InsetRefs {

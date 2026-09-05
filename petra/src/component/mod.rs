@@ -124,7 +124,9 @@ mod tooltip;
 mod tree_view;
 mod ui_shell;
 
-pub use accordion::{accordion, accordion_item, accordion_item_lg, accordion_item_sm};
+pub use accordion::{
+    accordion, accordion_item, accordion_item_lg, accordion_item_sm, accordion_item_with,
+};
 pub use ai_label::{
     ai_label, ai_label_2xs, ai_label_inline, ai_label_inline_lg, ai_label_inline_sm, ai_label_lg,
     ai_label_mini, ai_label_revert, ai_label_sm, ai_label_with_actions, ai_label_xl, ai_label_xs,
@@ -165,7 +167,8 @@ pub use menu::{menu, menu_item};
 pub use menu_button::menu_button;
 pub use modal::{modal, modal_passive};
 pub use notification::{
-    notification, notification_actionable, notification_inline, notification_toast,
+    NotificationKind, notification, notification_actionable, notification_actionable_kind,
+    notification_inline, notification_inline_kind, notification_toast, notification_toast_kind,
 };
 pub use number_input::{number_input, number_input_invalid, number_input_lg, number_input_sm};
 pub use pagination::{PaginationPicker, pagination, pagination_items, pagination_items_open};

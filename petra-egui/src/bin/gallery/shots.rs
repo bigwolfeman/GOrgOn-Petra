@@ -3176,4 +3176,351 @@ mod tests {
             }
         }
     }
+
+    // ===== Wave D, round 3: loading, inline loading, notification, toggle,
+    // accordion. One contiguous block, appended; nothing above this line is
+    // touched, because two other waves edit this file in their own trees.
+
+    /// The device-pixel rect of a logical rect, inset on every side.
+    ///
+    /// The inset is what makes a fill test about the fill: a rounded control
+    /// antialiases its own edge into the ground behind it, so an
+    /// uninset crop of a knob always carries the track's tone and every
+    /// "is this one colour" question answers no.
+    fn inset_pixels(img: &image::RgbaImage, rect: Rect, inset: u32) -> Vec<[u8; 4]> {
+        let scale = super::CAPTURE_SCALE;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let (x0, y0, x1, y1) = (
+            (rect.x * scale).round() as u32 + inset,
+            (rect.y * scale).round() as u32 + inset,
+            ((rect.x + rect.w) * scale).round() as u32 - inset,
+            ((rect.y + rect.h) * scale).round() as u32 - inset,
+        );
+        let mut out = Vec::new();
+        for y in y0..y1.min(img.height()) {
+            for x in x0..x1.min(img.width()) {
+                out.push(img.get_pixel(x, y).0);
+            }
+        }
+        assert!(!out.is_empty(), "{rect:?} inset by {inset} has no pixels");
+        out
+    }
+
+    /// How many of two equal-length pixel runs differ at all.
+    fn differing(a: &[[u8; 4]], b: &[[u8; 4]]) -> usize {
+        assert_eq!(a.len(), b.len(), "two crops of the same rect");
+        a.iter().zip(b).filter(|(p, q)| p != q).count()
+    }
+
+    /// Run `n` host passes without capturing, to advance egui's clock.
+    ///
+    /// `Camera` exposes no clock. Every pass egui runs with `RawInput::time`
+    /// unset advances its own `input.time` by the predicted frame time, one
+    /// sixtieth of a second, and `Host::pass` hands that to `App::tick` — so
+    /// counting passes *is* the clock, and it is the only clock a driven test
+    /// has. Hovering a fixed point in the window's bottom-right corner is the
+    /// cheapest pass this driver can produce: it takes no GPU capture, and
+    /// every assertion below reads one control's own rect, so a hover
+    /// highlight anywhere else cannot reach the measurement.
+    fn advance(cam: &mut Camera, n: usize) {
+        for _ in 0..n {
+            cam.hover_at(WINDOW[0] - 4.0, WINDOW[1] - 4.0);
+        }
+    }
+
+    /// One sixtieth of a second, the step `advance` spends per pass.
+    const FRAME_SECONDS: f64 = 1.0 / 60.0;
+
+    /// Row 17. The turn takes 1.38 s of wall clock, read off the pixels.
+    ///
+    /// **This is a departure from Carbon and the test says so.**
+    /// `_animation.scss` measures 690 ms and this library drew at it; the
+    /// operator asked twice for it to slow down and chose that over keeping
+    /// Carbon's rate on 2026-09-05. `loading.rs`'s
+    /// `one_turn_takes_twice_carbon_s_690ms_of_real_time` pins the constant
+    /// against real seconds; this pins that the constant reaches the picture.
+    ///
+    /// The measurement is a period, not a speed, so it needs no angle
+    /// arithmetic: photograph the spinner, advance a whole turn, photograph
+    /// again — few pixels differ. Advance a half turn instead and the arc is
+    /// on the other side of the ring, so most of them do. At Carbon's 690 ms
+    /// those two swap places, which is exactly how this goes red.
+    #[test]
+    fn the_large_spinner_takes_one_and_a_third_seconds_to_come_back_round() {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let passes = |seconds: f64| (seconds / FRAME_SECONDS).round() as usize;
+        let turn = passes(1.38);
+        let half = passes(0.69);
+        assert_eq!((turn, half), (83, 41));
+
+        let mut cam = Camera::on("Loading");
+        let ring = cam.rect("sizes/load-lg");
+        let start = inset_pixels(&raster(&mut cam, "17-loading"), ring, 0);
+
+        advance(&mut cam, half - 1);
+        let half_way = inset_pixels(&raster(&mut cam, "17-loading-half-turn"), ring, 0);
+
+        advance(&mut cam, turn - half - 1);
+        let full = inset_pixels(&raster(&mut cam, "17-loading-one-turn"), ring, 0);
+
+        let moved = differing(&start, &half_way);
+        let returned = differing(&start, &full);
+        assert!(
+            returned * 4 < moved,
+            "a full turn later the spinner differs from where it started in \
+             {returned} pixels, but a half turn later in only {moved} — the \
+             picture is not coming back round at 1.38 s. At Carbon's 690 ms \
+             these two are the wrong way about, which is the whole point of \
+             this test."
+        );
+        // And it is genuinely moving, so "returned" is not "frozen".
+        assert!(
+            moved > 200,
+            "half a turn moved only {moved} pixels; the spinner is not turning"
+        );
+    }
+
+    /// Row 14. The finished mark's tick is centred in its own disc.
+    ///
+    /// **Not driven from a click, and it cannot be**: the Inline loading page
+    /// is two status readouts with no control on it, and `Role::Status`
+    /// declares no interaction, so there is nothing on the page a hand can
+    /// press. What is driven is the clock, through `advance`, which is what
+    /// separates the still finished mark from the turning one beside it.
+    ///
+    /// The assertion is on ink, not on rects, because the rects were already
+    /// right while the picture was wrong: the badge declared 16x16 and the
+    /// tick declared 10x10 the whole time the tick sat 3 units left of
+    /// centre. Ink is every pixel inside the disc that is not the disc's own
+    /// fill; its bounding box must be centred on the disc.
+    #[test]
+    fn the_saved_marks_tick_sits_in_the_middle_of_its_disc() {
+        let mut cam = Camera::on("Inline loading");
+        let disc = cam.rect("il-off/mark");
+        let shot = raster(&mut cam, "14-inline-loading-finished");
+        let scale = super::CAPTURE_SCALE;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let (x0, y0, x1, y1) = (
+            (disc.x * scale).round() as u32,
+            (disc.y * scale).round() as u32,
+            ((disc.x + disc.w) * scale).round() as u32,
+            ((disc.y + disc.h) * scale).round() as u32,
+        );
+        // The disc's own fill, read from a point a quarter in from its left
+        // edge on its middle row — inside the fill, outside any centred mark.
+        let fill = shot.get_pixel(x0 + (x1 - x0) / 6, (y0 + y1) / 2).0;
+        let dark = |p: [u8; 4]| {
+            // The tick is `text.on-accent` on `accent.primary`: much darker
+            // than the fill on every channel.
+            u32::from(fill[0]) + u32::from(fill[1]) + u32::from(fill[2])
+                > u32::from(p[0]) + u32::from(p[1]) + u32::from(p[2]) + 150
+        };
+        let (mut lo_x, mut hi_x, mut lo_y, mut hi_y) = (u32::MAX, 0u32, u32::MAX, 0u32);
+        let mut ink = 0usize;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                if dark(shot.get_pixel(x, y).0) {
+                    ink += 1;
+                    lo_x = lo_x.min(x);
+                    hi_x = hi_x.max(x);
+                    lo_y = lo_y.min(y);
+                    hi_y = hi_y.max(y);
+                }
+            }
+        }
+        assert!(
+            ink > 20,
+            "found {ink} ink pixels inside the finished disc: there is no \
+             tick on it at all"
+        );
+        let ink_centre = (
+            f32::from(u16::try_from(lo_x + hi_x).unwrap()) / 2.0,
+            f32::from(u16::try_from(lo_y + hi_y).unwrap()) / 2.0,
+        );
+        let disc_centre = (
+            f32::from(u16::try_from(x0 + x1).unwrap()) / 2.0,
+            f32::from(u16::try_from(y0 + y1).unwrap()) / 2.0,
+        );
+        let (dx, dy) = (
+            ink_centre.0 - disc_centre.0,
+            ink_centre.1 - disc_centre.1,
+        );
+        assert!(
+            dx.abs() <= 1.0 && dy.abs() <= 1.0,
+            "the tick's ink is centred {dx:+.1},{dy:+.1} device pixels off \
+             the disc's own centre. Before 2026-09-05 this was -6,0: the \
+             10-unit mark packed against the leading edge of the 16 disc \
+             because the badge set `align` (the cross axis) and no `justify`."
+        );
+    }
+
+    /// Row 36. **Departure from Carbon, operator decision 2026-09-05:** the
+    /// small on-toggle's knob is bare.
+    ///
+    /// Carbon puts a 6x5 `$support-success` tick inside that knob —
+    /// `Toggle.js` renders it under `isSm && !readOnly`, and
+    /// `ignored/carbon-ref/shots/36-toggle.png` shows it. The operator asked
+    /// twice for the mark to go and chose deletion over Carbon's placement
+    /// when both were put to him. This test is what a later conformance pass
+    /// has to argue with before putting it back.
+    ///
+    /// Driven from a click on the small **off** toggle, so the knob under
+    /// test is one this test turned on rather than one the page was born
+    /// with, and read off the pixels: the knob's interior is one flat tone.
+    #[test]
+    fn clicking_the_small_toggle_on_leaves_its_knob_bare() {
+        let mut cam = Camera::on("Toggle");
+        cam.click("toggle-sm-off");
+        let knob = cam.rect("toggle-sm-off/appearance/track/knob");
+        let shot = raster(&mut cam, "36-toggle-sm-clicked-on");
+        // 4 device pixels in from a 20-device-pixel circle leaves a 12x12
+        // square whose half-diagonal is 8.49, inside the 10 radius.
+        let interior = inset_pixels(&shot, knob, 4);
+        let mut tones: Vec<[u8; 4]> = interior.clone();
+        tones.sort_unstable();
+        tones.dedup();
+        assert_eq!(
+            tones.len(),
+            1,
+            "the knob's interior is {} tones, not one: something is drawn \
+             inside it ({:?})",
+            tones.len(),
+            &tones[..tones.len().min(4)]
+        );
+        // The rect really landed on the knob and not on the track: the two
+        // are different tones, and the track is the accent.
+        let knob_tone = tones[0];
+        let track = cam.rect("toggle-sm-off/appearance/track");
+        let track_tone = shot
+            .get_pixel(
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                {
+                    ((track.x + track.w - 2.0) * super::CAPTURE_SCALE) as u32
+                },
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                {
+                    ((track.y + track.h / 2.0) * super::CAPTURE_SCALE) as u32
+                },
+            )
+            .0;
+        assert_ne!(
+            knob_tone, track_tone,
+            "the rect under test is the track, not the knob"
+        );
+        assert!(
+            u32::from(track_tone[2]) > u32::from(track_tone[0]) + 60,
+            "the clicked toggle's track is not the accent: {track_tone:?}"
+        );
+    }
+
+    /// Row 21. The icon field the operator asked for, driven and read.
+    ///
+    /// Two claims, both from pixels. The four kinds on the page draw four
+    /// different marks, so a reader who cannot use hue can still tell an
+    /// error from a success — Carbon separates them by `$support-error` and
+    /// `$support-success` as well as by glyph, and this library has only the
+    /// glyph. And the toast's own field is live: pressing its action steps
+    /// the kind and the mark in the picture changes with it.
+    #[test]
+    fn the_notification_kinds_draw_four_different_marks_and_the_toast_steps() {
+        let mut cam = Camera::on("Notification");
+        let cards = ["nt-error", "nt-warning", "nt-info", "nt-success"];
+        let rects: Vec<Rect> = cards
+            .iter()
+            .map(|card| cam.rect(&format!("{card}/glyph")))
+            .collect();
+        let shot = raster(&mut cam, "21-notification");
+        let marks: Vec<Vec<[u8; 4]>> = rects
+            .iter()
+            .map(|rect| inset_pixels(&shot, *rect, 0))
+            .collect();
+        for (i, a) in marks.iter().enumerate() {
+            for (j, b) in marks.iter().enumerate().skip(i + 1) {
+                assert!(
+                    differing(a, b) > 20,
+                    "{} and {} draw the same mark: the kind is not reaching \
+                     the picture, and hue is not a channel this operator has",
+                    cards[i],
+                    cards[j]
+                );
+            }
+        }
+
+        // The toast opens on Info. Press its action and the mark must change.
+        let toast_glyph = cam.rect("panel/glyph");
+        let before = inset_pixels(&shot, toast_glyph, 0);
+        cam.click("panel/action");
+        let after_shot = raster(&mut cam, "21-notification-stepped");
+        let after = inset_pixels(&after_shot, cam.rect("panel/glyph"), 0);
+        assert!(
+            differing(&before, &after) > 20,
+            "a click on the toast's action left its status mark unchanged"
+        );
+    }
+
+    /// Row 01. The nested accordion, opened by a click on an inner header.
+    ///
+    /// The operator asked to see one. **Carbon writes no rule for nesting**
+    /// — no permission, no ban, no depth limit, no nested styling — and
+    /// steers deep hierarchy at Tree view instead, so this is off the
+    /// conformance target rather than against it; `accordion_item_with`'s
+    /// doc carries the sources.
+    ///
+    /// Driven, because a resting photograph of an open panel cannot tell a
+    /// working nested accordion from a picture of one, and because the inner
+    /// header's routed path names the outer item too — a handler that reads
+    /// the outer key first swallows every inner press.
+    #[test]
+    fn clicking_an_inner_accordion_header_opens_only_that_inner_panel() {
+        let mut cam = Camera::on("Accordion");
+        assert!(
+            cam.has("acc-nest/body/inner/acc-nest-1"),
+            "the nested list is not on the page"
+        );
+        assert!(
+            !cam.has("acc-nest-1/body"),
+            "the second nested section starts shut"
+        );
+        let outer = cam.rect("acc/acc-nest");
+        let before = raster(&mut cam, "01-accordion");
+
+        cam.click("acc-nest-1/header");
+        assert!(
+            cam.has("acc-nest-1/body"),
+            "the click on the inner header mounted no panel"
+        );
+        assert!(
+            cam.has("acc-nest-0/body"),
+            "opening one nested section shut its sibling; Carbon's accordion \
+             holds any number open"
+        );
+        let after = raster(&mut cam, "01-accordion-inner-open");
+        assert!(
+            cam.rect("acc/acc-nest").h > outer.h,
+            "the outer item did not grow to hold the newly opened inner panel"
+        );
+        assert_ne!(
+            before.dimensions(),
+            (0, 0),
+            "the shot before the click is empty"
+        );
+        assert_ne!(
+            before.into_raw(),
+            after.into_raw(),
+            "the click changed nothing on screen"
+        );
+
+        // The inner list is indented inside the outer item's panel, which is
+        // the only geometry this library states for a nested accordion: the
+        // panel's own inline padding is the indent.
+        let outer_header = cam.rect("acc-nest/header");
+        let inner_header = cam.rect("acc-nest-1/header");
+        assert!(
+            inner_header.x > outer_header.x + 8.0,
+            "the nested header sits at x {} against the outer header's {}: \
+             nothing marks the level",
+            inner_header.x,
+            outer_header.x
+        );
+    }
 }
