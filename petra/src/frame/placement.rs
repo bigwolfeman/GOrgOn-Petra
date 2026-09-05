@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::draw::DrawList;
 use crate::geom::Rect;
 use crate::layout::Slot;
-use crate::tree::{Edge, Interaction, NodeKind, Role, TextWrap};
+use crate::tree::{Edge, FocusFigure, Interaction, NodeKind, Role, TextWrap};
 
 /// Paint-relevant state that is not geometry but does change the picture.
 ///
@@ -144,6 +144,13 @@ pub struct PlacementSemantics {
     pub expanded: Option<bool>,
     /// Declared staleness of the projection behind this node.
     pub stale: bool,
+    /// The figure keyboard focus takes on this node, and which rect shows
+    /// it ([`crate::tree::FocusFigure`]). App-declared, projected straight
+    /// off the node the way `disabled` is. The painter reads it to place
+    /// the focus indicator; it is not accessibility payload, so the
+    /// semantic projection holds it out, and it is not a digest input, for
+    /// the same reason `role` (which decided the figure before it) is not.
+    pub focus_figure: FocusFigure,
     /// Hosts a deliberately endless animation, so it never blocks settle.
     pub ambient: bool,
     /// Driver action kinds this node accepts.

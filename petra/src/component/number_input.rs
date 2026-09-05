@@ -29,6 +29,15 @@
 //! steppers were `surface.base` boxes with a 16-unit gap between every
 //! cell, and the whole well hugged the value's width so the steppers hung
 //! outside it. The operator's word was "visually broken", and it was.
+//!
+//! Keyboard focus on the value shows on the **well** (the well declares
+//! [`FocusFigure::Hug`], the value leaf [`FocusFigure::HugWell`]): Carbon's
+//! `input[type=number]:focus` outline spans the whole `.cds--number`
+//! control, steppers included. A focused stepper keeps its own underline,
+//! because Carbon gives `.cds--number__control-btn:focus` its own outline
+//! (`_number-input.scss:178`). Until 2026-09-05 the host hugged the value
+//! leaf, so the right bar stood in the middle of the well beside the
+//! Subtract glyph.
 
 use super::field::bind_field_chrome;
 use super::icon::{IconMark, IconTone, icon_toned};
@@ -41,7 +50,8 @@ use super::tokens::{
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
-    AxisConstraint, Constraints, Interaction, Justify, Key, NodeKind, Props, Role, ViewNode,
+    AxisConstraint, Constraints, FocusFigure, Interaction, Justify, Key, NodeKind, Props, Role,
+    ViewNode,
 };
 
 /// Carbon Default sm. `tokens` only ships [`SIZE_MD`] (md / 40).
@@ -141,6 +151,7 @@ fn number_sized(
         ],
     );
     well.props.align = Some(Align::Center);
+    well.semantics.focus_figure = FocusFigure::Hug;
     match chrome {
         Chrome::Enabled => bind_field_chrome(&mut well.props),
         Chrome::Invalid => {
@@ -178,7 +189,7 @@ fn value_field(key: &'static str, label: String, value: String, height: f32) -> 
         ..Props::default()
     };
     props.tokens.insert("foreground".into(), t(TEXT_PRIMARY));
-    ViewNode::new(NodeKind::Input, key)
+    let mut node = ViewNode::new(NodeKind::Input, key)
         .with_props(props)
         .interactive(Role::TextInput, label, super::field::EDITABLE_TEXT_INTENTS)
         .with_constraints(Constraints {
@@ -188,7 +199,9 @@ fn value_field(key: &'static str, label: String, value: String, height: f32) -> 
                 priority: 0,
             },
             ..Constraints::default()
-        })
+        });
+    node.semantics.focus_figure = FocusFigure::HugWell;
+    node
 }
 
 /// One stepper: a `height × height` square holding a centred glyph, resting
@@ -250,7 +263,7 @@ mod tests {
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, inks, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
-    use crate::tree::{Interaction, NodeKind, Props, Registry, Role, ViewNode};
+    use crate::tree::{FocusFigure, Interaction, NodeKind, Props, Registry, Role, ViewNode};
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         node.children
@@ -262,6 +275,38 @@ mod tests {
 
     fn token<'a>(node: &'a ViewNode, slot: &str) -> Option<&'a str> {
         node.props.tokens.get(slot).map(|name| name.as_str())
+    }
+
+    /// The value's focus shows on the whole well; a stepper's shows on the
+    /// stepper. Falsify by declaring `Hug` on the value leaf: the right bar
+    /// goes back to the middle of the well.
+    #[test]
+    fn the_value_shows_focus_on_the_well_and_a_stepper_on_itself() {
+        for node in [
+            number_input_sm("n", "Replicas", "3"),
+            number_input("n", "Replicas", "3"),
+            number_input_lg("n", "Replicas", "3"),
+        ] {
+            assert_eq!(node.semantics.focus_figure, FocusFigure::Hug);
+            assert_eq!(
+                child(&node, "value").semantics.focus_figure,
+                FocusFigure::HugWell
+            );
+            for key in ["decrement", "increment"] {
+                assert_eq!(
+                    child(&node, key).semantics.focus_figure,
+                    FocusFigure::Underline,
+                    "{key}: Carbon outlines the stepper itself"
+                );
+            }
+        }
+        let invalid = number_input_invalid("n", "Replicas", "x", "must be a number");
+        let well = child(&invalid, "input");
+        assert_eq!(well.semantics.focus_figure, FocusFigure::Hug);
+        assert_eq!(
+            child(well, "value").semantics.focus_figure,
+            FocusFigure::HugWell
+        );
     }
 
     #[test]

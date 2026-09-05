@@ -954,6 +954,7 @@ pub fn semantics_of(node: &ViewNode, id: &str, state: &LayoutState) -> Placement
         selected: node.semantics.selected,
         expanded: node.semantics.expanded,
         stale: node.semantics.stale,
+        focus_figure: node.semantics.focus_figure,
         ambient: node.ambient,
         actions: node.interactions.clone(),
         total_count: node.props.total_count,

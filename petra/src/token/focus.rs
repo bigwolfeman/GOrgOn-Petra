@@ -34,10 +34,18 @@ pub const HALO_TOKEN: &str = "focus.ring-halo";
 /// The focus underline's measurements, in logical units.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FocusRing {
-    /// Height of the bar.
+    /// Height of the underline, and width of a hug bar.
     pub thickness: f32,
-    /// Gap between the node's bottom edge and the bar's top edge.
+    /// Gap between the node's bottom edge and the underline's top edge.
     pub gap: f32,
+    /// Gap between a well's left or right edge and the hug bar beside it.
+    ///
+    /// Wider than [`Self::gap`]. An underline sits in the empty run under a
+    /// pill; a hug bar stands beside a filled well whose edge is a hard
+    /// colour step, and at two units the bar read as part of that edge —
+    /// the operator's "cramped" and "needs a bit of padding" on the Search
+    /// and Number input rows, 2026-09-05.
+    pub hug_gap: f32,
 }
 
 impl Default for FocusRing {
@@ -56,6 +64,7 @@ impl FocusRing {
     pub const STANDARD: Self = Self {
         thickness: 3.0,
         gap: 2.0,
+        hug_gap: 4.0,
     };
 
     /// Fraction of the node's width the underline occupies.
@@ -73,20 +82,22 @@ impl FocusRing {
         Rect::new(x, rect.bottom() + self.gap, w, self.thickness)
     }
 
-    /// Left and right bars hugging `rect`, same thickness and gap as [`Self::bar`].
+    /// Left and right bars hugging `rect`: [`Self::thickness`] wide,
+    /// [`Self::hug_gap`] outside each edge, exactly the node's height.
     ///
-    /// Outside the node, full height, so a text field is bracketed rather
-    /// than underlined. `the_hugs_sit_outside_the_left_and_right` asserts it.
+    /// Outside the node, so a well is bracketed rather than underlined, and
+    /// never taller than it: a bar past the well's bottom rule reads as an
+    /// overhang. `the_hugs_sit_outside_the_left_and_right` asserts it.
     #[must_use]
     pub fn hugs(self, rect: Rect) -> [Rect; 2] {
         let left = Rect::new(
-            rect.x - self.gap - self.thickness,
+            rect.x - self.hug_gap - self.thickness,
             rect.y,
             self.thickness,
             rect.h.max(0.0),
         );
         let right = Rect::new(
-            rect.right() + self.gap,
+            rect.right() + self.hug_gap,
             rect.y,
             self.thickness,
             rect.h.max(0.0),
@@ -94,12 +105,11 @@ impl FocusRing {
         [left, right]
     }
 
-    /// How far outside the node's own rect a bar (not its shadow) reaches.
-    ///
-    /// The same number for an underline (below) and a hug (left or right).
+    /// How far outside the node's own rect a bar (not its shadow) can
+    /// reach: the wider of the two gaps plus the thickness.
     #[must_use]
     pub fn overhang(self) -> f32 {
-        self.gap + self.thickness
+        self.gap.max(self.hug_gap) + self.thickness
     }
 }
 
@@ -117,7 +127,7 @@ mod tests {
         assert!((bar.w - node.w * FocusRing::WIDTH_FRACTION).abs() < f32::EPSILON);
         assert!((bar.x + bar.w / 2.0 - (node.x + node.w / 2.0)).abs() < f32::EPSILON);
         assert_eq!(bar.y, node.bottom() + ring.gap);
-        assert_eq!(ring.overhang(), 5.0);
+        assert_eq!(ring.overhang(), 7.0, "the hug gap is the wider reach");
     }
 
     #[test]
@@ -125,11 +135,21 @@ mod tests {
         let ring = FocusRing::STANDARD;
         let node = Rect::new(10.0, 20.0, 90.0, 40.0);
         let [left, right] = ring.hugs(node);
-        assert_eq!(left, Rect::new(5.0, 20.0, 3.0, 40.0));
-        assert_eq!(right, Rect::new(102.0, 20.0, 3.0, 40.0));
-        assert_eq!(left.right(), node.x - ring.gap);
-        assert_eq!(right.x, node.right() + ring.gap);
-        assert_eq!(left.h, node.h);
+        assert_eq!(left, Rect::new(3.0, 20.0, 3.0, 40.0));
+        assert_eq!(right, Rect::new(104.0, 20.0, 3.0, 40.0));
+        assert_eq!(left.right(), node.x - ring.hug_gap);
+        assert_eq!(right.x, node.right() + ring.hug_gap);
+        assert!(
+            ring.hug_gap > ring.gap,
+            "a hug stands off a filled well further than an underline stands \
+             off a pill"
+        );
+        assert_eq!(left.y, node.y, "a hug starts at the well's top");
+        assert_eq!(
+            left.bottom(),
+            node.bottom(),
+            "a hug never overhangs the well's bottom rule"
+        );
         assert_eq!(right.h, node.h);
     }
 

@@ -67,12 +67,12 @@ use gorgon_petra::tree::{
     InputPolicy, Interaction, NodeKind, Props, Registry, ValidatedTree, ViewNode, validate,
 };
 
-use crate::focus_caret::FocusCaret;
+use crate::focus_caret::{CaretFigure, FocusCaret};
 use crate::image::ImageSources;
 use crate::input::EventTranslator;
 use crate::paint::{
-    CustomPainters, PaintReport, caret_clip_limit, caret_dest_pair, focused_caret_target,
-    paint_caret_overlay, paint_frame_with_caret,
+    CaretOverlay, CustomPainters, PaintReport, caret_clip_limit, caret_dest_pair,
+    focused_caret_target, paint_caret_overlay, paint_frame_with_caret,
 };
 use crate::schedule::FrameMotion;
 use crate::text::{FontFaces, GalleyShaper, Typography};
@@ -1256,26 +1256,30 @@ impl<A: App> Host<A> {
         self.last_report = Some(report);
     }
 
-    fn caret_overlay(&self, frame: &PetrifiedFrame) -> Option<(Vec<egui::Rect>, egui::Rect)> {
+    fn caret_overlay(&self, frame: &PetrifiedFrame) -> Option<CaretOverlay> {
         let scale = frame.viewport.scale;
         let page = egui::Rect::from_min_size(
             egui::Pos2::ZERO,
             egui::vec2(frame.viewport.size.w, frame.viewport.size.h),
         );
-        self.caret.bars().map(|bars| {
-            (
-                bars,
-                caret_clip_limit(self.caret.clip(), self.caret.is_moving(), page, scale),
-            )
+        self.caret.bars().map(|bars| CaretOverlay {
+            bars,
+            clip: caret_clip_limit(self.caret.clip(), self.caret.is_moving(), page, scale),
+            figure: self.caret.figure(),
         })
     }
 
     fn tick_caret(&mut self, frame: &PetrifiedFrame, now: f64) {
         let scale = frame.viewport.scale;
         match focused_caret_target(frame) {
-            Some((id, node, figure, clip)) => {
+            Some(target) => {
                 self.caret.tick(
-                    Some((id, caret_dest_pair(node, figure, scale), figure, clip)),
+                    Some((
+                        target.id,
+                        caret_dest_pair(target.node, target.figure, scale),
+                        target.figure,
+                        target.clip,
+                    )),
                     now,
                 );
             }
@@ -1305,7 +1309,13 @@ impl<A: App> Host<A> {
             colors,
             &self.painters,
             &mut self.images,
-            Some((Vec::new(), page)),
+            // An empty overlay: the frame painter draws no settled ring,
+            // because the caret is drawn below, after the bake.
+            Some(CaretOverlay {
+                bars: Vec::new(),
+                clip: page,
+                figure: CaretFigure::Underline,
+            }),
         );
         self.full_paints = self.full_paints.saturating_add(1);
         if self.caret.is_moving() {
@@ -1324,11 +1334,12 @@ impl<A: App> Host<A> {
             self.scene.clear();
             self.hop_blit = false;
         }
-        if let Some((bars, clip)) = overlay
+        if let Some(overlay) = overlay
             && paint_caret_overlay(
                 &ctx.layer_painter(petra_layer()),
-                &bars,
-                clip,
+                &overlay.bars,
+                overlay.clip,
+                overlay.figure,
                 colors,
                 frame.viewport.scale,
                 &mut report,
@@ -1395,11 +1406,12 @@ impl<A: App> Host<A> {
         });
         report.focus_rings = 0;
         report.blind_focus = 0;
-        if let Some((bars, clip)) = self.caret_overlay(frame)
+        if let Some(overlay) = self.caret_overlay(frame)
             && paint_caret_overlay(
                 painter,
-                &bars,
-                clip,
+                &overlay.bars,
+                overlay.clip,
+                overlay.figure,
                 colors,
                 frame.viewport.scale,
                 &mut report,
@@ -3704,10 +3716,8 @@ mod tests {
 
     fn settled_caret_bar(host: &Host<Demo>) -> egui::Rect {
         let frame = host.frame().expect("a frame");
-        let (node, figure) = crate::paint::focused_caret_target(frame)
-            .map(|(_, node, figure, _)| (node, figure))
-            .expect("something focused");
-        crate::paint::caret_dest_pair(node, figure, frame.viewport.scale)[0]
+        let target = crate::paint::focused_caret_target(frame).expect("something focused");
+        crate::paint::caret_dest_pair(target.node, target.figure, frame.viewport.scale)[0]
     }
 
     /// A press with a button held is a press, and it does not grab a control

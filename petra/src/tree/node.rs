@@ -363,6 +363,49 @@ impl<'de> Deserialize<'de> for Role {
     }
 }
 
+/// How keyboard focus is drawn on a node, and on which rect.
+///
+/// The indicator's geometry is [`crate::token::FocusRing`]; this is the
+/// choice between its two figures, and it is made by the component that
+/// builds the node. A host must not guess it from the role: a select field,
+/// a dropdown field, a date field and a toggletip trigger are all
+/// [`Role::Button`] and are all wells a person picks into, while a menu item
+/// is [`Role::Button`] and is not. Until 2026-09-05 `gorgon-petra-egui`
+/// decided the figure from `role == TextInput`, in two places, and every
+/// field-shaped button underlined into the surface it had just opened.
+///
+/// Wire form is the kebab-case variant name; absent means
+/// [`Self::Underline`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FocusFigure {
+    /// A bar under this node's own rect. Buttons, tabs, radios, menu items.
+    #[default]
+    Underline,
+    /// Bars outside this node's own left and right edges. A field well: a
+    /// text input, a select or dropdown field, a date field, a toggletip
+    /// trigger. A node declaring this is also the **hull** any descendant
+    /// declaring [`Self::HugWell`] is shown on.
+    Hug,
+    /// Bars hugging the nearest ancestor declaring [`Self::Hug`], not this
+    /// node. The `Input` leaf inside a search or number well: the leaf holds
+    /// focus and the well shows it, the way Carbon's `:focus-within` puts
+    /// `.cds--search--focus` on the wrapper and never on the `<input>`. A
+    /// button inside the same well — a number stepper — keeps its own
+    /// [`Self::Underline`], because Carbon gives it its own outline
+    /// (`_number-input.scss:178`). With no such ancestor the leaf hugs
+    /// itself rather than going blind.
+    HugWell,
+}
+
+impl FocusFigure {
+    /// Whether this is the default figure, so the wire form can omit it.
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == Self::Underline
+    }
+}
+
 /// Semantic declarations carried by a node.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -413,6 +456,11 @@ pub struct Semantics {
     /// freshness bound.
     #[serde(skip_serializing_if = "is_false")]
     pub stale: bool,
+    /// The figure keyboard focus takes on this node, and which rect shows
+    /// it. Declared by the component, never inferred from [`Self::role`];
+    /// see [`FocusFigure`].
+    #[serde(skip_serializing_if = "FocusFigure::is_default")]
+    pub focus_figure: FocusFigure,
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)]

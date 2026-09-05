@@ -13,7 +13,7 @@ use crate::geom::{Scale, Size};
 use crate::semantic::{AuditRule, StateFlag, TreeQuery, audit, project};
 use crate::testing::{GeneratedRows, Harness, MonoContent, validated};
 use crate::token::ThemeMode;
-use crate::tree::{Interaction, NodeKind, Props, Role, Semantics, ViewNode};
+use crate::tree::{FocusFigure, Interaction, NodeKind, Props, Role, Semantics, ViewNode};
 
 const VIEWPORT: Size = Size { w: 200.0, h: 120.0 };
 
@@ -134,6 +134,10 @@ fn the_wire_shape_is_the_contract_shape() {
             selected: true,
             expanded: Some(true),
             stale: true,
+            // Held out of the projection on purpose: where the focus ring
+            // is drawn is a paint fact. Non-default here so the assertion
+            // below proves the hold-out rather than the default.
+            focus_figure: FocusFigure::Hug,
         })
         .with_ambient(true);
     let node = ViewNode {
