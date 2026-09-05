@@ -8,6 +8,7 @@
 //! driver.
 
 use std::collections::BTreeMap;
+use std::ops::Range;
 
 use crate::frame::{PetrifiedFrame, Placement};
 use crate::geom::{Point, Size};
@@ -119,6 +120,79 @@ pub struct Capture {
     pub origin: Point,
     /// Where the pointer was at this capture's most recent event.
     pub last: Point,
+}
+
+/// A stretch of one text node's own string the operator has selected.
+///
+/// # Why this is interaction state and not a tree field
+///
+/// A selection is made with the pointer, over glyphs the engine cannot see:
+/// the mapping from a window position to a byte offset needs shaped text, and
+/// `contracts/view-tree.md`'s U-09 boundary puts shaping in the host. So the
+/// **host** derives this, exactly as it derives [`Capture`],
+/// [`crate::layout::LayoutState::hovered`] and the focused id, and hands it
+/// to the engine through [`crate::layout::LayoutState`]
+/// (`contracts/interaction-state.md` §1: interaction state has one owner and
+/// it is not the application).
+///
+/// It reaches the picture at paint time and never at measure time
+/// ([`crate::frame::PaintContent::selection`]). A container that got taller
+/// because three words were selected would re-lay-out the page under the
+/// pointer that is selecting them, which is the same rule `hovered` is under
+/// and for the same reason.
+///
+/// # Anchor and focus, not start and end
+///
+/// `anchor` is where the button went down and `focus` is where the pointer is
+/// now, so `focus < anchor` for a selection dragged leftwards or upwards.
+/// Keeping the direction is what lets a drag reverse through its own start
+/// without the selection collapsing and re-growing the other way, and it is
+/// the pair every text editor keeps. [`TextSelection::range`] is the ordered
+/// view for everything that only wants the bytes.
+///
+/// Both are **byte** offsets into the node's own painted string, which is
+/// what [`str`] slicing takes; the char offsets a shaper deals in are
+/// converted at the shaper.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct TextSelection {
+    /// Canonical id of the text node the selection lives in.
+    pub node: String,
+    /// Byte offset where the gesture started.
+    pub anchor: usize,
+    /// Byte offset where the gesture is now.
+    pub focus: usize,
+}
+
+impl TextSelection {
+    /// A fresh, empty selection anchored at `at` in `node`.
+    #[must_use]
+    pub fn new(node: impl Into<String>, at: usize) -> Self {
+        Self {
+            node: node.into(),
+            anchor: at,
+            focus: at,
+        }
+    }
+
+    /// The selected bytes, low offset first, whichever way the drag went.
+    #[must_use]
+    pub fn range(&self) -> Range<usize> {
+        if self.anchor <= self.focus {
+            self.anchor..self.focus
+        } else {
+            self.focus..self.anchor
+        }
+    }
+
+    /// Whether this selection covers no bytes — a press with no drag.
+    ///
+    /// An empty selection is kept rather than dropped: it is the anchor a
+    /// drag that has not moved yet will grow from, and dropping it would
+    /// make the first pointer move of every gesture start from nowhere.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.anchor == self.focus
+    }
 }
 
 /// Why a gesture ended without completing.

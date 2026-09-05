@@ -50,13 +50,15 @@ use gorgon_petra::focus::FocusTree;
 use gorgon_petra::frame::{
     FrameCounter, PetrifiedFrame, Placement, TransitionActivity, Viewport, petrify,
 };
-use gorgon_petra::geom::{Axis, Rect, Scale, Size};
+use gorgon_petra::geom::{Axis, Point, Rect, Scale, Size};
 use gorgon_petra::input::{
     InputEvent, KeyCode, PointerButton, PointerRouting, PointerState, Route, RouteOutcome,
+    TextSelection,
 };
 use gorgon_petra::layout::overlay_surface::{focus_taking_surfaces, surface_scopes};
 use gorgon_petra::layout::{
     AnchorRects, ChangeSet, LayoutCtx, LayoutState, MeasureCache, RowSource, ScrollStack,
+    TextRequest,
 };
 use gorgon_petra::token::value::CoverageValue;
 use gorgon_petra::token::{
@@ -71,7 +73,7 @@ use crate::focus_caret::{CaretFigure, FocusCaret};
 use crate::image::ImageSources;
 use crate::input::EventTranslator;
 use crate::paint::{
-    CaretOverlay, CustomPainters, PaintReport, caret_clip_limit, caret_dest_pair,
+    CaretOverlay, CustomPainters, PaintReport, SELECTION_SLOT, caret_clip_limit, caret_dest_pair,
     focused_caret_target, paint_caret_overlay, paint_frame_with_caret,
 };
 use crate::schedule::FrameMotion;
@@ -218,6 +220,50 @@ pub trait App: RowSource {
     ///
     /// The default copies nothing.
     fn clipboard_request(&mut self) -> Option<String> {
+        None
+    }
+
+    /// A host-clock time this application wants another pass at, in the
+    /// seconds [`App::tick`] is handed.
+    ///
+    /// Asked once per pass, right after the clock is delivered. `None` means
+    /// "ask me nothing", which is every application that draws nothing on a
+    /// deadline.
+    ///
+    /// # Why this exists, and why it is not `ambient`
+    ///
+    /// `contracts/animation.md` §"Frame scheduling" lists four reasons a
+    /// frame is scheduled: input, a change set, a viewport change, and
+    /// motion. A picture that is a function of the clock but is **not**
+    /// moving is none of the four, and it had no way to ask. Catalog row 6's
+    /// copy feedback is the first: it says `"Copied!"` for two seconds and
+    /// then stops, and nothing about it is a transition — Carbon's is a DOM
+    /// node with a `setTimeout` on it, not an animation
+    /// (`@carbon/react/lib/components/Copy/Copy.js:37`).
+    ///
+    /// Without this the message appears on the pass that handled the press
+    /// and stays up until the operator's *next* input, whatever it is and
+    /// whenever it comes, because an idle Petra window paints nothing (SC-002).
+    /// [`crate::tree::ViewNode::with_ambient`] would keep the frames coming,
+    /// but `ambient` means *deliberately endless* and is excluded from
+    /// settle: a driver waiting for this window to settle would be told it
+    /// already had while a two-second message was still counting down.
+    ///
+    /// A deadline is neither, so it is its own answer: one frame, at a stated
+    /// time, and then the window goes back to sleep. SC-002 is intact because
+    /// the pass that wakes finds the deadline passed and asks for nothing
+    /// more.
+    ///
+    /// A time already gone asks for the next frame the pump can give. A time
+    /// that is not finite is ignored rather than passed to
+    /// `std::time::Duration::from_secs_f64`, which would panic.
+    ///
+    /// **One honest limit.** A pass that reuses the last frame to fly the
+    /// focus caret returns before the clock is delivered, so it does not ask
+    /// this either. That pass only happens while the caret is moving, which
+    /// is already requesting frames of its own, and the first pass after it
+    /// re-arms the deadline.
+    fn wake_at(&mut self) -> Option<f64> {
         None
     }
 
@@ -1100,7 +1146,16 @@ impl<A: App> Host<A> {
         // the ancestor walk it requires.
         // The clock goes to the application before its change set is read,
         // so a view that depends on the clock can name what the clock moved.
-        self.app.tick(ctx.input(|input| input.time));
+        let now = ctx.input(|input| input.time);
+        self.app.tick(now);
+        // Immediately after the clock and not later: the application has just
+        // been told what time it is, so this is the first moment it can name
+        // a deadline measured against it.
+        if let Some(at) = self.app.wake_at()
+            && at.is_finite()
+        {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64((at - now).max(0.0)));
+        }
         self.cache
             .retain_theme_and_scale(viewport.theme_rev, viewport.scale);
         self.cache.apply(&self.app.take_changes());
@@ -2021,6 +2076,14 @@ impl<A: App> Host<A> {
             {
                 self.apply_scroll(node, *delta);
             }
+            // And a press or a captured move over a selectable run is a text
+            // selection, moved here for the same reason and at the same
+            // point in the pass: nothing in `gorgon-petra` can turn a window
+            // position into a byte offset, because that needs shaped glyphs
+            // and shaping is this crate's side of the U-09 boundary. Before
+            // the application hears the event, so a copy control reading the
+            // selection off this frame reads what this press just wrote.
+            self.apply_text_selection(event, &routing.outcome.route);
             // Re-borrowed: `seat_pointer_focus` and `apply_scroll` above took
             // `&mut self`. Nothing between the routing and here places a
             // frame, so this is the frame the routing was computed against,
@@ -2272,6 +2335,122 @@ impl<A: App> Host<A> {
     /// across the crate used to turn up only test harnesses writing it
     /// directly (`testing.rs`, and `catalog.rs`'s own
     /// `writing_the_index_pane_scroll_offset_reveals_row_forty_two`).
+    /// Move the text selection from a routed pointer event.
+    ///
+    /// The whole of the selection gesture, and it is deliberately small:
+    /// a press anchors, a captured move extends, and a press anywhere else
+    /// clears. A release does nothing, because a selection outlives the drag
+    /// that made it — that is the point of it.
+    ///
+    /// # Why this is the host's and not the application's
+    ///
+    /// Every other interaction the application could express for itself. This
+    /// one it could not: the map from a window position to a byte offset is
+    /// per-glyph advances and line breaks, which live only in the shaped run,
+    /// and `contracts/view-tree.md`'s U-09 boundary keeps shaping on this side
+    /// of the wall. An application asked to do it would need a font.
+    ///
+    /// So the selection is host-derived interaction state, published through
+    /// [`LayoutState`] exactly as `hovered`, `pressed` and the scroll offsets
+    /// are, and the application learns what was selected by reading the range
+    /// off the frame it is handed
+    /// ([`gorgon_petra::frame::PaintContent::selection`]). One owner, one
+    /// number, and no way for the highlight and the clipboard to disagree.
+    ///
+    /// # What makes a run selectable
+    ///
+    /// Two declarations, both the component's: [`Interaction::Drag`], which
+    /// is what wins the press its capture, and a binding in the
+    /// [`SELECTION_SLOT`] token slot, which is the design system saying what
+    /// a selection looks like on this node. A text node with a drag and no
+    /// selection ground is something else being dragged, and is left alone.
+    fn apply_text_selection(&mut self, event: &InputEvent, route: &Route) {
+        match event {
+            InputEvent::PointerPressed {
+                pos,
+                button: PointerButton::Primary,
+                ..
+            } => {
+                let node = match route {
+                    Route::Pointer { node } => node.clone(),
+                    _ => {
+                        self.state.text_selection = None;
+                        return;
+                    }
+                };
+                // A press on anything else drops the selection, which is what
+                // every text surface does and what stops a stale highlight
+                // outliving the block it was made in.
+                self.state.text_selection =
+                    Self::text_offset(&mut self.shaper, self.last_frame.as_ref(), &node, *pos)
+                        .map(|at| TextSelection::new(node, at));
+            }
+            InputEvent::PointerMoved { pos } => {
+                // Only the node that holds the capture extends its own
+                // selection. Without the capture test a bare hover across a
+                // code block would rewrite a selection made in it.
+                let Some(node) = self.state.text_selection.as_ref().map(|s| s.node.clone()) else {
+                    return;
+                };
+                if self.pointer.capture().is_none_or(|held| held.node != node) {
+                    return;
+                }
+                if let Some(at) =
+                    Self::text_offset(&mut self.shaper, self.last_frame.as_ref(), &node, *pos)
+                    && let Some(selection) = self.state.text_selection.as_mut()
+                {
+                    selection.focus = at;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The byte offset in `node`'s painted string under the window position
+    /// `pos`, or `None` when `node` is not a selectable run.
+    ///
+    /// An associated function taking the two fields it needs rather than a
+    /// method: it reads `last_frame` and writes through `shaper`, and the
+    /// caller is holding a third field at the same time.
+    ///
+    /// The request is rebuilt exactly as [`crate::paint`] builds it for a
+    /// `Text` node — the full placement width, no inset — so the galley this
+    /// asks comes back from the shaper's cache as the same `Arc` the painter
+    /// drew. `Input` is excluded for that reason and not by oversight: the
+    /// painter insets a field's galley by `spacing-04`, so an offset measured
+    /// here would be off by twelve units and the highlight would sit beside
+    /// the letters it named.
+    fn text_offset(
+        shaper: &mut GalleyShaper,
+        frame: Option<&PetrifiedFrame>,
+        node: &str,
+        pos: Point,
+    ) -> Option<usize> {
+        let frame = frame?;
+        let index = frame.placements.iter().position(|p| p.id == node)?;
+        let placement = &frame.placements[index];
+        if placement.kind != NodeKind::Text {
+            return None;
+        }
+        let content = frame.content.get(index)?;
+        if !content.tokens.contains_key(SELECTION_SLOT) {
+            return None;
+        }
+        let text = content.text.as_ref()?;
+        let request = TextRequest {
+            text: &text.text,
+            style: text.style.as_deref(),
+            wrap: text.wrap,
+            max_lines: text.max_lines,
+            available_width: Some(placement.rect.w),
+        };
+        let galley = shaper.galley(&request);
+        Some(crate::text::byte_offset_at(
+            &galley,
+            egui::vec2(pos.x - placement.rect.x, pos.y - placement.rect.y),
+        ))
+    }
+
     fn apply_scroll(&mut self, node: &str, delta: Size) -> bool {
         let Some(frame) = self.last_frame.as_ref() else {
             return false;
@@ -2575,6 +2754,11 @@ mod tests {
         view_calls: usize,
         /// Text this app wants copied on its next pass.
         copy: Option<String>,
+        /// A deadline this app names, relative to the clock it was ticked
+        /// with: `Some(2.0)` means "wake me two seconds from now".
+        wake_in: Option<f64>,
+        /// The clock the last pass handed this app.
+        now: f64,
         /// Paths this app has been handed, dropped or picked, in order.
         dropped: Vec<std::path::PathBuf>,
     }
@@ -2604,6 +2788,14 @@ mod tests {
     }
 
     impl App for Demo {
+        fn tick(&mut self, now: f64) {
+            self.now = now;
+        }
+
+        fn wake_at(&mut self) -> Option<f64> {
+            self.wake_in.map(|delay| self.now + delay)
+        }
+
         fn clipboard_request(&mut self) -> Option<String> {
             self.copy.take()
         }
@@ -3453,6 +3645,70 @@ mod tests {
             .unwrap_or(std::time::Duration::MAX);
         out.drop_without_applying_deltas();
         delay
+    }
+
+    /// An application deadline reaches the window as a timed repaint.
+    ///
+    /// A picture that is a function of the clock but is **not moving** had no
+    /// way to ask for a frame. Catalog row 6's copy feedback is the first:
+    /// it says `"Copied!"` for two seconds and then stops, and Petra paints
+    /// nothing at idle (SC-002), so without this the word would sit on the
+    /// screen until the operator's next input — which on a window nobody is
+    /// touching is forever.
+    ///
+    /// Read where the request actually leaves, `ViewportOutput::repaint_delay`.
+    /// An assertion that `App::wake_at` was *called* would pass with the host
+    /// wiring missing, which is the state every seam in this file shipped in
+    /// at least once.
+    #[test]
+    fn an_application_deadline_reaches_the_window_as_a_timed_repaint() {
+        use std::time::Duration;
+        let ctx = headless();
+        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        // The first pass seats focus and asks for one more to paint the ring
+        // it just moved, so idle is measured after that has settled.
+        let mut idle = Duration::ZERO;
+        for _ in 0..4 {
+            idle = step(&ctx, &mut host, RawInput::default());
+        }
+        assert!(
+            idle > Duration::from_secs(60),
+            "a window with nothing to do asked for a frame in {idle:?}"
+        );
+
+        host.app_mut().wake_in = Some(2.0);
+        let armed = step(&ctx, &mut host, RawInput::default());
+        assert!(
+            armed > Duration::from_secs_f64(1.9) && armed <= Duration::from_secs_f64(2.0),
+            "a two-second deadline armed a repaint in {armed:?}"
+        );
+
+        // Not a time at all: ignored, not passed on. `from_secs_f64` panics
+        // on a NaN and a panic in the frame pump takes the window down.
+        host.app_mut().wake_in = Some(f64::NAN);
+        assert!(
+            step(&ctx, &mut host, RawInput::default()) > Duration::from_secs(60),
+            "a NaN deadline must be dropped, not armed"
+        );
+
+        // An application that stops asking lets the window sleep again, which
+        // is the half of SC-002 this seam could have broken.
+        host.app_mut().wake_in = None;
+        let back = step(&ctx, &mut host, RawInput::default());
+        assert!(
+            back > Duration::from_secs(60),
+            "the window never went back to idle: {back:?}"
+        );
+
+        // Already gone: the next frame the pump can give, rather than a panic
+        // inside `Duration::from_secs_f64` on a negative. Last, because an
+        // immediate request is the one egui carries into the following pass.
+        host.app_mut().wake_in = Some(-5.0);
+        assert_eq!(
+            step(&ctx, &mut host, RawInput::default()),
+            Duration::ZERO,
+            "an overdue deadline asks for the next frame"
+        );
     }
 
     #[test]

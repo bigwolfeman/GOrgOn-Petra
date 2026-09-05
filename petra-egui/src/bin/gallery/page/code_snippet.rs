@@ -1,9 +1,11 @@
 //! Inventory row 6, Code snippet.
 
 use gorgon_petra::component::{
-    CodeInk, code_runs, code_snippet, code_snippet_inline, code_snippet_multi, section,
+    COPY_FEEDBACK_SECONDS, CodeInk, code_runs, code_snippet, code_snippet_copied,
+    code_snippet_inline, code_snippet_multi, section,
 };
-use gorgon_petra::input::InputEvent;
+use gorgon_petra::frame::PetrifiedFrame;
+use gorgon_petra::input::{InputEvent, KeyCode};
 use gorgon_petra::tree::{TextRun, ViewNode};
 
 use super::Page;
@@ -131,22 +133,77 @@ fn words(line: &str) -> Vec<(&str, usize)> {
     out
 }
 
+/// Which well a press landed on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Well {
+    /// The single-line snippet, keyed [`SNIP`].
+    Single,
+    /// The multi-line snippet, keyed [`SNIP_MULTI`].
+    Multi,
+}
+
 /// The Code snippet page.
 ///
-/// The only state is the string a press on Copy has queued. The operator:
-/// *"copy button does not work"* — it did not, because `handle` returned
-/// `false` for every activation and a page holds no handle to the window.
+/// Two pieces of state, both about one press on Copy.
+///
+/// The first is the string it queued. The operator: *"copy button does not
+/// work"* — it did not, because `handle` returned `false` for every
+/// activation and a page holds no handle to the window.
 /// `Page::clipboard_request` is that channel; the host answers it with
 /// `egui::Context::copy_text`.
+///
+/// The second is *which well was pressed and when*, which is round 4's ask:
+/// *"when clicking the copy text button it should give me some feed back
+/// that it copied"*. The well says `Copied!` for
+/// [`COPY_FEEDBACK_SECONDS`] and then stops, so the page has to hold the
+/// press time and compare it against the host clock — and it has to ask the
+/// host for a pass at the deadline, because an idle Petra window paints
+/// nothing and the message would otherwise outlive its own timer. That is
+/// [`Page::wake_at`].
+///
+/// The well is recorded beside the time rather than a bare flag: both wells
+/// name their control `copy`, and a flag would light the bubble on whichever
+/// one the tree happened to build first.
 #[derive(Default)]
 pub struct CodeSnippet {
     /// Taken by the chrome on the pass that handled the press.
     pending: Option<String>,
+    /// The host clock for the pass now being built.
+    now: f64,
+    /// Which well was copied, and at what time, while the feedback is up.
+    copied: Option<(Well, f64)>,
+}
+
+impl CodeSnippet {
+    /// Whether `well` is inside its feedback window.
+    ///
+    /// A press restarts the window rather than extending it, which is what
+    /// Carbon's debounced `handleFadeOut` does
+    /// (`@carbon/react/lib/components/Copy/Copy.js:37`).
+    fn saying_copied(&self, well: Well) -> bool {
+        self.copied
+            .is_some_and(|(at, when)| at == well && self.now - when < COPY_FEEDBACK_SECONDS)
+    }
 }
 
 impl Page for CodeSnippet {
     fn row(&self) -> &'static str {
         "Code snippet"
+    }
+
+    fn tick(&mut self, now: f64) {
+        self.now = now;
+    }
+
+    /// The moment the feedback stops being true, or nothing when none is up.
+    ///
+    /// One deadline, not a repeating request: the pass this wakes finds the
+    /// window elapsed, drops the bubble, and answers `None`, so the window
+    /// goes straight back to idle.
+    fn wake_at(&mut self) -> Option<f64> {
+        let (_, when) = self.copied?;
+        let ends = when + COPY_FEEDBACK_SECONDS;
+        (ends > self.now).then_some(ends)
     }
 
     fn body(&self) -> ViewNode {
@@ -157,8 +214,14 @@ impl Page for CodeSnippet {
                 "code",
                 sp("spacing.md"),
                 vec![
-                    code_runs(code_snippet(SNIP, SINGLE), shell_runs(SINGLE)),
-                    code_runs(code_snippet_multi(SNIP_MULTI, MULTI), shell_runs(MULTI)),
+                    code_snippet_copied(
+                        code_runs(code_snippet(SNIP, SINGLE), shell_runs(SINGLE)),
+                        self.saying_copied(Well::Single),
+                    ),
+                    code_snippet_copied(
+                        code_runs(code_snippet_multi(SNIP_MULTI, MULTI), shell_runs(MULTI)),
+                        self.saying_copied(Well::Multi),
+                    ),
                     code_snippet_inline("snip-in", "cargo xtask gates"),
                 ],
             )],
@@ -169,22 +232,77 @@ impl Page for CodeSnippet {
         self.pending.take()
     }
 
-    /// Copy puts the well's own text on the clipboard.
+    /// The copy chord over a selection copies exactly the selected bytes.
+    ///
+    /// The operator, round 4: *"code snippet: I cant highlight text inside
+    /// the code snippet blocks"*. Highlighting is only half of that ask — a
+    /// selection nobody can copy is decoration — and the other half is the
+    /// chord every text surface answers.
+    ///
+    /// **The bytes come out of the frame, not out of this page's own
+    /// constants.** `PaintContent` carries the painted string and the range
+    /// the host wrote onto it, so the substring copied here is by
+    /// construction the substring under the highlight: there is no second
+    /// copy of either to drift. A page slicing `SINGLE` by a range read off
+    /// the frame would be right until the day the two strings differed, and
+    /// that is exactly the class of bug this repository calls theatre.
+    ///
+    /// `gesture` and not `handle`, because `handle` is handed a route and no
+    /// frame. This hook already receives the frame the route was computed
+    /// against, and the selection lives on that frame.
+    ///
+    /// Carbon's Copy **button** still copies the whole well
+    /// (`@carbon/react/lib/components/CodeSnippet/CodeSnippet.js`:
+    /// `copyText || innerCode.textContent`), which is why the button below is
+    /// unchanged: in a browser the button copies everything and the chord
+    /// copies the selection, and those are two different affordances rather
+    /// than two spellings of one.
+    fn gesture(&mut self, event: &InputEvent, node: &str, frame: &PetrifiedFrame) -> bool {
+        let InputEvent::Key {
+            key: KeyCode::Char('c'),
+            pressed: true,
+            modifiers,
+            ..
+        } = event
+        else {
+            return false;
+        };
+        if !(modifiers.ctrl || modifiers.meta) {
+            return false;
+        }
+        let Some(content) = frame.content_of(node) else {
+            return false;
+        };
+        let (Some(range), Some(text)) = (content.selection.clone(), content.text.as_ref()) else {
+            return false;
+        };
+        let Some(selected) = text.text.get(range) else {
+            return false;
+        };
+        self.pending = Some(selected.to_owned());
+        true
+    }
+
+    /// Copy puts the well's own text on the clipboard, and the well says so.
     ///
     /// Matched on both segments, because both snippets name their control
     /// `copy` and only the snippet's own key says which well was pressed.
+    /// `SNIP_MULTI` is tested first: `snip-multi` is not `snip`, but a
+    /// segment test that asked the short question first would answer it for
+    /// both wells.
     fn handle(&mut self, _event: &InputEvent, node: &str) -> bool {
         if !path_has(node, COPY) {
             return false;
         }
-        let text = if path_has(node, SNIP_MULTI) {
-            MULTI
+        let (well, text) = if path_has(node, SNIP_MULTI) {
+            (Well::Multi, MULTI)
         } else if path_has(node, SNIP) {
-            SINGLE
+            (Well::Single, SINGLE)
         } else {
             return false;
         };
         self.pending = Some(text.to_owned());
+        self.copied = Some((well, self.now));
         true
     }
 }

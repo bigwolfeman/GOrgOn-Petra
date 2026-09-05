@@ -137,6 +137,11 @@ impl FrameMemo {
     ///    it was in when it was built. Focus got this treatment from the
     ///    start and these three did not, which was latent only for as long as
     ///    nothing ever set them.
+    /// 5. The node at either end of a text-selection change. Unlike the four
+    ///    above, this one moves *within* a node: the id stays put for the
+    ///    whole body of a drag while the byte pair grows, so the id-pair test
+    ///    would call every frame of a selection unchanged and reuse the
+    ///    subtree that has the old highlight painted into it.
     ///
     /// Returns `None` when the change set is [`ChangeSet::All`], which is the
     /// host saying it does not know: there is no dirty *set* in that case,
@@ -193,6 +198,25 @@ impl FrameMemo {
             }
             if let Some(after) = after {
                 dirty.insert(after.clone());
+            }
+        }
+
+        // The text selection, which the table above cannot express. The other
+        // five move *between* nodes, so both ends of the move are named ids;
+        // a selection moves **inside** one node for the whole body of a drag,
+        // with the id unchanged and only the byte pair growing. Comparing the
+        // whole thing and dirtying both nodes covers both shapes: a selection
+        // that started, ended, jumped to another block, or simply got one
+        // character longer.
+        if self.state.text_selection != now.text_selection {
+            for end in [
+                self.state.text_selection.as_ref(),
+                now.text_selection.as_ref(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                dirty.insert(end.node.clone());
             }
         }
 

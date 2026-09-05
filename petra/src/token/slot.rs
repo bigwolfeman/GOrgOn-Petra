@@ -134,11 +134,12 @@ impl SlotSchema {
 }
 
 /// The shipped slot schema: every paint slot the design system has
-/// committed to. Ten entries, and `gorgon-petra-egui`'s painter draws all
-/// ten — `standard_slots()` and that painter's `KNOWN_SLOTS` are the same
-/// set, which `the_shipped_schema_is_exactly_what_the_painter_draws` holds
-/// them to. Six of the ten date from 2026-08-25; the four edge slots
-/// (`border-top` … `border-left`) from 2026-09-04, see below.
+/// committed to. Thirteen entries, and `gorgon-petra-egui`'s painter draws
+/// all thirteen — `standard_slots()` and that painter's `KNOWN_SLOTS` are the
+/// same set, which `the_shipped_schema_is_exactly_what_the_painter_draws`
+/// holds them to. Six date from 2026-08-25; the four edge slots
+/// (`border-top` … `border-left`) from 2026-09-04, see below; the two
+/// selection slots from 2026-09-05, see below that.
 ///
 /// # Five slots were retired on 2026-08-25 (FR-025)
 ///
@@ -249,6 +250,32 @@ impl SlotSchema {
 /// that says "this is a link" when the hue cannot. A slot, for the same
 /// reasons the side borders are slots, and because `underline@hover` is
 /// exactly Carbon's standalone link with nothing further to build.
+/// # The two selection slots (2026-09-05)
+///
+/// `selection` is the ground filled **behind the stretch of this node's text
+/// the operator has selected**, and `selection-ink` is the colour those
+/// glyphs are then drawn in. The range comes from the frame
+/// (`frame::PaintContent::selection`), which the host writes from a real
+/// press-and-drag; these two say what it looks like.
+///
+/// **This is not `highlight` coming back.** The table above retires
+/// `highlight` because the need behind it was a *state-keyed `background`*:
+/// Carbon never composites a state, it swaps the token bound to the same
+/// property, and `background@selected` already does that. A text selection
+/// cannot be expressed that way and the difference is not a matter of
+/// taste — `background` fills the node's **whole rect**, and a selection
+/// covers a sub-range of one string, in as many rectangles as it crosses
+/// rows. No state-decorated key can say "these seventeen bytes". That is why
+/// this is a slot and `highlight` still is not.
+///
+/// **Two slots and not one**, and this is measured rather than symmetric: a
+/// ground dark enough to be seen moves the ground the ink was measured
+/// against. The code snippet's keyword class (`link-primary`) clears AA on
+/// its own well in the light theme at 4.63:1 against a 4.5 floor, so any
+/// visible selection ground drops it below AA — and a ground pale enough to
+/// keep it is one nobody can see. The selected run therefore takes its own
+/// ink, exactly as `::selection { color }` does in a browser. A node binding
+/// one and not the other gets no highlight; they are resolved as a pair.
 #[must_use]
 pub fn standard_slots() -> SlotSchema {
     let mut s = SlotSchema::new();
@@ -262,7 +289,9 @@ pub fn standard_slots() -> SlotSchema {
         .declare(SlotSpec::new("underline", TokenKind::Color, false))
         .declare(SlotSpec::new("shadow", TokenKind::Color, false))
         .declare(SlotSpec::new("radius", TokenKind::Shape, false))
-        .declare(SlotSpec::new("silhouette", TokenKind::Silhouette, false));
+        .declare(SlotSpec::new("silhouette", TokenKind::Silhouette, false))
+        .declare(SlotSpec::new("selection", TokenKind::Color, false))
+        .declare(SlotSpec::new("selection-ink", TokenKind::Color, false));
     s
 }
 
@@ -299,6 +328,8 @@ mod tests {
             ("shadow", TokenKind::Color),
             ("radius", TokenKind::Shape),
             ("silhouette", TokenKind::Silhouette),
+            ("selection", TokenKind::Color),
+            ("selection-ink", TokenKind::Color),
         ];
         assert_eq!(
             schema.len(),

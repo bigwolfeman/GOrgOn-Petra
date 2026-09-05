@@ -338,6 +338,12 @@ impl App for Catalog {
         }
     }
 
+    /// Forward the open page's deadline. Only the open page has one: a page
+    /// the operator is not looking at has no picture to keep current.
+    fn wake_at(&mut self) -> Option<f64> {
+        self.open_page_mut()?.wake_at()
+    }
+
     /// Forward the open page's theme choice, converted here.
     ///
     /// The page names a [`ThemeMode`] and the chrome turns it into a

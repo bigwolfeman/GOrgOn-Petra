@@ -287,6 +287,66 @@ impl Camera {
         )
     }
 
+    /// A press at `from`, a move through the midpoint, and a release at `to`
+    /// — [`Camera::drag`] aimed by raw position at both ends.
+    ///
+    /// A drag that starts at a node's centre is the right driver for a slider
+    /// handle and the wrong one for a text selection, where *where in the
+    /// run* the press landed is the whole of what is being tested.
+    pub fn drag_at(&mut self, from: Point, to: Point) -> &mut Self {
+        self.act(
+            Target::Pos(from),
+            &Action::Drag {
+                to,
+                modifiers: Modifiers::default(),
+            },
+        )
+    }
+
+    /// [`Camera::key`] with modifiers held — the copy chord, and anything
+    /// else that is a chord rather than a key.
+    ///
+    /// # Panics
+    /// If the frame holds no placements.
+    pub fn chord(&mut self, key: KeyCode, modifiers: Modifiers) -> &mut Self {
+        let frame = self.frame();
+        let id = frame
+            .placements
+            .iter()
+            .find(|p| p.semantics.focused)
+            .or_else(|| frame.placements.first())
+            .unwrap_or_else(|| panic!("{}: the frame holds no placements", self.page))
+            .id
+            .clone();
+        self.act(Target::NodeId(id), &Action::Key { key, modifiers })
+    }
+
+    /// The byte range of its own painted string that the node whose id ends
+    /// `tail` reports selected, or `None`.
+    ///
+    /// Read off the frame, which is the same place the painter reads it and
+    /// the same place the application reads it — so a test asserting on this
+    /// is asserting on the one number all three share.
+    ///
+    /// # Panics
+    /// As [`Camera::id`] does, on a missing or ambiguous tail.
+    pub fn selection(&self, tail: &str) -> Option<std::ops::Range<usize>> {
+        self.paint(tail).selection.clone()
+    }
+
+    /// The text the node whose id ends `tail` paints, verbatim.
+    ///
+    /// # Panics
+    /// As [`Camera::id`] does, and if the node paints no text at all.
+    pub fn painted_text(&self, tail: &str) -> String {
+        self.paint(tail)
+            .text
+            .as_ref()
+            .unwrap_or_else(|| panic!("{}: {tail} paints no text", self.page))
+            .text
+            .clone()
+    }
+
     /// The placed rect of the node whose id ends `tail`, in logical units.
     ///
     /// # Panics
@@ -315,6 +375,28 @@ impl Camera {
             .position(|p| p.id == id)
             .unwrap_or_else(|| panic!("{}: {id} resolved but is not placed", self.page));
         &frame.content[index]
+    }
+
+    /// The accessible name the frame carries for the node whose id ends
+    /// `tail`, or `None` when it names nothing.
+    ///
+    /// The channel a screen reader gets, and the one a copy control's
+    /// feedback has to move as well as the picture: Carbon swaps
+    /// `CopyButton`'s own `aria-label` to the feedback string while the
+    /// bubble is up (`@carbon/react/lib/components/Copy/Copy.js:61`), so a
+    /// test that only read pixels would pass a control that told a reader
+    /// nothing had happened.
+    ///
+    /// # Panics
+    /// As [`Camera::id`] does, on a missing or ambiguous tail.
+    pub fn label(&self, tail: &str) -> Option<String> {
+        let id = self.id(tail);
+        self.frame()
+            .placement(&id)
+            .unwrap_or_else(|| panic!("{}: {id} resolved but is not placed", self.page))
+            .semantics
+            .label
+            .clone()
     }
 
     /// The caret the engine draws for the anchored surface whose id ends
@@ -605,7 +687,7 @@ mod tests {
     use super::{CAPTURE_SCALE, Camera};
     use crate::catalog::WINDOW;
     use gorgon_petra::geom::{Point, Rect};
-    use gorgon_petra::input::KeyCode;
+    use gorgon_petra::input::{KeyCode, Modifiers};
     use gorgon_petra::token::FocusRing;
     use gorgon_petra::tree::Edge;
 
@@ -2669,6 +2751,347 @@ mod tests {
             "the multi-line well copies its own many lines, got {last:?}"
         );
     }
+
+    /// Row 6, round 4. The operator: *"when clicking the copy text button it
+    /// should give me some feed back that it copied"*.
+    ///
+    /// Carbon's answer is a tooltip reading `"Copied!"` that clears itself
+    /// after `feedbackTimeout` milliseconds, 2000 by default
+    /// (`@carbon/react/lib/components/Copy/Copy.js:30`), built from the
+    /// tooltip caret and content mixins
+    /// (`@carbon/styles/scss/components/copy-button/_copy-button.scss:44,50`).
+    /// Carbon also swaps the button's own `aria-label` to that string while
+    /// the bubble is up (`Copy.js:56,61`).
+    ///
+    /// **The feedback is a word, never a tint**, which is the operator's
+    /// channel: he is red-green colourblind, so a copy control that answered
+    /// with a fill step would answer him with nothing. Both channels are
+    /// asserted here — the painted string and the accessible name — and so
+    /// is the clearing, because feedback that never goes away stops being
+    /// feedback the second time it is pressed.
+    #[test]
+    fn a_copy_says_copied_and_the_word_clears_on_carbons_two_second_timer() {
+        let mut cam = Camera::on("Code snippet");
+        cam.shoot("06-code-snippet-before-copy");
+        assert!(
+            !cam.has("copied"),
+            "the page says Copied before anything was pressed"
+        );
+        assert_eq!(
+            cam.label("snip/copy").as_deref(),
+            Some("Copy"),
+            "the resting control is named for what it does"
+        );
+
+        cam.click("snip/copy");
+        // Photographed before anything is resolved, so the red run of this
+        // test leaves the picture of a press that did nothing.
+        let shot = raster(&mut cam, "06-code-snippet-copied");
+        let bubble = cam.rect("snip/copy/copied");
+        assert_eq!(
+            cam.paint("snip/copy/copied/content/body")
+                .text
+                .as_ref()
+                .map(|run| run.text.as_str()),
+            Some("Copied!"),
+            "the feedback bubble carries Carbon's own feedback string"
+        );
+        assert_eq!(
+            cam.label("snip/copy").as_deref(),
+            Some("Copied!"),
+            "and so does the button's accessible name, as Carbon's does"
+        );
+        // The word is on the screen, not only in the frame record: a bubble
+        // painted in one flat colour is a bubble with no text in it.
+        let inks: std::collections::HashSet<[u8; 4]> =
+            inset_pixels(&shot, bubble, 2).into_iter().collect();
+        assert!(
+            inks.len() > 2,
+            "the feedback bubble rasterizes to {} colours, so nothing is \
+             written in it",
+            inks.len()
+        );
+
+        // Carbon's two seconds, counted in passes, plus a frame of slack.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let two_seconds = (2.0 / FRAME_SECONDS).round() as usize + 1;
+        advance(&mut cam, two_seconds);
+        cam.shoot("06-code-snippet-copy-cleared");
+        assert!(
+            !cam.has("copied"),
+            "the feedback is still up two seconds later; Carbon clears it at \
+             feedbackTimeout and a message that never leaves cannot report \
+             the next press"
+        );
+        assert_eq!(
+            cam.label("snip/copy").as_deref(),
+            Some("Copy"),
+            "and the accessible name goes back with it"
+        );
+    }
+
+    /// Row 6, round 4. The operator: *"code snippet: I cant highlight text
+    /// inside the code snippet blocks"*.
+    ///
+    /// Carbon's snippet container is a read-only `textbox` the browser lets
+    /// you drag across (`CodeSnippet.js:120-124`). Petra has no browser, so
+    /// the gesture is built: the press anchors a byte offset, the drag moves
+    /// the other end, the frame carries the range, the painter fills behind
+    /// those glyphs, and the copy chord takes exactly those bytes.
+    ///
+    /// **All four are asserted here, and the last one is the point.** A
+    /// highlight that does not copy is decoration, and a copy that takes the
+    /// whole block while a fragment is lit is a lie. The copied string is
+    /// compared against the substring the frame says is selected, sliced out
+    /// of the string the frame says is painted — the same two numbers the
+    /// painter used — so the picture and the clipboard cannot disagree
+    /// without this going red.
+    #[test]
+    fn dragging_across_the_code_selects_those_bytes_and_the_copy_chord_takes_them() {
+        let mut cam = Camera::on("Code snippet");
+        assert_eq!(
+            cam.selection("snip/code"),
+            None,
+            "nothing is selected before anything is dragged"
+        );
+        let resting = raster(&mut cam, "06-code-snippet-unselected");
+
+        // Across the middle of the single-line run, from a quarter of the way
+        // along to three quarters, so the selection is a genuine fragment
+        // with unselected code on both sides of it.
+        let run = cam.rect("snip/code");
+        let mid = run.y + run.h / 2.0;
+        cam.drag_at(
+            Point::new(run.x + run.w * 0.25, mid),
+            Point::new(run.x + run.w * 0.75, mid),
+        );
+        let shot = raster(&mut cam, "06-code-snippet-selected");
+
+        let range = cam
+            .selection("snip/code")
+            .expect("a drag across the code selected nothing at all");
+        let painted = cam.painted_text("snip/code");
+        let selected = painted[range.clone()].to_owned();
+        assert!(
+            !selected.is_empty() && selected.len() < painted.len(),
+            "the drag selected {selected:?} of {painted:?}, which is not a \
+             fragment: a quarter-to-three-quarters drag must take some of \
+             the line and leave some of it"
+        );
+
+        // The highlight is on the screen, measured as a tone the run's own
+        // rect did not carry before the drag. Counting tones rather than
+        // sampling a point: a point sample lands on a glyph as easily as on
+        // the ground, and "this pixel changed" is as true of a moved caret
+        // as of a painted band.
+        let (band, count) = new_tone(&resting, &shot, run);
+        assert!(
+            count > 200,
+            "the drag added no new tone to the run's rect at all, so nothing \
+             was painted behind the selected glyphs"
+        );
+        // Lighter than the fill it sits on, which is the operator's channel:
+        // he is red-green colourblind, so a highlight separated by hue alone
+        // is one he does not receive. `layer-selected` is the design system's
+        // own selected step, seven L* off this well's ground.
+        //
+        // Sampled inside the **well** and past the end of the code, which is
+        // the only place on this row that is certainly the well's own fill.
+        // Above the run is the card the well sits on, a different grey, and
+        // reading it here is how the first cut of this assertion compared the
+        // highlight against the wrong ground and called a real band too dim.
+        let well = cam.rect("code/snip");
+        let fill = px(&shot, well.x + well.w - 8.0, mid);
+        assert!(
+            pixel_luma(band) > pixel_luma(fill) + 8,
+            "the highlight is {} against a {} ground, which is not a \
+             luminance step a reader can use: {band:?} on {fill:?}",
+            pixel_luma(band),
+            pixel_luma(fill)
+        );
+        // And it is a band, not the whole run: unselected code is left on
+        // both sides of it.
+        let (left, right) = tone_span(&shot, run, band);
+        assert!(
+            left > run.x + 2.0 && right < run.x + run.w - 2.0,
+            "the highlight runs {left} to {right} across a run at {} to {}, \
+             so it is the whole line rather than the fragment that was \
+             dragged over",
+            run.x,
+            run.x + run.w
+        );
+
+        // And the chord copies exactly those bytes, not the whole line.
+        let before = cam.clipboard().len();
+        cam.chord(
+            KeyCode::Char('c'),
+            Modifiers {
+                ctrl: true,
+                ..Modifiers::default()
+            },
+        );
+        let copied = cam.clipboard();
+        assert_eq!(
+            copied.len(),
+            before + 1,
+            "the copy chord put nothing on the clipboard"
+        );
+        assert_eq!(
+            copied.last().map(String::as_str),
+            Some(selected.as_str()),
+            "the chord copied something other than what is highlighted"
+        );
+        assert_ne!(
+            copied.last().map(String::as_str),
+            Some(painted.as_str()),
+            "the chord took the whole well while a fragment was selected, \
+             which is the copy that pretends to be a selection"
+        );
+    }
+
+    /// A drag down the multi-line well selects across the line break, lights
+    /// both rows, and repaints the selected comment in the selection's ink.
+    ///
+    /// Three claims the single-line case cannot make.
+    ///
+    /// **One rectangle per row.** A selection that crossed a newline and
+    /// painted one box from the first character to the last would cover the
+    /// whole right-hand margin of the first line and the whole left margin of
+    /// the second. The bands here are measured on two separate rows.
+    ///
+    /// **The line break is in the copied bytes.** A selection whose range
+    /// stopped at the end of a row would copy one line and look like two.
+    ///
+    /// **The selected comment changes ink.** The comment class is
+    /// `text.muted` and the selection's ink is `text.primary`, so the same
+    /// words are brighter inside the highlight than outside it. That is the
+    /// half of `::selection` that keeps a coloured run legible on a ground it
+    /// was never measured against — the keyword class clears AA on this well
+    /// by 0.13 in the light theme, so a highlight that left the ink alone
+    /// would sink it.
+    #[test]
+    fn a_drag_down_the_multi_line_well_lights_both_rows_and_relights_the_ink() {
+        let mut cam = Camera::on("Code snippet");
+        let run = cam.rect("snip-multi/code");
+        let lines = cam.painted_text("snip-multi/code").lines().count();
+        assert!(lines > 10, "the multi-line sample is {lines} lines");
+        #[allow(clippy::cast_precision_loss)]
+        let line_h = run.h / lines as f32;
+        let row_mid = |n: usize| {
+            #[allow(clippy::cast_precision_loss)]
+            let n = n as f32;
+            run.y + line_h * (n + 0.5)
+        };
+
+        let resting = raster(&mut cam, "06-code-snippet-multi-unselected");
+        // From a third of the way along the comment on row 0, down to two
+        // thirds along the command on row 1.
+        let press_x = run.x + run.w * 0.20;
+        cam.drag_at(
+            Point::new(press_x, row_mid(0)),
+            Point::new(run.x + run.w * 0.45, row_mid(1)),
+        );
+        let shot = raster(&mut cam, "06-code-snippet-multi-selected");
+
+        let range = cam
+            .selection("snip-multi/code")
+            .expect("the drag down the well selected nothing");
+        let painted = cam.painted_text("snip-multi/code");
+        let selected = &painted[range];
+        assert!(
+            selected.contains('\n'),
+            "a drag from one row to the next selected {selected:?}, which \
+             holds no line break, so the range stopped at the end of a row"
+        );
+
+        // A band on each row, each ending short of the run's right edge —
+        // one box spanning both rows would run the full width of the first.
+        let (band, _) = new_tone(&resting, &shot, run);
+        for row in [0usize, 1] {
+            let strip = Rect::new(run.x, row_mid(row) - 1.0, run.w, 2.0);
+            let (left, right) = tone_span(&shot, strip, band);
+            assert!(
+                left.is_finite() && right < run.x + run.w - 2.0,
+                "row {row} carries no highlight band inside the run, or it \
+                 runs the whole width: {left} to {right} of {} to {}",
+                run.x,
+                run.x + run.w
+            );
+        }
+
+        // The comment on row 0 is brighter inside the selection than outside
+        // it, which is the ink swap and nothing else: same words, same size,
+        // same face.
+        let strip =
+            |x0: f32, x1: f32| Rect::new(x0, row_mid(0) - line_h * 0.4, x1 - x0, line_h * 0.8);
+        let outside = brightest(&shot, strip(run.x + 1.0, press_x - 1.0));
+        let inside = brightest(&shot, strip(press_x + 2.0, run.x + run.w * 0.6));
+        // Twenty, because the two inks are thirty apart and not a hundred:
+        // dark `text.muted` is `#d4d4d4` and `text.primary` is `#f2f2f2`, so
+        // the swap this proves is a real but narrow one. Without it both
+        // readings are the same number and the margin is zero.
+        assert!(
+            inside > outside + 20,
+            "the selected comment peaks at {inside} and the unselected part \
+             of the same line at {outside}; the selection is not repainting \
+             the run in its own ink"
+        );
+    }
+
+    /// A press somewhere else drops the selection, and a bare hover across a
+    /// block does not make one.
+    ///
+    /// Both are what every text surface does, and both are the ways a
+    /// selection built on a raw pointer stream goes wrong: a highlight that
+    /// outlives the block it was made in, and one that follows the mouse
+    /// around with no button held.
+    #[test]
+    fn a_selection_needs_a_held_button_and_does_not_outlive_a_press_elsewhere() {
+        let mut cam = Camera::on("Code snippet");
+        let run = cam.rect("snip/code");
+        let mid = run.y + run.h / 2.0;
+        cam.drag_at(
+            Point::new(run.x + run.w * 0.2, mid),
+            Point::new(run.x + run.w * 0.8, mid),
+        );
+        let held = cam.selection("snip/code").expect("the drag selected");
+
+        cam.hover_at(run.x + run.w * 0.4, mid);
+        assert_eq!(
+            cam.selection("snip/code"),
+            Some(held),
+            "a hover with no button held rewrote the selection"
+        );
+
+        cam.click("snip/copy");
+        assert_eq!(
+            cam.selection("snip/code"),
+            None,
+            "a press on another control left the old highlight lit"
+        );
+    }
+
+    /// The multi-line well answers a press the same way, from its own button.
+    ///
+    /// Both wells name their control `copy`, and the first cut of this
+    /// feedback hung the bubble off the snippet rather than off the button
+    /// that was pressed — which reads correct on a page with one well and
+    /// wrong on this one.
+    #[test]
+    fn the_multi_line_well_gets_its_own_copied_bubble_and_not_the_other_ones() {
+        let mut cam = Camera::on("Code snippet");
+        cam.click("snip-multi/copy-row/copy");
+        cam.shoot("06-code-snippet-multi-copied");
+        assert!(
+            cam.has("snip-multi/copy-row/copy/copied"),
+            "the well that was pressed says Copied"
+        );
+        assert!(
+            !cam.has("snip/copy/copied"),
+            "and the well that was not pressed says nothing"
+        );
+        assert_eq!(cam.label("snip/copy").as_deref(), Some("Copy"));
+    }
     // ---- The focus caret on field-shaped controls (round 3, wave F1) ----
     //
     // Every test below starts from a `Camera::click`, because no person has
@@ -3420,6 +3843,79 @@ mod tests {
         }
         assert!(!out.is_empty(), "{rect:?} inset by {inset} has no pixels");
         out
+    }
+
+    /// Rec. 601 luminance of one pixel, 0-255.
+    fn pixel_luma(p: [u8; 4]) -> u32 {
+        (u32::from(p[0]) * 299 + u32::from(p[1]) * 587 + u32::from(p[2]) * 114) / 1000
+    }
+
+    /// The tone `after` carries inside `rect` that `before` did not, and how
+    /// many pixels wear it.
+    ///
+    /// "A new tone appeared" is the honest reading of "a fill was painted".
+    /// A point sample lands on a glyph as often as on the ground, and
+    /// counting *changed* pixels cannot tell a painted band from a caret
+    /// that moved through the same rect. This is the strongest claim two
+    /// rasters of the same rect support without knowing the theme.
+    ///
+    /// The busiest such tone wins, so antialiasing along a glyph edge — a
+    /// handful of pixels each — cannot outvote a band.
+    fn new_tone(
+        before: &image::RgbaImage,
+        after: &image::RgbaImage,
+        rect: Rect,
+    ) -> ([u8; 4], usize) {
+        let count = |img: &image::RgbaImage| {
+            let mut seen: std::collections::HashMap<[u8; 4], usize> =
+                std::collections::HashMap::new();
+            for p in inset_pixels(img, rect, 0) {
+                *seen.entry(p).or_default() += 1;
+            }
+            seen
+        };
+        let (was, now) = (count(before), count(after));
+        now.into_iter()
+            .filter(|(tone, _)| was.get(tone).copied().unwrap_or(0) < 20)
+            .max_by_key(|(_, n)| *n)
+            .unwrap_or(([0, 0, 0, 0], 0))
+    }
+
+    /// The highest per-pixel luminance inside `rect`.
+    ///
+    /// For telling one ink from another where the two are the same glyphs at
+    /// the same size: the peak is the glyph's own core, before antialiasing
+    /// drags it towards the ground.
+    fn brightest(img: &image::RgbaImage, rect: Rect) -> u32 {
+        inset_pixels(img, rect, 0)
+            .into_iter()
+            .map(pixel_luma)
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// The leftmost and rightmost logical x inside `rect` wearing `tone`.
+    fn tone_span(img: &image::RgbaImage, rect: Rect, tone: [u8; 4]) -> (f32, f32) {
+        let scale = super::CAPTURE_SCALE;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let (x0, y0, x1, y1) = (
+            (rect.x * scale).round() as u32,
+            (rect.y * scale).round() as u32,
+            ((rect.x + rect.w) * scale).round() as u32,
+            ((rect.y + rect.h) * scale).round() as u32,
+        );
+        let (mut left, mut right) = (f32::MAX, f32::MIN);
+        for y in y0..y1.min(img.height()) {
+            for x in x0..x1.min(img.width()) {
+                if img.get_pixel(x, y).0 == tone {
+                    #[allow(clippy::cast_precision_loss)]
+                    let at = x as f32 / scale;
+                    left = left.min(at);
+                    right = right.max(at);
+                }
+            }
+        }
+        (left, right)
     }
 
     /// How many of two equal-length pixel runs differ at all.

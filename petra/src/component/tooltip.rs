@@ -56,12 +56,30 @@ const _: () = assert!(SINGLE_LINE_INTENT == 208.0);
 /// Anchored to a sibling keyed `"trigger"`.
 pub fn tooltip(key: impl Into<Key>, label: impl Into<String>, body: impl Into<String>) -> ViewNode {
     let _label = label.into();
+    tooltip_anchored(key, "trigger", body)
+}
+
+/// [`tooltip`], anchored to a sibling the caller names.
+///
+/// The same bubble, for the triggers that are not keyed `"trigger"`. The
+/// first of those is [`super::code_snippet`]'s copy control, whose feedback
+/// Carbon builds out of these very mixins —
+/// `_copy-button.scss:44` is `tooltip--caret` and `:50` is
+/// `tooltip--content`, on an element that lives *inside* the button. A
+/// second bubble constructor with its own fill and its own padding is how
+/// two tooltips in one library stop looking alike, so this is the one
+/// bubble with the anchor lifted out rather than a copy of it.
+pub fn tooltip_anchored(
+    key: impl Into<Key>,
+    anchor: impl Into<Key>,
+    body: impl Into<String>,
+) -> ViewNode {
     let body = body.into();
     let mut run = super::popover::bubble_text(body.clone());
     run.props
         .tokens
         .insert("foreground".into(), t(TEXT_PRIMARY));
-    let mut node = popover_with(key, body.clone(), "trigger", vec![run]);
+    let mut node = popover_with(key, body.clone(), anchor, vec![run]);
     node.props
         .tokens
         .insert("background".into(), t(SURFACE_LAYER_THREE));

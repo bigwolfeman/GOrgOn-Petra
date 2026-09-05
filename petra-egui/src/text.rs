@@ -578,6 +578,148 @@ impl GalleyShaper {
     }
 }
 
+/// The byte offset in `galley`'s own text nearest the local position `at`.
+///
+/// # This is the seam a text selection needs and nothing else provides
+///
+/// `contracts/view-tree.md`'s U-09 boundary puts shaping in the host and
+/// keeps every egui type out of `gorgon-petra`, so [`ContentMeasure`] answers
+/// only *how big* a run is. Nothing in the engine can turn a window position
+/// into a position in a string: that mapping is per-glyph advances and line
+/// breaks, which only the shaped run holds. So the mapping lives here, beside
+/// the shaping, and the host is the one caller — a selection is host-derived
+/// interaction state ([`gorgon_petra::input::TextSelection`]) for exactly the
+/// same reason hover is.
+///
+/// `at` is relative to the galley's own origin, which for a Petra text node
+/// is its placement's top-left ([`crate::paint`] paints at `rect.min`). A
+/// position above the run answers 0 and one below it answers the end, which
+/// is egui's own rule and is what lets a drag run off the top or bottom of a
+/// code block and keep selecting.
+///
+/// **Byte offset, not char index.** egui counts characters and `str` slices
+/// by bytes, and the two are the same number only until the first
+/// multi-byte character. Converting here rather than at each caller is what
+/// stops that difference reaching a `&text[..]` that panics.
+#[must_use]
+pub fn byte_offset_at(galley: &Galley, at: egui::Vec2) -> usize {
+    char_to_byte(galley.text(), galley.cursor_from_pos(at).index.0)
+}
+
+/// The rectangles the byte range `range` covers in `galley`, one per row it
+/// crosses, in coordinates local to the galley's origin.
+///
+/// Empty when the range is empty or falls outside the text. Rows the range
+/// touches but covers no glyph of — the blank line between two paragraphs —
+/// contribute nothing, because a zero-width fill is not a picture.
+///
+/// The row's own `pos` is added back on both ends: `Row::x_offset` is
+/// measured from the row's start and `PlacedRow::pos` is where that start
+/// sits in the galley, which is the same pair `Galley::cursor_from_pos` puts
+/// together in the other direction.
+#[must_use]
+pub fn selection_rects(galley: &Galley, range: &std::ops::Range<usize>) -> Vec<egui::Rect> {
+    if range.is_empty() {
+        return Vec::new();
+    }
+    let text = galley.text();
+    let (from, to) = (
+        byte_to_char(text, range.start),
+        byte_to_char(text, range.end),
+    );
+    let mut out = Vec::new();
+    let mut row_start = 0usize;
+    for row in &galley.rows {
+        // The glyph count, which is what `x_offset` indexes. The newline is
+        // counted for the *next* row's start but is not a glyph on this one.
+        let glyphs = row.char_count_excluding_newline().0;
+        let row_end = row_start + glyphs;
+        let start = from.max(row_start);
+        let end = to.min(row_end);
+        if start < end {
+            let x0 = row.pos.x + row.x_offset(egui::text::CharIndex(start - row_start));
+            let x1 = row.pos.x + row.x_offset(egui::text::CharIndex(end - row_start));
+            if x1 > x0 {
+                out.push(egui::Rect::from_min_max(
+                    egui::pos2(x0, row.min_y()),
+                    egui::pos2(x1, row.max_y()),
+                ));
+            }
+        }
+        row_start += row.char_count_including_newline().0;
+    }
+    out
+}
+
+/// `runs` with the stretch `range` forced to `ink`, tiling the same string.
+///
+/// # Why the selected run takes its own ink at all
+///
+/// A highlight is a fill behind glyphs, and a fill dark enough to see moves
+/// the ground those glyphs were measured against. Measured on the shipped
+/// themes: the code snippet's keyword ink (`link-primary`) clears AA on
+/// `surface.raised` in the light theme at 4.63:1, with 4.5 the floor — so
+/// **any** selection ground darker than the well drops it below AA there.
+/// Solving it by choosing a paler ground means choosing one nobody can see.
+///
+/// So the selected stretch takes the selection's own ink, which is what
+/// `::selection` does in a browser and what most editors do: the highlight is
+/// a ground *and* an ink, checked as a pair, and the syntax colouring inside
+/// the selection is deliberately suspended for as long as it is selected.
+///
+/// Splitting the run list rather than re-measuring: colour is not a shaping
+/// input (`GalleyShaper::galley_runs`), so the split galley has the geometry
+/// the unsplit one had, which is what lets the highlight rectangles computed
+/// from one be painted under the other.
+#[must_use]
+pub fn runs_with_selection(
+    runs: &[(usize, Option<Color32>)],
+    text_len: usize,
+    range: &std::ops::Range<usize>,
+    ink: Color32,
+) -> Vec<(usize, Option<Color32>)> {
+    // A node with no runs of its own still needs one, or there is nothing to
+    // split and the whole string keeps the node's `foreground`.
+    let base: Vec<(usize, Option<Color32>)> = if runs.is_empty() {
+        vec![(text_len, None)]
+    } else {
+        runs.to_vec()
+    };
+    let mut out: Vec<(usize, Option<Color32>)> = Vec::with_capacity(base.len() + 2);
+    let mut at = 0usize;
+    for (len, colour) in base {
+        let (start, end) = (at, at + len);
+        at = end;
+        // Three pieces, any of which may be empty: before the selection,
+        // inside it, after it.
+        for (from, to, colour) in [
+            (start, end.min(range.start), colour),
+            (start.max(range.start), end.min(range.end), Some(ink)),
+            (start.max(range.end), end, colour),
+        ] {
+            if to > from {
+                match out.last_mut() {
+                    Some((last_len, last_ink)) if *last_ink == colour => *last_len += to - from,
+                    _ => out.push((to - from, colour)),
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The byte offset of character `index`, or the string's length past its end.
+fn char_to_byte(text: &str, index: usize) -> usize {
+    text.char_indices()
+        .nth(index)
+        .map_or(text.len(), |(byte, _)| byte)
+}
+
+/// The character index of byte offset `at`, clamped to the string.
+fn byte_to_char(text: &str, at: usize) -> usize {
+    text[..at.min(text.len())].chars().count()
+}
+
 /// The egui wrapping parameters for a Petra text request.
 fn wrapping(req: &TextRequest<'_>) -> (usize, bool, Option<char>) {
     match req.wrap {
@@ -690,6 +832,124 @@ mod tests {
             max_lines: None,
             available_width: width,
         }
+    }
+
+    /// The hit test answers a byte offset, and answers it in bytes.
+    ///
+    /// egui counts characters and `str` slices by bytes, and the two are the
+    /// same number only until the first multi-byte character. The emoji here
+    /// is not decoration: with the conversion missing, a click past it hands
+    /// back a char index that either slices inside a code point (a panic) or
+    /// names the wrong glyph, and every ASCII test in this file would still
+    /// pass.
+    #[test]
+    fn the_hit_test_answers_a_byte_offset_and_not_a_char_index() {
+        let h = Headless::new();
+        let mut shaper = h.shaper();
+        let text = "aé😀bc";
+        let galley = shaper.galley(&req(text, None, TextWrap::Clip));
+
+        // Left of everything is the start; far right of everything is the end.
+        assert_eq!(
+            super::byte_offset_at(&galley, egui::vec2(-100.0, 8.0)),
+            0,
+            "a position left of the run is not the start of it"
+        );
+        let end = super::byte_offset_at(&galley, egui::vec2(10_000.0, 8.0));
+        assert_eq!(end, text.len(), "a position past the run is not its end");
+
+        // Every answer is a real char boundary, which is the whole point.
+        let width = galley.rect.width();
+        for step in 0..=20 {
+            #[allow(clippy::cast_precision_loss)]
+            let x = width * step as f32 / 20.0;
+            let at = super::byte_offset_at(&galley, egui::vec2(x, 8.0));
+            assert!(
+                text.is_char_boundary(at),
+                "offset {at} at x={x} is inside a code point of {text:?}"
+            );
+        }
+
+        // And it is monotonic left to right, which a char index read as a
+        // byte offset stops being at the first wide character.
+        let mut last = 0;
+        for step in 0..=20 {
+            #[allow(clippy::cast_precision_loss)]
+            let x = width * step as f32 / 20.0;
+            let at = super::byte_offset_at(&galley, egui::vec2(x, 8.0));
+            assert!(at >= last, "the offset went backwards: {last} then {at}");
+            last = at;
+        }
+    }
+
+    /// A range crossing a line break is one rectangle per row, not one box.
+    ///
+    /// One box from the first character to the last would cover the whole
+    /// right margin of the first row and the whole left margin of the second,
+    /// which is a highlight over text nobody selected.
+    #[test]
+    fn a_selection_across_rows_is_one_rectangle_per_row() {
+        let h = Headless::new();
+        let mut shaper = h.shaper();
+        let text = "alpha\nbeta\ngamma";
+        let galley = shaper.galley(&req(text, None, TextWrap::Wrap));
+
+        // "pha\nbeta\nga" — part of the first row, all of the second, part of
+        // the third.
+        let rects = super::selection_rects(&galley, &(2..12));
+        assert_eq!(rects.len(), 3, "expected one band per row, got {rects:?}");
+        assert!(
+            rects[0].min.x > rects[1].min.x,
+            "the first row's band must start where the selection did, not at \
+             the left margin: {rects:?}"
+        );
+        assert!(
+            rects[2].max.x < rects[1].max.x,
+            "the last row's band must stop where the selection did: {rects:?}"
+        );
+        // Each band sits on its own row, top to bottom.
+        assert!(rects[0].max.y <= rects[1].min.y + 0.01);
+        assert!(rects[1].max.y <= rects[2].min.y + 0.01);
+
+        assert!(
+            super::selection_rects(&galley, &(4..4)).is_empty(),
+            "an empty range is not a picture"
+        );
+    }
+
+    /// Splitting the run list forces the selected stretch's ink and tiles the
+    /// same string.
+    ///
+    /// The tiling is what tree acceptance guarantees for an authored run list
+    /// and what nothing guarantees for one this function builds, so it is
+    /// checked here: a split that lost or duplicated a byte would shape a
+    /// different string from the one that was measured.
+    #[test]
+    fn splitting_a_run_list_for_a_selection_keeps_it_tiling() {
+        let ink = Color32::from_rgb(1, 2, 3);
+        let blue = Color32::from_rgb(0, 0, 255);
+        let runs = vec![(4, Some(blue)), (6, None)];
+
+        let split = super::runs_with_selection(&runs, 10, &(2..7), ink);
+        assert_eq!(split.iter().map(|(len, _)| *len).sum::<usize>(), 10);
+        assert_eq!(
+            split,
+            vec![(2, Some(blue)), (5, Some(ink)), (3, None)],
+            "the selected stretch takes the selection's ink and the rest keeps its own"
+        );
+
+        // A node with no runs of its own still gets one to split, or the
+        // whole string would keep the node's `foreground` and the highlight
+        // would sit under unchanged ink.
+        assert_eq!(
+            super::runs_with_selection(&[], 10, &(2..7), ink),
+            vec![(2, None), (5, Some(ink)), (3, None)]
+        );
+
+        // Neighbours with the same ink merge, so a selection covering two
+        // runs of one colour does not lengthen the list for nothing.
+        let merged = super::runs_with_selection(&[(4, None), (6, None)], 10, &(0..10), ink);
+        assert_eq!(merged, vec![(10, Some(ink))]);
     }
 
     /// The claim the whole colour-run design rests on: **colour is not a
