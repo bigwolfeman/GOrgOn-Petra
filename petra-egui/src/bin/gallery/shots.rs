@@ -1329,6 +1329,123 @@ mod tests {
         );
     }
 
+    // ===== Wave R6: loading, progress and notification =====
+
+    /// The pixels inside `rect` (logical units) of a captured page, at the
+    /// camera's device scale, so two frames can be compared on one control
+    /// and not on the whole window.
+    fn pixels_in(png: &[u8], rect: Rect) -> Vec<u8> {
+        let image = image::load_from_memory(png)
+            .expect("a shot is a PNG")
+            .to_rgba8();
+        let scale = super::CAPTURE_SCALE;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let (x, y, w, h) = (
+            (rect.x * scale).floor() as u32,
+            (rect.y * scale).floor() as u32,
+            (rect.w * scale).ceil() as u32,
+            (rect.h * scale).ceil() as u32,
+        );
+        image::imageops::crop_imm(&image, x, y, w, h)
+            .to_image()
+            .into_raw()
+    }
+
+    /// Rows 17 and 14. A spinner is motion, and a resting photograph of one
+    /// proves nothing — the round-1 page was two still rings under a green
+    /// suite. So this photographs two frames of each spinner and asserts
+    /// the spinner's own pixels changed between them, and photographs two
+    /// frames of a still control and asserts its pixels did not. Every
+    /// camera pass advances egui's clock by one sixtieth of a second, so
+    /// the two frames are a known fraction of the 690 ms turn apart.
+    ///
+    /// The frame's own motion count is asserted too: the host keeps asking
+    /// for frames only while `transitions.ambient` is non-zero, so a
+    /// spinner that turned under the camera but declared nothing would
+    /// freeze on an idle window.
+    #[test]
+    fn the_loading_spinners_turn_between_frames_and_a_still_control_does_not() {
+        let mut cam = Camera::on("Loading");
+        let large = cam.rect("sizes/load-lg");
+        let small = cam.rect("sizes/load-sm");
+        let first = cam.shoot("17-loading");
+        for _ in 0..4 {
+            cam.shoot("_scratch");
+        }
+        let later = cam.shoot("17-loading-later");
+        assert_ne!(
+            pixels_in(&first, large),
+            pixels_in(&later, large),
+            "five sixtieths of a second later the large spinner has not moved a pixel"
+        );
+        assert_ne!(
+            pixels_in(&first, small),
+            pixels_in(&later, small),
+            "five sixtieths of a second later the small spinner has not moved a pixel"
+        );
+        assert_eq!(
+            cam.frame().transitions.ambient,
+            2,
+            "both spinners must declare ambient, or the host stops scheduling frames"
+        );
+
+        let mut cam = Camera::on("Inline loading");
+        let mark = cam.rect("il-on/mark");
+        let first = cam.shoot("14-inline-loading");
+        for _ in 0..4 {
+            cam.shoot("_scratch");
+        }
+        let later = cam.shoot("14-inline-loading-later");
+        assert_ne!(
+            pixels_in(&first, mark),
+            pixels_in(&later, mark),
+            "the inline spinner has not moved a pixel"
+        );
+        assert_eq!(cam.frame().transitions.ambient, 1);
+
+        // The control: a still page's control is byte-identical across the
+        // same interval, so the difference above is the spinner and not
+        // the camera.
+        let mut cam = Camera::on("Progress indicator");
+        let steps = cam.rect("pi/pi");
+        let first = cam.shoot("26-progress-indicator");
+        for _ in 0..4 {
+            cam.shoot("_scratch");
+        }
+        let later = cam.shoot("_scratch");
+        assert_eq!(
+            pixels_in(&first, steps),
+            pixels_in(&later, steps),
+            "a still progress indicator changed between two frames"
+        );
+        assert_eq!(cam.frame().transitions.ambient, 0);
+    }
+
+    /// Row 21, the operator's decision made twice: no rail, text centred.
+    /// Asserted on the placed frame — the card's leftmost child is the
+    /// title's column and not a 3-unit bar, and the title's centre is the
+    /// card's centre — and photographed.
+    #[test]
+    fn the_notification_card_has_no_rail_and_its_text_is_centred() {
+        let mut cam = Camera::on("Notification");
+        cam.shoot("21-notification");
+        assert!(!cam.has("nt/panel/rail"), "the accent rail is still placed");
+        let panel = cam.rect("nt/panel");
+        let title = cam.rect("panel/title");
+        let body = cam.rect("panel/body");
+        for (name, line) in [("title", title), ("body", body)] {
+            let off = (line.x + line.w / 2.0) - (panel.x + panel.w / 2.0);
+            assert!(
+                off.abs() <= 0.5,
+                "the {name} is {off} off the card's centre: {line:?} in {panel:?}"
+            );
+        }
+        assert!(
+            (panel.w - 288.0).abs() < 0.5,
+            "Carbon's toast is 288 wide, got {panel:?}"
+        );
+    }
+
     /// Clicking a text field puts the caret in it.
     ///
     /// The live path, which `typing_into_a_text_field_changes_what_the_page_

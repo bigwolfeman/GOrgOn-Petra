@@ -5,27 +5,41 @@ use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::ViewNode;
 
 use super::Page;
-use super::common::{body, sp};
+use super::common::{body, row, sp};
 
-/// The Loading page. It holds no live state.
-pub struct Loading;
+/// The Loading page. Its only state is the host's clock, which the two
+/// spinners turn on.
+#[derive(Default)]
+pub struct Loading {
+    now: f64,
+}
 
 impl Page for Loading {
     fn row(&self) -> &'static str {
         "Loading"
     }
 
+    fn tick(&mut self, now: f64) {
+        self.now = now;
+    }
+
     fn body(&self) -> ViewNode {
+        // Large and small side by side, centred on each other, as the
+        // Carbon reference page lays them out (`17-loading.png`).
         section(
             "spinner",
             "Loading",
             vec![body(
                 "load",
                 sp("spacing.md"),
-                vec![
-                    loading("load-lg", "Working"),
-                    loading_sm("load-sm", "Working"),
-                ],
+                vec![row(
+                    "sizes",
+                    sp("spacing-05"),
+                    vec![
+                        loading("load-lg", "Working", self.now),
+                        loading_sm("load-sm", "Working", self.now),
+                    ],
+                )],
             )],
         )
     }

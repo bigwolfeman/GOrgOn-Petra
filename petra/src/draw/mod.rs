@@ -48,6 +48,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::geom::{Point, Rect, Size};
 
+mod arc;
+
+pub use arc::arc_verbs;
+
 /// The wire version of the command set.
 ///
 /// A list that names any other version is refused whole. Growing the set — a
@@ -306,7 +310,7 @@ impl Fit {
 /// No arc verb: `epaint` has no arc shape, so an arc would have to be
 /// converted to cubics somewhere, and doing it at authoring time keeps the
 /// verb count — which [`MAX_DRAW_PATH_VERBS`] bounds — a number the author
-/// can see (§2).
+/// can see (§2). [`arc_verbs`] is that conversion.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub enum PathVerb {
@@ -440,13 +444,22 @@ pub enum Command {
         paint: Paint,
     },
     /// An axis-aligned ellipse.
+    ///
+    /// A stroke is **centred on the radii**, half inside and half outside,
+    /// as an SVG `<circle>` strokes — the convention every Carbon radius and
+    /// stroke width in this crate was measured in. `epaint`'s own ellipse
+    /// strokes outside its radius, and a 10-unit track drawn that way at
+    /// radius 39 ran to 49, past its 44-unit canvas, and was clipped into
+    /// the octagon the operator saw on the loading page. The interpreter
+    /// tessellates the ellipse itself and strokes the centreline.
     Ellipse {
         /// Centre, canvas-local logical units.
         center: Point,
-        /// Half-extents on the two axes. A [`Size`] rather than a fresh
-        /// two-float type: a pair of non-negative extents is exactly what
-        /// `Size` already is, and a fourth two-float struct in this crate
-        /// would be one more thing for a serializer to get subtly different.
+        /// Half-extents on the two axes, to the stroke's centreline. A
+        /// [`Size`] rather than a fresh two-float type: a pair of
+        /// non-negative extents is exactly what `Size` already is, and a
+        /// fourth two-float struct in this crate would be one more thing for
+        /// a serializer to get subtly different.
         radii: Size,
         /// Fill and stroke.
         paint: Paint,

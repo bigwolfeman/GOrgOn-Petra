@@ -101,6 +101,23 @@ pub fn petra_layer() -> LayerId {
 /// is drained by the frame that consumes it, so an application that reports
 /// the same change twice pays twice, not that it goes unnoticed.
 pub trait App: RowSource {
+    /// The host's clock for the pass about to build a view, in seconds.
+    ///
+    /// The same `egui::InputState::time` the transition scheduler advances
+    /// on, handed to the application before [`App::view`] on every pass
+    /// that builds one. An application whose picture is a function of time
+    /// — a spinner, a live plot — reads its phase from here and rebuilds
+    /// the canvas that draws it, which is `contracts/draw-list.md` §8's rule
+    /// for such a canvas: resubmit a new list each frame and declare
+    /// `ambient`. No other clock reaches an application: an `Instant` read
+    /// inside `view` would make two hosts disagree about when now is, and a
+    /// driver could not step it.
+    ///
+    /// The default ignores the clock, for every application that draws
+    /// nothing time-dependent.
+    fn tick(&mut self, now: f64) {
+        let _ = now;
+    }
     /// The view tree for this frame.
     fn view(&mut self) -> ViewNode;
     /// Handle one routed input event.
@@ -897,6 +914,9 @@ impl<A: App> Host<A> {
         // to either invalidates wholesale; content changes are the
         // application's change set, applied here so no host wiring can skip
         // the ancestor walk it requires.
+        // The clock goes to the application before its change set is read,
+        // so a view that depends on the clock can name what the clock moved.
+        self.app.tick(ctx.input(|input| input.time));
         self.cache
             .retain_theme_and_scale(viewport.theme_rev, viewport.scale);
         self.cache.apply(&self.app.take_changes());

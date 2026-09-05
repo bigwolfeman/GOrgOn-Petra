@@ -1,28 +1,42 @@
 //! Carbon Notification (slice-c). Status colours stay Petra's.
 //!
-//! Anatomy (`_toast-notification.scss` / `_inline-notification.scss`):
-//! 1. Accent rail — 3px [`ACCENT_PRIMARY`] bar. Chrome, not meaning.
-//! 2. Title — the required name (and the non-colour channel).
-//! 3. Body — the message.
-//! 4. Optional action — a [`Role::Button`] with a label.
+//! Anatomy (`_toast-notification.scss` / `_inline-notification.scss`), as
+//! this library draws it:
+//! 1. Title — the required name (and the non-colour channel),
+//!    `heading-compact-01`.
+//! 2. Body — the message, `body-compact-01`.
+//! 3. Optional action — a [`Role::Button`] with a label.
+//!
+//! Title and body are centred in the card, on both axes.
+//!
+//! # No rail
+//!
+//! Carbon draws a `border-left: 3px` in the status colour. This library
+//! drew that rail in the accent, and the operator asked twice for it to go
+//! (`.agents/carbon-waves/ROUND2-DEFECTS.md`, "Decisions the operator has
+//! now made twice": *"remove the handle, center the text"*). It is gone.
+//! Nothing here depends on it: this constructor has no status kind, so
+//! there is no state the rail was the channel for. If a status kind is
+//! added, Carbon's channel for it is the leading status glyph
+//! (`InformationFilled`, `CheckmarkFilled`, `WarningFilled`,
+//! `ErrorFilled`), and [`super::IconMark`] has none of the four yet.
 //!
 //! Carbon's alert palette (`$notification-background-error` / success
 //! green / warning yellow) is **not** used. Those names are not in
 //! [`super::tokens`], and painting red/green would fail FR-015 for a
-//! red-green colourblind operator. Meaning lives in the title and body;
-//! the rail spends Petra's accent, the same hue [`super::primary_button`]
-//! already spends. [`crate::token::StatusToken`] is not assembled here:
-//! this constructor has no kind to pair with a shape.
+//! red-green colourblind operator. Meaning lives in the title and body.
+//! [`crate::token::StatusToken`] is not assembled here: this constructor
+//! has no kind to pair with a shape.
 //!
 //! [`notification`] / [`notification_toast`] are a [`Role::Toast`]
 //! surface. [`notification_inline`] is in-flow [`Role::Status`].
 
 use super::pad;
 use super::stack;
-use super::text::{heading, text};
+use super::text::text;
 use super::tokens::{
-    ACCENT_PRIMARY, LAYER_HOVER, SHADOW_RAISED, SHAPE_SM, SPACING_03, SPACING_04, SPACING_05,
-    SURFACE_RAISED, TEXT_PRIMARY, t,
+    LAYER_HOVER, SHADOW_RAISED, SHAPE_SM, SPACING_03, SPACING_04, SPACING_05, SURFACE_RAISED,
+    TEXT_PRIMARY, TYPOGRAPHY_HEADING_SM, t,
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
@@ -34,12 +48,9 @@ use crate::tree::{
 const TOAST_INLINE: f32 = 288.0;
 /// Carbon inline/actionable `min-block-size` (`3rem`).
 const INLINE_MIN_BLOCK: f32 = 48.0;
-/// Carbon `border-left` on every form.
-const RAIL: f32 = 3.0;
 
 const _: () = assert!(TOAST_INLINE == 288.0);
 const _: () = assert!(INLINE_MIN_BLOCK == 48.0);
-const _: () = assert!(RAIL == 3.0);
 
 const ACTION_INTENTS: &[Interaction] =
     &[Interaction::Focus, Interaction::Click, Interaction::Hover];
@@ -124,48 +135,31 @@ fn toast_surface(
     node
 }
 
+/// The card: title over body over any extras, every line centred, on the
+/// raised surface with its shadow.
 fn chrome(
     key: impl Into<Key>,
     title: String,
     body: impl Into<String>,
     extras: Vec<ViewNode>,
 ) -> ViewNode {
-    let mut rail = stack("rail", Axis::Vertical, None, vec![]);
-    rail.props
-        .tokens
-        .insert("background".into(), t(ACCENT_PRIMARY));
-    rail.constraints.horizontal = AxisConstraint {
-        min: Some(RAIL),
-        max: Some(RAIL),
-        priority: 0,
-    };
-
-    let mut copy = vec![heading("title", title), text("body", body.into())];
+    let mut heading = text("title", title);
+    heading.props.style = Some(t(TYPOGRAPHY_HEADING_SM));
+    let mut copy = vec![heading, text("body", body.into())];
     copy.extend(extras);
-    let mut details = stack("details", Axis::Vertical, Some(SPACING_03), copy);
-    details.props.padding = Some(pad(SPACING_05, SPACING_04));
-
-    let mut node = stack(key, Axis::Horizontal, None, vec![rail, details]);
-    // Cross-axis stretch, not `Align::Start`: `rail` is a childless swatch
-    // with no intrinsic content of its own, the same shape as the Accordion
-    // item divider (`accordion.rs`'s own module doc). Under `Align::Start`
-    // it petrified at a **0px height** — declared paint content
-    // (`background: accent.primary`) covering zero pixels, invisible even
-    // though every `ViewNode`-level check (which never looks at a placed
-    // rect) passed. `Align::Stretch` matches it to `details`'s full height,
-    // the same fix `accordion_item_sized` applies to its own divider.
-    node.props.align = Some(Align::Stretch);
+    let mut node = stack(key, Axis::Vertical, Some(SPACING_03), copy);
+    // Cross-axis centre: each line sits in the middle of the card's width.
+    // The padding is symmetric, so the block is centred top to bottom too.
+    node.props.align = Some(Align::Center);
+    node.props.padding = Some(pad(SPACING_05, SPACING_04));
     node.props
         .tokens
         .insert("background".into(), t(SURFACE_RAISED));
     // No `border` token: neither `_toast-notification.scss` nor
     // `_inline-notification.scss` (per the slice-c ground truth) documents
-    // anything but the `border-left: 3px` accent rail, already drawn above
-    // by `rail`'s own coloured bar. A full `border.subtle` outline around
-    // the card is decoration Carbon does not spec, the same class as
-    // `file_uploader_item`'s spurious border (T070: SCSS wins). The card is
-    // a container, not a control, so it takes a tone (`SURFACE_RAISED`) and
-    // `SHADOW_RAISED` below, not an edge.
+    // any edge but the `border-left: 3px` rail, and the rail is gone by the
+    // operator's decision. The card is a container, not a control, so it
+    // takes a tone (`SURFACE_RAISED`) and `SHADOW_RAISED`, not an edge.
     node.props.tokens.insert("radius".into(), t(SHAPE_SM));
     node.props.tokens.insert("shadow".into(), t(SHADOW_RAISED));
     node
@@ -197,13 +191,13 @@ fn action_button(key: impl Into<Key>, label: String) -> ViewNode {
 #[cfg(test)]
 mod tests {
     use super::{
-        ACCENT_PRIMARY, INLINE_MIN_BLOCK, RAIL, TOAST_INLINE, notification,
-        notification_actionable, notification_inline, notification_toast,
+        INLINE_MIN_BLOCK, TOAST_INLINE, notification, notification_actionable, notification_inline,
+        notification_toast,
     };
     use crate::component::disabled;
-    use crate::component::tokens::{LAYER_HOVER, SURFACE_RAISED};
+    use crate::component::tokens::{LAYER_HOVER, SURFACE_RAISED, TYPOGRAPHY_HEADING_SM};
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
-    use crate::geom::{Axis, Size};
+    use crate::geom::{Align, Axis, Size};
     use crate::testing::{Harness, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
     use crate::tree::{InputPolicy, Interaction, Layer, NodeKind, Props, Registry, Role, ViewNode};
@@ -216,14 +210,15 @@ mod tests {
             .unwrap_or_else(|| panic!("missing child {key}"))
     }
 
-    fn descendant<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
-        fn walk<'a>(node: &'a ViewNode, key: &str) -> Option<&'a ViewNode> {
-            if node.key.as_str() == key {
-                return Some(node);
-            }
-            node.children.iter().find_map(|c| walk(c, key))
+    fn descendant<'a>(node: &'a ViewNode, key: &str) -> Option<&'a ViewNode> {
+        if node.key.as_str() == key {
+            return Some(node);
         }
-        walk(node, key).unwrap_or_else(|| panic!("missing descendant {key}"))
+        node.children.iter().find_map(|c| descendant(c, key))
+    }
+
+    fn found<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
+        descendant(node, key).unwrap_or_else(|| panic!("missing descendant {key}"))
     }
 
     fn token<'a>(node: &'a ViewNode, slot: &str) -> Option<&'a str> {
@@ -246,11 +241,11 @@ mod tests {
         assert_eq!(node.constraints.horizontal.max, Some(TOAST_INLINE));
         assert_eq!(TOAST_INLINE, 288.0);
         assert_eq!(
-            descendant(&node, "title").props.text.as_deref(),
+            found(&node, "title").props.text.as_deref(),
             Some("Supervisor restarted")
         );
         assert_eq!(
-            descendant(&node, "body").props.text.as_deref(),
+            found(&node, "body").props.text.as_deref(),
             Some("Worker 3 came back.")
         );
     }
@@ -273,21 +268,61 @@ mod tests {
         assert_eq!(node.constraints.vertical.min, Some(INLINE_MIN_BLOCK));
         assert_eq!(INLINE_MIN_BLOCK, 48.0);
         assert_eq!(
-            descendant(&node, "title").props.text.as_deref(),
+            found(&node, "title").props.text.as_deref(),
             Some("Disk filling")
         );
+    }
+
+    /// Row 21, the operator's decision made twice: no rail, and the text
+    /// centred. The card is one vertical stack of title over body with the
+    /// cross axis centred, so there is no column beside the text for a rail
+    /// to have lived in.
+    #[test]
+    fn the_card_has_no_rail_and_centres_its_text() {
+        for node in [
+            notification("restart", "Supervisor restarted", "Worker 3 came back."),
+            notification_inline("warn", "Disk filling", "Trace volume is at 80%."),
+            notification_actionable("act", "Update available", "A new build is ready.", "Reload"),
+        ] {
+            assert!(
+                descendant(&node, "rail").is_none(),
+                "the accent rail was removed by the operator's decision"
+            );
+            let card = if node.kind == NodeKind::Surface {
+                child(&node, "panel")
+            } else {
+                &node
+            };
+            assert_eq!(card.props.axis, Some(Axis::Vertical));
+            assert_eq!(
+                card.props.align,
+                Some(Align::Center),
+                "title and body sit in the middle of the card"
+            );
+            assert_eq!(card.children[0].key.as_str(), "title");
+            assert_eq!(card.children[1].key.as_str(), "body");
+            assert_eq!(
+                found(&node, "title")
+                    .props
+                    .style
+                    .as_ref()
+                    .map(|s| s.as_str()),
+                Some(TYPOGRAPHY_HEADING_SM),
+                "Carbon's title is heading-compact-01, not the page heading"
+            );
+            assert!(
+                !card.props.tokens.contains_key("border"),
+                "no outline: Carbon specs none past the rail"
+            );
+        }
     }
 
     #[test]
     fn notification_does_not_paint_carbon_alert_red_or_green() {
         let node = notification("restart", "Supervisor restarted", "Worker 3 came back.");
-        let rail = descendant(&node, "rail");
-        assert_eq!(token(rail, "background"), Some(ACCENT_PRIMARY));
-        assert_eq!(rail.constraints.horizontal.max, Some(RAIL));
-        assert_eq!(RAIL, 3.0);
         assert!(
-            descendant(&node, "title").props.text.is_some(),
-            "title is the non-colour channel; the rail is chrome"
+            found(&node, "title").props.text.is_some(),
+            "title is the non-colour channel"
         );
         let slots: Vec<&str> = node
             .props
@@ -319,7 +354,7 @@ mod tests {
             "Open",
         );
         assert_eq!(node.semantics.role, Some(Role::Toast));
-        let action = descendant(&node, "action");
+        let action = found(&node, "action");
         assert_eq!(action.semantics.role, Some(Role::Button));
         assert_eq!(action.semantics.label.as_deref(), Some("Open"));
         assert_eq!(child(action, "label").props.text.as_deref(), Some("Open"));
@@ -398,14 +433,35 @@ mod tests {
     }
 
     /// Check C/D: toast, inline, and actionable forms all place with real
-    /// rects, none of their parts outside their parent.
+    /// rects, none of their parts outside their parent — and the placed
+    /// title's centre is the card's centre, which is the operator's ask
+    /// measured on the frame rather than read off a flag.
     #[test]
     fn frame_geometry_has_no_degenerate_or_overflowing_placements() {
-        check_geometry(&petrify_lone(notification_toast(
+        let frame = petrify_lone(notification_toast(
             "restart",
             "Supervisor restarted",
             "Worker 3 came back.",
-        )));
+        ));
+        check_geometry(&frame);
+        let rect = |suffix: &str| {
+            frame
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with(suffix))
+                .unwrap_or_else(|| panic!("no placement ending in {suffix}"))
+                .rect
+        };
+        let panel = rect("/panel");
+        assert_eq!(panel.w, TOAST_INLINE, "the card fills the toast's 288");
+        for key in ["/title", "/body"] {
+            let line = rect(key);
+            let off = (line.x + line.w / 2.0) - (panel.x + panel.w / 2.0);
+            assert!(
+                off.abs() <= 0.5,
+                "{key} centre is {off} off the card's centre: {line:?} in {panel:?}"
+            );
+        }
         check_geometry(&petrify_lone(notification_inline(
             "warn",
             "Disk filling",
@@ -430,8 +486,8 @@ mod tests {
         // inside `chrome`). Reusing "action" for the surface key, as an
         // earlier draft of this test did, makes `ends_with("/action")`
         // match the surface placement (`/root/action`) before the nested
-        // button (`/root/action/panel/details/action`) — both end with
-        // `/action` — so the button never gets checked at all.
+        // button (`/root/action/panel/action`) — both end with `/action` —
+        // so the button never gets checked at all.
         let frame = petrify_lone(notification_actionable(
             "toast",
             "Update available",
@@ -446,7 +502,7 @@ mod tests {
         let action = frame
             .placements
             .iter()
-            .find(|p| p.id.ends_with("/details/action"))
+            .find(|p| p.id.ends_with("/panel/action"))
             .expect("the action button is placed");
         assert!(
             order.iter().any(|o| o == &action.id),
@@ -467,7 +523,7 @@ mod tests {
         let disabled_action = disabled_frame
             .placements
             .iter()
-            .find(|p| p.id.ends_with("/details/action"))
+            .find(|p| p.id.ends_with("/panel/action"))
             .expect("the disabled action button is placed");
         assert!(
             !disabled_order.iter().any(|o| o == &disabled_action.id),
@@ -476,9 +532,7 @@ mod tests {
     }
 
     /// Check E: title, body and the action label against the card's own
-    /// fill (`chrome` binds `SURFACE_RAISED`; `rail` and `details` bind no
-    /// background of their own, so text under them inherits it), in both
-    /// themes.
+    /// fill (`chrome` binds `SURFACE_RAISED`), in both themes.
     #[test]
     fn card_text_clears_aa_contrast_against_its_own_fill() {
         const MIN_TEXT_CONTRAST: f32 = 4.5;

@@ -44,8 +44,12 @@
 
 use std::sync::Arc;
 
-use super::tokens::{ICON_DISABLED, ICON_PRIMARY, ICON_SECONDARY, TEXT_ON_ACCENT, t};
-use crate::draw::{ColorRef, Command, Corners, DrawList, Paint, PathVerb, Stroke, Width};
+use super::tokens::{
+    ACCENT_PRIMARY, ICON_DISABLED, ICON_PRIMARY, ICON_SECONDARY, TEXT_ON_ACCENT, t,
+};
+use crate::draw::{
+    ColorRef, Command, Corners, DrawList, Paint, PathVerb, Stroke, Width, arc_verbs,
+};
 use crate::geom::{Point, Rect, Size};
 use crate::tree::{AxisConstraint, Constraints, Key, NodeKind, Props, ViewNode};
 
@@ -206,6 +210,33 @@ pub enum IconMark {
     /// viewBox `0 0 32 32`: `M12 8L22 16 12 24z`. [`IconMark::CaretLeft`]
     /// mirrored.
     CaretRight,
+    /// Carbon `CheckmarkOutline` (a complete progress-indicator step).
+    ///
+    /// Source paths, viewBox `0 0 32 32`:
+    /// `M16,2A14,14,0,1,0,30,16,14,14,0,0,0,16,2Zm0,26A12,12,0,1,1,28,16,12,12,0,0,1,16,28Z`
+    /// and `M14 21.414L9 16.413 10.413 15 14 18.586 21.585 11 23 12.415 14 21.414z`.
+    /// The ring, 14 outside and 12 inside, is one stroked ellipse down the
+    /// centre of the band; the check is the same thick chevron as
+    /// [`IconMark::Check`], split into two convex quads.
+    CheckmarkOutline,
+    /// Carbon `CircleDash` (a not-started progress-indicator step).
+    ///
+    /// Source path, viewBox `0 0 32 32`: ten dashes, each an 18° arc of the
+    /// band between radius 12 and 14, on a 36° pitch starting at three
+    /// o'clock — `M27.4 19.7l1.9.6A15.47 15.47 0 0030 16H28A11.48 11.48 0
+    /// 0127.4 19.7z` is the first, and the other nine follow round the
+    /// circle. Each dash is one stroked arc down the centre of the band.
+    CircleDash,
+    /// Carbon `Incomplete` (the current progress-indicator step).
+    ///
+    /// Source path, viewBox `0 0 32 32`: `M16 30V2a14 14 0 000 28z` is the
+    /// solid left half; `M23.7642 6.8593l1.2851-1.5315A13.976 13.976 0
+    /// 0020.8672 2.887l-.6836 1.8776A11.9729 11.9729 0 0123.7642 6.8593z`
+    /// and three more like it are four 20° dashes of the band on a 40°
+    /// pitch, symmetric about three o'clock, so the gap sits at three
+    /// o'clock. The half disc is one closed path of two quarter arcs; the
+    /// dashes are stroked arcs.
+    Incomplete,
 }
 
 /// The box a mark is drawn in: which of Carbon's two glyph sizes.
@@ -240,6 +271,10 @@ pub enum IconTone {
     /// only thing in an icon button, so a caret drawn at the live tone would
     /// leave a disabled button indistinguishable from a live one.
     Disabled,
+    /// `accent.primary`: the mark sits on a layer and **is** the accent —
+    /// Carbon's `fill: $interactive` on a complete or current progress step
+    /// (`_progress-indicator.scss`, `.cds--progress-step svg`).
+    Accent,
 }
 
 impl IconTone {
@@ -249,6 +284,7 @@ impl IconTone {
             Self::Primary => ICON_PRIMARY,
             Self::Secondary => ICON_SECONDARY,
             Self::Disabled => ICON_DISABLED,
+            Self::Accent => ACCENT_PRIMARY,
         }
     }
 }
@@ -333,6 +369,9 @@ fn draw_list(mark: IconMark, boxed: IconBox, tone: IconTone) -> DrawList {
         IconMark::Switcher => switcher(size / 32.0, color),
         IconMark::CaretLeft => caret_left(size / 32.0, color),
         IconMark::CaretRight => caret_right(size / 32.0, color),
+        IconMark::CheckmarkOutline => checkmark_outline(size / 32.0, color),
+        IconMark::CircleDash => circle_dash(size / 32.0, color),
+        IconMark::Incomplete => incomplete(size / 32.0, color),
     };
     DrawList::new(commands).unwrap_or_else(|err| panic!("{mark:?} draw list refused: {err}"))
 }
@@ -772,6 +811,89 @@ fn caret_right(s: f32, color: ColorRef) -> Vec<Command> {
     )]
 }
 
+/// The three step glyphs share one circle: Carbon's band runs from radius
+/// 12 to 14 in the 32 viewBox, so its centreline is 13 and it is 2 wide.
+const STEP_RING_RADIUS: f32 = 13.0;
+const STEP_RING_BAND: f32 = 2.0;
+/// Where the step glyphs' circle sits: the viewBox centre.
+const STEP_CENTER: Point = Point { x: 16.0, y: 16.0 };
+
+/// One dash of a step ring: the band's centreline from `from` degrees
+/// through `sweep` degrees, clockwise on screen from three o'clock.
+fn ring_dash(from: f32, sweep: f32, s: f32, color: ColorRef) -> Command {
+    Command::Path {
+        verbs: arc_verbs(
+            scaled(STEP_CENTER, s),
+            STEP_RING_RADIUS * s,
+            from.to_radians(),
+            sweep.to_radians(),
+        ),
+        closed: false,
+        paint: Paint::stroked(Stroke {
+            width: Width::Logical(STEP_RING_BAND * s),
+            color,
+        }),
+    }
+}
+
+fn checkmark_outline(s: f32, color: ColorRef) -> Vec<Command> {
+    let paint = Paint::filled(color.clone());
+    // Vertex letters as in `check_mark`: A inner V, B inner top of the
+    // long arm, C outer top, D bottom tip, E outer left of the short arm,
+    // F inner left.
+    let a = pt(14.0, 18.586);
+    let b = pt(21.585, 11.0);
+    let c = pt(23.0, 12.415);
+    let d = pt(14.0, 21.414);
+    let e = pt(9.0, 16.413);
+    let f = pt(10.413, 15.0);
+    vec![
+        Command::Ellipse {
+            center: scaled(STEP_CENTER, s),
+            radii: Size::new(STEP_RING_RADIUS * s, STEP_RING_RADIUS * s),
+            paint: Paint::stroked(Stroke {
+                width: Width::Logical(STEP_RING_BAND * s),
+                color,
+            }),
+        },
+        filled_quad([a, b, c, d], s, paint.clone()),
+        filled_quad([a, d, e, f], s, paint),
+    ]
+}
+
+fn circle_dash(s: f32, color: ColorRef) -> Vec<Command> {
+    // Ten 18° dashes on a 36° pitch, the first starting at three o'clock.
+    (0..10)
+        .map(|k| ring_dash(36.0 * k as f32, 18.0, s, color.clone()))
+        .collect()
+}
+
+fn incomplete(s: f32, color: ColorRef) -> Vec<Command> {
+    // The solid left half: from twelve o'clock, anticlockwise on screen
+    // through nine o'clock to six o'clock, closed on the vertical chord.
+    // `arc_verbs`' control points sit 1.14 r out, so at r = 14 the box edge
+    // at 16 is cleared by 0.02 of a viewBox unit.
+    let half = Command::Path {
+        verbs: arc_verbs(
+            scaled(STEP_CENTER, s),
+            14.0 * s,
+            (-90.0_f32).to_radians(),
+            (-180.0_f32).to_radians(),
+        ),
+        closed: true,
+        paint: Paint::filled(color.clone()),
+    };
+    // Four 20° dashes on a 40° pitch, symmetric about three o'clock: the
+    // gap straddles three o'clock, as Carbon's does.
+    let mut commands = vec![half];
+    commands.extend(
+        [10.0, 50.0, -30.0, -70.0]
+            .into_iter()
+            .map(|from| ring_dash(from, 20.0, s, color.clone())),
+    );
+    commands
+}
+
 fn pt(x: f32, y: f32) -> Point {
     Point::new(x, y)
 }
@@ -823,13 +945,18 @@ fn snapped_bar(x0: f32, y0: f32, x1: f32, y1: f32, s: f32, paint: Paint) -> Comm
 #[cfg(test)]
 mod tests {
     use super::{CHECK_BOX, GLYPH_BOX, HEADER_BOX, IconBox, IconMark, IconTone, icon, icon_in};
-    use crate::component::tokens::{ICON_DISABLED, ICON_PRIMARY, ICON_SECONDARY, TEXT_ON_ACCENT};
+    use crate::component::tokens::{
+        ACCENT_PRIMARY, ICON_DISABLED, ICON_PRIMARY, ICON_SECONDARY, TEXT_ON_ACCENT,
+    };
     use crate::draw::{ColorRef, Command, DrawList};
     use crate::tree::NodeKind;
 
-    const EVERY_MARK: [IconMark; 16] = [
+    const EVERY_MARK: [IconMark; 19] = [
         IconMark::CaretLeft,
         IconMark::CaretRight,
+        IconMark::CheckmarkOutline,
+        IconMark::CircleDash,
+        IconMark::Incomplete,
         IconMark::Check,
         IconMark::Calendar,
         IconMark::ChevronDown,
@@ -1013,6 +1140,7 @@ mod tests {
                 (IconTone::Primary, ICON_PRIMARY),
                 (IconTone::Secondary, ICON_SECONDARY),
                 (IconTone::Disabled, ICON_DISABLED),
+                (IconTone::Accent, ACCENT_PRIMARY),
             ] {
                 let node = icon_in("m", mark, IconBox::Glyph, tone);
                 let seen = colours(list(&node));

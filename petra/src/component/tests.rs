@@ -24,8 +24,8 @@ use super::{
     data_table_sort_header, date_picker, date_picker_open, disabled, dismissible_tag, dropdown,
     dropdown_open, dropdown_option, expandable_tile, field, field_fluid, field_labeled, field_lg,
     field_readonly, field_sm, file_uploader, file_uploader_item, form, heading, inline_loading,
-    layer_tokens, link, list_item, list_item_with, list_row, loading, loading_sm, menu,
-    menu_button, menu_item, modal, notification_actionable, notification_inline,
+    inline_loading_finished, layer_tokens, link, list_item, list_item_with, list_row, loading,
+    loading_sm, menu, menu_button, menu_item, modal, notification_actionable, notification_inline,
     notification_toast, number_input, on_layer, ordered_list, pagination, popover, primary_button,
     progress, progress_indicator, progress_sm, progress_step, radio, search, section, select,
     select_lg, select_sm, selectable_tag, selectable_tile, slider, slider_readonly, status,
@@ -174,8 +174,8 @@ fn full_gallery() -> ViewNode {
             file_uploader_item("fu-f0", "notes.txt", true),
             file_uploader_item("fu-f1", "report.pdf", false),
             form("fm-signup", "Account", vec![field("fm-name", "Name")]),
-            inline_loading("il-save", "Saving", true),
-            inline_loading("il-saved", "Saved", false),
+            inline_loading("il-save", "Saving", 0.0),
+            inline_loading_finished("il-saved", "Saved"),
         ],
     );
 
@@ -215,8 +215,8 @@ fn full_gallery() -> ViewNode {
                     vec![list_item("li-nested-child", "Child")],
                 )),
             ),
-            loading("ld-large", "Loading fibers"),
-            loading_sm("ld-small", "Saving"),
+            loading("ld-large", "Loading fibers", 0.0),
+            loading_sm("ld-small", "Saving", 0.0),
             menu_item("mi-rename", "Rename"),
             disabled(menu_item("mi-delete", "Delete")),
             menu_button(
@@ -1105,7 +1105,7 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
     /// Every node in [`full_gallery`] that may draw a border, by the key
     /// path it appears at. An exact set: a node missing from here that draws
     /// one fails, and a node listed here that stops drawing one fails too.
-    const DRAWS_AN_EDGE: [&str; 58] = [
+    const DRAWS_AN_EDGE: [&str; 55] = [
         // `field`: an empty well with no boundary does not read as a place
         // to type. See `field`'s own doc for why it keeps one when `button`
         // does not.
@@ -1194,14 +1194,14 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         // Form's field child: the exact same `field()` component as
         // `root/controls/name`, for the exact same reason.
         "root/carbon2/fm-signup/fm-name",
-        // File uploader's incomplete-item mark and Inline loading's active
-        // mark: both are a static ring standing in for Carbon's spinning
-        // loader (the shipped animation registry has no spinner track). Like
-        // the binary controls' marks above, this shape has **no fill at
-        // all** — the border is not decoration on top of a boundary, it is
-        // the whole ring.
+        // File uploader's incomplete-item mark: a static ring standing in
+        // for Carbon's spinning loader. Like the binary controls' marks
+        // above, this shape has **no fill at all** — the border is not
+        // decoration on top of a boundary, it is the whole ring. Inline
+        // loading's active mark used to sit beside it and no longer does:
+        // it is `loading::spinner_small`, a drawn canvas whose track and
+        // arc are strokes in a draw list, so it binds no `border`.
         "root/carbon2/fu-f1/mark",
-        "root/carbon2/il-save/mark",
         // File uploader's drop zone: Carbon draws `border: 1px dashed
         // $border-strong` (MEASURED `_file-uploader.scss:425`); Petra has no
         // dashed stroke and substitutes a solid `BORDER_SUBTLE` rather than
@@ -1254,18 +1254,11 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         // one edge Carbon actually draws, so `previous`/`next` no longer
         // bind `border` at all — the divider binds `background`, which
         // this test does not audit.
-        // Progress indicator's not-started status icon: an empty ring,
-        // `marked_box`'s own class — with no fill at all, the outline is
-        // the whole mark (the same precedent `check`/`radio`'s boxes set
-        // above). The complete step's `complete_mark` is a solid accent
-        // disc and the current step's `current_mark` is a drawn canvas
-        // (Carbon's `Incomplete` glyph: a stroked ring with half a disc in
-        // it), so neither binds `border` and `pi-choose` (complete) and
-        // `pi-configure` (current) are absent from this list while
-        // `pi-review` (not-started) and `pi-confirm` (disabled,
-        // not-started) are on it.
-        "root/carbon4/pi-steps/pi-confirm/row/icon",
-        "root/carbon4/pi-steps/pi-review/row/icon",
+        // Progress indicator's three step glyphs are all drawn canvases now
+        // (Carbon's `CheckmarkOutline`, `Incomplete` and `CircleDash`, off
+        // their own paths), so no step binds `border`. The not-started
+        // step's icon was a bordered empty swatch until 2026-09-04 and sat
+        // on this list as `pi-review` and `pi-confirm`.
         // Popover, and every surface built on `popover_with` (Menu, Menu
         // button open, Dropdown open, Date picker open, Toggletip open,
         // Tooltip, AI label open) plus the UI shell right panels, which

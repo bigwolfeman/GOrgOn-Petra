@@ -69,6 +69,16 @@ pub trait Page {
     /// The chrome finds the open page by it.
     fn row(&self) -> &'static str;
 
+    /// The host's clock, in seconds, for the pass about to call
+    /// [`Page::body`]. Forwarded from `App::tick` to the open page.
+    ///
+    /// A page whose picture turns with time — the two loading rows — keeps
+    /// it and builds from it; the default drops it, for the forty pages
+    /// that draw nothing time-dependent.
+    fn tick(&mut self, now: f64) {
+        let _ = now;
+    }
+
     /// Build the body from this page's own state.
     fn body(&self) -> ViewNode;
 
@@ -146,10 +156,10 @@ pub fn all() -> Vec<Box<dyn Page>> {
         Box::new(dropdown::Dropdown::default()),
         Box::new(file_uploader::FileUploader),
         Box::new(form::Form),
-        Box::new(inline_loading::InlineLoading),
+        Box::new(inline_loading::InlineLoading::default()),
         Box::new(link::Link),
         Box::new(list::List),
-        Box::new(loading::Loading),
+        Box::new(loading::Loading::default()),
         Box::new(menu::Menu::default()),
         Box::new(menu_buttons::MenuButtons::default()),
         Box::new(modal::Modal::default()),

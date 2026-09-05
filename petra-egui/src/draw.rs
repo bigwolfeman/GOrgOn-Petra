@@ -299,14 +299,26 @@ fn draw_one(
                 return;
             }
             let at = Pos2::new(placed.x, placed.y);
+            // Tessellated here rather than handed to `Shape::ellipse_*`:
+            // `epaint::EllipseShape` strokes *outside* its radius
+            // (`tessellate_ellipse` builds `PathStroke::from(stroke).outside()`),
+            // and the draw list's `radii` name the stroke's centreline, as an
+            // SVG `<circle>`'s `r` does. A 10-unit track at radius 39 drawn
+            // outside ran to 49, past its 88-unit canvas, and the clip cut
+            // it into an octagon. `closed_line` strokes on the centreline.
+            let points = ellipse_points(at, radius, scale);
             let mut drew = false;
             if let Some(fill) = resolve(colors, paint.fill.as_ref(), report) {
-                painter.add(Shape::ellipse_filled(at, radius, fill));
+                painter.add(Shape::convex_polygon(
+                    points.clone(),
+                    fill,
+                    EguiStroke::NONE,
+                ));
                 report.shapes += 1;
                 drew = true;
             }
             if let Some(stroke) = resolve_stroke(colors, paint.stroke.as_ref(), scale, report) {
-                painter.add(Shape::ellipse_stroke(at, radius, stroke));
+                painter.add(Shape::closed_line(points, stroke));
                 report.shapes += 1;
                 drew = true;
             }
@@ -410,6 +422,47 @@ fn draw_one(
         // Handled by the caller, which owns the state stack.
         Command::Push { .. } | Command::Pop => unreachable!("the stack is the caller's"),
     }
+}
+
+/// The largest distance, in device pixels, a chord of the tessellated
+/// ellipse may sit off the true curve.
+///
+/// A tenth of a pixel is under the feathering width, so the polygon is
+/// invisible as a polygon at every radius. Sixteen chords is the floor so a
+/// tiny ring is still round rather than a hexagon with rounding error.
+const ELLIPSE_SAGITTA_PX: f32 = 0.1;
+const ELLIPSE_MIN_POINTS: usize = 16;
+
+/// The ellipse at `center` with `radius` half-extents, as a closed polygon
+/// whose chord error is at most [`ELLIPSE_SAGITTA_PX`] at `scale`.
+///
+/// The count comes from the larger radius: a chord of angle `α` on a circle
+/// of device radius `R` sits `R(1 − cos(α/2))` off the curve, so
+/// `α = 2·acos(1 − s/R)` is the widest chord allowed. Starts at three o'clock
+/// and runs clockwise on screen, the same orientation as
+/// `gorgon_petra::draw::arc_verbs`.
+fn ellipse_points(center: Pos2, radius: Vec2, scale: Scale) -> Vec<Pos2> {
+    let device_radius = radius.max_elem() * scale.factor();
+    let count = if device_radius <= ELLIPSE_SAGITTA_PX {
+        ELLIPSE_MIN_POINTS
+    } else {
+        let alpha = 2.0 * (1.0 - ELLIPSE_SAGITTA_PX / device_radius).acos();
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let n = (std::f32::consts::TAU / alpha).ceil() as usize;
+        // Up to a multiple of four, so the four axis points are vertices
+        // and the polygon is symmetric about both axes.
+        n.max(ELLIPSE_MIN_POINTS).next_multiple_of(4)
+    };
+    (0..count)
+        .map(|i| {
+            #[allow(clippy::cast_precision_loss)]
+            let theta = std::f32::consts::TAU * i as f32 / count as f32;
+            Pos2::new(
+                center.x + radius.x * theta.cos(),
+                center.y + radius.y * theta.sin(),
+            )
+        })
+        .collect()
 }
 
 /// The canvas's placement rect on the device grid, back in logical units.
@@ -568,7 +621,7 @@ fn resolve_stroke(
 #[cfg(test)]
 mod tests {
     use super::{CanvasAssets, CanvasReport, HostImages, NoAssets, paint_canvas, snapped};
-    use egui::{Color32, Shape, Vec2};
+    use egui::{Color32, Shape};
     use gorgon_petra::draw::{
         Affine, AssetRef, ColorRef, Command, Corners, DrawList, Fit, Paint, PathVerb, Stroke, Width,
     };
@@ -729,20 +782,37 @@ mod tests {
         let (report, shapes) = run(&list, at, scale);
         assert_eq!(report.shapes, 3, "{report:?}");
 
+        // The ellipse is a filled closed polygon on the true curve: its
+        // three-o'clock, six-o'clock and nine-o'clock vertices land exactly
+        // on the unrounded centre and radii.
         let ellipse = shapes
             .iter()
             .find_map(|s| match s {
-                Shape::Ellipse(e) => Some(*e),
+                Shape::Path(p) if p.closed && p.fill != Color32::TRANSPARENT => Some(p.clone()),
                 _ => None,
             })
-            .expect("the fixture draws an ellipse");
-        assert_eq!(ellipse.center, egui::pos2(13.37, 21.73));
-        assert_eq!(ellipse.radius, Vec2::new(4.19, 2.71));
+            .expect("the fixture draws an ellipse as a filled polygon");
+        let n = ellipse.points.len();
+        assert!(n >= 16, "{n} points");
+        let close = |a: egui::Pos2, b: egui::Pos2| (a - b).length() < 1e-4;
+        assert!(close(ellipse.points[0], egui::pos2(13.37 + 4.19, 21.73)));
+        assert!(
+            n.is_multiple_of(4),
+            "{n} points, so the quarter points exist"
+        );
+        assert!(close(
+            ellipse.points[n / 4],
+            egui::pos2(13.37, 21.73 + 2.71)
+        ));
+        assert!(close(
+            ellipse.points[n / 2],
+            egui::pos2(13.37 - 4.19, 21.73)
+        ));
 
         let path = shapes
             .iter()
             .find_map(|s| match s {
-                Shape::Path(p) => Some(p.clone()),
+                Shape::Path(p) if !p.closed => Some(p.clone()),
                 _ => None,
             })
             .expect("the fixture draws a path");

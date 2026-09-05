@@ -331,6 +331,12 @@ impl RowSource for Catalog {
 }
 
 impl App for Catalog {
+    fn tick(&mut self, now: f64) {
+        if let Some(page) = self.open_page_mut() {
+            page.tick(now);
+        }
+    }
+
     fn view(&mut self) -> ViewNode {
         let cell = self.current();
         let title = format!("{}  {}", cell.row.number, cell.row.component);

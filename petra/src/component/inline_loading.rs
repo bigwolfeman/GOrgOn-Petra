@@ -1,18 +1,30 @@
 //! `inline_loading` — Carbon Inline loading (slice-b).
 //!
-//! Status of an in-flight action. Carbon's active state is a 16×16 spinning
-//! ring; the shipped animation registry has no spinner track, so the active
-//! mark is a static outlined disc. Finished adds [`IconMark::Check`].
+//! Status of an in-flight action. Carbon's active state is the small
+//! Loading spinner — a 16×16 track ring with a turning 48% arc, the same
+//! markup `loading.scss` draws (`_inline-loading.scss` `@use '../loading'`)
+//! — so the active mark here is [`super::loading`]'s small spinner at the
+//! host clock `now`, and it turns for the same reason and by the same
+//! mechanism. Finished adds [`IconMark::Check`] on a disc.
 //!
 //! Spinner size 16 is MEASURED `_loading.scss` `--small`. Container floor
 //! 32 (`min-block-size: 2rem`, `_inline-loading.scss:30`). Gap spinner-to-
-//! label is [`SPACING_03`] (8).
+//! label is [`SPACING_03`] (8, `margin-inline-end` on `__animation`).
+//!
+//! # The finished disc is the accent, not Carbon's green
+//!
+//! Carbon fills `CheckmarkFilled` in `$support-success`. Petra's
+//! `support-success` aliases `status.ok`, a near-white mint in both themes
+//! (`token::shipped`), and a glyph in that tone on the light theme's ground
+//! is about 1.2:1 — the status palette carries its meaning through a shape
+//! and a word, not through a glyph. So the disc spends the accent, and the
+//! check is the channel: a disc with a tick against a ring with an arc.
 
 use super::icon::{IconMark, icon};
+use super::loading::spinner_small;
 use super::stack;
-use super::swatch;
 use super::text::text;
-use super::tokens::{ACCENT_PRIMARY, BORDER_SUBTLE, SHAPE_FULL, SPACING_03, TEXT_MUTED, t};
+use super::tokens::{ACCENT_PRIMARY, SHAPE_FULL, SPACING_03, TEXT_MUTED, t};
 use crate::geom::{Align, Axis};
 use crate::tree::{AxisConstraint, Constraints, Key, Role, Semantics, ViewNode};
 
@@ -21,48 +33,47 @@ const SPINNER: f32 = 16.0;
 /// Container `min-block-size: 2rem`. MEASURED `_inline-loading.scss:30`.
 const MIN_BLOCK: f32 = 32.0;
 
-/// In-place status of an action: spinning (static disc) or finished (check).
+/// An action in flight: the small spinner at the host clock `now`
+/// (seconds), then `label`.
 ///
-/// `label` is required ([`Role::Status`] needs a label). `active` selects
-/// the mark and [`Semantics.value`]: `"loading"` vs `"finished"`.
-pub fn inline_loading(key: impl Into<Key>, label: impl Into<String>, active: bool) -> ViewNode {
-    let label = label.into();
-    let mark = if active {
-        swatch(
-            "mark",
-            SPINNER,
-            SPINNER,
-            None,
-            Some(BORDER_SUBTLE),
-            Some(SHAPE_FULL),
-        )
-    } else {
-        let mut badge = stack(
-            "mark",
-            Axis::Horizontal,
-            None,
-            vec![icon("tick", IconMark::Check)],
-        );
-        badge.props.align = Some(Align::Center);
-        badge
-            .props
-            .tokens
-            .insert("background".into(), t(ACCENT_PRIMARY));
-        badge.props.tokens.insert("radius".into(), t(SHAPE_FULL));
-        badge.with_constraints(Constraints {
-            horizontal: AxisConstraint {
-                min: Some(SPINNER),
-                max: Some(SPINNER),
-                priority: 0,
-            },
-            vertical: AxisConstraint {
-                min: Some(SPINNER),
-                max: Some(SPINNER),
-                priority: 0,
-            },
-        })
-    };
+/// `label` is required ([`Role::Status`] needs a label).
+/// [`Semantics.value`] is `"loading"`.
+pub fn inline_loading(key: impl Into<Key>, label: impl Into<String>, now: f64) -> ViewNode {
+    row(key, label, spinner_small("mark", now), "loading")
+}
 
+/// An action that finished: a check on an accent disc, then `label`.
+/// [`Semantics.value`] is `"finished"`.
+pub fn inline_loading_finished(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
+    let mut badge = stack(
+        "mark",
+        Axis::Horizontal,
+        None,
+        vec![icon("tick", IconMark::Check)],
+    );
+    badge.props.align = Some(Align::Center);
+    badge
+        .props
+        .tokens
+        .insert("background".into(), t(ACCENT_PRIMARY));
+    badge.props.tokens.insert("radius".into(), t(SHAPE_FULL));
+    let badge = badge.with_constraints(Constraints {
+        horizontal: AxisConstraint {
+            min: Some(SPINNER),
+            max: Some(SPINNER),
+            priority: 0,
+        },
+        vertical: AxisConstraint {
+            min: Some(SPINNER),
+            max: Some(SPINNER),
+            priority: 0,
+        },
+    });
+    row(key, label, badge, "finished")
+}
+
+fn row(key: impl Into<Key>, label: impl Into<String>, mark: ViewNode, value: &str) -> ViewNode {
+    let label = label.into();
     let mut caption = text("label", label.clone());
     caption
         .props
@@ -75,11 +86,7 @@ pub fn inline_loading(key: impl Into<Key>, label: impl Into<String>, active: boo
     node.semantics = Semantics {
         role: Some(Role::Status),
         label: Some(label),
-        value: Some(if active {
-            "loading".into()
-        } else {
-            "finished".into()
-        }),
+        value: Some(value.into()),
         ..Semantics::default()
     };
     node
@@ -87,7 +94,7 @@ pub fn inline_loading(key: impl Into<Key>, label: impl Into<String>, active: boo
 
 #[cfg(test)]
 mod tests {
-    use super::{MIN_BLOCK, SPINNER, inline_loading};
+    use super::{MIN_BLOCK, SPINNER, inline_loading, inline_loading_finished};
     use crate::component::icon::IconMark;
     use crate::draw::Command;
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
@@ -104,9 +111,11 @@ mod tests {
             .unwrap_or_else(|| panic!("missing child {key}"))
     }
 
+    /// Row 14: the active mark is the small spinner — an open arc that
+    /// turns with the clock on an ambient canvas — not a still ring.
     #[test]
-    fn active_is_status_loading_with_the_label() {
-        let node = inline_loading("save", "Saving", true);
+    fn active_is_status_loading_with_a_turning_arc() {
+        let node = inline_loading("save", "Saving", 0.0);
         assert_eq!(node.semantics.role, Some(Role::Status));
         assert_eq!(node.semantics.label.as_deref(), Some("Saving"));
         assert_eq!(node.semantics.value.as_deref(), Some("loading"));
@@ -114,23 +123,37 @@ mod tests {
         assert_eq!(node.constraints.vertical.min, Some(MIN_BLOCK));
         assert_eq!(MIN_BLOCK, 32.0);
         let mark = child(&node, "mark");
+        assert_eq!(mark.kind, NodeKind::Canvas);
+        assert!(mark.ambient, "the spinner canvas is rebuilt every frame");
         assert_eq!(mark.constraints.horizontal.min, Some(SPINNER));
         assert_eq!(mark.constraints.vertical.min, Some(SPINNER));
         assert_eq!(SPINNER, 16.0);
-        assert_eq!(child(&node, "label").props.text.as_deref(), Some("Saving"));
+        let list = mark.props.canvas.as_ref().expect("the spinner is a canvas");
         assert!(
-            node.transition.is_none(),
-            "no spinner track is registered; motion is omitted"
+            list.commands()
+                .iter()
+                .any(|c| matches!(c, Command::Path { closed: false, .. })),
+            "an arc with a gap, not a closed ring: {:?}",
+            list.commands()
         );
+        assert_ne!(
+            child(&inline_loading("save", "Saving", 0.1), "mark")
+                .props
+                .canvas,
+            mark.props.canvas,
+            "a later clock is a different picture"
+        );
+        assert_eq!(child(&node, "label").props.text.as_deref(), Some("Saving"));
     }
 
     #[test]
     fn finished_adds_a_check_mark() {
-        let node = inline_loading("save", "Saved", false);
+        let node = inline_loading_finished("save", "Saved");
         assert_eq!(node.semantics.role, Some(Role::Status));
         assert_eq!(node.semantics.label.as_deref(), Some("Saved"));
         assert_eq!(node.semantics.value.as_deref(), Some("finished"));
         let mark = child(&node, "mark");
+        assert!(!mark.ambient, "a finished mark is still");
         let tick = child(mark, "tick");
         assert_eq!(tick.kind, NodeKind::Canvas);
         let list = tick.props.canvas.as_ref().expect("Check draws a path");
@@ -181,8 +204,8 @@ mod tests {
     #[test]
     fn frame_geometry_has_no_degenerate_or_overflowing_placements() {
         for (label, node) in [
-            ("active", inline_loading("save", "Saving", true)),
-            ("finished", inline_loading("save", "Saved", false)),
+            ("active", inline_loading("save", "Saving", 0.0)),
+            ("finished", inline_loading_finished("save", "Saved")),
         ] {
             let frame = petrify_lone(node);
             assert!(!frame.placements.is_empty(), "{label}: nothing placed");
@@ -220,8 +243,8 @@ mod tests {
     #[test]
     fn declares_no_interaction_so_nothing_enters_focus_order() {
         for node in [
-            inline_loading("save", "Saving", true),
-            inline_loading("save", "Saved", false),
+            inline_loading("save", "Saving", 0.0),
+            inline_loading_finished("save", "Saved"),
         ] {
             assert!(!node.is_interactive());
             let frame = petrify_lone(node);
@@ -248,8 +271,8 @@ mod tests {
         for theme in [crate::token::light(), crate::token::dark()] {
             let bg = color(&theme, SURFACE_BASE);
             for node in [
-                inline_loading("save", "Saving", true),
-                inline_loading("save", "Saved", false),
+                inline_loading("save", "Saving", 0.0),
+                inline_loading_finished("save", "Saved"),
             ] {
                 let label = child(&node, "label");
                 let fg_name = label

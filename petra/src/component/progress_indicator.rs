@@ -1,62 +1,69 @@
 //! Carbon Progress indicator (slice-d).
 //!
 //! Horizontal row of connected steps. Distinct from [`super::progress`]
-//! (a system-driven bar). Anatomy of one horizontal step
-//! (`_progress-indicator.scss` + `26-progress-indicator.png`):
+//! (a system-driven bar). Anatomy of one horizontal step, measured on
+//! `26-progress-indicator.png` against `_progress-indicator.scss`:
 //! 1. Step line — 2px, **the step's own top rule**, spanning the step's
-//!    128 width (`.cds--progress-line`, `:59-60`); [`ACCENT_PRIMARY`] when
-//!    complete or current, else [`BORDER_SUBTLE`]. Adjacent steps abut, so
-//!    the rules join into one rail that ends at the last step's edge.
-//! 2. Status indicator, 16×16, 10 below the step's top (`margin-block-
-//!    start: 10px`; T070: SCSS wins over the style page's 16) — complete:
-//!    [`IconMark::Check`] on an accent disc; current: Carbon's `Incomplete`
-//!    glyph, an accent ring with its left half filled; not started: an
-//!    empty ring. Three different silhouettes, so no two states differ by
-//!    hue alone.
-//! 3. Label, inline to the right of the icon, `$spacing-03` off it.
+//!    128 width (`.cds--progress-line`, `position: absolute` at the top);
+//!    [`ACCENT_PRIMARY`] when complete or current, else the recessed
+//!    [`LAYER_ACCENT`] (Carbon spends `$border-subtle`, which in g100 is the
+//!    same tone as `$layer-accent-01`; Petra's `border.subtle` is a raised
+//!    hairline tone that read as a bright second rail — the row 25 finding).
+//!    Adjacent steps abut, so the rules join into one rail that ends at the
+//!    last step's edge.
+//! 2. Status glyph, 16×16, its top **10** below the step's top
+//!    (`svg { margin-block-start: 10px }`; T070: SCSS wins over the style
+//!    page's 16) — complete: [`IconMark::CheckmarkOutline`] in the accent;
+//!    current: [`IconMark::Incomplete`] in the accent; not started:
+//!    [`IconMark::CircleDash`] in `icon-primary`. Three different
+//!    silhouettes, so no two states differ by hue alone.
+//! 3. Label, inline to the right of the glyph, `$spacing-03` off it
+//!    (`margin-inline-end`), `body-compact-01`, centred on the glyph. In
+//!    Carbon that centring is arithmetic — the label's line box starts
+//!    `$spacing-03` below the step's top and is 20.3 tall (`line-height:
+//!    1.45`), so its centre is 18.15 against the glyph's 18. Petra's body
+//!    line box is 16 tall, the glyph's own height, so here the row is
+//!    centred on its cross axis and starts 10 from the top, and the two
+//!    facts the Carbon capture shows — glyph top at 10, label centred on the
+//!    glyph — both hold.
 //!
 //! Complete is `Semantics.value = "complete"`; current is
 //! `Semantics.selected`. Never colour alone.
 //!
-//! # What the line is not
+//! # What changed on 2026-09-04, twice
 //!
-//! Until 2026-09-04 the line was drawn *beside* the icon as a connector to
-//! the next step, with `max: None` so it grew to fill the row, and every
-//! step drew one — including the last, which hung a 265-logical-unit rule
-//! off the last circle into nothing. That is the picture the operator
-//! called "the gap between circles looks bad". Carbon's line is not a link
-//! between two circles; it is each step's own top edge, and the last
-//! step's ends where the step does.
+//! Until the round-1 fix the line was drawn *beside* the glyph as a
+//! connector, growing to fill the row, and the last step hung a rule into
+//! nothing. Round 1 moved it to the top edge, where Carbon's is, and drew
+//! the glyphs as heavy filled discs — a solid accent disc with a check, a
+//! half-filled disc, a solid grey ring — which the operator liked less than
+//! the connector. Carbon's glyphs are thin: a 1-unit outline ring with a
+//! check inside, a half disc with a dashed right half, a dashed ring. Those
+//! are what this draws now, off Carbon's own paths.
 
-use std::sync::Arc;
-
-use super::icon::{IconMark, icon};
+use super::icon::{IconMark, IconTone, icon_toned};
 use super::stack;
 use super::swatch;
 use super::text::text;
-use super::tokens::{ACCENT_PRIMARY, BORDER_SUBTLE, SHAPE_FULL, SPACING_03, TEXT_PRIMARY, t};
-use crate::draw::{ColorRef, Command, DrawList, Paint, PathVerb, Stroke, Width};
-use crate::geom::{Align, Axis, Point, Size};
-use crate::tree::{AxisConstraint, Constraints, Key, NodeKind, Props, Role, Semantics, ViewNode};
+use super::tokens::{ACCENT_PRIMARY, LAYER_ACCENT, SPACING_03, TEXT_PRIMARY, t};
+use crate::geom::{Align, Axis};
+use crate::tree::{AxisConstraint, Key, Role, Semantics, ViewNode};
 
 /// Carbon step `inline-size` (`convert.to-rem(128px)`, `:43-44`). Fixed,
 /// not a floor: the default indicator does not grow its steps
 /// (`--space-equal` is the variant that does, and it is not built here).
 const STEP_WIDTH: f32 = 128.0;
-/// Carbon icon 16×16 (`$spacing-05`).
-const ICON: f32 = 16.0;
 /// Carbon `.cds--progress-line` height.
 const LINE: f32 = 2.0;
-/// T070: SCSS `margin-block-start: 10px`, not the style-page 16. Composed
-/// here as the 2-unit line plus the `$spacing-03` gap under it.
+/// T070: SCSS `margin-block-start: 10px` on the glyph, not the style-page
+/// 16. The glyph-and-label row starts here. The line is out of flow in
+/// Carbon (`position: absolute`), so this is measured from the step's top
+/// and the in-flow gap under the line is this less the line.
 const ICON_TOP: f32 = 10.0;
-/// The `Incomplete` glyph's ring stroke.
-const RING_STROKE: f32 = 1.0;
 
 const _: () = assert!(STEP_WIDTH == 128.0);
-const _: () = assert!(ICON == 16.0);
 const _: () = assert!(LINE == 2.0);
-const _: () = assert!(ICON_TOP == LINE + 8.0);
+const _: () = assert!(ICON_TOP == 10.0);
 
 /// Horizontal progress indicator. `Role::List`, no interactions. Steps
 /// abut: the spacing is `None` so each step's top rule meets the next.
@@ -69,12 +76,13 @@ pub fn progress_indicator(key: impl Into<Key>, steps: Vec<ViewNode>) -> ViewNode
     node
 }
 
-/// One step: its own top rule, then icon + label inline. Exactly 128 wide.
+/// One step: its own top rule, then glyph + label inline. Exactly 128 wide.
 ///
 /// `complete` writes [`Semantics.value`] `"complete"` and draws
-/// [`IconMark::Check`]. `current` writes [`Semantics.selected`]. A step
-/// may be both (the facts are independent). Not-started is an empty
-/// circle.
+/// [`IconMark::CheckmarkOutline`]. `current` writes [`Semantics.selected`]
+/// and draws [`IconMark::Incomplete`]. A step may be both (the facts are
+/// independent; complete wins the glyph). Not-started is
+/// [`IconMark::CircleDash`].
 pub fn progress_step(
     key: impl Into<Key>,
     label: impl Into<String>,
@@ -85,7 +93,7 @@ pub fn progress_step(
     let line_fill = if complete || current {
         ACCENT_PRIMARY
     } else {
-        BORDER_SUBTLE
+        LAYER_ACCENT
     };
 
     // A childless `Stack`, not a `swatch`, so `align_self: Stretch` can
@@ -114,7 +122,16 @@ pub fn progress_step(
     );
     row.props.align = Some(Align::Center);
 
-    let mut node = stack(key, Axis::Vertical, Some(SPACING_03), vec![line, row]);
+    let mut node = stack(
+        key,
+        Axis::Vertical,
+        None,
+        vec![
+            line,
+            swatch("gap", 0.0, ICON_TOP - LINE, None, None, None),
+            row,
+        ],
+    );
     node.constraints.horizontal = AxisConstraint {
         min: Some(STEP_WIDTH),
         max: Some(STEP_WIDTH),
@@ -131,121 +148,22 @@ pub fn progress_step(
 }
 
 fn status_icon(complete: bool, current: bool) -> ViewNode {
-    if complete {
-        complete_mark()
+    let (mark, tone) = if complete {
+        (IconMark::CheckmarkOutline, IconTone::Accent)
     } else if current {
-        current_mark()
+        (IconMark::Incomplete, IconTone::Accent)
     } else {
-        swatch(
-            "icon",
-            ICON,
-            ICON,
-            None,
-            Some(BORDER_SUBTLE),
-            Some(SHAPE_FULL),
-        )
-    }
-}
-
-fn square(extent: f32) -> Constraints {
-    Constraints {
-        horizontal: AxisConstraint {
-            min: Some(extent),
-            max: Some(extent),
-            priority: 0,
-        },
-        vertical: AxisConstraint {
-            min: Some(extent),
-            max: Some(extent),
-            priority: 0,
-        },
-    }
-}
-
-/// Check on a 16×16 accent circle so [`TEXT_ON_ACCENT`] ink has a ground.
-fn complete_mark() -> ViewNode {
-    let tick = icon("mark", IconMark::Check);
-    let inset = ((ICON - tick.constraints.horizontal.min.unwrap_or(0.0)) * 0.5).max(0.0);
-    let mut node = stack(
-        "icon",
-        Axis::Horizontal,
-        None,
-        vec![
-            swatch("inset-start", inset, ICON, None, None, None),
-            tick,
-            swatch("inset-end", inset, ICON, None, None, None),
-        ],
-    );
-    node.props.align = Some(Align::Center);
-    node.props
-        .tokens
-        .insert("background".into(), t(ACCENT_PRIMARY));
-    node.props.tokens.insert("radius".into(), t(SHAPE_FULL));
-    node.with_constraints(square(ICON))
-}
-
-/// Carbon's `Incomplete` glyph for the current step: an accent ring with
-/// its left half filled. A canvas rather than a swatch because a swatch is
-/// a whole rect and this is half a disc.
-///
-/// The half-disc is a twelve-segment polygon on the ring's own radius —
-/// every vertex on one circle, so it is convex and [`DrawList::new`]
-/// accepts the fill (`contracts/draw-list.md` §5). The ring is stroked one
-/// unit wide on a radius one unit inside the box, so the outer edge of the
-/// stroke lands on the box's edge and nothing is clipped.
-///
-/// # Panics
-/// Never in practice: one ellipse and one thirteen-verb convex path are
-/// well inside every draw-list bound. A panic here means an edit broke
-/// convexity, which is a defect and not a runtime condition to handle.
-fn current_mark() -> ViewNode {
-    const SEGMENTS: usize = 12;
-    let half = ICON / 2.0;
-    let radius = half - RING_STROKE;
-    let accent = ColorRef::Token(t(ACCENT_PRIMARY).as_str().to_owned());
-    let ring = Command::Ellipse {
-        center: Point::new(half, half),
-        radii: Size::new(radius, radius),
-        paint: Paint::stroked(Stroke {
-            width: Width::Logical(RING_STROKE),
-            color: accent.clone(),
-        }),
+        (IconMark::CircleDash, IconTone::Primary)
     };
-    // Top of the ring, round the left side, to the bottom; the close is
-    // the vertical chord. Screen y grows downward, hence the minus.
-    let verbs: Vec<PathVerb> = (0..=SEGMENTS)
-        .map(|k| {
-            let theta =
-                std::f32::consts::FRAC_PI_2 + std::f32::consts::PI * (k as f32) / (SEGMENTS as f32);
-            let point = Point::new(half + radius * theta.cos(), half - radius * theta.sin());
-            if k == 0 {
-                PathVerb::MoveTo(point)
-            } else {
-                PathVerb::LineTo(point)
-            }
-        })
-        .collect();
-    let half_disc = Command::Path {
-        verbs,
-        closed: true,
-        paint: Paint::filled(accent),
-    };
-    let list = DrawList::new(vec![ring, half_disc])
-        .unwrap_or_else(|err| panic!("Incomplete mark draw list refused: {err}"));
-    ViewNode::new(NodeKind::Canvas, "icon")
-        .with_props(Props {
-            canvas: Some(Arc::new(list)),
-            ..Props::default()
-        })
-        .with_constraints(square(ICON))
+    icon_toned("icon", mark, tone)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        ACCENT_PRIMARY, BORDER_SUBTLE, ICON, ICON_TOP, LINE, STEP_WIDTH, progress_indicator,
-        progress_step,
+        ACCENT_PRIMARY, ICON_TOP, LAYER_ACCENT, LINE, STEP_WIDTH, progress_indicator, progress_step,
     };
+    use crate::component::tokens::ICON_PRIMARY;
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Rect, Size};
     use crate::testing::{Harness, validated_with};
@@ -266,8 +184,17 @@ mod tests {
         node.props.tokens.get(slot).map(|name| name.as_str())
     }
 
-    fn has_canvas(node: &ViewNode) -> bool {
-        node.kind == NodeKind::Canvas || node.children.iter().any(|child| has_canvas(child))
+    /// Every colour the glyph's draw list paints with.
+    fn glyph_tokens(node: &ViewNode) -> Vec<String> {
+        let icon = named(node, "icon");
+        assert_eq!(icon.kind, NodeKind::Canvas, "every step glyph is drawn");
+        icon.props
+            .canvas
+            .as_ref()
+            .expect("a canvas")
+            .color_tokens()
+            .map(str::to_owned)
+            .collect()
     }
 
     fn three() -> ViewNode {
@@ -310,70 +237,62 @@ mod tests {
         assert!(node.interactions.is_empty());
     }
 
+    /// Row 26: the three glyphs are Carbon's three — an outlined ring with
+    /// a check, a half disc with a dashed half, a dashed ring — in Carbon's
+    /// two tones, and no two are the same picture. A solid disc is not one
+    /// of them.
     #[test]
-    fn progress_step_complete_is_check_plus_value() {
-        let node = progress_step("a", "Choose", true, false);
-        assert_eq!(node.semantics.value.as_deref(), Some("complete"));
-        assert!(!node.semantics.selected);
-        assert!(has_canvas(&node), "complete draws IconMark::Check");
-        assert_eq!(
-            token(named(&node, "icon"), "background"),
-            Some(ACCENT_PRIMARY)
-        );
-        let line = named(&node, "line");
-        assert_eq!(token(line, "background"), Some(ACCENT_PRIMARY));
-        assert_eq!(line.constraints.vertical.min, Some(LINE));
-        assert_eq!(LINE, 2.0);
-    }
-
-    /// Current is a different *shape* from complete, not a different
-    /// tint: a ring with half a disc in it, against a full disc with a
-    /// check. Before this the two were both solid accent discs and only a
-    /// 5-unit check told them apart.
-    #[test]
-    fn progress_step_current_is_a_half_filled_ring_not_colour_alone() {
-        let node = progress_step("b", "Configure", false, true);
-        assert!(node.semantics.selected);
-        assert!(node.semantics.value.is_none());
-        let icon = named(&node, "icon");
-        assert_eq!(
-            icon.kind,
-            NodeKind::Canvas,
-            "current draws the Incomplete glyph"
-        );
-        assert_eq!(
-            token(icon, "background"),
-            None,
-            "the glyph is drawn, not a filled swatch"
-        );
+    fn the_three_states_are_carbons_three_thin_glyphs() {
         let complete = progress_step("a", "Choose", true, false);
-        assert_ne!(
-            icon.props.canvas,
-            named(&complete, "mark").props.canvas,
-            "current and complete must draw different marks"
-        );
-        assert_eq!(icon.constraints.horizontal.min, Some(ICON));
-        assert_eq!(icon.constraints.vertical.max, Some(ICON));
+        let current = progress_step("b", "Configure", false, true);
+        let pending = progress_step("c", "Review", false, false);
+        assert_eq!(complete.semantics.value.as_deref(), Some("complete"));
+        assert!(!complete.semantics.selected);
+        assert!(current.semantics.selected);
+        assert!(current.semantics.value.is_none());
+        assert!(!pending.semantics.selected);
+
+        for name in glyph_tokens(&complete)
+            .iter()
+            .chain(glyph_tokens(&current).iter())
+        {
+            assert_eq!(
+                name, ACCENT_PRIMARY,
+                "complete and current are $interactive"
+            );
+        }
+        for name in glyph_tokens(&pending) {
+            assert_eq!(name, ICON_PRIMARY, "not started is $icon-primary");
+        }
+        let pictures =
+            [&complete, &current, &pending].map(|n| named(n, "icon").props.canvas.clone());
+        assert_ne!(pictures[0], pictures[1]);
+        assert_ne!(pictures[1], pictures[2]);
+        assert_ne!(pictures[0], pictures[2]);
+        for step in [&complete, &current, &pending] {
+            assert!(
+                !named(step, "icon").props.tokens.contains_key("background"),
+                "a step glyph is drawn, never a filled swatch"
+            );
+        }
         assert_eq!(
-            token(named(&node, "line"), "background"),
+            token(named(&complete, "line"), "background"),
             Some(ACCENT_PRIMARY)
         );
-    }
-
-    #[test]
-    fn progress_step_not_started_is_an_empty_circle() {
-        let node = progress_step("c", "Review", false, false);
-        assert!(!node.semantics.selected);
-        assert!(node.semantics.value.is_none());
-        assert!(!has_canvas(&node));
-        let icon = named(&node, "icon");
-        assert_eq!(token(icon, "background"), None);
-        assert_eq!(token(icon, "border"), Some(BORDER_SUBTLE));
-        assert_eq!(token(icon, "radius"), Some(super::SHAPE_FULL));
         assert_eq!(
-            token(named(&node, "line"), "background"),
-            Some(BORDER_SUBTLE)
+            token(named(&current, "line"), "background"),
+            Some(ACCENT_PRIMARY)
         );
+        assert_eq!(
+            token(named(&pending, "line"), "background"),
+            Some(LAYER_ACCENT),
+            "the incomplete rail recedes; border.subtle read as a bright second rail"
+        );
+        assert_eq!(
+            named(&complete, "line").constraints.vertical.min,
+            Some(LINE)
+        );
+        assert_eq!(LINE, 2.0);
     }
 
     const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
@@ -418,13 +337,14 @@ mod tests {
         }
     }
 
-    /// Row 26's defect, pinned on the placed frame: the line is each step's
-    /// own top rule — flush with the step's left edge, exactly the step's
-    /// width, at the step's top — the steps abut at a 128 pitch, and the
-    /// rail ends where the last step does. Nothing trails past it. The
-    /// icon row starts 10 below the step's top (T070).
+    /// Row 26's geometry, pinned on the placed frame against the Carbon
+    /// capture: the line is each step's own top rule — flush with the
+    /// step's left edge, exactly the step's width, at the step's top — the
+    /// steps abut at a 128 pitch, the rail ends where the last step does,
+    /// and the glyph's top is 10 below the step's top (T070), which in the
+    /// Carbon shot is 20 device pixels under the rule's top edge at 2x.
     #[test]
-    fn the_line_is_each_steps_own_top_rule_and_nothing_trails_the_last_step() {
+    fn the_line_is_each_steps_own_top_rule_and_the_glyph_sits_ten_below_it() {
         let frame = petrify_lone(three());
         let indicator = rect_of(&frame, "/pi");
         let steps = ["/pi/a", "/pi/b", "/pi/c"].map(|s| rect_of(&frame, s));
@@ -457,16 +377,34 @@ mod tests {
             indicator.x + indicator.w,
             "the rail ends at the last step's edge; nothing trails past it"
         );
-        let row = rect_of(&frame, "/pi/a/row");
-        assert_eq!(
-            row.y - steps[0].y,
-            ICON_TOP,
-            "icon row starts 10 below the top"
-        );
+        for (step, key) in steps.iter().zip(["/pi/a", "/pi/b", "/pi/c"]) {
+            let icon = rect_of(&frame, &format!("{key}/row/icon"));
+            assert_eq!(icon.w, 16.0);
+            assert_eq!(icon.h, 16.0);
+            assert!(
+                (icon.y - step.y - ICON_TOP).abs() < 0.01,
+                "{key}: the glyph's top is {} below the step's top, Carbon's is {ICON_TOP}",
+                icon.y - step.y
+            );
+            assert_eq!(
+                icon.x, step.x,
+                "the glyph is flush with the step's left edge"
+            );
+            let label = rect_of(&frame, &format!("{key}/row/label"));
+            let off = (label.y + label.h / 2.0) - (icon.y + icon.h / 2.0);
+            assert!(
+                off.abs() <= 0.5,
+                "{key}: the label's centre is {off} off the glyph's: {label:?} beside {icon:?}"
+            );
+            assert!(
+                (label.x - (icon.x + icon.w + 8.0)).abs() < 0.01,
+                "{key}: the label starts $spacing-03 after the glyph, got {label:?}"
+            );
+        }
         assert_eq!(ICON_TOP, 10.0);
     }
 
-    /// Check C/D: every step state places its line and icon with a real
+    /// Check C/D: every step state places its line and glyph with a real
     /// rect, nothing overflows, nothing leaves its parent.
     #[test]
     fn line_and_icon_place_with_a_real_nonzero_rect_in_every_state() {
@@ -493,12 +431,16 @@ mod tests {
                 "{label}: icon placed with a degenerate rect {icon:?}"
             );
             for p in &frame.placements {
-                assert!(
-                    p.rect.w > 0.0 && p.rect.h > 0.0,
-                    "{label}: {} placed with a degenerate rect {:?}",
-                    p.id,
-                    p.rect
-                );
+                // The gap spacer is a zero-width, six-tall spacer by
+                // design; every other placement has area.
+                if !p.id.ends_with("/gap") {
+                    assert!(
+                        p.rect.w > 0.0 && p.rect.h > 0.0,
+                        "{label}: {} placed with a degenerate rect {:?}",
+                        p.id,
+                        p.rect
+                    );
+                }
                 assert!(
                     !p.paint.overflowed,
                     "{label}: {} drew content larger than its own rect",
@@ -526,11 +468,14 @@ mod tests {
     }
 
     /// Check E: the label against the page ground the step sits on (the
-    /// step itself binds no `background`), in both themes. Steps declare
-    /// no `Interaction` at all, so there is no Check F focus case here.
+    /// step itself binds no `background`), in both themes; and the glyph
+    /// inks against the same ground at the 3:1 a non-text mark needs.
+    /// Steps declare no `Interaction` at all, so there is no Check F focus
+    /// case here.
     #[test]
-    fn step_label_clears_aa_contrast_on_the_page_ground() {
+    fn step_label_and_glyph_clear_contrast_on_the_page_ground() {
         const MIN_TEXT_CONTRAST: f32 = 4.5;
+        const MIN_GLYPH_CONTRAST: f32 = 3.0;
         use super::super::tokens::SURFACE_BASE;
         for theme in [crate::token::light(), crate::token::dark()] {
             let bg = color(&theme, SURFACE_BASE);
@@ -552,6 +497,13 @@ mod tests {
                     ratio >= MIN_TEXT_CONTRAST,
                     "label at {ratio:.2}:1 against page ground fails AA {MIN_TEXT_CONTRAST}:1"
                 );
+                for ink in glyph_tokens(&node) {
+                    let ratio = color(&theme, &ink).contrast_ratio(bg);
+                    assert!(
+                        ratio >= MIN_GLYPH_CONTRAST,
+                        "{ink} glyph at {ratio:.2}:1 against page ground fails {MIN_GLYPH_CONTRAST}:1"
+                    );
+                }
             }
         }
     }
