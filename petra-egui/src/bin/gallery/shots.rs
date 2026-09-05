@@ -2988,4 +2988,192 @@ mod tests {
         cam.click("form-ok");
         assert!(selected(&cam, "form-ok"), "it does not come back on");
     }
+
+    // ===== Wave A, round 3: rows 39, 02 and 03 =====
+    //
+    // All three were the same defect wearing three faces: a unit-struct page
+    // whose `handle` returned `false`, so the component underneath it was
+    // photographed and never driven. Every test below starts from a
+    // `Camera::click` and finishes by reading the raster, because a page that
+    // holds state is exactly the thing a resting photograph cannot show.
+
+    /// The strongest blue-over-red a pixel inside `rect` has.
+    ///
+    /// Link ink is `#4589ff` (b - r = 186) and both page ink `#f4f4f4` and
+    /// every grey ground are neutral (0), so this one number separates "this
+    /// text is a link" from "this text is prose" off the picture rather than
+    /// off a token binding. Antialiasing only ever pulls the number down, so
+    /// a high reading cannot be an artefact.
+    fn blue_lead(img: &image::RgbaImage, rect: Rect) -> i32 {
+        let x0 = (rect.x * CAPTURE_SCALE) as u32;
+        let x1 = ((rect.x + rect.w) * CAPTURE_SCALE) as u32;
+        let y0 = (rect.y * CAPTURE_SCALE) as u32;
+        let y1 = ((rect.y + rect.h) * CAPTURE_SCALE) as u32;
+        let mut best = 0;
+        for y in y0..y1.min(img.height()) {
+            for x in x0..x1.min(img.width()) {
+                let p = img.get_pixel(x, y).0;
+                best = best.max(i32::from(p[2]) - i32::from(p[0]));
+            }
+        }
+        best
+    }
+
+    /// Row 39. A press on a shut branch opens it: the hidden rows arrive in
+    /// the frame and the picture changes.
+    ///
+    /// Falsified 2026-09-05 by putting `fn handle(..) -> bool { false }` back
+    /// on `page/tree_view.rs`: `tv-gallery` never appears and `Camera::id`
+    /// panics listing every placed id, which is the old page exactly.
+    #[test]
+    fn clicking_a_shut_tree_branch_mounts_the_rows_underneath_it() {
+        let mut cam = Camera::on("Tree view");
+        assert!(
+            !cam.has("tv-gallery"),
+            "petra-egui is meant to start shut, so this proves nothing"
+        );
+        let before = cam.shoot("39-tree-view-resting");
+        cam.click("tv-petra-egui/row");
+        assert!(
+            cam.has("tv-gallery"),
+            "the press did not open the branch: the page dropped it"
+        );
+        let after = cam.shoot("39-tree-view-expanded");
+        assert_ne!(
+            before, after,
+            "the branch opened in the tree and changed no pixel"
+        );
+    }
+
+    /// Row 39. The accent bar moves to the row that was pressed.
+    ///
+    /// Read at the row's inline-start edge, where Carbon's
+    /// `.cds--tree-node--active` 4-unit bar lives, because
+    /// `Semantics.selected` is a flag and the operator's complaint was the
+    /// picture. Both halves are asserted: the bar arrives on the new row
+    /// **and** leaves the old one, because a bar that never moves would pass
+    /// the first half on its own.
+    ///
+    /// The press names the row and not the item: a branch item's rect spans
+    /// its children too, so its centre is inside a child and that is where a
+    /// hand would land. `.../tv-petra` alone shut nothing for exactly that
+    /// reason, which is worth knowing before writing the next tree test.
+    #[test]
+    fn a_press_moves_the_tree_selection_bar_onto_the_row_it_landed_on() {
+        let mut cam = Camera::on("Tree view");
+        let was = cam.rect("tv-component/row");
+        let shot = raster(&mut cam, "39-tree-view-resting");
+        let bar = px(&shot, was.x + 1.0, was.y + was.h / 2.0);
+        assert!(
+            i32::from(bar[2]) - i32::from(bar[0]) > 100,
+            "no accent bar at the selected leaf's inline edge: {bar:?}"
+        );
+
+        cam.click("tv-inspector/row");
+        let now = cam.rect("tv-inspector/row");
+        let was = cam.rect("tv-component/row");
+        let shot = raster(&mut cam, "39-tree-view-selection-moved");
+        let moved = px(&shot, now.x + 1.0, now.y + now.h / 2.0);
+        assert!(
+            i32::from(moved[2]) - i32::from(moved[0]) > 100,
+            "the press did not move the accent bar onto the row: {moved:?}"
+        );
+        let left = px(&shot, was.x + 1.0, was.y + was.h / 2.0);
+        assert!(
+            i32::from(left[2]) - i32::from(left[0]) < 40,
+            "the accent bar is still on the row that was selected before: {left:?}"
+        );
+    }
+
+    /// Row 03. The leading crumbs are painted in link ink and the last one
+    /// is not, which is the whole of what "i dont understand this one" was
+    /// about: three identical grey words with slashes between them.
+    ///
+    /// Falsified 2026-09-05 by making `breadcrumb_item` a bare
+    /// `text(key, label)` again: `blue_lead` on the leading crumb drops from
+    /// 186 to 0 and this fails on the first assertion.
+    #[test]
+    fn a_breadcrumb_paints_its_links_blue_and_the_page_you_are_on_in_page_ink() {
+        let mut cam = Camera::on("Breadcrumb");
+        let link = cam.rect("bc-0");
+        let current = cam.rect("bc-3");
+        let shot = raster(&mut cam, "03-breadcrumb-resting");
+        assert!(
+            blue_lead(&shot, link) > 40,
+            "the leading crumb is not in link ink"
+        );
+        assert!(
+            blue_lead(&shot, current) < 12,
+            "the current page is painted like a link"
+        );
+    }
+
+    /// Row 03. A press on a leading crumb walks the trail up: the levels
+    /// below it leave the frame and it becomes the crumb in page ink.
+    #[test]
+    fn clicking_a_crumb_walks_the_trail_up_to_it() {
+        let mut cam = Camera::on("Breadcrumb");
+        assert!(cam.has("bc-3"), "the trail starts at its deepest level");
+        cam.click("bc-1");
+        assert!(!cam.has("bc-2"), "the trail did not shorten");
+        assert!(!cam.has("bc-3"));
+        let now_current = cam.rect("bc-1");
+        let shot = raster(&mut cam, "03-breadcrumb-walked-up");
+        assert!(
+            blue_lead(&shot, now_current) < 12,
+            "the crumb pressed is still painted as a link to somewhere else"
+        );
+        assert!(
+            blue_lead(&shot, cam.rect("bc-0")) > 40,
+            "the level above it stopped being a link"
+        );
+    }
+
+    /// Row 02. The AI mark is a button, and what it opens is the thing the
+    /// page exists to show.
+    ///
+    /// Falsified 2026-09-05 by returning `false` from
+    /// `page/ai_label.rs::handle`: `panel` never appears and the two shots
+    /// are byte-identical.
+    #[test]
+    fn clicking_the_ai_mark_opens_the_explainability_popover() {
+        let mut cam = Camera::on("AI label");
+        assert!(!cam.has("panel"), "the page starts closed");
+        let before = cam.shoot("02-ai-label-resting");
+        cam.click("ai-live/trigger");
+        assert!(
+            cam.has("panel"),
+            "the press did not open the explainability popover"
+        );
+        let after = cam.shoot("02-ai-label-open");
+        assert_ne!(before, after, "the panel opened and changed no pixel");
+        cam.click("ai-live/trigger");
+        assert!(!cam.has("panel"), "the second press did not shut it");
+    }
+
+    /// Row 02. The revert control holds its word with air on both sides.
+    ///
+    /// Pinned square at 40 the glyphs sat 3 points off one border and 2.5
+    /// off the other. Sampled on the raster at the row through the middle of
+    /// the control: the two device columns just inside each border must be
+    /// the control's own fill, not part of a letter.
+    #[test]
+    fn the_revert_control_is_not_crammed_against_its_own_border() {
+        let mut cam = Camera::on("AI label");
+        let revert = cam.rect("ai-revert");
+        let shot = raster(&mut cam, "02-ai-label-revert");
+        let mid = revert.y + revert.h / 2.0;
+        let ground = px(&shot, revert.x + revert.w / 2.0, revert.y + 3.0);
+        for offset in [3.0_f32, 5.0, 7.0] {
+            for edge in [revert.x + offset, revert.x + revert.w - offset] {
+                assert_eq!(
+                    px(&shot, edge, mid),
+                    ground,
+                    "a glyph reaches to within {offset} points of the revert \
+                     control's border, which is the cramming this row was \
+                     reported for"
+                );
+            }
+        }
+    }
 }
