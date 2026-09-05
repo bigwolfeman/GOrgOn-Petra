@@ -23,7 +23,7 @@ use super::tokens::{
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
-    AxisConstraint, Constraints, InsetRefs, Interaction, Key, NodeKind, Props, Role, ViewNode,
+    AxisConstraint, Constraints, InsetRefs, Key, NodeKind, Props, Role, ViewNode,
 };
 
 /// Carbon Search sm. `tokens` only ships [`SIZE_MD`] (md / 40).
@@ -91,11 +91,7 @@ fn search_field(key: &'static str, label: String, height: f32) -> ViewNode {
     props.tokens.insert("foreground".into(), t(TEXT_PRIMARY));
     ViewNode::new(NodeKind::Input, key)
         .with_props(props)
-        .interactive(
-            Role::TextInput,
-            label,
-            &[Interaction::Focus, Interaction::Key, Interaction::TextEdit],
-        )
+        .interactive(Role::TextInput, label, super::field::EDITABLE_TEXT_INTENTS)
         .with_constraints(Constraints {
             vertical: AxisConstraint {
                 min: Some(height),

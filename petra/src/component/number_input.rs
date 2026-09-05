@@ -141,11 +141,7 @@ fn value_field(key: &'static str, label: String, value: String, height: f32) -> 
     props.tokens.insert("foreground".into(), t(TEXT_PRIMARY));
     ViewNode::new(NodeKind::Input, key)
         .with_props(props)
-        .interactive(
-            Role::TextInput,
-            label,
-            &[Interaction::Focus, Interaction::Key, Interaction::TextEdit],
-        )
+        .interactive(Role::TextInput, label, super::field::EDITABLE_TEXT_INTENTS)
         .with_constraints(Constraints {
             vertical: AxisConstraint {
                 min: Some(height),

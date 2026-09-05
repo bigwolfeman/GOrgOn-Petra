@@ -20,6 +20,27 @@ use super::tokens::{
 use crate::geom::{Align, Axis};
 use crate::tree::{AxisConstraint, Constraints, Interaction, Key, NodeKind, Props, Role, ViewNode};
 
+/// What an editable text input declares.
+///
+/// `Click` is in the list because **a person reaches a field by clicking
+/// it**. `hit_test` aims a press at `Interaction::Click`, and the host seats
+/// keyboard focus only on a `Route::Pointer`; an input that declared
+/// `Focus, Key, TextEdit` and no `Click` was therefore invisible to the
+/// pointer. It could be Tab-ed to and driven by `Action::Focus`, which is why
+/// three green tests missed it, and it could not be clicked into, which is
+/// all an operator ever tries. `Click` does not make the field activate on
+/// Enter: it already declares `Key`, so `route_above` was routing Enter to it
+/// before this.
+///
+/// Shared with [`super::search`] and [`super::number_input`], which build the
+/// same `NodeKind::Input` leaf and drifted from this list once already.
+pub(super) const EDITABLE_TEXT_INTENTS: &[Interaction] = &[
+    Interaction::Focus,
+    Interaction::Click,
+    Interaction::Key,
+    Interaction::TextEdit,
+];
+
 /// Carbon Default sm. `tokens` only ships [`SIZE_MD`] (md / 40).
 const SIZE_SM: f32 = 32.0;
 /// Carbon Default lg.
@@ -284,9 +305,7 @@ fn input_field(
     }
     let intents: &[Interaction] = match chrome {
         FieldChrome::ReadOnly => &[Interaction::Focus],
-        FieldChrome::Enabled | FieldChrome::Invalid | FieldChrome::Nested => {
-            &[Interaction::Focus, Interaction::Key, Interaction::TextEdit]
-        }
+        FieldChrome::Enabled | FieldChrome::Invalid | FieldChrome::Nested => EDITABLE_TEXT_INTENTS,
     };
     let mut node = ViewNode::new(NodeKind::Input, key)
         .with_props(props)

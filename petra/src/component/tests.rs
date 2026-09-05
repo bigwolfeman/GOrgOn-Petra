@@ -13,7 +13,7 @@ use crate::geom::{Axis, Size};
 use crate::semantic::{audit, project};
 use crate::testing::{Harness, validated_with};
 use crate::token::{StatusShape, StatusToken, ThemeMode, TokenName, standard_vocabulary};
-use crate::tree::{NodeKind, Props, Registry, ViewNode};
+use crate::tree::{Interaction, NodeKind, Props, Registry, ViewNode};
 
 use super::tokens::{ACCENT_PRIMARY, BORDER_SUBTLE, TEXT_ON_ACCENT};
 use super::{
@@ -551,6 +551,39 @@ fn every_component_in_one_tree_passes_the_audit_with_zero_findings() {
 /// [`list_row`] all declare at least one interaction; every one of them
 /// must carry a role and a non-empty label; this is FR-058 measured through
 /// the same audit rule the sabotage run (gate C1-12) targets.
+/// A node that accepts typing must also accept a press.
+///
+/// The rule a whole round of "the text field does not work" came down to.
+/// `input::hit_test` aims a pointer press at `Interaction::Click`, and
+/// `Host::seat_pointer_focus` runs only on a `Route::Pointer`. So an input
+/// that declares `TextEdit` without `Click` cannot be focused by a hand: the
+/// press hits nothing, focus stays where it was, and every later keystroke
+/// routes somewhere else. It looks perfectly correct in any test that moves
+/// focus itself.
+///
+/// Swept over [`full_gallery`], so a fourth text-entry component added later
+/// is covered without touching this test.
+#[test]
+fn anything_that_accepts_typing_can_also_be_clicked_into() {
+    fn walk(node: &ViewNode, bad: &mut Vec<String>) {
+        if node.interactions.contains(&Interaction::TextEdit)
+            && !node.interactions.contains(&Interaction::Click)
+        {
+            bad.push(node.key.as_str().to_owned());
+        }
+        for child in &node.children {
+            walk(child, bad);
+        }
+    }
+    let mut bad = Vec::new();
+    walk(&full_gallery(), &mut bad);
+    assert!(
+        bad.is_empty(),
+        "these accept typing but no pointer press can reach them, so clicking \
+         one does not put the caret in it: {bad:?}"
+    );
+}
+
 #[test]
 fn every_interactive_component_declares_a_role_and_a_label() {
     let nodes = [

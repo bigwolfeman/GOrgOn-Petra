@@ -299,6 +299,32 @@ impl Camera {
         )
     }
 
+    /// Commit `text` to whatever holds focus, moving focus nowhere.
+    ///
+    /// [`Camera::type_into`] focuses first, which is convenient and is also
+    /// how a whole round of text-field tests passed against a field no hand
+    /// could reach. Use this one after a [`Camera::click`] to prove the path
+    /// an operator actually walks.
+    ///
+    /// # Panics
+    /// If the frame holds no placements, which cannot happen after
+    /// [`Camera::on`].
+    pub fn type_here(&mut self, text: &str) -> &mut Self {
+        let id = self
+            .frame()
+            .placements
+            .first()
+            .unwrap_or_else(|| panic!("{}: the frame holds no placements", self.page))
+            .id
+            .clone();
+        self.act(
+            Target::NodeId(id),
+            &Action::TextEdit {
+                text: text.to_owned(),
+            },
+        )
+    }
+
     /// A full keystroke to whatever holds focus.
     ///
     /// Aimed at the focused placement, or at the first one when nothing has
@@ -345,6 +371,15 @@ impl Camera {
     /// Which placement the pointer is over, per the host's own derivation.
     pub fn hovered(&self) -> Option<String> {
         self.host.pointer().hovered().map(str::to_owned)
+    }
+
+    /// Which node holds keyboard focus, per the host's own focus tree.
+    ///
+    /// The peer of [`Camera::hovered`]. A test that wants to know whether a
+    /// *click* seated focus cannot ask [`Camera::focus`], which moves focus
+    /// itself; it has to read the tree back.
+    pub fn focused(&self) -> Option<String> {
+        self.host.focus().current().map(str::to_owned)
     }
 
     /// The frame as it now stands.
@@ -1139,6 +1174,32 @@ mod tests {
             cam.has("/query"),
             "the catalog navigated away from the Search page while a bracket \
              was being typed into its field"
+        );
+    }
+
+    /// Clicking a text field puts the caret in it.
+    ///
+    /// The live path, which `typing_into_a_text_field_changes_what_the_page_
+    /// rasterizes` does not exercise: `Camera::type_into` moves focus itself
+    /// with `Action::Focus`, so it proves the value plumbing and says nothing
+    /// about how a person reaches the field. An operator clicks.
+    #[test]
+    fn clicking_a_text_field_seats_the_caret_in_it() {
+        let mut cam = Camera::on("Text input");
+        cam.click("field-sm");
+        let focused = cam.focused();
+        assert!(
+            focused.as_deref().is_some_and(|id| id.contains("field-sm")),
+            "a click on a text field left focus at {focused:?}: nothing a \
+             person types can reach the field"
+        );
+        let before = cam.shoot("34-text-input-clicked");
+        cam.type_here("gorgon");
+        let after = cam.shoot("34-text-input-clicked-typed");
+        assert_ne!(
+            before, after,
+            "the field took focus from the click and then six typed \
+             characters changed nothing on screen"
         );
     }
 }

@@ -209,8 +209,11 @@ impl From<FocusError> for InjectError {
 /// # Errors
 /// [`InjectError::StaleNode`] when a [`Target::NodeId`] does not resolve;
 /// [`InjectError::NotFocusable`] / [`InjectError::OutsideActiveScope`] /
-/// [`InjectError::NoFocusableAt`] when [`Action::Focus`] or
-/// [`Action::TextEdit`]'s implicit focus step is refused;
+/// [`InjectError::NoFocusableAt`] when [`Action::Focus`] is refused;
+/// [`Action::TextEdit`] has no focus step of its own — it pushes the text
+/// and lets it route by whatever holds focus, exactly as a keyboard does, so
+/// a caller that wants it to land somewhere must put focus there first (by
+/// clicking, as a person does, or with [`Action::Focus`]);
 /// [`InjectError::UnsupportedKey`] when [`Action::Key`] names a `KeyCode`
 /// this crate cannot turn into an `egui::Key`. On every error, `raw` is left
 /// exactly as it was passed in.
