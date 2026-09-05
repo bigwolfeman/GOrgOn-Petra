@@ -73,6 +73,10 @@ fn node_at(frame: &PetrifiedFrame, index: usize, children: Vec<SemanticNode>) ->
         ambient,
         actions,
         total_count,
+        // Held out on purpose: which rect the focus indicator is drawn on
+        // is a paint fact, not a fact about what the node is. The tree
+        // already says which node is `focused`.
+        focus_figure: _,
     } = &placement.semantics;
 
     let mut actions: Vec<Interaction> = actions.clone();

@@ -50,8 +50,9 @@ use super::tokens::{
 };
 use crate::geom::{Align as CrossAlign, Axis};
 use crate::tree::{
-    Align, Anchor, AxisConstraint, ClampRule, Constraints, Edge, Fit, InputPolicy, InsetRefs,
-    Interaction, Justify, Key, Layer, NodeKind, Props, Role, Semantics, TextWrap, Tip, ViewNode,
+    Align, Anchor, AxisConstraint, ClampRule, Constraints, Edge, Fit, FocusFigure, InputPolicy,
+    InsetRefs, Interaction, Justify, Key, Layer, NodeKind, Props, Role, Semantics, TextWrap, Tip,
+    ViewNode,
 };
 
 /// Height of the rule between two rows, and of the rule under a field.
@@ -176,6 +177,11 @@ pub(crate) fn edge_row(
 /// key is the caller's, and a caller that keeps that key the same in the
 /// closed and open forms keeps keyboard focus on the field across the
 /// open — the id is what focus is seated on.
+///
+/// It is a well, so it declares [`FocusFigure::Hug`]: keyboard focus is two
+/// bars beside it, the way a text input's is, and never the underline a
+/// button gets — which, with the list flush under the field, landed across
+/// the first option row (rows 11 and 29, 2026-09-05).
 pub(crate) fn list_box_field(
     key: impl Into<Key>,
     label: impl Into<String>,
@@ -222,6 +228,7 @@ pub(crate) fn list_box_field(
         })
         .interactive(Role::Button, label, FIELD_INTENTS);
     node.semantics.expanded = Some(expanded);
+    node.semantics.focus_figure = FocusFigure::Hug;
     node
 }
 

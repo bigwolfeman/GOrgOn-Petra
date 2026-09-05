@@ -1171,7 +1171,7 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         // field) and nothing around it; its open `menu` is a `list_box`,
         // which Carbon casts with a shadow and no outline. Select's field
         // is the same node, so it left this list with it.
-        "root/carbon2/dp-due",
+        "root/carbon2/dp-due/field",
         "root/carbon2/dp-open/field",
         // Data table rows used to be here, binding the four-sided `border`
         // as an approximation of Carbon's row-bottom rule

@@ -18,7 +18,9 @@ use super::tokens::{
     TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_BODY, t,
 };
 use crate::geom::{Align, Axis};
-use crate::tree::{AxisConstraint, Constraints, Interaction, Key, NodeKind, Props, Role, ViewNode};
+use crate::tree::{
+    AxisConstraint, Constraints, FocusFigure, Interaction, Key, NodeKind, Props, Role, ViewNode,
+};
 
 /// What an editable text input declares.
 ///
@@ -139,9 +141,11 @@ pub fn labeled(key: impl Into<Key>, label: impl Into<String>, control: ViewNode)
 /// is why the rule is there: it is the edge that identifies the control.
 ///
 /// Keyboard focus on a field is two vertical bars hugging the left and
-/// right, not the underline buttons get. Geometry is `FocusRing::hugs`.
-/// This file does not paint a focus ring. Carbon's is a 2px outline on all
-/// four sides; that is the host's figure to change, not this file's.
+/// right, not the underline buttons get. The field declares that
+/// ([`FocusFigure::Hug`]); the geometry is `FocusRing::hugs`, and the host
+/// paints it. This file does not paint a focus ring. Carbon's is a 2px
+/// outline on all four sides; that is the host's figure to change, not
+/// this file's.
 ///
 /// `NodeKind::Input` is a leaf kind, so unlike [`super::button`] it carries
 /// no padding (`Props.padding` is refused on a leaf,
@@ -167,7 +171,10 @@ pub fn field_lg(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
 /// Carbon Fluid: 64 tall, label stacked inside the well.
 ///
 /// The wrapper is the 64-unit well (fill + edge). The inner `Input` holds
-/// `Role::TextInput`; the wrapper does not steal it.
+/// `Role::TextInput`; the wrapper does not steal it. Focus shows on the
+/// wrapper: the wrapper is the hull ([`FocusFigure::Hug`]) and the input
+/// says so ([`FocusFigure::HugWell`]), which is Carbon's 2px focus border
+/// on `.cds--text-input--fluid` and not on the `<input>`.
 pub fn field_fluid(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
     let label = label.into();
     let mut node = stack(
@@ -180,6 +187,7 @@ pub fn field_fluid(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
         ],
     );
     bind_field_chrome(&mut node.props);
+    node.semantics.focus_figure = FocusFigure::Hug;
     node.constraints.vertical.min = Some(SIZE_FLUID);
     node
 }
@@ -363,6 +371,12 @@ fn input_field(
     if matches!(chrome, FieldChrome::ReadOnly) {
         node.semantics.read_only = true;
     }
+    // A bare input is its own well and hugs itself. A nested one sits in a
+    // wrapper that is the well, and shows its focus there.
+    node.semantics.focus_figure = match chrome {
+        FieldChrome::Nested => FocusFigure::HugWell,
+        FieldChrome::Enabled | FieldChrome::Invalid | FieldChrome::ReadOnly => FocusFigure::Hug,
+    };
     node
 }
 
@@ -386,7 +400,7 @@ mod tests {
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
-    use crate::tree::{Interaction, NodeKind, Props, Registry, Role, ViewNode};
+    use crate::tree::{FocusFigure, Interaction, NodeKind, Props, Registry, Role, ViewNode};
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         node.children
@@ -398,6 +412,47 @@ mod tests {
 
     fn token<'a>(node: &'a ViewNode, slot: &str) -> Option<&'a str> {
         node.props.tokens.get(slot).map(|name| name.as_str())
+    }
+
+    /// Every field declares its focus figure; the host does not guess it
+    /// from `Role::TextInput`. A bare well hugs itself; the fluid well is
+    /// the hull its nested input shows focus on.
+    #[test]
+    fn every_field_declares_where_its_focus_is_shown() {
+        for (label, node) in [
+            ("default", field("f", "Name")),
+            ("sm", field_sm("f", "Name")),
+            ("lg", field_lg("f", "Name")),
+            ("readonly", field_readonly("f", "Name")),
+        ] {
+            assert_eq!(
+                node.semantics.focus_figure,
+                FocusFigure::Hug,
+                "{label}: a bare well is its own hull"
+            );
+        }
+        for (label, node) in [
+            ("labeled", field_labeled("f", "Name")),
+            ("invalid", field_invalid("f", "Name", "required")),
+        ] {
+            assert_eq!(
+                node.semantics.focus_figure,
+                FocusFigure::Underline,
+                "{label}: the wrapper is a label seat, not a well"
+            );
+            assert_eq!(
+                child(&node, "input").semantics.focus_figure,
+                FocusFigure::Hug,
+                "{label}: the input inside a label seat hugs itself"
+            );
+        }
+        let fluid = field_fluid("f", "Name");
+        assert_eq!(fluid.semantics.focus_figure, FocusFigure::Hug);
+        assert_eq!(
+            child(&fluid, "input").semantics.focus_figure,
+            FocusFigure::HugWell,
+            "the fluid input shows its focus on the 64-tall well around it"
+        );
     }
 
     #[test]

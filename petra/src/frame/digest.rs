@@ -556,6 +556,13 @@ fn leaf_bytes(scale: Scale, p: &Placement) -> Vec<u8> {
                 ambient: _,
                 actions: _,
                 total_count: _,
+                // Decides where the focus indicator is drawn, and is held
+                // out the way `role` is: `role` decided the same figure
+                // before this field existed and was never hashed either,
+                // so the hole is unchanged. Closing it means hashing both
+                // and bumping `DOMAIN`, which is a contract change owed
+                // separately (`contracts/frame-identity.md`, "Not covered").
+                focus_figure: _,
             },
         // Rewritable, not merely redundant: a subtree a reuse pass copies
         // from the previous frame is rebased onto its new position, and
@@ -951,7 +958,7 @@ mod tests {
     use crate::geom::Point;
     use crate::geom::{Rect, Scale, Size};
     use crate::token::ThemeMode;
-    use crate::tree::{Edge, Interaction, NodeKind, Role, TextWrap};
+    use crate::tree::{Edge, FocusFigure, Interaction, NodeKind, Role, TextWrap};
 
     fn viewport() -> Viewport {
         Viewport {
@@ -1047,6 +1054,10 @@ mod tests {
                 skeleton: true,
                 disabled: false,
                 selected: false,
+                // Non-default on purpose, like the flags above: a fixture
+                // that only ever carries the default cannot show that the
+                // field is held out of the stream.
+                focus_figure: FocusFigure::Hug,
                 expanded: Some(true),
                 stale: false,
                 ambient: false,
@@ -1269,6 +1280,7 @@ mod tests {
         resemanticked.semantics.actions = vec![Interaction::Scroll];
         resemanticked.semantics.total_count = Some(4);
         resemanticked.semantics.role = Some(Role::Label);
+        resemanticked.semantics.focus_figure = FocusFigure::Underline;
         assert_ne!(resemanticked, base);
         assert_eq!(
             digest(&vp, &[resemanticked]),

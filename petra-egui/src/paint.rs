@@ -24,7 +24,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use egui::{Color32, Painter, Rgba, Stroke};
-use gorgon_petra::frame::{PaintContent, PetrifiedFrame, Placement, round_rect};
+use gorgon_petra::frame::{
+    PaintContent, PetrifiedFrame, Placement, PlacementSemantics, round_rect,
+};
 use gorgon_petra::geom::{Rect as PetraRect, Scale};
 use gorgon_petra::layout::TextRequest;
 use gorgon_petra::token::value::CoverageValue;
@@ -32,7 +34,7 @@ use gorgon_petra::token::{
     DerivedState, FocusRing, InteractionRank, MotionValue, SHADOW_GEOMETRY, Silhouette,
     ThemeSnapshot, TokenName, TokenValue, TypographyValue, base_slot, resolve_slot, resolve_state,
 };
-use gorgon_petra::tree::{Edge, Role};
+use gorgon_petra::tree::{Edge, FocusFigure, NodeKind};
 
 use crate::focus_caret::CaretFigure;
 use crate::host::{COVERAGE_TOKEN, FALLBACK_COVERAGE, coverage_plan};
@@ -641,9 +643,22 @@ pub(crate) fn paint_frame_with_caret(
     colors: &dyn TokenSource,
     painters: &CustomPainters,
     images: &mut ImageSources,
-    caret: Option<(Vec<egui::Rect>, egui::Rect)>,
+    caret: Option<CaretOverlay>,
 ) -> PaintReport {
     paint_frame_inner(painter, frame, shaper, colors, painters, images, caret)
+}
+
+/// The host's interpolated caret, handed to the painter in place of a jump
+/// onto `semantics.focused`: the bars in flight, the clip they may not
+/// paint past, and the figure they are flying toward (which decides
+/// whether they cast a shadow).
+pub(crate) struct CaretOverlay {
+    /// The bars this frame, already interpolated.
+    pub bars: Vec<egui::Rect>,
+    /// The clip the bars may not paint past.
+    pub clip: egui::Rect,
+    /// The figure at the destination.
+    pub figure: CaretFigure,
 }
 
 fn paint_frame_inner(
@@ -653,7 +668,7 @@ fn paint_frame_inner(
     colors: &dyn TokenSource,
     painters: &CustomPainters,
     images: &mut ImageSources,
-    caret: Option<(Vec<egui::Rect>, egui::Rect)>,
+    caret: Option<CaretOverlay>,
 ) -> PaintReport {
     let mut report = PaintReport {
         placements: frame.placements.len(),
@@ -683,11 +698,6 @@ fn paint_frame_inner(
         painters,
         images,
     };
-    // The focused placement *and* the corner radius it asked for. The ring
-    // tracks the node's own rounding, so it needs the `radius` slot the main
-    // loop already resolved — carried here rather than re-derived, so a ring
-    // can never round differently from the shape it is ringing.
-    let mut focused: Vec<(&Placement, f32)> = Vec::new();
     for (placement, content) in frame.paint_pairs() {
         let clip = to_egui_snapped(placement.clip, scale);
         if !clip.is_positive() {
@@ -706,49 +716,38 @@ fn paint_frame_inner(
             Outcome::Empty => report.empty += 1,
             Outcome::Silent => report.silent += 1,
         }
-        if caret.is_none() && placement.semantics.focused {
-            // The same chain `paint_one` walked, so a ring can never round
-            // differently from the shape it is ringing when a state rebinds
-            // `radius` (`gorgon_petra::token::state`).
-            let corner_radius = resolve_slot(
-                &content.tokens,
-                RADIUS_SLOT,
-                DerivedState::of(&placement.semantics),
-            )
-            .map_or(0.0, |token| {
-                resolve_radius_or_record(env.colors, token, &mut report)
-            });
-            focused.push((placement, corner_radius));
-        }
     }
-    if let Some((bars, clip)) = caret {
-        let painted = paint_caret_overlay(painter, &bars, clip, colors, scale, &mut report);
-        if painted {
-            report.focus_rings += 1;
-        } else if frame
-            .placements
-            .iter()
-            .any(|p| p.semantics.focused && !p.is_visible())
-            || report
-                .unresolved_tokens
-                .contains(gorgon_petra::token::focus::RING_TOKEN)
-        {
-            report.blind_focus += 1;
-        }
-    } else {
-        for (placement, _corner_radius) in focused {
-            let mut p = painter.with_clip_rect(to_egui_snapped(placement.clip, scale));
-            p.set_opacity(placement.opacity.clamp(0.0, 1.0));
-            if paint_focus_ring(&p, placement, env.page, colors, scale, &mut report) {
-                report.focus_rings += 1;
-            } else if !placement.is_visible()
-                || report
-                    .unresolved_tokens
-                    .contains(gorgon_petra::token::focus::RING_TOKEN)
-            {
-                report.blind_focus += 1;
-            }
-        }
+    // The indicator is drawn after the loop rather than inside it because
+    // it reaches outside its node's rect, and a later sibling's fill would
+    // paint over one drawn in tree order. Either the host's in-flight bars,
+    // or a jump onto the settled target: one target, resolved once, by
+    // [`focused_caret_target`].
+    let focused_off_screen = frame
+        .placements
+        .iter()
+        .any(|p| p.semantics.focused && !p.is_visible());
+    let painted = match caret {
+        Some(overlay) => paint_caret_overlay(
+            painter,
+            &overlay.bars,
+            overlay.clip,
+            overlay.figure,
+            colors,
+            scale,
+            &mut report,
+        ),
+        None => focused_caret_target(frame).is_some_and(|target| {
+            paint_focus_target(painter, &target, env.page, colors, scale, &mut report)
+        }),
+    };
+    if painted {
+        report.focus_rings += 1;
+    } else if focused_off_screen
+        || report
+            .unresolved_tokens
+            .contains(gorgon_petra::token::focus::RING_TOKEN)
+    {
+        report.blind_focus += 1;
     }
     report
 }
@@ -758,6 +757,7 @@ fn snapped_ring(scale: Scale) -> FocusRing {
     FocusRing {
         thickness: device_snapped_width(FocusRing::STANDARD.thickness, scale),
         gap: device_snapped_width(FocusRing::STANDARD.gap, scale),
+        hug_gap: device_snapped_width(FocusRing::STANDARD.hug_gap, scale),
     }
 }
 
@@ -834,55 +834,147 @@ pub(crate) fn caret_dest_pair(
     }
 }
 
-/// The focused placement's node, if that placement is on screen.
+/// Where the focus indicator goes this frame: the focused node's id, the
+/// rect the figure is drawn around, the figure, and that rect's clip.
+///
+/// The rect is the focused placement's own, or — for a node that declared
+/// [`FocusFigure::HugWell`] — the nearest ancestor that declared
+/// [`FocusFigure::Hug`]: the well an `Input` leaf sits in. `id` stays the
+/// focused node's, because that is what the spring keys its flight on.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct CaretTarget<'a> {
+    /// The focused placement's id.
+    pub id: &'a str,
+    /// The rect the figure brackets or underlines, device-snapped.
+    pub node: egui::Rect,
+    /// Underline or hug.
+    pub figure: CaretFigure,
+    /// The composer clip of the placement `node` belongs to, device-snapped.
+    pub clip: egui::Rect,
+    /// That placement's cumulative opacity.
+    pub opacity: f32,
+}
+
+/// The figure rule, in its one home: the node's own declaration.
+///
+/// Never the role. A select field, a dropdown field, a date field and a
+/// toggletip trigger are `Role::Button` and hug; a menu item is
+/// `Role::Button` and underlines. Until 2026-09-05 this was
+/// `role == TextInput`, written twice, and every field-shaped button
+/// underlined into the surface it had just opened.
 #[must_use]
-pub(crate) fn focused_caret_target(
-    frame: &PetrifiedFrame,
-) -> Option<(&str, egui::Rect, CaretFigure, egui::Rect)> {
+pub(crate) fn caret_figure(semantics: &PlacementSemantics) -> CaretFigure {
+    match semantics.focus_figure {
+        FocusFigure::Underline => CaretFigure::Underline,
+        FocusFigure::Hug | FocusFigure::HugWell => CaretFigure::Hug,
+    }
+}
+
+/// The focused placement's caret target, if one is to be painted.
+///
+/// `None` when nothing is focused, when the focused node (or the well it
+/// shows focus on) is off screen, or when a bar would cross a surface that
+/// sits **above** the node — a `Layer::Popup` list opened flush under a
+/// field, say. The indicator belongs to its node's own layer; painting it
+/// over a surface stacked above that node would put the operator's eye on
+/// a bar the node cannot own, so it is withheld instead. A surface the
+/// focused node is *inside* is not above it and never hides it.
+#[must_use]
+pub(crate) fn focused_caret_target(frame: &PetrifiedFrame) -> Option<CaretTarget<'_>> {
     let scale = frame.viewport.scale;
-    frame.placements.iter().find_map(|p| {
-        if !p.semantics.focused || !p.is_visible() {
-            return None;
-        }
-        let figure = if p.semantics.role == Some(Role::TextInput) {
-            CaretFigure::Hug
-        } else {
-            CaretFigure::Underline
-        };
-        Some((
-            p.id.as_str(),
-            to_egui_snapped(p.rect, scale),
-            figure,
-            to_egui_snapped(p.clip, scale),
-        ))
+    let placements = &frame.placements;
+    let (index, focused) = placements
+        .iter()
+        .enumerate()
+        .find(|(_, p)| p.semantics.focused)?;
+    if !focused.is_visible() {
+        return None;
+    }
+    let lineage: Vec<usize> = ancestors(placements, index).collect();
+    let hull = if focused.semantics.focus_figure == FocusFigure::HugWell {
+        lineage
+            .iter()
+            .copied()
+            .find(|&i| placements[i].semantics.focus_figure == FocusFigure::Hug)
+            .map(|i| &placements[i])
+    } else {
+        None
+    };
+    let shown_on = hull.unwrap_or(focused);
+    if !shown_on.is_visible() {
+        return None;
+    }
+    let node = to_egui_snapped(shown_on.rect, scale);
+    let figure = caret_figure(&shown_on.semantics);
+    let bars = caret_bars(node, figure, scale);
+    let covered = placements.iter().enumerate().any(|(i, s)| {
+        i != index
+            && s.kind == NodeKind::Surface
+            && s.z > shown_on.z
+            && !lineage.contains(&i)
+            && s.is_visible()
+            && {
+                let cover = to_egui_snapped(s.rect, scale);
+                bars.iter().any(|bar| overlaps(*bar, cover))
+            }
+    });
+    if covered {
+        return None;
+    }
+    Some(CaretTarget {
+        id: focused.id.as_str(),
+        node,
+        figure,
+        clip: to_egui_snapped(shown_on.clip, scale),
+        opacity: shown_on.opacity,
     })
 }
 
-/// Draw the focus underline under one focused placement, and report whether
-/// any of it landed.
+/// The indices of `index`'s ancestors, nearest first, walking
+/// `Placement::parent` the way `gorgon_petra::focus`'s `blocking_scopes`
+/// does: bounded by the slice's length, so a cyclic or out-of-range chain
+/// ends rather than spins.
+fn ancestors(placements: &[Placement], index: usize) -> impl Iterator<Item = usize> + '_ {
+    let mut cursor = placements.get(index).and_then(|p| p.parent);
+    let mut steps = 0usize;
+    std::iter::from_fn(move || {
+        let i = cursor?;
+        if steps >= placements.len() {
+            return None;
+        }
+        steps += 1;
+        cursor = placements.get(i).and_then(|p| p.parent);
+        Some(i)
+    })
+}
+
+/// Whether two rects share any area. Touching edges do not count: a list
+/// flush under a field shares the field's bottom edge with a hug bar's
+/// bottom edge, and that is not a cover.
+fn overlaps(a: egui::Rect, b: egui::Rect) -> bool {
+    a.min.x < b.max.x && b.min.x < a.max.x && a.min.y < b.max.y && b.min.y < a.max.y
+}
+
+/// Draw the settled indicator for `target`, and report whether any of it
+/// landed.
 ///
 /// The geometry is [`FocusRing`]'s, in `gorgon-petra` (D-069). What lives
-/// here is one filled strip in `focus.ring` (the accent) and the raised
-/// shadow that seats it on the card. The bar sits *below* the node, full
-/// width, so it never enters a rounded fill.
-fn paint_focus_ring(
+/// here is the filled bars in `focus.ring` (the accent) and, for an
+/// underline, the shadow that seats it on the card.
+fn paint_focus_target(
     painter: &Painter,
-    placement: &Placement,
+    target: &CaretTarget<'_>,
     page: egui::Rect,
     colors: &dyn TokenSource,
     scale: Scale,
     report: &mut PaintReport,
 ) -> bool {
-    let figure = if placement.semantics.role == Some(Role::TextInput) {
-        CaretFigure::Hug
-    } else {
-        CaretFigure::Underline
-    };
-    let node = to_egui_snapped(placement.rect, scale);
-    let limit = caret_clip_limit(to_egui_snapped(placement.clip, scale), false, page, scale);
+    let mut p = painter.clone();
+    p.set_opacity(target.opacity.clamp(0.0, 1.0));
+    let limit = caret_clip_limit(target.clip, false, page, scale);
     let mut painted = false;
-    for bar in caret_bars(node, figure, scale) {
-        if paint_focus_bar(painter, bar, limit, colors, scale, report) {
+    for bar in caret_bars(target.node, target.figure, scale) {
+        if paint_focus_bar(&p, bar, limit, target.figure, colors, scale, report) {
             painted = true;
         }
     }
@@ -895,27 +987,36 @@ pub(crate) fn paint_caret_overlay(
     painter: &Painter,
     bars: &[egui::Rect],
     clip: egui::Rect,
+    figure: CaretFigure,
     colors: &dyn TokenSource,
     scale: Scale,
     report: &mut PaintReport,
 ) -> bool {
     let mut painted = false;
     for bar in bars {
-        if paint_focus_bar(painter, *bar, clip, colors, scale, report) {
+        if paint_focus_bar(painter, *bar, clip, figure, colors, scale, report) {
             painted = true;
         }
     }
     painted
 }
 
-/// Draw one underline at `bar`, never past `limit`.
+/// Draw one bar at `bar`, never past `limit`.
 ///
 /// `limit` is the composer's clip for this node. A list row at the bottom
 /// of a scroll must not paint its bar onto the next card.
+///
+/// An underline casts the overlay shadow that seats a 3-unit strip on the
+/// card. A hug does not: the shadow's 4-unit downward offset and 12-unit
+/// blur put a dark smudge under the bar's foot, past the well's bottom
+/// rule, which read as the bar overhanging the well (rows 22 and 28,
+/// 2026-09-05). A 40-unit bar standing beside a filled well needs no
+/// seating, and Carbon's field outline casts none.
 fn paint_focus_bar(
     painter: &Painter,
     bar: egui::Rect,
     limit: egui::Rect,
+    figure: CaretFigure,
     colors: &dyn TokenSource,
     scale: Scale,
     report: &mut PaintReport,
@@ -941,7 +1042,9 @@ fn paint_focus_bar(
         return false;
     }
     cast.set_clip_rect(clip);
-    if let Some(shadow_color) = resolve_or_record(colors, "shadow.overlay", report) {
+    if figure == CaretFigure::Underline
+        && let Some(shadow_color) = resolve_or_record(colors, "shadow.overlay", report)
+    {
         let shadow = egui::epaint::Shadow {
             offset: shadow_geom.offset,
             blur: shadow_geom.blur,
@@ -2908,9 +3011,9 @@ mod tests {
         );
     }
 
-    /// A focused text field is hugged on the left and right, not underlined.
-    #[test]
-    fn a_focused_field_is_hugged_on_the_left_and_right() {
+    /// A bare text input, for the figure tests: `Role::TextInput`, and the
+    /// focus figure the caller declares.
+    fn text_input(figure: gorgon_petra::tree::FocusFigure) -> ViewNode {
         use gorgon_petra::tree::{Interaction, Role};
 
         let mut props = Props {
@@ -2921,13 +3024,136 @@ mod tests {
             .tokens
             .insert("background".into(), tok("surface.raised"));
         props.tokens.insert("border".into(), tok("border.subtle"));
-        let node = ViewNode::new(NodeKind::Input, "root")
+        let mut node = ViewNode::new(NodeKind::Input, "root")
             .with_props(props)
             .interactive(
                 Role::TextInput,
                 "name",
                 &[Interaction::Focus, Interaction::Key, Interaction::TextEdit],
             );
+        node.semantics.focus_figure = figure;
+        node
+    }
+
+    /// The figure is the node's declaration, never its role: a
+    /// `Role::TextInput` that declares nothing underlines, and the same
+    /// node declaring `Hug` hugs. Falsify by putting `role == TextInput`
+    /// back into `caret_figure`.
+    #[test]
+    fn the_figure_is_the_declaration_not_the_role() {
+        use super::{caret_figure, focused_caret_target};
+        use crate::focus_caret::CaretFigure;
+        use gorgon_petra::tree::FocusFigure;
+
+        let host = Headless::new();
+        for (declared, expected) in [
+            (FocusFigure::Underline, CaretFigure::Underline),
+            (FocusFigure::Hug, CaretFigure::Hug),
+            (FocusFigure::HugWell, CaretFigure::Hug),
+        ] {
+            let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
+            h.state.focused = Some("/root".to_owned());
+            let frame = frame_of(&text_input(declared), &mut h);
+            let placement = frame.placement("/root").expect("placed");
+            assert_eq!(caret_figure(&placement.semantics), expected, "{declared:?}");
+            let target = focused_caret_target(&frame).expect("focused and on screen");
+            assert_eq!(target.figure, expected, "{declared:?}");
+            assert_eq!(target.id, "/root");
+        }
+    }
+
+    /// An `Input` leaf declaring `HugWell` shows its focus on the nearest
+    /// ancestor declaring `Hug` — the search well, not the leaf between the
+    /// magnifier and the text. Falsify by returning `focused` instead of
+    /// `shown_on` from `focused_caret_target`.
+    #[test]
+    fn a_hug_well_leaf_is_shown_on_the_well_around_it() {
+        use super::focused_caret_target;
+        use crate::focus_caret::CaretFigure;
+        use gorgon_petra::component::search;
+        use gorgon_petra::geom::Axis;
+
+        let root = ViewNode::new(NodeKind::Stack, "root")
+            .with_props(Props {
+                axis: Some(Axis::Vertical),
+                ..Props::default()
+            })
+            .child(search("q", "Filter"));
+        let host = Headless::new();
+        let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
+        h.state.focused = Some("/root/q/input".to_owned());
+        let frame = frame_of(&root, &mut h);
+        let well = frame.placement("/root/q").expect("the well is placed");
+        let leaf = frame
+            .placement("/root/q/input")
+            .expect("the leaf is placed");
+        assert!(
+            leaf.rect.x > well.rect.x,
+            "the fixture must put the leaf inside the well, past the glyph"
+        );
+        let target = focused_caret_target(&frame).expect("focused and on screen");
+        assert_eq!(target.id, "/root/q/input", "the spring keys on the leaf");
+        assert_eq!(target.figure, CaretFigure::Hug);
+        assert_eq!(
+            target.node,
+            to_egui_snapped(well.rect, frame.viewport.scale),
+            "the bars bracket the well, not the leaf"
+        );
+    }
+
+    /// A bar that would cross a surface stacked above the focused node is
+    /// withheld: the underline under a menu's trigger lands on the open
+    /// menu's first row otherwise. Falsify by dropping the `covered` check.
+    #[test]
+    fn a_caret_crossing_a_surface_above_its_node_is_withheld() {
+        use super::focused_caret_target;
+        use gorgon_petra::component::{button, menu, menu_item};
+        use gorgon_petra::geom::Axis;
+
+        let pair = |open: bool| {
+            let mut children = vec![button("trigger", "Actions")];
+            if open {
+                children.push(menu("menu", "Actions", vec![menu_item("mn-0", "Rename")]));
+            }
+            ViewNode::new(NodeKind::Stack, "root")
+                .with_props(Props {
+                    axis: Some(Axis::Vertical),
+                    ..Props::default()
+                })
+                .with_children(children)
+        };
+        let host = Headless::new();
+        let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
+        h.state.focused = Some("/root/trigger".to_owned());
+        let shut = frame_of(&pair(false), &mut h);
+        assert!(
+            focused_caret_target(&shut).is_some(),
+            "with the menu shut the trigger's underline is painted"
+        );
+        let open = frame_of(&pair(true), &mut h);
+        let menu_rect = open
+            .placement("/root/menu")
+            .expect("the menu is placed")
+            .rect;
+        let trigger_rect = open.placement("/root/trigger").expect("placed").rect;
+        assert!(
+            menu_rect.y
+                <= trigger_rect.bottom() + gorgon_petra::token::FocusRing::STANDARD.overhang(),
+            "the fixture must open the menu where the underline would go: \
+             menu {menu_rect:?}, trigger {trigger_rect:?}"
+        );
+        assert_eq!(
+            focused_caret_target(&open),
+            None,
+            "the underline would cross the open menu, which is above the trigger"
+        );
+    }
+
+    /// A focused text field declaring `Hug` is hugged on the left and
+    /// right, not underlined.
+    #[test]
+    fn a_focused_field_is_hugged_on_the_left_and_right() {
+        let node = text_input(gorgon_petra::tree::FocusFigure::Hug);
 
         let host = Headless::new();
         let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);

@@ -124,7 +124,9 @@ mod tests {
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
-    use crate::tree::{Anchor, Interaction, NodeKind, Props, Registry, Role, Tip, ViewNode};
+    use crate::tree::{
+        Anchor, FocusFigure, Interaction, NodeKind, Props, Registry, Role, Tip, ViewNode,
+    };
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         node.children
@@ -166,6 +168,11 @@ mod tests {
         assert_eq!(token(label, "foreground"), Some(TEXT_MUTED));
         let field = field_of(&node);
         assert_eq!(field.semantics.role, Some(Role::Button));
+        assert_eq!(
+            field.semantics.focus_figure,
+            FocusFigure::Hug,
+            "the field is a well: focus hugs its sides, as a text input's does"
+        );
         assert_eq!(field.semantics.label.as_deref(), Some("Theme"));
         assert_eq!(field.semantics.expanded, Some(false));
         assert_eq!(field.constraints.vertical.min, Some(SIZE_MD));
@@ -378,6 +385,11 @@ mod tests {
         assert_eq!(node.semantics.expanded, Some(true));
         let field = child(&node, "field");
         assert_eq!(field.semantics.role, Some(Role::Button));
+        assert_eq!(
+            field.semantics.focus_figure,
+            FocusFigure::Hug,
+            "open, the field still hugs: an underline would cross the list"
+        );
         assert_eq!(field.semantics.label.as_deref(), Some("Theme"));
         assert_eq!(field.semantics.expanded, Some(true));
         assert_eq!(field.constraints.vertical.min, Some(SIZE_MD));

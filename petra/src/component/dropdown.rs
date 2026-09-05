@@ -177,7 +177,9 @@ mod tests {
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, inks, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
-    use crate::tree::{Anchor, Interaction, NodeKind, Props, Registry, Role, Tip, ViewNode};
+    use crate::tree::{
+        Anchor, FocusFigure, Interaction, NodeKind, Props, Registry, Role, Tip, ViewNode,
+    };
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         node.children
@@ -204,6 +206,11 @@ mod tests {
         assert_eq!(token(label, "foreground"), Some(TEXT_MUTED));
         let field = open_field_of(&node);
         assert_eq!(field.semantics.role, Some(Role::Button));
+        assert_eq!(
+            field.semantics.focus_figure,
+            FocusFigure::Hug,
+            "the field is a well: focus hugs its sides, as a text input's does"
+        );
         assert_eq!(field.semantics.label.as_deref(), Some("Theme"));
         assert_eq!(field.constraints.vertical.min, Some(SIZE_MD));
         assert_eq!(field.constraints.vertical.max, Some(SIZE_MD));
@@ -254,6 +261,11 @@ mod tests {
         assert_eq!(node.semantics.expanded, Some(true));
         let field = child(&node, "field");
         assert_eq!(field.semantics.role, Some(Role::Button));
+        assert_eq!(
+            field.semantics.focus_figure,
+            FocusFigure::Hug,
+            "open, the field still hugs: an underline would cross the list"
+        );
         assert_eq!(field.semantics.label.as_deref(), Some("Theme"));
         assert_eq!(field.semantics.expanded, Some(true));
         assert_eq!(
@@ -302,6 +314,11 @@ mod tests {
     fn dropdown_option_sets_role_label_and_selected() {
         let on = dropdown_option("dark", "Dark", true);
         assert_eq!(on.semantics.role, Some(Role::Button));
+        assert_eq!(
+            on.semantics.focus_figure,
+            FocusFigure::Underline,
+            "an option row is a button, not a well: it keeps the underline"
+        );
         assert_eq!(on.semantics.label.as_deref(), Some("Dark"));
         assert!(on.semantics.selected);
         assert!(on.interactions.contains(&Interaction::Click));

@@ -33,6 +33,19 @@
 //! The month now comes from `value`, which is already `YYYY-MM-DD`: the
 //! component reads the month it is being asked to show rather than being
 //! told twice.
+//!
+//! # One shape, closed and open
+//!
+//! Both forms are a column keyed `key` holding `field`, plus `calendar`
+//! while open — the same arrangement [`super::select`] and
+//! [`super::dropdown`] settled on. Until 2026-09-05 the closed form *was*
+//! the field (`/due`) and the open form wrapped it (`/due/field`), so the
+//! id keyboard focus sat on stopped being focusable the moment the
+//! calendar opened, and the vanished-focus rule sent focus to the next
+//! reachable node on the page: the operator's "when I click it the cursor
+//! flies away". Carbon keeps focus on the input while the calendar is
+//! open. The field declares [`FocusFigure::Hug`], so that focus is two
+//! bars beside the field and never an underline across the calendar's top.
 
 use super::icon::{IconMark, IconTone, icon_toned};
 use super::pad;
@@ -44,8 +57,8 @@ use super::tokens::{
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
-    Align as PropAlign, Anchor, AxisConstraint, ClampRule, Constraints, Edge, InputPolicy,
-    Interaction, Justify, Key, Layer, NodeKind, Props, Role, TrackSize, ViewNode,
+    Align as PropAlign, Anchor, AxisConstraint, ClampRule, Constraints, Edge, FocusFigure,
+    InputPolicy, Interaction, Justify, Key, Layer, NodeKind, Props, Role, TrackSize, ViewNode,
 };
 
 /// Carbon calendar menu width (`18rem`). Independent of field size.
@@ -82,23 +95,26 @@ const _: () = assert!(WEEK_ROWS == 6);
 
 const FIELD_INTENTS: &[Interaction] = &[Interaction::Focus, Interaction::Click, Interaction::Hover];
 
-/// Closed date field at Carbon md (40). `label` is the accessible name;
-/// `value` is the visible date text.
+/// Closed date picker at Carbon md (40): a column keyed `key` holding the
+/// field, keyed `"field"`. `label` is the field's accessible name; `value`
+/// is the visible date text.
 pub fn date_picker(
     key: impl Into<Key>,
     label: impl Into<String>,
     value: impl Into<String>,
 ) -> ViewNode {
-    closed_field(key, label, value, None)
+    let label = label.into();
+    let field = closed_field("field", label, value, false);
+    column(key, field, None)
 }
 
-/// Open calendar: the closed field plus the month `value` names, flush
-/// under the field's leading edge.
+/// Open calendar: the same column, its field expanded, plus the month
+/// `value` names, flush under the field's leading edge.
 ///
-/// The field child is keyed `"field"`; the calendar is keyed `"calendar"`
-/// and anchored to `"field"`. A day cell is keyed `day-<n>` and an
-/// adjacent-month cell `adj-<i>`, so a caller matching `day-` picks up
-/// exactly the days of the month on show.
+/// The field child is keyed `"field"` in both forms; the calendar is keyed
+/// `"calendar"` and anchored to `"field"`. A day cell is keyed `day-<n>`
+/// and an adjacent-month cell `adj-<i>`, so a caller matching `day-` picks
+/// up exactly the days of the month on show.
 ///
 /// `value` is read as `YYYY-MM-DD`. A value that does not parse still
 /// draws a calendar — the current month cannot be known here, so it falls
@@ -113,10 +129,18 @@ pub fn date_picker_open(
     let label = label.into();
     let value = value.into();
     let (year, month, day) = parse_date(&value).unwrap_or((1970, 1, 0));
-    let field = closed_field("field", label.clone(), value, Some(true));
-    let calendar = calendar_surface(label, year, month, day);
-    let mut node = stack(key, Axis::Vertical, None, vec![field, calendar]);
-    node.semantics.expanded = Some(true);
+    let field = closed_field("field", label.clone(), value, true);
+    column(key, field, Some(calendar_surface(label, year, month, day)))
+}
+
+/// The column both forms share: `field`, plus `calendar` while open. One
+/// builder so the field's id cannot differ between the two.
+fn column(key: impl Into<Key>, field: ViewNode, calendar: Option<ViewNode>) -> ViewNode {
+    let open = calendar.is_some();
+    let mut children = vec![field];
+    children.extend(calendar);
+    let mut node = stack(key, Axis::Vertical, None, children);
+    node.semantics.expanded = Some(open);
     node
 }
 
@@ -124,7 +148,7 @@ fn closed_field(
     key: impl Into<Key>,
     label: impl Into<String>,
     value: impl Into<String>,
-    expanded: Option<bool>,
+    expanded: bool,
 ) -> ViewNode {
     let label = label.into();
     let mut value_node = text("value", value.into());
@@ -154,7 +178,10 @@ fn closed_field(
     let mut node =
         node.with_constraints(pin_height(SIZE_MD))
             .interactive(Role::Button, label, FIELD_INTENTS);
-    node.semantics.expanded = expanded;
+    node.semantics.expanded = Some(expanded);
+    // A well a person picks into: focus brackets its sides, as on a text
+    // input, and never underlines into the calendar flush beneath it.
+    node.semantics.focus_figure = FocusFigure::Hug;
     node
 }
 
@@ -475,7 +502,9 @@ mod tests {
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
-    use crate::tree::{Anchor, Interaction, NodeKind, Props, Registry, Role, ViewNode};
+    use crate::tree::{
+        Anchor, FocusFigure, Interaction, NodeKind, Props, Registry, Role, ViewNode,
+    };
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         node.children
@@ -489,22 +518,34 @@ mod tests {
         node.props.tokens.get(slot).map(|name| name.as_str())
     }
 
+    /// The closed form is a column whose `field` is the button, the same
+    /// shape as the open form less the calendar.
     #[test]
-    fn date_picker_is_a_closed_button_at_height_40() {
+    fn date_picker_is_a_column_over_a_closed_field_at_height_40() {
         let node = date_picker("due", "Due date", "2026-08-30");
-        assert_eq!(node.semantics.role, Some(Role::Button));
-        assert_eq!(node.semantics.label.as_deref(), Some("Due date"));
-        assert_eq!(node.constraints.vertical.min, Some(SIZE_MD));
-        assert_eq!(node.constraints.vertical.max, Some(SIZE_MD));
-        assert!(node.interactions.contains(&Interaction::Click));
-        assert_eq!(token(&node, "background"), Some(SURFACE_RAISED));
-        assert_eq!(token(&node, "border"), Some(BORDER_SUBTLE));
+        assert_eq!(node.kind, NodeKind::Stack);
+        assert_eq!(node.semantics.role, None, "the column is not the control");
+        assert_eq!(node.semantics.expanded, Some(false));
+        assert_eq!(node.children.len(), 1, "closed is the field alone");
+        let field = child(&node, "field");
+        assert_eq!(field.semantics.role, Some(Role::Button));
         assert_eq!(
-            child(&node, "value").props.text.as_deref(),
+            field.semantics.focus_figure,
+            FocusFigure::Hug,
+            "a well a person picks into: focus brackets its sides"
+        );
+        assert_eq!(field.semantics.label.as_deref(), Some("Due date"));
+        assert_eq!(field.constraints.vertical.min, Some(SIZE_MD));
+        assert_eq!(field.constraints.vertical.max, Some(SIZE_MD));
+        assert!(field.interactions.contains(&Interaction::Click));
+        assert_eq!(token(field, "background"), Some(SURFACE_RAISED));
+        assert_eq!(token(field, "border"), Some(BORDER_SUBTLE));
+        assert_eq!(
+            child(field, "value").props.text.as_deref(),
             Some("2026-08-30")
         );
-        let mark = child(&node, "calendar-mark");
-        assert_eq!(mark.kind, crate::tree::NodeKind::Canvas);
+        let mark = child(field, "calendar-mark");
+        assert_eq!(mark.kind, NodeKind::Canvas);
         assert_eq!(mark.props.text, None, "the calendar is a glyph, not a word");
         assert_eq!(
             mark.semantics.label.as_deref(),
@@ -512,8 +553,27 @@ mod tests {
             "the word survives as the mark's accessible name"
         );
         assert!(mark.semantics.role.is_none());
-        assert_eq!(node.semantics.expanded, None);
-        assert_ne!(node.semantics.role, Some(Role::Overlay));
+        assert_eq!(field.semantics.expanded, Some(false));
+        assert_ne!(field.semantics.role, Some(Role::Overlay));
+    }
+
+    /// The field's id is the same in both forms, so keyboard focus seated
+    /// on it survives the calendar opening. Falsify by keying the closed
+    /// column's field `"input"`: `/due/field` then exists only while open,
+    /// and the host's vanished-focus rule sends focus elsewhere.
+    #[test]
+    fn the_field_keeps_its_key_across_open_and_closed() {
+        let closed = date_picker("due", "Due date", "2026-08-30");
+        let open = date_picker_open("due", "Due date", "2026-08-30");
+        assert_eq!(closed.key, open.key);
+        assert_eq!(child(&closed, "field").key, child(&open, "field").key);
+        for (label, node) in [("closed", &closed), ("open", &open)] {
+            let frame = petrify_lone(node.clone());
+            assert!(
+                frame.placements.iter().any(|p| p.id == "/root/due/field"),
+                "{label}: the field is placed at the same id"
+            );
+        }
     }
 
     #[test]
@@ -746,7 +806,8 @@ mod tests {
         }
     }
 
-    /// Check F: the closed field declares `Focus` and is reachable.
+    /// Check F: the closed field declares `Focus` and is reachable; the
+    /// column above it is never a stop.
     #[test]
     fn the_closed_field_is_reachable_in_focus_order() {
         let node = date_picker("due", "Due date", "2026-08-30");
@@ -755,14 +816,13 @@ mod tests {
             &frame.placements,
             &std::collections::BTreeMap::new(),
         );
-        let field = frame
-            .placements
-            .iter()
-            .find(|p| p.id.ends_with("/due"))
-            .expect("the field is placed");
         assert!(
-            focus.order().iter().any(|o| o == &field.id),
+            focus.order().iter().any(|o| o == "/root/due/field"),
             "the closed field declares Focus but is not in focus order"
+        );
+        assert!(
+            !focus.order().iter().any(|o| o == "/root/due"),
+            "the column is not a stop"
         );
     }
 
@@ -773,14 +833,15 @@ mod tests {
         const MIN_TEXT_CONTRAST: f32 = 4.5;
         const MIN_GLYPH_CONTRAST: f32 = 3.0;
         for theme in [crate::token::light(), crate::token::dark()] {
-            let node = date_picker("due", "Due date", "2026-08-30");
+            let column = date_picker("due", "Due date", "2026-08-30");
+            let node = child(&column, "field");
             let bg_name = node
                 .props
                 .tokens
                 .get("background")
                 .expect("the field binds a resting background");
             let bg = color(&theme, bg_name.as_str());
-            let value = child(&node, "value");
+            let value = child(node, "value");
             let fg_name = value
                 .props
                 .tokens
@@ -795,7 +856,7 @@ mod tests {
                 bg_name.as_str()
             );
 
-            let mark = child(&node, "calendar-mark");
+            let mark = child(node, "calendar-mark");
             let list = mark.props.canvas.as_ref().expect("the calendar is drawn");
             let mut fills = 0;
             for command in list.commands() {

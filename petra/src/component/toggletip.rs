@@ -10,6 +10,11 @@
 //!
 //! Container max-inline is 288 (`18rem`, SCSS). Open/closed are the only
 //! documented states.
+//!
+//! The trigger declares [`FocusFigure::Hug`]: keyboard focus is two bars
+//! beside it, as on a text input. An underline under a trigger whose
+//! popover opens flush beneath it landed on the popover's beak (row 37,
+//! 2026-09-05), and the operator asked for the sides.
 
 use super::pad;
 use super::popover::popover_with;
@@ -17,7 +22,7 @@ use super::stack;
 use super::text::text;
 use super::tokens::{LAYER_HOVER, SIZE_MD, SPACING_03, SPACING_05, SURFACE_BASE, TEXT_PRIMARY, t};
 use crate::geom::{Align, Axis};
-use crate::tree::{AxisConstraint, Constraints, Interaction, Key, Role, ViewNode};
+use crate::tree::{AxisConstraint, Constraints, FocusFigure, Interaction, Key, Role, ViewNode};
 
 /// Carbon toggletip content `max-inline-size` (`18rem`).
 const MAX_INLINE: f32 = 288.0;
@@ -66,8 +71,13 @@ fn trigger_button(key: impl Into<Key>, label: String) -> ViewNode {
     node.props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
-    node.with_constraints(pin_height(SIZE_MD))
-        .interactive(Role::Button, label, TRIGGER_INTENTS)
+    let mut node = node.with_constraints(pin_height(SIZE_MD)).interactive(
+        Role::Button,
+        label,
+        TRIGGER_INTENTS,
+    );
+    node.semantics.focus_figure = FocusFigure::Hug;
+    node
 }
 
 fn pin_height(h: f32) -> Constraints {
@@ -88,7 +98,9 @@ mod tests {
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
-    use crate::tree::{Anchor, Interaction, NodeKind, Props, Registry, Role, ViewNode};
+    use crate::tree::{
+        Anchor, FocusFigure, Interaction, NodeKind, Props, Registry, Role, ViewNode,
+    };
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         node.children
@@ -105,6 +117,11 @@ mod tests {
         assert_eq!(node.children.len(), 1);
         let trigger = child(&node, "trigger");
         assert_eq!(trigger.semantics.role, Some(Role::Button));
+        assert_eq!(
+            trigger.semantics.focus_figure,
+            FocusFigure::Hug,
+            "focus brackets the trigger's sides, as on a text input"
+        );
         assert_eq!(trigger.semantics.label.as_deref(), Some("About filters"));
         assert!(trigger.interactions.contains(&Interaction::Click));
         assert!(trigger.interactions.contains(&Interaction::Focus));

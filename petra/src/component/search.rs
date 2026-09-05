@@ -15,6 +15,13 @@
 //!
 //! Sizes: sm 32, md 40 (default), lg 48. The well is Carbon's field chrome
 //! ([`super::field::bind_field_chrome`]): a fill and a bottom rule.
+//!
+//! Keyboard focus shows on the **well**, not on the `Input` leaf inside it:
+//! the well declares [`FocusFigure::Hug`] and the leaf
+//! [`FocusFigure::HugWell`]. Carbon's `.cds--search--focus` is on the
+//! wrapper. Until 2026-09-05 the host hugged the leaf, so the left bar stood
+//! between the magnifier and the text — the operator's "doesn't respect the
+//! whole box".
 
 use super::field::bind_field_chrome;
 use super::icon::{IconMark, IconTone, icon_toned};
@@ -23,7 +30,9 @@ use super::tokens::{
     SIZE_MD, SPACING_03, SPACING_04, SPACING_05, TEXT_PRIMARY, TYPOGRAPHY_BODY, t,
 };
 use crate::geom::{Align, Axis};
-use crate::tree::{AxisConstraint, Constraints, InsetRefs, Key, NodeKind, Props, Role, ViewNode};
+use crate::tree::{
+    AxisConstraint, Constraints, FocusFigure, InsetRefs, Key, NodeKind, Props, Role, ViewNode,
+};
 
 /// Carbon Search sm. `tokens` only ships [`SIZE_MD`] (md / 40).
 const SIZE_SM: f32 = 32.0;
@@ -89,6 +98,7 @@ fn search_sized(key: impl Into<Key>, label: impl Into<String>, height: f32) -> V
         ..InsetRefs::default()
     });
     bind_field_chrome(&mut well.props);
+    well.semantics.focus_figure = FocusFigure::Hug;
     well.constraints.vertical.min = Some(height);
     well
 }
@@ -100,7 +110,7 @@ fn search_field(key: &'static str, label: String, height: f32) -> ViewNode {
         ..Props::default()
     };
     props.tokens.insert("foreground".into(), t(TEXT_PRIMARY));
-    ViewNode::new(NodeKind::Input, key)
+    let mut node = ViewNode::new(NodeKind::Input, key)
         .with_props(props)
         .interactive(Role::TextInput, label, super::field::EDITABLE_TEXT_INTENTS)
         .with_constraints(Constraints {
@@ -110,7 +120,9 @@ fn search_field(key: &'static str, label: String, height: f32) -> ViewNode {
                 priority: 0,
             },
             ..Constraints::default()
-        })
+        });
+    node.semantics.focus_figure = FocusFigure::HugWell;
+    node
 }
 
 #[cfg(test)]
@@ -123,7 +135,7 @@ mod tests {
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, inks, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
-    use crate::tree::{Interaction, NodeKind, Props, Registry, Role, ViewNode};
+    use crate::tree::{FocusFigure, Interaction, NodeKind, Props, Registry, Role, ViewNode};
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         node.children
@@ -135,6 +147,29 @@ mod tests {
 
     fn token<'a>(node: &'a ViewNode, slot: &str) -> Option<&'a str> {
         node.props.tokens.get(slot).map(|name| name.as_str())
+    }
+
+    /// Focus shows on the well, at every size. Falsify by declaring `Hug`
+    /// on the input instead of `HugWell`: the bar goes back between the
+    /// magnifier and the text.
+    #[test]
+    fn focus_is_shown_on_the_well_not_the_input_leaf() {
+        for node in [
+            search_sm("q", "Filter"),
+            search("q", "Filter"),
+            search_lg("q", "Filter"),
+        ] {
+            assert_eq!(node.semantics.focus_figure, FocusFigure::Hug);
+            assert_eq!(
+                child(&node, "input").semantics.focus_figure,
+                FocusFigure::HugWell
+            );
+            assert_eq!(
+                child(&node, "magnifier").semantics.focus_figure,
+                FocusFigure::Underline,
+                "the glyph declares nothing; it is never focused"
+            );
+        }
     }
 
     #[test]

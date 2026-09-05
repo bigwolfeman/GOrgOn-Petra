@@ -514,6 +514,7 @@ mod tests {
     use crate::catalog::WINDOW;
     use gorgon_petra::geom::{Point, Rect};
     use gorgon_petra::input::KeyCode;
+    use gorgon_petra::token::FocusRing;
     use gorgon_petra::tree::Edge;
 
     // ===== TRIAGE (temporary, 2026-09-04) — delete before merge =====
@@ -2293,5 +2294,330 @@ mod tests {
              of {width} marked"
         );
     }
-}
 
+    // ---- The focus caret on field-shaped controls (round 3, wave F1) ----
+    //
+    // Every test below starts from a `Camera::click`, because no person has
+    // an `Action::Focus`, and reads the raster back: the caret is host-owned
+    // geometry that no frame-level assertion can see.
+
+    /// The two hug bars the settled indicator draws around the well keyed
+    /// `well_tail`, read back from the raster, or a panic naming which part
+    /// of the figure is wrong.
+    ///
+    /// Asserts, from `FocusRing::STANDARD`'s own geometry: a bar of one
+    /// accent colour `hug_gap` outside each side; each bar exactly the
+    /// well's height, top and bottom; the gap between bar and well left as
+    /// ground; and the ground directly under each bar's foot the same as the
+    /// ground beside it, which is what a shadow smudge breaks. Returns the
+    /// bar colour so a caller can look for it elsewhere.
+    fn assert_hugs_well(cam: &mut Camera, well_tail: &str, shot: &str) -> [u8; 4] {
+        let ring = FocusRing::STANDARD;
+        let well = cam.rect(well_tail);
+        let img = raster(cam, shot);
+        let [left, right] = ring.hugs(well);
+        let mid_y = well.y + well.h / 2.0;
+        let (lx, rx) = (left.x + left.w / 2.0, right.x + right.w / 2.0);
+        let bar = px(&img, lx, mid_y);
+        assert_eq!(
+            px(&img, rx, mid_y),
+            bar,
+            "{well_tail}: the right hug is not the same colour as the left"
+        );
+        let inside = px(&img, well.x + 3.0, well.y + 3.0);
+        assert_ne!(
+            bar, inside,
+            "{well_tail}: no bar {ring:?} outside the left edge"
+        );
+        assert!(
+            bar[2] > bar[0] && bar[2] > bar[1],
+            "{well_tail}: the bar is not the accent: {bar:?}"
+        );
+        for (side, x, outward) in [("left", lx, -1.0), ("right", rx, 1.0)] {
+            let beside = px(&img, x + outward * 6.0, mid_y);
+            assert_ne!(bar, beside, "{well_tail}: the {side} bar bleeds outward");
+            let gap = px(
+                &img,
+                x - outward * (ring.thickness / 2.0 + ring.hug_gap / 2.0),
+                mid_y,
+            );
+            assert_ne!(
+                bar, gap,
+                "{well_tail}: the {side} bar touches the well; the gap is gone"
+            );
+            assert_eq!(
+                px(&img, x, well.y + 0.5),
+                bar,
+                "{well_tail}: the {side} bar does not reach the well's top"
+            );
+            assert_eq!(
+                px(&img, x, well.y + well.h - 0.5),
+                bar,
+                "{well_tail}: the {side} bar stops short of the well's bottom rule"
+            );
+            assert_ne!(
+                px(&img, x, well.y - 1.5),
+                bar,
+                "{well_tail}: the {side} bar overhangs the well's top"
+            );
+            let under = px(&img, x, well.y + well.h + 1.5);
+            assert_ne!(
+                under, bar,
+                "{well_tail}: the {side} bar overhangs the well's bottom rule"
+            );
+            assert_eq!(
+                under,
+                px(&img, x + outward * 6.0, well.y + well.h + 1.5),
+                "{well_tail}: the ground under the {side} bar's foot is darker \
+                 than the ground beside it: a shadow smudge past the rule"
+            );
+        }
+        bar
+    }
+
+    /// The device row where an underline under `rect` would sit.
+    fn underline_row(rect: Rect) -> u32 {
+        let ring = FocusRing::STANDARD;
+        ((rect.y + rect.h + ring.gap + ring.thickness / 2.0) * CAPTURE_SCALE) as u32
+    }
+
+    /// Row 28. A click in the search field brackets the **well**, magnifier
+    /// included, not the input leaf beside the glyph.
+    ///
+    /// The operator's "the cursor going to the sides doesn't respect the
+    /// whole box and needs a bit of padding; has clipping". The left bar
+    /// stood between the magnifier and the text, and the overlay shadow
+    /// put a smudge under its foot past the rule.
+    #[test]
+    fn clicking_the_search_field_brackets_the_whole_well() {
+        let mut cam = Camera::on("Search");
+        cam.click("query/input");
+        assert!(
+            cam.focused()
+                .as_deref()
+                .is_some_and(|id| id.ends_with("query/input")),
+            "the click did not seat focus in the field: {:?}",
+            cam.focused()
+        );
+        let well = cam.rect("/query");
+        let leaf = cam.rect("query/input");
+        assert!(
+            leaf.x > well.x + 8.0,
+            "the leaf sits past the glyph: {leaf:?} in {well:?}"
+        );
+        assert_hugs_well(&mut cam, "/query", "28-search-focused");
+        // Where a hug of the leaf would stand: inside the well, beside the
+        // glyph. It has to be the well's own fill.
+        let img = raster(&mut cam, "28-search-focused");
+        let inside = px(&img, well.x + 3.0, well.y + 3.0);
+        assert_eq!(
+            px(&img, leaf.x - 5.5, well.y + 3.0),
+            inside,
+            "a bar stands inside the well between the magnifier and the text"
+        );
+    }
+
+    /// Row 22. A click in the number field brackets the **well**, steppers
+    /// included, not the value cell beside the Subtract glyph.
+    #[test]
+    fn clicking_the_number_value_brackets_the_whole_well() {
+        let mut cam = Camera::on("Number input");
+        cam.click("n-md/value");
+        assert!(
+            cam.focused()
+                .as_deref()
+                .is_some_and(|id| id.ends_with("n-md/value")),
+            "the click did not seat focus in the value cell: {:?}",
+            cam.focused()
+        );
+        let well = cam.rect("/n-md");
+        let value = cam.rect("n-md/value");
+        assert!(
+            value.x + value.w < well.x + well.w - 40.0,
+            "the steppers sit past the value"
+        );
+        assert_hugs_well(&mut cam, "/n-md", "22-number-input-focused");
+        let img = raster(&mut cam, "22-number-input-focused");
+        let inside = px(&img, well.x + 3.0, well.y + 3.0);
+        assert_eq!(
+            px(&img, value.x + value.w + 4.5, well.y + 3.0),
+            inside,
+            "a bar stands in the middle of the well, beside the Subtract stepper"
+        );
+    }
+
+    /// Row 29. A click on the select field opens the list and brackets the
+    /// field; nothing is drawn across the list's first row, where a
+    /// button's underline used to land.
+    #[test]
+    fn clicking_the_select_field_brackets_it_and_nothing_crosses_the_open_list() {
+        let mut cam = Camera::on("Select");
+        cam.click("theme/field");
+        assert!(cam.has("theme/menu"), "the click did not open the list");
+        assert!(
+            cam.ring()
+                .as_deref()
+                .is_some_and(|id| id.ends_with("theme/field")),
+            "focus left the field when the list opened: {:?}",
+            cam.ring()
+        );
+        let field = cam.rect("theme/field");
+        let bar = assert_hugs_well(&mut cam, "theme/field", "29-select-open-focused");
+        let img = raster(&mut cam, "29-select-open-focused");
+        let row = device_row(&img, field.x, field.x + field.w, underline_row(field));
+        assert!(
+            !row.contains(&bar),
+            "an underline crosses the open list's first row"
+        );
+    }
+
+    /// Row 11. The dropdown field: the same anatomy as row 29.
+    #[test]
+    fn clicking_the_dropdown_field_brackets_it_and_nothing_crosses_the_open_list() {
+        let mut cam = Camera::on("Dropdown");
+        cam.click("dd/field");
+        assert!(cam.has("dd/menu"), "the click did not open the list");
+        assert!(
+            cam.ring()
+                .as_deref()
+                .is_some_and(|id| id.ends_with("dd/field")),
+            "focus left the field when the list opened: {:?}",
+            cam.ring()
+        );
+        let field = cam.rect("dd/field");
+        let bar = assert_hugs_well(&mut cam, "dd/field", "11-dropdown-open-focused");
+        let img = raster(&mut cam, "11-dropdown-open-focused");
+        let row = device_row(&img, field.x, field.x + field.w, underline_row(field));
+        assert!(
+            !row.contains(&bar),
+            "an underline crosses the open list's first row"
+        );
+    }
+
+    /// Row 10. A click on the date field opens the calendar, **keeps focus
+    /// on the field**, and brackets it.
+    ///
+    /// The operator's "when I click it the cursor flies away". The closed
+    /// form was the field and the open form wrapped it, so the id focus sat
+    /// on stopped existing as a focusable the moment the calendar opened,
+    /// and the vanished-focus rule sent focus to the chrome's Next button.
+    #[test]
+    fn clicking_the_date_field_keeps_focus_on_it_and_brackets_it() {
+        let mut cam = Camera::on("Date picker");
+        cam.click("when/field");
+        assert!(
+            cam.has("when/calendar"),
+            "the click did not open the calendar"
+        );
+        assert!(
+            cam.focused()
+                .as_deref()
+                .is_some_and(|id| id.ends_with("when/field")),
+            "focus flew away from the field when the calendar opened: {:?}",
+            cam.focused()
+        );
+        assert!(
+            cam.ring()
+                .as_deref()
+                .is_some_and(|id| id.ends_with("when/field")),
+            "the frame rings something other than the field: {:?}",
+            cam.ring()
+        );
+        let field = cam.rect("when/field");
+        let bar = assert_hugs_well(&mut cam, "when/field", "10-date-picker-open-focused");
+        let img = raster(&mut cam, "10-date-picker-open-focused");
+        let row = device_row(&img, field.x, field.x + field.w, underline_row(field));
+        assert!(
+            !row.contains(&bar),
+            "an underline crosses the calendar's top"
+        );
+    }
+
+    /// Row 37. A click on the toggletip trigger opens the tip and brackets
+    /// the trigger, the way a text input is bracketed; nothing is drawn on
+    /// the tip's beak, where the underline used to land.
+    #[test]
+    fn clicking_the_toggletip_trigger_brackets_it_like_a_text_input() {
+        let mut cam = Camera::on("Toggletip");
+        cam.click("tt/trigger");
+        assert!(cam.has("tt/tip"), "the click did not open the tip");
+        let trigger = cam.rect("tt/trigger");
+        let bar = assert_hugs_well(&mut cam, "tt/trigger", "37-toggletip-open-focused");
+        let img = raster(&mut cam, "37-toggletip-open-focused");
+        let row = device_row(
+            &img,
+            trigger.x,
+            trigger.x + trigger.w,
+            underline_row(trigger),
+        );
+        assert!(
+            !row.contains(&bar),
+            "an underline sits under the trigger, on the tip's beak"
+        );
+    }
+
+    /// Row 18. A menu's trigger is a button and underlines; while its menu
+    /// is open flush beneath it, the underline would cross the menu's first
+    /// row, so it is withheld — and comes back the moment the menu shuts.
+    #[test]
+    fn a_menu_trigger_underline_is_withheld_while_the_menu_covers_it() {
+        let mut cam = Camera::on("Menu");
+        cam.click("mn-pair/trigger");
+        assert!(
+            cam.has("mn-pair/menu"),
+            "the first click did not open the menu"
+        );
+        cam.click("mn-pair/trigger");
+        assert!(
+            !cam.has("mn-pair/menu"),
+            "the second click did not shut the menu"
+        );
+        assert!(
+            cam.focused()
+                .as_deref()
+                .is_some_and(|id| id.ends_with("mn-pair/trigger")),
+            "focus is not on the trigger after two clicks: {:?}",
+            cam.focused()
+        );
+        let trigger = cam.rect("mn-pair/trigger");
+        let shut = raster(&mut cam, "18-menu-shut-focused");
+        let row = underline_row(trigger);
+        let bar = px(
+            &shut,
+            trigger.x + trigger.w / 2.0,
+            row as f32 / CAPTURE_SCALE,
+        );
+        assert!(
+            bar[2] > bar[0] && bar[2] > bar[1],
+            "with the menu shut the trigger's underline is not there: {bar:?}"
+        );
+        cam.click("mn-pair/trigger");
+        assert!(
+            cam.has("mn-pair/menu"),
+            "the third click did not reopen the menu"
+        );
+        let open = raster(&mut cam, "18-menu-open-focused");
+        let across = device_row(&open, trigger.x, trigger.x + trigger.w, row);
+        assert!(
+            !across.contains(&bar),
+            "the trigger's underline is painted across the open menu's first row"
+        );
+    }
+
+    /// Row 34. A bare text field's hug stands `hug_gap` off the well with no
+    /// smudge under its foot: the same figure the seven rows above get,
+    /// checked on the control that always had it.
+    #[test]
+    fn clicking_a_text_field_brackets_it_off_the_well_with_a_clean_foot() {
+        let mut cam = Camera::on("Text input");
+        cam.click("field-md");
+        assert!(
+            cam.focused()
+                .as_deref()
+                .is_some_and(|id| id.ends_with("field-md")),
+            "the click did not seat focus in the field: {:?}",
+            cam.focused()
+        );
+        assert_hugs_well(&mut cam, "field-md", "34-text-input-md-focused");
+    }
+}
