@@ -243,6 +243,7 @@ pub struct TransitionDef {
     enter: Option<Track>,
     exit: ExitRule,
     ambient: bool,
+    press_inset: f32,
 }
 
 impl TransitionDef {
@@ -255,6 +256,7 @@ impl TransitionDef {
             enter: None,
             exit: ExitRule::CompleteInstantly,
             ambient: false,
+            press_inset: 0.0,
             errors: Vec::new(),
         }
     }
@@ -289,6 +291,33 @@ impl TransitionDef {
         &self.exit
     }
 
+    /// How far a node naming this transition pulls its rect in on every
+    /// side while its placement is **pressed**, in logical units. `0.0`
+    /// when the definition declares no press response, which is every
+    /// definition but one.
+    ///
+    /// # Why the response lives in the definition and not in the tree
+    ///
+    /// A press-crunch is a *visual* answer to a pointer, and the two things
+    /// it must not do are re-negotiate its siblings and be re-derived by
+    /// every component that wants one. The engine already guarantees the
+    /// first: `crate::anim::engine`'s own doc opens with *"a node animating
+    /// its rect does not re-negotiate its siblings"*, because it rewrites
+    /// the finished frame rather than feeding back into layout. Putting the
+    /// number here rather than on [`crate::tree::ViewNode`] gets the second:
+    /// a component opts in by **naming the transition**, and the depth of
+    /// the crunch, its curve and its timing are then one decision in one
+    /// place instead of a float every button constructor has to agree on.
+    ///
+    /// A definition that declares one must drive both
+    /// [`PropertyKind::Position`] and [`PropertyKind::Size`], because the
+    /// crunch is a scale about the node's own centre and neither half is a
+    /// crunch alone. [`TransitionBuilder::build`] refuses the rest.
+    #[must_use]
+    pub fn press_inset(&self) -> f32 {
+        self.press_inset
+    }
+
     /// Whether this transition is a declared-endless animation.
     ///
     /// An ambient definition never settles and never blocks a driver's settle
@@ -315,6 +344,7 @@ pub struct TransitionBuilder {
     enter: Option<Track>,
     exit: ExitRule,
     ambient: bool,
+    press_inset: f32,
     errors: Vec<String>,
 }
 
@@ -363,6 +393,19 @@ impl TransitionBuilder {
     #[must_use]
     pub fn ambient(mut self, ambient: bool) -> Self {
         self.ambient = ambient;
+        self
+    }
+
+    /// Pull the node's rect in by `units` on every side while it is
+    /// pressed. See [`TransitionDef::press_inset`].
+    #[must_use]
+    pub fn press(mut self, units: f32) -> Self {
+        if !units.is_finite() || units < 0.0 {
+            self.errors
+                .push(format!("a press inset is a finite distance, not {units}"));
+            return self;
+        }
+        self.press_inset = units;
         self
     }
 
@@ -421,6 +464,28 @@ impl TransitionBuilder {
         // makes the engine run forever without a host re-triggering anything.
         // Refusing this is what stops "ambient" from becoming a way to opt out
         // of the settle contract by accident.
+        // A crunch is a scale about the node's own centre, which moves the
+        // origin *and* the extent. Driving one without the other is a node
+        // that either slides sideways or grows out of one corner, and both
+        // read as a bug rather than as a press.
+        if self.press_inset > 0.0 {
+            for property in [PropertyKind::Position, PropertyKind::Size] {
+                if !self.timings.contains_key(&property) {
+                    self.errors.push(format!(
+                        "a press response scales about the node's centre, so it drives \
+                         Position and Size together; this definition does not drive \
+                         {property:?}"
+                    ));
+                }
+            }
+            if self.ambient {
+                self.errors.push(
+                    "an ambient transition replaces the laid-out value with its own \
+                     keyframe track, so a press inset on it would never be read"
+                        .into(),
+                );
+            }
+        }
         if self.ambient {
             for (property, timing) in &self.timings {
                 if !matches!(timing, Timing::Keyframes(_)) {
@@ -440,6 +505,7 @@ impl TransitionBuilder {
                 enter: self.enter,
                 exit: self.exit,
                 ambient: self.ambient,
+                press_inset: self.press_inset,
             })
         } else {
             Err(self.errors.join("; "))

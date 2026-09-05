@@ -566,12 +566,43 @@ pub struct PointerState {
     pos: Option<Point>,
     hovered: Option<String>,
     capture: Option<Capture>,
-    /// Whether the capture in force is *pressed*: the pointer is inside the
-    /// captured node's own rect. Kept as a bit rather than recomputed on
+    /// Whether the node this state calls pressed is pressed: the pointer is
+    /// inside that node's own rect. Kept as a bit rather than recomputed on
     /// demand because the answer is a fact about a frame, and the caller that
     /// needs it — a host publishing `LayoutState` before the next
     /// negotiation — is between frames and holds none.
     pressed: bool,
+    /// The node an **uncaptured** primary press went down on, and `None`
+    /// whenever the primary button is up, a gesture owns the pointer, or the
+    /// press landed on nothing.
+    ///
+    /// # Why this exists at all
+    ///
+    /// Capture is granted only to a node declaring [`Interaction::Drag`]
+    /// (see [`PointerState::route_positional`]), which is right: a gesture
+    /// that has to keep receiving moves after leaving its own rect is a
+    /// drag. A button declares `Click`, never `Drag`, so before this field
+    /// existed a button could not be pressed at all — [`PointerState::pressed`]
+    /// was derived from the capture alone, so
+    /// [`crate::frame::PlacementSemantics::active`] was permanently false for
+    /// every button, checkbox and menu item in the library, and every
+    /// `background@active` binding in `crate::component` was a token nothing
+    /// could ever read.
+    ///
+    /// Pressed is not a routing fact. It is a fact about the pointer, so it
+    /// is answered from the pointer and routing is left exactly as it was:
+    /// no `Click` node gains the capture, no event changes where it lands.
+    ///
+    /// # Why the *node* and not a bare "is the button down" bit
+    ///
+    /// A press belongs to the node it started on. A bare bit made a held
+    /// pointer light up whatever it slid over — press `Cancel`, drag across
+    /// `Delete`, and `Delete` looked pressed under a finger that never went
+    /// down on it. Remembering the node makes the uncaptured press behave
+    /// the way the captured one already does: it sticks to its own control,
+    /// and it stops looking pressed when the pointer leaves that control's
+    /// rect without ever moving to a neighbour.
+    pressed_on: Option<String>,
 }
 
 /// What one event did to a [`PointerState`], beyond where it routed.
@@ -641,8 +672,18 @@ impl PointerState {
         self.capture.as_ref()
     }
 
-    /// The node that is *pressed*: it holds the capture and the pointer was
-    /// inside its rect as of the most recent frame or event.
+    /// The node that is *pressed*: the primary button is down and the
+    /// pointer was inside that node's rect as of the most recent frame or
+    /// event.
+    ///
+    /// Which node, in the two cases:
+    ///
+    /// * **A gesture is in flight.** The capture's holder, because every
+    ///   move routes there and nothing else may light up underneath it.
+    /// * **Nothing is captured.** The node the press went down on, because a
+    ///   button declares [`Interaction::Click`] and never
+    ///   [`Interaction::Drag`] and so is never granted the capture — see
+    ///   [`PointerState::pressed_on`] for the whole of that argument.
     ///
     /// Distinct from [`PointerState::capture`] on purpose
     /// (`contracts/interaction-state.md` §1): a button pressed and then
@@ -652,9 +693,13 @@ impl PointerState {
     /// gesture at the rect's edge.
     #[must_use]
     pub fn pressed(&self) -> Option<&str> {
-        self.pressed
-            .then(|| self.capture.as_ref().map(|c| c.node.as_str()))
-            .flatten()
+        if !self.pressed {
+            return None;
+        }
+        match &self.capture {
+            Some(capture) => Some(capture.node.as_str()),
+            None => self.pressed_on.as_deref(),
+        }
     }
 
     /// Route `event` against `frame`, updating hover and capture.
@@ -686,7 +731,11 @@ impl PointerState {
             InputEvent::WindowBlurred => {
                 // A window that lost keyboard focus is not going to see the
                 // button come up, so the gesture has to end here or it never
-                // ends at all.
+                // ends at all. The same argument covers the uncaptured
+                // press: a node left looking held while the window is in the
+                // background is a control the operator cannot let go of.
+                self.pressed_on = None;
+                self.pressed = false;
                 let ended = self.end_capture(CancelReason::Blurred);
                 PointerRouting {
                     outcome: route_with_surfaces(frame, focused, event, surfaces),
@@ -771,6 +820,10 @@ impl PointerState {
         self.hovered = None;
         self.pos = None;
         self.pressed = false;
+        // The pointer is outside the window and the release will happen
+        // somewhere this host never hears about, so the button is not held
+        // as far as anything here can know.
+        self.pressed_on = None;
         PointerRouting {
             outcome: RouteOutcome {
                 route,
@@ -833,6 +886,21 @@ impl PointerState {
             });
             outcome.route = Route::Pointer { node };
         }
+        // Which node the primary button went down on, recorded *after* the
+        // grant above so a press that opened a gesture records nothing —
+        // the capture owns that press, and `pressed()` reads the holder.
+        // Only the primary: a right-click does not press a control.
+        match event {
+            InputEvent::PointerPressed {
+                button: PointerButton::Primary,
+                ..
+            } if self.capture.is_none() => self.pressed_on = self.hovered.clone(),
+            InputEvent::PointerReleased {
+                button: PointerButton::Primary,
+                ..
+            } => self.pressed_on = None,
+            _ => {}
+        }
         // Unconditional: with nothing captured this clears the bit, which is
         // the right answer and one branch fewer than asking first.
         self.refresh_pressed(frame);
@@ -848,10 +916,24 @@ impl PointerState {
     /// so does the rect underneath it, so this is re-asked after every
     /// positional event *and* after every newly placed frame.
     fn refresh_pressed(&mut self, frame: &PetrifiedFrame) {
+        let inside = |id: &str, pos: Point| {
+            frame
+                .placement(id)
+                .is_some_and(|p| p.rect.contains(pos) && p.clip.contains(pos))
+        };
         self.pressed = match (&self.capture, self.pos) {
-            (Some(capture), Some(pos)) => frame
-                .placement(&capture.node)
-                .is_some_and(|p| p.rect.contains(pos) && p.clip.contains(pos)),
+            (Some(capture), Some(pos)) => inside(&capture.node, pos),
+            // Nothing captured: the node the press went down on is pressed
+            // for as long as the pointer is still on it. Both halves are
+            // needed. `hovered` is re-derived immediately before every call
+            // to this function, so comparing against it is what stops a
+            // press sliding onto a neighbour and lighting that up instead;
+            // the rect check is what makes a node that moved out from under
+            // a stationary held pointer stop looking pressed.
+            (None, Some(pos)) => self
+                .pressed_on
+                .as_deref()
+                .is_some_and(|id| self.hovered.as_deref() == Some(id) && inside(id, pos)),
             _ => false,
         };
     }

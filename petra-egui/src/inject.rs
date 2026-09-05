@@ -90,6 +90,28 @@ pub enum Action {
         /// Modifiers held for the whole gesture.
         modifiers: Modifiers,
     },
+    /// A primary-button press at the target with **no release**: the
+    /// pointer moves there, the button goes down, and it stays down.
+    ///
+    /// [`Action::Click`]'s missing half, and the only way to photograph a
+    /// control in its held state. A click's press and release land in one
+    /// pass, so the frame a camera captures afterwards is always the
+    /// released one — which is how a button could grow a press animation
+    /// that no test could see. Pair it with [`Action::Release`].
+    Press {
+        /// Modifiers held for the press.
+        modifiers: Modifiers,
+    },
+    /// A primary-button release at the target: the pointer moves there and
+    /// the button comes up. [`Action::Press`]'s other half.
+    ///
+    /// Aimed at a target like every other action, because a release
+    /// *somewhere else* is how a press is cancelled and a driver has to be
+    /// able to say where.
+    Release {
+        /// Modifiers held for the release.
+        modifiers: Modifiers,
+    },
     /// The pointer moves to the target and no button changes state.
     Hover,
     /// Focus moves to the target through
@@ -231,6 +253,21 @@ pub fn inject_action<A: App>(
         Action::Drag { to, modifiers } => {
             let from = resolve_point(host.frame(), target)?;
             push_drag(raw, from, *to, *modifiers);
+        }
+        Action::Press { modifiers } => {
+            let pos = resolve_point(host.frame(), target)?;
+            push_pointer_down(raw, pos, *modifiers);
+        }
+        Action::Release { modifiers } => {
+            let pos = resolve_point(host.frame(), target)?;
+            // Move then up, not up alone. `push_pointer_up` deliberately
+            // sends no move of its own, because a physical release happens
+            // wherever the pointer already is. `Action::Release` names a
+            // *target*, so the move is what puts the pointer on it — a
+            // release aimed at a node the pointer never reached would
+            // otherwise route to whatever it was last over.
+            push_pointer_move(raw, pos);
+            push_pointer_up(raw, pos, *modifiers);
         }
         Action::Hover => {
             let pos = resolve_point(host.frame(), target)?;

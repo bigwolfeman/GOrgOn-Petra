@@ -2185,7 +2185,10 @@ pub(super) fn mounted_like_the_catalog(children: Vec<ViewNode>) -> ViewNode {
 /// names the anchor it could not resolve.
 pub(super) fn assert_mounts_at_catalog_depth(what: &str, children: Vec<ViewNode>) {
     let tree = mounted_like_the_catalog(children);
-    let registry = Registry::with_vocabulary(standard_vocabulary());
+    // `accepting_registry`, not a bare vocabulary: a trigger is a `button`
+    // and every button names `crate::anim::BUTTON_PRESS`, which acceptance
+    // refuses unless the registry has been told the name exists.
+    let registry = accepting_registry();
     if let Err(errors) = crate::tree::validate(&tree, &registry) {
         panic!("{what}: mounted two levels deep, `validate` refused the tree:\n{errors}");
     }

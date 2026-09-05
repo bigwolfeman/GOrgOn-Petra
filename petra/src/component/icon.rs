@@ -45,7 +45,7 @@
 use std::sync::Arc;
 
 use super::tokens::{
-    ACCENT_PRIMARY, ICON_DISABLED, ICON_PRIMARY, ICON_SECONDARY, TEXT_ON_ACCENT, t,
+    ACCENT_PRIMARY, ICON_DISABLED, ICON_PRIMARY, ICON_SECONDARY, SUPPORT_ERROR, TEXT_ON_ACCENT, t,
 };
 use crate::draw::{
     ColorRef, Command, Corners, DrawList, Paint, PathVerb, Stroke, Width, arc_verbs,
@@ -453,6 +453,18 @@ pub enum IconTone {
     /// Carbon's `fill: $interactive` on a complete or current progress step
     /// (`_progress-indicator.scss`, `.cds--progress-step svg`).
     Accent,
+    /// `support-error`: the mark sits on a layer and says the control it
+    /// leads is destructive. The danger button's own tone —
+    /// [`super::button`]'s doc carries the measurements (3.75:1 on the
+    /// grey button fill, ΔE\*ab 47.2 protanope / 76.3 deuteranope apart
+    /// from it), and this is the fifth name rather than a free token
+    /// string for the reason the other four are names: gate C1-8 refuses a
+    /// component that invents a hue, and `support-error` is a shipped
+    /// token this enum is merely pointing at.
+    ///
+    /// It has no place on an accent or a red *fill*: `support-error` on
+    /// `button-danger-primary` measures 1.18:1. Only on a layer.
+    Danger,
 }
 
 impl IconTone {
@@ -463,6 +475,7 @@ impl IconTone {
             Self::Secondary => ICON_SECONDARY,
             Self::Disabled => ICON_DISABLED,
             Self::Accent => ACCENT_PRIMARY,
+            Self::Danger => SUPPORT_ERROR,
         }
     }
 }

@@ -77,29 +77,44 @@
 //! `crate::token::shipped`, each with its own gate. [`danger_button`] binds
 //! both.
 //!
-//! ## The octagon stays, and on the fill it turns white
+//! ## The mark: two variants carry one, and the filled one does not
 //!
-//! Carbon has no such mark. This library keeps it because **FR-015 says
+//! Carbon draws **no** visible danger glyph on any button. Its entire
+//! non-colour danger affordance is a screen-reader string: MEASURED
+//! `@carbon/react/lib/components/Button/ButtonBase.js:49-68`, where
+//! `dangerDescription` is rendered as a `cds--visually-hidden` span and
+//! hung off `aria-describedby` for `danger`, `danger--tertiary` and
+//! `danger--ghost`. Nothing in
+//! `@carbon/styles/scss/components/button/_button.scss` draws a mark.
+//! `Semantics.value` is this library's version of that string, and all
+//! three variants still carry it.
+//!
+//! This library adds a **visible** mark on top, because **FR-015 says
 //! colour is never the only channel** and the operator is red-green colour
-//! blind: a red button that differs from a grey one only in hue does not
-//! differ from it for him. So the [`SILHOUETTE_OCTAGON`] leads all three
-//! danger variants, the same figure `status.down` paints, and it carries
-//! the kind in a channel that survives greyscale.
+//! blind. Round 4 row 04 split it by variant, on his instruction:
 //!
-//! What changed with the fill is the mark's **tone**, and it changed
-//! because of a measurement rather than a preference: `support-error`
-//! `#f21c0d` on `#da1e28` is **1.18:1**. Two reds of nearly equal
-//! luminance is an invisible mark, for everybody, colour vision or not. On
-//! the filled variant the octagon therefore takes [`TEXT_ON_COLOR`], which
-//! is 5.00:1 on the fill; on the tertiary and ghost variants, whose ground
-//! is a grey surface, it keeps [`SUPPORT_ERROR`]. Both tones are pinned by
-//! [`tests::the_danger_mark_is_visible_against_whatever_the_variant_fills_with`].
+//! **The filled variant carries no mark.** Its fill is already the second
+//! channel, in the one dimension that survives greyscale. Rec. 709 luma of
+//! `button-danger-primary` `#da1e28` is 74.5; the default button's
+//! `surface.raised` is 39.3 and `accent.primary` `#4589ff` is 133.5. So the
+//! red button sits 35 luma above one neighbour and 59 below the other with
+//! no glyph on it at all, and
+//! `shots::tests::the_filled_danger_button_drops_the_mark_and_the_other_two_carry_a_glyph`
+//! reads those three gaps off the raster rather than off the tokens. The
+//! mark it used to carry was [`TEXT_ON_COLOR`] white, because
+//! `support-error` `#f21c0d` on `#da1e28` is **1.18:1** — and a white blob
+//! on a red button is what the operator asked to have removed.
 //!
-//! On the two grey grounds the mark still carries hue as a second channel:
-//! `#f21c0d` against the default button's `#222222` measures ΔE\*ab **47.2**
-//! under Viénot-Brettel-Mollon protanope simulation and **76.3** under
-//! deuteranope, against this repo's own `MIN_STATUS_SEPARATION` floor of
-//! 30, at 3.75:1 — over the 3:1 SC 1.4.11 floor for a graphical object.
+//! **The two unfilled variants keep one, and it is a glyph now.** They have
+//! no fill to carry the kind. The mark was a `shape.silhouette-octagon`
+//! swatch and read as a rounded square; see [`danger_mark`] for the 3:1
+//! side-ratio that is why. It is now Carbon's own `WarningFilled` path at
+//! 16 units in `support-error`, which against the default button's
+//! `#222222` measures
+//! ΔE\*ab **47.2** under Viénot-Brettel-Mollon protanope simulation and
+//! **76.3** under deuteranope, against this repo's own
+//! `MIN_STATUS_SEPARATION` floor of 30, at 3.75:1 — over the 3:1 SC 1.4.11
+//! floor for a graphical object.
 //!
 //! ## What tertiary and ghost do *not* get, and why
 //!
@@ -168,14 +183,13 @@
 //! both rendered. Tertiary keeps the edge because without a fill the
 //! outline *is* the control, the same reason a checkbox does.
 
+use super::icon::{IconMark, IconTone, icon_toned};
 use super::stack;
-use super::swatch;
 use super::text::text;
 use super::tokens::{
     ACCENT_PRIMARY, BORDER_STRONG, BUTTON_DANGER_PRIMARY, ICON_DISABLED, ICON_ON_COLOR_DISABLED,
-    LAYER_ACTIVE, LAYER_HOVER, LINK_PRIMARY, SHADOW_RAISED, SHAPE_MD, SILHOUETTE_OCTAGON, SIZE_MD,
-    SPACING_03, SPACING_05, SUPPORT_ERROR, SURFACE_BASE, SURFACE_RAISED, TEXT_ON_ACCENT,
-    TEXT_ON_COLOR, TEXT_PRIMARY, t,
+    LAYER_ACTIVE, LAYER_HOVER, LINK_PRIMARY, SHADOW_RAISED, SHAPE_MD, SIZE_MD, SPACING_03,
+    SPACING_05, SURFACE_BASE, SURFACE_RAISED, TEXT_ON_ACCENT, TEXT_ON_COLOR, TEXT_PRIMARY, t,
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{AxisConstraint, Constraints, InsetRefs, Interaction, Key, Role, ViewNode};
@@ -198,17 +212,6 @@ const _: () = assert!(HEIGHT_SM == 32.0);
 const _: () = assert!(SIZE_MD == 40.0);
 const _: () = assert!(HEIGHT_LG == 48.0);
 const _: () = assert!(PAD_END_NO_ICON == 64.0);
-
-/// The danger mark's extent, Carbon's own button-icon box.
-const DANGER_MARK: f32 = 16.0;
-
-const _: () = assert!(DANGER_MARK == 16.0);
-
-/// The paint slot naming a node's outline family — the painter's
-/// `SILHOUETTE_SLOT`. Spelled here for the reason `status.rs` spells it: a
-/// slot key is a plain string by design (`Props::tokens`), not a token name
-/// this module could import.
-const SILHOUETTE_SLOT: &str = "silhouette";
 
 #[derive(Clone, Copy)]
 enum Size {
@@ -252,24 +255,21 @@ impl Variant {
         }
     }
 
-    /// The ink the leading octagon is filled with, which follows the
-    /// variant's *ground* rather than its kind. See [`danger_mark`] for the
-    /// two measurements; the short version is that a red mark on a red fill
-    /// is 1.18:1 and invisible.
+    /// Whether this variant leads with [`danger_mark`].
     ///
-    /// Total over the enum on purpose: the four non-danger variants never
-    /// reach [`danger_mark`], and returning their tone here anyway means a
-    /// new variant has to say which ground its mark lands on rather than
-    /// falling through a wildcard onto whichever tone was listed last.
-    fn mark_tone(self) -> &'static str {
+    /// **Not the same question as [`Variant::danger_kind`], and that is the
+    /// whole of round 4 row 04.** All three danger variants *are* danger,
+    /// and all three say so in `Semantics.value`. Only the two without a
+    /// fill draw a glyph for it: on [`Variant::Danger`] the red fill is
+    /// already the channel, and a second mark stacked on top of it is what
+    /// the operator asked to have removed.
+    ///
+    /// Total over the enum on purpose, so a new variant has to say whether
+    /// its ground carries the kind rather than falling through a wildcard.
+    fn marks_danger(self) -> bool {
         match self {
-            Self::Danger => TEXT_ON_COLOR,
-            Self::DangerTertiary
-            | Self::DangerGhost
-            | Self::Primary
-            | Self::Secondary
-            | Self::Tertiary
-            | Self::Ghost => SUPPORT_ERROR,
+            Self::DangerTertiary | Self::DangerGhost => true,
+            Self::Danger | Self::Primary | Self::Secondary | Self::Tertiary | Self::Ghost => false,
         }
     }
 }
@@ -373,29 +373,36 @@ fn chrome(variant: Variant) -> Chrome {
     }
 }
 
-/// A [`DANGER_MARK`]-unit octagon in `tone`: the same figure `status.down`
-/// paints, at the button-icon box.
+/// Carbon `WarningFilled` at the button-icon box, in [`SUPPORT_ERROR`].
 ///
-/// **`tone` is a parameter because the ground moved.** On the two grey
-/// variants the mark is [`SUPPORT_ERROR`], 3.75:1 on the button fill and
-/// ΔE\*ab 47.2/76.3 apart from it under the two red-green simulations. On
-/// the filled danger button that same red is **1.18:1** against
-/// [`BUTTON_DANGER_PRIMARY`] — two reds of nearly equal luminance, which is
-/// no mark at all — so there it takes [`TEXT_ON_COLOR`] at 5.00:1. The
-/// shape is the channel either way;
-/// [`tests::the_danger_mark_is_visible_against_whatever_the_variant_fills_with`]
-/// holds both numbers.
+/// **This was a `shape.silhouette-octagon` swatch until round 4.** The
+/// operator's words on the picture were *"this rounded square in the centre
+/// of it looks bad"*, and he read the figure correctly: `paint.rs`'s
+/// `silhouette_points` chamfers the box by 0.16 of a side, so at 16 units
+/// the four flat sides are 10.9 and the four diagonals 3.6 — a 3:1 ratio
+/// that leaves the axis-aligned sides dominant and the whole figure reading
+/// as a box with the corners knocked off. That 0.16 was tuned at the 10x10
+/// status marker, where the job was to look unlike a *disc*, and it is not
+/// changed here: `status.down` draws from the same figure and re-cutting it
+/// is a status decision, not a button one.
 ///
-/// No fill token on a text node and no `border` slot, so neither the AA
-/// floor nor
+/// A real traced glyph instead. [`IconMark::WarningFilled`] is Carbon's own
+/// `kind: 'warning'` path (`icon.rs` carries the source and the viewBox),
+/// so the mark is now a ring with a stem and a dot rather than a solid
+/// blob — a figure at 16 units instead of a silhouette sized for 10.
+///
+/// [`IconTone::Danger`] is [`SUPPORT_ERROR`], 3.75:1 on the two grey
+/// button fills and ΔE\*ab 47.2 protanope / 76.3 deuteranope apart from
+/// them. It is never drawn on [`BUTTON_DANGER_PRIMARY`]: that pairing is
+/// 1.18:1, and the filled variant carries no mark at all now, which is the
+/// other half of the same instruction.
+///
+/// A [`crate::tree::NodeKind::Canvas`] binds no `background` and no
+/// `border`, so neither the AA floor nor
 /// [`super::tests::containers_take_a_tone_and_controls_take_an_edge`]'s
 /// border-tone rule has anything to say about it.
-fn danger_mark(tone: &str) -> ViewNode {
-    let mut mark = swatch("mark", DANGER_MARK, DANGER_MARK, Some(tone), None, None);
-    mark.props
-        .tokens
-        .insert(SILHOUETTE_SLOT.into(), t(SILHOUETTE_OCTAGON));
-    mark
+fn danger_mark() -> ViewNode {
+    icon_toned("mark", IconMark::WarningFilled, IconTone::Danger)
 }
 
 fn pin_height(h: f32) -> Constraints {
@@ -553,16 +560,14 @@ fn labelled(
         .tokens
         .insert("foreground@disabled".into(), t(chrome.disabled_ink));
 
-    // The danger triple leads with the library's own `status.down` figure
-    // in `support-error`. See the module doc for the four contrast
-    // measurements that rule a red fill out and the two CVD separations
-    // that make this mark legible to the operator.
-    let (children, spacing) = match variant.danger_kind() {
-        Some(_) => (
-            vec![danger_mark(variant.mark_tone()), inner],
-            Some(SPACING_03),
-        ),
-        None => (vec![inner], None),
+    // The two *unfilled* danger variants lead with Carbon's
+    // `WarningFilled`. The filled one does not: see the module doc for the
+    // greyscale measurement that says its own fill is already the second
+    // channel, and `Variant::marks_danger` for the split.
+    let (children, spacing) = if variant.marks_danger() {
+        (vec![danger_mark(), inner], Some(SPACING_03))
+    } else {
+        (vec![inner], None)
     };
     let mut node = stack(key, Axis::Horizontal, spacing, children);
     node.props.align = Some(Align::Center);
@@ -606,7 +611,23 @@ fn labelled(
             // nothing ever reads — the "declared name nothing reads" defect
             // `crate::token::shipped` counts, aimed at the slot channel.
             &[Interaction::Focus, Interaction::Click, Interaction::Hover],
-        );
+        )
+        // The crunch. Round 4, row 04: *"we need to give these an on click
+        // animation so it is like it is crunching down on the click"*.
+        //
+        // The whole of it is this one name. `crate::anim::shipped` carries
+        // the depth, the curve and the 70 ms; the engine reads the
+        // placement's own `active` flag and pulls the rect in about its
+        // centre. Nothing here holds a clock, and nothing here can make a
+        // pressed button shove its neighbours along, because the engine
+        // rewrites the finished frame rather than feeding back into layout.
+        //
+        // **A departure from Carbon, deliberately.** Carbon's button
+        // transitions `background`, `box-shadow`, `border-color` and
+        // `outline` at `$duration-fast-01` and nothing geometric (MEASURED
+        // `_mixins.scss:72-76`). The duration and the curve here are
+        // Carbon's; the dip is not.
+        .with_transition(crate::anim::BUTTON_PRESS);
     if let Some(kind) = variant.danger_kind() {
         node.semantics.value = Some(kind.to_owned());
     }
@@ -617,11 +638,15 @@ fn labelled(
 mod tests {
     use super::{
         ACCENT_PRIMARY, BORDER_STRONG, BUTTON_DANGER_PRIMARY, HEIGHT_LG, HEIGHT_SM, HEIGHT_XS,
-        LINK_PRIMARY, PAD_END_NO_ICON, SHADOW_RAISED, SIZE_MD, SPACING_05, SUPPORT_ERROR,
-        SURFACE_BASE, TEXT_ON_ACCENT, TEXT_ON_COLOR, TEXT_PRIMARY, button, button_lg, button_sm,
-        button_xs, danger_button, danger_ghost_button, danger_tertiary_button, ghost_button,
-        primary_button, tertiary_button,
+        LINK_PRIMARY, PAD_END_NO_ICON, SHADOW_RAISED, SIZE_MD, SPACING_05, SURFACE_BASE,
+        TEXT_ON_ACCENT, TEXT_ON_COLOR, TEXT_PRIMARY, button, button_lg, button_sm, button_xs,
+        danger_button, danger_ghost_button, danger_tertiary_button, ghost_button, primary_button,
+        tertiary_button,
     };
+    // The glyph's tone. `button.rs` itself no longer names it — the mark is
+    // an `IconTone` now — so the test module reaches for the token module
+    // the same way `icon.rs` does.
+    use crate::component::tokens::SUPPORT_ERROR;
     use crate::frame::{TransitionActivity, Viewport, petrify};
     use crate::geom::{Align, Axis, Size};
     use crate::testing::{Harness, validated_with};
@@ -817,6 +842,22 @@ mod tests {
         assert_ne!(token(&danger, "background"), Some(ACCENT_PRIMARY));
         assert_eq!(token(&danger, "background"), Some(BUTTON_DANGER_PRIMARY));
         assert_eq!(token(&danger, "shadow"), Some(SHADOW_RAISED));
+        // Since round 4 the label is the **only** thing drawn on that fill:
+        // the leading mark came off. `text-on-color` measures 5.00:1 on
+        // `#da1e28` and `text.primary` measures 4.47:1, so the ink is not a
+        // free choice here and this is the assertion that says so.
+        assert_eq!(
+            danger
+                .children
+                .iter()
+                .find(|c| c.key.as_str() == "d-label")
+                .and_then(|c| c.props.tokens.get("foreground"))
+                .map(|t| t.as_str().to_owned())
+                .as_deref(),
+            Some(TEXT_ON_COLOR),
+            "the filled danger button's label is the one mark left on its \
+             fill and it has to be the on-colour white"
+        );
 
         let dt = danger_tertiary_button("dt", "Delete");
         assert_eq!(dt.semantics.value.as_deref(), Some("danger-tertiary"));
@@ -848,31 +889,38 @@ mod tests {
         }
     }
 
-    /// The leading octagon is **findable on the fill it is drawn on**, in
-    /// both themes, for all three danger variants.
+    /// The leading mark is **findable on the fill it is drawn on**, in both
+    /// themes, for the two variants that draw one.
     ///
     /// # The defect this was written after
     ///
     /// Giving [`danger_button`] Carbon's red fill on 2026-09-05 made the
     /// mark and the ground the same colour family. `support-error`
     /// `#f21c0d` on `button-danger-primary` `#da1e28` is **1.18:1**: two
-    /// reds of nearly equal luminance, so the octagon disappears into the
+    /// reds of nearly equal luminance, so the mark disappeared into the
     /// button while every structural assertion about it — it exists, it is
-    /// first, it is 16 units, it carries a silhouette — still passes. That
-    /// is the exact shape of failure this repo's rules are written against,
-    /// and no test in this file could have caught it, because none of them
-    /// read a colour against another colour.
+    /// first, it is 16 units — still passed. That is the exact shape of
+    /// failure this repo's rules are written against, and no test in this
+    /// file could have caught it, because none of them read a colour
+    /// against another colour.
     ///
-    /// So the floor is WCAG 2.1 SC 1.4.11's 3:1 for a graphical object, and
-    /// the ground is whatever the variant's own `chrome` fills with — read
-    /// out of the built node rather than named here, so a chrome edit that
-    /// changes the ground and forgets the mark fails.
+    /// # What round 4 changed here
     ///
-    /// **Falsify it** by making `Variant::mark_tone` return `SUPPORT_ERROR`
-    /// for `Danger`, which is what it did before the fill landed.
+    /// [`Variant::Danger`] is no longer in the loop, because it draws no
+    /// mark at all: `marks_danger` is false for it, and the assertion that
+    /// it stays that way is
+    /// [`only_the_two_unfilled_danger_variants_lead_with_a_glyph`]. What is
+    /// still checked, for the two that do draw one, is the same 3:1 against
+    /// whatever their own `chrome` fills with — read out of the built node
+    /// rather than named here, so a chrome edit that changes the ground and
+    /// forgets the mark fails.
+    ///
+    /// **Falsify it** by giving [`danger_mark`] [`IconTone::OnAccent`],
+    /// whose `text.on-accent` is `#121212` in the dark theme and lands at
+    /// 1.09:1 on `surface.base`.
     #[test]
     fn the_danger_mark_is_visible_against_whatever_the_variant_fills_with() {
-        /// WCAG 2.1 SC 1.4.11 *Non-text Contrast*, Level AA. The octagon is
+        /// WCAG 2.1 SC 1.4.11 *Non-text Contrast*, Level AA. The glyph is
         /// a graphical object that conveys information, not body text.
         const MIN_MARK_CONTRAST: f32 = 3.0;
 
@@ -881,7 +929,6 @@ mod tests {
             ("dark", crate::token::shipped::dark()),
         ] {
             for (label, node) in [
-                ("danger", danger_button("b", "Delete")),
                 ("danger-tertiary", danger_tertiary_button("b", "Delete")),
                 ("danger-ghost", danger_ghost_button("b", "Delete")),
             ] {
@@ -897,23 +944,37 @@ mod tests {
                     .children
                     .iter()
                     .find(|c| c.key.as_str() == "mark")
-                    .expect("every danger variant leads with a mark");
-                let tone = mark
+                    .expect("both unfilled danger variants lead with a mark");
+                // The tone is in the canvas now, not in a `background`
+                // binding: the mark is a traced path, so every colour it
+                // uses is a `ColorRef::Token` inside its own draw list.
+                // Reading *all* of them rather than one means a glyph whose
+                // ring and stem drifted apart cannot pass on whichever the
+                // test happened to look at.
+                let canvas = mark
                     .props
-                    .tokens
-                    .get("background")
-                    .expect("the mark is a filled swatch");
-                let ratio = color(&theme, tone.as_str()).contrast_ratio(ground);
+                    .canvas
+                    .as_ref()
+                    .expect("the mark is a canvas glyph");
+                let tones: Vec<&str> = canvas.color_tokens().collect();
                 assert!(
-                    ratio >= MIN_MARK_CONTRAST,
-                    "{theme_name}/{label}: the octagon in `{}` measures \
-                     {ratio:.2}:1 against the fill this variant paints, under \
-                     the {MIN_MARK_CONTRAST}:1 SC 1.4.11 floor. A mark nobody \
-                     can see is not a second channel, and the whole reason \
-                     this library keeps a mark Carbon does not have is that \
-                     the operator cannot rely on the hue.",
-                    tone.as_str()
+                    !tones.is_empty(),
+                    "{theme_name}/{label}: the mark's draw list names no \
+                     colour token at all"
                 );
+                for tone in tones {
+                    let ratio = color(&theme, tone).contrast_ratio(ground);
+                    assert!(
+                        ratio >= MIN_MARK_CONTRAST,
+                        "{theme_name}/{label}: the glyph's `{tone}` measures \
+                         {ratio:.2}:1 against the fill this variant paints, \
+                         under the {MIN_MARK_CONTRAST}:1 SC 1.4.11 floor. A \
+                         mark nobody can see is not a second channel, and \
+                         the whole reason this library keeps a mark Carbon \
+                         does not have is that the operator cannot rely on \
+                         the hue."
+                    );
+                }
             }
         }
     }
@@ -1040,68 +1101,91 @@ mod tests {
         }
     }
 
-    /// The danger triple's mark: a leading octagon on all three, and on
-    /// none of the other four, in the tone that suits the ground each one
-    /// fills with.
+    /// **Only the two unfilled danger variants lead with a glyph**, it is
+    /// Carbon's `WarningFilled` path, and the other five buttons carry
+    /// nothing.
+    ///
+    /// This is round 4 row 04 in one assertion. The operator's words were
+    /// *"remove it for the solid colored button and change the shape on the
+    /// other 2"*, and the two halves are here: `btn-danger` has no `mark`
+    /// child at all, and the two that do have one carry a
+    /// [`crate::tree::NodeKind::Canvas`] rather than a
+    /// [`crate::component::swatch`] with a `silhouette`.
+    ///
+    /// All three still name their kind in `Semantics.value` — that is
+    /// Carbon's own `dangerDescription` channel and it is checked in
+    /// [`danger_is_named_in_semantics_not_painted_accent_red`], which is
+    /// what stops "no visible mark" from becoming "no channel at all".
     ///
     /// The measurements this asserts the *consequences* of live in the
     /// module doc and in
     /// [`the_danger_mark_is_visible_against_whatever_the_variant_fills_with`].
-    /// The mark is a shape as well as a hue, which is what makes it legible
-    /// to a red-green colour blind reader; the hue changes with the ground
-    /// because `support-error` on Carbon's danger fill is 1.18:1. Falsify by
-    /// returning `None` from `Variant::danger_kind` for one variant, by
-    /// deleting the `silhouette` insert in `danger_mark`, or by collapsing
-    /// `Variant::mark_tone` back to one tone.
+    ///
+    /// **Falsify it** by returning `true` from `Variant::marks_danger` for
+    /// `Danger`, which is what it did before round 4, or by handing
+    /// [`danger_mark`] back a `swatch`.
     #[test]
-    fn every_danger_variant_leads_with_an_octagon_toned_for_its_ground() {
-        use crate::component::tokens::SILHOUETTE_OCTAGON;
-        let mark = |node: &ViewNode| -> Option<(String, String, String)> {
-            let m = node.children.iter().find(|c| c.key.as_str() == "mark")?;
-            Some((
-                m.props.tokens.get("background")?.as_str().to_owned(),
-                m.props.tokens.get("silhouette")?.as_str().to_owned(),
-                format!("{:?}", m.kind),
-            ))
+    fn only_the_two_unfilled_danger_variants_lead_with_a_glyph() {
+        let mark = |node: &ViewNode| -> Option<ViewNode> {
+            node.children
+                .iter()
+                .find(|c| c.key.as_str() == "mark")
+                .map(|c| (**c).clone())
         };
-        for (label, node, tone) in [
-            // The filled variant's ground is Carbon's red, so the mark
-            // cannot also be red: 1.18:1. It takes the on-colour white.
-            ("danger", danger_button("b", "Delete"), TEXT_ON_COLOR),
-            (
-                "danger-tertiary",
-                danger_tertiary_button("b", "Delete"),
-                SUPPORT_ERROR,
-            ),
-            (
-                "danger-ghost",
-                danger_ghost_button("b", "Delete"),
-                SUPPORT_ERROR,
-            ),
+        for (label, node) in [
+            ("danger-tertiary", danger_tertiary_button("b", "Delete")),
+            ("danger-ghost", danger_ghost_button("b", "Delete")),
         ] {
-            let found = mark(&node)
-                .unwrap_or_else(|| panic!("{label} draws no mark: danger is a colour-only kind"));
+            let found = mark(&node).unwrap_or_else(|| {
+                panic!(
+                    "{label} draws no mark: with no fill to carry it, danger is a colour-only kind"
+                )
+            });
             assert_eq!(
-                found,
-                (
-                    tone.to_owned(),
-                    SILHOUETTE_OCTAGON.to_owned(),
-                    "Spacer".to_owned()
-                ),
-                "{label}'s mark is not the `status.down` figure in the tone \
-                 its own ground can carry"
+                found.kind,
+                NodeKind::Canvas,
+                "{label}'s mark is a {:?}, not a canvas. The silhouette \
+                 swatch is the rounded square the operator asked to be rid \
+                 of; the replacement is a traced path.",
+                found.kind
+            );
+            assert!(
+                !found.props.tokens.contains_key("silhouette"),
+                "{label}'s mark still binds a `silhouette`"
+            );
+            let canvas = found
+                .props
+                .canvas
+                .as_ref()
+                .expect("a canvas mark carries a draw list");
+            assert_eq!(
+                canvas.color_tokens().collect::<Vec<_>>(),
+                vec![SUPPORT_ERROR; canvas.color_tokens().count()],
+                "{label}'s glyph is not drawn in `support-error` throughout"
+            );
+            assert!(
+                canvas.commands().len() >= 3,
+                "{label}'s glyph is {} command(s). Carbon's `WarningFilled` \
+                 is a ring, a stem and a dot; one command is a blob again.",
+                canvas.commands().len()
             );
             assert_eq!(
                 node.children.first().map(|c| c.key.as_str()),
                 Some("mark"),
-                "{label}'s mark leads the label; Carbon's trailing icon slot                  is held open by `$spacing-10`, which this file does not bind"
+                "{label}'s mark leads the label; Carbon's trailing icon slot \
+                 is held open by `$spacing-10`, which this file does not bind"
             );
             assert_eq!(
-                node.children.first().unwrap().constraints.horizontal.min,
-                Some(super::DANGER_MARK)
+                found.constraints.horizontal.min,
+                Some(16.0),
+                "{label}'s glyph is not at Carbon's 16-unit button-icon box"
             );
         }
         for (label, node) in [
+            // The filled variant is the one the operator asked to have the
+            // mark taken off: its own red fill is the second channel, and
+            // the module doc carries the three greyscale gaps.
+            ("danger", danger_button("b", "Delete")),
             ("secondary", button("b", "Save")),
             ("primary", primary_button("b", "Save")),
             ("tertiary", tertiary_button("b", "Save")),
@@ -1109,7 +1193,9 @@ mod tests {
         ] {
             assert!(
                 mark(&node).is_none(),
-                "{label} grew a danger mark; the mark is what tells the two                  apart and it has to be absent from the safe four"
+                "{label} carries a danger mark and must not: a filled red \
+                 button already says danger, and the other four are not \
+                 danger at all"
             );
         }
     }

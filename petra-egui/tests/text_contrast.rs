@@ -34,12 +34,12 @@ use gorgon_petra::component::{button, disabled, primary_button, text};
 use gorgon_petra::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
 use gorgon_petra::geom::{Axis, Size};
 use gorgon_petra::layout::LayoutState;
-use gorgon_petra::testing::{Harness, validated};
+use gorgon_petra::testing::{Harness, extended_vocabulary, validated_with};
 use gorgon_petra::token::{
     ColorValue, DerivedState, InteractionRank, Theme, ThemeMode, TokenName, TokenValue, light,
     resolve_slot, resolve_state,
 };
-use gorgon_petra::tree::{NodeKind, Props, ViewNode};
+use gorgon_petra::tree::{NodeKind, Props, Registry, ViewNode};
 use gorgon_petra_egui::paint::{BACKGROUND_SLOT, DEFAULT_TEXT_TOKEN, FOREGROUND_SLOT};
 
 /// WCAG 2.1 SC 1.4.3 at AA for body text.
@@ -123,9 +123,17 @@ fn contrast_violations(frame: &PetrifiedFrame, theme: &Theme) -> Vec<String> {
 fn place(tree: &ViewNode) -> PetrifiedFrame {
     let mut harness = Harness::new();
     harness.state = LayoutState::default();
+    // The tree's own vocabulary plus every shipped transition name, the way
+    // `Host::new` builds a registry. `testing::validated`'s bare vocabulary
+    // refuses the page below, because a `button` names
+    // `anim::BUTTON_PRESS`. Declaring the shipped set rather than whatever
+    // the tree says keeps acceptance honest here: an invented transition
+    // name is still refused.
+    let mut registry = Registry::with_vocabulary(extended_vocabulary(tree));
+    gorgon_petra::anim::shipped_registry().declare_into(&mut registry);
     petrify(
         1,
-        validated(tree),
+        validated_with(tree, &registry),
         &mut harness.ctx(),
         Viewport::new(Size::new(600.0, 200.0), ThemeMode::Light),
         TransitionActivity::default(),

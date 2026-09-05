@@ -11,10 +11,8 @@
 //!    `.cds--file-browse-btn`: a [`Role::Button`] [`ZONE_WIDTH`] wide and
 //!    [`DROP_HEIGHT`] tall, padded [`SPACING_05`], holding one prompt run
 //!    in [`LINK_PRIMARY`] reading `"Drop files here or click to upload"`.
-//!    Content is **start**-aligned on both axes (`align-items: flex-start`),
-//!    which is why this constructor sets no [`Align`] on the zone: Carbon
-//!    puts the link in the top-left corner of a 96-unit box, not in the
-//!    middle of it.
+//!    Content is **centred** on both axes, which is a departure from
+//!    Carbon recorded in the third divergence below.
 //! 4. [`file_uploader_item`] and its two siblings — one selected-file row,
 //!    [`ITEM_WIDTH`] wide, [`ITEM_HEIGHT`] tall, `$layer` fill, laid out
 //!    `1fr auto` so the name starts at the leading edge and the state
@@ -24,7 +22,7 @@
 //!    `CheckmarkFilled` when complete, an `ErrorFilled` when invalid, and a
 //!    `Close` button when the row is editable.
 //!
-//! # Two divergences, both recorded rather than faked
+//! # Three divergences, all recorded rather than faked
 //!
 //! **The dashed border.** Carbon draws `border: 1px dashed $border-strong`
 //! (MEASURED `_file-uploader.scss:424`). This painter has one border slot
@@ -38,6 +36,25 @@
 //! [`BORDER_SUBTLE`], which is also what
 //! `component::tests::containers_take_a_tone_and_controls_take_an_edge`
 //! requires of every edge in this library.
+//!
+//! **The prompt is centred in the zone; Carbon's is in the corner.**
+//! MEASURED `_file-uploader.scss:415`: `.cds--file__drop-container` is
+//! `display: flex; align-items: flex-start; justify-content:
+//! space-between; padding: $spacing-05; block-size: 96px`. One child under
+//! `space-between` sits at the main-axis start, so Carbon's own prompt is
+//! in the box's top-left corner and 60 of the 96 units below it are empty.
+//! Round 4, row 12, is the operator on that picture: *"file uploader: the
+//! text needs to be centered in the ui"*. The zone therefore takes
+//! [`Align::Center`] across and [`Justify::Center`] along, and the measured
+//! offset it closes is 40.1 units horizontally and 23 vertically
+//! (`shots::tests::the_drop_zone_is_a_carbon_box_and_a_file_row_can_be_removed`,
+//! which now holds the two centres together to within a point).
+//!
+//! This is an **open** departure. Carbon's corner alignment is what leaves
+//! room for the second element its drop container is built to take — the
+//! `space-between` is there for a trailing control, not for a lone label —
+//! so a later form of this component that grows one has to revisit the
+//! pair rather than keep centring around it.
 //!
 //! **The prompt's underline is at rest, not on hover.** Carbon underlines
 //! `.cds--file-browse-btn` on hover. The hover flag belongs to the placement
@@ -151,10 +168,22 @@ fn build_uploader(
         .insert("underline".into(), t(LINK_PRIMARY));
 
     let mut zone = stack("zone", Axis::Vertical, None, vec![prompt]);
-    // No `align`: Carbon is `align-items: flex-start`, so the prompt sits in
-    // the zone's top-left corner. `Align::Center` put it on the box's
-    // midline and, with no width constraint, collapsed the whole box to the
-    // width of the words — the "121 points wide" the operator photographed.
+    // **Centred on both axes, against Carbon, on the operator's
+    // instruction.** See the module doc's third divergence for the
+    // measurement and the argument; the short version is that Carbon's
+    // `align-items: flex-start` leaves 60 of the 96 units empty under one
+    // line of text, and round 4 row 12 reads *"the text needs to be
+    // centered in the ui"*.
+    //
+    // `Align` is the cross axis and `Justify` the main one, and this stack
+    // is vertical, so the pair is "centre horizontally, centre vertically"
+    // in that order. Both are safe here only because `zone.constraints`
+    // pins **both** extents four lines down: `Align::Center` on an
+    // unconstrained box is what collapsed the zone to the 121 points the
+    // operator photographed in round 3, and a centred prompt inside a
+    // collapsed box is centred in nothing.
+    zone.props.align = Some(Align::Center);
+    zone.props.justify = Some(Justify::Center);
     zone.props.padding = Some(pad(SPACING_05, SPACING_05));
     zone.props
         .tokens
@@ -392,10 +421,10 @@ mod tests {
     };
     use crate::component::tokens::{BORDER_STRONG, LINK_PRIMARY, TEXT_MUTED};
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
-    use crate::geom::{Axis, Size};
+    use crate::geom::{Align, Axis, Size};
     use crate::testing::{Harness, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
-    use crate::tree::{Interaction, NodeKind, Props, Registry, Role, ViewNode};
+    use crate::tree::{Interaction, Justify, NodeKind, Props, Registry, Role, ViewNode};
 
     fn named<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         fn walk<'a>(node: &'a ViewNode, key: &str) -> Option<&'a ViewNode> {
@@ -422,14 +451,27 @@ mod tests {
         }
     }
 
-    /// Carbon's zone is a 320 x 96 box whose prompt is a link in its
-    /// top-left corner. Ours was a 121-wide box with grey body text on its
-    /// midline: `zone` set only `vertical.min`, so the box collapsed to the
-    /// width of its caption, and `Align::Center` put the caption in the
-    /// middle of what was left. Falsify by dropping `zone.constraints`
-    /// back to a lone `vertical.min`.
+    /// Carbon's zone is a 320 x 96 box. Ours was a 121-wide box with grey
+    /// body text on its midline: `zone` set only `vertical.min`, so the box
+    /// collapsed to the width of its caption, and `Align::Center` put the
+    /// caption in the middle of what was left.
+    ///
+    /// **The two halves of that are separable, and round 4 separated
+    /// them.** What went wrong was the missing horizontal constraint, not
+    /// the centring; a centred caption in a box that cannot collapse is
+    /// centred in a 320 x 96 box. The constraint assertions below are the
+    /// guard that used to be carried by "align is None", and they come
+    /// first here for that reason. The alignment is now `Center` on both
+    /// axes, on the operator's instruction — see the module doc's third
+    /// divergence, and
+    /// `shots::tests::the_drop_zone_is_a_carbon_box_and_a_file_row_can_be_removed`
+    /// for the picture.
+    ///
+    /// Falsify by dropping `zone.constraints` back to a lone
+    /// `vertical.min`, which fails on the horizontal pin before it reaches
+    /// the alignment.
     #[test]
-    fn the_drop_zone_is_a_320_by_96_box_with_a_link_in_its_corner() {
+    fn the_drop_zone_is_a_320_by_96_box_with_a_centred_prompt() {
         let node = file_uploader("up", "Upload files");
         assert_eq!(node.semantics.label.as_deref(), Some("Upload files"));
         assert_eq!(
@@ -457,10 +499,23 @@ mod tests {
         assert_eq!(zone.constraints.vertical.max, Some(DROP_HEIGHT));
         assert_eq!(ZONE_WIDTH, 320.0);
         assert_eq!(DROP_HEIGHT, 96.0);
+        // Both axes centred, and both extents pinned four lines up. The
+        // pin is the precondition: a centred child inside an unconstrained
+        // box is what collapsed this zone to 121 points in round 3, so
+        // these two assertions are only safe *because* those four hold.
         assert_eq!(
-            zone.props.align, None,
-            "Carbon's drop container is `align-items: flex-start`; a centred \
-             caption is what collapsed this box to the width of its words"
+            zone.props.align,
+            Some(Align::Center),
+            "the drop zone's prompt is centred across the box. Carbon is \
+             `align-items: flex-start` (`_file-uploader.scss:421`); this is \
+             a recorded departure, see the module doc."
+        );
+        assert_eq!(
+            zone.props.justify,
+            Some(Justify::Center),
+            "the drop zone's prompt is centred along the box too. Carbon is \
+             `justify-content: space-between`, which puts a lone child at \
+             the start and leaves 60 of the 96 units empty under it."
         );
         assert_eq!(token(zone, "border"), Some(BORDER_STRONG));
 
