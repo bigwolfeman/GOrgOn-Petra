@@ -22,9 +22,10 @@ use super::pad;
 use super::stack;
 use super::text::text;
 use super::tokens::{
-    LINK_PRIMARY, SHAPE_SM, SIZE_MD, SPACING_02, SPACING_03, SPACING_05, SURFACE_RAISED,
-    TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_CODE, t,
+    LINK_PRIMARY, SHAPE_SM, SIZE_MD, SPACING_02, SPACING_03, SPACING_05, SURFACE_LAYER_THREE,
+    SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_CODE, t,
 };
+use super::tooltip::tooltip_anchored;
 use crate::geom::{Align, Axis};
 use crate::token::TokenName;
 use crate::tree::{
@@ -42,13 +43,42 @@ const _: () = assert!(INLINE_HEIGHT == 16.0);
 
 const COPY_INTENTS: &[Interaction] = &[Interaction::Focus, Interaction::Click];
 
+/// What a copied snippet says.
+///
+/// Carbon's `CopyButton`/`Copy` `feedback` prop, whose default is exactly
+/// this string (`@carbon/react/lib/components/Copy/Copy.js:30`,
+/// `CopyButton.js:30`). It is a **word**, which is the whole point: the
+/// operator is red-green colourblind, so a copy control that answered with
+/// a fill step would answer him with nothing.
+pub const COPY_FEEDBACK: &str = "Copied!";
+
+/// How long a copied snippet says it, in seconds.
+///
+/// Carbon's `feedbackTimeout` default is `2e3` milliseconds
+/// (`@carbon/react/lib/components/Copy/Copy.js:30`). Seconds because that
+/// is the unit the host clock reaches an application in
+/// (`gorgon_petra_egui::host::App::tick`), and the conversion belongs at the
+/// one place the number is written down rather than at each caller.
+pub const COPY_FEEDBACK_SECONDS: f64 = 2.0;
+
+/// Key of the feedback bubble [`code_snippet_copied`] mounts.
+pub const COPY_FEEDBACK_KEY: &str = "copied";
+
+/// Key of the copy control inside any snippet that has one.
+const COPY_KEY: &str = "copy";
+/// Key of the glyph inside the copy control, which is what the feedback
+/// bubble anchors to. See [`code_snippet_copied`].
+const COPY_ICON_KEY: &str = "copy-icon";
+
+const _: () = assert!(COPY_FEEDBACK_SECONDS == 2.0);
+
 /// Single-line snippet. Height 40. Copy button labelled `"Copy"`.
 pub fn code_snippet(key: impl Into<Key>, code: impl Into<String>) -> ViewNode {
     let mut node = stack(
         key,
         Axis::Horizontal,
         Some(SPACING_03),
-        vec![code_text(code.into()), copy_button()],
+        vec![code_text(code.into(), true), copy_button()],
     );
     node.props.align = Some(Align::Center);
     // Carbon pins the control to the trailing edge in every variant
@@ -71,7 +101,7 @@ pub fn code_snippet_multi(key: impl Into<Key>, code: impl Into<String>) -> ViewN
         key,
         Axis::Vertical,
         Some(SPACING_03),
-        vec![copy_row(), code_text(code.into())],
+        vec![copy_row(), code_text(code.into(), true)],
     );
     node.props.align = Some(Align::Stretch);
     node.props.padding = Some(pad(SPACING_05, SPACING_05));
@@ -87,7 +117,12 @@ pub fn code_snippet_multi(key: impl Into<Key>, code: impl Into<String>) -> ViewN
 
 /// Inline snippet. Height 16, radius sm. Display only — no copy button.
 pub fn code_snippet_inline(key: impl Into<Key>, code: impl Into<String>) -> ViewNode {
-    let mut node = stack(key, Axis::Horizontal, None, vec![code_text(code.into())]);
+    let mut node = stack(
+        key,
+        Axis::Horizontal,
+        None,
+        vec![code_text(code.into(), false)],
+    );
     node.props.align = Some(Align::Center);
     node.props.padding = Some(InsetRefs {
         left: Some(t(SPACING_03)),
@@ -211,7 +246,89 @@ pub fn code_runs(mut node: ViewNode, runs: Vec<TextRun>) -> ViewNode {
     node
 }
 
-fn code_text(code: String) -> ViewNode {
+/// Say a snippet was copied, or stop saying it.
+///
+/// Takes any of the three snippet constructors, the way [`code_runs`] does,
+/// and reaches the control keyed `"copy"` inside it. A snippet with no copy
+/// control — the inline variant — comes back unchanged.
+///
+/// # What Carbon does
+///
+/// Pressing `CopyButton` shows a tooltip reading [`COPY_FEEDBACK`] for
+/// [`COPY_FEEDBACK_SECONDS`] and swaps the button's own accessible name to
+/// the same string (`@carbon/react/lib/components/Copy/Copy.js:30,56,61`).
+/// The bubble is not a component of its own over there either: it is the
+/// tooltip caret and content mixins on a `<span>` **inside** the button
+/// (`@carbon/styles/scss/components/copy-button/_copy-button.scss:44,50`),
+/// which is why this mounts it as the button's own child rather than beside
+/// it.
+///
+/// Both channels move together, and that is deliberate rather than
+/// belt-and-braces. The operator this library is built for is red-green
+/// colourblind: feedback carried by a tint is feedback he does not receive,
+/// so the affordance is a word on the screen and the same word in the
+/// accessible name, and neither is a decoration of the other.
+///
+/// # Why the button and not the snippet
+///
+/// A [`crate::tree::NodeKind::Surface`] measures `Size::ZERO`, but a stack
+/// still counts it when it spreads a [`Justify::SpaceBetween`] row's
+/// leftover into the gaps (`layout::stack`, `gaps = children - 1`). Hung off
+/// the single-line snippet the bubble would therefore be a third child of a
+/// two-child row, and the copy control the operator just pressed would jump
+/// to the middle of the well the moment it answered him. Inside the button
+/// the row has no spacing and no justify, so the zero-size child moves
+/// nothing — and it is where Carbon puts it anyway.
+///
+/// The bubble anchors to the glyph rather than to the button, because
+/// [`crate::tree::Anchor::Sibling`] resolves among siblings and the glyph is
+/// the one sibling it has. The two are concentric — the glyph is the only
+/// thing in the button, centred — so the bubble hangs under the middle of
+/// the control either way.
+#[must_use]
+pub fn code_snippet_copied(mut node: ViewNode, copied: bool) -> ViewNode {
+    if !copied {
+        return node;
+    }
+    fn mark(node: &mut ViewNode) -> bool {
+        if node.key.as_str() == COPY_KEY {
+            node.semantics.label = Some(COPY_FEEDBACK.to_owned());
+            node.children.push(Arc::new(tooltip_anchored(
+                COPY_FEEDBACK_KEY,
+                COPY_ICON_KEY,
+                COPY_FEEDBACK,
+            )));
+            return true;
+        }
+        for child in &mut node.children {
+            let mut owned = Arc::unwrap_or_clone(Arc::clone(child));
+            if mark(&mut owned) {
+                *child = Arc::new(owned);
+                return true;
+            }
+        }
+        false
+    }
+    mark(&mut node);
+    node
+}
+
+/// What the well's code run declares so the operator can select inside it.
+///
+/// `Drag` is what wins the pointer capture — a selection *is* a
+/// press-move-release, and `crate::input::PointerState` hit-tests for exactly
+/// this intent before granting one. `Focus` and `Key` are what make the copy
+/// chord reachable: a selection nobody can copy is decoration.
+const CODE_INTENTS: &[Interaction] = &[Interaction::Focus, Interaction::Drag, Interaction::Key];
+
+/// The accessible name of the well's code run.
+///
+/// Carbon's container falls back to the literal string `"code-snippet"`
+/// (`@carbon/react/lib/components/CodeSnippet/CodeSnippet.js:124`); this is
+/// the same name written the way a person reads it.
+const CODE_LABEL: &str = "Code snippet";
+
+fn code_text(code: String, selectable: bool) -> ViewNode {
     let mut node = text("code", code);
     // Carbon sets every snippet in `$code-01` / `$code-02`, which is IBM
     // Plex Mono. This bound nothing until 2026-09-05, so the catalog's code
@@ -220,6 +337,77 @@ fn code_text(code: String) -> ViewNode {
     // hardest to name. `typography.code` is the ramp's one MONO step and it
     // shipped from the start.
     node.props.style = Some(t(TYPOGRAPHY_CODE));
+    if selectable {
+        selectable_code(node)
+    } else {
+        node
+    }
+}
+
+/// Declare a code run selectable, and say what a selection looks like on it.
+///
+/// The operator, round 4: *"code snippet: I cant highlight text inside the
+/// code snippet blocks"*. Carbon's answer is that the snippet container is a
+/// read-only `textbox` the browser lets you drag across
+/// (`@carbon/react/lib/components/CodeSnippet/CodeSnippet.js:120-124`:
+/// `role="textbox"`, `tabIndex=0`, `aria-readonly`). Petra has no browser
+/// under it, so the same three facts have to be declared:
+///
+/// 1. **The intents** ([`CODE_INTENTS`]). Without `Drag` a press on the code
+///    never wins the capture and the drag is somebody else's.
+/// 2. **The role, the name and the read-only flag**, which is FR-058's
+///    requirement for any node that declares an interaction and is also
+///    Carbon's own trio.
+/// 3. **What a selection is painted in.** The engine carries the selected
+///    byte range and the host fills a rectangle behind those glyphs; which
+///    colour it fills is a design-system decision and so it is named here, in
+///    the component, never in the painter.
+///
+/// # Why a selection is two tokens and not one
+///
+/// A ground dark enough to see moves the ground the ink was measured
+/// against. `link-primary` — the keyword class — clears AA on
+/// `surface.raised` in the light theme at 4.63:1 against a 4.5 floor, so
+/// **every** visible highlight sinks it there, and a ground pale enough to
+/// keep it is a ground nobody can see. So the selected stretch takes
+/// [`TEXT_PRIMARY`] for as long as it is selected, which is what
+/// `::selection { color }` does in a browser: the syntax colouring is
+/// suspended inside the selection rather than being made illegible under it.
+/// `snippet_selection_is_legible_in_both_themes` measures the pair.
+///
+/// # Why the ground is the top of the ramp and not `layer-selected`
+///
+/// `layer-selected` is the obvious name and it does not work, measured on
+/// the catalog: the well binds `surface.raised`, [`super::on_layer`] re-seats
+/// it to `surface.layer-two` (`#333333` dark) because every component in the
+/// catalog sits on a card, and `layer-selected` is a step off layer *one* —
+/// `#313131`. Two of 255 apart from the ground it would sit on, which is the
+/// same invisible-highlight defect the tag's selected fill was found to have.
+/// A relative name that followed the re-seat would be the real fix and it is
+/// not a slot: `on_layer` rewrites `background` and nothing else, by design.
+///
+/// So this takes [`super::tooltip`]'s answer to the same problem, for the
+/// same reason it gave: a surface that is dragged over whatever happens to be
+/// under it cannot know what that is, and the ramp's last rung is a step away
+/// from every rung below it. `#444444` on `#333333` is seventeen of 255.
+///
+/// **The limit that comes with it, stated rather than discovered later:** a
+/// well already seated at the top of the ramp gets no visible highlight. That
+/// is `on_layer`'s own documented four-step limit — *"a component that stacks
+/// three surfaces of its own and is then mounted one step up loses its
+/// topmost separation"* — and nothing at this layer can paper over it.
+fn selectable_code(mut node: ViewNode) -> ViewNode {
+    node.props
+        .tokens
+        .insert("selection".into(), t(SURFACE_LAYER_THREE));
+    node.props
+        .tokens
+        .insert("selection-ink".into(), t(TEXT_PRIMARY));
+    let mut node = node.interactive(Role::TextInput, CODE_LABEL, CODE_INTENTS);
+    // Carbon's `aria-readonly`. A code well takes a selection and a copy and
+    // never a keystroke, and a reader told it is an editable field would be
+    // told something false about every one of these forty-two rows.
+    node.semantics.read_only = true;
     node
 }
 
@@ -237,10 +425,10 @@ fn copy_row() -> ViewNode {
 
 fn copy_button() -> ViewNode {
     let mut node = stack(
-        "copy",
+        COPY_KEY,
         Axis::Horizontal,
         None,
-        vec![icon_toned("copy-icon", IconMark::Copy, IconTone::Primary)],
+        vec![icon_toned(COPY_ICON_KEY, IconMark::Copy, IconTone::Primary)],
     );
     node.props.align = Some(Align::Center);
     node.props.padding = Some(pad(SPACING_03, SPACING_02));
@@ -268,8 +456,9 @@ fn pin_height(h: f32) -> Constraints {
 #[cfg(test)]
 mod tests {
     use super::{
-        CodeInk, INLINE_HEIGHT, MULTI_MIN, SHAPE_SM, SIZE_MD, SURFACE_RAISED, code_runs,
-        code_snippet, code_snippet_inline, code_snippet_multi,
+        COPY_FEEDBACK, COPY_FEEDBACK_KEY, COPY_FEEDBACK_SECONDS, CodeInk, INLINE_HEIGHT, MULTI_MIN,
+        SHAPE_SM, SIZE_MD, SURFACE_LAYER_THREE, SURFACE_RAISED, code_runs, code_snippet,
+        code_snippet_copied, code_snippet_inline, code_snippet_multi,
     };
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
@@ -427,6 +616,156 @@ mod tests {
         assert_eq!(code_runs(plain.clone(), runs), plain);
     }
 
+    /// A copied snippet says so in words, in both channels.
+    ///
+    /// Carbon's `feedback` default is `"Copied!"` and its `feedbackTimeout`
+    /// default is 2000 ms
+    /// (`@carbon/react/lib/components/Copy/Copy.js:30`); the button's own
+    /// accessible name becomes the same string while it is up
+    /// (`Copy.js:56,61`). Both are asserted, because the operator is
+    /// red-green colourblind and a control that answered only in a tint
+    /// would not have answered him at all.
+    #[test]
+    fn a_copied_snippet_says_copied_in_the_picture_and_in_its_name() {
+        assert_eq!(COPY_FEEDBACK, "Copied!");
+        assert!((COPY_FEEDBACK_SECONDS - 2.0).abs() < f64::EPSILON);
+
+        for (label, bare) in [
+            ("single", code_snippet("s", "fn main() {}")),
+            ("multi", code_snippet_multi("s", "line 1\nline 2")),
+        ] {
+            let resting = code_snippet_copied(bare.clone(), false);
+            assert_eq!(
+                resting, bare,
+                "{label}: a snippet nobody copied must come back untouched"
+            );
+            assert_eq!(
+                named(&resting, "copy").semantics.label.as_deref(),
+                Some("Copy")
+            );
+            assert!(
+                descendant(&resting, COPY_FEEDBACK_KEY).is_none(),
+                "{label}: a snippet nobody copied says nothing"
+            );
+
+            let said = code_snippet_copied(bare, true);
+            let copy = named(&said, "copy");
+            let bubble = descendant(copy, COPY_FEEDBACK_KEY)
+                .unwrap_or_else(|| panic!("{label}: no feedback bubble under the copy control"));
+            assert_eq!(
+                named(bubble, "body").props.text.as_deref(),
+                Some(COPY_FEEDBACK),
+                "{label}: the bubble carries Carbon's own feedback string"
+            );
+            assert_eq!(
+                copy.semantics.label.as_deref(),
+                Some(COPY_FEEDBACK),
+                "{label}: and so does the accessible name, as Carbon's does"
+            );
+            assert!(
+                bubble.interactions.is_empty(),
+                "{label}: the feedback is a message, not a control"
+            );
+        }
+    }
+
+    /// The well's code run declares everything a selection gesture needs.
+    ///
+    /// Four facts, and the gesture is dead without any one of them:
+    /// `Interaction::Drag` wins the press its capture, `Focus` and `Key` make
+    /// the copy chord reachable, the role and name satisfy FR-058 and match
+    /// Carbon's own read-only `textbox`, and the two token slots are the
+    /// design system saying what a selection looks like — the painter draws
+    /// nothing without them and never invents a colour of its own.
+    #[test]
+    fn the_code_run_declares_what_a_selection_needs() {
+        for (label, node) in [
+            ("single", code_snippet("s", "fn main() {}")),
+            ("multi", code_snippet_multi("s", "line 1\nline 2")),
+        ] {
+            let code = named(&node, "code");
+            assert_eq!(code.semantics.role, Some(Role::TextInput), "{label}");
+            assert_eq!(
+                code.semantics.label.as_deref(),
+                Some("Code snippet"),
+                "{label}"
+            );
+            assert!(
+                code.semantics.read_only,
+                "{label}: a code well takes a selection and never a keystroke"
+            );
+            for intent in [Interaction::Drag, Interaction::Focus, Interaction::Key] {
+                assert!(
+                    code.interactions.contains(&intent),
+                    "{label}: the code run does not declare {intent:?}, so \
+                     the selection gesture never reaches it"
+                );
+            }
+            assert_eq!(
+                token(code, "selection"),
+                Some(SURFACE_LAYER_THREE),
+                "{label}: no selection ground, so the painter draws no highlight"
+            );
+            assert_eq!(
+                token(code, "selection-ink"),
+                Some(super::super::tokens::TEXT_PRIMARY),
+                "{label}: no selection ink, and the pair is never used by halves"
+            );
+        }
+
+        // The inline form is a `<span>` in Carbon with no role and no tab
+        // stop, and it is not a control here either.
+        let inline = code_snippet_inline("s", "ViewNode");
+        let code = named(&inline, "code");
+        assert!(
+            code.interactions.is_empty(),
+            "the inline run is not a control"
+        );
+        assert_eq!(token(code, "selection"), None);
+    }
+
+    /// The selection ground is a step a reader can see, in both themes, and
+    /// the ink on it clears AA for every class the highlighter can produce.
+    ///
+    /// This is the measurement that chose the pair. `layer-selected` is the
+    /// obvious ground and it lands two of 255 from the re-seated well; and a
+    /// ground that *is* visible drops `link-primary` under AA in the light
+    /// theme, which is why the selected run takes its own ink at all.
+    #[test]
+    fn snippet_selection_is_legible_in_both_themes() {
+        const MIN_TEXT_CONTRAST: f32 = 4.5;
+        // The catalog seats every component one layer up, so the well the
+        // highlight sits on is the ramp's second rung, not `surface.raised`.
+        const SEATED_WELL: &str = "surface.layer-two";
+        for theme in [crate::token::light(), crate::token::dark()] {
+            let ground = color(&theme, SURFACE_LAYER_THREE);
+            let ink = color(&theme, super::super::tokens::TEXT_PRIMARY);
+            let ratio = ink.over(ground).contrast_ratio(ground);
+            assert!(
+                ratio >= MIN_TEXT_CONTRAST,
+                "selected text reads at {ratio:.2}:1 on its own highlight, \
+                 under the {MIN_TEXT_CONTRAST}:1 floor"
+            );
+            // And the band is a luminance step off the well, which is the
+            // operator's channel: he is red-green colourblind, so a
+            // highlight told apart by hue is one he does not receive.
+            let well = color(&theme, SEATED_WELL);
+            let step = (ground.relative_luminance() - well.relative_luminance()).abs();
+            assert!(
+                step > 0.01,
+                "the highlight is {step:.4} of relative luminance from the \
+                 well it sits on, which is not a step a reader can use"
+            );
+        }
+    }
+
+    /// The inline snippet has no copy control, so there is nothing to say.
+    #[test]
+    fn an_inline_snippet_has_no_copy_control_and_no_feedback() {
+        let bare = code_snippet_inline("s", "ViewNode");
+        assert_eq!(code_snippet_copied(bare.clone(), true), bare);
+    }
+
     const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
 
     fn accepting_registry() -> Registry {
@@ -497,6 +836,41 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// The control does not move when it answers.
+    ///
+    /// The trap this is here for: a `Surface` measures `Size::ZERO`, but
+    /// `layout::stack` still counts it when it spreads a
+    /// `Justify::SpaceBetween` row's leftover into the gaps
+    /// (`gaps = children - 1`). Hung off the single-line snippet rather than
+    /// off the button, the feedback bubble is a third child of a two-child
+    /// row — and the control the operator just pressed jumps to the middle
+    /// of the well at the moment it answers him. That is worse than no
+    /// feedback, so it is pinned by rect and not by inspection.
+    #[test]
+    fn saying_copied_does_not_move_the_control_that_said_it() {
+        for (label, bare) in [
+            ("single", code_snippet("s", "fn main() {}")),
+            ("multi", code_snippet_multi("s", "line 1\nline 2")),
+        ] {
+            let copy_rect = |node: ViewNode| {
+                let frame = petrify_lone(node);
+                frame
+                    .placements
+                    .iter()
+                    .find(|p| p.id.ends_with("/copy"))
+                    .unwrap_or_else(|| panic!("{label}: no copy control placed"))
+                    .rect
+            };
+            let resting = copy_rect(code_snippet_copied(bare.clone(), false));
+            let saying = copy_rect(code_snippet_copied(bare, true));
+            assert_eq!(
+                resting, saying,
+                "{label}: the copy control moved from {resting:?} to {saying:?} \
+                 when it answered the press"
+            );
         }
     }
 

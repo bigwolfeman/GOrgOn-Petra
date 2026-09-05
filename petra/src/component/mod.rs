@@ -136,7 +136,10 @@ pub use button::{
     button, button_lg, button_sm, button_xs, danger_button, danger_ghost_button,
     danger_tertiary_button, ghost_button, primary_button, tertiary_button,
 };
-pub use code_snippet::{CodeInk, code_runs, code_snippet, code_snippet_inline, code_snippet_multi};
+pub use code_snippet::{
+    COPY_FEEDBACK, COPY_FEEDBACK_KEY, COPY_FEEDBACK_SECONDS, CodeInk, code_runs, code_snippet,
+    code_snippet_copied, code_snippet_inline, code_snippet_multi,
+};
 pub use contained_list::{contained_list, contained_list_disclosed};
 pub use content_switcher::{content_switcher, content_switcher_item};
 pub use controls::{
@@ -195,7 +198,7 @@ pub use tag::{dismissible_tag, selectable_tag, tag, tag_lg, tag_sm};
 pub use text::{heading, text};
 pub use tile::{clickable_tile, expandable_tile, selectable_tile, tile};
 pub use toggletip::{toggletip, toggletip_with};
-pub use tooltip::tooltip;
+pub use tooltip::{tooltip, tooltip_anchored};
 pub use tree_view::{tree_item, tree_item_xs, tree_view};
 pub use ui_shell::{
     LeftPanelMode, ui_shell_header, ui_shell_header_action, ui_shell_header_action_icon,

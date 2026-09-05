@@ -104,6 +104,20 @@ impl PetrifiedFrame {
         self.placements.iter().find(|p| p.id == id)
     }
 
+    /// What the placement with `id` draws, if the frame has one.
+    ///
+    /// The peer of [`PetrifiedFrame::placement`] for the questions geometry
+    /// cannot answer: which token a node bound, which bytes of it are
+    /// selected. `content` is a parallel array rather than a member of
+    /// `Placement` — a driver `frame` response carries the placements and not
+    /// the payloads — so reaching it means finding the index, and three
+    /// callers had grown their own copy of that walk.
+    #[must_use]
+    pub fn content_of(&self, id: &str) -> Option<&PaintContent> {
+        let index = self.placements.iter().position(|p| p.id == id)?;
+        self.content.get(index)
+    }
+
     /// Every placement paired with what it draws, in tree pre-order.
     pub fn drawn(&self) -> impl Iterator<Item = (&Placement, &PaintContent)> {
         self.placements.iter().zip(self.content.iter())

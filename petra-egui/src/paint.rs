@@ -105,6 +105,24 @@ pub const SILHOUETTE_SLOT: &str = "silhouette";
 /// theme is the wrong place to keep a fact that is the same in both.
 pub const SHADOW_SLOT: &str = "shadow";
 
+/// Token slot filled behind the stretch of a node's text the operator has
+/// selected ([`gorgon_petra::frame::PaintContent::selection`]). Absent means
+/// no highlight is painted, whatever the frame says is selected — a node the
+/// design system has no selection ground for does not get one invented here.
+pub const SELECTION_SLOT: &str = "selection";
+/// Token slot the selected stretch's glyphs are drawn in, over
+/// [`SELECTION_SLOT`]'s fill.
+///
+/// A pair and not a single ground, because a ground dark enough to see is a
+/// different ground from the one the text's contrast was measured against.
+/// The code snippet's keyword ink clears AA on its own well by 0.13 in the
+/// light theme, so every visible highlight would sink it; the selected run
+/// takes this ink instead, exactly as `::selection { color }` does in a
+/// browser. Both are resolved together and neither is used alone: a node
+/// binding one and not the other gets no highlight and the missing slot is
+/// reported.
+pub const SELECTION_INK_SLOT: &str = "selection-ink";
+
 /// Every token slot this painter knows how to use. Anything else a node binds
 /// lands in [`PaintReport::unknown_slots`] rather than being dropped on the
 /// floor.
@@ -120,6 +138,8 @@ const KNOWN_SLOTS: &[&str] = &[
     RADIUS_SLOT,
     SHADOW_SLOT,
     SILHOUETTE_SLOT,
+    SELECTION_SLOT,
+    SELECTION_INK_SLOT,
 ];
 /// Token consulted for text with no declared `foreground`.
 pub const DEFAULT_TEXT_TOKEN: &str = "text.primary";
@@ -1433,6 +1453,25 @@ fn paint_one(
             max_lines: text.max_lines,
             available_width: Some(inner_w),
         };
+        // The selected stretch, resolved as a pair. Neither half is usable
+        // alone: the fill without the ink can sink a coloured run below AA,
+        // and the ink without the fill recolours text for no visible reason.
+        // A node that binds neither gets no highlight even when the frame
+        // says something in it is selected, which is the same rule every
+        // other slot is under — the painter never invents a token.
+        let selection = content.selection.as_ref().and_then(|range| {
+            let ground = resolve_slot(&content.tokens, SELECTION_SLOT, state)?;
+            let ink = resolve_slot(&content.tokens, SELECTION_INK_SLOT, state)?;
+            let ground = resolve_or_record(env.colors, ground, report)?;
+            let ink = resolve_or_record(env.colors, ink, report)?;
+            Some((range, ground, ink))
+        });
+        let runs = match &selection {
+            Some((range, _, ink)) => {
+                crate::text::runs_with_selection(&runs, text.text.len(), range, *ink)
+            }
+            None => runs,
+        };
         let galley = env.shaper.galley_runs(&request, &runs);
         let text_pos = if input {
             let galley_h = galley.rect.height();
@@ -1452,6 +1491,16 @@ fn paint_one(
         // is the other half of). `report.texts` and `shapes` count the
         // logical run once regardless of how many physical paints it took —
         // see this module's doc comment and `PaintReport`'s.
+        // Behind the glyphs, so the ink above is read against this fill and
+        // not the other way round. One rectangle per row the selection
+        // crosses, from the galley about to be painted — the same galley, so
+        // the highlight and the letters cannot be measured differently.
+        if let Some((range, ground, _)) = &selection {
+            for band in crate::text::selection_rects(&galley, range) {
+                painter.rect_filled(band.translate(text_pos.to_vec2()), 0.0, *ground);
+                shapes += 1;
+            }
+        }
         let coverage = env
             .colors
             .coverage(COVERAGE_TOKEN)

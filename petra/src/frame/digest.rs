@@ -18,6 +18,17 @@ use crate::geom::Scale;
 /// the version bump that a serialization change requires cannot be forgotten
 /// quietly.
 ///
+/// `v10` covers [`crate::frame::placement::PaintContent::selection`], the
+/// stretch of a text node's own string the operator has selected. It rides
+/// the *payload* stream after the draw list, so [`PAINT_DOMAIN`] moves to
+/// `v6` and the frame prefix moves with it. It is a picture-deciding payload:
+/// a highlight is a filled rectangle behind glyphs, and while a drag grows
+/// one the string, the style, the colour runs and the token map are all
+/// unchanged — so nothing else in the stream could tell the frames apart.
+/// The consequence is the same one `v6` had for hover: a drag across a code
+/// block is a **mutating** gesture, and two frames differing only in which
+/// words are lit no longer share a digest.
+///
 /// `v9` covers [`crate::frame::placement::TextPaint::runs`], the colour runs
 /// a text node lays over its own string (`Props::runs`). It rides the
 /// *payload* stream inside `TextPaint`, so [`PAINT_DOMAIN`] moves to `v5` and
@@ -91,7 +102,7 @@ use crate::geom::Scale;
 /// covered only the text content hash, the truncation flag, and the theme
 /// revision, so two frames that bound the same node's `background` to two
 /// different colours shared one digest.
-pub const DOMAIN: &[u8] = b"gorgon-petra-frame-v9";
+pub const DOMAIN: &[u8] = b"gorgon-petra-frame-v10";
 
 /// Domain separation for one placement's leaf hash.
 ///
@@ -140,7 +151,13 @@ pub const SUBTREE_DOMAIN: &[u8] = b"gorgon-petra-subtree-v1";
 /// ([`crate::frame::placement::PaintContent::canvas`]), appended after the
 /// caret under its own nested prefix [`DRAWLIST_DOMAIN`]. Frame `v8` moves
 /// with it for the same reason.
-pub const PAINT_DOMAIN: &[u8] = b"gorgon-petra-paint-v5";
+///
+/// `v6` is the selected byte range
+/// ([`crate::frame::placement::PaintContent::selection`]), appended after the
+/// draw list. Frame `v10` moves with it. (`v5` was
+/// [`crate::frame::placement::TextPaint::runs`], inside the text payload
+/// rather than appended to this one.)
+pub const PAINT_DOMAIN: &[u8] = b"gorgon-petra-paint-v6";
 
 /// Domain separation for the nested draw-list hash.
 ///
@@ -243,6 +260,7 @@ pub fn hash_paint_content(content: &PaintContent) -> u64 {
         tokens,
         caret,
         canvas,
+        selection,
     } = content;
 
     let mut w = Canonical::new();
@@ -316,6 +334,23 @@ pub fn hash_paint_content(content: &PaintContent) -> u64 {
         Some(list) => {
             w.bool(true);
             w.u64(hash_draw_list(list));
+        }
+        None => w.bool(false),
+    }
+    // The selected run, last, appended after the draw list. A highlight is a
+    // filled rectangle behind glyphs, and nothing else in this stream can
+    // tell one frame from the next while it grows: the string, the style, the
+    // runs and the token map are all identical from the first character of a
+    // drag to the last. A digest blind to it would let a screenshot consumer
+    // holding `(seq, digest)` accept a picture with the wrong words lit.
+    //
+    // Two `u64`s behind a bool rather than a pair of `opt_u64`s, so the
+    // absent case — which is every placement but one — costs one byte.
+    match selection {
+        Some(range) => {
+            w.bool(true);
+            w.u64(range.start as u64);
+            w.u64(range.end as u64);
         }
         None => w.bool(false),
     }
@@ -1117,6 +1152,7 @@ mod tests {
             tokens,
             caret: None,
             canvas: None,
+            selection: None,
         }
     }
 
@@ -1649,6 +1685,7 @@ mod tests {
             tokens: BTreeMap::new(),
             caret: None,
             canvas: None,
+            selection: None,
         };
         assert_ne!(hash_paint_content(&content), hash_text("Fibers"));
     }
@@ -1665,6 +1702,7 @@ mod tests {
             tokens: BTreeMap::new(),
             caret: None,
             canvas: None,
+            selection: None,
         };
         assert_ne!(
             hash_paint_content(&split("ab", "c")),
@@ -1678,6 +1716,7 @@ mod tests {
             tokens: BTreeMap::new(),
             caret: None,
             canvas: None,
+            selection: None,
         };
         let empty = PaintContent {
             image: Some(String::new()),
@@ -1696,6 +1735,7 @@ mod tests {
             tokens,
             caret: None,
             canvas: None,
+            selection: None,
         };
         assert_ne!(
             hash_paint_content(&with(one)),
@@ -1810,32 +1850,32 @@ mod tests {
     fn the_canonical_stream_matches_its_pinned_vectors() {
         assert_eq!(
             super::DOMAIN,
-            b"gorgon-petra-frame-v9",
+            b"gorgon-petra-frame-v10",
             "the frame prefix moved without the vectors below moving with it"
         );
-        assert_eq!(super::PAINT_DOMAIN, b"gorgon-petra-paint-v5");
+        assert_eq!(super::PAINT_DOMAIN, b"gorgon-petra-paint-v6");
         assert_eq!(super::DRAWLIST_DOMAIN, b"gorgon-petra-drawlist-v1");
         assert_eq!(super::NODE_DOMAIN, b"gorgon-petra-node-v1");
         assert_eq!(super::SUBTREE_DOMAIN, b"gorgon-petra-subtree-v1");
 
-        // Moved by v9: `TextPaint::runs` joins the payload stream, and the
-        // run count is written even for the uncoloured case, so every text
-        // payload's hash moves.
+        // Moved by v10: `PaintContent::selection` joins the payload stream,
+        // and the absent case writes a `false` byte, so every payload's hash
+        // moves whether or not anything is selected in it.
         assert_eq!(
             hash_paint_content(&rich_content()),
-            0xf0e7_2ce3_ea38_fac5,
+            0x9697_637e_c258_3177,
             "the paint payload stream changed; see this test's doc comment"
         );
 
         let vp = viewport();
         assert_eq!(
             digest(&vp, &[]).hex(),
-            "961d77788c46007504a84cc145b52b4b850b9c1f582d514a6c245b7080208b83",
+            "986676619cdd163c7fddc50d2947ce5e5d4d861bab3dc0ee08e30cddf69184da",
             "the empty-frame stream changed; see this test's doc comment"
         );
         assert_eq!(
             digest(&vp, &[rich_placement()]).hex(),
-            "72a56d614bc968bb75f0c6541e4f748793f4823b1513edd9b5b88733514406be",
+            "b0f21c1c5483182612b2d0a705c66ebe0305127e434dac7b6ffb63f7b1ed4072",
             "the placement stream changed; see this test's doc comment"
         );
     }

@@ -1,6 +1,7 @@
 //! Placements: exactly one final rect per node per frame.
 
 use std::collections::BTreeMap;
+use std::ops::Range;
 use std::sync::Arc;
 
 use crate::draw::DrawList;
@@ -324,6 +325,33 @@ pub struct PaintContent {
     /// (`contracts/draw-list.md` §4), and a canvas is hosted only when it
     /// draws a `Sprite`, whose decoded pixels the digest genuinely cannot see.
     pub canvas: Option<Arc<DrawList>>,
+    /// The byte range of [`TextPaint::text`] the operator has selected, in
+    /// this node's own string.
+    ///
+    /// `None` for every node with no selection in it, which is all but one at
+    /// a time. Written by `crate::layout::place` from
+    /// [`crate::layout::LayoutState::text_selection`], the way `caret` is
+    /// written from the anchored-placement ladder: it is not derivable from
+    /// the tree, so it cannot come out of `paint_content_of`.
+    ///
+    /// **A range, not rectangles.** The rectangles behind the glyphs need the
+    /// shaped run, and shaping is the host's side of the U-09 boundary
+    /// (`contracts/view-tree.md`) — the painter already holds the exact
+    /// galley it is about to draw, so handing it rectangles would mean
+    /// shaping the same string twice and hoping the two agreed. A range is
+    /// what the engine can say without a font.
+    ///
+    /// Byte offsets, ordered, and clamped to the painted string's own
+    /// length: a selection made against one frame's string must never be a
+    /// panicking slice of the next one's. Empty ranges are dropped, so a
+    /// press that never dragged carries `None` here and paints nothing.
+    ///
+    /// This is also how an application learns what was selected. `App::handle`
+    /// receives the frame, so a copy control reads the range off its own code
+    /// node and slices the string it already has — no second channel, and no
+    /// way for the highlight and the clipboard to disagree about which bytes
+    /// they mean.
+    pub selection: Option<Range<usize>>,
 }
 
 impl PaintContent {
@@ -345,6 +373,11 @@ impl PaintContent {
             // zero shortcut in `hash_paint_content` would make every one of
             // those shapes invisible to the digest if it were.
             && self.canvas.is_none()
+            // And once more for the selection. A highlighted run is a
+            // different picture from an unhighlighted one; a payload that
+            // carried only a selection would hash to zero without this line
+            // and the highlight would be invisible to the digest.
+            && self.selection.is_none()
     }
 
     /// Whether the host, not Petra, produces this node's pixels.
@@ -1025,6 +1058,7 @@ mod tests {
                     tokens,
                     caret: None,
                     canvas: None,
+                    selection: None,
                 },
                 true,
             ),

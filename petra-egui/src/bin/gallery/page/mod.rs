@@ -83,6 +83,20 @@ pub trait Page {
         let _ = now;
     }
 
+    /// A host-clock time this page wants another pass at, in the seconds
+    /// [`Page::tick`] is handed.
+    ///
+    /// Forwarded to `App::wake_at`, whose doc carries the reasoning. Row 6 is
+    /// the one page that names one: its copy feedback clears itself two
+    /// seconds after the press, and an idle Petra window paints nothing, so
+    /// without a deadline the word `Copied!` would sit there until the
+    /// operator happened to touch something else.
+    ///
+    /// The default asks for nothing, which is the other forty-one rows.
+    fn wake_at(&mut self) -> Option<f64> {
+        None
+    }
+
     /// Build the body from this page's own state.
     fn body(&self) -> ViewNode;
 

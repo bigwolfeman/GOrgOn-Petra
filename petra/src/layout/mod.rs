@@ -28,7 +28,7 @@ use crate::frame::placement::{
     TextRunPaint,
 };
 use crate::geom::{Insets, Rect, Scale, Size};
-use crate::input::Capture;
+use crate::input::{Capture, TextSelection};
 use crate::token::{ThemeSnapshot, TokenName};
 use crate::tree::props::ScrollProps;
 use crate::tree::{InsetRefs, KeyPath, NodeKind, Role, TextWrap, ViewNode};
@@ -130,6 +130,22 @@ pub struct LayoutState {
     /// The pointer capture in force, if any. Outlives `pressed`: a button
     /// dragged off its own rect is still captured and no longer pressed.
     pub capture: Option<Capture>,
+    /// The stretch of one text node's own string the operator has selected,
+    /// if any.
+    ///
+    /// The sixth member of the host's interaction snapshot and under exactly
+    /// the same rule as `hovered` and `pressed`: **it may not be read during
+    /// measurement.** A run of code that got wider because half of it was
+    /// selected would reflow the page under the pointer that is selecting it.
+    /// It is read once, by `crate::layout::place`, onto
+    /// [`crate::frame::PaintContent::selection`], which is a paint-time
+    /// payload.
+    ///
+    /// Derived by the host, never declared by an application: the mapping
+    /// from a window position to a byte offset needs shaped glyphs, and
+    /// shaping is the host's side of the U-09 boundary. See
+    /// [`TextSelection`].
+    pub text_selection: Option<TextSelection>,
 }
 
 impl LayoutState {
@@ -773,6 +789,13 @@ fn place_node(
         // member the placement pass hands the dispatcher rather than the
         // other way round (`contracts/anchored-placement.md` §5).
         content.caret = caret;
+        // The other payload member no tree can state. `LayoutState` names one
+        // node and a byte pair; this is the one placement that node is, so
+        // this is where the pair becomes a range on the string that is
+        // actually being painted — clamped to it, because the string a
+        // selection was made against is the *previous* frame's and an
+        // application is free to have changed it since.
+        content.selection = selected_range(ctx.state.text_selection.as_ref(), &path.id(), &content);
         if !content.is_empty() {
             sink.attach(index, content);
         }
@@ -783,6 +806,38 @@ fn place_node(
         sink.note_slot(index, slot);
     }
     path.pop();
+}
+
+/// The selected byte range of `content`'s painted string, if this placement
+/// is the one the selection names.
+///
+/// Three ways to answer `None`, and each is a real case rather than a guard
+/// against one:
+///
+/// 1. No selection, or a selection in another node.
+/// 2. This placement paints no text at all.
+/// 3. The selection collapses on this string — a press that never dragged,
+///    or a range that clamping empties because the application replaced the
+///    text under a live gesture. An empty highlight is not a picture, so it
+///    is not a payload.
+///
+/// Clamping rather than trusting: the offsets were taken against the string
+/// the *previous* frame painted, and nothing stops an application handing a
+/// shorter one to this frame. A slice out of bounds here would be a panic
+/// inside the layout pass.
+fn selected_range(
+    selection: Option<&TextSelection>,
+    id: &str,
+    content: &PaintContent,
+) -> Option<Range<usize>> {
+    let selection = selection?;
+    if selection.node != id {
+        return None;
+    }
+    let len = content.text.as_ref()?.text.len();
+    let range = selection.range();
+    let (start, end) = (range.start.min(len), range.end.min(len));
+    (start < end).then_some(start..end)
 }
 
 /// What this node draws, beyond its rect.
@@ -850,6 +905,12 @@ pub fn paint_content_of(node: &ViewNode) -> PaintContent {
             NodeKind::Canvas => props.canvas.clone(),
             _ => None,
         },
+        // Never from the tree. A selection is made with a pointer over shaped
+        // glyphs and is therefore host-derived interaction state, so it is
+        // attached by `place` from `LayoutState`, the same way `caret` is
+        // attached from the anchored-placement ladder. See
+        // `PaintContent::selection`.
+        selection: None,
         // Verbatim, state-decorated keys and all. `crate::token::resolve_slot`
         // picks the winning key at paint time from the placement's own flags;
         // collapsing here would put an interaction state into the placement
@@ -1002,10 +1063,83 @@ pub fn default_role(kind: NodeKind) -> Option<Role> {
 
 #[cfg(test)]
 mod tests {
-    use super::{LayoutCtx, LayoutState, SizeProposal, Slot, default_role, semantics_of};
+    use super::{
+        LayoutCtx, LayoutState, SizeProposal, Slot, default_role, selected_range, semantics_of,
+    };
+    use crate::frame::placement::{PaintContent, TextPaint};
     use crate::geom::Rect;
+    use crate::input::TextSelection;
     use crate::token::{TokenName, TokenValue};
-    use crate::tree::{Interaction, NodeKind, Role, ViewNode};
+    use crate::tree::{Interaction, NodeKind, Role, TextWrap, ViewNode};
+
+    /// A paint payload that draws `text` and nothing else.
+    fn drawing(text: &str) -> PaintContent {
+        PaintContent {
+            text: Some(TextPaint {
+                text: text.to_owned(),
+                style: None,
+                wrap: TextWrap::Clip,
+                max_lines: None,
+                runs: Vec::new(),
+            }),
+            ..PaintContent::default()
+        }
+    }
+
+    /// The selection reaches exactly the node it names, ordered and clamped.
+    ///
+    /// The clamp is the one that matters and it is not defensive padding: the
+    /// offsets were taken against the string the *previous* frame painted,
+    /// and nothing stops an application handing a shorter one to this frame.
+    /// A range that outran it would be a panicking slice inside the layout
+    /// pass, on a code path the operator reaches by dragging.
+    #[test]
+    fn a_selection_lands_on_its_own_node_ordered_and_clamped() {
+        let content = drawing("abcdef");
+        let at = |anchor, focus| TextSelection {
+            node: "/root/code".to_owned(),
+            anchor,
+            focus,
+        };
+
+        assert_eq!(
+            selected_range(Some(&at(1, 4)), "/root/code", &content),
+            Some(1..4)
+        );
+        // Dragged leftwards: the same bytes, low end first.
+        assert_eq!(
+            selected_range(Some(&at(4, 1)), "/root/code", &content),
+            Some(1..4)
+        );
+        // Another node's selection is not this node's.
+        assert_eq!(
+            selected_range(Some(&at(1, 4)), "/root/other", &content),
+            None
+        );
+        // Nothing selected anywhere.
+        assert_eq!(selected_range(None, "/root/code", &content), None);
+        // A press that never dragged paints nothing.
+        assert_eq!(
+            selected_range(Some(&at(2, 2)), "/root/code", &content),
+            None
+        );
+        // A node that paints no text cannot carry a range.
+        assert_eq!(
+            selected_range(Some(&at(1, 4)), "/root/code", &PaintContent::default()),
+            None
+        );
+        // The string got shorter under a live gesture.
+        assert_eq!(
+            selected_range(Some(&at(2, 99)), "/root/code", &content),
+            Some(2..6)
+        );
+        assert_eq!(
+            selected_range(Some(&at(40, 99)), "/root/code", &content),
+            None,
+            "a range entirely past the end of the string is not an empty \
+             highlight, it is no highlight"
+        );
+    }
 
     #[test]
     fn slots_compose_clip_z_and_opacity() {
