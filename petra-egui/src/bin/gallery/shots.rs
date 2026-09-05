@@ -52,7 +52,9 @@ use gorgon_petra::frame::{CaretPaint, PaintContent, PetrifiedFrame};
 use gorgon_petra::geom::{Point, Rect, Size};
 use gorgon_petra::input::{KeyCode, Modifiers};
 use gorgon_petra_egui::host::{Host, default_presenter};
-use gorgon_petra_egui::inject::{Action, Target, inject_action};
+use gorgon_petra_egui::inject::{
+    Action, Target, inject_action, push_pointer_down, push_pointer_move, push_pointer_up,
+};
 use gorgon_petra_testkit::snapshot::Snapshotter;
 
 use crate::catalog::{Catalog, WINDOW};
@@ -85,7 +87,22 @@ pub struct Camera {
     /// camera opened. A driven `Copy` control is otherwise invisible: the
     /// string leaves through `PlatformOutput`, not through the frame.
     clipboard: Vec<String>,
+    /// Logical seconds handed to egui, advanced by one 60 Hz frame per pass.
+    ///
+    /// Without this every pass reports whatever wall-clock time it ran at, and
+    /// a driven step runs microseconds after the one before it — so a 160 ms
+    /// caret hop or a 140 ms toggle slide is, to the driver, permanently at
+    /// its first instant. Anything whose defect only appears while a clock is
+    /// running is invisible to a driver with no clock, which is how row 30's
+    /// nine-frame freeze survived a green suite.
+    clock: f64,
+    /// Where the pointer was left, so [`Camera::release`] can let go there
+    /// rather than inventing a move a device never sent.
+    pointer: Option<Point>,
 }
+
+/// One 60 Hz frame, the step [`Camera`] advances its clock by per pass.
+const FRAME: f64 = 1.0 / 60.0;
 
 impl Camera {
     /// Open the page whose inventory row is named `component`, and settle it.
@@ -121,12 +138,18 @@ impl Camera {
             .drop_without_applying_deltas();
         crate::catalog::seat_index_focus(&mut host);
         host.set_reduced_motion(true);
+        // egui has already run a pass on its own wall clock, and
+        // `emath::History` panics if time ever steps backwards. So the driver
+        // clock starts from where egui left off rather than from zero.
+        let clock = ctx.input(|input| input.time);
         let mut cam = Self {
             ctx,
             host,
             shooter: Snapshotter::new(),
             page: component.to_owned(),
             clipboard: Vec::new(),
+            clock,
+            pointer: None,
         };
         cam.settle();
         cam
@@ -134,9 +157,109 @@ impl Camera {
 
     /// Run one pass with no input, so the frame matches the current state.
     fn settle(&mut self) {
+        self.step(RawInput::default());
+    }
+
+    /// Run exactly one [`Host::pass`] over `raw`, one 60 Hz frame after the
+    /// last one, and keep whatever the app put on the clipboard.
+    ///
+    /// The single place a pass is run, so no driving step can accidentally
+    /// skip the clock.
+    fn step(&mut self, raw: RawInput) {
+        let raw = self.timed(raw);
         let ctx = self.ctx.clone();
-        ctx.run_ui(sized(RawInput::default()), |_| self.host.pass(&ctx))
-            .drop_without_applying_deltas();
+        let out = ctx.run_ui(raw, |_| self.host.pass(&ctx));
+        self.clipboard.extend(
+            out.platform_output
+                .commands
+                .iter()
+                .filter_map(|cmd| match cmd {
+                    egui::OutputCommand::CopyText(text) => Some(text.clone()),
+                    _ => None,
+                }),
+        );
+        out.drop_without_applying_deltas();
+    }
+
+    /// Whether the focus caret is mid-hop.
+    ///
+    /// The one piece of host state a latency test has to read: `Host::pass`'s
+    /// frame-reuse path is reachable only while this is true, so a test that
+    /// means to exercise it has to prove it got there.
+    pub fn host_caret_is_moving(&self) -> bool {
+        self.host.caret().is_moving()
+    }
+
+    /// Advance the driver clock by one 60 Hz frame and stamp `raw` with it,
+    /// window size and all.
+    ///
+    /// **Every** pass this camera runs goes through here, [`Camera::shoot`]'s
+    /// included. A pass that stamped no time would leave egui to fall back on
+    /// its own wall clock, and `emath::History` panics the moment time steps
+    /// backwards from that into a driver frame.
+    fn timed(&mut self, mut raw: RawInput) -> RawInput {
+        self.clock += FRAME;
+        raw.time = Some(self.clock);
+        sized(raw)
+    }
+
+    /// Stop reducing motion, so transitions and the focus caret run at their
+    /// real durations.
+    ///
+    /// [`Camera::on`] reduces motion so a shot taken straight after a click
+    /// shows the settled result. A test **about** latency must not: the whole
+    /// of row 30's defect lived in `Host::can_reuse_frame`, which only ever
+    /// fires while the caret is in flight, and reduced motion means it never
+    /// is.
+    pub fn live_motion(&mut self) -> &mut Self {
+        self.host.set_reduced_motion(false);
+        self
+    }
+
+    /// Press the primary button on the node whose id ends `tail`, in a pass of
+    /// its own, and hold it.
+    ///
+    /// The opening of a frame-by-frame gesture. Pair with [`Camera::move_to`]
+    /// and [`Camera::release`]; [`Camera::drag`] is the one-pass form.
+    ///
+    /// # Panics
+    /// As [`Camera::id`] does, on a missing or ambiguous tail.
+    pub fn press(&mut self, tail: &str) -> &mut Self {
+        let rect = self.rect(tail);
+        let at = Point::new(rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
+        let mut raw = RawInput::default();
+        push_pointer_down(&mut raw, at, Modifiers::default());
+        self.pointer = Some(at);
+        self.step(raw);
+        self
+    }
+
+    /// Move the pointer to `to` in a pass of its own, changing no button.
+    ///
+    /// Under a held press this is one frame of a drag, and the frame the
+    /// window would have painted for it is the frame this camera can then
+    /// read. With nothing held it is one frame of a hover.
+    pub fn move_to(&mut self, to: Point) -> &mut Self {
+        let mut raw = RawInput::default();
+        push_pointer_move(&mut raw, to);
+        self.pointer = Some(to);
+        self.step(raw);
+        self
+    }
+
+    /// Let the primary button up where the pointer is, in a pass of its own.
+    ///
+    /// # Panics
+    /// If nothing has moved or pressed the pointer yet — there is no position
+    /// to release at, and inventing one would be a move the device never sent.
+    pub fn release(&mut self) -> &mut Self {
+        let at = self
+            .pointer
+            .unwrap_or_else(|| panic!("{}: release with the pointer nowhere", self.page));
+        let mut raw = RawInput::default();
+        push_pointer_up(&mut raw, at, Modifiers::default());
+        self.step(raw);
+        self
     }
 
     /// Resolve a placement id by its tail.
@@ -204,18 +327,7 @@ impl Camera {
         inject_action(&mut self.host, &target, action, &mut raw).unwrap_or_else(|err| {
             panic!("{}: {action:?} refused: {err:?}", self.page);
         });
-        let ctx = self.ctx.clone();
-        let out = ctx.run_ui(sized(raw), |_| self.host.pass(&ctx));
-        self.clipboard.extend(
-            out.platform_output
-                .commands
-                .iter()
-                .filter_map(|cmd| match cmd {
-                    egui::OutputCommand::CopyText(text) => Some(text.clone()),
-                    _ => None,
-                }),
-        );
-        out.drop_without_applying_deltas();
+        self.step(raw);
         self
     }
 
@@ -244,9 +356,7 @@ impl Camera {
                 .collect(),
             ..RawInput::default()
         };
-        let ctx = self.ctx.clone();
-        let out = ctx.run_ui(sized(raw), |_| self.host.pass(&ctx));
-        out.drop_without_applying_deltas();
+        self.step(raw);
         self
     }
 
@@ -495,8 +605,9 @@ impl Camera {
     /// If the capture is refused, or if the result is not a decodable PNG.
     /// Both are defects in the snapshotter rather than in the page.
     pub fn shoot(&mut self, name: &str) -> Vec<u8> {
+        let raw = self.timed(RawInput::default());
         let ctx = self.ctx.clone();
-        let output = ctx.run_ui(sized(RawInput::default()), |_| self.host.pass(&ctx));
+        let output = ctx.run_ui(raw, |_| self.host.pass(&ctx));
         let frame = self
             .host
             .frame()
@@ -741,6 +852,135 @@ mod tests {
             before, after,
             "the fill's placement moved and not one pixel changed: the drag \
              never reached the picture"
+        );
+    }
+
+    /// Row 30. **The handle is under the pointer on every frame of a drag,
+    /// not on every ninth one.**
+    ///
+    /// The operator, twice: *"slider still renders poorly. It is laggy
+    /// compared to the cursor. It needs to update like the cursor does."*
+    /// `dragging_the_slider_handle_moves_the_fill_the_way_the_pointer_went`
+    /// above was green through both reports, because it delivers the press,
+    /// both moves and the release in **one** `RawInput` and photographs where
+    /// the gesture finished. A defect that takes nine passes to show cannot
+    /// appear in a one-pass gesture.
+    ///
+    /// So this drives the drag the way the window pumps it — one pass per
+    /// event, on a real 60 Hz clock, with motion **not** reduced — and checks
+    /// the painted handle after every single one.
+    ///
+    /// What it caught, measured on 2026-09-05 at the parent of this commit:
+    /// the press seats focus on the handle, which starts the focus caret's
+    /// 160 ms hop; `Host::deliver_input` answered "this event does not change
+    /// the picture" for every move under that hop, so `Host::can_reuse_frame`
+    /// repainted the stale frame and never asked the page for a tree.
+    /// `Slider::volume` moved the whole time and none of it was painted. It is
+    /// a loop, not a single stall: the frame that finally rebuilds moves the
+    /// handle, the caret chases the handle it just moved, and the chase
+    /// freezes the next nine frames. At four units of travel per frame the
+    /// painted handle updated once every nine frames and fell up to 56 units
+    /// behind the pointer. `Host::picture_must_rebuild` now answers for a move
+    /// under a pointer capture the way it answers for a press.
+    ///
+    /// Half a unit of tolerance, not a proportion of the rail: the claim is
+    /// that the handle's centre is *under the pointer*, and the arithmetic in
+    /// `slider_value_at` is exact, so anything looser would pass with a frame
+    /// of lag in it.
+    #[test]
+    fn the_slider_handle_is_painted_under_the_pointer_on_every_frame_of_a_drag() {
+        let mut cam = Camera::at_scale("Slider", 1.0);
+        cam.live_motion();
+        let rail = cam.rect("/row/rail");
+        let handle = cam.rect("/rail/handle");
+        let y = handle.y + handle.h / 2.0;
+        let start = handle.x + handle.w / 2.0;
+        // 40 frames x 4 units of travel has to finish short of the rail's end,
+        // or `normalise`'s clamp would hold the handle still and agree with a
+        // pointer that had stopped too — the one way "0 behind" could be true
+        // and mean nothing.
+        assert!(
+            start + 160.0 < rail.x + rail.w - handle.w,
+            "the drag must stay off the clamp: it ends at {} and the rail's \
+             last handle centre is {}",
+            start + 160.0,
+            rail.x + rail.w - handle.w / 2.0
+        );
+        cam.press("/rail/handle");
+        assert!(
+            cam.host_caret_is_moving(),
+            "the press must seat focus on the handle and start the caret hop, \
+             or this test is not exercising the frame-reuse path at all"
+        );
+
+        // Four units per frame for forty frames: a slow, ordinary drag, and
+        // long enough to cover several 160 ms hops.
+        let mut worst = 0.0_f32;
+        for step in 1..=40i16 {
+            let x = start + 4.0 * f32::from(step);
+            cam.move_to(Point::new(x, y));
+            let painted = cam.rect("/rail/handle");
+            let centre = painted.x + painted.w / 2.0;
+            worst = worst.max((centre - x).abs());
+            assert!(
+                (centre - x).abs() < 0.5,
+                "frame {step} of the drag: the pointer is at {x:.2} and the \
+                 painted handle centre is at {centre:.2}, {:.2} behind. The \
+                 handle has to be under the pointer on the frame that carried \
+                 the move, not on some later one.",
+                x - centre
+            );
+        }
+        assert!(
+            worst < 0.5,
+            "worst tracking error over the drag was {worst:.3} units"
+        );
+        cam.release();
+        let released = cam.rect("/rail/handle");
+        assert!(
+            (released.x + released.w / 2.0 - (start + 160.0)).abs() < 0.5,
+            "the release leaves the handle where the last move put it"
+        );
+    }
+
+    /// The same drag, photographed six frames in and twenty-four frames in,
+    /// so the fix is **looked at** rather than only asserted.
+    ///
+    /// The capture is the whole point here. Its `assert_ne!` is deliberately
+    /// weak and is not the gate — 18 frames apart the handle moved even with
+    /// the defect present, so this test was green before the fix and is green
+    /// after it. The gate is
+    /// [`the_slider_handle_is_painted_under_the_pointer_on_every_frame_of_a_drag`]
+    /// above. Read the PNGs: the handle sits at 50% with the input reading
+    /// `50` in the first, at 78% reading `78` in the second, the filled track
+    /// ends at the handle in both, and the focus caret is under the handle
+    /// rather than behind it.
+    #[test]
+    fn the_slider_handle_mid_drag_is_photographed_at_two_positions() {
+        let mut cam = Camera::on("Slider");
+        cam.live_motion();
+        let rail = cam.rect("/row/rail");
+        let handle = cam.rect("/rail/handle");
+        let y = handle.y + handle.h / 2.0;
+        let start = handle.x + handle.w / 2.0;
+        assert!(
+            start + 240.0 < rail.x + rail.w - handle.w,
+            "the drag must stay off `normalise`'s clamp"
+        );
+        cam.press("/rail/handle");
+        for step in 1..=6i16 {
+            cam.move_to(Point::new(start + 10.0 * f32::from(step), y));
+        }
+        let first = cam.shoot("30-slider-mid-drag-a");
+        for step in 7..=24i16 {
+            cam.move_to(Point::new(start + 10.0 * f32::from(step), y));
+        }
+        let second = cam.shoot("30-slider-mid-drag-b");
+        cam.release();
+        assert_ne!(
+            first, second,
+            "the handle moved 180 units between the two shots and not one \
+             pixel changed: the drag never reached the picture"
         );
     }
 
