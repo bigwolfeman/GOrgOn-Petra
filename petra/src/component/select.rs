@@ -187,6 +187,12 @@ mod tests {
             "no box around the field: Carbon's boundary is the rule under it"
         );
         assert_eq!(
+            token(field, "radius"),
+            None,
+            "and no rounding on it either: `.cds--select-input` is a flat \
+             fill, and a corner here would read as a box even without one"
+        );
+        assert_eq!(
             token(child(field, "rule"), "background"),
             Some(BORDER_STRONG)
         );

@@ -224,6 +224,12 @@ mod tests {
             "no box: the rule under the field is its whole boundary"
         );
         assert_eq!(
+            token(field, "radius"),
+            None,
+            "and no rounding on it either: `.cds--list-box__field` is a flat \
+             fill, and a corner here would read as a box even without one"
+        );
+        assert_eq!(
             token(child(field, "rule"), "background"),
             Some(BORDER_STRONG)
         );
