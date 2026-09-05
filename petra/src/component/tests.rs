@@ -1490,6 +1490,37 @@ fn a_seat_deeper_than_the_ramp_is_clamped_and_still_has_a_step_in_it() {
 /// floor on `surface.layer-three`, so a re-seating pass that treated an
 /// accent fill as "a background, therefore mine to move" could walk a
 /// primary button onto a ground its own colour cannot carry.
+/// An ordinal layer name is re-seated too, by the same amount.
+///
+/// Every one of these names is a distance from the ground, so re-seating has
+/// to move all of them together. It used to move only the two lowest, which
+/// made the operator non-composable: a component that stepped its own two
+/// surfaces had them collapsed onto one tone the moment its mount point
+/// re-seated the outer one. The modal is where that showed — its dialog and
+/// its Cancel button rendered as the same `#333333`.
+#[test]
+fn on_layer_moves_an_ordinal_layer_by_the_same_step_as_the_two_below_it() {
+    fn seat(name: &str, depth: usize) -> String {
+        let mut node = ViewNode::new(NodeKind::Stack, "n");
+        node.props
+            .tokens
+            .insert("background".into(), TokenName::new(name).unwrap());
+        on_layer(node, depth)
+            .props
+            .tokens
+            .get("background")
+            .expect("the binding survives")
+            .as_str()
+            .to_owned()
+    }
+    // Two nodes a step apart stay a step apart after a re-seat.
+    assert_eq!(seat("surface.raised", 1), "surface.layer-two");
+    assert_eq!(seat("surface.layer-two", 1), "surface.layer-three");
+    // And the ramp's own ceiling is where that stops. Four steps is four
+    // steps; this test states the limit rather than pretending there is none.
+    assert_eq!(seat("surface.layer-three", 1), "surface.layer-three");
+}
+
 #[test]
 fn on_layer_leaves_every_other_fill_alone_and_never_touches_an_edge() {
     for depth in 0..=MAX_LAYER_DEPTH {

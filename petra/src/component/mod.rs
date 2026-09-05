@@ -298,13 +298,35 @@ pub fn disabled(mut node: ViewNode) -> ViewNode {
 /// |---|---|
 /// | `surface.base` | `LAYER_TOKENS[depth]` — the ground itself, so the node disappears into it |
 /// | `surface.raised` / `surface.layer-one` | `LAYER_TOKENS[depth + 1]` — one step ahead of the ground |
+/// | `surface.layer-two` / `surface.layer-three` | `LAYER_TOKENS[depth + 2]` / `[depth + 3]`, clamped |
 /// | anything else | untouched |
 ///
-/// "Anything else" is load-bearing, not a fall-through: an accent fill, a
-/// status colour, or a background already written as an ordinal layer is a
-/// deliberate choice by whoever bound it, and a re-seating pass that
-/// second-guessed those would be doing something other than what its name
-/// says.
+/// "Anything else" is load-bearing, not a fall-through: an accent fill or a
+/// status colour is a deliberate choice by whoever bound it, and a re-seating
+/// pass that second-guessed those would be doing something other than what
+/// its name says.
+///
+/// # Why an ordinal shifts too
+///
+/// It did not, and the reasoning was that an ordinal layer name is an
+/// absolute choice the author meant. That reading makes this operator
+/// non-composable, and the modal is where it showed: `modal.rs` seats its
+/// Cancel one step above the dialog, so the dialog was `surface.raised` and
+/// Cancel `surface.layer-two`. The gallery then re-seats the whole page at
+/// depth 1 — every component sits on a card, one step up from the page —
+/// which moved the dialog to `layer-two` and left Cancel where it was.
+/// Measured on the capture: both `#333333`, byte for byte. The Cancel
+/// button had no edge, no fill of its own and no separation from the dialog
+/// it sat in, and the operator's report was "idk what I am looking at".
+///
+/// Every one of these names is a *distance from the ground*, so re-seating
+/// has to move all of them by the same amount or it does not preserve the
+/// relationships it exists to preserve.
+///
+/// The ramp has four steps, so `depth + 3` clamps at the top of the ramp. A component
+/// that stacks three surfaces of its own and is then mounted one step up
+/// loses its topmost separation. That is a real limit of a four-step ramp
+/// and not something this function can paper over.
 ///
 /// Children are not touched. That is the same line
 /// [`crate::tree::ViewNode`]'s public fields already draw between composing
@@ -330,17 +352,22 @@ pub fn disabled(mut node: ViewNode) -> ViewNode {
 #[must_use]
 pub fn on_layer(mut node: ViewNode, depth: usize) -> ViewNode {
     let depth = depth.min(MAX_LAYER_DEPTH);
-    let reseated = match node
+    let step = match node
         .props
         .tokens
         .get("background")
         .map(TokenName::as_str)
         .unwrap_or_default()
     {
-        tokens::SURFACE_BASE => LAYER_TOKENS[depth],
-        tokens::SURFACE_RAISED | "surface.layer-one" => LAYER_TOKENS[depth + 1],
+        tokens::SURFACE_BASE => 0,
+        tokens::SURFACE_RAISED | "surface.layer-one" => 1,
+        "surface.layer-two" => 2,
+        "surface.layer-three" => 3,
         _ => return node,
     };
+    // The index, not the argument: `MAX_LAYER_DEPTH` clamps `depth` so that
+    // `depth + 1` stays in range, and an ordinal can ask for three more.
+    let reseated = LAYER_TOKENS[(depth + step).min(LAYER_TOKENS.len() - 1)];
     node.props
         .tokens
         .insert("background".into(), tokens::t(reseated));

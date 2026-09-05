@@ -612,9 +612,12 @@ mod tests {
     #[test]
     fn the_modal_covers_the_window_not_the_card() {
         let mut cam = Camera::on("Modal");
+        // The dialog opens from a trigger now, as Carbon's does; the page no
+        // longer mounts it at rest.
+        cam.click("open-modal");
         cam.shoot("20-modal");
         let window = Rect::new(0.0, 0.0, WINDOW[0], WINDOW[1]);
-        assert_eq!(cam.rect("/md/md"), window, "the scrim is the window");
+        assert_eq!(cam.rect("md-col/md"), window, "the scrim is the window");
         let dialog = cam.rect("/seat/dialog");
         assert!(
             (dialog.x - WINDOW[0] * 0.2).abs() < 0.5 && (dialog.w - WINDOW[0] * 0.6).abs() < 0.5,
@@ -1304,5 +1307,80 @@ mod tests {
         );
         cam.click("shell-left-kernel/row");
         assert!(cam.has("shell-left-fibers"), "and it opens again");
+    }
+
+    /// The modal opens from a trigger and every one of its controls closes it.
+    ///
+    /// The page mounted the dialog unconditionally and wired nothing, so a
+    /// modal that blocks every press behind it and answers none of its own
+    /// made the whole page inert.
+    #[test]
+    fn the_modal_opens_from_its_trigger_and_each_control_closes_it() {
+        for control in ["close", "cancel", "primary"] {
+            let mut cam = Camera::on("Modal");
+            assert!(
+                !cam.has("md/frame/seat/dialog"),
+                "the page starts with the dialog shut"
+            );
+            cam.click("open-modal");
+            assert!(
+                cam.has("md/frame/seat/dialog"),
+                "pressing the trigger must open the dialog"
+            );
+            cam.click(control);
+            assert!(
+                !cam.has("md/frame/seat/dialog"),
+                "{control} left the dialog open: an operator who opens this \
+                 has no way back out of it"
+            );
+        }
+    }
+
+    /// The dialog and its Cancel button are not the same grey.
+    ///
+    /// They were, byte for byte. `modal.rs` seats Cancel one step above the
+    /// dialog with `on_layer`, and the gallery then re-seats the whole page
+    /// at depth 1 because every component sits on a card; `on_layer` moved
+    /// the dialog and left the already-ordinal Cancel alone, so the two met
+    /// on `surface.layer-two`. A footer button with no edge, no fill of its
+    /// own and no separation from the dialog is not a button.
+    #[test]
+    fn the_modal_footer_button_is_a_different_tone_from_the_dialog() {
+        let mut cam = Camera::on("Modal");
+        cam.click("open-modal");
+        let png = cam.shoot("20-modal-open");
+        let body = cam.rect("dialog/content");
+        let cancel = cam.rect("footer/cancel");
+        let image = image_at(&png);
+        let a = sample(&image, body.x + body.w / 2.0, body.y + body.h / 2.0);
+        let b = sample(&image, cancel.x + 8.0, cancel.y + cancel.h - 8.0);
+        let step = i32::from(a).abs_diff(i32::from(b));
+        assert!(
+            step >= 8,
+            "the dialog reads {a} and its Cancel button reads {b}: a step of \
+             {step} of 255. Carbon's own pair is 38 and 111"
+        );
+    }
+
+    /// Read `png` back as an image, for the two tests that measure a tone.
+    fn image_at(png: &[u8]) -> image::RgbaImage {
+        image::load_from_memory(png)
+            .expect("the snapshotter writes valid PNG")
+            .to_rgba8()
+    }
+
+    /// The grey level at a logical point, at the capture's own scale.
+    fn sample(image: &image::RgbaImage, x: f32, y: f32) -> u8 {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a logical coordinate inside a placed rect, scaled to the \
+                      capture, is a small positive number"
+        )]
+        let (px, py) = (
+            (x * super::CAPTURE_SCALE) as u32,
+            (y * super::CAPTURE_SCALE) as u32,
+        );
+        image.get_pixel(px, py)[0]
     }
 }

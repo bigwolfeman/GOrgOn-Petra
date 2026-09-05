@@ -152,7 +152,7 @@ pub fn all() -> Vec<Box<dyn Page>> {
         Box::new(loading::Loading),
         Box::new(menu::Menu::default()),
         Box::new(menu_buttons::MenuButtons::default()),
-        Box::new(modal::Modal),
+        Box::new(modal::Modal::default()),
         Box::new(notification::Notification),
         Box::new(number_input::NumberInput),
         Box::new(pagination::Pagination::default()),
