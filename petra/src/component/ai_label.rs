@@ -81,7 +81,7 @@
 //!   ([`ClampRule::Flip`](crate::tree::ClampRule::Flip)), not reimplemented.
 
 use super::pad;
-use super::popover::popover_with;
+use super::popover::{bubble_text, popover_with};
 use super::stack;
 use super::text::text;
 use super::tokens::{
@@ -262,7 +262,7 @@ pub fn ai_label_with_actions(
             max: Some(ACTIONS_FOOTER_HEIGHT),
             priority: 0,
         };
-        let rows = vec![text("body", body.into()), footer];
+        let rows = vec![bubble_text(body.into()), footer];
         children.push(explainability_panel(label.clone(), "trigger", rows));
     }
     let mut node = stack(key, Axis::Vertical, None, children);
@@ -378,7 +378,7 @@ fn default_sized(
     let trigger = trigger_button("trigger", label.clone(), size);
     let mut children = vec![trigger];
     if open {
-        let rows = vec![text("body", body.into())];
+        let rows = vec![bubble_text(body.into())];
         children.push(explainability_panel(label.clone(), "trigger", rows));
     }
     let mut node = stack(key, Axis::Vertical, None, children);
@@ -398,7 +398,7 @@ fn inline_sized(
     let trigger = inline_trigger("trigger", label.clone(), height, bullet);
     let mut children = vec![trigger];
     if open {
-        let rows = vec![text("body", body.into())];
+        let rows = vec![bubble_text(body.into())];
         children.push(explainability_panel(label.clone(), "trigger", rows));
     }
     let mut node = stack(key, Axis::Vertical, None, children);
@@ -676,6 +676,56 @@ mod tests {
         assert_eq!(
             child(content, "body").props.text.as_deref(),
             Some("Trained on ticket history.")
+        );
+    }
+
+    /// The panel's body **wraps**, inside a box that honours its own
+    /// ceiling.
+    ///
+    /// Two halves, and this row is the one that had both wrong.
+    ///
+    /// The body was a plain `text` run through 2026-09-05, and a run that
+    /// does not wrap answers with one unbroken line whatever it is offered,
+    /// so the tail of a two-sentence explanation was cut mid-word. The other
+    /// three bubbles in this library moved to
+    /// [`crate::component::popover::bubble_text`] and this one was missed.
+    ///
+    /// And the box was 48 units wider than the 368 it declares:
+    /// `layout::overlay_surface` offered the whole ceiling to the children
+    /// and then added this panel's `spacing-06` padding on top of it, so
+    /// every line wrapped 48 units too late and the surface overshot its own
+    /// `max-inline-size`.
+    ///
+    /// `MonoContent` is 8 units a character and 16 a line, so a hundred
+    /// characters in 368 − 48 = 320 units of content is forty a line and
+    /// three lines. The old code gave one line, 16 tall, in a 416-wide box.
+    #[test]
+    fn the_open_panel_wraps_its_body_inside_its_own_ceiling() {
+        let body: String = "abcdefghij".repeat(10);
+        assert_eq!(body.chars().count(), 100);
+        let frame = petrify_lone(ai_label("conf", "Confidence score", true, body));
+
+        let panel = placed(&frame, "panel");
+        let run = placed(&frame, "body");
+
+        assert_eq!(
+            panel.rect.w, 368.0,
+            "the declared `max-inline-size` is the width of the whole box, \
+             padding included: {:?}",
+            panel.rect
+        );
+        assert_eq!(
+            run.rect.h, 48.0,
+            "a hundred characters at forty a line is three lines; one line \
+             means the run did not wrap and its tail was cut: {:?}",
+            run.rect
+        );
+        assert!(
+            run.rect.x > panel.rect.x && run.rect.right() < panel.rect.right(),
+            "the run sits inside the panel's padding on both sides: run \
+             {:?} in panel {:?}",
+            run.rect,
+            panel.rect
         );
     }
 
@@ -1030,6 +1080,26 @@ mod tests {
 
     fn accepting_registry() -> Registry {
         Registry::with_vocabulary(standard_vocabulary())
+    }
+
+    /// The one placement whose id ends in `/{key}`.
+    ///
+    /// Panics rather than returning an `Option`: a test that silently skips
+    /// its subject is worse than one that fails.
+    fn placed<'a>(frame: &'a PetrifiedFrame, key: &str) -> &'a crate::frame::placement::Placement {
+        let suffix = format!("/{key}");
+        let mut hits = frame
+            .placements
+            .iter()
+            .filter(|p| p.id.as_str().ends_with(&suffix));
+        let first = hits
+            .next()
+            .unwrap_or_else(|| panic!("nothing placed at `{suffix}`"));
+        assert!(
+            hits.next().is_none(),
+            "`{suffix}` is ambiguous: more than one placement ends with it"
+        );
+        first
     }
 
     fn petrify_lone(node: ViewNode) -> PetrifiedFrame {

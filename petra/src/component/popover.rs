@@ -60,20 +60,28 @@ pub fn popover(
     popover_with(key, label, anchor, vec![bubble_text(body.into())])
 }
 
-/// The body run every anchored bubble in this library shares: a text leaf
-/// that **wraps**.
+/// The one body run all four anchored bubbles in this library share.
 ///
-/// A bubble declares `constraints.horizontal.max` — 368 here, 288 on a
-/// tooltip — and a run that does not wrap answers with one unbroken line
-/// whatever it is offered. The box is then clamped to the ceiling and the
-/// tail of the sentence is cut mid-word. Both halves had to change on
-/// 2026-09-05: `layout::overlay_surface::natural_size` now *offers* the
-/// ceiling instead of clamping after the fact, and this is the run that can
-/// take the offer.
+/// Used by [`popover`], [`super::toggletip`], [`super::tooltip`] and
+/// [`super::ai_label`]'s explainability panel, because all four are the same
+/// bubble with different tones and they have drifted from each other before.
 ///
-/// Shared by [`popover`], [`super::toggletip`] and [`super::tooltip`] rather
-/// than written three times, because all three are the same bubble with
-/// three different tones and they have drifted from each other before.
+/// # The `wrap` line is not what makes a bubble wrap
+///
+/// It reads like it is, and the note that introduced this function said it
+/// was. It is not. [`crate::tree::TextWrap::Wrap`] is `TextWrap`'s
+/// `#[default]` and `Props::text()` resolves an unset `wrap` through
+/// `unwrap_or_default()`, so [`super::text::text`] already answers a finite
+/// offer by wrapping. Writing the value down is worth it for the reader —
+/// a bubble body that silently changed policy would be a real regression —
+/// but it changes nothing on its own.
+///
+/// What makes a bubble wrap is the offer it is measured under.
+/// `layout::overlay_surface::natural_size` hands the children the surface's
+/// declared `constraints.horizontal.max`, less the surface's own padding,
+/// instead of an open probe. Before that a run answered with one unbroken
+/// line, the box was clamped to the ceiling afterwards, and the tail of the
+/// sentence was cut mid-word.
 pub(super) fn bubble_text(body: String) -> ViewNode {
     let mut node = text("body", body);
     node.props.wrap = Some(TextWrap::Wrap);

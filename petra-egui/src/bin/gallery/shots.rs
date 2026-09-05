@@ -4225,4 +4225,57 @@ mod tests {
              reaching the picture"
         );
     }
+
+    // ===== Wave WRAP, round 4: an anchored surface wraps its body inside
+    // its own ceiling. Appended; nothing above this line is touched, because
+    // other waves edit this file in their own trees.
+
+    /// Row 02. The explainability panel's body **wraps**, and the box it
+    /// wraps inside is the 368 units Carbon declares, not 368 plus the
+    /// panel's own padding.
+    ///
+    /// Two defects met on this row. `component::ai_label` built its body
+    /// from a plain `text` run, and a run that does not wrap answers with
+    /// one unbroken line whatever it is offered, so a two-sentence
+    /// explanation lost its tail mid-word. And
+    /// `layout::overlay_surface::natural_size` offered the whole ceiling to
+    /// the children and let `place` add the panel's 24-unit `spacing-06`
+    /// padding on top, so the box came out 416 wide — the ceiling plus the
+    /// padding — and every line wrapped 48 units too late.
+    ///
+    /// The one-line reference is the trigger's own `"AI"` caption: at
+    /// `DEFAULT_LG` it carries no style override, so it is one line of the
+    /// same body typography the panel's run is set in. Nothing here is a
+    /// tolerance; the run either is taller than one such line or it is not.
+    #[test]
+    fn the_ai_explainability_panel_wraps_its_body_inside_its_ceiling() {
+        let mut cam = Camera::on("AI label");
+        cam.click("ai-live/trigger");
+        assert!(cam.has("panel"), "the press did not open the panel");
+
+        let panel = cam.rect("panel");
+        let run = cam.rect("panel/content/body");
+        let one_line = cam.rect("ai-live/trigger/text").h;
+        cam.shoot("02-ai-label-panel-wrapped");
+
+        assert!(
+            panel.w <= 368.5,
+            "the panel is {} wide against the 368 its `max-inline-size` \
+             declares: the padding is being added on top of the ceiling \
+             instead of taken out of it",
+            panel.w
+        );
+        assert!(
+            run.h >= 2.0 * one_line,
+            "the body run is {} tall against a single line's {}: it answered \
+             with one unwrapped line and its tail was cut",
+            run.h,
+            one_line
+        );
+        assert!(
+            run.x >= panel.x + 23.5 && run.right() <= panel.right() - 23.5,
+            "the run {run:?} does not sit inside the panel's 24-unit padding \
+             on both sides of {panel:?}"
+        );
+    }
 }

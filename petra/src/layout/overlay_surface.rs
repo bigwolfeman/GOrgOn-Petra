@@ -5,8 +5,9 @@
 //! that parent's flow either — [`crate::layout::measure`] answers zero for
 //! it, so the trigger under an open menu keeps the neighbours it had when
 //! the menu was closed. It always sizes itself to its own natural content
-//! extent (an "open probe" — every child measured with
-//! [`Proposal::Unspecified`], the union taken), positions that box at its
+//! extent (every child measured at its own natural extent, under whatever
+//! horizontal ceiling this surface declares less its own padding
+//! — [`natural_size`] — and the union taken), positions that box at its
 //! declared [`Anchor`], and then clamps the result into the window by its
 //! [`ClampRule`] so it never paints outside the viewport (FR-022). This is
 //! why [`place`] repeats the natural-size probe rather than trusting whatever
@@ -85,7 +86,7 @@
 use std::collections::BTreeMap;
 
 use crate::frame::placement::{CaretPaint, PaintState, Placement, PlacementSink};
-use crate::geom::{Axis, Rect, Size};
+use crate::geom::{Axis, Insets, Rect, Size};
 use crate::layout::{AnchorRects, LayoutCtx, Proposal, SizeProposal, Slot, semantics_of};
 use crate::tree::{Align, Anchor, ClampRule, Edge, Fit, InputPolicy, KeyPath, Tip, ViewNode};
 
@@ -120,13 +121,11 @@ pub fn place(
         .surface()
         .expect("tree acceptance guarantees a `surface` node carries `layer` and `anchor`");
 
-    // Same order the dispatcher uses in `crate::layout::measure`: clamp to
-    // this node's own declared constraints, then sanitize — so a surface's
-    // placed size is bound by the same rule every other node's is.
-    let mut natural = node
-        .constraints
-        .clamp_size(natural_size(node, ctx, path))
-        .sane();
+    // Padding is resolved first because the probe below needs it: a
+    // surface's declared ceiling is the width of the whole box, so the
+    // padding comes out of the ceiling before the children are offered
+    // what is left (see [`natural_size`]).
+    let padding = ctx.padding(&node.props.padding);
 
     // "Add before clamp, inset content_rect after" (`layout-insets.md` §8
     // step 6): padding grows the surface's own natural size here, before the
@@ -135,9 +134,20 @@ pub fn place(
     // exactly like the rest of its natural size. `content_rect` is inset
     // back out of the *clamped* `rect` afterwards, not built from this
     // padded `natural` directly.
-    let padding = ctx.padding(&node.props.padding);
+    let mut natural = natural_size(node, ctx, path, padding);
     natural.w += padding.along(Axis::Horizontal);
     natural.h += padding.along(Axis::Vertical);
+
+    // The node's own declared constraints bound the **padded** box, not the
+    // content inside it. Clamping before the padding was added let a
+    // popover with a 368-unit ceiling and 16 units of padding a side place
+    // 400 units wide, which is the ceiling plus the padding and not the
+    // ceiling. Carbon's `max-inline-size` is a border-box number — the
+    // research pass reads 368 as "368 - 16px padding on each side is 336"
+    // of content
+    // (`.agents/research/08-25-2026/Carbon-Component-Inventory/slice-d.md`)
+    // - and `sane()` follows the clamp exactly as it did before.
+    natural = node.constraints.clamp_size(natural).sane();
 
     // See the module doc: the walk's window is "the window" a surface must
     // never render outside of — never the cell its flow parent offered.
@@ -149,7 +159,7 @@ pub fn place(
     // only known once the plan has harvested it, and the cross-axis origin
     // the plan chose depends on the surface's extent, so the plan is redone
     // against the broadened size rather than patched. After `clamp_size`,
-    // deliberately: a surface's own `max` describes its content, and a
+    // deliberately: a surface's own `max` describes the box it wants, and a
     // menu narrower than its trigger is exactly the picture this exists to
     // rule out.
     if let Some(broadened) = fit_to_anchor(surface.fit, &plan, natural)
@@ -247,8 +257,9 @@ pub fn place(
 }
 
 /// The bounding box of this node's children, each probed at its own natural
-/// extent — under the surface's own horizontal ceiling when it declares one.
-/// A surface with no children is a zero-size point at its anchor.
+/// extent — under the surface's own horizontal ceiling, less this surface's
+/// own `padding`, when it declares one. A surface with no children is a
+/// zero-size point at its anchor.
 ///
 /// # Why the ceiling is offered and not applied afterwards
 ///
@@ -261,15 +272,42 @@ pub fn place(
 /// bodies short enough to fit one line escaped, which is why every one of
 /// those rows shipped looking fine.
 ///
+/// # Why the padding comes out of the ceiling first
+///
+/// The ceiling describes the **box**, and the padding is inside the box.
+/// Offering the whole ceiling and then adding the padding in [`place`] put a
+/// 368-unit popover on the page 400 units wide, with every line of its body
+/// wrapped 32 units too late. Carbon's `max-inline-size` is a border-box
+/// number: the research pass reads the popover's 368 as "368 - 16px padding
+/// on each side is 336" of content
+/// (`.agents/research/08-25-2026/Carbon-Component-Inventory/slice-d.md`).
+/// So the offer is `Proposal::shrink`-ed by the padding here — the same
+/// reserve-before-you-distribute step `stack::measure` takes — and [`place`]
+/// adds the padding back and clamps the padded box to the ceiling.
+///
+/// A child is still free to answer wider than the offer ("a parent places,
+/// it does not force", [`Proposal::Exact`]): an unbreakable word, or a child
+/// pinned to a fixed width, overflows. `place` clamps the box to the ceiling
+/// anyway and the surface's own `clip` cuts what will not fit, which is the
+/// honest reading of content that cannot be made narrower. It is not what
+/// this defect was.
+///
 /// The vertical axis stays `Unspecified`: a bubble grows downward as far as
 /// its content needs, and there is no ceiling to offer.
-fn natural_size(node: &ViewNode, ctx: &mut LayoutCtx<'_>, path: &mut KeyPath) -> Size {
+fn natural_size(
+    node: &ViewNode,
+    ctx: &mut LayoutCtx<'_>,
+    path: &mut KeyPath,
+    padding: Insets,
+) -> Size {
     let offer = SizeProposal {
         horizontal: node
             .constraints
             .horizontal
             .max
-            .map_or(Proposal::Unspecified, Proposal::Exact),
+            .map_or(Proposal::Unspecified, |max| {
+                Proposal::Exact(max).shrink(padding.along(Axis::Horizontal))
+            }),
         vertical: Proposal::Unspecified,
     };
     // Measured under the same empty scroll context `place` uses, so a
@@ -1080,16 +1118,8 @@ mod tests {
             .child(content)
     }
 
-    // -- Padding: inside the clamped rect, added before the clamp runs. ----
+    // -- The ceiling a surface declares, and what it offers under it. ------
 
-    /// The behaviour this leaf exists to add, pinned by name (gate G4).
-    ///
-    /// The surface's own placed rect grows by the padding (content 40x20 plus
-    /// 8.0 on every edge is 56x36); the content it hands its one child is the
-    /// *clamped* rect's interior, inset back down by that same padding —
-    /// landing exactly on the child's own 40x20 natural size, round-tripped
-    /// through "add before clamp, inset content_rect after"
-    /// (`layout-insets.md` §8 step 6).
     /// A surface offers its own horizontal ceiling to its children.
     ///
     /// Every child was probed at `Unspecified` until 2026-09-05, so a
@@ -1138,6 +1168,127 @@ mod tests {
         );
     }
 
+    /// A surface's declared ceiling is the width of the **box**, padding
+    /// included — so the padding comes out of the ceiling before the
+    /// children are offered it.
+    ///
+    /// Carbon's `max-inline-size: 368px` on `.cds--popover-content` is a
+    /// border-box number: the research pass reads it as "368 − 16px padding
+    /// on each side is 336" of content
+    /// (`.agents/research/08-25-2026/Carbon-Component-Inventory/slice-d.md`).
+    /// Petra offered the whole 368 to the children and then added the padding
+    /// on top, so a popover placed 400 units wide with 368 of text in it: the
+    /// box overshot the ceiling by its own padding and every line wrapped 32
+    /// units too late.
+    ///
+    /// `MonoContent` is 8 units a character and 16 a line. Twenty-four
+    /// characters in a 96-unit box with 8 units of padding on every edge is
+    /// 80 units of content, ten characters a line, **three** lines: content
+    /// 80x48, box 96x64. Offering the ceiling unreserved gives twelve
+    /// characters a line, two lines, and a 112-wide box — wider than the
+    /// ceiling the author declared.
+    #[test]
+    fn a_padded_surface_reserves_its_padding_from_the_ceiling_it_offers() {
+        let body = ViewNode::new(NodeKind::Text, "body").with_props(Props {
+            text: Some("abcdefghijklmnopqrstuvwx".to_owned()),
+            wrap: Some(TextWrap::Wrap),
+            ..Props::default()
+        });
+
+        let mut node = ViewNode::new(NodeKind::Surface, "popup")
+            .with_props(Props {
+                layer: Some(Layer::Popup),
+                anchor: Some(Anchor::Viewport),
+                clamp: Some(ClampRule::Shrink),
+                padding: Some(crate::testing::gap_insets(Insets::all(8.0))),
+                ..Props::default()
+            })
+            .child(body);
+        node.constraints.horizontal.max = Some(96.0);
+
+        let (surface, content) =
+            place_surface_and_content(&node, Rect::new(0.0, 0.0, 600.0, 400.0));
+
+        assert_eq!(
+            surface.rect.w, 96.0,
+            "the declared ceiling is the width of the whole box, padding \
+             included, and nothing may push the box past it: {:?}",
+            surface.rect
+        );
+        assert_eq!(
+            content.rect.w, 80.0,
+            "the children are offered the ceiling minus this surface's own \
+             padding, never the whole ceiling: {:?}",
+            content.rect
+        );
+        assert_eq!(
+            content.rect.h, 48.0,
+            "twenty-four characters at ten a line is three lines: {:?}",
+            content.rect
+        );
+        assert_eq!(
+            surface.rect.h, 64.0,
+            "three lines plus 8 units of padding above and below: {:?}",
+            surface.rect
+        );
+    }
+
+    /// A child that will not narrow does not push the box past the ceiling.
+    ///
+    /// The offer is an offer — "a parent places, it does not force"
+    /// ([`Proposal::Exact`]) — so a child pinned to a fixed width *measures*
+    /// at that width whatever it is handed: this spacer answers 200 to an
+    /// 80-unit offer. The declared `max` still has to describe the **box**,
+    /// so the clamp runs on the padded size rather than on the content, and
+    /// the surface comes out 96 wide with the overflow cut by its own
+    /// `clip` — not 112.
+    ///
+    /// This is the case the ceiling reservation above cannot reach, because
+    /// a rigid child ignores what it is offered. Falsify by clamping
+    /// `natural_size`'s answer before the padding is added, the way it
+    /// shipped: 112 against 96.
+    #[test]
+    fn a_child_that_overflows_the_ceiling_does_not_widen_the_box() {
+        let node = {
+            let mut n = padded_surface(
+                Anchor::Viewport,
+                ClampRule::Shrink,
+                Size::new(200.0, 20.0),
+                Insets::all(8.0),
+            );
+            n.constraints.horizontal.max = Some(96.0);
+            n
+        };
+
+        let (surface, content) =
+            place_surface_and_content(&node, Rect::new(0.0, 0.0, 600.0, 400.0));
+
+        assert_eq!(
+            surface.rect.w, 96.0,
+            "the ceiling describes the box, so a child that answered 200 to \
+             an 80-unit offer is cut by the surface's clip rather than \
+             allowed to widen it: {:?}",
+            surface.rect
+        );
+        assert_eq!(
+            content.rect.w, 80.0,
+            "the child is still placed into the padded interior of the \
+             clamped box, which is where the 200 it measured at gets cut: \
+             {:?}",
+            content.rect
+        );
+    }
+
+    // -- Padding: inside the clamped rect, added before the clamp runs. ----
+
+    /// The behaviour this leaf exists to add, pinned by name (gate G4).
+    ///
+    /// The surface's own placed rect grows by the padding (content 40x20 plus
+    /// 8.0 on every edge is 56x36); the content it hands its one child is the
+    /// *clamped* rect's interior, inset back down by that same padding —
+    /// landing exactly on the child's own 40x20 natural size, round-tripped
+    /// through "add before clamp, inset content_rect after"
+    /// (`layout-insets.md` §8 step 6).
     #[test]
     fn a_padded_surface_pads_inside_its_clamped_rect() {
         let node = padded_surface(
