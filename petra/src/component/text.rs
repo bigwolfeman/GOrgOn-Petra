@@ -1,6 +1,8 @@
 //! `text` and `heading` — the two non-interactive type components.
 
-use super::tokens::{TEXT_PRIMARY, TYPOGRAPHY_BODY, TYPOGRAPHY_HEADING, t};
+use std::sync::Arc;
+
+use super::tokens::{TEXT_PRIMARY, TYPOGRAPHY_BODY, TYPOGRAPHY_HEADING, TYPOGRAPHY_HEADING_SM, t};
 use crate::tree::{Key, NodeKind, Props, ViewNode};
 
 /// A run of body text.
@@ -36,4 +38,26 @@ pub fn heading(key: impl Into<Key>, content: impl Into<String>) -> ViewNode {
     };
     props.tokens.insert("foreground".into(), t(TEXT_PRIMARY));
     ViewNode::new(NodeKind::Text, key).with_props(props)
+}
+
+/// Every text leaf under `node` restyled as `heading-compact-01`
+/// ([`TYPOGRAPHY_HEADING_SM`]) in [`TEXT_PRIMARY`]: the type a table's
+/// column header is set in (data table, slice-b:75; structured list,
+/// slice-e anatomy 2). Shared by both tables so a caller can hand either
+/// a bare [`text`] as a header cell and get the header's type without
+/// knowing the token.
+pub(crate) fn as_compact_heading(mut node: ViewNode) -> ViewNode {
+    fn walk(node: &mut ViewNode) {
+        if node.kind == NodeKind::Text {
+            node.props.style = Some(t(TYPOGRAPHY_HEADING_SM));
+            node.props
+                .tokens
+                .insert("foreground".into(), t(TEXT_PRIMARY));
+        }
+        for child in &mut node.children {
+            walk(Arc::make_mut(child));
+        }
+    }
+    walk(&mut node);
+    node
 }

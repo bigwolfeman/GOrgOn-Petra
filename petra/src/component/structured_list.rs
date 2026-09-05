@@ -1,29 +1,41 @@
 //! Carbon Structured list (slice-e).
 //!
 //! A definition-style table, not [`super::list`] (ordered/unordered
-//! markers). Anatomy (`_structured-list.scss`):
-//! 1. Container — `display:table` → [`Role::Table`].
-//! 2. Header row — [`Role::Row`] of [`Role::Cell`]s. Not interactive.
+//! markers). Anatomy (`_structured-list.scss` + `31-structured-list.png`):
+//! 1. Container — `display:table` → [`Role::Table`]. No box: Carbon draws
+//!    nothing around a structured list.
+//! 2. Header row — [`Role::Row`] of [`Role::Cell`]s. Not interactive, no
+//!    fill, **no rule of its own**; text `$text-primary` in
+//!    `heading-compact-01` (`TYPOGRAPHY_HEADING_SM`). Cell padding is the
+//!    `padding-th` mixin: 16 top, 8 bottom.
 //! 3. Data rows — [`structured_list_row`]: [`Role::Row`], selectable,
 //!    `Semantics.selected` never colour alone — Carbon's own anatomy draws
 //!    `RadioButtonChecked` / `RadioButton` beside the row (slice-e, Icons:
-//!    "the only two icons this component ever renders"), so a row with a
-//!    fill change and nothing else is not an approximation, it is a
-//!    channel Carbon specifies and this file used to drop. See
-//!    [`with_selection_mark`].
+//!    "the only two icons this component ever renders"); see
+//!    [`with_selection_mark`]. Cell padding is the `padding-td` mixin: 16
+//!    top, 24 bottom, so a one-line row comes out at Carbon's 60 without a
+//!    pinned height, and the text sits in the upper part of the row the
+//!    way the reference shows it, not centred.
+//! 4. Rules — every data row binds `border-top` ([`BORDER_SUBTLE`]):
+//!    slice-e:98, "`.cds--structured-list-row` gets a `1px solid
+//!    $border-subtle` top divider". The tbody's **last** row also binds
+//!    `border-bottom`, which [`structured_list`] adds because only the
+//!    container knows which row is last. One line per boundary; the old
+//!    four-sided `border` on every row is the grid-of-boxes defect
+//!    (`.agents/carbon-waves/ROUND2-DEFECTS.md` row 31).
 //!
-//! Padding is `$spacing-05` (16) inline on each cell (see
-//! `cell_padding_inline`), not a single inset on the row: each row is a
-//! `Grid` of shared-width columns so sibling rows resolve identical pixel
-//! columns (the `data_table.rs` fix, `31-structured-list.png` had the same
-//! defect). Default row min-height is Carbon's 60. The 10-colour tag set
-//! is unrelated; this file does not invent hues.
+//! Inline padding is `$spacing-05` (16) on each cell (see
+//! [`cell_padding`]), not a single inset on the row: each row is a `Grid`
+//! of shared-width columns so sibling rows resolve identical pixel columns
+//! (the `data_table.rs` fix). The 10-colour tag set is unrelated; this file
+//! does not invent hues.
 
-use super::icon::{IconMark, icon};
+use super::icon::{IconMark, IconTone, icon_toned};
 use super::stack;
+use super::text::as_compact_heading;
 use super::tokens::{
     BORDER_SUBTLE, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SPACING_03, SPACING_05,
-    SURFACE_BASE, t,
+    SPACING_06, SURFACE_BASE, t,
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
@@ -31,31 +43,44 @@ use crate::tree::{
     ViewNode,
 };
 
-/// Carbon default structured-list row height (style page Size table).
+/// Carbon default structured-list row height (style page Size table). Not
+/// pinned on the row: it is what `padding-td` (16 + 24) plus one 20-unit
+/// line of `body-01` adds up to, and the row grows with a second line.
 const ROW_HEIGHT: f32 = 60.0;
 
 const _: () = assert!(ROW_HEIGHT == 60.0);
 
 const ROW_INTENTS: &[Interaction] = &[Interaction::Focus, Interaction::Click, Interaction::Hover];
 
-/// Structured list: header + rows under [`Role::Table`].
+/// Which padding mixin a cell takes.
+#[derive(Clone, Copy)]
+enum CellKind {
+    /// `padding-th`: 16 top, 8 bottom.
+    Header,
+    /// `padding-td`: 16 top, 24 bottom.
+    Data,
+}
+
+/// Structured list: header + rows under [`Role::Table`]. The last data row
+/// gets the tbody's closing rule.
 pub fn structured_list(
     key: impl Into<Key>,
     header: Vec<ViewNode>,
     rows: Vec<ViewNode>,
 ) -> ViewNode {
-    let mut children = vec![plain_row("header", header)];
-    children.extend(rows.into_iter().map(ensure_row));
+    let mut rows: Vec<ViewNode> = rows.into_iter().map(ensure_row).collect();
+    if let Some(last) = rows.last_mut() {
+        last.props
+            .tokens
+            .insert("border-bottom".into(), t(BORDER_SUBTLE));
+    }
+    let mut children = vec![header_row("header", header)];
+    children.extend(rows);
     let mut node = stack(key, Axis::Vertical, None, children);
     // Every row is a `Grid` (see `row_shell`) whose equal-weight column
-    // tracks resolve against whatever width `place` offers it. Without
-    // `Stretch` here, each row measures at its own content width and the
-    // picture (`31-structured-list.png`) showed exactly `data_table.rs`'s
-    // pre-fix defect one level up: "NameRole" cells touching with no gap,
-    // three ragged row widths, and "kernel"/"runtime" not lining up under
-    // "petra"/"layout". `Stretch` offers every row the list's own width,
-    // so the Grid tracks resolve identical pixel columns row to row — the
-    // same fix `data_table` made (commit 8778a83).
+    // tracks resolve against whatever width `place` offers it. `Stretch`
+    // offers every row the list's own width, so the Grid tracks resolve
+    // identical pixel columns row to row.
     node.props.align = Some(Align::Stretch);
     node.semantics = Semantics {
         role: Some(Role::Table),
@@ -67,12 +92,12 @@ pub fn structured_list(
 /// One selectable data row. Interactive, [`Role::Row`], cells stamped
 /// [`Role::Cell`]. `selected` is a declared fact plus the four-fill set
 /// [`super::list_row`] pioneered, plus [`with_selection_mark`]'s icon —
-/// Carbon's own second channel, not [`super::list_row`]'s.
+/// Carbon's own second channel.
 pub fn structured_list_row(key: impl Into<Key>, cells: Vec<ViewNode>, selected: bool) -> ViewNode {
     let key = key.into();
     let label = row_label(key.as_str(), &cells);
     let cells = with_selection_mark(cells, selected);
-    let mut node = row_shell(key, cells);
+    let mut node = row_shell(key, cells, CellKind::Data);
     for (slot, token) in [
         ("background", SURFACE_BASE),
         ("background@hover", LAYER_HOVER),
@@ -81,7 +106,9 @@ pub fn structured_list_row(key: impl Into<Key>, cells: Vec<ViewNode>, selected: 
     ] {
         node.props.tokens.insert(slot.into(), t(token));
     }
-    node.props.tokens.insert("border".into(), t(BORDER_SUBTLE));
+    node.props
+        .tokens
+        .insert("border-top".into(), t(BORDER_SUBTLE));
     let mut node = node.interactive(Role::Row, label, ROW_INTENTS);
     node.semantics.selected = selected;
     node
@@ -91,31 +118,21 @@ pub fn structured_list_row(key: impl Into<Key>, cells: Vec<ViewNode>, selected: 
 /// channel for this component (slice-e Icons: `RadioButtonChecked` /
 /// `RadioButton`, "the only two icons this component ever renders").
 ///
-/// [`IconMark`] has no radio-pair glyph — it is the vocabulary's existing
-/// stand-in for "this is the on state" ([`super::tile::selectable_tile`],
-/// the toggle, radio, checkbox, [`super::progress_indicator`]'s complete
-/// step), not a new SVG path, and reusing it here is the same move those
-/// made rather than new geometry for a mark this vocabulary already has
-/// one of.
+/// [`IconMark`] has no radio-pair glyph — [`IconMark::Check`] is the
+/// vocabulary's existing stand-in for "this is the on state", drawn in
+/// [`IconTone::Primary`] (Carbon's `$icon-primary`, the fill its SCSS gives
+/// the checked icon). The first version drew it in the default on-accent
+/// tone, which on the row's own layer measured 1.44:1 and was a mark
+/// nobody could see.
 ///
 /// The mark sits at the row's leading edge — Carbon's own
 /// `enable-v12-structured-list-visible-icons` placement, the one slice-e
-/// calls *visible at all times* rather than the legacy right-edge
-/// placement that stays `fill: transparent` until hover/checked, which is
-/// the same colour-only failure this fix exists to close.
+/// calls *visible at all times*.
 ///
 /// The mark's footprint is reserved on **every** row, selected or not — a
 /// same-size transparent spacer stands in when it is absent
-/// ([`selection_mark`]). An icon that only appeared on the selected row
-/// would make row width depend on selection, which is exactly the
-/// `31-structured-list.png` raggedness [`row_shell`]'s own doc already
-/// fixed once, one level deeper (inside a cell instead of across a row).
-/// The header row does not call this — Carbon's icon is "(Selectable
-/// only)", tbody rows alone — so the header's own leading column does not
-/// reserve this width; `row_shell`'s shared `Weight` tracks still keep
-/// every column's own boundary identical column-to-column, header
-/// included, because track width comes from the Grid's weight split, not
-/// from a cell's content.
+/// ([`selection_mark`]), so row width does not depend on selection. The
+/// header row does not call this — Carbon's icon is "(Selectable only)".
 fn with_selection_mark(cells: Vec<ViewNode>, selected: bool) -> Vec<ViewNode> {
     let mut cells = cells.into_iter();
     let Some(first) = cells.next() else {
@@ -131,13 +148,10 @@ fn with_selection_mark(cells: Vec<ViewNode>, selected: bool) -> Vec<ViewNode> {
     std::iter::once(lead).chain(cells).collect()
 }
 
-/// The mark itself: [`IconMark::Check`] when selected, a same-size
-/// transparent spacer when not. Sized off the icon's own constructed
-/// constraints rather than a duplicated constant — the same idiom
-/// [`super::progress_indicator::complete_mark`] uses to centre its own
-/// check without importing [`super::icon`]'s private `SIZE`.
+/// The mark itself: [`IconMark::Check`] in the primary icon tone when
+/// selected, a same-size transparent spacer when not.
 fn selection_mark(selected: bool) -> ViewNode {
-    let mark = icon("mark", IconMark::Check);
+    let mark = icon_toned("mark", IconMark::Check, IconTone::Primary);
     if selected {
         return mark;
     }
@@ -157,73 +171,63 @@ fn selection_mark(selected: bool) -> ViewNode {
     spacer
 }
 
-fn plain_row(key: impl Into<Key>, cells: Vec<ViewNode>) -> ViewNode {
-    let mut node = row_shell(key, cells);
+/// The column header row: compact-heading text, no fill, no rule.
+fn header_row(key: impl Into<Key>, cells: Vec<ViewNode>) -> ViewNode {
+    let cells = cells.into_iter().map(as_compact_heading).collect();
+    let mut node = row_shell(key, cells, CellKind::Header);
     node.semantics = Semantics {
         role: Some(Role::Row),
         ..Semantics::default()
     };
-    node.props.tokens.insert("border".into(), t(BORDER_SUBTLE));
     node
 }
 
 /// One row's cells, laid out as a `Grid` of `ncols` equal [`TrackSize::Weight`]
-/// columns rather than a bare `Axis::Horizontal` stack.
-///
-/// The picture (`31-structured-list.png`) showed `NameRole` with no gap and
-/// `kernel`/`runtime` in row 1 not lining up under `petra`/`layout` in row
-/// 2 — a horizontal stack sizes each cell to its own text, so column 2's x
-/// depends on how wide column 1's *own row* happened to be. A `Grid` with
-/// shared column tracks fixes both at once: every cell in column *i*
-/// resolves the same width, in every row, because they are the same track.
-/// `structured_list` gives every row's `Grid` the identical `Stretch`-
-/// offered width, so the tracks resolve to identical pixels row to row.
-/// Carbon gives no per-column width for this component either, so an equal
-/// split is the least-invented default — the same reasoning `data_table.rs`
-/// used.
-fn row_shell(key: impl Into<Key>, cells: Vec<ViewNode>) -> ViewNode {
+/// columns rather than a bare `Axis::Horizontal` stack, so every cell in
+/// column *i* resolves the same width in every row.
+fn row_shell(key: impl Into<Key>, cells: Vec<ViewNode>, kind: CellKind) -> ViewNode {
     let ncols = cells.len().max(1);
     let cells = cells
         .into_iter()
         .enumerate()
-        .map(|(i, cell)| as_cell(i, cell))
+        .map(|(i, cell)| as_cell(i, cell, kind))
         .collect();
-    let mut node = ViewNode::new(NodeKind::Grid, key)
+    ViewNode::new(NodeKind::Grid, key)
         .with_props(Props {
             columns: vec![TrackSize::Weight { weight: 1.0 }; ncols],
-            rows: vec![TrackSize::Weight { weight: 1.0 }],
+            rows: vec![TrackSize::FitContent],
             align: Some(Align::Stretch),
             ..Props::default()
         })
-        .with_children(cells);
-    node.constraints.vertical.min = Some(ROW_HEIGHT);
-    node
+        .with_children(cells)
 }
 
-/// `padding-inline: $spacing-05` on both sides. MEASURED (SCSS,
-/// `padding--data-structured-list` mixin, used by
-/// `.cds--structured-list--selection`): "selectable-row padding is
-/// `$spacing-05`(16px) on both inline sides — a different, simpler rule
-/// than the plain padding-td/padding-th mixins above"
-/// (`.agents/research/08-25-2026/Carbon-Component-Inventory/slice-e.md`
-/// line 104). Applied per cell, matching `data_table.rs`'s
-/// `cell_padding_inline`: without it the Grid's shared columns still touch
-/// at the seam, which is the second half of the `NameRole` defect.
-fn cell_padding_inline() -> InsetRefs {
+/// Inline `$spacing-05` on both sides (MEASURED, `padding--data-structured-list`
+/// mixin, slice-e:104: "selectable-row padding is `$spacing-05`(16px) on
+/// both inline sides"); block from the `padding-th` / `padding-td` mixins
+/// (slice-e:100-101): header 16 top / 8 bottom, data 16 top / 24 bottom.
+fn cell_padding(kind: CellKind) -> InsetRefs {
+    let bottom = match kind {
+        CellKind::Header => SPACING_03,
+        CellKind::Data => SPACING_06,
+    };
     InsetRefs {
         left: Some(t(SPACING_05)),
         right: Some(t(SPACING_05)),
-        ..InsetRefs::default()
+        top: Some(t(SPACING_05)),
+        bottom: Some(t(bottom)),
     }
 }
 
-fn as_cell(index: usize, node: ViewNode) -> ViewNode {
+fn as_cell(index: usize, node: ViewNode, kind: CellKind) -> ViewNode {
     if node.semantics.role == Some(Role::Cell) {
         return node;
     }
     let mut wrap = stack(format!("c{index}"), Axis::Horizontal, None, vec![node]);
-    wrap.props.padding = Some(cell_padding_inline());
-    wrap.props.align = Some(Align::Center);
+    wrap.props.padding = Some(cell_padding(kind));
+    // Top-aligned: Carbon's cell is padded, not centred, and the asymmetric
+    // 16/24 block padding is what puts the text where the reference has it.
+    wrap.props.align = Some(Align::Start);
     wrap.semantics = Semantics {
         role: Some(Role::Cell),
         ..Semantics::default()
@@ -231,12 +235,21 @@ fn as_cell(index: usize, node: ViewNode) -> ViewNode {
     wrap
 }
 
+/// A data row handed in as a bare node: a non-selectable row with the data
+/// padding and its top rule.
 fn ensure_row(node: ViewNode) -> ViewNode {
     if node.semantics.role == Some(Role::Row) {
-        node
-    } else {
-        plain_row(node.key.clone(), vec![node])
+        return node;
     }
+    let mut row = row_shell(node.key.clone(), vec![node], CellKind::Data);
+    row.semantics = Semantics {
+        role: Some(Role::Row),
+        ..Semantics::default()
+    };
+    row.props
+        .tokens
+        .insert("border-top".into(), t(BORDER_SUBTLE));
+    row
 }
 
 fn row_label(key: &str, cells: &[ViewNode]) -> String {
@@ -269,9 +282,12 @@ fn collect_text(node: &ViewNode) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{ROW_HEIGHT, SPACING_05, structured_list, structured_list_row};
+    use super::{
+        ROW_HEIGHT, SPACING_03, SPACING_05, SPACING_06, structured_list, structured_list_row,
+    };
+    use crate::component::icon::{IconMark, IconTone, icon_toned};
     use crate::component::text::text;
-    use crate::component::tokens::{BORDER_SUBTLE, LAYER_SELECTED};
+    use crate::component::tokens::{BORDER_SUBTLE, LAYER_SELECTED, TYPOGRAPHY_HEADING_SM};
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, validated_with};
@@ -294,15 +310,15 @@ mod tests {
         node.kind == NodeKind::Canvas || node.children.iter().any(|child| has_canvas(child))
     }
 
-    /// `31-structured-list.png` showed `NameRole` with no gap between the
-    /// cells because padding lived on the whole row (a single inset around
-    /// all cells at once) instead of between them. The fix moved
-    /// `$spacing-05` to each cell's own inline padding (`cell_padding_inline`,
-    /// mirroring `data_table.rs`'s `cell_padding_inline`), so this checks the
-    /// cell, not the row.
-    fn cell_padding_inline(cell: &ViewNode) -> Option<(&str, &str)> {
+    /// The four edges of a cell's padding, as token names.
+    fn cell_padding(cell: &ViewNode) -> Option<[&str; 4]> {
         let pad = cell.props.padding.as_ref()?;
-        Some((pad.left.as_ref()?.as_str(), pad.right.as_ref()?.as_str()))
+        Some([
+            pad.left.as_ref()?.as_str(),
+            pad.top.as_ref()?.as_str(),
+            pad.right.as_ref()?.as_str(),
+            pad.bottom.as_ref()?.as_str(),
+        ])
     }
 
     #[test]
@@ -323,16 +339,14 @@ mod tests {
         let header = child(&node, "header");
         assert_eq!(header.semantics.role, Some(Role::Row));
         assert!(header.interactions.is_empty());
-        assert_eq!(header.constraints.vertical.min, Some(ROW_HEIGHT));
-        assert_eq!(ROW_HEIGHT, 60.0);
         assert_eq!(header.kind, NodeKind::Grid, "shared columns need a Grid");
         assert_eq!(header.props.align, Some(crate::geom::Align::Stretch));
         assert_eq!(child(header, "c0").semantics.role, Some(Role::Cell));
         assert_eq!(child(header, "c1").semantics.role, Some(Role::Cell));
         assert_eq!(
-            cell_padding_inline(child(header, "c0")),
-            Some((SPACING_05, SPACING_05)),
-            "adjacent cells need inline padding or they touch"
+            cell_padding(child(header, "c0")),
+            Some([SPACING_05, SPACING_05, SPACING_05, SPACING_03]),
+            "header cells take `padding-th`: 16 top, 8 bottom, 16 inline"
         );
 
         let row = child(&node, "r0");
@@ -340,9 +354,51 @@ mod tests {
         assert_eq!(child(row, "c0").semantics.role, Some(Role::Cell));
         assert_eq!(child(row, "c1").semantics.role, Some(Role::Cell));
         assert_eq!(
-            cell_padding_inline(child(row, "c1")),
-            Some((SPACING_05, SPACING_05))
+            cell_padding(child(row, "c1")),
+            Some([SPACING_05, SPACING_05, SPACING_05, SPACING_06]),
+            "data cells take `padding-td`: 16 top, 24 bottom, 16 inline"
         );
+    }
+
+    /// Row 31, round 2 ("not in carbon style"): the header is compact
+    /// heading text with no fill and no rule; each data row draws one rule
+    /// above itself and the last one closes the body with a rule below;
+    /// nothing draws a four-sided box.
+    #[test]
+    fn rows_draw_one_top_rule_the_last_closes_and_the_header_is_bare() {
+        let node = structured_list(
+            "plans",
+            vec![text("h0", "Plan")],
+            vec![
+                structured_list_row("r0", vec![text("p0", "Basic")], false),
+                structured_list_row("r1", vec![text("p1", "Pro")], false),
+            ],
+        );
+        let header = child(&node, "header");
+        assert_eq!(token(header, "background"), None, "no header fill");
+        assert_eq!(token(header, "border-top"), None);
+        assert_eq!(token(header, "border-bottom"), None);
+        assert_eq!(
+            child(child(header, "c0"), "h0")
+                .props
+                .style
+                .as_ref()
+                .map(|s| s.as_str()),
+            Some(TYPOGRAPHY_HEADING_SM)
+        );
+        let r0 = child(&node, "r0");
+        assert_eq!(token(r0, "border-top"), Some(BORDER_SUBTLE));
+        assert_eq!(token(r0, "border-bottom"), None, "only the last row closes");
+        let r1 = child(&node, "r1");
+        assert_eq!(token(r1, "border-top"), Some(BORDER_SUBTLE));
+        assert_eq!(token(r1, "border-bottom"), Some(BORDER_SUBTLE));
+        for key in ["header", "r0", "r1"] {
+            assert_eq!(
+                token(child(&node, key), "border"),
+                None,
+                "{key}: a four-sided border is the grid-of-boxes defect"
+            );
+        }
     }
 
     #[test]
@@ -355,33 +411,29 @@ mod tests {
         assert!(on.interactions.contains(&Interaction::Focus));
         assert!(on.interactions.contains(&Interaction::Hover));
         assert_eq!(token(&on, "background@selected"), Some(LAYER_SELECTED));
-        assert_eq!(token(&on, "border"), Some(BORDER_SUBTLE));
+        assert_eq!(token(&on, "border-top"), Some(BORDER_SUBTLE));
         assert_eq!(on.kind, NodeKind::Grid, "shared columns need a Grid");
-        assert_eq!(
-            cell_padding_inline(child(&on, "c0")),
-            Some((SPACING_05, SPACING_05))
-        );
-        assert_eq!(on.constraints.vertical.min, Some(ROW_HEIGHT));
 
         let off = structured_list_row("r0", vec![text("p", "Alpha")], false);
         assert!(!off.semantics.selected);
         assert!(off.is_interactive());
     }
 
-    /// A5 (2026-09-04): Carbon's own anatomy draws `RadioButtonChecked` /
-    /// `RadioButton` beside a selected row (slice-e Icons); a fill change
-    /// alone is a channel this file used to drop, not an approximation of
-    /// one Carbon never specified. Selected rows must carry a canvas mark;
-    /// unselected rows must not — the mark is the on-state glyph, not a
-    /// permanent decoration.
+    /// Selected rows carry a canvas mark in the primary icon tone;
+    /// unselected rows carry none — the mark is the on-state glyph, and
+    /// the tone is the one that reads on a layer (the on-accent default
+    /// measured 1.44:1 there).
     #[test]
-    fn structured_list_row_selection_carries_a_second_channel() {
+    fn structured_list_row_selection_carries_a_visible_second_channel() {
         let on = structured_list_row("r0", vec![text("p", "Alpha"), text("c", "12")], true);
-        assert!(
-            has_canvas(&on),
-            "Carbon's own anatomy draws RadioButtonChecked beside a \
-             selected row (slice-e Icons); selection must not be fill-tone \
-             alone"
+        assert!(has_canvas(&on));
+        let mark = child(child(child(&on, "c0"), "lead"), "mark");
+        assert_eq!(
+            mark.props.canvas,
+            icon_toned("mark", IconMark::Check, IconTone::Primary)
+                .props
+                .canvas,
+            "the mark is drawn in `icon-primary`, not the on-accent ink"
         );
         let off = structured_list_row("r0", vec![text("p", "Alpha"), text("c", "12")], false);
         assert!(
@@ -434,14 +486,16 @@ mod tests {
         )
     }
 
-    /// Check C/D: the header row and its own row-divider `border`
-    /// (slice-e, "`.cds--structured-list-row` gets a `1px solid
-    /// $border-subtle` top divider ... the tbody's last row additionally
-    /// gets a bottom divider") is not a separate childless swatch the way
-    /// the Accordion divider was — the border lives directly on the row
-    /// node's own `Props.tokens`, not on a zero-sized child, so there is
-    /// no class-two shape here to petrify around. This is the frame-level
-    /// check across the header and both data rows, one selected.
+    fn rect_of(frame: &PetrifiedFrame, suffix: &str) -> crate::geom::Rect {
+        frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with(suffix))
+            .unwrap_or_else(|| panic!("no placement ending {suffix}"))
+            .rect
+    }
+
+    /// Check C/D across the header and both data rows, one selected.
     #[test]
     fn frame_geometry_has_no_degenerate_or_overflowing_placements() {
         let frame = petrify_lone(fixture());
@@ -473,29 +527,43 @@ mod tests {
         }
     }
 
-    /// A5 (2026-09-04): [`with_selection_mark`]'s own doc names the risk —
-    /// an icon that only appeared on the selected row would make that
-    /// row's leading-cell content depend on selection, the same
-    /// `31-structured-list.png` raggedness [`row_shell`]'s doc already
-    /// fixed once, one level deeper. The reserved spacer closes it: the
-    /// leading label ("Basic" in the unselected row, "Pro" in the
-    /// selected one) must land at the same x in both, because the mark's
-    /// footprint — icon or spacer — is the same size either way.
+    /// A one-line data row is its padding plus its one line and nothing
+    /// else — Carbon's 60 with a real 20-unit `body-01` line box (the test
+    /// harness shapes a shorter line, so the sum is asserted rather than
+    /// the constant) — with no pinned height; the header is shorter by the
+    /// 16 that `padding-th` gives up at the bottom; and the text sits 16
+    /// under the row's top, not centred in it.
+    #[test]
+    fn a_one_line_row_measures_carbons_default_height_from_its_padding() {
+        let frame = petrify_lone(fixture());
+        let row = rect_of(&frame, "/plans/r0");
+        let label = rect_of(&frame, "/r0/c0/lead/p0");
+        assert_eq!(
+            row.h,
+            16.0 + label.h + 24.0,
+            "padding-td (16 + 24) plus one line; with a 20 line box that is {ROW_HEIGHT}"
+        );
+        assert_eq!(
+            label.y - row.y,
+            16.0,
+            "the text sits 16 under the row's top, not centred in it"
+        );
+        let header = rect_of(&frame, "/plans/header");
+        assert_eq!(
+            row.h - header.h,
+            16.0,
+            "the header takes padding-th (16 + 8) and is 16 shorter than a data row"
+        );
+    }
+
+    /// The reserved spacer: the leading label lands at the same x whether
+    /// its own row is selected or not.
     #[test]
     fn selection_mark_reserves_the_same_width_selected_or_not() {
         let frame = petrify_lone(fixture());
-        let label_x = |suffix: &str| {
-            frame
-                .placements
-                .iter()
-                .find(|p| p.id.ends_with(suffix))
-                .unwrap_or_else(|| panic!("no placement ending {suffix}"))
-                .rect
-                .x
-        };
         assert_eq!(
-            label_x("/r0/c0/lead/p0"),
-            label_x("/r1/c0/lead/p1"),
+            rect_of(&frame, "/r0/c0/lead/p0").x,
+            rect_of(&frame, "/r1/c0/lead/p1").x,
             "the leading label must start at the same x whether its own \
              row is selected or not"
         );
@@ -547,11 +615,6 @@ mod tests {
                     .children
                     .first()
                     .unwrap_or_else(|| panic!("cell {cell_key} carries no text child"));
-                // A5: the leading cell now wraps its label behind the
-                // selection mark (`with_selection_mark`'s own `lead` node,
-                // children `[mark, label]`) — reach past it to the label.
-                // Other cells are untouched, so `first` is already the
-                // label there.
                 if first.key.as_str() == "lead" {
                     first
                         .children

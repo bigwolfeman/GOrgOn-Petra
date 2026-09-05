@@ -168,6 +168,33 @@ fn checkbox_mark(checked: bool) -> ViewNode {
     }
 }
 
+/// The 16×16 box alone, in any of its three states, with no label and no
+/// interaction of its own: the mark a data table draws in its selection
+/// column, where the **row** is the control that carries `selected` and
+/// the box is its visible second channel (`data_table.rs`).
+///
+/// Sized off the same constants [`checkbox`] uses, so a standalone box and
+/// a labelled one are one shape at one size.
+pub(crate) fn checkbox_box(state: CheckState) -> ViewNode {
+    match state {
+        CheckState::Unchecked => checkbox_mark(false),
+        CheckState::Checked => checkbox_mark(true),
+        CheckState::Mixed => marked_box(
+            CHECKBOX_BOX,
+            ACCENT_PRIMARY,
+            SHAPE_NONE,
+            swatch(
+                "dash",
+                CHECKBOX_DASH_W,
+                CHECKBOX_DASH_H,
+                Some(TEXT_ON_ACCENT),
+                None,
+                None,
+            ),
+        ),
+    }
+}
+
 /// A checkbox: an independent on/off choice, drawn as a sharp 16×16 square.
 pub fn checkbox(key: impl Into<Key>, label: impl Into<String>, checked: bool) -> ViewNode {
     labelled_box(
@@ -219,19 +246,11 @@ pub fn checkbox_tristate(
 /// `Semantics.selected` stays false — mixed is not on. `Semantics.value` is
 /// `"mixed"` so the third state is declared, not faked as selected.
 pub fn checkbox_indeterminate(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
-    let dash = swatch(
-        "dash",
-        CHECKBOX_DASH_W,
-        CHECKBOX_DASH_H,
-        Some(TEXT_ON_ACCENT),
-        None,
-        None,
-    );
     let mut node = labelled_box(
         key,
         label,
         false,
-        marked_box(CHECKBOX_BOX, ACCENT_PRIMARY, SHAPE_NONE, dash),
+        checkbox_box(CheckState::Mixed),
         &[Interaction::Focus, Interaction::Click],
     );
     node.semantics.value = Some("mixed".into());

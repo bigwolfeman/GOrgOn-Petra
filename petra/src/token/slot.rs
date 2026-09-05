@@ -134,10 +134,11 @@ impl SlotSchema {
 }
 
 /// The shipped slot schema: every paint slot the design system has
-/// committed to. Six entries, and `gorgon-petra-egui`'s painter draws all
-/// six — `standard_slots()` and that painter's `KNOWN_SLOTS` are now the
-/// same set, which `the_shipped_schema_is_exactly_what_the_painter_draws`
-/// holds them to.
+/// committed to. Ten entries, and `gorgon-petra-egui`'s painter draws all
+/// ten — `standard_slots()` and that painter's `KNOWN_SLOTS` are the same
+/// set, which `the_shipped_schema_is_exactly_what_the_painter_draws` holds
+/// them to. Six of the ten date from 2026-08-25; the four edge slots
+/// (`border-top` … `border-left`) from 2026-09-04, see below.
 ///
 /// # Five slots were retired on 2026-08-25 (FR-025)
 ///
@@ -215,11 +216,38 @@ impl SlotSchema {
 /// `shipped.rs:46-51` names for an unread token, aimed the other way — a
 /// schema entry nothing in the render path could honour per node, rather
 /// than a vocabulary entry nothing reads at all.
+///
+/// # The four edge slots (2026-09-04)
+///
+/// `border-top`, `border-right`, `border-bottom` and `border-left` each
+/// paint **one** edge of the node's rect in the bound colour, at the same
+/// one-unit device-snapped width `border` uses, and nothing else. They are
+/// the shape the retired `divider` slot's table above says the real need
+/// was: Carbon separates data-table rows with `border-block-end`, structured
+/// list rows with `border-block-start`, and pagination's nav buttons with
+/// `border-inline-start` (slice-b:76, slice-e:98, slice-d:58). A four-sided
+/// `border` on each of two adjacent rows drew every seam twice and every
+/// column edge once, which is why the two tables read as a grid of boxes
+/// under a green suite (`.agents/carbon-waves/ROUND2-DEFECTS.md` rows 9
+/// and 31). A real 1-unit element per edge was the workaround three
+/// components used first; it works for a bar's top rule and costs a node,
+/// a key, and a constraint each time, and it cannot be state-decorated the
+/// way a slot can (`border-bottom@selected`).
+///
+/// They are independent slots and not one `Edge` enum so a three-sided
+/// case (Carbon's active header action, slice-f:150) binds three of them.
+/// Adding them cost no `Props` field, no `PaintContent` field and no digest
+/// bump: `props.tokens` is already a map keyed by slot name, and
+/// `frame::digest::hash_paint_content` hashes every entry it holds.
 #[must_use]
 pub fn standard_slots() -> SlotSchema {
     let mut s = SlotSchema::new();
     s.declare(SlotSpec::new("background", TokenKind::Color, false))
         .declare(SlotSpec::new("border", TokenKind::Color, false))
+        .declare(SlotSpec::new("border-top", TokenKind::Color, false))
+        .declare(SlotSpec::new("border-right", TokenKind::Color, false))
+        .declare(SlotSpec::new("border-bottom", TokenKind::Color, false))
+        .declare(SlotSpec::new("border-left", TokenKind::Color, false))
         .declare(SlotSpec::new("foreground", TokenKind::Color, false))
         .declare(SlotSpec::new("shadow", TokenKind::Color, false))
         .declare(SlotSpec::new("radius", TokenKind::Shape, false))
@@ -232,8 +260,8 @@ mod tests {
     use super::{SlotSpec, standard_slots};
     use crate::token::value::TokenKind;
 
-    /// The shipped schema is exactly the six slots the painter draws, at the
-    /// kinds it draws them.
+    /// The shipped schema is exactly the ten slots the painter draws, at
+    /// the kinds it draws them.
     ///
     /// The count is the load-bearing assertion, not the membership list. This
     /// schema carried eleven entries against a six-entry painter for as long
@@ -251,6 +279,10 @@ mod tests {
         let expected = [
             ("background", TokenKind::Color),
             ("border", TokenKind::Color),
+            ("border-top", TokenKind::Color),
+            ("border-right", TokenKind::Color),
+            ("border-bottom", TokenKind::Color),
+            ("border-left", TokenKind::Color),
             ("foreground", TokenKind::Color),
             ("shadow", TokenKind::Color),
             ("radius", TokenKind::Shape),

@@ -830,33 +830,138 @@ mod tests {
         assert_ne!(resting, selected_shot);
     }
 
-    /// Row 9. The zebra form: the second body row binds the raised fill.
-    #[test]
-    fn the_data_table_is_the_zebra_form() {
-        let mut cam = Camera::on("Data table");
-        cam.shoot("09-data-table");
-        let tree = cam.tree();
-        let fill = |key: &str| {
-            crate::page::common::find(&tree, key)
-                .unwrap()
-                .props
-                .tokens
-                .get("background")
-                .map(|t| t.as_str().to_owned())
-        };
-        assert_eq!(fill("dt-0").as_deref(), Some("surface.base"));
-        assert_eq!(
-            fill("dt-1").as_deref(),
-            Some("surface.raised"),
-            "the odd row is not striped: the page is not calling `data_table_zebra`"
-        );
+    /// Whether the node keyed `key` in the open page's tree is selected.
+    fn selected(cam: &Camera, key: &str) -> bool {
+        crate::page::common::find(&cam.tree(), key)
+            .unwrap_or_else(|| panic!("no node keyed {key:?} in the page tree"))
+            .semantics
+            .selected
     }
 
-    /// Row 23. The page called the three-argument `pagination`, so the
-    /// bar's whole left half was empty. Now the items group and the range
-    /// are on the bar, and Next moves both the page and the range.
+    /// Row 9, round 2 ("not in carbon style"). Carbon's data table is a
+    /// selection column of checkboxes, an accent header in compact heading
+    /// type, and one rule under each row (`09-data-table.png`). Driven the
+    /// way a hand drives it: a press on a row selects it and its box takes
+    /// the tick; a press on the header's select-all selects every row, and
+    /// a second press clears them. Read back from the tree and from the
+    /// pixels, because a `selected` flag that flips while the picture does
+    /// not is the round-1 failure this module exists to catch.
     #[test]
-    fn the_pagination_bar_has_its_items_group_and_pages_forward() {
+    fn a_data_table_row_selects_when_pressed_and_select_all_selects_every_row() {
+        let mut cam = Camera::on("Data table");
+        let resting = cam.shoot("09-data-table");
+        for key in ["dt-0", "dt-1", "dt-2", "dt-3"] {
+            assert!(
+                cam.has(&format!("{key}/select/box")),
+                "{key} has no checkbox in its selection column"
+            );
+            assert!(
+                !cam.has(&format!("{key}/select/box/tick")) || selected(&cam, key),
+                "{key}: a tick on an unselected row"
+            );
+        }
+        assert!(
+            cam.has("header/select/select-all"),
+            "no select-all in the header"
+        );
+        assert!(!selected(&cam, "dt-0"));
+        assert!(
+            selected(&cam, "dt-1"),
+            "the page opens with its second row selected"
+        );
+
+        cam.click("dt-0/c0");
+        let one_more = cam.shoot("09-data-table-row-one-selected");
+        assert!(selected(&cam, "dt-0"), "pressing the row did not select it");
+        assert!(
+            cam.has("dt-0/select/box/tick"),
+            "the selected row's checkbox did not take the tick"
+        );
+        assert_ne!(resting, one_more, "the selection never reached the picture");
+
+        cam.click("select-all");
+        let every = cam.shoot("09-data-table-all-selected");
+        for key in ["dt-0", "dt-1", "dt-2", "dt-3"] {
+            assert!(selected(&cam, key), "select-all left {key} unselected");
+            assert!(
+                cam.has(&format!("{key}/select/box/tick")),
+                "{key} has no tick"
+            );
+        }
+        assert!(
+            selected(&cam, "select-all"),
+            "with every row selected the header box is checked"
+        );
+        assert_ne!(one_more, every);
+
+        cam.click("select-all");
+        let none = cam.shoot("09-data-table-none-selected");
+        for key in ["dt-0", "dt-1", "dt-2", "dt-3"] {
+            assert!(
+                !selected(&cam, key),
+                "a second select-all press left {key} selected"
+            );
+            assert!(
+                !cam.has(&format!("{key}/select/box/tick")),
+                "{key} kept its tick"
+            );
+        }
+        assert_ne!(every, none);
+    }
+
+    /// Row 31, round 2. A structured list's selectable rows are
+    /// single-select: a press on the first row moves the selection and its
+    /// check mark off the second row and onto the first, and the picture
+    /// changes with it.
+    #[test]
+    fn a_structured_list_row_takes_the_selection_when_pressed() {
+        let mut cam = Camera::on("Structured list");
+        let resting = cam.shoot("31-structured-list");
+        assert!(!selected(&cam, "sl-0"));
+        assert!(
+            selected(&cam, "sl-1"),
+            "the page opens with its second row selected"
+        );
+        // Every row reserves the mark's footprint (a same-size spacer keyed
+        // `mark`), so "has a mark" is "the node keyed `mark` is a glyph".
+        let mark_is_glyph = |cam: &Camera, row: &str| {
+            crate::page::common::find(&cam.tree(), row)
+                .and_then(|r| crate::page::common::find(r, "mark"))
+                .is_some_and(|m| m.kind == gorgon_petra::tree::NodeKind::Canvas)
+        };
+        assert!(
+            mark_is_glyph(&cam, "sl-1") && !mark_is_glyph(&cam, "sl-0"),
+            "the mark is on the selected row alone"
+        );
+        cam.click("sl-0/c0/lead/c0");
+        let moved = cam.shoot("31-structured-list-first-selected");
+        assert!(
+            selected(&cam, "sl-0"),
+            "pressing the first row did not select it"
+        );
+        assert!(
+            !selected(&cam, "sl-1"),
+            "single-select: the second row must let go"
+        );
+        assert!(
+            mark_is_glyph(&cam, "sl-0"),
+            "the mark did not move onto the first row"
+        );
+        assert!(
+            !mark_is_glyph(&cam, "sl-1"),
+            "the mark stayed on the second row"
+        );
+        assert_ne!(resting, moved, "the selection never reached the picture");
+    }
+
+    /// Row 23, round 2 ("I dont think is ibm style"). Carbon's bar is two
+    /// pickers with chevrons and two caret icon buttons
+    /// (`23-pagination.png`). Driven: Next is a caret button and a press on
+    /// it moves the page and the range; the page-size picker opens a list
+    /// under itself and a press on `20` reflows the whole bar to 3 pages;
+    /// the page picker opens too and a press on a page number jumps to it.
+    #[test]
+    fn the_pagination_bar_pages_forward_and_its_pickers_pick() {
         let mut cam = Camera::on("Pagination");
         let first = cam.shoot("23-pagination");
         assert!(
@@ -864,14 +969,58 @@ mod tests {
             "no items-per-page group"
         );
         assert!(cam.has("range/range-text"), "no range text");
+        assert!(
+            cam.has("previous/caret") && cam.has("next/caret"),
+            "the nav buttons are carets"
+        );
+        assert!(
+            cam.has("page-size-picker/chevron"),
+            "the page-size picker has no chevron"
+        );
         assert_eq!(leaf_text(&cam, "page-size"), "10");
         assert_eq!(leaf_text(&cam, "range-text"), "1\u{2013}10 of 50 items");
         assert_eq!(leaf_text(&cam, "page"), "1");
+        assert!(!cam.has("menu"), "no picker is open at rest");
+
         cam.click("controls/next");
         let second = cam.shoot("23-pagination-page-two");
         assert_eq!(leaf_text(&cam, "page"), "2");
         assert_eq!(leaf_text(&cam, "range-text"), "11\u{2013}20 of 50 items");
         assert_ne!(first, second);
+
+        cam.click("page-size-picker");
+        let sizes_open = cam.shoot("23-pagination-sizes-open");
+        assert!(
+            cam.has("page-size-cell/menu"),
+            "the page-size picker did not open its list"
+        );
+        let picker = cam.rect("page-size-picker");
+        let menu = cam.rect("page-size-cell/menu");
+        assert!(
+            menu.y >= picker.y + picker.h - 1.0 && (menu.x - picker.x).abs() < 1.0,
+            "the list at {menu:?} does not hang under the picker at {picker:?}"
+        );
+        assert_ne!(second, sizes_open);
+
+        cam.click("size-20");
+        let twenty = cam.shoot("23-pagination-twenty-per-page");
+        assert!(!cam.has("menu"), "choosing a size did not close the list");
+        assert_eq!(leaf_text(&cam, "page-size"), "20");
+        assert_eq!(leaf_text(&cam, "page-count"), "of 3 pages");
+        assert_eq!(leaf_text(&cam, "range-text"), "21\u{2013}40 of 50 items");
+        assert_ne!(sizes_open, twenty);
+
+        cam.click("page-picker");
+        assert!(
+            cam.has("page-cell/menu"),
+            "the page picker did not open its list"
+        );
+        cam.click("page-3");
+        let third = cam.shoot("23-pagination-page-three");
+        assert!(!cam.has("menu"));
+        assert_eq!(leaf_text(&cam, "page"), "3");
+        assert_eq!(leaf_text(&cam, "range-text"), "41\u{2013}50 of 50 items");
+        assert_ne!(twenty, third);
     }
 
     /// Row 32. The vertical strip was hardcoded and had no panel, so a

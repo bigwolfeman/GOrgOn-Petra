@@ -96,6 +96,7 @@ mod icon;
 mod inline_loading;
 mod link;
 mod list;
+mod list_box;
 mod list_row;
 mod loading;
 mod menu;
@@ -141,8 +142,9 @@ pub use controls::{
     checkbox_tristate, radio, radio_group, toggle, toggle_sm,
 };
 pub use data_table::{
-    data_table, data_table_row, data_table_row_expandable, data_table_row_lg, data_table_row_sm,
-    data_table_row_xl, data_table_row_xs, data_table_sort_header, data_table_zebra,
+    data_table, data_table_row, data_table_row_expandable, data_table_row_lg, data_table_row_md,
+    data_table_row_sm, data_table_row_xl, data_table_row_xs, data_table_sort_header,
+    data_table_zebra,
 };
 pub use date_picker::{date_picker, date_picker_open};
 pub use dropdown::{dropdown, dropdown_open, dropdown_option};
@@ -155,6 +157,7 @@ pub use icon::{IconBox, IconMark, IconTone, icon, icon_in, icon_toned};
 pub use inline_loading::inline_loading;
 pub use link::link;
 pub use list::{list_item, list_item_with, ordered_list, unordered_list};
+pub use list_box::list_box;
 pub use list_row::list_row;
 pub use loading::{loading, loading_sm};
 pub use menu::{menu, menu_item};
@@ -164,7 +167,7 @@ pub use notification::{
     notification, notification_actionable, notification_inline, notification_toast,
 };
 pub use number_input::{number_input, number_input_invalid, number_input_lg, number_input_sm};
-pub use pagination::{pagination, pagination_items};
+pub use pagination::{PaginationPicker, pagination, pagination_items, pagination_items_open};
 pub use popover::{popover, popover_with};
 pub use progress::{progress, progress_sm, progress_with_helper};
 pub use progress_indicator::{progress_indicator, progress_step};

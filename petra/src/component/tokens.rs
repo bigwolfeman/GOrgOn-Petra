@@ -37,6 +37,9 @@ pub(crate) const SPACING_03: &str = "spacing-03";
 pub(crate) const SPACING_04: &str = "spacing-04";
 /// See [`SPACING_01`]. 16 units.
 pub(crate) const SPACING_05: &str = "spacing-05";
+/// See [`SPACING_01`]. 24 units. Carbon's structured-list cell bottom
+/// padding (`padding-td`, slice-e) and the ordered list's marker column.
+pub(crate) const SPACING_06: &str = "spacing-06";
 /// See [`SPACING_01`]. 32 units. Carbon nested-list indent (`_list.scss`).
 pub(crate) const SPACING_07: &str = "spacing-07";
 /// See [`SPACING_01`]. 48 units. Carbon modal content bottom padding and
@@ -107,6 +110,9 @@ pub(crate) const SURFACE_RAISED: &str = "surface.raised";
 /// while only the name was checked. Where an area is filled to recede, spend
 /// this.
 pub(crate) const LAYER_ACCENT: &str = "layer-accent";
+/// [`LAYER_ACCENT`] under the pointer: Carbon's `$layer-accent-hover`, the
+/// data table's column-header hover (slice-b, "Column header" colour table).
+pub(crate) const LAYER_ACCENT_HOVER: &str = "layer-accent-hover";
 
 /// The error hue. Carbon's `$support-error`, which `token::shipped` aliases
 /// onto `status.down`.

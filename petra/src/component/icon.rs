@@ -44,7 +44,7 @@
 
 use std::sync::Arc;
 
-use super::tokens::{ICON_PRIMARY, ICON_SECONDARY, TEXT_ON_ACCENT, t};
+use super::tokens::{ICON_DISABLED, ICON_PRIMARY, ICON_SECONDARY, TEXT_ON_ACCENT, t};
 use crate::draw::{ColorRef, Command, Corners, DrawList, Paint, PathVerb, Stroke, Width};
 use crate::geom::{Point, Rect, Size};
 use crate::tree::{AxisConstraint, Constraints, Key, NodeKind, Props, ViewNode};
@@ -193,6 +193,19 @@ pub enum IconMark {
     /// `M14 4H18V8H14zM4 4H8V8H4zM24 4H28V8H24zM14 14H18V18H14zM4 14H8V18H4zM24 14H28V18H24zM14 24H18V28H14zM4 24H8V28H4zM24 24H28V28H24z`.
     /// Nine snapped squares.
     Switcher,
+    /// Carbon `CaretLeft` (pagination's Previous button).
+    ///
+    /// Source path at 16, viewBox `0 0 16 16`: `M10 12L5 8 10 4z`; at 32,
+    /// viewBox `0 0 32 32`: `M20 24L10 16 20 8z`. One filled triangle
+    /// pointing left, on whole units at 16 so no vertex lands on a half
+    /// pixel.
+    CaretLeft,
+    /// Carbon `CaretRight` (pagination's Next button).
+    ///
+    /// Source path at 16, viewBox `0 0 16 16`: `M6 4L11 8 6 12z`; at 32,
+    /// viewBox `0 0 32 32`: `M12 8L22 16 12 24z`. [`IconMark::CaretLeft`]
+    /// mirrored.
+    CaretRight,
 }
 
 /// The box a mark is drawn in: which of Carbon's two glyph sizes.
@@ -221,6 +234,12 @@ pub enum IconTone {
     /// `icon-secondary`: the mark sits on a layer and is furniture (the
     /// search field's magnifier, a resting header action).
     Secondary,
+    /// `icon-disabled`: the mark is a control's own mark and the control is
+    /// unavailable (pagination's Previous on page 1). Carbon's
+    /// `$icon-disabled` is `$icon-primary` at 25%, and the caret is the
+    /// only thing in an icon button, so a caret drawn at the live tone would
+    /// leave a disabled button indistinguishable from a live one.
+    Disabled,
 }
 
 impl IconTone {
@@ -229,6 +248,7 @@ impl IconTone {
             Self::OnAccent => TEXT_ON_ACCENT,
             Self::Primary => ICON_PRIMARY,
             Self::Secondary => ICON_SECONDARY,
+            Self::Disabled => ICON_DISABLED,
         }
     }
 }
@@ -311,6 +331,8 @@ fn draw_list(mark: IconMark, boxed: IconBox, tone: IconTone) -> DrawList {
         IconMark::Menu => menu(boxed, color),
         IconMark::Notification => notification(boxed, color),
         IconMark::Switcher => switcher(size / 32.0, color),
+        IconMark::CaretLeft => caret_left(size / 32.0, color),
+        IconMark::CaretRight => caret_right(size / 32.0, color),
     };
     DrawList::new(commands).unwrap_or_else(|err| panic!("{mark:?} draw list refused: {err}"))
 }
@@ -734,6 +756,22 @@ fn switcher(s: f32, color: ColorRef) -> Vec<Command> {
         .collect()
 }
 
+fn caret_left(s: f32, color: ColorRef) -> Vec<Command> {
+    vec![filled_tri(
+        [pt(20.0, 24.0), pt(10.0, 16.0), pt(20.0, 8.0)],
+        s,
+        Paint::filled(color),
+    )]
+}
+
+fn caret_right(s: f32, color: ColorRef) -> Vec<Command> {
+    vec![filled_tri(
+        [pt(12.0, 8.0), pt(22.0, 16.0), pt(12.0, 24.0)],
+        s,
+        Paint::filled(color),
+    )]
+}
+
 fn pt(x: f32, y: f32) -> Point {
     Point::new(x, y)
 }
@@ -757,6 +795,20 @@ fn filled_quad(corners: [Point; 4], s: f32, paint: Paint) -> Command {
     }
 }
 
+/// One filled triangle, the convex figure every Carbon caret is.
+fn filled_tri(corners: [Point; 3], s: f32, paint: Paint) -> Command {
+    let [p0, p1, p2] = corners.map(|p| scaled(p, s));
+    Command::Path {
+        verbs: vec![
+            PathVerb::MoveTo(p0),
+            PathVerb::LineTo(p1),
+            PathVerb::LineTo(p2),
+        ],
+        closed: true,
+        paint,
+    }
+}
+
 /// An axis-aligned bar from `(x0, y0)` to `(x1, y1)` in the source viewBox,
 /// scaled by `s`, snapped to the device grid at paint time.
 fn snapped_bar(x0: f32, y0: f32, x1: f32, y1: f32, s: f32, paint: Paint) -> Command {
@@ -771,11 +823,13 @@ fn snapped_bar(x0: f32, y0: f32, x1: f32, y1: f32, s: f32, paint: Paint) -> Comm
 #[cfg(test)]
 mod tests {
     use super::{CHECK_BOX, GLYPH_BOX, HEADER_BOX, IconBox, IconMark, IconTone, icon, icon_in};
-    use crate::component::tokens::{ICON_PRIMARY, ICON_SECONDARY, TEXT_ON_ACCENT};
+    use crate::component::tokens::{ICON_DISABLED, ICON_PRIMARY, ICON_SECONDARY, TEXT_ON_ACCENT};
     use crate::draw::{ColorRef, Command, DrawList};
     use crate::tree::NodeKind;
 
-    const EVERY_MARK: [IconMark; 14] = [
+    const EVERY_MARK: [IconMark; 16] = [
+        IconMark::CaretLeft,
+        IconMark::CaretRight,
         IconMark::Check,
         IconMark::Calendar,
         IconMark::ChevronDown,
@@ -958,6 +1012,7 @@ mod tests {
                 (IconTone::OnAccent, TEXT_ON_ACCENT),
                 (IconTone::Primary, ICON_PRIMARY),
                 (IconTone::Secondary, ICON_SECONDARY),
+                (IconTone::Disabled, ICON_DISABLED),
             ] {
                 let node = icon_in("m", mark, IconBox::Glyph, tone);
                 let seen = colours(list(&node));

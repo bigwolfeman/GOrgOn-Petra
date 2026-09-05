@@ -32,7 +32,7 @@ use gorgon_petra::token::{
     DerivedState, FocusRing, InteractionRank, MotionValue, SHADOW_GEOMETRY, Silhouette,
     ThemeSnapshot, TokenName, TokenValue, TypographyValue, base_slot, resolve_slot, resolve_state,
 };
-use gorgon_petra::tree::Role;
+use gorgon_petra::tree::{Edge, Role};
 
 use crate::focus_caret::CaretFigure;
 use crate::host::{COVERAGE_TOKEN, FALLBACK_COVERAGE, coverage_plan};
@@ -43,6 +43,30 @@ use crate::text::GalleyShaper;
 pub const BACKGROUND_SLOT: &str = "background";
 /// Token slot painted as a one-unit outline around a node.
 pub const BORDER_SLOT: &str = "border";
+/// Token slot painted as a one-unit rule along the node's top edge only.
+///
+/// Carbon draws most of its rules on one edge — `border-block-end` under a
+/// table row, `border-block-start` over a structured-list row,
+/// `border-inline-start` beside a pagination button — and a four-sided
+/// [`BORDER_SLOT`] on each of two adjacent rows drew every seam twice. The
+/// four edge slots each stroke exactly one side of the same snapped rect
+/// [`BORDER_SLOT`] would outline, at the same [`device_snapped_width`],
+/// inset by half that width so the line sits inside the node the way an
+/// inside-stroked outline does.
+pub const BORDER_TOP_SLOT: &str = "border-top";
+/// See [`BORDER_TOP_SLOT`]: the right edge only.
+pub const BORDER_RIGHT_SLOT: &str = "border-right";
+/// See [`BORDER_TOP_SLOT`]: the bottom edge only.
+pub const BORDER_BOTTOM_SLOT: &str = "border-bottom";
+/// See [`BORDER_TOP_SLOT`]: the left edge only.
+pub const BORDER_LEFT_SLOT: &str = "border-left";
+/// The four edge slots, in the order the painter walks them.
+const EDGE_SLOTS: [(&str, Edge); 4] = [
+    (BORDER_TOP_SLOT, Edge::Top),
+    (BORDER_RIGHT_SLOT, Edge::Right),
+    (BORDER_BOTTOM_SLOT, Edge::Bottom),
+    (BORDER_LEFT_SLOT, Edge::Left),
+];
 /// Token slot used for a node's text.
 pub const FOREGROUND_SLOT: &str = "foreground";
 /// Token slot painted as the corner radius of a node's background and
@@ -79,6 +103,10 @@ pub const SHADOW_SLOT: &str = "shadow";
 const KNOWN_SLOTS: &[&str] = &[
     BACKGROUND_SLOT,
     BORDER_SLOT,
+    BORDER_TOP_SLOT,
+    BORDER_RIGHT_SLOT,
+    BORDER_BOTTOM_SLOT,
+    BORDER_LEFT_SLOT,
     FOREGROUND_SLOT,
     RADIUS_SLOT,
     SHADOW_SLOT,
@@ -935,6 +963,32 @@ fn device_snapped_width(width: f32, scale: Scale) -> f32 {
     (width * factor).round().max(1.0) / factor
 }
 
+/// The two ends of a one-edge rule of stroke `width` along `edge` of `rect`,
+/// inset by half the width so the whole stroke lies inside the rect — the
+/// same pixels `StrokeKind::Inside` would put that edge of a four-sided
+/// outline on.
+fn edge_segment(rect: egui::Rect, edge: Edge, width: f32) -> [egui::Pos2; 2] {
+    let half = width / 2.0;
+    match edge {
+        Edge::Top => [
+            egui::pos2(rect.min.x, rect.min.y + half),
+            egui::pos2(rect.max.x, rect.min.y + half),
+        ],
+        Edge::Bottom => [
+            egui::pos2(rect.min.x, rect.max.y - half),
+            egui::pos2(rect.max.x, rect.max.y - half),
+        ],
+        Edge::Left => [
+            egui::pos2(rect.min.x + half, rect.min.y),
+            egui::pos2(rect.min.x + half, rect.max.y),
+        ],
+        Edge::Right => [
+            egui::pos2(rect.max.x - half, rect.min.y),
+            egui::pos2(rect.max.x - half, rect.max.y),
+        ],
+    }
+}
+
 /// Everything one paint pass shares across every placement it visits, beyond
 /// the placement and content that change per call.
 ///
@@ -1138,6 +1192,27 @@ fn paint_one(
                 ));
             }
         }
+        shapes += 1;
+    }
+    // One edge at a time. Each bound edge slot is one line segment down the
+    // inside of that edge — the same placement `StrokeKind::Inside` gives
+    // the four-sided outline above, so a node that swaps `border` for
+    // `border-bottom` keeps its bottom rule on the same device pixels. A
+    // silhouette has no edges to pick from, so on a non-rect figure the
+    // slot is recorded undrawn rather than drawn on the wrong shape.
+    for (slot, edge) in EDGE_SLOTS {
+        let Some(token) = resolve_slot(&content.tokens, slot, state) else {
+            continue;
+        };
+        let Some(color) = resolve_or_record(env.colors, token, report) else {
+            continue;
+        };
+        if outline.is_some() {
+            report.undrawn.insert(slot.to_owned());
+            continue;
+        }
+        let width = device_snapped_width(1.0, env.scale);
+        painter.line_segment(edge_segment(rect, edge, width), Stroke::new(width, color));
         shapes += 1;
     }
 
@@ -2107,6 +2182,75 @@ mod tests {
                 (painted_device - painted_device.round()).abs() < 1e-4,
                 "scale {factor}: the painted border width {painted_width} \
                  is {painted_device} device pixels, not a whole number"
+            );
+        }
+    }
+
+    /// An edge slot paints one line, on the inside of its own edge, at the
+    /// same snapped width the four-sided `border` uses — and paints no
+    /// outline. This is the primitive the two Carbon tables lean on: a row
+    /// that binds `border-bottom` draws its one rule and never a box.
+    #[test]
+    fn an_edge_slot_paints_one_inside_line_and_no_outline() {
+        for (slot, edge) in super::EDGE_SLOTS {
+            let scale = Scale::new(1.5).unwrap();
+            let host = Headless::new();
+            let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
+            let mut props = Props::default();
+            props.tokens.insert(slot.into(), tok("surface.raised"));
+            let node = ViewNode::new(NodeKind::Stack, "root").with_props(props);
+            let frame = petrify(
+                1,
+                validated(&node),
+                &mut h.ctx(),
+                Viewport::new(Size::new(240.0, 120.0), ThemeMode::Dark).with_scale(scale),
+                TransitionActivity::default(),
+            );
+            let mut shaper = host.shaper();
+            let report = paint_frame(&host.painter(), &frame, &mut shaper, &snapshot());
+            assert!(
+                report.unknown_slots.is_empty(),
+                "{slot}: the painter must know the slot, got {:?}",
+                report.unknown_slots
+            );
+            let out = host.0.run_ui(RawInput::default(), |_| {});
+            let strokes: Vec<_> = out
+                .shapes
+                .iter()
+                .filter_map(|cs| match &cs.shape {
+                    Shape::LineSegment { points, stroke } => Some((*points, stroke.width)),
+                    Shape::Rect(r) if r.stroke.width > 0.0 => {
+                        panic!("{slot}: painted a four-sided outline {r:?}")
+                    }
+                    _ => None,
+                })
+                .collect();
+            out.drop_without_applying_deltas();
+            let [(points, width)] = strokes[..] else {
+                panic!("{slot}: expected exactly one line, got {strokes:?}");
+            };
+            let expected = super::device_snapped_width(1.0, scale);
+            assert_eq!(width, expected, "{slot}: width is not device-snapped");
+            let rect = to_egui_snapped(frame.placements[0].rect, scale);
+            assert_eq!(
+                points,
+                super::edge_segment(rect, edge, expected),
+                "{slot}: the line is not on the inside of its own edge"
+            );
+            let half = expected / 2.0;
+            let on_edge = match edge {
+                super::Edge::Top => points[0].y == rect.min.y + half && points[1].y == points[0].y,
+                super::Edge::Bottom => {
+                    points[0].y == rect.max.y - half && points[1].y == points[0].y
+                }
+                super::Edge::Left => points[0].x == rect.min.x + half && points[1].x == points[0].x,
+                super::Edge::Right => {
+                    points[0].x == rect.max.x - half && points[1].x == points[0].x
+                }
+            };
+            assert!(
+                on_edge,
+                "{slot}: {points:?} is not along {edge:?} of {rect:?}"
             );
         }
     }

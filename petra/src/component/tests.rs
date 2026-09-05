@@ -1105,7 +1105,7 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
     /// Every node in [`full_gallery`] that may draw a border, by the key
     /// path it appears at. An exact set: a node missing from here that draws
     /// one fails, and a node listed here that stops drawing one fails too.
-    const DRAWS_AN_EDGE: [&str; 61] = [
+    const DRAWS_AN_EDGE: [&str; 58] = [
         // `field`: an empty well with no boundary does not read as a place
         // to type. See `field`'s own doc for why it keeps one when `button`
         // does not.
@@ -1173,18 +1173,24 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         "root/carbon2/dp-due",
         "root/carbon2/dp-open/calendar",
         "root/carbon2/dp-open/field",
-        // Data table: Carbon's own row-bottom rule (MEASURED
-        // `_data-table.scss`), the same class as the Accordion item
-        // divider above — a table with no rule between its rows does not
-        // read as a table. `header` (raised) and every body row (base,
-        // selected, expandable, disabled) all carry it; `data_table_row_sized`
-        // and `header_row` bind it unconditionally, same as the checkbox
-        // marks above.
-        "root/carbon2/dt-jobs/dt-r0",
-        "root/carbon2/dt-jobs/dt-r1",
-        "root/carbon2/dt-jobs/dt-r2",
-        "root/carbon2/dt-jobs/dt-r3",
-        "root/carbon2/dt-jobs/header",
+        // Data table rows used to be here, binding the four-sided `border`
+        // as an approximation of Carbon's row-bottom rule
+        // (`td { border-block-end }`, slice-b:76). On adjacent rows that
+        // drew every seam twice and every column edge once — the "grid of
+        // boxes" the operator named in both rounds of the 2026-09-04 walk
+        // (`.agents/carbon-waves/ROUND2-DEFECTS.md` row 9). The rows now
+        // bind `border-bottom`, the one edge Carbon draws, which this test
+        // does not audit; see `data_table.rs`'s
+        // `header_is_accent_in_compact_heading_and_rows_draw_one_bottom_rule`.
+        // What the rows do carry is the selection column's checkbox box —
+        // `controls::checkbox_box`, the exact same outline-is-the-mark
+        // shape as `root/controls/check/box` above — one per body row and
+        // the header's select-all.
+        "root/carbon2/dt-jobs/dt-r0/select/box",
+        "root/carbon2/dt-jobs/dt-r1/select/box",
+        "root/carbon2/dt-jobs/dt-r2/cells/select/box",
+        "root/carbon2/dt-jobs/dt-r3/select/box",
+        "root/carbon2/dt-jobs/header/select/select-all/box",
         // Form's field child: the exact same `field()` component as
         // `root/controls/name`, for the exact same reason.
         "root/carbon2/fm-signup/fm-name",
@@ -1296,16 +1302,12 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         "root/carbon5/sel-lg",
         "root/carbon5/sel-sm",
         "root/carbon5/sel-theme",
-        // Structured list: Carbon's own `1px solid $border-subtle` top
-        // divider between rows, with a bottom divider on the tbody's last
-        // row (slice-e, "`.cds--structured-list-row` gets a top divider;
-        // the tbody's last row additionally gets a bottom divider") — the
-        // same row-rule class as the Accordion item and Data table rows
-        // above. `plain_row` (the header) and `structured_list_row` (each
-        // data row) both bind it unconditionally.
-        "root/carbon5/stl-plans/header",
-        "root/carbon5/stl-plans/stl-r0",
-        "root/carbon5/stl-plans/stl-r1",
+        // Structured list rows used to be here for the same reason and
+        // with the same defect as the Data table rows above (round 2 row
+        // 31, "has all the problems of the data table"). Each data row now
+        // binds `border-top` and the last one `border-bottom` (slice-e:98);
+        // the header binds no edge at all. See `structured_list.rs`'s
+        // `rows_draw_one_top_rule_the_last_closes_and_the_header_is_bare`.
         // Tag: only Selectable and Operational carry a Border — slice-e,
         // "Selectable and Operational additionally have a Border (E) that
         // read-only/dismissible tags do not have ... the border is the

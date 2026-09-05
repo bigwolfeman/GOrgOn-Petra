@@ -2,16 +2,59 @@
 //!
 //! The list container is not interactive (FR-058). List items that are only
 //! text are not interactive either. Markers are generated here because Petra
-//! has no CSS counters and no `::before` content; Carbon's hanging indent is
-//! a horizontal stack of marker + label.
+//! has no CSS counters and no `::before` content.
+//!
+//! # The hanging indent, measured
+//!
+//! Carbon hangs the marker in a gutter to the *left* of the label's edge:
+//! the unordered container carries `margin-inline-start: $spacing-05` and
+//! its level-1 marker sits at `inset-inline-start: calc(-1 * $spacing-05)`
+//! (slice-c, `_list.scss:34,87`), so the marker lands on the list's own
+//! left edge and every label starts 16 in. Read off `16-list.png`
+//! (Carbon, 2x): "–" at the block's edge, "Inbox" 16 in; the nested "▪" 36
+//! in and "2025" 52 in (32 nested indent + 4 item padding + 16); "1." 24
+//! *outside* the block's edge and "Clone" on it (the ordered container has
+//! no margin and its counter hangs at `-$spacing-06`).
+//!
+//! Petra's first version put the marker *inside* the indent: a 16 inset,
+//! then the marker, then an 8 gap, then the label — so "–" sat 16 in and
+//! "Inbox" 31 in, and the nested pair 58 / 74. Every line was the right
+//! height and the block read as typed markdown, which is what the operator
+//! called it twice (`.agents/carbon-waves/ROUND2-DEFECTS.md` row 16). Now
+//! each item is one row: a **marker column** of fixed width — 16 for an
+//! unordered marker, 24 for an ordered one (`$spacing-06`, the counter's
+//! own hang) — with the marker at its start and the label at its end, no
+//! gap and no inset. Labels form one left edge at 16 (unordered) or 24
+//! (ordered) and markers hang in the column beside it. The one thing a
+//! retained layout cannot copy is Carbon's ordered counter overflowing
+//! *outside* its own list box; here the ordered list's box includes its
+//! 24 gutter, so an ordered list's labels sit 24 further in than Carbon's
+//! relative to the block, with the same marker-to-label distance.
 
 use std::sync::Arc;
 
 use super::stack;
 use super::text::text;
-use super::tokens::{SPACING_02, SPACING_03, SPACING_05, SPACING_07, t};
+use super::tokens::{SPACING_02, SPACING_07, t};
+// `SPACING_06` (24) is the ordered marker column, cited by value in
+// `MARKER_COLUMN_ORDERED` because a constraint is an extent, not a token ref.
 use crate::geom::Axis;
-use crate::tree::{InsetRefs, Key, Role, Semantics, ViewNode};
+use crate::tree::{AxisConstraint, InsetRefs, Key, Role, Semantics, ViewNode};
+
+/// The unordered marker column: Carbon's `$spacing-05` hang (`_list.scss:87`).
+const MARKER_COLUMN_UNORDERED: f32 = 16.0;
+/// The ordered marker column: the counter's `$spacing-06` hang, room for
+/// two digits and the full stop.
+const MARKER_COLUMN_ORDERED: f32 = 24.0;
+/// The ordered marker column from item 100 on: three digits need the next
+/// step of the ramp (`$spacing-07`).
+const MARKER_COLUMN_ORDERED_WIDE: f32 = 32.0;
+/// The first zero-based index whose ordered marker has three digits.
+const THREE_DIGITS_FROM: usize = 99;
+
+const _: () = assert!(MARKER_COLUMN_UNORDERED == 16.0);
+const _: () = assert!(MARKER_COLUMN_ORDERED == 24.0);
+const _: () = assert!(MARKER_COLUMN_ORDERED_WIDE == 32.0);
 
 /// Unordered level-1 marker: en dash U+2013.
 const MARKER_UNORDERED_L1: &str = "\u{2013}";
@@ -32,10 +75,8 @@ enum Level {
 }
 
 /// An unordered list. Level-1 markers are en dashes. `Role::List`, no
-/// interactions. Indent is per-item ([`SPACING_05`] on each
-/// [`list_item`]/[`list_item_with`], see that doc), not a container margin —
-/// a bare `list_item` reused as a [`super::contained_list`] row needs the
-/// same inset without an `unordered_list` wrapper.
+/// interactions, no container inset: the marker column on each item is the
+/// whole hanging indent (module doc).
 pub fn unordered_list(key: impl Into<Key>, items: Vec<ViewNode>) -> ViewNode {
     let mut node = stack(
         key,
@@ -66,29 +107,23 @@ pub fn ordered_list(key: impl Into<Key>, items: Vec<ViewNode>) -> ViewNode {
     node
 }
 
-/// One list row: marker text + label text, hanging indent via a horizontal
-/// stack. Default marker is the unordered level-1 en dash; an
-/// [`ordered_list`] parent restamps it. `Role::ListItem`, no interactions.
+/// One list row: a fixed-width marker column then the label, which is the
+/// hanging indent (module doc). Default marker is the unordered level-1 en
+/// dash in a 16 column; an [`ordered_list`] parent restamps both. A
+/// standalone item carries no inset of its own: a bare `list_item` is
+/// `Role::ListItem` with its marker on its own left edge. No interactions.
 pub fn list_item(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
     list_item_with(key, label, None)
 }
 
 /// [`list_item`] plus an optional nested [`unordered_list`] / [`ordered_list`].
 ///
-/// Every top-level item gets [`SPACING_05`] `padding-left`, SOURCED
-/// `slice-a.md` Contained list "Key numbers": "List item: `padding-left`/
-/// `right` 16px (`$spacing-05`)" — the same figure list.rs's own container
-/// used to carry (see `unordered_list`'s history), now moved onto the item
-/// so a bare [`list_item`] lines up whether it sits under `unordered_list`,
-/// `ordered_list`, or a [`super::contained_list`] header (both get
-/// `padding-left: $spacing-05`, so a raw row and the header it sits under
-/// now share one left edge). [`stamp_items`] overwrites this to
-/// [`SPACING_02`] for a nested (level-2) item, so the two never stack.
-///
 /// Nested indent is Carbon's 32px (`spacing-07`) on the nested container and
 /// [`SPACING_02`] on each nested item (T070: SCSS wins over the style-page
-/// `$spacing-05`). Nested unordered markers become the small square; nested
-/// ordered markers become `a.` `b.` …
+/// `$spacing-05`), which with the 16 marker column puts a nested label 52
+/// in from the parent item's edge — the figure `16-list.png` measures.
+/// Nested unordered markers become the small square; nested ordered markers
+/// become `a.` `b.` …
 pub fn list_item_with(
     key: impl Into<Key>,
     label: impl Into<String>,
@@ -96,22 +131,15 @@ pub fn list_item_with(
 ) -> ViewNode {
     let label = label.into();
     match nested {
-        None => with_list_item_role(pad_item(item_row(key, MARKER_UNORDERED_L1, &label)), label),
+        None => with_list_item_role(item_row(key, MARKER_UNORDERED_L1, &label), label),
         Some(nested) => {
             let row = item_row("row", MARKER_UNORDERED_L1, &label);
             with_list_item_role(
-                pad_item(stack(key, Axis::Vertical, None, vec![row, nest(nested)])),
+                stack(key, Axis::Vertical, None, vec![row, nest(nested)]),
                 label,
             )
         }
     }
-}
-
-/// Default level-1 item inset. See [`list_item_with`] doc for the source
-/// and why [`stamp_items`]'s level-2 override is safe against this.
-fn pad_item(mut node: ViewNode) -> ViewNode {
-    pad_inline_start(&mut node, SPACING_05);
-    node
 }
 
 fn with_list_item_role(mut node: ViewNode, label: String) -> ViewNode {
@@ -124,12 +152,33 @@ fn with_list_item_role(mut node: ViewNode, label: String) -> ViewNode {
 }
 
 fn item_row(key: impl Into<Key>, marker: &str, label: &str) -> ViewNode {
+    let mut marker = text("marker", marker);
+    set_column(&mut marker, MARKER_COLUMN_UNORDERED);
     stack(
         key,
         Axis::Horizontal,
-        Some(SPACING_03),
-        vec![text("marker", marker), text("label", label)],
+        None,
+        vec![marker, text("label", label)],
     )
+}
+
+/// Pin a marker leaf to its column width, so the label after it starts at
+/// the column's end whatever glyph the marker is.
+fn set_column(marker: &mut ViewNode, width: f32) {
+    marker.constraints.horizontal = AxisConstraint {
+        min: Some(width),
+        max: Some(width),
+        priority: 0,
+    };
+}
+
+/// The marker column an item at `index` takes in a list of `kind`.
+fn marker_column(kind: Kind, index: usize) -> f32 {
+    match kind {
+        Kind::Unordered => MARKER_COLUMN_UNORDERED,
+        Kind::Ordered if index >= THREE_DIGITS_FROM => MARKER_COLUMN_ORDERED_WIDE,
+        Kind::Ordered => MARKER_COLUMN_ORDERED,
+    }
 }
 
 fn stamp_items(items: Vec<ViewNode>, kind: Kind, level: Level) -> Vec<ViewNode> {
@@ -137,7 +186,11 @@ fn stamp_items(items: Vec<ViewNode>, kind: Kind, level: Level) -> Vec<ViewNode> 
         .into_iter()
         .enumerate()
         .map(|(i, mut item)| {
-            set_marker(&mut item, &marker_for(kind, level, i));
+            set_marker(
+                &mut item,
+                &marker_for(kind, level, i),
+                marker_column(kind, i),
+            );
             if matches!(level, Level::Two) {
                 pad_inline_start(&mut item, SPACING_02);
             }
@@ -214,16 +267,17 @@ fn marker_text(node: &ViewNode) -> Option<&str> {
     None
 }
 
-fn set_marker(item: &mut ViewNode, marker: &str) {
+fn set_marker(item: &mut ViewNode, marker: &str, column: f32) {
     for child in &mut item.children {
         let child = Arc::make_mut(child);
         match child.key.as_str() {
             "marker" => {
                 child.props.text = Some(marker.to_string());
+                set_column(child, column);
                 return;
             }
             "row" => {
-                set_marker(child, marker);
+                set_marker(child, marker, column);
                 return;
             }
             _ => {}
@@ -241,7 +295,8 @@ fn pad_inline_start(node: &mut ViewNode, token: &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        MARKER_UNORDERED_L1, MARKER_UNORDERED_L2, SPACING_02, SPACING_05, SPACING_07, list_item,
+        MARKER_COLUMN_ORDERED, MARKER_COLUMN_ORDERED_WIDE, MARKER_COLUMN_UNORDERED,
+        MARKER_UNORDERED_L1, MARKER_UNORDERED_L2, SPACING_02, SPACING_07, list_item,
         list_item_with, marker_text, ordered_list, unordered_list,
     };
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
@@ -331,12 +386,107 @@ mod tests {
         assert_eq!(nested_list(&item).props.spacing, None);
     }
 
+    fn marker_column(item: &ViewNode) -> Option<f32> {
+        let marker = item
+            .children
+            .iter()
+            .find(|c| c.key.as_str() == "marker" || c.key.as_str() == "row")?;
+        if marker.key.as_str() == "row" {
+            return marker_column(marker);
+        }
+        let h = &marker.constraints.horizontal;
+        assert_eq!(h.min, h.max, "the marker column is pinned");
+        h.min
+    }
+
+    /// Row 16, round 2 ("still badly formatted markdown"): the marker
+    /// hangs in a fixed column on the item's own left edge and the label
+    /// starts at the column's end — no item inset, no gap. 16 for an
+    /// unordered marker, 24 for an ordered one, 32 from the hundredth.
     #[test]
-    fn standalone_item_carries_spacing_05_left_inset() {
+    fn the_marker_hangs_in_a_fixed_column_and_the_item_has_no_inset() {
+        let item = list_item("a", "Alpha");
         assert_eq!(
-            padding_left(&super::list_item("a", "Alpha")),
-            Some(SPACING_05)
+            padding_left(&item),
+            None,
+            "no inset: the column is the indent"
         );
+        assert_eq!(item.props.spacing, None, "no gap: the column is the gap");
+        assert_eq!(marker_column(&item), Some(MARKER_COLUMN_UNORDERED));
+        assert_eq!(MARKER_COLUMN_UNORDERED, 16.0);
+
+        let items: Vec<ViewNode> = (0..100).map(|i| list_item(format!("i{i}"), "x")).collect();
+        let ordered = ordered_list("o", items);
+        assert_eq!(
+            marker_column(&ordered.children[0]),
+            Some(MARKER_COLUMN_ORDERED)
+        );
+        assert_eq!(
+            marker_column(&ordered.children[98]),
+            Some(MARKER_COLUMN_ORDERED)
+        );
+        assert_eq!(MARKER_COLUMN_ORDERED, 24.0);
+        assert_eq!(
+            marker_column(&ordered.children[99]),
+            Some(MARKER_COLUMN_ORDERED_WIDE),
+            "\"100.\" needs the wider column"
+        );
+        assert_eq!(marker_text(&ordered.children[99]), Some("100."));
+        assert_eq!(padding_left(&ordered.children[0]), None);
+        assert_eq!(
+            padding_left(&ordered),
+            None,
+            "the ordered container has no margin"
+        );
+    }
+
+    /// The whole block, placed: labels form one left edge 16 in from the
+    /// list's edge, markers sit on the edge, a nested label is 52 in and an
+    /// ordered label 24 in — the figures measured off Carbon's own
+    /// `16-list.png` (module doc), bar the ordered counter's overflow.
+    #[test]
+    fn placed_labels_form_carbons_hanging_indent() {
+        let frame = petrify_lone(sample_lists());
+        let x_of = |suffix: &str| {
+            frame
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with(suffix))
+                .unwrap_or_else(|| panic!("{suffix} is not placed"))
+                .rect
+                .x
+        };
+        let ul = x_of("/lists/ul");
+        assert_eq!(
+            x_of("/ul/ul-0/marker"),
+            ul,
+            "the marker hangs on the list's edge"
+        );
+        assert_eq!(
+            x_of("/ul/ul-0/label"),
+            ul + 16.0,
+            "unordered labels start 16 in"
+        );
+        assert_eq!(x_of("/ul/ul-1/label"), ul + 16.0, "and form one left edge");
+        let ol = x_of("/lists/ol");
+        assert_eq!(
+            x_of("/ol/ol-0/marker"),
+            ol,
+            "the counter hangs on the list's edge"
+        );
+        assert_eq!(
+            x_of("/ol/ol-0/label"),
+            ol + 24.0,
+            "ordered labels start 24 in"
+        );
+        let parent = x_of("/lists/with-nested");
+        assert_eq!(x_of("/with-nested/row/label"), parent + 16.0);
+        assert_eq!(
+            x_of("/nested/n0/label"),
+            parent + 52.0,
+            "32 nested indent + 4 item padding + 16 marker column"
+        );
+        assert_eq!(x_of("/nested/n0/marker"), parent + 36.0);
     }
 
     #[test]
