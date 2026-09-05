@@ -560,6 +560,12 @@ mod tests {
             "Carbon's date input is `.cds--text-input`, and that is a fill \
              with one rule under it, not a box"
         );
+        assert_eq!(
+            token(field, "radius"),
+            None,
+            "and a flat one: `.cds--text-input` has no `border-radius`, and \
+             the rounded box is the other half of what the operator saw"
+        );
         assert_eq!(token(field, "border-bottom"), Some(BORDER_STRONG));
         assert_eq!(
             child(field, "value").props.text.as_deref(),
