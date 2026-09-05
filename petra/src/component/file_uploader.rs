@@ -1,64 +1,156 @@
-//! Carbon File uploader (slice-b). OS drop is T140 / T148.
+//! Carbon File uploader (slice-b). OS drop and the native picker are T140.
 //!
-//! Anatomy (usage page + `_file-uploader.scss`):
-//! 1. Heading — the constructor `label` (Carbon default "Upload files").
-//! 2. Drop zone — [`Role::Button`] that conceptually opens a file picker.
-//!    Visible text is `"Drop files here"`. Border is solid
-//!    [`BORDER_SUBTLE`]: Carbon draws a dashed `$border-strong`; Petra
-//!    has no dashed stroke, and does not invent one.
-//! 3. [`file_uploader_item`] — one selected-file row: the name plus
-//!    either a loading mark or a check. No file bytes are stored here.
+//! Anatomy (usage page + `_file-uploader.scss`), in order:
 //!
-//! The drop zone does **not** declare [`Interaction::Drag`]. OS file-drop
-//! is a windowing event (T140), not pointer capture.
+//! 1. **Heading** — `.cds--file--label`, `heading-compact-01`,
+//!    [`TEXT_PRIMARY`]: the constructor's `label`.
+//! 2. **Description** — `.cds--label-description`, `body-compact-01`,
+//!    `$text-secondary` ([`TEXT_MUTED`]): the size and format limits.
+//!    Optional; [`file_uploader`] omits it, [`file_uploader_with`] takes it.
+//! 3. **Drop zone** — `.cds--file__drop-container` inside
+//!    `.cds--file-browse-btn`: a [`Role::Button`] [`ZONE_WIDTH`] wide and
+//!    [`DROP_HEIGHT`] tall, padded [`SPACING_05`], holding one prompt run
+//!    in [`LINK_PRIMARY`] reading `"Drop files here or click to upload"`.
+//!    Content is **start**-aligned on both axes (`align-items: flex-start`),
+//!    which is why this constructor sets no [`Align`] on the zone: Carbon
+//!    puts the link in the top-left corner of a 96-unit box, not in the
+//!    middle of it.
+//! 4. [`file_uploader_item`] and its two siblings — one selected-file row,
+//!    [`ITEM_WIDTH`] wide, [`ITEM_HEIGHT`] tall, `$layer` fill, laid out
+//!    `1fr auto` so the name starts at the leading edge and the state
+//!    container is flush right. Carbon's state container is
+//!    [`STATE_BOX`] wide with [`SPACING_04`] of trailing pad, and holds
+//!    **exactly one** control per status: a loader while uploading, a
+//!    `CheckmarkFilled` when complete, an `ErrorFilled` when invalid, and a
+//!    `Close` button when the row is editable.
+//!
+//! # Two divergences, both recorded rather than faked
+//!
+//! **The dashed border.** Carbon draws `border: 1px dashed $border-strong`
+//! (MEASURED `_file-uploader.scss:424`). This painter has one border slot
+//! and [`crate::draw::Stroke`] carries a width and a colour and no dash
+//! pattern, so a dashed edge is not expressible: adding one is a
+//! `draw::VERSION` v1 → v2 change plus a `paint.rs` change, not a component
+//! edit. Drawing the dashes as a row of child rectangles is not open either
+//! — [`crate::tree::NodeKind::Canvas`] places no child, so a canvas cannot
+//! *contain* the prompt, and there is no absolute positioning outside the
+//! anchored-surface machinery. The zone therefore keeps a **solid**
+//! [`BORDER_SUBTLE`], which is also what
+//! `component::tests::containers_take_a_tone_and_controls_take_an_edge`
+//! requires of every edge in this library.
+//!
+//! **The prompt's underline is at rest, not on hover.** Carbon underlines
+//! `.cds--file-browse-btn` on hover. The hover flag belongs to the placement
+//! the pointer is over, which here is the **zone**, not the text leaf inside
+//! it — `link.rs`'s own doc walks the same trap — so an `underline@hover`
+//! slot on the prompt would never resolve. The prompt binds a resting
+//! `underline` instead, the [`super::link_inline`] form, which is also the
+//! form to reach for when a link must be found without a pointer.
+//!
+//! # No file bytes, and no picker
+//!
+//! Nothing here stores a file, opens a dialog, or hears an OS drop. The zone
+//! declares [`Interaction::Click`] because activating it is what opens a
+//! picker; the picker itself needs a channel from `Page` to the host that
+//! does not exist yet (see this row's Agent Note). The zone does **not**
+//! declare [`Interaction::Drag`]: an OS file-drop is a windowing event, not
+//! pointer capture.
 
-use super::icon::{IconMark, icon};
+use super::icon::{IconBox, IconMark, IconTone, icon_in};
 use super::pad;
 use super::stack;
 use super::swatch;
 use super::text::text;
 use super::tokens::{
-    ACCENT_PRIMARY, BORDER_SUBTLE, LAYER_HOVER, SHAPE_FULL, SPACING_03, SPACING_05, SURFACE_BASE,
-    SURFACE_RAISED, TEXT_PRIMARY, t,
+    BORDER_SUBTLE, LAYER_HOVER, LINK_PRIMARY, SHAPE_FULL, SPACING_03, SPACING_04, SPACING_05,
+    SURFACE_BASE, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_BODY_COMPACT,
+    TYPOGRAPHY_HEADING_SM, TYPOGRAPHY_LABEL, t,
 };
 use crate::geom::{Align, Axis};
-use crate::tree::{AxisConstraint, Constraints, Interaction, Key, Role, ViewNode};
+use crate::tree::{
+    AxisConstraint, Constraints, Interaction, Justify, Key, NodeKind, Role, ViewNode,
+};
 
 /// MEASURED `_file-uploader.scss:425` drop-container `block-size`.
 const DROP_HEIGHT: f32 = 96.0;
-/// MEASURED uploaded-file width `18rem`.
-const ITEM_WIDTH: f32 = 288.0;
+/// MEASURED `_file-uploader.scss:70` — `.cds--file-browse-btn` is
+/// `inline-size: 100%` capped at `max-inline-size: 320px`, and the
+/// reference capture (`ignored/carbon-ref/shots/12-file-uploader.png`,
+/// device x 64..703 at dpr 2) renders it at exactly that cap.
+const ZONE_WIDTH: f32 = 320.0;
+/// MEASURED `_file-uploader.scss:155` `.cds--file__selected-file`
+/// `max-inline-size`. **This was 288 until 2026-09-05**, from the docs'
+/// `18rem`; T070 gives the SCSS the last word and the reference renders the
+/// row at the same 320 the zone above it uses, which is why the two boxes
+/// line up in Carbon's picture and did not in ours.
+const ITEM_WIDTH: f32 = 320.0;
 /// MEASURED default selected-file `min-block-size` (`$spacing-09`).
 const ITEM_HEIGHT: f32 = 48.0;
-/// Small loading disc, same 16 as Inline loading's spinner.
+/// MEASURED `_file-uploader.scss:390` — `.cds--file-close` and
+/// `.cds--file-complete` are `$spacing-06` (24) on both axes, and
+/// `.cds--file__state-container` is `min-inline-size: 1.5rem` (24).
+const STATE_BOX: f32 = 24.0;
+/// Small loading disc: the still ring standing in for Carbon's spinner.
 const MARK: f32 = 16.0;
 
 const _: () = assert!(DROP_HEIGHT == 96.0);
-const _: () = assert!(ITEM_WIDTH == 288.0);
+const _: () = assert!(ZONE_WIDTH == 320.0);
+const _: () = assert!(ITEM_WIDTH == 320.0);
 const _: () = assert!(ITEM_HEIGHT == 48.0);
+const _: () = assert!(STATE_BOX == 24.0);
+
+/// Carbon's `.cds--file-browse-btn` copy, and the operator's own complaint:
+/// the resting prompt has to say that a click opens a picker, because a
+/// drop target that only says "drop files here" reads as a tile.
+const PROMPT: &str = "Drop files here or click to upload";
 
 const ZONE_INTENTS: &[Interaction] = &[Interaction::Focus, Interaction::Click, Interaction::Hover];
+/// The remove control answers to the same three a button does.
+const REMOVE_INTENTS: &[Interaction] =
+    &[Interaction::Focus, Interaction::Click, Interaction::Hover];
 
 /// Drop-zone file uploader. `label` is the heading and the button name.
 ///
-/// Visible zone copy is `"Drop files here"`. Clicking the zone is the
-/// file-picker activation; dropped OS files are out of this constructor.
+/// See [`file_uploader_with`] for the described form.
 pub fn file_uploader(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
+    build_uploader(key, label, None)
+}
+
+/// [`file_uploader`] with Carbon's `.cds--label-description` line under the
+/// heading — the place the size and format limits go.
+pub fn file_uploader_with(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    description: impl Into<String>,
+) -> ViewNode {
+    build_uploader(key, label, Some(description.into()))
+}
+
+fn build_uploader(key: impl Into<Key>, label: impl Into<String>, description: Option<String>) -> ViewNode {
     let label = label.into();
     let mut heading = text("heading", label.clone());
+    heading.props.style = Some(t(TYPOGRAPHY_HEADING_SM));
     heading
         .props
         .tokens
         .insert("foreground".into(), t(TEXT_PRIMARY));
 
-    let mut caption = text("prompt", "Drop files here");
-    caption
+    let mut prompt = text("prompt", PROMPT);
+    prompt.props.style = Some(t(TYPOGRAPHY_BODY_COMPACT));
+    prompt
         .props
         .tokens
-        .insert("foreground".into(), t(TEXT_PRIMARY));
+        .insert("foreground".into(), t(LINK_PRIMARY));
+    prompt
+        .props
+        .tokens
+        .insert("underline".into(), t(LINK_PRIMARY));
 
-    let mut zone = stack("zone", Axis::Vertical, None, vec![caption]);
-    zone.props.align = Some(Align::Center);
+    let mut zone = stack("zone", Axis::Vertical, None, vec![prompt]);
+    // No `align`: Carbon is `align-items: flex-start`, so the prompt sits in
+    // the zone's top-left corner. `Align::Center` put it on the box's
+    // midline and, with no width constraint, collapsed the whole box to the
+    // width of the words — the "121 points wide" the operator photographed.
     zone.props.padding = Some(pad(SPACING_05, SPACING_05));
     zone.props
         .tokens
@@ -67,66 +159,171 @@ pub fn file_uploader(key: impl Into<Key>, label: impl Into<String>) -> ViewNode 
     zone.props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
-    zone.constraints.vertical.min = Some(DROP_HEIGHT);
+    zone.constraints = pin(ZONE_WIDTH, DROP_HEIGHT);
     let zone = zone.interactive(Role::Button, label.clone(), ZONE_INTENTS);
 
-    let mut node = stack(key, Axis::Vertical, Some(SPACING_03), vec![heading, zone]);
+    let mut children = vec![heading];
+    if let Some(description) = description {
+        let mut line = text("description", description);
+        line.props.style = Some(t(TYPOGRAPHY_LABEL));
+        line.props.tokens.insert("foreground".into(), t(TEXT_MUTED));
+        children.push(line);
+    }
+    children.push(zone);
+
+    let mut node = stack(key, Axis::Vertical, Some(SPACING_03), children);
     node.semantics.label = Some(label);
     node
 }
 
-/// One selected-file row. `complete` chooses check vs loading mark.
+/// One selected-file row. `complete` chooses the check vs the loading ring.
 ///
-/// No file bytes. The row is not a drop target.
+/// No file bytes. The row is not a drop target. See
+/// [`file_uploader_item_edit`] for the form that carries a remove control
+/// and [`file_uploader_item_invalid`] for the one that carries an error.
 pub fn file_uploader_item(
     key: impl Into<Key>,
     name: impl Into<String>,
     complete: bool,
 ) -> ViewNode {
-    let name = name.into();
     let mark = if complete {
-        let mut badge = stack(
-            "mark",
-            Axis::Horizontal,
-            None,
-            vec![icon("tick", IconMark::Check)],
-        );
-        badge.props.align = Some(Align::Center);
-        badge
-            .props
-            .tokens
-            .insert("background".into(), t(ACCENT_PRIMARY));
-        badge.props.tokens.insert("radius".into(), t(SHAPE_FULL));
-        badge.with_constraints(pin_mark())
+        // Carbon `.cds--file-complete { fill: $interactive }` — the accent,
+        // not a disc with a tick punched out of it. `CheckmarkFilled` is the
+        // glyph the reference draws (`12-file-uploader.png`: a 14-unit blue
+        // ring with a light tick, flush right).
+        icon_in("mark", IconMark::CheckmarkFilled, IconBox::Glyph, IconTone::Accent)
     } else {
-        swatch(
-            "mark",
-            MARK,
-            MARK,
-            None,
-            Some(BORDER_SUBTLE),
-            Some(SHAPE_FULL),
-        )
+        // A still ring standing in for `.cds--file-loading`'s spinner. It
+        // keeps its `border` binding on purpose: this shape has no fill at
+        // all, so the ring *is* the mark, and
+        // `component::tests::containers_take_a_tone_and_controls_take_an_edge`
+        // names `fu-f1/mark` as one of the library's measured edges.
+        swatch("mark", MARK, MARK, None, Some(BORDER_SUBTLE), Some(SHAPE_FULL))
     };
     let status = if complete { "complete" } else { "uploading" };
-    let mut status_text = text("status", status);
-    status_text
+    item_row(key, name, mark, status, None)
+}
+
+/// The editable form: Carbon's `status="edit"`, whose state container is a
+/// `Close` button that removes the row.
+///
+/// The glyph is the whole control and the word lives in `Semantics.label`,
+/// which is this library's settled shape for an affordance that used to be
+/// spelled out — see
+/// `component::tests::no_shipped_component_spells_an_icon_as_its_name`.
+pub fn file_uploader_item_edit(key: impl Into<Key>, name: impl Into<String>) -> ViewNode {
+    let name = name.into();
+    let mut remove = stack(
+        "remove",
+        Axis::Horizontal,
+        None,
+        vec![icon_in(
+            "glyph",
+            IconMark::Close,
+            IconBox::Glyph,
+            IconTone::Primary,
+        )],
+    );
+    remove.props.align = Some(Align::Center);
+    remove.props.justify = Some(Justify::Center);
+    // A resting fill as well as a hover one. Carbon's `.cds--file-close` is
+    // `background-color: transparent`; the row's own `$layer` is what
+    // "transparent" means here, and a state-decorated slot with no resting
+    // binding is a placement that declares content and paints nothing —
+    // `PaintReport::silent`, which is exactly what the catalog's
+    // `every_built_page_paints_with_nothing_silent` caught on the first run
+    // of this control.
+    remove
         .props
         .tokens
-        .insert("foreground".into(), t(TEXT_PRIMARY));
+        .insert("background".into(), t(SURFACE_RAISED));
+    remove
+        .props
+        .tokens
+        .insert("background@hover".into(), t(LAYER_HOVER));
+    let remove = remove.with_constraints(pin(STATE_BOX, STATE_BOX)).interactive(
+        Role::Button,
+        format!("Remove {name}"),
+        REMOVE_INTENTS,
+    );
+    item_row(key, name, remove, "ready", None)
+}
+
+/// The invalid form: Carbon's `.cds--file__selected-file--invalid`, an
+/// `ErrorFilled` mark plus a `.cds--form-requirement` line under the name.
+///
+/// The message is [`TEXT_PRIMARY`] and not a red ink, because
+/// [`super::tokens::SUPPORT_ERROR`] measures 3.79:1 on this row's own fill
+/// in the dark theme and AA wants 4.5 for text. The kind travels on the
+/// glyph's silhouette — a ring with a slash, which no other state in this
+/// component draws — and on `Semantics.value`.
+pub fn file_uploader_item_invalid(
+    key: impl Into<Key>,
+    name: impl Into<String>,
+    message: impl Into<String>,
+) -> ViewNode {
+    let mark = icon_in("mark", IconMark::ErrorFilled, IconBox::Glyph, IconTone::Primary);
+    item_row(key, name, mark, "invalid", Some(message.into()))
+}
+
+/// The shared row: `1fr auto`, the name at the leading edge and one state
+/// control flush right.
+///
+/// # Why the control is a direct child and not inside a `state` wrapper
+///
+/// Carbon's `.cds--file__state-container` is a 24-wide box with
+/// `padding-inline-end: 12px`, which puts its 14-unit glyph **17** units in
+/// from the row's trailing edge (MEASURED on
+/// `ignored/carbon-ref/shots/12-file-uploader.png`: glyph right edge at
+/// device x 669, row right edge at 703, dpr 2). Ours is a 16-unit mark
+/// against the row's own `$spacing-05` trailing pad, so it lands at **16**
+/// — one logical unit short of Carbon's, and a direct child of the row so
+/// the mark keeps the canonical id `<row>/mark` that
+/// `component::tests::containers_take_a_tone_and_controls_take_an_edge`
+/// names. A wrapper would buy the missing unit and cost that id.
+///
+/// The invalid form is the one that nests, because it has a second row
+/// (`.cds--form-requirement`) under the name and needs a `line` to hold the
+/// first one.
+fn item_row(
+    key: impl Into<Key>,
+    name: impl Into<String>,
+    control: ViewNode,
+    status: &str,
+    message: Option<String>,
+) -> ViewNode {
+    let key = key.into();
+    let name = name.into();
     let mut filename = text("name", name.clone());
+    filename.props.style = Some(t(TYPOGRAPHY_BODY_COMPACT));
     filename
         .props
         .tokens
         .insert("foreground".into(), t(TEXT_PRIMARY));
 
-    let mut node = stack(
-        key,
-        Axis::Horizontal,
-        Some(SPACING_03),
-        vec![filename, mark, status_text],
-    );
-    node.props.align = Some(Align::Center);
+    // Carbon's grid is `1fr auto`; a stack has no weighted track, so the
+    // free space is a child, the same answer `accordion_item`'s header
+    // reached for the chevron at its trailing edge.
+    let line_children = vec![filename, ViewNode::new(NodeKind::Spacer, "spacer"), control];
+
+    let mut node = if let Some(message) = message {
+        let mut line = stack("line", Axis::Horizontal, Some(SPACING_03), line_children);
+        line.props.align = Some(Align::Center);
+        line.props.justify = Some(Justify::SpaceBetween);
+        let mut requirement = text("message", message);
+        requirement.props.style = Some(t(TYPOGRAPHY_LABEL));
+        requirement
+            .props
+            .tokens
+            .insert("foreground".into(), t(TEXT_PRIMARY));
+        // `gap: 12px 0` between a selected file's own grid rows.
+        stack(key, Axis::Vertical, Some(SPACING_04), vec![line, requirement])
+    } else {
+        let mut row = stack(key, Axis::Horizontal, Some(SPACING_03), line_children);
+        row.props.align = Some(Align::Center);
+        row.props.justify = Some(Justify::SpaceBetween);
+        row
+    };
     node.props.padding = Some(pad(SPACING_05, SPACING_03));
     // MEASURED `_file-uploader.scss`: `.cds--file__selected-file` is
     // `background-color: $layer` (→ `SURFACE_RAISED`) and nothing else —
@@ -147,16 +344,16 @@ pub fn file_uploader_item(
     node
 }
 
-fn pin_mark() -> Constraints {
+fn pin(w: f32, h: f32) -> Constraints {
     Constraints {
         horizontal: AxisConstraint {
-            min: Some(MARK),
-            max: Some(MARK),
+            min: Some(w),
+            max: Some(w),
             priority: 0,
         },
         vertical: AxisConstraint {
-            min: Some(MARK),
-            max: Some(MARK),
+            min: Some(h),
+            max: Some(h),
             priority: 0,
         },
     }
@@ -164,8 +361,11 @@ fn pin_mark() -> Constraints {
 
 #[cfg(test)]
 mod tests {
-    use super::{DROP_HEIGHT, ITEM_HEIGHT, ITEM_WIDTH, file_uploader, file_uploader_item};
-    use crate::component::tokens::BORDER_SUBTLE;
+    use super::{
+        DROP_HEIGHT, ITEM_HEIGHT, ITEM_WIDTH, PROMPT, STATE_BOX, ZONE_WIDTH, file_uploader,
+        file_uploader_item, file_uploader_item_edit, file_uploader_item_invalid, file_uploader_with,
+    };
+    use crate::component::tokens::{BORDER_SUBTLE, LINK_PRIMARY, TEXT_MUTED};
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, validated_with};
@@ -197,13 +397,24 @@ mod tests {
         }
     }
 
+    /// Carbon's zone is a 320 x 96 box whose prompt is a link in its
+    /// top-left corner. Ours was a 121-wide box with grey body text on its
+    /// midline: `zone` set only `vertical.min`, so the box collapsed to the
+    /// width of its caption, and `Align::Center` put the caption in the
+    /// middle of what was left. Falsify by dropping `zone.constraints`
+    /// back to a lone `vertical.min`.
     #[test]
-    fn file_uploader_has_a_label_and_a_drop_zone() {
+    fn the_drop_zone_is_a_320_by_96_box_with_a_link_in_its_corner() {
         let node = file_uploader("up", "Upload files");
         assert_eq!(node.semantics.label.as_deref(), Some("Upload files"));
         assert_eq!(
             named(&node, "heading").props.text.as_deref(),
             Some("Upload files")
+        );
+        assert_eq!(
+            named(&node, "heading").props.style.as_ref().map(|s| s.as_str()),
+            Some(crate::component::tokens::TYPOGRAPHY_HEADING_SM),
+            "Carbon's `.cds--file--label` is `heading-compact-01`"
         );
         let zone = named(&node, "zone");
         assert_eq!(zone.semantics.role, Some(Role::Button));
@@ -211,30 +422,72 @@ mod tests {
         assert!(zone.interactions.contains(&Interaction::Click));
         assert!(zone.interactions.contains(&Interaction::Focus));
         assert!(!zone.interactions.contains(&Interaction::Drag));
-        assert_eq!(
-            named(zone, "prompt").props.text.as_deref(),
-            Some("Drop files here")
-        );
+        assert_eq!(zone.constraints.horizontal.min, Some(ZONE_WIDTH));
+        assert_eq!(zone.constraints.horizontal.max, Some(ZONE_WIDTH));
         assert_eq!(zone.constraints.vertical.min, Some(DROP_HEIGHT));
+        assert_eq!(zone.constraints.vertical.max, Some(DROP_HEIGHT));
+        assert_eq!(ZONE_WIDTH, 320.0);
         assert_eq!(DROP_HEIGHT, 96.0);
+        assert_eq!(
+            zone.props.align, None,
+            "Carbon's drop container is `align-items: flex-start`; a centred \
+             caption is what collapsed this box to the width of its words"
+        );
         assert_eq!(token(zone, "border"), Some(BORDER_SUBTLE));
+
+        let prompt = named(zone, "prompt");
+        assert_eq!(prompt.props.text.as_deref(), Some(PROMPT));
+        assert_eq!(
+            prompt.props.text.as_deref(),
+            Some("Drop files here or click to upload"),
+            "the prompt has to say that a click opens a picker"
+        );
+        assert_eq!(token(prompt, "foreground"), Some(LINK_PRIMARY));
+        assert_eq!(
+            token(prompt, "underline"),
+            Some(LINK_PRIMARY),
+            "a resting underline, not `underline@hover`: the hover flag \
+             belongs to the zone placement, so a state slot on this leaf \
+             would never resolve"
+        );
+        assert!(
+            token(prompt, "underline@hover").is_none(),
+            "the slot that cannot resolve here is not bound"
+        );
         no_drag(&node);
     }
 
     #[test]
-    fn item_shows_check_when_complete_and_a_mark_when_not() {
+    fn the_described_form_adds_carbon_s_label_description_line() {
+        let plain = file_uploader("up", "Upload files");
+        assert!(
+            crate::component::file_uploader::tests::find(&plain, "description").is_none(),
+            "the undescribed form draws no description line"
+        );
+        let described = file_uploader_with("up", "Upload files", "Max 5 MB, .ndjson only");
+        let line = named(&described, "description");
+        assert_eq!(line.props.text.as_deref(), Some("Max 5 MB, .ndjson only"));
+        assert_eq!(token(line, "foreground"), Some(TEXT_MUTED));
+    }
+
+    /// One state control per row, flush right, and **no status word**:
+    /// Carbon's selected file shows a glyph and nothing else, and ours
+    /// printed "complete" beside the mark. The three states draw three
+    /// different silhouettes, which is the channel that survives a reader
+    /// who cannot use hue.
+    #[test]
+    fn each_row_state_draws_one_mark_flush_right_and_no_status_word() {
         let done = file_uploader_item("f0", "notes.txt", true);
         assert_eq!(done.semantics.label.as_deref(), Some("notes.txt"));
         assert_eq!(done.semantics.value.as_deref(), Some("complete"));
-        assert_eq!(
-            named(&done, "name").props.text.as_deref(),
-            Some("notes.txt")
+        assert_eq!(named(&done, "name").props.text.as_deref(), Some("notes.txt"));
+        assert!(
+            crate::component::file_uploader::tests::find(&done, "status").is_none(),
+            "Carbon's file row carries no status word; the glyph and \
+             `Semantics.value` carry the state"
         );
-        assert_eq!(
-            named(&done, "status").props.text.as_deref(),
-            Some("complete")
-        );
-        assert_eq!(named(&done, "tick").kind, NodeKind::Canvas);
+        assert_eq!(named(&done, "mark").kind, NodeKind::Canvas);
+        assert_eq!(done.props.justify, Some(crate::tree::Justify::SpaceBetween));
         assert!(
             token(&done, "border").is_none(),
             "MEASURED `_file-uploader.scss`: `.cds--file__selected-file` is \
@@ -243,24 +496,86 @@ mod tests {
         );
         assert_eq!(done.constraints.horizontal.min, Some(ITEM_WIDTH));
         assert_eq!(done.constraints.horizontal.max, Some(ITEM_WIDTH));
-        assert_eq!(ITEM_WIDTH, 288.0);
+        assert_eq!(
+            ITEM_WIDTH, 320.0,
+            "MEASURED `_file-uploader.scss:155`; the docs' 18rem is the \
+             number T070 tells us to ignore"
+        );
         assert_eq!(done.constraints.vertical.min, Some(ITEM_HEIGHT));
         assert_eq!(ITEM_HEIGHT, 48.0);
         no_drag(&done);
 
         let busy = file_uploader_item("f1", "notes.txt", false);
         assert_eq!(busy.semantics.value.as_deref(), Some("uploading"));
-        assert_eq!(
-            named(&busy, "status").props.text.as_deref(),
-            Some("uploading")
-        );
         let mark = named(&busy, "mark");
+        assert_eq!(
+            mark.kind,
+            NodeKind::Spacer,
+            "the uploading ring is the one mark with no fill, so the border \
+             is the whole shape and `fu-f1/mark` stays on this library's \
+             measured-edge list"
+        );
         assert_eq!(token(mark, "border"), Some(BORDER_SUBTLE));
         assert_eq!(
             token(mark, "radius"),
             Some(crate::component::tokens::SHAPE_FULL)
         );
         no_drag(&busy);
+    }
+
+    /// Carbon's `status="edit"` row: the state container is a `Close`
+    /// button that removes the file. The word is in `Semantics.label` and
+    /// the eye gets the glyph, which is this library's settled shape for an
+    /// affordance that used to be spelled out.
+    #[test]
+    fn the_editable_row_carries_a_named_remove_button() {
+        let row = file_uploader_item_edit("f2", "trace.ndjson");
+        assert_eq!(row.semantics.value.as_deref(), Some("ready"));
+        let remove = named(&row, "remove");
+        assert_eq!(remove.semantics.role, Some(Role::Button));
+        assert_eq!(
+            remove.semantics.label.as_deref(),
+            Some("Remove trace.ndjson"),
+            "the accessible name says which file, not just `Remove`"
+        );
+        assert!(remove.interactions.contains(&Interaction::Click));
+        assert!(remove.interactions.contains(&Interaction::Focus));
+        assert_eq!(remove.constraints.horizontal.min, Some(STATE_BOX));
+        assert_eq!(remove.constraints.vertical.min, Some(STATE_BOX));
+        assert_eq!(STATE_BOX, 24.0);
+        assert_eq!(named(remove, "glyph").kind, NodeKind::Canvas);
+        no_drag(&row);
+    }
+
+    /// The invalid row is the only one with a second line, so it is the
+    /// only one that nests: `line` holds the name and the mark, and
+    /// `.cds--form-requirement` sits under both.
+    #[test]
+    fn the_invalid_row_carries_a_message_under_its_name() {
+        let row = file_uploader_item_invalid("f3", "huge.bin", "File is over 5 MB");
+        assert_eq!(row.semantics.value.as_deref(), Some("invalid"));
+        assert_eq!(
+            named(&row, "message").props.text.as_deref(),
+            Some("File is over 5 MB")
+        );
+        assert_eq!(named(&row, "line").props.axis, Some(Axis::Horizontal));
+        assert_eq!(named(&row, "mark").kind, NodeKind::Canvas);
+        assert!(
+            token(named(&row, "message"), "foreground") != Some(crate::component::tokens::SUPPORT_ERROR),
+            "`support-error` measures 3.79:1 on this row's fill in the dark \
+             theme; AA wants 4.5, so the kind travels on the glyph and not \
+             on a red ink this library does not have"
+        );
+        no_drag(&row);
+    }
+
+    /// Depth-first lookup that answers `None` instead of panicking, for the
+    /// negative halves above.
+    fn find<'a>(node: &'a ViewNode, key: &str) -> Option<&'a ViewNode> {
+        if node.key.as_str() == key {
+            return Some(node);
+        }
+        node.children.iter().find_map(|child| find(child, key))
     }
 
     const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
@@ -415,7 +730,8 @@ mod tests {
                     .get("background")
                     .expect("item binds a resting background");
                 let bg = color(&theme, bg_name.as_str());
-                for label_key in ["name", "status"] {
+                {
+                    let label_key = "name";
                     let label = named(&item, label_key);
                     let fg_name = label
                         .props

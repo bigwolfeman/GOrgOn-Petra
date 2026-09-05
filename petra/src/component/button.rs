@@ -45,13 +45,69 @@
 //! [`SPACING_05`]. Block padding is none: height is the pinned constraint,
 //! matching Carbon's `min-height` + `padding-block: 0` shape.
 //!
-//! # Danger without a red
+//! # Danger: a red mark, because a red fill is not reachable
 //!
-//! `tokens.rs` has no `$support-error`. Painting [`ACCENT_PRIMARY`] as
-//! danger would be a blue lie. The three danger constructors keep Carbon's
-//! *structure* (filled / outlined / ghost) with the tokens those shapes
-//! already spend, and write `Semantics.value` so the kind is not colour
-//! alone. Status-red waits for a support-error name in `tokens.rs`.
+//! Carbon's `.cds--btn--danger` is `background-color: $button-danger-primary`
+//! (`#da1e28` in every theme) with `color: $text-on-color` (`#ffffff`), and
+//! its tertiary and ghost forms are `$button-danger-secondary` (`#fa4d56`
+//! at g100) as an outline and as ink. All three values are MEASURED from
+//! `@carbon/themes/scss/generated/_button-tokens.scss`.
+//!
+//! **Petra ships exactly one red and it is neither of those.**
+//! [`SUPPORT_ERROR`] resolves to `#f21c0d` in the dark theme, tuned as a
+//! *status marker* — it has to clear 3:1 against a surface, so it was
+//! pushed bright. Measured against every ink this library owns, no label
+//! clears the 4.5:1 AA floor on it:
+//!
+//! | ink on the dark `support-error` fill | measured |
+//! |---|---|
+//! | `text.on-accent` `#121212` | **4.41:1** |
+//! | `text-inverse` `#1a1a1a` | 4.10:1 |
+//! | `text.primary` `#f2f2f2` | 3.79:1 |
+//! | `layer-selected-inverse` `#ffffff` | 4.24:1 |
+//!
+//! Carbon's own `#da1e28` clears it at 5.00:1 against white, which is the
+//! whole difference. So a red *fill* here would be a button whose label
+//! misses AA by 0.09 in one theme, and
+//! [`super::tests::containers_take_a_tone_and_controls_take_an_edge`] holds
+//! every `border` in this library to [`BORDER_SUBTLE`], so a red *edge* is
+//! not open either. **Two token names are owed: a button-danger fill and
+//! the always-white ink that goes on it.** They belong with
+//! `$button-secondary` and `$button-primary-hover` on the operator's list,
+//! not in a component.
+//!
+//! What ships instead is a **red octagon**, the library's own `status.down`
+//! figure ([`SILHOUETTE_OCTAGON`] filled [`SUPPORT_ERROR`]), leading each of
+//! the three danger variants. It carries two channels and neither is a
+//! colour on its own:
+//!
+//! * **shape** — a mark where the default button has none, and an octagon
+//!   no other control on a page draws. It survives greyscale, which is the
+//!   test that matters: the operator is red-green colour blind.
+//! * **hue** — `#f21c0d` against the default button's `#222222` measures
+//!   ΔE\*ab **47.2** under Viénot-Brettel-Mollon protanope simulation and
+//!   **76.3** under deuteranope, against this repo's own
+//!   `MIN_STATUS_SEPARATION` floor of 30. It is 3.75:1 against that fill,
+//!   over the 3:1 SC 1.4.11 floor for a graphical object.
+//!
+//! The mark leads rather than trails. Carbon's icon slot is the trailing
+//! one (`.cds--btn { justify-content: space-between }`) and is held open by
+//! `$spacing-10` of end padding — [`PAD_END_NO_ICON`], the number this file
+//! deliberately does not bind — so a trailing mark here would sit tight
+//! against the edge. Leading also puts the warning before the word.
+//!
+//! `Semantics.value` still names the kind, for the reader who has neither.
+//!
+//! # Ghost is a link, not a label
+//!
+//! MEASURED `_button.scss:196`: `.cds--btn--ghost` is
+//! `button-theme(transparent, transparent, $link-primary, ...)`. Its ink is
+//! the link colour, which is what makes a fill-less, edge-less control read
+//! as a control at all — and it is why the reference draws "Ghost" in blue
+//! where ours drew it in the same white as the label beside it. Carbon's
+//! danger-ghost and danger-tertiary want `$button-danger-secondary` there
+//! instead; that ink does not exist here (see above), so those two keep
+//! [`TEXT_PRIMARY`] and lean on the octagon.
 //!
 //! # A filled button sits *on* the surface
 //!
@@ -77,11 +133,12 @@
 //! outline *is* the control, the same reason a checkbox does.
 
 use super::stack;
+use super::swatch;
 use super::text::text;
 use super::tokens::{
     ACCENT_PRIMARY, BORDER_SUBTLE, ICON_DISABLED, ICON_ON_COLOR_DISABLED, LAYER_ACTIVE,
-    LAYER_HOVER, SHADOW_RAISED, SHAPE_MD, SIZE_MD, SPACING_05, SURFACE_BASE, SURFACE_RAISED,
-    TEXT_ON_ACCENT, TEXT_PRIMARY, t,
+    LAYER_HOVER, LINK_PRIMARY, SHADOW_RAISED, SHAPE_MD, SILHOUETTE_OCTAGON, SIZE_MD, SPACING_03,
+    SPACING_05, SUPPORT_ERROR, SURFACE_BASE, SURFACE_RAISED, TEXT_ON_ACCENT, TEXT_PRIMARY, t,
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{AxisConstraint, Constraints, InsetRefs, Interaction, Key, Role, ViewNode};
@@ -104,6 +161,17 @@ const _: () = assert!(HEIGHT_SM == 32.0);
 const _: () = assert!(SIZE_MD == 40.0);
 const _: () = assert!(HEIGHT_LG == 48.0);
 const _: () = assert!(PAD_END_NO_ICON == 64.0);
+
+/// The danger mark's extent, Carbon's own button-icon box.
+const DANGER_MARK: f32 = 16.0;
+
+const _: () = assert!(DANGER_MARK == 16.0);
+
+/// The paint slot naming a node's outline family — the painter's
+/// `SILHOUETTE_SLOT`. Spelled here for the reason `status.rs` spells it: a
+/// slot key is a plain string by design (`Props::tokens`), not a token name
+/// this module could import.
+const SILHOUETTE_SLOT: &str = "silhouette";
 
 #[derive(Clone, Copy)]
 enum Size {
@@ -198,8 +266,21 @@ fn chrome(variant: Variant) -> Chrome {
             border: Some(BORDER_SUBTLE),
             shadow: None,
         },
-        Variant::Ghost | Variant::DangerGhost => Chrome {
+        Variant::Ghost => Chrome {
             background: SURFACE_BASE,
+            // MEASURED `_button.scss:196`: `color: $link-primary`.
+            foreground: LINK_PRIMARY,
+            hover: Some(LAYER_HOVER),
+            active: Some(LAYER_ACTIVE),
+            disabled_ink: ICON_DISABLED,
+            border: None,
+            shadow: None,
+        },
+        Variant::DangerGhost => Chrome {
+            background: SURFACE_BASE,
+            // Carbon wants `$button-danger-secondary` here; this library has
+            // no such ink (module doc), and `link-primary` on a *danger*
+            // control would say "safe". The octagon carries the kind.
             foreground: TEXT_PRIMARY,
             hover: Some(LAYER_HOVER),
             active: Some(LAYER_ACTIVE),
@@ -208,6 +289,28 @@ fn chrome(variant: Variant) -> Chrome {
             shadow: None,
         },
     }
+}
+
+/// A [`DANGER_MARK`]-unit [`SUPPORT_ERROR`] octagon: the same figure
+/// `status.down` paints, at the button-icon box.
+///
+/// No fill token on a text node and no `border` slot, so neither the AA
+/// floor nor
+/// [`super::tests::containers_take_a_tone_and_controls_take_an_edge`]'s
+/// single-border-tone rule has anything to say about it.
+fn danger_mark() -> ViewNode {
+    let mut mark = swatch(
+        "mark",
+        DANGER_MARK,
+        DANGER_MARK,
+        Some(SUPPORT_ERROR),
+        None,
+        None,
+    );
+    mark.props
+        .tokens
+        .insert(SILHOUETTE_SLOT.into(), t(SILHOUETTE_OCTAGON));
+    mark
 }
 
 fn pin_height(h: f32) -> Constraints {
@@ -365,7 +468,15 @@ fn labelled(
         .tokens
         .insert("foreground@disabled".into(), t(chrome.disabled_ink));
 
-    let mut node = stack(key, Axis::Horizontal, None, vec![inner]);
+    // The danger triple leads with the library's own `status.down` figure
+    // in `support-error`. See the module doc for the four contrast
+    // measurements that rule a red fill out and the two CVD separations
+    // that make this mark legible to the operator.
+    let (children, spacing) = match variant.danger_kind() {
+        Some(_) => (vec![danger_mark(), inner], Some(SPACING_03)),
+        None => (vec![inner], None),
+    };
+    let mut node = stack(key, Axis::Horizontal, spacing, children);
     node.props.align = Some(Align::Center);
     node.props.padding = Some(pad_inline());
     node.props
@@ -417,8 +528,9 @@ fn labelled(
 #[cfg(test)]
 mod tests {
     use super::{
-        ACCENT_PRIMARY, BORDER_SUBTLE, HEIGHT_LG, HEIGHT_SM, HEIGHT_XS, PAD_END_NO_ICON,
-        SHADOW_RAISED, SIZE_MD, SPACING_05, SURFACE_BASE, TEXT_ON_ACCENT, button, button_lg,
+        ACCENT_PRIMARY, BORDER_SUBTLE, HEIGHT_LG, HEIGHT_SM, HEIGHT_XS, LINK_PRIMARY,
+        PAD_END_NO_ICON, SHADOW_RAISED, SIZE_MD, SPACING_05, SURFACE_BASE, TEXT_ON_ACCENT,
+        TEXT_PRIMARY, button, button_lg,
         button_sm, button_xs, danger_button, danger_ghost_button, danger_tertiary_button,
         ghost_button, primary_button, tertiary_button,
     };
@@ -748,7 +860,11 @@ mod tests {
                     .get("background")
                     .unwrap_or_else(|| panic!("{label}: button has no resting background"));
                 let bg = color(&theme, bg_name.as_str());
-                let text = node.children.first().expect("label child");
+                let text = node
+                    .children
+                    .iter()
+                    .find(|c| c.key.as_str() == "b-label")
+                    .unwrap_or_else(|| panic!("{label}: no label child"));
                 let fg_name = text
                     .props
                     .tokens
@@ -764,4 +880,99 @@ mod tests {
             }
         }
     }
+
+    /// The danger triple's mark: a `support-error` octagon, on all three,
+    /// and on none of the other four.
+    ///
+    /// The measurements this asserts the *consequences* of live in the
+    /// module doc: no shipped ink clears AA on a `support-error` fill (best
+    /// is 4.41:1), so the red goes on a text-free child; and the mark is a
+    /// shape as well as a hue, which is what makes it legible to a
+    /// red-green colour blind reader. Falsify by returning `None` from
+    /// `Variant::danger_kind` for one variant, or by deleting the
+    /// `silhouette` insert in `danger_mark`.
+    #[test]
+    fn every_danger_variant_leads_with_a_support_error_octagon() {
+        use crate::component::tokens::{SILHOUETTE_OCTAGON, SUPPORT_ERROR};
+        let mark = |node: &ViewNode| -> Option<(String, String, String)> {
+            let m = node.children.iter().find(|c| c.key.as_str() == "mark")?;
+            Some((
+                m.props.tokens.get("background")?.as_str().to_owned(),
+                m.props.tokens.get("silhouette")?.as_str().to_owned(),
+                format!("{:?}", m.kind),
+            ))
+        };
+        for (label, node) in [
+            ("danger", danger_button("b", "Delete")),
+            ("danger-tertiary", danger_tertiary_button("b", "Delete")),
+            ("danger-ghost", danger_ghost_button("b", "Delete")),
+        ] {
+            let found = mark(&node)
+                .unwrap_or_else(|| panic!("{label} draws no mark: danger is a colour-only kind"));
+            assert_eq!(
+                found,
+                (
+                    SUPPORT_ERROR.to_owned(),
+                    SILHOUETTE_OCTAGON.to_owned(),
+                    "Spacer".to_owned()
+                ),
+                "{label}'s mark is not the `status.down` figure in the error red"
+            );
+            assert_eq!(
+                node.children.first().map(|c| c.key.as_str()),
+                Some("mark"),
+                "{label}'s mark leads the label; Carbon's trailing icon slot                  is held open by `$spacing-10`, which this file does not bind"
+            );
+            assert_eq!(
+                node.children.first().unwrap().constraints.horizontal.min,
+                Some(super::DANGER_MARK)
+            );
+        }
+        for (label, node) in [
+            ("secondary", button("b", "Save")),
+            ("primary", primary_button("b", "Save")),
+            ("tertiary", tertiary_button("b", "Save")),
+            ("ghost", ghost_button("b", "Save")),
+        ] {
+            assert!(
+                mark(&node).is_none(),
+                "{label} grew a danger mark; the mark is what tells the two                  apart and it has to be absent from the safe four"
+            );
+        }
+    }
+
+    /// MEASURED `_button.scss:196`: a ghost button's ink is `$link-primary`.
+    /// Ours was `text.primary`, so "Ghost" rendered in the same white as
+    /// "Default" beside it while the Carbon reference draws it blue. The
+    /// underline is not added here: Carbon's ghost is not underlined, and
+    /// the button's own fill-and-shadow-less shape is its second channel.
+    #[test]
+    fn a_ghost_button_is_written_in_the_link_ink() {
+        assert_eq!(
+            token(&ghost_button("g", "Cancel"), "background"),
+            Some(SURFACE_BASE)
+        );
+        let ink = |node: &ViewNode| -> Option<String> {
+            node.children
+                .iter()
+                .find(|c| c.key.as_str() == "g-label")?
+                .props
+                .tokens
+                .get("foreground")
+                .map(|t| t.as_str().to_owned())
+        };
+        assert_eq!(ink(&ghost_button("g", "Cancel")).as_deref(), Some(LINK_PRIMARY));
+        assert_eq!(
+            ink(&tertiary_button("g", "Cancel")).as_deref(),
+            Some(TEXT_PRIMARY),
+            "only ghost takes the link ink; a tertiary button has an edge"
+        );
+        assert_eq!(
+            ink(&danger_ghost_button("g", "Delete")).as_deref(),
+            Some(TEXT_PRIMARY),
+            "Carbon wants `$button-danger-secondary` here and this library              has no such ink; `link-primary` on a danger control would say              the opposite of what it means"
+        );
+    }
 }
+
+

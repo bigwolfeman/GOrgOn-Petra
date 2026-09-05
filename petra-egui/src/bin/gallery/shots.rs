@@ -1333,6 +1333,12 @@ mod tests {
     #[test]
     fn the_popover_opens_over_the_page_and_dismisses_outside() {
         let mut cam = Camera::on("Popover");
+        // Since 2026-09-05 the page mounts its open form at rest — a closed
+        // disclosure photographs as one button and no disclosure, which is
+        // what the operator walked past on rows 24 and 37. Shut it with a
+        // press first, so the shared helper still drives it open from a
+        // resting closed state.
+        cam.click("po-pair/pop-anchor");
         let note = opens_over_the_page(
             &mut cam,
             "po-pair/pop-anchor",
@@ -1362,7 +1368,9 @@ mod tests {
             "the note stands off its anchor by the caret's depth, 8: \
              {note:?} under {anchor:?}"
         );
-        let body = cam.rect("pop-note/content/body");
+        // The page's popover holds caller children now, so its first run is
+        // keyed by the page rather than by `popover`'s own one-run form.
+        let body = cam.rect("pop-note/content/pop-body");
         let content = cam.rect("pop-note/content");
         assert!(
             (body.x - content.x).abs() < 0.5,
@@ -1460,6 +1468,8 @@ mod tests {
     #[test]
     fn the_toggletip_opens_over_the_page_and_its_trigger_closes_it() {
         let mut cam = Camera::on("Toggletip");
+        // Open at rest since 2026-09-05; see the popover test above.
+        cam.click("tt/trigger");
         opens_over_the_page(&mut cam, "tt/trigger", "tt/tip", 30.0, "37-toggletip-open");
         cam.click("tt/trigger");
         cam.shoot("37-toggletip-closed-again");
@@ -2700,6 +2710,9 @@ mod tests {
     #[test]
     fn clicking_the_toggletip_trigger_brackets_it_like_a_text_input() {
         let mut cam = Camera::on("Toggletip");
+        // Open at rest since 2026-09-05: shut it, then open it, so the
+        // bracket under test is the one a press puts there.
+        cam.click("tt/trigger");
         cam.click("tt/trigger");
         assert!(cam.has("tt/tip"), "the click did not open the tip");
         let trigger = cam.rect("tt/trigger");
@@ -3523,4 +3536,313 @@ mod tests {
             outer_header.x
         );
     }
+    // ----------------------------------------------------------------
+    // Wave E, 2026-09-05. Rows 12 (File uploader), 04 (Button), 24/37
+    // (Popover and Toggletip). One contiguous block, appended at the end:
+    // another wave edits this file in its own worktree and the merge is by
+    // hand.
+    // ----------------------------------------------------------------
+
+    /// Mean luma of a crop, Rec. 709, so a claim can be made about what a
+    /// reader who cannot use hue sees.
+    fn luma(pixels: &[[u8; 4]]) -> f32 {
+        let sum: f32 = pixels
+            .iter()
+            .map(|p| 0.2126 * f32::from(p[0]) + 0.7152 * f32::from(p[1]) + 0.0722 * f32::from(p[2]))
+            .sum();
+        sum / pixels.len() as f32
+    }
+
+    /// How many pixels of a crop are red-dominant by `lead` on both of the
+    /// other two channels. A grey, a blue and a white all score zero.
+    fn red_lead(pixels: &[[u8; 4]], lead: i32) -> usize {
+        pixels
+            .iter()
+            .filter(|p| {
+                let (r, g, b) = (i32::from(p[0]), i32::from(p[1]), i32::from(p[2]));
+                r - g > lead && r - b > lead
+            })
+            .count()
+    }
+
+    /// The modal colour of a crop, so a bubble's fill can be named rather
+    /// than sampled at one point that might land on a glyph.
+    fn modal_colour(pixels: &[[u8; 4]]) -> [u8; 4] {
+        let mut counts: std::collections::HashMap<[u8; 4], usize> = std::collections::HashMap::new();
+        for p in pixels {
+            *counts.entry(*p).or_default() += 1;
+        }
+        counts
+            .into_iter()
+            .max_by_key(|(_, n)| *n)
+            .map(|(c, _)| c)
+            .expect("a crop has pixels")
+    }
+
+    /// Row 12. The drop zone is Carbon's 320 x 96 box with its link in the
+    /// top-left corner, and a row's remove control really removes it.
+    ///
+    /// **What was wrong.** `file_uploader.rs:68` set only
+    /// `zone.constraints.vertical.min`, so the box took the width of the
+    /// words inside it — 121 points against Carbon's 320, measured off
+    /// `12-file-uploader.png` — and `zone.props.align = Center` put the
+    /// caption on its midline where Carbon's is `align-items: flex-start`.
+    /// The caption was grey body text reading "Drop files here", so nothing
+    /// in the picture said a click does anything.
+    ///
+    /// **How this went red before the fix.** Restore either half and it
+    /// fails on its own: dropping the horizontal constraint fails the width
+    /// assertion at 121, and putting `Align::Center` back fails the
+    /// top-left corner assertion.
+    ///
+    /// The remove half is driven, because a list that cannot lose a row is
+    /// a picture of a list. Carbon's `status="edit"` file row is a `Close`
+    /// button and this is that button, pressed.
+    #[test]
+    fn the_drop_zone_is_a_carbon_box_and_a_file_row_can_be_removed() {
+        let mut cam = Camera::on("File uploader");
+        let zone = cam.rect("fu/zone");
+        assert!(
+            (zone.w - 320.0).abs() < 0.5,
+            "the drop zone is {} wide; Carbon's `.cds--file-browse-btn` caps \
+             at 320 and the reference renders it there",
+            zone.w
+        );
+        assert!(
+            (zone.h - 96.0).abs() < 0.5,
+            "the drop zone is {} tall; `_file-uploader.scss:425` is 96",
+            zone.h
+        );
+        let prompt = cam.rect("fu/zone/prompt");
+        assert!(
+            (prompt.x - zone.x - 16.0).abs() < 1.5 && (prompt.y - zone.y - 16.0).abs() < 2.5,
+            "the prompt is at ({}, {}) inside a zone at ({}, {}); Carbon pads \
+             16 and aligns to flex-start, so it belongs in the top-left \
+             corner and not on the midline",
+            prompt.x,
+            prompt.y,
+            zone.x,
+            zone.y
+        );
+
+        // The rows under it line up with the zone: both are 320 in Carbon,
+        // and ours were 320 and 288 while the module doc cited `18rem`.
+        let item = cam.rect("fu-busy");
+        assert!(
+            (item.w - zone.w).abs() < 0.5,
+            "the file row is {} wide against a {}-wide zone; Carbon's \
+             `.cds--file__selected-file` caps at the same 320",
+            item.w,
+            zone.w
+        );
+
+        let before = raster(&mut cam, "12-file-uploader");
+        // The prompt is a link: blue ink with a rule under it. Read off the
+        // pixels, because `foreground` and `underline` are two bindings and
+        // a slot the painter ignored would pass every tree-level check.
+        let ink = inset_pixels(&before, prompt, 0);
+        let blue = ink
+            .iter()
+            .filter(|p| i32::from(p[2]) - i32::from(p[0]) > 40)
+            .count();
+        assert!(
+            blue > 40,
+            "only {blue} pixels of the prompt are blue-leaning: the link ink \
+             is not reaching the picture, and a grey prompt is what the \
+             operator read as `not ibm carbon`"
+        );
+
+        assert!(cam.has("fu-1"), "the page starts holding two removable files");
+        cam.click("fu-1/remove");
+        let after = raster(&mut cam, "12-file-uploader-removed");
+        assert!(
+            !cam.has("fu-1"),
+            "pressing a row's remove control left the row on the page. \
+             Placed:\n  {}",
+            cam.ids().join("\n  ")
+        );
+        assert!(cam.has("fu-0"), "removing one row took its sibling with it");
+        assert_ne!(
+            before.into_raw(),
+            after.into_raw(),
+            "the removal changed nothing on screen"
+        );
+    }
+
+    /// Row 04. The danger triple carries a `support-error` octagon and the
+    /// four safe variants do not, so danger differs from default by a shape
+    /// as well as by a hue.
+    ///
+    /// **What was wrong.** `button.rs`'s `chrome` gave `Variant::Danger`
+    /// exactly the same `Chrome` struct as `Variant::Secondary` — same
+    /// fill, same ink, same shadow, no edge — and the kind lived only in
+    /// `Semantics.value`, which no eye reads. The operator: *"danger still
+    /// does not look visually distinct from default"*.
+    ///
+    /// **Why a mark and not a red fill.** No ink this library ships clears
+    /// AA on `support-error` as a *fill*: `text.on-accent` measures 4.41:1
+    /// against a 4.5 floor in the dark theme, and the other three are worse.
+    /// The four numbers are in `button.rs`'s module doc. So the red goes
+    /// where no text sits.
+    ///
+    /// **The colour-blind half is measured here, not asserted by comment.**
+    /// The mark's crop is compared to the button's own fill in *luma*, not
+    /// in colour, so a reader with no red-green channel still has a
+    /// difference to see.
+    ///
+    /// **How this went red before the fix.** With `chrome` restored, the
+    /// first assertion fails at `btn-danger-2 draws no mark`.
+    #[test]
+    fn the_danger_buttons_carry_a_red_octagon_and_the_safe_ones_do_not() {
+        let mut cam = Camera::on("Button");
+        // Driven, so the claim is about a live page and not a constructor:
+        // a pointer on the danger button must not take its mark away.
+        cam.hover("btn-danger");
+        let shot = raster(&mut cam, "04-button-danger");
+
+        for tail in ["btn-danger", "btn-danger-tertiary", "btn-danger-ghost"] {
+            assert!(
+                cam.has(&format!("{tail}/mark")),
+                "{tail} draws no mark: danger is a colour-only kind again"
+            );
+            let mark = cam.rect(&format!("{tail}/mark"));
+            let crop = inset_pixels(&shot, mark, 3);
+            assert!(
+                red_lead(&crop, 60) > crop.len() / 3,
+                "{tail}'s mark is not red: {} of {} pixels lead red by 60",
+                red_lead(&crop, 60),
+                crop.len()
+            );
+
+            // A marked button must still fit its own label on one line.
+            // `layout::stack::distribute` clips the widest child in a row
+            // to the mean of the row's naturals, and a 16-unit mark is what
+            // makes a danger button the widest; the first arrangement of
+            // this page broke `Delete` across two lines inside a 40-unit
+            // box. 20 is one line at `typography.body`.
+            let caption = cam.rect(&format!("{tail}/{tail}-label"));
+            assert!(
+                caption.h < 24.0,
+                "{tail}'s label is {} tall, so it wrapped inside a 40-unit \
+                 button: the row clipped it",
+                caption.h
+            );
+
+            // The luma step, which is the channel that survives protanopia.
+            let button = cam.rect(tail);
+            let fill = inset_pixels(&shot, Rect { x: button.x + button.w - 6.0, y: button.y + 4.0, w: 4.0, h: button.h - 8.0 }, 0);
+            assert!(
+                (luma(&crop) - luma(&fill)).abs() > 12.0,
+                "{tail}'s mark is luma {:.1} on a fill of luma {:.1}: a \
+                 reader with no red-green channel cannot see it",
+                luma(&crop),
+                luma(&fill)
+            );
+        }
+
+        for tail in ["btn-primary", "btn-default", "btn-tertiary", "btn-ghost"] {
+            assert!(
+                !cam.has(&format!("{tail}/mark")),
+                "{tail} grew a danger mark; the mark is what tells the two \
+                 apart and it has to be absent from the safe four"
+            );
+        }
+
+        // Carbon's ghost button is written in `$link-primary`
+        // (`_button.scss:196`); ours was `text.primary`, the same white as
+        // the default button beside it.
+        let ghost = cam.rect("btn-ghost/btn-ghost-label");
+        let ink = inset_pixels(&shot, ghost, 0);
+        let blue = ink
+            .iter()
+            .filter(|p| i32::from(p[2]) - i32::from(p[0]) > 40)
+            .count();
+        assert!(
+            blue > 20,
+            "only {blue} pixels of the ghost label lean blue: Carbon draws \
+             it in the link ink and this one is still page ink"
+        );
+    }
+
+    /// Rows 24 and 37. The operator: *"popover: this is the same as toggle
+    /// tip as far as I can tell just as a button?"* He was right, and the
+    /// two open bubbles measured the same `#333333`.
+    ///
+    /// **What was wrong.** `toggletip.rs:45` called `popover_with` and then
+    /// changed exactly one thing, the width cap. Fill, radius, shadow,
+    /// caret, padding and layer were literally one code path, and both
+    /// catalog pages photographed **closed**, so the picture of each row was
+    /// one trigger and no disclosure at all.
+    ///
+    /// **How this went red before the fix.** Delete the `background` insert
+    /// in `toggletip::bubble` and the tone assertion fails with the two
+    /// bubbles reported at the same colour, which is the defect stated as a
+    /// number.
+    ///
+    /// Both halves are driven: each page now mounts its open form at rest,
+    /// so each is closed with a press and opened again with a second one
+    /// before anything is measured.
+    #[test]
+    fn the_popover_and_the_toggletip_open_onto_two_different_bubbles() {
+        let mut pop = Camera::on("Popover");
+        pop.click("po-pair/pop-anchor");
+        assert!(!pop.has("po-pair/pop-note"), "a press did not shut the panel");
+        pop.click("po-pair/pop-anchor");
+        assert!(pop.has("po-pair/pop-note"), "a press did not reopen it");
+        let pop_rect = pop.rect("po-pair/pop-note");
+        let pop_shot = raster(&mut pop, "24-popover-open");
+        let pop_fill = modal_colour(&inset_pixels(&pop_shot, pop_rect, 6));
+
+        // A popover is the container other overlays compose on, so the page
+        // has to show something living in it. Two real controls.
+        for tail in ["pop-note/content/pop-actions/pop-cancel", "pop-note/content/pop-actions/pop-apply"] {
+            assert!(
+                pop.has(tail),
+                "the popover holds no interactive child, so the page still \
+                 says nothing about what a popover is for. Placed:\n  {}",
+                pop.ids().join("\n  ")
+            );
+        }
+
+        let mut tip = Camera::on("Toggletip");
+        tip.click("tt/trigger");
+        assert!(!tip.has("tt/tip"), "a press did not shut the tip");
+        tip.click("tt/trigger");
+        assert!(tip.has("tt/tip"), "a press did not reopen it");
+        let tip_rect = tip.rect("tt/tip");
+        let tip_shot = raster(&mut tip, "37-toggletip-open");
+        let tip_fill = modal_colour(&inset_pixels(&tip_shot, tip_rect, 6));
+
+        let step = i32::from(tip_fill[0]) - i32::from(pop_fill[0]);
+        assert!(
+            step.abs() >= 8,
+            "the two bubbles are {pop_fill:?} and {tip_fill:?}, {} sRGB \
+             levels apart. That is the operator's complaint restated: two \
+             rows, one picture",
+            step.abs()
+        );
+        assert!(
+            tip_rect.w < pop_rect.w - 40.0,
+            "the tip is {} wide against the popover's {}; Carbon caps them \
+             at 288 and 368",
+            tip_rect.w,
+            pop_rect.w
+        );
+
+        // The trigger the operator saw as the bare word "Why" now leads with
+        // an information mark, which is what makes it read as a control on a
+        // card its own fill disappears into.
+        assert!(
+            tip.has("tt/trigger/glyph"),
+            "the toggletip trigger draws no mark"
+        );
+        let glyph = tip.rect("tt/trigger/glyph");
+        let crop = inset_pixels(&tip_shot, glyph, 1);
+        assert!(
+            differing(&crop, &vec![crop[0]; crop.len()]) > crop.len() / 8,
+            "the trigger's mark box is one flat colour: the glyph is not \
+             reaching the picture"
+        );
+    }
+
 }

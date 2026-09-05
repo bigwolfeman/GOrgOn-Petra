@@ -8,19 +8,62 @@
 //!    Interactive children belong in the popover (that is why this is
 //!    not [`super::tooltip`]).
 //!
-//! Container max-inline is 288 (`18rem`, SCSS). Open/closed are the only
-//! documented states.
+//! Container max-inline is 288 (`18rem`, SCSS), against Popover's 368.
+//! Open/closed are the only documented states.
+//!
+//! # The surface, and a departure the operator chose
+//!
+//! Carbon separates Toggletip from Popover by **surface**, not by shape:
+//! `.cds--popover-content` is `$layer` and `.cds--toggletip-content` is
+//! `$background-inverse` with `$text-inverse` — a near-white chip on the
+//! g100 page (`ignored/carbon-ref/shots/37-toggletip-open.png`, read
+//! 2026-09-05). Ours called `popover_with` and changed only the width cap,
+//! so the two rows rendered the **same** `#333333` bubble (measured on
+//! `24-popover-open.png` and `37-toggletip-open.png` at device x 700), and
+//! the operator's note on row 24 was *"this is the same as toggle tip as
+//! far as I can tell"*. He was right, and the pixels say so.
+//!
+//! This takes [`SURFACE_LAYER_THREE`] rather than `background-inverse`, and
+//! that is a **departure recorded on purpose**. Hours earlier the operator
+//! read row 38 as *"tooltip: white background in dark mode, change it"* and,
+//! shown Carbon's own reference beside ours, chose to change it anyway;
+//! `tooltip.rs` carries that decision. A toggletip is the same inverse
+//! family, so shipping a light chip here would put the thing he just
+//! refused back on the next row. The ramp's last rung is the tone
+//! `tooltip.rs` moved to, it is a step away from both the page (`#121212`)
+//! and a card (`#222222`), and it leaves this bubble 17 sRGB levels off
+//! Popover's. **Restoring Carbon is one line**: bind `background-inverse`
+//! and a descendant `text-inverse` here, and re-add the `BACKGROUND_INVERSE`
+//! re-export that `tokens.rs` dropped on 2026-09-05.
+//!
+//! # The trigger carries an information mark
+//!
+//! Carbon's `.cds--toggletip-button` is a reset button — no fill, no edge —
+//! and the reference renders it as the bare word "Why" on the page ground.
+//! Ours did the same and the operator read it as a text label, because a
+//! `SURFACE_BASE` fill inside a catalog card **is** the card
+//! (`catalog.rs::seat_card` reseats it, and the trigger's whole row band
+//! measured a uniform `#222222`). Carbon's own convention for this trigger
+//! is an information icon, so the trigger now leads with
+//! [`IconMark::InformationFilled`] beside its label: a ringed glyph reads as
+//! a control on any ground without inventing chrome Carbon does not draw,
+//! and it is a second channel to the label rather than a replacement for
+//! it (FR-026).
 //!
 //! The trigger declares [`FocusFigure::Hug`]: keyboard focus is two bars
 //! beside it, as on a text input. An underline under a trigger whose
 //! popover opens flush beneath it landed on the popover's beak (row 37,
 //! 2026-09-05), and the operator asked for the sides.
 
+use super::icon::{IconBox, IconMark, IconTone, icon_in};
 use super::pad;
 use super::popover::popover_with;
 use super::stack;
 use super::text::text;
-use super::tokens::{LAYER_HOVER, SIZE_MD, SPACING_03, SPACING_05, SURFACE_BASE, TEXT_PRIMARY, t};
+use super::tokens::{
+    LAYER_HOVER, SIZE_MD, SPACING_03, SPACING_05, SURFACE_BASE, SURFACE_LAYER_THREE, TEXT_PRIMARY,
+    t,
+};
 use crate::geom::{Align, Axis};
 use crate::tree::{AxisConstraint, Constraints, FocusFigure, Interaction, Key, Role, ViewNode};
 
@@ -43,17 +86,41 @@ pub fn toggletip(
     open: bool,
     body: impl Into<String>,
 ) -> ViewNode {
+    toggletip_with(key, label, open, vec![super::popover::bubble_text(body.into())])
+}
+
+/// [`toggletip`] whose bubble holds caller-supplied children — Carbon's
+/// `.cds--toggletip-actions` row is one of these, and interactive contents
+/// are the whole reason this component is not [`super::tooltip`].
+pub fn toggletip_with(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    open: bool,
+    children: Vec<ViewNode>,
+) -> ViewNode {
     let label = label.into();
     let trigger = trigger_button("trigger", label.clone());
-    let mut children = vec![trigger];
+    let mut nodes = vec![trigger];
     if open {
-        let mut tip = popover_with("tip", label, "trigger", vec![super::popover::bubble_text(body.into())]);
-        tip.constraints.horizontal.max = Some(MAX_INLINE);
-        children.push(tip);
+        nodes.push(bubble(label, children));
     }
-    let mut node = stack(key, Axis::Vertical, None, children);
+    let mut node = stack(key, Axis::Vertical, None, nodes);
     node.semantics.expanded = Some(open);
     node
+}
+
+/// The open surface: [`super::popover::popover_with`]'s chrome at
+/// Toggletip's own width cap and on Toggletip's own tone.
+fn bubble(label: String, children: Vec<ViewNode>) -> ViewNode {
+    let mut tip = popover_with("tip", label, "trigger", children);
+    tip.constraints.horizontal.max = Some(MAX_INLINE);
+    // The one binding that makes this row tell itself apart from row 24.
+    // See the module doc for why it is the ramp's last rung and not
+    // `background-inverse`.
+    tip.props
+        .tokens
+        .insert("background".into(), t(SURFACE_LAYER_THREE));
+    tip
 }
 
 fn trigger_button(key: impl Into<Key>, label: String) -> ViewNode {
@@ -62,7 +129,13 @@ fn trigger_button(key: impl Into<Key>, label: String) -> ViewNode {
         .props
         .tokens
         .insert("foreground".into(), t(TEXT_PRIMARY));
-    let mut node = stack(key, Axis::Horizontal, Some(SPACING_03), vec![caption]);
+    let glyph = icon_in(
+        "glyph",
+        IconMark::InformationFilled,
+        IconBox::Glyph,
+        IconTone::Primary,
+    );
+    let mut node = stack(key, Axis::Horizontal, Some(SPACING_03), vec![glyph, caption]);
     node.props.align = Some(Align::Center);
     node.props.padding = Some(pad(SPACING_05, SPACING_03));
     node.props
@@ -93,7 +166,7 @@ fn pin_height(h: f32) -> Constraints {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_INLINE, toggletip};
+    use super::{MAX_INLINE, toggletip, toggletip_with};
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, validated_with};
@@ -155,6 +228,88 @@ mod tests {
             child(content, "body").props.text.as_deref(),
             Some("Narrow the list.")
         );
+    }
+
+    /// **Row 24 against row 37.** The whole operator complaint was that the
+    /// two rows draw the same picture, and they did: `toggletip` called
+    /// `popover_with` and changed only the width cap, so both bubbles
+    /// resolved `surface.raised` and rasterized `#333333`. The two facts
+    /// that separate them are asserted here as an inequality, not only as
+    /// an equality, so a later edit that puts them back on one tone fails.
+    ///
+    /// Falsify by deleting the `background` insert in `bubble`.
+    #[test]
+    fn the_toggletip_bubble_is_not_the_popover_s_own_tone() {
+        use crate::component::tokens::{SURFACE_LAYER_THREE, SURFACE_RAISED};
+        let open = toggletip("help", "About filters", true, "Narrow the list.");
+        let tip = child(&open, "tip");
+        let popover = crate::component::popover("p", "Note", "trigger", "Narrow the list.");
+        let tone = |node: &ViewNode| {
+            node.props
+                .tokens
+                .get("background")
+                .map(|t| t.as_str().to_owned())
+                .expect("an anchored bubble binds a resting background")
+        };
+        assert_eq!(tone(&popover), SURFACE_RAISED, "popover is Carbon's $layer");
+        assert_eq!(
+            tone(tip),
+            SURFACE_LAYER_THREE,
+            "a toggletip is a foreign object and takes the ramp's last rung; \
+             see this module's doc for why that stands in for Carbon's \
+             `background-inverse`"
+        );
+        assert_ne!(
+            tone(tip),
+            tone(&popover),
+            "row 24 and row 37 are back on one tone, which is the defect"
+        );
+        assert_eq!(tip.constraints.horizontal.max, Some(MAX_INLINE));
+        assert_ne!(
+            tip.constraints.horizontal.max,
+            popover.constraints.horizontal.max,
+            "288 against 368 is the other half of the split"
+        );
+    }
+
+    /// Carbon's trigger is a reset button and the reference draws it as a
+    /// bare word. Inside a catalog card a `surface.base` fill *is* the
+    /// card, so a bare word is all the operator saw. The information mark
+    /// is what makes it read as a control, beside the label rather than
+    /// instead of it.
+    #[test]
+    fn the_trigger_leads_with_an_information_mark_beside_its_label() {
+        let node = toggletip("help", "About filters", false, "Narrow the list.");
+        let trigger = child(&node, "trigger");
+        let keys: Vec<&str> = trigger.children.iter().map(|c| c.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            vec!["glyph", "label"],
+            "the mark leads and the label follows it"
+        );
+        assert_eq!(child(trigger, "glyph").kind, NodeKind::Canvas);
+        assert_eq!(
+            child(trigger, "label").props.text.as_deref(),
+            Some("About filters"),
+            "the mark is a second channel, never the only one"
+        );
+    }
+
+    /// `toggletip_with` is the interactive-contents form — the reason this
+    /// component exists rather than `tooltip` — and its children keep their
+    /// own roles.
+    #[test]
+    fn toggletip_with_hosts_interactive_children() {
+        let node = toggletip_with(
+            "help",
+            "About filters",
+            true,
+            vec![crate::component::button("learn", "Learn more")],
+        );
+        let content = child(child(&node, "tip"), "content");
+        let action = child(content, "learn");
+        assert_eq!(action.semantics.role, Some(Role::Button));
+        assert_eq!(action.semantics.label.as_deref(), Some("Learn more"));
     }
 
     /// The open form's `tip` names its `trigger` sibling by bare key
