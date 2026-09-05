@@ -473,48 +473,71 @@ fn to_egui_key(key: KeyCode) -> Option<egui::Key> {
     })
 }
 
-/// The move-press-release sequence a physical primary click produces.
-fn push_click(raw: &mut RawInput, pos: Point, modifiers: Modifiers) {
+/// The pointer moves to `pos` and the primary button goes down there — the
+/// opening of every gesture a physical device produces.
+///
+/// # Why the three phases are public and the composites are not
+///
+/// A gesture is not always one frame's worth of input. [`Action::Click`] and
+/// [`Action::Drag`] pack their whole sequence into a single [`RawInput`],
+/// which is what a driver wants when it only asks where a gesture *finished* —
+/// and it is blind by construction to any defect that needs more than one
+/// [`crate::host::Host::pass`] to appear. Row 30's was one: the painted slider
+/// handle stood still for nine frames at a time while the value under it kept
+/// moving, and no single-frame drag could see it. A driver that wants to watch
+/// a gesture the way the window pumps it pushes these three into three
+/// separate `RawInput`s, one pass each.
+///
+/// The event sequence is the same either way, because the composites below are
+/// built out of these and nothing else.
+pub fn push_pointer_down(raw: &mut RawInput, pos: Point, modifiers: Modifiers) {
     let at = to_pos2(pos);
-    let mods = to_egui_modifiers(modifiers);
     raw.events.push(Event::PointerMoved(at));
     raw.events.push(Event::PointerButton {
         pos: at,
         button: EguiButton::Primary,
         pressed: true,
-        modifiers: mods,
+        modifiers: to_egui_modifiers(modifiers),
     });
+}
+
+/// The pointer moves to `pos` with no button change. Under a capture this is
+/// a drag step; with nothing captured it is a hover.
+pub fn push_pointer_move(raw: &mut RawInput, pos: Point) {
+    raw.events.push(Event::PointerMoved(to_pos2(pos)));
+}
+
+/// The primary button comes up at `pos`. No move of its own: a physical
+/// release happens wherever the pointer already is, and pushing a move here
+/// would invent one the device never sent.
+pub fn push_pointer_up(raw: &mut RawInput, pos: Point, modifiers: Modifiers) {
     raw.events.push(Event::PointerButton {
-        pos: at,
+        pos: to_pos2(pos),
         button: EguiButton::Primary,
         pressed: false,
-        modifiers: mods,
+        modifiers: to_egui_modifiers(modifiers),
     });
+}
+
+/// The move-press-release sequence a physical primary click produces, all in
+/// **one** `RawInput`.
+fn push_click(raw: &mut RawInput, pos: Point, modifiers: Modifiers) {
+    push_pointer_down(raw, pos, modifiers);
+    push_pointer_up(raw, pos, modifiers);
 }
 
 /// The press-move-move-release sequence a physical primary-button drag
 /// produces, with one interpolated waypoint so the gesture crosses whatever
 /// is between `from` and `to` rather than teleporting.
+///
+/// All of it in **one** `RawInput`, so one pass delivers the whole gesture.
+/// See [`push_pointer_down`] for when that is the wrong shape.
 fn push_drag(raw: &mut RawInput, from: Point, to: Point, modifiers: Modifiers) {
-    let start = to_pos2(from);
-    let end = to_pos2(to);
-    let mid = Pos2::new((from.x + to.x) / 2.0, (from.y + to.y) / 2.0);
-    let mods = to_egui_modifiers(modifiers);
-    raw.events.push(Event::PointerMoved(start));
-    raw.events.push(Event::PointerButton {
-        pos: start,
-        button: EguiButton::Primary,
-        pressed: true,
-        modifiers: mods,
-    });
-    raw.events.push(Event::PointerMoved(mid));
-    raw.events.push(Event::PointerMoved(end));
-    raw.events.push(Event::PointerButton {
-        pos: end,
-        button: EguiButton::Primary,
-        pressed: false,
-        modifiers: mods,
-    });
+    let mid = Point::new((from.x + to.x) / 2.0, (from.y + to.y) / 2.0);
+    push_pointer_down(raw, from, modifiers);
+    push_pointer_move(raw, mid);
+    push_pointer_move(raw, to);
+    push_pointer_up(raw, to, modifiers);
 }
 
 /// A pointer move to `pos` followed by a wheel delta there, in

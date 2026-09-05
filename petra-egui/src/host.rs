@@ -1934,11 +1934,41 @@ impl<A: App> Host<A> {
         }
     }
 
-    fn picture_must_rebuild(event: &InputEvent) -> bool {
+    /// Whether `event` changes the tree the *application* would build, as
+    /// opposed to a projection this host applies to the frame it already
+    /// holds.
+    ///
+    /// This is [`Host::deliver_input`]'s return value, which is
+    /// [`Host::can_reuse_frame`]'s `had_input`. A pass whose every event
+    /// answers `false` here, with a caret in flight, repaints the **last**
+    /// frame and never asks the application for a tree — so an event that
+    /// answers `false` while the application acted on it is an event whose
+    /// consequence is not painted.
+    fn picture_must_rebuild(&self, event: &InputEvent) -> bool {
         match event {
-            // Hover is a projection. A compositor that repeats pointer
-            // position every vsync must not rebuild the gallery under a hop.
-            InputEvent::PointerMoved { .. } => false,
+            // A move with **nothing captured** is a projection: hover is
+            // re-derived from the frame this host already has, and a
+            // compositor that repeats the pointer position every vsync must
+            // not rebuild the gallery under a caret hop.
+            //
+            // A move **under capture** is not that, and calling it one cost
+            // the operator row 30. The engine's rule is that a press on an
+            // `Interaction::Drag` node grants the capture and every positional
+            // event until the gesture ends routes to the holder
+            // unconditionally — because the holder is running a gesture, and a
+            // gesture is the application's own state moving. A slider press
+            // also seats focus on the handle, which starts the 160 ms caret
+            // hop; with this arm answering `false`, every move for the rest of
+            // that hop repainted the stale picture while `Slider::volume` went
+            // on changing underneath it. It is a loop, not a one-off: the
+            // frame that finally rebuilds moves the handle, the caret chases
+            // the handle it just moved, and the chase freezes the next nine
+            // frames. Measured headlessly at four units of travel per 60 Hz
+            // frame, the painted handle updated once every nine frames and
+            // trailed the pointer by up to 56 units — the operator's "laggy
+            // compared to the cursor". See
+            // `shots::tests::the_slider_handle_is_painted_under_the_pointer_on_every_frame_of_a_drag`.
+            InputEvent::PointerMoved { .. } => self.pointer.capture().is_some(),
             // Tab's release would otherwise petrify mid-flight.
             InputEvent::Key { pressed: false, .. } => false,
             _ => true,
@@ -2033,7 +2063,7 @@ impl<A: App> Host<A> {
             if let Some(ended) = routing.ended {
                 self.app.handle(&ended.event(), &ended.route(), frame);
             }
-            if Self::picture_must_rebuild(event) {
+            if self.picture_must_rebuild(event) {
                 invalidate = true;
             }
         }

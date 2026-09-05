@@ -84,7 +84,20 @@ cam.shoot("11-dropdown-open");
 
 `click`, `hover`, `focus`, `type_into`, `key`, `scroll`, `drag`, and `click_at`
 / `hover_at` for a raw position (pressing *outside* a menu is what dismisses
-it). Nodes are named by the tail of their id, so `"btn-ghost"` finds
+it). Each of those is **one** pass: `drag` delivers press, both waypoints and
+the release in a single `RawInput`, which is right when you only ask where a
+gesture finished and blind to anything that needs more than one pass to go
+wrong.
+
+`press` / `move_to` / `release` are the same gesture at one pass per event, the
+way the window pumps it, and `live_motion()` stops reducing motion so the
+160 ms focus caret and the 140 ms toggle slide actually run. Reach for those
+four whenever the question is *when* a page paints rather than *what* it paints.
+Row 30 is why they exist: a slider drag repainted the stale frame for nine
+frames at a time under the caret hop, the handle trailed the pointer by up to
+56 units, and a one-pass drag with motion reduced could not see any of it. Every
+pass also advances a deterministic 60 Hz clock, so a driven step is a frame
+later than the one before it instead of microseconds later. Nodes are named by the tail of their id, so `"btn-ghost"` finds
 `/page/.../kinds/btn-ghost`; a tail shared by two placements (a section and a
 surface both keyed `menu`) panics as ambiguous, so use a longer one. A tail
 that matches nothing panics listing every placed id, which is usually the
