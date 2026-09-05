@@ -667,8 +667,30 @@ pub fn run() -> eframe::Result<()> {
             .with_active(true),
         ..eframe::NativeOptions::default()
     };
+    // Latency 1, not eframe's `HIGH_THROUGHPUT` 2.
+    //
+    // The operator, row 30: *"Slider is laggy when moving compared to the
+    // cursor under it. They should render in the same way."* The compositor
+    // draws his pointer with no queue at all, so anything this window queues
+    // is a gap he can see, and a slider handle is the one control whose whole
+    // job is to sit under that pointer.
+    //
+    // `HIGH_THROUGHPUT` was chosen for the older example gallery so a caret
+    // hop had a frame queued ahead and never stalled. That trade is right for
+    // a *self-driven* animation, which has nothing to be measured against,
+    // and wrong for *pointer tracking*, which is measured against the
+    // hardware cursor on every frame. `SurfaceConfig::LOW_LATENCY` is
+    // eframe's own recommendation for "GUIs with very little (or no) extra
+    // GPU work", which is what a 2D component catalog is; the 160 ms caret
+    // hop is about ten frames at 60 Hz and needs the host to keep asking for
+    // repaints, which `FocusCaret::is_moving` already does, not a queued
+    // frame.
+    //
+    // One frame of latency is left and cannot be removed by an application
+    // that draws its own control: the pass that reads the move is the pass
+    // that paints it, and that painting reaches the screen at the next vsync.
     options.wgpu_options = eframe::WgpuConfiguration::default()
-        .with_surface_config(eframe::SurfaceConfig::HIGH_THROUGHPUT);
+        .with_surface_config(eframe::SurfaceConfig::LOW_LATENCY);
     eframe::run_native(
         "Petra Carbon catalog",
         options,
