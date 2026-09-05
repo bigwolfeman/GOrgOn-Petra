@@ -5,10 +5,18 @@ use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::ViewNode;
 
 use super::Page;
-use super::common::{body, sp};
+use super::common::{body, dismisses, path_has, sp};
 
-/// The Menu buttons page. It holds no live state.
-pub struct MenuButtons;
+/// `menu_button`'s own keys for its trigger and its menu.
+const TRIGGER: &str = "trigger";
+const MENU: &str = "menu";
+const DUPLICATE: &str = "mb-0";
+
+/// Live state of the Menu buttons page: whether the menu is open.
+#[derive(Default)]
+pub struct MenuButtons {
+    open: bool,
+}
 
 impl Page for MenuButtons {
     fn row(&self) -> &'static str {
@@ -25,14 +33,27 @@ impl Page for MenuButtons {
                 vec![menu_button(
                     "mb",
                     "More",
-                    false,
-                    vec![menu_item("mb-0", "Duplicate")],
+                    self.open,
+                    vec![menu_item(DUPLICATE, "Duplicate")],
                 )],
             )],
         )
     }
 
-    fn handle(&mut self, _event: &InputEvent, _node: &str) -> bool {
-        false
+    fn handle(&mut self, _event: &InputEvent, node: &str) -> bool {
+        if path_has(node, DUPLICATE) {
+            self.open = false;
+        } else if path_has(node, TRIGGER) {
+            self.open = !self.open;
+        } else {
+            return false;
+        }
+        true
+    }
+
+    fn dismissed(&mut self, ids: &[String]) {
+        if dismisses(ids, MENU) {
+            self.open = false;
+        }
     }
 }

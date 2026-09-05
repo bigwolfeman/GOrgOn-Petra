@@ -93,12 +93,40 @@ pub trait Page {
     /// the value it names is that position along some rect only the frame
     /// has (`gorgon_petra::component::slider_value_at`).
     ///
-    /// The default consumes nothing, so the forty-one pages with no drag
-    /// declare none. A page that declares `Interaction::Drag` on a control
-    /// overrides this, or the control is dead — exactly what row 30 was.
+    /// `node` is empty for a pointer move or pointer-exit that routed
+    /// nowhere — the pointer is over nothing that accepts hover. A page
+    /// whose surface is revealed by hover (row 38, Tooltip) closes it on
+    /// that; [`common::path_has`] on an empty path matches no key, so every
+    /// other page ignores it exactly as it ignores a stranger's node.
+    ///
+    /// The default consumes nothing, so the forty pages with no drag and no
+    /// hover-revealed surface declare none. A page that declares
+    /// `Interaction::Drag` on a control overrides this, or the control is
+    /// dead — exactly what row 30 was.
     fn gesture(&mut self, event: &InputEvent, node: &str, frame: &PetrifiedFrame) -> bool {
         let _ = (event, node, frame);
         false
+    }
+
+    /// Close every surface named in `ids`, each an
+    /// `InputPolicy::DismissOutside` surface a press landed outside of.
+    ///
+    /// The ids are canonical placement ids, so a page matches its own
+    /// surface with [`common::dismisses`] rather than by equality: the
+    /// chrome's mount path is not the page's business.
+    ///
+    /// The chrome delivers this **after** [`Page::handle`] has seen the
+    /// press, not before as the host does (`App::dismissed`). The order
+    /// matters for the one control every popup page has: a trigger that
+    /// toggles. Delivered first, a press on the open trigger would close the
+    /// surface and then `handle` would toggle it straight back open; the
+    /// press that closes a menu by landing on its own trigger would leave
+    /// the menu open. Delivered second, `handle` toggles it shut and the
+    /// dismissal finds it already closed.
+    ///
+    /// The default ignores dismissals, for the pages with no such surface.
+    fn dismissed(&mut self, ids: &[String]) {
+        let _ = ids;
     }
 }
 
@@ -111,29 +139,29 @@ pub fn all() -> Vec<Box<dyn Page>> {
         Box::new(button::Button),
         Box::new(checkbox::Checkbox::default()),
         Box::new(code_snippet::CodeSnippet),
-        Box::new(contained_list::ContainedList),
+        Box::new(contained_list::ContainedList::default()),
         Box::new(content_switcher::ContentSwitcher::default()),
         Box::new(data_table::DataTable),
-        Box::new(date_picker::DatePicker),
-        Box::new(dropdown::Dropdown),
+        Box::new(date_picker::DatePicker::default()),
+        Box::new(dropdown::Dropdown::default()),
         Box::new(file_uploader::FileUploader),
         Box::new(form::Form),
         Box::new(inline_loading::InlineLoading),
         Box::new(link::Link),
         Box::new(list::List),
         Box::new(loading::Loading),
-        Box::new(menu::Menu),
-        Box::new(menu_buttons::MenuButtons),
+        Box::new(menu::Menu::default()),
+        Box::new(menu_buttons::MenuButtons::default()),
         Box::new(modal::Modal),
         Box::new(notification::Notification),
         Box::new(number_input::NumberInput),
         Box::new(pagination::Pagination::default()),
-        Box::new(popover::Popover),
+        Box::new(popover::Popover::default()),
         Box::new(progress_bar::ProgressBar),
         Box::new(progress_indicator::ProgressIndicator),
         Box::new(radio_button::RadioButton::default()),
         Box::new(search::Search),
-        Box::new(select::Select),
+        Box::new(select::Select::default()),
         Box::new(slider::Slider::default()),
         Box::new(structured_list::StructuredList),
         Box::new(tabs::Tabs::default()),
@@ -141,12 +169,12 @@ pub fn all() -> Vec<Box<dyn Page>> {
         Box::new(text_input::TextInput),
         Box::new(tile::Tile::default()),
         Box::new(toggle::Toggle::default()),
-        Box::new(toggletip::Toggletip),
-        Box::new(tooltip::Tooltip),
+        Box::new(toggletip::Toggletip::default()),
+        Box::new(tooltip::Tooltip::default()),
         Box::new(tree_view::TreeView),
         Box::new(ui_shell_header::UiShellHeader),
         Box::new(ui_shell_left_panel::UiShellLeftPanel),
-        Box::new(ui_shell_right_panel::UiShellRightPanel),
+        Box::new(ui_shell_right_panel::UiShellRightPanel::default()),
     ]
 }
 

@@ -260,6 +260,25 @@ impl Camera {
         self.act(Target::Pos(Point::new(x, y)), &Action::Hover)
     }
 
+    /// A primary-button press and release at a raw position — for pressing
+    /// *outside* something, which is what dismisses a `DismissOutside`
+    /// surface and has no node to name.
+    pub fn click_at(&mut self, x: f32, y: f32) -> &mut Self {
+        self.act(
+            Target::Pos(Point::new(x, y)),
+            &Action::Click {
+                modifiers: Modifiers::default(),
+            },
+        )
+    }
+
+    /// The open page's body as its module builds it now. For reading back a
+    /// fact the frame does not carry (a leaf's text); see
+    /// `Catalog::open_page_body`.
+    pub fn tree(&self) -> gorgon_petra::tree::ViewNode {
+        self.host.app().open_page_body()
+    }
+
     /// Move keyboard focus to the node whose id ends `tail`.
     pub fn focus(&mut self, tail: &str) -> &mut Self {
         let id = self.id(tail);
@@ -395,28 +414,11 @@ mod tests {
 
     // ===== TRIAGE (temporary, 2026-09-04) — delete before merge =====
     //
-    // Prints, per page, how many placements existed before a driving step and
-    // after it, plus any ids that appeared or vanished, and writes a PNG.
-    // Asserts nothing: the picture and the id delta are the evidence.
-
-    fn report(page: &str, before: Vec<String>, cam: &Camera) {
-        let after = cam.ids();
-        let gained: Vec<&String> = after.iter().filter(|i| !before.contains(i)).collect();
-        let lost: Vec<&String> = before.iter().filter(|i| !after.contains(i)).collect();
-        println!(
-            "TRIAGE {page}: {} placements -> {} ({} gained, {} lost)",
-            before.len(),
-            after.len(),
-            gained.len(),
-            lost.len()
-        );
-        for id in gained {
-            println!("TRIAGE   + {id}");
-        }
-        for id in lost {
-            println!("TRIAGE   - {id}");
-        }
-    }
+    // Sweeps every page and prints where the focus bar landed. Asserts
+    // nothing: the printout is the evidence. Its sibling, the "drive every
+    // dead page" instrument, is gone: every row it drove now has its own
+    // asserting test below (Wave 7), and its node tails named trees those
+    // pages no longer build.
 
     /// Is the stuck focus bar a device-pixel-ratio bug?
     ///
@@ -458,86 +460,6 @@ mod tests {
                 println!("TRIAGE   page {row} -> bar on row {at:?}");
             }
         }
-    }
-
-    #[test]
-    fn triage_drive_every_dead_page() {
-        struct Step(&'static str, &'static str, &'static str, &'static str);
-        // page, action, node tail, shot name
-        let steps = [
-            Step("Date picker", "click", "dp/when", "10-date-picker-open"),
-            Step("Dropdown", "click", "drop/dd/dd", "11-dropdown-open"),
-            Step("Select", "click", "sel/theme", "29-select-open"),
-            Step(
-                "Menu buttons",
-                "click",
-                "mb/trigger",
-                "19-menu-buttons-open",
-            ),
-            Step("Toggletip", "click", "tt/trigger", "37-toggletip-open"),
-            Step("Popover", "click", "pop-anchor", "24-popover-open"),
-            Step("Modal", "click", "header/close", "20-modal-closed"),
-            Step("Menu", "click", "mn-0", "18-menu-clicked"),
-            Step(
-                "Checkbox",
-                "click",
-                "check-mixed",
-                "05-checkbox-mixed-clicked",
-            ),
-            Step("Content switcher", "click", "sw-1", "08-switcher-grid"),
-            Step("Tabs", "click", "tab-line-1", "32-tabs-second"),
-            Step(
-                "Accordion",
-                "click",
-                "acc-1/header",
-                "01-accordion-second-open",
-            ),
-            Step("Link", "hover", "docs", "15-link-hover"),
-            Step("Form", "type", "form-name", "13-form-typed"),
-            Step("Search", "type", "search/q/q/input", "28-search-typed"),
-        ];
-        for Step(page, action, tail, shot) in steps {
-            let mut cam = Camera::on(page);
-            let before = cam.ids();
-            let png_before = cam.shoot("_triage-before");
-            match action {
-                "click" => {
-                    cam.click(tail);
-                }
-                "hover" => {
-                    cam.hover(tail);
-                }
-                "type" => {
-                    cam.type_into(tail, "zzq");
-                }
-                _ => unreachable!(),
-            }
-            report(page, before, &cam);
-            let png_after = cam.shoot(shot);
-            println!(
-                "TRIAGE {page}: pixels {}",
-                if png_before == png_after {
-                    "IDENTICAL"
-                } else {
-                    "changed"
-                }
-            );
-        }
-        // Row 38 has no trigger at all; photograph a hover on its only node.
-        let mut cam = Camera::on("Tooltip");
-        let before = cam.ids();
-        let png_before = cam.shoot("_triage-before");
-        cam.hover("tip-text");
-        report("Tooltip(hover its only node)", before, &cam);
-        let png_after = cam.shoot("38-tooltip-hovered");
-        println!(
-            "TRIAGE Tooltip: pixels {}",
-            if png_before == png_after {
-                "IDENTICAL"
-            } else {
-                "changed"
-            }
-        );
     }
 
     /// The camera's click reaches application state.
@@ -687,6 +609,456 @@ mod tests {
             "the host reports the ghost button hovered and it binds \
              `background@hover`, yet not one pixel changed: the hover state \
              never reaches the paint pass"
+        );
+    }
+
+    // ===== Wave 7: catalog state and routing =====
+    //
+    // Every row below reached the operator as "does not work". A resting
+    // photograph cannot tell a working control from a dead one, so each
+    // test drives the control and photographs the result, and asserts on
+    // the frame that came out (ids, rects) and on the page's own tree where
+    // the frame does not carry the fact (a leaf's text). The picture is
+    // written to `PETRA_SHOT_DIR` and is the evidence; the assertions are
+    // what fails when the arm stops firing.
+
+    /// The text a leaf keyed `key` paints, from the page's own tree.
+    fn leaf_text(cam: &Camera, key: &str) -> String {
+        crate::page::common::find(&cam.tree(), key)
+            .unwrap_or_else(|| panic!("no node keyed {key:?} in the page tree"))
+            .props
+            .text
+            .clone()
+            .unwrap_or_else(|| panic!("{key:?} paints no text"))
+    }
+
+    /// A press on empty ground at the window's lower-right corner: inside
+    /// no surface, on no control. What dismisses a `DismissOutside` surface.
+    fn press_empty_ground(cam: &mut Camera) {
+        cam.click_at(WINDOW[0] - 8.0, WINDOW[1] - 8.0);
+    }
+
+    /// Drive an anchored surface open and check it landed *over the page*:
+    /// placed, hanging under its trigger, and as tall as its own content
+    /// asks (at least `min_h`), not boxed into the column that declares it.
+    /// Returns the surface's rect for a row's own extra checks.
+    ///
+    /// `trigger` and `surface` are placement-id tails; `shot` names the
+    /// open picture, and `<shot>-closed` the resting one.
+    fn opens_over_the_page(
+        cam: &mut Camera,
+        trigger: &str,
+        surface: &str,
+        min_h: f32,
+        shot: &str,
+    ) -> Rect {
+        let closed = cam.shoot(&format!("{shot}-closed"));
+        assert!(
+            !cam.has(surface),
+            "{surface} is placed before anything was pressed: the page \
+             mounts its open form at rest"
+        );
+        let trigger_rect = cam.rect(trigger);
+        cam.click(trigger);
+        let open = cam.shoot(shot);
+        assert!(
+            cam.has(surface),
+            "pressing {trigger} placed no {surface}: the handler arm did \
+             not fire. Placed:\n  {}",
+            cam.ids().join("\n  ")
+        );
+        let rect = cam.rect(surface);
+        assert!(
+            rect.w > 0.0 && rect.h >= min_h,
+            "{surface} is placed but boxed: {rect:?}, wanted at least {min_h} tall"
+        );
+        assert!(
+            rect.y >= trigger_rect.y + trigger_rect.h - 1.0,
+            "{surface} at {rect:?} is not under its trigger at {trigger_rect:?}"
+        );
+        assert!(
+            rect.y + rect.h <= WINDOW[1] + 0.5,
+            "{surface} at {rect:?} runs off the window"
+        );
+        assert_ne!(
+            closed, open,
+            "{surface} was placed and not one pixel changed: it never \
+             reached the picture"
+        );
+        rect
+    }
+
+    /// Row 1. The second section's header was built with a literal
+    /// `false` and no handler arm.
+    #[test]
+    fn the_second_accordion_section_expands_when_its_header_is_pressed() {
+        let mut cam = Camera::on("Accordion");
+        let closed = cam.shoot("01-accordion-rest");
+        assert!(cam.has("acc-1/header"));
+        assert!(
+            !cam.has("acc-1/body"),
+            "the second section starts collapsed"
+        );
+        cam.click("acc-1/header");
+        let open = cam.shoot("01-accordion-second-open");
+        assert!(cam.has("acc-1/body"), "the second section did not expand");
+        let body = cam.rect("acc-1/body");
+        assert!(body.h > 0.0, "the body is placed with no height: {body:?}");
+        assert_ne!(closed, open);
+        cam.click("acc-1/header");
+        assert!(!cam.has("acc-1/body"), "a second press collapses it again");
+    }
+
+    /// Row 5. "mixed does not work": the row had no state behind it. Three
+    /// presses walk mixed, checked, unchecked, mixed — each a different
+    /// mark inside the box, which the frame carries as a different child.
+    #[test]
+    fn the_mixed_checkbox_cycles_through_its_three_states_when_pressed() {
+        let mut cam = Camera::on("Checkbox");
+        let mixed = cam.shoot("05-checkbox-mixed");
+        assert!(cam.has("check-mixed/box/dash"), "starts mixed");
+        cam.click("check-mixed");
+        let checked = cam.shoot("05-checkbox-mixed-then-checked");
+        assert!(cam.has("check-mixed/box/tick"), "mixed then checked");
+        assert!(!cam.has("check-mixed/box/dash"));
+        assert_ne!(mixed, checked);
+        cam.click("check-mixed");
+        cam.shoot("05-checkbox-mixed-then-unchecked");
+        assert!(!cam.has("check-mixed/box/tick"), "checked then unchecked");
+        assert!(!cam.has("check-mixed/box/dash"));
+        cam.click("check-mixed");
+        assert!(cam.has("check-mixed/box/dash"), "and back to mixed");
+    }
+
+    /// Row 6. The page never called `code_snippet_multi`; now the
+    /// multi-line well is on the page at its Carbon minimum height.
+    #[test]
+    fn the_multi_line_snippet_is_a_tall_well_on_the_page() {
+        let mut cam = Camera::on("Code snippet");
+        cam.shoot("06-code-snippet");
+        let well = cam.rect("code/snip-multi");
+        assert!(
+            well.h >= 288.0,
+            "the multi-line well is {}px tall, under Carbon's 288 minimum",
+            well.h
+        );
+        assert!(
+            cam.has("snip-multi/copy"),
+            "the well carries its Copy button"
+        );
+    }
+
+    /// Row 7. The rows are `list_row`s with a selection behind them, not
+    /// en-dashed `list_item`s.
+    #[test]
+    fn a_contained_list_row_selects_when_pressed() {
+        let mut cam = Camera::on("Contained list");
+        let resting = cam.shoot("07-contained-list");
+        assert!(
+            !cam.has("cl-0/marker"),
+            "a contained-list row carries no list marker"
+        );
+        let unselected = crate::page::common::find(&cam.tree(), "cl-0")
+            .unwrap()
+            .semantics
+            .selected;
+        assert!(!unselected);
+        cam.click("cl-0");
+        let selected_shot = cam.shoot("07-contained-list-trace-selected");
+        let selected = crate::page::common::find(&cam.tree(), "cl-0")
+            .unwrap()
+            .semantics
+            .selected;
+        assert!(selected, "pressing the row did not select it");
+        assert_ne!(resting, selected_shot);
+    }
+
+    /// Row 9. The zebra form: the second body row binds the raised fill.
+    #[test]
+    fn the_data_table_is_the_zebra_form() {
+        let mut cam = Camera::on("Data table");
+        cam.shoot("09-data-table");
+        let tree = cam.tree();
+        let fill = |key: &str| {
+            crate::page::common::find(&tree, key)
+                .unwrap()
+                .props
+                .tokens
+                .get("background")
+                .map(|t| t.as_str().to_owned())
+        };
+        assert_eq!(fill("dt-0").as_deref(), Some("surface.base"));
+        assert_eq!(
+            fill("dt-1").as_deref(),
+            Some("surface.raised"),
+            "the odd row is not striped: the page is not calling `data_table_zebra`"
+        );
+    }
+
+    /// Row 23. The page called the three-argument `pagination`, so the
+    /// bar's whole left half was empty. Now the items group and the range
+    /// are on the bar, and Next moves both the page and the range.
+    #[test]
+    fn the_pagination_bar_has_its_items_group_and_pages_forward() {
+        let mut cam = Camera::on("Pagination");
+        let first = cam.shoot("23-pagination");
+        assert!(
+            cam.has("pager/bar/items-per-page"),
+            "no items-per-page group"
+        );
+        assert!(cam.has("range/range-text"), "no range text");
+        assert_eq!(leaf_text(&cam, "page-size"), "10");
+        assert_eq!(leaf_text(&cam, "range-text"), "1\u{2013}10 of 50 items");
+        assert_eq!(leaf_text(&cam, "page"), "1");
+        cam.click("controls/next");
+        let second = cam.shoot("23-pagination-page-two");
+        assert_eq!(leaf_text(&cam, "page"), "2");
+        assert_eq!(leaf_text(&cam, "range-text"), "11\u{2013}20 of 50 items");
+        assert_ne!(first, second);
+    }
+
+    /// Row 32. The vertical strip was hardcoded and had no panel, so a
+    /// press changed nothing. Now the panel beside it reads the selected
+    /// tab's content.
+    #[test]
+    fn the_vertical_tabs_switch_the_panel_beside_them() {
+        let mut cam = Camera::on("Tabs");
+        let north = cam.shoot("32-tabs-north");
+        assert_eq!(leaf_text(&cam, "panel-text"), "North panel");
+        let strip = cam.rect("vert/vert-strip");
+        let panel = cam.rect("vert/panel");
+        assert!(
+            panel.x >= strip.x + strip.w - 0.5,
+            "the panel sits beside the strip: strip {strip:?}, panel {panel:?}"
+        );
+        assert!(
+            (panel.h - strip.h).abs() < 0.5,
+            "the panel is as tall as the strip: strip {strip:?}, panel {panel:?}"
+        );
+        cam.click("tab-vert-1");
+        let south = cam.shoot("32-tabs-south");
+        assert_eq!(leaf_text(&cam, "panel-text"), "South panel");
+        assert_ne!(north, south);
+    }
+
+    /// Row 10. The calendar opens under the field over the page, a day
+    /// becomes the value and closes it, and a press on empty ground closes
+    /// it too.
+    #[test]
+    fn the_date_picker_opens_its_calendar_over_the_page() {
+        let mut cam = Camera::on("Date picker");
+        let calendar = opens_over_the_page(
+            &mut cam,
+            "dp/when",
+            "when/calendar",
+            336.0,
+            "10-date-picker-open",
+        );
+        assert!(
+            calendar.w >= 288.0,
+            "the calendar is Carbon's 288 wide, got {calendar:?}"
+        );
+        cam.click("days/day-12");
+        cam.shoot("10-date-picker-picked");
+        assert!(!cam.has("when/calendar"), "picking a day did not close it");
+        assert_eq!(leaf_text(&cam, "value"), "2026-08-12");
+        cam.click("dp/when");
+        assert!(cam.has("when/calendar"));
+        press_empty_ground(&mut cam);
+        assert!(
+            !cam.has("when/calendar"),
+            "a press outside did not dismiss it"
+        );
+    }
+
+    /// Row 11. The list opens under the field over the page, an option
+    /// becomes the value, and a press on the open field closes it — the
+    /// press that both dismisses and toggles, in that order's inverse.
+    #[test]
+    fn the_dropdown_opens_its_list_over_the_page_and_an_option_selects() {
+        let mut cam = Camera::on("Dropdown");
+        let menu =
+            opens_over_the_page(&mut cam, "dd-body/dd", "dd/menu", 100.0, "11-dropdown-open");
+        let field = cam.rect("dd/field");
+        assert!(
+            menu.w >= field.w * 0.5,
+            "the list is a real list, not a sliver: {menu:?} under {field:?}"
+        );
+        cam.click("opt-light");
+        cam.shoot("11-dropdown-light");
+        assert!(
+            !cam.has("dd/menu"),
+            "choosing an option did not close the list"
+        );
+        assert_eq!(leaf_text(&cam, "value"), "Light");
+        cam.click("dd-body/dd");
+        assert!(cam.has("dd/menu"));
+        cam.click("dd/field");
+        assert!(
+            !cam.has("dd/menu"),
+            "a press on the open field must close the list, not dismiss it \
+             and toggle it straight back open"
+        );
+    }
+
+    /// Row 18. A menu with something to open it, floating over the page.
+    #[test]
+    fn the_menu_opens_over_the_page_and_an_item_closes_it() {
+        let mut cam = Camera::on("Menu");
+        let menu = opens_over_the_page(
+            &mut cam,
+            "mn-pair/trigger",
+            "mn-pair/menu",
+            80.0,
+            "18-menu-open",
+        );
+        assert!(
+            menu.w >= 160.0,
+            "Carbon's menu is at least 160 wide, got {menu:?}"
+        );
+        assert!(cam.has("menu/content/mn-0") && cam.has("menu/content/mn-1"));
+        cam.click("mn-1");
+        cam.shoot("18-menu-after-delete");
+        assert!(
+            !cam.has("mn-pair/menu"),
+            "choosing an item did not close the menu"
+        );
+    }
+
+    /// Row 19. The trigger opens its menu over the page.
+    #[test]
+    fn the_menu_button_opens_its_menu_over_the_page() {
+        let mut cam = Camera::on("Menu buttons");
+        opens_over_the_page(
+            &mut cam,
+            "mb/trigger",
+            "mb/menu",
+            40.0,
+            "19-menu-buttons-open",
+        );
+        assert!(cam.has("menu/content/mb-0"));
+        cam.click("mb-0");
+        assert!(
+            !cam.has("mb/menu"),
+            "choosing the item did not close the menu"
+        );
+        cam.click("mb/trigger");
+        assert!(cam.has("mb/menu"));
+        press_empty_ground(&mut cam);
+        cam.shoot("19-menu-buttons-dismissed");
+        assert!(!cam.has("mb/menu"), "a press outside did not dismiss it");
+    }
+
+    /// Row 24. The note is a floating surface anchored to the button, not a
+    /// paragraph printed under it.
+    #[test]
+    fn the_popover_opens_over_the_page_and_dismisses_outside() {
+        let mut cam = Camera::on("Popover");
+        opens_over_the_page(
+            &mut cam,
+            "po-pair/pop-anchor",
+            "po-pair/pop-note",
+            30.0,
+            "24-popover-open",
+        );
+        assert!(
+            cam.has("pop-note/content/caret"),
+            "the popover has its caret"
+        );
+        press_empty_ground(&mut cam);
+        cam.shoot("24-popover-dismissed");
+        assert!(
+            !cam.has("po-pair/pop-note"),
+            "a press outside did not dismiss it"
+        );
+    }
+
+    /// Row 29. `select_open` is new this wave: the field opens a list over
+    /// the page and an option becomes the value.
+    #[test]
+    fn the_select_opens_its_list_over_the_page_and_an_option_selects() {
+        let mut cam = Camera::on("Select");
+        opens_over_the_page(&mut cam, "sel/theme", "theme/menu", 100.0, "29-select-open");
+        cam.click("opt-system");
+        cam.shoot("29-select-system");
+        assert!(
+            !cam.has("theme/menu"),
+            "choosing an option did not close the list"
+        );
+        assert_eq!(leaf_text(&cam, "value"), "System");
+    }
+
+    /// Row 37. The toggletip opens on press and a second press on its own
+    /// trigger closes it, which is the case the dismissal order exists for.
+    #[test]
+    fn the_toggletip_opens_over_the_page_and_its_trigger_closes_it() {
+        let mut cam = Camera::on("Toggletip");
+        opens_over_the_page(&mut cam, "tt/trigger", "tt/tip", 30.0, "37-toggletip-open");
+        cam.click("tt/trigger");
+        cam.shoot("37-toggletip-closed-again");
+        assert!(
+            !cam.has("tt/tip"),
+            "a second press on the trigger must close the tip: the dismissal \
+             and the toggle cancelled each other"
+        );
+    }
+
+    /// Row 38. There was no trigger on the page at all. Now hovering the
+    /// button reveals the bubble over the page, and leaving it for empty
+    /// ground hides it.
+    #[test]
+    fn the_tooltip_appears_on_hover_and_leaves_with_the_pointer() {
+        let mut cam = Camera::on("Tooltip");
+        let resting = cam.shoot("38-tooltip-rest");
+        assert!(
+            cam.has("tip-pair/trigger"),
+            "the page has a trigger to hover"
+        );
+        assert!(!cam.has("bubble"), "no bubble at rest");
+        let trigger = cam.rect("tip-pair/trigger");
+        cam.hover("tip-pair/trigger");
+        let hovered = cam.shoot("38-tooltip-hovered");
+        assert!(cam.has("bubble"), "hovering the trigger placed no bubble");
+        let bubble = cam.rect("bubble");
+        assert!(
+            bubble.y >= trigger.y + trigger.h - 1.0 && bubble.h > 20.0,
+            "the bubble hangs under the trigger over the page: {bubble:?} under {trigger:?}"
+        );
+        assert_ne!(resting, hovered);
+        cam.hover_at(WINDOW[0] - 8.0, WINDOW[1] - 8.0);
+        cam.shoot("38-tooltip-left");
+        assert!(
+            !cam.has("bubble"),
+            "the pointer left the trigger for empty ground and the bubble stayed"
+        );
+    }
+
+    /// Row 42. The switcher opens from the header action, docked under the
+    /// header's trailing edge at Carbon's 256, over the page.
+    #[test]
+    fn the_right_panel_opens_under_the_header_over_the_page() {
+        let mut cam = Camera::on("UI shell right panel");
+        let panel = opens_over_the_page(
+            &mut cam,
+            "shell-switcher-trigger",
+            "shell-right/shell-switcher",
+            60.0,
+            "42-ui-shell-right-panel-open",
+        );
+        let header = cam.rect("shell-right/shell-header");
+        assert!(
+            (panel.w - 256.0).abs() < 0.5,
+            "the panel is Carbon's 256 wide, got {panel:?}"
+        );
+        assert!(
+            (panel.x + panel.w - (header.x + header.w)).abs() < 1.0,
+            "the panel's trailing edge is the header's: panel {panel:?}, header {header:?}"
+        );
+        assert!(cam.has("shell-switcher-petra") && cam.has("shell-switcher-inspector"));
+        cam.click("shell-switcher-inspector");
+        assert!(
+            !cam.has("shell-right/shell-switcher"),
+            "choosing an app did not close it"
         );
     }
 }

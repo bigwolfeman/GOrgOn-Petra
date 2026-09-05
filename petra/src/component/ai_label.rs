@@ -878,9 +878,12 @@ mod tests {
 
     /// Check C/D across the closed forms of every size ramp and every
     /// variant (default, inline, revert): no degenerate rect, no child
-    /// outside its parent. Open forms are excluded — see this module's own
-    /// `every_constructor_produces_a_tree_validate_accepts` doc for why the
-    /// anchor gap makes an open popover unmountable here.
+    /// outside its parent. The open forms are not here because a surface
+    /// child is placed against the window rather than inside its parent's
+    /// rect, so the "inside its parent" half of this check does not apply
+    /// to them; `every_constructor_produces_a_tree_validate_accepts` and
+    /// `ai_label_open_validates_when_mounted_at_catalog_depth` cover their
+    /// acceptance, and the gallery photographs them open.
     #[test]
     fn frame_geometry_has_no_degenerate_or_overflowing_placements() {
         let cases: Vec<(&str, ViewNode)> = vec![

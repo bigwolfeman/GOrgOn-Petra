@@ -77,6 +77,10 @@ pub struct Catalog {
     page: usize,
     /// One page per row, from [`page::all`], found by [`Page::row`].
     pages: Vec<Box<dyn Page>>,
+    /// Dismissals the host reported for the event now being handled,
+    /// held until the open page has seen the press. See
+    /// [`Page::dismissed`] for why the order is inverted from the host's.
+    pending_dismiss: Vec<String>,
 }
 
 impl Default for Catalog {
@@ -90,6 +94,7 @@ impl Default for Catalog {
             roster,
             page: open,
             pages: page::all(),
+            pending_dismiss: Vec::new(),
         }
     }
 }
@@ -125,6 +130,17 @@ impl Catalog {
                 )
             });
         app
+    }
+
+    /// The open page's body as the page builds it now, unseated.
+    ///
+    /// A driver reads state back from here when the frame cannot carry it:
+    /// a placement has an id, a rect and its semantics, but not the text a
+    /// leaf paints, so "the panel now reads South" is a question for the
+    /// tree. Never a substitute for the picture — a tree that says so and a
+    /// picture that does not is the defect this catalog exists to catch.
+    pub(crate) fn open_page_body(&self) -> ViewNode {
+        self.page_body_raw()
     }
 }
 
@@ -379,6 +395,37 @@ impl App for Catalog {
     }
 
     fn handle(&mut self, event: &InputEvent, route: &Route, frame: Option<&PetrifiedFrame>) {
+        self.route_event(event, route, frame);
+        // The dismissals the host reported for this same event, delivered
+        // now that the page has seen the press. `Page::dismissed` says why
+        // this order and not the host's.
+        let ids = std::mem::take(&mut self.pending_dismiss);
+        if !ids.is_empty()
+            && let Some(page) = self.open_page_mut()
+        {
+            page.dismissed(&ids);
+        }
+    }
+
+    fn dismissed(&mut self, ids: &[String]) {
+        self.pending_dismiss.extend_from_slice(ids);
+    }
+
+    fn take_changes(&mut self) -> ChangeSet {
+        // The catalog rebuilds its whole tree every pass, so `All` is the
+        // only honest answer. Naming individual nodes while handing back
+        // fresh `Arc`s is the under-declaration
+        // `ReuseState::verify_declaration` panics on in a debug build.
+        ChangeSet::All
+    }
+}
+
+impl Catalog {
+    /// [`App::handle`] proper: the chrome's own shortcuts, then the open
+    /// page's gesture hook, then the activation filter, then the page's
+    /// handler, then the chrome's Prev/Next. Split from `handle` so every
+    /// early return here still lands on the dismissal delivery there.
+    fn route_event(&mut self, event: &InputEvent, route: &Route, frame: Option<&PetrifiedFrame>) {
         if let InputEvent::Key {
             key, pressed: true, ..
         } = event
@@ -398,14 +445,24 @@ impl App for Catalog {
 
         let node = match route {
             Route::Pointer { node } | Route::Keyboard { node } => node.as_str(),
-            Route::Unrouted { .. } => return,
+            // A pointer move or pointer-exit that landed on nothing is still
+            // news to a page whose surface is revealed by hover: the pointer
+            // has left the trigger for empty ground, and the tooltip has to
+            // hear that or it never closes. The empty path matches no key
+            // (`Page::gesture`), so no other page acts on it. Every other
+            // unrouted event is dropped here as before.
+            Route::Unrouted { .. } => match event {
+                InputEvent::PointerMoved { .. } | InputEvent::PointerLeft => "",
+                _ => return,
+            },
         };
         // A gesture reaches the open page before the activation filter
         // below, with the frame it was routed against: a pointer move under
         // capture is not an activation, and a page turning it into a value
         // needs a rect the route does not carry (`Page::gesture`). The route
         // named a node, so the frame is there; `App::handle`'s doc says
-        // `None` comes only with an `Unrouted` route, returned above.
+        // `None` comes only with an `Unrouted` route, and a first-pass
+        // unrouted move has no frame to offer.
         if let Some(frame) = frame
             && self
                 .open_page_mut()
@@ -413,7 +470,7 @@ impl App for Catalog {
         {
             return;
         }
-        if !activated(event) {
+        if node.is_empty() || !activated(event) {
             return;
         }
         // A press on a child (knob, label, state text) still names that
@@ -441,14 +498,6 @@ impl App for Catalog {
         } else if path_has(node, NEXT) {
             self.next();
         }
-    }
-
-    fn take_changes(&mut self) -> ChangeSet {
-        // The catalog rebuilds its whole tree every pass, so `All` is the
-        // only honest answer. Naming individual nodes while handing back
-        // fresh `Arc`s is the under-declaration
-        // `ReuseState::verify_declaration` panics on in a debug build.
-        ChangeSet::All
     }
 }
 

@@ -5,10 +5,17 @@ use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::ViewNode;
 
 use super::Page;
-use super::common::{body, sp};
+use super::common::{body, dismisses, path_has, sp};
 
-/// The Toggletip page. It holds no live state.
-pub struct Toggletip;
+/// `toggletip`'s own keys for its trigger and its popover.
+const TRIGGER: &str = "trigger";
+const TIP: &str = "tip";
+
+/// Live state of the Toggletip page: whether the tip is showing.
+#[derive(Default)]
+pub struct Toggletip {
+    open: bool,
+}
 
 impl Page for Toggletip {
     fn row(&self) -> &'static str {
@@ -22,12 +29,27 @@ impl Page for Toggletip {
             vec![body(
                 "tt-body",
                 sp("spacing.md"),
-                vec![toggletip("tt", "Why", false, "Because the spec says so.")],
+                vec![toggletip(
+                    "tt",
+                    "Why",
+                    self.open,
+                    "Because the spec says so.",
+                )],
             )],
         )
     }
 
-    fn handle(&mut self, _event: &InputEvent, _node: &str) -> bool {
+    fn handle(&mut self, _event: &InputEvent, node: &str) -> bool {
+        if path_has(node, TRIGGER) {
+            self.open = !self.open;
+            return true;
+        }
         false
+    }
+
+    fn dismissed(&mut self, ids: &[String]) {
+        if dismisses(ids, TIP) {
+            self.open = false;
+        }
     }
 }

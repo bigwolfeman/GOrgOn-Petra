@@ -1,14 +1,28 @@
 //! Inventory row 11, Dropdown.
 
-use gorgon_petra::component::{dropdown, section};
+use gorgon_petra::component::{dropdown, dropdown_open, dropdown_option, section};
 use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::ViewNode;
 
 use super::Page;
-use super::common::{body, sp};
+use super::common::{body, dismisses, path_has, sp};
 
-/// The Dropdown page. It holds no live state.
-pub struct Dropdown;
+const DD: &str = "dd";
+/// The option list's key inside `dropdown_open`.
+const MENU: &str = "menu";
+const OPTIONS: [(&str, &str); 3] = [
+    ("opt-dark", "Dark"),
+    ("opt-light", "Light"),
+    ("opt-system", "System"),
+];
+
+/// Live state of the Dropdown page: whether the list is open, and which
+/// option is current.
+#[derive(Default)]
+pub struct Dropdown {
+    open: bool,
+    selected: usize,
+}
 
 impl Page for Dropdown {
     fn row(&self) -> &'static str {
@@ -16,18 +30,45 @@ impl Page for Dropdown {
     }
 
     fn body(&self) -> ViewNode {
+        let value = OPTIONS[self.selected].1;
+        let field = if self.open {
+            dropdown_open(
+                DD,
+                "Theme",
+                value,
+                OPTIONS
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (key, label))| dropdown_option(*key, *label, i == self.selected))
+                    .collect(),
+            )
+        } else {
+            dropdown(DD, "Theme", value)
+        };
         section(
             "drop",
-            "Closed dropdown",
-            vec![body(
-                "dd",
-                sp("spacing.md"),
-                vec![dropdown("dd", "Theme", "Dark")],
-            )],
+            "Dropdown",
+            vec![body("dd-body", sp("spacing.md"), vec![field])],
         )
     }
 
-    fn handle(&mut self, _event: &InputEvent, _node: &str) -> bool {
-        false
+    fn handle(&mut self, _event: &InputEvent, node: &str) -> bool {
+        // An option is inside the dropdown's own subtree, so it is matched
+        // before the trigger.
+        if let Some(hit) = OPTIONS.iter().position(|(key, _)| path_has(node, key)) {
+            self.selected = hit;
+            self.open = false;
+        } else if path_has(node, DD) {
+            self.open = !self.open;
+        } else {
+            return false;
+        }
+        true
+    }
+
+    fn dismissed(&mut self, ids: &[String]) {
+        if dismisses(ids, MENU) {
+            self.open = false;
+        }
     }
 }

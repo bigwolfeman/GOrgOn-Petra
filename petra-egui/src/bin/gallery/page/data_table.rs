@@ -1,6 +1,6 @@
 //! Inventory row 9, Data table.
 
-use gorgon_petra::component::{data_table, data_table_row, section, text};
+use gorgon_petra::component::{data_table_row, data_table_zebra, section, text};
 use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::ViewNode;
 
@@ -22,7 +22,9 @@ impl Page for DataTable {
             vec![body(
                 "dt",
                 sp("spacing.md"),
-                vec![data_table(
+                // Four rows, not two: with two, the one striped row is
+                // also the selected row and the stripe cannot be seen.
+                vec![data_table_zebra(
                     "dt",
                     vec![text("h0", "Name"), text("h1", "Kind")],
                     vec![
@@ -35,6 +37,16 @@ impl Page for DataTable {
                             "dt-1",
                             vec![text("c0", "petra"), text("c1", "layout")],
                             true,
+                        ),
+                        data_table_row(
+                            "dt-2",
+                            vec![text("c0", "luau"), text("c1", "plugin host")],
+                            false,
+                        ),
+                        data_table_row(
+                            "dt-3",
+                            vec![text("c0", "helix"), text("c1", "editor")],
+                            false,
                         ),
                     ],
                 )],

@@ -23,11 +23,10 @@ impl Page for AiLabel {
                 "ai-body",
                 sp("spacing.md"),
                 vec![
-                    // Closed form only: `open: true` mounts the
-                    // explainability popover via `Anchor::Node`, which the
-                    // catalog cannot validate nested in a page (see the
-                    // Popover/Toggletip/Tooltip pages below for the same
-                    // workaround).
+                    // The closed trigger. The open form's explainability
+                    // popover names the trigger by sibling key and mounts
+                    // at this depth (`ai_label_open_validates_when_mounted_at_catalog_depth`);
+                    // this page does not yet hold the state to open it.
                     //
                     // `ai_label_inline` is NOT shown here: its trigger
                     // (`ai_label.rs::inline_trigger`) sets `props.padding`

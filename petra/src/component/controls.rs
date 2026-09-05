@@ -179,6 +179,41 @@ pub fn checkbox(key: impl Into<Key>, label: impl Into<String>, checked: bool) ->
     )
 }
 
+/// The three states a checkbox can declare (Carbon's `checked`,
+/// unchecked, and `indeterminate`).
+///
+/// A value rather than two bools because `checked` and `indeterminate`
+/// are not independent: Carbon's own prop pair lets a caller assert both,
+/// and a `checkbox` that then has to pick one is a decision hidden in a
+/// constructor. Three variants make the impossible pair unspellable.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CheckState {
+    /// Off: the outline alone.
+    #[default]
+    Unchecked,
+    /// On: the accent fill and the tick.
+    Checked,
+    /// Neither: the accent fill and the dash. `Semantics.value` is
+    /// `"mixed"` and `selected` stays false — see [`checkbox_indeterminate`].
+    Mixed,
+}
+
+/// A checkbox in any of its three states. [`checkbox`] and
+/// [`checkbox_indeterminate`] are the two-state and mixed spellings of the
+/// same control; this is the one a caller that cycles all three holds its
+/// state in.
+pub fn checkbox_tristate(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    state: CheckState,
+) -> ViewNode {
+    match state {
+        CheckState::Unchecked => checkbox(key, label, false),
+        CheckState::Checked => checkbox(key, label, true),
+        CheckState::Mixed => checkbox_indeterminate(key, label),
+    }
+}
+
 /// A checkbox in the mixed state: not checked, not empty.
 ///
 /// `Semantics.selected` stays false — mixed is not on. `Semantics.value` is

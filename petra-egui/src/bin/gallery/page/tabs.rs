@@ -3,22 +3,42 @@
 use gorgon_petra::component::{
     contained_tab, contained_tab_bar, section, tab, tab_bar, vertical_tab, vertical_tab_bar,
 };
+use gorgon_petra::geom::Align;
 use gorgon_petra::input::InputEvent;
-use gorgon_petra::tree::ViewNode;
+use gorgon_petra::tree::{InsetRefs, NodeKind, Props, TrackSize, ViewNode};
 
 use super::Page;
-use super::common::{body, path_has, sp};
+use super::common::{body, column, path_has, sp, tok, wrapped};
 
 const TAB_LINE_0: &str = "tab-line-0";
 const TAB_LINE_1: &str = "tab-line-1";
 const TAB_CONT_0: &str = "tab-cont-0";
 const TAB_CONT_1: &str = "tab-cont-1";
+const TAB_VERT: [(&str, &str, &str); 2] = [
+    ("tab-vert-0", "North", "North panel"),
+    ("tab-vert-1", "South", "South panel"),
+];
 
-/// Live state of the Tabs page.
+/// Live state of the Tabs page: the selected tab of each strip.
 #[derive(Default)]
 pub struct Tabs {
     line_tab: u8,
     contained_tab: u8,
+    vertical_tab: usize,
+}
+
+/// The panel a vertical strip selects between: Carbon's `TabPanel`, the
+/// `$layer` fill the strip sits on, padded, showing the selected tab's
+/// content. The line and contained strips show none, matching the Carbon
+/// reference shot for this row, which panels only the vertical strip.
+fn tab_panel(content: &str) -> ViewNode {
+    let mut panel = column("panel", None, vec![wrapped("panel-text", content)]);
+    panel.props.padding = Some(InsetRefs::symmetric(tok("spacing.md"), tok("spacing.md")));
+    panel
+        .props
+        .tokens
+        .insert("background".into(), tok("surface.raised"));
+    panel
 }
 
 impl Page for Tabs {
@@ -27,6 +47,23 @@ impl Page for Tabs {
     }
 
     fn body(&self) -> ViewNode {
+        let vertical = vertical_tab_bar(
+            "vert-strip",
+            TAB_VERT
+                .iter()
+                .enumerate()
+                .map(|(i, (key, label, _))| vertical_tab(*key, *label, i == self.vertical_tab))
+                .collect(),
+        );
+        // Strip beside panel: the strip takes its own width, the panel the
+        // rest, and `Stretch` makes the panel as tall as the strip.
+        let vertical_with_panel = ViewNode::new(NodeKind::Grid, "vert")
+            .with_props(Props {
+                columns: vec![TrackSize::FitContent, TrackSize::Weight { weight: 1.0 }],
+                align: Some(Align::Stretch),
+                ..Props::default()
+            })
+            .with_children(vec![vertical, tab_panel(TAB_VERT[self.vertical_tab].2)]);
         section(
             "strips",
             "Line, contained, vertical",
@@ -48,13 +85,7 @@ impl Page for Tabs {
                             contained_tab(TAB_CONT_1, "Two", self.contained_tab == 1),
                         ],
                     ),
-                    vertical_tab_bar(
-                        "vert-strip",
-                        vec![
-                            vertical_tab("tab-vert-0", "North", true),
-                            vertical_tab("tab-vert-1", "South", false),
-                        ],
-                    ),
+                    vertical_with_panel,
                 ],
             )],
         )
@@ -69,6 +100,8 @@ impl Page for Tabs {
             self.contained_tab = 0;
         } else if path_has(node, TAB_CONT_1) {
             self.contained_tab = 1;
+        } else if let Some(hit) = TAB_VERT.iter().position(|(key, _, _)| path_has(node, key)) {
+            self.vertical_tab = hit;
         } else {
             return false;
         }

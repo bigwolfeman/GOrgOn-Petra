@@ -1,19 +1,26 @@
-//! Carbon Select (slice-e). Closed state only.
+//! Carbon Select (slice-e). Closed field plus an open list on Popover.
 //!
 //! Anatomy of the closed field (`_select.scss`):
 //! 1. Field — [`SURFACE_RAISED`] + [`BORDER_SUBTLE`], height md 40.
 //! 2. Current value (visible text).
-//! 3. Chevron as the word `"closed"` — never an icon-only mark (FR-026).
+//! 3. Chevron as the word `"closed"` / `"open"` — never an icon-only mark
+//!    (FR-026).
+//! 4. Open menu — [`super::popover::popover_with`] listing caller-supplied
+//!    option rows ([`select_open`]).
 //!
-//! The open menu is Wave 3 Popover. This module does not mount an overlay,
-//! a listbox, or option rows. `Role::Button` is the closed field: it is
-//! what would open the menu. `select_sm` 32 / `select_lg` 48 follow the
-//! shared layout scale.
+//! `Role::Button` is the closed field: it is what opens the menu.
+//! `select_sm` 32 / `select_lg` 48 follow the shared layout scale.
+//!
+//! Carbon's Select is the browser's native `<select>`, so Carbon draws no
+//! open list of its own; the open form here is the same shape as
+//! [`super::dropdown::dropdown_open`], and a caller builds the rows with
+//! [`super::dropdown::dropdown_option`] — one option-row anatomy, not two.
 //!
 //! The field label is the accessible name. Carbon's label-above anatomy
 //! would make the control taller than 40; it is not stacked here.
 
 use super::pad;
+use super::popover::popover_with;
 use super::stack;
 use super::text::text;
 use super::tokens::{
@@ -38,7 +45,7 @@ const CLOSED_INTENTS: &[Interaction] =
 /// Closed select at Carbon md (40). `label` is the accessible name;
 /// `value` is the visible current option.
 pub fn select(key: impl Into<Key>, label: impl Into<String>, value: impl Into<String>) -> ViewNode {
-    select_sized(key, label, value, SIZE_MD)
+    select_sized(key, label, value, SIZE_MD, "closed", None)
 }
 
 /// Carbon sm (32).
@@ -47,7 +54,7 @@ pub fn select_sm(
     label: impl Into<String>,
     value: impl Into<String>,
 ) -> ViewNode {
-    select_sized(key, label, value, SIZE_SM)
+    select_sized(key, label, value, SIZE_SM, "closed", None)
 }
 
 /// Carbon lg (48).
@@ -56,7 +63,27 @@ pub fn select_lg(
     label: impl Into<String>,
     value: impl Into<String>,
 ) -> ViewNode {
-    select_sized(key, label, value, SIZE_LG)
+    select_sized(key, label, value, SIZE_LG, "closed", None)
+}
+
+/// Open select: the md field plus a popover listing `options`.
+///
+/// The field child is keyed `"field"`; the popover is keyed `"menu"` and
+/// anchored to `"field"` by sibling key, so the pair is accepted wherever
+/// a caller mounts it. Build `options` with
+/// [`super::dropdown::dropdown_option`].
+pub fn select_open(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    value: impl Into<String>,
+    options: Vec<ViewNode>,
+) -> ViewNode {
+    let label = label.into();
+    let field = select_sized("field", label.clone(), value, SIZE_MD, "open", Some(true));
+    let menu = popover_with("menu", label, "field", options);
+    let mut node = stack(key, Axis::Vertical, None, vec![field, menu]);
+    node.semantics.expanded = Some(true);
+    node
 }
 
 fn select_sized(
@@ -64,6 +91,8 @@ fn select_sized(
     label: impl Into<String>,
     value: impl Into<String>,
     height: f32,
+    chevron_word: &'static str,
+    expanded: Option<bool>,
 ) -> ViewNode {
     let label = label.into();
     let mut value_node = text("value", value.into());
@@ -71,7 +100,7 @@ fn select_sized(
         .props
         .tokens
         .insert("foreground".into(), t(TEXT_PRIMARY));
-    let mut chevron = text("chevron", "closed");
+    let mut chevron = text("chevron", chevron_word);
     chevron
         .props
         .tokens
@@ -93,8 +122,11 @@ fn select_sized(
     node.props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
-    node.with_constraints(pin_height(height))
-        .interactive(Role::Button, label, CLOSED_INTENTS)
+    let mut node =
+        node.with_constraints(pin_height(height))
+            .interactive(Role::Button, label, CLOSED_INTENTS);
+    node.semantics.expanded = expanded;
+    node
 }
 
 fn pin_height(h: f32) -> Constraints {
@@ -110,13 +142,14 @@ fn pin_height(h: f32) -> Constraints {
 
 #[cfg(test)]
 mod tests {
-    use super::{SIZE_LG, SIZE_MD, SIZE_SM, select, select_lg, select_sm};
+    use super::{SIZE_LG, SIZE_MD, SIZE_SM, select, select_lg, select_open, select_sm};
+    use crate::component::dropdown::dropdown_option;
     use crate::component::tokens::{BORDER_SUBTLE, SURFACE_RAISED};
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
-    use crate::tree::{Interaction, NodeKind, Props, Registry, Role, ViewNode};
+    use crate::tree::{Anchor, Interaction, NodeKind, Props, Registry, Role, ViewNode};
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         node.children
@@ -338,5 +371,52 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn open_theme() -> ViewNode {
+        select_open(
+            "theme",
+            "Theme",
+            "Dark",
+            vec![
+                dropdown_option("dark", "Dark", true),
+                dropdown_option("light", "Light", false),
+            ],
+        )
+    }
+
+    /// The open form is the closed field, expanded and reading `"open"`,
+    /// beside a popover of the caller's rows anchored to that field by its
+    /// bare sibling key.
+    #[test]
+    fn select_open_hosts_options_in_a_popover() {
+        let node = open_theme();
+        assert_eq!(node.semantics.expanded, Some(true));
+        let field = child(&node, "field");
+        assert_eq!(field.semantics.role, Some(Role::Button));
+        assert_eq!(field.semantics.label.as_deref(), Some("Theme"));
+        assert_eq!(field.semantics.expanded, Some(true));
+        assert_eq!(field.constraints.vertical.min, Some(SIZE_MD));
+        assert_eq!(child(field, "chevron").props.text.as_deref(), Some("open"));
+
+        let menu = child(&node, "menu");
+        assert_eq!(menu.kind, NodeKind::Surface);
+        assert_eq!(menu.semantics.role, Some(Role::Overlay));
+        assert_eq!(menu.semantics.label.as_deref(), Some("Theme"));
+        match &menu.props.anchor {
+            Some(Anchor::Sibling { key, .. }) => assert_eq!(key.as_str(), "field"),
+            other => panic!("expected Anchor::Sibling, got {other:?}"),
+        }
+        let content = child(menu, "content");
+        assert!(child(content, "dark").semantics.selected);
+        assert!(!child(content, "light").semantics.selected);
+    }
+
+    /// Accepted two containers below the root with the shipped `Registry`,
+    /// the gallery catalog's own depth — the same acceptance
+    /// `dropdown_open` has.
+    #[test]
+    fn select_open_validates_when_mounted_at_catalog_depth() {
+        crate::component::tests::assert_mounts_at_catalog_depth("select_open", vec![open_theme()]);
     }
 }

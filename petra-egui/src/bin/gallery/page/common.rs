@@ -31,6 +31,16 @@ pub fn path_has(node: &str, key: &str) -> bool {
     node.split('/').any(|part| part == key)
 }
 
+/// Whether any of the dismissed surface ids `ids` is the surface keyed
+/// `key` — the test a page runs in [`super::Page::dismissed`].
+///
+/// By segment, as [`path_has`] matches, because the ids are canonical
+/// placement paths under the chrome's mount point and the page knows only
+/// the key it gave its own surface.
+pub fn dismisses(ids: &[String], key: &str) -> bool {
+    ids.iter().any(|id| path_has(id, key))
+}
+
 /// A vertical run of blocks, each as tall as it needs to be.
 ///
 /// A single-column `Grid`, not a `Stack`. A vertical `Stack` placed at

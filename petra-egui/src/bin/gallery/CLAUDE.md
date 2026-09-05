@@ -41,10 +41,19 @@ with zero spacing beside another rect is a legal frame record.
     own Prev/Next, because Pagination's `pager/next` shares a segment with
     the chrome's `next`. `Page::gesture` receives the same path plus the
     frame the route was computed against, for the pages with a drag; the
-    chrome offers it before the activation filter that gates `handle`.
+    chrome offers it before the activation filter that gates `handle`. A
+    pointer move or pointer-exit that routed **nowhere** also reaches
+    `gesture`, with an **empty** path — that is how a hover-revealed
+    surface (row 38) learns the pointer left; `path_has("", key)` is false
+    for every key, so every other page ignores it. `Page::dismissed(ids)`
+    is how a `DismissOutside` surface closes on an outside press; the chrome
+    delivers it **after** `handle` has seen the press, so a press on an open
+    trigger toggles it shut and the dismissal finds it closed rather than
+    closing it and letting the toggle reopen it. Match your surface with
+    `common::dismisses`.
   - `page/common.rs` — what several pages share: `sp`, `tok`, `column`,
-    `row`, `body`, `wrapped`, `path_has`, and the test-only `find`. Import
-    from here; do not copy.
+    `row`, `body`, `wrapped`, `path_has`, `dismisses`, and the test-only
+    `find`. Import from here; do not copy.
 - `cell.rs` — one `Cell` per inventory row, and `Content` saying what that row
   can hand back. `BUILT` is a test-only hand-written cross-check against
   `xtask`'s `BUILT_COMPONENTS`; keep the two in lockstep.
@@ -73,11 +82,16 @@ cam.click("dropdown-trigger");
 cam.shoot("11-dropdown-open");
 ```
 
-`click`, `hover`, `focus`, `type_into`, `key`, `scroll`, `drag`. Nodes are named
-by the tail of their id, so `"btn-ghost"` finds `/page/.../kinds/btn-ghost`. A
-tail that matches nothing panics listing every placed id, which is usually the
+`click`, `hover`, `focus`, `type_into`, `key`, `scroll`, `drag`, and `click_at`
+/ `hover_at` for a raw position (pressing *outside* a menu is what dismisses
+it). Nodes are named by the tail of their id, so `"btn-ghost"` finds
+`/page/.../kinds/btn-ghost`; a tail shared by two placements (a section and a
+surface both keyed `menu`) panics as ambiguous, so use a longer one. A tail
+that matches nothing panics listing every placed id, which is usually the
 fastest way to learn what a page actually built. `rect(tail)` reads a placed
-rect back, which is how a drag works out where to let go:
+rect back, which is how a drag works out where to let go. `tree()` is the open
+page's own `ViewNode` tree, for a leaf's text the frame does not carry; it is
+never a substitute for the picture:
 
 ```rust
 let rail = cam.rect("/row/rail");

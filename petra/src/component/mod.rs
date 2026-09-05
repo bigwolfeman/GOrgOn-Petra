@@ -137,8 +137,8 @@ pub use code_snippet::{code_snippet, code_snippet_inline, code_snippet_multi};
 pub use contained_list::{contained_list, contained_list_disclosed};
 pub use content_switcher::{content_switcher, content_switcher_item};
 pub use controls::{
-    checkbox, checkbox_group, checkbox_indeterminate, checkbox_readonly, radio, radio_group,
-    toggle, toggle_sm,
+    CheckState, checkbox, checkbox_group, checkbox_indeterminate, checkbox_readonly,
+    checkbox_tristate, radio, radio_group, toggle, toggle_sm,
 };
 pub use data_table::{
     data_table, data_table_row, data_table_row_expandable, data_table_row_lg, data_table_row_sm,
@@ -170,7 +170,7 @@ pub use progress::{progress, progress_sm, progress_with_helper};
 pub use progress_indicator::{progress_indicator, progress_step};
 pub use search::{search, search_lg, search_sm};
 pub use section::section;
-pub use select::{select, select_lg, select_sm};
+pub use select::{select, select_lg, select_open, select_sm};
 pub use slider::{slider, slider_readonly, slider_value_at};
 pub use status::status;
 pub use structured_list::{structured_list, structured_list_row};
