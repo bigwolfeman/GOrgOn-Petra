@@ -42,7 +42,7 @@ use super::tokens::{
 use super::{CARET_SIZE, CaretDirection, caret, stack, swatch};
 use crate::geom::{Align, Axis};
 use crate::tree::{
-    AxisConstraint, FocusFigure, InsetRefs, Interaction, Key, NodeKind, Props, Role, Semantics,
+    AxisConstraint, FocusShownOn, InsetRefs, Interaction, Key, NodeKind, Props, Role, Semantics,
     TrackSize, ViewNode,
 };
 
@@ -165,7 +165,7 @@ fn tree_item_sized(
     // Carbon puts the ring here instead — `.cds--tree-node:focus >
     // .cds--tree-node__label`, `_treeview.scss:59` — and this pair of
     // declarations is that selector.
-    row.semantics.focus_figure = FocusFigure::Head;
+    row.semantics.focus_shown_on = FocusShownOn::Head;
 
     let mut parts = vec![row];
     if expanded && is_branch {
@@ -198,11 +198,28 @@ fn tree_item_sized(
     // text). `rows` are `FitContent`: only the column needs to claim the
     // full width, the two stacked rows (`row`, optional `children`) stay
     // sized to their own content height.
+    //
+    // R8: `align: Align::Stretch` on that grid, added 2026-09-05. The
+    // `Weight` track made the *item* span the tree, which is where the
+    // `background@selected` fill is bound, so the highlighted band was
+    // full width. The head `row` inside the cell was not: a grid places a
+    // non-`Stretch` child by *measuring* it against the cell and offsetting
+    // the answer inside the box (`layout/grid.rs::place_in_cell`), and a
+    // Horizontal stack measures to its content. So the row settled at its
+    // label's width, and the focus indicator — which is drawn on the row,
+    // because the item declares `FocusShownOn::OnHead` — stopped short of
+    // the band the operator can see. `Stretch` is the arm that skips the
+    // measurement and imposes the cell outright. The existing
+    // `rows_pin_their_height_and_labels_align_across_branch_and_leaf`
+    // asserted `item.w == tree.w`, which is the *fill's* node and was
+    // already true; it never looked at the row.
+    // `the_head_row_spans_the_band_the_selection_fills` does.
     let row_count = parts.len();
     let mut node = ViewNode::new(NodeKind::Grid, key)
         .with_props(Props {
             columns: vec![TrackSize::Weight { weight: 1.0 }],
             rows: vec![TrackSize::FitContent; row_count],
+            align: Some(Align::Stretch),
             ..Props::default()
         })
         .with_children(parts);
@@ -215,7 +232,7 @@ fn tree_item_sized(
         node.props.tokens.insert(slot.into(), t(token));
     }
     let mut node = node.interactive(Role::TreeItem, label, ITEM_INTENTS);
-    node.semantics.focus_figure = FocusFigure::UnderlineHead;
+    node.semantics.focus_shown_on = FocusShownOn::OnHead;
     node.semantics.selected = selected;
     node.semantics.expanded = Some(expanded);
     node
@@ -253,7 +270,7 @@ fn indent(item: &mut ViewNode, by: f32) {
 #[cfg(test)]
 mod tests {
     use super::{
-        ACCENT_BAR, ACCENT_PRIMARY, FocusFigure, HEIGHT, HEIGHT_XS, LABEL_START, tree_item,
+        ACCENT_BAR, ACCENT_PRIMARY, FocusShownOn, HEIGHT, HEIGHT_XS, LABEL_START, tree_item,
         tree_item_xs, tree_view,
     };
     use crate::component::disabled;
@@ -327,13 +344,13 @@ mod tests {
         ] {
             let node = tree_item("src", "src", expanded, false, children);
             assert_eq!(
-                node.semantics.focus_figure,
-                FocusFigure::UnderlineHead,
+                node.semantics.focus_shown_on,
+                FocusShownOn::OnHead,
                 "the item points at its head row (expanded {expanded})"
             );
             assert_eq!(
-                named(&node, "row").semantics.focus_figure,
-                FocusFigure::Head,
+                named(&node, "row").semantics.focus_shown_on,
+                FocusShownOn::Head,
                 "the head row is the one pointed at (expanded {expanded})"
             );
         }
@@ -579,6 +596,77 @@ mod tests {
         assert_eq!(bar.x, tree.x, "the accent bar sits at the tree's edge");
         assert_eq!(bar.w, ACCENT_BAR);
         assert_eq!(bar.h, HEIGHT, "the accent bar spans the full row height");
+    }
+
+    /// R8: the head row spans the same band the selection fill covers, so
+    /// an indicator drawn on that row lines up with the highlight.
+    ///
+    /// The operator: "In tree view the cursor doesn't position itself well
+    /// on any of these elements" (2026-09-05). The item declares
+    /// `FocusShownOn::OnHead`, so every figure is drawn on `"row"` and not
+    /// on the item; the fill is bound on the item. Before `Align::Stretch`
+    /// went on the item's grid, the row measured to its own content and the
+    /// indicator stopped short of the band by whatever the label left over.
+    ///
+    /// `rows_pin_their_height_and_labels_align_across_branch_and_leaf`
+    /// already asserted `item.w == tree.w`. That is the *fill's* node and it
+    /// was true the whole time; it never looked at the row. This does, and
+    /// asserts both edges rather than the width alone, because two rects of
+    /// equal width can still be offset from one another.
+    ///
+    /// Falsify by dropping `align: Some(Align::Stretch)` from
+    /// `tree_item_sized`'s grid.
+    #[test]
+    fn the_head_row_spans_the_band_the_selection_fills() {
+        let frame = petrify_lone(sample_tree());
+        for item in ["/fs/src", "/fs/build", "/fs/archived"] {
+            let fill = rect_of(&frame, item);
+            let row = rect_of(&frame, &format!("{item}/row"));
+            assert_eq!(
+                row.x, fill.x,
+                "{item}: the head row starts left of the band the fill covers"
+            );
+            assert_eq!(
+                row.right(),
+                fill.right(),
+                "{item}: the head row stops {} short of the band's right edge",
+                fill.right() - row.right()
+            );
+        }
+        // A nested row too: the indent widens `lead` rather than padding the
+        // container, so a level-2 row must still reach both edges.
+        let nested_fill = rect_of(&frame, "/fs/src/children/main");
+        let nested_row = rect_of(&frame, "/fs/src/children/main/row");
+        assert_eq!(nested_row.x, nested_fill.x);
+        assert_eq!(nested_row.right(), nested_fill.right());
+        assert_eq!(
+            nested_row.h, HEIGHT,
+            "stretching the cell must not stretch the row past its pinned height"
+        );
+    }
+
+    /// The item points at its head row, and the head row is the marker it
+    /// points at. Two declarations, one selector.
+    #[test]
+    fn a_tree_item_shows_its_focus_on_its_head_row() {
+        let item = tree_item(
+            "src",
+            "src",
+            true,
+            false,
+            vec![tree_item("a", "a.rs", false, false, vec![])],
+        );
+        assert_eq!(item.semantics.focus_shown_on, FocusShownOn::OnHead);
+        assert_eq!(
+            named(&item, "row").semantics.focus_shown_on,
+            FocusShownOn::Head
+        );
+        let xs = tree_item_xs("leaf", "leaf", false, false, vec![]);
+        assert_eq!(xs.semantics.focus_shown_on, FocusShownOn::OnHead);
+        assert_eq!(
+            named(&xs, "row").semantics.focus_shown_on,
+            FocusShownOn::Head
+        );
     }
 
     /// Check C/D: every placement across a mixed expanded/collapsed/

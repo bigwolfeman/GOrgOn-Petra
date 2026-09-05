@@ -221,6 +221,26 @@ impl Catalog {
         }
     }
 
+    /// Open the row named `component`, keeping every page's own state.
+    ///
+    /// The theme is one page's state — row 27's radio group — and the host
+    /// holds whatever that page last published. So a driver that wants a
+    /// light-theme photograph of some *other* row has to visit row 27,
+    /// choose Light, and come back, and `shots.rs`'s `Camera::light` is that
+    /// walk. Clicking the index row would do it too, but only for a row
+    /// inside the pane's un-scrolled fold, which rules out half the roster.
+    ///
+    /// # Panics
+    /// If no row carries that name.
+    #[cfg(test)]
+    pub(crate) fn open(&mut self, component: &str) {
+        self.page = self
+            .roster
+            .iter()
+            .position(|cell| cell.row.component == component)
+            .unwrap_or_else(|| panic!("no inventory row is named {component:?}"));
+    }
+
     fn index_pane(&self) -> ViewNode {
         let rows: Vec<ViewNode> = self
             .roster

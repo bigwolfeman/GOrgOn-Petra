@@ -19,7 +19,8 @@ use super::tokens::{
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
-    AxisConstraint, Constraints, FocusFigure, Interaction, Key, NodeKind, Props, Role, ViewNode,
+    AxisConstraint, Constraints, FocusFigure, FocusShownOn, Interaction, Key, NodeKind, Props,
+    Role, ViewNode,
 };
 
 /// What an editable text input declares.
@@ -187,7 +188,8 @@ pub fn field_fluid(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
         ],
     );
     bind_field_chrome(&mut node.props);
-    node.semantics.focus_figure = FocusFigure::Hug;
+    node.semantics.focus_figure = FocusFigure::Sides;
+    node.semantics.focus_shown_on = FocusShownOn::Well;
     node.constraints.vertical.min = Some(SIZE_FLUID);
     node
 }
@@ -439,9 +441,10 @@ fn input_field(
     }
     // A bare input is its own well and hugs itself. A nested one sits in a
     // wrapper that is the well, and shows its focus there.
-    node.semantics.focus_figure = match chrome {
-        FieldChrome::Nested => FocusFigure::HugWell,
-        FieldChrome::Enabled | FieldChrome::Invalid | FieldChrome::ReadOnly => FocusFigure::Hug,
+    node.semantics.focus_figure = FocusFigure::Sides;
+    node.semantics.focus_shown_on = match chrome {
+        FieldChrome::Nested => FocusShownOn::OnWell,
+        FieldChrome::Enabled | FieldChrome::Invalid | FieldChrome::ReadOnly => FocusShownOn::Well,
     };
     node
 }
@@ -466,7 +469,9 @@ mod tests {
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
-    use crate::tree::{FocusFigure, Interaction, NodeKind, Props, Registry, Role, ViewNode};
+    use crate::tree::{
+        FocusFigure, FocusShownOn, Interaction, NodeKind, Props, Registry, Role, ViewNode,
+    };
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         node.children
@@ -493,7 +498,12 @@ mod tests {
         ] {
             assert_eq!(
                 node.semantics.focus_figure,
-                FocusFigure::Hug,
+                FocusFigure::Sides,
+                "{label}: a well is bracketed, not ringed"
+            );
+            assert_eq!(
+                node.semantics.focus_shown_on,
+                FocusShownOn::Well,
                 "{label}: a bare well is its own hull"
             );
         }
@@ -503,20 +513,35 @@ mod tests {
         ] {
             assert_eq!(
                 node.semantics.focus_figure,
-                FocusFigure::Underline,
+                FocusFigure::Border,
                 "{label}: the wrapper is a label seat, not a well"
             );
             assert_eq!(
+                node.semantics.focus_shown_on,
+                FocusShownOn::Own,
+                "{label}: a label seat points nowhere else"
+            );
+            assert_eq!(
                 child(&node, "input").semantics.focus_figure,
-                FocusFigure::Hug,
-                "{label}: the input inside a label seat hugs itself"
+                FocusFigure::Sides,
+                "{label}: the input inside a label seat is the well"
+            );
+            assert_eq!(
+                child(&node, "input").semantics.focus_shown_on,
+                FocusShownOn::Well,
+                "{label}: and it is its own hull"
             );
         }
         let fluid = field_fluid("f", "Name");
-        assert_eq!(fluid.semantics.focus_figure, FocusFigure::Hug);
+        assert_eq!(fluid.semantics.focus_figure, FocusFigure::Sides);
+        assert_eq!(fluid.semantics.focus_shown_on, FocusShownOn::Well);
         assert_eq!(
             child(&fluid, "input").semantics.focus_figure,
-            FocusFigure::HugWell,
+            FocusFigure::Sides
+        );
+        assert_eq!(
+            child(&fluid, "input").semantics.focus_shown_on,
+            FocusShownOn::OnWell,
             "the fluid input shows its focus on the 64-tall well around it"
         );
     }

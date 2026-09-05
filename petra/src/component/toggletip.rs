@@ -65,7 +65,9 @@ use super::tokens::{
     t,
 };
 use crate::geom::{Align, Axis};
-use crate::tree::{AxisConstraint, Constraints, FocusFigure, Interaction, Key, Role, ViewNode};
+use crate::tree::{
+    AxisConstraint, Constraints, FocusFigure, FocusShownOn, Interaction, Key, Role, ViewNode,
+};
 
 /// Carbon toggletip content `max-inline-size` (`18rem`).
 const MAX_INLINE: f32 = 288.0;
@@ -159,7 +161,8 @@ fn trigger_button(key: impl Into<Key>, label: String) -> ViewNode {
         label,
         TRIGGER_INTENTS,
     );
-    node.semantics.focus_figure = FocusFigure::Hug;
+    node.semantics.focus_figure = FocusFigure::Sides;
+    node.semantics.focus_shown_on = FocusShownOn::Well;
     node
 }
 
@@ -182,7 +185,7 @@ mod tests {
     use crate::testing::{Harness, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
     use crate::tree::{
-        Anchor, FocusFigure, Interaction, NodeKind, Props, Registry, Role, ViewNode,
+        Anchor, FocusFigure, FocusShownOn, Interaction, NodeKind, Props, Registry, Role, ViewNode,
     };
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
@@ -202,9 +205,10 @@ mod tests {
         assert_eq!(trigger.semantics.role, Some(Role::Button));
         assert_eq!(
             trigger.semantics.focus_figure,
-            FocusFigure::Hug,
+            FocusFigure::Sides,
             "focus brackets the trigger's sides, as on a text input"
         );
+        assert_eq!(trigger.semantics.focus_shown_on, FocusShownOn::Well);
         assert_eq!(trigger.semantics.label.as_deref(), Some("About filters"));
         assert!(trigger.interactions.contains(&Interaction::Click));
         assert!(trigger.interactions.contains(&Interaction::Focus));

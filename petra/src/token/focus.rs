@@ -1,51 +1,110 @@
-//! The focus indicator: an underline below the node, and why it is not a colour.
+//! The focus indicator's three figures, and why none of them is a colour.
 //!
 //! FR-015's rule is that no Petra-provided status may carry meaning by colour
 //! alone, and keyboard focus is a status like any other. The indicator
 //! answers that with a **shape that is present or absent**: a focused node
-//! grows a bar [`FocusRing::thickness`] logical units thick, [`FocusRing::gap`]
-//! below its bottom edge, that an unfocused node does not have. Print the
-//! frame in greyscale and the bar is still there.
+//! grows a figure an unfocused node does not have. Print the frame in
+//! greyscale and the figure is still there.
 //!
-//! The bar is painted in `accent.primary` (bound here as [`RING_TOKEN`]) and
-//! sits *under* the node, centred at two thirds of the node's width, so it
-//! never enters the rounded fill and cannot clip a corner. Full-width was
-//! too long on a 2026-08-26 crop of Save.
+//! # The three figures
 //!
-//! Contrast is against the card the bar sits on, not against the node's own
-//! fill. `the_focus_underline_is_legible_on_the_card` measures that.
+//! Which one a node wears is [`crate::tree::FocusFigure`]'s, declared by the
+//! component. This module owns the measurements, and there is one method per
+//! figure:
 //!
-//! The geometry lives here, in the engine, and not in `gorgon-petra-egui`:
-//! how thick the bar is and where it sits relative to the node is a design
+//! | Figure | Method | Where it lands |
+//! |---|---|---|
+//! | `Border` | [`FocusRing::bands`] | two concentric strokes **inside** the rect |
+//! | `BarUnder` | [`FocusRing::bar`] | one strip **below** the rect |
+//! | `Sides` | [`FocusRing::sides`] | two strips **outside** the left and right edges |
+//!
+//! `Border` is Carbon's and is the default: `@include focus-outline('outline')`
+//! is `outline: 2px solid $focus; outline-offset: -2px`
+//! (`@carbon/styles/scss/utilities/_focus-outline.scss` line 29), used 75
+//! times across 62 component files, and no Carbon rule anywhere produces an
+//! underline. The halo band inside the accent stroke is Carbon's too:
+//! a primary button focuses with `box-shadow: inset 0 0 0
+//! $button-outline-width $button-focus-color, inset 0 0 0
+//! $button-border-width $background` (`components/button/_mixins.scss` line
+//! 133), one unit of ground between the focus stroke and the button's fill.
+//! Petra needs that band more sharply than Carbon does, because
+//! [`RING_TOKEN`] is byte-identical to `accent.primary` and a primary
+//! button's fill *is* `accent.primary`: without the halo the ring on that one
+//! control is exactly invisible.
+//!
+//! `BarUnder` and `Sides` have no Carbon citation as focus figures. They are
+//! Petra's, kept because a control that already paints an accent band on one
+//! of its own edges has nowhere inside its rect for a ring (a tab), and
+//! because a well a person types into should not read the same as a button
+//! they press.
+//!
+//! # Whose rect
+//!
+//! What shape the indicator is lives here. *Whose rect it goes on* is a
+//! separate question, answered by [`crate::tree::FocusShownOn`] on the node
+//! itself: a field's input leaf shows focus on the well around it, and a
+//! tree item shows it on its head row rather than on its whole expanded
+//! subtree.
+//!
+//! # Why here and not in the adapter
+//!
+//! How thick a band is and where it sits relative to the node is a design
 //! decision a second renderer must reproduce, and D-069 keeps this crate free
-//! of any toolkit. What the adapter crate owns is the drawing.
+//! of any toolkit. What `gorgon-petra-egui` owns is the drawing.
 
 use crate::geom::Rect;
 
-/// Token naming the underline's fill. Bound to the theme's accent, so the
-/// bar is the same blue as the primary button, not a second hue.
+/// Token naming the indicator's accent. Bound to the theme's accent, so every
+/// figure is the same blue as the primary button, not a second hue.
 pub const RING_TOKEN: &str = "focus.ring";
 
-/// Token naming the unused paper halo. Kept in the vocabulary because
-/// `focus-inverse` and the theme builder still declare the pair; the
-/// underline does not paint it.
+/// Token naming the halo band [`FocusFigure::Border`] draws immediately
+/// inside its accent stroke. The page ground: white in the light theme,
+/// near-black in the dark one.
+///
+/// [`FocusFigure::Border`]: crate::tree::FocusFigure::Border
 pub const HALO_TOKEN: &str = "focus.ring-halo";
 
-/// The focus underline's measurements, in logical units.
+/// Token naming the shadow that seats a `BarUnder` bar on the card it hangs
+/// over. One of [`crate::token::SHADOW_GEOMETRY`]'s two names, never a new
+/// one.
+///
+/// `shadow.raised`, not `shadow.overlay`. Overlay drops the shadow four
+/// units under a bar three units tall, so the shadow's own pixels never
+/// touch the bar's and it stands as a second stripe below it — R6, "there
+/// are just 2 lines instead of a shadow", light mode, 2026-09-05. Raised
+/// drops two, less than the bar's three, so the two overlap and the shadow
+/// reads as a shadow. `the_bar_is_taller_than_its_shadow_is_displaced`
+/// holds that inequality.
+///
+/// `Border` and `Sides` cast nothing. A ring on the node's own edge needs no
+/// seating, and a 40-unit bar standing beside a filled well needs none
+/// either — the overlay smudge past the well's bottom rule read as the bar
+/// overhanging the well (rows 22 and 28, 2026-09-05).
+pub const BAR_SHADOW_TOKEN: &str = "shadow.raised";
+
+/// The focus indicator's measurements, in logical units. One struct, three
+/// figures; each field says which of them reads it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FocusRing {
-    /// Height of the underline, and width of a hug bar.
+    /// Height of a `BarUnder` bar, and width of a `Sides` bar.
     pub thickness: f32,
-    /// Gap between the node's bottom edge and the underline's top edge.
+    /// Gap between the node's bottom edge and a `BarUnder` bar's top edge.
     pub gap: f32,
-    /// Gap between a well's left or right edge and the hug bar beside it.
+    /// Gap between a well's left or right edge and the `Sides` bar beside it.
     ///
-    /// Wider than [`Self::gap`]. An underline sits in the empty run under a
-    /// pill; a hug bar stands beside a filled well whose edge is a hard
+    /// Wider than [`Self::gap`]. A bar under sits in the empty run below a
+    /// pill; a side bar stands beside a filled well whose edge is a hard
     /// colour step, and at two units the bar read as part of that edge —
     /// the operator's "cramped" and "needs a bit of padding" on the Search
     /// and Number input rows, 2026-09-05.
     pub hug_gap: f32,
+    /// Width of the `Border` accent stroke, drawn inside the node's own edge.
+    pub stroke: f32,
+    /// Width of the ground-coloured band `Border` draws immediately inside
+    /// its accent stroke, so the ring never disappears into a fill of its
+    /// own colour.
+    pub halo: f32,
 }
 
 impl Default for FocusRing {
@@ -55,26 +114,29 @@ impl Default for FocusRing {
 }
 
 impl FocusRing {
-    /// The shipped underline: three units thick, two units below the node,
-    /// two thirds of the node's width, centred.
+    /// The shipped measurements.
     ///
-    /// Three, not two: the 2-unit strip was a hairline under a 40-unit
-    /// button. Two thirds, not full width: edge-to-edge read as a second
-    /// border under the pill.
+    /// `thickness` is three, not two: a 2-unit strip was a hairline under a
+    /// 40-unit button. `stroke` is two, not three: Carbon's
+    /// `focus-outline('outline')` is `2px` (`utilities/_focus-outline.scss:29`),
+    /// and a closed ring on four edges does not have the hairline problem a
+    /// bar hung under one edge has.
     pub const STANDARD: Self = Self {
         thickness: 3.0,
         gap: 2.0,
         hug_gap: 4.0,
+        stroke: 2.0,
+        halo: 1.0,
     };
 
-    /// Fraction of the node's width the underline occupies.
+    /// Fraction of the node's width a `BarUnder` bar occupies.
     pub const WIDTH_FRACTION: f32 = 2.0 / 3.0;
 
-    /// The underline for a focused node occupying `rect`.
+    /// `BarUnder` for a focused node occupying `rect`.
     ///
     /// Centred, [`Self::WIDTH_FRACTION`] of `rect.w`, [`Self::gap`] below
     /// the bottom edge, [`Self::thickness`] tall.
-    /// `the_underline_sits_below_the_node_at_two_thirds` asserts it.
+    /// `the_bar_sits_below_the_node_at_two_thirds` asserts it.
     #[must_use]
     pub fn bar(self, rect: Rect) -> Rect {
         let w = (rect.w * Self::WIDTH_FRACTION).max(0.0);
@@ -82,14 +144,15 @@ impl FocusRing {
         Rect::new(x, rect.bottom() + self.gap, w, self.thickness)
     }
 
-    /// Left and right bars hugging `rect`: [`Self::thickness`] wide,
-    /// [`Self::hug_gap`] outside each edge, exactly the node's height.
+    /// `Sides` for a focused node occupying `rect`: left and right bars,
+    /// [`Self::thickness`] wide, [`Self::hug_gap`] outside each edge,
+    /// exactly the node's height.
     ///
     /// Outside the node, so a well is bracketed rather than underlined, and
     /// never taller than it: a bar past the well's bottom rule reads as an
-    /// overhang. `the_hugs_sit_outside_the_left_and_right` asserts it.
+    /// overhang. `the_sides_sit_outside_the_left_and_right` asserts it.
     #[must_use]
-    pub fn hugs(self, rect: Rect) -> [Rect; 2] {
+    pub fn sides(self, rect: Rect) -> [Rect; 2] {
         let left = Rect::new(
             rect.x - self.hug_gap - self.thickness,
             rect.y,
@@ -105,8 +168,46 @@ impl FocusRing {
         [left, right]
     }
 
-    /// How far outside the node's own rect a bar (not its shadow) can
+    /// `Border` for a focused node occupying `rect`: the two concentric
+    /// bands, outermost first, each as the rect its stroke is drawn *inside*
+    /// of and that stroke's width.
+    ///
+    /// Contained by construction — neither band ever leaves `rect`, so a
+    /// list row can show focus without painting into its neighbours, and a
+    /// composer clip equal to the node's own rect never cuts the indicator.
+    #[must_use]
+    pub fn bands(self, rect: Rect) -> [(Rect, f32); 2] {
+        [(rect, self.stroke), (rect.inset(self.stroke), self.halo)]
+    }
+
+    /// The four edges of the `Border` accent stroke, clockwise from the
+    /// top: `[top, right, bottom, left]`.
+    ///
+    /// The same ring [`Self::bands`]' outer entry describes, cut into the
+    /// four rects a four-band caret flies as. Corners belong to two edges
+    /// at once and are covered twice; that overlap is deliberate, because a
+    /// band that stopped short of the corner would leave a notch mid-flight.
+    ///
+    /// This is the geometry a test asks "which edges does the ring mark?"
+    /// with. A selection indicator pinned to one edge of a node can coincide
+    /// with one of these four; it can never coincide with the other three,
+    /// which is what keeps focus legible on a selected control.
+    #[must_use]
+    pub fn border_edges(self, rect: Rect) -> [Rect; 4] {
+        let s = self.stroke;
+        [
+            Rect::new(rect.x, rect.y, rect.w, s),
+            Rect::new(rect.right() - s, rect.y, s, rect.h),
+            Rect::new(rect.x, rect.bottom() - s, rect.w, s),
+            Rect::new(rect.x, rect.y, s, rect.h),
+        ]
+    }
+
+    /// How far outside the node's own rect an indicator (not its shadow) can
     /// reach: the wider of the two gaps plus the thickness.
+    ///
+    /// `Border` reaches nowhere, so this is `BarUnder`'s and `Sides`' number
+    /// and the clip widening that reads it is theirs alone.
     #[must_use]
     pub fn overhang(self) -> f32 {
         self.gap.max(self.hug_gap) + self.thickness
@@ -119,7 +220,7 @@ mod tests {
     use crate::geom::Rect;
 
     #[test]
-    fn the_underline_sits_below_the_node_at_two_thirds() {
+    fn the_bar_sits_below_the_node_at_two_thirds() {
         let ring = FocusRing::STANDARD;
         let node = Rect::new(10.0, 20.0, 90.0, 40.0);
         let bar = ring.bar(node);
@@ -131,42 +232,154 @@ mod tests {
     }
 
     #[test]
-    fn the_hugs_sit_outside_the_left_and_right() {
+    fn the_sides_sit_outside_the_left_and_right() {
         let ring = FocusRing::STANDARD;
         let node = Rect::new(10.0, 20.0, 90.0, 40.0);
-        let [left, right] = ring.hugs(node);
+        let [left, right] = ring.sides(node);
         assert_eq!(left, Rect::new(3.0, 20.0, 3.0, 40.0));
         assert_eq!(right, Rect::new(104.0, 20.0, 3.0, 40.0));
         assert_eq!(left.right(), node.x - ring.hug_gap);
         assert_eq!(right.x, node.right() + ring.hug_gap);
         assert!(
             ring.hug_gap > ring.gap,
-            "a hug stands off a filled well further than an underline stands \
-             off a pill"
+            "a side bar stands off a filled well further than a bar under \
+             stands off a pill"
         );
-        assert_eq!(left.y, node.y, "a hug starts at the well's top");
+        assert_eq!(left.y, node.y, "a side bar starts at the well's top");
         assert_eq!(
             left.bottom(),
             node.bottom(),
-            "a hug never overhangs the well's bottom rule"
+            "a side bar never overhangs the well's bottom rule"
         );
         assert_eq!(right.h, node.h);
     }
 
     #[test]
-    fn a_node_narrower_than_the_ring_does_not_invert_it() {
-        let bar = FocusRing::STANDARD.bar(Rect::new(0.0, 0.0, 1.0, 1.0));
-        assert!(bar.w >= 0.0 && bar.h >= 0.0, "{bar:?}");
-        assert!((bar.w - 2.0 / 3.0).abs() < 1e-6);
+    fn the_border_lies_inside_the_node_it_rings() {
+        let ring = FocusRing::STANDARD;
+        let node = Rect::new(10.0, 20.0, 90.0, 40.0);
+        let [(accent, stroke), (halo, halo_w)] = ring.bands(node);
+        assert_eq!(accent, node, "the accent stroke's outer edge is the node's");
+        assert_eq!(stroke, ring.stroke);
+        assert_eq!(
+            halo,
+            Rect::new(12.0, 22.0, 86.0, 36.0),
+            "the halo band sits immediately inside the accent stroke"
+        );
+        assert_eq!(halo_w, ring.halo);
+        assert!(
+            accent.x >= node.x
+                && accent.y >= node.y
+                && accent.right() <= node.right()
+                && accent.bottom() <= node.bottom(),
+            "the border reaches outside the node it rings: {accent:?} in {node:?}"
+        );
     }
 
     #[test]
-    fn the_ring_changes_the_silhouette_by_more_than_a_hairline() {
+    fn a_node_narrower_than_the_figures_does_not_invert_them() {
+        let tiny = Rect::new(0.0, 0.0, 1.0, 1.0);
+        let bar = FocusRing::STANDARD.bar(tiny);
+        assert!(bar.w >= 0.0 && bar.h >= 0.0, "{bar:?}");
+        assert!((bar.w - 2.0 / 3.0).abs() < 1e-6);
+        let [(accent, _), (halo, _)] = FocusRing::STANDARD.bands(tiny);
+        assert!(accent.w >= 0.0 && accent.h >= 0.0, "{accent:?}");
+        assert_eq!(
+            halo.w, 0.0,
+            "the halo collapses rather than turning inside out"
+        );
+        assert_eq!(halo.h, 0.0);
+    }
+
+    #[test]
+    fn every_figure_changes_the_silhouette_by_more_than_a_hairline() {
         let ring = FocusRing::default();
         assert!(
             ring.thickness >= 2.0,
             "a bar thinner than this reads as a border, not as an indicator"
         );
         assert!(ring.gap >= 0.0);
+        assert!(
+            ring.stroke >= 2.0,
+            "a stroke thinner than this reads as a border, not as an indicator"
+        );
+        assert!(
+            ring.halo > 0.0,
+            "without the halo the border vanishes on a node filled with the \
+             accent, which is what a primary button is"
+        );
+    }
+
+    /// The shadow that seats a `BarUnder` bar on the card must be displaced
+    /// by less than the bar is tall, or it clears the bar and stands as its
+    /// own stripe under it. That is R6: "there are just 2 lines instead of a
+    /// shadow", light mode, 2026-09-05.
+    ///
+    /// The rule is here, beside the thickness it constrains, so that raising
+    /// the shadow or thinning the bar fails a test in this file rather than
+    /// in a screenshot three waves later.
+    /// The four `Border` edges are the ring, and nothing else.
+    ///
+    /// Each is `stroke` deep, each lies inside the node, and together they
+    /// leave exactly the inside of the ring uncovered. `paint::caret_bands`
+    /// flies these four and `component::tabs` measures against them, so
+    /// this is the one place their shape is pinned.
+    #[test]
+    fn the_border_edges_line_the_inside_of_the_node() {
+        let ring = FocusRing::STANDARD;
+        let node = Rect::new(10.0, 20.0, 90.0, 40.0);
+        let [top, right, bottom, left] = ring.border_edges(node);
+
+        assert_eq!(top.h, ring.stroke, "the top band is a stroke deep");
+        assert_eq!(bottom.h, ring.stroke, "the bottom band is a stroke deep");
+        assert_eq!(left.w, ring.stroke, "the left band is a stroke wide");
+        assert_eq!(right.w, ring.stroke, "the right band is a stroke wide");
+
+        for (name, band) in [
+            ("top", top),
+            ("right", right),
+            ("bottom", bottom),
+            ("left", left),
+        ] {
+            assert_eq!(
+                band.intersect(node),
+                band,
+                "the {name} band {band:?} leaves the node {node:?}, so a \
+                 clip equal to the node's own rect would cut the ring"
+            );
+        }
+
+        // Nothing reaches the middle: the ring is a line, not a fill.
+        let middle = node.inset(ring.stroke);
+        for (name, band) in [
+            ("top", top),
+            ("right", right),
+            ("bottom", bottom),
+            ("left", left),
+        ] {
+            assert!(
+                !band.overlaps(middle),
+                "the {name} band {band:?} reaches into {middle:?}, which is \
+                 the node's content and not the ring"
+            );
+        }
+    }
+
+    #[test]
+    fn the_bar_is_taller_than_its_shadow_is_displaced() {
+        let geometry = crate::token::SHADOW_GEOMETRY
+            .iter()
+            .find(|(name, _)| *name == crate::token::focus::BAR_SHADOW_TOKEN)
+            .expect("the bar's shadow token has geometry")
+            .1;
+        let drop = f32::from(geometry.offset[1]);
+        assert!(
+            drop < FocusRing::STANDARD.thickness,
+            "{} drops {drop} under a {}-unit bar, so the bar's own pixels do \
+             not overlap it and it reads as a second line",
+            crate::token::focus::BAR_SHADOW_TOKEN,
+            FocusRing::STANDARD.thickness
+        );
+        assert_eq!(geometry.offset[0], 0, "the drop is straight down");
     }
 }

@@ -51,7 +51,8 @@ use egui::{Context, Pos2, RawInput};
 use gorgon_petra::frame::{CaretPaint, PaintContent, PetrifiedFrame};
 use gorgon_petra::geom::{Point, Rect, Size};
 use gorgon_petra::input::{KeyCode, Modifiers};
-use gorgon_petra_egui::host::{Host, default_presenter};
+use gorgon_petra::tree::FocusFigure;
+use gorgon_petra_egui::host::{App, Host, default_presenter};
 use gorgon_petra_egui::inject::{
     Action, Target, inject_action, push_pointer_down, push_pointer_move, push_pointer_up,
 };
@@ -77,9 +78,9 @@ use crate::catalog::{Catalog, WINDOW};
 const CAPTURE_SCALE: f32 = 2.0;
 
 /// A catalog page, a driver for it, and a camera pointed at it.
-pub struct Camera {
+pub struct Camera<A: App = Catalog> {
     ctx: Context,
-    host: Host<Catalog>,
+    host: Host<A>,
     shooter: Snapshotter,
     /// The page's row name, so a failure says which page it was on.
     page: String,
@@ -104,7 +105,7 @@ pub struct Camera {
 /// One 60 Hz frame, the step [`Camera`] advances its clock by per pass.
 const FRAME: f64 = 1.0 / 60.0;
 
-impl Camera {
+impl Camera<Catalog> {
     /// Open the page whose inventory row is named `component`, and settle it.
     ///
     /// Two passes: the first registers the font atlas, the second is the one a
@@ -154,7 +155,9 @@ impl Camera {
         cam.settle();
         cam
     }
+}
 
+impl<A: App> Camera<A> {
     /// Run one pass with no input, so the frame matches the current state.
     fn settle(&mut self) {
         self.step(RawInput::default());
@@ -213,6 +216,19 @@ impl Camera {
     /// is.
     pub fn live_motion(&mut self) -> &mut Self {
         self.host.set_reduced_motion(false);
+        self
+    }
+
+    /// Advance one 60 Hz frame with no input, the way a window pumps while a
+    /// transition runs.
+    ///
+    /// [`Camera::live_motion`] plus this is how a *mid-flight* frame is
+    /// reached: `focus` starts the hop, and each `tick` is one more frame of
+    /// it. Without this the only way to step the clock was to send input,
+    /// which changes hover and press state and so changes the picture for a
+    /// second reason.
+    pub fn tick(&mut self) -> &mut Self {
+        self.settle();
         self
     }
 
@@ -459,13 +475,6 @@ impl Camera {
         )
     }
 
-    /// The open page's body as its module builds it now. For reading back a
-    /// fact the frame does not carry (a leaf's text); see
-    /// `Catalog::open_page_body`.
-    pub fn tree(&self) -> gorgon_petra::tree::ViewNode {
-        self.host.app().open_page_body()
-    }
-
     /// Move keyboard focus to the node whose id ends `tail`.
     pub fn focus(&mut self, tail: &str) -> &mut Self {
         let id = self.id(tail);
@@ -678,6 +687,141 @@ impl Camera {
     }
 }
 
+/// A page of focusable nodes whose focus figures the test picks.
+///
+/// The catalog is Carbon's 42 components and every one of them declares the
+/// figure Carbon gives it. After the tab citation was corrected on
+/// 2026-09-05 — `_tabs.scss:596` is `// Item Selected`, not a focus rule,
+/// and `.cds--tabs__nav-link:focus` is `focus-outline('outline')` — no
+/// shipped component declares [`FocusFigure::BarUnder`]. So no catalog row
+/// can be photographed wearing one, and no catalog page can put a
+/// `BarUnder` and another figure side by side for a morph.
+///
+/// Building nodes that declare the figures is the honest way to photograph
+/// them. Putting a wrong figure on a real control so that a picture exists
+/// is what produced the defect this fixture replaces. Anything measured
+/// here is a property of a figure; nothing here is a claim about a
+/// component.
+struct Fixture {
+    subjects: Vec<(&'static str, FocusFigure)>,
+    /// Taken by the first [`App::theme_request`] and never asked for again.
+    pending: Option<gorgon_petra::token::Theme>,
+}
+
+impl gorgon_petra::layout::RowSource for Fixture {
+    fn rows(
+        &mut self,
+        _source: &str,
+        _range: std::ops::Range<usize>,
+    ) -> Vec<std::sync::Arc<gorgon_petra::tree::ViewNode>> {
+        Vec::new()
+    }
+}
+
+impl App for Fixture {
+    fn view(&mut self) -> gorgon_petra::tree::ViewNode {
+        use crate::page::common::{body, column, sp};
+
+        // Plain buttons rather than components that carry marks of their
+        // own, so nothing in the picture is inherited from a control. The
+        // figure is set here and never inferred from the role, which is the
+        // rule `paint.rs`'s `the_figure_is_the_declaration_not_the_role`
+        // holds for the shipped path too.
+        let subjects: Vec<gorgon_petra::tree::ViewNode> = self
+            .subjects
+            .iter()
+            .map(|(key, figure)| {
+                let mut node = gorgon_petra::component::button(*key, "Subject");
+                node.semantics.focus_figure = *figure;
+                node
+            })
+            .collect();
+        // A wide gap between them and around them: `BarUnder`'s bar hangs
+        // below its node and `Sides`' bars stand outside it, so a tight
+        // column would put one figure's indicator on another's node.
+        let inner = column("inner", sp("spacing.3xl"), subjects);
+        let mut page = body("body", sp("spacing.3xl"), vec![inner]);
+        // The catalog paints the card its pages sit on. A fixture has no
+        // shell, so it binds its own ground — without it every pixel of the
+        // capture is the clear colour and a light-theme reading is a
+        // reading of nothing.
+        page.props.tokens.insert(
+            "background".into(),
+            crate::page::common::tok("surface.base"),
+        );
+        page.props.padding = Some(gorgon_petra::tree::InsetRefs::all(
+            crate::page::common::tok("spacing.3xl"),
+        ));
+        page
+    }
+
+    fn handle(
+        &mut self,
+        _event: &gorgon_petra::input::InputEvent,
+        _route: &gorgon_petra::input::Route,
+        _frame: Option<&gorgon_petra::frame::PetrifiedFrame>,
+    ) {
+    }
+
+    /// The fixture rebuilds its whole tree every pass, so `All` is the only
+    /// honest answer — the same reason `Catalog::take_changes` gives.
+    fn take_changes(&mut self) -> gorgon_petra::layout::ChangeSet {
+        gorgon_petra::layout::ChangeSet::All
+    }
+
+    /// Published once. `Host::pass` reads this at the top of a pass, so the
+    /// theme is in force from the second pass on and every photograph this
+    /// fixture takes is settled in it.
+    fn theme_request(&mut self) -> Option<gorgon_petra::token::Theme> {
+        self.pending.take()
+    }
+}
+
+impl Camera<Fixture> {
+    /// Host a [`Fixture`] the same way [`Camera::at_scale`] hosts the
+    /// catalog, so every driving primitive on `Camera` works on it.
+    ///
+    /// `theme` is `"dark"` or `"light"`; anything else panics, because a
+    /// typo would otherwise silently photograph the wrong one.
+    fn fixture(subjects: &[(&'static str, FocusFigure)], theme: &str) -> Self {
+        let picked = match theme {
+            "dark" => gorgon_petra::token::dark(),
+            "light" => gorgon_petra::token::light(),
+            other => panic!("no shipped theme is named {other:?}"),
+        };
+        let app = Fixture {
+            subjects: subjects.to_vec(),
+            pending: Some(picked),
+        };
+        let ctx = headless();
+        ctx.set_pixels_per_point(CAPTURE_SCALE);
+        let mut host = Host::new(&ctx, app, default_presenter());
+        ctx.run_ui(sized(RawInput::default()), |_| host.pass(&ctx))
+            .drop_without_applying_deltas();
+        host.set_reduced_motion(true);
+        let clock = ctx.input(|input| input.time);
+        let mut cam = Self {
+            ctx,
+            host,
+            shooter: Snapshotter::new(),
+            page: format!("fixture({theme})"),
+            clipboard: Vec::new(),
+            clock,
+            pointer: None,
+        };
+        // Two passes: the first delivers the theme request, the second lays
+        // out and paints under it.
+        cam.settle();
+        cam.settle();
+        let luma = cam.mean_luma();
+        match theme {
+            "light" => assert!(luma > 0.5, "the fixture is not light: luma {luma}"),
+            _ => assert!(luma < 0.5, "the fixture is not dark: luma {luma}"),
+        }
+        cam
+    }
+}
+
 /// A dropped file that is only a path.
 ///
 /// `egui::DroppedFile` can also read its own bytes; nothing on Petra's side
@@ -693,6 +837,49 @@ impl egui::DroppedFile for TestDrop {
 
     fn bytes(&self) -> Result<Vec<u8>, String> {
         Err("a dropped path carries no bytes across this seam".to_owned())
+    }
+}
+
+/// The driver moves the catalog itself: these two reach into
+/// [`Catalog`]'s own pages and mean nothing for any other application.
+impl Camera<Catalog> {
+    /// Put the whole catalog on the light theme, then come back to this page.
+    ///
+    /// The theme belongs to row 27's radio group and the host holds whatever
+    /// that page last published, so switching it means visiting row 27,
+    /// choosing Light and returning. That is exactly what a hand does, and
+    /// the return trip is `Catalog::open` rather than an index-row click so
+    /// it reaches a row below the pane's fold.
+    ///
+    /// Light is where a shadow or an off-by-a-few-units mark shows: R6 was
+    /// invisible dark-on-dark and obvious on the light card.
+    pub fn light(&mut self) -> &mut Self {
+        let here = self.page.clone();
+        self.host.app_mut().open("Radio button");
+        self.settle();
+        self.click("radio-b");
+        // One more pass on row 27 before leaving it. `Host::pass` reads
+        // `theme_request` at the *top* of a pass, before it delivers that
+        // pass's input, so the choice the click just made is still pending
+        // when the click's own pass ends. Walking away here would leave it
+        // pending on a page nobody asks again, and the catalog would stay
+        // dark under a `light()` that reported nothing wrong.
+        self.settle();
+        self.host.app_mut().open(&here);
+        self.settle();
+        assert!(
+            self.mean_luma() > 0.5,
+            "{}: the light theme did not take; mean luma is still dark",
+            self.page
+        );
+        self
+    }
+
+    /// The open page's body as its module builds it now. For reading back a
+    /// fact the frame does not carry (a leaf's text); see
+    /// `Catalog::open_page_body`.
+    pub fn tree(&self) -> gorgon_petra::tree::ViewNode {
+        self.host.app().open_page_body()
     }
 }
 
@@ -713,7 +900,7 @@ fn headless() -> Context {
 
 #[cfg(test)]
 mod tests {
-    use super::{CAPTURE_SCALE, Camera};
+    use super::{CAPTURE_SCALE, Camera, FocusFigure};
     use crate::catalog::WINDOW;
     use gorgon_petra::geom::{Point, Rect};
     use gorgon_petra::input::KeyCode;
@@ -2638,7 +2825,10 @@ mod tests {
     // pass every tree-level test and still draw a box.
 
     /// The raster of the current frame, for reading pixels back.
-    fn raster(cam: &mut Camera, name: &str) -> image::RgbaImage {
+    ///
+    /// Generic over the hosted application, so a figure photographed on a
+    /// `Fixture` is read back the same way a component on the catalog is.
+    fn raster<A: super::App>(cam: &mut Camera<A>, name: &str) -> image::RgbaImage {
         let png = cam.shoot(name);
         image::load_from_memory(&png)
             .unwrap_or_else(|err| panic!("shot {name:?} is not a PNG: {err}"))
@@ -3052,7 +3242,7 @@ mod tests {
     // an `Action::Focus`, and reads the raster back: the caret is host-owned
     // geometry that no frame-level assertion can see.
 
-    /// The two hug bars the settled indicator draws around the well keyed
+    /// The two side bars the settled indicator draws around the well keyed
     /// `well_tail`, read back from the raster, or a panic naming which part
     /// of the figure is wrong.
     ///
@@ -3066,7 +3256,7 @@ mod tests {
         let ring = FocusRing::STANDARD;
         let well = cam.rect(well_tail);
         let img = raster(cam, shot);
-        let [left, right] = ring.hugs(well);
+        let [left, right] = ring.sides(well);
         let mid_y = well.y + well.h / 2.0;
         let (lx, rx) = (left.x + left.w / 2.0, right.x + right.w / 2.0);
         let bar = px(&img, lx, mid_y);
@@ -3310,11 +3500,28 @@ mod tests {
         );
     }
 
-    /// Row 18. A menu's trigger is a button and underlines; while its menu
-    /// is open flush beneath it, the underline would cross the menu's first
-    /// row, so it is withheld — and comes back the moment the menu shuts.
+    /// Row 18. A menu's trigger is a button, so it wears
+    /// `FocusFigure::Border`, and the ring lands on the trigger's own edge.
+    /// Opening the menu hands keyboard focus to the menu's first item
+    /// (`../../.agents/notes/implemented/bug-fix/2026-09-05-an-open-menu-takes-keyboard-focus.md`),
+    /// so the ring moves there with it.
+    ///
+    /// This test used to assert something else and it was right to at the
+    /// time: the trigger underlined, the bar hung two units below it, an
+    /// open menu sits on exactly those two units, and the indicator was
+    /// **withheld** — no focus indicator anywhere on the page. That is the
+    /// cost a figure reaching outside its node pays, and
+    /// `paint.rs`'s `a_caret_crossing_a_surface_above_its_node_is_withheld`
+    /// still holds it for `BarUnder` and now holds the contained half too.
+    /// Here the question is what the operator sees, and the answer is a ring
+    /// on the trigger, then a ring on `mn-0`.
+    ///
+    /// # How this goes red
+    ///
+    /// Give `button` `FocusFigure::BarUnder` and the first assertion fails
+    /// on the trigger's own top edge, because a bar is not there.
     #[test]
-    fn a_menu_trigger_underline_is_withheld_while_the_menu_covers_it() {
+    fn a_menu_triggers_border_moves_into_the_menu_it_opened() {
         let mut cam = Camera::on("Menu");
         cam.click("mn-pair/trigger");
         assert!(
@@ -3334,27 +3541,47 @@ mod tests {
             cam.focused()
         );
         let trigger = cam.rect("mn-pair/trigger");
+        let ring = FocusRing::STANDARD;
+        // The middle of the accent band on the trigger's own top edge — a
+        // row that carries the button's fill when nothing is focused, and a
+        // row a bar under the button could never reach.
+        let band_y = trigger.y + ring.stroke / 2.0;
+        let mid_x = trigger.x + trigger.w / 2.0;
+
         let shut = raster(&mut cam, "18-menu-shut-focused");
-        let row = underline_row(trigger);
-        let bar = px(
-            &shut,
-            trigger.x + trigger.w / 2.0,
-            row as f32 / CAPTURE_SCALE,
-        );
+        let accent = px(&shut, mid_x, band_y);
         assert!(
-            bar[2] > bar[0] && bar[2] > bar[1],
-            "with the menu shut the trigger's underline is not there: {bar:?}"
+            accent[2] > accent[0] && accent[2] > accent[1],
+            "with the menu shut the trigger has no ring on its top edge: \
+             {accent:?}"
         );
+
         cam.click("mn-pair/trigger");
         assert!(
             cam.has("mn-pair/menu"),
             "the third click did not reopen the menu"
         );
+        // Photograph first, then read focus back. The surface's `takes_focus`
+        // is seated by the host on the pass *after* the menu appears, so a
+        // `ring()` read taken straight off the click still names the trigger;
+        // the shooting pass is the one that moves it.
         let open = raster(&mut cam, "18-menu-open-focused");
-        let across = device_row(&open, trigger.x, trigger.x + trigger.w, row);
         assert!(
-            !across.contains(&bar),
-            "the trigger's underline is painted across the open menu's first row"
+            cam.ring().is_some_and(|id| id.ends_with("mn-0")),
+            "an open menu takes keyboard focus onto its first item; focus is \
+             {:?}",
+            cam.ring()
+        );
+        let item = cam.rect("mn-0");
+        let on_item = px(&open, item.x + item.w / 2.0, item.y + ring.stroke / 2.0);
+        assert_eq!(
+            on_item, accent,
+            "the ring did not follow focus onto the menu's first item"
+        );
+        assert_ne!(
+            px(&open, mid_x, band_y),
+            accent,
+            "the trigger still wears the ring while the menu holds focus"
         );
     }
 
@@ -5239,5 +5466,369 @@ mod tests {
              field, so this rule is the whole boundary: at this contrast \
              there is no field on the page, only a grey patch."
         );
+    }
+
+    // ===== Wave FIGURE, round 5: three focus figures, the bar's shadow
+    // (R6) and the tree row's width (R8). Appended; nothing above this line
+    // is touched, because other waves edit this file in their own trees.
+
+    /// R6, measured in the theme it showed up in.
+    ///
+    /// The operator, 2026-09-05: *"Light mode showed that the shadow on the
+    /// cursor is broken. It looks really bad in light mode. Like there are
+    /// just 2 lines instead of a shadow."*
+    ///
+    /// The bar is `FocusRing::thickness` (3) units tall and used to cast
+    /// `shadow.overlay`, whose offset is `[0, 4]`. Four units of drop under a
+    /// three-unit bar means the shadow's own pixels never touch the bar's:
+    /// the card shows through between them and the pair reads as two lines.
+    /// It now casts `focus::BAR_SHADOW_TOKEN` (`shadow.raised`, offset
+    /// `[0, 2]`), and two units of drop under three units of bar overlap.
+    ///
+    /// Read as a column of pixels straight down from the bar's centre. A
+    /// shadow is darkest where it meets the thing casting it and fades from
+    /// there; two lines are darkest somewhere below a gap. So:
+    ///
+    /// 1. the darkest row under the bar is the first row under the bar, and
+    /// 2. darkness never rises again on the way down.
+    ///
+    /// # How this goes red
+    ///
+    /// Point `focus::BAR_SHADOW_TOKEN` back at `"shadow.overlay"`. Claim 1
+    /// fails: the peak moves several rows down and the rows just under the
+    /// bar come back near the card.
+    ///
+    /// # Why a fixture
+    ///
+    /// This used to be photographed on a tab. `component::tabs` declared
+    /// `BarUnder` on the strength of `_tabs.scss:596`, which is the
+    /// selection rule and not the focus rule, so the picture was of a
+    /// mis-assigned figure. Tabs now ring, and the bar is photographed on a
+    /// node built to wear one.
+    #[test]
+    fn the_bar_under_casts_a_shadow_and_not_a_second_line_in_light_mode() {
+        // A fixture and not a tab: after the tab citation was corrected no
+        // shipped component wears `BarUnder`, and mis-assigning one to keep
+        // this photograph is exactly the move that produced the defect.
+        let mut cam = Camera::fixture(&[("bar", FocusFigure::BarUnder)], "light");
+        cam.focus("bar");
+        assert!(
+            cam.ring().is_some_and(|id| id.ends_with("bar")),
+            "the driver did not seat focus on the subject"
+        );
+        let tab = cam.rect("bar");
+        let img = raster(&mut cam, "fixture-bar-under-shadow-light");
+
+        let ring = FocusRing::STANDARD;
+        let bar = ring.bar(tab);
+        let ground = px(&img, bar.x + bar.w / 2.0, bar.y + bar.h + 14.0);
+        assert!(
+            pixel_luminance(ground) > 0.5,
+            "this must be the light theme; the ground under the bar reads \
+             {ground:?}"
+        );
+
+        // Every device row from the first one clear of the bar down to the
+        // shadow's full reach (offset 2 + blur 6 = 8 logical units).
+        let mid_x = bar.x + bar.w / 2.0;
+        let first = ((bar.y + bar.h) * CAPTURE_SCALE).ceil() as u32 + 1;
+        let last = ((bar.y + bar.h + 8.0) * CAPTURE_SCALE) as u32;
+        let column: Vec<(u32, f32)> = (first..last)
+            .map(|dy| {
+                let p = img.get_pixel((mid_x * CAPTURE_SCALE) as u32, dy).0;
+                (dy, pixel_luminance(p))
+            })
+            .collect();
+        assert!(
+            column.len() >= 8,
+            "the sampling window is too short to say anything: {column:?}"
+        );
+
+        let darkest = column
+            .iter()
+            .copied()
+            .min_by(|a, b| a.1.partial_cmp(&b.1).expect("luminances are finite"))
+            .expect("the column is not empty");
+        assert_eq!(
+            darkest.0,
+            column[0].0,
+            "the shadow's darkest row is {} device rows below the bar, not \
+             touching it: the card shows through between the two and they \
+             read as two lines. Column (device row, luminance): {column:?}",
+            darkest.0 - column[0].0
+        );
+
+        let mut prev = column[0].1;
+        for &(dy, luma) in &column[1..] {
+            assert!(
+                luma >= prev - 0.002,
+                "the shadow gets darker again at device row {dy} \
+                 ({prev:.4} -> {luma:.4}), which is a second line and not a \
+                 fade. Column: {column:?}"
+            );
+            prev = luma;
+        }
+        assert!(
+            column[0].1 < pixel_luminance(ground) - 0.02,
+            "there is no shadow at all under the bar: first row \
+             {:.4} against ground {:.4}",
+            column[0].1,
+            pixel_luminance(ground)
+        );
+    }
+
+    /// R8, measured: the ring on a tree item's head row spans the same band
+    /// the selection fill covers.
+    ///
+    /// The operator, 2026-09-05: *"In tree view the cursor doesn't position
+    /// itself well on any of these elements"*, and after the round-4 ring
+    /// went in, *"still misaligned"*.
+    ///
+    /// The item is a `Grid` with a `Weight` column and the fill is bound on
+    /// the item, so the highlighted band is full width. The head row inside
+    /// that cell settled at its content width until `Align::Stretch` went on
+    /// the grid, so every figure drawn on the row — and the item declares
+    /// `FocusShownOn::OnHead`, so all of them are — stopped short of it.
+    ///
+    /// Measured on the frame, not by eye: the placed row and the placed item
+    /// must share both edges. Then photographed, because the frame record
+    /// cannot show the indicator at all — the host paints it.
+    ///
+    /// # How this goes red
+    ///
+    /// Drop `align: Some(Align::Stretch)` from `tree_item_sized`'s grid.
+    #[test]
+    fn a_tree_rows_indicator_spans_the_band_the_selection_fills() {
+        for theme in ["dark", "light"] {
+            let mut cam = Camera::on("Tree view");
+            // The theme walk goes to row 27 and clicks, which moves focus, so
+            // it has to happen before focus is seated rather than between the
+            // two photographs.
+            if theme == "light" {
+                cam.light();
+            }
+            cam.focus("tv-gorgon");
+            assert!(
+                cam.ring().is_some_and(|id| id.ends_with("tv-gorgon")),
+                "{theme}: the driver did not seat focus on the item"
+            );
+            let item = cam.rect("tv-gorgon");
+            let head = cam.rect("tv-gorgon/row");
+            assert_eq!(
+                head.x, item.x,
+                "{theme}: the head row starts right of the band the fill covers"
+            );
+            assert_eq!(
+                head.x + head.w,
+                item.x + item.w,
+                "{theme}: the head row stops {} short of the band's right \
+                 edge, so the indicator drawn on it does too",
+                (item.x + item.w) - (head.x + head.w)
+            );
+            cam.shoot(&format!("39-tree-view-border-{theme}"));
+        }
+    }
+
+    /// One photograph of each figure, in each theme. Six pictures, and the
+    /// point of the test is that a person opens them.
+    ///
+    /// The assertion is deliberately weak — focus landed and the picture
+    /// moved — because a frame-record assertion cannot see the indicator at
+    /// all and a strong one here would only be theatre. `paint.rs` pins the
+    /// arithmetic; the two tests above pin the two defects. This exists so
+    /// the three figures are on disk side by side.
+    #[test]
+    fn every_figure_is_photographed_in_both_themes() {
+        // Two figures have a shipped component that declares them, and one
+        // does not. `Sides` is every field well; `Border` is the default and
+        // every contained control. `BarUnder` has no component after the tab
+        // citation was corrected — the operator asked for three figures by
+        // name and "bar under" is one of them, so it stays in the
+        // vocabulary and gets photographed on a node built to wear it,
+        // rather than on a control talked into it.
+        for (page, tail, name) in [
+            ("Search", "query/input", "28-search-sides"),
+            ("Button", "btn-primary", "04-button-border"),
+        ] {
+            for theme in ["dark", "light"] {
+                let mut cam = Camera::on(page);
+                if theme == "light" {
+                    cam.light();
+                }
+                let before = cam.shoot(&format!("{name}-{theme}-rest"));
+                cam.focus(tail);
+                assert!(
+                    cam.ring().is_some_and(|id| id.ends_with(tail)),
+                    "{page}/{theme}: the driver did not seat focus on {tail}"
+                );
+                let after = cam.shoot(&format!("{name}-{theme}"));
+                assert_ne!(
+                    before, after,
+                    "{page}/{theme}: focus reached {tail} and nothing was drawn"
+                );
+            }
+        }
+        for theme in ["dark", "light"] {
+            // Two nodes, and the bar is the second. The host spawns focus on
+            // the first focusable node of a fresh page, so a one-node
+            // fixture is already focused before the driver touches it and a
+            // "before" frame would be no such thing.
+            let mut cam = Camera::fixture(
+                &[
+                    ("park", FocusFigure::Border),
+                    ("bar", FocusFigure::BarUnder),
+                ],
+                theme,
+            );
+            let bar_rect = cam.rect("bar");
+            let before = raster(&mut cam, &format!("fixture-bar-under-{theme}-rest"));
+            cam.focus("bar");
+            assert!(
+                cam.ring().is_some_and(|id| id.ends_with("bar")),
+                "fixture/{theme}: the driver did not seat focus on the subject"
+            );
+            let after = raster(&mut cam, &format!("fixture-bar-under-{theme}"));
+
+            // Probe the bar's own pixels rather than compare whole files: a
+            // byte difference anywhere in a 2400x1800 capture would pass
+            // even if the bar were never drawn.
+            let bar = FocusRing::STANDARD.bar(bar_rect);
+            let at = (bar.x + bar.w / 2.0, bar.y + bar.h / 2.0);
+            let rest = px(&before, at.0, at.1);
+            let lit = px(&after, at.0, at.1);
+            assert_ne!(
+                rest, lit,
+                "fixture/{theme}: the middle of the bar's own rect {bar:?} \
+                 reads {rest:?} whether or not the subject has focus, so no \
+                 bar was drawn"
+            );
+        }
+    }
+
+    /// The worst case for a tab, photographed rather than argued about: the
+    /// tab that is **selected** is also the one focused, so its own accent
+    /// indicator and the focus ring are the same colour.
+    ///
+    /// `$focus` and `$border-interactive` are both `#0f62fe` in the white
+    /// and g10 themes, and Carbon ships the ring on a tab anyway
+    /// (`_tabs.scss:497-499`). What tells them apart is shape: the
+    /// indicator is one edge, the ring is four. This reads the raster on the
+    /// three edges the indicator is not on, and each must carry accent that
+    /// the unfocused frame does not.
+    ///
+    /// # How this goes red
+    ///
+    /// Put `FocusFigure::BarUnder` back on `tab_variant` — the round-5
+    /// mistake — and the tab's own edges stop changing when focus arrives,
+    /// because the bar hangs below the tab instead of ringing it.
+    #[test]
+    fn a_selected_tab_focused_shows_its_ring_around_its_indicator() {
+        for theme in ["dark", "light"] {
+            let mut cam = Camera::on("Tabs");
+            if theme == "light" {
+                cam.light();
+            }
+            let tab = cam.rect("tab-line-0");
+            let before = raster(&mut cam, &format!("32-tabs-selected-{theme}-rest"));
+            cam.focus("tab-line-0");
+            assert!(
+                cam.ring().is_some_and(|id| id.ends_with("tab-line-0")),
+                "{theme}: the driver did not seat focus on the selected tab"
+            );
+            let indicator = cam.rect("tab-line-0/indicator");
+            let after = raster(&mut cam, &format!("32-tabs-selected-focused-{theme}"));
+
+            // The indicator is the bottom edge of a Line tab. Sample the
+            // other three, a stroke's width inside the tab so the reading is
+            // of the ring's own band and not of the card beyond it.
+            let inset = FocusRing::STANDARD.stroke / 2.0;
+            let probes = [
+                ("top", tab.x + tab.w / 2.0, tab.y + inset),
+                ("left", tab.x + inset, tab.y + tab.h / 2.0),
+                ("right", tab.right() - inset, tab.y + tab.h / 2.0),
+            ];
+            for (edge, x, y) in probes {
+                let rest = px(&before, x, y);
+                let lit = px(&after, x, y);
+                assert_ne!(
+                    rest, lit,
+                    "{theme}: the tab's {edge} edge reads {rest:?} both \
+                     before and after focus, so the ring is not closed and \
+                     focus has nowhere the indicator is not"
+                );
+            }
+
+            // And the indicator is still its own mark under all that: it is
+            // pinned to the bottom edge, which is where a Line tab puts it.
+            assert!(
+                indicator.bottom() >= tab.bottom() - 0.01,
+                "{theme}: the indicator {indicator:?} is not on the tab's \
+                 bottom edge {tab:?}, so this test is probing the wrong three"
+            );
+        }
+    }
+
+    /// The morph, photographed: a mid-flight frame of every figure pair,
+    /// both ways.
+    ///
+    /// The caret is four springs, one band per edge, so a change of figure
+    /// is a change of where those four sit and never a swap.
+    /// `focus_caret.rs`'s `every_pair_of_figures_morphs_band_by_band` holds
+    /// that per band and per frame; this is the picture, because a frame
+    /// record cannot show the indicator at all.
+    ///
+    /// Driven with motion live and stepped a frame at a time. `Camera::on`
+    /// reduces motion so a shot taken after a click shows the settled
+    /// result; a test about a transition must not.
+    ///
+    /// # Why a fixture and not catalog pages
+    ///
+    /// Three figures make three unordered pairs, six with direction. No
+    /// catalog row carries two different figures — after the tab correction
+    /// no row carries `BarUnder` at all — so on the catalog only
+    /// `Sides <-> Border` can be photographed, and round 5 shipped with
+    /// `BarUnder <-> Sides` unphotographed. A fixture holding one node per
+    /// figure photographs all six and owes no component anything.
+    ///
+    /// # How this goes red
+    ///
+    /// Make `FocusCaret::retarget` snap instead of spring and
+    /// `host_caret_is_moving` is false on the frame after the hop starts.
+    #[test]
+    fn each_figure_pair_is_photographed_in_flight() {
+        let subjects = [
+            ("bar", FocusFigure::BarUnder),
+            ("sides", FocusFigure::Sides),
+            ("border", FocusFigure::Border),
+        ];
+        for (i, (from, _)) in subjects.iter().enumerate() {
+            for (to, _) in subjects.iter().skip(i + 1).map(|s| (s.0, s.1)) {
+                for (a, b, way) in [(*from, to, "out"), (to, *from, "back")] {
+                    let mut cam = Camera::fixture(&subjects, "dark");
+                    cam.focus(a);
+                    assert!(
+                        cam.ring().is_some_and(|id| id.ends_with(a)),
+                        "{a}->{b}: the driver did not seat focus on {a}"
+                    );
+                    cam.live_motion();
+                    cam.focus(b);
+                    assert!(
+                        cam.host_caret_is_moving(),
+                        "{a}->{b}: the hop never started, so there is no \
+                         morph to photograph"
+                    );
+                    // Two frames in: the springs have visibly left `a` and a
+                    // 160 ms hop is about ten frames, so they cannot have
+                    // arrived.
+                    cam.tick();
+                    cam.tick();
+                    assert!(
+                        cam.host_caret_is_moving(),
+                        "{a}->{b}: the caret settled before the photograph"
+                    );
+                    cam.shoot(&format!("fixture-{from}-to-{to}-{way}-mid"));
+                }
+            }
+        }
     }
 }

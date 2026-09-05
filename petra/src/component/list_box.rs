@@ -50,9 +50,9 @@ use super::tokens::{
 };
 use crate::geom::{Align as CrossAlign, Axis};
 use crate::tree::{
-    Align, Anchor, AxisConstraint, ClampRule, Constraints, Edge, Fit, FocusFigure, InputPolicy,
-    InsetRefs, Interaction, Justify, Key, Layer, NodeKind, Props, Role, Semantics, TextWrap, Tip,
-    ViewNode,
+    Align, Anchor, AxisConstraint, ClampRule, Constraints, Edge, Fit, FocusFigure, FocusShownOn,
+    InputPolicy, InsetRefs, Interaction, Justify, Key, Layer, NodeKind, Props, Role, Semantics,
+    TextWrap, Tip, ViewNode,
 };
 
 /// Height of the rule between two rows, and of the rule under a field.
@@ -228,7 +228,8 @@ pub(crate) fn list_box_field(
         })
         .interactive(Role::Button, label, FIELD_INTENTS);
     node.semantics.expanded = Some(expanded);
-    node.semantics.focus_figure = FocusFigure::Hug;
+    node.semantics.focus_figure = FocusFigure::Sides;
+    node.semantics.focus_shown_on = FocusShownOn::Well;
     node
 }
 
