@@ -89,6 +89,15 @@ impl Page for Notification {
                 "nt-inline",
                 sp("spacing.md"),
                 vec![
+                    // Not stretched. The component carries Carbon's band —
+                    // `min-inline-size: 288px` and the ramp's `md` cap of
+                    // 608 — and every message on this page is shorter than
+                    // the floor, so all four cards land on 288 exactly and
+                    // the column is one column. Round 3 photographed a
+                    // staircase here because the floor did not exist yet.
+                    // Stretching to the page instead would also line them up,
+                    // at 550-odd wide with a lot of empty band; Carbon's own
+                    // reference for this row is the narrow card.
                     body("kinds", sp("spacing.md"), inline),
                     // The toast, keyed as it has been since round 2 so its
                     // `nt/panel` path stays the one `shots.rs` photographs.

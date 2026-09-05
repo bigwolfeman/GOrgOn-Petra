@@ -1742,17 +1742,28 @@ mod tests {
 
     /// Row 21, the operator's decision made twice: no rail, text centred.
     /// Asserted on the placed frame — the card's leftmost child is the
-    /// title's column and not a 3-unit bar, and the title's centre is the
+    /// text's column and not a 3-unit bar, and the head row's centre is the
     /// card's centre — and photographed.
+    ///
+    /// The head row, not the title: the status glyph leads the title on that
+    /// row (Carbon's own placement), so the title alone sits right of centre
+    /// by half the glyph and its gap. Centring the title instead would push
+    /// the glyph off the card's left.
     #[test]
     fn the_notification_card_has_no_rail_and_its_text_is_centred() {
         let mut cam = Camera::on("Notification");
         cam.shoot("21-notification");
         assert!(!cam.has("nt/panel/rail"), "the accent rail is still placed");
         let panel = cam.rect("nt/panel");
-        let title = cam.rect("panel/title");
+        let head = cam.rect("panel/head");
         let body = cam.rect("panel/body");
-        for (name, line) in [("title", title), ("body", body)] {
+        let (glyph, title) = (cam.rect("panel/head/glyph"), cam.rect("panel/head/title"));
+        assert!(
+            glyph.x + glyph.w <= title.x,
+            "the status glyph must lead the title on one line, got \
+             {glyph:?} then {title:?}"
+        );
+        for (name, line) in [("head", head), ("body", body)] {
             let off = (line.x + line.w / 2.0) - (panel.x + panel.w / 2.0);
             assert!(
                 off.abs() <= 0.5,
@@ -3425,9 +3436,27 @@ mod tests {
     fn the_notification_kinds_draw_four_different_marks_and_the_toast_steps() {
         let mut cam = Camera::on("Notification");
         let cards = ["nt-error", "nt-warning", "nt-info", "nt-success"];
+        // The column is one column. Round 3 photographed a staircase: each
+        // card had shrink-wrapped its own sentence, so four cards drew four
+        // widths. Carbon floors an inline notification at 288 and caps it at
+        // the ramp's `md` step, and the page stretches them to that band.
+        let widths: Vec<f32> = cards.iter().map(|card| cam.rect(card).w).collect();
+        for (card, width) in cards.iter().zip(&widths) {
+            assert!(
+                (width - widths[0]).abs() <= 0.5,
+                "{card} is {width} wide where {} is {}: the cards stair-step",
+                cards[0],
+                widths[0]
+            );
+        }
+        assert!(
+            widths[0] >= 288.0,
+            "an inline card is under Carbon's 288 floor: {}",
+            widths[0]
+        );
         let rects: Vec<Rect> = cards
             .iter()
-            .map(|card| cam.rect(&format!("{card}/glyph")))
+            .map(|card| cam.rect(&format!("{card}/head/glyph")))
             .collect();
         let shot = raster(&mut cam, "21-notification");
         let marks: Vec<Vec<[u8; 4]>> = rects
@@ -3447,11 +3476,11 @@ mod tests {
         }
 
         // The toast opens on Info. Press its action and the mark must change.
-        let toast_glyph = cam.rect("panel/glyph");
+        let toast_glyph = cam.rect("panel/head/glyph");
         let before = inset_pixels(&shot, toast_glyph, 0);
         cam.click("panel/action");
         let after_shot = raster(&mut cam, "21-notification-stepped");
-        let after = inset_pixels(&after_shot, cam.rect("panel/glyph"), 0);
+        let after = inset_pixels(&after_shot, cam.rect("panel/head/glyph"), 0);
         assert!(
             differing(&before, &after) > 20,
             "a click on the toast's action left its status mark unchanged"

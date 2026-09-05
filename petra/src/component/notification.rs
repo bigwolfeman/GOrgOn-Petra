@@ -2,12 +2,12 @@
 //!
 //! Anatomy (`_toast-notification.scss` / `_inline-notification.scss`), as
 //! this library draws it:
-//! 1. Title — the required name (and the non-colour channel),
-//!    `heading-compact-01`.
+//! 1. Head — the status glyph, then the required name (and the non-colour
+//!    channel), `heading-compact-01`, on one line.
 //! 2. Body — the message, `body-compact-01`.
 //! 3. Optional action — a [`Role::Button`] with a label.
 //!
-//! Title and body are centred in the card, on both axes.
+//! Head and body are centred in the card, on both axes.
 //!
 //! # No rail, and a glyph instead
 //!
@@ -40,12 +40,13 @@
 //!   red-green colourblind reader and is stricter than Carbon's own
 //!   hue-plus-shape pairing. The word is a third channel:
 //!   [`Semantics.value`] carries the kind.
-//! - **Placement.** Carbon puts the glyph inline-start of a left-aligned
-//!   title. The operator asked twice for the text to be centred, and a
-//!   leading glyph and a card-centred title cannot both be true, so the
-//!   glyph sits **above** the title in the same centred column. That is a
-//!   departure from Carbon's anatomy, taken because his instruction is
-//!   newer than the conformance target on this one row.
+//! - **Placement.** Carbon puts the glyph inline-start of the title, one
+//!   `$spacing-05` before it, and left-aligns the pair against the card's
+//!   leading edge. The operator asked twice for the text to be centred, so
+//!   only the second half of that is dropped: glyph and title are a
+//!   horizontal row, the glyph still leading, and the **row** is what the
+//!   card centres. Both hold. The earlier reading — glyph stacked above the
+//!   title — is gone; it read as a loose symbol rather than a status field.
 //!
 //! Carbon's alert palette (`$notification-background-error` / success
 //! green / warning yellow) is **not** used either. Those names are not in
@@ -72,9 +73,23 @@ use crate::tree::{
 const TOAST_INLINE: f32 = 288.0;
 /// Carbon inline/actionable `min-block-size` (`3rem`).
 const INLINE_MIN_BLOCK: f32 = 48.0;
+/// Carbon inline/actionable `min-inline-size` (`288px`) — MEASURED slice-c
+/// Notification, "Inline / Actionable: ... `min-inline-size: 288px` floor".
+/// Without it every card shrink-wraps its own sentence and a column of them
+/// stair-steps, which is what the round-3 walk saw.
+const INLINE_MIN_INLINE: f32 = 288.0;
+/// Carbon inline/actionable `max-inline-size` at the `md` breakpoint
+/// (`608px`) — MEASURED slice-c Notification, "responsive `max-inline-size`
+/// ramp `288px -> 608px (md) -> 736px (lg) -> 832px (max)`". Only the `md`
+/// step is taken: this library has no breakpoint machinery, and the
+/// narrowest cap is the one that never lets a card run the width of a
+/// desktop page.
+const INLINE_MAX_INLINE: f32 = 608.0;
 
 const _: () = assert!(TOAST_INLINE == 288.0);
 const _: () = assert!(INLINE_MIN_BLOCK == 48.0);
+const _: () = assert!(INLINE_MIN_INLINE == 288.0);
+const _: () = assert!(INLINE_MAX_INLINE == 608.0);
 
 const ACTION_INTENTS: &[Interaction] =
     &[Interaction::Focus, Interaction::Click, Interaction::Hover];
@@ -175,6 +190,8 @@ pub fn notification_inline_kind(
     let title = title.into();
     let mut node = chrome(key, kind, title.clone(), body, Vec::new());
     node.constraints.vertical.min = Some(INLINE_MIN_BLOCK);
+    node.constraints.horizontal.min = Some(INLINE_MIN_INLINE);
+    node.constraints.horizontal.max = Some(INLINE_MAX_INLINE);
     node.semantics = Semantics {
         role: Some(Role::Status),
         label: Some(title),
@@ -242,8 +259,9 @@ fn toast_surface(
     node
 }
 
-/// The card: the status glyph over the title over the body over any
-/// extras, every line centred, on the raised surface with its shadow.
+/// The card: the glyph beside the title on one line, the body under it,
+/// then any extras, every line centred, on the raised surface with its
+/// shadow.
 fn chrome(
     key: impl Into<Key>,
     kind: NotificationKind,
@@ -257,7 +275,15 @@ fn chrome(
     let glyph = icon_in("glyph", kind.glyph(), IconBox::Header, IconTone::Primary);
     let mut heading = text("title", title);
     heading.props.style = Some(t(TYPOGRAPHY_HEADING_SM));
-    let mut copy = vec![glyph, heading, text("body", body.into())];
+    // Glyph and title share one line, the glyph leading, separated by
+    // Carbon's own `margin-inline-end: 16px` / `$spacing-05` — MEASURED
+    // slice-c Notification, "Inline/Actionable ... icon `margin-inline-end`:
+    // 16px/`$spacing-05`". The pair is a row, and the row is what the card
+    // centres, so both the operator's centring and Carbon's leading glyph
+    // hold at once.
+    let mut head = stack("head", Axis::Horizontal, Some(SPACING_05), vec![glyph, heading]);
+    head.props.align = Some(Align::Center);
+    let mut copy = vec![head, text("body", body.into())];
     copy.extend(extras);
     let mut node = stack(key, Axis::Vertical, Some(SPACING_03), copy);
     // Cross-axis centre: each line sits in the middle of the card's width.
@@ -303,8 +329,8 @@ fn action_button(key: impl Into<Key>, label: String) -> ViewNode {
 #[cfg(test)]
 mod tests {
     use super::{
-        INLINE_MIN_BLOCK, TOAST_INLINE, notification, notification_actionable, notification_inline,
-        notification_toast,
+        INLINE_MAX_INLINE, INLINE_MIN_BLOCK, INLINE_MIN_INLINE, TOAST_INLINE, notification,
+        notification_actionable, notification_inline, notification_toast,
     };
     use crate::component::disabled;
     use crate::component::tokens::{LAYER_HOVER, SURFACE_RAISED, TYPOGRAPHY_HEADING_SM};
@@ -413,11 +439,22 @@ mod tests {
             );
             assert_eq!(
                 card.children[0].key.as_str(),
-                "glyph",
-                "the status glyph leads the centred column"
+                "head",
+                "the glyph-and-title row is the card's first line"
             );
-            assert_eq!(card.children[1].key.as_str(), "title");
-            assert_eq!(card.children[2].key.as_str(), "body");
+            let head = &card.children[0];
+            assert_eq!(
+                head.props.axis,
+                Some(Axis::Horizontal),
+                "glyph and title share one line"
+            );
+            assert_eq!(
+                head.children[0].key.as_str(),
+                "glyph",
+                "the status glyph leads the title, as Carbon places it"
+            );
+            assert_eq!(head.children[1].key.as_str(), "title");
+            assert_eq!(card.children[1].key.as_str(), "body");
             assert_eq!(
                 found(&node, "title")
                     .props
@@ -432,6 +469,48 @@ mod tests {
                 "no outline: Carbon specs none past the rail"
             );
         }
+    }
+
+    /// Carbon floors an inline notification at `min-inline-size: 288px` and
+    /// caps it at the `md` step of the ramp, so a stretched column of them is
+    /// one column and not a staircase. Round 3 saw the staircase: each card
+    /// had shrink-wrapped its own sentence.
+    #[test]
+    fn every_inline_notification_holds_carbons_width_band() {
+        let short = notification_inline("a", "Ok", "Done.");
+        let long = notification_inline(
+            "b",
+            "Rebuild failed",
+            "Fiber 7 did not come back and the trace volume is at 80 percent.",
+        );
+        for node in [&short, &long] {
+            assert_eq!(
+                node.constraints.horizontal.min,
+                Some(INLINE_MIN_INLINE),
+                "the floor does not depend on the sentence"
+            );
+            assert_eq!(
+                node.constraints.horizontal.max,
+                Some(INLINE_MAX_INLINE),
+                "nor does the ceiling"
+            );
+        }
+        let frame = petrify_stretched(vec![short, long]);
+        let width = |id: &str| frame.placement(id).map(|p| p.rect.w);
+        assert_eq!(
+            width("/root/a"),
+            width("/root/b"),
+            "two inline cards in one stretched column draw the same width"
+        );
+        assert!(
+            width("/root/a").is_some_and(|w| (INLINE_MIN_INLINE..=INLINE_MAX_INLINE).contains(&w)),
+            "and that width is inside Carbon's band, got {:?}",
+            width("/root/a")
+        );
+        assert!(
+            width("/root/a").is_some_and(|w| w < VIEWPORT.w),
+            "the ceiling stops a card running the whole page"
+        );
     }
 
     #[test]
@@ -494,12 +573,26 @@ mod tests {
     }
 
     fn petrify_lone(node: ViewNode) -> PetrifiedFrame {
-        let root = ViewNode::new(NodeKind::Stack, "root")
-            .with_props(Props {
-                axis: Some(Axis::Vertical),
-                ..Props::default()
-            })
-            .child(node);
+        petrify_all(vec![node])
+    }
+
+    fn petrify_stretched(nodes: Vec<ViewNode>) -> PetrifiedFrame {
+        petrify_column(nodes, Some(Align::Stretch))
+    }
+
+    fn petrify_all(nodes: Vec<ViewNode>) -> PetrifiedFrame {
+        petrify_column(nodes, None)
+    }
+
+    fn petrify_column(nodes: Vec<ViewNode>, align: Option<Align>) -> PetrifiedFrame {
+        let mut root = ViewNode::new(NodeKind::Stack, "root").with_props(Props {
+            axis: Some(Axis::Vertical),
+            align,
+            ..Props::default()
+        });
+        for node in nodes {
+            root = root.child(node);
+        }
         let registry = accepting_registry();
         let mut harness = Harness::new();
         let viewport = Viewport::new(VIEWPORT, ThemeMode::Dark);
@@ -571,7 +664,10 @@ mod tests {
         };
         let panel = rect("/panel");
         assert_eq!(panel.w, TOAST_INLINE, "the card fills the toast's 288");
-        for key in ["/title", "/body"] {
+        // The head row — glyph then title — is what centres, not the title
+        // on its own: the glyph leads the title inside the row, so the title
+        // is deliberately right of centre by half the glyph and its gap.
+        for key in ["/head", "/body"] {
             let line = rect(key);
             let off = (line.x + line.w / 2.0) - (panel.x + panel.w / 2.0);
             assert!(
@@ -579,6 +675,19 @@ mod tests {
                 "{key} centre is {off} off the card's centre: {line:?} in {panel:?}"
             );
         }
+        let (glyph, title) = (rect("/glyph"), rect("/title"));
+        assert!(
+            glyph.x + glyph.w <= title.x,
+            "the glyph leads the title on the same line, got {glyph:?} then {title:?}"
+        );
+        let head = rect("/head");
+        let share = |r: crate::geom::Rect| (r.y + r.h / 2.0) - (head.y + head.h / 2.0);
+        assert!(
+            share(glyph).abs() <= 0.5 && share(title).abs() <= 0.5,
+            "glyph and title share the row's centre line, got {} and {}",
+            share(glyph),
+            share(title)
+        );
         check_geometry(&petrify_lone(notification_inline(
             "warn",
             "Disk filling",
