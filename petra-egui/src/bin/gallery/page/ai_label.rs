@@ -19,15 +19,17 @@ const PANEL: &str = "panel";
 
 /// What the open panel says.
 ///
-/// One short line, and that is a constraint rather than a style choice.
-/// `layout::overlay_surface::natural_size` measures a surface's children at
-/// `SizeProposal::unspecified()` — one unbounded line — and the surface's
-/// own 368-unit `max` (`popover.rs`'s `MAX_INLINE`) is applied to the
-/// placement afterwards, so a body longer than one line is **cut**, not
-/// wrapped. Photographed 2026-09-05: a two-sentence body lost its second
-/// half mid-word. The rest of what a reader needs is in the page's own
-/// prose, which does wrap. Written up in `ROUND3-DEFECTS.md`.
-const EXPLANATION: &str = "Model answer, from 4,318 resolved tickets.";
+/// **Two sentences, deliberately.** This was one short line until
+/// 2026-09-05, and the comment here said why: the panel's body was cut
+/// mid-word rather than wrapped, so the row was written short to keep the
+/// picture presentable. That hid the defect for four rounds. The body now
+/// wraps (`component::popover::bubble_text`) inside a box that honours its
+/// own 368-unit ceiling
+/// (`layout::overlay_surface::natural_size` reserves the panel's padding
+/// out of the ceiling before offering it), so this string is long enough to
+/// need three lines and the row shows both halves of that working.
+const EXPLANATION: &str = "This score came from a model, not a person. It reads 4,318 resolved \
+     tickets and weighs the twelve most recent the heaviest.";
 
 /// Live state of the AI label page: whether the explainability popover is
 /// open.
