@@ -41,7 +41,7 @@
 //! by a second owner, and the two drift the first time a surface overlaps
 //! something (FR-009, R-A §7(a)).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use egui::{Context, Id, LayerId, Order};
@@ -54,7 +54,7 @@ use gorgon_petra::geom::{Axis, Rect, Scale, Size};
 use gorgon_petra::input::{
     InputEvent, KeyCode, PointerButton, PointerRouting, PointerState, Route, RouteOutcome,
 };
-use gorgon_petra::layout::overlay_surface::surface_scopes;
+use gorgon_petra::layout::overlay_surface::{focus_taking_surfaces, surface_scopes};
 use gorgon_petra::layout::{
     AnchorRects, ChangeSet, LayoutCtx, LayoutState, MeasureCache, RowSource, ScrollStack,
 };
@@ -570,6 +570,21 @@ pub struct Host<A: App> {
     /// a bug this makes visible instead of hiding.
     #[cfg(not(target_arch = "wasm32"))]
     picking: Option<std::sync::mpsc::Receiver<Vec<std::path::PathBuf>>>,
+    /// Every focus-claiming overlay (`Props::takes_focus`) the previous pass
+    /// placed, and the node focus was on at the moment each of them opened.
+    ///
+    /// The map is both halves of the rule at once. A key that is new this
+    /// frame is an overlay that just opened, so focus moves into it; a key
+    /// that is gone is one that just closed, so focus goes back to the id
+    /// stored beside it. `None` beside a key means focus was nowhere when it
+    /// opened, and there is nothing to hand back to.
+    ///
+    /// Diffing frames is what makes the move happen once. `enter_open_modal`
+    /// gets that for free — "focus is already inside some blocking scope" is
+    /// an idempotent test — but a menu declares no scope at all, so an
+    /// unguarded rule would drag focus back to the first item after every
+    /// Tab for as long as the menu stayed open.
+    focus_taking: BTreeMap<String, Option<String>>,
     /// Where the pointer is, what it is over, and what it has captured. The
     /// pointer's peer of `focus`; see this module's doc.
     pointer: PointerState,
@@ -687,6 +702,7 @@ impl<A: App> Host<A> {
             pending_focus: None,
             #[cfg(not(target_arch = "wasm32"))]
             picking: None,
+            focus_taking: BTreeMap::new(),
             pointer: PointerState::new(),
             caret: FocusCaret::new(),
             scene: Vec::new(),
@@ -1126,6 +1142,15 @@ impl<A: App> Host<A> {
         };
 
         let scopes = surface_scopes(&tree);
+        let taking = focus_taking_surfaces(&tree);
+        // Read before any reconciliation below can move it: this is where
+        // focus stood while the *previous* frame's overlays were still
+        // mounted, which is the only moment that can answer "was focus
+        // inside the overlay that just closed" —
+        // `reseat_focus_taking_surfaces` needs that answer and
+        // `FocusTree::update`'s vanished-focus rule has already destroyed it
+        // by the time that call runs.
+        let focus_before = self.focus.current().map(str::to_owned);
         let mut frame = self.petrify_frame(tree, viewport, snapshot.as_ref());
 
         // `state.focused` was set from the *last* pass's reconciliation,
@@ -1226,6 +1251,7 @@ impl<A: App> Host<A> {
             let _ = self.focus.focus(&target);
         }
         self.enter_open_modal(&frame, &scopes);
+        self.reseat_focus_taking_surfaces(&frame, &taking, focus_before.as_deref());
         // The pointer's half of the same reconciliation, and it needs the new
         // placements for the same reason focus does: a captured node that is
         // gone has no successor, and hover is a fact about the picture on
@@ -1669,6 +1695,81 @@ impl<A: App> Host<A> {
                 false,
                 "a node this frame's own focus order lists was refused focus: {err}"
             );
+        }
+    }
+
+    /// Move focus into a focus-claiming overlay that just opened, and back
+    /// out of one that just closed.
+    ///
+    /// [`gorgon_petra::tree::Props::takes_focus`] is the declaration; this is
+    /// the timing, which is the host's half of the split this module's doc
+    /// draws ("`gorgon-petra` decides *what* focus does, this crate decides
+    /// *when*"). Carbon's `Menu` is the component that asks for it:
+    /// `Menu.js`'s `handleOpen` stores `document.activeElement` and focuses
+    /// the list, an effect seats item 0, and `handleClose` calls
+    /// `returnFocus`.
+    ///
+    /// `focus_before` is where focus stood before this pass's reconciliation
+    /// touched it — [`Host::pass`] reads it before petrify. It is what the
+    /// return half tests: focus goes back to the opener **only when it was
+    /// still inside the overlay that closed**. Without that test a press on
+    /// some other control would open with that control focused (the press
+    /// seats focus before petrify) and then be yanked back to a trigger the
+    /// operator had already left.
+    ///
+    /// Three deliberate no-ops. An overlay with nothing focusable inside is
+    /// still recorded as open, so it does not try again every frame, and it
+    /// hands nothing back when it goes. A refused
+    /// [`FocusTree::focus`] — the opener has since been disabled or
+    /// unmounted, or a blocking scope has opened over it — leaves focus
+    /// wherever the vanished-focus rule already put it, which is the same
+    /// "best effort, never broken" choice [`Host::seat_pointer_focus`] makes.
+    /// And an overlay that is placed but clipped out of sight is not open for
+    /// this purpose: [`Placement::is_visible`] is the same test
+    /// [`FocusTree`] uses to decide what is reachable at all.
+    fn reseat_focus_taking_surfaces(
+        &mut self,
+        frame: &PetrifiedFrame,
+        taking: &BTreeSet<String>,
+        focus_before: Option<&str>,
+    ) {
+        let present: BTreeSet<&str> = frame
+            .placements
+            .iter()
+            .filter(|p| p.is_visible() && taking.contains(&p.id))
+            .map(|p| p.id.as_str())
+            .collect();
+        let closed: Vec<(String, Option<String>)> = self
+            .focus_taking
+            .iter()
+            .filter(|(id, _)| !present.contains(id.as_str()))
+            .map(|(id, opener)| (id.clone(), opener.clone()))
+            .collect();
+        for (id, opener) in closed {
+            self.focus_taking.remove(&id);
+            let was_inside = focus_before.is_some_and(|f| f.starts_with(&format!("{id}/")));
+            if was_inside && let Some(target) = opener {
+                let _ = self.focus.focus(&target);
+            }
+        }
+        let opened: Vec<String> = present
+            .iter()
+            .filter(|id| !self.focus_taking.contains_key(**id))
+            .map(|id| (*id).to_owned())
+            .collect();
+        for id in opened {
+            let opener = self.focus.current().map(str::to_owned);
+            let inside = format!("{id}/");
+            if let Some(first) = self
+                .focus
+                .order()
+                .iter()
+                .find(|node| node.starts_with(&inside))
+                .cloned()
+            {
+                let _ = self.focus.focus(&first);
+            }
+            self.focus_taking.insert(id, opener);
         }
     }
 
@@ -2465,6 +2566,9 @@ mod tests {
         gutter: bool,
         modal: bool,
         menu: bool,
+        /// Whether the fixture's menu declares `Props::takes_focus`, the way
+        /// `gorgon_petra::component::menu` does.
+        menu_takes_focus: bool,
         hide_run: bool,
         /// How many times [`App::view`] ran. A caret in flight must not
         /// increment this on every vsync.
@@ -2571,6 +2675,7 @@ mod tests {
                             anchor: Some(Anchor::Viewport),
                             clamp: Some(ClampRule::Shrink),
                             input_policy: Some(InputPolicy::DismissOutside),
+                            takes_focus: self.menu_takes_focus.then_some(true),
                             ..Props::default()
                         })
                         .child(button("open", "Open")),
@@ -2772,6 +2877,151 @@ mod tests {
                 .any(|(_, w)| w == "unrouted: outside every currently-open Block surface's bounds"),
             "DismissOutside places no swallow boundary: {:?}",
             host.app().seen
+        );
+    }
+
+    /// `Props::takes_focus` reaching the host: focus moves onto the first
+    /// focusable node inside the overlay when it appears, and back to
+    /// whatever held focus at that moment when it goes away.
+    ///
+    /// Carbon's `Menu` is what asks for this
+    /// (`@carbon/react/lib/components/Menu/Menu.js`: `handleOpen` stores
+    /// `document.activeElement`, an effect seats item 0, `handleClose` calls
+    /// `returnFocus`), and `gorgon_petra::component::menu` is the one
+    /// constructor that declares it. Driven here on the fixture rather than
+    /// on the gallery so the rule is pinned where it lives.
+    ///
+    /// Note the extra pass after each toggle: the seat happens after the
+    /// frame is petrified, the same "seat it after petrify" shape
+    /// `enter_open_modal` has, so the ring lands one frame later.
+    #[test]
+    fn a_focus_taking_overlay_seats_focus_inside_itself_and_hands_it_back() {
+        let ctx = headless();
+        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        host.app_mut().menu_takes_focus = true;
+        step(&ctx, &mut host, RawInput::default());
+        host.focus_mut()
+            .focus("/root/run")
+            .expect("run is focusable");
+        step(&ctx, &mut host, RawInput::default());
+        assert_eq!(host.focus().current(), Some("/root/run"));
+
+        host.app_mut().menu = true;
+        step(&ctx, &mut host, RawInput::default());
+        assert_eq!(
+            host.focus().current(),
+            Some("/root/menu/open"),
+            "the overlay opened and focus stayed outside it"
+        );
+
+        host.app_mut().menu = false;
+        step(&ctx, &mut host, RawInput::default());
+        assert_eq!(
+            host.focus().current(),
+            Some("/root/run"),
+            "the overlay closed and focus did not go back to its opener"
+        );
+    }
+
+    /// The same overlay, without the declaration: focus is left where it is.
+    ///
+    /// This is what keeps the rule off Carbon's Dropdown, Combo box and Date
+    /// picker, which all open an anchored list and all keep focus on the
+    /// control that opened it. A host rule keyed on `Role::Overlay` or on
+    /// `InputPolicy::DismissOutside` would move focus in every one of them,
+    /// and this fixture's menu is exactly that shape.
+    #[test]
+    fn an_overlay_that_does_not_declare_takes_focus_leaves_focus_alone() {
+        let ctx = headless();
+        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        step(&ctx, &mut host, RawInput::default());
+        host.focus_mut()
+            .focus("/root/run")
+            .expect("run is focusable");
+        step(&ctx, &mut host, RawInput::default());
+
+        host.app_mut().menu = true;
+        step(&ctx, &mut host, RawInput::default());
+        step(&ctx, &mut host, RawInput::default());
+        assert_eq!(
+            host.focus().current(),
+            Some("/root/run"),
+            "an overlay that never claimed focus took it anyway"
+        );
+    }
+
+    /// The seat happens **once**, on the frame the overlay appears.
+    ///
+    /// `enter_open_modal` gets idempotence free — "focus is already inside
+    /// some blocking scope" is a test it can repeat every frame — but a menu
+    /// declares no scope, so the rule is a frame-to-frame diff instead. If
+    /// that diff were dropped, Tab out of an open menu would be undone by the
+    /// very next pass and the menu would be a focus trap nothing could leave.
+    #[test]
+    fn a_focus_taking_overlay_does_not_drag_focus_back_every_frame() {
+        let ctx = headless();
+        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        host.app_mut().menu_takes_focus = true;
+        host.app_mut().menu = true;
+        step(&ctx, &mut host, RawInput::default());
+        step(&ctx, &mut host, RawInput::default());
+        assert_eq!(host.focus().current(), Some("/root/menu/open"));
+
+        step(&ctx, &mut host, key_press(Key::Tab, Modifiers::NONE));
+        let after_tab = host.focus().current().map(str::to_owned);
+        assert_ne!(
+            after_tab.as_deref(),
+            Some("/root/menu/open"),
+            "Tab did not leave the open overlay at all"
+        );
+        step(&ctx, &mut host, RawInput::default());
+        step(&ctx, &mut host, RawInput::default());
+        assert_eq!(
+            host.focus().current(),
+            after_tab.as_deref(),
+            "an idle pass dragged focus back into the overlay"
+        );
+    }
+
+    /// Focus goes back to the opener only when it was still **inside** the
+    /// overlay that closed.
+    ///
+    /// A press on some other control closes the menu and seats focus on that
+    /// control in the same pass (`seat_pointer_focus` runs before petrify).
+    /// Handing focus back to the trigger there would yank it off the thing
+    /// the operator just pressed.
+    #[test]
+    fn closing_a_focus_taking_overlay_leaves_focus_where_a_press_put_it() {
+        let ctx = headless();
+        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        host.app_mut().menu_takes_focus = true;
+        host.app_mut().menu = true;
+        step(&ctx, &mut host, RawInput::default());
+        step(&ctx, &mut host, RawInput::default());
+        assert_eq!(host.focus().current(), Some("/root/menu/open"));
+
+        let filter = host
+            .frame()
+            .expect("a frame")
+            .placements
+            .iter()
+            .find(|p| p.id == "/root/filter")
+            .expect("the fixture's text field is placed")
+            .rect;
+        host.app_mut().menu = false;
+        step(
+            &ctx,
+            &mut host,
+            press_at(egui::Pos2::new(
+                filter.x + filter.w / 2.0,
+                filter.y + filter.h / 2.0,
+            )),
+        );
+        step(&ctx, &mut host, RawInput::default());
+        assert_eq!(
+            host.focus().current(),
+            Some("/root/filter"),
+            "the close handed focus back over the press that caused it"
         );
     }
 

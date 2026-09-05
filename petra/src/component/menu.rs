@@ -51,6 +51,13 @@ pub fn menu(key: impl Into<Key>, label: impl Into<String>, items: Vec<ViewNode>)
         max: Some(MAX_INLINE),
         priority: 0,
     };
+    // Carbon's Menu takes keyboard focus for as long as it is open
+    // (`Menu.js`'s `handleOpen`/`focusItem`/`handleClose`), and it is the
+    // only list box in this crate that does: Dropdown and Combo box leave
+    // focus on the trigger. Without this the trigger stays focused under an
+    // open menu, and the cover rule then withholds its underline because the
+    // menu sits on the strip the bar would occupy — no indicator anywhere.
+    node.props.takes_focus = Some(true);
     node
 }
 
@@ -150,6 +157,11 @@ mod tests {
             "Carbon's menu has no beak"
         );
         assert_eq!(node.props.fit, Some(Fit::Anchor));
+        assert_eq!(
+            node.props.takes_focus,
+            Some(true),
+            "Carbon's Menu moves focus into itself when it opens"
+        );
         assert!(node.props.padding.is_none(), "rows run edge to edge");
         let content = child(&node, "content");
         assert!(

@@ -1376,13 +1376,74 @@ mod tests {
         );
     }
 
+    /// Row 18. Carbon's `Menu` seats keyboard focus on its first item when
+    /// it opens, and hands focus back to whatever had it when it closes.
+    ///
+    /// `@carbon/react/lib/components/Menu/Menu.js`: `handleOpen` (66-85)
+    /// saves `document.activeElement` in `focusReturn` and focuses the menu
+    /// itself; the `useEffect` at 177-186 then calls `focusItem()` with no
+    /// event, which lands on index 0 (97-111); `handleClose` (86-89) calls
+    /// `returnFocus()`, putting focus back on the trigger.
+    ///
+    /// The recorded defect (round-3 catalog row 18): Petra left focus on the
+    /// trigger, and the cover rule then withheld the trigger's underline
+    /// because the open menu sat on top of where it would land — so the
+    /// operator saw no focus indicator anywhere until the menu shut.
+    #[test]
+    fn opening_the_menu_seats_focus_on_its_first_item_and_closing_returns_it() {
+        let mut cam = Camera::on("Menu");
+        cam.click("mn-pair/trigger");
+        assert!(cam.has("mn-pair/menu"), "the click did not open the menu");
+        // The seat happens after this pass petrified (`Host`'s "seat it
+        // after petrify" shape, the same one `enter_open_modal` has), so the
+        // ring lands one frame later. One empty pass is that frame.
+        cam.settle();
+        assert!(
+            cam.focused()
+                .as_deref()
+                .is_some_and(|id| id.ends_with("menu/content/mn-0")),
+            "focus is on {:?}, not the menu's first item",
+            cam.focused()
+        );
+        assert!(
+            cam.ring()
+                .as_deref()
+                .is_some_and(|id| id.ends_with("menu/content/mn-0")),
+            "the frame rings {:?}, so the operator sees no indicator inside \
+             the open menu",
+            cam.ring()
+        );
+        cam.shoot("18-menu-open-focus-inside");
+        press_empty_ground(&mut cam);
+        assert!(
+            !cam.has("mn-pair/menu"),
+            "a press outside did not dismiss the menu"
+        );
+        cam.settle();
+        assert!(
+            cam.focused()
+                .as_deref()
+                .is_some_and(|id| id.ends_with("mn-pair/trigger")),
+            "closing the menu did not hand focus back to the trigger: {:?}",
+            cam.focused()
+        );
+    }
+
     /// Row 19. The trigger opens its menu over the page.
     ///
     /// A Carbon menu button is a primary button at least 160 wide with its
     /// chevron on the trailing edge, and its menu is a list box flush under
-    /// it with no caret, leading edges aligned (slice-b §19). Opening the
-    /// menu leaves keyboard focus on the trigger — the recorded defect was
-    /// focus falling off it, because the open form was a different node.
+    /// it with no caret, leading edges aligned (slice-b §19).
+    ///
+    /// Opening the menu moves keyboard focus onto its first item: a menu
+    /// button renders the same `Menu` a bare menu does
+    /// (`@carbon/react/lib/components/MenuButton/index.js:112`), so it gets
+    /// the same `handleOpen` that seats item 0. Until 2026-09-05 this test
+    /// asserted the opposite — focus stays on the trigger — which was the
+    /// round-3 catalog's row-18 defect written down as a check. The defect it
+    /// was really guarding is still guarded: focus must land *somewhere*
+    /// real when the open form is a different node, and the assertion below
+    /// names where.
     #[test]
     fn the_menu_button_opens_its_menu_over_the_page() {
         let mut cam = Camera::on("Menu buttons");
@@ -1418,12 +1479,19 @@ mod tests {
             "the menu is at least as wide as its trigger: {menu:?} under {trigger:?}"
         );
         assert!(
-            cam.ring().is_some_and(|id| id.ends_with("mb/trigger")),
-            "opening the menu moved keyboard focus off the trigger: the ring \
-             is on {:?}",
+            cam.ring()
+                .is_some_and(|id| id.ends_with("menu/content/mb-0")),
+            "opening the menu did not seat the ring on its first item: the \
+             ring is on {:?}",
             cam.ring()
         );
         cam.click("mb-0");
+        cam.settle();
+        assert!(
+            cam.focused().is_some_and(|id| id.ends_with("mb/trigger")),
+            "choosing an item did not hand focus back to the trigger: {:?}",
+            cam.focused()
+        );
         assert!(
             !cam.has("mb/menu"),
             "choosing the item did not close the menu"
