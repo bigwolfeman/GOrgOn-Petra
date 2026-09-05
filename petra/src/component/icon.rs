@@ -195,7 +195,11 @@ pub enum IconMark {
     ///
     /// Source path, viewBox `0 0 32 32`:
     /// `M14 4H18V8H14zM4 4H8V8H4zM24 4H28V8H24zM14 14H18V18H14zM4 14H8V18H4zM24 14H28V18H24zM14 24H18V28H14zM4 24H8V28H4zM24 24H28V28H24z`.
-    /// Nine snapped squares.
+    /// Nine snapped squares, Carbon's own 4-on-10-pitch numbers scaled for
+    /// [`IconBox::Glyph`]. [`IconBox::Header`] does **not** scale that same
+    /// path — see `switcher`'s doc for the half-device-pixel column it used
+    /// to land on (`ROUND3-DEFECTS.md` row 40, "this 3x3 dot icon is
+    /// rendering poorly").
     Switcher,
     /// Carbon `CaretLeft` (pagination's Previous button).
     ///
@@ -247,6 +251,99 @@ pub enum IconMark {
     /// chevron, split at the inner V into two convex quads the same way the
     /// toggle's tick is.
     Checkmark,
+    /// Carbon `ErrorFilled`, the notification title's status glyph when
+    /// `kind: 'error'`. Slice-c's Notification section leaves "exact
+    /// status-icon glyph names" Unverified; the vendored package settles it
+    /// — `Notification.tsx`'s `iconTypes` map binds `error` to
+    /// `ErrorFilled` (MEASURED
+    /// `ignored/carbon-ref/node_modules/@carbon/react/lib/components/
+    /// Notification/Notification.js:139`), so [`IconMark::WarningFilled`],
+    /// [`IconMark::InformationFilled`] and [`IconMark::CheckmarkFilled`]
+    /// below are read from the same map, not guessed.
+    ///
+    /// Source path, viewBox `0 0 32 32`: the ring is
+    /// `M16,2A13.914,13.914,0,0,0,2,16,13.914,13.914,0,0,0,16,30,
+    /// 13.914,13.914,0,0,0,30,16,13.914,13.914,0,0,0,16,2Z`; the diagonal
+    /// slash cut through it is
+    /// `M21.4449,23L9,10.5557,10.5557,9,23,21.4448Z` (both MEASURED
+    /// `@carbon/icons-react` 11.72.0's `ErrorFilled.js`, the same vendored
+    /// copy this file's header names).
+    ///
+    /// There is no fill-with-a-hole command in this draw list
+    /// (`draw-list.md` §2), so Carbon's solid disc with the slash punched
+    /// through it cannot be drawn as Carbon draws it — a single
+    /// `currentColor` path relies on the browser's non-zero fill rule to
+    /// turn the second subpath into a hole, and `DrawList::new` checks one
+    /// subpath's convexity at a time, never two subpaths' interaction.
+    /// [`IconMark::ErrorFilled`] and the three below instead draw a ring
+    /// ([`STATUS_RING_BAND`], twice [`IconMark::CheckmarkOutline`]'s band,
+    /// so a status glyph reads bolder than the progress-step ring it would
+    /// otherwise be indistinguishable from) and paint the kind's own mark
+    /// solid inside it, rather than leaving it as a hole. The slash is
+    /// Carbon's own quad, not re-derived or extended to the rim: its
+    /// corners already sit about 5 units short of the ring on each end.
+    ErrorFilled,
+    /// Carbon `WarningFilled`, `kind: 'warning'` (same source and the same
+    /// reasoning as [`IconMark::ErrorFilled`]).
+    ///
+    /// Source path, viewBox `0 0 32 32`: ring
+    /// `M16,2C8.3,2,2,8.3,2,16s6.3,14,14,14s14-6.3,14-14C30,8.3,23.7,2,16,2z`;
+    /// the `!`'s stem `M14.9,8H17.1V19H14.9z` and dot, centre `(16, 23.5)`
+    /// radius `1.5` (MEASURED `WarningFilled.js`).
+    WarningFilled,
+    /// Carbon `InformationFilled`, `kind: 'info'` (same source and the same
+    /// reasoning as [`IconMark::ErrorFilled`]).
+    ///
+    /// Source path, viewBox `0 0 32 32`: ring
+    /// `M16,2A14,14,0,1,0,30,16,14,14,0,0,0,16,2Z`; the `i`'s dot, centre
+    /// `(16, 9.5)` radius `1.5`, over a stem (MEASURED
+    /// `InformationFilled.js`). Carbon's stem has a serif foot
+    /// (`...H12v-2.25h2.875v-5.75H13v-2.25h4.125v8H20Z`, a two-width step);
+    /// this draws one bar, `(14.9, 13)` to `(17.1, 24)`, the same width as
+    /// [`IconMark::WarningFilled`]'s stem — the foot is a detail this file
+    /// already drops elsewhere (see [`calendar`]'s corner radius).
+    InformationFilled,
+    /// Carbon `CheckmarkFilled`, `kind: 'success'` (same source and the
+    /// same reasoning as [`IconMark::ErrorFilled`]).
+    ///
+    /// Source path, viewBox `0 0 32 32`: ring
+    /// `M16,2A14,14,0,1,0,30,16,14,14,0,0,0,16,2Z`; the tick,
+    /// `M14,21.591L9,16.591,10.591,15,14,18.409,21.41,11,23.005,12.585z`
+    /// (MEASURED `CheckmarkFilled.js`), the same thick-chevron anatomy as
+    /// [`IconMark::Checkmark`] — split at the inner V into two convex
+    /// quads — sized to sit inside the ring instead of the whole 32-unit
+    /// box.
+    CheckmarkFilled,
+    /// Carbon `CaretDown` (the tree view's expand control:
+    /// `TreeNode.tsx` renders `<CaretDown className={toggleClasses} />` on
+    /// every parent row, MEASURED
+    /// `ignored/carbon-ref/node_modules/@carbon/react/lib/components/
+    /// TreeView/TreeNode.js:303`).
+    ///
+    /// Source path, viewBox `0 0 32 32`: `M24 12L16 22 8 12z`. Carbon ships
+    /// no 16 or 20 path for this glyph — only `glyph` (an `0 0 8 4` box the
+    /// React component reaches only at the string `size="glyph"`, which
+    /// `TreeNode` never passes) and 32 — so the same rule
+    /// [`IconMark::CaretLeft`] documents applies: the 32 master, scaled.
+    /// One filled triangle, [`IconMark::CaretLeft`]'s anatomy rotated 90°.
+    CaretDown,
+    /// Carbon `Edit` (an editable data-table cell's pencil, rows 09 and
+    /// 31).
+    ///
+    /// Source path, viewBox `0 0 32 32`:
+    /// `M2 26H30V28H2zM25.4 9c.8-.8.8-2 0-2.8l-3.6-3.6c-.8-.8-2-.8-2.8 0l-15
+    /// 15V24h6.4L25.4 9zM20.4 4L24 7.6l-3 3L17.4 7 20.4 4zM6 22v-3.6l10-10
+    /// 3.6 3.6-10 10H6z`. Carbon draws the pencil as one outline with two
+    /// slightly rounded corners at the tip — `contracts/draw-list.md` §5
+    /// refuses filling that directly, and rounding it away for two corners
+    /// this small is not worth a bespoke bézier decomposition — and, in the
+    /// same `d`, its own two convex sub-shapes: the tip's ferrule (a
+    /// rhombus) and the shaft (a pentagon). This draws those two plus the
+    /// underline bar and skips the outline. The ferrule and the shaft do
+    /// not quite share an edge in Carbon's own numbers — a gap of about two
+    /// source units, one logical unit at [`GLYPH_BOX`] — which this file
+    /// leaves as Carbon states it rather than closing.
+    Edit,
 }
 
 /// The box a mark is drawn in: which of Carbon's two glyph sizes.
@@ -376,13 +473,19 @@ fn draw_list(mark: IconMark, boxed: IconBox, tone: IconTone) -> DrawList {
         IconMark::Search => search(boxed, color),
         IconMark::Menu => menu(boxed, color),
         IconMark::Notification => notification(boxed, color),
-        IconMark::Switcher => switcher(size / 32.0, color),
+        IconMark::Switcher => switcher(boxed, color),
         IconMark::CaretLeft => caret_left(size / 32.0, color),
         IconMark::CaretRight => caret_right(size / 32.0, color),
         IconMark::CheckmarkOutline => checkmark_outline(size / 32.0, color),
         IconMark::CircleDash => circle_dash(size / 32.0, color),
         IconMark::Incomplete => incomplete(size / 32.0, color),
         IconMark::Checkmark => checkmark(size / 32.0, color),
+        IconMark::ErrorFilled => error_filled(size / 32.0, color),
+        IconMark::WarningFilled => warning_filled(size / 32.0, color),
+        IconMark::InformationFilled => information_filled(size / 32.0, color),
+        IconMark::CheckmarkFilled => checkmark_filled(size / 32.0, color),
+        IconMark::CaretDown => caret_down(size / 32.0, color),
+        IconMark::Edit => edit(size / 32.0, color),
     };
     DrawList::new(commands).unwrap_or_else(|err| panic!("{mark:?} draw list refused: {err}"))
 }
@@ -814,13 +917,35 @@ fn notification(boxed: IconBox, color: ColorRef) -> Vec<Command> {
     ]
 }
 
-fn switcher(s: f32, color: ColorRef) -> Vec<Command> {
+/// Carbon's nine squares scale cleanly onto [`GLYPH_BOX`] (16/32 = 0.5:
+/// every one of 4, 14, 24 lands on a whole device pixel) but not onto
+/// [`HEADER_BOX`] (20/32 = 0.625: the middle column's start, `14 * 0.625 =
+/// 8.75` logical units, is 17.5 device pixels at the snapshotter's 2x — a
+/// value [`crate::frame::rounding::round_coord`] always rounds *up* under
+/// its documented half-away-from-zero rule, landing the middle column one
+/// whole device pixel closer to the right column than the left column sits
+/// to it. Nine isolated squares make a one-pixel gap asymmetry obvious in a
+/// way a single bar or stroke would not — this was the operator's "this 3x3
+/// dot icon is rendering poorly, it is in a few places" (round 3, row 40,
+/// `ui_shell_header`'s notifications/switcher pair).
+///
+/// `round_coord` is correct by its own contract (`frame/rounding.rs:44`)
+/// and is not this file's to change, so the fix moves the numbers instead
+/// of the caller's scale: [`IconBox::Header`] gets its own grid — start at
+/// 3 rather than a scaled 4, pitch 6 rather than a scaled 6.25, the dot
+/// held at 2 units rather than continuing to shrink from Carbon's 4 — whose
+/// six column/row edges are all whole units at 2x. [`IconBox::Glyph`] keeps
+/// exactly the numbers it always painted correctly.
+fn switcher(boxed: IconBox, color: ColorRef) -> Vec<Command> {
     let paint = Paint::filled(color);
-    let starts = [4.0, 14.0, 24.0];
+    let (starts, size): ([f32; 3], f32) = match boxed {
+        IconBox::Glyph => ([2.0, 7.0, 12.0], 2.0),
+        IconBox::Header => ([3.0, 9.0, 15.0], 2.0),
+    };
     starts
         .into_iter()
         .flat_map(|y| starts.into_iter().map(move |x| (x, y)))
-        .map(|(x, y)| snapped_bar(x, y, x + 4.0, y + 4.0, s, paint.clone()))
+        .map(|(x, y)| snapped_bar(x, y, x + size, y + size, 1.0, paint.clone()))
         .collect()
 }
 
@@ -835,6 +960,15 @@ fn caret_left(s: f32, color: ColorRef) -> Vec<Command> {
 fn caret_right(s: f32, color: ColorRef) -> Vec<Command> {
     vec![filled_tri(
         [pt(12.0, 8.0), pt(22.0, 16.0), pt(12.0, 24.0)],
+        s,
+        Paint::filled(color),
+    )]
+}
+
+/// Carbon `CaretDown`, [`IconMark::CaretLeft`]'s anatomy rotated 90°.
+fn caret_down(s: f32, color: ColorRef) -> Vec<Command> {
+    vec![filled_tri(
+        [pt(24.0, 12.0), pt(16.0, 22.0), pt(8.0, 12.0)],
         s,
         Paint::filled(color),
     )]
@@ -890,6 +1024,83 @@ fn checkmark_outline(s: f32, color: ColorRef) -> Vec<Command> {
     ]
 }
 
+/// The band [`IconMark::ErrorFilled`], [`IconMark::WarningFilled`],
+/// [`IconMark::InformationFilled`] and [`IconMark::CheckmarkFilled`] stroke
+/// their ring with: twice [`STEP_RING_BAND`], so a solid status glyph does
+/// not read as the much thinner progress-step ring above.
+const STATUS_RING_BAND: f32 = 4.0;
+
+/// The ring every `*Filled` notification-status glyph shares, at its own
+/// `radius` (Carbon's own circle differs by a few hundredths between
+/// `ErrorFilled` and the other three — see each variant's doc).
+fn status_ring(radius: f32, s: f32, color: ColorRef) -> Command {
+    Command::Ellipse {
+        center: scaled(STEP_CENTER, s),
+        radii: Size::new(radius * s, radius * s),
+        paint: Paint::stroked(Stroke {
+            width: Width::Logical(STATUS_RING_BAND * s),
+            color,
+        }),
+    }
+}
+
+fn error_filled(s: f32, color: ColorRef) -> Vec<Command> {
+    let ring = status_ring(13.914, s, color.clone());
+    let slash = filled_quad(
+        [
+            pt(21.4449, 23.0),
+            pt(9.0, 10.5557),
+            pt(10.5557, 9.0),
+            pt(23.0, 21.4448),
+        ],
+        s,
+        Paint::filled(color),
+    );
+    vec![ring, slash]
+}
+
+fn warning_filled(s: f32, color: ColorRef) -> Vec<Command> {
+    let ring = status_ring(14.0, s, color.clone());
+    let stem = snapped_bar(14.9, 8.0, 17.1, 19.0, s, Paint::filled(color.clone()));
+    let dot = Command::Ellipse {
+        center: scaled(pt(16.0, 23.5), s),
+        radii: Size::new(1.5 * s, 1.5 * s),
+        paint: Paint::filled(color),
+    };
+    vec![ring, stem, dot]
+}
+
+fn information_filled(s: f32, color: ColorRef) -> Vec<Command> {
+    let ring = status_ring(14.0, s, color.clone());
+    let dot = Command::Ellipse {
+        center: scaled(pt(16.0, 9.5), s),
+        radii: Size::new(1.5 * s, 1.5 * s),
+        paint: Paint::filled(color.clone()),
+    };
+    let stem = snapped_bar(14.9, 13.0, 17.1, 24.0, s, Paint::filled(color));
+    vec![ring, dot, stem]
+}
+
+/// Carbon `CheckmarkFilled`'s tick, [`IconMark::Checkmark`]'s anatomy sized
+/// to sit inside [`status_ring`] rather than the whole 32-unit box. Vertex
+/// letters as in `checkmark`: A bottom tip, B outer left end, C inner left
+/// end, D inner V, E inner right end, F outer right end.
+fn checkmark_filled(s: f32, color: ColorRef) -> Vec<Command> {
+    let ring = status_ring(14.0, s, color.clone());
+    let paint = Paint::filled(color);
+    let a = pt(14.0, 21.591);
+    let b = pt(9.0, 16.591);
+    let c = pt(10.591, 15.0);
+    let d = pt(14.0, 18.409);
+    let e = pt(21.41, 11.0);
+    let f = pt(23.005, 12.585);
+    vec![
+        ring,
+        filled_quad([a, b, c, d], s, paint.clone()),
+        filled_quad([a, d, e, f], s, paint),
+    ]
+}
+
 fn circle_dash(s: f32, color: ColorRef) -> Vec<Command> {
     // Ten 18° dashes on a 36° pitch, the first starting at three o'clock.
     (0..10)
@@ -921,6 +1132,32 @@ fn incomplete(s: f32, color: ColorRef) -> Vec<Command> {
             .map(|from| ring_dash(from, 20.0, s, color.clone())),
     );
     commands
+}
+
+/// Carbon `Edit`'s underline, ferrule and shaft — the pencil's own two
+/// convex sub-shapes plus the bar beneath it. See [`IconMark::Edit`] for
+/// why the outline itself is not drawn, and for the seam this leaves.
+fn edit(s: f32, color: ColorRef) -> Vec<Command> {
+    let paint = Paint::filled(color);
+    vec![
+        snapped_bar(2.0, 26.0, 30.0, 28.0, s, paint.clone()),
+        filled_quad(
+            [pt(20.4, 4.0), pt(24.0, 7.6), pt(21.0, 10.6), pt(17.4, 7.0)],
+            s,
+            paint.clone(),
+        ),
+        filled_poly(
+            &[
+                pt(6.0, 22.0),
+                pt(6.0, 18.4),
+                pt(16.0, 8.4),
+                pt(19.6, 12.0),
+                pt(9.6, 22.0),
+            ],
+            s,
+            paint,
+        ),
+    ]
 }
 
 fn pt(x: f32, y: f32) -> Point {
@@ -960,6 +1197,28 @@ fn filled_tri(corners: [Point; 3], s: f32, paint: Paint) -> Command {
     }
 }
 
+/// A closed, filled, convex path of any vertex count, corners scaled by `s`.
+/// Generalises [`filled_quad`]/[`filled_tri`], which keep fixed arity
+/// because every other mark in this file is a triangle or a quad and the
+/// compiler-checked array length is worth it where it costs nothing; `edit`'s
+/// pencil shaft is a pentagon and is the one shape here that needs it.
+fn filled_poly(corners: &[Point], s: f32, paint: Paint) -> Command {
+    let mut verbs = Vec::with_capacity(corners.len());
+    for (index, corner) in corners.iter().enumerate() {
+        let scaled_point = scaled(*corner, s);
+        verbs.push(if index == 0 {
+            PathVerb::MoveTo(scaled_point)
+        } else {
+            PathVerb::LineTo(scaled_point)
+        });
+    }
+    Command::Path {
+        verbs,
+        closed: true,
+        paint,
+    }
+}
+
 /// An axis-aligned bar from `(x0, y0)` to `(x1, y1)` in the source viewBox,
 /// scaled by `s`, snapped to the device grid at paint time.
 fn snapped_bar(x0: f32, y0: f32, x1: f32, y1: f32, s: f32, paint: Paint) -> Command {
@@ -980,9 +1239,10 @@ mod tests {
     use crate::draw::{ColorRef, Command, DrawList};
     use crate::tree::NodeKind;
 
-    const EVERY_MARK: [IconMark; 20] = [
+    const EVERY_MARK: [IconMark; 26] = [
         IconMark::CaretLeft,
         IconMark::CaretRight,
+        IconMark::CaretDown,
         IconMark::CheckmarkOutline,
         IconMark::CircleDash,
         IconMark::Incomplete,
@@ -1001,6 +1261,11 @@ mod tests {
         IconMark::Menu,
         IconMark::Notification,
         IconMark::Switcher,
+        IconMark::ErrorFilled,
+        IconMark::WarningFilled,
+        IconMark::InformationFilled,
+        IconMark::CheckmarkFilled,
+        IconMark::Edit,
     ];
 
     fn list(node: &crate::tree::ViewNode) -> &DrawList {
@@ -1209,5 +1474,152 @@ mod tests {
                 "{size} would put a centred mark on a half-pixel"
             );
         }
+    }
+
+    /// Round 3, row 40, `ui_shell_header`: "this 3x3 dot icon is rendering
+    /// poorly". Confirmed by cropping the snapshotter's own PNG — the
+    /// middle column sat one device pixel closer to the right column than
+    /// the left column sat to it (an 8px/7px gap where Carbon's even pitch
+    /// asks for two equal gaps) — and traced to
+    /// `IconBox::Header`'s `14 * (20.0 / 32.0) = 8.75` logical units, `17.5`
+    /// device pixels at the snapshotter's 2x, a value
+    /// `crate::frame::rounding::round_coord` always rounds up under its
+    /// documented half-away-from-zero rule. This is the algebraic form of
+    /// that same fact: it fails on the pre-fix numbers exactly where the
+    /// pixels did (`8.75 * 2 = 17.5`, not a whole device pixel) and passes
+    /// on `switcher`'s current, hand-picked grid.
+    #[test]
+    fn switcher_grid_lands_every_edge_on_a_device_pixel() {
+        for boxed in [IconBox::Glyph, IconBox::Header] {
+            let node = icon_in("m", IconMark::Switcher, boxed, IconTone::Primary);
+            for command in list(&node).commands() {
+                let Command::Rect { rect, .. } = command else {
+                    panic!("{boxed:?}: switcher draws only rects");
+                };
+                for (label, edge) in [
+                    ("left", rect.x),
+                    ("top", rect.y),
+                    ("right", rect.right()),
+                    ("bottom", rect.bottom()),
+                ] {
+                    let device = edge * 2.0;
+                    assert!(
+                        (device - device.round()).abs() < 0.001,
+                        "{boxed:?}: {label} edge {edge} is {device} device pixels at 2x, \
+                         not a whole one"
+                    );
+                }
+            }
+        }
+    }
+
+    /// FR-026 / the operator's own colourblindness: the four notification
+    /// status glyphs exist so a reader who cannot use hue still has a shape
+    /// to tell `error` from `success` by. That claim is false the moment
+    /// two of them draw the same inner mark — a copy-paste that left, say,
+    /// `WarningFilled` painting `ErrorFilled`'s slash would still pass
+    /// `every_mark_constructs_at_both_boxes_and_paints_something`, since
+    /// that test never compares one mark against another.
+    ///
+    /// Falsify by making any one of the four call another's helper in
+    /// `draw_list`; the ring the four share is filtered out first so this
+    /// compares only the part that has to differ.
+    #[test]
+    fn the_four_filled_status_glyphs_draw_four_different_inner_shapes() {
+        fn inner_shape_signature(mark: IconMark) -> Vec<String> {
+            let node = icon_in("m", mark, IconBox::Glyph, IconTone::Primary);
+            list(&node)
+                .commands()
+                .iter()
+                .filter(|command| !matches!(command, Command::Ellipse { .. }))
+                .map(|command| format!("{command:?}"))
+                .collect()
+        }
+        let marks = [
+            IconMark::ErrorFilled,
+            IconMark::WarningFilled,
+            IconMark::InformationFilled,
+            IconMark::CheckmarkFilled,
+        ];
+        let signatures: Vec<Vec<String>> = marks.iter().copied().map(inner_shape_signature).collect();
+        for (i, sig_a) in signatures.iter().enumerate() {
+            assert!(!sig_a.is_empty(), "{:?} draws no inner mark", marks[i]);
+            for (j, sig_b) in signatures.iter().enumerate().skip(i + 1) {
+                assert_ne!(
+                    sig_a, sig_b,
+                    "{:?} and {:?} draw the same inner shape -- a colourblind reader has no \
+                     channel left to tell them apart",
+                    marks[i], marks[j]
+                );
+            }
+        }
+    }
+
+    /// `WarningFilled`'s `!` and `InformationFilled`'s `i` are both a ring
+    /// plus a dot plus a stem; the dot is the easiest of the three pieces to
+    /// drop by accident (it is the one `Command::Ellipse` besides the
+    /// shared ring), so it gets its own count rather than relying only on
+    /// the shape-signature test above.
+    #[test]
+    fn warning_and_information_filled_each_draw_a_ring_and_a_dot() {
+        for mark in [IconMark::WarningFilled, IconMark::InformationFilled] {
+            let node = icon_in("m", mark, IconBox::Glyph, IconTone::Primary);
+            let ellipses = list(&node)
+                .commands()
+                .iter()
+                .filter(|command| matches!(command, Command::Ellipse { .. }))
+                .count();
+            assert_eq!(ellipses, 2, "{mark:?}: expected the ring and the `!`/`i` dot");
+        }
+    }
+
+    /// `CaretDown` is `CaretLeft` rotated 90°, not `CaretLeft` or
+    /// `CaretRight` redrawn under a new name — falsify by pointing
+    /// `caret_down` at either of their vertex lists.
+    #[test]
+    fn caret_down_points_a_different_way_than_caret_left_and_caret_right() {
+        fn first_triangle_vertices(mark: IconMark) -> Vec<(i32, i32)> {
+            let node = icon_in("m", mark, IconBox::Glyph, IconTone::Primary);
+            let commands = list(&node).commands();
+            assert_eq!(commands.len(), 1, "{mark:?} draws one triangle");
+            let Command::Path { verbs, .. } = &commands[0] else {
+                panic!("{mark:?} is a filled path");
+            };
+            verbs
+                .iter()
+                .flat_map(|verb| verb.points())
+                .map(|p| ((p.x * 1000.0).round() as i32, (p.y * 1000.0).round() as i32))
+                .collect()
+        }
+        let down = first_triangle_vertices(IconMark::CaretDown);
+        assert_ne!(down, first_triangle_vertices(IconMark::CaretLeft));
+        assert_ne!(down, first_triangle_vertices(IconMark::CaretRight));
+    }
+
+    /// A mark that is in the enum but rasterises to nothing is exactly the
+    /// failure `every_mark_constructs_at_both_boxes_and_paints_something`
+    /// exists to catch at the generic level; this pins down `Edit`'s actual
+    /// structure (one rect, two closed non-empty paths) so a future edit
+    /// that quietly drops the shaft or the ferrule — leaving the underline
+    /// bar as the only visible stroke — fails here by shape, not just by
+    /// "paints something".
+    #[test]
+    fn edit_draws_an_underline_and_two_convex_polygons() {
+        let node = icon_in("m", IconMark::Edit, IconBox::Glyph, IconTone::Primary);
+        let mut rects = 0;
+        let mut paths = 0;
+        for command in list(&node).commands() {
+            match command {
+                Command::Rect { .. } => rects += 1,
+                Command::Path { verbs, closed, .. } => {
+                    assert!(*closed, "edit's polygons must be closed to fill");
+                    assert!(!verbs.is_empty(), "edit draws an empty path");
+                    paths += 1;
+                }
+                other => panic!("edit draws an unexpected command {other:?}"),
+            }
+        }
+        assert_eq!(rects, 1, "edit's underline bar");
+        assert_eq!(paths, 2, "edit's ferrule and shaft");
     }
 }
