@@ -1,5 +1,5 @@
 //! The stack container: priority groups, flexibility-ascending equal share,
-//! surplus roll-forward.
+//! surplus roll-forward, and roll-back of whatever that leaves unspent.
 //!
 //! This file is a transcription of the binding algorithm in
 //! `contracts/view-tree.md` §3, in its order, and the order is the whole
@@ -14,6 +14,12 @@
 //!   flexible child. Dropping that is what turns "distribute 300 units" into
 //!   "hand out 300 units per child", and it is why the group is walked from
 //!   least flexible to most: the rigid answers land before the pot is split.
+//! * **Surplus also rolls back.** Rolling forward only ever reaches children
+//!   the walk has not visited yet, so a child limited by its own equal share
+//!   while a *later* sibling declined room stayed small in a row that had the
+//!   space. Whatever the walk leaves over is offered back round to the
+//!   children that were limited by their offer, until it is gone or nobody
+//!   can use it. [`settle_group`] states the whole policy, shrink included.
 
 use crate::frame::placement::{PaintState, Placement, PlacementSink};
 use crate::geom::{Align, Axis, Rect, Size};
@@ -290,6 +296,10 @@ fn distribute(
     let n = node.children.len();
     let mut floors = Vec::with_capacity(n);
     let mut flexibility = Vec::with_capacity(n);
+    // The `Unbounded` response itself, kept beside the flexibility derived
+    // from it: the roll-back caps its offers with it, and reconstructing it as
+    // `floors + flexibility` would not survive the `max(0.0)` on that line.
+    let mut highs = Vec::with_capacity(n);
     let mut priorities = Vec::with_capacity(n);
     for child in &node.children {
         // Both bounds, up front: step (b) needs every lower-priority child's
@@ -301,6 +311,7 @@ fn distribute(
                 .along(main);
         floors.push(low);
         flexibility.push((high - low).max(0.0));
+        highs.push(high);
         priorities.push(child.constraints.axis(main).priority);
     }
 
@@ -321,6 +332,13 @@ fn distribute(
     }
 
     let mut taken = vec![Size::ZERO; n];
+    let mut offers = Offers {
+        node,
+        ctx,
+        path,
+        main,
+        cross,
+    };
     let mut pot = budget;
     let mut k = 0;
     while k < n {
@@ -335,24 +353,13 @@ fn distribute(
         // actually use it are offered their share.
         group.sort_by(|&a, &b| flexibility[a].total_cmp(&flexibility[b]));
 
-        let mut remaining = (pot - reserved[end]).max(0.0);
-        let mut left = group.len();
-        let mut spent = 0.0f32;
-        for &i in group.iter() {
-            let share = remaining / left as f32;
-            let got = crate::layout::measure(
-                &node.children[i],
-                ctx,
-                path,
-                offer(main, Proposal::Exact(share), cross),
-            );
-            let extent = got.along(main);
-            taken[i] = got;
-            // Surplus roll-forward.
-            remaining = (remaining - extent).max(0.0);
-            spent += extent;
-            left -= 1;
-        }
+        let spent = settle_group(
+            &mut offers,
+            group,
+            (pot - reserved[end]).max(0.0),
+            &highs,
+            &mut taken,
+        );
         pot = (pot - spent).max(0.0);
         k = end;
     }
@@ -362,6 +369,170 @@ fn distribute(
         floors,
         flexibility,
     }
+}
+
+/// Everything one child offer needs except the child and the number.
+///
+/// Bundled so [`settle_group`] can be a five-argument function rather than a
+/// nine-argument one, and so both of its passes reach a child through the same
+/// [`Offers::measure`] rather than through two hand-written calls that could
+/// drift in what they offer on the cross axis.
+struct Offers<'a, 'ctx> {
+    node: &'a ViewNode,
+    ctx: &'a mut LayoutCtx<'ctx>,
+    path: &'a mut KeyPath,
+    main: Axis,
+    cross: Proposal,
+}
+
+impl Offers<'_, '_> {
+    /// Offer child `index` exactly `extent` on the main axis, and answer what
+    /// it takes.
+    fn measure(&mut self, index: usize, extent: f32) -> Size {
+        crate::layout::measure(
+            &self.node.children[index],
+            self.ctx,
+            self.path,
+            offer(self.main, Proposal::Exact(extent), self.cross),
+        )
+    }
+}
+
+/// Hand one priority group `avail` main-axis units, write each child's
+/// response into `taken` at its declaration index, and answer what the group
+/// spent.
+///
+/// # What a child gets, exactly
+///
+/// **Pass one** is `contracts/view-tree.md` step 3.c verbatim: walk the group
+/// least flexible first, offer each child an equal share of what is left when
+/// the walk reaches it, and let a child that takes less than its share roll
+/// the difference forward to the next, more flexible child.
+///
+/// **Pass two onwards** is the roll-*back*, `contracts/view-tree.md` step
+/// 3.c-bis. Roll-forward only ever reaches children the walk has
+/// not visited yet, so a child that was limited by its own share while a later
+/// sibling declined room ends up smaller than the row had space for. That is
+/// not a hypothetical: a row measures under `Unbounded`, its parent places it
+/// at exactly the width that answer named, and the widest child — which, if it
+/// declares a minimum, is also the *least* flexible and therefore first in the
+/// walk — is handed the mean of the row's naturals instead of its own. A
+/// 104-unit label in a row of five 88-unit ones was placed at 91.2 and broke
+/// mid-word, in a row that had been sized for all of them.
+///
+/// So: whatever the walk leaves unspent is offered back round to the children
+/// that have **not reached their own ceiling** — their `Unbounded` response,
+/// the largest extent they said they could use — in the same
+/// least-flexible-first order, each getting an equal share of the leftover on
+/// top of what it already holds. Repeat until the leftover is gone or nobody
+/// gains. A child already at its ceiling is never asked, which is what keeps
+/// the roll-back from eating the slack `justify` spends: three 64-unit images
+/// in a 400-unit `SpaceBetween` row are all at their ceiling after the walk,
+/// so the 208 units they left stay in the gaps.
+///
+/// # The shrink policy, stated
+///
+/// When the group's children want more than `avail`, they shrink to an **equal
+/// share of the budget**, not proportionally to their natural sizes: three
+/// children in a row too narrow for them end at a third each, whatever their
+/// naturals were. Declared minimums and priority both outrank that — a lower
+/// group's minimums are reserved out of `avail` before this function sees it,
+/// and a child's own `min` clamps its response above its share, which the
+/// container then reports as overflow rather than hiding. Shrinking never
+/// happens while budget is unspent, which is the whole content of the
+/// roll-back above.
+///
+/// Both halves are pinned:
+/// `a_row_placed_at_the_width_it_asked_for_gives_every_child_what_it_asked_for`
+/// for the first, `a_row_too_narrow_for_its_children_shrinks_them_to_an_equal_share`
+/// for the second.
+fn settle_group(
+    o: &mut Offers<'_, '_>,
+    group: &[usize],
+    avail: f32,
+    highs: &[f32],
+    taken: &mut [Size],
+) -> f32 {
+    let mut extents = vec![0.0f32; group.len()];
+    let mut remaining = avail;
+    let mut left = group.len();
+    for (g, &i) in group.iter().enumerate() {
+        let share = remaining / left as f32;
+        left -= 1;
+        let got = o.measure(i, share);
+        taken[i] = got;
+        extents[g] = got.along(o.main);
+        // Surplus roll-forward.
+        remaining = (remaining - extents[g]).max(0.0);
+    }
+
+    // The roll-back. A child is out of the queue once it has said no: either
+    // it is already at the largest extent it declared it could use, or a
+    // re-offer bought it nothing. Every pass therefore removes a child or
+    // spends the leftover, so `group.len()` passes is a bound the loop
+    // reaches only if it is about to stop anyway — and a layout pass must
+    // terminate whatever a child answers.
+    let mut done = vec![false; group.len()];
+    for _ in 0..group.len() {
+        // Recomputed from a fresh sum rather than carried on from the walk:
+        // the running subtraction above is one rounding deep per child by the
+        // time it gets here.
+        remaining = (avail - extents.iter().sum::<f32>()).max(0.0);
+        if remaining <= FIT_EPSILON {
+            break;
+        }
+        let claimants: Vec<usize> = (0..group.len())
+            .filter(|&g| !done[g] && extents[g] < highs[group[g]] - FIT_EPSILON)
+            .collect();
+        if claimants.is_empty() {
+            break;
+        }
+        let mut left = claimants.len();
+        let mut gained = false;
+        for &g in &claimants {
+            let high = highs[group[g]];
+            let want = extents[g] + remaining / left as f32;
+            left -= 1;
+            // The ceiling is a snap, not a `min`, and that is the point. A
+            // hand-back is a sum of `f32` shares and lands a few parts in ten
+            // million either side of the ceiling it was built from, which is
+            // how a row placed at exactly the 456 units it answered put a
+            // 104-unit label at 103.999985 and rounded it to a different
+            // device pixel than the answer did. `FIT_EPSILON` is already this
+            // file's definition of "the same extent"; an offer that close to
+            // a child's ceiling *is* that ceiling.
+            let ask = if want >= high - FIT_EPSILON {
+                high
+            } else {
+                want
+            };
+            if ask - extents[g] <= FIT_EPSILON {
+                done[g] = true;
+                continue;
+            }
+            let got = o.measure(group[g], ask);
+            let extent = got.along(o.main);
+            if extent < ask - FIT_EPSILON {
+                // It declined the bigger offer, so it will decline the next
+                // one too. Take the answer — it is the response to an offer
+                // this pass is committing — and stop asking.
+                done[g] = true;
+            }
+            if extent - extents[g] <= FIT_EPSILON {
+                done[g] = true;
+                continue;
+            }
+            taken[group[g]] = got;
+            remaining = (remaining - (extent - extents[g])).max(0.0);
+            extents[g] = extent;
+            gained = true;
+        }
+        if !gained {
+            break;
+        }
+    }
+
+    extents.iter().sum()
 }
 
 /// Spacing reserved before distribution: one gap between each adjacent pair.
@@ -1435,5 +1606,243 @@ mod tests {
              absorb along it: shrinking it there loses content"
         );
         assert!(!super::scroll_absorbs(&rigid("icon"), Axis::Vertical));
+    }
+
+    // ---- the widest child of a row -------------------------------------
+
+    /// A label `chars` characters wide under `MonoContent` (8 units each),
+    /// optionally carrying declared horizontal bounds.
+    fn label(key: &str, chars: usize, min: Option<f32>, max: Option<f32>) -> ViewNode {
+        let node = ViewNode::new(NodeKind::Text, Key::new(key)).with_props(Props {
+            text: Some("x".repeat(chars)),
+            ..Props::default()
+        });
+        if min.is_none() && max.is_none() {
+            return node;
+        }
+        node.with_constraints(on(
+            Axis::Horizontal,
+            AxisConstraint {
+                min,
+                max,
+                priority: 0,
+            },
+        ))
+    }
+
+    /// A row of `n` children: `n - 1` bare 11-character labels (88 units
+    /// each) and a 13-character label (104 units) last, carrying a declared
+    /// 40-unit minimum. The minimum is what makes the widest child the
+    /// *least* flexible of the row -- 104 - 40 = 64 against the bare labels'
+    /// 88 - 0 = 88 -- so the ascending-flexibility walk reaches it first,
+    /// before any sibling has declined anything.
+    fn widest_last(n: usize) -> ViewNode {
+        let mut children: Vec<ViewNode> = (0..n - 1)
+            .map(|i| label(&format!("bare{i}"), 11, None, None))
+            .collect();
+        children.push(label("wide", 13, Some(40.0), None));
+        stack(Axis::Horizontal, 0.0, Align::Start, children)
+    }
+
+    #[test]
+    fn a_row_placed_at_the_width_it_asked_for_gives_every_child_what_it_asked_for() {
+        let mut placed = Vec::new();
+        for n in 1..=5usize {
+            let tree = widest_last(n);
+            let natural = measured(&tree, SizeProposal::unbounded()).w;
+            assert_eq!(
+                natural,
+                88.0 * (n as f32 - 1.0) + 104.0,
+                "n = {n}: the row's own unbounded answer moved"
+            );
+            let out = placements(&tree, Rect::new(0.0, 0.0, natural, 40.0));
+            let wide = out
+                .iter()
+                .find(|p| p.id.ends_with("wide"))
+                .expect("the widest child is placed");
+            placed.push(wide.rect.w);
+        }
+        assert!(
+            placed.iter().all(|w| (w - 104.0).abs() < 1e-3),
+            "a row placed at exactly the width it answered gave its 104-unit child \
+             {placed:?} for n = 1..=5"
+        );
+    }
+
+    /// The main-axis extent of the placement whose id ends in `key`.
+    fn extent_of(out: &[Placement], key: &str, axis: Axis) -> f32 {
+        let p = out
+            .iter()
+            .find(|p| p.id.ends_with(key))
+            .unwrap_or_else(|| panic!("{key} is placed"));
+        match axis {
+            Axis::Horizontal => p.rect.w,
+            Axis::Vertical => p.rect.h,
+        }
+    }
+
+    /// The roll-back is not a text or a horizontal phenomenon: any child that
+    /// answers an `Exact` offer with the offer is limited by it, and a spacer
+    /// clamped into a band does exactly that. Four spacers capped at 88 and
+    /// one capped at 104 whose declared 40-unit minimum makes it the least
+    /// flexible of the five, on each axis in turn.
+    #[test]
+    fn the_roll_back_settles_both_axes() {
+        for axis in [Axis::Horizontal, Axis::Vertical] {
+            let mut children: Vec<ViewNode> = (0..4)
+                .map(|i| flexible(&format!("bare{i}"), axis, 0.0, 88.0, 0))
+                .collect();
+            children.push(flexible("wide", axis, 40.0, 104.0, 0));
+            let tree = stack(axis, 0.0, Align::Start, children);
+            let natural = measured(&tree, SizeProposal::unbounded()).along(axis);
+            assert_eq!(natural, 456.0, "{axis:?}");
+            let rect = match axis {
+                Axis::Horizontal => Rect::new(0.0, 0.0, natural, 60.0),
+                Axis::Vertical => Rect::new(0.0, 0.0, 60.0, natural),
+            };
+            let out = placements(&tree, rect);
+            assert_eq!(
+                extent_of(&out, "wide", axis),
+                104.0,
+                "{axis:?}: the least flexible child was left on the mean of \
+                 the row's naturals while its siblings declined 12.8 units"
+            );
+            assert!(!out[0].paint.truncated, "{axis:?}");
+        }
+    }
+
+    /// The shrink policy, pinned: a row genuinely too narrow for its children
+    /// splits what it has **equally**, not in proportion to their naturals.
+    /// 104 and 88 in a 150-unit row are 75 and 75, not the 81.25 and 68.75
+    /// a proportional policy would place.
+    #[test]
+    fn a_row_too_narrow_for_its_children_shrinks_them_to_an_equal_share() {
+        let tree = widest_last(2);
+        let out = placements(&tree, Rect::new(0.0, 0.0, 150.0, 60.0));
+        assert_eq!(extent_of(&out, "wide", Axis::Horizontal), 75.0);
+        assert_eq!(extent_of(&out, "bare0", Axis::Horizontal), 75.0);
+    }
+
+    /// A declared minimum outranks the equal share: the wide label holds its
+    /// 60 units in a 100-unit row and the sibling lives on the 40 that are
+    /// left, rather than both landing on 50.
+    #[test]
+    fn a_declared_minimum_outranks_the_equal_share_a_narrow_row_hands_out() {
+        let tree = stack(
+            Axis::Horizontal,
+            0.0,
+            Align::Start,
+            vec![
+                label("bare0", 11, None, None),
+                label("wide", 13, Some(60.0), None),
+            ],
+        );
+        let out = placements(&tree, Rect::new(0.0, 0.0, 100.0, 60.0));
+        assert_eq!(extent_of(&out, "wide", Axis::Horizontal), 60.0);
+        assert_eq!(extent_of(&out, "bare0", Axis::Horizontal), 40.0);
+    }
+
+    /// A child already at its declared maximum takes no part in the roll-back:
+    /// it answered *less* than it was offered, which is the engine's one
+    /// signal for "satisfied", and the 16 units it left over stay leftover for
+    /// `justify` to spend.
+    #[test]
+    fn the_roll_back_never_grows_a_child_past_its_declared_maximum() {
+        let tree = stack(
+            Axis::Horizontal,
+            0.0,
+            Align::Start,
+            vec![
+                label("bare0", 11, None, None),
+                label("wide", 13, Some(40.0), Some(96.0)),
+            ],
+        );
+        let out = placements(&tree, Rect::new(0.0, 0.0, 200.0, 60.0));
+        assert_eq!(extent_of(&out, "wide", Axis::Horizontal), 96.0);
+        assert_eq!(extent_of(&out, "bare0", Axis::Horizontal), 88.0);
+        assert_eq!(
+            measured(&tree, SizeProposal::exact(Size::new(200.0, 60.0))).w,
+            184.0,
+            "the row answers what its children take, and 16 units stay unspent"
+        );
+    }
+
+    /// The roll-back spends the group's own budget and nothing else: a
+    /// lower-priority child's declared minimum was reserved out of that budget
+    /// before the group ever saw it, and it is still there afterwards.
+    #[test]
+    fn the_roll_back_cannot_raid_a_lower_prioritys_reserved_minimum() {
+        let mut wide = label("wide", 13, Some(40.0), None);
+        wide.constraints.horizontal.priority = 5;
+        let mut bare = label("bare0", 11, None, None);
+        bare.constraints.horizontal.priority = 5;
+        let tree = stack(
+            Axis::Horizontal,
+            0.0,
+            Align::Start,
+            vec![
+                wide,
+                bare,
+                flexible("floor", Axis::Horizontal, 30.0, 1000.0, 0),
+            ],
+        );
+        // 104 + 88 + 30 = 222, and every one of the three gets its number.
+        let out = placements(&tree, Rect::new(0.0, 0.0, 222.0, 60.0));
+        assert_eq!(extent_of(&out, "wide", Axis::Horizontal), 104.0);
+        assert_eq!(extent_of(&out, "bare0", Axis::Horizontal), 88.0);
+        assert_eq!(extent_of(&out, "floor", Axis::Horizontal), 30.0);
+        assert!(!out[0].paint.truncated);
+    }
+
+    /// The roll-back must not eat the slack `justify` spends. It only ever
+    /// re-offers to a child that answered with at least what it was given;
+    /// both children here answered with less, so the 108 units they declined
+    /// go into the gap, exactly as they did before the roll-back existed.
+    #[test]
+    fn a_satisfied_row_keeps_the_slack_space_between_spends() {
+        let mut tree = widest_last(2);
+        tree.props.justify = Some(Justify::SpaceBetween);
+        let out = placements(&tree, Rect::new(0.0, 0.0, 300.0, 60.0));
+        assert_eq!(extent_of(&out, "bare0", Axis::Horizontal), 88.0);
+        assert_eq!(extent_of(&out, "wide", Axis::Horizontal), 104.0);
+        let wide = out.iter().find(|p| p.id.ends_with("wide")).unwrap();
+        assert_eq!(out[1].rect.x, 0.0);
+        assert_eq!(wide.rect.right(), 300.0);
+    }
+
+    /// How a row comes to be placed at exactly the width it answered, which is
+    /// the shape the defect needs and the reason it reached a shipped page.
+    /// A column that aligns its children `Start` places each one across at its
+    /// own measured extent rather than at the column's width — so the row is
+    /// handed back precisely the number it built out of its children's
+    /// naturals, and then has to reproduce it.
+    #[test]
+    fn a_row_start_aligned_inside_a_column_still_gives_its_widest_child_its_width() {
+        let keyed = |mut n: ViewNode, k: &str| {
+            n.key = Key::new(k);
+            n
+        };
+        let mut column = stack(
+            Axis::Vertical,
+            0.0,
+            Align::Start,
+            vec![keyed(widest_last(3), "r3"), keyed(widest_last(5), "r5")],
+        );
+        column.key = Key::new("column");
+        let out = placements(&column, Rect::new(0.0, 0.0, 900.0, 200.0));
+        // Both rows are Start-aligned, so each is exactly as wide as it asked.
+        let rows: Vec<f32> = out
+            .iter()
+            .filter(|p| p.id == "/column/r3" || p.id == "/column/r5")
+            .map(|p| p.rect.w)
+            .collect();
+        assert_eq!(rows, vec![280.0, 456.0]);
+        for w in out
+            .iter()
+            .filter(|p| p.id.ends_with("wide"))
+            .map(|p| p.rect.w)
+        {
+            assert_eq!(w, 104.0, "a Start-aligned row clipped its widest child");
+        }
     }
 }
