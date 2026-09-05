@@ -181,8 +181,13 @@ fn insert_layer_set(values: &mut BTreeMap<TokenName, TokenValue>, layers: &[[u8;
 ///
 /// | | Carbon g100 | Petra, before | Petra, now |
 /// |---|---|---|---|
-/// | row rule / this token | `#393939` (57) | `#9c9c9c` (156) | `#555555` (85) |
+/// | row rule / this token | `#393939`–`#6f6f6f` (57–111) | `#9c9c9c` (156) | `#616161` (97) |
 /// | field rule / [`BORDER_STRONG_TOKEN`] | `#6f6f6f` (111) | `#b8b8b8` (184) | `#8f8f8f` (143) |
+///
+/// The row-rule range is not vagueness: Carbon has **four** decorative
+/// border tones, `border-subtle-00..03`, one per layer, and ours is one
+/// tone covering all four layers. Ours therefore sits inside Carbon's
+/// range rather than on any single member of it.
 ///
 /// So the split is by **role**, not by taste:
 ///
@@ -258,22 +263,42 @@ const MIN_CONTROL_BOUNDARY: f32 = 3.0;
 /// The floor a **decorative** rule is held to: a divider between two rows,
 /// a panel edge, a line under a header.
 ///
-/// **1.3:1 is Carbon's own number, not a relaxation invented here.** Carbon
-/// Gray 100 draws its row rules in `$border-subtle-01` `#393939` on
-/// `$layer-01` `#262626` — both hexes are already cited in this file
-/// (`DARK_LAYERS`' comment carries the layer ramp,
-/// `component::tokens::LAYER_ACCENT`'s carries the border) — and that pair
-/// measures **1.31:1**. So this is the contrast IBM ships on the line
-/// between two table rows, rounded down by 0.01 to the nearest hundredth so
-/// a theme that reproduces Carbon exactly is admitted rather than rejected
-/// by a rounding step.
+/// **1.56:1 is Carbon's own number, not a relaxation invented here** — but
+/// getting to it takes care, because Carbon numbers its borders and its
+/// layers in lockstep and a rule only ever meets the layer of the same
+/// index. In `@carbon/themes`' g100 the matched pairs are:
 ///
-/// It is deliberately far below [`MIN_CONTROL_BOUNDARY`] and it is **not**
+/// | rule | ground | contrast |
+/// |---|---|---|
+/// | `border-subtle-00` `#393939` | `background` `#161616` | 1.567 |
+/// | `border-subtle-01` `#525252` | `layer-01` `#262626` | 1.937 |
+/// | `border-subtle-02` `#6f6f6f` | `layer-02` `#393939` | 2.298 |
+///
+/// The quietest line IBM actually draws is therefore **1.567:1**, rounded
+/// down to the nearest hundredth so a theme reproducing Carbon exactly is
+/// admitted rather than rejected by a rounding step.
+///
+/// This constant read `1.3` until 2026-09-05, from `border-subtle-01`'s
+/// `#393939` against `layer-01`'s `#262626`. That pair is **not one Carbon
+/// makes**: `#393939` is `border-subtle-00`, which meets `background`, and
+/// the rule that meets `layer-01` is `#525252`. Crossing them by one index
+/// understated the floor by a quarter and put our deepest layer's rule at
+/// 1.31:1, quieter than any divider in Carbon. The hexes were cited
+/// honestly; the pairing was the error.
+///
+/// One tone, four layers, so the deepest layer binds and this floor decides
+/// where in that spread the single tone lands. Carbon does not have that
+/// problem — it tunes `border-subtle-00..03` one per layer, and that ramp
+/// (`contracts/token-vocabulary.md` §11, step 7) is the real answer here.
+/// Until it lands, the honest rule is that our one tone must clear the
+/// quietest line Carbon draws, on every layer we can draw it on.
+///
+/// It is deliberately below [`MIN_CONTROL_BOUNDARY`] and it is **not**
 /// zero. A rule at 1.0:1 is not a quiet rule, it is a missing one, and the
 /// operator is red-green colour blind: two greys within about three of 255
-/// are invisible to everybody. 1.3:1 on dark's deepest layer is 17 sRGB
-/// levels of separation, which is five times that.
-const MIN_DIVIDER_CONTRAST: f32 = 1.3;
+/// are invisible to everybody. 1.56:1 on dark's deepest layer is 29 sRGB
+/// levels of separation, nearly ten times that.
+const MIN_DIVIDER_CONTRAST: f32 = 1.56;
 
 /// The contrast of two opaque sRGB triples.
 ///
@@ -331,21 +356,25 @@ fn quietest_grey_clearing(layers: &[[u8; 3]; 4], ratio: f32, mode: ThemeMode) ->
     );
 }
 
-/// Light `border.subtle`, the decorative tone: `#d5d5d5`. Worst ground is
-/// `#f2f2f2` at 1.30:1, the first level that clears
-/// [`MIN_DIVIDER_CONTRAST`]; against `#ffffff` it is 1.47:1. `text.muted` on
-/// that same worst ground is 8.70:1, so the rule sits 6.64x quieter.
+/// Light `border.subtle`, the decorative tone: `#c3c3c3`. Worst ground is
+/// `#f2f2f2` at 1.57:1, the first level that clears
+/// [`MIN_DIVIDER_CONTRAST`]; against `#ffffff` it is 1.76:1.
 fn light_border() -> [u8; 3] {
     quietest_grey_clearing(&LIGHT_LAYERS, MIN_DIVIDER_CONTRAST, ThemeMode::Light)
 }
 
-/// Dark `border.subtle`, the decorative tone: `#555555`. Worst ground is
-/// `surface.layer-three` (`#444444`) at 1.31:1 — the same 1.31:1 Carbon
-/// draws its own row rules at — and against `surface.base` it is 2.51:1.
-/// Carbon's `#393939` would be 1.19:1 on `#444444`, which is why this is 28
-/// levels brighter than Carbon's and not equal to it: Petra's dark layer set
-/// *ramps* to a lighter deepest layer than Carbon's stops at, and one tone
-/// has to survive all four.
+/// Dark `border.subtle`, the decorative tone: `#616161`. Worst ground is
+/// `surface.layer-three` (`#444444`) at 1.57:1 — the quietest line Carbon
+/// draws anywhere, `border-subtle-00` on `background` — and against
+/// `surface.base` it is 3.02:1.
+///
+/// It is brighter than any single Carbon border because Petra's dark ramp
+/// *keeps going* to `#444444` where Carbon's layers stop at `#393939`, and
+/// one tone has to survive all four of ours. The right comparison is not a
+/// hex but a job: on our deepest layer this rule is exactly as quiet as
+/// Carbon's quietest, and on our shallowest it is as loud as Carbon's
+/// `border-strong-01` is on `layer-01`. That spread is the cost of one tone
+/// and it is what §11 step 7's per-layer names remove.
 fn dark_border() -> [u8; 3] {
     quietest_grey_clearing(&DARK_LAYERS, MIN_DIVIDER_CONTRAST, ThemeMode::Dark)
 }
