@@ -162,7 +162,10 @@ pub use form::form;
 pub use icon::{IconBox, IconMark, IconTone, icon, icon_in, icon_toned};
 pub use inline_loading::{inline_loading, inline_loading_finished};
 pub use link::{link, link_inline};
-pub use list::{list_item, list_item_with, ordered_list, unordered_list};
+pub use list::{
+    Bullet, BulletScheme, list_item, list_item_with, ordered_list, unordered_list,
+    unordered_list_with,
+};
 pub use list_row::list_row;
 pub use loading::{loading, loading_sm, spinner_phase};
 pub use menu::{menu, menu_item};

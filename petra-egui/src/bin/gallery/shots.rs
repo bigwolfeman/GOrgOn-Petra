@@ -2319,39 +2319,39 @@ mod tests {
         assert_eq!(cam.frame().transitions.ambient, 0);
     }
 
-    /// Row 21, the operator's decision made twice: no rail, text centred.
-    /// Asserted on the placed frame — the card's leftmost child is the
-    /// text's column and not a 3-unit bar, and the head row's centre is the
-    /// card's centre — and photographed.
+    /// Row 21: no rail, and the toast is Carbon's 288.
     ///
-    /// The head row, not the title: the status glyph leads the title on that
-    /// row (Carbon's own placement), so the title alone sits right of centre
-    /// by half the glyph and its gap. Centring the title instead would push
-    /// the glyph off the card's left.
+    /// The operator refused the accent rail twice
+    /// (`.agents/carbon-waves/ROUND2-DEFECTS.md` row 21) and it stays
+    /// refused. The same sentence asked for the text to be centred, and this
+    /// test asserted that until 2026-09-05; centring is what made the status
+    /// glyph's inset a function of the title's length, which is the
+    /// operator's round-4 line.
+    /// `every_notification_kind_hangs_its_glyph_on_the_card_leading_edge`
+    /// owns the replacement claim, measured against Carbon's own
+    /// stylesheet, and takes the photograph.
+    ///
+    /// The width stays here because it is the toast's own number:
+    /// `inline-size: convert.to-rem(288px)`, `_toast-notification.scss:34`.
     #[test]
-    fn the_notification_card_has_no_rail_and_its_text_is_centred() {
-        let mut cam = Camera::on("Notification");
-        cam.shoot("21-notification");
+    fn the_notification_toast_has_no_rail_and_holds_carbons_288() {
+        let cam = Camera::on("Notification");
         assert!(!cam.has("nt/panel/rail"), "the accent rail is still placed");
         let panel = cam.rect("nt/panel");
-        let head = cam.rect("panel/head");
-        let body = cam.rect("panel/body");
-        let (glyph, title) = (cam.rect("panel/head/glyph"), cam.rect("panel/head/title"));
-        assert!(
-            glyph.x + glyph.w <= title.x,
-            "the status glyph must lead the title on one line, got \
-             {glyph:?} then {title:?}"
-        );
-        for (name, line) in [("head", head), ("body", body)] {
-            let off = (line.x + line.w / 2.0) - (panel.x + panel.w / 2.0);
-            assert!(
-                off.abs() <= 0.5,
-                "the {name} is {off} off the card's centre: {line:?} in {panel:?}"
-            );
-        }
         assert!(
             (panel.w - 288.0).abs() < 0.5,
             "Carbon's toast is 288 wide, got {panel:?}"
+        );
+        let glyph = cam.rect("panel/glyph");
+        let title = cam.rect("panel/details/title");
+        assert!(
+            glyph.x + glyph.w <= title.x,
+            "the status glyph must lead the title, got {glyph:?} then {title:?}"
+        );
+        let centre_off = ((title.x + title.w / 2.0) - (panel.x + panel.w / 2.0)).abs();
+        assert!(
+            centre_off > 0.5,
+            "the title is centred in the card again: {title:?} in {panel:?}"
         );
     }
 
@@ -4035,7 +4035,7 @@ mod tests {
         );
         let rects: Vec<Rect> = cards
             .iter()
-            .map(|card| cam.rect(&format!("{card}/head/glyph")))
+            .map(|card| cam.rect(&format!("{card}/glyph")))
             .collect();
         let shot = raster(&mut cam, "21-notification");
         let marks: Vec<Vec<[u8; 4]>> = rects
@@ -4055,11 +4055,11 @@ mod tests {
         }
 
         // The toast opens on Info. Press its action and the mark must change.
-        let toast_glyph = cam.rect("panel/head/glyph");
+        let toast_glyph = cam.rect("panel/glyph");
         let before = inset_pixels(&shot, toast_glyph, 0);
-        cam.click("panel/action");
+        cam.click("actions/action");
         let after_shot = raster(&mut cam, "21-notification-stepped");
-        let after = inset_pixels(&after_shot, cam.rect("panel/head/glyph"), 0);
+        let after = inset_pixels(&after_shot, cam.rect("panel/glyph"), 0);
         assert!(
             differing(&before, &after) > 20,
             "a click on the toast's action left its status mark unchanged"
@@ -5239,5 +5239,153 @@ mod tests {
              field, so this rule is the whole boundary: at this contrast \
              there is no field on the page, only a grey patch."
         );
+    }
+
+    /// Every card on row 21, inline and toast alike.
+    const NOTE_CARDS: [&str; 5] = [
+        "nt-error",
+        "nt-warning",
+        "nt-info",
+        "nt-success",
+        "nt/panel",
+    ];
+
+    /// Carbon's leading inset to a notification's status glyph:
+    /// `padding-inline-start: convert.to-rem(13px)`
+    /// (`_toast-notification.scss:35`) plus the `border-inline-start: 3px`
+    /// status rail (`_mixins.scss:35`) this library does not draw, which is
+    /// 16 — `$spacing-05`, on the ramp.
+    const NOTE_LEAD: f32 = 16.0;
+    /// Carbon's notification glyph, `size: 20` (`Notification.js:152`).
+    const NOTE_GLYPH: f32 = 20.0;
+    /// Carbon `__icon { margin-inline-end: $spacing-05 }`
+    /// (`_inline-notification.scss:281`).
+    const NOTE_GAP: f32 = 16.0;
+
+    /// Row 21. The glyph hangs on the card's leading edge and the text is a
+    /// left-aligned column beside it, which is Carbon's whole anatomy for
+    /// this component: `display: flex` with the icon first, then
+    /// `__text-wrapper` (`_inline-notification.scss:29,253-266`).
+    ///
+    /// The card centred every line until 2026-09-05, so the glyph's leading
+    /// inset was a function of the *title's length* — measured 58.66, 72.98,
+    /// 80.62 and 91.80 on the four inline cards of one page, four different
+    /// places for the same field — and the message sat on a third edge again.
+    /// That is the "icons and the way it is layed out" the operator named.
+    #[test]
+    fn every_notification_kind_hangs_its_glyph_on_the_card_leading_edge() {
+        let mut cam = Camera::on("Notification");
+        for card in NOTE_CARDS {
+            let panel = cam.rect(card);
+            let glyph = cam.rect(&format!("{card}/glyph"));
+            let title = cam.rect(&format!("{card}/details/title"));
+            let body = cam.rect(&format!("{card}/details/body"));
+            assert!(
+                (glyph.x - panel.x - NOTE_LEAD).abs() <= 0.5,
+                "{card}: the glyph is {} in from the card's edge, not {NOTE_LEAD}: \
+                 {glyph:?} in {panel:?}",
+                glyph.x - panel.x
+            );
+            assert!(
+                (glyph.y - panel.y - NOTE_LEAD).abs() <= 0.5,
+                "{card}: the glyph is {} down from the card's top, not {NOTE_LEAD}",
+                glyph.y - panel.y
+            );
+            assert!(
+                (title.x - panel.x - (NOTE_LEAD + NOTE_GLYPH + NOTE_GAP)).abs() <= 0.5,
+                "{card}: the title starts {} in, not {}",
+                title.x - panel.x,
+                NOTE_LEAD + NOTE_GLYPH + NOTE_GAP
+            );
+            assert!(
+                (body.x - title.x).abs() <= 0.5,
+                "{card}: the message starts at {} and the title at {}; \
+                 Carbon's `__text-wrapper` gives them one leading edge",
+                body.x,
+                title.x
+            );
+        }
+        assert!(
+            !cam.has("nt/panel/rail"),
+            "the accent rail is back; the operator refused it twice"
+        );
+        cam.shoot("21-notification");
+    }
+
+    /// Row 16, the operator's round-4 line: *"List: we need several types of
+    /// bullet points like word or emacs org mode has"*
+    /// (`.agents/carbon-waves/ROUND4-DEFECTS.md` R7).
+    ///
+    /// Four claims on the placed frame, and a capture that has to be read:
+    ///
+    /// 1. Every unordered marker is a **canvas**, not a text leaf. That is
+    ///    what makes it a drawn mark rather than a character riding the
+    ///    label's font, and it is the thing a rect cannot show.
+    /// 2. The four levels of the rotating chain draw **four different**
+    ///    pictures. Same reason `the_notification_kinds_draw_four_different_
+    ///    marks` reads pixels: this operator cannot use hue, so the shape is
+    ///    the whole channel.
+    /// 3. Nesting is real to four levels — each level's marker starts
+    ///    further in than the one above it.
+    /// 4. Every marker sits in its own 16-unit column with its label at the
+    ///    column's end, which is the hanging indent `list.rs`'s module doc
+    ///    measures off Carbon's own `16-list.png`.
+    #[test]
+    fn the_list_page_nests_four_drawn_bullets_and_indents_every_level() {
+        let mut cam = Camera::on("List");
+        let shot = raster(&mut cam, "16-list");
+
+        let levels = ["rot-1", "rot-2", "rot-3", "rot-4"];
+        let mut lefts = Vec::new();
+        let mut marks = Vec::new();
+        for key in levels {
+            let row = format!("{key}/row");
+            let marker = if cam.has(&row) {
+                cam.rect(&format!("{row}/marker"))
+            } else {
+                cam.rect(&format!("{key}/marker"))
+            };
+            let label = if cam.has(&row) {
+                cam.rect(&format!("{row}/label"))
+            } else {
+                cam.rect(&format!("{key}/label"))
+            };
+            assert!(
+                (marker.w - 16.0).abs() <= 0.5,
+                "{key}: the marker column is {}, not Carbon's 16 hang",
+                marker.w
+            );
+            assert!(
+                (label.x - (marker.x + marker.w)).abs() <= 0.5,
+                "{key}: the label starts at {} and the column ends at {}",
+                label.x,
+                marker.x + marker.w
+            );
+            lefts.push(marker.x);
+            marks.push(inset_pixels(&shot, marker, 0));
+        }
+
+        for (level, pair) in lefts.windows(2).enumerate() {
+            assert!(
+                pair[1] > pair[0] + 8.0,
+                "level {} starts at {} and level {} at {}: the nesting is \
+                 not indented",
+                level + 1,
+                pair[0],
+                level + 2,
+                pair[1]
+            );
+        }
+        for (i, a) in marks.iter().enumerate() {
+            for (j, b) in marks.iter().enumerate().skip(i + 1) {
+                assert!(
+                    differing(a, b) > 8,
+                    "levels {} and {} draw the same mark, so a rotation of \
+                     four is a rotation of one",
+                    i + 1,
+                    j + 1
+                );
+            }
+        }
     }
 }

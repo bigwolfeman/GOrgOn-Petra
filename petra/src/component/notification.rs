@@ -2,12 +2,54 @@
 //!
 //! Anatomy (`_toast-notification.scss` / `_inline-notification.scss`), as
 //! this library draws it:
-//! 1. Head — the status glyph, then the required name (and the non-colour
-//!    channel), `heading-compact-01`, on one line.
-//! 2. Body — the message, `body-compact-01`.
+//! 1. Glyph — the status mark, hung on the card's leading edge, 20 units
+//!    (`Notification.js:152`).
+//! 2. Details — a left-aligned column beside it: the required name (and the
+//!    non-colour channel) in `heading-compact-01`, then the message in
+//!    `body-compact-01`, then any action.
 //! 3. Optional action — a [`Role::Button`] with a label.
 //!
-//! Head and body are centred in the card, on both axes.
+//! # The card is a row, and nothing in it is centred
+//!
+//! Carbon's card is `display: flex` — `_inline-notification.scss:29`,
+//! `_toast-notification.scss:30` — with the icon first and the text after
+//! it. Neither stylesheet centres anything on either axis.
+//!
+//! This library centred every line in the card until 2026-09-05. That put
+//! the glyph's leading inset at the mercy of the *title's length*: the four
+//! inline cards on the catalog's own row 21 measured 58.66, 72.98, 80.62 and
+//! 91.80 units in from their own left edges, four different places for one
+//! field, with the message on a fifth edge below. The operator's round-4
+//! line — *"I am not super happy with notifications I think it is the icons
+//! and the way it is layed out or something"* — is that picture. See
+//! `.agents/notes/implemented/bug-fix/2026-09-05-a-centred-notification-
+//! moves-its-status-glyph-with-the-title.md` for the measured table against
+//! Carbon and for what the earlier centring decision was actually about.
+//!
+//! Every inset here is Carbon's own toast, which is uniform 16:
+//! `padding-inline-start: convert.to-rem(13px)` (`_toast-notification.scss:35`)
+//! plus the `border-inline-start: 3px` status rail (`_mixins.scss:35`) this
+//! library does not draw; `__icon { margin-block-start: $spacing-05 }` and
+//! `__title { margin-block-start: $spacing-05 }` (`:227`, `:270`); and
+//! `__details { margin-block-end: $spacing-05; margin-inline-end:
+//! $spacing-05 }` (`:232-233`).
+//!
+//! # What Carbon does here that this does not
+//!
+//! - **Title and message on one line.** Carbon's *inline* variant flows them
+//!   through one `display: flex; flex-wrap: wrap` wrapper with the title
+//!   carrying `margin-inline-end: $spacing-02`
+//!   (`_inline-notification.scss:284-293`), so short copy reads as one
+//!   sentence and only wraps when it must. There is no flex-wrap in this
+//!   layout engine, so both stack — which is Carbon's own *toast* anatomy
+//!   (`_toast-notification.scss:266-280`) applied to both forms.
+//! - **The close button.** Carbon puts a 48×48 dismiss control at the
+//!   trailing edge (`_inline-notification.scss:362-375`) and reserves
+//!   `$spacing-09` for it in `__details` (`:271`). FR-026 forbids an
+//!   icon-only control, and the worded "Close" that [`super::modal`] uses
+//!   instead takes a third of a 288-wide card. Neither the control nor its
+//!   48-unit reserve is drawn; the trailing inset is the plain
+//!   `$spacing-05`.
 //!
 //! # No rail, and a glyph instead
 //!
@@ -16,7 +58,8 @@
 //! drew that rail in the accent, and the operator asked twice for it to go
 //! (`.agents/carbon-waves/ROUND2-DEFECTS.md`, "Decisions the operator has
 //! now made twice": *"remove the handle, center the text"*). It is gone and
-//! it stays gone.
+//! it stays gone. The centring in the same sentence did not survive: see
+//! "The card is a row" above, and the note it names.
 //!
 //! That left the card with no status channel at all, which is what the
 //! operator's round-3 line — *"give it an icon field"* — is about.
@@ -40,13 +83,13 @@
 //!   red-green colourblind reader and is stricter than Carbon's own
 //!   hue-plus-shape pairing. The word is a third channel:
 //!   [`Semantics.value`] carries the kind.
-//! - **Placement.** Carbon puts the glyph inline-start of the title, one
-//!   `$spacing-05` before it, and left-aligns the pair against the card's
-//!   leading edge. The operator asked twice for the text to be centred, so
-//!   only the second half of that is dropped: glyph and title are a
-//!   horizontal row, the glyph still leading, and the **row** is what the
-//!   card centres. Both hold. The earlier reading — glyph stacked above the
-//!   title — is gone; it read as a loose symbol rather than a status field.
+//! - **Placement.** Carbon puts the glyph inline-start of the whole text
+//!   block, one `$spacing-05` before it
+//!   (`_inline-notification.scss:278-281`), and left-aligns both against the
+//!   card's leading edge. That is copied exactly, as of 2026-09-05. Two
+//!   earlier readings are gone: the glyph stacked *above* the title, which
+//!   read as a loose symbol rather than a status field, and the glyph beside
+//!   the title on a *centred* row, which moved it with every title.
 //!
 //! Carbon's alert palette (`$notification-background-error` / success
 //! green / warning yellow) is **not** used either. Those names are not in
@@ -60,16 +103,16 @@ use super::pad;
 use super::stack;
 use super::text::text;
 use super::tokens::{
-    LAYER_HOVER, SHADOW_RAISED, SHAPE_SM, SPACING_03, SPACING_04, SPACING_05, SURFACE_RAISED,
-    TEXT_PRIMARY, TYPOGRAPHY_HEADING_SM, t,
+    LAYER_HOVER, SHADOW_RAISED, SHAPE_SM, SPACING_03, SPACING_05, SURFACE_RAISED, TEXT_PRIMARY,
+    TYPOGRAPHY_HEADING_SM, t,
 };
 use crate::geom::{Align, Axis};
 // `crate::tree::Align` is the cross-axis half of an anchor and
 // `crate::geom::Align` is a child's alignment inside its parent's cell. Both
 // are used in this module, so the anchor one is spelled out at every use.
 use crate::tree::{
-    Anchor, AxisConstraint, ClampRule, Edge, InputPolicy, Interaction, Key, Layer, NodeKind, Props,
-    Role, Semantics, ViewNode,
+    Anchor, AxisConstraint, ClampRule, Edge, InputPolicy, InsetRefs, Interaction, Key, Layer,
+    NodeKind, Props, Role, Semantics, TextWrap, TrackSize, ViewNode,
 };
 
 /// Carbon toast `inline-size` below the `max` breakpoint (`18rem`).
@@ -105,6 +148,15 @@ const _: () = assert!(TOAST_INLINE == 288.0);
 const _: () = assert!(INLINE_MIN_BLOCK == 48.0);
 const _: () = assert!(INLINE_MIN_INLINE == 288.0);
 const _: () = assert!(INLINE_MAX_INLINE == 608.0);
+
+/// Carbon's notification action button, `block-size: convert.to-rem(32px)`
+/// — MEASURED `_inline-notification.scss:303`. The button is a ghost
+/// `.cds--btn--ghost` there; here it is a labelled [`Role::Button`] on the
+/// card's own fill, which reads the same way, and only the block size is a
+/// number worth pinning.
+const ACTION_BLOCK: f32 = 32.0;
+
+const _: () = assert!(ACTION_BLOCK == 32.0);
 
 const ACTION_INTENTS: &[Interaction] =
     &[Interaction::Focus, Interaction::Click, Interaction::Hover];
@@ -285,9 +337,14 @@ fn toast_surface(
     node
 }
 
-/// The card: the glyph beside the title on one line, the body under it,
-/// then any extras, every line centred, on the raised surface with its
-/// shadow.
+/// The card: the status glyph hung on the leading edge, and a left-aligned
+/// column of text beside it, on the raised surface with its shadow.
+///
+/// A [`NodeKind::Grid`] rather than a horizontal [`stack`], for
+/// [`super::modal`]'s `header` reason: the text column takes whatever room
+/// the fixed-width glyph leaves, so a long message wraps inside the card
+/// instead of pushing the glyph off its edge. Carbon gets the same result
+/// from `flex-grow: 1` on `__details` (`_inline-notification.scss:270`).
 fn chrome(
     key: impl Into<Key>,
     kind: NotificationKind,
@@ -299,28 +356,66 @@ fn chrome(
     // [`IconBox::Header`]'s extent. `IconTone::Primary` is `$icon-primary`,
     // not the kind's hue — see the module doc.
     let glyph = icon_in("glyph", kind.glyph(), IconBox::Header, IconTone::Primary);
+
     let mut heading = text("title", title);
     heading.props.style = Some(t(TYPOGRAPHY_HEADING_SM));
-    // Glyph and title share one line, the glyph leading, separated by
-    // Carbon's own `margin-inline-end: 16px` / `$spacing-05` — MEASURED
-    // slice-c Notification, "Inline/Actionable ... icon `margin-inline-end`:
-    // 16px/`$spacing-05`". The pair is a row, and the row is what the card
-    // centres, so both the operator's centring and Carbon's leading glyph
-    // hold at once.
-    let mut head = stack(
-        "head",
-        Axis::Horizontal,
-        Some(SPACING_05),
-        vec![glyph, heading],
-    );
-    head.props.align = Some(Align::Center);
-    let mut copy = vec![head, text("body", body.into())];
-    copy.extend(extras);
-    let mut node = stack(key, Axis::Vertical, Some(SPACING_03), copy);
-    // Cross-axis centre: each line sits in the middle of the card's width.
-    // The padding is symmetric, so the block is centred top to bottom too.
-    node.props.align = Some(Align::Center);
-    node.props.padding = Some(pad(SPACING_05, SPACING_04));
+    heading.props.wrap = Some(TextWrap::Wrap);
+    // Carbon: `__subtitle { word-break: break-word }`
+    // (`_inline-notification.scss:296`, `_toast-notification.scss:279`). A
+    // card with a hard 288 floor and a 608 cap has to wrap the message or
+    // lose the end of it.
+    let mut message = text("body", body.into());
+    message.props.wrap = Some(TextWrap::Wrap);
+
+    let mut column = vec![heading, message];
+    if !extras.is_empty() {
+        // Carbon's `__caption`, the row the actionable variant's button
+        // sits on: `padding-block-start: $spacing-03`
+        // (`_toast-notification.scss:282-287`). Every other gap in the
+        // column is zero — `__title`'s only block margin is its 16 above
+        // and `__subtitle`'s is its 16 below (`:270`, `:278`), and the
+        // card's own padding already spends both.
+        let mut actions = stack("actions", Axis::Horizontal, Some(SPACING_03), extras);
+        actions.props.padding = Some(InsetRefs {
+            top: Some(t(SPACING_03)),
+            ..InsetRefs::default()
+        });
+        column.push(actions);
+    }
+    let details = stack("details", Axis::Vertical, None, column);
+
+    let mut node = ViewNode::new(NodeKind::Grid, key)
+        .with_props(Props {
+            // Both tracks fit their content, so the card shrink-wraps its
+            // own copy between `INLINE_MIN_INLINE` and `INLINE_MAX_INLINE`
+            // — Carbon's `min-inline-size: 288px` /
+            // `max-inline-size: 608px` band
+            // (`_inline-notification.scss:37,40`). A `Weight` track for the
+            // text instead makes every card 608 whatever it holds, which is
+            // also legal Carbon (`inline-size: 100%`, `:32`) and is the
+            // picture round 3 rejected: four cards of thirty characters
+            // each in 608 units of band. See
+            // `page/notification.rs`'s own note on the narrow card.
+            columns: vec![TrackSize::FitContent, TrackSize::FitContent],
+            // Carbon `__icon { margin-inline-end: $spacing-05 }`
+            // (`_inline-notification.scss:281`, `_toast-notification.scss:228`).
+            column_spacing: Some(t(SPACING_05)),
+            // `Stretch`, so the text column is its whole track and a
+            // wrapped message keeps the width the track was sized for. The
+            // glyph's own min = max = 20 clamps it back to 20×20 at the
+            // cell's top-left, which is where Carbon's
+            // `margin-block-start: $spacing-05` puts it.
+            align: Some(Align::Stretch),
+            // Uniform 16, which is Carbon's toast on all four edges: 13
+            // `padding-inline-start` plus the 3 rail this library does not
+            // draw (`_toast-notification.scss:35`, `_mixins.scss:35`); 16
+            // above from `__icon` and `__title`'s `margin-block-start`
+            // (`:227`, `:270`); 16 below and trailing from `__details`
+            // (`:232-233`).
+            padding: Some(pad(SPACING_05, SPACING_05)),
+            ..Props::default()
+        })
+        .with_children(vec![glyph, details]);
     node.props
         .tokens
         .insert("background".into(), t(SURFACE_RAISED));
@@ -354,6 +449,11 @@ fn action_button(key: impl Into<Key>, label: String) -> ViewNode {
     node.props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
+    node.constraints.vertical = AxisConstraint {
+        min: Some(ACTION_BLOCK),
+        max: Some(ACTION_BLOCK),
+        priority: 0,
+    };
     node.interactive(Role::Button, label, ACTION_INTENTS)
 }
 
@@ -369,7 +469,9 @@ mod tests {
     use crate::geom::{Align, Axis, Size};
     use crate::testing::{Harness, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
-    use crate::tree::{InputPolicy, Interaction, Layer, NodeKind, Props, Registry, Role, ViewNode};
+    use crate::tree::{
+        InputPolicy, Interaction, Layer, NodeKind, Props, Registry, Role, TrackSize, ViewNode,
+    };
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         node.children
@@ -442,12 +544,14 @@ mod tests {
         );
     }
 
-    /// Row 21, the operator's decision made twice: no rail, and the text
-    /// centred. The card is one vertical stack of title over body with the
-    /// cross axis centred, so there is no column beside the text for a rail
-    /// to have lived in.
+    /// Row 21: no rail (the operator's decision, made twice), and Carbon's
+    /// own anatomy for everything else — a two-column row with the status
+    /// glyph in the first column and a text block in the second
+    /// (`_inline-notification.scss:29`, `:269-296`). Nothing is centred; the
+    /// centring this test used to assert is what the operator's round-4 line
+    /// was about.
     #[test]
-    fn the_card_has_no_rail_and_centres_its_text() {
+    fn the_card_has_no_rail_and_hangs_its_glyph_on_the_leading_edge() {
         for node in [
             notification("restart", "Supervisor restarted", "Worker 3 came back."),
             notification_inline("warn", "Disk filling", "Trace volume is at 80%."),
@@ -462,30 +566,43 @@ mod tests {
             } else {
                 &node
             };
-            assert_eq!(card.props.axis, Some(Axis::Vertical));
+            assert_eq!(card.kind, NodeKind::Grid);
+            assert_eq!(
+                card.props.columns,
+                vec![TrackSize::FitContent, TrackSize::FitContent],
+                "both tracks fit their content, so the card shrink-wraps \
+                 inside Carbon's 288-608 band instead of always taking 608"
+            );
             assert_eq!(
                 card.props.align,
+                Some(Align::Stretch),
+                "the text column has to be the track's full width for a long \
+                 message to wrap in it"
+            );
+            assert_ne!(
+                card.props.align,
                 Some(Align::Center),
-                "title and body sit in the middle of the card"
+                "a centred card moves its status glyph with the title's length"
             );
             assert_eq!(
                 card.children[0].key.as_str(),
-                "head",
-                "the glyph-and-title row is the card's first line"
-            );
-            let head = &card.children[0];
-            assert_eq!(
-                head.props.axis,
-                Some(Axis::Horizontal),
-                "glyph and title share one line"
-            );
-            assert_eq!(
-                head.children[0].key.as_str(),
                 "glyph",
-                "the status glyph leads the title, as Carbon places it"
+                "the status glyph is the card's leading column"
             );
-            assert_eq!(head.children[1].key.as_str(), "title");
-            assert_eq!(card.children[1].key.as_str(), "body");
+            let details = &card.children[1];
+            assert_eq!(details.key.as_str(), "details");
+            assert_eq!(
+                details.props.axis,
+                Some(Axis::Vertical),
+                "title over message, Carbon's toast anatomy"
+            );
+            assert_eq!(details.children[0].key.as_str(), "title");
+            assert_eq!(details.children[1].key.as_str(), "body");
+            assert_ne!(
+                details.props.align,
+                Some(Align::Center),
+                "the title and the message share one leading edge"
+            );
             assert_eq!(
                 found(&node, "title")
                     .props
@@ -695,29 +812,32 @@ mod tests {
         };
         let panel = rect("/panel");
         assert_eq!(panel.w, TOAST_INLINE, "the card fills the toast's 288");
-        // The head row — glyph then title — is what centres, not the title
-        // on its own: the glyph leads the title inside the row, so the title
-        // is deliberately right of centre by half the glyph and its gap.
-        for key in ["/head", "/body"] {
-            let line = rect(key);
-            let off = (line.x + line.w / 2.0) - (panel.x + panel.w / 2.0);
-            assert!(
-                off.abs() <= 0.5,
-                "{key} centre is {off} off the card's centre: {line:?} in {panel:?}"
-            );
-        }
-        let (glyph, title) = (rect("/glyph"), rect("/title"));
+        let (glyph, title, body) = (rect("/glyph"), rect("/title"), rect("/body"));
+        // Carbon's leading inset: `padding-inline-start: 13px`
+        // (`_toast-notification.scss:35`) plus the 3px rail
+        // (`_mixins.scss:35`) this library does not draw.
         assert!(
-            glyph.x + glyph.w <= title.x,
-            "the glyph leads the title on the same line, got {glyph:?} then {title:?}"
+            (glyph.x - panel.x - 16.0).abs() <= 0.5,
+            "the glyph is {} in from the card's edge, not 16: {glyph:?} in {panel:?}",
+            glyph.x - panel.x
         );
-        let head = rect("/head");
-        let share = |r: crate::geom::Rect| (r.y + r.h / 2.0) - (head.y + head.h / 2.0);
         assert!(
-            share(glyph).abs() <= 0.5 && share(title).abs() <= 0.5,
-            "glyph and title share the row's centre line, got {} and {}",
-            share(glyph),
-            share(title)
+            (glyph.y - panel.y - 16.0).abs() <= 0.5,
+            "the glyph is {} down from the card's top, not 16",
+            glyph.y - panel.y
+        );
+        // 16 lead, a 20-unit glyph (`Notification.js:152`), then
+        // `__icon { margin-inline-end: $spacing-05 }` (`:228`).
+        assert!(
+            (title.x - panel.x - 52.0).abs() <= 0.5,
+            "the title starts {} in, not 52",
+            title.x - panel.x
+        );
+        assert!(
+            (body.x - title.x).abs() <= 0.5,
+            "the message starts at {} and the title at {}; one leading edge",
+            body.x,
+            title.x
         );
         check_geometry(&petrify_lone(notification_inline(
             "warn",
@@ -759,7 +879,7 @@ mod tests {
         let action = frame
             .placements
             .iter()
-            .find(|p| p.id.ends_with("/panel/action"))
+            .find(|p| p.id.ends_with("/actions/action"))
             .expect("the action button is placed");
         assert!(
             order.iter().any(|o| o == &action.id),
@@ -780,7 +900,7 @@ mod tests {
         let disabled_action = disabled_frame
             .placements
             .iter()
-            .find(|p| p.id.ends_with("/panel/action"))
+            .find(|p| p.id.ends_with("/actions/action"))
             .expect("the disabled action button is placed");
         assert!(
             !disabled_order.iter().any(|o| o == &disabled_action.id),
