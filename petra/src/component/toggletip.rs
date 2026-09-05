@@ -47,7 +47,12 @@ pub fn toggletip(
     let trigger = trigger_button("trigger", label.clone());
     let mut children = vec![trigger];
     if open {
-        let mut tip = popover_with("tip", label, "trigger", vec![super::popover::bubble_text(body.into())]);
+        let mut tip = popover_with(
+            "tip",
+            label,
+            "trigger",
+            vec![super::popover::bubble_text(body.into())],
+        );
         tip.constraints.horizontal.max = Some(MAX_INLINE);
         children.push(tip);
     }

@@ -1373,13 +1373,34 @@ fn paint_one(
             0.0
         };
         let inner_w = (placement.rect.w - 2.0 * inset_x).max(0.0);
-        let galley = env.shaper.galley(&TextRequest {
+        // Colour runs, resolved here because this is where the theme is. A
+        // run naming no token keeps `None` and takes `color` below, the same
+        // ink the whole line would have taken; a run naming one this theme
+        // cannot resolve is reported and then also falls back, for
+        // `Color32::PLACEHOLDER`'s reason above — visibly wrong beats
+        // invisible, and the name is in the report either way.
+        let runs: Vec<(usize, Option<Color32>)> = text
+            .runs
+            .iter()
+            .map(|run| {
+                let ink = run.foreground.as_deref().and_then(|name| {
+                    let found = env.colors.color(name);
+                    if found.is_none() {
+                        report.unresolved_tokens.insert(name.to_owned());
+                    }
+                    found
+                });
+                (run.len, ink)
+            })
+            .collect();
+        let request = TextRequest {
             text: &text.text,
             style: text.style.as_deref(),
             wrap: text.wrap,
             max_lines: text.max_lines,
             available_width: Some(inner_w),
-        });
+        };
+        let galley = env.shaper.galley_runs(&request, &runs);
         let text_pos = if input {
             let galley_h = galley.rect.height();
             let inset_y = ((rect.height() - galley_h) * 0.5).max(0.0);

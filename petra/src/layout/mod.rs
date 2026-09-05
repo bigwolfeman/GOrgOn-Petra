@@ -25,6 +25,7 @@ use std::sync::Arc;
 
 use crate::frame::placement::{
     CaretPaint, PaintContent, PlacementList, PlacementSemantics, PlacementSink, TextPaint,
+    TextRunPaint,
 };
 use crate::geom::{Insets, Rect, Scale, Size};
 use crate::input::Capture;
@@ -801,15 +802,19 @@ fn place_node(
 #[must_use]
 pub fn paint_content_of(node: &ViewNode) -> PaintContent {
     let props = &node.props;
-    let text = match node.kind {
-        NodeKind::Text => Some(props.text.clone().unwrap_or_default()),
+    // `own` says the painted string is the node's own `props.text`, which is
+    // the string `props.runs` were measured against and accepted against. An
+    // `input` falling back to its placeholder paints a different string, and
+    // a run list carried onto that would colour the wrong bytes.
+    let (text, own) = match node.kind {
+        NodeKind::Text => (Some(props.text.clone().unwrap_or_default()), true),
         // An empty field draws its placeholder, which is why the placeholder
         // is what gets painted rather than the empty string.
-        NodeKind::Input => Some(match props.text.as_deref() {
-            Some(t) if !t.is_empty() => t.to_owned(),
-            _ => props.placeholder.clone().unwrap_or_default(),
-        }),
-        _ => None,
+        NodeKind::Input => match props.text.as_deref() {
+            Some(t) if !t.is_empty() => (Some(t.to_owned()), true),
+            _ => (Some(props.placeholder.clone().unwrap_or_default()), false),
+        },
+        _ => (None, false),
     };
     PaintContent {
         text: text.map(|text| TextPaint {
@@ -817,6 +822,18 @@ pub fn paint_content_of(node: &ViewNode) -> PaintContent {
             style: props.style.as_ref().map(|t| t.as_str().to_owned()),
             wrap: props.wrap.unwrap_or_default(),
             max_lines: props.max_lines,
+            runs: if own {
+                props
+                    .runs
+                    .iter()
+                    .map(|run| TextRunPaint {
+                        len: run.len,
+                        foreground: run.foreground.as_ref().map(|n| n.as_str().to_owned()),
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            },
         }),
         image: match node.kind {
             NodeKind::Image => props.image.clone(),

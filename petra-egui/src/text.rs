@@ -333,6 +333,15 @@ struct GalleyKey {
     max_rows: usize,
     break_anywhere: bool,
     overflow: Option<char>,
+    /// Colour runs over the text, as `(byte length, colour bits)` with
+    /// `None` for a run that takes the painter's fallback ink.
+    ///
+    /// Empty for every uncoloured run, which is almost all of them, so a
+    /// measurement and an ordinary paint of the same string still land on
+    /// exactly the key they landed on before this field existed. A coloured
+    /// run gets its own entry: two inks over one string are two pictures and
+    /// must not share a galley.
+    runs: Vec<(usize, Option<u32>)>,
 }
 
 /// Content measurement backed by egui galleys.
@@ -453,6 +462,34 @@ impl GalleyShaper {
     /// The painter calls this with the same request the measurement used, gets
     /// the same `Arc`, and therefore paints exactly what was measured.
     pub fn galley(&mut self, req: &TextRequest<'_>) -> Arc<Galley> {
+        self.galley_runs(req, &[])
+    }
+
+    /// [`GalleyShaper::galley`] with the text split into coloured runs.
+    ///
+    /// `runs` is `(byte length, ink)` pairs tiling `req.text`; `None` ink
+    /// means the section keeps [`Color32::PLACEHOLDER`], which is what
+    /// `egui::Painter::galley`'s fallback colour fills in — so an uncoloured
+    /// stretch takes the node's own `foreground` with no special case here.
+    /// An empty slice is the ordinary single-section path.
+    ///
+    /// **Colour is not a shaping input.** The sections a colour run creates
+    /// change no advance, no break and no row height, so the galley this
+    /// returns has the same geometry as the one [`GalleyShaper::galley`]
+    /// returns for the same request — which is what lets the painter colour a
+    /// run that was measured without colour and still paint what was
+    /// measured. `a_coloured_galley_has_the_same_geometry_as_a_plain_one`
+    /// holds that rather than assuming it.
+    ///
+    /// A `runs` slice that does not tile `req.text` is refused by tree
+    /// acceptance long before here (`Violation::TextRunsDoNotCoverTheText`);
+    /// this function clamps rather than panics, because a shaper is not the
+    /// place to discover a malformed tree.
+    pub fn galley_runs(
+        &mut self,
+        req: &TextRequest<'_>,
+        runs: &[(usize, Option<Color32>)],
+    ) -> Arc<Galley> {
         // Cloned rather than borrowed: the shaping below needs `&mut self`
         // for the cache and the counters, and a `TextStyle` is a size, a
         // family handle and an optional float.
@@ -479,6 +516,10 @@ impl GalleyShaper {
             max_rows,
             break_anywhere,
             overflow,
+            runs: runs
+                .iter()
+                .map(|(len, color)| (*len, color.map(|c| u32::from_le_bytes(c.to_array()))))
+                .collect(),
         };
         if let Some(hit) = self.galleys.get(&key) {
             self.reused += 1;
@@ -489,16 +530,44 @@ impl GalleyShaper {
         // which takes a `FontId` and has nowhere to put a line height.
         // `single_section` leaves `wrap` at its default, so the wrap width
         // `simple` would have set is set here.
-        let mut job = LayoutJob::single_section(
-            req.text.to_owned(),
-            TextFormat {
-                font_id: style.font.clone(),
-                color: Color32::PLACEHOLDER,
-                line_height: style.line_height,
-                extra_letter_spacing: style.extra_letter_spacing,
-                ..TextFormat::default()
-            },
-        );
+        let format = |color: Color32| TextFormat {
+            font_id: style.font.clone(),
+            color,
+            line_height: style.line_height,
+            extra_letter_spacing: style.extra_letter_spacing,
+            ..TextFormat::default()
+        };
+        let mut job = if runs.is_empty() {
+            LayoutJob::single_section(req.text.to_owned(), format(Color32::PLACEHOLDER))
+        } else {
+            let mut job = LayoutJob {
+                text: req.text.to_owned(),
+                ..LayoutJob::default()
+            };
+            let mut at = 0usize;
+            for (len, color) in runs {
+                // Clamped, not trusted: acceptance guarantees the tiling for
+                // an accepted tree, and a shaper handed a bad one draws a
+                // short line rather than panicking inside a paint pass.
+                let end = at.saturating_add(*len).min(req.text.len());
+                if end > at {
+                    job.sections.push(egui::text::LayoutSection {
+                        leading_space: 0.0,
+                        byte_range: egui::text::ByteIndex(at)..egui::text::ByteIndex(end),
+                        format: format(color.unwrap_or(Color32::PLACEHOLDER)),
+                    });
+                }
+                at = end;
+            }
+            if at < req.text.len() {
+                job.sections.push(egui::text::LayoutSection {
+                    leading_space: 0.0,
+                    byte_range: egui::text::ByteIndex(at)..egui::text::ByteIndex(req.text.len()),
+                    format: format(Color32::PLACEHOLDER),
+                });
+            }
+            job
+        };
         job.wrap.max_width = wrap_width;
         job.wrap.max_rows = max_rows;
         job.wrap.break_anywhere = break_anywhere;
@@ -560,10 +629,11 @@ impl ContentMeasure for GalleyShaper {
 #[cfg(test)]
 mod tests {
     use super::{ELLIPSIS, FontFaces, GalleyShaper, TextStyle, Typography};
-    use egui::{Context, FontFamily, FontId, RawInput};
+    use egui::{Color32, Context, FontFamily, FontId, Galley, RawInput};
     use gorgon_petra::layout::{ContentMeasure, SizeProposal, TextRequest};
     use gorgon_petra::token::{TypographyFamily, TypographyValue, TypographyWeight, dark, light};
     use gorgon_petra::tree::TextWrap;
+    use std::sync::Arc;
 
     /// A headless egui context, brought up and torn down honestly.
     ///
@@ -620,6 +690,122 @@ mod tests {
             max_lines: None,
             available_width: width,
         }
+    }
+
+    /// The claim the whole colour-run design rests on: **colour is not a
+    /// shaping input.**
+    ///
+    /// `Props::runs` reaches the frame without touching
+    /// `ContentMeasure::text`, so a coloured line is measured uncoloured and
+    /// painted coloured. That is only sound if the two galleys have the same
+    /// geometry. Asserted glyph by glyph rather than on the bounding box: a
+    /// box can match while a break moved inside it.
+    ///
+    /// Wrapped, not a single line, because a wrap is where a stray section
+    /// boundary would show up first.
+    #[test]
+    fn a_coloured_galley_has_the_same_geometry_as_a_plain_one() {
+        let h = Headless::new();
+        let mut s = h.shaper();
+        let text = "let fibers = kernel.spawn(count);";
+        let request = req(text, Some(90.0), TextWrap::Wrap);
+
+        let plain = s.galley(&request);
+        let coloured = s.galley_runs(
+            &request,
+            &[
+                (3, Some(Color32::from_rgb(0x78, 0xa9, 0xff))),
+                (8, None),
+                (1, Some(Color32::from_rgb(0xff, 0x83, 0x89))),
+                (text.len() - 12, None),
+            ],
+        );
+
+        assert!(
+            !Arc::ptr_eq(&plain, &coloured),
+            "the two share a galley, so this test is comparing one object \
+             with itself and would pass on any implementation"
+        );
+        assert_eq!(plain.rect, coloured.rect, "the runs moved the box");
+        assert_eq!(
+            plain.rows.len(),
+            coloured.rows.len(),
+            "the runs moved a line break"
+        );
+        for (i, (a, b)) in plain.rows.iter().zip(&coloured.rows).enumerate() {
+            let pos = |row: &_| {
+                let row: &egui::epaint::text::PlacedRow = row;
+                row.row
+                    .glyphs
+                    .iter()
+                    .map(|g| (g.pos.x.to_bits(), g.pos.y.to_bits(), g.chr))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(pos(a), pos(b), "row {i}'s glyphs moved");
+        }
+    }
+
+    /// Two inks over one string are two galleys, and the cache must not
+    /// hand the second caller the first one's.
+    ///
+    /// The trap this exists for: `GalleyKey` was keyed on the text, the
+    /// style, the wrap and the scale, and a colour run changes none of
+    /// those. Without `runs` in the key, colouring a snippet would paint the
+    /// previously cached uncoloured galley and every test asserting on the
+    /// tree would still pass.
+    #[test]
+    fn two_inks_over_one_string_are_two_galleys() {
+        let h = Headless::new();
+        let mut s = h.shaper();
+        let request = req("keyword rest", Some(400.0), TextWrap::Wrap);
+        let blue = Color32::from_rgb(0x78, 0xa9, 0xff);
+        let red = Color32::from_rgb(0xff, 0x83, 0x89);
+
+        let plain = s.galley(&request);
+        let a = s.galley_runs(&request, &[(7, Some(blue)), (5, None)]);
+        let b = s.galley_runs(&request, &[(7, Some(red)), (5, None)]);
+        let again = s.galley_runs(&request, &[(7, Some(blue)), (5, None)]);
+
+        let ink = |g: &Arc<Galley>| {
+            g.job
+                .sections
+                .iter()
+                .map(|sec| sec.format.color)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ink(&plain), vec![Color32::PLACEHOLDER]);
+        assert_eq!(ink(&a), vec![blue, Color32::PLACEHOLDER]);
+        assert_eq!(ink(&b), vec![red, Color32::PLACEHOLDER]);
+        assert!(
+            Arc::ptr_eq(&a, &again),
+            "the same runs re-shaped instead of hitting the cache"
+        );
+        assert!(!Arc::ptr_eq(&a, &b), "two inks shared one galley");
+        assert!(
+            !Arc::ptr_eq(&plain, &a),
+            "coloured text reused the plain galley"
+        );
+    }
+
+    /// An uncoloured stretch keeps `Color32::PLACEHOLDER`, which is what
+    /// `egui::Painter::galley`'s fallback fills in — so a run naming no token
+    /// takes the node's own `foreground` with no special case in the painter.
+    #[test]
+    fn an_uncoloured_run_keeps_the_placeholder_the_painter_fills_in() {
+        let h = Headless::new();
+        let mut s = h.shaper();
+        let g = s.galley_runs(
+            &req("abcdef", None, TextWrap::Wrap),
+            &[(3, None), (3, None)],
+        );
+        assert_eq!(
+            g.job
+                .sections
+                .iter()
+                .map(|sec| sec.format.color)
+                .collect::<Vec<_>>(),
+            vec![Color32::PLACEHOLDER, Color32::PLACEHOLDER]
+        );
     }
 
     #[test]

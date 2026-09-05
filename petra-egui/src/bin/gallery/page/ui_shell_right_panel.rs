@@ -133,7 +133,11 @@ impl Page for UiShellRightPanel {
         section(
             "shell-right-section",
             "Header with the switcher",
-            vec![filled_body("shell-right-body", sp("spacing.md"), vec![frame])],
+            vec![filled_body(
+                "shell-right-body",
+                sp("spacing.md"),
+                vec![frame],
+            )],
         )
     }
 

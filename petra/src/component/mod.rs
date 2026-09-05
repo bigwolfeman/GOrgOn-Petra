@@ -136,7 +136,7 @@ pub use button::{
     button, button_lg, button_sm, button_xs, danger_button, danger_ghost_button,
     danger_tertiary_button, ghost_button, primary_button, tertiary_button,
 };
-pub use code_snippet::{code_snippet, code_snippet_inline, code_snippet_multi};
+pub use code_snippet::{CodeInk, code_runs, code_snippet, code_snippet_inline, code_snippet_multi};
 pub use contained_list::{contained_list, contained_list_disclosed};
 pub use content_switcher::{content_switcher, content_switcher_item};
 pub use controls::{
@@ -194,10 +194,10 @@ pub use tree_view::{tree_item, tree_item_xs, tree_view};
 pub use ui_shell::{
     LeftPanelMode, ui_shell_header, ui_shell_header_action, ui_shell_header_action_icon,
     ui_shell_header_menu_trigger, ui_shell_header_nav_item, ui_shell_left_panel,
-    ui_shell_left_panel_divider, ui_shell_left_panel_icon_item,
-    ui_shell_left_panel_icon_subitem, ui_shell_left_panel_in, ui_shell_left_panel_item,
-    ui_shell_left_panel_rail, ui_shell_left_panel_subitem, ui_shell_right_panel,
-    ui_shell_right_panel_divider, ui_shell_switcher, ui_shell_switcher_item,
+    ui_shell_left_panel_divider, ui_shell_left_panel_icon_item, ui_shell_left_panel_icon_subitem,
+    ui_shell_left_panel_in, ui_shell_left_panel_item, ui_shell_left_panel_rail,
+    ui_shell_left_panel_subitem, ui_shell_right_panel, ui_shell_right_panel_divider,
+    ui_shell_switcher, ui_shell_switcher_item,
 };
 
 use std::sync::Arc;

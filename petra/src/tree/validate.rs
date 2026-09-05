@@ -1436,9 +1436,7 @@ mod tests {
         standard_vocabulary,
     };
     use crate::tree::node::{Interaction, NodeKind, Role, Semantics, ViewNode};
-    use crate::tree::props::{
-        Anchor, Edge, GridSpan, InsetRefs, Layer, Props, TextRun, TrackSize,
-    };
+    use crate::tree::props::{Anchor, Edge, GridSpan, InsetRefs, Layer, Props, TextRun, TrackSize};
 
     fn stack(key: &str) -> ViewNode {
         ViewNode::new(NodeKind::Stack, key)

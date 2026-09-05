@@ -887,6 +887,76 @@ mod tests {
         assert!(cam.has("check-mixed/box/dash"), "and back to mixed");
     }
 
+    /// Row 6, the second half of *"it needs to support colorization for
+    /// later LSP integration"*: the colour actually reaches the raster.
+    ///
+    /// Read off the pixels, because every layer below this one can be green
+    /// on a snippet that draws in a single ink. `Props::runs` accepts, the
+    /// digest moves, the shaper builds sections — and if the painter passed
+    /// the plain galley, or the theme resolved every class to the same
+    /// value, the picture would still be one colour and nothing in the frame
+    /// record would say so.
+    ///
+    /// Three claims, all inside the multi-line well's own rect:
+    ///
+    /// 1. There are at least three distinct inks in it. One-ink code is one
+    ///    ink plus the fill plus antialiasing, so a comfortable floor is
+    ///    "three tones that are each far from the fill and far from each
+    ///    other".
+    /// 2. The comment ink is dimmer than the command ink. That is the one
+    ///    ordering every syntax theme agrees on and it is the operator's
+    ///    channel — he is red-green colourblind, so the classes have to
+    ///    separate by lightness and not only by hue.
+    /// 3. The blue command ink is genuinely blue: blue minus red is wide.
+    ///    Without it, three greys would pass claim 1.
+    #[test]
+    fn the_snippet_draws_its_syntax_classes_in_three_separable_inks() {
+        let mut cam = Camera::on("Code snippet");
+        let well = cam.rect("code/snip-multi");
+        let shot = raster(&mut cam, "06-code-snippet-coloured");
+
+        // Tones far enough from the well's fill to be ink rather than
+        // antialiasing, counted by how many pixels wear each one, so a
+        // single stray blended pixel cannot pass for a class.
+        let fill = px(&shot, well.x + well.w - 4.0, well.y + well.h - 4.0);
+        let luma = |p: [u8; 4]| {
+            (u32::from(p[0]) * 299 + u32::from(p[1]) * 587 + u32::from(p[2]) * 114) / 1000
+        };
+        let mut counts: std::collections::HashMap<[u8; 4], usize> =
+            std::collections::HashMap::new();
+        for p in inset_pixels(&shot, well, 2) {
+            if luma(p).abs_diff(luma(fill)) > 40 {
+                *counts.entry(p).or_default() += 1;
+            }
+        }
+        let mut inks: Vec<[u8; 4]> = counts
+            .into_iter()
+            .filter(|(_, n)| *n > 200)
+            .map(|(p, _)| p)
+            .collect();
+        inks.sort_by_key(|p| luma(*p));
+        assert!(
+            inks.len() >= 3,
+            "the well draws {} solid ink tones; a snippet with no colour \
+             runs draws one, so the runs are not reaching the picture. Got \
+             {inks:?} against a fill of {fill:?}",
+            inks.len()
+        );
+
+        let (dimmest, brightest) = (inks[0], inks[inks.len() - 1]);
+        assert!(
+            luma(brightest) - luma(dimmest) > 40,
+            "the classes are {} luma apart, which is not a channel a \
+             colourblind reader can use: {dimmest:?} vs {brightest:?}",
+            luma(brightest) - luma(dimmest)
+        );
+        assert!(
+            inks.iter().any(|p| u32::from(p[2]) > u32::from(p[0]) + 60),
+            "no blue ink in the well, so the three tones are three greys \
+             and the keyword class is not resolving: {inks:?}"
+        );
+    }
+
     /// Row 6. The page never called `code_snippet_multi`; now the
     /// multi-line well is on the page at its Carbon minimum height.
     #[test]
@@ -3363,10 +3433,7 @@ mod tests {
             f32::from(u16::try_from(x0 + x1).unwrap()) / 2.0,
             f32::from(u16::try_from(y0 + y1).unwrap()) / 2.0,
         );
-        let (dx, dy) = (
-            ink_centre.0 - disc_centre.0,
-            ink_centre.1 - disc_centre.1,
-        );
+        let (dx, dy) = (ink_centre.0 - disc_centre.0, ink_centre.1 - disc_centre.1);
         assert!(
             dx.abs() <= 1.0 && dy.abs() <= 1.0,
             "the tick's ink is centred {dx:+.1},{dy:+.1} device pixels off \

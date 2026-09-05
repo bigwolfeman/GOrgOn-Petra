@@ -18,6 +18,16 @@ use crate::geom::Scale;
 /// the version bump that a serialization change requires cannot be forgotten
 /// quietly.
 ///
+/// `v9` covers [`crate::frame::placement::TextPaint::runs`], the colour runs
+/// a text node lays over its own string (`Props::runs`). It rides the
+/// *payload* stream inside `TextPaint`, so [`PAINT_DOMAIN`] moves to `v5` and
+/// the frame prefix moves with it. The same sentence in two inks is two
+/// pictures, and nothing else in the stream can tell them apart: the string,
+/// the style, the wrap and the cap are all identical, and the node's own
+/// `foreground` binding is the ink of the *uncoloured* remainder. The run
+/// count is written even when it is zero, because a field that appeared only
+/// sometimes would let an empty list and a single zero-length run hash alike.
+///
 /// `v8` covers [`crate::frame::placement::PaintContent::canvas`], the draw
 /// list a `canvas` node executes (`contracts/draw-list.md` §4). Like the caret
 /// it rides the *payload* stream, so [`PAINT_DOMAIN`] moves to `v4` and the
@@ -81,7 +91,7 @@ use crate::geom::Scale;
 /// covered only the text content hash, the truncation flag, and the theme
 /// revision, so two frames that bound the same node's `background` to two
 /// different colours shared one digest.
-pub const DOMAIN: &[u8] = b"gorgon-petra-frame-v8";
+pub const DOMAIN: &[u8] = b"gorgon-petra-frame-v9";
 
 /// Domain separation for one placement's leaf hash.
 ///
@@ -130,7 +140,7 @@ pub const SUBTREE_DOMAIN: &[u8] = b"gorgon-petra-subtree-v1";
 /// ([`crate::frame::placement::PaintContent::canvas`]), appended after the
 /// caret under its own nested prefix [`DRAWLIST_DOMAIN`]. Frame `v8` moves
 /// with it for the same reason.
-pub const PAINT_DOMAIN: &[u8] = b"gorgon-petra-paint-v4";
+pub const PAINT_DOMAIN: &[u8] = b"gorgon-petra-paint-v5";
 
 /// Domain separation for the nested draw-list hash.
 ///
@@ -243,12 +253,24 @@ pub fn hash_paint_content(content: &PaintContent) -> u64 {
             style,
             wrap,
             max_lines,
+            runs,
         }) => {
             w.bool(true);
             w.text(text);
             w.opt_text(style.as_deref());
             w.text(wrap.as_str());
             w.opt_u64(max_lines.map(|n| n as u64));
+            // Colour runs decide the picture — the same string in two inks is
+            // two pictures — so they go in the stream, length first, the way
+            // `tokens` does below. Written unconditionally, including the
+            // zero for the ordinary uncoloured run, because a field that
+            // appears only sometimes makes the stream ambiguous: an empty
+            // list and a single run of length zero would hash alike.
+            w.u64(runs.len() as u64);
+            for run in runs {
+                w.u64(run.len as u64);
+                w.opt_text(run.foreground.as_deref());
+            }
         }
         None => w.bool(false),
     }
@@ -953,6 +975,7 @@ mod tests {
     };
     use crate::frame::placement::{
         CaretPaint, PaintContent, PaintState, Placement, PlacementSemantics, TextPaint,
+        TextRunPaint,
     };
     use crate::frame::viewport::Viewport;
     use crate::geom::Point;
@@ -1087,12 +1110,56 @@ mod tests {
                 style: Some("heading".into()),
                 wrap: TextWrap::Ellipsis,
                 max_lines: Some(2),
+                runs: Vec::new(),
             }),
             image: Some("logo.png".into()),
             custom: Some("sparkline".into()),
             tokens,
             caret: None,
             canvas: None,
+        }
+    }
+
+    /// The same sentence in two inks is two pictures, and only the runs say
+    /// so.
+    ///
+    /// Everything else in a `TextPaint` is equal across these three: the
+    /// string, the style, the wrap, the cap, and the node's own `foreground`
+    /// binding — which is the ink of the *uncoloured* remainder and cannot
+    /// speak for a stretch inside the line. A digest blind to the runs would
+    /// hand a screenshot consumer holding `(seq, digest)` an image with the
+    /// wrong half of the line lit.
+    ///
+    /// The zero-length-run case is here because it is the one the stream's
+    /// framing exists for: without the unconditional count, an empty list and
+    /// a single run of length zero would write the same bytes.
+    #[test]
+    fn two_inks_over_one_string_are_two_paint_hashes() {
+        let with = |runs: Vec<TextRunPaint>| {
+            let mut content = rich_content();
+            if let Some(text) = content.text.as_mut() {
+                text.runs = runs;
+            }
+            hash_paint_content(&content)
+        };
+        let run = |len: usize, fg: Option<&str>| TextRunPaint {
+            len,
+            foreground: fg.map(ToOwned::to_owned),
+        };
+
+        let plain = with(Vec::new());
+        let keyword = with(vec![run(3, Some("accent.primary")), run(3, None)]);
+        let string = with(vec![run(3, Some("support.error")), run(3, None)]);
+        let split = with(vec![run(2, Some("accent.primary")), run(4, None)]);
+        let empty_run = with(vec![run(0, None), run(6, None)]);
+
+        for (a, b, what) in [
+            (plain, keyword, "an uncoloured line and a coloured one"),
+            (keyword, string, "two different inks over the same stretch"),
+            (keyword, split, "the same ink over two different stretches"),
+            (plain, empty_run, "no runs and one zero-length run"),
+        ] {
+            assert_ne!(a, b, "{what} hash alike");
         }
     }
 
@@ -1575,6 +1642,7 @@ mod tests {
                 style: None,
                 wrap: TextWrap::Wrap,
                 max_lines: None,
+                runs: Vec::new(),
             }),
             image: None,
             custom: None,
@@ -1742,31 +1810,32 @@ mod tests {
     fn the_canonical_stream_matches_its_pinned_vectors() {
         assert_eq!(
             super::DOMAIN,
-            b"gorgon-petra-frame-v8",
+            b"gorgon-petra-frame-v9",
             "the frame prefix moved without the vectors below moving with it"
         );
-        assert_eq!(super::PAINT_DOMAIN, b"gorgon-petra-paint-v4");
+        assert_eq!(super::PAINT_DOMAIN, b"gorgon-petra-paint-v5");
         assert_eq!(super::DRAWLIST_DOMAIN, b"gorgon-petra-drawlist-v1");
         assert_eq!(super::NODE_DOMAIN, b"gorgon-petra-node-v1");
         assert_eq!(super::SUBTREE_DOMAIN, b"gorgon-petra-subtree-v1");
 
-        // Unmoved by v4: v4 changed only the framing around placements, not
-        // the payload stream.
+        // Moved by v9: `TextPaint::runs` joins the payload stream, and the
+        // run count is written even for the uncoloured case, so every text
+        // payload's hash moves.
         assert_eq!(
             hash_paint_content(&rich_content()),
-            0xa156_9044_8c82_030f,
+            0xf0e7_2ce3_ea38_fac5,
             "the paint payload stream changed; see this test's doc comment"
         );
 
         let vp = viewport();
         assert_eq!(
             digest(&vp, &[]).hex(),
-            "0ac565296cf778d2d8e82baa31461a56e7d2e7a8171eb0e1fb4e59f3eabdcb2c",
+            "961d77788c46007504a84cc145b52b4b850b9c1f582d514a6c245b7080208b83",
             "the empty-frame stream changed; see this test's doc comment"
         );
         assert_eq!(
             digest(&vp, &[rich_placement()]).hex(),
-            "2a1e9cf20cb02eb826a6b15e7e0e0820d05a98bc71f796121422b4c394b20833",
+            "72a56d614bc968bb75f0c6541e4f748793f4823b1513edd9b5b88733514406be",
             "the placement stream changed; see this test's doc comment"
         );
     }

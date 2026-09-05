@@ -211,6 +211,30 @@ pub struct TextPaint {
     pub wrap: TextWrap,
     /// Line cap, or `None` for unlimited.
     pub max_lines: Option<usize>,
+    /// Per-stretch ink over [`TextPaint::text`], empty for one run in the
+    /// node's own `foreground` ([`crate::tree::TextRun`]).
+    ///
+    /// Byte lengths, tiling `text` exactly — acceptance guarantees that for a
+    /// `text` node ([`crate::tree::Violation::TextRunsDoNotCoverTheText`]).
+    /// **Empty whenever the painted string is not the node's own `text`**,
+    /// which is the one case acceptance cannot speak for: an `input` with an
+    /// empty value paints its placeholder, and a run list measured against
+    /// the value would colour the wrong bytes of it. Dropping them there is
+    /// the only reading that cannot lie.
+    pub runs: Vec<TextRunPaint>,
+}
+
+/// One coloured stretch of a [`TextPaint`], as the frame carries it.
+///
+/// [`crate::tree::TextRun`] with its token name flattened to a string, the
+/// same way [`TextPaint::style`] flattens `Props::style`: the payload stream
+/// is a serialization and carries names, not typed handles.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct TextRunPaint {
+    /// Length of this run in bytes of the parent's `text`.
+    pub len: usize,
+    /// Ink token for this run, or `None` to take the node's `foreground`.
+    pub foreground: Option<String>,
 }
 
 /// The pointer a surface draws back at the node it is anchored to.
@@ -953,6 +977,7 @@ mod tests {
             style: None,
             wrap: TextWrap::Wrap,
             max_lines: None,
+            runs: Vec::new(),
         };
         let mut tokens = BTreeMap::new();
         tokens.insert("background".to_owned(), "surface.raised".to_owned());
@@ -1053,6 +1078,7 @@ mod tests {
                 style: None,
                 wrap: TextWrap::Wrap,
                 max_lines: None,
+                runs: Vec::new(),
             }),
             ..PaintContent::default()
         };

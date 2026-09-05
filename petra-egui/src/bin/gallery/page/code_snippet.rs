@@ -1,8 +1,10 @@
 //! Inventory row 6, Code snippet.
 
-use gorgon_petra::component::{code_snippet, code_snippet_inline, code_snippet_multi, section};
+use gorgon_petra::component::{
+    CodeInk, code_runs, code_snippet, code_snippet_inline, code_snippet_multi, section,
+};
 use gorgon_petra::input::InputEvent;
-use gorgon_petra::tree::ViewNode;
+use gorgon_petra::tree::{TextRun, ViewNode};
 
 use super::Page;
 use super::common::{filled_body, path_has, sp};
@@ -36,6 +38,99 @@ PETRA_SHOT_DIR=/tmp/wave pcargo test -p gorgon-petra-egui --bin gallery \\
 magick /tmp/wave/06-code-snippet.png -crop 900x700+480+240 +repage \\
     -filter point -resize 400% /tmp/c.png";
 
+/// Classify a shell script, line by line, into [`CodeInk`] classes.
+///
+/// The operator's row-6 line was *"it needs to support colorization for
+/// later LSP integration"*. The library half of that is `Props::runs`,
+/// `code_runs` and `CodeInk`; this is a stand-in for the half an LSP will
+/// eventually do, so the catalog row shows the mechanism carrying real
+/// colour rather than a page asserting that it could.
+///
+/// **It is a classifier, not a parser, and it is deliberately small.** Four
+/// rules, which is all this page's sample needs: a line whose first
+/// non-blank character is `#` is a comment; a word starting with `-` is a
+/// flag; the first word of a command is the command; and a line following
+/// one that ended in `\` is a continuation, so its first word is an
+/// argument and not a second command. That last rule is here because the
+/// picture said so — without it the sample's two wrapped lines wore the
+/// command ink on `every_built_page_...` and `-filter`, which is exactly the
+/// kind of plausible-but-wrong colouring a highlighter has to be looked at
+/// to catch.
+///
+/// It still knows nothing about quoting, here-docs or substitution, and it
+/// is not meant to — the moment an LSP is wired, `shell_runs` is deleted and
+/// its `Vec<TextRun>` comes off the wire instead. Nothing else on the page
+/// changes, which is the point of the seam.
+///
+/// The runs tile the string exactly, including the newlines, because tree
+/// acceptance refuses anything else
+/// (`Violation::TextRunsDoNotCoverTheText`).
+fn shell_runs(code: &str) -> Vec<TextRun> {
+    let mut runs: Vec<TextRun> = Vec::new();
+    let mut push = |ink: CodeInk, len: usize| {
+        if len == 0 {
+            return;
+        }
+        // Merge with the run before it when the class is the same, so the
+        // list stays as short as the colouring actually is.
+        match runs.last_mut() {
+            Some(last) if last.foreground == ink.token() => last.len += len,
+            _ => runs.push(ink.over(len)),
+        }
+    };
+    let mut continued = false;
+    for line in code.split_inclusive('\n') {
+        let body = line.strip_suffix('\n').unwrap_or(line);
+        let newline = line.len() - body.len();
+        let indent = body.len() - body.trim_start().len();
+        push(CodeInk::Plain, indent);
+        let rest = &body[indent..];
+        let carries_on = body.trim_end().ends_with('\\');
+        if rest.starts_with('#') {
+            push(CodeInk::Comment, rest.len());
+        } else {
+            let mut at = 0usize;
+            for (word, gap) in words(rest) {
+                let ink = if at == 0 && !continued && !word.is_empty() {
+                    CodeInk::Keyword
+                } else if word.starts_with('-') {
+                    CodeInk::Literal
+                } else {
+                    CodeInk::Plain
+                };
+                push(ink, word.len());
+                push(CodeInk::Plain, gap);
+                at += word.len() + gap;
+            }
+            debug_assert_eq!(at, rest.len(), "the words did not tile the line");
+        }
+        push(CodeInk::Plain, newline);
+        // A comment cannot be continued, whatever it ends with.
+        continued = carries_on && !rest.starts_with('#');
+    }
+    debug_assert_eq!(
+        runs.iter().map(|r| r.len).sum::<usize>(),
+        code.len(),
+        "the runs do not tile the code"
+    );
+    runs
+}
+
+/// `line` split into `(word, following whitespace)` pairs that tile it.
+fn words(line: &str) -> Vec<(&str, usize)> {
+    let mut out = Vec::new();
+    let mut at = 0usize;
+    while at < line.len() {
+        let rest = &line[at..];
+        let word_len = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        let after = &rest[word_len..];
+        let gap = after.len() - after.trim_start().len();
+        out.push((&rest[..word_len], gap));
+        at += word_len + gap;
+    }
+    out
+}
+
 /// The Code snippet page.
 ///
 /// The only state is the string a press on Copy has queued. The operator:
@@ -62,8 +157,8 @@ impl Page for CodeSnippet {
                 "code",
                 sp("spacing.md"),
                 vec![
-                    code_snippet(SNIP, SINGLE),
-                    code_snippet_multi(SNIP_MULTI, MULTI),
+                    code_runs(code_snippet(SNIP, SINGLE), shell_runs(SINGLE)),
+                    code_runs(code_snippet_multi(SNIP_MULTI, MULTI), shell_runs(MULTI)),
                     code_snippet_inline("snip-in", "cargo xtask gates"),
                 ],
             )],

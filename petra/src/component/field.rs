@@ -209,7 +209,6 @@ pub fn field_labeled(key: impl Into<Key>, label: impl Into<String>) -> ViewNode 
     )
 }
 
-
 /// Invalid Default input plus a label-adjacent helper.
 ///
 /// Colour is not the only channel: the Input outline is [`SUPPORT_ERROR`]

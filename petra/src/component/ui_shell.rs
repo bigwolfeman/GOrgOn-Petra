@@ -1306,10 +1306,7 @@ mod tests {
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, inks, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
-    use crate::tree::{
-        Interaction, Justify, NodeKind, Props, Registry, Role,
-        ViewNode,
-    };
+    use crate::tree::{Interaction, Justify, NodeKind, Props, Registry, Role, ViewNode};
 
     fn named<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         fn walk<'a>(node: &'a ViewNode, key: &str) -> Option<&'a ViewNode> {
@@ -1602,7 +1599,10 @@ mod tests {
         for (mode, want) in [
             (LeftPanelMode::Rail, MINI_UNIT_6),
             (LeftPanelMode::Fixed, LEFT_PANEL_WIDTH),
-            (LeftPanelMode::Expandable { expanded: true }, LEFT_PANEL_WIDTH),
+            (
+                LeftPanelMode::Expandable { expanded: true },
+                LEFT_PANEL_WIDTH,
+            ),
             (LeftPanelMode::Expandable { expanded: false }, 0.0),
             (LeftPanelMode::Hidden, 0.0),
         ] {
@@ -1616,7 +1616,10 @@ mod tests {
 
         // The two named entry points are the two named modes.
         assert_eq!(
-            ui_shell_left_panel("nav", vec![]).constraints.horizontal.min,
+            ui_shell_left_panel("nav", vec![])
+                .constraints
+                .horizontal
+                .min,
             Some(LEFT_PANEL_WIDTH)
         );
         assert_eq!(
@@ -1777,7 +1780,10 @@ mod tests {
         // `layer-selected` from, and the ink step on the label itself.
         assert!(item.semantics.selected);
         assert_eq!(token(item, "background@selected"), Some(LAYER_SELECTED));
-        assert_eq!(token(named(item, "label"), "foreground"), Some(TEXT_PRIMARY));
+        assert_eq!(
+            token(named(item, "label"), "foreground"),
+            Some(TEXT_PRIMARY)
+        );
         let rest = named(&node, "b");
         assert!(!rest.semantics.selected);
         assert_eq!(token(named(rest, "label"), "foreground"), Some(TEXT_MUTED));
@@ -1786,7 +1792,10 @@ mod tests {
         // `$spacing-03` above and below (`_switcher.scss`).
         let divider = named(&node, "d1");
         let rule = named(divider, "rule");
-        assert_eq!(rule.constraints.horizontal.min, Some(SWITCHER_DIVIDER_WIDTH));
+        assert_eq!(
+            rule.constraints.horizontal.min,
+            Some(SWITCHER_DIVIDER_WIDTH)
+        );
         assert_eq!(rule.constraints.vertical.max, Some(1.0));
         assert_eq!(SWITCHER_DIVIDER_WIDTH, 224.0);
     }
@@ -2235,8 +2244,7 @@ mod tests {
     fn a_collapsed_branch_wears_its_current_childs_mark() {
         let current = || ui_shell_left_panel_subitem("fibers", "Fibers", true);
 
-        let collapsed =
-            ui_shell_left_panel_item("kernel", "Kernel", false, false, vec![current()]);
+        let collapsed = ui_shell_left_panel_item("kernel", "Kernel", false, false, vec![current()]);
         assert!(
             !has_key(&collapsed, "fibers"),
             "the child is unmounted, which is the whole reason the parent has \
@@ -2276,7 +2284,10 @@ mod tests {
             vec![ui_shell_left_panel_subitem("fibers", "Fibers", false)],
         );
         assert!(!plain.semantics.selected);
-        assert_eq!(token(named(&plain, "label"), "foreground"), Some(TEXT_MUTED));
+        assert_eq!(
+            token(named(&plain, "label"), "foreground"),
+            Some(TEXT_MUTED)
+        );
     }
 
     /// Check F: the selected leaf, the branch, both subitems, and the

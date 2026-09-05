@@ -281,7 +281,12 @@ fn chrome(
     // 16px/`$spacing-05`". The pair is a row, and the row is what the card
     // centres, so both the operator's centring and Carbon's leading glyph
     // hold at once.
-    let mut head = stack("head", Axis::Horizontal, Some(SPACING_05), vec![glyph, heading]);
+    let mut head = stack(
+        "head",
+        Axis::Horizontal,
+        Some(SPACING_05),
+        vec![glyph, heading],
+    );
     head.props.align = Some(Align::Center);
     let mut copy = vec![head, text("body", body.into())];
     copy.extend(extras);

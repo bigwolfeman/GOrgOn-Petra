@@ -1541,7 +1541,8 @@ mod tests {
             IconMark::InformationFilled,
             IconMark::CheckmarkFilled,
         ];
-        let signatures: Vec<Vec<String>> = marks.iter().copied().map(inner_shape_signature).collect();
+        let signatures: Vec<Vec<String>> =
+            marks.iter().copied().map(inner_shape_signature).collect();
         for (i, sig_a) in signatures.iter().enumerate() {
             assert!(!sig_a.is_empty(), "{:?} draws no inner mark", marks[i]);
             for (j, sig_b) in signatures.iter().enumerate().skip(i + 1) {
@@ -1569,7 +1570,10 @@ mod tests {
                 .iter()
                 .filter(|command| matches!(command, Command::Ellipse { .. }))
                 .count();
-            assert_eq!(ellipses, 2, "{mark:?}: expected the ring and the `!`/`i` dot");
+            assert_eq!(
+                ellipses, 2,
+                "{mark:?}: expected the ring and the `!`/`i` dot"
+            );
         }
     }
 

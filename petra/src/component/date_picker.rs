@@ -59,8 +59,7 @@ use super::tokens::{
 use crate::geom::{Align, Axis};
 use crate::tree::{
     Align as PropAlign, Anchor, AxisConstraint, ClampRule, Constraints, Edge, FocusFigure,
-    InputPolicy, Interaction, Justify, Key, Layer, NodeKind, Props, Role, Tip, TrackSize,
-    ViewNode,
+    InputPolicy, Interaction, Justify, Key, Layer, NodeKind, Props, Role, Tip, TrackSize, ViewNode,
 };
 
 /// Carbon calendar menu width (`18rem`). Independent of field size.

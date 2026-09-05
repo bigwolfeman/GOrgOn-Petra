@@ -15,16 +15,20 @@
 //! `fill: $icon-primary`, 16×16); the label is its name, so the glyph is
 //! never the only channel (FR-058, FR-026).
 
+use std::sync::Arc;
+
 use super::icon::{IconMark, IconTone, icon_toned};
 use super::pad;
 use super::stack;
 use super::text::text;
 use super::tokens::{
-    SHAPE_SM, SIZE_MD, SPACING_02, SPACING_03, SPACING_05, SURFACE_RAISED, TYPOGRAPHY_CODE, t,
+    LINK_PRIMARY, SHAPE_SM, SIZE_MD, SPACING_02, SPACING_03, SPACING_05, SURFACE_RAISED,
+    TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_CODE, t,
 };
 use crate::geom::{Align, Axis};
+use crate::token::TokenName;
 use crate::tree::{
-    AxisConstraint, Constraints, InsetRefs, Interaction, Justify, Key, Role, ViewNode,
+    AxisConstraint, Constraints, InsetRefs, Interaction, Justify, Key, Role, TextRun, ViewNode,
 };
 
 /// Carbon `.cds--snippet--multi` `min-block-size`.
@@ -95,6 +99,118 @@ pub fn code_snippet_inline(key: impl Into<Key>, code: impl Into<String>) -> View
     node.with_constraints(pin_height(INLINE_HEIGHT))
 }
 
+/// What a stretch of code *is*, so the theme can decide what colour it takes.
+///
+/// The seam the operator asked for on 2026-09-05: *"it needs to support
+/// colorization for later LSP integration"*. Three facts have to live
+/// somewhere and they belong in three different places:
+///
+/// 1. **"this stretch is a comment"** — the source knows it, and later an
+///    LSP `textDocument/semanticTokens` response says it.
+/// 2. **"comments are the muted ink here"** — the design system knows it.
+/// 3. **"the muted ink is `#6f6f6f`"** — the theme knows it.
+///
+/// This enum is the second. It names no colour and invents no token; it
+/// chooses among names [`super::tokens`] already ships, the same way
+/// [`super::field`] chooses `surface.raised` for a well. A caller classifies
+/// (1) and never has to decide (2), so two callers cannot disagree about
+/// what a comment looks like.
+///
+/// **Carbon ships no syntax palette.** `.cds--snippet` sets every variant in
+/// one ink and the inventory records no others, so every mapping below is
+/// this library's own choice and is a departure by addition rather than by
+/// contradiction. Four classes because that is what the catalog's own sample
+/// needs; an LSP's two dozen semantic types map onto them until there is a
+/// reason to grow the set, and growing it is adding a variant here rather
+/// than teaching every caller a new token name.
+///
+/// The four are told apart by **lightness as well as hue** — muted grey,
+/// white, blue, and the error tone — because the operator is red-green
+/// colourblind and a palette separated only by hue would be one channel he
+/// does not have.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum CodeInk {
+    /// Ordinary code: the snippet's own ink, whatever the well decided.
+    #[default]
+    Plain,
+    /// A comment. [`TEXT_MUTED`] — quieter than the code around it, which is
+    /// the one thing every syntax theme agrees on.
+    Comment,
+    /// A keyword, a command name, the word that says what the line does.
+    /// [`LINK_PRIMARY`], the ink this library already spends on "the
+    /// actionable word".
+    Keyword,
+    /// A literal — a string, a number, a flag's value. [`TEXT_PRIMARY`], so
+    /// it reads as the brightest thing on the line.
+    Literal,
+}
+
+impl CodeInk {
+    /// The token this class takes, or `None` for the snippet's own ink.
+    #[must_use]
+    pub fn token(self) -> Option<TokenName> {
+        match self {
+            Self::Plain => None,
+            Self::Comment => Some(t(TEXT_MUTED)),
+            Self::Keyword => Some(t(LINK_PRIMARY)),
+            Self::Literal => Some(t(TEXT_PRIMARY)),
+        }
+    }
+
+    /// This class over `len` bytes, as a run [`code_runs`] takes.
+    #[must_use]
+    pub fn over(self, len: usize) -> TextRun {
+        TextRun {
+            len,
+            foreground: self.token(),
+        }
+    }
+}
+
+/// Lay colour runs over a snippet's code, for syntax highlighting.
+///
+/// Takes any of the three snippet constructors and reaches the node keyed
+/// `"code"` inside it — by key, not by kind, so it can never land on a copy
+/// button's label. Returns the node unchanged if there is none.
+///
+/// # This library ships no syntax palette, and this function does not invent
+/// one
+///
+/// Carbon has no syntax colours: `.cds--snippet` sets every variant in one
+/// ink, and the inventory records none. So the runs come from the **caller**
+/// and name tokens the caller's theme declares. That is not a gap left open
+/// by accident — it is the seam the operator asked for, *"support
+/// colorization for later LSP integration"*. An LSP's
+/// `textDocument/semanticTokens` response is a token type per stretch; a
+/// consumer maps those types to theme token names and hands the result here.
+/// Nothing in this file has to know what a keyword is.
+///
+/// A run naming no token takes the snippet's own ink, so a highlighter names
+/// only the stretches it has an opinion about.
+///
+/// The runs must tile the code exactly; a list that does not is refused by
+/// tree acceptance ([`crate::tree::Violation::TextRunsDoNotCoverTheText`])
+/// rather than silently recoloured.
+#[must_use]
+pub fn code_runs(mut node: ViewNode, runs: Vec<TextRun>) -> ViewNode {
+    fn fill(node: &mut ViewNode, runs: &[TextRun]) -> bool {
+        if node.key.as_str() == "code" {
+            node.props.runs = runs.to_vec();
+            return true;
+        }
+        for child in &mut node.children {
+            let mut owned = Arc::unwrap_or_clone(Arc::clone(child));
+            if fill(&mut owned, runs) {
+                *child = Arc::new(owned);
+                return true;
+            }
+        }
+        false
+    }
+    fill(&mut node, &runs);
+    node
+}
+
 fn code_text(code: String) -> ViewNode {
     let mut node = text("code", code);
     // Carbon sets every snippet in `$code-01` / `$code-02`, which is IBM
@@ -152,8 +268,8 @@ fn pin_height(h: f32) -> Constraints {
 #[cfg(test)]
 mod tests {
     use super::{
-        INLINE_HEIGHT, MULTI_MIN, SHAPE_SM, SIZE_MD, SURFACE_RAISED, code_snippet,
-        code_snippet_inline, code_snippet_multi,
+        CodeInk, INLINE_HEIGHT, MULTI_MIN, SHAPE_SM, SIZE_MD, SURFACE_RAISED, code_runs,
+        code_snippet, code_snippet_inline, code_snippet_multi,
     };
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
@@ -162,13 +278,16 @@ mod tests {
     use crate::tree::{Interaction, NodeKind, Props, Registry, Role, ViewNode};
 
     fn named<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
-        fn walk<'a>(node: &'a ViewNode, key: &str) -> Option<&'a ViewNode> {
-            if node.key.as_str() == key {
-                return Some(node);
-            }
-            node.children.iter().find_map(|child| walk(child, key))
+        descendant(node, key).unwrap_or_else(|| panic!("no descendant keyed `{key}`"))
+    }
+
+    fn descendant<'a>(node: &'a ViewNode, key: &str) -> Option<&'a ViewNode> {
+        if node.key.as_str() == key {
+            return Some(node);
         }
-        walk(node, key).unwrap_or_else(|| panic!("no descendant keyed `{key}`"))
+        node.children
+            .iter()
+            .find_map(|child| descendant(child, key))
     }
 
     fn token<'a>(node: &'a ViewNode, slot: &str) -> Option<&'a str> {
@@ -250,6 +369,62 @@ mod tests {
                 .all(|k| k != "syntax" && !k.starts_with("syntax.")),
             "no invented syntax colour slots"
         );
+        assert!(
+            code.props.runs.is_empty(),
+            "a bare snippet carries no runs; colour is something a caller adds"
+        );
+
+        // And the palette `CodeInk` does ship invents nothing either: every
+        // class resolves to a name the shipped vocabulary already declares.
+        // This is the check that stops the enum growing a colour of its own.
+        let vocabulary = standard_vocabulary();
+        for ink in [
+            CodeInk::Plain,
+            CodeInk::Comment,
+            CodeInk::Keyword,
+            CodeInk::Literal,
+        ] {
+            let Some(name) = ink.token() else { continue };
+            assert!(
+                vocabulary.names().any(|declared| declared == &name),
+                "{ink:?} names {}, which no shipped theme declares",
+                name.as_str()
+            );
+        }
+    }
+
+    /// `code_runs` reaches the code and nothing else.
+    ///
+    /// By key, not by kind: a snippet's copy button carries a `label` text
+    /// node, and a modifier that took the first `NodeKind::Text` it found
+    /// would colour the word "Copy" on the single-line and multi-line forms.
+    #[test]
+    fn code_runs_colours_the_code_and_never_the_copy_label() {
+        let runs = vec![CodeInk::Comment.over(2), CodeInk::Plain.over(2)];
+        for label in ["single", "multi", "inline"] {
+            let bare = match label {
+                "single" => code_snippet("s", "abcd"),
+                "multi" => code_snippet_multi("s", "abcd"),
+                _ => code_snippet_inline("s", "abcd"),
+            };
+            let node = code_runs(bare, runs.clone());
+            assert_eq!(
+                named(&node, "code").props.runs,
+                runs,
+                "{label}: the runs did not reach the code"
+            );
+            if let Some(caption) = descendant(&node, "label") {
+                assert!(
+                    caption.props.runs.is_empty(),
+                    "{label}: the copy button's own caption was coloured"
+                );
+            }
+        }
+
+        // Nothing keyed `code` means nothing to colour, and that is a no-op
+        // rather than a panic, the same as `valued` on a tree with no input.
+        let plain = crate::component::text("t", "abcd");
+        assert_eq!(code_runs(plain.clone(), runs), plain);
     }
 
     const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
@@ -352,14 +527,31 @@ mod tests {
 
     /// Check E: code text and the copy label against the snippet's own
     /// well fill, in both themes, read through `Props.opacity`.
+    ///
+    /// **Colour runs are checked too**, and they are the reason this walk
+    /// grew: a run is a second ink channel over the same fill, and a guard
+    /// that read only `tokens["foreground"]` would pass a snippet whose
+    /// comments were unreadable. Every [`CodeInk`] class is in the fixture
+    /// list, so adding a class to that enum without a legible token turns
+    /// this red.
     #[test]
     fn snippet_and_copy_text_clear_aa_contrast_against_the_well_fill() {
         const MIN_TEXT_CONTRAST: f32 = 4.5;
+        let every_ink = code_runs(
+            code_snippet_multi("s", "abcd"),
+            vec![
+                CodeInk::Plain.over(1),
+                CodeInk::Comment.over(1),
+                CodeInk::Keyword.over(1),
+                CodeInk::Literal.over(1),
+            ],
+        );
         for theme in [crate::token::light(), crate::token::dark()] {
             for (label, node) in [
                 ("single", code_snippet("s", "fn main() {}")),
                 ("multi", code_snippet_multi("s", "line 1\nline 2")),
                 ("inline", code_snippet_inline("s", "ViewNode")),
+                ("every ink", every_ink.clone()),
             ] {
                 let bg_name = node
                     .props
@@ -374,18 +566,25 @@ mod tests {
                     min: f32,
                     label: &str,
                 ) {
-                    if node.props.text.is_some()
-                        && let Some(fg_name) = node.props.tokens.get("foreground")
-                    {
+                    if node.props.text.is_some() {
                         let opacity = node.props.opacity.unwrap_or(1.0);
-                        let fg = color(theme, fg_name.as_str()).faded(opacity).over(bg);
-                        let ratio = fg.contrast_ratio(bg);
-                        assert!(
-                            ratio >= min,
-                            "{label}: {:?} at {ratio:.2}:1 against {} fails AA {min}:1",
-                            node.key,
-                            fg_name.as_str()
-                        );
+                        // The node's own ink, then every run's. A run naming
+                        // no token takes the node's, which the first pass
+                        // already measured.
+                        let inks =
+                            node.props.tokens.get("foreground").into_iter().chain(
+                                node.props.runs.iter().filter_map(|r| r.foreground.as_ref()),
+                            );
+                        for fg_name in inks {
+                            let fg = color(theme, fg_name.as_str()).faded(opacity).over(bg);
+                            let ratio = fg.contrast_ratio(bg);
+                            assert!(
+                                ratio >= min,
+                                "{label}: {:?} at {ratio:.2}:1 against {} fails AA {min}:1",
+                                node.key,
+                                fg_name.as_str()
+                            );
+                        }
                     }
                     for child in &node.children {
                         walk_text(child, bg, theme, min, label);
