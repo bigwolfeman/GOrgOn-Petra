@@ -90,6 +90,28 @@ pub enum Action {
         /// Modifiers held for the whole gesture.
         modifiers: Modifiers,
     },
+    /// A primary-button press at the target with **no release**: the
+    /// pointer moves there, the button goes down, and it stays down.
+    ///
+    /// [`Action::Click`]'s missing half, and the only way to photograph a
+    /// control in its held state. A click's press and release land in one
+    /// pass, so the frame a camera captures afterwards is always the
+    /// released one — which is how a button could grow a press animation
+    /// that no test could see. Pair it with [`Action::Release`].
+    Press {
+        /// Modifiers held for the press.
+        modifiers: Modifiers,
+    },
+    /// A primary-button release at the target: the pointer moves there and
+    /// the button comes up. [`Action::Press`]'s other half.
+    ///
+    /// Aimed at a target like every other action, because a release
+    /// *somewhere else* is how a press is cancelled and a driver has to be
+    /// able to say where.
+    Release {
+        /// Modifiers held for the release.
+        modifiers: Modifiers,
+    },
     /// The pointer moves to the target and no button changes state.
     Hover,
     /// Focus moves to the target through
@@ -231,6 +253,14 @@ pub fn inject_action<A: App>(
         Action::Drag { to, modifiers } => {
             let from = resolve_point(host.frame(), target)?;
             push_drag(raw, from, *to, *modifiers);
+        }
+        Action::Press { modifiers } => {
+            let pos = resolve_point(host.frame(), target)?;
+            push_button(raw, pos, *modifiers, true);
+        }
+        Action::Release { modifiers } => {
+            let pos = resolve_point(host.frame(), target)?;
+            push_button(raw, pos, *modifiers, false);
         }
         Action::Hover => {
             let pos = resolve_point(host.frame(), target)?;
@@ -474,6 +504,23 @@ fn to_egui_key(key: KeyCode) -> Option<egui::Key> {
 }
 
 /// The move-press-release sequence a physical primary click produces.
+/// One half of a click: a move to `pos` and the primary button changing to
+/// `pressed` there.
+///
+/// The move is not decoration. `PointerState::route` derives hover and
+/// capture from where the pointer *is*, and a button event with no position
+/// behind it routes against wherever the pointer was left.
+fn push_button(raw: &mut RawInput, pos: Point, modifiers: Modifiers, pressed: bool) {
+    let at = to_pos2(pos);
+    raw.events.push(Event::PointerMoved(at));
+    raw.events.push(Event::PointerButton {
+        pos: at,
+        button: EguiButton::Primary,
+        pressed,
+        modifiers: to_egui_modifiers(modifiers),
+    });
+}
+
 fn push_click(raw: &mut RawInput, pos: Point, modifiers: Modifiers) {
     let at = to_pos2(pos);
     let mods = to_egui_modifiers(modifiers);

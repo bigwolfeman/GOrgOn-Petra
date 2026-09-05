@@ -4253,29 +4253,61 @@ mod tests {
         crate::paint::caret_dest_pair(target.node, target.figure, frame.viewport.scale)[0]
     }
 
-    /// A press with a button held is a press, and it does not grab a control
-    /// that never asked to be dragged.
+    /// A press with a button held is a press. It does **not** grab a
+    /// control that never asked to be dragged, and it **does** make that
+    /// control look pressed.
     ///
-    /// The Demo page declares no `Interaction::Drag` anywhere, so this is the
-    /// fall-through half of the grab rule through the shipped host: pressing
-    /// still routes as a click and no capture is opened.
+    /// The Demo page declares no `Interaction::Drag` anywhere, so this is
+    /// the fall-through half of the grab rule through the shipped host:
+    /// pressing still routes as a click and no capture is opened.
+    ///
+    /// # The half of this that changed, and why
+    ///
+    /// Until round 4 this test also asserted `pressed() == None` and
+    /// `!semantics.active` everywhere, because `PointerState::pressed` was
+    /// derived from the capture alone. That made `active` permanently false
+    /// for every button, checkbox and menu item in `crate::component` — none
+    /// of which declare `Drag` — so every `background@active` binding in the
+    /// library was a token nothing could read, and a press animation had no
+    /// state to key off.
+    ///
+    /// Pressed is not a routing fact. `input.rs`'s `down` bit answers it
+    /// from the pointer instead, and the capture claim above is untouched:
+    /// nothing is captured, nothing routes anywhere new. The two are
+    /// asserted together here on purpose, because collapsing them again is
+    /// the mistake this test now exists to catch in both directions.
     #[test]
-    fn a_press_on_a_click_only_control_opens_no_gesture() {
+    fn a_press_on_a_click_only_control_presses_it_without_grabbing_it() {
         let ctx = headless();
         let mut host = Host::new(&ctx, Demo::default(), default_presenter());
         step(&ctx, &mut host, RawInput::default());
         let run = centre_of(&host, "/root/run");
 
         step(&ctx, &mut host, press_at(run));
-        assert!(host.pointer().capture().is_none());
-        assert_eq!(host.pointer().pressed(), None);
         assert!(
-            host.frame()
-                .expect("a frame")
-                .placements
-                .iter()
-                .all(|p| !p.semantics.captured && !p.semantics.active),
+            host.pointer().capture().is_none(),
+            "nothing declared `Drag`, so no gesture may be opened"
+        );
+        assert_eq!(
+            host.pointer().pressed(),
+            Some("/root/run"),
+            "the control under a held primary button is pressed, capture or no"
+        );
+        let frame = host.frame().expect("a frame");
+        assert!(
+            frame.placements.iter().all(|p| !p.semantics.captured),
             "nothing declared `Drag`, so nothing is captured"
+        );
+        let active: Vec<&str> = frame
+            .placements
+            .iter()
+            .filter(|p| p.semantics.active)
+            .map(|p| p.id.as_str())
+            .collect();
+        assert_eq!(
+            active,
+            vec!["/root/run"],
+            "exactly the node under the pointer is active"
         );
         assert_eq!(host.pointer().hovered(), Some("/root/run"));
     }

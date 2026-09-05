@@ -520,13 +520,31 @@ impl TransitionEngine {
         now: f64,
         previous_now: f64,
     ) -> bool {
-        let target = read_property(&frame.placements[index], property);
+        // What layout put on the placement, and what this node is actually
+        // heading for. The two differ only for a **pressed** node whose
+        // definition declares a press response; everywhere else `target`
+        // *is* the laid-out value and this pair collapses to what it was.
+        let laid = read_property(&frame.placements[index], property);
+        let target = press_target(def, &frame.placements[index], property, laid);
         // Reduced motion: the end state is identical and it is reached now.
         // Any trajectory already running for this property was completed by
         // `set_reduced_motion`, so there is nothing here to stop.
+        //
+        // "Reached now" used to mean "leave the placement alone", which was
+        // right while the target was always the laid-out value. It is not
+        // right for a press: `contracts/animation.md` says a movement
+        // transition under reduced motion *completes instantly*, and a
+        // crunch that completes instantly is a crunch, not an absence. So
+        // the target is written and only the travel is dropped.
         if !self.policy.animates(property) {
-            self.nodes.get_mut(id).map(|t| t.remove(&property));
-            return false;
+            if let Some(tracks) = self.nodes.get_mut(id) {
+                tracks.remove(&property);
+            }
+            if target == laid {
+                return false;
+            }
+            write_property(&mut frame.placements[index], property, target);
+            return true;
         }
         let timing = def
             .timing(property)
@@ -603,10 +621,19 @@ impl TransitionEngine {
             .get_mut(&property)
             .expect("just inserted or already present");
         let value = track.advance(now);
-        if value == target {
-            // Settled, or a trajectory that happens to be exactly there. The
-            // placement already carries the target, so writing it would be a
-            // no-op and marking the frame changed would cost a rehash.
+        if value == laid {
+            // The trajectory is exactly where layout already put the
+            // placement, so writing it would be a no-op and marking the
+            // frame changed would cost a rehash.
+            //
+            // This compares against the **laid-out** value and not against
+            // the target, and the difference is the whole of the press
+            // response: a settled crunch sits at `target`, which layout did
+            // *not* put on the placement, so it has to be written on every
+            // pass for as long as the node is held down. Comparing against
+            // the target instead would settle the crunch and then paint the
+            // resting rect, which is a button that flinches once and pops
+            // back while the finger is still on it.
             return false;
         }
         write_property(&mut frame.placements[index], property, value);
@@ -849,6 +876,58 @@ impl TransitionEngine {
 }
 
 /// Read one animatable property off a placement.
+/// `laid` adjusted for a **pressed** node that declares a press response:
+/// the rect scaled about its own centre by pulling `press_inset` in on
+/// every side.
+///
+/// Returns `laid` unchanged for every node that is not pressed, for every
+/// definition that declares no inset, and for `Opacity`, which has no
+/// centre to scale about.
+///
+/// # The clamp
+///
+/// A node shorter than four insets would invert, and `write_property`'s
+/// `.max(0.0)` would then paint a zero-extent rect rather than a small one
+/// — a control that vanishes on press instead of dipping. The inset is
+/// therefore capped at a quarter of the smaller extent, which on Carbon's
+/// smallest button (`.cds--btn--xs`, 24 tall) is 6 and never bites at the
+/// 2 units [`crate::anim::shipped`] actually declares.
+///
+/// # Why the engine and not layout
+///
+/// Layout *can* see the press — `crate::layout::semantics_of` reads
+/// `LayoutState::pressed` — but a rect that shrank in layout would shrink
+/// the slot the row measured, and the buttons beside it would shuffle
+/// sideways every time one was held. This module's opening contract is
+/// that a node animating its rect does not re-negotiate its siblings, and
+/// that is exactly the property a press-crunch needs.
+fn press_target(
+    def: &TransitionDef,
+    placement: &Placement,
+    property: PropertyKind,
+    laid: AnimVector,
+) -> AnimVector {
+    let inset = def.press_inset();
+    if inset <= 0.0 || !placement.semantics.active {
+        return laid;
+    }
+    let limit = (placement.rect.w.min(placement.rect.h) / 4.0).max(0.0);
+    let d = f64::from(inset.min(limit));
+    match property {
+        PropertyKind::Position => AnimVector::new([laid.get(0) + d, laid.get(1) + d, 0.0, 0.0], 2),
+        PropertyKind::Size => AnimVector::new(
+            [
+                (laid.get(0) - 2.0 * d).max(0.0),
+                (laid.get(1) - 2.0 * d).max(0.0),
+                0.0,
+                0.0,
+            ],
+            2,
+        ),
+        PropertyKind::Opacity | PropertyKind::Color => laid,
+    }
+}
+
 fn read_property(placement: &Placement, property: PropertyKind) -> AnimVector {
     match property {
         PropertyKind::Position => AnimVector::new(
@@ -1282,6 +1361,193 @@ mod tests {
         settled: bool,
         digest_matches: bool,
         placements_match: bool,
+    }
+
+    /// **A pressed node stays crunched for as long as it is held**, and
+    /// comes back exactly when it is let go.
+    ///
+    /// # The bug this is aimed at
+    ///
+    /// `advance_property` used to end with `if value == target { return
+    /// false }`, on the reasoning that a settled trajectory sits where
+    /// layout already put the placement, so writing it would be a no-op.
+    /// That reasoning is exactly true while the target *is* the laid-out
+    /// value, and exactly false for a press: the crunched target is not
+    /// what layout wrote, so once the trajectory settled the engine stopped
+    /// writing and the placement went back to carrying the resting rect
+    /// while the button was still held down. A button that flinches once
+    /// and pops back under a stationary finger.
+    ///
+    /// The gallery's `a_pressed_button_crunches_down_and_comes_back` cannot
+    /// see it: its camera runs with reduced motion, which takes the branch
+    /// above this one and writes the target directly. So this test runs the
+    /// engine with motion **on** and steps past the settle.
+    ///
+    /// `semantics.active` is set on the placement by hand. That is the seam
+    /// this engine reads and nothing more; `crate::layout::semantics_of` is
+    /// what projects `LayoutState::pressed` onto it, and the end-to-end path
+    /// from a real pointer is the gallery test above.
+    ///
+    /// **Falsify it** by restoring `value == target`, which fails at the
+    /// held-past-settle assertion with the resting width.
+    #[test]
+    fn a_held_node_stays_crunched_after_its_trajectory_settles() {
+        use crate::anim::registry::{Timing, TransitionDef};
+        use crate::anim::spring::Spring;
+        use crate::anim::value::PropertyKind;
+
+        const INSET: f32 = 3.0;
+
+        let mut registry = TransitionRegistry::new();
+        registry.register(
+            "crunch",
+            TransitionDef::builder()
+                .drive(
+                    PropertyKind::Position,
+                    Timing::Spring(Spring::response(0.05, 1.0).unwrap()),
+                )
+                .drive(
+                    PropertyKind::Size,
+                    Timing::Spring(Spring::response(0.05, 1.0).unwrap()),
+                )
+                .press(INSET)
+                .build()
+                .unwrap(),
+        );
+        let mut engine = TransitionEngine::new(registry);
+
+        let tree = ViewNode::new(NodeKind::Stack, "app")
+            .child(ViewNode::new(NodeKind::Spacer, "btn").with_transition("crunch"));
+        let declarations = Declarations::collect(&tree);
+
+        // Pass one: at rest, so the engine has a previous frame to diff.
+        let mut frame = fixtures::frame(&tree, 1, 200.0, 100.0);
+        engine.animate(&mut frame, &declarations, 0.0);
+        let resting = frame
+            .placements
+            .iter()
+            .find(|p| p.id == "/app/btn")
+            .expect("the button is placed")
+            .rect;
+
+        // Held, and stepped well past the 50 ms response so the trajectory
+        // is settled rather than in flight.
+        let mut held = resting;
+        for step in 1..40 {
+            let mut frame = fixtures::frame(&tree, 2, 200.0, 100.0);
+            let index = frame
+                .placements
+                .iter()
+                .position(|p| p.id == "/app/btn")
+                .expect("the button is placed");
+            frame.placements[index].semantics.active = true;
+            engine.animate(&mut frame, &declarations, f64::from(step) * 0.016);
+            held = frame.placements[index].rect;
+        }
+        assert!(
+            (resting.w - held.w - 2.0 * INSET).abs() < 0.01,
+            "held past settle the node is {} wide against a resting {}: the \
+             crunch should hold at {} and the engine stopped writing it",
+            held.w,
+            resting.w,
+            resting.w - 2.0 * INSET
+        );
+        assert!(
+            (resting.h - held.h - 2.0 * INSET).abs() < 0.01,
+            "held past settle the node is {} tall against a resting {}",
+            held.h,
+            resting.h
+        );
+        assert!(
+            (held.x - resting.x - INSET).abs() < 0.01 && (held.y - resting.y - INSET).abs() < 0.01,
+            "the crunch is not centred: {held:?} against {resting:?}"
+        );
+
+        // Let go, and step past the settle again. The rect has to be the
+        // laid-out one to the bit, not near it.
+        let mut released = held;
+        for step in 40..80 {
+            let mut frame = fixtures::frame(&tree, 3, 200.0, 100.0);
+            engine.animate(&mut frame, &declarations, f64::from(step) * 0.016);
+            released = frame
+                .placements
+                .iter()
+                .find(|p| p.id == "/app/btn")
+                .expect("the button is placed")
+                .rect;
+        }
+        assert_eq!(
+            released, resting,
+            "the released node did not come back to where layout put it"
+        );
+    }
+
+    /// Under reduced motion a press still crunches; only the travel is
+    /// dropped.
+    ///
+    /// `contracts/animation.md`: *"movement (position/size) transitions
+    /// complete instantly"*. Completing instantly means arriving at the
+    /// target on the first frame, not ignoring it — and before this wave the
+    /// reduced-motion arm returned without writing anything at all, which
+    /// was indistinguishable from "no press response" for every operator
+    /// who has reduced motion on.
+    #[test]
+    fn reduced_motion_keeps_the_crunch_and_drops_only_the_travel() {
+        use crate::anim::registry::{Timing, TransitionDef};
+        use crate::anim::spring::Spring;
+        use crate::anim::value::PropertyKind;
+
+        const INSET: f32 = 2.0;
+
+        let mut registry = TransitionRegistry::new();
+        registry.register(
+            "crunch",
+            TransitionDef::builder()
+                .drive(
+                    PropertyKind::Position,
+                    Timing::Spring(Spring::response(0.3, 1.0).unwrap()),
+                )
+                .drive(
+                    PropertyKind::Size,
+                    Timing::Spring(Spring::response(0.3, 1.0).unwrap()),
+                )
+                .press(INSET)
+                .build()
+                .unwrap(),
+        );
+        let mut engine = TransitionEngine::new(registry);
+        engine.set_reduced_motion(true);
+
+        let tree = ViewNode::new(NodeKind::Stack, "app")
+            .child(ViewNode::new(NodeKind::Spacer, "btn").with_transition("crunch"));
+        let declarations = Declarations::collect(&tree);
+
+        let mut frame = fixtures::frame(&tree, 1, 200.0, 100.0);
+        engine.animate(&mut frame, &declarations, 0.0);
+        let resting = frame
+            .placements
+            .iter()
+            .find(|p| p.id == "/app/btn")
+            .expect("placed")
+            .rect;
+
+        // One frame, not forty: instantly means instantly.
+        let mut frame = fixtures::frame(&tree, 2, 200.0, 100.0);
+        let index = frame
+            .placements
+            .iter()
+            .position(|p| p.id == "/app/btn")
+            .expect("placed");
+        frame.placements[index].semantics.active = true;
+        engine.animate(&mut frame, &declarations, 0.016);
+        let held = frame.placements[index].rect;
+        assert!(
+            (resting.w - held.w - 2.0 * INSET).abs() < 0.01,
+            "under reduced motion the first held frame is {} wide against a \
+             resting {}: the crunch has to complete instantly, not vanish",
+            held.w,
+            resting.w
+        );
     }
 
     /// An unresolvable name is recorded and answerable, never a node that

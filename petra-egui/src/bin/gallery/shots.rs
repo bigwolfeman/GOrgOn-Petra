@@ -261,6 +261,40 @@ impl Camera {
         )
     }
 
+    /// Press the primary button on the node whose id ends `tail` and
+    /// **hold it there**. Nothing is released until [`Camera::release`].
+    ///
+    /// [`Camera::click`] cannot photograph a held state: its press and its
+    /// release land in one pass, so every picture taken after it is of a
+    /// button that has already come back up. A press animation is invisible
+    /// to a driver that only knows how to click, which is how one could
+    /// ship and no test see it.
+    ///
+    /// The camera is left with a button down and a capture in force, which
+    /// is a real state a real pointer can be in; the next driving step sees
+    /// it, exactly as it would on a desk.
+    pub fn press(&mut self, tail: &str) -> &mut Self {
+        let id = self.id(tail);
+        self.act(
+            Target::NodeId(id),
+            &Action::Press {
+                modifiers: Modifiers::default(),
+            },
+        )
+    }
+
+    /// Release the primary button over the node whose id ends `tail`.
+    /// [`Camera::press`]'s other half.
+    pub fn release(&mut self, tail: &str) -> &mut Self {
+        let id = self.id(tail);
+        self.act(
+            Target::NodeId(id),
+            &Action::Release {
+                modifiers: Modifiers::default(),
+            },
+        )
+    }
+
     /// Move the pointer onto the node whose id ends `tail`, pressing nothing.
     /// This is what a `slot@hover` binding and a hover-revealed tooltip need.
     pub fn hover(&mut self, tail: &str) -> &mut Self {
@@ -4087,16 +4121,26 @@ mod tests {
             "the drop zone is {} tall; `_file-uploader.scss:425` is 96",
             zone.h
         );
+        // **Centred, which is a departure from Carbon and is the operator's
+        // instruction.** MEASURED `_file-uploader.scss:415-426`:
+        // `.cds--file__drop-container` is `align-items: flex-start;
+        // justify-content: space-between`, so Carbon's own prompt sits in
+        // the box's top-left corner with 60 points of empty box under it.
+        // Round 4, row 12: *"file uploader: the text needs to be centered in
+        // the ui"*. Both axes, because one line alone in a 320 x 96 box is
+        // off-centre in both and a person asking for "centered" means the
+        // middle of the box.
+        //
+        // Held to a point rather than to an edge, so the claim survives a
+        // change in the prompt's own width: the two centres coincide.
         let prompt = cam.rect("fu/zone/prompt");
+        let dx = (prompt.x + prompt.w / 2.0) - (zone.x + zone.w / 2.0);
+        let dy = (prompt.y + prompt.h / 2.0) - (zone.y + zone.h / 2.0);
         assert!(
-            (prompt.x - zone.x - 16.0).abs() < 1.5 && (prompt.y - zone.y - 16.0).abs() < 2.5,
-            "the prompt is at ({}, {}) inside a zone at ({}, {}); Carbon pads \
-             16 and aligns to flex-start, so it belongs in the top-left \
-             corner and not on the midline",
-            prompt.x,
-            prompt.y,
-            zone.x,
-            zone.y
+            dx.abs() < 1.0 && dy.abs() < 1.0,
+            "the prompt's centre is ({dx}, {dy}) from the zone's; the drop \
+             zone's one line has to sit in the middle of the box on both \
+             axes, and it is off by more than a point"
         );
 
         // The rows under it line up with the zone: both are 320 in Carbon,
@@ -4146,83 +4190,208 @@ mod tests {
         );
     }
 
-    /// Row 04. The danger triple carries a `support-error` octagon and the
-    /// four safe variants do not, so danger differs from default by a shape
-    /// as well as by a hue.
+    /// Row 04. **The filled danger button carries no mark; the two unfilled
+    /// ones lead with Carbon's `WarningFilled` glyph.**
     ///
-    /// **What was wrong.** `button.rs`'s `chrome` gave `Variant::Danger`
-    /// exactly the same `Chrome` struct as `Variant::Secondary` — same
-    /// fill, same ink, same shadow, no edge — and the kind lived only in
-    /// `Semantics.value`, which no eye reads. The operator: *"danger still
-    /// does not look visually distinct from default"*.
+    /// # What the operator said, and what it split into
     ///
-    /// **2026-09-05: the filled variant now carries Carbon's red as its
-    /// fill, and its mark went white.** Wave E could not paint a red fill
-    /// because the only red in the vocabulary was `support-error`, which no
-    /// ink here clears AA on (`text.on-accent` measures 4.41:1 against a 4.5
-    /// floor; the four numbers are in `button.rs`'s module doc). The token
-    /// layer grew `button-danger-primary` and `text-on-color` that day, so
-    /// `danger_button` is Carbon's `#da1e28` under white now.
+    /// Round 4, row 04: *"we had the danger button before I complained
+    /// looked too much like default. So now you built 3 delete buttons.
+    /// They do not look that good. I think just the issue is this rounded
+    /// square in the center of it looks bad. Probably remove it for the
+    /// solid colored button and change the shape on the other 2."*
     ///
-    /// That moved which pixel is red. On the two unfilled variants the
-    /// octagon is still `support-error` on a grey ground. On the filled one
-    /// the *fill* is the red, and the octagon had to leave red behind —
-    /// `support-error` on `#da1e28` measures 1.18:1, an invisible mark — so
-    /// it takes the on-colour white. Both are asserted below, per variant,
-    /// against the same 60-level red lead: this test got **stronger**, not
-    /// looser, because it now reads the fill as well as the mark.
+    /// He is describing `shape.silhouette-octagon`, and he read it right.
+    /// `paint.rs`'s `silhouette_points` chamfers the box by 0.16 of a side,
+    /// which is a *chamfered square*, not a regular octagon: at the 16-unit
+    /// button mark the four flat sides are 10.9 units and the four
+    /// diagonals are 3.6, a 3:1 ratio, so the axis-aligned sides dominate
+    /// and the figure reads as a box with the corners knocked off. That
+    /// number was tuned for the 10x10 status marker, where the job was to
+    /// look unlike a *disc*; at 16 units against a word it looks like a
+    /// rounded square. `paint.rs`'s own comment says so — "chamfered box,
+    /// not a regular octagon" — and the octagon is not changed here,
+    /// because `status.down` is drawn from the same figure and that is not
+    /// this row.
     ///
-    /// **The colour-blind half is measured here, not asserted by comment.**
-    /// The mark's crop is compared to the button's own fill in *luma*, not
-    /// in colour, so a reader with no red-green channel still has a
-    /// difference to see. That half is unchanged and applies to all three.
+    /// # The two halves this asserts
     ///
-    /// **How this went red before the fix.** With `chrome` restored, the
-    /// first assertion fails at `btn-danger-2 draws no mark`. With
-    /// `Variant::mark_tone` collapsed back to one tone, the filled
-    /// variant's mark assertion fails with the octagon reported red on a
-    /// red fill.
+    /// **The filled variant has no mark at all.** Its second channel is
+    /// its own fill's *luminance*: `button-danger-primary` sits between
+    /// the default button's grey and the primary's blue with a wide gap on
+    /// each side, so it survives a reader with no red-green channel
+    /// without anything drawn on top of it. That is measured below in
+    /// greyscale, not asserted. Its third channel is
+    /// `Semantics.value = "danger"`, which is exactly Carbon's own
+    /// affordance — MEASURED
+    /// `@carbon/react/lib/components/Button/ButtonBase.js:49-68`, where
+    /// `dangerDescription` is rendered as a `cds--visually-hidden` span
+    /// and hung off `aria-describedby`. Carbon draws **no** visible danger
+    /// glyph on any button variant; there is none in
+    /// `@carbon/styles/scss/components/button/_button.scss` either.
+    ///
+    /// **The two unfilled variants lead with a glyph.** They have no fill
+    /// to carry the kind, so they keep a mark, and the mark is now
+    /// `IconMark::WarningFilled` — a real traced Carbon path — instead of
+    /// the silhouette. The assertion that tells the two apart is
+    /// **coverage**: a solid chamfered box fills about 97% of its own 16x16
+    /// box, and a ring with a stem and a dot fills a fraction of it. So the
+    /// bound fails in both directions — too high means the blob is back,
+    /// too low means the glyph vanished.
+    ///
+    /// **How this went red before the fix.** With the octagon restored,
+    /// the first assertion fails at `btn-danger still draws a mark`, and
+    /// with only the filled variant changed the coverage bound fails at
+    /// about 0.97 on `btn-danger-tertiary`.
     #[test]
-    fn the_danger_buttons_carry_a_red_octagon_and_the_safe_ones_do_not() {
+    fn the_filled_danger_button_drops_the_mark_and_the_other_two_carry_a_glyph() {
         let mut cam = Camera::on("Button");
         // Driven, so the claim is about a live page and not a constructor:
-        // a pointer on the danger button must not take its mark away.
+        // a pointer on the danger button must not change what it carries.
         cam.hover("btn-danger");
         let shot = raster(&mut cam, "04-button-danger");
 
-        // `mark_is_red` is false for exactly the variant whose *fill* is
-        // the red one. Carrying it in the loop rather than branching on the
-        // name inside is what makes the pair of claims read as one rule:
-        // whichever of the two is red, the other one is not.
-        for (tail, mark_is_red) in [
-            ("btn-danger", false),
-            ("btn-danger-tertiary", true),
-            ("btn-danger-ghost", true),
-        ] {
+        // ---- The filled variant: no mark, and two channels that are not
+        // the hue.
+        assert!(
+            !cam.has("btn-danger/mark"),
+            "btn-danger still draws a mark. The red fill is the channel on \
+             this variant; a white blob on top of it is what the operator \
+             asked to have removed."
+        );
+        let value = cam
+            .frame()
+            .placement(&cam.id("btn-danger"))
+            .expect("the danger button is placed")
+            .semantics
+            .value
+            .clone();
+        assert_eq!(
+            value.as_deref(),
+            Some("danger"),
+            "the filled danger button stopped naming its kind. That string \
+             is the only channel left for a reader who is not looking at \
+             the picture, and it is Carbon's own -- `dangerDescription` in \
+             `ButtonBase.js`."
+        );
+
+        /// How far apart two button fills have to sit in greyscale.
+        ///
+        /// **This is the tightest number in this test and it is set from a
+        /// measurement, not from a standard.** Read off the raster on
+        /// 2026-09-05: the danger fill is Rec. 709 luma 70.7, the default
+        /// button's `surface.raised` `#333333` is 51.0, and the primary's
+        /// `accent.primary` `#4589ff` is 118.2. So the narrow side is 19.7
+        /// and the wide side is 47.5. The floor sits just under the narrow
+        /// one, which is what makes a later re-tone of
+        /// `button-danger-primary` toward its grey neighbour fail here
+        /// rather than quietly turn the filled variant back into the
+        /// default button — the operator's round 3 complaint.
+        ///
+        /// What this floor is **not** is a claim that 19.7 is comfortable.
+        /// `#da1e28` against `#333333` is 2.53:1 as a contrast ratio, and
+        /// ΔE\*ab 28.9 protanope / 62.5 deuteranope under the
+        /// Viénot-Brettel-Mollon transform `token::shipped`'s own gate
+        /// uses — 1.1 short of this library's `MIN_STATUS_SEPARATION` of
+        /// 30 on the protanope side. Those three numbers were computed off
+        /// the sampled pixels rather than asserted by any gate, because
+        /// the simulation matrices live in `shipped.rs`'s private test
+        /// module and copying them here is the drift that keeps two
+        /// numbers from ever agreeing again. The wave's Agent Note carries
+        /// the consequence: the label is the channel that closes that gap,
+        /// and it is the same channel Carbon relies on.
+        const MIN_FILL_LUMA_GAP: f32 = 15.0;
+
+        // A strip inside each button's trailing edge, clear of the label
+        // and of any mark: the fill, and nothing else.
+        let fill_of = |cam: &Camera, tail: &str| -> Rect {
+            let b = cam.rect(tail);
+            Rect {
+                x: b.x + b.w - 6.0,
+                y: b.y + 4.0,
+                w: 4.0,
+                h: b.h - 8.0,
+            }
+        };
+        let danger_fill = inset_pixels(&shot, fill_of(&cam, "btn-danger"), 0);
+        assert!(
+            red_lead(&danger_fill, 60) > danger_fill.len() / 2,
+            "btn-danger's fill does not lead red: {} of {} pixels. With the \
+             mark gone the fill is the whole picture.",
+            red_lead(&danger_fill, 60),
+            danger_fill.len()
+        );
+        // And against the page it sits on, which is the claim SC 1.4.11
+        // actually makes: a filled button draws no edge (see `button.rs`'s
+        // "a filled button sits *on* the surface"), so the fill is the only
+        // thing separating the control from its ground. `#da1e28` on
+        // `surface.base` `#121212` is 3.48:1.
+        let ground = inset_pixels(
+            &shot,
+            Rect {
+                x: cam.rect("btn-danger").x - 8.0,
+                y: cam.rect("btn-danger").y + 4.0,
+                w: 4.0,
+                h: cam.rect("btn-danger").h - 8.0,
+            },
+            0,
+        );
+        assert!(
+            (luma(&danger_fill) - luma(&ground)).abs() > 30.0,
+            "the danger button is luma {:.1} on a ground of luma {:.1}. \
+             It draws no edge, so the fill is the whole boundary.",
+            luma(&danger_fill),
+            luma(&ground)
+        );
+
+        let danger_luma = luma(&danger_fill);
+        for other in ["btn-primary", "btn-default", "btn-tertiary"] {
+            let gap = (danger_luma - luma(&inset_pixels(&shot, fill_of(&cam, other), 0))).abs();
+            assert!(
+                gap > MIN_FILL_LUMA_GAP,
+                "btn-danger's fill is luma {danger_luma:.1} and {other}'s is \
+                 {:.1}, a gap of {gap:.1}. Under {MIN_FILL_LUMA_GAP} the two \
+                 buttons are the same button to a reader with no red-green \
+                 channel, and the mark this variant gave up was the thing \
+                 covering that.",
+                luma(&inset_pixels(&shot, fill_of(&cam, other), 0))
+            );
+        }
+
+        // ---- The two unfilled variants: a glyph, red, and not a blob.
+
+        /// Least of the mark's own box the glyph may ink. Under this the
+        /// mark has gone missing or shrunk to a speck.
+        const MIN_GLYPH_COVERAGE: f32 = 0.12;
+        /// Most of it. A filled `shape.silhouette-octagon` inks about 0.97
+        /// of its box -- that is the rounded square the operator asked to
+        /// be rid of -- so this bound is what a solid figure fails.
+        const MAX_GLYPH_COVERAGE: f32 = 0.70;
+
+        for tail in ["btn-danger-tertiary", "btn-danger-ghost"] {
             assert!(
                 cam.has(&format!("{tail}/mark")),
-                "{tail} draws no mark: danger is a colour-only kind again"
+                "{tail} draws no mark. It has no fill to carry the kind, so \
+                 danger here is a colour-only kind again."
             );
             let mark = cam.rect(&format!("{tail}/mark"));
-            let crop = inset_pixels(&shot, mark, 3);
-            if mark_is_red {
-                assert!(
-                    red_lead(&crop, 60) > crop.len() / 3,
-                    "{tail}'s mark is not red: {} of {} pixels lead red by 60",
-                    red_lead(&crop, 60),
-                    crop.len()
-                );
-            } else {
-                assert!(
-                    red_lead(&crop, 60) == 0,
-                    "{tail}'s mark leads red on a red fill: {} of {} pixels. \
-                     `support-error` on `button-danger-primary` is 1.18:1, \
-                     which is a mark nobody can see -- it must be the \
-                     on-colour white here.",
-                    red_lead(&crop, 60),
-                    crop.len()
-                );
-            }
+            let crop = inset_pixels(&shot, mark, 0);
+            let inked = red_lead(&crop, 60);
+            #[allow(clippy::cast_precision_loss)]
+            let coverage = inked as f32 / crop.len() as f32;
+            assert!(
+                coverage > MIN_GLYPH_COVERAGE,
+                "{tail}'s mark inks {coverage:.2} of its own box ({inked} of \
+                 {} pixels): the glyph is missing or has shrunk to a speck",
+                crop.len()
+            );
+            assert!(
+                coverage < MAX_GLYPH_COVERAGE,
+                "{tail}'s mark inks {coverage:.2} of its own box ({inked} of \
+                 {} pixels). A solid silhouette inks about 0.97 -- this is \
+                 the rounded square again, not a glyph.",
+                crop.len()
+            );
 
             // A marked button must still fit its own label on one line.
             // `layout::stack::distribute` clips the widest child in a row
@@ -4239,17 +4408,7 @@ mod tests {
             );
 
             // The luma step, which is the channel that survives protanopia.
-            let button = cam.rect(tail);
-            let fill = inset_pixels(
-                &shot,
-                Rect {
-                    x: button.x + button.w - 6.0,
-                    y: button.y + 4.0,
-                    w: 4.0,
-                    h: button.h - 8.0,
-                },
-                0,
-            );
+            let fill = inset_pixels(&shot, fill_of(&cam, tail), 0);
             assert!(
                 (luma(&crop) - luma(&fill)).abs() > 12.0,
                 "{tail}'s mark is luma {:.1} on a fill of luma {:.1}: a \
@@ -4257,22 +4416,6 @@ mod tests {
                 luma(&crop),
                 luma(&fill)
             );
-
-            // And on the filled variant the red the octagon gave up is on
-            // the button itself. Carbon's `.cds--btn--danger` is
-            // `background-color: $button-danger-primary`, and this is the
-            // pixel that says the fill actually landed rather than the
-            // token merely resolving.
-            if !mark_is_red {
-                assert!(
-                    red_lead(&fill, 60) > fill.len() / 2,
-                    "{tail}'s fill does not lead red: {} of {} pixels. The \
-                     mark gave up the red for this fill; if neither is red \
-                     the variant is back to looking like the default button.",
-                    red_lead(&fill, 60),
-                    fill.len()
-                );
-            }
         }
 
         for tail in ["btn-primary", "btn-default", "btn-tertiary", "btn-ghost"] {
@@ -4297,6 +4440,197 @@ mod tests {
             "only {blue} pixels of the ghost label lean blue: Carbon draws \
              it in the link ink and this one is still page ink"
         );
+    }
+
+    /// Row 04. **A held button crunches down, and comes back when it is let
+    /// go.**
+    ///
+    /// Round 4, row 04: *"Buttons: we need to give these an on click
+    /// animation so it is like it is crunching down on the click"*.
+    ///
+    /// # This is a departure from Carbon and the departure is the point
+    ///
+    /// MEASURED `@carbon/styles/scss/components/button/_mixins.scss:72-76`:
+    /// Carbon's `.cds--btn` transitions `background`, `box-shadow`,
+    /// `border-color` and `outline` at `$duration-fast-01`, and nothing
+    /// else. There is no `transform`, no `scale` and no press-down anywhere
+    /// in `_button.scss`. What is Carbon's here is the timing — 70 ms on
+    /// `motion(entrance, productive)`, the token whose own doc names
+    /// buttons — and what is not is the dip.
+    ///
+    /// # Driven and photographed, not asserted
+    ///
+    /// [`Camera::click`] presses and releases inside one pass, so every
+    /// picture it can take is of a button that has already come back up. A
+    /// press animation is invisible to it. [`Camera::press`] holds the
+    /// button down, which is what makes the middle of this test possible at
+    /// all, and `04-button-pressed.png` is the frame with the finger still
+    /// on it.
+    ///
+    /// The camera runs with reduced motion on, so what is photographed is
+    /// the *settled* crunch rather than a sample a third of the way in.
+    /// That is deliberate: the frame this checks is the end state, and the
+    /// travel between the two is `anim::engine`'s own business and is
+    /// tested there.
+    ///
+    /// **How this went red before the fix.** Every assertion below fails on
+    /// a button with no `.with_transition(BUTTON_PRESS)`: the pressed rect
+    /// is the resting rect to the last decimal, so the width never moves.
+    #[test]
+    fn a_pressed_button_crunches_down_and_comes_back() {
+        /// `anim::shipped`'s `PRESS_INSET`, in logical units, doubled: the
+        /// rect loses one inset off each edge on both axes.
+        const CRUNCH: f32 = 4.0;
+
+        let mut cam = Camera::on("Button");
+        let resting = cam.rect("btn-primary");
+        let resting_shot = raster(&mut cam, "04-button-resting");
+
+        cam.press("btn-primary");
+        assert_eq!(
+            cam.hovered().as_deref(),
+            Some(cam.id("btn-primary").as_str()),
+            "the press did not land on the button, so nothing below is \
+             about a pressed button"
+        );
+        assert!(
+            cam.frame()
+                .placement(&cam.id("btn-primary"))
+                .is_some_and(|p| p.semantics.active),
+            "the button is not `active` while held. `PointerState::pressed` \
+             answered from the capture alone until this wave, and a button \
+             declares Click and never Drag, so it could never be captured \
+             and never be pressed -- see `input.rs`'s `down`."
+        );
+        let held = cam.rect("btn-primary");
+        let pressed_shot = raster(&mut cam, "04-button-pressed");
+
+        assert!(
+            (resting.w - held.w - CRUNCH).abs() < 0.51,
+            "the held button is {} wide against a resting {}: the crunch \
+             should take {CRUNCH} off the width and it took {}",
+            held.w,
+            resting.w,
+            resting.w - held.w
+        );
+        assert!(
+            (resting.h - held.h - CRUNCH).abs() < 0.51,
+            "the held button is {} tall against a resting {}: the crunch \
+             should take {CRUNCH} off the height and it took {}",
+            held.h,
+            resting.h,
+            resting.h - held.h
+        );
+        // Scaled about its own centre, not shrunk from one corner. A
+        // corner-anchored dip reads as the button sliding, which is the
+        // wrong picture and the easy thing to get wrong.
+        assert!(
+            (resting.x + resting.w / 2.0 - (held.x + held.w / 2.0)).abs() < 0.26
+                && (resting.y + resting.h / 2.0 - (held.y + held.h / 2.0)).abs() < 0.26,
+            "the held button's centre moved from ({}, {}) to ({}, {}): a \
+             crunch scales about the centre, it does not slide",
+            resting.x + resting.w / 2.0,
+            resting.y + resting.h / 2.0,
+            held.x + held.w / 2.0,
+            held.y + held.h / 2.0
+        );
+
+        // Let go. The rect comes back **exactly**: a crunch that leaves a
+        // fraction of a unit behind on every press walks the button off its
+        // own row over an afternoon.
+        cam.release("btn-primary");
+        let released = cam.rect("btn-primary");
+        assert_eq!(
+            (released.x, released.y, released.w, released.h),
+            (resting.x, resting.y, resting.w, resting.h),
+            "the button did not come back to where layout put it: \
+             {released:?} against {resting:?}"
+        );
+        let released_shot = raster(&mut cam, "04-button-released");
+
+        // And the dip reached the picture, which is the half a rect cannot
+        // answer. Held against the **released** frame rather than the
+        // resting one: a press seats keyboard focus (`Host::seat_pointer_focus`),
+        // so the released button legitimately carries a focus ring the
+        // untouched one did not, and comparing against the first shot would
+        // be measuring the ring.
+        let over_button = |img: &image::RgbaImage| inset_pixels(img, resting, 0);
+        let moved = differing(&over_button(&pressed_shot), &over_button(&released_shot));
+        assert!(
+            moved > 200,
+            "only {moved} pixels over the button differ between held and \
+             released: the rect crunched and the raster did not"
+        );
+        // Specifically the lid: the row one unit inside the resting top
+        // edge is the button's own fill when it is up and the page behind
+        // it when it is down.
+        let lid = |img: &image::RgbaImage| {
+            device_row(
+                img,
+                resting.x + resting.w / 2.0 - 4.0,
+                resting.x + resting.w / 2.0 + 4.0,
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                {
+                    ((resting.y + 0.5) * CAPTURE_SCALE).round() as u32
+                },
+            )
+        };
+        assert_ne!(
+            lid(&pressed_shot),
+            lid(&released_shot),
+            "the top edge of the held button paints what the released one \
+             paints, so the dip never reached a pixel"
+        );
+        // The resting shot is not decoration either: it proves the released
+        // button came back to the fill it started with, so "it comes back"
+        // is a claim about the picture and not only about the rect. Sampled
+        // at the button's own centre-left, inside the fill and clear of
+        // both the label and the focus ring under the bottom edge.
+        let centre_fill =
+            |img: &image::RgbaImage| px(img, resting.x + 6.0, resting.y + resting.h / 2.0);
+        assert_eq!(
+            centre_fill(&released_shot),
+            centre_fill(&resting_shot),
+            "the released button's fill is not the fill it had at rest"
+        );
+        // One unit inside the resting left edge is the button's fill when it
+        // is up and the page behind it when it is down, because the dip is
+        // two units. Read at mid-height, clear of the rounded corners.
+        let edge = |img: &image::RgbaImage| px(img, resting.x + 1.0, resting.y + resting.h / 2.0);
+        assert_eq!(
+            edge(&resting_shot),
+            centre_fill(&resting_shot),
+            "the sample point is not inside the resting button at all"
+        );
+        assert_ne!(
+            edge(&pressed_shot),
+            edge(&resting_shot),
+            "one unit inside the resting left edge still paints the button \
+             while it is held, so the leading edge never moved"
+        );
+
+        // The four safe variants and the danger triple all carry it: the
+        // operator said "buttons", not "the primary button".
+        for tail in [
+            "btn-default",
+            "btn-tertiary",
+            "btn-ghost",
+            "btn-danger",
+            "btn-danger-tertiary",
+            "btn-danger-ghost",
+            "btn-sm",
+            "btn-lg",
+        ] {
+            let rest = cam.rect(tail);
+            cam.press(tail);
+            let down = cam.rect(tail);
+            assert!(
+                (rest.w - down.w - CRUNCH).abs() < 0.51,
+                "{tail} took {} off its width on a press, not {CRUNCH}",
+                rest.w - down.w
+            );
+            cam.release(tail);
+        }
     }
 
     /// Rows 24 and 37. The operator: *"popover: this is the same as toggle

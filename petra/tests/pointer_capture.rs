@@ -752,3 +752,152 @@ fn the_audit_passes_a_read_only_node_that_is_merely_read_only() {
     let order = FocusTree::from_placements(&frame.placements, &BTreeMap::new());
     assert_eq!(order.order(), &["/app/field".to_owned()]);
 }
+
+/// **A click-only control is pressed while it is held, and holds no capture.**
+///
+/// `contracts/interaction-state.md` §1 defines pressed as a fact about the
+/// pointer. Until round 4 this engine answered it from the *capture*, and
+/// `route_positional` grants a capture only to a node declaring
+/// [`Interaction::Drag`] — so a `pane` that declares `Click` could never be
+/// pressed, `PlacementSemantics::active` was permanently false for every
+/// button and checkbox in `crate::component`, and every `background@active`
+/// binding in that library was a token nothing could read.
+///
+/// Both halves are asserted together on purpose. Collapsing pressed back into
+/// capture fails the first; granting a `Click` node the capture to make the
+/// first pass fails the second.
+///
+/// The slide-off half is the reason `pressed_on` records the **node** and not
+/// a bare "the button is down" bit: with a bit, a press on one control lit
+/// up whatever the held pointer slid over next.
+///
+/// Falsify by returning `false` from `refresh_pressed`'s uncaptured arm,
+/// which fails at the first pressed assertion, or by dropping its
+/// `hovered == pressed_on` half, which fails at the slide-off one.
+#[test]
+fn a_click_only_control_is_pressed_while_held_and_captures_nothing() {
+    let tree = draggable_page();
+    let frame = place(&tree, &LayoutState::default());
+    let pane = centre(rect_of(&frame, "/app/pane"));
+    let away = centre(rect_of(&frame, "/app/handle"));
+
+    let mut pointer = PointerState::new();
+    pointer.route(&frame, None, &no_surfaces(), &moved(pane));
+    assert_eq!(
+        pointer.pressed(),
+        None,
+        "hovering is not pressing: nothing is down yet"
+    );
+
+    pointer.route(&frame, None, &no_surfaces(), &pressed(pane));
+    assert_eq!(
+        pointer.pressed(),
+        Some("/app/pane"),
+        "the control under a held primary button is pressed"
+    );
+    assert!(
+        pointer.capture().is_none(),
+        "`pane` declares no Drag, so no gesture may be opened for it"
+    );
+
+    // The projection the painter reads: exactly that node is `active`, and
+    // nothing anywhere is `captured`.
+    let mut state = LayoutState::default();
+    publish(&mut state, &pointer);
+    let held = place(&tree, &state);
+    let active: Vec<&str> = held
+        .placements
+        .iter()
+        .filter(|p| p.semantics.active)
+        .map(|p| p.id.as_str())
+        .collect();
+    assert_eq!(active, vec!["/app/pane"]);
+    assert!(held.placements.iter().all(|p| !p.semantics.captured));
+
+    // Held, and dragged off. With no capture the press simply stops: there is
+    // no gesture to keep, so the node under the pointer is not pressed either
+    // — a press that started elsewhere may not light up whatever it slides
+    // over.
+    pointer.route(&frame, None, &no_surfaces(), &moved(away));
+    assert_eq!(
+        pointer.pressed(),
+        None,
+        "sliding a held pointer off a click-only control unpresses it"
+    );
+
+    // And the release puts the bit down for good.
+    pointer.route(&frame, None, &no_surfaces(), &released(away));
+    pointer.route(&frame, None, &no_surfaces(), &moved(pane));
+    assert_eq!(
+        pointer.pressed(),
+        None,
+        "the button came up, so nothing is pressed under the pointer"
+    );
+}
+
+/// A held control that goes **unavailable under a stationary pointer** stops
+/// being pressed.
+///
+/// The other half of `refresh_pressed`'s uncaptured arm, and the half the
+/// slide-off case above cannot reach. Sliding off works on the rect check
+/// alone, because a pointer that left the rect is no longer inside it. A
+/// pointer that never moves is inside the rect for as long as the rect is
+/// there, so the only thing that can answer "is this still the node under
+/// the pointer" is the hit test — and `derive_hover` refuses a disabled
+/// placement where `Rect::contains` knows nothing about it.
+///
+/// This is [`PointerState::reconcile`]'s stated job — *"hover follows the
+/// picture, not the pointer"* — extended to the press, and it is why the
+/// uncaptured arm compares against `hovered` rather than testing the rect
+/// alone.
+///
+/// Falsify by dropping the `hovered == pressed_on` half of that arm.
+#[test]
+fn a_held_control_that_goes_unavailable_stops_looking_pressed() {
+    let live = draggable_page();
+    let frame = place(&live, &LayoutState::default());
+    let pane = centre(rect_of(&frame, "/app/pane"));
+
+    let mut pointer = PointerState::new();
+    pointer.route(&frame, None, &no_surfaces(), &pressed(pane));
+    assert_eq!(pointer.pressed(), Some("/app/pane"));
+
+    // The same tree with the held control unavailable, placed at the same
+    // geometry. The pointer has not moved and the rect has not moved.
+    let mut disabled_pane = control(
+        "pane",
+        (200.0, 60.0),
+        &[Interaction::Hover, Interaction::Click, Interaction::Focus],
+    );
+    disabled_pane.semantics.disabled = true;
+    let unavailable = ViewNode::new(NodeKind::Stack, "app")
+        .with_props(gorgon_petra::tree::Props {
+            axis: Some(gorgon_petra::geom::Axis::Horizontal),
+            ..gorgon_petra::tree::Props::default()
+        })
+        .child(control(
+            "handle",
+            (60.0, 60.0),
+            &[
+                Interaction::Drag,
+                Interaction::Hover,
+                Interaction::Click,
+                Interaction::Focus,
+            ],
+        ))
+        .child(disabled_pane);
+    let next = place(&unavailable, &LayoutState::default());
+    assert_eq!(
+        rect_of(&next, "/app/pane"),
+        rect_of(&frame, "/app/pane"),
+        "the fixture must not move the rect, or the rect check answers this \
+         and the hover check is never reached"
+    );
+
+    pointer.reconcile(&next, &no_surfaces());
+    assert_eq!(
+        pointer.pressed(),
+        None,
+        "a control the operator can no longer press is not pressed"
+    );
+}

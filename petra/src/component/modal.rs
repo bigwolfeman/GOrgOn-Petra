@@ -512,7 +512,15 @@ mod tests {
     const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
 
     fn accepting_registry() -> Registry {
-        Registry::with_vocabulary(standard_vocabulary())
+        // Every shipped transition name is declared here for the same reason
+        // `component::tests`'s own harness declares them: a `button` names
+        // `crate::anim::BUTTON_PRESS` and a `toggle` knob names `TOGGLE_KNOB`,
+        // and tree acceptance refuses a name the registry has not been told
+        // about. A host does this in `Host::new`; a test that builds its own
+        // registry has to do it too.
+        let mut registry = Registry::with_vocabulary(standard_vocabulary());
+        crate::anim::shipped_registry().declare_into(&mut registry);
+        registry
     }
 
     /// The modal mounted the way an application mounts it: inside a card,

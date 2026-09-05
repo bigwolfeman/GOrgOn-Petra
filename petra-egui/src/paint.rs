@@ -1787,17 +1787,25 @@ mod tests {
             .child(ViewNode::new(NodeKind::Spacer, "gap"))
     }
 
+    /// Petrify one fixture at this module's standard 240 x 120 page.
+    ///
+    /// The registry is built the way `Host::new` builds one: the tree's own
+    /// vocabulary **plus** every shipped transition name. Not
+    /// `testing::validated`'s bare vocabulary, because the fixtures here are
+    /// shipped components and a `button` names `anim::BUTTON_PRESS`, which
+    /// acceptance refuses against a registry that was never told the name
+    /// exists. Declaring the *shipped* set rather than whatever the tree
+    /// happens to say keeps acceptance honest: a fixture that invents a
+    /// transition name is still refused.
     fn frame_of(
         node: &ViewNode,
         h: &mut Harness<GalleyShaper, gorgon_petra::testing::NoRows>,
     ) -> gorgon_petra::frame::PetrifiedFrame {
-        petrify(
-            1,
-            validated(node),
-            &mut h.ctx(),
-            Viewport::new(Size::new(240.0, 120.0), ThemeMode::Dark),
-            TransitionActivity::default(),
-        )
+        let mut registry = gorgon_petra::tree::Registry::with_vocabulary(
+            gorgon_petra::testing::extended_vocabulary(node),
+        );
+        gorgon_petra::anim::shipped_registry().declare_into(&mut registry);
+        frame_of_registered(node, h, &registry)
     }
 
     /// A canvas has to reach the screen, not merely reach the digest.
