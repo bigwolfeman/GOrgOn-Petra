@@ -43,16 +43,49 @@
 //! find the ends of does not read as a track.
 //!
 //! What changed for all three is the tone. They bound `text.muted`, a text
-//! colour at 10.73:1 on a card; they now bind [`BORDER_SUBTLE`], which is
-//! held at or above SC 1.4.11's 3:1 on every layer and pinned *below* both
-//! text tones by
-//! `crate::token::shipped`'s `the_border_tone_is_visible_everywhere_and_quieter_than_every_text_tone`.
+//! colour at 10.73:1 on a card; then [`BORDER_SUBTLE`]; and since
+//! 2026-09-05 they bind [`BORDER_STRONG`].
+//!
+//! That last move is the point of the paragraph above, arriving in the
+//! token layer. One border tone was doing two jobs — the hairline between
+//! two table rows and the outline that *is* an unchecked checkbox — and it
+//! was held to WCAG SC 1.4.11's 3:1 because of the second. That floor set
+//! the tone of every divider on 42 pages and made the catalog read as a
+//! wireframe. The two jobs are two names now: `border.subtle` is the
+//! decorative rule at Carbon's own quiet 1.3:1, and [`BORDER_STRONG`] is
+//! the control boundary still held at 3:1 on every layer by
+//! `crate::token::shipped`'s
+//! `border_strong_sits_between_the_subtle_border_and_every_text_tone`.
+//! These three controls are on the control side, and the module comment
+//! above is the argument for why.
+//!
+//! # The knob is white, in both themes
+//!
+//! Carbon's toggle handle is `background-color: $icon-on-color` on
+//! `.cds--toggle__switch::before`, with **no `--checked` override**
+//! (SOURCED
+//! `.agents/research/08-25-2026/Carbon-Component-Inventory/slice-f.md:26`),
+//! so it is white on and off. This library bound [`TEXT_ON_ACCENT`] for the
+//! on state, which resolves to the theme's own `surface.base` — `#121212`
+//! in dark — so row 36 drew a **black knob** inside a blue track. Wave D
+//! recorded it and left it for the token layer
+//! (`.agents/notes/implemented/feature/2026-09-05-the-notification-carries-a-kind-and-two-rows-leave-carbon-on-purpose.md`);
+//! [`TEXT_ON_COLOR`] is that name, white in every theme the way Carbon's
+//! `$text-on-color` and `$icon-on-color` are, and the on-knob binds it.
+//!
+//! The **off** knob stays [`TEXT_PRIMARY`], which is a departure Carbon
+//! does not make and this library cannot avoid: the off track is
+//! `surface.raised`, and white on `#222222` would be a knob at 14.2:1 —
+//! louder than the page's own prose, on the control that is *not* doing
+//! anything. `text.primary` is `#f2f2f2` in dark and `#1a1a1a` in light, so
+//! the off knob reads correctly in both polarities where a fixed white
+//! would vanish in light.
 
 use super::icon::{IconMark, icon};
 use super::text::text;
 use super::tokens::{
-    ACCENT_PRIMARY, BORDER_SUBTLE, SHAPE_FULL, SHAPE_NONE, SPACING_01, SPACING_02, SPACING_03,
-    SPACING_05, SURFACE_RAISED, TEXT_MUTED, TEXT_ON_ACCENT, TEXT_PRIMARY, t,
+    ACCENT_PRIMARY, BORDER_STRONG, SHAPE_FULL, SHAPE_NONE, SPACING_01, SPACING_02, SPACING_03,
+    SPACING_05, SURFACE_RAISED, TEXT_MUTED, TEXT_ON_ACCENT, TEXT_ON_COLOR, TEXT_PRIMARY, t,
 };
 use super::{pad, stack, swatch};
 use crate::geom::{Align, Axis};
@@ -130,7 +163,7 @@ fn labelled_box(
 /// Outline only: unchecked checkbox, unselected radio. The keyed `"box"` is
 /// a swatch so tests.rs still reads background from that node.
 fn empty_mark(size: f32, shape: &str) -> ViewNode {
-    swatch("box", size, size, None, Some(BORDER_SUBTLE), Some(shape))
+    swatch("box", size, size, None, Some(BORDER_STRONG), Some(shape))
 }
 
 /// Filled mark with a second-channel child. The keyed `"box"` stack carries
@@ -150,7 +183,7 @@ fn marked_box(size: f32, fill: &str, shape: &str, inner: ViewNode) -> ViewNode {
     );
     node.props.align = Some(Align::Center);
     node.props.tokens.insert("background".into(), t(fill));
-    node.props.tokens.insert("border".into(), t(BORDER_SUBTLE));
+    node.props.tokens.insert("border".into(), t(BORDER_STRONG));
     node.props.tokens.insert("radius".into(), t(shape));
     node.with_constraints(pinned(size, size))
 }
@@ -300,7 +333,7 @@ pub fn checkbox_group(
 /// A radio button: one choice among a group, drawn as an 18×18 circle.
 ///
 /// Selected: the keyed `"box"` fills solid with [`ACCENT_PRIMARY`].
-/// Unselected: fill `None`, outline [`BORDER_SUBTLE`] (the 2026-08-25 edge
+/// Unselected: fill `None`, outline [`BORDER_STRONG`] (the 2026-08-25 edge
 /// contract). So the two states differ as **solid disc against empty ring**,
 /// which is a shape channel and survives greyscale — it does not lean on the
 /// blue at all.
@@ -330,7 +363,7 @@ pub fn radio(key: impl Into<Key>, label: impl Into<String>, selected: bool) -> V
             RADIO_BOX,
             RADIO_BOX,
             Some(ACCENT_PRIMARY),
-            Some(BORDER_SUBTLE),
+            Some(BORDER_STRONG),
             Some(SHAPE_FULL),
         )
     } else {
@@ -433,7 +466,10 @@ fn toggle_sized(
         "knob",
         handle,
         handle,
-        Some(if on { TEXT_ON_ACCENT } else { TEXT_PRIMARY }),
+        // Carbon: `$icon-on-color`, white with no `--checked` override.
+        // `TEXT_ON_ACCENT` is the theme's own `surface.base` and drew this
+        // knob black in dark — see the module doc.
+        Some(if on { TEXT_ON_COLOR } else { TEXT_PRIMARY }),
         None,
         Some(SHAPE_FULL),
     )
@@ -456,7 +492,7 @@ fn toggle_sized(
         "background".into(),
         t(if on { ACCENT_PRIMARY } else { SURFACE_RAISED }),
     );
-    track.props.tokens.insert("border".into(), t(BORDER_SUBTLE));
+    track.props.tokens.insert("border".into(), t(BORDER_STRONG));
     track.props.tokens.insert("radius".into(), t(SHAPE_FULL));
     track = track.with_constraints(pinned(track_w, track_h));
 

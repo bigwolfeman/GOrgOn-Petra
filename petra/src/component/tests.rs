@@ -1105,9 +1105,39 @@ fn walk(node: &ViewNode, path: &str, visit: &mut impl FnMut(&str, &crate::tree::
 #[test]
 fn containers_take_a_tone_and_controls_take_an_edge() {
     /// Every node in [`full_gallery`] that may draw a border, by the key
-    /// path it appears at. An exact set: a node missing from here that draws
-    /// one fails, and a node listed here that stops drawing one fails too.
-    const DRAWS_AN_EDGE: [&str; 25] = [
+    /// path it appears at **and the tone it must bind**. An exact set: a
+    /// node missing from here that draws one fails, a node listed here that
+    /// stops drawing one fails too, and a node that draws one in the wrong
+    /// tone fails.
+    ///
+    /// # The second column, added 2026-09-05
+    ///
+    /// The border tone split in two that day.
+    /// [`tokens::BORDER_SUBTLE`] is the **decorative** rule — a divider
+    /// between two table rows, a panel edge — held to Carbon's own quiet
+    /// 1.3:1. [`tokens::BORDER_STRONG`] is the **control boundary**, the
+    /// only tone still held to WCAG SC 1.4.11's 3:1. Before the split one
+    /// tone did both jobs, and because one of them is a checkbox outline it
+    /// was pinned at 3:1 — which set the tone of every divider on 42 pages
+    /// and is the single largest reason the catalog read as a wireframe.
+    ///
+    /// So this list is now where the split is *enforced*, and the rule it
+    /// applies to each row is stated rather than felt:
+    ///
+    /// 1. If Carbon MEASURES `$border-subtle` for that specific edge, it
+    ///    binds the decorative tone. Exactly one row qualifies, the content
+    ///    switcher's container outline.
+    /// 2. Otherwise the node has no fill of its own, or a fill identical to
+    ///    the surface underneath it, so the edge is the only thing that
+    ///    identifies the control — and that is precisely what SC 1.4.11
+    ///    covers. It binds [`tokens::BORDER_STRONG`].
+    ///
+    /// Note what is *not* on this list at all: every decorative rule in the
+    /// library is a one-unit node binding `background`
+    /// (`super::rule`, `accordion_item`'s divider, `structured_list`'s row
+    /// rules), not a `border`. The `border` slot is very nearly the control
+    /// slot, and the one exception is spelled out below.
+    const DRAWS_AN_EDGE: [(&str, &str); 25] = [
         // `field`: an empty well with no boundary does not read as a place
         // to type. See `field`'s own doc for why it keeps one when `button`
         // does not.
@@ -1116,11 +1146,11 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         // at three different `Semantics` states — `empty_mark`/`marked_box`
         // bind `border` unconditionally, so all three carry it regardless
         // of checked or disabled.
-        "root/controls/check/box",
-        "root/controls/check-off/box",
-        "root/controls/check-disabled/box",
-        "root/controls/radio/box",
-        "root/controls/toggle/appearance/track",
+        ("root/controls/check/box", BORDER_STRONG),
+        ("root/controls/check-off/box", BORDER_STRONG),
+        ("root/controls/check-disabled/box", BORDER_STRONG),
+        ("root/controls/radio/box", BORDER_STRONG),
+        ("root/controls/toggle/appearance/track", BORDER_STRONG),
         // Accordion item used to be here, binding `border` on the whole
         // item as an approximation of Carbon's own `border-top: 1px solid
         // $border-subtle` divider between rows (`_accordion.scss`). A3
@@ -1139,25 +1169,27 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         //
         // AI label's default-variant trigger: Carbon's `border-inverse`
         // (`.cds--ai-label`, MEASURED SCSS; see `ai_label.rs`'s module doc
-        // for why `BORDER_SUBTLE` stands in for the missing token). Unlike
+        // for why `BORDER_STRONG` stands in for the missing token — that
+        // token is the loudest boundary in Carbon's theme, so of the two
+        // tones this library ships it is the closer one). Unlike
         // a filled `button`, which trades its edge for `shadow.raised`, this
         // trigger has no fill loud enough to read as a boundary on its own —
         // its background is `SURFACE_BASE`, the page's own ground — so the
         // edge is the only thing that identifies it as a control at rest.
         // The inline variant (`ai-inline`) is the sibling case that does
         // *not* draw one: its leading bullet dot is the boundary instead.
-        "root/carbon/ai-default/trigger",
+        ("root/carbon/ai-default/trigger", BORDER_STRONG),
         // The open AI label's trigger is the same `trigger_button` as the
         // closed one — `open` changes `expanded` and nothing it draws — and
         // its explainability `panel` is a popover, which draws no edge
         // since 2026-09-04 (see the popover note below).
-        "root/carbon/ai-open/trigger",
+        ("root/carbon/ai-open/trigger", BORDER_STRONG),
         // Content switcher's own row: Carbon's `.cds--content-switcher`
         // 1px `$border-subtle` outline (MEASURED `_content-switcher.scss`;
         // see `content_switcher.rs`'s module doc, anatomy #1). The row is a
         // container, but this is a real measured boundary, not decoration —
         // the same class as `field` rather than a card or a strip.
-        "root/carbon2/cs",
+        ("root/carbon2/cs", BORDER_SUBTLE),
         // Date picker's closed field: `SURFACE_RAISED` + `BORDER_SUBTLE`,
         // the same `field`-class pairing and the same reason — a raised
         // fill one layer ahead of its ground is not enough contrast on its
@@ -1195,11 +1227,14 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         // `controls::checkbox_box`, the exact same outline-is-the-mark
         // shape as `root/controls/check/box` above — one per body row and
         // the header's select-all.
-        "root/carbon2/dt-jobs/dt-r0/select/box",
-        "root/carbon2/dt-jobs/dt-r1/select/box",
-        "root/carbon2/dt-jobs/dt-r2/cells/select/box",
-        "root/carbon2/dt-jobs/dt-r3/select/box",
-        "root/carbon2/dt-jobs/header/select/select-all/box",
+        ("root/carbon2/dt-jobs/dt-r0/select/box", BORDER_STRONG),
+        ("root/carbon2/dt-jobs/dt-r1/select/box", BORDER_STRONG),
+        ("root/carbon2/dt-jobs/dt-r2/cells/select/box", BORDER_STRONG),
+        ("root/carbon2/dt-jobs/dt-r3/select/box", BORDER_STRONG),
+        (
+            "root/carbon2/dt-jobs/header/select/select-all/box",
+            BORDER_STRONG,
+        ),
         // Form's field child: the exact same `field()` component as
         // `root/controls/name`, for the exact same reason.
         // File uploader's incomplete-item mark: a static ring standing in
@@ -1209,15 +1244,15 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         // loading's active mark used to sit beside it and no longer does:
         // it is `loading::spinner_small`, a drawn canvas whose track and
         // arc are strokes in a draw list, so it binds no `border`.
-        "root/carbon2/fu-f1/mark",
+        ("root/carbon2/fu-f1/mark", BORDER_STRONG),
         // File uploader's drop zone: Carbon draws `border: 1px dashed
         // $border-strong` (MEASURED `_file-uploader.scss:425`); Petra has no
-        // dashed stroke and substitutes a solid `BORDER_SUBTLE` rather than
+        // dashed stroke and substitutes a solid `BORDER_STRONG` rather than
         // inventing one — see `file_uploader.rs`'s module doc. The zone is
         // also a click target with no fill loud enough to read as a
         // boundary on its own (`SURFACE_BASE`, the page's own ground), the
         // same shape as AI label's trigger above.
-        "root/carbon2/fu-up/zone",
+        ("root/carbon2/fu-up/zone", BORDER_STRONG),
         // Modal draws no edge since 2026-09-04. Carbon's "Container
         // border: 1px `$border-subtle-01`" (SOURCED style page, slice-c)
         // was bound on the dialog shell until the operator's walk of the
@@ -1281,9 +1316,9 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         // radio is nothing but its outline, and the selected/disabled
         // forms keep the same border so the ring does not resize between
         // states.
-        "root/carbon4/radio-checked/box",
-        "root/carbon4/radio-disabled/box",
-        "root/carbon4/radio-unchecked/box",
+        ("root/carbon4/radio-checked/box", BORDER_STRONG),
+        ("root/carbon4/radio-disabled/box", BORDER_STRONG),
+        ("root/carbon4/radio-unchecked/box", BORDER_STRONG),
         // Select's closed field: Carbon's `border-block-end: 1px solid
         // $border-strong` on `.cds--select-input` (slice-e, Select
         // anatomy #3), the same `field`-class input-well pairing as
@@ -1307,10 +1342,10 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         // fixed in `tag.rs`'s own `shell` doc). Read-only tags
         // (`tag-ro`/`tag-sm`/`tag-lg`, not on this list either) have no
         // edge, matching the same line.
-        "root/carbon5/tag-select-off",
-        "root/carbon5/tag-select-on",
+        ("root/carbon5/tag-select-off", BORDER_STRONG),
+        ("root/carbon5/tag-select-on", BORDER_STRONG),
         // Tile: no kind draws a resting edge any more. The three
-        // interactive kinds used to take `BORDER_SUBTLE` as a second
+        // interactive kinds used to take the border tone as a second
         // channel beside the hover fill, which put a fill-and-no-edge base
         // tile in a row with three fill-and-edge ones — two visual
         // languages, W8 audit, `35-tile.png`. Carbon's own form without
@@ -1321,7 +1356,7 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         // outline is the whole mark, the checkbox's own class above. The
         // selected one (`tile-select-on`) is an accent-filled box with a
         // check and binds no border.
-        "root/carbon5/tile-select-off/row/box",
+        ("root/carbon5/tile-select-off/row/box", BORDER_STRONG),
         // Toggle: the same `root/controls/toggle/appearance/track` argument
         // as above, for the three additional states this group's own
         // section adds (off, disabled, small) — `toggle_sized` binds
@@ -1338,10 +1373,10 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         // viewport. Each draws its own inline-start rule as a node
         // instead, exactly as the header below does, and the node binds
         // `background`, which this test does not audit.
-        "root/carbon6/tog-disabled/appearance/track",
-        "root/carbon6/tog-off/appearance/track",
-        "root/carbon6/tog-on/appearance/track",
-        "root/carbon6/tog-sm/appearance/track",
+        ("root/carbon6/tog-disabled/appearance/track", BORDER_STRONG),
+        ("root/carbon6/tog-off/appearance/track", BORDER_STRONG),
+        ("root/carbon6/tog-on/appearance/track", BORDER_STRONG),
+        ("root/carbon6/tog-sm/appearance/track", BORDER_STRONG),
         // UI shell header used to be on this list, binding `border`
         // directly on the header bar for Carbon's `border-block-end: 1px
         // solid $border-subtle` (slice-f "UI shell header" Key numbers).
@@ -1369,31 +1404,35 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
     // `primary_button` is absent for the reason in this test's doc; its
     // label child is a `Text` node and draws no box at all.
 
-    let mut bordered: Vec<String> = Vec::new();
+    let mut bordered: Vec<(String, String)> = Vec::new();
     walk(&full_gallery(), "", &mut |path, props| {
         let Some(token) = props.tokens.get("border") else {
             return;
         };
-        assert_eq!(
-            token.as_str(),
-            BORDER_SUBTLE,
-            "{path} draws its edge in `{}`. A border binds the border tone; \
-             binding a text tone is how this library came to look like a \
-             wireframe, and it fails no contrast floor on the way.",
+        assert!(
+            token.as_str() == BORDER_SUBTLE || token.as_str() == BORDER_STRONG,
+            "{path} draws its edge in `{}`. A border binds one of the two \
+             border tones; binding a text tone is how this library came to \
+             look like a wireframe, and it fails no contrast floor on the way.",
             token.as_str()
         );
-        bordered.push(path.to_owned());
+        bordered.push((path.to_owned(), token.as_str().to_owned()));
     });
     bordered.sort();
 
-    let mut expected: Vec<String> = DRAWS_AN_EDGE.iter().map(|s| (*s).to_owned()).collect();
+    let mut expected: Vec<(String, String)> = DRAWS_AN_EDGE
+        .iter()
+        .map(|(path, tone)| ((*path).to_owned(), (*tone).to_owned()))
+        .collect();
     expected.sort();
     assert_eq!(
         bordered, expected,
-        "the set of nodes drawing an edge changed. Containers take a tone \
-         and controls take an edge -- read this test's doc before widening \
-         the list, and if a node genuinely needs an edge, say which of the \
-         two measured reasons applies to it."
+        "the set of nodes drawing an edge, or the tone one of them draws it \
+         in, changed. Containers take a tone and controls take an edge -- \
+         read this test's doc before widening the list, and if a node \
+         genuinely needs an edge, say which of the two measured reasons \
+         applies to it and which side of the decorative/control-boundary \
+         split it lands on."
     );
 }
 

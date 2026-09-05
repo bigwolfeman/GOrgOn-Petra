@@ -188,23 +188,72 @@ pub(crate) const ICON_PRIMARY: &str = "icon-primary";
 /// resting header action.
 pub(crate) const ICON_SECONDARY: &str = "icon-secondary";
 
-/// The one colour a drawn boundary is allowed to be.
+/// The **decorative** rule: a divider between two rows, a panel edge, a
+/// line under a header. Carbon's `$border-subtle`.
 ///
 /// Every border in this library bound [`TEXT_MUTED`] until 2026-08-25 —
 /// 10.73:1 against the card it was drawn on, as loud as the prose inside
 /// it, because there was no border colour in the theme and a text one had
-/// been conscripted. Most of those borders are now gone entirely; the ones
-/// that survive are the ones where the edge *is* the control (an unchecked
-/// checkbox is nothing but its outline), and they bind this.
+/// been conscripted. Most of those borders are now gone entirely.
+///
+/// # The 2026-09-05 split, which is the reason to read this
+///
+/// What survived the 2026-08-25 pass was **one** border tone doing two
+/// jobs, held to WCAG SC 1.4.11's 3:1 because one of those jobs is a
+/// checkbox outline. That floor set the tone of every table rule, every
+/// divider and every panel edge on 42 pages, and it is the single largest
+/// reason the catalog read as "not Carbon": dark's rule measured `#9c9c9c`
+/// against Carbon's `#393939`, 99 sRGB levels too bright.
+///
+/// SC 1.4.11 covers information that identifies a *component*. A hairline
+/// between two table rows identifies none. So the roles are two names now:
+///
+/// | | binds | floor |
+/// |---|---|---|
+/// | divider, row rule, panel edge | this | Carbon's own 1.3:1 |
+/// | checkbox, radio, toggle track, tertiary button, drop zone, field rule | [`BORDER_STRONG`] | SC 1.4.11's 3:1 |
+///
+/// `component::tests::containers_take_a_tone_and_controls_take_an_edge`
+/// names every node that draws an edge **and which of the two it must
+/// bind**, so a new edge on the wrong side of the split fails a test rather
+/// than shipping. `crate::token::shipped`'s `BORDER_TOKEN` carries the
+/// measurement table and derives both tones from the layer set.
 pub(crate) const BORDER_SUBTLE: &str = "border.subtle";
 
-/// The one-unit rule under a Carbon field: `border-block-end: 1px solid
-/// $border-strong` on a text input, a select and a list box field (slice-e,
-/// slice-b). A field's boundary in Carbon is that rule and nothing else — no
-/// box, no radius — and the rule is one step louder than
-/// [`BORDER_SUBTLE`] because it is the whole edge. `token::shipped` pins it
-/// at the CIE L\* midpoint between the subtle border and the primary text.
+/// The **control boundary**: the edge that identifies an interactive
+/// element, and the only border tone in this library held to WCAG SC
+/// 1.4.11's 3:1.
+///
+/// Two shapes bind it. The first is Carbon's one-unit field rule —
+/// `border-block-end: 1px solid $border-strong` on a text input, a select
+/// and a list box field (slice-e, slice-b); a field's boundary in Carbon is
+/// that rule and nothing else, no box and no radius. The second is every
+/// control whose outline *is* the control: an unchecked checkbox, an
+/// unselected radio, a toggle track, a tertiary button, the upload drop
+/// zone (Carbon: `border: 1px dashed $border-strong`, MEASURED
+/// `_file-uploader.scss:425`). Those four moved here from [`BORDER_SUBTLE`]
+/// on 2026-09-05 — see that constant for the split and why it happened.
 pub(crate) const BORDER_STRONG: &str = "border-strong";
+
+/// Carbon's `$button-danger-primary` (`#da1e28`, the same in all four
+/// published themes): the fill under a destructive button.
+///
+/// Spent by `super::danger_button` and nothing else. `SUPPORT_ERROR` cannot
+/// do this job — no ink in this library clears the 4.5:1 AA floor on it,
+/// best 4.41:1 — which is the whole reason for a second red. See
+/// `crate::token::shipped`'s `DANGER_FILL_TOKEN` for the measurements and
+/// the colour-blindness gate that lets a new hue into the palette at all.
+pub(crate) const BUTTON_DANGER_PRIMARY: &str = "button-danger-primary";
+
+/// Carbon's `$text-on-color` / `$icon-on-color`: **white in every theme**,
+/// the ink and the mark that ride a saturated fill.
+///
+/// **Not [`TEXT_ON_ACCENT`], and the difference is visible.** That one is
+/// the theme's own `surface.base`, so in dark it is `#121212`, which is
+/// correct on the accent (white on `#4589ff` is 3.35:1, under AA) and wrong
+/// everywhere else. Binding it for the toggle handle is what drew row 36's
+/// on-toggle with a black knob where Carbon's is white.
+pub(crate) const TEXT_ON_COLOR: &str = "text-on-color";
 
 /// The accent fill, and the ink that goes on top of it.
 ///
@@ -305,6 +354,8 @@ pub(crate) const ALL: &[&str] = &[
     BORDER_STRONG,
     ACCENT_PRIMARY,
     TEXT_ON_ACCENT,
+    BUTTON_DANGER_PRIMARY,
+    TEXT_ON_COLOR,
     LAYER_HOVER,
     LAYER_ACTIVE,
     LAYER_SELECTED,

@@ -4,7 +4,7 @@
 //! (Wave 3) and is omitted. Colour variants (`$tag-background-red` …) are
 //! **skipped**: those names are not in [`super::tokens`], and inventing
 //! hues here would put a colour decision in a component. High-contrast /
-//! outline uses [`BORDER_SUBTLE`].
+//! outline uses [`BORDER_STRONG`].
 //!
 //! Sizes MEASURED `_tag.scss`: sm 18, md 24 (default), lg 32. Radius
 //! [`SHAPE_FULL`]. `min-inline-size` 32, `max-inline-size` 208.
@@ -31,7 +31,7 @@ use super::icon::{IconMark, IconTone, icon_toned};
 use super::stack;
 use super::text::text;
 use super::tokens::{
-    BORDER_SUBTLE, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SHAPE_FULL, SPACING_03,
+    BORDER_STRONG, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SHAPE_FULL, SPACING_03,
     SPACING_04, SURFACE_RAISED, TEXT_PRIMARY, t,
 };
 use crate::geom::{Align, Axis};
@@ -96,7 +96,12 @@ pub fn dismissible_tag(key: impl Into<Key>, label: impl Into<String>) -> ViewNod
 }
 
 /// Selectable tag. [`Role::Button`] + `Semantics.selected`. Outline is
-/// [`BORDER_SUBTLE`] (high-contrast/outline stand-in). No colour set.
+/// [`BORDER_STRONG`] (high-contrast/outline stand-in). No colour set.
+///
+/// The control-boundary tone rather than the decorative one (2026-09-05
+/// split, see `tokens::BORDER_SUBTLE`): a selectable tag's fill is
+/// `SURFACE_RAISED`, which on a card is the card's own tone, so the pill
+/// edge is the only thing that says a pill is there.
 ///
 /// Selected additionally draws [`IconMark::Check`] ahead of the title, in
 /// [`IconTone::Primary`]: the pill is a layer, not an accent track, and the
@@ -181,7 +186,7 @@ fn shell(
         .insert("background".into(), t(SURFACE_RAISED));
     node.props.tokens.insert("radius".into(), t(SHAPE_FULL));
     if border {
-        node.props.tokens.insert("border".into(), t(BORDER_SUBTLE));
+        node.props.tokens.insert("border".into(), t(BORDER_STRONG));
     }
     if hover {
         node.props
@@ -209,7 +214,7 @@ mod tests {
         dismissible_tag, icon_toned, selectable_tag, tag, tag_lg, tag_sm,
     };
     use crate::component::tokens::{
-        BORDER_SUBTLE, LAYER_HOVER, LAYER_SELECTED, SHAPE_FULL, SURFACE_RAISED,
+        BORDER_STRONG, LAYER_HOVER, LAYER_SELECTED, SHAPE_FULL, SURFACE_RAISED,
     };
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
@@ -317,7 +322,7 @@ mod tests {
         assert!(on.semantics.selected);
         assert!(on.interactions.contains(&Interaction::Click));
         assert_eq!(token(&on, "background@selected"), Some(LAYER_SELECTED));
-        assert_eq!(token(&on, "border"), Some(BORDER_SUBTLE));
+        assert_eq!(token(&on, "border"), Some(BORDER_STRONG));
         assert_eq!(on.constraints.vertical.min, Some(HEIGHT_MD));
 
         let off = selectable_tag("env", "prod", false);

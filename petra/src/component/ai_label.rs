@@ -60,7 +60,7 @@
 //!   flat token). The panel fill is [`SURFACE_RAISED`] — [`popover_with`]'s
 //!   own choice, reused rather than duplicated.
 //! * **`border-inverse`.** Not a name in `component::tokens`. The trigger's
-//!   1px edge binds [`BORDER_SUBTLE`] instead, the same stand-in
+//!   1px edge binds [`BORDER_STRONG`] instead, the same stand-in
 //!   [`super::tag`] and [`super::toggletip`] already use for a Carbon edge
 //!   colour this library has no token for.
 //! * **The mini/2xs invisible 24×24 click-target extension** (SCSS
@@ -85,8 +85,8 @@ use super::popover::popover_with;
 use super::stack;
 use super::text::text;
 use super::tokens::{
-    BORDER_SUBTLE, LAYER_HOVER, SHAPE_FULL, SHAPE_MD, SIZE_MD, SPACING_02, SPACING_03, SPACING_05,
-    SURFACE_BASE, TEXT_PRIMARY, TYPOGRAPHY_LABEL, t,
+    BORDER_STRONG, BORDER_SUBTLE, LAYER_HOVER, SHAPE_FULL, SHAPE_MD, SIZE_MD, SPACING_02,
+    SPACING_03, SPACING_05, SURFACE_BASE, TEXT_PRIMARY, TYPOGRAPHY_LABEL, t,
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
@@ -306,7 +306,13 @@ pub fn ai_label_revert(key: impl Into<Key>, label: impl Into<String>) -> ViewNod
     node.props
         .tokens
         .insert("background".into(), t(SURFACE_BASE));
-    node.props.tokens.insert("border".into(), t(BORDER_SUBTLE));
+    // The control boundary, not the decorative rule (2026-09-05 split, see
+    // `tokens::BORDER_SUBTLE`). This trigger's fill *is* the page's own
+    // ground, so the edge is the only thing that identifies it as a control
+    // at rest, which is exactly what SC 1.4.11 covers. Carbon's
+    // `$border-inverse` here is the loudest boundary in its theme, so the
+    // control tone is also the closer of the two stand-ins.
+    node.props.tokens.insert("border".into(), t(BORDER_STRONG));
     node.props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
@@ -408,7 +414,7 @@ fn inline_sized(
 
 /// The bordered square icon-button trigger (anatomy parts 2+3: button
 /// wrapping the `"AI"` text). `border-inverse` has no token; see the
-/// module doc for why [`BORDER_SUBTLE`] stands in.
+/// module doc for why [`BORDER_STRONG`] stands in.
 fn trigger_button(key: impl Into<Key>, label: String, size: f32) -> ViewNode {
     let style = (size < SMALL_GLYPH_BELOW).then_some(TYPOGRAPHY_LABEL);
     let mut node = stack(key, Axis::Horizontal, None, centered_caption("AI", style));
@@ -417,7 +423,7 @@ fn trigger_button(key: impl Into<Key>, label: String, size: f32) -> ViewNode {
     node.props
         .tokens
         .insert("background".into(), t(SURFACE_BASE));
-    node.props.tokens.insert("border".into(), t(BORDER_SUBTLE));
+    node.props.tokens.insert("border".into(), t(BORDER_STRONG));
     node.props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
@@ -588,7 +594,7 @@ mod tests {
         ai_label_mini, ai_label_revert, ai_label_sm, ai_label_with_actions, ai_label_xl,
         ai_label_xs,
     };
-    use crate::component::tokens::{BORDER_SUBTLE, SHAPE_FULL, SHAPE_MD, SIZE_MD, SPACING_05};
+    use crate::component::tokens::{BORDER_STRONG, SHAPE_FULL, SHAPE_MD, SIZE_MD, SPACING_05};
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, validated, validated_with};
@@ -643,7 +649,7 @@ mod tests {
         );
         assert_eq!(trigger.constraints.vertical.min, Some(SIZE_MD));
         assert_eq!(SIZE_MD, 40.0);
-        assert_eq!(token(trigger, "border"), Some(BORDER_SUBTLE));
+        assert_eq!(token(trigger, "border"), Some(BORDER_STRONG));
         assert_eq!(child(trigger, "text").props.text.as_deref(), Some("AI"));
 
         assert!(!node.semantics.disabled, "AI label is never disabled");

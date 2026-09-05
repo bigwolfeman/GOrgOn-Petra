@@ -62,7 +62,7 @@ use super::stack;
 use super::swatch;
 use super::text::text;
 use super::tokens::{
-    BORDER_SUBTLE, LAYER_HOVER, LINK_PRIMARY, SHAPE_FULL, SPACING_03, SPACING_04, SPACING_05,
+    BORDER_STRONG, LAYER_HOVER, LINK_PRIMARY, SHAPE_FULL, SPACING_03, SPACING_04, SPACING_05,
     SURFACE_BASE, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_BODY_COMPACT,
     TYPOGRAPHY_HEADING_SM, TYPOGRAPHY_LABEL, t,
 };
@@ -159,7 +159,7 @@ fn build_uploader(
     zone.props
         .tokens
         .insert("background".into(), t(SURFACE_BASE));
-    zone.props.tokens.insert("border".into(), t(BORDER_SUBTLE));
+    zone.props.tokens.insert("border".into(), t(BORDER_STRONG));
     zone.props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
@@ -212,7 +212,7 @@ pub fn file_uploader_item(
             MARK,
             MARK,
             None,
-            Some(BORDER_SUBTLE),
+            Some(BORDER_STRONG),
             Some(SHAPE_FULL),
         )
     };
@@ -390,7 +390,7 @@ mod tests {
         file_uploader_item, file_uploader_item_edit, file_uploader_item_invalid,
         file_uploader_with,
     };
-    use crate::component::tokens::{BORDER_SUBTLE, LINK_PRIMARY, TEXT_MUTED};
+    use crate::component::tokens::{BORDER_STRONG, LINK_PRIMARY, TEXT_MUTED};
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, validated_with};
@@ -462,7 +462,7 @@ mod tests {
             "Carbon's drop container is `align-items: flex-start`; a centred \
              caption is what collapsed this box to the width of its words"
         );
-        assert_eq!(token(zone, "border"), Some(BORDER_SUBTLE));
+        assert_eq!(token(zone, "border"), Some(BORDER_STRONG));
 
         let prompt = named(zone, "prompt");
         assert_eq!(prompt.props.text.as_deref(), Some(PROMPT));
@@ -547,7 +547,7 @@ mod tests {
              is the whole shape and `fu-f1/mark` stays on this library's \
              measured-edge list"
         );
-        assert_eq!(token(mark, "border"), Some(BORDER_SUBTLE));
+        assert_eq!(token(mark, "border"), Some(BORDER_STRONG));
         assert_eq!(
             token(mark, "radius"),
             Some(crate::component::tokens::SHAPE_FULL)

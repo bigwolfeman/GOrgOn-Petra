@@ -653,8 +653,15 @@ impl Gallery {
     /// until 2026-08-25, and the first capture after the borders came off
     /// made the cost obvious: with every card outline gone, these four rules
     /// were measured at byte 212 on a byte-34 card, the loudest marks left
-    /// on the page and louder than the prose they divided. A divider is a
-    /// component boundary (WCAG 2.1 SC 1.4.11, 3:1), not body text.
+    /// on the page and louder than the prose they divided.
+    ///
+    /// A divider is **decorative**, and the line that used to end this
+    /// paragraph said it was "a component boundary (WCAG 2.1 SC 1.4.11,
+    /// 3:1)". That clause covers information identifying a *component*, and
+    /// a rule between two blocks identifies none; holding every rule to it
+    /// is what set the tone of every divider in the catalog. The floor is
+    /// Carbon's own 1.3:1 now -- see `gorgon_petra::token::shipped`'s
+    /// `BORDER_TOKEN`.
     fn rule(key: &str) -> ViewNode {
         let mut props = Props::default();
         props
