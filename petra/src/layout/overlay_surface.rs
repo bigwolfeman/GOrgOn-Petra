@@ -81,8 +81,13 @@
 //! every surface's declared [`InputPolicy`] keyed by canonical placement id,
 //! for `crate::focus::FocusTree` to fold in alongside the placements
 //! themselves.
+//!
+//! [`focus_taking_surfaces`] is its sibling and exists for the same reason:
+//! [`crate::tree::Props::takes_focus`] is a `surface`-only property, so a
+//! host that has to know which open overlays claim keyboard focus reads it
+//! off the tree here rather than off every placement.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::frame::placement::{CaretPaint, PaintState, Placement, PlacementSink};
 use crate::geom::{Axis, Rect, Size};
@@ -964,6 +969,32 @@ pub fn surface_scopes(tree: &ViewNode) -> BTreeMap<String, InputPolicy> {
     out
 }
 
+/// Canonical placement ids of every `surface` node in `tree` that declares
+/// [`crate::tree::Props::takes_focus`].
+///
+/// [`surface_scopes`]'s sibling, walking the same tree for the same reason.
+/// A host uses it to answer "which focus-claiming overlays are mounted this
+/// frame", diff that against the previous frame, and seat or return focus on
+/// the difference; `gorgon-petra-egui`'s `Host::reseat_focus_taking_surfaces`
+/// is that host.
+#[must_use]
+pub fn focus_taking_surfaces(tree: &ViewNode) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    collect_focus_taking(tree, &mut KeyPath::root(), &mut out);
+    out
+}
+
+fn collect_focus_taking(node: &ViewNode, path: &mut KeyPath, out: &mut BTreeSet<String>) {
+    path.push(node.key.clone());
+    if node.props.surface().is_some() && node.props.takes_focus == Some(true) {
+        out.insert(path.id());
+    }
+    for child in &node.children {
+        collect_focus_taking(child, path, out);
+    }
+    path.pop();
+}
+
 fn collect_surface_scopes(
     node: &ViewNode,
     path: &mut KeyPath,
@@ -983,7 +1014,8 @@ fn collect_surface_scopes(
 mod tests {
     use super::{
         AnchorPlan, AnchorResolution, AnchoredPlan, AxisPlacement, CARET_BASE, CARET_DEPTH, Grow,
-        clamp_axis, cross_axis_placement, main_axis_placement, resolve_anchor_kind, surface_scopes,
+        clamp_axis, cross_axis_placement, focus_taking_surfaces, main_axis_placement,
+        resolve_anchor_kind, surface_scopes,
     };
     use crate::frame::placement::PlacementList;
     use crate::geom::{Axis, Insets, Point, Rect, Size};
@@ -2218,6 +2250,44 @@ mod tests {
             scopes.len(),
             1,
             "only the surface node itself is a scope, not its content"
+        );
+    }
+
+    // -- takes_focus reaches the host. -------------------------------------
+
+    /// The declaration is collected off `surface` nodes only, and only where
+    /// it is really made. A stack that carries the flag is not an overlay and
+    /// takes no focus; a surface that stays silent takes none either.
+    #[test]
+    fn focus_taking_surfaces_collects_the_declaring_surfaces_and_nothing_else() {
+        let mut claiming = surface(
+            Anchor::Viewport,
+            ClampRule::Shrink,
+            InputPolicy::DismissOutside,
+            Size::new(10.0, 10.0),
+        );
+        claiming.key = "claims".into();
+        claiming.props.takes_focus = Some(true);
+        let mut silent = surface(
+            Anchor::Viewport,
+            ClampRule::Shrink,
+            InputPolicy::DismissOutside,
+            Size::new(10.0, 10.0),
+        );
+        silent.key = "silent".into();
+        let mut not_a_surface = ViewNode::new(NodeKind::Stack, "stack");
+        not_a_surface.props.takes_focus = Some(true);
+        let tree = ViewNode::new(NodeKind::Stack, "root")
+            .child(claiming)
+            .child(silent)
+            .child(not_a_surface);
+
+        let taking = focus_taking_surfaces(&tree);
+        assert!(taking.contains("/root/claims"));
+        assert_eq!(
+            taking.len(),
+            1,
+            "collected something that never declared it: {taking:?}"
         );
     }
 

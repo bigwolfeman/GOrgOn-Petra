@@ -839,6 +839,35 @@ pub struct Props {
     /// Outside-input rule for `surface`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_policy: Option<InputPolicy>,
+    /// Whether a `surface` takes keyboard focus for as long as it is
+    /// mounted: focus moves onto the first focusable node inside it when it
+    /// appears, and back to whatever held focus at that moment when it goes
+    /// away.
+    ///
+    /// Carbon's `Menu` is the component that needs this
+    /// (`@carbon/react/lib/components/Menu/Menu.js`: `handleOpen` saves
+    /// `document.activeElement` and focuses the list, an effect then seats
+    /// item 0, and `handleClose` calls `returnFocus`). It is declared rather
+    /// than inferred because the other anchored list boxes want the
+    /// opposite: Carbon's Dropdown and Combo box keep DOM focus on the
+    /// trigger and point at the highlighted option with
+    /// `aria-activedescendant`, and a Date picker keeps focus in its field.
+    /// A rule keyed on [`crate::tree::Role::Overlay`] would move focus in
+    /// all four.
+    ///
+    /// **Silence is not the same as `Some(false)`** only to a reader: both
+    /// mean "does not take focus". The flag is a `bool` so the surface can
+    /// say so out loud where a component's intent would otherwise be a
+    /// missing line.
+    ///
+    /// Declaring it on any kind other than `surface` does nothing, the same
+    /// way [`Props::canvas`] on a non-canvas paints nothing:
+    /// `crate::layout::overlay_surface::focus_taking_surfaces` reads it only
+    /// where [`Props::surface`] answers `Some`. *When* the move happens is
+    /// the host's business, not the tree's — `gorgon-petra-egui`'s
+    /// `Host::reseat_focus_taking_surfaces` is the one implementation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub takes_focus: Option<bool>,
     /// Whether an anchored `surface` draws a caret. See [`Tip`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tip: Option<Tip>,
