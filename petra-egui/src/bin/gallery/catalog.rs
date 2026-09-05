@@ -19,6 +19,7 @@ use gorgon_petra::frame::PetrifiedFrame;
 use gorgon_petra::geom::{Align, Axis};
 use gorgon_petra::input::{InputEvent, KeyCode, PointerButton, Route, activates};
 use gorgon_petra::layout::{ChangeSet, RowSource};
+use gorgon_petra::token::{Theme, ThemeMode};
 use gorgon_petra::tree::{
     AxisConstraint, Constraints, InsetRefs, Interaction, NodeKind, Props, Role, TrackSize, ViewNode,
 };
@@ -335,6 +336,20 @@ impl App for Catalog {
         if let Some(page) = self.open_page_mut() {
             page.tick(now);
         }
+    }
+
+    /// Forward the open page's theme choice, converted here.
+    ///
+    /// The page names a [`ThemeMode`] and the chrome turns it into a
+    /// [`Theme`], so `token::light()` and `token::dark()` are named in one
+    /// place rather than in whichever page happens to offer the switch. The
+    /// host publishes it; see `App::theme_request`.
+    fn theme_request(&mut self) -> Option<Theme> {
+        let mode = self.open_page_mut()?.theme_request()?;
+        Some(match mode {
+            ThemeMode::Light => gorgon_petra::token::light(),
+            ThemeMode::Dark => gorgon_petra::token::dark(),
+        })
     }
 
     fn view(&mut self) -> ViewNode {

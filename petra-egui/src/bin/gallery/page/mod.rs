@@ -57,6 +57,7 @@ mod ui_shell_right_panel;
 
 use gorgon_petra::frame::PetrifiedFrame;
 use gorgon_petra::input::InputEvent;
+use gorgon_petra::token::ThemeMode;
 use gorgon_petra::tree::ViewNode;
 
 /// One catalog page: the state, body and handler for one inventory row.
@@ -81,6 +82,22 @@ pub trait Page {
 
     /// Build the body from this page's own state.
     fn body(&self) -> ViewNode;
+
+    /// A theme this page wants the whole catalog switched to, taken and
+    /// cleared.
+    ///
+    /// Row 27's radio group is labelled Theme and offers Dark and Light, and
+    /// until 2026-09-05 choosing Light moved a dot and nothing else. The
+    /// operator: *"in here you have dark and light as options, actually
+    /// implement that so I can see the light theme version."*
+    ///
+    /// A theme is application-wide, so a page cannot publish one; it asks,
+    /// the chrome converts the mode into a `Theme`, and `App::theme_request`
+    /// hands it to the host, which owns the `Presenter`. The default asks for
+    /// nothing, which is forty-one of the forty-two rows.
+    fn theme_request(&mut self) -> Option<ThemeMode> {
+        None
+    }
 
     /// React to an activation routed to `node`, the full id path of the node
     /// the press or key landed on. Returns whether the page consumed it.

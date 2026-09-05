@@ -469,6 +469,35 @@ impl Camera {
         shot.png
     }
 
+    /// Mean luminance of the current frame, 0.0 (black) to 1.0 (white).
+    ///
+    /// The coarsest possible reading of a picture, and the right one for the
+    /// question "is this page dark or light": a theme swap moves every pixel
+    /// on the page, and no token-level assertion proves the swap reached the
+    /// rasterizer.
+    ///
+    /// # Panics
+    /// If the shot is not a decodable PNG.
+    pub fn mean_luma(&mut self) -> f32 {
+        let png = self.shoot("_scratch");
+        let image = image::load_from_memory(&png)
+            .unwrap_or_else(|err| panic!("{}: shot is not a PNG: {err}", self.page))
+            .to_rgba8();
+        let mut total = 0.0_f64;
+        for px in image.pixels() {
+            let [r, g, b, _] = px.0;
+            total += 0.2126 * f64::from(r) + 0.7152 * f64::from(g) + 0.0722 * f64::from(b);
+        }
+        let count = image.pixels().len() as f64;
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "a mean of u8 luminances divided by 255 is inside f32"
+        )]
+        {
+            (total / count / 255.0) as f32
+        }
+    }
+
     /// How many distinct RGBA values the current frame rasterizes to, capped
     /// at `cap` so a full-page scan stops early.
     ///
@@ -2336,6 +2365,40 @@ mod tests {
             cam.token("field-port/input", "border").as_deref(),
             Some("support-error"),
             "and it must come back the moment the value stops being a number"
+        );
+    }
+
+    /// Row 27's radio group is labelled Theme and offers Dark and Light.
+    ///
+    /// Until 2026-09-05 choosing Light moved a dot and nothing else. The
+    /// operator: *"in here you have dark and light as options, actually
+    /// implement that so I can see the light theme version."*
+    ///
+    /// Driven the way a hand drives it, and read as pixels: a theme swap that
+    /// only reached the token map would pass every binding assertion and
+    /// still leave a dark window on his screen.
+    #[test]
+    fn choosing_light_on_the_radio_row_turns_the_whole_catalog_light() {
+        let mut cam = Camera::on("Radio button");
+        let dark = cam.mean_luma();
+        assert!(
+            dark < 0.25,
+            "the catalog opens on the dark theme, mean luma {dark}"
+        );
+
+        cam.click("radio-b");
+        let light = cam.mean_luma();
+        cam.shoot("27-radio-button-light");
+        assert!(
+            light > dark + 0.3,
+            "choosing Light must light the page up: {dark} -> {light}"
+        );
+
+        cam.click("radio-a");
+        let back = cam.mean_luma();
+        assert!(
+            back < dark + 0.05,
+            "and choosing Dark must put it back: {light} -> {back}"
         );
     }
 }

@@ -185,6 +185,24 @@ pub trait App: RowSource {
     fn focus_changed(&mut self, focused: Option<&str>) {
         let _ = focused;
     }
+
+    /// A theme the application wants published, taken and cleared.
+    ///
+    /// Asked once at the top of every [`Host::pass`], before anything reads
+    /// the registry, so the tree this pass builds is validated and resolved
+    /// against the theme the application just asked for rather than the one
+    /// before it.
+    ///
+    /// The host publishes rather than the application because the
+    /// [`Presenter`] lives here: an application that held its own handle to
+    /// it could publish mid-frame, between the validation and the resolve,
+    /// which is the one window `rebind_theme_if_stale` exists to close.
+    ///
+    /// The default asks for nothing, which is every application whose theme
+    /// is chosen outside it.
+    fn theme_request(&mut self) -> Option<Theme> {
+        None
+    }
 }
 
 /// Point egui's glyph rasteriser at the coverage curve its own documentation
@@ -904,6 +922,12 @@ impl<A: App> Host<A> {
     /// host without a window. Interactive windows call [`Self::pass_in_window`]
     /// so the GPU cache can attach.
     pub fn pass(&mut self, ctx: &Context) {
+        // Before the snapshot is read, not after: a theme asked for on the
+        // last pass has to be in force for this one, or the frame the
+        // operator sees is one behind his own click.
+        if let Some(theme) = self.app.theme_request() {
+            self.presenter.publish(theme);
+        }
         let snapshot = self.presenter.current();
         // Before anything reads the registry: a theme published since the
         // last pass may name a different set of tokens, and a tree accepted
