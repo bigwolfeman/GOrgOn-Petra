@@ -536,9 +536,17 @@ impl Parity {
     /// background is what makes a rule a rule — and a `Separator` has no
     /// `border` slot to bind, so its `background` *is* the edge, the same
     /// role a card's outline used to play. That makes `text.muted` here the
-    /// same conscription BORDERS.md names everywhere else (R2): a divider is
-    /// a component boundary, WCAG 2.1 SC 1.4.11's 3:1 case, not prose, so it
-    /// takes `border.subtle`, not a text tone.
+    /// same conscription BORDERS.md names everywhere else (R2), so it takes
+    /// `border.subtle` rather than a text tone.
+    ///
+    /// It is the **decorative** tone and the sentence that used to be here
+    /// said otherwise. "A divider is a component boundary, WCAG 2.1 SC
+    /// 1.4.11's 3:1 case" over-reads that clause: SC 1.4.11 covers the
+    /// information that identifies a *component*, and a line between two
+    /// blocks identifies none. Holding every rule to the control floor is
+    /// what made this page read as a wireframe; the floor a rule is held to
+    /// now is Carbon's own 1.3:1. `gorgon_petra::token::shipped`'s
+    /// `BORDER_TOKEN` carries the table.
     fn rule(key: &str) -> ViewNode {
         let mut props = Props::default();
         props

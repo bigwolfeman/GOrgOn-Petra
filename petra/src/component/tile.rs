@@ -29,7 +29,7 @@
 //! without the `enable-tile-contrast` flag ("interactive tiles have no
 //! border at all", slice-e) and it is what `35-tile.png` shows: four tiles
 //! at one width, one fill, no outline. Before 2026-09-04 the three
-//! interactive kinds drew a [`super::tokens::BORDER_SUBTLE`] edge as a
+//! interactive kinds drew a [`super::tokens::BORDER_STRONG`] edge as a
 //! second channel and every kind hugged its own sentence, so the row read
 //! as two visual languages in four widths. What tells the kinds apart now
 //! is what Carbon uses: the hover fill on the interactive ones, the mark
@@ -49,7 +49,7 @@
 use super::icon::{IconMark, icon};
 use super::text::text;
 use super::tokens::{
-    ACCENT_PRIMARY, BORDER_SUBTLE, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SHAPE_NONE,
+    ACCENT_PRIMARY, BORDER_STRONG, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SHAPE_NONE,
     SPACING_03, SPACING_05, SURFACE_RAISED, t,
 };
 use super::{CaretDirection, caret, pad, stack, swatch};
@@ -194,7 +194,7 @@ pub fn selectable_tile(key: impl Into<Key>, label: impl Into<String>, selected: 
 }
 
 /// The selectable tile's checkbox-shaped mark. Off: a 16-unit box with a
-/// [`BORDER_SUBTLE`] edge and no fill, the same reason the checkbox's own
+/// [`BORDER_STRONG`] edge and no fill, the same reason the checkbox's own
 /// box keeps its edge — with nothing inside it, the outline is the whole
 /// control. On: an [`ACCENT_PRIMARY`] box with [`IconMark::Check`] centred
 /// in it, the way [`super::progress_indicator`]'s complete mark is built.
@@ -206,7 +206,7 @@ fn selection_mark(selected: bool) -> ViewNode {
             MARK,
             MARK,
             None,
-            Some(BORDER_SUBTLE),
+            Some(BORDER_STRONG),
             Some(SHAPE_NONE),
         );
     }
@@ -283,7 +283,7 @@ pub fn expandable_tile(
 #[cfg(test)]
 mod tests {
     use super::super::tokens::{
-        ACCENT_PRIMARY, BORDER_SUBTLE, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER,
+        ACCENT_PRIMARY, BORDER_STRONG, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER,
         SURFACE_RAISED,
     };
     use super::{
@@ -413,7 +413,7 @@ mod tests {
         assert!(!off.semantics.selected);
         assert!(!has_canvas(&off), "an unselected tile draws no check");
         let off_box = named(&off, "box");
-        assert_eq!(token(off_box, "border"), Some(BORDER_SUBTLE));
+        assert_eq!(token(off_box, "border"), Some(BORDER_STRONG));
         assert_eq!(token(off_box, "background"), None);
         assert_eq!(off_box.constraints.horizontal.min, Some(MARK));
         assert!(off.is_interactive());

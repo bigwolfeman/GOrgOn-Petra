@@ -4156,19 +4156,32 @@ mod tests {
     /// `Semantics.value`, which no eye reads. The operator: *"danger still
     /// does not look visually distinct from default"*.
     ///
-    /// **Why a mark and not a red fill.** No ink this library ships clears
-    /// AA on `support-error` as a *fill*: `text.on-accent` measures 4.41:1
-    /// against a 4.5 floor in the dark theme, and the other three are worse.
-    /// The four numbers are in `button.rs`'s module doc. So the red goes
-    /// where no text sits.
+    /// **2026-09-05: the filled variant now carries Carbon's red as its
+    /// fill, and its mark went white.** Wave E could not paint a red fill
+    /// because the only red in the vocabulary was `support-error`, which no
+    /// ink here clears AA on (`text.on-accent` measures 4.41:1 against a 4.5
+    /// floor; the four numbers are in `button.rs`'s module doc). The token
+    /// layer grew `button-danger-primary` and `text-on-color` that day, so
+    /// `danger_button` is Carbon's `#da1e28` under white now.
+    ///
+    /// That moved which pixel is red. On the two unfilled variants the
+    /// octagon is still `support-error` on a grey ground. On the filled one
+    /// the *fill* is the red, and the octagon had to leave red behind —
+    /// `support-error` on `#da1e28` measures 1.18:1, an invisible mark — so
+    /// it takes the on-colour white. Both are asserted below, per variant,
+    /// against the same 60-level red lead: this test got **stronger**, not
+    /// looser, because it now reads the fill as well as the mark.
     ///
     /// **The colour-blind half is measured here, not asserted by comment.**
     /// The mark's crop is compared to the button's own fill in *luma*, not
     /// in colour, so a reader with no red-green channel still has a
-    /// difference to see.
+    /// difference to see. That half is unchanged and applies to all three.
     ///
     /// **How this went red before the fix.** With `chrome` restored, the
-    /// first assertion fails at `btn-danger-2 draws no mark`.
+    /// first assertion fails at `btn-danger-2 draws no mark`. With
+    /// `Variant::mark_tone` collapsed back to one tone, the filled
+    /// variant's mark assertion fails with the octagon reported red on a
+    /// red fill.
     #[test]
     fn the_danger_buttons_carry_a_red_octagon_and_the_safe_ones_do_not() {
         let mut cam = Camera::on("Button");
@@ -4177,19 +4190,39 @@ mod tests {
         cam.hover("btn-danger");
         let shot = raster(&mut cam, "04-button-danger");
 
-        for tail in ["btn-danger", "btn-danger-tertiary", "btn-danger-ghost"] {
+        // `mark_is_red` is false for exactly the variant whose *fill* is
+        // the red one. Carrying it in the loop rather than branching on the
+        // name inside is what makes the pair of claims read as one rule:
+        // whichever of the two is red, the other one is not.
+        for (tail, mark_is_red) in [
+            ("btn-danger", false),
+            ("btn-danger-tertiary", true),
+            ("btn-danger-ghost", true),
+        ] {
             assert!(
                 cam.has(&format!("{tail}/mark")),
                 "{tail} draws no mark: danger is a colour-only kind again"
             );
             let mark = cam.rect(&format!("{tail}/mark"));
             let crop = inset_pixels(&shot, mark, 3);
-            assert!(
-                red_lead(&crop, 60) > crop.len() / 3,
-                "{tail}'s mark is not red: {} of {} pixels lead red by 60",
-                red_lead(&crop, 60),
-                crop.len()
-            );
+            if mark_is_red {
+                assert!(
+                    red_lead(&crop, 60) > crop.len() / 3,
+                    "{tail}'s mark is not red: {} of {} pixels lead red by 60",
+                    red_lead(&crop, 60),
+                    crop.len()
+                );
+            } else {
+                assert!(
+                    red_lead(&crop, 60) == 0,
+                    "{tail}'s mark leads red on a red fill: {} of {} pixels. \
+                     `support-error` on `button-danger-primary` is 1.18:1, \
+                     which is a mark nobody can see -- it must be the \
+                     on-colour white here.",
+                    red_lead(&crop, 60),
+                    crop.len()
+                );
+            }
 
             // A marked button must still fit its own label on one line.
             // `layout::stack::distribute` clips the widest child in a row
@@ -4224,6 +4257,22 @@ mod tests {
                 luma(&crop),
                 luma(&fill)
             );
+
+            // And on the filled variant the red the octagon gave up is on
+            // the button itself. Carbon's `.cds--btn--danger` is
+            // `background-color: $button-danger-primary`, and this is the
+            // pixel that says the fill actually landed rather than the
+            // token merely resolving.
+            if !mark_is_red {
+                assert!(
+                    red_lead(&fill, 60) > fill.len() / 2,
+                    "{tail}'s fill does not lead red: {} of {} pixels. The \
+                     mark gave up the red for this fill; if neither is red \
+                     the variant is back to looking like the default button.",
+                    red_lead(&fill, 60),
+                    fill.len()
+                );
+            }
         }
 
         for tail in ["btn-primary", "btn-default", "btn-tertiary", "btn-ghost"] {
@@ -4544,6 +4593,274 @@ mod tests {
             cam.caret("nt"),
             None,
             "a docked toast points at a window edge, so it draws no beak"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Wave TOK, 2026-09-05: the token layer's three owed names.
+    //
+    // `button-danger-primary` and `text-on-color` are new; `border.subtle`
+    // split into a decorative tone and a control-boundary tone. Each of the
+    // three claims below is read off a rasterized page, because every one
+    // of them was already legal at the frame-record level: a black toggle
+    // knob binds a real token, and a divider at 5.80:1 passes every
+    // contrast floor in the repo by passing them harder.
+    // ------------------------------------------------------------------
+
+    /// WCAG 2.x relative luminance of a captured pixel, alpha ignored.
+    ///
+    /// The pixels here come off an opaque rasterized page, so there is no
+    /// alpha to composite; `gorgon_petra::token::ColorValue` is not reachable
+    /// from a `[u8; 4]` without a conversion that would be longer than this.
+    fn pixel_luminance(p: [u8; 4]) -> f32 {
+        let chan = |v: u8| {
+            let c = f32::from(v) / 255.0;
+            if c <= 0.040_45 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.212_672_9 * chan(p[0]) + 0.715_152_2 * chan(p[1]) + 0.072_175 * chan(p[2])
+    }
+
+    /// The WCAG contrast ratio between two captured pixels.
+    fn pixel_contrast(a: [u8; 4], b: [u8; 4]) -> f32 {
+        let (x, y) = (pixel_luminance(a), pixel_luminance(b));
+        let (hi, lo) = if x > y { (x, y) } else { (y, x) };
+        (hi + 0.05) / (lo + 0.05)
+    }
+
+    /// Walk `dy` down a one-pixel column and return the pixel that differs
+    /// most in luminance from `ground` — the drawn line, whatever row the
+    /// painter snapped it to.
+    ///
+    /// A hairline at device pixel ratio 2 lands on one of two rows and may
+    /// be feathered across both, so sampling a single named row is how a
+    /// working rule gets reported as missing. This takes the strongest
+    /// pixel in a short window instead, which is the line if there is one
+    /// and the ground if there is not.
+    fn strongest_line_pixel(
+        img: &image::RgbaImage,
+        x: f32,
+        y: f32,
+        rows: u32,
+        ground: [u8; 4],
+    ) -> [u8; 4] {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let (dx, dy0) = (
+            (x * super::CAPTURE_SCALE) as u32,
+            (y * super::CAPTURE_SCALE) as u32,
+        );
+        (dy0.saturating_sub(rows)..=(dy0 + rows).min(img.height() - 1))
+            .map(|dy| img.get_pixel(dx.min(img.width() - 1), dy).0)
+            .max_by(|a, b| {
+                pixel_contrast(*a, ground)
+                    .partial_cmp(&pixel_contrast(*b, ground))
+                    .expect("contrast ratios are finite")
+            })
+            .expect("the window has at least one row")
+    }
+
+    /// Row 36. The on-toggle's handle is **white**, and the off-toggle's is
+    /// not, in the dark theme the catalog opens in.
+    ///
+    /// # The defect
+    ///
+    /// `controls.rs` bound `TEXT_ON_ACCENT` for the on state. That token is
+    /// the theme's own `surface.base`, so in dark it resolves to `#121212`
+    /// and row 36 drew a **black knob** inside a blue track where Carbon's
+    /// is white. Carbon's handle is `background-color: $icon-on-color` on
+    /// `.cds--toggle__switch::before` with no `--checked` override (SOURCED
+    /// `.agents/research/08-25-2026/Carbon-Component-Inventory/slice-f.md:26`),
+    /// so it is white in both states. Wave D recorded it and left it for the
+    /// token layer; `text-on-color` is that name.
+    ///
+    /// # Why the frame record could not see it
+    ///
+    /// Because the black knob was *correct* at every level above the pixel.
+    /// The node existed, it was keyed `knob`, it was pinned to Carbon's 18
+    /// units, it bound a declared colour token, and that token was even the
+    /// right one for the ink on an accent **fill**. Nothing but the picture
+    /// distinguishes "the ink that goes on the accent" from "the mark that
+    /// rides the accent", and this reads the picture.
+    ///
+    /// # How this went red
+    ///
+    /// Restore `TEXT_ON_COLOR` to `TEXT_ON_ACCENT` in `controls.rs`'s knob
+    /// and the first assertion reports the dark knob's channels.
+    ///
+    /// Driven, not composed: the on state under test is reached by pressing
+    /// the off toggle, so this is a live page rather than a constructor.
+    #[test]
+    fn switching_a_toggle_on_gives_it_carbons_white_handle() {
+        /// Every channel a white handle must reach. `#ffffff` rasterizes to
+        /// 255s; 240 leaves room for the painter's own rounding without
+        /// admitting `text.on-accent`'s `#121212` or `text.primary`'s
+        /// `#f2f2f2`-at-a-glance — the latter is 242, which is why the
+        /// second assertion below reads the *off* knob rather than trusting
+        /// this bound to separate them.
+        const WHITE_FLOOR: u8 = 240;
+
+        let mut cam = Camera::on("Toggle");
+
+        // The resting off knob first, so the pair is measured on one page.
+        let off_knob = cam.rect("toggle-default-off/appearance/track/knob");
+        let resting = raster(&mut cam, "36-toggle-before-press");
+        // The handle is a full pill, so a square crop has to fit inside the
+        // circle rather than inside the bounding box: 18 logical units is 36
+        // device pixels at `CAPTURE_SCALE`, radius 18, and an inset of 8
+        // leaves a 20x20 square whose half-diagonal is 14.1. An inset of 4
+        // leaves 19.8, and the four corners then sample the accent track --
+        // which is how this test first reported a white knob as 24 blue
+        // pixels.
+        let off = inset_pixels(&resting, off_knob, 8);
+        let off_tone = off[0];
+
+        cam.click("toggle-default-off");
+        let on_knob = cam.rect("toggle-default-off/appearance/track/knob");
+        let shot = raster(&mut cam, "36-toggle-pressed-on");
+        let on = inset_pixels(&shot, on_knob, 8);
+
+        let dark = on
+            .iter()
+            .filter(|p| p[0] < WHITE_FLOOR || p[1] < WHITE_FLOOR || p[2] < WHITE_FLOOR)
+            .count();
+        assert_eq!(
+            dark,
+            0,
+            "{dark} of {} pixels of the switched-on handle are under \
+             {WHITE_FLOOR} on some channel (first: {:?}). Carbon's handle is \
+             $icon-on-color, white in both states; a handle painted in \
+             `text.on-accent` is `#121212` in this theme and reads as a hole \
+             in the track.",
+            on.len(),
+            on.iter()
+                .find(|p| p[0] < WHITE_FLOOR)
+                .copied()
+                .unwrap_or([0, 0, 0, 0])
+        );
+
+        // The track really is the accent underneath it, so the rect under
+        // test is the handle and not some white the page already had.
+        let track = cam.rect("toggle-default-off/appearance/track");
+        let track_tone = px(&shot, track.x + track.w - 2.0, track.y + track.h / 2.0);
+        assert!(
+            u32::from(track_tone[2]) > u32::from(track_tone[0]) + 60,
+            "the switched-on track is not the accent: {track_tone:?}; the \
+             handle above was measured against the wrong ground"
+        );
+
+        // And the off handle is a different tone: `text.primary` in dark is
+        // `#f2f2f2`, which would pass a naive "is it light" check, so the
+        // claim is that the two states differ rather than that one is dark.
+        assert_ne!(
+            off_tone, on[0],
+            "the handle is one tone in both states, so the on state is not \
+             saying anything the off state does not"
+        );
+    }
+
+    /// Rows 31 and 34. **A row rule is quiet and a field rule is a
+    /// boundary**, measured on the two pages side by side.
+    ///
+    /// # What this is testing
+    ///
+    /// The 2026-09-05 border split, at the only level that can see it. One
+    /// tone used to do both jobs and it was pinned at WCAG SC 1.4.11's 3:1
+    /// because one of the two is a checkbox outline. Wave B measured the
+    /// consequence against the Carbon reference at the same dpr: our row
+    /// rule was `#9c9c9c` (156) where Carbon's is `#393939` (57), and our
+    /// field rule `#b8b8b8` (184) where Carbon's is `#6f6f6f` (111). Every
+    /// table, divider, field underline and panel edge in the catalog
+    /// inherited it, and it is why the pages read as a wireframe.
+    ///
+    /// So the assertion is a **band**, and both ends matter:
+    ///
+    /// - A divider must clear [`MIN_DIVIDER`], because a rule nobody can see
+    ///   is a missing rule and the operator is red-green colour blind — two
+    ///   greys within about three of 255 are invisible to everybody.
+    /// - A divider must stay **under** [`CONTROL_FLOOR`]. This is the half
+    ///   that catches the regression: the old tone measures 5.80:1 against
+    ///   the card and fails no floor in the repo, it passes every one of
+    ///   them by a factor of two, which is exactly why no existing test
+    ///   could have caught it.
+    /// - A field's bottom rule must clear [`CONTROL_FLOOR`], because that
+    ///   rule *is* the field's boundary — Carbon draws no box — and SC
+    ///   1.4.11 is about the information that identifies a component.
+    ///
+    /// # How this went red
+    ///
+    /// Point `light_border`/`dark_border` in `token::shipped` back at the
+    /// control floor (`MIN_CONTROL_BOUNDARY` instead of
+    /// `MIN_DIVIDER_CONTRAST`) and the structured list's rule is reported at
+    /// 5.80:1, over the ceiling. Point `dark_border_strong` at the divider
+    /// floor and the text field's rule is reported under 3:1.
+    #[test]
+    fn a_row_rule_is_a_quiet_divider_and_a_field_rule_is_a_control_boundary() {
+        /// WCAG 2.1 SC 1.4.11 *Non-text Contrast*, Level AA.
+        const CONTROL_FLOOR: f32 = 3.0;
+        /// The floor a decorative rule is held to, mirroring
+        /// `token::shipped`'s `MIN_DIVIDER_CONTRAST`. Carbon's own g100 row
+        /// rule (`$border-subtle-01` `#393939` on `$layer-01` `#262626`)
+        /// measures 1.31:1; the painter feathers a hairline across two
+        /// device rows at dpr 2, so the pixel this reads can land a little
+        /// under the token's own value and 1.2 is the fence that allows for
+        /// that without allowing a missing rule.
+        const MIN_DIVIDER: f32 = 1.2;
+
+        // --- the decorative side: a structured list's row rule -----------
+        let mut list = Camera::on("Structured list");
+        let row = list.rect("sl-1");
+        let shot = raster(&mut list, "31-structured-list-rule");
+        // Well inside the row, below any rule on its top edge.
+        let ground = px(&shot, row.x + row.w / 2.0, row.y + row.h / 2.0);
+        let rule = strongest_line_pixel(&shot, row.x + row.w / 2.0, row.y, 2, ground);
+        let ratio = pixel_contrast(rule, ground);
+        assert!(
+            ratio >= MIN_DIVIDER,
+            "the structured list's row rule measures {ratio:.2}:1 against the \
+             row it separates ({rule:?} on {ground:?}), under {MIN_DIVIDER}:1. \
+             A divider a reader cannot find is a missing divider."
+        );
+        assert!(
+            ratio < CONTROL_FLOOR,
+            "the structured list's row rule measures {ratio:.2}:1 against the \
+             row it separates ({rule:?} on {ground:?}), at or over the \
+             {CONTROL_FLOOR}:1 control-boundary floor. A hairline between two \
+             table rows identifies no component, and holding it to that floor \
+             is what made every page in this catalog read as a wireframe -- \
+             Carbon's own rule is 1.31:1."
+        );
+
+        // --- the control side: a text field's bottom rule ----------------
+        let mut field = Camera::on("Text input");
+        let well = field.rect("field-md");
+        let shot = raster(&mut field, "34-text-input-rule");
+        let fill = px(&shot, well.x + well.w / 2.0, well.y + well.h / 2.0);
+        let under = device_row(
+            &shot,
+            well.x + 4.0,
+            well.x + well.w - 4.0,
+            bottom_device_row(well),
+        );
+        let rule = under
+            .iter()
+            .copied()
+            .max_by(|a, b| {
+                pixel_contrast(*a, fill)
+                    .partial_cmp(&pixel_contrast(*b, fill))
+                    .expect("contrast ratios are finite")
+            })
+            .expect("the rule row is not empty");
+        let ratio = pixel_contrast(rule, fill);
+        assert!(
+            ratio >= CONTROL_FLOOR,
+            "the text field's bottom rule measures {ratio:.2}:1 against the \
+             well it closes ({rule:?} on {fill:?}), under the \
+             {CONTROL_FLOOR}:1 SC 1.4.11 floor. Carbon draws no box around a \
+             field, so this rule is the whole boundary: at this contrast \
+             there is no field on the page, only a grey patch."
         );
     }
 }

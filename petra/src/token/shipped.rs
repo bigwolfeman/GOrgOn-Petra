@@ -158,17 +158,56 @@ fn insert_layer_set(values: &mut BTreeMap<TokenName, TokenValue>, layers: &[[u8;
 /// wireframe rather than as a set of surfaces, which is the complaint that
 /// started this pass.
 ///
-/// The floor is **WCAG 2.1 SC 1.4.11 *Non-text Contrast*, 3:1**, not SC
-/// 1.4.3's 4.5:1 — a boundary is a user-interface component, not body text,
-/// and this is the same distinction [`ACCENT_TOKEN`] turns on. Holding a
-/// border to the text floor is precisely how it ends up looking like text.
+/// # 2026-09-05: this is the *decorative* tone, and the floor moved with it
 ///
-/// Two claims travel with the value and both are measured by
+/// The paragraph below is the argument as it stood, and it is kept because
+/// the correction is only legible beside it. It read:
+///
+/// > The floor is **WCAG 2.1 SC 1.4.11 *Non-text Contrast*, 3:1**, not SC
+/// > 1.4.3's 4.5:1 — a boundary is a user-interface component, not body
+/// > text, and this is the same distinction [`ACCENT_TOKEN`] turns on.
+///
+/// The first clause is right and the second sentence over-reaches. SC 1.4.11
+/// covers *"visual information required to identify user interface components
+/// and states"*. A checkbox's outline is that. **A hairline between two rows
+/// of a table is not** — it identifies no component, carries no state, and a
+/// reader who cannot see it loses a nicety rather than a control. Holding
+/// every drawn line in the library to the control floor is how one number
+/// meant for a checkbox ended up setting the tone of every divider, every
+/// table rule and every panel edge on 42 pages.
+///
+/// Measured, dark theme, against `.agents/carbon-waves/ROUND3-DEFECTS.md`'s
+/// row-31 and row-13 captures at the same dpr:
+///
+/// | | Carbon g100 | Petra, before | Petra, now |
+/// |---|---|---|---|
+/// | row rule / this token | `#393939` (57) | `#9c9c9c` (156) | `#555555` (85) |
+/// | field rule / [`BORDER_STRONG_TOKEN`] | `#6f6f6f` (111) | `#b8b8b8` (184) | `#8f8f8f` (143) |
+///
+/// So the split is by **role**, not by taste:
+///
+/// - **this token, and the three [`BORDER_SUBTLE_TOKENS`], are decorative.**
+///   Floor [`MIN_DIVIDER_CONTRAST`], derived below from Carbon's own
+///   number rather than chosen.
+/// - **[`BORDER_STRONG_TOKEN`] is the control boundary.** It keeps
+///   [`MIN_CONTROL_BOUNDARY`] — the full 3:1 — on every layer, in both
+///   directions, and every edge that identifies a control now binds it:
+///   the checkbox square, the radio ring, the toggle track, the tertiary
+///   button, the upload drop zone, and every field's bottom rule.
+///   `component::tests::containers_take_a_tone_and_controls_take_an_edge`
+///   names each one and which of the two it must bind, so a new edge on the
+///   wrong side of the split fails a test instead of shipping.
+///
+/// Neither tone is a literal any more. Both are walked out from the theme's
+/// own layer set by [`quietest_grey_clearing`], so a layer-set edit moves
+/// them and cannot leave them stale.
+///
+/// Two claims still travel with this value and both are measured by
 /// [`tests::the_border_tone_is_visible_everywhere_and_quieter_than_every_text_tone`]:
-/// it clears 3:1 on every layer it can be drawn on, and on every one of
-/// those layers it is *strictly and substantially* quieter than both text
-/// tones. The second is the regression guard. A border that drifts back up
-/// the ramp does not fail any contrast floor — it passes harder — so the
+/// it clears its own floor on every layer it can be drawn on, and on every
+/// one of those layers it is *strictly and substantially* quieter than both
+/// text tones. The second is the regression guard. A border that drifts back
+/// up the ramp does not fail any contrast floor — it passes harder — so the
 /// only thing that can catch the drift is a ceiling, and this is it.
 ///
 /// **One border tone, not two.** A `border.strong` for selected or hovered
@@ -209,18 +248,121 @@ fn insert_layer_set(values: &mut BTreeMap<TokenName, TokenValue>, layers: &[[u8;
 /// a strong border is meant to close some of that gap.
 const BORDER_TOKEN: &str = "border.subtle";
 
-/// Light `border.subtle`. Worst ground is `#f2f2f2` at 3.34:1; against
-/// `#ffffff` it is 3.74:1. `text.muted` on the same worst ground is 8.70:1,
-/// so the border sits 2.6x quieter.
-const LIGHT_BORDER: [u8; 3] = [0x84, 0x84, 0x84];
+/// WCAG 2.1 SC 1.4.11 *Non-text Contrast*, Level AA: the floor for **visual
+/// information required to identify a user-interface component or its
+/// state**. [`BORDER_STRONG_TOKEN`] is held here, on every layer, because a
+/// checkbox that is nothing but its outline is exactly what that clause
+/// names.
+const MIN_CONTROL_BOUNDARY: f32 = 3.0;
 
-/// Dark `border.subtle`. Worst ground is `surface.layer-three` (`#444444`)
-/// at 3.55:1; against `surface.base` it is 6.82:1. `text.muted` on that same
-/// worst ground is 6.57:1, so the border sits 1.85x quieter — a smaller
-/// margin than light's, because dark's layer set *ramps* while light's
-/// alternates, so dark's deepest layer is genuinely close to this tone and
-/// light's never gets there.
-const DARK_BORDER: [u8; 3] = [0x9c, 0x9c, 0x9c];
+/// The floor a **decorative** rule is held to: a divider between two rows,
+/// a panel edge, a line under a header.
+///
+/// **1.3:1 is Carbon's own number, not a relaxation invented here.** Carbon
+/// Gray 100 draws its row rules in `$border-subtle-01` `#393939` on
+/// `$layer-01` `#262626` — both hexes are already cited in this file
+/// (`DARK_LAYERS`' comment carries the layer ramp,
+/// `component::tokens::LAYER_ACCENT`'s carries the border) — and that pair
+/// measures **1.31:1**. So this is the contrast IBM ships on the line
+/// between two table rows, rounded down by 0.01 to the nearest hundredth so
+/// a theme that reproduces Carbon exactly is admitted rather than rejected
+/// by a rounding step.
+///
+/// It is deliberately far below [`MIN_CONTROL_BOUNDARY`] and it is **not**
+/// zero. A rule at 1.0:1 is not a quiet rule, it is a missing one, and the
+/// operator is red-green colour blind: two greys within about three of 255
+/// are invisible to everybody. 1.3:1 on dark's deepest layer is 17 sRGB
+/// levels of separation, which is five times that.
+const MIN_DIVIDER_CONTRAST: f32 = 1.3;
+
+/// The contrast of two opaque sRGB triples.
+///
+/// Thin wrapper over [`ColorValue::contrast_ratio`] rather than a second
+/// copy of the WCAG arithmetic: this module works in `[u8; 3]` and that
+/// method works in `ColorValue`, and the tests below measure the shipped
+/// theme through the same method, so a divergence between the value this
+/// file *derives* and the value the tests *check* is impossible by
+/// construction.
+fn contrast_of(a: [u8; 3], b: [u8; 3]) -> f32 {
+    ColorValue::from_srgb8(a[0], a[1], a[2], 0xff)
+        .contrast_ratio(ColorValue::from_srgb8(b[0], b[1], b[2], 0xff))
+}
+
+/// The **quietest** grey that clears `ratio` against every one of `layers`,
+/// walking away from the theme's own ground in `mode`'s direction.
+///
+/// "Quietest" is the whole point. A border is the one family where passing a
+/// contrast floor harder is a defect rather than a margin — that is the
+/// finding the ceiling in
+/// [`tests::the_border_tone_is_visible_everywhere_and_quieter_than_every_text_tone`]
+/// was written after — so the tone is the *first* step that clears the
+/// floor, not a comfortable one past it. One sRGB level of headroom is the
+/// correct amount.
+///
+/// Every one of `layers` is swept, not just the deepest, because nothing in
+/// this library tracks which layer a given edge was drawn on: `on_layer`
+/// re-seats a node's `background` and leaves its `border` alone, so one tone
+/// has to hold everywhere until `component::layer_tokens`' per-layer names
+/// are actually bound (`contracts/token-vocabulary.md` §11, step 7). When
+/// that flag day comes, this function is what each numbered name calls with
+/// its own single layer, and both tones drop again toward Carbon's.
+///
+/// # Panics
+/// If no grey in the walk clears `ratio` — which for a ratio under 4.5 and
+/// any layer set with a near-black or near-white ground cannot happen, and
+/// if it ever does the theme is unshippable and must say so loudly rather
+/// than silently return an extreme.
+fn quietest_grey_clearing(layers: &[[u8; 3]; 4], ratio: f32, mode: ThemeMode) -> [u8; 3] {
+    let ground = layers[0][0];
+    let candidates: Vec<u8> = match mode {
+        ThemeMode::Light => (0..=ground).rev().collect(),
+        ThemeMode::Dark => (ground..=u8::MAX).collect(),
+    };
+    for level in candidates {
+        let grey = [level, level, level];
+        if layers.iter().all(|l| contrast_of(grey, *l) >= ratio) {
+            return grey;
+        }
+    }
+    panic!(
+        "no grey between the ground and the end of the ramp clears {ratio}:1 \
+         against every layer of {layers:?}; this theme cannot draw a boundary \
+         at all"
+    );
+}
+
+/// Light `border.subtle`, the decorative tone: `#d5d5d5`. Worst ground is
+/// `#f2f2f2` at 1.30:1, the first level that clears
+/// [`MIN_DIVIDER_CONTRAST`]; against `#ffffff` it is 1.47:1. `text.muted` on
+/// that same worst ground is 8.70:1, so the rule sits 6.64x quieter.
+fn light_border() -> [u8; 3] {
+    quietest_grey_clearing(&LIGHT_LAYERS, MIN_DIVIDER_CONTRAST, ThemeMode::Light)
+}
+
+/// Dark `border.subtle`, the decorative tone: `#555555`. Worst ground is
+/// `surface.layer-three` (`#444444`) at 1.31:1 — the same 1.31:1 Carbon
+/// draws its own row rules at — and against `surface.base` it is 2.51:1.
+/// Carbon's `#393939` would be 1.19:1 on `#444444`, which is why this is 28
+/// levels brighter than Carbon's and not equal to it: Petra's dark layer set
+/// *ramps* to a lighter deepest layer than Carbon's stops at, and one tone
+/// has to survive all four.
+fn dark_border() -> [u8; 3] {
+    quietest_grey_clearing(&DARK_LAYERS, MIN_DIVIDER_CONTRAST, ThemeMode::Dark)
+}
+
+/// Light [`BORDER_STRONG_TOKEN`], the control-boundary tone: `#8c8c8c`, the
+/// first level clearing [`MIN_CONTROL_BOUNDARY`] on all four light layers
+/// (3.00:1 on `#f2f2f2`, 3.36:1 on `#ffffff`).
+fn light_border_strong() -> [u8; 3] {
+    quietest_grey_clearing(&LIGHT_LAYERS, MIN_CONTROL_BOUNDARY, ThemeMode::Light)
+}
+
+/// Dark [`BORDER_STRONG_TOKEN`], the control-boundary tone: `#8f8f8f`, the
+/// first level clearing [`MIN_CONTROL_BOUNDARY`] on all four dark layers
+/// (3.01:1 on `#444444`, 5.79:1 on `#121212`).
+fn dark_border_strong() -> [u8; 3] {
+    quietest_grey_clearing(&DARK_LAYERS, MIN_CONTROL_BOUNDARY, ThemeMode::Dark)
+}
 
 /// The one accent hue, and the ink that goes on top of it.
 ///
@@ -427,25 +569,26 @@ struct Polarity {
     layers: &'static [[u8; 3]; 4],
     /// Primary then muted ink.
     text: &'static [[u8; 3]; 2],
-    /// The boundary tone.
-    border: &'static [u8; 3],
     /// The focus ring's ink core.
     ring: &'static [u8; 3],
 }
 
 /// The light polarity, as the dark theme's inverse source.
+///
+/// No `border` field: since 2026-09-05 both border tones are *walked out* of
+/// the layer set by [`quietest_grey_clearing`] rather than written as
+/// literals, so there is no constant left to gather here. The inverse
+/// border is [`light_border`] called from the dark theme, one call away.
 const LIGHT: Polarity = Polarity {
     layers: &LIGHT_LAYERS,
     text: &LIGHT_TEXT,
-    border: &LIGHT_BORDER,
     ring: &LIGHT_RING[0],
 };
 
-/// The dark polarity, as the light theme's inverse source.
+/// The dark polarity, as the light theme's inverse source. See [`LIGHT`].
 const DARK: Polarity = Polarity {
     layers: &DARK_LAYERS,
     text: &DARK_TEXT,
-    border: &DARK_BORDER,
     ring: &DARK_RING[0],
 };
 
@@ -755,6 +898,95 @@ const DARK_SCRIM_ALPHA: u8 = 166;
 /// *every* colour token whose name starts `status.` or `support-` rather than
 /// three literals, so a fourth status-shaped token is caught the day it is
 /// added.
+/// Carbon's `$button-danger-primary`: the fill under a destructive button.
+///
+/// **This is the third chromatic name in the library, and it exists because
+/// the only red already shipped cannot carry a label.**
+/// `component::button`'s module doc carries wave E's full table; the one
+/// line of it that matters is that `support-error` (`#f21c0d` dark, tuned as
+/// a *status marker*, so pushed bright to clear 3:1 against a surface) has
+/// no ink in this library that clears the 4.5:1 AA body-text floor on it —
+/// the best is `text.on-accent` at 4.41:1. Carbon's `#da1e28` clears it at
+/// **5.00:1 against white**. That difference is the whole reason for a
+/// second red rather than an alias.
+///
+/// MEASURED from `@carbon/themes/scss/generated/_button-tokens.scss`, where
+/// `$button-danger-primary` is `#da1e28` in **all four** published themes —
+/// which is why one constant serves both themes here, the same shape as
+/// [`ON_COLOUR_TOKEN`]. (That measurement is wave E's, recorded in
+/// `component::button`'s module doc on 2026-09-05; `ignored/carbon-ref/` was
+/// not on this machine when this landed, so it is cited from the in-repo
+/// record rather than re-read from the package.)
+///
+/// **Colour is not the only channel and this token does not make it one.**
+/// `component::button` keeps the red octagon on all three danger variants
+/// even now that the filled one is red (FR-015). On the fill the octagon
+/// switches to [`ON_COLOUR_TOKEN`], because `support-error` on `#da1e28`
+/// measures 1.18:1 and is a mark nobody can see; the shape survives
+/// greyscale either way, which is the channel that matters here.
+///
+/// Gated by
+/// [`tests::the_danger_fill_carries_a_white_label_and_reads_without_colour`],
+/// which is what lets it past
+/// [`tests::no_shipped_colour_carries_a_hue_that_is_not_already_gated`].
+const DANGER_FILL_TOKEN: &str = "button-danger-primary";
+
+/// See [`DANGER_FILL_TOKEN`]. One value, both themes, because Carbon
+/// publishes one.
+const DANGER_FILL: [u8; 3] = [0xda, 0x1e, 0x28];
+
+/// Carbon's `$text-on-color` (and `$icon-on-color`): **white in every
+/// theme**, the ink and the mark that go on a saturated fill.
+///
+/// # Why this is not `text.on-accent`
+///
+/// Because Petra's accent is lighter than Carbon's and the two names stopped
+/// meaning the same thing the moment that was true. [`ON_ACCENT_TOKEN`] is
+/// assigned the theme's own `surface.base`, so in dark it is `#121212` — a
+/// near-black, and correct there: white on dark's `#4589ff` measures
+/// **3.35:1**, under the 4.5:1 AA floor, while `#121212` on it is 5.60:1.
+/// Carbon never faces that because its `$button-primary` is `#0f62fe` in
+/// g100 too.
+///
+/// So an "on-colour" ink and an "on-accent" ink are two different tones in
+/// this library, and conflating them shipped a visible defect: row 36's
+/// on-toggle drew a **black knob** where Carbon's is white, because
+/// `component::controls` bound `TEXT_ON_ACCENT` for it. Carbon's handle is
+/// `background-color: $icon-on-color` on `.cds--toggle__switch::before`
+/// with no `--checked` override (SOURCED
+/// `.agents/research/08-25-2026/Carbon-Component-Inventory/slice-f.md:26`),
+/// so it is white in both states. Wave D found this and left it for the
+/// token layer, in
+/// `.agents/notes/implemented/feature/2026-09-05-the-notification-carries-a-kind-and-two-rows-leave-carbon-on-purpose.md`.
+///
+/// `icon-on-color` is deliberately **not** repointed at this. It is the
+/// resting partner of `icon-on-color-disabled`, which is the same tone at
+/// 25%, and both are spent on the accent fill by `primary_button` — moving
+/// one and not the other would ship a button whose label is near-black at
+/// rest and faded-white when disabled. That name keeps Petra's meaning
+/// ("ink on *the accent*") and this one carries Carbon's.
+///
+/// Its two bindings today are the danger button's label and mark on
+/// [`DANGER_FILL_TOKEN`] (5.00:1, AA) and the toggle knob on
+/// `accent.primary` (3.35:1 dark, 5.00:1 light — a graphical object, so SC
+/// 1.4.11's 3:1). Both are measured by
+/// [`tests::the_on_colour_ink_is_white_in_both_themes_and_is_not_the_accent_ink`].
+const ON_COLOUR_TOKEN: &str = "text-on-color";
+
+/// See [`ON_COLOUR_TOKEN`].
+const ON_COLOUR: [u8; 3] = [0xff, 0xff, 0xff];
+
+/// Assign the two names that do not move between themes: the Carbon danger
+/// fill and the always-white on-colour ink.
+///
+/// One function called by both themes, for the reason [`insert_layer_set`]
+/// is: a hand-copied pair is a pair that drifts, and "the same in every
+/// theme" is the entire content of both of these tokens.
+fn insert_on_colour_pair(values: &mut BTreeMap<TokenName, TokenValue>) {
+    values.insert(name(DANGER_FILL_TOKEN), opaque(DANGER_FILL));
+    values.insert(name(ON_COLOUR_TOKEN), opaque(ON_COLOUR));
+}
+
 const SUPPORT_ALIASES: [(&str, &str); 3] = [
     ("support-error", "status.down"),
     ("support-success", "status.ok"),
@@ -782,25 +1014,36 @@ fn insert_icon_family(
 /// Assign the border names beyond [`BORDER_TOKEN`]: the loud tone, the
 /// interactive tone, the three per-layer subtle names, and the inverted one.
 ///
-/// `border-strong` is the grey at the **CIE L\* midpoint** of the subtle
-/// border and the muted text tone. That is a rule rather than a hex, and it is
-/// the rule the existing border ceiling already implies: a strong border has
-/// to be louder than the subtle one or the name is a lie, and quieter than
-/// every text tone or it puts back the wireframe the border pass removed. The
-/// midpoint is the one point that is guaranteed to be strictly inside both
-/// bounds no matter how either endpoint moves later.
+/// # `border-strong` stopped being a midpoint on 2026-09-05
+///
+/// It used to be the grey at the **CIE L\* midpoint** of the subtle border
+/// and the muted text tone, chosen because it lands strictly inside both
+/// bounds no matter how either endpoint moves. That construction was sound
+/// and it had one dependency that turned out to be false: it assumed the
+/// subtle border was itself anchored to the control-boundary floor. Once
+/// [`BORDER_TOKEN`] became the *decorative* tone at
+/// [`MIN_DIVIDER_CONTRAST`], a midpoint between a 1.3:1 rule and a text tone
+/// would have been a control boundary chosen by averaging two numbers
+/// neither of which is a control boundary — and in dark it lands at `#a4a4a4`,
+/// 61 sRGB levels brighter than the 3:1 floor asks for.
+///
+/// So the roles swapped over which one is derived from a floor. **This is
+/// now the anchored one**: the quietest grey clearing
+/// [`MIN_CONTROL_BOUNDARY`] on every layer, walked out by
+/// [`quietest_grey_clearing`] exactly the way the decorative tone is walked
+/// out from its own floor. Both bounds the midpoint used to guarantee are
+/// still held, now by measurement instead of by construction —
+/// [`tests::border_strong_sits_between_the_subtle_border_and_every_text_tone`]
+/// keeps it strictly louder than the subtle tone and strictly quieter than
+/// both text tones, and it fails in both directions.
 fn insert_border_family(
     values: &mut BTreeMap<TokenName, TokenValue>,
     border: &[u8; 3],
-    muted_text: [u8; 3],
+    strong: [u8; 3],
     accent: &[u8; 3],
     inverse_border: [u8; 3],
 ) {
-    let midpoint = (lightness_of(*border) + lightness_of(muted_text)) / 2.0;
-    values.insert(
-        name(BORDER_STRONG_TOKEN),
-        opaque(grey_at_lightness(midpoint)),
-    );
+    values.insert(name(BORDER_STRONG_TOKEN), opaque(strong));
     values.insert(name(BORDER_INTERACTIVE_TOKEN), opaque(*accent));
     for token in BORDER_SUBTLE_TOKENS {
         values.insert(name(token), opaque(*border));
@@ -1708,6 +1951,14 @@ pub fn standard_vocabulary() -> Vocabulary {
     for token in [
         BORDER_STRONG_TOKEN,
         BORDER_INTERACTIVE_TOKEN,
+        // The destructive fill and the ink that goes on it. Two names, both
+        // theme-independent, both entering on a measurement rather than on
+        // Carbon publishing them: see `DANGER_FILL_TOKEN` for the 4.41:1
+        // that ruled `support-error` out as a fill, and `ON_COLOUR_TOKEN`
+        // for the black toggle knob that ruled `text.on-accent` out as an
+        // on-colour ink.
+        DANGER_FILL_TOKEN,
+        ON_COLOUR_TOKEN,
         ACTIVE_TOKEN,
         LAYER_ACCENT_TOKEN,
         SCRIM_TOKEN,
@@ -1755,17 +2006,18 @@ pub fn light() -> Theme {
 
     insert_layer_set(&mut values, &LIGHT_LAYERS);
     insert_accent(&mut values, &LIGHT_ACCENT, &LIGHT_LAYERS, LIGHT_TEXT[0]);
-    insert_border(&mut values, &LIGHT_BORDER);
+    insert_border(&mut values, &light_border());
     insert_shadow_set(&mut values, &LIGHT_SHADOW_ALPHAS);
     values.insert(name("text.primary"), opaque(LIGHT_TEXT[0]));
     values.insert(name("text.muted"), opaque(LIGHT_TEXT[1]));
     insert_icon_family(&mut values, &LIGHT_TEXT, LIGHT_LAYERS[0], DARK_TEXT[0]);
+    insert_on_colour_pair(&mut values);
     insert_border_family(
         &mut values,
-        &LIGHT_BORDER,
-        LIGHT_TEXT[1],
+        &light_border(),
+        light_border_strong(),
         &LIGHT_ACCENT,
-        *DARK.border,
+        dark_border(),
     );
     insert_field_set(&mut values, &LIGHT_LAYERS);
     insert_state_set(&mut values, &LIGHT_LAYERS, ThemeMode::Light);
@@ -1852,17 +2104,18 @@ pub fn dark() -> Theme {
 
     insert_layer_set(&mut values, &DARK_LAYERS);
     insert_accent(&mut values, &DARK_ACCENT, &DARK_LAYERS, DARK_TEXT[0]);
-    insert_border(&mut values, &DARK_BORDER);
+    insert_border(&mut values, &dark_border());
     insert_shadow_set(&mut values, &DARK_SHADOW_ALPHAS);
     values.insert(name("text.primary"), opaque(DARK_TEXT[0]));
     values.insert(name("text.muted"), opaque(DARK_TEXT[1]));
     insert_icon_family(&mut values, &DARK_TEXT, DARK_LAYERS[0], LIGHT_TEXT[0]);
+    insert_on_colour_pair(&mut values);
     insert_border_family(
         &mut values,
-        &DARK_BORDER,
-        DARK_TEXT[1],
+        &dark_border(),
+        dark_border_strong(),
         &DARK_ACCENT,
-        *LIGHT.border,
+        light_border(),
     );
     insert_field_set(&mut values, &DARK_LAYERS);
     insert_state_set(&mut values, &DARK_LAYERS, ThemeMode::Dark);
@@ -1926,9 +2179,10 @@ pub fn dark() -> Theme {
 mod tests {
     use super::{
         ACCENT_TOKEN, ACTIVE_STEP, ACTIVE_TOKEN, BORDER_INTERACTIVE_TOKEN, BORDER_STRONG_TOKEN,
-        BORDER_SUBTLE_TOKENS, BORDER_TOKEN, CornerRole, DARK_LAYERS, FIELD_TOKENS, HOVER_STEP,
-        ICON_TOKENS, LAYER_ACCENT_STATE_TOKENS, LAYER_ACCENT_TOKEN, LAYER_TOKENS, LIGHT_LAYERS,
-        LINK_TOKEN, M, MONO, ON_ACCENT_TOKEN, R, RAISED_ALIAS, SANS, SCRIM_TOKEN,
+        BORDER_SUBTLE_TOKENS, BORDER_TOKEN, CornerRole, DANGER_FILL_TOKEN, DARK_LAYERS,
+        FIELD_TOKENS, HOVER_STEP, ICON_TOKENS, LAYER_ACCENT_STATE_TOKENS, LAYER_ACCENT_TOKEN,
+        LAYER_TOKENS, LIGHT_LAYERS, LINK_TOKEN, M, MIN_CONTROL_BOUNDARY, MIN_DIVIDER_CONTRAST,
+        MONO, ON_ACCENT_TOKEN, ON_COLOUR_TOKEN, R, RAISED_ALIAS, SANS, SCRIM_TOKEN,
         SELECTED_HOVER_STEP, SELECTED_STEP, SHADOW_GEOMETRY, SHADOW_TOKENS, SHAPE_RAMP, SIZE_RAMP,
         SPACING_ALIASES, SPACING_RAMP, SPRING_SET, SUPPORT_ALIASES, TYPOGRAPHY_RAMP, corner_for,
         dark, light, lightness_of, standard_vocabulary,
@@ -3375,6 +3629,174 @@ mod tests {
         }
     }
 
+    /// The deepest [`LAYER_TOKENS`] index [`DANGER_FILL_TOKEN`] stays
+    /// findable on, per theme. Same shape and same reason as
+    /// [`DEEPEST_ACCENT_LAYER`]: the painter needs the boundary as a number.
+    ///
+    /// Light reaches the bottom because the light layers alternate between
+    /// `#ffffff` and `#f2f2f2` and `#da1e28` is 5.00:1 and 4.47:1 on them.
+    /// Dark stops at layer **one**: `#da1e28` is 3.18:1 on `#222222` and
+    /// **2.53:1** on `#333333`. That is one layer shallower than the accent
+    /// reaches, and it is the price of taking Carbon's hex instead of
+    /// tuning one for Petra's deeper ramp — recorded rather than hidden,
+    /// because a danger button dropped two layers down loses the fill floor
+    /// while every other check still passes.
+    const DEEPEST_DANGER_LAYER: [(&str, usize); 2] = [("light", 3), ("dark", 1)];
+
+    /// [`DANGER_FILL_TOKEN`] carries its label at the body-text floor, is
+    /// findable on every layer it is declared paintable on, and is still a
+    /// danger signal to a reader who cannot see red.
+    ///
+    /// # This is the gate the hue sweep points at
+    ///
+    /// [`no_shipped_colour_carries_a_hue_that_is_not_already_gated`] refuses
+    /// any chromatic token that no measurement covers, and lists this one by
+    /// name. So this test is not optional decoration on a new colour; it is
+    /// the reason the colour is allowed to exist. Three claims:
+    ///
+    /// 1. **The label.** [`ON_COLOUR_TOKEN`] on the fill clears SC 1.4.3's
+    ///    4.5:1. This is the whole reason the token is `#da1e28` and not
+    ///    `support-error`: the shipped red tops out at 4.41:1 under the best
+    ///    ink this library owns.
+    /// 2. **The fill.** SC 1.4.11's 3:1 against the ground, on every layer
+    ///    inside [`DEEPEST_DANGER_LAYER`], and *below* it on every layer
+    ///    outside — so a retune that gains a layer is caught and reported
+    ///    rather than silently unused.
+    /// 3. **Without colour.** The operator is red-green colour blind, so a
+    ///    red button that is only distinguishable from a grey one by hue is
+    ///    not distinguishable at all. Measured against `surface.raised`, the
+    ///    fill an ordinary [`crate::component::button`] carries, under both
+    ///    Viénot-Brettel-Mollon simulations at [`MIN_STATUS_SEPARATION`].
+    ///
+    /// # What this cannot reach
+    ///
+    /// It says nothing about the red octagon `component::button` still draws
+    /// on all three danger variants. That mark is the *shape* channel and it
+    /// is FR-015's requirement, not this token's; its own tone against this
+    /// fill is measured in `component::button`'s tests, because which ink
+    /// the mark takes is a component decision.
+    #[test]
+    fn the_danger_fill_carries_a_white_label_and_reads_without_colour() {
+        /// WCAG 2.x SC 1.4.3 AA for body text. A button label is prose and
+        /// gets no discount for being one word long.
+        const MIN_TEXT_CONTRAST: f32 = 4.5;
+
+        for (label, deepest) in DEEPEST_DANGER_LAYER {
+            let theme = if label == "light" { light() } else { dark() };
+            let fill = theme_color(&theme, DANGER_FILL_TOKEN);
+            let ink = theme_color(&theme, ON_COLOUR_TOKEN);
+
+            let ratio = contrast(ink, fill);
+            assert!(
+                ratio >= MIN_TEXT_CONTRAST,
+                "{label}: {ON_COLOUR_TOKEN} on {DANGER_FILL_TOKEN} is \
+                 {ratio:.2}:1, below the {MIN_TEXT_CONTRAST}:1 AA floor. The \
+                 only reason this fill exists rather than an alias of \
+                 support-error is that support-error tops out at 4.41:1 under \
+                 the best ink here; a danger fill that cannot carry white has \
+                 given that reason away."
+            );
+
+            for (depth, token) in LAYER_TOKENS.iter().enumerate() {
+                let ratio = contrast(fill, theme_color(&theme, token));
+                if depth <= deepest {
+                    assert!(
+                        ratio >= MIN_SURFACE_CONTRAST,
+                        "{label}: {DANGER_FILL_TOKEN} is declared paintable on \
+                         {token} (depth {depth} <= {deepest}) but measures \
+                         {ratio:.2}:1, under the {MIN_SURFACE_CONTRAST}:1 \
+                         non-text floor (WCAG SC 1.4.11)."
+                    );
+                } else {
+                    assert!(
+                        ratio < MIN_SURFACE_CONTRAST,
+                        "{label}: {DANGER_FILL_TOKEN} now clears \
+                         {MIN_SURFACE_CONTRAST}:1 on {token} (depth {depth}) at \
+                         {ratio:.2}:1. That is an improvement, and it means \
+                         DEEPEST_DANGER_LAYER is stale: raise {label} to \
+                         {depth}."
+                    );
+                }
+            }
+
+            // The grey a plain `button` is filled with, which is the thing a
+            // danger button has to be told apart from.
+            let ordinary = theme_color(&theme, RAISED_ALIAS);
+            for (vision, matrix) in [("deuteranope", &DEUTERANOPE), ("protanope", &PROTANOPE)] {
+                let d = delta_e(
+                    to_lab(simulate(fill, matrix)),
+                    to_lab(simulate(ordinary, matrix)),
+                );
+                assert!(
+                    d >= MIN_STATUS_SEPARATION,
+                    "{label}: {DANGER_FILL_TOKEN} and {RAISED_ALIAS} are only \
+                     ΔE*ab {d:.1} apart to a {vision} reader (floor is \
+                     {MIN_STATUS_SEPARATION}). A destructive button that reads \
+                     as an ordinary one is the failure mode this whole palette \
+                     is arranged to avoid — separate them in lightness, not in \
+                     hue."
+                );
+            }
+        }
+    }
+
+    /// [`ON_COLOUR_TOKEN`] is white in **both** themes, it carries the two
+    /// fills it is spent on, and it is not a second name for
+    /// [`ON_ACCENT_TOKEN`].
+    ///
+    /// # Why the last clause is the point
+    ///
+    /// Because the two *were* conflated and it shipped a visible defect:
+    /// `component::controls` bound `text.on-accent` for the toggle handle,
+    /// which resolves to `#121212` in dark, so row 36's on-toggle drew a
+    /// black knob where Carbon's `$icon-on-color` handle is white. This test
+    /// asserts the two names differ in dark, so the merge that would put the
+    /// black knob back fails here rather than in a screenshot nobody takes.
+    ///
+    /// The light half is deliberately *not* an inequality: in light both
+    /// resolve to `#ffffff` and always will, because light's `surface.base`
+    /// is white. The asymmetry is the whole content of the pair.
+    #[test]
+    fn the_on_colour_ink_is_white_in_both_themes_and_is_not_the_accent_ink() {
+        /// SC 1.4.11: the toggle handle is a graphical object, not text.
+        const MIN_MARK_CONTRAST: f32 = MIN_SURFACE_CONTRAST;
+
+        let white = ColorValue::from_srgb8(0xff, 0xff, 0xff, 0xff);
+        for (label, theme) in [("light", light()), ("dark", dark())] {
+            let ink = theme_color(&theme, ON_COLOUR_TOKEN);
+            assert_eq!(
+                ink, white,
+                "{label}: {ON_COLOUR_TOKEN} must be #ffffff. Carbon publishes \
+                 $text-on-color and $icon-on-color as white in all four \
+                 themes, and a theme-derived value here is exactly the drift \
+                 that made the toggle knob black."
+            );
+
+            // The toggle handle rides the accent fill in this library —
+            // Carbon's own track is `$support-success`, which Petra does not
+            // spend on a control — so that is the ground to measure.
+            let on_track = contrast(ink, theme_color(&theme, ACCENT_TOKEN));
+            assert!(
+                on_track >= MIN_MARK_CONTRAST,
+                "{label}: {ON_COLOUR_TOKEN} on {ACCENT_TOKEN} is \
+                 {on_track:.2}:1, under the {MIN_MARK_CONTRAST}:1 SC 1.4.11 \
+                 floor. A toggle knob a reader cannot find inside its own \
+                 track is not showing a state."
+            );
+        }
+
+        assert_ne!(
+            theme_color(&dark(), ON_COLOUR_TOKEN),
+            theme_color(&dark(), ON_ACCENT_TOKEN),
+            "dark: {ON_COLOUR_TOKEN} and {ON_ACCENT_TOKEN} are the same \
+             colour, so one of the two names is doing nothing. They are not \
+             the same idea: on-accent is the page the accent is cut out of \
+             (#121212 in dark, because white on #4589ff is 3.35:1 and misses \
+             AA), and on-colour is Carbon's always-white ink for a saturated \
+             fill. Collapsing them puts the black toggle knob back."
+        );
+    }
+
     /// [`BORDER_TOKEN`] is visible on every layer it can be drawn on, and on
     /// every one of those layers it is decisively quieter than both text
     /// tones.
@@ -3382,10 +3804,15 @@ mod tests {
     /// # The two halves, and why the second one is the point
     ///
     /// The floor is the ordinary half: a boundary nobody can see is not a
-    /// boundary. [`MIN_UI_CONTRAST`] is WCAG 2.1 SC 1.4.11's 3:1, the same
-    /// floor `the_accent_clears_aa_on_every_surface_it_can_be_painted_on`
-    /// uses and for the same reason — a drawn edge is a user-interface
-    /// component, not body text.
+    /// boundary. It is [`MIN_DIVIDER_CONTRAST`], **not** SC 1.4.11's 3:1,
+    /// and that is the 2026-09-05 correction: this token is the decorative
+    /// tone, spent on row rules and dividers and panel edges, and SC 1.4.11
+    /// covers information that identifies a *component*. The 3:1 floor moved
+    /// to [`BORDER_STRONG_TOKEN`], where the checkbox, the radio, the toggle
+    /// track, the tertiary button, the drop zone and every field rule now
+    /// live, and it is held there by
+    /// [`border_strong_sits_between_the_subtle_border_and_every_text_tone`].
+    /// [`BORDER_TOKEN`]'s own doc carries the measurement table.
     ///
     /// The **ceiling** is the half this test exists for. Before this token
     /// shipped, every border in `component/` bound `text.muted`, and that
@@ -3405,18 +3832,18 @@ mod tests {
     /// capture owns that. What this stops is the *tone* drifting.
     #[test]
     fn the_border_tone_is_visible_everywhere_and_quieter_than_every_text_tone() {
-        /// WCAG 2.1 SC 1.4.11 *Non-text Contrast*, Level AA. A border is a
-        /// component boundary, so 3:1 and not 4.5:1.
-        const MIN_UI_CONTRAST: f32 = 3.0;
         /// How much quieter than a text tone the border must be, as a ratio
         /// of contrasts on the *same* ground.
         ///
         /// Not a perceptual constant. It is a fence set below the tighter of
-        /// the two shipped margins — dark's 1.85x against `text.muted` on
-        /// `surface.layer-three`, light's 2.60x — with enough room that a
+        /// the two shipped margins — dark's 5.03x against `text.muted` on
+        /// `surface.layer-three`, light's 6.64x — with enough room that a
         /// deliberate retune does not trip it and a slide back toward a text
-        /// tone does.
-        const MIN_QUIETER_THAN_TEXT: f32 = 1.5;
+        /// tone does. It was 1.5x while this token carried the 3:1 control
+        /// floor; the floor moved and the margins widened by a factor of
+        /// three, so the fence moves with them or it stops catching
+        /// anything.
+        const MIN_QUIETER_THAN_TEXT: f32 = 4.0;
 
         for (label, theme) in [("light", light()), ("dark", dark())] {
             let border = theme_color(&theme, BORDER_TOKEN);
@@ -3427,11 +3854,12 @@ mod tests {
                 let ground = theme_color(&theme, surface);
                 let edge = contrast(border, ground);
                 assert!(
-                    edge >= MIN_UI_CONTRAST,
+                    edge >= MIN_DIVIDER_CONTRAST,
                     "{label}: {BORDER_TOKEN} on {surface} is {edge:.2}:1, below \
-                     the {MIN_UI_CONTRAST}:1 SC 1.4.11 floor for a component \
-                     boundary. An edge a reader cannot find is not separating \
-                     anything."
+                     the {MIN_DIVIDER_CONTRAST}:1 floor Carbon's own row rules \
+                     measure at. A rule a reader cannot find is not separating \
+                     anything, and this is the decorative tone, so there is no \
+                     louder name behind it to fall back on."
                 );
 
                 for (tone_name, tone) in [("text.primary", primary), ("text.muted", muted)] {
@@ -3463,8 +3891,8 @@ mod tests {
     /// step in light. That is 1.12:1, against WCAG 2.1 SC 1.4.11's 3:1 floor
     /// for the visual information that identifies a user-interface component.
     ///
-    /// So `field` keeps a quiet [`BORDER_TOKEN`] edge, and this test is the
-    /// number that says why. It asserts the step is **below** the floor,
+    /// So `field` keeps a quiet [`BORDER_STRONG_TOKEN`] rule, and this test
+    /// is the number that says why. It asserts the step is **below** the floor,
     /// which reads backwards until you see what it is guarding: the next
     /// person to look at an outlined field will want to delete the outline,
     /// and this makes them measure first. If a future layer set genuinely
@@ -3511,14 +3939,24 @@ mod tests {
             // of those grounds. Asserted here beside the number it answers,
             // so the pair reads as one argument rather than two unrelated
             // gates in different files.
-            let border = theme_color(&theme, BORDER_TOKEN);
+            //
+            // That edge is `border-strong`, not `border.subtle`, since the
+            // 2026-09-05 role split. `field` binds `border-strong` through
+            // its `border-bottom` slot and always did; what changed is that
+            // the checkbox, the radio, the toggle track, the tertiary button
+            // and the upload drop zone now bind it too, because they are the
+            // other controls whose edge *is* the control. `border.subtle` is
+            // the decorative tone and is deliberately under this floor —
+            // see `BORDER_TOKEN`'s own doc for the measurement table.
+            let border = theme_color(&theme, BORDER_STRONG_TOKEN);
             for surface in &LAYER_TOKENS {
                 let edge = contrast(border, theme_color(&theme, surface));
                 assert!(
                     edge >= MIN_UI_CONTRAST,
-                    "{label}: {BORDER_TOKEN} on {surface} is {edge:.2}:1, \
-                     under the floor the tonal step already failed. With both \
-                     under 3:1 a control on this layer has no boundary at all."
+                    "{label}: {BORDER_STRONG_TOKEN} on {surface} is \
+                     {edge:.2}:1, under the floor the tonal step already \
+                     failed. With both under 3:1 a control on this layer has \
+                     no boundary at all."
                 );
             }
         }
@@ -3929,13 +4367,25 @@ mod tests {
     /// the change that could walk through that ceiling, so the ceiling is
     /// restated here for the new name.
     ///
-    /// No magic fence, unlike the subtle border's `1.5x`: the claim is a
-    /// strict ordering, which is what the CIE L\* midpoint construction
-    /// guarantees and what a hand-picked hex would not.
+    /// No magic fence, unlike the subtle border's ratio: the claim is a
+    /// strict ordering, and a hand-picked hex would not give it.
+    ///
+    /// # 2026-09-05: this became the load-bearing half of the pair
+    ///
+    /// `border-strong` used to be the CIE L\* midpoint of the subtle border
+    /// and the muted text tone, and the ordering fell out of the
+    /// construction for free. It is now the *anchored* tone — the quietest
+    /// grey clearing [`MIN_CONTROL_BOUNDARY`] on every layer — and the
+    /// subtle one is the derived-quiet one, so the ordering is a
+    /// measurement rather than an arithmetic identity, and the floor
+    /// assertion below is the one the checkbox, the radio, the toggle
+    /// track, the tertiary button, the drop zone and every field rule now
+    /// depend on. Breaking it does not make a page look slightly worse; it
+    /// deletes the outline that *is* an unchecked checkbox.
     #[test]
     fn border_strong_sits_between_the_subtle_border_and_every_text_tone() {
-        /// WCAG 2.1 SC 1.4.11 *Non-text Contrast*, Level AA.
-        const MIN_UI_CONTRAST: f32 = 3.0;
+        /// See [`MIN_CONTROL_BOUNDARY`], restated at the point of use.
+        const MIN_UI_CONTRAST: f32 = MIN_CONTROL_BOUNDARY;
 
         for (label, theme) in [("light", light()), ("dark", dark())] {
             let subtle = theme_color(&theme, BORDER_TOKEN);
@@ -4264,6 +4714,13 @@ mod tests {
                 let name = token.as_str();
                 let gated = name == ACCENT_TOKEN
                     || name == LINK_TOKEN
+                    // The destructive fill, gated by
+                    // `the_danger_fill_carries_a_white_label_and_reads_without_colour`:
+                    // its label clears AA on it, it clears the fill floor on
+                    // every layer it is declared paintable on, and it stays
+                    // ΔE*ab-separated from the button tone it has to be told
+                    // apart from under both red-green simulations.
+                    || name == DANGER_FILL_TOKEN
                     || name == BORDER_INTERACTIVE_TOKEN
                     || name == RING_TOKEN
                     || name == "focus-inverse"
