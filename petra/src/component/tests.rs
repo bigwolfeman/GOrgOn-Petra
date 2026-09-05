@@ -372,10 +372,12 @@ fn full_gallery() -> ViewNode {
     // header, UI shell left panel, UI shell right panel). Toggle already has
     // one instance in `controls` above; this section adds the states that
     // instance does not cover (off, disabled, small). Toggletip appears
-    // closed and open. Tooltip and both UI shell right panels IS the
-    // anchored surface with no closed form, so each sits beside the control
-    // its `Anchor::Sibling` names: tooltip's is keyed `trigger` by
-    // construction, the panels' are whatever key the caller passes.
+    // closed and open. Tooltip IS the anchored surface with no closed form,
+    // so it sits beside the control its `Anchor::Sibling` names, keyed
+    // `trigger` by construction. The two UI shell right panels are docked
+    // regions, not surfaces (`ui_shell::right_panel`): each takes an `open`
+    // boolean instead of an anchor key, and appears here open, beside the
+    // header action Carbon says opens it.
     let carbon6 = section(
         "carbon6",
         "Carbon (group 6)",
@@ -392,18 +394,18 @@ fn full_gallery() -> ViewNode {
             ui_shell_right_panel(
                 "shell-right",
                 "Notifications",
-                "panel-trigger",
+                true,
                 vec![text("shell-note", "No new notifications.")],
             ),
             ui_shell_header_action("apps", "App switcher", true),
             ui_shell_switcher(
                 "shell-switcher",
                 "App switcher",
-                "apps",
+                true,
                 vec![
-                    ui_shell_switcher_item("sw-a", "Petra"),
+                    ui_shell_switcher_item("sw-a", "Petra", true),
                     ui_shell_right_panel_divider("sw-d1"),
-                    ui_shell_switcher_item("sw-b", "Inspector"),
+                    ui_shell_switcher_item("sw-b", "Inspector", false),
                 ],
             ),
             tree_view(
@@ -1105,7 +1107,7 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
     /// Every node in [`full_gallery`] that may draw a border, by the key
     /// path it appears at. An exact set: a node missing from here that draws
     /// one fails, and a node listed here that stops drawing one fails too.
-    const DRAWS_AN_EDGE: [&str; 27] = [
+    const DRAWS_AN_EDGE: [&str; 25] = [
         // `field`: an empty well with no boundary does not read as a place
         // to type. See `field`'s own doc for why it keeps one when `button`
         // does not.
@@ -1325,11 +1327,17 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         // section adds (off, disabled, small) — `toggle_sized` binds
         // `border` unconditionally on the track regardless of `on` or the
         // size variant, the same precedent `check`/`radio`'s boxes set.
-        // Both UI shell right panels bind `SURFACE_RAISED` +
-        // `BORDER_SUBTLE` by hand (the popover note above). Toggletip open
-        // and Tooltip are popovers and draw no edge.
-        "root/carbon6/shell-right",
-        "root/carbon6/shell-switcher",
+        // Toggletip open and Tooltip are popovers and draw no edge.
+        //
+        // Both UI shell right panels used to be on this list, binding
+        // `SURFACE_RAISED` + `BORDER_SUBTLE` by hand while they were
+        // popovers. They are docked regions now, and
+        // `.cds--header-panel--expanded` puts a rule on its two *inline*
+        // edges and none on its block ones — a `border` box laid a bright
+        // line across the foot of the panel where Carbon has open
+        // viewport. Each draws its own inline-start rule as a node
+        // instead, exactly as the header below does, and the node binds
+        // `background`, which this test does not audit.
         "root/carbon6/tog-disabled/appearance/track",
         "root/carbon6/tog-off/appearance/track",
         "root/carbon6/tog-on/appearance/track",
