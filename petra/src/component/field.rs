@@ -196,6 +196,10 @@ pub fn field_fluid(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
 ///
 /// [`labeled`] over [`field`]. The wrapper has no role. The `"input"` child
 /// is the interactive `Role::TextInput` node, 40 tall.
+///
+/// The label is also the placeholder. Reasonable when the label is the only
+/// thing there is to say; the word then appears twice, once above the well
+/// and once inside it. [`hinted`] is what puts something else inside.
 pub fn field_labeled(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
     let label = label.into();
     labeled(
@@ -204,6 +208,7 @@ pub fn field_labeled(key: impl Into<Key>, label: impl Into<String>) -> ViewNode 
         input_field("input", label, SIZE_MD, FieldChrome::Enabled),
     )
 }
+
 
 /// Invalid Default input plus a label-adjacent helper.
 ///
@@ -270,6 +275,47 @@ pub fn field_validated(
 /// `Semantics.read_only` and does not set `disabled`.
 pub fn field_readonly(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
     input_field(key, label, SIZE_MD, FieldChrome::ReadOnly)
+}
+
+/// Give the input inside `node` a placeholder of its own.
+///
+/// Carbon's `TextInput` carries `labelText` and `placeholder` as two props
+/// and uses them for two things: the label names the field, the placeholder
+/// shows an example of the value. This library builds an input from one
+/// string that does both jobs ([`input_field`] binds it to
+/// `Props::placeholder` and to the `Role::TextInput` accessible name), so a
+/// field under a [`labeled`] wrapper printed its own name twice — once above
+/// the well and once inside it. Photographed on the Form row 2026-09-05
+/// against `ignored/carbon-ref/shots/13-form.png`, whose well is empty.
+///
+/// This changes **only** what the empty box draws. The accessible name stays
+/// the label, which is the whole point: passing the hint as the label instead
+/// would fix the picture and make a screen reader announce "fiber-7" for a
+/// field the page calls "Name".
+///
+/// Shaped like [`valued`] — take a built control, reach the one
+/// `NodeKind::Input` in it, change one field — so a page keeps the keys it
+/// already routes on and this composes with `valued` in either order. It is
+/// a no-op on a tree with no input, same as [`valued`].
+#[must_use]
+pub fn hinted(mut node: ViewNode, hint: impl Into<String>) -> ViewNode {
+    fn fill(node: &mut ViewNode, hint: &str) -> bool {
+        if node.kind == NodeKind::Input {
+            node.props.placeholder = Some(hint.to_owned());
+            return true;
+        }
+        for child in &mut node.children {
+            let mut owned = Arc::unwrap_or_clone(Arc::clone(child));
+            if fill(&mut owned, hint) {
+                *child = Arc::new(owned);
+                return true;
+            }
+        }
+        false
+    }
+    let hint = hint.into();
+    fill(&mut node, &hint);
+    node
 }
 
 /// Put a value in a field.
@@ -414,7 +460,7 @@ mod tests {
     // can assert the two differ.
     use super::{
         SIZE_FLUID, SIZE_LG, SIZE_MD, SIZE_SM, field, field_fluid, field_invalid, field_labeled,
-        field_lg, field_readonly, field_sm, field_validated, labeled,
+        field_lg, field_readonly, field_sm, field_validated, hinted, labeled,
     };
     use crate::component::tokens::{ACCENT_PRIMARY, SURFACE_BASE};
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
@@ -615,6 +661,73 @@ mod tests {
         assert_eq!(input.semantics.role, Some(Role::TextInput));
         assert_eq!(input.semantics.label.as_deref(), Some("Fiber name"));
         assert_carbon_well(input, "labeled input");
+    }
+
+    /// `hinted` changes the hint in the empty well and nothing else.
+    ///
+    /// The trap it exists to avoid: a labelled field printed its own label
+    /// twice, once above the well and once inside it, because `input_field`
+    /// uses one string for both the placeholder and the accessible name.
+    /// The obvious fix — pass the hint as the label — swaps the name too,
+    /// so a screen reader would announce "fiber-7" for a field the page
+    /// labels "Name". Both halves are asserted, and the second is the one
+    /// that would go quietly wrong.
+    #[test]
+    fn hinted_changes_the_hint_and_never_the_name() {
+        let plain = field("name", "Fiber name");
+        let one = hinted(field("name", "Fiber name"), "fiber-7");
+        assert_eq!(
+            one.props.placeholder.as_deref(),
+            Some("fiber-7"),
+            "the empty well shows the hint"
+        );
+        assert_eq!(
+            one.semantics.label.as_deref(),
+            Some("Fiber name"),
+            "the accessible name is the label, never the hint"
+        );
+        assert_eq!(one.kind, plain.kind);
+        assert_eq!(one.constraints.vertical.min, plain.constraints.vertical.min);
+        assert_eq!(one.interactions, plain.interactions);
+        assert_eq!(one.props.tokens, plain.props.tokens, "same Carbon well");
+        assert_carbon_well(&one, "hinted input");
+    }
+
+    /// It reaches through a wrapper, and it composes with `valued` either
+    /// way round: a page writes `hinted(valued(..))` or `valued(hinted(..))`
+    /// depending on which reads better and gets the same tree.
+    #[test]
+    fn hinted_reaches_the_input_inside_a_wrapper_and_composes_with_valued() {
+        let wrapped = labeled("item", "Name", field("name", "Name"));
+        let one = hinted(wrapped.clone(), "fiber-7");
+        assert_eq!(
+            child(&one, "name").props.placeholder.as_deref(),
+            Some("fiber-7")
+        );
+        assert_eq!(
+            child(&one, "label").props.text.as_deref(),
+            Some("Name"),
+            "the label above the well is untouched"
+        );
+        let a = valued(hinted(wrapped.clone(), "fiber-7"), "p9");
+        let b = hinted(valued(wrapped, "p9"), "fiber-7");
+        let leaf = |n: &ViewNode| {
+            let c = child(n, "name");
+            (c.props.placeholder.clone(), c.props.text.clone())
+        };
+        assert_eq!(leaf(&a), leaf(&b), "the two orders disagree");
+        assert_eq!(leaf(&a), (Some("fiber-7".into()), Some("p9".into())));
+    }
+
+    #[test]
+    fn hinted_on_a_tree_with_no_input_is_a_no_op() {
+        let plain = super::stack(
+            "row",
+            Axis::Horizontal,
+            None,
+            vec![crate::component::text("t", "no well here")],
+        );
+        assert_eq!(hinted(plain.clone(), "fiber-7"), plain);
     }
 
     /// An invalid field's edge is the error hue, never the accent, and the

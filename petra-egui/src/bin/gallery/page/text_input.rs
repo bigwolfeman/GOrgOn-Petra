@@ -1,7 +1,7 @@
 //! Inventory row 34, Text input.
 
 use gorgon_petra::component::{
-    field, field_lg, field_readonly, field_sm, field_validated, labeled, section, valued,
+    field, field_lg, field_readonly, field_sm, field_validated, hinted, labeled, section, valued,
 };
 use gorgon_petra::input::{InputEvent, KeyCode};
 use gorgon_petra::tree::ViewNode;
@@ -110,7 +110,11 @@ impl Page for TextInput {
                     labeled(
                         "fiber-name",
                         "Fiber name",
-                        valued(field(MD, "Fiber name"), self.md.clone()),
+                        // Hinted, not left to echo its own label: the well
+                        // under a label that already says "Fiber name" was
+                        // printing the words a second time inside itself.
+                        // Carbon's placeholder is an example of the value.
+                        valued(hinted(field(MD, "Fiber name"), "fiber-7"), self.md.clone()),
                     ),
                     labeled(
                         "small",

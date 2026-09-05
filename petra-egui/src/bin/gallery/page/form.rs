@@ -1,11 +1,16 @@
 //! Inventory row 13, Form.
 
-use gorgon_petra::component::{checkbox, field, form, labeled, section, valued};
+use gorgon_petra::component::{checkbox, field, form, hinted, labeled, section, valued};
 use gorgon_petra::input::{InputEvent, KeyCode};
 use gorgon_petra::tree::ViewNode;
 
 use super::Page;
 use super::common::{filled_body, path_has, sp};
+
+/// What the empty Name field shows. An example of the value, never the
+/// label beside it — the label already says "Name", and a placeholder that
+/// repeats it says nothing and reads as a duplicated word.
+const PLACEHOLDER: &str = "fiber-7";
 
 /// The editable field's key.
 const NAME: &str = "form-name";
@@ -26,7 +31,11 @@ const ENABLED: &str = "form-ok";
 ///    above the well (slice-b:227, anatomy 2a); this page passed the word
 ///    "Name" as the *placeholder*, so the well showed its own name until
 ///    the first keystroke wiped it. A bare well with its name inside it is
-///    a search box.
+///    a search box. The label went in on 2026-09-05 but the placeholder
+///    stayed "Name" beside it, which read as the word printed twice; the
+///    placeholder is an example of the value now, which is the only thing
+///    it is for (slice-e:184, "the user's entered content, styled via
+///    `::placeholder` ... before anything is typed").
 /// 3. **The items were 16 apart where Carbon puts 32.** Fixed in
 ///    `component/form.rs`, which owns the number.
 pub struct Form {
@@ -67,7 +76,7 @@ impl Page for Form {
                         labeled(
                             "name-item",
                             "Name",
-                            valued(field(NAME, "Name"), self.name.clone()),
+                            valued(hinted(field(NAME, "Name"), PLACEHOLDER), self.name.clone()),
                         ),
                         checkbox(ENABLED, "Enabled", self.enabled),
                     ],
