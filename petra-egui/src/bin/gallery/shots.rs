@@ -832,6 +832,23 @@ mod tests {
             .unwrap_or_else(|| panic!("{key:?} paints no text"))
     }
 
+    /// The text of the leaf keyed `key` inside the subtree keyed `owner`.
+    ///
+    /// Row 10 shows two date pickers whose insides carry identical keys, so
+    /// a bare `find` for `"value"` answers whichever picker the page
+    /// happened to build first.
+    fn leaf_text_in(cam: &Camera, owner: &str, key: &str) -> String {
+        let tree = cam.tree();
+        let pane = crate::page::common::find(&tree, owner)
+            .unwrap_or_else(|| panic!("no subtree keyed {owner:?} in the page tree"));
+        crate::page::common::find(pane, key)
+            .unwrap_or_else(|| panic!("no node keyed {key:?} under {owner:?}"))
+            .props
+            .text
+            .clone()
+            .unwrap_or_else(|| panic!("{owner:?}/{key:?} paints no text"))
+    }
+
     /// A press on empty ground at the window's lower-right corner: inside
     /// no surface, on no control. What dismisses a `DismissOutside` surface.
     fn press_empty_ground(cam: &mut Camera) {
@@ -1269,8 +1286,8 @@ mod tests {
         let mut cam = Camera::on("Date picker");
         let calendar = opens_over_the_page(
             &mut cam,
-            "dp/when",
-            "when/calendar",
+            "compact/field",
+            "compact/calendar",
             336.0,
             "10-date-picker-open",
         );
@@ -1278,16 +1295,136 @@ mod tests {
             calendar.w >= 288.0,
             "the calendar is Carbon's 288 wide, got {calendar:?}"
         );
-        cam.click("days/day-12");
+        cam.click("compact/calendar/content/days/day-12");
         cam.shoot("10-date-picker-picked");
-        assert!(!cam.has("when/calendar"), "picking a day did not close it");
-        assert_eq!(leaf_text(&cam, "value"), "2026-08-12");
-        cam.click("dp/when");
-        assert!(cam.has("when/calendar"));
+        assert!(
+            !cam.has("compact/calendar"),
+            "picking a day did not close it"
+        );
+        assert_eq!(leaf_text_in(&cam, "compact", "value"), "2026-08-12");
+        cam.click("compact/field");
+        assert!(cam.has("compact/calendar"));
         press_empty_ground(&mut cam);
         assert!(
-            !cam.has("when/calendar"),
+            !cam.has("compact/calendar"),
             "a press outside did not dismiss it"
+        );
+    }
+
+    /// Row 10, round 4. The operator: *"the date picker doesnt let me go
+    /// to other months, I click an arrow and it goes away"*.
+    ///
+    /// Driven, because a photograph of the open calendar cannot tell a
+    /// working arrow from one that shuts the panel. Two assertions, and the
+    /// first one alone is the operator's whole complaint: the calendar is
+    /// still placed after the press. The second says the press did the job
+    /// it was drawn for rather than merely surviving.
+    #[test]
+    fn stepping_the_month_arrow_keeps_the_calendar_open_and_turns_the_month() {
+        let mut cam = Camera::on("Date picker");
+        cam.click("compact/field");
+        assert!(cam.has("compact/calendar"), "the field did not open it");
+        let august = leaf_text_in(&cam, "compact", "month");
+        cam.click("compact/calendar/content/month-header/next-month");
+        assert!(
+            cam.has("compact/calendar"),
+            "the next-month arrow dismissed the calendar"
+        );
+        assert_eq!(
+            leaf_text_in(&cam, "compact", "month"),
+            "September 2026",
+            "the arrow did not turn the month on from {august:?}"
+        );
+        assert_eq!(
+            leaf_text_in(&cam, "compact", "value"),
+            "2026-08-30",
+            "browsing dragged the selected date with it"
+        );
+        cam.click("compact/calendar/content/month-header/prev-month");
+        cam.click("compact/calendar/content/month-header/prev-month");
+        assert!(
+            cam.has("compact/calendar"),
+            "the previous-month arrow dismissed the calendar"
+        );
+        assert_eq!(leaf_text_in(&cam, "compact", "month"), "July 2026");
+        cam.shoot("10-date-picker-compact-open");
+    }
+
+    /// Row 10, round 4, the full form. The operator: *"we need 2 date
+    /// pickers 'compact' and 'full' ... and in the full view the month is a
+    /// button, not just a label."*
+    ///
+    /// Driven end to end, because the chooser is a surface **inside** a
+    /// surface and everything that could go wrong there is invisible in a
+    /// tree: whether the router reaches a control the day grid is under,
+    /// whether `DismissOutside` on the inner panel shuts the outer one with
+    /// it, and whether a press on the month button toggles or fights its own
+    /// dismissal.
+    #[test]
+    fn the_full_forms_month_button_raises_a_chooser_that_moves_the_grid() {
+        let mut cam = Camera::on("Date picker");
+        cam.click("full/field");
+        assert!(cam.has("full/calendar"), "the full field did not open");
+        assert!(
+            !cam.has("compact/month-button"),
+            "the compact form grew a month button"
+        );
+        let closed = cam.shoot("10-date-picker-full-open");
+
+        cam.click("full/calendar/content/month-header/month-button");
+        assert!(
+            cam.has("full/calendar/content/chooser"),
+            "the month button raised nothing. Placed:\n  {}",
+            cam.ids().join("\n  ")
+        );
+        assert!(
+            cam.has("full/calendar"),
+            "raising the chooser shut the calendar under it"
+        );
+        let chooser = cam.rect("full/calendar/content/chooser");
+        let calendar = cam.rect("full/calendar");
+        assert!(
+            chooser.x >= calendar.x - 0.5
+                && chooser.y >= calendar.y - 0.5
+                && chooser.x + chooser.w <= calendar.x + calendar.w + 0.5
+                && chooser.y + chooser.h <= calendar.y + calendar.h + 0.5,
+            "the chooser at {chooser:?} escapes the calendar at {calendar:?}, \
+             so every press inside it is a press outside the calendar"
+        );
+        let open = cam.shoot("10-date-picker-full-choosing");
+        assert_ne!(
+            closed, open,
+            "the chooser was placed and not one pixel changed"
+        );
+
+        cam.click("chooser/chooser-content/year-header/next-year");
+        assert_eq!(leaf_text_in(&cam, "full", "year"), "2027");
+        assert!(
+            cam.has("full/calendar/content/chooser"),
+            "the year arrow shut it"
+        );
+
+        cam.click("chooser/chooser-content/months/mon-3");
+        assert!(
+            !cam.has("full/calendar/content/chooser"),
+            "picking a month left the chooser up"
+        );
+        assert!(
+            cam.has("full/calendar"),
+            "picking a month shut the calendar it was picked in"
+        );
+        assert_eq!(leaf_text_in(&cam, "full", "month"), "March 2027");
+        assert_eq!(
+            leaf_text_in(&cam, "full", "value"),
+            "2026-08-30",
+            "choosing a month moved the selected date"
+        );
+        cam.shoot("10-date-picker-full-march");
+
+        // And the compact picker beside it never opened.
+        assert!(
+            !cam.has("compact/calendar"),
+            "driving the full picker opened the compact one"
         );
     }
 
@@ -2878,27 +3015,27 @@ mod tests {
     #[test]
     fn clicking_the_date_field_keeps_focus_on_it_and_brackets_it() {
         let mut cam = Camera::on("Date picker");
-        cam.click("when/field");
+        cam.click("compact/field");
         assert!(
-            cam.has("when/calendar"),
+            cam.has("compact/calendar"),
             "the click did not open the calendar"
         );
         assert!(
             cam.focused()
                 .as_deref()
-                .is_some_and(|id| id.ends_with("when/field")),
+                .is_some_and(|id| id.ends_with("compact/field")),
             "focus flew away from the field when the calendar opened: {:?}",
             cam.focused()
         );
         assert!(
             cam.ring()
                 .as_deref()
-                .is_some_and(|id| id.ends_with("when/field")),
+                .is_some_and(|id| id.ends_with("compact/field")),
             "the frame rings something other than the field: {:?}",
             cam.ring()
         );
-        let field = cam.rect("when/field");
-        let bar = assert_hugs_well(&mut cam, "when/field", "10-date-picker-open-focused");
+        let field = cam.rect("compact/field");
+        let bar = assert_hugs_well(&mut cam, "compact/field", "10-date-picker-open-focused");
         let img = raster(&mut cam, "10-date-picker-open-focused");
         let row = device_row(&img, field.x, field.x + field.w, underline_row(field));
         assert!(

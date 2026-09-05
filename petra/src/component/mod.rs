@@ -148,7 +148,7 @@ pub use data_table::{
     data_table_row_sm, data_table_row_xl, data_table_row_xs, data_table_sort_header,
     data_table_zebra,
 };
-pub use date_picker::{date_picker, date_picker_open};
+pub use date_picker::{Calendar, date_picker, date_picker_open, date_picker_showing};
 pub use dropdown::{dropdown, dropdown_open, dropdown_option};
 pub use field::{
     field, field_fluid, field_invalid, field_labeled, field_lg, field_readonly, field_sm,

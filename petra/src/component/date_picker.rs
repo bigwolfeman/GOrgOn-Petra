@@ -89,10 +89,26 @@ const MONTHS: [&str; 12] = [
     "December",
 ];
 
+/// The month/year chooser fills the calendar's body exactly: everything
+/// below the header it hangs from. Anything shorter would leave a band of
+/// the day grid showing under an opaque panel, which reads as two grids
+/// stacked rather than as one panel over one grid.
+const CHOOSER_H: f32 = CALENDAR_H - SIZE_MD;
+/// Rows of months in the chooser: twelve months, three to a row.
+const MONTH_ROWS: usize = 4;
+/// Columns of months in the chooser.
+const MONTH_COLS: usize = 3;
+/// One month cell's height: the chooser's body divided by its rows, so the
+/// grid fills the panel rather than floating in the top of it.
+const MONTH_CELL_H: f32 = (CHOOSER_H - SIZE_MD) / MONTH_ROWS as f32;
+
 const _: () = assert!(SIZE_MD == 40.0);
 const _: () = assert!(CALENDAR_W == 288.0);
 const _: () = assert!(CALENDAR_H == 336.0);
 const _: () = assert!(WEEK_ROWS == 6);
+const _: () = assert!(CHOOSER_H == 296.0);
+const _: () = assert!(MONTH_ROWS * MONTH_COLS == 12);
+const _: () = assert!(MONTH_CELL_H == 64.0);
 
 const FIELD_INTENTS: &[Interaction] = &[Interaction::Focus, Interaction::Click, Interaction::Hover];
 
@@ -109,29 +125,123 @@ pub fn date_picker(
     column(key, field, None)
 }
 
-/// Open calendar: the same column, its field expanded, plus the month
-/// `value` names, flush under the field's leading edge.
+/// What an open calendar is showing: which month the grid is browsing, and
+/// which of the two forms draws its header.
 ///
-/// The field child is keyed `"field"` in both forms; the calendar is keyed
+/// The month is carried here rather than read off `value` because browsing
+/// and choosing are two different things. Carbon's arrows turn the month on
+/// show and leave the selected date alone; a component that took only
+/// `value` could not say "August is selected, September is on screen", so
+/// the only way to step a month was to move the selection with it.
+///
+/// Two forms, because the operator asked for two: *"we need 2 date pickers
+/// 'compact' and 'full' where compact is what we have now, and full lets me
+/// click the month to get another menu that lets me pick month and year,
+/// and in the full view the month is a button, not just a label."*
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Calendar {
+    /// Carbon's own header: the month name is a caption between the two
+    /// arrows (`.flatpickr-current-month`, a `<span class="cur-month">`),
+    /// browsing `year`-`month`.
+    Compact {
+        /// Year the grid is browsing.
+        year: i32,
+        /// Month the grid is browsing, `1..=12`.
+        month: u32,
+    },
+    /// The month name is a button carrying a [`IconMark::ChevronDown`],
+    /// keyed `month-button`. Pressing it is the caller's to turn into
+    /// [`Calendar::Choosing`].
+    Full {
+        /// Year the grid is browsing.
+        year: i32,
+        /// Month the grid is browsing, `1..=12`.
+        month: u32,
+    },
+    /// [`Calendar::Full`] with the month/year chooser raised over the day
+    /// grid: a year stepper keyed `prev-year`/`next-year` over twelve month
+    /// cells keyed `mon-1`..`mon-12`.
+    Choosing {
+        /// Year the chooser is on, which is also the year the grid beneath
+        /// it is browsing.
+        year: i32,
+        /// Month the grid beneath is browsing, `1..=12`, and the cell the
+        /// chooser marks selected.
+        month: u32,
+    },
+}
+
+impl Calendar {
+    /// The month on show, whatever the form.
+    fn view(self) -> (i32, u32) {
+        match self {
+            Self::Compact { year, month }
+            | Self::Full { year, month }
+            | Self::Choosing { year, month } => (year, month),
+        }
+    }
+
+    /// Whether the header's month is a button rather than a caption.
+    fn month_is_a_button(self) -> bool {
+        !matches!(self, Self::Compact { .. })
+    }
+
+    /// Whether the chooser is over the day grid.
+    fn choosing(self) -> bool {
+        matches!(self, Self::Choosing { .. })
+    }
+}
+
+/// Open calendar: the same column, its field expanded, plus the month
+/// `calendar` names, flush under the field's leading edge.
+///
+/// The field child is keyed `"field"` in every form; the calendar is keyed
 /// `"calendar"` and anchored to `"field"`. A day cell is keyed `day-<n>`
 /// and an adjacent-month cell `adj-<i>`, so a caller matching `day-` picks
 /// up exactly the days of the month on show.
 ///
-/// `value` is read as `YYYY-MM-DD`. A value that does not parse still
-/// draws a calendar — the current month cannot be known here, so it falls
-/// back to the month in the field's own text being unreadable and shows
-/// January 1970 with nothing selected, which is visibly wrong rather than
-/// quietly wrong.
+/// `value` is read as `YYYY-MM-DD` for the *selected* day, which is marked
+/// only when it falls in the month `calendar` is browsing. A value that
+/// does not parse marks nothing and still draws the month asked for, which
+/// is visibly wrong in the field and never wrong in the grid.
+pub fn date_picker_showing(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    value: impl Into<String>,
+    calendar: Calendar,
+) -> ViewNode {
+    let label = label.into();
+    let value = value.into();
+    let (year, month) = calendar.view();
+    // The selected day belongs to the month it was picked in. Browsing away
+    // from that month must not carry the accent fill with it onto whatever
+    // day happens to share the number.
+    let selected = match parse_date(&value) {
+        Some((y, m, day)) if y == year && m == month => day,
+        _ => 0,
+    };
+    let field = closed_field("field", label.clone(), value, true);
+    column(
+        key,
+        field,
+        Some(calendar_surface(label, year, month, selected, calendar)),
+    )
+}
+
+/// [`date_picker_showing`] browsing the month `value` names, in the compact
+/// form: Carbon's calendar exactly.
+///
+/// `value` is read as `YYYY-MM-DD`. A value that does not parse cannot say
+/// what month to show, so this falls back to January 1970 with nothing
+/// selected — visibly wrong rather than quietly wrong.
 pub fn date_picker_open(
     key: impl Into<Key>,
     label: impl Into<String>,
     value: impl Into<String>,
 ) -> ViewNode {
-    let label = label.into();
     let value = value.into();
-    let (year, month, day) = parse_date(&value).unwrap_or((1970, 1, 0));
-    let field = closed_field("field", label.clone(), value, true);
-    column(key, field, Some(calendar_surface(label, year, month, day)))
+    let (year, month, _) = parse_date(&value).unwrap_or((1970, 1, 1));
+    date_picker_showing(key, label, value, Calendar::Compact { year, month })
 }
 
 /// The column both forms share: `field`, plus `calendar` while open. One
@@ -245,13 +355,21 @@ fn first_weekday(year: i32, month: u32) -> usize {
 /// `.cds--date-picker__calendar` is flush under the field's leading edge
 /// and has no beak, because it is a panel belonging to the field rather
 /// than a bubble pointing at it.
-fn calendar_surface(label: String, year: i32, month: u32, selected: u32) -> ViewNode {
-    let mut content = stack(
-        "content",
-        Axis::Vertical,
-        None,
-        vec![month_header(year, month), month_grid(year, month, selected)],
-    );
+fn calendar_surface(
+    label: String,
+    year: i32,
+    month: u32,
+    selected: u32,
+    calendar: Calendar,
+) -> ViewNode {
+    let mut children = vec![
+        month_header(year, month, calendar),
+        month_grid(year, month, selected),
+    ];
+    if calendar.choosing() {
+        children.push(chooser_surface(year, month));
+    }
+    let mut content = stack("content", Axis::Vertical, None, children);
     content.props.align = Some(Align::Stretch);
 
     let mut node = ViewNode::new(NodeKind::Surface, "calendar")
@@ -301,21 +419,34 @@ fn calendar_surface(label: String, year: i32, month: u32, selected: u32) -> View
     })
 }
 
-/// `< August 2026 >` — Carbon's `.cds--date-picker__month`.
-fn month_header(year: i32, month: u32) -> ViewNode {
-    let mut caption = text(
-        "month",
-        format!("{} {year}", MONTHS[(month - 1) as usize % 12]),
-    );
+/// `< August 2026 >` — Carbon's `.flatpickr-months`: a prev arrow, the
+/// current month, a next arrow, each 40 tall.
+///
+/// A `calendar` whose month is a button swaps the caption for a real
+/// control. Carbon's own header is
+/// the caption (`.cur-month` is a `<span>`), so the compact form is the
+/// conformance target and the full form is a stated extension: Flatpickr
+/// ships a `monthSelectorType: "dropdown"` variant and Carbon does not wire
+/// it up, so there is no Carbon markup for the button or for the panel it
+/// raises. What Carbon does give is the affordance — `.cur-month:hover`
+/// takes `$layer-hover`, which is a hover tone on a span nothing can press.
+fn month_header(year: i32, month: u32, calendar: Calendar) -> ViewNode {
+    let caption_text = format!("{} {year}", MONTHS[(month - 1) as usize % 12]);
+    let mut caption = text("month", caption_text.clone());
     caption.props.style = Some(t(TYPOGRAPHY_HEADING_SM));
     caption
         .props
         .tokens
         .insert("foreground".into(), t(TEXT_PRIMARY));
 
-    let mut seat = stack("month-seat", Axis::Horizontal, None, vec![caption]);
-    seat.props.align = Some(Align::Center);
-    seat.props.justify = Some(Justify::Center);
+    let seat = if calendar.month_is_a_button() {
+        month_button(caption, caption_text, calendar.choosing())
+    } else {
+        let mut seat = stack("month-seat", Axis::Horizontal, None, vec![caption]);
+        seat.props.align = Some(Align::Center);
+        seat.props.justify = Some(Justify::Center);
+        seat
+    };
 
     let mut row = ViewNode::new(NodeKind::Grid, "month-header")
         .with_props(Props {
@@ -329,16 +460,20 @@ fn month_header(year: i32, month: u32) -> ViewNode {
             ..Props::default()
         })
         .with_children(vec![
-            month_step("prev-month", "Previous month", IconMark::ChevronLeft),
+            step_control("prev-month", "Previous month", IconMark::ChevronLeft),
             seat,
-            month_step("next-month", "Next month", IconMark::ChevronRight),
+            step_control("next-month", "Next month", IconMark::ChevronRight),
         ]);
     row.constraints = pin_height(SIZE_MD);
     row
 }
 
-/// One of the two month controls: a 40x40 icon button.
-fn month_step(key: &str, label: &str, mark: IconMark) -> ViewNode {
+/// One step control: a 40x40 icon button. Carbon's
+/// `.flatpickr-prev-month`/`.flatpickr-next-month` — 40x40, `$icon-primary`,
+/// `$layer-hover` on hover — and the same shape the chooser's year stepper
+/// wears, because a year arrow and a month arrow are the same control
+/// pointed at a different number.
+fn step_control(key: &str, label: &str, mark: IconMark) -> ViewNode {
     let glyph = icon_toned("glyph", mark, IconTone::Primary);
     let mut node = stack(key, Axis::Horizontal, None, vec![glyph]);
     node.props.align = Some(Align::Center);
@@ -354,6 +489,232 @@ fn month_step(key: &str, label: &str, mark: IconMark) -> ViewNode {
         label.to_owned(),
         FIELD_INTENTS,
     )
+}
+
+/// The full form's month control: the same caption, plus a chevron saying
+/// it raises something, in a button 40 tall.
+///
+/// `name` is the caption's own text, so the accessible name reads
+/// "August 2026, choose month and year" rather than leaving the glyph to
+/// carry the meaning (FR-026). The chevron turns over when the chooser is
+/// up, which is Carbon's rule for every open state it draws
+/// (`.cds--list-box__menu-icon--open { transform: rotate(180deg) }`).
+fn month_button(caption: ViewNode, name: String, choosing: bool) -> ViewNode {
+    let mark = if choosing {
+        IconMark::ChevronUp
+    } else {
+        IconMark::ChevronDown
+    };
+    let glyph = icon_toned("glyph", mark, IconTone::Primary);
+    let mut node = stack(
+        "month-button",
+        Axis::Horizontal,
+        Some(SPACING_03),
+        vec![caption, glyph],
+    );
+    node.props.align = Some(Align::Center);
+    node.props.justify = Some(Justify::Center);
+    node.props
+        .tokens
+        .insert("background".into(), t(SURFACE_RAISED));
+    node.props
+        .tokens
+        .insert("background@hover".into(), t(LAYER_HOVER));
+    let mut node = node.with_constraints(pin_height(SIZE_MD)).interactive(
+        Role::Button,
+        format!("{name}, choose month and year"),
+        FIELD_INTENTS,
+    );
+    node.semantics.expanded = Some(choosing);
+    node
+}
+
+/// The month/year chooser: a year stepper over twelve month cells, filling
+/// the calendar's body.
+///
+/// A `Layer::Popup` surface *inside* the calendar surface, anchored to the
+/// header it hangs from. Three consequences, each of them the reason it is
+/// built this way rather than as a sibling of the calendar:
+///
+/// * z. A surface nested in a surface takes its parent's z plus its own
+///   layer base (`layout::Slot::above`), so the chooser paints over the day
+///   grid without any component naming a number.
+/// * Dismissal. `input::dismiss_requests` reports **every**
+///   `DismissOutside` surface a press landed outside of. A chooser hanging
+///   outside the calendar's own rect would make every press inside itself a
+///   press outside the calendar, and picking a month would shut the
+///   calendar it was picked in. Sized to the calendar's body, no press on
+///   the chooser is ever outside the calendar.
+/// * Anchoring. A component knows the keys it just wrote and not its own
+///   mount path, so `Anchor::Sibling` is the only anchor it can spell
+///   ([`Anchor::Sibling`]'s doc). Putting the chooser in the same child list
+///   as `month-header` is what makes that spelling reach the header.
+///
+/// Carbon ships no markup for this panel; see [`month_header`].
+fn chooser_surface(year: i32, month: u32) -> ViewNode {
+    let mut content = stack(
+        "chooser-content",
+        Axis::Vertical,
+        None,
+        vec![year_header(year), month_cells(month)],
+    );
+    content.props.align = Some(Align::Stretch);
+
+    let mut node = ViewNode::new(NodeKind::Surface, "chooser")
+        .with_props(Props {
+            layer: Some(Layer::Popup),
+            anchor: Some(Anchor::Sibling {
+                key: Key::new("month-header"),
+                edge: Edge::Bottom,
+                align: PropAlign::Start,
+                offset: None,
+            }),
+            // `Shrink` and not the `Flip` the calendar takes. Flip's escape
+            // hatch is the opposite edge, which for this surface is *above*
+            // the header and therefore outside the calendar -- and a chooser
+            // outside the calendar makes every press on itself a press
+            // outside the calendar, which is the one thing the containment
+            // below exists to prevent. Shrink keeps the edge and gives up
+            // extent instead. In practice neither fires: the calendar is
+            // already clamped onto the window and the chooser is sized to
+            // its body, so there is nothing left to clamp.
+            clamp: Some(ClampRule::Shrink),
+            input_policy: Some(InputPolicy::DismissOutside),
+            align: Some(Align::Stretch),
+            tip: Some(Tip::Flush),
+            ..Props::default()
+        })
+        .child(content);
+    node.props
+        .tokens
+        .insert("background".into(), t(SURFACE_RAISED));
+    node.props.tokens.insert("shadow".into(), t(SHADOW_OVERLAY));
+    node.semantics.role = Some(Role::Overlay);
+    node.semantics.label = Some("Choose month and year".to_owned());
+    node.with_constraints(Constraints {
+        horizontal: AxisConstraint {
+            min: Some(CALENDAR_W),
+            max: Some(CALENDAR_W),
+            priority: 0,
+        },
+        vertical: AxisConstraint {
+            min: Some(CHOOSER_H),
+            max: Some(CHOOSER_H),
+            priority: 0,
+        },
+    })
+}
+
+/// `< 2026 >` — the chooser's year stepper, built to the same three-track
+/// plan as [`month_header`] so the two rows line up arrow over arrow.
+fn year_header(year: i32) -> ViewNode {
+    let mut caption = text("year", year.to_string());
+    caption.props.style = Some(t(TYPOGRAPHY_HEADING_SM));
+    caption
+        .props
+        .tokens
+        .insert("foreground".into(), t(TEXT_PRIMARY));
+    let mut seat = stack("year-seat", Axis::Horizontal, None, vec![caption]);
+    seat.props.align = Some(Align::Center);
+    seat.props.justify = Some(Justify::Center);
+
+    let mut row = ViewNode::new(NodeKind::Grid, "year-header")
+        .with_props(Props {
+            columns: vec![
+                TrackSize::Fixed { value: SIZE_MD },
+                TrackSize::Weight { weight: 1.0 },
+                TrackSize::Fixed { value: SIZE_MD },
+            ],
+            rows: vec![TrackSize::Fixed { value: SIZE_MD }],
+            align: Some(Align::Stretch),
+            ..Props::default()
+        })
+        .with_children(vec![
+            step_control("prev-year", "Previous year", IconMark::ChevronLeft),
+            seat,
+            step_control("next-year", "Next year", IconMark::ChevronRight),
+        ]);
+    row.constraints = pin_height(SIZE_MD);
+    row
+}
+
+/// Twelve month cells, three to a row, `selected` filled with the accent.
+fn month_cells(selected: u32) -> ViewNode {
+    let children: Vec<ViewNode> = (1..=12).map(|m| month_cell(m, m == selected)).collect();
+    let mut grid = ViewNode::new(NodeKind::Grid, "months").with_props(Props {
+        columns: vec![TrackSize::Weight { weight: 1.0 }; MONTH_COLS],
+        rows: vec![
+            TrackSize::Fixed {
+                value: MONTH_CELL_H
+            };
+            MONTH_ROWS
+        ],
+        // Same reason `month_grid` names it: without it a cell keeps its
+        // natural size and the hit box is the width of the word, not of the
+        // column it sits in.
+        align: Some(Align::Stretch),
+        ..Props::default()
+    });
+    grid.constraints = Constraints {
+        horizontal: AxisConstraint {
+            min: Some(CALENDAR_W),
+            max: Some(CALENDAR_W),
+            priority: 0,
+        },
+        vertical: AxisConstraint {
+            min: None,
+            max: None,
+            priority: 1,
+        },
+    };
+    grid.with_children(children)
+}
+
+/// One month of the chooser, keyed `mon-<n>` with `n` in `1..=12`.
+///
+/// The visible text is the three-letter abbreviation, because "September"
+/// does not fit a 96-wide column at heading-sm and a label that overflows
+/// is a defect this catalog has already shipped once. The accessible name
+/// is the whole month, so the abbreviation is never the only channel
+/// (FR-026).
+fn month_cell(month: u32, selected: bool) -> ViewNode {
+    let name = MONTHS[(month - 1) as usize % 12];
+    let short = name.get(..3).unwrap_or(name);
+    let mut caption = text("label", short.to_owned());
+    caption.props.tokens.insert(
+        "foreground".into(),
+        t(if selected {
+            TEXT_ON_ACCENT
+        } else {
+            TEXT_PRIMARY
+        }),
+    );
+    let mut node = stack(
+        format!("mon-{month}"),
+        Axis::Horizontal,
+        None,
+        vec![caption],
+    );
+    node.props.align = Some(Align::Center);
+    node.props.justify = Some(Justify::Center);
+    node.props.tokens.insert(
+        "background".into(),
+        t(if selected {
+            ACCENT_PRIMARY
+        } else {
+            SURFACE_RAISED
+        }),
+    );
+    node.props
+        .tokens
+        .insert("background@hover".into(), t(LAYER_HOVER));
+    let mut node = node.with_constraints(pin_height(MONTH_CELL_H)).interactive(
+        Role::Button,
+        name.to_owned(),
+        FIELD_INTENTS,
+    );
+    node.semantics.selected = selected;
+    node
 }
 
 /// The weekday row plus six week rows of the real month.
@@ -509,8 +870,9 @@ fn pin_height(h: f32) -> Constraints {
 #[cfg(test)]
 mod tests {
     use super::{
-        CALENDAR_H, CALENDAR_W, PropAlign, SIZE_MD, WEEK_ROWS, WEEKDAYS, date_picker,
-        date_picker_open, days_in_month, first_weekday, parse_date,
+        CALENDAR_H, CALENDAR_W, CHOOSER_H, Calendar, MONTH_CELL_H, MONTH_COLS, MONTH_ROWS,
+        PropAlign, SIZE_MD, WEEK_ROWS, WEEKDAYS, date_picker, date_picker_open,
+        date_picker_showing, days_in_month, first_weekday, parse_date,
     };
     use crate::component::tokens::{ACCENT_PRIMARY, BORDER_STRONG, SURFACE_RAISED};
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
@@ -518,7 +880,7 @@ mod tests {
     use crate::testing::{Harness, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
     use crate::tree::{
-        Anchor, FocusFigure, Interaction, NodeKind, Props, Registry, Role, Tip, ViewNode,
+        Anchor, ClampRule, FocusFigure, Interaction, NodeKind, Props, Registry, Role, Tip, ViewNode,
     };
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
@@ -727,6 +1089,299 @@ mod tests {
         assert!(
             days.children.iter().all(|c| c.key.as_str() != "adj-6"),
             "slot 6 is the 1st of August"
+        );
+    }
+
+    /// The compact form's month is a caption in a seat; the full form's is
+    /// a real control that says what it opens and whether it is open.
+    ///
+    /// The operator: *"in the full view the month is a button, not just a
+    /// label."* A `Text` node someone made clickable would pass a
+    /// screenshot and fail a keyboard, so what is asserted is the role, the
+    /// interactions and the accessible name, not the paint.
+    #[test]
+    fn only_the_full_form_makes_the_month_a_control() {
+        let view = Calendar::Compact {
+            year: 2026,
+            month: 8,
+        };
+        let compact = date_picker_showing("due", "Due date", "2026-08-30", view);
+        let header = child(
+            child(child(&compact, "calendar"), "content"),
+            "month-header",
+        );
+        let seat = child(header, "month-seat");
+        assert_eq!(seat.semantics.role, None, "Carbon's `.cur-month` is a span");
+        assert!(seat.interactions.is_empty());
+        assert!(
+            header
+                .children
+                .iter()
+                .all(|c| c.key.as_str() != "month-button"),
+            "the compact form grew a month button"
+        );
+
+        for (calendar, open) in [
+            (
+                Calendar::Full {
+                    year: 2026,
+                    month: 8,
+                },
+                false,
+            ),
+            (
+                Calendar::Choosing {
+                    year: 2026,
+                    month: 8,
+                },
+                true,
+            ),
+        ] {
+            let node = date_picker_showing("due", "Due date", "2026-08-30", calendar);
+            let header = child(child(child(&node, "calendar"), "content"), "month-header");
+            let button = child(header, "month-button");
+            assert_eq!(button.semantics.role, Some(Role::Button));
+            assert!(button.interactions.contains(&Interaction::Click));
+            assert!(button.interactions.contains(&Interaction::Focus));
+            assert_eq!(
+                button.semantics.label.as_deref(),
+                Some("August 2026, choose month and year"),
+                "the chevron must not be the only channel"
+            );
+            assert_eq!(button.semantics.expanded, Some(open));
+            assert_eq!(
+                child(button, "month").props.text.as_deref(),
+                Some("August 2026")
+            );
+            assert!(
+                header
+                    .children
+                    .iter()
+                    .all(|c| c.key.as_str() != "month-seat"),
+                "the button replaces the seat rather than joining it"
+            );
+        }
+    }
+
+    /// The chooser: twelve named month cells over a year stepper, sized to
+    /// the calendar's body and anchored to the header it hangs from.
+    #[test]
+    fn the_chooser_offers_every_month_and_a_year_stepper() {
+        let node = date_picker_showing(
+            "due",
+            "Due date",
+            "2026-08-30",
+            Calendar::Choosing {
+                year: 2026,
+                month: 8,
+            },
+        );
+        let content = child(child(&node, "calendar"), "content");
+        let chooser = child(content, "chooser");
+        assert_eq!(chooser.kind, NodeKind::Surface);
+        assert_eq!(chooser.semantics.role, Some(Role::Overlay));
+        assert_eq!(chooser.props.tip, Some(Tip::Flush));
+        assert_eq!(
+            chooser.props.clamp,
+            Some(ClampRule::Shrink),
+            "Flip's opposite edge is above the header, which is outside the \
+             calendar, and a chooser outside the calendar dismisses it"
+        );
+        match &chooser.props.anchor {
+            Some(Anchor::Sibling { key, align, .. }) => {
+                assert_eq!(key.as_str(), "month-header");
+                assert_eq!(*align, PropAlign::Start);
+            }
+            other => panic!("expected Anchor::Sibling, got {other:?}"),
+        }
+        assert_eq!(chooser.constraints.horizontal.max, Some(CALENDAR_W));
+        assert_eq!(chooser.constraints.vertical.max, Some(CHOOSER_H));
+        assert_eq!(CHOOSER_H, CALENDAR_H - SIZE_MD);
+
+        let body = child(chooser, "chooser-content");
+        let years = child(body, "year-header");
+        assert_eq!(
+            child(child(years, "year-seat"), "year")
+                .props
+                .text
+                .as_deref(),
+            Some("2026")
+        );
+        for step in ["prev-year", "next-year"] {
+            let control = child(years, step);
+            assert_eq!(control.semantics.role, Some(Role::Button));
+            assert!(control.interactions.contains(&Interaction::Click));
+        }
+
+        let months = child(body, "months");
+        assert_eq!(months.props.columns.len(), MONTH_COLS);
+        assert_eq!(months.props.rows.len(), MONTH_ROWS);
+        assert_eq!(
+            months.props.align,
+            Some(crate::geom::Align::Stretch),
+            "an unstretched cell is a hit box the width of its own word"
+        );
+        assert_eq!(months.children.len(), 12);
+        let names = [
+            "January",
+            "February",
+            "March",
+            "April",
+            "May",
+            "June",
+            "July",
+            "August",
+            "September",
+            "October",
+            "November",
+            "December",
+        ];
+        for (i, name) in names.iter().enumerate() {
+            let cell = child(months, &format!("mon-{}", i + 1));
+            assert_eq!(cell.semantics.role, Some(Role::Button));
+            assert!(cell.interactions.contains(&Interaction::Click));
+            assert_eq!(
+                cell.semantics.label.as_deref(),
+                Some(*name),
+                "the abbreviation must not be the only channel"
+            );
+            assert_eq!(
+                child(cell, "label").props.text.as_deref(),
+                Some(&name[..3]),
+                "the visible text is the abbreviation that fits the column"
+            );
+            assert_eq!(cell.constraints.vertical.max, Some(MONTH_CELL_H));
+        }
+        let august = child(months, "mon-8");
+        assert!(august.semantics.selected);
+        assert_eq!(token(august, "background"), Some(ACCENT_PRIMARY));
+        let other = child(months, "mon-3");
+        assert!(!other.semantics.selected);
+        assert_eq!(
+            token(other, "background"),
+            Some(SURFACE_RAISED),
+            "an unselected cell needs a resting fill under its hover binding"
+        );
+    }
+
+    /// Browsing to another month leaves the selected date alone and marks
+    /// no day in the month on show.
+    ///
+    /// The alternative — carrying the accent onto whatever day shares the
+    /// number — would have made "the 30th" look selected in every month
+    /// that has one.
+    #[test]
+    fn browsing_off_the_selected_month_marks_no_day() {
+        let node = date_picker_showing(
+            "due",
+            "Due date",
+            "2026-08-30",
+            Calendar::Compact {
+                year: 2026,
+                month: 9,
+            },
+        );
+        assert_eq!(
+            child(child(&node, "field"), "value").props.text.as_deref(),
+            Some("2026-08-30"),
+            "browsing moved the field's own value"
+        );
+        let content = child(child(&node, "calendar"), "content");
+        assert_eq!(
+            child(child(child(content, "month-header"), "month-seat"), "month")
+                .props
+                .text
+                .as_deref(),
+            Some("September 2026")
+        );
+        let days = child(content, "days");
+        assert!(
+            days.children.iter().all(|c| !c.semantics.selected),
+            "the 30th of August was marked in September"
+        );
+        // And back on the month it belongs to, it is marked again.
+        let home = date_picker_showing(
+            "due",
+            "Due date",
+            "2026-08-30",
+            Calendar::Compact {
+                year: 2026,
+                month: 8,
+            },
+        );
+        let days = child(child(child(&home, "calendar"), "content"), "days");
+        assert!(child(days, "day-30").semantics.selected);
+    }
+
+    /// The chooser is placed **inside** the calendar and above its day
+    /// grid, which is what makes it safe to declare `DismissOutside`.
+    ///
+    /// `input::dismiss_requests` reports every `DismissOutside` surface a
+    /// press landed outside of. A chooser hanging outside the calendar's own
+    /// rect would make every press inside itself a press outside the
+    /// calendar, so picking a month would shut the calendar it was picked
+    /// in. This is that containment, measured on a real frame rather than
+    /// argued from the constraints.
+    #[test]
+    fn the_chooser_lands_inside_the_calendar_and_over_the_day_grid() {
+        let frame = petrify_lone(date_picker_showing(
+            "due",
+            "Due date",
+            "2026-08-30",
+            Calendar::Choosing {
+                year: 2026,
+                month: 8,
+            },
+        ));
+        let at = |id: &str| {
+            frame
+                .placement(id)
+                .unwrap_or_else(|| panic!("{id} was not placed"))
+        };
+        let calendar = at("/root/due/calendar");
+        let chooser = at("/root/due/calendar/content/chooser");
+        let days = at("/root/due/calendar/content/days");
+        assert!(
+            chooser.rect.x >= calendar.rect.x - 0.5
+                && chooser.rect.y >= calendar.rect.y - 0.5
+                && chooser.rect.x + chooser.rect.w <= calendar.rect.x + calendar.rect.w + 0.5
+                && chooser.rect.y + chooser.rect.h <= calendar.rect.y + calendar.rect.h + 0.5,
+            "the chooser at {:?} escapes the calendar at {:?}",
+            chooser.rect,
+            calendar.rect
+        );
+        assert!(
+            chooser.z > days.z,
+            "the chooser at z {} is under the day grid at z {}",
+            chooser.z,
+            days.z
+        );
+        assert_eq!(chooser.rect.w, CALENDAR_W);
+        assert_eq!(chooser.rect.h, CHOOSER_H);
+        assert!(
+            (chooser.rect.h + SIZE_MD - calendar.rect.h).abs() < 0.5,
+            "the chooser leaves a band of the day grid showing under it:              chooser {:?}, calendar {:?}",
+            chooser.rect,
+            calendar.rect
+        );
+    }
+
+    /// The full form's nested surface is accepted at the depth the catalog
+    /// mounts it, which is where the anchor-cycle scan has the most to say:
+    /// the chooser depends on the calendar, and the calendar on the field.
+    #[test]
+    fn the_full_form_validates_when_mounted_at_catalog_depth() {
+        crate::component::tests::assert_mounts_at_catalog_depth(
+            "date_picker_showing",
+            vec![date_picker_showing(
+                "due",
+                "Due date",
+                "2026-08-30",
+                Calendar::Choosing {
+                    year: 2026,
+                    month: 8,
+                },
+            )],
         );
     }
 
