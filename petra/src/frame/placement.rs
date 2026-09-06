@@ -156,6 +156,10 @@ pub struct PlacementSemantics {
     /// ([`crate::tree::FocusShownOn`]). Projected and held out of the
     /// digest on the same terms as [`Self::focus_figure`].
     pub focus_shown_on: FocusShownOn,
+    /// Whether an ancestor's bar figure spans this node
+    /// ([`crate::tree::Semantics::focus_run`]). Projected and held out of the
+    /// digest on the same terms as [`Self::focus_figure`].
+    pub focus_run: bool,
     /// Hosts a deliberately endless animation, so it never blocks settle.
     pub ambient: bool,
     /// Driver action kinds this node accepts.

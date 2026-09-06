@@ -639,6 +639,31 @@ pub struct Semantics {
     /// [`FocusShownOn`].
     #[serde(skip_serializing_if = "FocusShownOn::is_default")]
     pub focus_shown_on: FocusShownOn,
+    /// When an ancestor draws a bar figure, the bar spans **this** node
+    /// rather than the ancestor's own content.
+    ///
+    /// A third, separate question from the other two: [`FocusFigure`] says
+    /// what shape, [`FocusShownOn`] says on whose rect, and this says how
+    /// wide. It narrows only the horizontal run — the bar still seats on the
+    /// rect [`FocusShownOn`] chose, so a row keeps its stripe on its own
+    /// bottom edge while the stripe spans only the row's title.
+    ///
+    /// # Why a component has to say it
+    ///
+    /// [`crate::focus::marked_rect`] otherwise takes the control's whole
+    /// content, and that is right for a toggle, a tag and a checkbox, whose
+    /// parts are all *the control*. It is wrong for a row with a **trailing
+    /// affordance**. An accordion header is 868 wide with an 79-wide title
+    /// at x 308 and a chevron at x 1128, so its content run is 836 — a
+    /// stripe that spans the row and reads as the container's own rule,
+    /// which is the picture the content rule replaced.
+    ///
+    /// Nothing geometric separates that chevron from a tag's dismiss cross,
+    /// which *is* part of its control. Both are a trailing canvas a gap away
+    /// from the label. The difference is what the control means by them, so
+    /// the control is what says.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub focus_run: bool,
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
@@ -831,6 +856,13 @@ impl ViewNode {
     ///
     /// Chainable counterpart to writing `semantics.focus_shown_on` directly,
     /// for the same reason as [`Self::with_focus_figure`].
+    #[must_use]
+    pub fn with_focus_run(mut self) -> Self {
+        self.semantics.focus_run = true;
+        self
+    }
+
+    /// Chainable counterpart to writing `semantics.focus_shown_on` directly,
     #[must_use]
     pub fn with_focus_shown_on(mut self, shown_on: FocusShownOn) -> Self {
         self.semantics.focus_shown_on = shown_on;

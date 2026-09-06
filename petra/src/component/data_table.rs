@@ -256,13 +256,25 @@ pub fn data_table_row_expandable(
     let mut node = stack(key, Axis::Vertical, None, parts);
     node.props.align = Some(Align::Stretch);
     bind_row_fills(&mut node);
-    // `BarInside` on every control this module builds: a table is rows packed
-    // flush and cells packed flush inside them, so the default bar *under* any
-    // of them would paint on a neighbour. The same stripe seated on the node's
-    // own bottom edge is contained by construction and cannot reach one.
+    // `Sides` on every row this module builds, the operator's call of
+    // 2026-09-06: *"instead of underlining the label try the v bars again,
+    // it looked better"*.
+    //
+    // A table is rows packed flush, so the default bar *under* a row paints
+    // on the next one and `BarInside` was the answer for a day. What an
+    // underline cannot do here is say which of a row's two columns it
+    // belongs to: the stripe lands on the row's content run, which is the
+    // name cell, and reads as marking that cell rather than the row. A pair
+    // of brackets marks the row and nothing narrower.
+    //
+    // They stand outside the row, and a row spans the table exactly, so this
+    // is the one figure choice in the library whose containment depends on
+    // the table having padding of its own.
+    // `no_focus_figure_paints_outside_the_box_it_belongs_to` is what checks
+    // that and will say so if the table ever loses it.
     let mut node = node
         .interactive(Role::Row, label, ROW_INTENTS)
-        .with_focus_figure(FocusFigure::BarInside);
+        .with_focus_figure(FocusFigure::Sides);
     node.semantics.selected = selected;
     node.semantics.expanded = Some(expanded);
     node
@@ -334,9 +346,10 @@ fn data_table_row_sized(
         size.height(),
     );
     bind_row_fills(&mut node);
+    // `Sides`, for the reason the expandable row above gives.
     let mut node = node
         .interactive(Role::Row, label, ROW_INTENTS)
-        .with_focus_figure(FocusFigure::BarInside);
+        .with_focus_figure(FocusFigure::Sides);
     node.semantics.selected = selected;
     node
 }

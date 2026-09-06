@@ -78,6 +78,7 @@ fn node_at(frame: &PetrifiedFrame, index: usize, children: Vec<SemanticNode>) ->
         // the node is. The tree already says which node is `focused`.
         focus_figure: _,
         focus_shown_on: _,
+        focus_run: _,
     } = &placement.semantics;
 
     let mut actions: Vec<Interaction> = actions.clone();

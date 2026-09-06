@@ -256,11 +256,19 @@ fn tab_variant(
     // already owns one edge of each variant, and the focus figure may not
     // share it, or the two accent marks read as one.
     //
-    // * **Line** — the indicator is on the tab's own *bottom* edge, which is
-    //   exactly where a bar would hang and exactly where a `BarInside`
-    //   stripe would sit. Two accent lines two units apart, told apart only
-    //   by width, is the defect reported against this strip once already.
-    //   The left and right edges are free, so: `Sides`.
+    // * **Line** — the indicator is on the tab's own *bottom* edge, so a
+    //   `BarInside` stripe would sit exactly on it and a selected tab would
+    //   show no focus at all. `Sides` was the answer until 2026-09-06 and
+    //   the operator photographed it clipping: the strip clips its own
+    //   height, so bars standing `hug_gap` outside a tab are cut off at top
+    //   and bottom. Their instruction is that an element already carrying a
+    //   blue line on its bottom edge takes the bar *below* it, which is the
+    //   one figure that neither collides nor clips: `BarUnder`.
+    //
+    //   It does put two accent lines two units apart on a selected tab.
+    //   That was reported against this strip once, in the other direction —
+    //   R6 wanted them further apart, not merged — and the shadow under the
+    //   bar is what separates them now.
     // * **Contained** — the indicator is on the *top* edge and the panel
     //   below the strip is not a control, so the bottom edge is free.
     //   `BarUnder`, unchanged.
@@ -270,7 +278,7 @@ fn tab_variant(
     //   the five units `BarUnder` needs. Both outset figures are out, and
     //   the bottom edge is free: `BarInside`, which needs no run at all.
     node.semantics.focus_figure = match variant {
-        Variant::Line => FocusFigure::Sides,
+        Variant::Line => FocusFigure::BarUnder,
         Variant::Vertical => FocusFigure::BarInside,
         Variant::Contained => FocusFigure::BarUnder,
     };
@@ -527,7 +535,7 @@ mod tests {
             assert_eq!(
                 node.semantics.focus_figure,
                 match label {
-                    "line" => FocusFigure::Sides,
+                    "line" => FocusFigure::BarUnder,
                     _ => FocusFigure::BarInside,
                 },
                 "{label}: the focus figure must keep off the {held} edge, \

@@ -1291,6 +1291,23 @@ fn paint_focus_figure(
         + f32::from(shadow_geom.spread)
         + f32::from(shadow_geom.blur)
         + f32::from(shadow_geom.offset[0].abs().max(shadow_geom.offset[1].abs()));
+    // `BarUnder` alone casts a shadow, and the operator asked about that on
+    // 2026-09-06: *"it looks like the cursors don't all have the same drop
+    // shadow? Hard to tell."* They do not, and the difference is measured
+    // rather than accidental.
+    //
+    // `BarUnder` hangs over the card below the control and the shadow is
+    // what seats it there. `Sides` was given the same shadow on 2026-09-06
+    // to make the set uniform, and `assert_hugs_well` went red on seven
+    // pages at once: the ground under a bracket's foot came back
+    // [27,27,27] against [34,34,34] beside it, a smudge past the well's
+    // bottom rule. That assertion exists because the smudge was reported.
+    // A bracket runs the full height of a control that is usually a well
+    // with a rule along its foot, so its shadow lands on that rule rather
+    // than on open card.
+    //
+    // `BarInside` casts none for a third reason: it is painted inside the
+    // fill it marks, so there is nothing behind it to lift it off.
     let shadow_color = (figure == FocusFigure::BarUnder)
         .then(|| resolve_or_record(colors, gorgon_petra::token::focus::BAR_SHADOW_TOKEN, report))
         .flatten();
@@ -3694,10 +3711,19 @@ mod tests {
                 .rect,
             frame.viewport.scale,
         );
+        // The row's content, which ends at the word. It starts earlier than
+        // the word does, at the indent and caret the row reserves — those are
+        // the row's own parts and `marked_rect` counts them, which is what
+        // keeps the run from moving when a branch gains or loses its caret.
         assert_eq!(
-            (target.mark.min.x, target.mark.max.x),
-            (label.min.x, label.max.x),
-            "and spans the row's own word"
+            target.mark.max.x, label.max.x,
+            "the run ends at the row's word: {:?} against {label:?}",
+            target.mark
+        );
+        assert!(
+            target.mark.min.x <= label.min.x,
+            "and reaches back over the row's own indent: {:?}",
+            target.mark
         );
         // Inside the selected band, not equal to it. The fill is bound on
         // the item and spans the tree; the stripe marks the word.

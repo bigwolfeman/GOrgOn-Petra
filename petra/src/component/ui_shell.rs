@@ -367,10 +367,24 @@ pub fn ui_shell_header_nav_item(
         .with_props(props)
         .with_children(vec![body, mark])
         .with_constraints(pin_block(MINI_UNIT_6));
-    // `Border`, for the reason `header_name` gives.
+    // `BarUnder`, and this row alone among the header's controls.
+    //
+    // `header_name` explains why every other one is `BarInside`: the header
+    // bar's bottom edge is the top of the page, so a bar hung two units
+    // below a header control paints on the page. That is still true here.
+    // What is also true here and nowhere else in the header is that this row
+    // carries a current-page accent on its own bottom edge (`mark`, three
+    // units, `accent_mark("indicator", Axis::Horizontal, ...)` above), and a
+    // `BarInside` stripe sits exactly on it — so the one row where focus
+    // matters most, the page you are already on, showed no focus at all.
+    //
+    // The operator's rule of 2026-09-06 settles the trade: an element that
+    // already has a blue line at its bottom when selected takes the bar
+    // below it. The bar reaches three units onto the page and is legible
+    // there; an invisible focus ring is not legible anywhere.
     let mut node = node
         .interactive(Role::Button, label, INTENTS)
-        .with_focus_figure(FocusFigure::BarInside);
+        .with_focus_figure(FocusFigure::BarUnder);
     node.semantics.selected = current;
     node
 }
@@ -886,6 +900,14 @@ fn left_panel_row(shape: &RowShape<'_>) -> ViewNode {
     lead.push(caption);
     let mut lead = stack("lead", Axis::Horizontal, None, lead);
     lead.props.align = Some(Align::Center);
+    // `with_focus_run`: the row's focus stripe spans the icon and the word,
+    // not the row. A branch row also carries a chevron pinned at the panel's
+    // trailing edge, so without this the run is 224 of the row's 256 — near
+    // enough to the full-width stripe the operator rejected on this very
+    // panel on 2026-09-06. The leaf rows have no chevron and would be
+    // unaffected either way; declaring it on `lead` for all of them keeps
+    // every row in the panel measured the same way.
+    let lead = lead.with_focus_run();
 
     let mut row_parts = vec![lead];
     if let Some(expanded) = shape.branch {

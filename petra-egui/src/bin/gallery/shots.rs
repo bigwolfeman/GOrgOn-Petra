@@ -3912,13 +3912,13 @@ mod tests {
             && inner.y + inner.h <= outer.y + outer.h
     }
 
-    /// Every control wearing a bar has a label for the bar to span.
+    /// Every control wearing a bar has content for the bar to span.
     ///
-    /// Since 2026-09-06 a bar's width is the control's leading text
-    /// descendant ([`gorgon_petra::focus::marked_rect`]), and a control with
-    /// no text at all falls back to its own rect. That fallback is right for
-    /// an icon-only button, which is snug, and wrong for anything wide: a
-    /// full-width stripe on a row is exactly the picture the rule replaced.
+    /// Since 2026-09-06 a bar's width is the control's content run
+    /// ([`gorgon_petra::focus::marked_rect`]), and a control with no content
+    /// at all falls back to its own rect. That fallback is right for a snug
+    /// control and wrong for anything wide: a full-width stripe on a row is
+    /// exactly the picture the rule replaced.
     ///
     /// So the fallback is allowed to happen, and is not allowed to happen
     /// *quietly on something wide*. This names any control where a bar is
@@ -3927,7 +3927,7 @@ mod tests {
     ///
     /// Falsify by putting `BarUnder` on a wide iconless container.
     #[test]
-    fn every_bar_figure_finds_a_label() {
+    fn every_bar_figure_finds_its_content() {
         // 240 units: the widest a control can be and still read as hugging
         // its own text. The gallery's own left rail is 240 and holds a
         // number and a word; nothing wider than this is a label.
@@ -3964,7 +3964,7 @@ mod tests {
                 let run = gorgon_petra::focus::marked_rect(places, i, seat.semantics.focus_figure);
                 if run.w >= seat.rect.w && seat.rect.w > SNUG {
                     blind.push(format!(
-                        "{}: {} is {:.0} wide, its {:?} found no label, so the bar spans it all",
+                        "{}: {} is {:.0} wide, its {:?} found no content, so the bar spans it all",
                         cell.component, seat.id, seat.rect.w, seat.semantics.focus_figure
                     ));
                 }
@@ -4005,6 +4005,12 @@ mod tests {
             ("Contained list", "cl-0", "07-contained-list-cursor"),
             ("Accordion", "acc-0/header", "01-accordion-cursor"),
             ("Data table", "dt-0", "09-data-table-cursor"),
+            // Rows 33 and 36 joined the list on 2026-09-06, when the
+            // operator caught the bar sitting off-centre on both: a tag's
+            // dismiss cross and a toggle's knob are not text, so a run
+            // measured from text alone drifted away from them.
+            ("Tag", "tag-x", "33-tag-cursor"),
+            ("Toggle", "toggle-default-off", "36-toggle-cursor"),
             // Rows 40-42 are what the operator's first sentence named:
             // "on every UI shell element it should be the horizontal cursor
             // or the 2 vertical bars, not the boxed cursor". Five of the
@@ -4049,44 +4055,88 @@ mod tests {
         }
     }
 
-    /// Does a `text` placement's rect hug its glyphs, or is it stretched?
+    /// What each focusable control is actually made of: its own rect, the
+    /// run `marked_rect` hands its figure, and every leaf inside it.
     ///
-    /// The whole "bar spans the label" rule stands or falls on this. A
-    /// placement carries no measured ink width, so the only extent available
-    /// is the text node's own layout box — and `component::menu`'s label is
-    /// documented as taking the row's whole width. If that is true of the
-    /// other packed rows too, the label's rect is the row's rect and the rule
-    /// cannot be built from it.
+    /// The instrument behind every width decision in
+    /// `gorgon_petra::focus::marked_rect`. Both wrong answers that shipped on
+    /// 2026-09-06 came from reasoning about control anatomy without looking
+    /// at it: a toggle turned out to carry its caption *inside* the
+    /// focusable node, and a checkbox turned out to draw its box as a bare
+    /// spacer when empty. Neither is visible from the component source.
     ///
     /// Prints, asserts nothing.
     #[test]
-    fn triage_does_a_label_rect_hug_its_text() {
-        for (page, key) in [
-            ("Tree view", "tv-gorgon"),
-            ("Data table", "dt-0"),
-            ("UI shell left panel", "shell-left-kernel"),
-            ("Menu", "mn-pair/trigger"),
-            ("Button", "btn-primary"),
-            ("Checkbox", "check-a"),
-            ("Accordion", "acc-0/header"),
+    fn triage_what_each_control_is_made_of() {
+        for page in [
+            "Checkbox",
+            "Menu",
+            "Accordion",
+            "Contained list",
+            "UI shell left panel",
+            "Modal",
         ] {
             let mut cam = Camera::on(page);
-            cam.focus(key);
+            for opener in ["open-modal", "mn-pair/trigger"] {
+                if cam.has(opener) {
+                    cam.click(opener);
+                }
+            }
             let frame = cam.frame();
-            let hit: Vec<usize> = frame
-                .placements
-                .iter()
-                .enumerate()
-                .filter(|(_, p)| p.id.contains(key))
-                .map(|(i, _)| i)
-                .collect();
-            println!("TRIAGE {page} :: {key}");
-            for i in hit {
-                let p = &frame.placements[i];
-                println!(
-                    "TRIAGE   {:?} x={:.1} w={:.1} y={:.1} h={:.1}  {}",
-                    p.kind, p.rect.x, p.rect.w, p.rect.y, p.rect.h, p.id
+            let places = &frame.placements;
+            println!("TRIAGE ===== {page}");
+            for (i, node) in places.iter().enumerate() {
+                let figure = node.semantics.focus_figure;
+                if !node
+                    .semantics
+                    .actions
+                    .contains(&gorgon_petra::tree::Interaction::Focus)
+                    || !node.is_visible()
+                    || node.id.contains("/nav/")
+                    || node.id.contains("/rows/")
+                    || node.id.contains("/idx-")
+                {
+                    continue;
+                }
+                let seat = shown_on(places, i);
+                let run = gorgon_petra::focus::marked_rect(
+                    places,
+                    seat,
+                    places[seat].semantics.focus_figure,
                 );
+                let short = node.id.rsplit('/').take(3).collect::<Vec<_>>().join("\\");
+                println!(
+                    "TRIAGE {short}  {:?}  node x={:.0} w={:.0} y={:.0} h={:.0}  run x={:.0} w={:.0}",
+                    figure, node.rect.x, node.rect.w, node.rect.y, node.rect.h, run.x, run.w
+                );
+                for (k, leaf) in places.iter().enumerate() {
+                    let mut up = leaf.parent;
+                    let mut inside = false;
+                    while let Some(a) = up {
+                        if a == seat {
+                            inside = true;
+                            break;
+                        }
+                        up = places[a].parent;
+                    }
+                    if !inside || k == seat {
+                        continue;
+                    }
+                    let leafy = !places.iter().any(|c| c.parent == Some(k));
+                    if !leafy {
+                        continue;
+                    }
+                    println!(
+                        "TRIAGE       leaf {:?} x={:.0} w={:.0} y={:.0} h={:.0} vis={}  {}",
+                        leaf.kind,
+                        leaf.rect.x,
+                        leaf.rect.w,
+                        leaf.rect.y,
+                        leaf.rect.h,
+                        leaf.is_visible(),
+                        leaf.id.rsplit('/').next().unwrap_or("")
+                    );
+                }
             }
         }
     }
@@ -7532,18 +7582,23 @@ mod tests {
     /// that edge is not. This reads the raster where the figure lives and
     /// requires accent there that the unfocused frame does not have.
     ///
-    /// A Line tab brackets (`FocusFigure::Sides`) since 2026-09-06. It rang
-    /// before, and the claim is unchanged by that: a ring answered "not the
-    /// bottom edge" with its other three, and the brackets answer it by
-    /// standing outside the tab altogether. What moved is where this test
-    /// looks, not what it asserts.
+    /// A Line tab takes the bar *below* it (`FocusFigure::BarUnder`) since
+    /// 2026-09-06. It rang, then bracketed for a day, and the claim is
+    /// unchanged by either move: a ring answered "not the bottom edge" with
+    /// its other three, brackets answered it by standing outside the tab,
+    /// and the bar answers it by hanging two units clear underneath. What
+    /// moves each time is where this test looks, not what it asserts.
+    ///
+    /// The brackets went because the operator photographed them clipped —
+    /// the strip clips its own height, so a bar standing `hug_gap` outside a
+    /// tab is cut off top and bottom.
     ///
     /// # How this goes red
     ///
-    /// Put `FocusFigure::BarUnder` or `FocusFigure::BarInside` on
-    /// `tab_variant`'s Line arm and the probes stop changing, because both
-    /// put their stripe on the bottom edge — the one edge the indicator
-    /// already owns, which is the whole defect this test exists to catch.
+    /// Put `FocusFigure::BarInside` on `tab_variant`'s Line arm and the probe
+    /// stops changing, because that stripe sits *on* the bottom edge — the
+    /// one edge the indicator already owns, which is the whole defect this
+    /// test exists to catch.
     #[test]
     fn a_selected_tab_focused_shows_its_ring_around_its_indicator() {
         for theme in ["dark", "light"] {
@@ -7561,26 +7616,26 @@ mod tests {
             let indicator = cam.rect("tab-line-0/indicator");
             let after = raster(&mut cam, &format!("32-tabs-selected-focused-{theme}"));
 
-            // The indicator is the bottom edge of a Line tab, and the
-            // brackets stand `hug_gap` outside the left and right edges.
-            // Sample down the middle of each bar, which is where the figure
-            // is and where the indicator can never be.
+            // The indicator is the bottom edge of a Line tab; the bar hangs
+            // `gap` below that edge, clear of it. Sample the middle of the
+            // bar's own row, which is where the figure is and where the
+            // indicator can never be.
             let ring = FocusRing::STANDARD;
-            let mid = ring.hug_gap + ring.thickness / 2.0;
-            let probes = [
-                ("left bracket", tab.x - mid, tab.y + tab.h / 2.0),
-                ("right bracket", tab.right() + mid, tab.y + tab.h / 2.0),
-            ];
-            for (edge, x, y) in probes {
-                let rest = px(&before, x, y);
-                let lit = px(&after, x, y);
-                assert_ne!(
-                    rest, lit,
-                    "{theme}: the tab's {edge} reads {rest:?} both before \
-                     and after focus, so focus has nowhere to show that the \
-                     selection indicator does not already own"
-                );
-            }
+            let run = marked_run(cam.frame(), "tab-line-0");
+            let y = tab.bottom() + ring.gap + ring.thickness / 2.0;
+            let rest = px(&before, run.x + run.w / 2.0, y);
+            let lit = px(&after, run.x + run.w / 2.0, y);
+            assert_ne!(
+                rest, lit,
+                "{theme}: the row two units under the tab reads {rest:?} both \
+                 before and after focus, so focus has nowhere to show that \
+                 the selection indicator does not already own"
+            );
+            assert!(
+                y > indicator.bottom(),
+                "{theme}: the bar's row {y} is not clear of the indicator \
+                 {indicator:?}, so this probe cannot tell them apart"
+            );
 
             // And the indicator is still its own mark under all that: it is
             // pinned to the bottom edge, which is where a Line tab puts it.

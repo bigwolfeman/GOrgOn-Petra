@@ -52,13 +52,13 @@
 //! [`super::popover`].
 
 use super::button::{button, primary_button};
+use super::icon::{IconBox, IconMark, IconTone, icon_in};
 use super::on_layer;
-use super::pad;
 use super::stack;
 use super::text::{heading, text};
 use super::tokens::{
-    BORDER_STRONG, LAYER_HOVER, OVERLAY_SCRIM, SHADOW_RAISED, SHAPE_NONE, SPACING_03, SPACING_05,
-    SPACING_09, SURFACE_RAISED, TEXT_PRIMARY, t,
+    LAYER_HOVER, OVERLAY_SCRIM, SHADOW_RAISED, SHAPE_NONE, SPACING_03, SPACING_05, SPACING_09,
+    SURFACE_RAISED, t,
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
@@ -308,14 +308,38 @@ fn footer_button(mut node: ViewNode) -> ViewNode {
 }
 
 fn close_button() -> ViewNode {
-    let mut caption = text("label", "Close");
-    caption
-        .props
-        .tokens
-        .insert("foreground".into(), t(TEXT_PRIMARY));
-    let mut node = stack("close", Axis::Horizontal, None, vec![caption]);
+    let mut node = stack(
+        "close",
+        Axis::Horizontal,
+        None,
+        vec![icon_in(
+            "glyph",
+            IconMark::Close,
+            IconBox::Glyph,
+            IconTone::Primary,
+        )],
+    );
     node.props.align = Some(Align::Center);
-    node.props.padding = Some(pad(SPACING_05, SPACING_03));
+    node.props.justify = Some(Justify::Center);
+    // A flat glyph, no boundary — `component::file_uploader`'s `remove`
+    // control, which is the one the operator named on 2026-09-06: *"the
+    // close button border looks terrible... for close try just a flat x like
+    // we are using on the file uploader modals"*.
+    //
+    // This replaces the word "Close" and a `BORDER_STRONG` box, both added
+    // the day before for a reason that was real: the resting fill is the
+    // dialog's own surface, so with neither a border nor a glyph the control
+    // appeared only under the pointer. A glyph answers that without a box —
+    // it is visible at rest, which is the whole job the border was doing.
+    //
+    // **It is a departure from FR-026**, which says an icon must be a second
+    // channel and never the only one, and from this module's own doc rule 6
+    // ("never an icon-only mark"). The accessible name is still "Close" and
+    // `no_shipped_component_spells_an_icon_as_its_name` still holds, but for
+    // a sighted reader the glyph is now the only channel. Recorded rather
+    // than dressed up: the operator asked for it by name, citing a control
+    // this library already ships the same way.
+    //
     // Resting fill matches the dialog surface it sits on ([`SURFACE_RAISED`])
     // rather than binding no `background` at all: an unbound slot with only
     // `background@hover` beside it declares content the paint pass cannot
@@ -327,28 +351,13 @@ fn close_button() -> ViewNode {
     node.props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
-    // A boundary, so the control is a control at rest.
-    //
-    // The resting fill above is [`SURFACE_RAISED`], the dialog's own
-    // surface, so until this line the button was the word "Close" floating
-    // on the header with nothing to say it could be pressed — it appeared
-    // only under the pointer, and a keyboard-only reader never saw it at
-    // all. [`BORDER_STRONG`] is the name for a control boundary
-    // (`component::controls`' module doc argues the split from
-    // `border.subtle`, which is the decorative rule), held at SC 1.4.11's
-    // 3:1 on every layer.
-    node.props.tokens.insert("border".into(), t(BORDER_STRONG));
     node.with_constraints(Constraints {
-        // Horizontal takes a floor, not a fixed width. Carbon's 48px is the
-        // hit box for an *icon-only* close glyph; FR-026 replaces the icon
-        // with the word "Close" (see this module's own doc), which needs
-        // more than the 16px `pad(SPACING_05, SPACING_03)` leaves inside a
-        // pinned 48px box. 48 stays the floor so the tap target never
-        // shrinks below Carbon's own number; the label decides how much
-        // wider it needs.
+        // Pinned both ways now, where the word "Close" needed a floor and no
+        // ceiling. Carbon's 48 is the hit box for exactly this: an icon-only
+        // close glyph.
         horizontal: AxisConstraint {
             min: Some(CLOSE_HIT),
-            max: None,
+            max: Some(CLOSE_HIT),
             priority: 0,
         },
         vertical: AxisConstraint {
@@ -358,14 +367,16 @@ fn close_button() -> ViewNode {
         },
     })
     .interactive(Role::Button, "Close", CLOSE_INTENTS)
-    // `BarInside`, not `Sides`. This button sits hard against the dialog's
-    // trailing edge, and a side bar stands `FocusRing::hug_gap` +
-    // `FocusRing::thickness` = 7 units *outside* the rect, so the right-hand
-    // bar painted on the page behind the modal — the operator's "the v
-    // cursor spills out of the box unpleasantly", 2026-09-06, with a
-    // screenshot. A contained stripe on the button's own bottom edge cannot
-    // leave the dialog whatever the dialog's width is.
-    .with_focus_figure(FocusFigure::BarInside)
+    // `BarUnder`, the operator's call of 2026-09-06 for this control.
+    //
+    // `Sides` was the library default and spilled: this button sits hard
+    // against the dialog's trailing edge and a side bar stands `hug_gap` +
+    // `thickness` = 7 units outside the rect, so the right-hand one painted
+    // on the page behind the modal. `BarInside` replaced it and put the
+    // stripe inside the button's own fill, which is what the operator is
+    // rejecting here. The header has the dialog's whole body under it, so
+    // the five units a bar needs are there and the bar stays in the dialog.
+    .with_focus_figure(FocusFigure::BarUnder)
 }
 
 #[cfg(test)]
@@ -378,6 +389,7 @@ mod tests {
     use crate::layout::overlay_surface::surface_scopes;
     use crate::testing::{Harness, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
+    use crate::tree::FocusFigure;
     use crate::tree::{
         Anchor, ClampRule, InputPolicy, Interaction, Layer, NodeKind, Props, Registry, Role,
         TrackSize, ViewNode,
@@ -466,14 +478,39 @@ mod tests {
         let close = descendant(&node, "close");
         assert_eq!(close.semantics.role, Some(Role::Button));
         assert_eq!(close.semantics.label.as_deref(), Some("Close"));
-        assert_eq!(
-            descendant(close, "label").props.text.as_deref(),
-            Some("Close")
+        // A glyph, not the word, since 2026-09-06. The accessible name above
+        // still carries "Close" and is the only place that word now appears,
+        // which is the FR-026 departure this control's own comment records.
+        assert!(
+            has_descendant(close, "glyph"),
+            "the close control draws no glyph"
+        );
+        assert!(
+            !has_descendant(close, "label"),
+            "the word came back beside the glyph; if that is wanted, the \
+             FR-026 note on `close_button` is what needs revisiting first"
         );
         assert!(close.interactions.contains(&Interaction::Click));
         assert!(close.interactions.contains(&Interaction::Focus));
         assert_eq!(close.constraints.horizontal.min, Some(CLOSE_HIT));
         assert_eq!(close.constraints.vertical.min, Some(CLOSE_HIT));
+        assert_eq!(
+            close.constraints.horizontal.max,
+            Some(CLOSE_HIT),
+            "an icon-only close is pinned square at Carbon's hit box; the \
+             open ceiling was there to let the word decide the width"
+        );
+        assert_eq!(
+            close.semantics.focus_figure,
+            FocusFigure::BarUnder,
+            "the header has the dialog's body under it, so the bar goes \
+             below the button rather than inside its fill"
+        );
+        assert_eq!(
+            close.props.tokens.get("border"),
+            None,
+            "the flat glyph carries no boundary"
+        );
         assert_eq!(CLOSE_HIT, 48.0);
         assert_eq!(CLOSE_ICON, 20.0, "T070: SCSS 20, not the style-page 16");
         assert!(

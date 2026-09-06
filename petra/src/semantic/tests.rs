@@ -141,6 +141,7 @@ fn the_wire_shape_is_the_contract_shape() {
             // the assertion below proves the hold-out rather than the default.
             focus_figure: FocusFigure::Sides,
             focus_shown_on: FocusShownOn::Well,
+            focus_run: true,
         })
         .with_ambient(true);
     let node = ViewNode {

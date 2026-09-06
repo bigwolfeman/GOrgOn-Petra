@@ -176,7 +176,13 @@ fn accordion_item_content(
         Axis::Horizontal,
         Some(SPACING_03),
         vec![
-            text("title", label.clone()),
+            // `with_focus_run`: the header's focus stripe spans this title
+            // and not the row. Without it the run is the header's whole
+            // content, which here is the title, a 725-wide spacer and a
+            // chevron pinned at the trailing edge — 836 of the row's 868,
+            // a stripe that reads as the accordion's own rule rather than
+            // as a mark on the section you are standing in.
+            text("title", label.clone()).with_focus_run(),
             ViewNode::new(NodeKind::Spacer, "spacer"),
             chevron,
         ],

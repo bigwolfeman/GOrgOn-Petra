@@ -486,17 +486,17 @@ fn successor(
 ///
 /// For [`FocusFigure::Border`] and [`FocusFigure::Sides`] this is the
 /// placement's own rect: a ring and a pair of brackets mark the whole
-/// control. For the two bar figures it is the control's **leading label**,
-/// widened to nothing and given the control's own vertical extent, so the
-/// stripe underlines the word and the bar still seats on the control's
-/// bottom edge.
+/// control. For the two bar figures it is the control's **content run** —
+/// horizontally the extent of what the control actually shows, vertically
+/// the control itself — so the stripe underlines the content and the bar
+/// still seats on the control's own bottom edge.
 ///
-/// # Why the label and not a fraction of the control
+/// # Why the content and not the control's width
 ///
 /// The bars took `FocusRing::WIDTH_FRACTION` — two thirds of the control,
-/// centred — until 2026-09-06, when that constant was retired. That fraction is a *proxy* for
-/// "about as wide as the label", and it holds only while a control hugs its
-/// own text. A menu trigger is 80 wide around a 48-wide label, and two
+/// centred — until 2026-09-06. That fraction is a *proxy* for "about as wide
+/// as what the control shows", and it holds only while a control hugs its
+/// own content. A menu trigger is 80 wide around a 48-wide label, and two
 /// thirds of it is 53: near enough that nobody looked twice for a year.
 ///
 /// A row that spans a panel breaks the proxy. A tree row is 868 wide around
@@ -507,23 +507,43 @@ fn successor(
 /// as the container's own rule. Both are the same missing idea, which is
 /// that the bar was never about the control's width.
 ///
-/// So the rule is the thing the fraction was standing in for. A control that
-/// hugs its label is unchanged to within a few units, and a control that
-/// spans a panel gets a stripe under its word.
+/// # What counts as content
 ///
-/// # Which text is the label
+/// Every visible descendant that lays out no children of its own
+/// ([`NodeKind::is_container`]), except an [`NodeKind::Input`]. So: text,
+/// canvases, images, and the spacers a control reserves for its own parts.
 ///
-/// The visible [`NodeKind::Text`] descendant with the smallest `x`, ties
-/// broken by the smallest `y`. Geometric rather than positional, so it does
-/// not depend on placement order the way [`FocusTree::order`] does: a data
-/// table row holds a name and a kind, and the name is the row's identity
-/// because it is the one at the leading edge, not because it was emitted
-/// first.
+/// **Containers are excluded because a childless one is decoration.** A tab's
+/// selection indicator, a side-nav row's accent bar and an icon's trailing
+/// gap are all childless `stack`s that paint a fill and hold nothing, and a
+/// contained tab's indicator spans the tab's full width — counting it would
+/// put the bar back at the control's width, which is the thing this rule
+/// exists to stop.
 ///
-/// A control with no text descendant at all — an icon-only button — falls
-/// back to its own rect, which is snug by nature on every such control the
-/// library ships. `component::tests`' `every_bar_figure_finds_a_label` is
-/// the gate that names any component where that stops being true.
+/// **An `input` is excluded because it is its own focus target**, with its
+/// own figure. A data table row holding an editable cell is the case: the
+/// cell is a control inside a control, not part of the row's mark.
+///
+/// **Spacers are included, and that is the load-bearing half.** A checkbox
+/// draws its box as a bare `spacer` when it is empty and as an inset canvas
+/// tick when it is not, so a rule that counted only the things a person can
+/// see would move the bar 24 units the moment the box was ticked. The run
+/// has to be stable under state, and a control's own reserved space is part
+/// of the control.
+///
+/// The consequence is that **a row with a trailing affordance must narrow
+/// itself explicitly**, because its trailing spacer and chevron are content
+/// by this rule and reach the far edge. An accordion header is 868 wide with
+/// a 79-wide title at x 308, a 725-wide spacer, and a chevron at x 1128;
+/// nothing geometric separates that chevron from a tag's dismiss cross,
+/// which *is* part of its control. The component knows and the engine cannot,
+/// so the component says so with [`crate::tree::FocusShownOn`] — the same
+/// mechanism that already answers *which placement*, pointed one level
+/// further in.
+///
+/// A control with no content at all falls back to its own rect.
+/// `every_bar_figure_finds_a_label` is the gate that names any control where
+/// that fallback lands on something too wide to read as an underline.
 #[must_use]
 pub fn marked_rect(placements: &[Placement], shown: usize, figure: FocusFigure) -> Rect {
     let Some(node) = placements.get(shown) else {
@@ -532,26 +552,68 @@ pub fn marked_rect(placements: &[Placement], shown: usize, figure: FocusFigure) 
     if !figure.marks_the_label() {
         return node.rect;
     }
-    leading_label(placements, shown).map_or(node.rect, |run| {
-        Rect::new(run.x, node.rect.y, run.w, node.rect.h)
+    let run = declared_run(placements, shown).or_else(|| content_run(placements, shown));
+    run.map_or(node.rect, |(l, r)| {
+        Rect::new(l, node.rect.y, r - l, node.rect.h)
     })
 }
 
-/// The leading visible text descendant of `shown`, by the rule
-/// [`marked_rect`] documents.
-fn leading_label(placements: &[Placement], shown: usize) -> Option<Rect> {
+/// The run a descendant declared with [`crate::tree::Semantics::focus_run`],
+/// nearest first.
+///
+/// Nearest by depth in steps up the parent chain, the same way
+/// `gorgon-petra-egui`'s `head_of` picks a head row: a row nested inside a
+/// row must not answer for the row above it.
+fn declared_run(placements: &[Placement], shown: usize) -> Option<(f32, f32)> {
     placements
         .iter()
         .enumerate()
         .filter(|&(i, p)| {
-            i != shown
-                && p.kind == NodeKind::Text
+            p.semantics.focus_run
+                && i != shown
                 && p.rect.w > 0.0
                 && p.is_visible()
                 && descends_from(placements, i, shown)
         })
-        .map(|(_, p)| p.rect)
-        .min_by(|a, b| a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y)))
+        .min_by_key(|&(i, _)| depth_below(placements, i, shown))
+        .map(|(_, p)| (p.rect.x, p.rect.x + p.rect.w))
+}
+
+/// How many parent steps `index` is below `ancestor`, saturating at the
+/// slice length when the chain does not reach it.
+fn depth_below(placements: &[Placement], index: usize, ancestor: usize) -> usize {
+    let mut cursor = placements.get(index).and_then(|p| p.parent);
+    for step in 0..placements.len() {
+        match cursor {
+            Some(i) if i == ancestor => return step,
+            Some(i) => cursor = placements.get(i).and_then(|p| p.parent),
+            None => break,
+        }
+    }
+    placements.len()
+}
+
+/// The horizontal extent of `shown`'s content, by the rule [`marked_rect`]
+/// documents, as `(left, right)`.
+fn content_run(placements: &[Placement], shown: usize) -> Option<(f32, f32)> {
+    let mut span: Option<(f32, f32)> = None;
+    for (i, p) in placements.iter().enumerate() {
+        if i == shown
+            || p.kind.is_container()
+            || p.kind == NodeKind::Input
+            || p.rect.w <= 0.0
+            || !p.is_visible()
+            || !descends_from(placements, i, shown)
+        {
+            continue;
+        }
+        let (l, r) = (p.rect.x, p.rect.x + p.rect.w);
+        span = Some(match span {
+            Some((sl, sr)) => (sl.min(l), sr.max(r)),
+            None => (l, r),
+        });
+    }
+    span
 }
 
 /// Whether `index` is inside `ancestor`'s subtree.
@@ -630,16 +692,16 @@ mod tests {
         vec![row, caret, label]
     }
 
-    /// The bar spans the word, not the row. This is the whole rule.
+    /// The bar spans the row's content, not the row. This is the whole rule.
     #[test]
-    fn a_bar_is_measured_against_the_leading_label() {
+    fn a_bar_is_measured_against_the_controls_content() {
         let places = wide_row();
         let run = marked_rect(&places, 0, FocusFigure::BarInside);
 
-        assert_eq!(
-            (run.x, run.w),
-            (332.0, 43.9),
-            "horizontally the label: {run:?}"
+        assert_eq!(run.x, 308.0, "the run starts at the caret: {run:?}");
+        assert!(
+            (run.right() - 375.9).abs() < 1e-3,
+            "and ends at the word: {run:?}"
         );
         assert_eq!(
             (run.y, run.h),
@@ -655,7 +717,7 @@ mod tests {
 
     /// A ring and a pair of brackets mark the control, so they are handed
     /// the control. Falsify by dropping the `marks_the_label` guard: the
-    /// brackets would then hug the word and leave the row unmarked.
+    /// brackets would then hug the content and leave the row unmarked.
     #[test]
     fn a_ring_and_a_bracket_are_measured_against_the_whole_control() {
         let places = wide_row();
@@ -668,45 +730,187 @@ mod tests {
         }
     }
 
-    /// Leading by position, not by placement order. A data table row holds a
-    /// name and a kind; the name is the row's identity because it sits at the
-    /// leading edge, and the rule must say so even when the kind is emitted
-    /// first.
+    /// A childless container is decoration and never widens the run.
+    ///
+    /// A contained tab's selection indicator spans the tab's whole width, so
+    /// counting it would put the bar back at the control's width — the exact
+    /// picture the content rule replaced. Falsify by dropping the
+    /// `is_container` test in `content_run`.
     #[test]
-    fn the_leading_label_wins_whatever_order_the_texts_arrive_in() {
+    fn an_indicator_is_not_content() {
         let mut places = wide_row();
-        let mut trailing = placement("/row/kind", Some(0), false, false);
-        trailing.rect = Rect::new(746.0, 294.0, 60.0, 20.0);
-        trailing.clip = places[0].clip;
-        places.insert(1, trailing);
-        for p in places.iter_mut().skip(2) {
-            p.parent = Some(0);
-        }
+        let mut indicator = placement("/row/indicator", Some(0), false, false);
+        indicator.kind = NodeKind::Stack;
+        indicator.rect = Rect::new(292.0, 317.0, 868.0, 3.0);
+        indicator.clip = places[0].clip;
+        places.push(indicator);
 
         let run = marked_rect(&places, 0, FocusFigure::BarInside);
-        assert_eq!(run.x, 332.0, "the trailing text is not the label: {run:?}");
+        assert_eq!(run.x, 308.0, "{run:?}");
+        assert!((run.right() - 375.9).abs() < 1e-3, "{run:?}");
     }
 
-    /// No text at all: the control's own rect, which is the documented
+    /// A nested `input` is its own focus target, not its row's mark. A data
+    /// table row holding an editable cell is the case.
+    #[test]
+    fn a_nested_input_is_not_content() {
+        let mut places = wide_row();
+        let mut cell = placement("/row/cell", Some(0), true, false);
+        cell.kind = NodeKind::Input;
+        cell.rect = Rect::new(762.0, 296.0, 382.0, 16.0);
+        cell.clip = places[0].clip;
+        places.push(cell);
+
+        let run = marked_rect(&places, 0, FocusFigure::BarInside);
+        assert_eq!(run.x, 308.0, "{run:?}");
+        assert!((run.right() - 375.9).abs() < 1e-3, "{run:?}");
+    }
+
+    /// The run does not move when the control changes state.
+    ///
+    /// A checkbox draws its box as a bare `spacer` when empty and as an inset
+    /// canvas tick when ticked. Measured on the catalog: `check-b` is a
+    /// 16-wide spacer at x 296, `check-a` is a 10-wide tick at x 299 between
+    /// two 3-wide insets. A rule that counted only what a person can see
+    /// would start the bar at 320 in one state and 299 in the other, so the
+    /// stripe would jump 24 units on a tick. Falsify by excluding spacers.
+    #[test]
+    fn the_run_does_not_move_when_a_box_is_ticked() {
+        let row = |ticked: bool| {
+            let mut node = placement("/row", None, true, false);
+            node.kind = NodeKind::Stack;
+            node.rect = Rect::new(292.0, 284.0, 68.0, 24.0);
+            node.clip = Rect::new(0.0, 0.0, 2000.0, 2000.0);
+
+            let mut label = placement("/row/label", Some(0), false, false);
+            label.rect = Rect::new(320.0, 286.0, 36.0, 20.0);
+            label.clip = node.clip;
+
+            let mut places = vec![node, label];
+            if ticked {
+                for (name, kind, x, w) in [
+                    ("/row/inset-start", NodeKind::Spacer, 296.0, 3.0),
+                    ("/row/tick", NodeKind::Canvas, 299.0, 10.0),
+                    ("/row/inset-end", NodeKind::Spacer, 309.0, 3.0),
+                ] {
+                    let mut part = placement(name, Some(0), false, false);
+                    part.kind = kind;
+                    part.rect = Rect::new(x, 288.0, w, 16.0);
+                    part.clip = places[0].clip;
+                    places.push(part);
+                }
+            } else {
+                let mut boxed = placement("/row/box", Some(0), false, false);
+                boxed.kind = NodeKind::Spacer;
+                boxed.rect = Rect::new(296.0, 288.0, 16.0, 16.0);
+                boxed.clip = places[0].clip;
+                places.push(boxed);
+            }
+            marked_rect(&places, 0, FocusFigure::BarInside)
+        };
+
+        assert_eq!(row(true), row(false), "the stripe moved on a tick");
+        assert_eq!(
+            row(false).x,
+            296.0,
+            "and it starts at the box, not at the word"
+        );
+    }
+
+    /// A declared run beats the content rule, and narrows only the width.
+    ///
+    /// The accordion header is the case: a title, a wide spacer and a
+    /// chevron pinned at the trailing edge, whose content run is the whole
+    /// row. Falsify by dropping the `declared_run` call in `marked_rect`.
+    #[test]
+    fn a_declared_run_narrows_the_bar_without_moving_it() {
+        let mut places = wide_row();
+        let mut chevron = placement("/row/chevron", Some(0), false, false);
+        chevron.kind = NodeKind::Canvas;
+        chevron.rect = Rect::new(1128.0, 296.0, 16.0, 16.0);
+        chevron.clip = places[0].clip;
+        places.push(chevron);
+
+        let wide = marked_rect(&places, 0, FocusFigure::BarInside);
+        assert!(
+            (wide.right() - 1144.0).abs() < 1e-3,
+            "the fixture must reach the chevron first: {wide:?}"
+        );
+
+        places[2].semantics.focus_run = true;
+        let run = marked_rect(&places, 0, FocusFigure::BarInside);
+        assert_eq!(run.x, places[2].rect.x, "{run:?}");
+        assert!(
+            (run.w - places[2].rect.w).abs() < 1e-3,
+            "the declared node decides the width: {run:?}"
+        );
+        assert_eq!(
+            (run.y, run.h),
+            (places[0].rect.y, places[0].rect.h),
+            "and the row still decides where the bar seats"
+        );
+    }
+
+    /// The nearest declaration wins, so a row nested inside a row does not
+    /// answer for the row above it.
+    #[test]
+    fn the_nearest_declared_run_wins() {
+        let mut places = wide_row();
+        places[2].semantics.focus_run = true;
+
+        let mut nested = placement("/row/sub", Some(0), false, false);
+        nested.kind = NodeKind::Stack;
+        nested.rect = Rect::new(292.0, 288.0, 868.0, 32.0);
+        nested.clip = places[0].clip;
+        places.push(nested);
+        let sub = places.len() - 1;
+
+        let mut deep = placement("/row/sub/label", Some(sub), false, false);
+        deep.rect = Rect::new(700.0, 294.0, 50.0, 20.0);
+        deep.clip = places[0].clip;
+        deep.semantics.focus_run = true;
+        places.push(deep);
+
+        let run = marked_rect(&places, 0, FocusFigure::BarInside);
+        assert_eq!(run.x, 332.0, "the deeper declaration won: {run:?}");
+    }
+
+    /// Content is a union, so placement order cannot change the answer.
+    #[test]
+    fn the_run_is_the_same_whatever_order_the_parts_arrive_in() {
+        let mut places = wide_row();
+        let forward = marked_rect(&places, 0, FocusFigure::BarInside);
+        places.swap(1, 2);
+        for (i, p) in places.iter_mut().enumerate() {
+            if i != 0 {
+                p.parent = Some(0);
+            }
+        }
+        assert_eq!(marked_rect(&places, 0, FocusFigure::BarInside), forward);
+    }
+
+    /// No content at all: the control's own rect, which is the documented
     /// fallback for an icon-only button.
     #[test]
-    fn a_control_with_no_text_falls_back_to_its_own_rect() {
+    fn a_control_with_no_content_falls_back_to_its_own_rect() {
         let mut places = wide_row();
-        places.truncate(2);
+        places.truncate(1);
         assert_eq!(
             marked_rect(&places, 0, FocusFigure::BarInside),
             places[0].rect
         );
     }
 
-    /// A text scrolled out of the clip is not the label. It is in the frame
-    /// so scrolling stays smooth, exactly as
+    /// Content scrolled out of the clip is not content. It is in the frame so
+    /// scrolling stays smooth, exactly as
     /// `a_clipped_away_node_is_not_in_the_tab_order` says, and a bar under a
     /// word nobody can see is not an underline.
     #[test]
-    fn an_offscreen_text_is_not_the_label() {
+    fn offscreen_content_does_not_widen_the_run() {
         let mut places = wide_row();
-        places[2].clip = Rect::new(0.0, 0.0, 100.0, 100.0);
+        for p in places.iter_mut().skip(1) {
+            p.clip = Rect::new(0.0, 0.0, 100.0, 100.0);
+        }
         let run = marked_rect(&places, 0, FocusFigure::BarInside);
         assert_eq!(run, places[0].rect, "{run:?}");
     }
@@ -715,7 +919,7 @@ mod tests {
     /// levels under the row it marks (`row/body/lead/label`), so a rule that
     /// only looked at direct children would find nothing there.
     #[test]
-    fn a_label_nested_under_a_wrapper_is_still_found() {
+    fn content_nested_under_a_wrapper_is_still_found() {
         let mut places = wide_row();
         let mut wrapper = placement("/row/body", Some(0), false, false);
         wrapper.kind = NodeKind::Stack;
@@ -726,7 +930,7 @@ mod tests {
         places[2].parent = Some(wrapper_at);
 
         let run = marked_rect(&places, 0, FocusFigure::BarInside);
-        assert_eq!(run.x, 332.0, "{run:?}");
+        assert_eq!(run.x, 308.0, "{run:?}");
     }
 
     fn no_scopes() -> BTreeMap<String, InputPolicy> {

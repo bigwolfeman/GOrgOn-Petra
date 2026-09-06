@@ -623,6 +623,7 @@ fn leaf_bytes(scale: Scale, p: &Placement) -> Vec<u8> {
                 // (`contracts/frame-identity.md`, "Not covered").
                 focus_figure: _,
                 focus_shown_on: _,
+                focus_run: _,
             },
         // Rewritable, not merely redundant: a subtree a reuse pass copies
         // from the previous frame is rebased onto its new position, and
@@ -1120,6 +1121,7 @@ mod tests {
                 // two are held out of the stream.
                 focus_figure: FocusFigure::Sides,
                 focus_shown_on: FocusShownOn::Well,
+                focus_run: true,
                 expanded: Some(true),
                 stale: false,
                 ambient: false,
