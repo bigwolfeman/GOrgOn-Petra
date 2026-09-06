@@ -1,6 +1,6 @@
 //! Inventory row 36, Toggle.
 
-use gorgon_petra::component::{section, toggle, toggle_sm};
+use gorgon_petra::component::{disabled, section, toggle, toggle_sm};
 use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::ViewNode;
 
@@ -48,6 +48,11 @@ impl Page for Toggle {
                     toggle(TOGGLE_DEFAULT_ON, "Default on", self.default_on),
                     toggle_sm(TOGGLE_SM_OFF, "Small off", self.small_off),
                     toggle_sm(TOGGLE_SM_ON, "Small on", self.small_on),
+                    // T0.1: the disabled ink family, off and on, so the
+                    // track's grey fill and the faded label both show
+                    // against the two live tracks above them.
+                    disabled(toggle("toggle-disabled-off", "Disabled off", false)),
+                    disabled(toggle("toggle-disabled-on", "Disabled on", true)),
                 ],
             )],
         )

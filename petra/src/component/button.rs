@@ -20,9 +20,26 @@
 //! Carbon's unmodified `.cds--btn` is **lg 48** (`layout.use('size',
 //! $default: 'lg')`, `_button.scss`). Gate G1 pins [`button`] and
 //! [`primary_button`] at Carbon **md 40** ([`SIZE_MD`]) at scale 1.0.
-//! `button_lg` is the Carbon unmodified height. `xs`/`sm`/`md`/`lg` are
-//! explicit constructors; `xl`/`2xl` are ambient layout-size in Carbon
-//! (no `.cds--btn--xl` class) and are not shipped here.
+//! `button_lg` is the Carbon unmodified height. All six of Carbon's steps
+//! are explicit constructors here: `xs`/`sm`/`md`/`lg`/`xl`/`2xl`.
+//!
+//! `xl` (64) and `2xl` (80) are MEASURED
+//! `@carbon/layout/scss/generated/_size.scss` (`$size-xl: 4rem`,
+//! `$size-2xl: 5rem`) and match the vocabulary's own `size-xl`/`size-2xl`
+//! (`crate::token::shipped`). They are **not** Carbon's `isExpressive`
+//! step. `ButtonBase.js` sets `size` and `isExpressive` as two independent
+//! props — `isExpressive` swaps the type style to `body-compact-02` and
+//! changes the padding-block formula's cap regardless of size, while `xl`
+//! and `2xl` add their own class (`.cds--btn--xl`, `.cds--btn--2xl`, always
+//! applied, `isExpressive` or not) that **no selector in `_button.scss`
+//! targets** — grep confirms it. The one thing either class does is also
+//! carry `.cds--layout--size-xl`, which scopes the contextual custom
+//! property `layout.use('size', ...)` reads for `min-block-size`. Height is
+//! genuinely the only thing that steps at `xl`/`2xl`: `padding-inline`
+//! reads `layout.density(...)`, gated on density (condensed/normal), not
+//! size, and the base type style is `body-compact-01` unconditionally.
+//! `Size::height` below is therefore still the whole of what a size means
+//! in this file, same as `xs`/`sm`/`md`/`lg`.
 //!
 //! # Variants
 //!
@@ -204,6 +221,13 @@ const HEIGHT_SM: f32 = 32.0;
 /// Carbon unmodified `.cds--btn` height (`lg`). [`button`] is md, not this.
 const HEIGHT_LG: f32 = 48.0;
 
+/// Carbon `.cds--btn--xl` height. `$size-xl: 4rem` in
+/// `@carbon/layout/scss/generated/_size.scss`. See the module comment for
+/// why nothing else about a button changes at this step.
+const HEIGHT_XL: f32 = 64.0;
+/// Carbon `.cds--btn--2xl` height. `$size-2xl: 5rem`. See [`HEIGHT_XL`].
+const HEIGHT_2XL: f32 = 80.0;
+
 /// Carbon `$spacing-10` = 64, the no-icon `padding-right`. Not bound: see
 /// the module comment. Named so a later tokens.rs extension has a number
 /// to meet, and so tests can petrify the fact we did not invent the name.
@@ -213,6 +237,8 @@ const _: () = assert!(HEIGHT_XS == 24.0);
 const _: () = assert!(HEIGHT_SM == 32.0);
 const _: () = assert!(SIZE_MD == 40.0);
 const _: () = assert!(HEIGHT_LG == 48.0);
+const _: () = assert!(HEIGHT_XL == 64.0);
+const _: () = assert!(HEIGHT_2XL == 80.0);
 const _: () = assert!(PAD_END_NO_ICON == 64.0);
 
 #[derive(Clone, Copy)]
@@ -221,6 +247,8 @@ enum Size {
     Sm,
     Md,
     Lg,
+    Xl,
+    TwoXl,
 }
 
 impl Size {
@@ -230,6 +258,8 @@ impl Size {
             Self::Sm => HEIGHT_SM,
             Self::Md => SIZE_MD,
             Self::Lg => HEIGHT_LG,
+            Self::Xl => HEIGHT_XL,
+            Self::TwoXl => HEIGHT_2XL,
         }
     }
 }
@@ -454,6 +484,17 @@ pub fn button_lg(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
     labelled(key, label, Variant::Secondary, Size::Lg)
 }
 
+/// Carbon secondary at xl 64. See the module comment: this is a height
+/// step, not Carbon's `isExpressive` type-scale step.
+pub fn button_xl(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
+    labelled(key, label, Variant::Secondary, Size::Xl)
+}
+
+/// Carbon secondary at 2xl 80. See [`button_xl`].
+pub fn button_2xl(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
+    labelled(key, label, Variant::Secondary, Size::TwoXl)
+}
+
 /// The page's one loudest action, filled with the accent instead of a grey.
 ///
 /// Same default height as [`button`]: Carbon md 40, not Carbon lg 48.
@@ -647,11 +688,11 @@ fn labelled(
 #[cfg(test)]
 mod tests {
     use super::{
-        ACCENT_PRIMARY, BORDER_STRONG, BUTTON_DANGER_PRIMARY, HEIGHT_LG, HEIGHT_SM, HEIGHT_XS,
-        LINK_PRIMARY, PAD_END_NO_ICON, SHADOW_RAISED, SIZE_MD, SPACING_05, SURFACE_BASE,
-        TEXT_ON_ACCENT, TEXT_ON_COLOR, TEXT_PRIMARY, button, button_lg, button_sm, button_xs,
-        danger_button, danger_ghost_button, danger_tertiary_button, ghost_button, primary_button,
-        tertiary_button,
+        ACCENT_PRIMARY, BORDER_STRONG, BUTTON_DANGER_PRIMARY, HEIGHT_2XL, HEIGHT_LG, HEIGHT_SM,
+        HEIGHT_XL, HEIGHT_XS, LINK_PRIMARY, PAD_END_NO_ICON, SHADOW_RAISED, SIZE_MD, SPACING_05,
+        SURFACE_BASE, TEXT_ON_ACCENT, TEXT_ON_COLOR, TEXT_PRIMARY, button, button_2xl, button_lg,
+        button_sm, button_xl, button_xs, danger_button, danger_ghost_button,
+        danger_tertiary_button, ghost_button, primary_button, tertiary_button,
     };
     // The glyph's tone. `button.rs` itself no longer names it — the mark is
     // an `IconTone` now — so the test module reaches for the token module
@@ -745,12 +786,14 @@ mod tests {
     }
 
     #[test]
-    fn size_constructors_pin_carbon_xs_sm_lg() {
+    fn size_constructors_pin_carbon_xs_sm_lg_xl_2xl() {
         let theme = crate::token::light();
         for (name, expected) in [
             ("size-xs", HEIGHT_XS),
             ("size-sm", HEIGHT_SM),
             ("size-lg", HEIGHT_LG),
+            ("size-xl", HEIGHT_XL),
+            ("size-2xl", HEIGHT_2XL),
         ] {
             match theme.value(&TokenName::new(name).unwrap()) {
                 Some(crate::token::TokenValue::Spacing(units)) => {
@@ -774,6 +817,16 @@ mod tests {
         assert_eq!(lg.constraints.vertical.min, Some(HEIGHT_LG));
         assert_eq!(lg.constraints.vertical.max, Some(HEIGHT_LG));
         assert_eq!(placed_height(&petrify_lone(lg), "lg"), HEIGHT_LG);
+
+        let xl = button_xl("xl", "Save");
+        assert_eq!(xl.constraints.vertical.min, Some(HEIGHT_XL));
+        assert_eq!(xl.constraints.vertical.max, Some(HEIGHT_XL));
+        assert_eq!(placed_height(&petrify_lone(xl), "xl"), HEIGHT_XL);
+
+        let two_xl = button_2xl("2xl", "Save");
+        assert_eq!(two_xl.constraints.vertical.min, Some(HEIGHT_2XL));
+        assert_eq!(two_xl.constraints.vertical.max, Some(HEIGHT_2XL));
+        assert_eq!(placed_height(&petrify_lone(two_xl), "2xl"), HEIGHT_2XL);
     }
 
     #[test]
@@ -783,6 +836,8 @@ mod tests {
             button_xs("xs", "Save"),
             button_sm("sm", "Save"),
             button_lg("lg", "Save"),
+            button_xl("xl", "Save"),
+            button_2xl("2xl", "Save"),
             primary_button("p", "Save"),
             tertiary_button("t", "Save"),
             ghost_button("g", "Save"),

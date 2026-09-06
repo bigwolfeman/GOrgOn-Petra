@@ -35,12 +35,11 @@
 //! These are the exception, and the reason is structural rather than
 //! aesthetic: **an unchecked checkbox and an unselected radio are nothing
 //! but their outline.** Fill is `None` when the control is off and
-//! `accent.primary` when it is on, so taking the border away while off
-//! deletes the control. The toggle track fills with the accent when on.
-//! taking the border away does not quieten the control, it deletes it. The
-//! toggle track is the same argument one step weaker — it has a fill, but
-//! that fill is what the knob slides *inside*, and a track a reader cannot
-//! find the ends of does not read as a track.
+//! `accent.primary` when it is on, so taking the border away while off does
+//! not quieten the control, it deletes it. The toggle track is the same
+//! argument one step weaker — it fills with the accent when on, but that
+//! fill is what the knob slides *inside*, and a track a reader cannot find
+//! the ends of does not read as a track.
 //!
 //! What changed for all three is the tone. They bound `text.muted`, a text
 //! colour at 10.73:1 on a card; then [`BORDER_SUBTLE`]; and since
@@ -84,8 +83,9 @@
 use super::icon::{IconMark, icon};
 use super::text::text;
 use super::tokens::{
-    ACCENT_PRIMARY, BORDER_STRONG, SHAPE_FULL, SHAPE_NONE, SPACING_01, SPACING_02, SPACING_03,
-    SPACING_05, SURFACE_RAISED, TEXT_MUTED, TEXT_ON_ACCENT, TEXT_ON_COLOR, TEXT_PRIMARY, t,
+    ACCENT_PRIMARY, BORDER_STRONG, BUTTON_DISABLED, ICON_DISABLED, ICON_ON_COLOR_DISABLED,
+    SHAPE_FULL, SHAPE_NONE, SPACING_01, SPACING_02, SPACING_03, SPACING_05, SURFACE_RAISED,
+    TEXT_MUTED, TEXT_ON_ACCENT, TEXT_ON_COLOR, TEXT_PRIMARY, t,
 };
 use super::{pad, stack, swatch};
 use crate::geom::{Align, Axis};
@@ -144,11 +144,22 @@ fn labelled_box(
 ) -> ViewNode {
     let key = key.into();
     let label = label.into();
+    let mut label_node = text("label", label.clone());
+    // Carbon: checkbox's `:disabled + label { color: $text-disabled }`
+    // (`_checkbox.scss`) and radio's identical rule on
+    // `.radio-button__label` (`_radio-button.scss`). `$text-disabled` and
+    // `$icon-disabled` are byte-identical in every published theme
+    // (`_themes.scss`), so this reuses the name the box's own outline binds
+    // below rather than shipping a second token for one measured value.
+    label_node
+        .props
+        .tokens
+        .insert("foreground@disabled".into(), t(ICON_DISABLED));
     let mut row = stack(
         key,
         Axis::Horizontal,
         Some(SPACING_03),
-        vec![box_node, text("label", label.clone())],
+        vec![box_node, label_node],
     );
     // Body line-height is 20; the checkbox is 16 and the radio is 18.
     // Start-align sits the mark on the top of the line; Center puts it on
@@ -178,7 +189,17 @@ fn labelled_box(
 /// Outline only: unchecked checkbox, unselected radio. The keyed `"box"` is
 /// a swatch so tests.rs still reads background from that node.
 fn empty_mark(size: f32, shape: &str) -> ViewNode {
-    swatch("box", size, size, None, Some(BORDER_STRONG), Some(shape))
+    let mut node = swatch("box", size, size, None, Some(BORDER_STRONG), Some(shape));
+    // Carbon: checkbox's `:disabled + label::before { border-color:
+    // $icon-disabled }` (`_checkbox.scss`) and radio's identical rule on
+    // `.radio-button__appearance` (`_radio-button.scss`). This module's own
+    // doc header already argues an unchecked/unselected mark *is* its
+    // outline, so fading that outline is the only channel a disabled empty
+    // control has to lose.
+    node.props
+        .tokens
+        .insert("border@disabled".into(), t(ICON_DISABLED));
+    node
 }
 
 /// Filled mark with a second-channel child. The keyed `"box"` stack carries
@@ -200,6 +221,16 @@ fn marked_box(size: f32, fill: &str, shape: &str, inner: ViewNode) -> ViewNode {
     node.props.tokens.insert("background".into(), t(fill));
     node.props.tokens.insert("border".into(), t(BORDER_STRONG));
     node.props.tokens.insert("radius".into(), t(shape));
+    // Carbon: `_checkbox.scss`'s "checked:disabled ... background-color:
+    // $icon-disabled" swaps the accent fill for the same faded tone the
+    // outline uses when off (see `empty_mark`) — a checked-and-disabled box
+    // reads as neither the live accent nor a plain outline.
+    node.props
+        .tokens
+        .insert("background@disabled".into(), t(ICON_DISABLED));
+    node.props
+        .tokens
+        .insert("border@disabled".into(), t(ICON_DISABLED));
     node.with_constraints(pinned(size, size))
 }
 
@@ -373,14 +404,28 @@ pub fn checkbox_group(
 /// `.agents/notes/proposed/bug-fix/2026-09-04-a-half-pixel-inset-snaps-a-small-mark-off-centre.md`.
 pub fn radio(key: impl Into<Key>, label: impl Into<String>, selected: bool) -> ViewNode {
     let box_node = if selected {
-        swatch(
+        let mut node = swatch(
             "box",
             RADIO_BOX,
             RADIO_BOX,
             Some(ACCENT_PRIMARY),
             Some(BORDER_STRONG),
             Some(SHAPE_FULL),
-        )
+        );
+        // Carbon: `_radio-button.scss`'s disabled selector on
+        // `.radio-button__appearance` (`border-color: $icon-disabled`) plus
+        // its nested `::before` dot (`background-color: $text-disabled` —
+        // byte-identical to `$icon-disabled` in every published theme, see
+        // `labelled_box`). Petra fills the whole disc rather than nesting a
+        // dot (this module's own doc header, the half-pixel argument), so
+        // the one fill here carries both halves of Carbon's rule.
+        node.props
+            .tokens
+            .insert("background@disabled".into(), t(ICON_DISABLED));
+        node.props
+            .tokens
+            .insert("border@disabled".into(), t(ICON_DISABLED));
+        node
     } else {
         empty_mark(RADIO_BOX, SHAPE_FULL)
     };
@@ -477,7 +522,7 @@ fn toggle_sized(
     // Carbon's placement when both were put to him with the reference shot.
     // So the small on-toggle is the default size's anatomy at a smaller
     // scale: a pill and a plain knob, no mark.
-    let knob = swatch(
+    let mut knob = swatch(
         "knob",
         handle,
         handle,
@@ -489,6 +534,13 @@ fn toggle_sized(
         Some(SHAPE_FULL),
     )
     .with_transition(crate::anim::TOGGLE_KNOB);
+    // Carbon: `.cds--toggle--disabled .cds--toggle__switch::before {
+    // background-color: $icon-on-color-disabled; }` — one fill for both
+    // states, because Carbon's own rule does not condition on `checked`
+    // either (`_toggle.scss`).
+    knob.props
+        .tokens
+        .insert("background@disabled".into(), t(ICON_ON_COLOR_DISABLED));
 
     let pad_start = swatch("pad-start", start, track_h, None, None, None);
 
@@ -509,6 +561,14 @@ fn toggle_sized(
     );
     track.props.tokens.insert("border".into(), t(BORDER_STRONG));
     track.props.tokens.insert("radius".into(), t(SHAPE_FULL));
+    // Carbon: `.cds--toggle--disabled .cds--toggle__switch { background-color:
+    // button.$button-disabled; }`, on and off alike (`_toggle.scss`).
+    // `$button-disabled` is Carbon's own value, not a fade of the accent or
+    // of `icon-primary` — see `BUTTON_DISABLED`.
+    track
+        .props
+        .tokens
+        .insert("background@disabled".into(), t(BUTTON_DISABLED));
     track = track.with_constraints(pinned(track_w, track_h));
 
     let mut label_node = text("label", label.clone());
@@ -516,7 +576,19 @@ fn toggle_sized(
         .props
         .tokens
         .insert("foreground".into(), t(TEXT_MUTED));
-    let state = text("state", if on { "On" } else { "Off" });
+    // Carbon: `.cds--toggle--disabled .cds--toggle__label-text,
+    // .cds--toggle--disabled .cds--toggle__text { color: $text-disabled; }`
+    // covers both the label and the On/Off word below — `$text-disabled` is
+    // byte-identical to `$icon-disabled` in every theme (see `labelled_box`).
+    label_node
+        .props
+        .tokens
+        .insert("foreground@disabled".into(), t(ICON_DISABLED));
+    let mut state = text("state", if on { "On" } else { "Off" });
+    state
+        .props
+        .tokens
+        .insert("foreground@disabled".into(), t(ICON_DISABLED));
 
     let mut appearance = stack(
         "appearance",
@@ -543,7 +615,9 @@ fn toggle_sized(
 
 #[cfg(test)]
 mod tests {
-    use super::{ACCENT_PRIMARY, SPACING_05};
+    use super::{
+        ACCENT_PRIMARY, BUTTON_DISABLED, ICON_DISABLED, ICON_ON_COLOR_DISABLED, SPACING_05,
+    };
     use super::{
         CHECKBOX_BOX, RADIO_BOX, TOGGLE_SM_TRACK_H, TOGGLE_SM_TRACK_W, TOGGLE_TRACK_H,
         TOGGLE_TRACK_W, checkbox, checkbox_group, checkbox_indeterminate, checkbox_readonly, radio,
@@ -1155,6 +1229,175 @@ mod tests {
                         "{key} at {ratio:.2}:1 against page ground fails AA {MIN_TEXT_CONTRAST}:1"
                     );
                 }
+            }
+        }
+    }
+
+    /// T0.1: `grep -c "@disabled" controls.rs` used to be 0. This reads the
+    /// bindings back rather than the frame, so removing an `insert` in
+    /// `empty_mark`/`marked_box`/`labelled_box` fails here even though the
+    /// geometry tests above (which only check that *something* painted)
+    /// would stay green.
+    ///
+    /// Carbon: `_checkbox.scss`'s `:disabled + label::before { border-color:
+    /// $icon-disabled }`, its `checked:disabled ... { background-color:
+    /// $icon-disabled }`, and its `:disabled + label { color: $text-disabled
+    /// }` (byte-identical to `$icon-disabled` in every published theme).
+    #[test]
+    fn a_disabled_checkbox_binds_the_disabled_ink_family() {
+        let off = checkbox("c", "Off", false);
+        let off_box = named(&off, "box");
+        assert_eq!(
+            off_box
+                .props
+                .tokens
+                .get("border@disabled")
+                .map(|t| t.as_str()),
+            Some(ICON_DISABLED),
+            "an unchecked checkbox is nothing but its outline, so the \
+             outline must fade when disabled"
+        );
+        assert!(
+            !off_box.props.tokens.contains_key("background@disabled"),
+            "an unchecked box carries no live background, so it must not \
+             gain a disabled one either"
+        );
+
+        let on = checkbox("c", "On", true);
+        let on_box = named(&on, "box");
+        assert_eq!(
+            on_box
+                .props
+                .tokens
+                .get("background@disabled")
+                .map(|t| t.as_str()),
+            Some(ICON_DISABLED),
+            "a checked-and-disabled box must swap the accent fill for the \
+             faded tone, or it reads as a live, pressable checkbox"
+        );
+        assert_eq!(
+            on_box
+                .props
+                .tokens
+                .get("border@disabled")
+                .map(|t| t.as_str()),
+            Some(ICON_DISABLED)
+        );
+
+        for (label, node) in [("off", off), ("on", on)] {
+            let label_node = named(&node, "label");
+            assert_eq!(
+                label_node
+                    .props
+                    .tokens
+                    .get("foreground@disabled")
+                    .map(|t| t.as_str()),
+                Some(ICON_DISABLED),
+                "{label}: the label text must fade under disabled too"
+            );
+        }
+    }
+
+    /// See [`a_disabled_checkbox_binds_the_disabled_ink_family`]. Carbon:
+    /// `_radio-button.scss`'s `:disabled` selectors on
+    /// `.radio-button__appearance` (`border-color: $icon-disabled`) and on
+    /// its label (`color: $text-disabled`).
+    #[test]
+    fn a_disabled_radio_binds_the_disabled_ink_family() {
+        let off = radio("r", "Off", false);
+        let off_box = named(&off, "box");
+        assert_eq!(
+            off_box
+                .props
+                .tokens
+                .get("border@disabled")
+                .map(|t| t.as_str()),
+            Some(ICON_DISABLED),
+            "an unselected radio is nothing but its ring, so the ring must \
+             fade when disabled"
+        );
+
+        let on = radio("r", "On", true);
+        let on_box = named(&on, "box");
+        assert_eq!(
+            on_box
+                .props
+                .tokens
+                .get("background@disabled")
+                .map(|t| t.as_str()),
+            Some(ICON_DISABLED),
+            "a selected-and-disabled radio must swap its accent fill for \
+             the faded tone, or it reads as a live, pressable radio"
+        );
+        assert_eq!(
+            on_box
+                .props
+                .tokens
+                .get("border@disabled")
+                .map(|t| t.as_str()),
+            Some(ICON_DISABLED)
+        );
+
+        for (label, node) in [("off", off), ("on", on)] {
+            let label_node = named(&node, "label");
+            assert_eq!(
+                label_node
+                    .props
+                    .tokens
+                    .get("foreground@disabled")
+                    .map(|t| t.as_str()),
+                Some(ICON_DISABLED),
+                "{label}: the label text must fade under disabled too"
+            );
+        }
+    }
+
+    /// See [`a_disabled_checkbox_binds_the_disabled_ink_family`]. Carbon:
+    /// `_toggle.scss`'s `.cds--toggle--disabled .cds--toggle__switch {
+    /// background-color: button.$button-disabled }` (a value Carbon
+    /// publishes on its own, not a fade — see [`BUTTON_DISABLED`]'s doc),
+    /// its nested `::before { background-color: $icon-on-color-disabled }`,
+    /// and its `.cds--toggle__label-text`/`.cds--toggle__text { color:
+    /// $text-disabled }` pair, on both on and off.
+    #[test]
+    fn a_disabled_toggle_binds_the_disabled_ink_family() {
+        for (label, node) in [
+            ("off", toggle("t", "Autosave", false)),
+            ("on", toggle("t", "Autosave", true)),
+        ] {
+            let track = named(&node, "track");
+            assert_eq!(
+                track
+                    .props
+                    .tokens
+                    .get("background@disabled")
+                    .map(|t| t.as_str()),
+                Some(BUTTON_DISABLED),
+                "{label}: the track must swap its fill for Carbon's own \
+                 disabled grey, on and off alike"
+            );
+
+            let knob = named(&node, "knob");
+            assert_eq!(
+                knob.props
+                    .tokens
+                    .get("background@disabled")
+                    .map(|t| t.as_str()),
+                Some(ICON_ON_COLOR_DISABLED),
+                "{label}: the knob must fade to the on-colour disabled ink"
+            );
+
+            for key in ["label", "state"] {
+                let text_node = named(&node, key);
+                assert_eq!(
+                    text_node
+                        .props
+                        .tokens
+                        .get("foreground@disabled")
+                        .map(|t| t.as_str()),
+                    Some(ICON_DISABLED),
+                    "{label}: {key} text must fade under disabled too"
+                );
             }
         }
     }

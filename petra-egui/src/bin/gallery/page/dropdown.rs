@@ -1,6 +1,8 @@
 //! Inventory row 11, Dropdown.
 
-use gorgon_petra::component::{dropdown, dropdown_open, dropdown_option, section};
+use gorgon_petra::component::{
+    dropdown, dropdown_lg, dropdown_open, dropdown_option, dropdown_sm, dropdown_xs, section,
+};
 use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::ViewNode;
 
@@ -48,7 +50,23 @@ impl Page for Dropdown {
         section(
             "drop",
             "Dropdown",
-            vec![body("dd-body", sp("spacing.md"), vec![field])],
+            vec![
+                body("dd-body", sp("spacing.md"), vec![field]),
+                // All four of Carbon's list-box sizes, stacked so the
+                // xs-to-lg step is one picture to look at rather than a
+                // fact only a unit test can see (`button.rs`'s "sizes"
+                // row does the same for its own six).
+                body(
+                    "dd-sizes",
+                    sp("spacing.md"),
+                    vec![
+                        dropdown_xs("dd-xs", "Xs 24", "Dark"),
+                        dropdown_sm("dd-sm", "Sm 32", "Dark"),
+                        dropdown("dd-md", "Md 40", "Dark"),
+                        dropdown_lg("dd-lg", "Lg 48", "Dark"),
+                    ],
+                ),
+            ],
         )
     }
 

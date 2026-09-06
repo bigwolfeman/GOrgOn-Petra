@@ -5,7 +5,8 @@
 //!    field.
 //! 2. Field — `.cds--list-box__field`: [`super::list_box::list_box_field`],
 //!    `$field` under a one-unit `$border-strong` rule, square, value at
-//!    `padding-left: 16px`, height md 40. The same node Select's field is.
+//!    `padding-left: 16px`, height md 40 by default. The same node Select's
+//!    field is.
 //! 3. Chevron — [`IconMark::ChevronDown`] shut, [`IconMark::ChevronUp`]
 //!    open (Carbon turns `.cds--list-box__menu-icon--open` 180°), in
 //!    [`IconTone::Primary`] (`fill: $icon-primary`), 16 in from the
@@ -15,18 +16,30 @@
 //! 4. Open menu — [`super::list_box::list_box`], flush under the field and
 //!    the field's width, a hairline between rows, **no caret**.
 //! 5. Option — [`dropdown_option`]: [`Role::Button`] + `Semantics.selected`,
-//!    height md 40, label at the leading edge, and when selected Carbon's
-//!    `Checkmark` glyph at the trailing edge plus [`LAYER_SELECTED`] — a
-//!    glyph and a fill, never a hue alone. Until 2026-09-04 the glyph was
-//!    the literal word `selected` printed beside the label.
+//!    height md 40 by default, label at the leading edge, and when selected
+//!    Carbon's `Checkmark` glyph at the trailing edge plus
+//!    [`LAYER_SELECTED`] — a glyph and a fill, never a hue alone. Until
+//!    2026-09-04 the glyph was the literal word `selected` printed beside
+//!    the label.
 //!
 //! [`dropdown`] is the closed column, [`dropdown_open`] the same column with
 //! the list. The field is keyed `"field"` in both, so keyboard focus seated
 //! on it survives the open. Combo box and Multiselect are omitted (clear
 //! icon + tags).
+//!
+//! **Sizes.** Carbon's list box runs xs/sm/md/lg
+//! ([`super::list_box::ListBoxSize`]); md is the unsuffixed default and
+//! [`dropdown_xs`]/[`dropdown_sm`]/[`dropdown_lg`] name the other three.
+//! [`dropdown_open`] and [`dropdown_option`] stay md-only for now — an open
+//! dropdown's rows are built at the same size as its field
+//! (`.cds--list-box__menu-item__option` shares the field's
+//! `layout.size('height')`), and that pairing is proved at all four sizes
+//! by a test that drives the crate-private size parameter directly, but
+//! shipping it as public `_xs`/`_sm`/`_lg` siblings is deferred to whichever
+//! caller first needs an open dropdown at a size other than md.
 
 use super::icon::{IconMark, IconTone, icon_toned};
-use super::list_box::{Dividers, edge_row, list_box, list_box_field};
+use super::list_box::{Dividers, ListBoxSize, edge_row, list_box, list_box_field};
 use super::stack;
 use super::text::text;
 use super::tokens::{
@@ -51,29 +64,60 @@ pub fn dropdown(
     label: impl Into<String>,
     value: impl Into<String>,
 ) -> ViewNode {
-    labelled(key, label, value, None)
+    labelled(key, label, value, ListBoxSize::Md, None)
 }
 
-/// Open dropdown: the labelled field plus a list box of `options`.
+/// Carbon xs (24). See [`dropdown`].
+pub fn dropdown_xs(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    value: impl Into<String>,
+) -> ViewNode {
+    labelled(key, label, value, ListBoxSize::Xs, None)
+}
+
+/// Carbon sm (32). See [`dropdown`].
+pub fn dropdown_sm(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    value: impl Into<String>,
+) -> ViewNode {
+    labelled(key, label, value, ListBoxSize::Sm, None)
+}
+
+/// Carbon lg (48). See [`dropdown`].
+pub fn dropdown_lg(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    value: impl Into<String>,
+) -> ViewNode {
+    labelled(key, label, value, ListBoxSize::Lg, None)
+}
+
+/// Open dropdown at Carbon md (40): the labelled field plus a list box of
+/// `options`.
 ///
 /// The field child is keyed `"field"` in both forms; the list box is keyed
 /// `"menu"` and anchored to `"field"` by sibling key, so the pair is
-/// accepted wherever a caller mounts it.
+/// accepted wherever a caller mounts it. Build `options` with
+/// [`dropdown_option`] at the same size as this call.
 pub fn dropdown_open(
     key: impl Into<Key>,
     label: impl Into<String>,
     value: impl Into<String>,
     options: Vec<ViewNode>,
 ) -> ViewNode {
-    labelled(key, label, value, Some(options))
+    labelled(key, label, value, ListBoxSize::Md, Some(options))
 }
 
 /// The column: label above field, plus the list box when `options` is
-/// `Some`. One builder for both forms so their ids cannot drift apart.
+/// `Some`. One builder for every size and both forms so their ids cannot
+/// drift apart.
 fn labelled(
     key: impl Into<Key>,
     label: impl Into<String>,
     value: impl Into<String>,
+    size: ListBoxSize,
     options: Option<Vec<ViewNode>>,
 ) -> ViewNode {
     let label = label.into();
@@ -89,7 +133,7 @@ fn labelled(
     } else {
         IconMark::ChevronDown
     };
-    let field = list_box_field("field", label.clone(), value, SIZE_MD, chevron, open);
+    let field = list_box_field("field", label.clone(), value, size.height(), chevron, open);
     let mut children = vec![caption, field];
     if let Some(options) = options {
         children.push(list_box("menu", label, "field", options, Dividers::Between));
@@ -114,13 +158,31 @@ pub(crate) fn open_field_of(node: &ViewNode) -> &ViewNode {
         .expect("a labelled column carries its field")
 }
 
-/// One option row. `selected` is a declared fact plus Carbon's `Checkmark`
-/// glyph at the trailing edge and [`LAYER_SELECTED`] — never colour alone.
+/// One option row at Carbon md (40). `selected` is a declared fact plus
+/// Carbon's `Checkmark` glyph at the trailing edge and [`LAYER_SELECTED`]
+/// — never colour alone.
 ///
 /// An [`edge_row`]: the text sits at the leading edge and the glyph at the
 /// trailing one; one line, ellipsised, as
 /// `.cds--list-box__menu-item__option` is.
+///
+/// `_list-box.scss`'s `.cds--list-box__menu-item__option` sets its
+/// `block-size` from the same `layout.size('height')` the field does, so a
+/// dropdown open at a size other than md needs its options built at that
+/// size too — [`sized_dropdown_option`] carries that, kept crate-private
+/// until a caller needs an open dropdown at a size other than md (proved
+/// by `dropdown_open_and_its_options_resolve_to_carbon_height_at_every_size`
+/// below, which drives it directly rather than through a public wrapper).
 pub fn dropdown_option(key: impl Into<Key>, label: impl Into<String>, selected: bool) -> ViewNode {
+    sized_dropdown_option(key, label, selected, ListBoxSize::Md)
+}
+
+fn sized_dropdown_option(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    selected: bool,
+    size: ListBoxSize,
+) -> ViewNode {
     let label = label.into();
     let mut caption = text("label", label.clone());
     caption.props.style = Some(t(TYPOGRAPHY_BODY_COMPACT));
@@ -149,7 +211,7 @@ pub fn dropdown_option(key: impl Into<Key>, label: impl Into<String>, selected: 
         .tokens
         .insert("background@selected-hover".into(), t(LAYER_SELECTED_HOVER));
     let mut node = node
-        .with_constraints(pin_height(SIZE_MD))
+        .with_constraints(pin_height(size.height()))
         .interactive(Role::Button, label, OPTION_INTENTS)
         // `Border`: options stack flush in the open menu, so the default bar
         // under one would land on the next option.
@@ -172,8 +234,9 @@ fn pin_height(h: f32) -> Constraints {
 #[cfg(test)]
 mod tests {
     use super::{
-        IconMark, IconTone, SIZE_MD, dropdown, dropdown_open, dropdown_option, icon_toned,
-        open_field_of,
+        IconMark, IconTone, ListBoxSize, SIZE_MD, dropdown, dropdown_lg, dropdown_open,
+        dropdown_option, dropdown_sm, dropdown_xs, icon_toned, labelled, open_field_of,
+        sized_dropdown_option,
     };
     use crate::component::tokens::{
         BORDER_STRONG, LAYER_SELECTED, SURFACE_RAISED, TEXT_MUTED, TYPOGRAPHY_LABEL,
@@ -546,6 +609,83 @@ mod tests {
                 }
                 walk_text(&option, bg, &theme, MIN_TEXT_CONTRAST);
             }
+        }
+    }
+
+    /// The closed field resolves to Carbon's measured height at every one
+    /// of the four sizes — a real layout pass, not `ListBoxSize::height`
+    /// echoing itself back. xs 24, sm 32, md 40, lg 48
+    /// (`ignored/carbon-ref/node_modules/@carbon/layout/scss/generated/_size.scss`,
+    /// `_list-box.scss`'s `layout.use('size', $default: 'md', $min: 'xs',
+    /// $max: 'lg')`).
+    #[test]
+    fn dropdown_resolves_to_carbon_height_at_every_size() {
+        let cases: [(ViewNode, f32); 4] = [
+            (dropdown_xs("dd", "Theme", "Dark"), 24.0),
+            (dropdown_sm("dd", "Theme", "Dark"), 32.0),
+            (dropdown("dd", "Theme", "Dark"), 40.0),
+            (dropdown_lg("dd", "Theme", "Dark"), 48.0),
+        ];
+        for (node, want) in cases {
+            let frame = petrify_lone(node);
+            let field = frame
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with("/dd/field"))
+                .unwrap_or_else(|| panic!("field not placed for height {want}"));
+            assert!(
+                (field.rect.h - want).abs() < 0.5,
+                "field at {} does not match Carbon's {want}",
+                field.rect.h
+            );
+        }
+    }
+
+    /// The open field and its option rows share one height per size —
+    /// `.cds--list-box__menu-item__option`'s `block-size` is the same
+    /// `layout.size('height')` the field's is — resolved by a real layout
+    /// pass at all four sizes. Drives the crate-private `labelled` and
+    /// `sized_dropdown_option` directly: [`dropdown_open`] and
+    /// [`dropdown_option`] only ever build md today (see the module doc's
+    /// Sizes section), but the pairing they would need at another size is
+    /// still proved here rather than left an untested claim.
+    #[test]
+    fn dropdown_open_and_its_options_resolve_to_carbon_height_at_every_size() {
+        let cases = [
+            (ListBoxSize::Xs, 24.0),
+            (ListBoxSize::Sm, 32.0),
+            (ListBoxSize::Md, 40.0),
+            (ListBoxSize::Lg, 48.0),
+        ];
+        for (size, want) in cases {
+            let node = labelled(
+                "dd",
+                "Theme",
+                "Dark",
+                size,
+                Some(vec![sized_dropdown_option("dark", "Dark", true, size)]),
+            );
+            let frame = petrify_lone(node);
+            let field = frame
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with("/dd/field"))
+                .unwrap_or_else(|| panic!("field not placed for height {want}"));
+            assert!(
+                (field.rect.h - want).abs() < 0.5,
+                "open field at {} does not match Carbon's {want}",
+                field.rect.h
+            );
+            let option = frame
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with("/dark"))
+                .unwrap_or_else(|| panic!("option not placed for height {want}"));
+            assert!(
+                (option.rect.h - want).abs() < 0.5,
+                "option row at {} does not match Carbon's {want}",
+                option.rect.h
+            );
         }
     }
 }

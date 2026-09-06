@@ -1349,6 +1349,157 @@ mod tests {
         );
     }
 
+    /// Photograph every page the T0 batch changed, in both themes.
+    ///
+    /// The batch added a disabled treatment to checkbox, radio and toggle, a
+    /// four-step size scale to dropdown, six button sizes, and all twelve
+    /// popover placements. Each of those is a claim about **what a person
+    /// sees**, and this repository has learned twice that a frame-record
+    /// test stays green over a visibly broken layout. So the pictures are
+    /// the evidence and this test is what writes them.
+    ///
+    /// It is a real gate, not only a shooter: a page that rasterizes to one
+    /// flat colour has failed to draw, and a light shot that is not lighter
+    /// than its dark twin means the theme never reached the frame — the
+    /// exact defect [`the_nav_row_theme_switcher_lights_the_catalog_from_any_page`]
+    /// was written for, checked here on the pages the batch touched rather
+    /// than on row 04 alone.
+    #[test]
+    fn every_page_the_size_and_state_batch_touched_is_photographed_in_both_themes() {
+        for (page, name) in [
+            ("Checkbox", "05-checkbox-disabled"),
+            ("Radio button", "27-radio-disabled"),
+            ("Toggle", "36-toggle-disabled"),
+            ("Dropdown", "11-dropdown-sizes"),
+            ("Button", "04-button-sizes"),
+            // `24-popover-resting`, not `24-popover-placements`. This camera
+            // never presses anything, so it photographs row 24 at rest — the
+            // `po-pair` panel open and no placement grid. The grid's own
+            // picture is written by
+            // [`the_twelve_placement_bubbles_neither_overlap_nor_leave_the_page`],
+            // which clicks the trigger first. Both names were
+            // `24-popover-placements` for one run, and whichever test
+            // finished last owned the file: a picture called "placements"
+            // that could hold no placements at all, depending on thread
+            // scheduling.
+            ("Popover", "24-popover-resting"),
+        ] {
+            let mut dark = Camera::on(page);
+            let dark_luma = dark.mean_luma();
+            dark.shoot(&format!("{name}-dark"));
+
+            let mut light = Camera::on(page);
+            light.light();
+            let light_luma = light.mean_luma();
+            light.shoot(&format!("{name}-light"));
+
+            assert!(
+                light_luma > dark_luma,
+                "{page}: the light shot ({light_luma:.4}) is not lighter than the dark one \
+                 ({dark_luma:.4}), so the theme never reached the frame"
+            );
+        }
+    }
+
+    /// No two of the Popover page's twelve placement bubbles overlap, and
+    /// none of them leaves the page's own content column.
+    ///
+    /// A popover bubble is an **overlay**: it paints outside its parent's
+    /// box and the layout pass reserves nothing for it. So a grid of twelve
+    /// of them is the one page in the catalog where correct components and
+    /// a correct engine still photograph as a fault, and three separate
+    /// attempts at this grid did exactly that — triggers sitting on their
+    /// neighbours' bubbles, and then, once the grid ran past the fold,
+    /// `ClampRule::Flip` correctly turning the `bottom-*` row into a second
+    /// `top-*` row. Neither showed up in any assertion. Only the picture
+    /// did, which is what this test is here to stop.
+    #[test]
+    fn the_twelve_placement_bubbles_neither_overlap_nor_leave_the_page() {
+        let mut cam = Camera::on("Popover");
+        // The grid shows when the `po-pair` panel is shut: see that page's
+        // own note on why one overlay demo at a time is the only honest
+        // arrangement on a single viewport.
+        cam.click("pop-anchor");
+        let tags = [
+            "top-start",
+            "top",
+            "top-end",
+            "right-start",
+            "right",
+            "right-end",
+            "bottom-start",
+            "bottom",
+            "bottom-end",
+            "left-start",
+            "left",
+            "left-end",
+        ];
+        let bubbles: Vec<_> = tags
+            .iter()
+            .map(|tag| (*tag, cam.rect(&format!("pop-grid-{tag}-bubble"))))
+            .collect();
+
+        for (i, (a_tag, a)) in bubbles.iter().enumerate() {
+            for (b_tag, b) in &bubbles[i + 1..] {
+                let apart =
+                    a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y;
+                assert!(
+                    apart,
+                    "{a_tag} and {b_tag} overlap: {a_tag} at {a:?}, {b_tag} at {b:?}"
+                );
+            }
+        }
+
+        // Both axes. The vertical is the one that bit: four 148-unit rows
+        // ran to y 1024 against a 900-unit viewport, the `left-*` row sat
+        // wholly below the fold, and all three of its bubbles clamped to
+        // the viewport's bottom edge — 82 units off their own triggers and
+        // sitting on the `bottom-*` row's. A horizontal-only check saw
+        // none of it.
+        let page = cam.rect("pop-grid");
+        for (tag, r) in &bubbles {
+            assert!(
+                r.x >= page.x && r.x + r.w <= page.x + page.w,
+                "{tag} leaves the grid horizontally: bubble at {r:?}, grid {page:?}"
+            );
+            assert!(
+                r.y >= page.y && r.y + r.h <= page.y + page.h,
+                "{tag} leaves the grid vertically: bubble at {r:?}, grid {page:?}"
+            );
+        }
+
+        // Every bubble sits on the side it is named for.
+        //
+        // Without this the page can photograph as a lie and still pass:
+        // `ClampRule::Flip` measures a bubble against the **viewport**, and
+        // when the grid ran past the fold it correctly flipped the
+        // `bottom-*` row above its triggers, where it read as a second
+        // `top-*` row. Overlap and containment were both still clean. Only
+        // the side is the claim the page is actually making.
+        for (tag, r) in &bubbles {
+            let anchor = cam.rect(&format!("pop-grid-{tag}"));
+            let (edge, _) = tag.split_once('-').unwrap_or((tag, ""));
+            let ok = match edge {
+                "top" => r.y + r.h <= anchor.y,
+                "bottom" => r.y >= anchor.y + anchor.h,
+                "left" => r.x + r.w <= anchor.x,
+                "right" => r.x >= anchor.x + anchor.w,
+                other => panic!("unknown edge in {tag:?}: {other:?}"),
+            };
+            assert!(
+                ok,
+                "{tag} is not on its own side of its trigger: bubble {r:?}, trigger {anchor:?}"
+            );
+        }
+
+        // The picture, from the same state the assertions just measured.
+        cam.shoot("24-popover-placements-dark");
+        let mut light = Camera::on("Popover");
+        light.light();
+        light.click("pop-anchor");
+        light.shoot("24-popover-placements-light");
+    }
+
     // ===== Wave 7: catalog state and routing =====
     //
     // Every row below reached the operator as "does not work". A resting
@@ -4355,7 +4506,7 @@ mod tests {
     #[test]
     fn dragging_a_structured_list_divider_moves_the_column_boundary() {
         let mut cam = Camera::on("Structured list");
-        let before = cam.shoot("31-structured-list");
+        let before = cam.shoot("31-structured-list-before-drag");
         let first = cam.rect("/sl/header/c0");
         let second = cam.rect("/sl/header/c1");
         let divider = cam.rect("/sl/header/div0");
@@ -4440,7 +4591,7 @@ mod tests {
     #[test]
     fn clicking_a_data_table_cell_and_typing_changes_the_value() {
         let mut cam = Camera::on("Data table");
-        let before = cam.shoot("09-data-table");
+        let before = cam.shoot("09-data-table-before-typing");
         assert_eq!(text_of(&cam, "dt-kind-0"), "runtime");
 
         cam.click("dt-kind-0");
@@ -4578,7 +4729,7 @@ mod tests {
             !cam.has("tv-gallery"),
             "petra-egui is meant to start shut, so this proves nothing"
         );
-        let before = cam.shoot("39-tree-view-resting");
+        let before = cam.shoot("39-tree-view-before-branch-opens");
         cam.click("tv-petra-egui/row");
         assert!(
             cam.has("tv-gallery"),
@@ -4874,7 +5025,7 @@ mod tests {
 
         let mut cam = Camera::on("Loading");
         let ring = cam.rect("sizes/load-lg");
-        let start = inset_pixels(&raster(&mut cam, "17-loading"), ring, 0);
+        let start = inset_pixels(&raster(&mut cam, "17-loading-large-first-frame"), ring, 0);
 
         advance(&mut cam, half - 1);
         let half_way = inset_pixels(&raster(&mut cam, "17-loading-half-turn"), ring, 0);
@@ -6105,7 +6256,7 @@ mod tests {
     #[test]
     fn a_file_dropped_on_the_window_joins_the_uploader_list() {
         let mut cam = Camera::on("File uploader");
-        let before = cam.shoot("12-file-uploader");
+        let before = cam.shoot("12-file-uploader-before-drop");
         let rows_before = cam.ids().iter().filter(|id| id.contains("/fu-")).count();
 
         cam.drop_files(&["/tmp/kernel-boot.ndjson", "/tmp/second.ndjson"]);
@@ -6635,7 +6786,7 @@ mod tests {
             !cam.has("nt/panel/rail"),
             "the accent rail is back; the operator refused it twice"
         );
-        cam.shoot("21-notification");
+        cam.shoot("21-notification-glyph-edges");
     }
 
     /// Row 16, the operator's round-4 line: *"List: we need several types of

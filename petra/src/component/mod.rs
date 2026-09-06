@@ -133,8 +133,8 @@ pub use ai_label::{
 };
 pub use breadcrumb::{breadcrumb, breadcrumb_item, breadcrumb_item_current};
 pub use button::{
-    button, button_lg, button_sm, button_xs, danger_button, danger_ghost_button,
-    danger_tertiary_button, ghost_button, primary_button, tertiary_button,
+    button, button_2xl, button_lg, button_sm, button_xl, button_xs, danger_button,
+    danger_ghost_button, danger_tertiary_button, ghost_button, primary_button, tertiary_button,
 };
 pub use code_snippet::{
     COPY_FEEDBACK, COPY_FEEDBACK_KEY, COPY_FEEDBACK_SECONDS, CodeInk, code_runs, code_snippet,
@@ -152,7 +152,9 @@ pub use data_table::{
     data_table_zebra,
 };
 pub use date_picker::{Calendar, date_picker, date_picker_open, date_picker_showing};
-pub use dropdown::{dropdown, dropdown_open, dropdown_option};
+pub use dropdown::{
+    dropdown, dropdown_lg, dropdown_open, dropdown_option, dropdown_sm, dropdown_xs,
+};
 pub use field::{
     field, field_fluid, field_invalid, field_labeled, field_lg, field_readonly, field_sm,
     field_validated, hinted, labeled, valued,
@@ -180,7 +182,7 @@ pub use notification::{
 };
 pub use number_input::{number_input, number_input_invalid, number_input_lg, number_input_sm};
 pub use pagination::{PaginationPicker, pagination, pagination_items, pagination_items_open};
-pub use popover::{popover, popover_with};
+pub use popover::{popover, popover_with, popover_with_placement};
 pub use progress::{progress, progress_sm, progress_with_helper};
 pub use progress_indicator::{progress_indicator, progress_step};
 pub use search::{search, search_lg, search_sm};

@@ -94,10 +94,38 @@ pub(super) fn bubble_text(body: String) -> ViewNode {
 /// engine caret, [`Role::Overlay`]. The children keep whatever roles and
 /// labels they already carry. `anchor` is the trigger's sibling key, as for
 /// [`popover`].
+///
+/// Placement is the engine's default: [`Edge::Bottom`], [`Align::Center`].
+/// A caller that needs one of the other eleven of Carbon's twelve placements
+/// (`_popover.scss`'s `--top`/`--bottom`/`--left`/`--right`, each crossed
+/// with `-start`/(none)/`-end`) wants [`popover_with_placement`], which this
+/// calls with that default so every existing caller of this constructor
+/// keeps its current bubble unchanged.
 pub fn popover_with(
     key: impl Into<Key>,
     label: impl Into<String>,
     anchor: impl Into<Key>,
+    children: Vec<ViewNode>,
+) -> ViewNode {
+    popover_with_placement(key, label, anchor, Edge::Bottom, Align::Center, children)
+}
+
+/// [`popover_with`], with the anchor side and cross-axis alignment as
+/// parameters instead of the engine's default.
+///
+/// `edge` and `align` are the same pair `tree::props` resolves an
+/// [`Anchor::Sibling`] with (`tree/props.rs:313-320,585-596`): 4 edges × 3
+/// aligns is exactly Carbon's twelve named placements, `--<edge>`,
+/// `--<edge>-start` and `--<edge>-end`. Carbon's `-left`/`-right` are
+/// deprecated aliases for `-start`/`-end` and are not ported
+/// (`contracts/anchored-placement.md` §3); this crate has one name per
+/// placement, not two.
+pub fn popover_with_placement(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    anchor: impl Into<Key>,
+    edge: Edge,
+    align: Align,
     children: Vec<ViewNode>,
 ) -> ViewNode {
     let content = stack("content", Axis::Vertical, Some(SPACING_03), children);
@@ -107,8 +135,8 @@ pub fn popover_with(
             layer: Some(Layer::Popup),
             anchor: Some(Anchor::Sibling {
                 key: anchor.into(),
-                edge: Edge::Bottom,
-                align: Align::Center,
+                edge,
+                align,
                 // The caret's depth: the engine draws it as deep as the gap
                 // (`overlay_surface::caret_of`), so this is both the air
                 // under the trigger and the size of the pointer in it.
@@ -143,7 +171,7 @@ pub fn popover_with(
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_INLINE, popover, popover_with};
+    use super::{MAX_INLINE, popover, popover_with, popover_with_placement};
     use crate::component::text::text;
     use crate::component::tokens::{
         SHADOW_OVERLAY, SHAPE_XS, SPACING_03, SPACING_05, SURFACE_RAISED,
@@ -320,6 +348,153 @@ mod tests {
             ("/root/page/body/help", "/root/page/body/filter-btn"),
             "the refusal names the surface and the exact sibling id it tried"
         );
+    }
+
+    /// T0.3's whole claim: each of the engine's twelve placements resolves
+    /// the *surface's rect*, not just an enum a caller can round-trip. A
+    /// test that only checked `node.props.anchor == Some(Anchor::Sibling {
+    /// edge, align, .. })` would pass even if the layout pass ignored both
+    /// fields, because that struct is built by the same line that reads
+    /// them. This places a real trigger and a real bubble through
+    /// [`crate::layout::place`] and checks the two rects against each
+    /// other, the same way `overlay_surface`'s own edge/align tests do for
+    /// the engine primitive underneath.
+    #[test]
+    fn every_placement_lands_on_the_edge_and_align_it_asked_for() {
+        use crate::frame::placement::PlacementList;
+        use crate::geom::Rect;
+        use crate::layout::Slot;
+        use crate::tree::KeyPath;
+
+        let control = Size::new(100.0, 40.0);
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        // Centred with room on all four sides, so no placement in the
+        // sweep below needs `ClampRule::Flip` to fit — this test is about
+        // which side and alignment were asked for, not about the flip
+        // ladder (that is `overlay_surface`'s own coverage).
+        let anchor_origin = (300.0_f32, 280.0_f32);
+
+        let mut harness = Harness::new();
+        let gap = harness
+            .theme
+            .spacing(&TokenName::new(SPACING_03).unwrap())
+            .expect("SPACING_03 is a spacing token in the fixture theme");
+
+        for edge in [Edge::Top, Edge::Bottom, Edge::Left, Edge::Right] {
+            for align in [Align::Start, Align::Center, Align::End] {
+                let mut pinned = ViewNode::new(NodeKind::Spacer, "box");
+                pinned.constraints.horizontal.min = Some(control.w);
+                pinned.constraints.horizontal.max = Some(control.w);
+                pinned.constraints.vertical.min = Some(control.h);
+                pinned.constraints.vertical.max = Some(control.h);
+                // A `Surface` pinned by `Anchor::Point` so its placed rect
+                // is a known constant, not something this test would have
+                // to trust the box layout to reproduce.
+                let trigger = ViewNode::new(NodeKind::Surface, "trigger")
+                    .with_props(Props {
+                        layer: Some(Layer::Popup),
+                        anchor: Some(Anchor::Point {
+                            x: anchor_origin.0,
+                            y: anchor_origin.1,
+                        }),
+                        clamp: Some(ClampRule::Shrink),
+                        input_policy: Some(InputPolicy::Block),
+                        ..Props::default()
+                    })
+                    .child(pinned);
+                let bubble = popover_with_placement(
+                    "pop",
+                    "Filter help",
+                    "trigger",
+                    edge,
+                    align,
+                    vec![text("item", "Narrow the list.")],
+                );
+                let root = ViewNode::new(NodeKind::Overlay, "root")
+                    .child(trigger)
+                    .child(bubble);
+
+                let mut ctx = harness.ctx();
+                let mut path = KeyPath::root();
+                let mut sink = PlacementList::new();
+                crate::layout::place(&root, &mut ctx, &mut path, Slot::new(viewport), &mut sink);
+                let parts = sink.into_parts();
+                let find = |id: &str| {
+                    parts
+                        .placements
+                        .iter()
+                        .find(|p| p.id == id)
+                        .unwrap_or_else(|| panic!("{id} was not placed for {edge:?}/{align:?}"))
+                };
+                let button = find("/root/trigger");
+                let surface = find("/root/pop");
+
+                assert_eq!(
+                    button.rect,
+                    Rect::new(anchor_origin.0, anchor_origin.1, control.w, control.h),
+                    "the trigger's own pinned rect moved — the test fixture is broken, \
+                     not the placement under test"
+                );
+
+                match edge {
+                    Edge::Bottom => assert_eq!(
+                        surface.rect.y,
+                        button.rect.bottom() + gap,
+                        "{align:?}: bottom did not sit under the trigger"
+                    ),
+                    Edge::Top => assert_eq!(
+                        surface.rect.bottom(),
+                        button.rect.y - gap,
+                        "{align:?}: top did not sit above the trigger"
+                    ),
+                    Edge::Right => assert_eq!(
+                        surface.rect.x,
+                        button.rect.right() + gap,
+                        "{align:?}: right did not sit beside the trigger"
+                    ),
+                    Edge::Left => assert_eq!(
+                        surface.rect.right(),
+                        button.rect.x - gap,
+                        "{align:?}: left did not sit beside the trigger"
+                    ),
+                }
+
+                match edge {
+                    Edge::Top | Edge::Bottom => match align {
+                        Align::Start => assert_eq!(
+                            surface.rect.x, button.rect.x,
+                            "{edge:?}/start did not flush the anchor's leading corner"
+                        ),
+                        Align::Center => assert_eq!(
+                            surface.rect.x,
+                            button.rect.x + (button.rect.w - surface.rect.w) / 2.0,
+                            "{edge:?}/center did not centre on the anchor"
+                        ),
+                        Align::End => assert_eq!(
+                            surface.rect.x + surface.rect.w,
+                            button.rect.x + button.rect.w,
+                            "{edge:?}/end did not flush the anchor's trailing corner"
+                        ),
+                    },
+                    Edge::Left | Edge::Right => match align {
+                        Align::Start => assert_eq!(
+                            surface.rect.y, button.rect.y,
+                            "{edge:?}/start did not flush the anchor's leading corner"
+                        ),
+                        Align::Center => assert_eq!(
+                            surface.rect.y,
+                            button.rect.y + (button.rect.h - surface.rect.h) / 2.0,
+                            "{edge:?}/center did not centre on the anchor"
+                        ),
+                        Align::End => assert_eq!(
+                            surface.rect.y + surface.rect.h,
+                            button.rect.y + button.rect.h,
+                            "{edge:?}/end did not flush the anchor's trailing corner"
+                        ),
+                    },
+                }
+            }
+        }
     }
 
     // Every constructor here IS the anchored surface — there is no closed

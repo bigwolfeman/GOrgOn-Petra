@@ -1,8 +1,9 @@
 //! Inventory row 4, Button.
 
 use gorgon_petra::component::{
-    button, button_lg, button_sm, danger_button, danger_ghost_button, danger_tertiary_button,
-    ghost_button, primary_button, section, tertiary_button,
+    button, button_2xl, button_lg, button_sm, button_xl, button_xs, danger_button,
+    danger_ghost_button, danger_tertiary_button, ghost_button, primary_button, section,
+    tertiary_button,
 };
 use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::ViewNode;
@@ -42,19 +43,17 @@ impl Page for Button {
                     // `support-error`: the channel that tells danger from
                     // default without spending a colour alone.
                     //
-                    // **Why the three sit alone in their own row.**
-                    // `layout::stack::distribute` clips the child with the
-                    // largest natural width to the mean of the row's
-                    // naturals, and a button that grew a 16-unit mark is
-                    // exactly that child. Measured 2026-09-05: `Cancel`
-                    // (72) beside `Delete` (98) placed the second at 84.7
-                    // and broke its label across two lines inside a
-                    // 40-unit box, while two `Delete`s beside each other
-                    // both placed at 98. Equal naturals, no clip. The
-                    // reproduction is in this wave's Agent Note, and
-                    // `the_danger_buttons_carry_a_red_octagon...` asserts
-                    // the label stays one line so it cannot regress
-                    // quietly.
+                    // This row used to carry a claim that the three had to
+                    // sit apart from the kinds row because
+                    // `layout::stack::distribute` clipped a mixed-width
+                    // sibling and broke `Delete`'s label across two lines.
+                    // Round 3 (wave STACK) put the trio back into the kinds
+                    // row and rasterized twice, with and without a
+                    // candidate fix: byte-identical both times, one line
+                    // both times. The defect did not reproduce, so that
+                    // justification was stale (`ROUND3-DEFECTS.md`). The
+                    // split here is a grouping choice, not a layout
+                    // workaround; not re-verified in this change.
                     row(
                         "danger",
                         sp("spacing.md"),
@@ -64,13 +63,19 @@ impl Page for Button {
                             danger_ghost_button("btn-danger-ghost", "Delete"),
                         ],
                     ),
+                    // All six of Carbon's size steps, in order, so the
+                    // xs-to-2xl progression is one row to look at rather
+                    // than a fact only a unit test can see.
                     row(
                         "sizes",
                         sp("spacing.md"),
                         vec![
+                            button_xs("btn-xs", "X-small 24"),
                             button_sm("btn-sm", "Small 32"),
                             button("btn-md", "Medium 40"),
                             button_lg("btn-lg", "Large 48"),
+                            button_xl("btn-xl", "X-large 64"),
+                            button_2xl("btn-2xl", "2X-large 80"),
                         ],
                     ),
                 ],

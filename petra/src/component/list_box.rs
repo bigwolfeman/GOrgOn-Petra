@@ -45,7 +45,7 @@ use super::icon::{IconMark, IconTone, icon_toned};
 use super::stack;
 use super::text::text;
 use super::tokens::{
-    BORDER_STRONG, BORDER_SUBTLE, LAYER_HOVER, SHADOW_OVERLAY, SPACING_05, SURFACE_RAISED,
+    BORDER_STRONG, BORDER_SUBTLE, LAYER_HOVER, SHADOW_OVERLAY, SIZE_MD, SPACING_05, SURFACE_RAISED,
     TEXT_PRIMARY, TYPOGRAPHY_BODY_COMPACT, t,
 };
 use crate::geom::{Align as CrossAlign, Axis};
@@ -60,6 +60,62 @@ use crate::tree::{
 const DIVIDER_HEIGHT: f32 = 1.0;
 
 const FIELD_INTENTS: &[Interaction] = &[Interaction::Focus, Interaction::Click, Interaction::Hover];
+
+/// Carbon extra-small (`@carbon/layout`'s generated `_size.scss`:
+/// `$size-xs: 1.5rem`; `.cds--list-box`'s `layout.use('size', ..., $min:
+/// 'xs')` bottoms out here).
+const HEIGHT_XS: f32 = 24.0;
+/// Carbon small (`$size-sm: 2rem`).
+const HEIGHT_SM: f32 = 32.0;
+/// Carbon large (`$size-lg: 3rem`; `.cds--list-box`'s `$max: 'lg'` — the
+/// list box never reaches `$size-xl`, unlike Button or Data table).
+const HEIGHT_LG: f32 = 48.0;
+
+const _: () = assert!(HEIGHT_XS == 24.0);
+const _: () = assert!(HEIGHT_SM == 32.0);
+const _: () = assert!(SIZE_MD == 40.0);
+const _: () = assert!(HEIGHT_LG == 48.0);
+
+/// Carbon's list-box size scale: `_list-box.scss` puts
+/// `@include layout.use('size', $default: 'md', $min: 'xs', $max: 'lg')`
+/// once, on `.cds--list-box` itself, and Dropdown, Select and Menu button
+/// each inherit that one declaration rather than declaring their own — the
+/// same field and the same option-row anatomy underlie all three
+/// (`_list-box.scss`'s own header comment). This lives here, not in
+/// `dropdown.rs`, for the same reason `list_box_field` and `edge_row` do:
+/// a shared anatomy has one home or it drifts, and it already had —
+/// `select.rs` carries its own private `SIZE_SM`/`SIZE_LG` today because
+/// this did not exist yet.
+///
+/// An enum with a `height` method, not a bare `f32` threaded through every
+/// caller the way [`super::field`]'s and [`super::tag`]'s separate
+/// constructors do it: this scale is about to be reused by nine more
+/// components (`.agents/carbon-waves/TASKS.md` T1.1-T1.9), each of which
+/// has to render "all four sizes, in order" in its own gallery page, and a
+/// `match` over a closed enum turns a size someone forgot to wire into a
+/// compile error instead of a silently-missing row — the trade
+/// [`super::button::Size`] and [`super::data_table::RowSize`] already
+/// made. Named `ListBoxSize`, not the bare `Size` those two use, because
+/// `crate::geom::Size` (a width/height pair) is already in scope wherever
+/// a frame gets petrified, `data_table::RowSize` sidesteps the same clash.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ListBoxSize {
+    Xs,
+    Sm,
+    Md,
+    Lg,
+}
+
+impl ListBoxSize {
+    pub(crate) fn height(self) -> f32 {
+        match self {
+            Self::Xs => HEIGHT_XS,
+            Self::Sm => HEIGHT_SM,
+            Self::Md => SIZE_MD,
+            Self::Lg => HEIGHT_LG,
+        }
+    }
+}
 
 /// Whether the panel draws a rule between each pair of rows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -273,7 +329,7 @@ fn pinned(h: f32) -> AxisConstraint {
 
 #[cfg(test)]
 mod tests {
-    use super::{DIVIDER_HEIGHT, Dividers, list_box, list_box_field};
+    use super::{DIVIDER_HEIGHT, Dividers, ListBoxSize, list_box, list_box_field};
     use crate::component::icon::{IconMark, IconTone, icon_toned};
     use crate::component::menu::menu_item;
     use crate::component::tokens::{
@@ -520,5 +576,56 @@ mod tests {
             ((rule.y + rule.h) - (field.y + field.h)).abs() < 0.01,
             "the rule is the field's bottom unit: rule {rule:?}, field {field:?}"
         );
+    }
+
+    /// Each of the four sizes petrifies to Carbon's measured height —
+    /// resolved geometry from a real layout pass, not `ListBoxSize::height`
+    /// echoing itself back. xs 24, sm 32, md 40, lg 48
+    /// (`ignored/carbon-ref/node_modules/@carbon/layout/scss/generated/_size.scss`).
+    #[test]
+    fn a_field_placed_at_each_carbon_size_resolves_to_its_measured_height() {
+        let cases = [
+            (ListBoxSize::Xs, 24.0),
+            (ListBoxSize::Sm, 32.0),
+            (ListBoxSize::Md, 40.0),
+            (ListBoxSize::Lg, 48.0),
+        ];
+        for (size, want) in cases {
+            assert_eq!(size.height(), want, "{size:?} height constant");
+            let field = list_box_field(
+                "field",
+                "Theme",
+                "Dark",
+                size.height(),
+                IconMark::ChevronDown,
+                false,
+            );
+            let root = ViewNode::new(NodeKind::Stack, "root")
+                .with_props(Props {
+                    axis: Some(Axis::Vertical),
+                    ..Props::default()
+                })
+                .child(field);
+            let registry = Registry::with_vocabulary(standard_vocabulary());
+            let mut harness = Harness::new();
+            let viewport = Viewport::new(Size { w: 900.0, h: 700.0 }, ThemeMode::Dark);
+            harness.scale = viewport.scale;
+            let frame = petrify(
+                1,
+                validated_with(&root, &registry),
+                &mut harness.ctx(),
+                viewport,
+                TransitionActivity::default(),
+            );
+            let placed = frame
+                .placement("/root/field")
+                .unwrap_or_else(|| panic!("{size:?}: field not placed"))
+                .rect;
+            assert!(
+                (placed.h - want).abs() < 0.5,
+                "{size:?}: placed height {} does not match Carbon's {want}",
+                placed.h
+            );
+        }
     }
 }

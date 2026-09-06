@@ -964,6 +964,32 @@ const DANGER_FILL_TOKEN: &str = "button-danger-primary";
 /// publishes one.
 const DANGER_FILL: [u8; 3] = [0xda, 0x1e, 0x28];
 
+/// Carbon's `$button-disabled`: the track colour `component::controls`'s
+/// `toggle` paints when disabled, on and off alike
+/// (`.cds--toggle--disabled .cds--toggle__switch`, `_toggle.scss`).
+///
+/// **Not a fade of an existing tone**, unlike [`ICON_TOKENS`]'s two disabled
+/// names. Carbon publishes `$button-disabled` as its own colour in
+/// `_button-tokens.scss` — an opaque mid-grey in White/G10 and a
+/// translucent grey in G90/G100 — rather than deriving it from
+/// `icon-primary` or the accent at 25%, so reusing [`ICON_DISABLED`] here
+/// would collapse two different Carbon values into one name.
+///
+/// MEASURED from `_button-tokens.scss`'s `$button-disabled` map. Petra ships
+/// two themes, not Carbon's four: light takes the White/G10 value (they
+/// agree, `#c6c6c6`), dark takes the G90/G100 value (they also agree,
+/// `rgba(141, 141, 141, 0.3)`).
+const BUTTON_DISABLED_TOKEN: &str = "button-disabled";
+
+/// See [`BUTTON_DISABLED_TOKEN`]. Light: `#c6c6c6`, opaque.
+const BUTTON_DISABLED_LIGHT: [u8; 3] = [0xc6, 0xc6, 0xc6];
+
+/// See [`BUTTON_DISABLED_TOKEN`]. Dark: `rgb(141, 141, 141)` at 30% alpha
+/// (Carbon's `rgba(141, 141, 141, 0.3)`; `0.3 * 255` rounds to 77).
+const BUTTON_DISABLED_DARK: [u8; 3] = [0x8d, 0x8d, 0x8d];
+/// See [`BUTTON_DISABLED_DARK`].
+const BUTTON_DISABLED_DARK_ALPHA: u8 = 77;
+
 /// Carbon's `$text-on-color` (and `$icon-on-color`): **white in every
 /// theme**, the ink and the mark that go on a saturated fill.
 ///
@@ -1988,6 +2014,9 @@ pub fn standard_vocabulary() -> Vocabulary {
         // on-colour ink.
         DANGER_FILL_TOKEN,
         ON_COLOUR_TOKEN,
+        // The disabled toggle track. Its own Carbon value, not a fade of an
+        // existing tone — see `BUTTON_DISABLED_TOKEN`.
+        BUTTON_DISABLED_TOKEN,
         ACTIVE_TOKEN,
         LAYER_ACCENT_TOKEN,
         SCRIM_TOKEN,
@@ -2041,6 +2070,8 @@ pub fn light() -> Theme {
     values.insert(name("text.muted"), opaque(LIGHT_TEXT[1]));
     insert_icon_family(&mut values, &LIGHT_TEXT, LIGHT_LAYERS[0], DARK_TEXT[0]);
     insert_on_colour_pair(&mut values);
+    // See `BUTTON_DISABLED_TOKEN`: Carbon's own value, not a fade.
+    values.insert(name(BUTTON_DISABLED_TOKEN), opaque(BUTTON_DISABLED_LIGHT));
     insert_border_family(
         &mut values,
         &light_border(),
@@ -2139,6 +2170,16 @@ pub fn dark() -> Theme {
     values.insert(name("text.muted"), opaque(DARK_TEXT[1]));
     insert_icon_family(&mut values, &DARK_TEXT, DARK_LAYERS[0], LIGHT_TEXT[0]);
     insert_on_colour_pair(&mut values);
+    // See `BUTTON_DISABLED_TOKEN`: Carbon's own value, not a fade.
+    values.insert(
+        name(BUTTON_DISABLED_TOKEN),
+        TokenValue::Color(ColorValue::from_srgb8(
+            BUTTON_DISABLED_DARK[0],
+            BUTTON_DISABLED_DARK[1],
+            BUTTON_DISABLED_DARK[2],
+            BUTTON_DISABLED_DARK_ALPHA,
+        )),
+    );
     insert_border_family(
         &mut values,
         &dark_border(),

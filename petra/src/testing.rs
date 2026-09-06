@@ -63,16 +63,31 @@ pub fn inks(node: &ViewNode) -> Vec<TokenName> {
 /// [`ValidatedTree`] through, rather than each of dozens of call sites
 /// repeating its own `validate(...).expect("valid")` — see the project's
 /// util rule. Reach for [`validated_with`] instead when the tree under test
-/// declares a custom kind or a transition name a real registry would need to
-/// know about, or when it references tokens outside the shipped vocabulary
-/// and the fixture gap scale — [`extended_vocabulary`] documents exactly what
-/// this function does and does not cover.
+/// declares a custom kind, or when it references tokens outside the shipped
+/// vocabulary and the fixture gap scale — [`extended_vocabulary`] documents
+/// exactly what this function does and does not cover.
+///
+/// # The shipped transitions are declared, because the host declares them
+///
+/// The registry carries [`crate::anim::shipped_registry`]'s names. Without
+/// them this helper is *stricter than production* and the gap is not a
+/// corner: every `button` in the library names
+/// [`crate::anim::BUTTON_PRESS`] unconditionally, and every `toggle` names
+/// `TOGGLE_KNOB`, so a panel that draws one button was refused by the plain
+/// helper while the real host — which installs the same registry at
+/// `Host::new` — drew it happily. That is a false refusal, and it cost
+/// `gorgon-inspector`'s unload panel a red test.
+///
+/// A name the shipped registry does *not* carry is still refused, so this
+/// declares what ships rather than turning the check off.
 ///
 /// # Panics
 /// Panics naming the violations when `tree` does not accept.
 #[must_use]
 pub fn validated(tree: &ViewNode) -> ValidatedTree<'_> {
-    validated_with(tree, &Registry::with_vocabulary(extended_vocabulary(tree)))
+    let mut registry = Registry::with_vocabulary(extended_vocabulary(tree));
+    crate::anim::shipped_registry().declare_into(&mut registry);
+    validated_with(tree, &registry)
 }
 
 /// [`validated`], against a caller-supplied [`Registry`] rather than an empty
@@ -722,7 +737,7 @@ mod tests {
 
 #[cfg(test)]
 mod escape_hatch {
-    use super::{extended_vocabulary, gap, gap_token};
+    use super::{extended_vocabulary, gap, gap_token, validated};
     use crate::token::TokenName;
     use crate::tree::{NodeKind, Props, Registry, ViewNode, validate};
 
@@ -771,6 +786,34 @@ mod escape_hatch {
         assert!(
             err.to_string().contains("props.style"),
             "the refusal must name the offending parameter, got: {err}"
+        );
+    }
+
+    /// [`validated`] accepts a tree naming a *shipped* transition.
+    ///
+    /// The regression this pins: `button-press` is on every button in the
+    /// library, so a helper that refuses it refuses the most common
+    /// component there is. `gorgon-inspector`'s unload panel drew one
+    /// button and went red for it.
+    #[test]
+    fn validated_accepts_a_shipped_transition_name() {
+        let tree =
+            ViewNode::new(NodeKind::Stack, "root").with_transition(crate::anim::BUTTON_PRESS);
+        let _ = validated(&tree);
+    }
+
+    /// ...and still refuses one nothing ships, so the check is narrowed to
+    /// what the host installs rather than turned off.
+    #[test]
+    fn validated_still_refuses_a_transition_nothing_ships() {
+        let tree = ViewNode::new(NodeKind::Stack, "root").with_transition("no-such-transition");
+        let mut registry = Registry::with_vocabulary(extended_vocabulary(&tree));
+        crate::anim::shipped_registry().declare_into(&mut registry);
+        let err = validate(&tree, &registry)
+            .expect_err("an unshipped transition name is still not registered");
+        assert!(
+            err.to_string().contains("no-such-transition"),
+            "the refusal must name the transition it could not resolve, got: {err}"
         );
     }
 }

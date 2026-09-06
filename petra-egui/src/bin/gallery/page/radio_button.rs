@@ -1,6 +1,6 @@
 //! Inventory row 27, Radio button.
 
-use gorgon_petra::component::{radio, radio_group, section};
+use gorgon_petra::component::{disabled, radio, radio_group, section};
 use gorgon_petra::input::InputEvent;
 use gorgon_petra::token::ThemeMode;
 use gorgon_petra::tree::ViewNode;
@@ -44,6 +44,11 @@ impl Page for RadioButton {
                     vec![
                         radio(RADIO_A, "Dark", self.radio == 0),
                         radio(RADIO_B, "Light", self.radio == 1),
+                        // T0.1: the disabled ink family, on both an
+                        // unselected and a selected radio, so the border
+                        // fade and the fill swap both show in one shot.
+                        disabled(radio("radio-disabled", "Disabled", false)),
+                        disabled(radio("radio-disabled-on", "Disabled, on", true)),
                     ],
                 )],
             )],

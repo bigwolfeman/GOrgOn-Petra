@@ -299,6 +299,18 @@ pub(crate) const ICON_DISABLED: &str = "icon-disabled";
 /// page's ink would be a different hue as well as a different lightness.
 pub(crate) const ICON_ON_COLOR_DISABLED: &str = "icon-on-color-disabled";
 
+/// Carbon's `$button-disabled`: the track a disabled toggle paints, on and
+/// off alike (`.cds--toggle--disabled .cds--toggle__switch`).
+///
+/// **Not [`ICON_DISABLED`].** That name is an existing live tone faded to
+/// 25%; this one is a colour Carbon publishes as its own value
+/// (`_button-tokens.scss`), an opaque mid-grey in White/G10 and a
+/// translucent one in G90/G100 — measured, not derived by fading
+/// `icon-primary` or the accent. Reusing `icon-disabled` here would be one
+/// name doing two jobs, the exact thing `component::controls`'s own module
+/// doc argues against for `border-strong`.
+pub(crate) const BUTTON_DISABLED: &str = "button-disabled";
+
 /// The ink a link is written in: Carbon's `$link-primary`, derived in
 /// `token::shipped` from the accent so it clears AA as *text* on every layer
 /// (the accent itself does not, on dark's deepest layers). Spent by
@@ -363,6 +375,7 @@ pub(crate) const ALL: &[&str] = &[
     ICON_DISABLED,
     ICON_ON_COLOR_DISABLED,
     BORDER_STRONG,
+    BUTTON_DISABLED,
     LINK_PRIMARY,
 ];
 

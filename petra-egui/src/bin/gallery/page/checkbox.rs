@@ -1,7 +1,7 @@
 //! Inventory row 5, Checkbox.
 
 use gorgon_petra::component::{
-    CheckState, checkbox, checkbox_group, checkbox_readonly, checkbox_tristate, section,
+    CheckState, checkbox, checkbox_group, checkbox_readonly, checkbox_tristate, disabled, section,
 };
 use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::ViewNode;
@@ -54,6 +54,12 @@ impl Page for Checkbox {
                         checkbox(CHECK_B, "Push", self.check_b),
                         checkbox_tristate(CHECK_MIXED, "Mixed", self.mixed),
                         checkbox_readonly("check-ro", "Read only", true),
+                        // T0.1: the disabled ink family, on both an
+                        // unchecked and a checked box, so the operator can
+                        // see the outline fade and the fill swap in the
+                        // same shot rather than only one of the two.
+                        disabled(checkbox("check-disabled", "Disabled", false)),
+                        disabled(checkbox("check-disabled-on", "Disabled, on", true)),
                     ],
                 )],
             )],
