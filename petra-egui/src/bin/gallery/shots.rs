@@ -3658,7 +3658,7 @@ mod tests {
             // tightly packed rows in the library and none of them exist in a
             // shut frame, so a gate that only ever looked at the opening
             // picture would hold none of them.
-            for trigger in ["mn-pair/trigger", "dd/field", "sel/field", "full/field"] {
+            for trigger in OPENERS {
                 if cam.has(trigger) {
                     cam.click(trigger);
                 }
@@ -3694,6 +3694,9 @@ mod tests {
                     continue;
                 }
                 let bar = ring.bar(node.rect);
+                if caret_is_covered(places, i, &[bar]) {
+                    continue;
+                }
                 for (k, other) in places.iter().enumerate() {
                     // Two kinds of collision count. Another **control**, so
                     // the operator cannot tell which of the two the bar
@@ -3723,11 +3726,421 @@ mod tests {
         assert!(
             collisions.is_empty(),
             "a bar under needs {} units of clear run and these do not have \
-             it, so they want FocusFigure::Border instead:\n{}",
+             it, so they want FocusFigure::BarInside — the same stripe on \
+             the node's own bottom edge, which needs no run at all. Not \
+             FocusFigure::Border: this message asked for a box four times \
+             and the operator asked for the boxes back out again each \
+             time.\n{}",
             ring.gap + ring.thickness,
             collisions.join("\n")
         );
     }
+
+    /// Every `Sides` figure in the catalog stands inside the thing that
+    /// contains it, and every `BarInside` stripe stays inside its own node.
+    ///
+    /// The companion to
+    /// [`every_bar_under_has_five_units_of_clear_run_below_it`], and it did
+    /// not exist until 2026-09-06. That asymmetry is exactly why the modal
+    /// shipped with its Close button's right-hand bar painted on the page
+    /// behind the dialog: `BarUnder` had a gate and `Sides` had none, so a
+    /// figure that reaches seven units outside the rect was never checked
+    /// against anything.
+    ///
+    /// A `Sides` bar is measured against its **nearest filled ancestor** —
+    /// the card, dialog or panel it visually sits on. That is the boundary a
+    /// person reads as "the box", and leaving it is what reads as a spill.
+    /// A `BarInside` stripe is measured against its own node, where it is
+    /// contained by construction, so this half of the test is a guard on the
+    /// geometry rather than on any component's judgement.
+    #[test]
+    fn no_focus_figure_paints_outside_the_box_it_belongs_to() {
+        let ring = FocusRing::STANDARD;
+        let mut escapes: Vec<String> = Vec::new();
+        for cell in crate::cell::Cell::roster() {
+            if !cell.is_built() {
+                continue;
+            }
+            let mut cam = Camera::on(cell.row.component);
+            for trigger in OPENERS {
+                if cam.has(trigger) {
+                    cam.click(trigger);
+                }
+            }
+            let frame = cam.frame();
+            let places = &frame.placements;
+            for (i, node) in places.iter().enumerate() {
+                if !node
+                    .semantics
+                    .actions
+                    .contains(&gorgon_petra::tree::Interaction::Focus)
+                    || !node.is_visible()
+                {
+                    continue;
+                }
+                // Resolve `FocusShownOn` the way `paint.rs`'s
+                // `focused_caret_target` does, and read the figure off the
+                // node the figure is *shown on*. Measuring the focused
+                // node's own rect instead reports a search field's input
+                // leaf spilling when what actually paints is its well —
+                // which is what the first run of this gate did.
+                let i = shown_on(places, i);
+                let node = &places[i];
+                match node.semantics.focus_figure {
+                    FocusFigure::BarInside => {
+                        let bar = ring.bar_inside(gorgon_petra::focus::marked_rect(
+                            places,
+                            i,
+                            FocusFigure::BarInside,
+                        ));
+                        if caret_is_covered(places, i, &[bar]) {
+                            continue;
+                        }
+                        if !contains(node.rect, bar) {
+                            escapes.push(format!(
+                                "{}: {}'s inside stripe {bar:?} leaves its own \
+                                 node {:?}",
+                                cell.row.component, node.id, node.rect
+                            ));
+                        }
+                    }
+                    FocusFigure::Sides => {
+                        // The nearest ancestor that paints a fill: the box a
+                        // person sees this control sitting on.
+                        let mut up = places[i].parent;
+                        let mut box_of = None;
+                        while let Some(k) = up {
+                            if frame.content[k].tokens.contains_key("background") {
+                                box_of = Some(places[k].rect);
+                                break;
+                            }
+                            up = places[k].parent;
+                        }
+                        let Some(container) = box_of else {
+                            continue;
+                        };
+                        if caret_is_covered(places, i, &ring.sides(node.rect)) {
+                            continue;
+                        }
+                        for bar in ring.sides(node.rect) {
+                            if !contains(container, bar) {
+                                escapes.push(format!(
+                                    "{}: {}'s side bar {bar:?} leaves the box \
+                                     it sits on {container:?}",
+                                    cell.row.component, node.id
+                                ));
+                            }
+                        }
+                    }
+                    FocusFigure::Border | FocusFigure::BarUnder => {}
+                }
+            }
+        }
+        assert!(
+            escapes.is_empty(),
+            "a focus figure painted outside the box it belongs to. A `Sides` \
+             bar reaches {} units past the rect; where that leaves the card, \
+             the control wants FocusFigure::BarInside instead:\n{}",
+            ring.hug_gap + ring.thickness,
+            escapes.join("\n")
+        );
+    }
+
+    /// The placement a focused `places[i]` shows its figure on, per
+    /// [`gorgon_petra::tree::FocusShownOn`].
+    ///
+    /// `OnWell` points up the ancestor chain at the nearest `Well`; `OnHead`
+    /// points down into the subtree at the nearest `Head`. Both fall back to
+    /// the node itself rather than going blind, exactly as the painter does.
+    fn shown_on(places: &[gorgon_petra::frame::Placement], i: usize) -> usize {
+        use gorgon_petra::tree::FocusShownOn;
+        match places[i].semantics.focus_shown_on {
+            FocusShownOn::Own | FocusShownOn::Well | FocusShownOn::Head => i,
+            FocusShownOn::OnWell => {
+                let mut up = places[i].parent;
+                while let Some(k) = up {
+                    if places[k].semantics.focus_shown_on == FocusShownOn::Well {
+                        return k;
+                    }
+                    up = places[k].parent;
+                }
+                i
+            }
+            FocusShownOn::OnHead => {
+                let descends = |mut k: usize| {
+                    while let Some(p) = places[k].parent {
+                        if p == i {
+                            return true;
+                        }
+                        k = p;
+                    }
+                    false
+                };
+                places
+                    .iter()
+                    .enumerate()
+                    .find(|(k, p)| p.semantics.focus_shown_on == FocusShownOn::Head && descends(*k))
+                    .map_or(i, |(k, _)| k)
+            }
+        }
+    }
+
+    /// The rect the figure on `tail` is measured against, resolved exactly as
+    /// the painter resolves it: `FocusShownOn` to pick the placement, then
+    /// [`gorgon_petra::focus::marked_rect`] to pick the run on it.
+    ///
+    /// A test that probes a bar has to ask for this and not for
+    /// [`Camera::rect`]. Since 2026-09-06 a bar spans the control's label
+    /// rather than the control, so on a row that is wide and a label that is
+    /// not, the control's own mid-point is off the end of the stripe and a
+    /// probe there reads the row's fill.
+    fn marked_run(frame: &gorgon_petra::frame::PetrifiedFrame, tail: &str) -> Rect {
+        let places = &frame.placements;
+        let i = places
+            .iter()
+            .position(|p| p.id.ends_with(tail))
+            .unwrap_or_else(|| panic!("no placement ends with {tail:?}"));
+        let i = shown_on(places, i);
+        gorgon_petra::focus::marked_rect(places, i, places[i].semantics.focus_figure)
+    }
+
+    /// Does `outer` wholly contain `inner`?
+    fn contains(outer: Rect, inner: Rect) -> bool {
+        inner.x >= outer.x
+            && inner.y >= outer.y
+            && inner.x + inner.w <= outer.x + outer.w
+            && inner.y + inner.h <= outer.y + outer.h
+    }
+
+    /// Every control wearing a bar has a label for the bar to span.
+    ///
+    /// Since 2026-09-06 a bar's width is the control's leading text
+    /// descendant ([`gorgon_petra::focus::marked_rect`]), and a control with
+    /// no text at all falls back to its own rect. That fallback is right for
+    /// an icon-only button, which is snug, and wrong for anything wide: a
+    /// full-width stripe on a row is exactly the picture the rule replaced.
+    ///
+    /// So the fallback is allowed to happen, and is not allowed to happen
+    /// *quietly on something wide*. This names any control where a bar is
+    /// spanning the whole of a node wider than a comfortable label, which is
+    /// the only shape the fallback can go wrong on.
+    ///
+    /// Falsify by putting `BarUnder` on a wide iconless container.
+    #[test]
+    fn every_bar_figure_finds_a_label() {
+        // 240 units: the widest a control can be and still read as hugging
+        // its own text. The gallery's own left rail is 240 and holds a
+        // number and a word; nothing wider than this is a label.
+        const SNUG: f32 = 240.0;
+
+        let mut blind = Vec::new();
+        for cell in crate::inventory::ROWS {
+            let cam = Camera::on(cell.component);
+            let frame = cam.frame();
+            let places = &frame.placements;
+            for (i, node) in places.iter().enumerate() {
+                // The variants by name, not `FocusFigure::marks_the_label`.
+                // A gate that filters on the predicate it is checking skips
+                // its whole population the moment that predicate is wrong,
+                // and reports green — which is what the first draft of this
+                // one did when the rule was removed to falsify it.
+                if !matches!(
+                    node.semantics.focus_figure,
+                    gorgon_petra::tree::FocusFigure::BarUnder
+                        | gorgon_petra::tree::FocusFigure::BarInside
+                ) || !node.is_visible()
+                {
+                    continue;
+                }
+                if !node
+                    .semantics
+                    .actions
+                    .contains(&gorgon_petra::tree::Interaction::Focus)
+                {
+                    continue;
+                }
+                let i = shown_on(places, i);
+                let seat = &places[i];
+                let run = gorgon_petra::focus::marked_rect(places, i, seat.semantics.focus_figure);
+                if run.w >= seat.rect.w && seat.rect.w > SNUG {
+                    blind.push(format!(
+                        "{}: {} is {:.0} wide, its {:?} found no label, so the bar spans it all",
+                        cell.component, seat.id, seat.rect.w, seat.semantics.focus_figure
+                    ));
+                }
+            }
+        }
+        assert!(
+            blind.is_empty(),
+            "a bar figure fell back to its control's own rect on a control too              wide for that to read as an underline. Give the control a text              child, or move it to FocusFigure::Sides:\n{}",
+            blind.join("\n")
+        );
+    }
+
+    /// The 2026-09-06 cursor pass, photographed: one focused control on
+    /// every row whose focus figure changed, in both themes.
+    ///
+    /// The operator's rule for that pass is that a control wears an
+    /// underline or a pair of brackets and never a box, and the library had
+    /// no *contained* underline until then — which is why eleven components
+    /// carried a box and the same one-line comment saying rows stack flush.
+    /// `FocusFigure::BarInside` is that figure and this is its picture.
+    ///
+    /// A resting photograph cannot show a focus figure at all, so every one
+    /// of these is driven: the camera seats focus on a named control and
+    /// then shoots. If a key here stops existing the test panics naming
+    /// every placed id, which is the fastest way to find where it went.
+    #[test]
+    fn every_row_the_cursor_pass_changed_is_photographed_focused() {
+        for (page, key, name) in [
+            ("Tree view", "tv-gorgon", "39-tree-view-cursor"),
+            ("Checkbox", "check-a", "05-checkbox-cursor"),
+            ("Radio button", "radio-a", "27-radio-cursor"),
+            ("Structured list", "sl-0", "31-structured-list-cursor"),
+            ("Tile", "tile-click", "35-tile-cursor"),
+            ("Breadcrumb", "bc-0", "03-breadcrumb-cursor"),
+            // Row 7, not row 16: `component::list_row` is the interactive
+            // row this pass retargeted, and row 16's list items are inert
+            // text by design (`component::list`'s own module doc, FR-058).
+            ("Contained list", "cl-0", "07-contained-list-cursor"),
+            ("Accordion", "acc-0/header", "01-accordion-cursor"),
+            ("Data table", "dt-0", "09-data-table-cursor"),
+            // Rows 40-42 are what the operator's first sentence named:
+            // "on every UI shell element it should be the horizontal cursor
+            // or the 2 vertical bars, not the boxed cursor". Five of the
+            // seventeen boxes lived in `ui_shell.rs`.
+            (
+                "UI shell header",
+                "shell-nav-overview",
+                "40-ui-shell-header-cursor",
+            ),
+            (
+                "UI shell left panel",
+                "shell-left-kernel",
+                "41-ui-shell-left-cursor",
+            ),
+            (
+                "UI shell right panel",
+                "shell-switcher-petra",
+                "42-ui-shell-right-cursor",
+            ),
+        ] {
+            for theme in ["dark", "light"] {
+                let mut cam = Camera::on(page);
+                if theme == "light" {
+                    cam.light();
+                }
+                let before = cam.shoot(&format!("{name}-{theme}-rest"));
+                cam.focus(key);
+                assert!(
+                    cam.ring().is_some_and(|id| id.ends_with(key)),
+                    "{page}/{theme}: the driver did not seat focus on {key:?}, \
+                     it sits on {:?}",
+                    cam.ring()
+                );
+                let after = cam.shoot(&format!("{name}-{theme}"));
+                assert_ne!(
+                    before, after,
+                    "{page}/{theme}: seating focus on {key:?} changed not one \
+                     pixel, so whatever figure it declares never reached the \
+                     frame"
+                );
+            }
+        }
+    }
+
+    /// Does a `text` placement's rect hug its glyphs, or is it stretched?
+    ///
+    /// The whole "bar spans the label" rule stands or falls on this. A
+    /// placement carries no measured ink width, so the only extent available
+    /// is the text node's own layout box — and `component::menu`'s label is
+    /// documented as taking the row's whole width. If that is true of the
+    /// other packed rows too, the label's rect is the row's rect and the rule
+    /// cannot be built from it.
+    ///
+    /// Prints, asserts nothing.
+    #[test]
+    fn triage_does_a_label_rect_hug_its_text() {
+        for (page, key) in [
+            ("Tree view", "tv-gorgon"),
+            ("Data table", "dt-0"),
+            ("UI shell left panel", "shell-left-kernel"),
+            ("Menu", "mn-pair/trigger"),
+            ("Button", "btn-primary"),
+            ("Checkbox", "check-a"),
+            ("Accordion", "acc-0/header"),
+        ] {
+            let mut cam = Camera::on(page);
+            cam.focus(key);
+            let frame = cam.frame();
+            let hit: Vec<usize> = frame
+                .placements
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| p.id.contains(key))
+                .map(|(i, _)| i)
+                .collect();
+            println!("TRIAGE {page} :: {key}");
+            for i in hit {
+                let p = &frame.placements[i];
+                println!(
+                    "TRIAGE   {:?} x={:.1} w={:.1} y={:.1} h={:.1}  {}",
+                    p.kind, p.rect.x, p.rect.w, p.rect.y, p.rect.h, p.id
+                );
+            }
+        }
+    }
+
+    /// Is the figure `places[i]` would draw hidden under a surface painted
+    /// over it?
+    ///
+    /// The same rule `paint.rs`'s `focused_caret_target` applies before it
+    /// paints anything: a visible `Surface` with a higher `z`, outside this
+    /// node's own lineage, overlapping where the figure would go, means the
+    /// figure never reaches the screen. A gate that skipped this rule
+    /// reports collisions the operator can never see — the catalog's own
+    /// theme switcher, sitting under an open modal's scrim, against the
+    /// modal covering it.
+    fn caret_is_covered(
+        places: &[gorgon_petra::frame::Placement],
+        i: usize,
+        marks: &[Rect],
+    ) -> bool {
+        let mut lineage = vec![i];
+        let mut up = places[i].parent;
+        while let Some(k) = up {
+            lineage.push(k);
+            up = places[k].parent;
+        }
+        places.iter().enumerate().any(|(k, s)| {
+            !lineage.contains(&k)
+                && s.kind == gorgon_petra::tree::NodeKind::Surface
+                && s.z > places[i].z
+                && s.is_visible()
+                && marks.iter().any(|m| overlaps(*m, s.rect))
+        })
+    }
+
+    /// The triggers a focus-figure gate presses before it measures.
+    ///
+    /// Shared by both gates so they cannot drift apart, and because what a
+    /// gate never opens it never checks. The most tightly packed rows in the
+    /// library — a menu's items, a dropdown's options, a calendar's day
+    /// cells — do not exist in a shut frame at all.
+    ///
+    /// `"open-modal"` is here because it was missing, and the miss was not
+    /// theoretical: the operator photographed the modal's Close button with
+    /// its right-hand focus bar painted on the page behind the dialog, and
+    /// the containment gate written to catch exactly that ran green,
+    /// because row 20's dialog is shut at rest and the button it complained
+    /// about was not in the frame being measured.
+    const OPENERS: [&str; 5] = [
+        "mn-pair/trigger",
+        "dd/field",
+        "sel/field",
+        "full/field",
+        "open-modal",
+    ];
 
     /// Do two rects share any area?
     fn overlaps(a: Rect, b: Rect) -> bool {
@@ -4394,7 +4807,7 @@ mod tests {
     /// band on its own top edge, which the second assertion refuses; give it
     /// `BarUnder` and `assert_hugs_well` finds no bar beside it at all.
     #[test]
-    fn a_menu_trigger_is_bracketed_and_the_ring_moves_into_the_menu() {
+    fn a_menu_trigger_is_bracketed_and_the_mark_moves_into_the_menu() {
         let mut cam = Camera::on("Menu");
         cam.click("mn-pair/trigger");
         assert!(
@@ -4447,12 +4860,17 @@ mod tests {
              {:?}",
             cam.ring()
         );
-        let item = cam.rect("mn-0");
-        let on_item = px(&open, item.x + item.w / 2.0, item.y + ring.stroke / 2.0);
+        // A menu item wears `BarInside` since 2026-09-06 — items stack
+        // flush, so its stripe sits on its own bottom edge rather than five
+        // units below it, on the next item. Read the middle of that stripe.
+        // Probing the item's *top* edge, where a ring's band used to be,
+        // now reads the item's own fill and says nothing.
+        let stripe = ring.bar_inside(marked_run(cam.frame(), "mn-0"));
+        let on_item = px(&open, stripe.x + stripe.w / 2.0, stripe.y + stripe.h / 2.0);
         assert_eq!(
             on_item, accent,
-            "the menu's first item did not take a ring in the same accent the \
-             trigger's brackets were drawn in"
+            "the menu's first item did not take its focus stripe in the same \
+             accent the trigger's brackets were drawn in"
         );
         let [left, _] = ring.sides(trigger);
         assert_ne!(
@@ -7108,17 +7526,24 @@ mod tests {
     /// indicator and the focus ring are the same colour.
     ///
     /// `$focus` and `$border-interactive` are both `#0f62fe` in the white
-    /// and g10 themes, and Carbon ships the ring on a tab anyway
-    /// (`_tabs.scss:497-499`). What tells them apart is shape: the
-    /// indicator is one edge, the ring is four. This reads the raster on the
-    /// three edges the indicator is not on, and each must carry accent that
-    /// the unfocused frame does not.
+    /// and g10 themes, so the two marks cannot be told apart by hue. What
+    /// tells them apart is **place**: the indicator owns the Line tab's
+    /// bottom edge, and the focus figure must therefore appear somewhere
+    /// that edge is not. This reads the raster where the figure lives and
+    /// requires accent there that the unfocused frame does not have.
+    ///
+    /// A Line tab brackets (`FocusFigure::Sides`) since 2026-09-06. It rang
+    /// before, and the claim is unchanged by that: a ring answered "not the
+    /// bottom edge" with its other three, and the brackets answer it by
+    /// standing outside the tab altogether. What moved is where this test
+    /// looks, not what it asserts.
     ///
     /// # How this goes red
     ///
-    /// Put `FocusFigure::BarUnder` back on `tab_variant` — the round-5
-    /// mistake — and the tab's own edges stop changing when focus arrives,
-    /// because the bar hangs below the tab instead of ringing it.
+    /// Put `FocusFigure::BarUnder` or `FocusFigure::BarInside` on
+    /// `tab_variant`'s Line arm and the probes stop changing, because both
+    /// put their stripe on the bottom edge — the one edge the indicator
+    /// already owns, which is the whole defect this test exists to catch.
     #[test]
     fn a_selected_tab_focused_shows_its_ring_around_its_indicator() {
         for theme in ["dark", "light"] {
@@ -7136,23 +7561,24 @@ mod tests {
             let indicator = cam.rect("tab-line-0/indicator");
             let after = raster(&mut cam, &format!("32-tabs-selected-focused-{theme}"));
 
-            // The indicator is the bottom edge of a Line tab. Sample the
-            // other three, a stroke's width inside the tab so the reading is
-            // of the ring's own band and not of the card beyond it.
-            let inset = FocusRing::STANDARD.stroke / 2.0;
+            // The indicator is the bottom edge of a Line tab, and the
+            // brackets stand `hug_gap` outside the left and right edges.
+            // Sample down the middle of each bar, which is where the figure
+            // is and where the indicator can never be.
+            let ring = FocusRing::STANDARD;
+            let mid = ring.hug_gap + ring.thickness / 2.0;
             let probes = [
-                ("top", tab.x + tab.w / 2.0, tab.y + inset),
-                ("left", tab.x + inset, tab.y + tab.h / 2.0),
-                ("right", tab.right() - inset, tab.y + tab.h / 2.0),
+                ("left bracket", tab.x - mid, tab.y + tab.h / 2.0),
+                ("right bracket", tab.right() + mid, tab.y + tab.h / 2.0),
             ];
             for (edge, x, y) in probes {
                 let rest = px(&before, x, y);
                 let lit = px(&after, x, y);
                 assert_ne!(
                     rest, lit,
-                    "{theme}: the tab's {edge} edge reads {rest:?} both \
-                     before and after focus, so the ring is not closed and \
-                     focus has nowhere the indicator is not"
+                    "{theme}: the tab's {edge} reads {rest:?} both before \
+                     and after focus, so focus has nowhere to show that the \
+                     selection indicator does not already own"
                 );
             }
 
@@ -7161,7 +7587,7 @@ mod tests {
             assert!(
                 indicator.bottom() >= tab.bottom() - 0.01,
                 "{theme}: the indicator {indicator:?} is not on the tab's \
-                 bottom edge {tab:?}, so this test is probing the wrong three"
+                 bottom edge {tab:?}, so this test is probing the wrong place"
             );
         }
     }

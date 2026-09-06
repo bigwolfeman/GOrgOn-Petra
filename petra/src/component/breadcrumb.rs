@@ -50,7 +50,7 @@ use super::stack;
 use super::text::text;
 use super::tokens::SPACING_03;
 use crate::geom::{Align, Axis};
-use crate::tree::{Key, Role, Semantics, ViewNode};
+use crate::tree::{FocusFigure, Key, Role, Semantics, ViewNode};
 
 /// A location/path trail. Horizontal stack, no role, no interactions.
 ///
@@ -86,7 +86,17 @@ pub fn breadcrumb(key: impl Into<Key>, crumbs: Vec<ViewNode>) -> ViewNode {
 /// child is never the hovered node, so the rule would never resolve; that
 /// is [`super::link`]'s own measured reason for the same shape.
 pub fn breadcrumb_item(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
-    super::link::link(key, label)
+    let mut node = super::link::link(key, label);
+    // The one place a crumb departs from the link it is built from.
+    //
+    // [`super::link::link`] brackets, because a standalone inline link's
+    // own underline sits exactly where a focus bar would hang. A crumb is
+    // not standalone: crumbs run in a horizontal row separated by `"/"`, so
+    // a bracket stands in the gap between two crumbs and reads as marking
+    // the separator rather than either word. The row has clear space under
+    // it, so the bar goes back under. The operator's call of 2026-09-06.
+    node.semantics.focus_figure = FocusFigure::BarUnder;
+    node
 }
 
 /// The crumb for the page you are on: Carbon's `[aria-current='page']`.

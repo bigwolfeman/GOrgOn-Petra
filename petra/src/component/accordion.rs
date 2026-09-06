@@ -207,9 +207,10 @@ fn accordion_item_content(
         label.clone(),
         HEADER_INTENTS,
     );
-    // `Border`: collapsed headers stack flush against each other, so the
+    // `BarInside`: collapsed headers stack flush against each other, so the
     // default bar would land on the next header rather than in empty space.
-    header.semantics.focus_figure = FocusFigure::Border;
+    // The same stripe on the header's own bottom edge stays inside it.
+    header.semantics.focus_figure = FocusFigure::BarInside;
     header.semantics.expanded = Some(expanded);
 
     let mut children = vec![header];

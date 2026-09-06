@@ -88,7 +88,7 @@ pub struct CaretDest<'a> {
     /// The focused placement's id. The spring keys its flight on this.
     pub id: &'a str,
     /// The rect the figure is drawn on, device-snapped.
-    pub node: Rect,
+    pub mark: Rect,
     /// The bands at the destination, in edge order: top, right, bottom, left.
     pub bands: [Rect; BANDS],
     /// The figure those bands add up to.
@@ -115,7 +115,7 @@ pub struct FocusCaret {
     moving: bool,
     figure: FocusFigure,
     radius: Option<String>,
-    node: Rect,
+    mark: Rect,
     clip: Rect,
 }
 
@@ -141,7 +141,7 @@ impl FocusCaret {
             moving: false,
             figure: FocusFigure::default(),
             radius: None,
-            node: Rect::NOTHING,
+            mark: Rect::NOTHING,
             clip: Rect::NOTHING,
         }
     }
@@ -197,8 +197,8 @@ impl FocusCaret {
     /// The destination node rect, which is what a **settled** caret is drawn
     /// from: the figure as it is designed, not the four flat bands.
     #[must_use]
-    pub fn node(&self) -> Rect {
-        self.node
+    pub fn mark(&self) -> Rect {
+        self.mark
     }
 
     /// The `radius` token of the current destination, if it named one.
@@ -233,7 +233,7 @@ impl FocusCaret {
         };
         self.figure = dest.figure;
         self.radius = dest.radius.map(str::to_owned);
-        self.node = dest.node;
+        self.mark = dest.mark;
         self.clip = dest.clip;
         let goal = [
             components(dest.bands[0]),
@@ -329,11 +329,11 @@ mod tests {
     /// The destination for `node` wearing `figure`, built the way the host
     /// builds it — through `paint::caret_bands`, so these tests fly the same
     /// geometry the painter draws.
-    fn dest(id: &str, node: Rect, figure: FocusFigure) -> CaretDest<'_> {
+    fn dest(id: &str, mark: Rect, figure: FocusFigure) -> CaretDest<'_> {
         CaretDest {
             id,
-            node,
-            bands: crate::paint::caret_bands(node, figure, Scale::ONE),
+            mark,
+            bands: crate::paint::caret_bands(mark, figure, Scale::ONE),
             figure,
             radius: None,
             clip: wide_open(),
@@ -345,7 +345,7 @@ mod tests {
     fn raw<'a>(id: &'a str, bands: [Rect; BANDS], figure: FocusFigure) -> CaretDest<'a> {
         CaretDest {
             id,
-            node: bands[2],
+            mark: bands[2],
             bands,
             figure,
             radius: None,
@@ -570,7 +570,7 @@ mod tests {
         let mut caret = FocusCaret::new();
         let node = node_rect();
         caret.tick(Some(dest("a", node, FocusFigure::Border)), 0.0);
-        assert_eq!(caret.node(), node);
+        assert_eq!(caret.mark(), node);
         assert_eq!(caret.figure(), FocusFigure::Border);
         assert_eq!(
             caret.bands().map(|b| b.len()),

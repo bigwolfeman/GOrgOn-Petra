@@ -17,6 +17,12 @@
 //! | `Border` | [`FocusRing::bands`] | two concentric strokes **inside** the rect |
 //! | `BarUnder` | [`FocusRing::bar`] | one strip **below** the rect |
 //! | `Sides` | [`FocusRing::sides`] | two strips **outside** the left and right edges |
+//! | `BarInside` | [`FocusRing::bar_inside`] | the same strip, on the rect's **own bottom edge** |
+//!
+//! The two bars are handed the **marked run** rather than the control's own
+//! rect — the control's leading label at the control's vertical extent. See
+//! [`crate::focus::marked_rect`] for the rule and why it is not a fraction
+//! of the control's width.
 //!
 //! `Border` is Carbon's, and Petra's **exception** rather than its default —
 //! [`crate::tree::FocusFigure`] carries the policy and the operator's rule
@@ -133,19 +139,46 @@ impl FocusRing {
         halo: 1.0,
     };
 
-    /// Fraction of the node's width a `BarUnder` bar occupies.
-    pub const WIDTH_FRACTION: f32 = 2.0 / 3.0;
-
-    /// `BarUnder` for a focused node occupying `rect`.
+    /// `BarUnder` for a focused node marking `rect`: the full width of
+    /// `rect`, [`Self::gap`] below its bottom edge, [`Self::thickness`]
+    /// tall. `the_bar_sits_below_the_marked_run` asserts it.
     ///
-    /// Centred, [`Self::WIDTH_FRACTION`] of `rect.w`, [`Self::gap`] below
-    /// the bottom edge, [`Self::thickness`] tall.
-    /// `the_bar_sits_below_the_node_at_two_thirds` asserts it.
+    /// `rect` is the **marked run**, not the control: horizontally the
+    /// control's leading label, vertically the control itself. The engine
+    /// composes it in [`crate::focus::marked_rect`], which is also where the
+    /// reasoning for that lives. Both bars take the whole of it, so the two
+    /// figures differ in exactly one measurement — where they seat.
     #[must_use]
     pub fn bar(self, rect: Rect) -> Rect {
-        let w = (rect.w * Self::WIDTH_FRACTION).max(0.0);
-        let x = rect.x + (rect.w - w) * 0.5;
-        Rect::new(x, rect.bottom() + self.gap, w, self.thickness)
+        Rect::new(
+            rect.x,
+            rect.bottom() + self.gap,
+            rect.w.max(0.0),
+            self.thickness,
+        )
+    }
+
+    /// `BarInside` for a focused node marking `rect`.
+    ///
+    /// The same run [`Self::bar`] takes, [`Self::thickness`] tall, seated on
+    /// `rect`'s own bottom edge. No [`Self::gap`]: a gap is the clear run
+    /// between a node and a bar outside it, and there is nothing outside
+    /// here.
+    ///
+    /// **Contained by construction**, the property [`Self::bands`] has and
+    /// [`Self::bar`] does not. That is the whole reason it exists, and the
+    /// only way it differs from [`Self::bar`]: a row that stacks flush
+    /// against the next one can wear an underline without painting into it.
+    /// `the_inside_bar_never_leaves_its_node` asserts the containment on all
+    /// four edges and `the_two_bars_differ_only_in_where_they_sit` asserts
+    /// that nothing else about the two shapes disagrees.
+    #[must_use]
+    pub fn bar_inside(self, rect: Rect) -> Rect {
+        // A node shorter than the bar keeps the bar inside it rather than
+        // growing one that overhangs the top: a 2-unit row shows a 2-unit
+        // stripe, not a 3-unit one starting above its own edge.
+        let h = self.thickness.min(rect.h.max(0.0));
+        Rect::new(rect.x, rect.bottom() - h, rect.w.max(0.0), h)
     }
 
     /// `Sides` for a focused node occupying `rect`: left and right bars,
@@ -210,8 +243,8 @@ impl FocusRing {
     /// How far outside the node's own rect an indicator (not its shadow) can
     /// reach: the wider of the two gaps plus the thickness.
     ///
-    /// `Border` reaches nowhere, so this is `BarUnder`'s and `Sides`' number
-    /// and the clip widening that reads it is theirs alone.
+    /// `Border` and `BarInside` reach nowhere, so this is `BarUnder`'s and
+    /// `Sides`' number and the clip widening that reads it is theirs alone.
     #[must_use]
     pub fn overhang(self) -> f32 {
         self.gap.max(self.hug_gap) + self.thickness
@@ -223,16 +256,91 @@ mod tests {
     use super::FocusRing;
     use crate::geom::Rect;
 
+    /// `bar` takes the whole run it is handed and hangs it `gap` below.
+    ///
+    /// The run is a control's label at the control's vertical extent, so the
+    /// rect here stands for a 90-wide word on a 40-tall row.
     #[test]
-    fn the_bar_sits_below_the_node_at_two_thirds() {
+    fn the_bar_sits_below_the_marked_run() {
+        let ring = FocusRing::STANDARD;
+        let run = Rect::new(10.0, 20.0, 90.0, 40.0);
+        let bar = ring.bar(run);
+        assert_eq!(bar, Rect::new(10.0, 62.0, 90.0, 3.0));
+        assert_eq!(
+            (bar.x, bar.w),
+            (run.x, run.w),
+            "the bar is the run: narrowing it here would be a second width \
+             rule, which is the defect `crate::focus::marked_rect` removed"
+        );
+        assert_eq!(bar.y, run.bottom() + ring.gap);
+        assert_eq!(ring.overhang(), 7.0, "the hug gap is the wider reach");
+    }
+
+    /// The containment `BarInside` exists for: the bar never crosses any of
+    /// the four edges of the node it marks.
+    ///
+    /// A flush-stacked row is the case. `BarUnder` on the same node reaches
+    /// `gap + thickness` past the bottom edge and lands on the row below,
+    /// which is what eight components wrote a comment about and worked
+    /// around with a box.
+    #[test]
+    fn the_inside_bar_never_leaves_its_node() {
         let ring = FocusRing::STANDARD;
         let node = Rect::new(10.0, 20.0, 90.0, 40.0);
-        let bar = ring.bar(node);
-        assert_eq!(bar, Rect::new(25.0, 62.0, 60.0, 3.0));
-        assert!((bar.w - node.w * FocusRing::WIDTH_FRACTION).abs() < f32::EPSILON);
-        assert!((bar.x + bar.w / 2.0 - (node.x + node.w / 2.0)).abs() < f32::EPSILON);
-        assert_eq!(bar.y, node.bottom() + ring.gap);
-        assert_eq!(ring.overhang(), 7.0, "the hug gap is the wider reach");
+        let bar = ring.bar_inside(node);
+
+        assert_eq!(bar, Rect::new(10.0, 57.0, 90.0, 3.0));
+        assert!(bar.x >= node.x && bar.right() <= node.right(), "{bar:?}");
+        assert!(bar.y >= node.y && bar.bottom() <= node.bottom(), "{bar:?}");
+        assert_eq!(
+            bar.bottom(),
+            node.bottom(),
+            "the bar sits on the node's own bottom edge, not floating above it"
+        );
+    }
+
+    /// One underline, drawn at two heights. The operator read the pair as
+    /// two cursors on 2026-09-06 because `bar_inside` had also been given a
+    /// second width, so this pins the shapes together on every measurement
+    /// except the one the pair exists for.
+    ///
+    /// Falsify by giving either bar a width rule of its own.
+    #[test]
+    fn the_two_bars_differ_only_in_where_they_sit() {
+        let ring = FocusRing::STANDARD;
+        let node = Rect::new(10.0, 20.0, 90.0, 40.0);
+        let inside = ring.bar_inside(node);
+        let under = ring.bar(node);
+
+        assert_eq!(inside.w, under.w, "one width rule, not two");
+        assert_eq!(inside.x, under.x, "and one horizontal rule");
+        assert_eq!(inside.h, under.h, "same thickness");
+        assert_eq!(
+            (inside.x, inside.w),
+            (node.x, node.w),
+            "both take the whole run they are handed: {inside:?}"
+        );
+
+        assert!(
+            under.bottom() > node.bottom(),
+            "the one difference: `bar` leaves the node"
+        );
+        assert_eq!(inside.bottom(), node.bottom(), "and `bar_inside` does not");
+    }
+
+    /// A node shorter than the bar keeps the bar inside it. Without the
+    /// clamp the bar would start above the node's top edge, which is the
+    /// containment failing in the one case it is most likely to be noticed:
+    /// a hairline row.
+    #[test]
+    fn a_node_shorter_than_the_bar_still_contains_it() {
+        let ring = FocusRing::STANDARD;
+        let thin = Rect::new(0.0, 0.0, 60.0, 2.0);
+        let bar = ring.bar_inside(thin);
+        assert_eq!(bar.h, 2.0, "clamped to the node's height, not 3");
+        assert_eq!(bar.w, thin.w, "width is untouched by the height clamp");
+        assert!(bar.y >= thin.y, "{bar:?} starts above {thin:?}");
+        assert_eq!(bar.bottom(), thin.bottom());
     }
 
     #[test]
@@ -285,7 +393,10 @@ mod tests {
         let tiny = Rect::new(0.0, 0.0, 1.0, 1.0);
         let bar = FocusRing::STANDARD.bar(tiny);
         assert!(bar.w >= 0.0 && bar.h >= 0.0, "{bar:?}");
-        assert!((bar.w - 2.0 / 3.0).abs() < 1e-6);
+        assert!(
+            (bar.w - tiny.w).abs() < 1e-6,
+            "the bar is the run it is given"
+        );
         let [(accent, _), (halo, _)] = FocusRing::STANDARD.bands(tiny);
         assert!(accent.w >= 0.0 && accent.h >= 0.0, "{accent:?}");
         assert_eq!(

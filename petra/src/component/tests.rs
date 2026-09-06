@@ -1156,7 +1156,7 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
     /// (`super::rule`, `accordion_item`'s divider, `structured_list`'s row
     /// rules), not a `border`. The `border` slot is very nearly the control
     /// slot, and the one exception is spelled out below.
-    const DRAWS_AN_EDGE: [(&str, &str); 25] = [
+    const DRAWS_AN_EDGE: [(&str, &str); 26] = [
         // `field`: an empty well with no boundary does not read as a place
         // to type. See `field`'s own doc for why it keeps one when `button`
         // does not.
@@ -1392,6 +1392,23 @@ fn containers_take_a_tone_and_controls_take_an_edge() {
         // viewport. Each draws its own inline-start rule as a node
         // instead, exactly as the header below does, and the node binds
         // `background`, which this test does not audit.
+        // The modal's Close button, added 2026-09-06. A **control
+        // boundary**, the second of this test's two reasons: its resting
+        // fill is `SURFACE_RAISED`, the dialog's own surface, so before the
+        // edge the button was the word "Close" floating on the header with
+        // nothing to say it could be pressed. It appeared under the pointer
+        // and nowhere else, which is not an affordance a keyboard reader or
+        // a still photograph can find. The operator: *"this button in the
+        // top also needs some texture"*.
+        //
+        // `BORDER_STRONG`, not `BORDER_SUBTLE`: this is the outline that
+        // *is* the control, the same argument `component::controls`' module
+        // doc makes for the checkbox box, and it is the tone held at SC
+        // 1.4.11's 3:1 on every layer.
+        (
+            "root/carbon3/md-retire/frame/seat/dialog/header/close",
+            BORDER_STRONG,
+        ),
         ("root/carbon6/tog-disabled/appearance/track", BORDER_STRONG),
         ("root/carbon6/tog-off/appearance/track", BORDER_STRONG),
         ("root/carbon6/tog-on/appearance/track", BORDER_STRONG),

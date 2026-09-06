@@ -55,7 +55,8 @@ use super::tokens::{
 use super::{CaretDirection, caret, pad, stack, swatch};
 use crate::geom::{Align, Axis};
 use crate::tree::{
-    AxisConstraint, Constraints, Interaction, Key, NodeKind, Props, Role, TrackSize, ViewNode,
+    AxisConstraint, Constraints, FocusFigure, Interaction, Key, NodeKind, Props, Role, TrackSize,
+    ViewNode,
 };
 
 /// Carbon `.cds--tile` `min-inline-size: 8rem`.
@@ -116,6 +117,13 @@ fn with_interactive_chrome(mut node: ViewNode, selectable: bool) -> ViewNode {
     node.props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
+    // `Sides`, the operator's call of 2026-09-06. A tile is a large standing
+    // card rather than a row in a stack: it has clear page on its left and
+    // right, and its bottom edge is where a selectable tile's own mark and
+    // an expandable tile's chevron live. Bracketing keeps the focus figure
+    // off both. Set here rather than at the three constructors so every
+    // interactive tile wears the same figure by construction.
+    node.semantics.focus_figure = FocusFigure::Sides;
     if selectable {
         node.props
             .tokens

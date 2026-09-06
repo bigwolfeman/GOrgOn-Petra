@@ -115,8 +115,8 @@ use super::tokens::{
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
-    AxisConstraint, Constraints, FocusFigure, InsetRefs, Interaction, Justify, Key, NodeKind,
-    Props, Role, Semantics, TextWrap, TrackSize, ViewNode,
+    AxisConstraint, Constraints, FocusFigure, FocusShownOn, InsetRefs, Interaction, Justify, Key,
+    NodeKind, Props, Role, Semantics, TextWrap, TrackSize, ViewNode,
 };
 
 /// Carbon `mini-units(6)` (`_functions.scss`): the header's block-size,
@@ -272,11 +272,16 @@ fn header_name(key: &'static str, product_name: impl Into<String>) -> ViewNode {
     // so a bar hung two units below a header control paints on the page
     // rather than in the header. Measured on the UI shell right panel page:
     // `bar/name`'s bar at y 305 lands on `shell-content/shell-page`, and the
-    // switcher trigger's on `shell-switcher`. The left panel's rows are boxed
-    // for the ordinary reason instead — they stack closer than the five units
-    // a bar needs.
+    // switcher trigger's on `shell-switcher`. The left panel's rows have the
+    // same trouble for the ordinary reason — they stack closer than the five
+    // units a bar needs.
+    //
+    // `BarInside` answers both without a box, which is the operator's call of
+    // 2026-09-06 for this row. The stripe sits on the control's own bottom
+    // edge, so it is inside the header bar by construction and cannot reach
+    // the page under it or the row under it.
     node.interactive(Role::Button, product_name, INTENTS)
-        .with_focus_figure(FocusFigure::Border)
+        .with_focus_figure(FocusFigure::BarInside)
 }
 
 /// The hamburger / menu trigger. Not a caller-labelled control: the
@@ -365,7 +370,7 @@ pub fn ui_shell_header_nav_item(
     // `Border`, for the reason `header_name` gives.
     let mut node = node
         .interactive(Role::Button, label, INTENTS)
-        .with_focus_figure(FocusFigure::Border);
+        .with_focus_figure(FocusFigure::BarInside);
     node.semantics.selected = current;
     node
 }
@@ -504,7 +509,7 @@ fn header_action_sized(
     // `Border`, for the reason `header_name` gives.
     let mut node = node
         .interactive(Role::Button, label, INTENTS)
-        .with_focus_figure(FocusFigure::Border);
+        .with_focus_figure(FocusFigure::BarInside);
     node.semantics.selected = active;
     node
 }
@@ -698,7 +703,7 @@ fn left_panel_item(
     // leave nothing on screen saying which page was open.
     let child_current = children.iter().any(|child| child.semantics.selected);
     let marked = selected || (child_current && !expanded);
-    let row = left_panel_row(&RowShape {
+    let mut row = left_panel_row(&RowShape {
         label: &label,
         typography: TYPOGRAPHY_HEADING_SM,
         icon,
@@ -707,6 +712,17 @@ fn left_panel_item(
         marked,
         emphasised: selected || child_current,
     });
+    // The item below holds focus and its rect spans its whole expanded
+    // sub-menu, so a figure on that rect marks the *group* rather than the
+    // row a person is standing on. Photographed 2026-09-06 with "Kernel"
+    // focused and open: the item measured 64 tall for a 32-tall row, and
+    // the stripe landed between "Fibers" and "Petra".
+    //
+    // The same pair `component::tree_view` uses, and Carbon narrows the
+    // same way — `.cds--side-nav__submenu:focus` puts its outline on the
+    // title, never on the `<ul>` under it.
+    row.semantics.focus_shown_on = FocusShownOn::Head;
+    row.semantics.focus_figure = FocusFigure::BarInside;
 
     let mut parts = vec![row];
     if expanded && is_branch {
@@ -732,7 +748,10 @@ fn left_panel_item(
     bind_row_states(&mut node);
     let mut node = node
         .interactive(Role::Button, label, INTENTS)
-        .with_focus_figure(FocusFigure::Border);
+        .with_focus_figure(FocusFigure::BarInside);
+    // See the `Head` declaration on `row` above: this item's rect spans its
+    // expanded sub-menu, and the figure belongs on the title row.
+    node.semantics.focus_shown_on = FocusShownOn::OnHead;
     node.semantics.selected = marked;
     node.semantics.expanded = Some(expanded);
     node
@@ -795,7 +814,7 @@ fn left_panel_subitem(
     bind_row_states(&mut node);
     let mut node = node
         .interactive(Role::Button, label, INTENTS)
-        .with_focus_figure(FocusFigure::Border);
+        .with_focus_figure(FocusFigure::BarInside);
     node.semantics.selected = selected;
     node
 }

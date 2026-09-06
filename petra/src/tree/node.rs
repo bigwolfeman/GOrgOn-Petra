@@ -430,8 +430,10 @@ pub enum FocusFigure {
     /// containment is the whole reason it is the figure for packed rows.
     Border,
     /// A bar under the rect: [`crate::token::FocusRing::thickness`] tall,
-    /// [`crate::token::FocusRing::gap`] below the bottom edge,
-    /// [`crate::token::FocusRing::WIDTH_FRACTION`] of the width, centred.
+    /// [`crate::token::FocusRing::gap`] below the bottom edge, and as wide
+    /// as the control's **leading label** — see
+    /// [`crate::focus::marked_rect`], which answers the width for both bar
+    /// figures and says why it is not a fraction of the control.
     ///
     /// Carbon has no focus underline anywhere, so this is a Petra figure.
     /// It is nonetheless **the default**: the operator's rule is *"underlines
@@ -470,6 +472,37 @@ pub enum FocusFigure {
     /// link the bar would sit exactly where `link_inline`'s own underline
     /// already is.
     Sides,
+    /// A bar on the rect's **own bottom edge, inside it**:
+    /// [`crate::token::FocusRing::thickness`] tall, over the control's
+    /// leading label ([`crate::focus::marked_rect`]). The same stripe
+    /// [`Self::BarUnder`] draws, moved up out of the neighbour's rect and
+    /// into the node's own — the seat is the **only** thing that differs
+    /// between the two, which is what
+    /// `the_two_bars_differ_only_in_where_they_sit` holds.
+    ///
+    /// **The figure for a control that stacks flush.** Contained by
+    /// construction, exactly as [`Self::Border`] is, so it can never land on
+    /// the row below and never leaves a clip equal to the node's own rect.
+    /// It is also still an underline, which is the shape the operator asks
+    /// for and the shape a box is not.
+    ///
+    /// It exists because the library had no such figure and paid for that
+    /// four times. A packed row wants an underline; [`Self::BarUnder`] hangs
+    /// five units into its neighbour; the only contained figure was a box;
+    /// so every packed component took the box, and each round of "fewer
+    /// boxes, please" moved one to [`Self::BarUnder`], collided, and moved
+    /// it back. `list_row`, `menu_item`, `tree_item`, `structured_list_row`,
+    /// the data table's rows, the dropdown's options, the date picker's
+    /// cells and five `ui_shell` rows all carry the same sentence at their
+    /// declaration — *rows stack flush, so a bar under one lands on the
+    /// next* — which is this figure's specification, written eight times
+    /// over before the figure existed.
+    ///
+    /// It casts no shadow. [`Self::BarUnder`]'s
+    /// [`crate::token::focus::BAR_SHADOW_TOKEN`] seats a bar on the card it
+    /// hangs *over*; this one hangs over nothing, because it sits inside the
+    /// fill it marks.
+    BarInside,
 }
 
 impl FocusFigure {
@@ -477,6 +510,18 @@ impl FocusFigure {
     #[must_use]
     pub fn is_default(&self) -> bool {
         *self == Self::BarUnder
+    }
+
+    /// Whether this figure's width comes from the control's leading label
+    /// rather than from the control's own rect.
+    ///
+    /// True for the two bars, false for the ring and the brackets: an
+    /// underline marks a word, while a ring and a pair of brackets mark a
+    /// whole control. [`crate::focus::marked_rect`] is the one caller and
+    /// carries the reasoning.
+    #[must_use]
+    pub fn marks_the_label(&self) -> bool {
+        matches!(self, Self::BarUnder | Self::BarInside)
     }
 }
 

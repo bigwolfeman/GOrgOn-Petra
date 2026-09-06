@@ -256,12 +256,13 @@ pub fn data_table_row_expandable(
     let mut node = stack(key, Axis::Vertical, None, parts);
     node.props.align = Some(Align::Stretch);
     bind_row_fills(&mut node);
-    // `Border` on every control this module builds: a table is rows packed
-    // flush and cells packed flush inside them, so the default bar under any
-    // of them would paint on a neighbour.
+    // `BarInside` on every control this module builds: a table is rows packed
+    // flush and cells packed flush inside them, so the default bar *under* any
+    // of them would paint on a neighbour. The same stripe seated on the node's
+    // own bottom edge is contained by construction and cannot reach one.
     let mut node = node
         .interactive(Role::Row, label, ROW_INTENTS)
-        .with_focus_figure(FocusFigure::Border);
+        .with_focus_figure(FocusFigure::BarInside);
     node.semantics.selected = selected;
     node.semantics.expanded = Some(expanded);
     node
@@ -335,7 +336,7 @@ fn data_table_row_sized(
     bind_row_fills(&mut node);
     let mut node = node
         .interactive(Role::Row, label, ROW_INTENTS)
-        .with_focus_figure(FocusFigure::Border);
+        .with_focus_figure(FocusFigure::BarInside);
     node.semantics.selected = selected;
     node
 }

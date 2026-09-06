@@ -1448,7 +1448,7 @@ impl<A: App> Host<A> {
             CaretPicture::Flying(bands)
         } else {
             CaretPicture::Settled {
-                node: self.caret.node(),
+                mark: self.caret.mark(),
                 figure: self.caret.figure(),
                 radius: self.caret.radius().map(str::to_owned),
             }
@@ -1463,8 +1463,8 @@ impl<A: App> Host<A> {
                 self.caret.tick(
                     Some(crate::focus_caret::CaretDest {
                         id: target.id,
-                        node: target.node,
-                        bands: caret_bands(target.node, target.figure, scale),
+                        mark: target.mark,
+                        bands: caret_bands(target.mark, target.figure, scale),
                         figure: target.figure,
                         radius: target.radius,
                         clip: target.clip,
@@ -4536,7 +4536,7 @@ mod tests {
     fn settled_caret_bar(host: &Host<Demo>) -> egui::Rect {
         let frame = host.frame().expect("a frame");
         let target = crate::paint::focused_caret_target(frame).expect("something focused");
-        crate::paint::caret_bands(target.node, target.figure, frame.viewport.scale)
+        crate::paint::caret_bands(target.mark, target.figure, frame.viewport.scale)
             .into_iter()
             .find(|band| band.width() > 0.0 && band.height() > 0.0)
             .expect("a figure paints at least one band")

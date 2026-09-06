@@ -680,7 +680,7 @@ pub(crate) enum CaretPicture {
     /// Settled on `node`, wearing `figure`.
     Settled {
         /// The rect the figure is drawn on, device-snapped.
-        node: egui::Rect,
+        mark: egui::Rect,
         /// The shape drawn on it.
         figure: FocusFigure,
         /// That node's `radius` token, if any. Read only by
@@ -837,19 +837,24 @@ pub(crate) fn caret_clip_limit(
     }
 }
 
-/// The rects a **settled** `figure` fills on `node`, for the two figures
+/// The rects a **settled** `figure` fills on `mark`, for the two figures
 /// that are filled outright.
 ///
-/// [`FocusFigure::Border`] answers the node itself, because its two
-/// concentric strokes are struck *inside* that rect by
-/// [`paint_focus_figure`] and there is no separate rect to fill.
+/// `mark` is [`gorgon_petra::focus::marked_rect`]'s answer, not a
+/// placement's rect: for a ring or a pair of brackets the two are the same,
+/// and for a bar the horizontal extent is the control's label.
+///
+/// [`FocusFigure::Border`] answers that rect itself, because its two
+/// concentric strokes are struck *inside* it by [`paint_focus_figure`] and
+/// there is no separate rect to fill.
 #[must_use]
-pub(crate) fn caret_bars(node: egui::Rect, figure: FocusFigure, scale: Scale) -> Vec<egui::Rect> {
+pub(crate) fn caret_bars(mark: egui::Rect, figure: FocusFigure, scale: Scale) -> Vec<egui::Rect> {
     let snapped = snapped_ring(scale);
-    let pr = petra_from_egui(node);
+    let pr = petra_from_egui(mark);
     match figure {
-        FocusFigure::Border => vec![node],
+        FocusFigure::Border => vec![mark],
         FocusFigure::BarUnder => vec![egui_from_petra(snapped.bar(pr))],
+        FocusFigure::BarInside => vec![egui_from_petra(snapped.bar_inside(pr))],
         FocusFigure::Sides => snapped.sides(pr).into_iter().map(egui_from_petra).collect(),
     }
 }
@@ -867,6 +872,7 @@ pub(crate) fn caret_bars(node: egui::Rect, figure: FocusFigure, scale: Scale) ->
 ///   `outline-offset: -2px`.
 /// * `BarUnder` — the bottom band is the bar below the node; the other three
 ///   are flat.
+/// * `BarInside` — the same bottom band, on the node's own bottom edge.
 /// * `Sides` — left and right stand outside the node; top and bottom are
 ///   flat.
 ///
@@ -874,31 +880,41 @@ pub(crate) fn caret_bars(node: egui::Rect, figure: FocusFigure, scale: Scale) ->
 /// is one filled rect and a border is four.
 #[must_use]
 pub(crate) fn caret_bands(
-    node: egui::Rect,
+    mark: egui::Rect,
     figure: FocusFigure,
     scale: Scale,
 ) -> [egui::Rect; crate::focus_caret::BANDS] {
     let ring = snapped_ring(scale);
-    let flat_top = egui::Rect::from_min_size(node.min, egui::vec2(node.width(), 0.0));
-    let flat_bottom = egui::Rect::from_min_size(node.left_bottom(), egui::vec2(node.width(), 0.0));
-    let flat_left = egui::Rect::from_min_size(node.min, egui::vec2(0.0, node.height()));
-    let flat_right = egui::Rect::from_min_size(node.right_top(), egui::vec2(0.0, node.height()));
+    let flat_top = egui::Rect::from_min_size(mark.min, egui::vec2(mark.width(), 0.0));
+    let flat_bottom = egui::Rect::from_min_size(mark.left_bottom(), egui::vec2(mark.width(), 0.0));
+    let flat_left = egui::Rect::from_min_size(mark.min, egui::vec2(0.0, mark.height()));
+    let flat_right = egui::Rect::from_min_size(mark.right_top(), egui::vec2(0.0, mark.height()));
     match figure {
         // `FocusRing::border_edges` and not four rects written out here:
         // `component::tabs`' `a_tabs_ring_marks_edges_its_indicator_does_not`
         // measures which edges the ring marks, and a second copy of this
         // geometry would let the painter and that test drift apart.
         FocusFigure::Border => ring
-            .border_edges(petra_from_egui(node))
+            .border_edges(petra_from_egui(mark))
             .map(egui_from_petra),
         FocusFigure::BarUnder => [
             flat_top,
             flat_right,
-            egui_from_petra(ring.bar(petra_from_egui(node))),
+            egui_from_petra(ring.bar(petra_from_egui(mark))),
+            flat_left,
+        ],
+        // The same bottom band as `BarUnder`, seated on the node's own edge.
+        // A flight between the two is therefore one band sliding five units,
+        // which is the morph a person can follow — and the reason both are
+        // the bottom band rather than one of them borrowing another edge.
+        FocusFigure::BarInside => [
+            flat_top,
+            flat_right,
+            egui_from_petra(ring.bar_inside(petra_from_egui(mark))),
             flat_left,
         ],
         FocusFigure::Sides => {
-            let [left, right] = ring.sides(petra_from_egui(node));
+            let [left, right] = ring.sides(petra_from_egui(mark));
             [
                 flat_top,
                 egui_from_petra(right),
@@ -921,7 +937,7 @@ pub(crate) struct CaretTarget<'a> {
     /// The focused placement's id.
     pub id: &'a str,
     /// The rect the figure brackets, underlines or rings, device-snapped.
-    pub node: egui::Rect,
+    pub mark: egui::Rect,
     /// The shape drawn on that rect.
     pub figure: FocusFigure,
     /// The `radius` token that placement paints its own fill with, if any.
@@ -976,13 +992,21 @@ pub(crate) fn focused_caret_target(frame: &PetrifiedFrame) -> Option<CaretTarget
     if !shown_on.is_visible() {
         return None;
     }
-    let node = to_egui_snapped(shown_on.rect, scale);
     // The *shape* comes from the node the figure is drawn on, not from the
     // node holding focus: an `Input` leaf declaring `OnWell` hands the
     // question to the well, and the well is the node that knows it is a
     // well. The two halves of the declaration are read from two different
     // places on purpose.
     let figure = shown_on.semantics.focus_figure;
+    // And the rect is not `shown_on.rect` either. A ring and a pair of
+    // brackets mark the whole control; an underline marks its label, and on
+    // a row that spans a panel those are 868 units and 44. `marked_rect` is
+    // the engine's answer to which, and lives in `gorgon-petra` because a
+    // second renderer has to reach the same picture (D-069).
+    let mark = to_egui_snapped(
+        gorgon_petra::focus::marked_rect(placements, shown_index, figure),
+        scale,
+    );
     let radius = frame.content.get(shown_index).and_then(|content| {
         resolve_slot(
             &content.tokens,
@@ -990,7 +1014,7 @@ pub(crate) fn focused_caret_target(frame: &PetrifiedFrame) -> Option<CaretTarget
             DerivedState::of(&shown_on.semantics),
         )
     });
-    let bars = caret_bars(node, figure, scale);
+    let bars = caret_bars(mark, figure, scale);
     let covered = placements.iter().enumerate().any(|(i, s)| {
         i != index
             && s.kind == NodeKind::Surface
@@ -1007,7 +1031,7 @@ pub(crate) fn focused_caret_target(frame: &PetrifiedFrame) -> Option<CaretTarget
     }
     Some(CaretTarget {
         id: focused.id.as_str(),
-        node,
+        mark,
         figure,
         radius,
         clip: to_egui_snapped(shown_on.clip, scale),
@@ -1086,7 +1110,7 @@ fn paint_focus_target(
     paint_focus_figure(
         &p,
         SettledFigure {
-            node: target.node,
+            mark: target.mark,
             figure: target.figure,
             radius: target.radius,
         },
@@ -1114,13 +1138,13 @@ pub(crate) fn paint_caret_overlay(
     match &overlay.picture {
         CaretPicture::Hidden => false,
         CaretPicture::Settled {
-            node,
+            mark,
             figure,
             radius,
         } => paint_focus_figure(
             painter,
             SettledFigure {
-                node: *node,
+                mark: *mark,
                 figure: *figure,
                 radius: radius.as_deref(),
             },
@@ -1172,7 +1196,7 @@ fn paint_caret_bands(
 #[derive(Clone, Copy)]
 pub(crate) struct SettledFigure<'a> {
     /// The rect the figure is drawn on, device-snapped.
-    pub node: egui::Rect,
+    pub mark: egui::Rect,
     /// The shape drawn on it.
     pub figure: FocusFigure,
     /// That rect's `radius` token, if any. Read only by
@@ -1214,11 +1238,11 @@ fn paint_focus_figure(
     report: &mut PaintReport,
 ) -> bool {
     let SettledFigure {
-        node,
+        mark,
         figure,
         radius,
     } = settled;
-    if !node.is_positive() {
+    if !mark.is_positive() {
         return false;
     }
     let Some(color) = resolve_or_record(colors, gorgon_petra::token::focus::RING_TOKEN, report)
@@ -1226,7 +1250,7 @@ fn paint_focus_figure(
         return false;
     };
     if figure == FocusFigure::Border {
-        let clip = node.intersect(limit);
+        let clip = mark.intersect(limit);
         if !clip.is_positive() {
             return false;
         }
@@ -1234,7 +1258,7 @@ fn paint_focus_figure(
         p.set_clip_rect(clip);
         let ring = snapped_ring(scale);
         let [(outer, stroke), (inner, halo)] = ring
-            .bands(petra_from_egui(node))
+            .bands(petra_from_egui(mark))
             .map(|(rect, width)| (egui_from_petra(rect), width));
         // The node's own radius, and the halo's is that minus the stroke it
         // sits inside — the way any nested rounded rect keeps a constant
@@ -1271,7 +1295,7 @@ fn paint_focus_figure(
         .then(|| resolve_or_record(colors, gorgon_petra::token::focus::BAR_SHADOW_TOKEN, report))
         .flatten();
     let mut painted = false;
-    for bar in caret_bars(node, figure, scale) {
+    for bar in caret_bars(mark, figure, scale) {
         if !bar.is_positive() {
             continue;
         }
@@ -3321,9 +3345,13 @@ mod tests {
             node_rect.bottom(),
             bar.top()
         );
+        // `focused_button` places one bare node with no text child, so
+        // `marked_rect` takes its documented fallback and hands the bar the
+        // node's own rect. The bar is then the whole of what it was handed,
+        // which is the rule since 2026-09-06: no fraction anywhere.
         assert!(
-            (bar.width() - node_rect.w * (2.0 / 3.0)).abs() < 0.5,
-            "the underline is two thirds of the node (node {}, bar {})",
+            (bar.width() - node_rect.w).abs() < 0.5,
+            "a textless control's bar spans it (node {}, bar {})",
             node_rect.w,
             bar.width()
         );
@@ -3567,7 +3595,7 @@ mod tests {
         assert_eq!(target.id, "/root/q/input", "the spring keys on the leaf");
         assert_eq!(target.figure, FocusFigure::Sides);
         assert_eq!(
-            target.node,
+            target.mark,
             to_egui_snapped(well.rect, frame.viewport.scale),
             "the bars bracket the well, not the leaf"
         );
@@ -3587,8 +3615,24 @@ mod tests {
     /// Falsify by dropping `OnHead`'s arm in `focused_caret_target`, or the
     /// `Head` declaration on `tree_view.rs`'s row.
     ///
-    /// R8 rides here too: the indicator's rect must share both edges with
-    /// the band `background@selected` fills, which is bound on the item.
+    /// The figure is `BarInside` since 2026-09-06 and was `Border` before.
+    /// Nothing this test asserts turned on which: the claim is *whose rect*
+    /// the figure lands on, and a box that spanned the whole expanded
+    /// subtree was wrong for the same reason an underline under it would
+    /// be.
+    ///
+    /// R8's *layout* half rides here: `tree_item_sized`'s grid stretches its
+    /// head row, so the row spans the same band `background@selected` fills
+    /// and the stripe has the whole row to sit on.
+    ///
+    /// R8's *paint* half does not, and was retired on 2026-09-06. It read
+    /// "the indicator's rect must share both edges with the selected band",
+    /// which was the right shape while a bar's width came from its control.
+    /// The operator's rule now is that a bar spans the control's label, so
+    /// the stripe is deliberately shorter than the band and shares neither
+    /// edge with it. What survives is that it stays inside the band and on
+    /// the head row — see
+    /// `.agents/notes/implemented/architecture/2026-09-06-a-contained-underline-and-the-four-regressions-it-ends.md`.
     #[test]
     fn an_expanded_tree_item_is_underlined_on_its_head_row() {
         use super::focused_caret_target;
@@ -3636,31 +3680,43 @@ mod tests {
 
         let target = focused_caret_target(&frame).expect("focused and on screen");
         assert_eq!(target.id, "/tree/src", "the spring keys on the item");
-        assert_eq!(target.figure, FocusFigure::Border);
+        assert_eq!(target.figure, FocusFigure::BarInside);
+        let head_rect = to_egui_snapped(head.rect, frame.viewport.scale);
         assert_eq!(
-            target.node,
-            to_egui_snapped(head.rect, frame.viewport.scale),
-            "the ring goes round the head row, not the whole subtree"
+            (target.mark.min.y, target.mark.max.y),
+            (head_rect.min.y, head_rect.max.y),
+            "the stripe goes on the head row, not on the whole subtree"
         );
-        // R8: the ring is drawn inside `target.node`, so its left and right
-        // edges are that rect's. The fill is on the item. Same edges, or the
-        // indicator stops short of the band the operator can see.
+        let label = to_egui_snapped(
+            frame
+                .placement("/tree/src/row/label")
+                .expect("the head row's label is placed")
+                .rect,
+            frame.viewport.scale,
+        );
+        assert_eq!(
+            (target.mark.min.x, target.mark.max.x),
+            (label.min.x, label.max.x),
+            "and spans the row's own word"
+        );
+        // Inside the selected band, not equal to it. The fill is bound on
+        // the item and spans the tree; the stripe marks the word.
         let band = to_egui_snapped(item.rect, frame.viewport.scale);
-        assert_eq!(
-            target.node.min.x, band.min.x,
-            "the indicator starts right of the selected band"
-        );
-        assert_eq!(
-            target.node.max.x,
-            band.max.x,
-            "the indicator stops {} short of the selected band's right edge",
-            band.max.x - target.node.max.x
+        assert!(
+            target.mark.min.x >= band.min.x && target.mark.max.x <= band.max.x,
+            "the indicator left the selected band it sits on: {:?} in {band:?}",
+            target.mark
         );
         assert!(
-            target.node.bottom() < last.rect.y,
+            target.mark.width() < band.width(),
+            "a stripe as wide as the whole band is the picture the label rule \
+             replaced"
+        );
+        assert!(
+            target.mark.bottom() < last.rect.y,
             "the bar landed at or below the last child, which is the defect \
              this test exists for (bar bottom {}, last child top {})",
-            target.node.bottom(),
+            target.mark.bottom(),
             last.rect.y
         );
     }
@@ -3669,12 +3725,12 @@ mod tests {
     /// withheld: the bar under a menu's trigger lands on the open menu's
     /// first row otherwise. Falsify by dropping the `covered` check.
     ///
-    /// Only the two figures that reach outside the node can be covered, so
-    /// this drives `BarUnder` on the trigger. The second half is the reason
-    /// that matters: `Border` never leaves the node's own rect, so the same
-    /// open menu covers nothing and the indicator is drawn rather than
-    /// withheld. Withholding is a cost the reaching figures pay and the
-    /// contained one does not.
+    /// Only the figures that reach outside the node can be covered, so this
+    /// drives `BarUnder` on the trigger. The second half is the reason that
+    /// matters: `Border` never leaves the node's own rect, so the same open
+    /// menu covers nothing and the indicator is drawn rather than withheld.
+    /// Withholding is a cost the reaching figures pay and the contained ones
+    /// — `Border` and, since 2026-09-06, `BarInside` — do not.
     #[test]
     fn a_caret_crossing_a_surface_above_its_node_is_withheld() {
         use super::focused_caret_target;

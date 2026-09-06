@@ -57,8 +57,8 @@ use super::pad;
 use super::stack;
 use super::text::{heading, text};
 use super::tokens::{
-    LAYER_HOVER, OVERLAY_SCRIM, SHADOW_RAISED, SHAPE_NONE, SPACING_03, SPACING_05, SPACING_09,
-    SURFACE_RAISED, TEXT_PRIMARY, t,
+    BORDER_STRONG, LAYER_HOVER, OVERLAY_SCRIM, SHADOW_RAISED, SHAPE_NONE, SPACING_03, SPACING_05,
+    SPACING_09, SURFACE_RAISED, TEXT_PRIMARY, t,
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
@@ -282,6 +282,19 @@ fn footer_button(mut node: ViewNode) -> ViewNode {
         max: Some(FOOTER_HEIGHT),
         priority: 0,
     };
+    // `BarInside`, overriding the `Sides` a library button carries.
+    //
+    // A footer button is full-bleed: Cancel's leading edge *is* the dialog's
+    // leading edge and the primary action's trailing edge is the dialog's,
+    // so a bar standing `FocusRing::hug_gap` + `FocusRing::thickness` = 7
+    // units outside either of them paints on the page behind the dialog.
+    // Measured 2026-09-06 on row 20: Cancel's left bar at x 233 and the
+    // primary's right bar at x 964, against a dialog spanning 240 to 960.
+    //
+    // The same defect the operator photographed on the Close button, in the
+    // same dialog, twice over — unseen for the same reason the Close one
+    // was: row 20's dialog is shut at rest, so no gate had ever opened it.
+    node.semantics.focus_figure = FocusFigure::BarInside;
     node.props.align = Some(Align::Start);
     node.props.padding = Some(InsetRefs {
         top: Some(t(SPACING_05)),
@@ -314,6 +327,17 @@ fn close_button() -> ViewNode {
     node.props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
+    // A boundary, so the control is a control at rest.
+    //
+    // The resting fill above is [`SURFACE_RAISED`], the dialog's own
+    // surface, so until this line the button was the word "Close" floating
+    // on the header with nothing to say it could be pressed — it appeared
+    // only under the pointer, and a keyboard-only reader never saw it at
+    // all. [`BORDER_STRONG`] is the name for a control boundary
+    // (`component::controls`' module doc argues the split from
+    // `border.subtle`, which is the decorative rule), held at SC 1.4.11's
+    // 3:1 on every layer.
+    node.props.tokens.insert("border".into(), t(BORDER_STRONG));
     node.with_constraints(Constraints {
         // Horizontal takes a floor, not a fixed width. Carbon's 48px is the
         // hit box for an *icon-only* close glyph; FR-026 replaces the icon
@@ -334,8 +358,14 @@ fn close_button() -> ViewNode {
         },
     })
     .interactive(Role::Button, "Close", CLOSE_INTENTS)
-    // A button: `Sides`, per the operator's rule. See `component::button`.
-    .with_focus_figure(FocusFigure::Sides)
+    // `BarInside`, not `Sides`. This button sits hard against the dialog's
+    // trailing edge, and a side bar stands `FocusRing::hug_gap` +
+    // `FocusRing::thickness` = 7 units *outside* the rect, so the right-hand
+    // bar painted on the page behind the modal — the operator's "the v
+    // cursor spills out of the box unpleasantly", 2026-09-06, with a
+    // screenshot. A contained stripe on the button's own bottom edge cannot
+    // leave the dialog whatever the dialog's width is.
+    .with_focus_figure(FocusFigure::BarInside)
 }
 
 #[cfg(test)]

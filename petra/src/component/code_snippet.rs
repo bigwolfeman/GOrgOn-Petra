@@ -458,7 +458,7 @@ fn paint_well(mut node: ViewNode) -> ViewNode {
     // its `focus-outline('outline')` calls sit on the snippet and its
     // buttons, never on the text run inside.
     //
-    // Without this the run rings itself, because `FocusFigure::Border` is
+    // Without this the run rings itself, because `FocusFigure::BarUnder` is
     // the default and the run is focusable — it declares `Interaction::Drag`
     // so a selection gesture can reach it. The picture was a blue box drawn
     // around the whole line at the moment the operator dragged across part
@@ -762,14 +762,13 @@ mod tests {
     /// that file is on the snippet or one of its buttons, never on the text
     /// run.
     ///
-    /// This is not decoration. `FocusFigure::Border` is the default and the
-    /// run is focusable — it declares `Interaction::Drag` so a selection
-    /// gesture can reach it — so without the pointing the run rings *itself*.
-    /// The picture that produced was a blue box drawn around the whole line
-    /// at the moment a fragment of it was dragged over, fighting the
-    /// selection band inside it. `paint.rs` takes the figure from the node
-    /// focus is shown on, so pointing the run at its well is what puts the
-    /// ring on the container.
+    /// This is not decoration. The run is focusable — it declares
+    /// `Interaction::Drag` so a selection gesture can reach it — so without
+    /// the pointing the run marks *itself*. The picture that produced was a
+    /// figure drawn on the whole line at the moment a fragment of it was
+    /// dragged over, fighting the selection band inside it. `paint.rs` takes
+    /// the figure from the node focus is shown on, so pointing the run at
+    /// its well is what puts the mark on the container.
     ///
     /// # How this goes red
     ///

@@ -213,9 +213,10 @@ fn sized_dropdown_option(
     let mut node = node
         .with_constraints(pin_height(size.height()))
         .interactive(Role::Button, label, OPTION_INTENTS)
-        // `Border`: options stack flush in the open menu, so the default bar
-        // under one would land on the next option.
-        .with_focus_figure(FocusFigure::Border);
+        // `BarInside`: options stack flush in the open menu, so the default
+        // bar *under* one would land on the next option. The same stripe on
+        // the option's own bottom edge stays inside it.
+        .with_focus_figure(FocusFigure::BarInside);
     node.semantics.selected = selected;
     node
 }
@@ -393,8 +394,9 @@ mod tests {
         assert_eq!(on.semantics.role, Some(Role::Button));
         assert_eq!(
             on.semantics.focus_figure,
-            FocusFigure::Border,
-            "an option row is a button, not a well: it takes Carbon's ring"
+            FocusFigure::BarInside,
+            "options stack flush, so the stripe goes on the option's own \
+             bottom edge rather than five units below it, on the next option"
         );
         assert_eq!(
             on.semantics.focus_shown_on,

@@ -174,14 +174,20 @@ fn labelled_box(
     // check-b's top is 312.0), so the bar's last unit paints inside the next
     // row's box and the operator cannot tell which of the two it marks. That
     // is the operator's "underlines stick too far off and look bad", and it
-    // is the one case in the library where the measurement decides it
-    // instead of taste. `toggle` keeps the bar: its rows are 12 apart.
+    // is the operator's "underlines stick too far off and look bad".
+    // `toggle` keeps the bar: its rows are 12 apart.
+    //
+    // The measurement stands; what changed is that four units of clear run
+    // is now enough, because the stripe no longer needs any. `BarInside`
+    // sits on the row's own bottom edge, so it is as contained as the ring
+    // was and still the underline the operator asked for — which is the
+    // whole reason that figure exists. This declaration was a box for one
+    // round only.
     //
     // Carbon rings the 16-unit box itself, not the label row
-    // (`_checkbox.scss`), and this rings the row. That gap is open and
-    // tracked; a ring on the row is at least contained and unambiguous,
-    // which the bar was not.
-    node.semantics.focus_figure = FocusFigure::Border;
+    // (`_checkbox.scss`), and this underlines the row. That gap is open and
+    // tracked.
+    node.semantics.focus_figure = FocusFigure::BarInside;
     node.semantics.selected = selected;
     node
 }

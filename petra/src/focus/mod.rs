@@ -66,7 +66,8 @@
 use std::collections::BTreeMap;
 
 use crate::frame::placement::Placement;
-use crate::tree::{InputPolicy, Interaction};
+use crate::geom::Rect;
+use crate::tree::{FocusFigure, InputPolicy, Interaction, NodeKind};
 
 /// Exactly one focused node, or the defined none-state; declared traversal
 /// order; and the overlay scope that order is currently trapped inside, if
@@ -481,12 +482,104 @@ fn successor(
     new_order.first().cloned()
 }
 
+/// The rect a focus figure is measured against for the placement at `shown`.
+///
+/// For [`FocusFigure::Border`] and [`FocusFigure::Sides`] this is the
+/// placement's own rect: a ring and a pair of brackets mark the whole
+/// control. For the two bar figures it is the control's **leading label**,
+/// widened to nothing and given the control's own vertical extent, so the
+/// stripe underlines the word and the bar still seats on the control's
+/// bottom edge.
+///
+/// # Why the label and not a fraction of the control
+///
+/// The bars took `FocusRing::WIDTH_FRACTION` — two thirds of the control,
+/// centred — until 2026-09-06, when that constant was retired. That fraction is a *proxy* for
+/// "about as wide as the label", and it holds only while a control hugs its
+/// own text. A menu trigger is 80 wide around a 48-wide label, and two
+/// thirds of it is 53: near enough that nobody looked twice for a year.
+///
+/// A row that spans a panel breaks the proxy. A tree row is 868 wide around
+/// a 44-wide word at x 332, so two thirds centred is a 579-unit stripe
+/// starting at x 434 — a hundred units past the end of the word, floating in
+/// the row's empty half and touching nothing. Widening it to the full 868
+/// does not fix that; it runs the stripe *further* past the word and reads
+/// as the container's own rule. Both are the same missing idea, which is
+/// that the bar was never about the control's width.
+///
+/// So the rule is the thing the fraction was standing in for. A control that
+/// hugs its label is unchanged to within a few units, and a control that
+/// spans a panel gets a stripe under its word.
+///
+/// # Which text is the label
+///
+/// The visible [`NodeKind::Text`] descendant with the smallest `x`, ties
+/// broken by the smallest `y`. Geometric rather than positional, so it does
+/// not depend on placement order the way [`FocusTree::order`] does: a data
+/// table row holds a name and a kind, and the name is the row's identity
+/// because it is the one at the leading edge, not because it was emitted
+/// first.
+///
+/// A control with no text descendant at all — an icon-only button — falls
+/// back to its own rect, which is snug by nature on every such control the
+/// library ships. `component::tests`' `every_bar_figure_finds_a_label` is
+/// the gate that names any component where that stops being true.
+#[must_use]
+pub fn marked_rect(placements: &[Placement], shown: usize, figure: FocusFigure) -> Rect {
+    let Some(node) = placements.get(shown) else {
+        return Rect::ZERO;
+    };
+    if !figure.marks_the_label() {
+        return node.rect;
+    }
+    leading_label(placements, shown).map_or(node.rect, |run| {
+        Rect::new(run.x, node.rect.y, run.w, node.rect.h)
+    })
+}
+
+/// The leading visible text descendant of `shown`, by the rule
+/// [`marked_rect`] documents.
+fn leading_label(placements: &[Placement], shown: usize) -> Option<Rect> {
+    placements
+        .iter()
+        .enumerate()
+        .filter(|&(i, p)| {
+            i != shown
+                && p.kind == NodeKind::Text
+                && p.rect.w > 0.0
+                && p.is_visible()
+                && descends_from(placements, i, shown)
+        })
+        .map(|(_, p)| p.rect)
+        .min_by(|a, b| a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y)))
+}
+
+/// Whether `index` is inside `ancestor`'s subtree.
+///
+/// Walks `Placement::parent`, bounded by the slice length exactly as
+/// [`FocusTree`]'s own scope walk is: a cyclic or out-of-range chain ends
+/// rather than spins. Deliberately not "the contiguous run after `ancestor`",
+/// which pre-order would allow — `gorgon-petra-egui`'s caret already declined
+/// to lean on placement order for the same question, and one rule that holds
+/// whatever the order is beats two that agree only while it does.
+fn descends_from(placements: &[Placement], index: usize, ancestor: usize) -> bool {
+    let mut cursor = placements.get(index).and_then(|p| p.parent);
+    for _ in 0..placements.len() {
+        match cursor {
+            Some(i) if i == ancestor => return true,
+            Some(i) => cursor = placements.get(i).and_then(|p| p.parent),
+            None => return false,
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{FocusError, FocusTree};
+    use super::{FocusError, FocusTree, marked_rect};
     use crate::frame::placement::{PaintState, Placement, PlacementSemantics};
     use crate::geom::Rect;
-    use crate::tree::{InputPolicy, Interaction, NodeKind};
+    use crate::tree::{FocusFigure, InputPolicy, Interaction, NodeKind};
     use std::collections::BTreeMap;
 
     /// A placement carrying enough to drive focus: id, parent, and whether
@@ -515,6 +608,125 @@ mod tests {
             },
             parent,
         }
+    }
+
+    /// A row 868 wide holding a caret at x 308 and a 44-wide word at 332:
+    /// `component::tree_view`'s own numbers, measured on 2026-09-06.
+    fn wide_row() -> Vec<Placement> {
+        let mut row = placement("/row", None, true, false);
+        row.kind = NodeKind::Stack;
+        row.rect = Rect::new(292.0, 288.0, 868.0, 32.0);
+        row.clip = Rect::new(0.0, 0.0, 2000.0, 2000.0);
+
+        let mut caret = placement("/row/caret", Some(0), false, false);
+        caret.kind = NodeKind::Canvas;
+        caret.rect = Rect::new(308.0, 296.0, 16.0, 16.0);
+        caret.clip = row.clip;
+
+        let mut label = placement("/row/label", Some(0), false, false);
+        label.rect = Rect::new(332.0, 294.0, 43.9, 20.0);
+        label.clip = row.clip;
+
+        vec![row, caret, label]
+    }
+
+    /// The bar spans the word, not the row. This is the whole rule.
+    #[test]
+    fn a_bar_is_measured_against_the_leading_label() {
+        let places = wide_row();
+        let run = marked_rect(&places, 0, FocusFigure::BarInside);
+
+        assert_eq!(
+            (run.x, run.w),
+            (332.0, 43.9),
+            "horizontally the label: {run:?}"
+        );
+        assert_eq!(
+            (run.y, run.h),
+            (288.0, 32.0),
+            "vertically the row, so the bar still seats on the row's own edge"
+        );
+        assert_eq!(
+            run,
+            marked_rect(&places, 0, FocusFigure::BarUnder),
+            "both bars ask the same question"
+        );
+    }
+
+    /// A ring and a pair of brackets mark the control, so they are handed
+    /// the control. Falsify by dropping the `marks_the_label` guard: the
+    /// brackets would then hug the word and leave the row unmarked.
+    #[test]
+    fn a_ring_and_a_bracket_are_measured_against_the_whole_control() {
+        let places = wide_row();
+        for figure in [FocusFigure::Border, FocusFigure::Sides] {
+            assert_eq!(
+                marked_rect(&places, 0, figure),
+                places[0].rect,
+                "{figure:?} marks the control"
+            );
+        }
+    }
+
+    /// Leading by position, not by placement order. A data table row holds a
+    /// name and a kind; the name is the row's identity because it sits at the
+    /// leading edge, and the rule must say so even when the kind is emitted
+    /// first.
+    #[test]
+    fn the_leading_label_wins_whatever_order_the_texts_arrive_in() {
+        let mut places = wide_row();
+        let mut trailing = placement("/row/kind", Some(0), false, false);
+        trailing.rect = Rect::new(746.0, 294.0, 60.0, 20.0);
+        trailing.clip = places[0].clip;
+        places.insert(1, trailing);
+        for p in places.iter_mut().skip(2) {
+            p.parent = Some(0);
+        }
+
+        let run = marked_rect(&places, 0, FocusFigure::BarInside);
+        assert_eq!(run.x, 332.0, "the trailing text is not the label: {run:?}");
+    }
+
+    /// No text at all: the control's own rect, which is the documented
+    /// fallback for an icon-only button.
+    #[test]
+    fn a_control_with_no_text_falls_back_to_its_own_rect() {
+        let mut places = wide_row();
+        places.truncate(2);
+        assert_eq!(
+            marked_rect(&places, 0, FocusFigure::BarInside),
+            places[0].rect
+        );
+    }
+
+    /// A text scrolled out of the clip is not the label. It is in the frame
+    /// so scrolling stays smooth, exactly as
+    /// `a_clipped_away_node_is_not_in_the_tab_order` says, and a bar under a
+    /// word nobody can see is not an underline.
+    #[test]
+    fn an_offscreen_text_is_not_the_label() {
+        let mut places = wide_row();
+        places[2].clip = Rect::new(0.0, 0.0, 100.0, 100.0);
+        let run = marked_rect(&places, 0, FocusFigure::BarInside);
+        assert_eq!(run, places[0].rect, "{run:?}");
+    }
+
+    /// A grandchild counts. `component::ui_shell`'s nav label sits three
+    /// levels under the row it marks (`row/body/lead/label`), so a rule that
+    /// only looked at direct children would find nothing there.
+    #[test]
+    fn a_label_nested_under_a_wrapper_is_still_found() {
+        let mut places = wide_row();
+        let mut wrapper = placement("/row/body", Some(0), false, false);
+        wrapper.kind = NodeKind::Stack;
+        wrapper.rect = places[0].rect;
+        wrapper.clip = places[0].clip;
+        places.push(wrapper);
+        let wrapper_at = places.len() - 1;
+        places[2].parent = Some(wrapper_at);
+
+        let run = marked_rect(&places, 0, FocusFigure::BarInside);
+        assert_eq!(run.x, 332.0, "{run:?}");
     }
 
     fn no_scopes() -> BTreeMap<String, InputPolicy> {

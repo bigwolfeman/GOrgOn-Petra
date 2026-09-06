@@ -251,18 +251,27 @@ fn tab_variant(
     // strip, under the operator's rule of 2026-09-05 that a box is only for
     // where a bar will not fit:
     //
+    // The operator's call of 2026-09-06 is no boxes on this row. What is
+    // left is decided by geometry rather than taste: the selection indicator
+    // already owns one edge of each variant, and the focus figure may not
+    // share it, or the two accent marks read as one.
+    //
     // * **Line** — the indicator is on the tab's own *bottom* edge, which is
-    //   exactly where a bar would hang. Two accent lines two units apart,
-    //   told apart only by width, is the defect that was reported against
-    //   the tab strip once already. So: ring.
+    //   exactly where a bar would hang and exactly where a `BarInside`
+    //   stripe would sit. Two accent lines two units apart, told apart only
+    //   by width, is the defect reported against this strip once already.
+    //   The left and right edges are free, so: `Sides`.
     // * **Contained** — the indicator is on the *top* edge and the panel
-    //   below the strip is not a control, so the bottom edge is free. Bar.
-    // * **Vertical** — the indicator is on the left, but the tabs stack, and
-    //   the measured gap between `tab-vert-0` and `tab-vert-1` is smaller
-    //   than the five units a bar needs. Ring, and this one is held by
-    //   `shots::every_bar_under_has_five_units_of_clear_run_below_it`.
+    //   below the strip is not a control, so the bottom edge is free.
+    //   `BarUnder`, unchanged.
+    // * **Vertical** — the indicator is on the *left*, so `Sides` would
+    //   collide the way a bar collides on Line. The tabs also stack, and the
+    //   measured gap between `tab-vert-0` and `tab-vert-1` is smaller than
+    //   the five units `BarUnder` needs. Both outset figures are out, and
+    //   the bottom edge is free: `BarInside`, which needs no run at all.
     node.semantics.focus_figure = match variant {
-        Variant::Line | Variant::Vertical => FocusFigure::Border,
+        Variant::Line => FocusFigure::Sides,
+        Variant::Vertical => FocusFigure::BarInside,
         Variant::Contained => FocusFigure::BarUnder,
     };
     node
@@ -473,16 +482,20 @@ mod tests {
         assert_eq!(placed.rect.h, SIZE_MD);
     }
 
-    /// Why the ringed tab variants keep `FocusFigure::Border` even when the
-    /// tab is selected, and its own indicator is the same accent.
+    /// Why each variant's focus figure keeps off the edge its own selection
+    /// indicator already owns, when the two are the same accent.
     ///
-    /// Two of the three are ringed, and for two different reasons. **Line**
-    /// pins its indicator to the tab's own bottom edge, which is exactly
-    /// where a focus bar would hang: two accent lines two units apart, told
-    /// apart only by width. **Vertical** stacks its tabs closer than the five
-    /// units a bar needs. **Contained** pins its indicator to the *top* edge
-    /// and its strip has the panel below it, so it takes the default bar —
-    /// this test asserts that too, at the end.
+    /// The three land on three different edges, and each figure is picked to
+    /// avoid it. **Line** pins its indicator to the tab's own bottom edge,
+    /// which is exactly where a bar would hang and where a `BarInside`
+    /// stripe would sit: two accent lines told apart only by width. Its left
+    /// and right edges are free, so it brackets. **Vertical** pins its
+    /// indicator to the *left*, so bracketing would collide there instead;
+    /// it also stacks its tabs closer than the five units `BarUnder` needs,
+    /// so it takes the contained stripe on its free bottom edge.
+    /// **Contained** pins its indicator to the *top* edge and its strip has
+    /// the panel below it, so it takes the default bar — this test asserts
+    /// that too, at the end.
     ///
     /// Carbon's answer, and the citation this file used to get wrong:
     /// `.cds--tabs__nav-link:focus` is `focus-outline('outline')`
@@ -513,8 +526,12 @@ mod tests {
         ] {
             assert_eq!(
                 node.semantics.focus_figure,
-                FocusFigure::Border,
-                "{label}: Carbon rings a tab, it does not underline it"
+                match label {
+                    "line" => FocusFigure::Sides,
+                    _ => FocusFigure::BarInside,
+                },
+                "{label}: the focus figure must keep off the {held} edge, \
+                 which this variant's selection indicator already owns"
             );
             let frame = petrify_lone(node);
             let find = |suffix: &str| -> Rect {

@@ -238,7 +238,11 @@ pub fn structured_list_row(key: impl Into<Key>, cells: Vec<ViewNode>, selected: 
         .insert("border-top".into(), t(BORDER_SUBTLE));
     let mut node = node
         .interactive(Role::Row, label, ROW_INTENTS)
-        .with_focus_figure(FocusFigure::Border);
+        // `Sides`, the operator's call of 2026-09-06. A structured list row
+        // spans the list, so its side bars stand in the list's own padding
+        // rather than on a neighbouring row, and the row's only other mark
+        // is the `border-top` rule above — which a side bar never touches.
+        .with_focus_figure(FocusFigure::Sides);
     node.semantics.selected = selected;
     node
 }

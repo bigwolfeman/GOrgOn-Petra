@@ -713,7 +713,7 @@ fn month_cell(month: u32, selected: bool) -> ViewNode {
     let mut node = node
         .with_constraints(pin_height(MONTH_CELL_H))
         .interactive(Role::Button, name.to_owned(), FIELD_INTENTS)
-        .with_focus_figure(FocusFigure::Border);
+        .with_focus_figure(FocusFigure::BarInside);
     node.semantics.selected = selected;
     node
 }
@@ -815,12 +815,13 @@ fn day_button(day: u32, selected: bool) -> ViewNode {
     let mut node = node
         .with_constraints(pin_height(SIZE_MD))
         .interactive(Role::Button, label, FIELD_INTENTS)
-        // `Border`, measured. The day grid is 40-tall cells on a 40 pitch —
-        // week rows at y 452, 492, 532, 572, 612 — so there is no gap at all
-        // and a bar under any day paints inside the day below it. The
-        // calendar's nav strip and its month button are *not* boxed: they sit
-        // 40 units clear of the first week and keep the default bar.
-        .with_focus_figure(FocusFigure::Border);
+        // `BarInside`, measured. The day grid is 40-tall cells on a 40 pitch
+        // — week rows at y 452, 492, 532, 572, 612 — so there is no gap at all
+        // and a bar *under* any day paints inside the day below it. Seated on
+        // the cell's own bottom edge it stays in its own day. The calendar's
+        // nav strip sits 40 units clear of the first week and keeps the
+        // default bar.
+        .with_focus_figure(FocusFigure::BarInside);
     node.semantics.selected = selected;
     node
 }

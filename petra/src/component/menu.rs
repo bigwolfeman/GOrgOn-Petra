@@ -97,12 +97,13 @@ pub fn menu_item(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
     node.props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
-    // `Border`. Menu items stack flush at `SIZE_MD` with no gap between
+    // `BarInside`. Menu items stack flush at `SIZE_MD` with no gap between
     // them, so the default bar — five units below the bottom edge — would
-    // paint on the next item rather than in empty space.
+    // paint on the next item rather than in empty space. The same stripe on
+    // the item's own bottom edge is contained and cannot.
     node.with_constraints(pin_height(SIZE_MD))
         .interactive(Role::Button, label, ITEM_INTENTS)
-        .with_focus_figure(FocusFigure::Border)
+        .with_focus_figure(FocusFigure::BarInside)
 }
 
 fn pin_height(h: f32) -> Constraints {

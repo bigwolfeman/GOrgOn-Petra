@@ -170,8 +170,8 @@ fn tree_item_sized(
     // holds it (`gorgon-petra-egui`'s `focused_caret_target`), so the head
     // row carries it and the item's own declaration below is only there to
     // keep the two from disagreeing if the `OnHead` link is ever dropped.
-    // `Border` for the reason the item gives: tree rows stack flush.
-    row.semantics.focus_figure = FocusFigure::Border;
+    // `BarInside` for the reason the item gives: tree rows stack flush.
+    row.semantics.focus_figure = FocusFigure::BarInside;
 
     let mut parts = vec![row];
     if expanded && is_branch {
@@ -239,11 +239,16 @@ fn tree_item_sized(
     }
     let mut node = node.interactive(Role::TreeItem, label, ITEM_INTENTS);
     node.semantics.focus_shown_on = FocusShownOn::OnHead;
-    // `Border`: tree rows stack flush, so the default bar would land on the
-    // row below. It is also the figure that can share a rect with the
-    // selected row's leading accent bar without reading as a second mark —
-    // a ring has four bands and the accent has one.
-    node.semantics.focus_figure = FocusFigure::Border;
+    // `BarInside`: tree rows stack flush, so the default bar — five units
+    // below the bottom edge — would land on the row below. This is the same
+    // underline seated on the row's own bottom edge, so it cannot.
+    //
+    // It also stays clear of the selected row's own mark, which a ring did
+    // not: the accent bar runs down the row's **leading** edge, and a ring's
+    // left band runs down exactly those pixels. A stripe on the bottom edge
+    // shares nothing with it, so "selected" and "focused" stay two marks a
+    // person can tell apart.
+    node.semantics.focus_figure = FocusFigure::BarInside;
     node.semantics.selected = selected;
     node.semantics.expanded = Some(expanded);
     node
