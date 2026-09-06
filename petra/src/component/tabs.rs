@@ -244,10 +244,27 @@ fn tab_variant(
     // `_themes.scss` `$white` and `$g10`), because a ring has four edges and
     // an indicator has one. Wherever the ring's bottom band lands on a Line
     // tab's indicator, its top, left and right bands are on pixels the
-    // indicator never touches. Containment is the whole reason `Border` is
-    // the default figure; a selected tab does not suspend it.
+    // indicator never touches.
     // `a_tabs_ring_marks_edges_its_indicator_does_not` measures that.
-    node.semantics.focus_figure = FocusFigure::Border;
+    //
+    // Which variant gets the ring is decided per variant, not once for the
+    // strip, under the operator's rule of 2026-09-05 that a box is only for
+    // where a bar will not fit:
+    //
+    // * **Line** — the indicator is on the tab's own *bottom* edge, which is
+    //   exactly where a bar would hang. Two accent lines two units apart,
+    //   told apart only by width, is the defect that was reported against
+    //   the tab strip once already. So: ring.
+    // * **Contained** — the indicator is on the *top* edge and the panel
+    //   below the strip is not a control, so the bottom edge is free. Bar.
+    // * **Vertical** — the indicator is on the left, but the tabs stack, and
+    //   the measured gap between `tab-vert-0` and `tab-vert-1` is smaller
+    //   than the five units a bar needs. Ring, and this one is held by
+    //   `shots::every_bar_under_has_five_units_of_clear_run_below_it`.
+    node.semantics.focus_figure = match variant {
+        Variant::Line | Variant::Vertical => FocusFigure::Border,
+        Variant::Contained => FocusFigure::BarUnder,
+    };
     node
 }
 
@@ -456,8 +473,16 @@ mod tests {
         assert_eq!(placed.rect.h, SIZE_MD);
     }
 
-    /// Why a tab keeps `FocusFigure::Border` even when it is the selected
-    /// tab, whose own indicator is the same accent.
+    /// Why the ringed tab variants keep `FocusFigure::Border` even when the
+    /// tab is selected, and its own indicator is the same accent.
+    ///
+    /// Two of the three are ringed, and for two different reasons. **Line**
+    /// pins its indicator to the tab's own bottom edge, which is exactly
+    /// where a focus bar would hang: two accent lines two units apart, told
+    /// apart only by width. **Vertical** stacks its tabs closer than the five
+    /// units a bar needs. **Contained** pins its indicator to the *top* edge
+    /// and its strip has the panel below it, so it takes the default bar —
+    /// this test asserts that too, at the end.
     ///
     /// Carbon's answer, and the citation this file used to get wrong:
     /// `.cds--tabs__nav-link:focus` is `focus-outline('outline')`
@@ -484,7 +509,6 @@ mod tests {
         let ring = FocusRing::STANDARD;
         for (label, node, held) in [
             ("line", tab("t", "Fibers", true), "bottom"),
-            ("contained", contained_tab("t", "Fibers", true), "top"),
             ("vertical", vertical_tab("t", "Fibers", true), "left"),
         ] {
             assert_eq!(
@@ -549,6 +573,35 @@ mod tests {
                 );
             }
         }
+
+        // Contained is the variant that does *not* need the ring. Its
+        // indicator is on the top edge, so the bottom edge — where a bar
+        // hangs — is free, and the operator's rule then applies: a bar unless
+        // a bar will not fit.
+        let contained = contained_tab("t", "Fibers", true);
+        assert_eq!(
+            contained.semantics.focus_figure,
+            FocusFigure::BarUnder,
+            "a contained tab pins its indicator to the top edge, so nothing \
+             is competing for the bottom one"
+        );
+        let frame = petrify_lone(contained);
+        let rect = |suffix: &str| -> Rect {
+            frame
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with(suffix))
+                .unwrap_or_else(|| panic!("contained: no placement ending in {suffix}"))
+                .rect
+        };
+        let bar = ring.bar(rect("/root/t"));
+        let mark = rect("/root/t/indicator");
+        assert_eq!(
+            bar.intersect(mark).w * bar.intersect(mark).h,
+            0.0,
+            "the bar {bar:?} touches the contained indicator {mark:?}, which \
+             is the two-lines defect this variant was chosen to avoid"
+        );
     }
 
     #[test]

@@ -249,12 +249,6 @@ fn stepper(key: &'static str, label: &'static str, mark: IconMark, height: f32) 
         label,
         &[Interaction::Focus, Interaction::Click, Interaction::Hover],
     )
-    // `Border`, declared rather than inherited. The two steppers stack flush
-    // against each other and against the well's trailing edge, each half the
-    // field's height, so a bar under the decrement would paint on the
-    // increment. Carbon outlines the stepper itself
-    // (`_number-input.scss`), which is the same answer.
-    .with_focus_figure(FocusFigure::Border)
 }
 
 #[cfg(test)]
@@ -303,10 +297,18 @@ mod tests {
             assert_eq!(value.semantics.focus_figure, FocusFigure::Sides);
             assert_eq!(value.semantics.focus_shown_on, FocusShownOn::OnWell);
             for key in ["decrement", "increment"] {
+                // The default bar, not a ring. This asserted `Border` on the
+                // reading that the two steppers stack — Carbon's do. Ours do
+                // not: measured on the Number input page, `decrement` is at
+                // x 1079 and `increment` at x 1120, both at y 284 and both 40
+                // square, so they sit side by side with the whole run below
+                // the field free. A box here would be the operator's
+                // "everything is boxed" one more time, for a reason that is
+                // not true of this layout.
                 assert_eq!(
                     child(&node, key).semantics.focus_figure,
-                    FocusFigure::Border,
-                    "{key}: Carbon outlines the stepper itself"
+                    FocusFigure::BarUnder,
+                    "{key}: the steppers sit side by side, so a bar fits"
                 );
                 assert_eq!(
                     child(&node, key).semantics.focus_shown_on,

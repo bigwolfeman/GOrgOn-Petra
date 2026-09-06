@@ -401,7 +401,6 @@ fn column_divider(index: usize, name: Option<&String>) -> ViewNode {
     // eight-unit target rather than against its leading edge.
     node.props.justify = Some(Justify::Center);
     node.interactive(Role::Separator, label, DIVIDER_INTENTS)
-        .with_focus_figure(FocusFigure::Border)
 }
 
 /// The trailing selection cell: the mark when the row is selected, a

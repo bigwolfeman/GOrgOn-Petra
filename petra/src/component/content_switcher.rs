@@ -42,8 +42,8 @@ use super::tokens::{
 use super::{pad, stack, swatch};
 use crate::geom::{Align, Axis};
 use crate::tree::{
-    AxisConstraint, Constraints, FocusFigure, Interaction, Justify, Key, NodeKind, Props, Role,
-    Semantics, TrackSize, ViewNode,
+    AxisConstraint, Constraints, Interaction, Justify, Key, NodeKind, Props, Role, Semantics,
+    TrackSize, ViewNode,
 };
 
 const _: () = assert!(SIZE_MD == 40.0);
@@ -156,10 +156,9 @@ pub fn content_switcher_item(
         t(LAYER_SELECTED_INVERSE),
     );
 
-    let mut node = node
-        .with_constraints(pin_height(SIZE_MD))
-        .interactive(Role::Button, label, ITEM_INTENTS)
-        .with_focus_figure(FocusFigure::Border);
+    let mut node =
+        node.with_constraints(pin_height(SIZE_MD))
+            .interactive(Role::Button, label, ITEM_INTENTS);
     node.semantics.selected = selected;
     node
 }

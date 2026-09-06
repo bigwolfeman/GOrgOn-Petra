@@ -161,13 +161,7 @@ fn handle_node(label: String, value: String, size: f32, live: bool) -> ViewNode 
     );
     handle = handle.with_constraints(pin_extent(size, size));
     if live {
-        handle = handle
-            .interactive(Role::Button, label, HANDLE_INTENTS)
-            // `Border`, not the default bar. The handle is a `SHAPE_FULL`
-            // circle riding the rail, so a bar hung under it would cross the
-            // rail it is sliding along; a ring follows the circle's own
-            // radius and stays on the control.
-            .with_focus_figure(FocusFigure::Border);
+        handle = handle.interactive(Role::Button, label, HANDLE_INTENTS);
         handle.semantics.value = Some(value);
     }
     handle

@@ -3501,7 +3501,17 @@ mod tests {
             if !cell.is_built() {
                 continue;
             }
-            let cam = Camera::on(cell.row.component);
+            let mut cam = Camera::on(cell.row.component);
+            // Open what the page hides behind a trigger. A menu's items, a
+            // dropdown's options and a calendar's day cells are the most
+            // tightly packed rows in the library and none of them exist in a
+            // shut frame, so a gate that only ever looked at the opening
+            // picture would hold none of them.
+            for trigger in ["mn-pair/trigger", "dd/field", "sel/field", "full/field"] {
+                if cam.has(trigger) {
+                    cam.click(trigger);
+                }
+            }
             let frame = cam.frame();
             let places = &frame.placements;
             // Ancestry by index, walked through `Placement::parent`.
@@ -3534,18 +3544,20 @@ mod tests {
                 }
                 let bar = ring.bar(node.rect);
                 for (k, other) in places.iter().enumerate() {
-                    // Only another *control* counts. A bar over a label or a
-                    // rule is a cosmetic overlap; a bar over the next thing
-                    // the operator can focus is the ambiguity this gate is
-                    // about.
-                    if k == i
-                        || !other
-                            .semantics
-                            .actions
-                            .contains(&gorgon_petra::tree::Interaction::Focus)
-                        || !other.is_visible()
-                        || is_kin(i, k)
-                    {
+                    // Two kinds of collision count. Another **control**, so
+                    // the operator cannot tell which of the two the bar
+                    // marks. And any other node carrying its own **fill**,
+                    // because a bar laid over a neighbouring card reads as
+                    // belonging to that card — the file uploader's drop zone
+                    // did exactly that, and a focusable-only rule missed it,
+                    // because the file rows under the zone are not themselves
+                    // controls; only their Remove buttons are.
+                    let is_control = other
+                        .semantics
+                        .actions
+                        .contains(&gorgon_petra::tree::Interaction::Focus);
+                    let has_fill = frame.content[k].tokens.contains_key("background");
+                    if k == i || (!is_control && !has_fill) || !other.is_visible() || is_kin(i, k) {
                         continue;
                     }
                     if overlaps(bar, other.rect) {

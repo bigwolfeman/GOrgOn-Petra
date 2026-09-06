@@ -193,13 +193,7 @@ fn build_uploader(
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
     zone.constraints = pin(ZONE_WIDTH, DROP_HEIGHT);
-    let zone = zone
-        .interactive(Role::Button, label.clone(), ZONE_INTENTS)
-        // `Border`. The drop zone's bottom edge is where the selected-file
-        // list starts, so a bar hung two units below it lands on the first
-        // file row and reads as marking that row instead — photographed on
-        // 2026-09-05 before this line existed.
-        .with_focus_figure(FocusFigure::Border);
+    let zone = zone.interactive(Role::Button, label.clone(), ZONE_INTENTS);
 
     let mut children = vec![heading];
     if let Some(description) = description {

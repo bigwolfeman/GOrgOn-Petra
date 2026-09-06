@@ -486,11 +486,11 @@ fn step_control(key: &str, label: &str, mark: IconMark) -> ViewNode {
     node.props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
-    // `Border`: calendar chrome is a packed grid of cells and a flush strip
-    // of nav buttons, so the default bar would land on the row beneath.
-    node.with_constraints(pin_height(SIZE_MD))
-        .interactive(Role::Button, label.to_owned(), FIELD_INTENTS)
-        .with_focus_figure(FocusFigure::Border)
+    node.with_constraints(pin_height(SIZE_MD)).interactive(
+        Role::Button,
+        label.to_owned(),
+        FIELD_INTENTS,
+    )
 }
 
 /// The full form's month control: the same caption, plus a chevron saying
@@ -522,14 +522,11 @@ fn month_button(caption: ViewNode, name: String, choosing: bool) -> ViewNode {
     node.props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
-    let mut node = node
-        .with_constraints(pin_height(SIZE_MD))
-        .interactive(
-            Role::Button,
-            format!("{name}, choose month and year"),
-            FIELD_INTENTS,
-        )
-        .with_focus_figure(FocusFigure::Border);
+    let mut node = node.with_constraints(pin_height(SIZE_MD)).interactive(
+        Role::Button,
+        format!("{name}, choose month and year"),
+        FIELD_INTENTS,
+    );
     node.semantics.expanded = Some(choosing);
     node
 }
@@ -815,9 +812,15 @@ fn day_button(day: u32, selected: bool) -> ViewNode {
     node.props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
-    let mut node =
-        node.with_constraints(pin_height(SIZE_MD))
-            .interactive(Role::Button, label, FIELD_INTENTS);
+    let mut node = node
+        .with_constraints(pin_height(SIZE_MD))
+        .interactive(Role::Button, label, FIELD_INTENTS)
+        // `Border`, measured. The day grid is 40-tall cells on a 40 pitch —
+        // week rows at y 452, 492, 532, 572, 612 — so there is no gap at all
+        // and a bar under any day paints inside the day below it. The
+        // calendar's nav strip and its month button are *not* boxed: they sit
+        // 40 units clear of the first week and keep the default bar.
+        .with_focus_figure(FocusFigure::Border);
     node.semantics.selected = selected;
     node
 }

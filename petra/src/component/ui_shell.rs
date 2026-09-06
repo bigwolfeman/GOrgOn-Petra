@@ -264,11 +264,17 @@ fn header_name(key: &'static str, product_name: impl Into<String>) -> ViewNode {
         right: Some(t(SPACING_07)),
         ..InsetRefs::default()
     });
-    // `Border` on every control this module builds. The header is a 48-unit
-    // bar with its items flush against each other and the page starting
-    // immediately below it, and the side nav is a flush column of rows: in
-    // both, the default bar would hang outside its own control onto a
-    // neighbour or onto the page.
+    // `Border` on every control in the **header**, and on the left panel's
+    // rows. Not on the right panel's switcher rows, which have the run for a
+    // bar and keep it.
+    //
+    // The header is a 48-unit bar whose bottom edge *is* the top of the page,
+    // so a bar hung two units below a header control paints on the page
+    // rather than in the header. Measured on the UI shell right panel page:
+    // `bar/name`'s bar at y 305 lands on `shell-content/shell-page`, and the
+    // switcher trigger's on `shell-switcher`. The left panel's rows are boxed
+    // for the ordinary reason instead — they stack closer than the five units
+    // a bar needs.
     node.interactive(Role::Button, product_name, INTENTS)
         .with_focus_figure(FocusFigure::Border)
 }
@@ -356,6 +362,7 @@ pub fn ui_shell_header_nav_item(
         .with_props(props)
         .with_children(vec![body, mark])
         .with_constraints(pin_block(MINI_UNIT_6));
+    // `Border`, for the reason `header_name` gives.
     let mut node = node
         .interactive(Role::Button, label, INTENTS)
         .with_focus_figure(FocusFigure::Border);
@@ -494,6 +501,7 @@ fn header_action_sized(
             HeaderActionFit::Square => square_hit_box(MINI_UNIT_6),
             HeaderActionFit::Word => icon_hit_box(MINI_UNIT_6),
         });
+    // `Border`, for the reason `header_name` gives.
     let mut node = node
         .interactive(Role::Button, label, INTENTS)
         .with_focus_figure(FocusFigure::Border);
@@ -1121,9 +1129,7 @@ pub fn ui_shell_switcher_item(
         .with_props(props)
         .with_children(vec![caption])
         .with_constraints(pin_block(SWITCHER_ROW));
-    let mut node = node
-        .interactive(Role::Button, label, INTENTS)
-        .with_focus_figure(FocusFigure::Border);
+    let mut node = node.interactive(Role::Button, label, INTENTS);
     node.semantics.selected = selected;
     node
 }
