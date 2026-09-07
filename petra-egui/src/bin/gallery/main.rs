@@ -26,6 +26,8 @@
 mod cat;
 mod catalog;
 mod cell;
+#[cfg(test)]
+mod font_spike;
 mod inventory;
 mod page;
 #[cfg(test)]

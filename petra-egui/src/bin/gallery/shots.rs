@@ -47,6 +47,15 @@
 // the same reason, as `cat.rs`.
 #![allow(dead_code)]
 
+/// Throwaway visual spike (2026-09-07): debossed hairline rules and box
+/// bevels, for the operator to pick a direction by looking at pixels. A
+/// descendant module of `shots` (not a sibling declared in `main.rs`)
+/// because it needs [`Camera`]'s private fields to build its own
+/// `Camera<SpikeApp>`, exactly the way [`Camera::<Fixture>::fixture`] does.
+/// Delete this module (and this one line) once the operator has chosen.
+#[cfg(test)]
+mod rule_spike;
+
 use egui::{Context, Pos2, RawInput};
 use gorgon_petra::frame::{CaretPaint, PaintContent, PetrifiedFrame};
 use gorgon_petra::geom::{Point, Rect, Size};
