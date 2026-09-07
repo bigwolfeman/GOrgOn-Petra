@@ -282,7 +282,8 @@ pub(crate) fn list_box_field(
             vertical: pinned(height),
             ..Constraints::default()
         })
-        .interactive(Role::Button, label, FIELD_INTENTS);
+        .interactive(Role::Button, label, FIELD_INTENTS)
+        .owning_its_text();
     node.semantics.expanded = Some(expanded);
     node.semantics.focus_figure = FocusFigure::Sides;
     node.semantics.focus_shown_on = FocusShownOn::Well;

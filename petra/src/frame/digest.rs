@@ -624,6 +624,7 @@ fn leaf_bytes(scale: Scale, p: &Placement) -> Vec<u8> {
                 focus_figure: _,
                 focus_shown_on: _,
                 focus_run: _,
+                owns_its_text: _,
             },
         // Rewritable, not merely redundant: a subtree a reuse pass copies
         // from the previous frame is rebased onto its new position, and
@@ -1122,6 +1123,7 @@ mod tests {
                 focus_figure: FocusFigure::Sides,
                 focus_shown_on: FocusShownOn::Well,
                 focus_run: true,
+                owns_its_text: true,
                 expanded: Some(true),
                 stale: false,
                 ambient: false,

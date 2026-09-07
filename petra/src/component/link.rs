@@ -70,6 +70,7 @@ fn link_built(key: impl Into<Key>, label: impl Into<String>, underline_slot: &st
     // look bad"* case, and it is also the rule that puts a button on `Sides`:
     // a link declares `Role::Button` because that is what it is.
     node.interactive(Role::Button, label, LINK_INTENTS)
+        .owning_its_text()
         .with_focus_figure(FocusFigure::Sides)
 }
 

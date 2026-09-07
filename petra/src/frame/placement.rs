@@ -160,6 +160,11 @@ pub struct PlacementSemantics {
     /// ([`crate::tree::Semantics::focus_run`]). Projected and held out of the
     /// digest on the same terms as [`Self::focus_figure`].
     pub focus_run: bool,
+    /// Whether this control owns the text inside it
+    /// ([`crate::tree::Semantics::owns_its_text`]). Projected and held out of
+    /// the digest and the semantic projection, the way `focus_run` is: it
+    /// changes where a press may anchor a selection, never what is painted.
+    pub owns_its_text: bool,
     /// Hosts a deliberately endless animation, so it never blocks settle.
     pub ambient: bool,
     /// Driver action kinds this node accepts.

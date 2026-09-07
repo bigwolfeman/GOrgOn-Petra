@@ -208,11 +208,10 @@ fn accordion_item_content(
         .props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
-    let mut header = header.with_constraints(pin_height(header_h)).interactive(
-        Role::Button,
-        label.clone(),
-        HEADER_INTENTS,
-    );
+    let mut header = header
+        .with_constraints(pin_height(header_h))
+        .interactive(Role::Button, label.clone(), HEADER_INTENTS)
+        .owning_its_text();
     // `BarInside`: collapsed headers stack flush against each other, so the
     // default bar would land on the next header rather than in empty space.
     // The same stripe on the header's own bottom edge stays inside it.

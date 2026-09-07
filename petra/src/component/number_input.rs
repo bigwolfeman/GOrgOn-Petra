@@ -249,6 +249,7 @@ fn stepper(key: &'static str, label: &'static str, mark: IconMark, height: f32) 
         label,
         &[Interaction::Focus, Interaction::Click, Interaction::Hover],
     )
+    .owning_its_text()
 }
 
 #[cfg(test)]

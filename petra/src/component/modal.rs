@@ -385,6 +385,7 @@ fn close_button() -> ViewNode {
         },
     })
     .interactive(Role::Button, "Close", CLOSE_INTENTS)
+    .owning_its_text()
     // `BarUnder`, the operator's call of 2026-09-06 for this control.
     //
     // `Sides` was the library default and spilled: this button sits hard

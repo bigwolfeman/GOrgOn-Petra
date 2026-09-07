@@ -675,6 +675,42 @@ pub struct Semantics {
     /// the control is what says.
     #[serde(default, skip_serializing_if = "is_false")]
     pub focus_run: bool,
+    /// This control owns the text inside it: a press there is the control's,
+    /// and no selection anchors in it.
+    ///
+    /// # Why the flag is an opt *out*
+    ///
+    /// Every run in the library is selectable and this is the one way to say
+    /// otherwise ([`crate::input::hit_text`]). The operator settled the
+    /// polarity on 2026-09-06, in five words — *"it should be opt out not opt
+    /// in"* — and the argument behind them is about which mistake survives
+    /// being made. A component that forgets this flag gets text a person can
+    /// drag a highlight across when they meant to press something: visible,
+    /// annoying, reported in a day. A component that forgets the opposite flag
+    /// gets text that silently cannot be selected, which is the defect he had
+    /// to report twice, and which no gate could see because "nobody opted in"
+    /// has no shape.
+    ///
+    /// So the default fails towards selectable.
+    ///
+    /// # Who sets it
+    ///
+    /// A control whose **press acts**: a button, a tab, a menu item, a
+    /// trigger that opens a list. Dragging across one of those would fire it
+    /// and highlight its label at the same time, because the catalog
+    /// activates on the press and not on the release.
+    ///
+    /// A control whose press only *selects* does not set it: a table row, a
+    /// tree item, a list row, a code well. Those carry content, the press is
+    /// not destructive, and a browser lets you drag a highlight through them.
+    /// `every_press_acting_control_owns_its_text` holds the library to that
+    /// line from both sides.
+    ///
+    /// It reaches a whole subtree. A button says it once, on the node that
+    /// declares the interaction, and its label, its glyph and its state text
+    /// are all covered.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub owns_its_text: bool,
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
@@ -870,6 +906,14 @@ impl ViewNode {
     #[must_use]
     pub fn with_focus_run(mut self) -> Self {
         self.semantics.focus_run = true;
+        self
+    }
+
+    /// Declare that this control owns the text inside it, so no selection
+    /// anchors there. See [`Semantics::owns_its_text`].
+    #[must_use]
+    pub fn owning_its_text(mut self) -> Self {
+        self.semantics.owns_its_text = true;
         self
     }
 

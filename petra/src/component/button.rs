@@ -655,6 +655,7 @@ fn labelled(
             // `crate::token::shipped` counts, aimed at the slot channel.
             &[Interaction::Focus, Interaction::Click, Interaction::Hover],
         )
+        .owning_its_text()
         // *"side bars on toggle tip and buttons"* — the operator, 2026-09-05.
         // A button stands in a row of buttons with clear space above and
         // below, so a bar under it would fit; the sides are chosen because

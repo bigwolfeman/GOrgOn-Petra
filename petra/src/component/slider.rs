@@ -161,7 +161,9 @@ fn handle_node(label: String, value: String, size: f32, live: bool) -> ViewNode 
     );
     handle = handle.with_constraints(pin_extent(size, size));
     if live {
-        handle = handle.interactive(Role::Button, label, HANDLE_INTENTS);
+        handle = handle
+            .interactive(Role::Button, label, HANDLE_INTENTS)
+            .owning_its_text();
         handle.semantics.value = Some(value);
     }
     handle
@@ -259,11 +261,13 @@ fn slider_built(
     if read_only {
         // Handle is zero size, so focus lives on the control itself. Drag
         // and Click are the interactions a read-only slider will not honour.
-        node = node.interactive(
-            Role::Button,
-            label,
-            &[Interaction::Focus, Interaction::Hover],
-        );
+        node = node
+            .interactive(
+                Role::Button,
+                label,
+                &[Interaction::Focus, Interaction::Hover],
+            )
+            .owning_its_text();
         node.semantics.read_only = true;
         node.semantics.value = Some(reported);
     }

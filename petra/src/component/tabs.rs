@@ -223,7 +223,8 @@ fn tab_variant(
             },
             ..Constraints::default()
         })
-        .interactive(Role::Tab, label, intents);
+        .interactive(Role::Tab, label, intents)
+        .owning_its_text();
     node.semantics.selected = selected;
     // Carbon focuses a tab with the ring: `.cds--tabs__nav-link:focus` is
     // `@include focus-outline('outline')` — `outline: 2px solid $focus;

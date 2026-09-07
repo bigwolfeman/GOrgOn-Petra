@@ -213,6 +213,7 @@ fn sized_dropdown_option(
     let mut node = node
         .with_constraints(pin_height(size.height()))
         .interactive(Role::Button, label, OPTION_INTENTS)
+        .owning_its_text()
         // `BarInside`: options stack flush in the open menu, so the default
         // bar *under* one would land on the next option. The same stripe on
         // the option's own bottom edge stays inside it.

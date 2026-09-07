@@ -174,11 +174,9 @@ pub fn clickable_tile(
     body: impl Into<String>,
 ) -> ViewNode {
     let label = label.into();
-    with_interactive_chrome(shell(key, vec![text("body", body.into())]), false).interactive(
-        Role::Button,
-        label,
-        INTERACTIVE,
-    )
+    with_interactive_chrome(shell(key, vec![text("body", body.into())]), false)
+        .interactive(Role::Button, label, INTERACTIVE)
+        .owning_its_text()
 }
 
 /// A selectable tile: one option in a caller-grouped set.
@@ -196,7 +194,9 @@ pub fn selectable_tile(key: impl Into<Key>, label: impl Into<String>, selected: 
         selection_mark(selected),
     );
     let node = with_interactive_chrome(shell(key, vec![row]), true);
-    let mut node = node.interactive(Role::Button, label, INTERACTIVE);
+    let mut node = node
+        .interactive(Role::Button, label, INTERACTIVE)
+        .owning_its_text();
     node.semantics.selected = selected;
     node
 }
@@ -279,11 +279,9 @@ pub fn expandable_tile(
         children.push(text("body", body.into()));
     }
 
-    let mut node = with_interactive_chrome(shell(key, children), false).interactive(
-        Role::Button,
-        label,
-        INTERACTIVE,
-    );
+    let mut node = with_interactive_chrome(shell(key, children), false)
+        .interactive(Role::Button, label, INTERACTIVE)
+        .owning_its_text();
     node.semantics.expanded = Some(expanded);
     node
 }

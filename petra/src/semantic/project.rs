@@ -79,6 +79,7 @@ fn node_at(frame: &PetrifiedFrame, index: usize, children: Vec<SemanticNode>) ->
         focus_figure: _,
         focus_shown_on: _,
         focus_run: _,
+        owns_its_text: _,
     } = &placement.semantics;
 
     let mut actions: Vec<Interaction> = actions.clone();

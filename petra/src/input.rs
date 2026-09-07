@@ -1210,29 +1210,34 @@ fn dismiss_requests(
 /// > *"a lot of these text elements are not highlightable, like the lists.
 /// > A lot are like this."*
 ///
-/// So selectability is **derived**, and the rule is the one a browser applies
-/// without being asked: running text is selectable, and text that is part of
-/// a control is part of the control. Walking topmost-first, the first
-/// placement whose rect and clip contain `pos` and which is one of these
-/// three ends the search:
+/// So **every run is selectable and a control opts out**, which is the
+/// operator's own ruling on the polarity — *"it should be opt out not opt
+/// in"* — and which fails towards the mistake that gets reported rather than
+/// the one that stays silent. [`crate::tree::Semantics::owns_its_text`]
+/// carries the opt-out and says who sets it.
 ///
-/// 1. **A `Text` placement with no control above it in the tree** is the
-///    target. "Above it in the tree", not "above it in paint order", and not
-///    the run itself: a code well's run declares [`Interaction::Drag`] to win
-///    its own capture and is the most selectable thing in the library.
+/// Walking topmost-first, the first placement whose rect and clip contain
+/// `pos` and which is one of these three ends the search:
 ///
-/// 2. **A `Text` placement inside a control** ends the search with `None`.
-///    A button's label is a `Text` placement and it paints *above* its
-///    button, so reverse paint order meets the label first — without this
-///    clause every label in the library would be draggable, and the press
-///    that dragged it would never reach its own control. It ends the search
-///    rather than skipping, because the press is the control's and the
-///    paragraph the button is drawn over is not a second answer to it.
+/// 1. **A `Text` placement no control above it has claimed** is the target.
+///    "Above it in the tree", not above it in paint order, and the run itself
+///    counts: a code well's run declares [`Interaction::Drag`] to win its own
+///    capture and is the most selectable thing in the library, while an
+///    inline code chip's run is inside a button that copies on a press.
+///
+/// 2. **A `Text` placement a control has claimed** ends the search with
+///    `None`. A button's label paints *above* its button, so reverse paint
+///    order meets the label first. It ends the search rather than skipping,
+///    because the press is the control's and the paragraph the button is
+///    drawn over is not a second answer to it.
 ///
 /// 3. **Anything else that claims a press** — [`Interaction::Click`] or
 ///    [`Interaction::Drag`], the exact pair [`PointerState::route`]
-///    hit-tests on a press — ends the search with `None`, for the same
-///    reason.
+///    hit-tests on a press — ends the search with `None`. This is the clause
+///    that stops a press on a control's *padding* from reaching the page
+///    behind it. It is about the pointer, not about the text: a data table
+///    row claims the press and still lets a selection anchor in its cells,
+///    because clause 1 answers before this one ever runs.
 ///
 /// Disabled is deliberately **not** consulted, and this is the one place in
 /// this module where it is not. A disabled control still owns its own rect as
@@ -1276,7 +1281,7 @@ pub fn hit_text<'a>(
             // the control's, and so is the press — walking on from it would
             // find whatever the control is drawn over.
             if placement.kind == NodeKind::Text {
-                return (!inside_a_control(frame, index)).then_some(placement);
+                return (!claimed_by_a_control(frame, index)).then_some(placement);
             }
             if claims_a_press(placement) {
                 return None;
@@ -1299,17 +1304,21 @@ fn claims_a_press(placement: &Placement) -> bool {
     actions.contains(&Interaction::Drag) || actions.contains(&Interaction::Click)
 }
 
-/// Whether any ancestor of `index` [`claims_a_press`].
+/// Whether `index`, or anything it is inside, declared
+/// [`crate::tree::Semantics::owns_its_text`].
 ///
-/// Not `index` itself: a code well's run declares [`Interaction::Drag`] to
-/// win its own capture and is the most selectable thing in the library.
-fn inside_a_control(frame: &PetrifiedFrame, index: usize) -> bool {
-    let mut cursor = frame.placements[index].parent;
+/// The walk starts at the node itself and not at its parent, so a leaf that
+/// is its own control — an inline code chip's run inside the chip that copies
+/// it — answers for itself. Ancestors carry it because a control says it
+/// once, on the node that declares the interaction, and means it for its
+/// label, its glyph and its state text.
+fn claimed_by_a_control(frame: &PetrifiedFrame, index: usize) -> bool {
+    let mut cursor = Some(index);
     while let Some(at) = cursor {
         let Some(placement) = frame.placements.get(at) else {
             return false;
         };
-        if claims_a_press(placement) {
+        if placement.semantics.owns_its_text {
             return true;
         }
         cursor = placement.parent;
@@ -1429,6 +1438,22 @@ mod tests {
         }
     }
 
+    /// [`kid`] that has declared `Semantics::owns_its_text` — a button, a
+    /// tab, a menu item. The opt-out is the *only* thing that makes a run
+    /// unselectable now, so a fixture that wants a control to own its label
+    /// has to say so exactly as a component does.
+    fn control(
+        id: &str,
+        rect: Rect,
+        z: i32,
+        actions: &[Interaction],
+        parent: Option<usize>,
+    ) -> Placement {
+        let mut p = kid(id, NodeKind::Stack, rect, z, actions, parent);
+        p.semantics.owns_its_text = true;
+        p
+    }
+
     /// The whole point of the pass: text nobody declared anything about.
     #[test]
     fn a_run_no_control_covers_is_the_selection_target() {
@@ -1469,9 +1494,8 @@ mod tests {
                 &[],
                 None,
             ),
-            kid(
+            control(
                 "/page/btn",
-                NodeKind::Stack,
                 Rect::new(10.0, 10.0, 100.0, 40.0),
                 0,
                 &[Interaction::Click],
@@ -1512,9 +1536,8 @@ mod tests {
                 &[],
                 Some(0),
             ),
-            kid(
+            control(
                 "/page/btn",
-                NodeKind::Stack,
                 Rect::new(10.0, 10.0, 100.0, 40.0),
                 5,
                 &[Interaction::Click],
@@ -1647,14 +1670,57 @@ mod tests {
         assert!(hit_text(&f, Point::new(10.0, 10.0), &surfaces).is_none());
     }
 
+    /// The row case, which is the whole reason the opt-out is a declaration
+    /// and not the press claim it used to be.
+    ///
+    /// A data table row claims its own press — that is how a row gets
+    /// selected — and its cells still carry text a person wants to copy. The
+    /// derived rule this replaced refused both together, so a table was as
+    /// unselectable as a button. The operator: *"it should be opt out not opt
+    /// in"*.
+    #[test]
+    fn a_row_that_claims_its_press_still_lends_out_its_cells() {
+        let f = frame(vec![
+            kid(
+                "/table",
+                NodeKind::Stack,
+                Rect::new(0.0, 0.0, 200.0, 200.0),
+                0,
+                &[],
+                None,
+            ),
+            // Declares `Click` and does *not* declare `owns_its_text`.
+            kid(
+                "/table/row",
+                NodeKind::Stack,
+                Rect::new(0.0, 0.0, 200.0, 40.0),
+                0,
+                &[Interaction::Click],
+                Some(0),
+            ),
+            kid(
+                "/table/row/cell",
+                NodeKind::Text,
+                Rect::new(10.0, 10.0, 80.0, 20.0),
+                0,
+                &[],
+                Some(1),
+            ),
+        ]);
+        let hit = hit_text(&f, Point::new(20.0, 15.0), &BTreeMap::new()).unwrap();
+        assert_eq!(hit.id, "/table/row/cell");
+        // …and the row's own padding is still the row's: a press there is a
+        // row selection and not a selection that starts nowhere.
+        assert!(hit_text(&f, Point::new(150.0, 20.0), &BTreeMap::new()).is_none());
+    }
+
     /// Clause 1 does not consult `disabled`, and this is the case that says
     /// why: a greyed-out button still owns its own rect, and dragging a
     /// highlight across its label is not something any surface does.
     #[test]
     fn a_disabled_control_still_owns_its_own_rect() {
-        let mut disabled = kid(
+        let mut disabled = control(
             "/page/btn",
-            NodeKind::Stack,
             Rect::new(10.0, 10.0, 100.0, 40.0),
             0,
             &[Interaction::Click],

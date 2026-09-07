@@ -455,6 +455,7 @@ fn action_button(key: impl Into<Key>, label: String) -> ViewNode {
         priority: 0,
     };
     node.interactive(Role::Button, label, ACTION_INTENTS)
+        .owning_its_text()
         // A button: `Sides`, per the operator's rule. See `component::button`.
         .with_focus_figure(FocusFigure::Sides)
 }

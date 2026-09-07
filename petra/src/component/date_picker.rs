@@ -293,9 +293,10 @@ fn closed_field(
     node.props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
-    let mut node =
-        node.with_constraints(pin_height(SIZE_MD))
-            .interactive(Role::Button, label, FIELD_INTENTS);
+    let mut node = node
+        .with_constraints(pin_height(SIZE_MD))
+        .interactive(Role::Button, label, FIELD_INTENTS)
+        .owning_its_text();
     node.semantics.expanded = Some(expanded);
     // A well a person picks into: focus brackets its sides, as on a text
     // input, and never underlines into the calendar flush beneath it.
@@ -486,11 +487,9 @@ fn step_control(key: &str, label: &str, mark: IconMark) -> ViewNode {
     node.props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
-    node.with_constraints(pin_height(SIZE_MD)).interactive(
-        Role::Button,
-        label.to_owned(),
-        FIELD_INTENTS,
-    )
+    node.with_constraints(pin_height(SIZE_MD))
+        .interactive(Role::Button, label.to_owned(), FIELD_INTENTS)
+        .owning_its_text()
 }
 
 /// The full form's month control: the same caption, plus a chevron saying
@@ -522,11 +521,14 @@ fn month_button(caption: ViewNode, name: String, choosing: bool) -> ViewNode {
     node.props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
-    let mut node = node.with_constraints(pin_height(SIZE_MD)).interactive(
-        Role::Button,
-        format!("{name}, choose month and year"),
-        FIELD_INTENTS,
-    );
+    let mut node = node
+        .with_constraints(pin_height(SIZE_MD))
+        .interactive(
+            Role::Button,
+            format!("{name}, choose month and year"),
+            FIELD_INTENTS,
+        )
+        .owning_its_text();
     node.semantics.expanded = Some(choosing);
     node
 }
@@ -713,6 +715,7 @@ fn month_cell(month: u32, selected: bool) -> ViewNode {
     let mut node = node
         .with_constraints(pin_height(MONTH_CELL_H))
         .interactive(Role::Button, name.to_owned(), FIELD_INTENTS)
+        .owning_its_text()
         // `Border`, for the day cell's second reason: a selected month fills
         // `ACCENT_PRIMARY`, and a stripe on that fill cannot be seen.
         .with_focus_figure(FocusFigure::Border);
@@ -817,6 +820,7 @@ fn day_button(day: u32, selected: bool) -> ViewNode {
     let mut node = node
         .with_constraints(pin_height(SIZE_MD))
         .interactive(Role::Button, label, FIELD_INTENTS)
+        .owning_its_text()
         // `Border`, and the day grid rules out both alternatives.
         //
         // A bar *under* a day is out: the grid is 40-tall cells on a 40

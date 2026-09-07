@@ -315,7 +315,9 @@ pub fn data_table_sort_header(
         .props
         .tokens
         .insert("background@hover".into(), t(LAYER_ACCENT_HOVER));
-    let mut button = button.interactive(Role::Button, accessible, SORT_INTENTS);
+    let mut button = button
+        .interactive(Role::Button, accessible, SORT_INTENTS)
+        .owning_its_text();
     button.semantics.value = Some(direction.into());
 
     let mut cell = stack(key, Axis::Horizontal, None, vec![button]);
@@ -401,7 +403,9 @@ fn header_row(
 fn select_all(all: CheckState) -> ViewNode {
     let mut node = stack(SELECT_ALL, Axis::Horizontal, None, vec![checkbox_box(all)]);
     node.props.align = Some(Align::Center);
-    let mut node = node.interactive(Role::Button, SELECT_ALL_LABEL, ROW_INTENTS);
+    let mut node = node
+        .interactive(Role::Button, SELECT_ALL_LABEL, ROW_INTENTS)
+        .owning_its_text();
     node.semantics.selected = all == CheckState::Checked;
     if all == CheckState::Mixed {
         node.semantics.value = Some("mixed".into());

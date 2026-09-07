@@ -103,6 +103,7 @@ fn trigger(key: impl Into<Key>, label: String, open: bool) -> ViewNode {
             },
         })
         .interactive(Role::Button, label, TRIGGER_INTENTS)
+        .owning_its_text()
         .with_focus_figure(FocusFigure::Sides);
     node.semantics.expanded = Some(open);
     node

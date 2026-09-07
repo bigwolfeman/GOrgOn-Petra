@@ -156,9 +156,10 @@ pub fn content_switcher_item(
         t(LAYER_SELECTED_INVERSE),
     );
 
-    let mut node =
-        node.with_constraints(pin_height(SIZE_MD))
-            .interactive(Role::Button, label, ITEM_INTENTS);
+    let mut node = node
+        .with_constraints(pin_height(SIZE_MD))
+        .interactive(Role::Button, label, ITEM_INTENTS)
+        .owning_its_text();
     node.semantics.selected = selected;
     node
 }

@@ -156,11 +156,10 @@ fn trigger_button(key: impl Into<Key>, label: String) -> ViewNode {
     node.props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
-    let mut node = node.with_constraints(pin_height(SIZE_MD)).interactive(
-        Role::Button,
-        label,
-        TRIGGER_INTENTS,
-    );
+    let mut node = node
+        .with_constraints(pin_height(SIZE_MD))
+        .interactive(Role::Button, label, TRIGGER_INTENTS)
+        .owning_its_text();
     node.semantics.focus_figure = FocusFigure::Sides;
     node.semantics.focus_shown_on = FocusShownOn::Well;
     node

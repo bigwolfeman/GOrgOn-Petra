@@ -193,7 +193,9 @@ fn build_uploader(
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
     zone.constraints = pin(ZONE_WIDTH, DROP_HEIGHT);
-    let zone = zone.interactive(Role::Button, label.clone(), ZONE_INTENTS);
+    let zone = zone
+        .interactive(Role::Button, label.clone(), ZONE_INTENTS)
+        .owning_its_text();
 
     let mut children = vec![heading];
     if let Some(description) = description {
@@ -289,6 +291,7 @@ pub fn file_uploader_item_edit(key: impl Into<Key>, name: impl Into<String>) -> 
     let remove = remove
         .with_constraints(pin(STATE_BOX, STATE_BOX))
         .interactive(Role::Button, format!("Remove {name}"), REMOVE_INTENTS)
+        .owning_its_text()
         // A button: `Sides`, per the operator's rule. See `component::button`.
         .with_focus_figure(FocusFigure::Sides);
     item_row(key, name, remove, "ready", None)

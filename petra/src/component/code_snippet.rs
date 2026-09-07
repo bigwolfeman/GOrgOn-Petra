@@ -195,7 +195,9 @@ pub fn code_snippet_inline(key: impl Into<Key>, code: impl Into<String>) -> View
     node.props
         .tokens
         .insert("background@active".into(), t(LAYER_ACTIVE));
-    let mut node = node.interactive(Role::Button, INLINE_LABEL, INLINE_INTENTS);
+    let mut node = node
+        .interactive(Role::Button, INLINE_LABEL, INLINE_INTENTS)
+        .owning_its_text();
     // `paint_well` seats focus on the enclosing well and rings it with
     // `Sides`, which is right for the two wells a run is dragged through and
     // wrong for a chip that *is* the control. Both are re-answered here
@@ -528,6 +530,7 @@ fn copy_button() -> ViewNode {
     node.props.align = Some(Align::Center);
     node.props.padding = Some(pad(SPACING_03, SPACING_02));
     node.interactive(Role::Button, "Copy", COPY_INTENTS)
+        .owning_its_text()
         // A button: `Sides`, per the operator's rule. See `component::button`.
         .with_focus_figure(FocusFigure::Sides)
 }

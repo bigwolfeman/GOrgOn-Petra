@@ -43,6 +43,90 @@ const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
 /// One tree exercising all thirteen shipped components, each at least once,
 /// nested under a plain `Stack` root (a primitive, per gate C1-10 — the
 /// library composes from the primitives, it does not replace the root).
+/// Every control whose press *acts* owns the text inside it, and every
+/// control that only carries content does not.
+///
+/// Selection is opt-out as of 2026-09-06 — the operator's ruling, in his own
+/// five words: *"it should be opt out not opt in"*. Every run in the library
+/// is selectable and a control turns it off with
+/// `Semantics::owns_its_text`. That default fails towards the mistake that
+/// gets reported: a forgotten opt-out gives text a person can drag a
+/// highlight across when they meant to press, which is visible, and the
+/// opposite default gives text that silently cannot be selected, which is
+/// the defect he had to report twice.
+///
+/// This is what stops the default being a free pass. It does not *decide*
+/// for a component — the declaration is still the component's — it holds the
+/// library to one line, from **both** sides:
+///
+/// * A `Button` or a `Tab` carrying text must own it. A press there fires
+///   something (`gallery/catalog.rs`'s `activated` treats `PointerPressed`
+///   as an activation, so a drag across a label would fire the control and
+///   light the label at once).
+/// * A `Row`, `TreeItem`, `ListItem`, `Cell` or `TextInput` must not. Those
+///   carry content, their press selects rather than acts, and a browser
+///   lends out their text. The two code wells are the `TextInput`s, and they
+///   are the runs this whole feature started from.
+///
+/// A press-acting role that is neither is reported rather than assumed, so a
+/// new one has to be decided here on purpose.
+#[test]
+fn every_press_acting_control_owns_its_text() {
+    use crate::tree::{Interaction, Role};
+
+    fn has_text(node: &ViewNode) -> bool {
+        node.kind == NodeKind::Text || node.children.iter().any(|c| has_text(c))
+    }
+
+    fn walk(node: &ViewNode, path: &str, owned: bool, bad: &mut Vec<String>) {
+        let here = format!("{path}/{}", node.key);
+        let owned = owned || node.semantics.owns_its_text;
+        let acts = node.interactions.contains(&Interaction::Click)
+            || node.interactions.contains(&Interaction::Drag);
+        if acts && has_text(node) {
+            match &node.semantics.role {
+                Some(Role::Button | Role::Tab) if !owned => bad.push(format!(
+                    "{here} is a {:?} whose press acts, and it has not \
+                     declared `owning_its_text`: a drag across its label \
+                     would fire it and highlight it at the same time",
+                    node.semantics.role
+                )),
+                Some(
+                    Role::Row | Role::TreeItem | Role::ListItem | Role::Cell | Role::TextInput,
+                ) if owned => {
+                    bad.push(format!(
+                        "{here} is a {:?}, which carries content rather than \
+                         acting, and something has claimed its text",
+                        node.semantics.role
+                    ));
+                }
+                Some(
+                    Role::Button
+                    | Role::Tab
+                    | Role::Row
+                    | Role::TreeItem
+                    | Role::ListItem
+                    | Role::Cell
+                    | Role::TextInput,
+                )
+                | None => {}
+                Some(other) => bad.push(format!(
+                    "{here} is a {other:?} whose press acts and which is on \
+                     neither side of the line: decide in this test whether a \
+                     {other:?} owns its text"
+                )),
+            }
+        }
+        for child in &node.children {
+            walk(child, &here, owned, bad);
+        }
+    }
+
+    let mut bad = Vec::new();
+    walk(&full_gallery(), "", false, &mut bad);
+    assert!(bad.is_empty(), "{} finding(s): {bad:#?}", bad.len());
+}
+
 fn full_gallery() -> ViewNode {
     let ok = StatusToken::new(
         TokenName::new("status.ok").unwrap(),

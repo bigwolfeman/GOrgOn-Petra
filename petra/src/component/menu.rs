@@ -103,6 +103,7 @@ pub fn menu_item(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
     // the item's own bottom edge is contained and cannot.
     node.with_constraints(pin_height(SIZE_MD))
         .interactive(Role::Button, label, ITEM_INTENTS)
+        .owning_its_text()
         .with_focus_figure(FocusFigure::BarInside)
 }
 

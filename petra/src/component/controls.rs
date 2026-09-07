@@ -167,7 +167,9 @@ fn labelled_box(
     // the optical midline.
     row.props.align = Some(Align::Center);
     row.props.padding = Some(pad(SPACING_02, SPACING_01));
-    let mut node = row.interactive(Role::Button, label, intents);
+    let mut node = row
+        .interactive(Role::Button, label, intents)
+        .owning_its_text();
     // The caller's, because the two controls that share this row do not
     // have the same room under them and the operator caught the difference
     // on 2026-09-06: *"radio button needs the under bar, the other bar is
@@ -618,11 +620,13 @@ fn toggle_sized(
         Some(SPACING_05),
         vec![label_node, appearance],
     );
-    let mut node = column.interactive(
-        Role::Button,
-        label,
-        &[Interaction::Focus, Interaction::Click],
-    );
+    let mut node = column
+        .interactive(
+            Role::Button,
+            label,
+            &[Interaction::Focus, Interaction::Click],
+        )
+        .owning_its_text();
     node.semantics.selected = on;
     node
 }

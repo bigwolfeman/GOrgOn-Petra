@@ -4512,6 +4512,64 @@ mod tests {
         );
     }
 
+    /// A table cell lends out its text and its row still takes the press.
+    ///
+    /// The operator, after the first cut of the selection rule refused
+    /// anything a control covered: *"it should be opt out not opt in"*. A
+    /// data table row claims its press — that is how a row gets selected —
+    /// and its cells carry the content a person actually wants to copy, so
+    /// the row does not declare `owning_its_text` and a button does.
+    ///
+    /// **Both halves are asserted here**, because the doubt a reader has is
+    /// whether one gesture can do two things. It can: routing is untouched,
+    /// so the row hears the press exactly as before, and the selection
+    /// anchors alongside it.
+    #[test]
+    fn dragging_across_a_table_cell_highlights_it_and_the_row_still_takes_the_press() {
+        let mut cam = Camera::on("Data table");
+        let selected = |cam: &Camera| {
+            cam.frame()
+                .placements
+                .iter()
+                .filter(|p| p.id.ends_with("/dt-0"))
+                .map(|p| p.semantics.selected)
+                .next()
+                .expect("the first data table row")
+        };
+        // The page opens with its *second* row selected, so the first is the
+        // one whose flag a press has somewhere to move.
+        assert!(!selected(&cam), "the row starts unselected");
+        let resting = raster(&mut cam, "09-data-table-unselected");
+
+        let run = cam.rect("dt-0/c0/name");
+        let mid = run.y + run.h / 2.0;
+        cam.drag_at(
+            Point::new(run.x + run.w * 0.25, mid),
+            Point::new(run.x + run.w * 0.75, mid),
+        );
+        let shot = raster(&mut cam, "09-data-table-cell-selected");
+
+        let range = cam
+            .selection("dt-0/c0/name")
+            .expect("a drag across a table cell selected nothing at all");
+        let painted = cam.painted_text("dt-0/c0/name");
+        assert!(
+            !painted[range.clone()].is_empty(),
+            "the drag lit an empty range of {painted:?}"
+        );
+        let (band, count) = new_tone(&resting, &shot, run);
+        assert!(count > 40, "no band was painted behind the selected glyphs");
+        assert!(
+            u32::from(band[2]) > u32::from(band[0]) + 60,
+            "the band is {band:?} rather than the accent fill"
+        );
+        assert!(
+            selected(&cam),
+            "the row did not hear the press that started the selection, so \
+             lending out its text cost it its own gesture"
+        );
+    }
+
     /// The other half of the rule, and the one that would have broken the
     /// library if it were missing: a button's label is a `Text` placement
     /// that paints *above* its own button, so a naive "every run is

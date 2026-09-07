@@ -319,6 +319,7 @@ pub fn ai_label_revert(key: impl Into<Key>, label: impl Into<String>) -> ViewNod
         .insert("background@hover".into(), t(LAYER_HOVER));
     node.with_constraints(revert_box())
         .interactive(Role::Button, label, TRIGGER_INTENTS)
+        .owning_its_text()
         // A button: `Sides`, per the operator's rule. See `component::button`.
         .with_focus_figure(FocusFigure::Sides)
 }
@@ -432,6 +433,7 @@ fn trigger_button(key: impl Into<Key>, label: String, size: f32) -> ViewNode {
         .insert("background@hover".into(), t(LAYER_HOVER));
     node.with_constraints(square(size))
         .interactive(Role::Button, label, TRIGGER_INTENTS)
+        .owning_its_text()
         // A button: `Sides`, per the operator's rule. See `component::button`.
         .with_focus_figure(FocusFigure::Sides)
 }
@@ -515,6 +517,7 @@ fn inline_trigger(key: impl Into<Key>, label: String, height: f32, bullet: f32) 
         ..Constraints::default()
     })
     .interactive(Role::Button, label, TRIGGER_INTENTS)
+    .owning_its_text()
     // A button: `Sides`, per the operator's rule. See `component::button`.
     .with_focus_figure(FocusFigure::Sides)
 }
@@ -948,11 +951,9 @@ mod tests {
 
     #[test]
     fn ai_label_with_actions_places_a_48px_footer_row_inside_the_panel() {
-        let cancel = ViewNode::new(NodeKind::Stack, "cancel").interactive(
-            Role::Button,
-            "Keep suggestion",
-            &[Interaction::Click],
-        );
+        let cancel = ViewNode::new(NodeKind::Stack, "cancel")
+            .interactive(Role::Button, "Keep suggestion", &[Interaction::Click])
+            .owning_its_text();
         let node = ai_label_with_actions(
             "conf",
             "Confidence score",

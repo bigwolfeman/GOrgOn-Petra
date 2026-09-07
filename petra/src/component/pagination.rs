@@ -380,9 +380,10 @@ fn picker(
     node.props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
-    let mut node =
-        node.with_constraints(pin_height(SIZE_MD))
-            .interactive(Role::Button, label, NAV_INTENTS);
+    let mut node = node
+        .with_constraints(pin_height(SIZE_MD))
+        .interactive(Role::Button, label, NAV_INTENTS)
+        .owning_its_text();
     node.semantics.value = Some(value);
     node.semantics.expanded = Some(open);
     node
@@ -507,9 +508,10 @@ fn nav_button(
     node.props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
-    let node =
-        node.with_constraints(pin_square(SIZE_MD))
-            .interactive(Role::Button, label, NAV_INTENTS);
+    let node = node
+        .with_constraints(pin_square(SIZE_MD))
+        .interactive(Role::Button, label, NAV_INTENTS)
+        .owning_its_text();
     if unavailable { disabled(node) } else { node }
 }
 

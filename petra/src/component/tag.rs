@@ -93,6 +93,7 @@ pub fn dismissible_tag(key: impl Into<Key>, label: impl Into<String>) -> ViewNod
         false,
     )
     .interactive(Role::Button, accessible, INTERACTIVE)
+    .owning_its_text()
 }
 
 /// Selectable tag. [`Role::Button`] + `Semantics.selected`. Outline is
@@ -128,7 +129,9 @@ pub fn selectable_tag(key: impl Into<Key>, label: impl Into<String>, selected: b
     node.props
         .tokens
         .insert("background@selected-hover".into(), t(LAYER_SELECTED_HOVER));
-    let mut node = node.interactive(Role::Button, label, INTERACTIVE);
+    let mut node = node
+        .interactive(Role::Button, label, INTERACTIVE)
+        .owning_its_text();
     node.semantics.selected = selected;
     node
 }
