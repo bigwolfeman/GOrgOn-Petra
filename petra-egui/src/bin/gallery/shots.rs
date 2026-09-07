@@ -4570,6 +4570,102 @@ mod tests {
         );
     }
 
+    /// A tile lends out its prose, which is the one `Role::Button` in the
+    /// library that does.
+    ///
+    /// Operator decision, 2026-09-06, taken after the opt-out landed on all
+    /// 45 press-acting controls at once. A tile is a content surface that
+    /// happens to be pressable — Carbon's clickable tile is an `<a>` — and
+    /// `component/tile.rs`'s own doc had already named the thing that decides
+    /// it: *"`body` is the visible text ... whose content is not always its
+    /// name."*
+    ///
+    /// **The price is asserted here rather than left in a comment.** A press
+    /// anywhere on an interactive tile still fires it, so the drag that lit
+    /// this highlight also toggled the tile beside it. That is what he chose;
+    /// this test is where a reader finds out.
+    #[test]
+    fn a_tile_lends_out_its_prose_and_the_press_still_fires() {
+        let mut cam = Camera::on("Tile");
+        let ticked = |cam: &Camera| {
+            cam.frame()
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with("/tile-sel"))
+                .map(|p| p.semantics.selected)
+                .expect("the selectable tile")
+        };
+        assert!(!ticked(&cam), "the selectable tile starts unselected");
+        let resting = raster(&mut cam, "35-tile-unselected");
+
+        // The clickable tile's body: prose that is not the control's name,
+        // which is the whole of the argument for lending it out.
+        //
+        // Absolute offsets and not a fraction of the rect. A tile's body runs
+        // the full width of the tile — 812 here — and its sentence ends
+        // around 170, so a 20%-to-60% drag starts on the last full stop and
+        // ends in empty space. The first cut of this test did exactly that,
+        // lit one character, and passed: the picture is what caught it.
+        let run = cam.rect("tile-click/body");
+        let mid = run.y + run.h / 2.0;
+        cam.drag_at(
+            Point::new(run.x + 10.0, mid),
+            Point::new(run.x + 120.0, mid),
+        );
+        let shot = raster(&mut cam, "35-tile-prose-selected");
+        let range = cam
+            .selection("tile-click/body")
+            .expect("a drag across a tile's body selected nothing at all");
+        let painted = cam.painted_text("tile-click/body");
+        let selected = painted[range].to_owned();
+        assert!(
+            selected.len() > 4 && selected.len() < painted.len(),
+            "the drag lit {selected:?} of {painted:?}, which is not a \
+             fragment a reader would call a selection"
+        );
+        // Counted as accent-coloured pixels rather than as `new_tone`'s
+        // busiest new tone: the drag leaves the pointer inside the tile, so
+        // the tile's own `layer-hover` fill is new across the whole rect and
+        // outvotes the band by an order of magnitude. Asking the narrower
+        // question — how many pixels here are the *accent* — is the honest
+        // measurement when a second fill changed at the same time.
+        let accent = |img: &image::RgbaImage| {
+            inset_pixels(img, run, 0)
+                .into_iter()
+                .filter(|p| {
+                    u32::from(p[2]) > u32::from(p[0]) + 60 && u32::from(p[2]) > u32::from(p[1]) + 40
+                })
+                .count()
+        };
+        let (before, after) = (accent(&resting), accent(&shot));
+        assert!(
+            before == 0 && after > 40,
+            "the run carried {before} accent pixels before the drag and \
+             {after} after, which is not a band appearing behind the \
+             selected glyphs"
+        );
+
+        // And the cost, on the tile that can show it: the same gesture the
+        // selectable tile hears is still a press.
+        // Absolute offsets, not a fraction of the rect: this label is
+        // stretched to the tile's full 812 and its four words end around 120,
+        // so a drag at 20%-60% of the rect lands entirely past the last glyph
+        // and collapses on the final byte.
+        let sel = cam.rect("tile-sel/row/label");
+        cam.drag_at(
+            Point::new(sel.x + 8.0, sel.y + sel.h / 2.0),
+            Point::new(sel.x + 70.0, sel.y + sel.h / 2.0),
+        );
+        assert!(
+            cam.selection("tile-sel/row/label").is_some(),
+            "the selectable tile's own label refused a selection"
+        );
+        assert!(
+            ticked(&cam),
+            "the tile did not hear the press that started the selection"
+        );
+    }
+
     /// The other half of the rule, and the one that would have broken the
     /// library if it were missing: a button's label is a `Text` placement
     /// that paints *above* its own button, so a naive "every run is

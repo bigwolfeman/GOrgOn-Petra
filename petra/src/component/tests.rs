@@ -74,6 +74,28 @@ const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
 fn every_press_acting_control_owns_its_text() {
     use crate::tree::{Interaction, Role};
 
+    /// The deliberate exceptions, by their key in this fixture.
+    ///
+    /// A tile is a `Role::Button` that is really a content surface: Carbon's
+    /// clickable tile is an `<a>`, and `component/tile.rs`'s own doc names
+    /// the thing that decides it — *"`body` is the visible text ... whose
+    /// content is not always its name"*. Operator decision, 2026-09-06, with
+    /// the price stated: a press anywhere on a tile still fires it, so
+    /// dragging a highlight out of one also clicks it.
+    ///
+    /// A list and not a rule, so that a fourth tile-shaped control has to be
+    /// decided here rather than inheriting an exception nobody chose. The
+    /// list is checked in both directions below: an entry that starts owning
+    /// its text, or that names nothing in the fixture at all, fails this test
+    /// as loudly as a missing opt-out.
+    const LENDS_ITS_TEXT: &[&str] = &[
+        "tile-click",
+        "tile-expand-open",
+        "tile-expand-shut",
+        "tile-select-off",
+        "tile-select-on",
+    ];
+
     fn has_text(node: &ViewNode) -> bool {
         node.kind == NodeKind::Text || node.children.iter().any(|c| has_text(c))
     }
@@ -85,12 +107,26 @@ fn every_press_acting_control_owns_its_text() {
             || node.interactions.contains(&Interaction::Drag);
         if acts && has_text(node) {
             match &node.semantics.role {
-                Some(Role::Button | Role::Tab) if !owned => bad.push(format!(
-                    "{here} is a {:?} whose press acts, and it has not \
-                     declared `owning_its_text`: a drag across its label \
-                     would fire it and highlight it at the same time",
-                    node.semantics.role
-                )),
+                Some(Role::Button | Role::Tab)
+                    if !owned && !LENDS_ITS_TEXT.contains(&node.key.as_str()) =>
+                {
+                    bad.push(format!(
+                        "{here} is a {:?} whose press acts, and it has not \
+                         declared `owning_its_text`: a drag across its label \
+                         would fire it and highlight it at the same time. \
+                         Either declare it, or add this key to \
+                         `LENDS_ITS_TEXT` above with the reason.",
+                        node.semantics.role
+                    ));
+                }
+                Some(Role::Button | Role::Tab)
+                    if owned && LENDS_ITS_TEXT.contains(&node.key.as_str()) =>
+                {
+                    bad.push(format!(
+                        "{here} is named in `LENDS_ITS_TEXT` and has declared \
+                         `owning_its_text` anyway: drop one of the two"
+                    ));
+                }
                 Some(
                     Role::Row | Role::TreeItem | Role::ListItem | Role::Cell | Role::TextInput,
                 ) if owned => {
@@ -123,7 +159,26 @@ fn every_press_acting_control_owns_its_text() {
     }
 
     let mut bad = Vec::new();
-    walk(&full_gallery(), "", false, &mut bad);
+    let gallery = full_gallery();
+    walk(&gallery, "", false, &mut bad);
+
+    // And the list cannot rot: an entry naming nothing this fixture builds is
+    // an exception that has outlived the control it was written for.
+    fn keys(node: &ViewNode, out: &mut Vec<String>) {
+        out.push(node.key.as_str().to_owned());
+        for child in &node.children {
+            keys(child, out);
+        }
+    }
+    let mut placed = Vec::new();
+    keys(&gallery, &mut placed);
+    for key in LENDS_ITS_TEXT {
+        assert!(
+            placed.iter().any(|k| k == key),
+            "`LENDS_ITS_TEXT` names {key:?}, which this catalog no longer \
+             builds: drop the entry"
+        );
+    }
     assert!(bad.is_empty(), "{} finding(s): {bad:#?}", bad.len());
 }
 

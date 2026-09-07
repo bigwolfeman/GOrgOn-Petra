@@ -18,6 +18,24 @@
 //!    reader who cannot see the caret still gets (FR-026). Until
 //!    2026-09-04 the caret was the literal word `expanded` / `collapsed`.
 //!
+//! # A tile lends out its text
+//!
+//! The three interactive kinds do **not** declare
+//! [`crate::tree::Semantics::owns_its_text`], and they are the only
+//! `Role::Button` in the library that does not. A tile is a content surface
+//! that happens to be pressable: Carbon's clickable tile is an `<a>`, whose
+//! text a browser lets you drag a highlight through, and this module's own
+//! [`clickable_tile`] doc already says the thing that decides it — *"`body`
+//! is the visible text ... Carbon's clickable tile is an `<a>` whose content
+//! is not always its name."* A run that is not the control's name is content.
+//!
+//! Operator decision, 2026-09-06, after the opt-out landed on all 45
+//! press-acting controls at once. The price is real and is his to pay: a
+//! press anywhere on an interactive tile still fires it, so dragging a
+//! highlight out of one also clicks it. `component/tests.rs`'s
+//! `every_press_acting_control_owns_its_text` carries the exception by name
+//! so a fourth tile-shaped control has to be decided rather than inherited.
+//!
 //! Geometry is the SCSS floor, not a size ramp: `min-inline-size` 128
 //! (8rem), `min-block-size` 64 (4rem), padding `$spacing-05` on both axes.
 //! There is no sm/md/lg. There is no invalid, warning, or skeleton state.
@@ -174,9 +192,11 @@ pub fn clickable_tile(
     body: impl Into<String>,
 ) -> ViewNode {
     let label = label.into();
-    with_interactive_chrome(shell(key, vec![text("body", body.into())]), false)
-        .interactive(Role::Button, label, INTERACTIVE)
-        .owning_its_text()
+    with_interactive_chrome(shell(key, vec![text("body", body.into())]), false).interactive(
+        Role::Button,
+        label,
+        INTERACTIVE,
+    )
 }
 
 /// A selectable tile: one option in a caller-grouped set.
@@ -194,9 +214,7 @@ pub fn selectable_tile(key: impl Into<Key>, label: impl Into<String>, selected: 
         selection_mark(selected),
     );
     let node = with_interactive_chrome(shell(key, vec![row]), true);
-    let mut node = node
-        .interactive(Role::Button, label, INTERACTIVE)
-        .owning_its_text();
+    let mut node = node.interactive(Role::Button, label, INTERACTIVE);
     node.semantics.selected = selected;
     node
 }
@@ -279,9 +297,11 @@ pub fn expandable_tile(
         children.push(text("body", body.into()));
     }
 
-    let mut node = with_interactive_chrome(shell(key, children), false)
-        .interactive(Role::Button, label, INTERACTIVE)
-        .owning_its_text();
+    let mut node = with_interactive_chrome(shell(key, children), false).interactive(
+        Role::Button,
+        label,
+        INTERACTIVE,
+    );
     node.semantics.expanded = Some(expanded);
     node
 }
