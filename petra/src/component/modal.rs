@@ -282,19 +282,37 @@ fn footer_button(mut node: ViewNode) -> ViewNode {
         max: Some(FOOTER_HEIGHT),
         priority: 0,
     };
-    // `BarInside`, overriding the `Sides` a library button carries.
+    // `Border`, overriding the `Sides` a library button carries, and it is
+    // the one place in this library where a box beats an underline on both
+    // counts at once.
     //
-    // A footer button is full-bleed: Cancel's leading edge *is* the dialog's
-    // leading edge and the primary action's trailing edge is the dialog's,
-    // so a bar standing `FocusRing::hug_gap` + `FocusRing::thickness` = 7
-    // units outside either of them paints on the page behind the dialog.
-    // Measured 2026-09-06 on row 20: Cancel's left bar at x 233 and the
-    // primary's right bar at x 964, against a dialog spanning 240 to 960.
+    // A footer button is full-bleed in **both** axes. Across: Cancel's
+    // leading edge *is* the dialog's leading edge and the primary action's
+    // trailing edge is the dialog's, so a bar standing `FocusRing::hug_gap`
+    // + `FocusRing::thickness` = 7 units outside either of them paints on
+    // the page behind the dialog — measured on row 20, Cancel's left bar at
+    // x 233 and the primary's right bar at x 964 against a dialog spanning
+    // 240 to 960. Down: the button's bottom edge *is* the dialog's bottom
+    // edge, so `BarInside` — which was the answer to the first problem —
+    // seats its stripe on the dialog's last three units with no ground under
+    // it at all. The operator, 2026-09-06: *"on modal the underbar is still
+    // too close."* Measured off his capture: dialog fill to y 278, accent on
+    // 279..281, page scrim from 282.
     //
-    // The same defect the operator photographed on the Close button, in the
-    // same dialog, twice over — unseen for the same reason the Close one
-    // was: row 20's dialog is shut at rest, so no gate had ever opened it.
-    node.semantics.focus_figure = FocusFigure::BarInside;
+    // And the primary action is worse than cramped. Its fill is
+    // `ACCENT_PRIMARY` and `focus.ring` is byte-identical to it, so a stripe
+    // painted on that fill is invisible — *"it disappears when in the
+    // colored one."* His capture reads `(15, 98, 254)` for both.
+    //
+    // `Border` answers all three. It is contained, so neither axis can
+    // overflow; it carries the ground-coloured halo band
+    // (`focus::HALO_TOKEN`) that exists for exactly this collision and says
+    // so in its own doc; and it is what Carbon puts here
+    // (`.cds--modal-footer .cds--btn:focus` takes `focus-outline('outline')`).
+    // The operator's standing rule is that underlines beat boxes *except*
+    // where an underline sticks too far off and looks bad; an underline that
+    // vanishes is the same complaint with the volume turned up.
+    node.semantics.focus_figure = FocusFigure::Border;
     node.props.align = Some(Align::Start);
     node.props.padding = Some(InsetRefs {
         top: Some(t(SPACING_05)),

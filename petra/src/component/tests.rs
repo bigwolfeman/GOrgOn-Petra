@@ -532,6 +532,61 @@ fn full_gallery() -> ViewNode {
     root
 }
 
+/// No node paints a focus stripe on a fill the stripe cannot be seen
+/// against.
+///
+/// `focus.ring` is byte-identical to `accent.primary` — deliberately, so
+/// every figure is the same blue as the primary button rather than a second
+/// hue — and [`FocusFigure::BarInside`] is the one figure painted *on the
+/// node it marks*. A node that can fill itself with the accent and also
+/// wears that figure shows the operator nothing at all when it is both
+/// selected and focused.
+///
+/// It shipped twice. The operator found the first on 2026-09-06, on a
+/// modal's primary action: *"it disappears when in the colored one."* The
+/// second was found by tracing that one and photographing a focused,
+/// selected day-30 cell, which read `(15, 98, 254)` from the fill straight
+/// through the stripe's rows. Both now wear [`FocusFigure::Border`], which
+/// is contained and carries the ground-coloured halo band that exists for
+/// exactly this collision.
+///
+/// The other two bar figures are not checked and must not be: `BarUnder`
+/// and `Sides` paint on the surface *behind* the node, which is never the
+/// node's own fill, so they are safe on an accent-filled control and a halo
+/// there would be a visible band bought for no defect.
+///
+/// Falsify by putting `BarInside` back on `date_picker`'s day cell.
+#[test]
+fn no_bar_is_painted_on_a_fill_it_cannot_be_seen_against() {
+    fn scan(node: &ViewNode, path: &str, bad: &mut Vec<String>) {
+        let here = format!("{path}/{}", node.key);
+        if node.semantics.focus_figure == crate::tree::FocusFigure::BarInside {
+            let accent: Vec<&str> = node
+                .props
+                .tokens
+                .iter()
+                .filter(|(slot, token)| {
+                    slot.starts_with("background") && token.as_str() == ACCENT_PRIMARY
+                })
+                .map(|(slot, _)| slot.as_str())
+                .collect();
+            if !accent.is_empty() {
+                bad.push(format!("{here} binds {accent:?} to the accent"));
+            }
+        }
+        for child in &node.children {
+            scan(child, &here, bad);
+        }
+    }
+    let mut bad = Vec::new();
+    scan(&full_gallery(), "", &mut bad);
+    assert!(
+        bad.is_empty(),
+        "a focus stripe seated on a node's own accent fill is invisible; \
+         these must wear `FocusFigure::Border` instead: {bad:#?}"
+    );
+}
+
 #[test]
 fn every_component_in_one_tree_passes_the_audit_with_zero_findings() {
     let tree = full_gallery();

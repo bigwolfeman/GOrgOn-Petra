@@ -713,7 +713,9 @@ fn month_cell(month: u32, selected: bool) -> ViewNode {
     let mut node = node
         .with_constraints(pin_height(MONTH_CELL_H))
         .interactive(Role::Button, name.to_owned(), FIELD_INTENTS)
-        .with_focus_figure(FocusFigure::BarInside);
+        // `Border`, for the day cell's second reason: a selected month fills
+        // `ACCENT_PRIMARY`, and a stripe on that fill cannot be seen.
+        .with_focus_figure(FocusFigure::Border);
     node.semantics.selected = selected;
     node
 }
@@ -815,13 +817,31 @@ fn day_button(day: u32, selected: bool) -> ViewNode {
     let mut node = node
         .with_constraints(pin_height(SIZE_MD))
         .interactive(Role::Button, label, FIELD_INTENTS)
-        // `BarInside`, measured. The day grid is 40-tall cells on a 40 pitch
-        // — week rows at y 452, 492, 532, 572, 612 — so there is no gap at all
-        // and a bar *under* any day paints inside the day below it. Seated on
-        // the cell's own bottom edge it stays in its own day. The calendar's
-        // nav strip sits 40 units clear of the first week and keeps the
-        // default bar.
-        .with_focus_figure(FocusFigure::BarInside);
+        // `Border`, and the day grid rules out both alternatives.
+        //
+        // A bar *under* a day is out: the grid is 40-tall cells on a 40
+        // pitch — week rows at y 452, 492, 532, 572, 612 — so there is no
+        // gap at all and the bar paints inside the day below.
+        //
+        // `BarInside` was the answer to that and is out for a second reason,
+        // found on 2026-09-06 while tracing the operator's *"it disappears
+        // when in the colored one"* on the modal's primary button. The
+        // **selected** day fills `ACCENT_PRIMARY`, `focus.ring` is
+        // byte-identical to it, and a stripe seated on that cell's own
+        // bottom edge is therefore invisible. Measured on the focused,
+        // selected day-30 cell: `(15, 98, 254)` from the fill straight
+        // through the stripe's rows, the only trace being two rows the
+        // stripe's *shadow* darkened to `(15, 97, 251)`.
+        //
+        // `Border` is contained, so the grid's zero pitch is fine, and it
+        // carries the ground-coloured halo (`focus::HALO_TOKEN`) that exists
+        // for this exact collision. It is also Carbon's own figure for a day
+        // cell. `no_bar_is_painted_on_a_fill_it_cannot_be_seen_against`
+        // holds the rule.
+        //
+        // The calendar's nav strip sits 40 units clear of the first week,
+        // never fills with the accent, and keeps the default bar.
+        .with_focus_figure(FocusFigure::Border);
     node.semantics.selected = selected;
     node
 }

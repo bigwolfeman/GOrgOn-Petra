@@ -141,6 +141,7 @@ fn labelled_box(
     selected: bool,
     box_node: ViewNode,
     intents: &[Interaction],
+    figure: FocusFigure,
 ) -> ViewNode {
     let key = key.into();
     let label = label.into();
@@ -167,27 +168,27 @@ fn labelled_box(
     row.props.align = Some(Align::Center);
     row.props.padding = Some(pad(SPACING_02, SPACING_01));
     let mut node = row.interactive(Role::Button, label, intents);
-    // `Border`, measured rather than guessed. A `BarUnder` needs
-    // `FocusRing::gap` + `FocusRing::thickness` = 5 units of clear run below
-    // the node. `checkbox_group` and `radio_group` leave **4**
-    // (`shots::tests::probe`, 2026-09-05: check-a's bottom is 308.0 and
-    // check-b's top is 312.0), so the bar's last unit paints inside the next
-    // row's box and the operator cannot tell which of the two it marks. That
-    // is the operator's "underlines stick too far off and look bad", and it
-    // is the operator's "underlines stick too far off and look bad".
-    // `toggle` keeps the bar: its rows are 12 apart.
+    // The caller's, because the two controls that share this row do not
+    // have the same room under them and the operator caught the difference
+    // on 2026-09-06: *"radio button needs the under bar, the other bar is
+    // too close."*
     //
-    // The measurement stands; what changed is that four units of clear run
-    // is now enough, because the stripe no longer needs any. `BarInside`
-    // sits on the row's own bottom edge, so it is as contained as the ring
-    // was and still the underline the operator asked for — which is the
-    // whole reason that figure exists. This declaration was a box for one
-    // round only.
+    // A `BarUnder` needs `FocusRing::gap` + `FocusRing::thickness` = 5 units
+    // of clear run below the node. `radio_group` stacks its items on
+    // `SPACING_05` = **16** and has eleven to spare; `checkbox_group` stacks
+    // on `SPACING_02` = **4**, so the bar's last unit paints inside the next
+    // row's box and the operator cannot tell which of the two it marks.
+    // That second number was measured on 2026-09-05 — check-a's bottom at
+    // 308.0 against check-b's top at 312.0 — and it is why the checkbox
+    // keeps a figure that needs no run at all.
+    //
+    // `toggle` keeps the bar for the same reason the radio may: its rows are
+    // 12 apart.
     //
     // Carbon rings the 16-unit box itself, not the label row
-    // (`_checkbox.scss`), and this underlines the row. That gap is open and
+    // (`_checkbox.scss`), and this marks the row. That gap is open and
     // tracked.
-    node.semantics.focus_figure = FocusFigure::BarInside;
+    node.semantics.focus_figure = figure;
     node.semantics.selected = selected;
     node
 }
@@ -288,6 +289,8 @@ pub fn checkbox(key: impl Into<Key>, label: impl Into<String>, checked: bool) ->
         checked,
         checkbox_mark(checked),
         &[Interaction::Focus, Interaction::Click],
+        // Four units to the next row. See `labelled_box`.
+        FocusFigure::BarInside,
     )
 }
 
@@ -337,6 +340,7 @@ pub fn checkbox_indeterminate(key: impl Into<Key>, label: impl Into<String>) -> 
         false,
         checkbox_box(CheckState::Mixed),
         &[Interaction::Focus, Interaction::Click],
+        FocusFigure::BarInside,
     );
     node.semantics.value = Some("mixed".into());
     node
@@ -353,6 +357,7 @@ pub fn checkbox_readonly(key: impl Into<Key>, label: impl Into<String>, checked:
         checked,
         checkbox_mark(checked),
         &[Interaction::Focus],
+        FocusFigure::BarInside,
     );
     node.semantics.read_only = true;
     node
@@ -441,6 +446,9 @@ pub fn radio(key: impl Into<Key>, label: impl Into<String>, selected: bool) -> V
         selected,
         box_node,
         &[Interaction::Focus, Interaction::Click],
+        // Sixteen units to the next row, so the default bar fits with
+        // eleven to spare. The operator asked for it by name.
+        FocusFigure::BarUnder,
     )
 }
 
