@@ -2452,9 +2452,16 @@ impl<A: App> Host<A> {
                     .as_ref()
                     .and_then(|frame| gorgon_petra::input::hit_text(frame, *pos, &self.last_scopes))
                     .map(|run| run.id.clone());
+                let theme = self.presenter.current();
                 self.state.text_selection = node.and_then(|node| {
-                    Self::text_offset(&mut self.shaper, self.last_frame.as_ref(), &node, *pos)
-                        .map(|at| TextSelection::new(node, at))
+                    Self::text_offset(
+                        &mut self.shaper,
+                        self.last_frame.as_ref(),
+                        &node,
+                        *pos,
+                        theme.as_ref(),
+                    )
+                    .map(|at| TextSelection::new(node, at))
                 });
                 self.selection_drag = self.state.text_selection.is_some();
             }
@@ -2468,14 +2475,31 @@ impl<A: App> Host<A> {
                 if !self.selection_drag {
                     return;
                 }
-                let Some(node) = self.state.text_selection.as_ref().map(|s| s.node.clone()) else {
+                // `reach_text` and not the press's `hit_text`: the focus end
+                // follows the pointer into whatever run it has got to, which
+                // is how a drag leaves the run it started in. The anchor is
+                // untouched, so a drag that turns around and goes back up the
+                // page shrinks rather than re-anchoring.
+                let Some(node) = self
+                    .last_frame
+                    .as_ref()
+                    .and_then(|frame| {
+                        gorgon_petra::input::reach_text(frame, *pos, &self.last_scopes)
+                    })
+                    .map(|run| run.id.clone())
+                else {
                     return;
                 };
-                if let Some(at) =
-                    Self::text_offset(&mut self.shaper, self.last_frame.as_ref(), &node, *pos)
-                    && let Some(selection) = self.state.text_selection.as_mut()
+                let theme = self.presenter.current();
+                if let Some(at) = Self::text_offset(
+                    &mut self.shaper,
+                    self.last_frame.as_ref(),
+                    &node,
+                    *pos,
+                    theme.as_ref(),
+                ) && let Some(selection) = self.state.text_selection.as_mut()
                 {
-                    selection.focus = at;
+                    selection.extend_to(node, at);
                 }
             }
             _ => {}
@@ -2493,38 +2517,60 @@ impl<A: App> Host<A> {
     /// method: it reads `last_frame` and writes through `shaper`, and the
     /// caller is holding a third field at the same time.
     ///
-    /// The request is rebuilt exactly as [`crate::paint`] builds it for a
-    /// `Text` node — the full placement width, no inset — so the galley this
-    /// asks comes back from the shaper's cache as the same `Arc` the painter
-    /// drew. `Input` is excluded for that reason and not by oversight: the
-    /// painter insets a field's galley by `spacing-04`, so an offset measured
-    /// here would be off by twelve units and the highlight would sit beside
-    /// the letters it named.
+    /// The request is rebuilt exactly as [`crate::paint`] builds it, inset and
+    /// all, so the galley this asks comes back from the shaper's cache as the
+    /// same `Arc` the painter drew. Measuring against a differently-shaped
+    /// galley would put the offset a word away from the pointer.
+    ///
+    /// `Input` used to be refused here on exactly that ground — the painter
+    /// insets a field's galley by `spacing-04`, and an offset measured at the
+    /// full width would be twelve units out. The operator, on the form page:
+    /// *"text is not highlightable in form, which is a text entry box"*. The
+    /// inset was a reason to *apply* the inset, not a reason to refuse the
+    /// kind, and it is applied below from the same token the painter reads.
     fn text_offset(
         shaper: &mut GalleyShaper,
         frame: Option<&PetrifiedFrame>,
         node: &str,
         pos: Point,
+        colors: &dyn crate::paint::TokenSource,
     ) -> Option<usize> {
         let frame = frame?;
         let index = frame.placements.iter().position(|p| p.id == node)?;
         let placement = &frame.placements[index];
-        if placement.kind != NodeKind::Text {
+        if !matches!(placement.kind, NodeKind::Text | NodeKind::Input) {
             return None;
         }
         let content = frame.content.get(index)?;
         let text = content.text.as_ref()?;
+        // From the placement's own kind, never from a constant. Handing this
+        // a field's inset for every run put twelve units under every press in
+        // the library and shrank each selection to about a third of the
+        // letters it crossed; two capture tests caught it by looking at the
+        // pixels, which is what they are for.
+        let inset_x = crate::paint::text_inset_x(placement.kind, colors);
         let request = TextRequest {
             text: &text.text,
             style: text.style.as_deref(),
             wrap: text.wrap,
             max_lines: text.max_lines,
-            available_width: Some(placement.rect.w),
+            available_width: Some((placement.rect.w - 2.0 * inset_x).max(0.0)),
         };
         let galley = shaper.galley(&request);
+        // The painter centres a field's galley in the chrome; a run's galley
+        // starts at the top of its rect. Undoing both shifts is what makes
+        // the offset name the letter the pointer is actually over.
+        let inset_y = if placement.kind == NodeKind::Input {
+            ((placement.rect.h - galley.rect.height()) * 0.5).max(0.0)
+        } else {
+            0.0
+        };
         Some(crate::text::byte_offset_at(
             &galley,
-            egui::vec2(pos.x - placement.rect.x, pos.y - placement.rect.y),
+            egui::vec2(
+                pos.x - placement.rect.x - inset_x,
+                pos.y - placement.rect.y - inset_y,
+            ),
         ))
     }
 
@@ -2546,9 +2592,11 @@ impl<A: App> Host<A> {
     /// decoration.
     ///
     /// **The bytes come out of the frame.** `PaintContent` carries the string
-    /// that was painted and the range this host wrote onto it, so the
-    /// substring taken here is by construction the substring under the
-    /// highlight. There is no second copy of either to drift.
+    /// that was painted and the range the engine wrote onto it, so what is
+    /// taken here is by construction what is under the highlight — across
+    /// every run the selection crosses, in the order they are painted.
+    /// [`gorgon_petra::frame::PetrifiedFrame::selected_text`] is the whole of
+    /// it, and there is no second copy of either to drift.
     ///
     /// Ctrl **or** Cmd, because the chord is the platform's and this host
     /// runs on both.
@@ -2565,19 +2613,14 @@ impl<A: App> Host<A> {
         if !(modifiers.ctrl || modifiers.meta) {
             return false;
         }
-        let Some(node) = self.state.text_selection.as_ref().map(|s| s.node.as_str()) else {
+        let Some(selected) = self
+            .last_frame
+            .as_ref()
+            .and_then(gorgon_petra::frame::PetrifiedFrame::selected_text)
+        else {
             return false;
         };
-        let Some(content) = self.last_frame.as_ref().and_then(|f| f.content_of(node)) else {
-            return false;
-        };
-        let (Some(range), Some(text)) = (content.selection.clone(), content.text.as_ref()) else {
-            return false;
-        };
-        let Some(selected) = text.text.get(range) else {
-            return false;
-        };
-        self.pending_copy = Some(selected.to_owned());
+        self.pending_copy = Some(selected);
         true
     }
 

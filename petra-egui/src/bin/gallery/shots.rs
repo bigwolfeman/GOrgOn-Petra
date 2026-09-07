@@ -8241,4 +8241,336 @@ mod tests {
             }
         }
     }
+
+    /// The operator, dragging down the nested lists on row 16: *"when I try
+    /// to select text on the list I can only select 1 element. A lot are like
+    /// this."*
+    ///
+    /// One gesture, seventeen runs, four levels of nesting, two lists. The
+    /// clipboard is asserted whole rather than by fragments: the shape of the
+    /// answer — one line per line, indented by nesting depth, ordered markers
+    /// carried along because they are painted text — is the part that would
+    /// rot silently, and a `contains` check would not see it go.
+    ///
+    /// The unordered markers are **not** in the string, and that is the
+    /// honest limit: Carbon's `::before` bullets are drawn shapes here
+    /// (`component/list.rs`: *"a typed marker cannot be sized, centred or
+    /// snapped"*), so there is no text to copy. The operator asked for
+    /// markdown *"if we can"*; this is as far as "can" reaches without
+    /// inventing syntax the picture does not contain.
+    #[test]
+    fn a_drag_down_a_nested_list_takes_every_line_and_its_indent() {
+        let mut cam = Camera::on("List");
+        let first = cam.rect("kinds/lists/ul/ul-1/row/label");
+        let last = cam.rect("kinds/lists/ol/ol-2/label");
+        let resting = raster(&mut cam, "16-list-unselected");
+        cam.drag_at(
+            Point::new(first.x + 1.0, first.y + first.h / 2.0),
+            Point::new(last.x + last.w - 1.0, last.y + last.h / 2.0),
+        );
+        let shot = raster(&mut cam, "16-list-span-selected");
+
+        cam.chord(
+            KeyCode::Char('c'),
+            Modifiers {
+                ctrl: true,
+                ..Modifiers::NONE
+            },
+        );
+        assert_eq!(
+            cam.clipboard().last().map(String::as_str),
+            Some(concat!(
+                "Inbox\n  Archive\n    2026\n      March\n",
+                "Disc\n  Ring\n    Square\n      Dash\n",
+                "Fixed square\nat every level\n",
+                "1. Clone\n2. Build\n  a. Compile\n  b. Link\n",
+                "    i. Static\n    ii. Dynamic\n3. Run"
+            )),
+            "one line per line, two spaces per level below the first, and \
+             each ordered marker joined to its label by the one space the \
+             layout put between them"
+        );
+
+        // And the picture agrees with the string, on runs from three
+        // different depths of the two lists.
+        for tail in [
+            "kinds/lists/ul/ul-1/row/label",
+            "kinds/lists/ul/ul-1/ul-l2/ul-2/ul-l3/ul-3/row/label",
+            "kinds/lists/ol/ol-1/ol-l2/ol-1-0/label",
+        ] {
+            let run = cam.rect(tail);
+            let (band, count) = new_tone(&resting, &shot, run);
+            assert!(count > 40, "{tail}: no band was painted behind the glyphs");
+            assert!(
+                u32::from(band[2]) > u32::from(band[0]) + 60,
+                "{tail}: the band is {band:?} rather than the accent fill"
+            );
+        }
+    }
+
+    /// The operator, on the same report: *"links stop copying too"*.
+    ///
+    /// A link is an `<a>`, so its words are content. The span here runs
+    /// straight through one — `"Read "`, the link, `" when a link sits in
+    /// running text."` are three separate runs on one line — and the three
+    /// come back as one sentence with no seam and no double space, because
+    /// the runs already carry their own.
+    #[test]
+    fn a_drag_through_running_text_carries_the_link_with_it() {
+        let mut cam = Camera::on("Link");
+        let first = cam.rect("links/link-row/prose/before");
+        let last = cam.rect("links/link-row/prose/after");
+        let resting = raster(&mut cam, "15-link-unselected");
+        cam.drag_at(
+            Point::new(first.x + 1.0, first.y + first.h / 2.0),
+            Point::new(last.x + last.w - 1.0, last.y + last.h / 2.0),
+        );
+        let shot = raster(&mut cam, "15-link-span-selected");
+
+        let link = cam.rect("links/link-row/prose/docs-inline");
+        let range = cam
+            .selection("links/link-row/prose/docs-inline")
+            .expect("the link in the middle of the span carries no highlight");
+        assert_eq!(
+            cam.painted_text("links/link-row/prose/docs-inline")[range],
+            *"the inline form",
+            "a run in the middle of a span is selected whole"
+        );
+        let (band, count) = new_tone(&resting, &shot, link);
+        assert!(count > 40, "the link's own words got no band");
+        assert!(
+            u32::from(band[2]) > u32::from(band[0]) + 60,
+            "the band is {band:?} rather than the accent fill"
+        );
+
+        cam.chord(
+            KeyCode::Char('c'),
+            Modifiers {
+                ctrl: true,
+                ..Modifiers::NONE
+            },
+        );
+        assert_eq!(
+            cam.clipboard().last().map(String::as_str),
+            Some("Read the inline form when a link sits in running text."),
+            "one line, one space at each seam, and the link's words in it"
+        );
+    }
+
+    /// The operator, on row 13: *"text is not highlightable in form, which is
+    /// a text entry box"* and *"check boxes need their text highlightable"*.
+    ///
+    /// Both in one gesture, because they are one page. The field is a
+    /// `NodeKind::Input`, which paints its own value rather than hanging a
+    /// run under it, and the checkbox's caption is a `<label>` beside the
+    /// control rather than inside it.
+    #[test]
+    fn a_drag_down_a_form_takes_the_field_and_the_checkbox_label() {
+        let mut cam = Camera::on("Form");
+        let first = cam.rect("form/form-body/demo-form/legend");
+        let last = cam.rect("form/form-body/demo-form/form-ok/label");
+        let field = cam.rect("form/form-body/demo-form/name-item/form-name");
+        let resting = raster(&mut cam, "13-form-unselected");
+        cam.drag_at(
+            Point::new(first.x + 1.0, first.y + first.h / 2.0),
+            Point::new(last.x + last.w - 1.0, last.y + last.h / 2.0),
+        );
+        let shot = raster(&mut cam, "13-form-span-selected");
+
+        assert_eq!(
+            cam.selection("form/form-body/demo-form/name-item/form-name")
+                .map(
+                    |range| cam.painted_text("form/form-body/demo-form/name-item/form-name")[range]
+                        .to_owned()
+                ),
+            Some("fiber-7".to_owned()),
+            "the entry box's own value is text like any other"
+        );
+        // The band sits where the letters are, twelve units in from the
+        // chrome — `paint::text_inset_x`. A highlight measured at the full
+        // width would sit beside them.
+        let inked = Rect::new(field.x + 12.0, field.y, field.w - 24.0, field.h);
+        let (band, count) = new_tone(&resting, &shot, inked);
+        assert!(count > 40, "the field's value got no band");
+        assert!(
+            u32::from(band[2]) > u32::from(band[0]) + 60,
+            "the band is {band:?} rather than the accent fill"
+        );
+
+        cam.chord(
+            KeyCode::Char('c'),
+            Modifiers {
+                ctrl: true,
+                ..Modifiers::NONE
+            },
+        );
+        assert_eq!(
+            cam.clipboard().last().map(String::as_str),
+            Some("Fiber\nName\nfiber-7\nEnabled"),
+            "the legend, the field's label, the value inside the box, and \
+             the checkbox's caption"
+        );
+    }
+
+    /// The operator, on the whole of it: *"I have to start my drag basically
+    /// on top of the text"*.
+    ///
+    /// Two presses that land on no letters at all: one on the drawn bullet in
+    /// the marker column, one ninety units past the end of the word. Before
+    /// the snap both pressed on nothing, cleared the selection, and the drag
+    /// that followed did not exist.
+    ///
+    /// The two answers differ, and the difference is the point. A press to
+    /// the *left* of a run anchors at its start and the word is in the span;
+    /// a press to the *right* anchors at its end and the word is behind the
+    /// caret. That is a browser's rule for a click in a margin, and it falls
+    /// out of the offset the shaper gives for a position past the last glyph
+    /// rather than being written anywhere.
+    #[test]
+    fn a_press_beside_the_words_still_anchors_in_them() {
+        let last = "kinds/lists/ul/ul-1/ul-l2/ul-2/ul-l3/ul-3/ul-l4/ul-4/label";
+
+        let mut cam = Camera::on("List");
+        let first = cam.rect("kinds/lists/ul/ul-1/row/label");
+        let bullet = cam.rect("kinds/lists/ul/ul-1/row/marker");
+        let end = cam.rect(last);
+        let on_the_bullet = Point::new(bullet.x + bullet.w / 2.0, bullet.y + bullet.h / 2.0);
+        assert!(
+            !first.contains(on_the_bullet),
+            "the press has to land off the glyphs or this proves nothing"
+        );
+        cam.drag_at(
+            on_the_bullet,
+            Point::new(end.x + end.w - 1.0, end.y + end.h / 2.0),
+        );
+        cam.chord(
+            KeyCode::Char('c'),
+            Modifiers {
+                ctrl: true,
+                ..Modifiers::NONE
+            },
+        );
+        assert_eq!(
+            cam.clipboard().last().map(String::as_str),
+            Some("Inbox\n  Archive\n    2026\n      March"),
+            "a press on the bullet snapped rightwards onto the word beside it"
+        );
+
+        let mut cam = Camera::on("List");
+        let beside = Point::new(first.x + first.w + 90.0, first.y + first.h / 2.0);
+        assert!(!first.contains(beside));
+        cam.drag_at(beside, Point::new(end.x + end.w - 1.0, end.y + end.h / 2.0));
+        cam.chord(
+            KeyCode::Char('c'),
+            Modifiers {
+                ctrl: true,
+                ..Modifiers::NONE
+            },
+        );
+        assert_eq!(
+            cam.clipboard().last().map(String::as_str),
+            Some("  Archive\n    2026\n      March"),
+            "a press past the end of the line anchored there, so the line \
+             itself is behind the caret and the three under it are not"
+        );
+    }
+
+    /// A span that crosses a control leaves the control's own words behind,
+    /// which is what a browser's `user-select: none` does on a form control.
+    ///
+    /// Driven on a real page rather than on a fixture, because the thing that
+    /// could break it is a component's declaration and not the resolver: the
+    /// four controls this span crosses are the catalog's own Prev, Next, Dark
+    /// and Light, and every one of them still owns its label.
+    #[test]
+    fn a_span_across_the_page_leaves_the_buttons_labels_alone() {
+        let mut cam = Camera::on("List");
+        let title = cam.rect("main/title");
+        let last = cam.rect("kinds/lists/ul/ul-1/row/label");
+        cam.drag_at(
+            Point::new(title.x + 1.0, title.y + title.h / 2.0),
+            Point::new(last.x + last.w - 1.0, last.y + last.h / 2.0),
+        );
+        cam.chord(
+            KeyCode::Char('c'),
+            Modifiers {
+                ctrl: true,
+                ..Modifiers::NONE
+            },
+        );
+        let copied = cam.clipboard().last().cloned().unwrap_or_default();
+        assert!(
+            copied.starts_with("16  List") && copied.ends_with("Inbox"),
+            "the span ran from the page title to the first list item, got \
+             {copied:?}"
+        );
+        for label in ["Prev", "Next", "Dark", "Light"] {
+            assert!(
+                !copied.contains(label),
+                "{label:?} is a button's own chrome and must not be in \
+                 {copied:?}"
+            );
+            assert!(
+                cam.selection(&format!(
+                    "nav/{}",
+                    match label {
+                        "Prev" => "prev/prev-label",
+                        "Next" => "next/next-label",
+                        "Dark" => "theme/theme-dark/label",
+                        _ => "theme/theme-light/label",
+                    }
+                ))
+                .is_none(),
+                "{label:?} is painted with a highlight it is not in the \
+                 clipboard for"
+            );
+        }
+    }
+
+    /// The page the operator photographed: *"I should be able to drag any
+    /// here and copy from multiple elements. By default obv."*
+    ///
+    /// Nine runs of four different kinds — a heading, a helper line, five file
+    /// names each sitting beside its own remove button, and an error message
+    /// under one of them — come out as nine lines in the order they are read.
+    ///
+    /// The drop zone's prompt is **not** among them, and that is a decision
+    /// rather than an oversight. Carbon's drop container is a `<label>`, so
+    /// the rule the rest of this change follows would lend its words out. It
+    /// keeps the opt-out because the press it acts on opens a **system file
+    /// dialog**: every other control this change opened up costs a stray drag
+    /// a toggle or a page change, and this one costs an OS window the
+    /// application cannot dismiss. One sentence from the operator flips it.
+    #[test]
+    fn a_drag_down_the_uploader_takes_every_row_but_not_the_drop_zone() {
+        let mut cam = Camera::on("File uploader");
+        let first = cam.rect("fu/heading");
+        let last = cam.rect("fu-body/fu-bad/message");
+        cam.drag_at(
+            Point::new(first.x + 1.0, first.y + first.h / 2.0),
+            Point::new(last.x + last.w - 1.0, last.y + last.h / 2.0),
+        );
+        cam.chord(
+            KeyCode::Char('c'),
+            Modifiers {
+                ctrl: true,
+                ..Modifiers::NONE
+            },
+        );
+        assert_eq!(
+            cam.clipboard().last().map(String::as_str),
+            Some(concat!(
+                "Upload a trace\n",
+                "NDJSON or YAML, up to 5 MB\n",
+                "trace.ndjson\nfiber-dump.ndjson\nkernel.yaml\nnotes.txt\n",
+                "core.dump\nFile is over 5 MB"
+            )),
+            "every run the span crosses, in reading order, one per line"
+        );
+        assert!(
+            cam.selection("fu/zone/prompt").is_none(),
+            "the drop zone opens a system file dialog on the press, so it \
+             keeps its own words"
+        );
+    }
 }

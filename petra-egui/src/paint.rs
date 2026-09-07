@@ -327,6 +327,32 @@ impl TokenSource for ThemeSnapshot {
     }
 }
 
+/// The horizontal inset between a placement's rect and the galley it paints.
+///
+/// Zero for everything but [`NodeKind::Input`], which is a leaf that refuses
+/// padding: the chrome rect *is* the placement, so the text has to be moved
+/// in by hand. Carbon's md field puts it `spacing-04` from each side.
+///
+/// A function rather than a literal in the paint path because the host has to
+/// undo exactly this shift to turn a pointer position back into a byte
+/// offset. Two copies of a number that must agree is one copy too many, and
+/// the twelve units it is worth are exactly the width of a word.
+#[must_use]
+pub fn text_inset_x(kind: NodeKind, colors: &dyn TokenSource) -> f32 {
+    if kind == NodeKind::Input {
+        colors.spacing(FIELD_INSET_TOKEN).unwrap_or(FIELD_INSET)
+    } else {
+        0.0
+    }
+}
+
+/// The token [`text_inset_x`] reads for a field's side inset.
+pub const FIELD_INSET_TOKEN: &str = "spacing-04";
+
+/// What [`text_inset_x`] falls back to for a source that does not name
+/// [`FIELD_INSET_TOKEN`] — most of this module's own fixtures.
+pub const FIELD_INSET: f32 = 12.0;
+
 /// Resolve `token` to a colour, or record it unresolved and return `None`.
 ///
 /// This is the "look up a token, or note that it did not resolve" idiom
@@ -1709,11 +1735,7 @@ fn paint_one(
         // first glyph on the border. Shaping against the full width, then
         // shifting in, would push the last glyph through the other border.
         let input = placement.kind == gorgon_petra::tree::NodeKind::Input;
-        let inset_x = if input {
-            env.colors.spacing("spacing-04").unwrap_or(12.0)
-        } else {
-            0.0
-        };
+        let inset_x = text_inset_x(placement.kind, env.colors);
         let inner_w = (placement.rect.w - 2.0 * inset_x).max(0.0);
         // Colour runs, resolved here because this is where the theme is. A
         // run naming no token keeps `None` and takes `color` below, the same

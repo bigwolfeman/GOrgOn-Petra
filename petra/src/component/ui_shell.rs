@@ -281,7 +281,6 @@ fn header_name(key: &'static str, product_name: impl Into<String>) -> ViewNode {
     // edge, so it is inside the header bar by construction and cannot reach
     // the page under it or the row under it.
     node.interactive(Role::Button, product_name, INTENTS)
-        .owning_its_text()
         .with_focus_figure(FocusFigure::BarInside)
 }
 
@@ -385,7 +384,6 @@ pub fn ui_shell_header_nav_item(
     // there; an invisible focus ring is not legible anywhere.
     let mut node = node
         .interactive(Role::Button, label, INTENTS)
-        .owning_its_text()
         .with_focus_figure(FocusFigure::BarUnder);
     node.semantics.selected = current;
     node
@@ -523,6 +521,13 @@ fn header_action_sized(
             HeaderActionFit::Word => icon_hit_box(MINI_UNIT_6),
         });
     // `Border`, for the reason `header_name` gives.
+    //
+    // The one control in this module that owns its text, and the one that is
+    // a `<button class="cds--header__action">` rather than an `<a>`. Every
+    // other row here is an anchor — the product name, the header nav items,
+    // both left-panel rows, the switcher rows — and an anchor's words are the
+    // destination's name, which a reader may want to copy. See
+    // `crate::component::link`.
     let mut node = node
         .interactive(Role::Button, label, INTENTS)
         .owning_its_text()
@@ -765,7 +770,6 @@ fn left_panel_item(
     bind_row_states(&mut node);
     let mut node = node
         .interactive(Role::Button, label, INTENTS)
-        .owning_its_text()
         .with_focus_figure(FocusFigure::BarInside);
     // See the `Head` declaration on `row` above: this item's rect spans its
     // expanded sub-menu, and the figure belongs on the title row.
@@ -832,7 +836,6 @@ fn left_panel_subitem(
     bind_row_states(&mut node);
     let mut node = node
         .interactive(Role::Button, label, INTENTS)
-        .owning_its_text()
         .with_focus_figure(FocusFigure::BarInside);
     node.semantics.selected = selected;
     node
@@ -1175,9 +1178,7 @@ pub fn ui_shell_switcher_item(
         .with_props(props)
         .with_children(vec![caption])
         .with_constraints(pin_block(SWITCHER_ROW));
-    let mut node = node
-        .interactive(Role::Button, label, INTENTS)
-        .owning_its_text();
+    let mut node = node.interactive(Role::Button, label, INTENTS);
     node.semantics.selected = selected;
     node
 }

@@ -76,24 +76,72 @@ fn every_press_acting_control_owns_its_text() {
 
     /// The deliberate exceptions, by their key in this fixture.
     ///
-    /// A tile is a `Role::Button` that is really a content surface: Carbon's
-    /// clickable tile is an `<a>`, and `component/tile.rs`'s own doc names
-    /// the thing that decides it — *"`body` is the visible text ... whose
-    /// content is not always its name"*. Operator decision, 2026-09-06, with
-    /// the price stated: a press anywhere on a tile still fires it, so
-    /// dragging a highlight out of one also clicks it.
+    /// The question each entry answers is **chrome or content**. A button's
+    /// label names the button and is chrome; a caption beside a checkbox, the
+    /// words of a link, the prose on a tile are content that happens to sit
+    /// inside something activatable. Carbon's own DOM is the tie-breaker,
+    /// because a browser has already answered it: `user-select: none` is what
+    /// Chrome and Safari put on a form control, and never on the `<label>`,
+    /// `<a>` or `<div>` beside it.
     ///
-    /// A list and not a rule, so that a fourth tile-shaped control has to be
-    /// decided here rather than inheriting an exception nobody chose. The
-    /// list is checked in both directions below: an entry that starts owning
-    /// its text, or that names nothing in the fixture at all, fails this test
-    /// as loudly as a missing opt-out.
+    /// Every entry pays the same price, and it is real: this library
+    /// activates on the press (`gallery/catalog.rs`'s `activated`), so a drag
+    /// that starts on one of these fires it as well as selecting. A browser
+    /// would not, because a browser fires on the release. Moving the catalog
+    /// from press to release is the fix and it is not this change.
+    ///
+    /// A list of instance keys and not a rule, so that a new control of any
+    /// of these shapes has to be decided here rather than inheriting an
+    /// exception nobody chose — including a second instance of a control
+    /// already listed, which is the friction and is on purpose: adding one is
+    /// the last moment anybody looks at this question. The list is checked in
+    /// both directions below: an entry that starts owning its text, or that
+    /// names nothing in the fixture at all, fails this test as loudly as a
+    /// missing opt-out.
+    ///
+    /// Operator decisions, 2026-09-06 (tiles) and 2026-09-07 (the rest):
+    /// *"check boxes need their text highlightable"*, *"links stop copying
+    /// too"*.
     const LENDS_ITS_TEXT: &[&str] = &[
-        "tile-click",
-        "tile-expand-open",
-        "tile-expand-shut",
-        "tile-select-off",
-        "tile-select-on",
+        // Carbon's tile is an `<a>`; `component/tile.rs` — *"`body` is the
+        // visible text ... whose content is not always its name"*.
+        "/root/carbon5/tile-click",
+        "/root/carbon5/tile-expand-open",
+        "/root/carbon5/tile-expand-shut",
+        "/root/carbon5/tile-select-off",
+        "/root/carbon5/tile-select-on",
+        // Checkbox, radio and toggle: the caption is a `<label>`, a sibling
+        // of the control in Carbon's markup rather than part of it.
+        "/root/controls/check",
+        "/root/controls/check-off",
+        "/root/controls/radio",
+        "/root/controls/toggle",
+        "/root/carbon4/radio-checked",
+        "/root/carbon4/radio-unchecked",
+        "/root/carbon6/tog-off",
+        "/root/carbon6/tog-on",
+        "/root/carbon6/tog-sm",
+        // Links, and breadcrumb items, which are links.
+        "/root/carbon3/lnk-docs",
+        "/root/carbon/trail/docs",
+        "/root/carbon/trail/here",
+        "/root/carbon/trail/home",
+        // The UI shell's anchors: the product name
+        // (`.cds--header__name`), the header nav
+        // (`.cds--header__menu-item`), both left-panel row kinds
+        // (`.cds--side-nav__link`) and the switcher rows
+        // (`.cds--switcher__item-link`). Its one `<button>` — the header
+        // action — is not here and owns its text.
+        "/root/carbon6/shell-header/bar/name",
+        "/root/carbon6/shell-header/bar/nav/fibers",
+        "/root/carbon6/shell-header/bar/nav/overview",
+        "/root/carbon6/shell-left/home",
+        "/root/carbon6/shell-left/kernel",
+        "/root/carbon6/shell-left/kernel/children/fibers-item",
+        "/root/carbon6/shell-left/kernel/children/trace-item",
+        "/root/carbon6/shell-left/settings",
+        "/root/carbon6/shell-switcher/content/sw-a",
+        "/root/carbon6/shell-switcher/content/sw-b",
     ];
 
     fn has_text(node: &ViewNode) -> bool {
@@ -108,7 +156,7 @@ fn every_press_acting_control_owns_its_text() {
         if acts && has_text(node) {
             match &node.semantics.role {
                 Some(Role::Button | Role::Tab)
-                    if !owned && !LENDS_ITS_TEXT.contains(&node.key.as_str()) =>
+                    if !owned && !LENDS_ITS_TEXT.contains(&here.as_str()) =>
                 {
                     bad.push(format!(
                         "{here} is a {:?} whose press acts, and it has not \
@@ -120,7 +168,7 @@ fn every_press_acting_control_owns_its_text() {
                     ));
                 }
                 Some(Role::Button | Role::Tab)
-                    if owned && LENDS_ITS_TEXT.contains(&node.key.as_str()) =>
+                    if owned && LENDS_ITS_TEXT.contains(&here.as_str()) =>
                 {
                     bad.push(format!(
                         "{here} is named in `LENDS_ITS_TEXT` and has declared \
@@ -164,14 +212,19 @@ fn every_press_acting_control_owns_its_text() {
 
     // And the list cannot rot: an entry naming nothing this fixture builds is
     // an exception that has outlived the control it was written for.
-    fn keys(node: &ViewNode, out: &mut Vec<String>) {
-        out.push(node.key.as_str().to_owned());
+    //
+    // Paths and not bare keys. `home` is a breadcrumb item here and a
+    // left-panel row over there, and the two want opposite answers; keyed by
+    // its last segment the list exempted both and this test said so.
+    fn paths(node: &ViewNode, at: &str, out: &mut Vec<String>) {
+        let here = format!("{at}/{}", node.key);
         for child in &node.children {
-            keys(child, out);
+            paths(child, &here, out);
         }
+        out.push(here);
     }
     let mut placed = Vec::new();
-    keys(&gallery, &mut placed);
+    paths(&gallery, "", &mut placed);
     for key in LENDS_ITS_TEXT {
         assert!(
             placed.iter().any(|k| k == key),

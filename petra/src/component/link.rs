@@ -23,6 +23,27 @@
 //! No fill. A link is words on whatever it sits on; a `SURFACE_BASE`
 //! background used to be bound so `on_layer` could reseat it, and painted
 //! a box of the wrong tone on any card the link was placed in.
+//!
+//! # A link lends out its text
+//!
+//! It does not declare [`crate::tree::Semantics::owns_its_text`], so its
+//! words can be selected and copied like any other prose. The operator, after
+//! dragging across a sentence with a link set in the middle of it:
+//!
+//! > *"links stop copying too"*
+//!
+//! Carbon's link is an `<a>`, and no browser makes an anchor's text
+//! unselectable — `user-select: none` is what browsers apply to *form
+//! controls*, and an anchor is not one. A link's words are content that
+//! happens to be activatable, which is the same argument
+//! [`crate::component::tile`] records for a clickable tile, decided by the
+//! operator on the same day.
+//!
+//! The price is the same too, and it is real: this library activates on the
+//! press, so a drag that starts inside a link follows the link as well as
+//! selecting it. A browser would not, because a browser fires on the release.
+//! Moving the catalog from press to release is the fix and it is not this
+//! change (`.agents/notes/implemented/architecture/2026-09-06-selection-is-opt-out-not-opt-in.md`).
 
 use super::text::text;
 use super::tokens::{LINK_PRIMARY, t};
@@ -70,7 +91,6 @@ fn link_built(key: impl Into<Key>, label: impl Into<String>, underline_slot: &st
     // look bad"* case, and it is also the rule that puts a button on `Sides`:
     // a link declares `Role::Button` because that is what it is.
     node.interactive(Role::Button, label, LINK_INTENTS)
-        .owning_its_text()
         .with_focus_figure(FocusFigure::Sides)
 }
 

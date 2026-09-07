@@ -47,6 +47,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use crate::frame::placement::{PaintContent, Placement, SubtreeCopy};
+use crate::input::TextSelection;
 use crate::layout::{ChangeSet, LayoutState, Slot};
 use crate::tree::{Key, KeyPath, ViewNode};
 
@@ -201,28 +202,60 @@ impl FrameMemo {
             }
         }
 
-        // The text selection, which the table above cannot express. The other
-        // five move *between* nodes, so both ends of the move are named ids;
-        // a selection moves **inside** one node for the whole body of a drag,
-        // with the id unchanged and only the byte pair growing. Comparing the
-        // whole thing and dirtying both nodes covers both shapes: a selection
-        // that started, ended, jumped to another block, or simply got one
-        // character longer.
+        // The text selection, which the table above cannot express in either
+        // of the two ways it differs. The other four move *between* nodes, so
+        // both ends of the move are named ids; a selection moves **inside** a
+        // node for the whole body of a drag, with the ids unchanged and only
+        // the byte offsets growing, and it covers every run *between* its two
+        // ends as well as the two themselves.
+        //
+        // So both spans are marked whole: the one this frame painted and the
+        // one the next frame will. Dirtying only the four endpoint ids would
+        // carry over the middle of a selection that had just been dragged
+        // across it — a page of running text with the highlight painted into
+        // the frame it was built in and no way to repaint it.
         if self.state.text_selection != now.text_selection {
-            for end in [
+            for selection in [
                 self.state.text_selection.as_ref(),
                 now.text_selection.as_ref(),
             ]
             .into_iter()
             .flatten()
             {
-                dirty.insert(end.node.clone());
+                self.span_ids(selection, &mut dirty);
             }
         }
 
         anchored_surfaces(&self.tree, &mut KeyPath::root(), &mut dirty);
 
         Some(dirty)
+    }
+
+    /// Every id `selection` reaches in the frame this memo holds, added to
+    /// `into`.
+    ///
+    /// Measured against the memo's own placements, which is the only frame
+    /// this type has. For the outgoing selection that is exactly right — it is
+    /// the frame the highlight was painted into. For the incoming one it is an
+    /// approximation of a frame not built yet, and the approximation errs
+    /// towards re-placing a subtree that did not need it, which costs time and
+    /// cannot produce a wrong picture.
+    ///
+    /// Both ends missing from this frame means the selection was made
+    /// somewhere this memo never saw; there is nothing here to mark.
+    fn span_ids(&self, selection: &TextSelection, into: &mut BTreeSet<String>) {
+        let index_of = |node: &str| self.placements.iter().position(|p| p.id == node);
+        let (Some(a), Some(b)) = (
+            index_of(&selection.anchor.node),
+            index_of(&selection.focus.node),
+        ) else {
+            into.insert(selection.anchor.node.clone());
+            into.insert(selection.focus.node.clone());
+            return;
+        };
+        for placement in &self.placements[a.min(b)..=a.max(b)] {
+            into.insert(placement.id.clone());
+        }
     }
 }
 

@@ -162,8 +162,13 @@ pub struct PlacementSemantics {
     pub focus_run: bool,
     /// Whether this control owns the text inside it
     /// ([`crate::tree::Semantics::owns_its_text`]). Projected and held out of
-    /// the digest and the semantic projection, the way `focus_run` is: it
-    /// changes where a press may anchor a selection, never what is painted.
+    /// the digest and the semantic projection, the way `focus_run` is.
+    ///
+    /// It decides where a press may anchor a selection and which runs a span
+    /// covers, so it *does* reach the picture — but only through
+    /// [`PaintContent::selection`], which is hashed. Hashing the flag as well
+    /// would make two frames differ over a rule that produced the same
+    /// highlight in both.
     pub owns_its_text: bool,
     /// Hosts a deliberately endless animation, so it never blocks settle.
     pub ambient: bool,
@@ -341,11 +346,17 @@ pub struct PaintContent {
     /// The byte range of [`TextPaint::text`] the operator has selected, in
     /// this node's own string.
     ///
-    /// `None` for every node with no selection in it, which is all but one at
-    /// a time. Written by `crate::layout::place` from
-    /// [`crate::layout::LayoutState::text_selection`], the way `caret` is
-    /// written from the anchored-placement ladder: it is not derivable from
-    /// the tree, so it cannot come out of `paint_content_of`.
+    /// `None` for every node with no selection in it. One selection can cover
+    /// many nodes: [`crate::layout::LayoutState::text_selection`] names two
+    /// points in two nodes, and `crate::layout::selection::resolve` writes a
+    /// range onto every run between them, whole for the ones in the middle
+    /// and part for the two at the ends.
+    ///
+    /// Written after the placement walk rather than during it, which is where
+    /// `caret` is written from the anchored-placement ladder. Neither is
+    /// derivable from the tree, so neither comes out of `paint_content_of`;
+    /// this one additionally needs placements the walk has not reached yet,
+    /// which is why it is a pass and not a step.
     ///
     /// **A range, not rectangles.** The rectangles behind the glyphs need the
     /// shaped run, and shaping is the host's side of the U-09 boundary
@@ -359,11 +370,12 @@ pub struct PaintContent {
     /// panicking slice of the next one's. Empty ranges are dropped, so a
     /// press that never dragged carries `None` here and paints nothing.
     ///
-    /// This is also how an application learns what was selected. `App::handle`
-    /// receives the frame, so a copy control reads the range off its own code
-    /// node and slices the string it already has — no second channel, and no
-    /// way for the highlight and the clipboard to disagree about which bytes
-    /// they mean.
+    /// This is also how the clipboard learns what was selected.
+    /// [`crate::frame::PetrifiedFrame::selected_text`] walks these ranges in
+    /// placement order and joins them — no second channel, and no way for the
+    /// highlight and the clipboard to disagree about which bytes they mean.
+    /// An application reading its own node's range off the frame it is handed
+    /// gets the same answer for the same reason.
     pub selection: Option<Range<usize>>,
 }
 

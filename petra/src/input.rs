@@ -8,7 +8,6 @@
 //! driver.
 
 use std::collections::BTreeMap;
-use std::ops::Range;
 
 use crate::frame::{PetrifiedFrame, Placement};
 use crate::geom::{Point, Size};
@@ -122,7 +121,31 @@ pub struct Capture {
     pub last: Point,
 }
 
-/// A stretch of one text node's own string the operator has selected.
+/// One end of a selection: a byte offset into one text node's painted string.
+///
+/// Byte offsets, not char offsets, because [`str`] slices on bytes; the char
+/// offsets a shaper deals in are converted at the shaper.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct TextPoint {
+    /// Canonical id of the text node this end sits in.
+    pub node: String,
+    /// Byte offset into that node's own painted string.
+    pub offset: usize,
+}
+
+impl TextPoint {
+    /// A point at `offset` in `node`.
+    #[must_use]
+    pub fn new(node: impl Into<String>, offset: usize) -> Self {
+        Self {
+            node: node.into(),
+            offset,
+        }
+    }
+}
+
+/// A stretch of the frame's running text the operator has selected, from one
+/// point in one node to another point in another.
 ///
 /// # Why this is interaction state and not a tree field
 ///
@@ -141,47 +164,54 @@ pub struct Capture {
 /// pointer that is selecting them, which is the same rule `hovered` is under
 /// and for the same reason.
 ///
+/// # Why two nodes and not one
+///
+/// It held one node and a byte pair until 2026-09-06. The operator, dragging
+/// down a nested list in the catalog:
+///
+/// > *"when I try to select text on the list I can only select 1 element. A
+/// > lot are like this. [...] I cant high light across elements at all"*
+///
+/// One node is the wrong shape for the thing being modelled. What the
+/// operator sees is a *document* — a page of running text that happens to be
+/// assembled out of forty separate runs — and a selection in a document runs
+/// from a point to a point, crossing whatever lies between. Modelling it as
+/// one node made the run boundary, which is an implementation detail of how
+/// the page was built, into a wall the operator could see.
+///
+/// The order "between" is measured in is placement order, which is the
+/// pre-order walk of the tree and therefore reading order
+/// ([`crate::layout::selection::resolve`] is where the span becomes ranges).
+///
 /// # Anchor and focus, not start and end
 ///
 /// `anchor` is where the button went down and `focus` is where the pointer is
-/// now, so `focus < anchor` for a selection dragged leftwards or upwards.
-/// Keeping the direction is what lets a drag reverse through its own start
-/// without the selection collapsing and re-growing the other way, and it is
-/// the pair every text editor keeps. [`TextSelection::range`] is the ordered
-/// view for everything that only wants the bytes.
-///
-/// Both are **byte** offsets into the node's own painted string, which is
-/// what [`str`] slicing takes; the char offsets a shaper deals in are
-/// converted at the shaper.
+/// now, so the focus may sit *before* the anchor in the document for a drag
+/// that went up the page. Keeping the direction is what lets a drag reverse
+/// through its own start without the selection collapsing and re-growing the
+/// other way, and it is the pair every text editor keeps.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct TextSelection {
-    /// Canonical id of the text node the selection lives in.
-    pub node: String,
-    /// Byte offset where the gesture started.
-    pub anchor: usize,
-    /// Byte offset where the gesture is now.
-    pub focus: usize,
+    /// Where the gesture started.
+    pub anchor: TextPoint,
+    /// Where the gesture is now.
+    pub focus: TextPoint,
 }
 
 impl TextSelection {
     /// A fresh, empty selection anchored at `at` in `node`.
     #[must_use]
     pub fn new(node: impl Into<String>, at: usize) -> Self {
+        let point = TextPoint::new(node, at);
         Self {
-            node: node.into(),
-            anchor: at,
-            focus: at,
+            anchor: point.clone(),
+            focus: point,
         }
     }
 
-    /// The selected bytes, low offset first, whichever way the drag went.
-    #[must_use]
-    pub fn range(&self) -> Range<usize> {
-        if self.anchor <= self.focus {
-            self.anchor..self.focus
-        } else {
-            self.focus..self.anchor
-        }
+    /// Move the focus end to `offset` in `node`, keeping the anchor.
+    pub fn extend_to(&mut self, node: impl Into<String>, offset: usize) {
+        self.focus = TextPoint::new(node, offset);
     }
 
     /// Whether this selection covers no bytes — a press with no drag.
@@ -189,6 +219,11 @@ impl TextSelection {
     /// An empty selection is kept rather than dropped: it is the anchor a
     /// drag that has not moved yet will grow from, and dropping it would
     /// make the first pointer move of every gesture start from nowhere.
+    ///
+    /// Only exact when the two ends name the same node. Two ends in two
+    /// nodes with nothing selectable between them also cover no bytes, and
+    /// that answer belongs to [`crate::layout::selection::resolve`], which is
+    /// the only code that knows what the frame actually placed.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.anchor == self.focus
@@ -1219,17 +1254,19 @@ fn dismiss_requests(
 /// Walking topmost-first, the first placement whose rect and clip contain
 /// `pos` and which is one of these three ends the search:
 ///
-/// 1. **A `Text` placement no control above it has claimed** is the target.
-///    "Above it in the tree", not above it in paint order, and the run itself
-///    counts: a code well's run declares [`Interaction::Drag`] to win its own
-///    capture and is the most selectable thing in the library, while an
-///    inline code chip's run is inside a button that copies on a press.
+/// 1. **A run no control above it has claimed** is the target. "Above it in
+///    the tree", not above it in paint order, and the run itself counts: a
+///    code well's run declares [`Interaction::Drag`] to win its own capture
+///    and is the most selectable thing in the library, while an inline code
+///    chip's run is inside a button that copies on a press. A run is any
+///    placement [`paints_text`] accepts, which is both kinds that carry a
+///    string of their own.
 ///
-/// 2. **A `Text` placement a control has claimed** ends the search with
-///    `None`. A button's label paints *above* its button, so reverse paint
-///    order meets the label first. It ends the search rather than skipping,
-///    because the press is the control's and the paragraph the button is
-///    drawn over is not a second answer to it.
+/// 2. **A run a control has claimed** ends the search with `None`. A button's
+///    label paints *above* its button, so reverse paint order meets the label
+///    first. It ends the search rather than skipping, because the press is
+///    the control's and the paragraph the button is drawn over is not a
+///    second answer to it.
 ///
 /// 3. **Anything else that claims a press** — [`Interaction::Click`] or
 ///    [`Interaction::Drag`], the exact pair [`PointerState::route`]
@@ -1250,14 +1287,33 @@ fn dismiss_requests(
 /// A dialog's body text is selectable; the page text behind the dialog is
 /// not.
 ///
-/// # What this does not do
+/// # A press that lands on no text at all
 ///
-/// It finds no run for a press that lands on no text — the gap between two
-/// paragraphs, the padding inside a card. A browser walks outward to the
-/// nearest run and starts there; this returns `None` and the press clears
-/// the selection instead. The nearest-run rule needs a distance metric over
-/// laid-out glyphs, which is on the host's side of the U-09 boundary, and
-/// nothing in the operator's report asks for it.
+/// The gap between two paragraphs, the padding inside a card, the empty
+/// right-hand half of a list row. This used to answer `None` there, and the
+/// press cleared the selection; the operator, on the catalog:
+///
+/// > *"I have to start my drag basically on top of the text"*
+///
+/// So a press that reaches no run **snaps to the nearest one inside the
+/// deepest container it did land in**, which is what a browser does with a
+/// click in a page margin. The scope matters: a press in a card's padding
+/// finds that card's text and not the page's, and the walk goes outward one
+/// container at a time only while the inner one holds no run at all.
+///
+/// The reason this was refused before — "the nearest-run rule needs a
+/// distance metric over laid-out glyphs, which is on the host's side of the
+/// U-09 boundary" — was half right and the wrong half was load-bearing.
+/// Choosing the nearest *run* is a distance to a rect, and this engine has
+/// every rect. Only the byte offset inside the chosen run needs shaped text,
+/// and that stays the host's ([`crate::layout::LayoutState`] carries the
+/// answer back). The boundary is where it was; the work simply divides.
+///
+/// Nearest is measured lexicographically, vertical distance first: the line
+/// the pointer is on wins outright, and only then does the horizontal
+/// distance choose between the runs on it. Plain Euclidean distance would
+/// hand a press at the far right of a short row to the *next* row down,
+/// twenty units away, over the row it was actually on.
 #[must_use]
 pub fn hit_text<'a>(
     frame: &'a PetrifiedFrame,
@@ -1268,11 +1324,17 @@ pub fn hit_text<'a>(
         return None;
     }
     let floor = block_floor(frame, pos, surfaces).map(|p| p.id.as_str());
+    // The same floor as an index, because a snap has to obey it too: a press
+    // in a dialog's empty half must not reach the page's prose underneath.
+    let bound = floor.and_then(|id| frame.placements.iter().position(|p| p.id == id));
     let mut order: Vec<usize> = (0..frame.placements.len()).collect();
     // The same order `PetrifiedFrame::paint_order` produces — a stable sort
     // by z — kept as indices because clause 2 walks `parent`, which is an
     // index into `placements` and not into the sorted view.
     order.sort_by_key(|&i| frame.placements[i].z);
+    // The innermost container the press did land in, remembered in case no
+    // run is hit and the search has to snap.
+    let mut scope = None;
     for &index in order.iter().rev() {
         let placement = &frame.placements[index];
         if placement.rect.contains(pos) && placement.clip.contains(pos) {
@@ -1280,18 +1342,200 @@ pub fn hit_text<'a>(
             // run outside every control is the target; a run inside one is
             // the control's, and so is the press — walking on from it would
             // find whatever the control is drawn over.
-            if placement.kind == NodeKind::Text {
+            if paints_text(frame, index) {
                 return (!claimed_by_a_control(frame, index)).then_some(placement);
             }
             if claims_a_press(placement) {
                 return None;
             }
+            if scope.is_none() {
+                scope = Some(index);
+            }
         }
+        // A `break` and not a `return`: nothing *behind* the floor is
+        // reachable, which is what this stops, but the containers already
+        // found in front of it are still where a snap may look.
         if floor == Some(placement.id.as_str()) {
-            return None;
+            break;
         }
     }
+    scope.and_then(|scope| nearest_outward(frame, pos, scope, bound))
+}
+
+/// Where a selection drag has got to: the nearest run to `pos` that a
+/// control has not claimed.
+///
+/// The companion to [`hit_text`], and deliberately a *different* question.
+/// A press asks "what did the operator mean by pressing here", which a
+/// control can answer instead of the text behind it. A move asks only "where
+/// has the gesture reached", and that question was settled the moment the
+/// button went down — the control under the pointer now is not being pressed
+/// and has no claim on the answer.
+///
+/// So this ignores [`claims_a_press`] entirely and ignores container scope
+/// entirely. Dragging down a page and over a button extends the selection
+/// through the runs on either side of it, exactly as a browser does with the
+/// `user-select: none` a form control carries; the button's own label is
+/// skipped because it is claimed, not because the button is under the
+/// pointer.
+///
+/// The modal rules still hold. A drag inside a dialog cannot reach the page
+/// behind it, and a position outside every open [`InputPolicy::Block`]
+/// surface reaches nothing.
+#[must_use]
+pub fn reach_text<'a>(
+    frame: &'a PetrifiedFrame,
+    pos: Point,
+    surfaces: &BTreeMap<String, InputPolicy>,
+) -> Option<&'a Placement> {
+    if outside_an_open_modal(frame, pos, surfaces) {
+        return None;
+    }
+    // Inside an open modal the whole search is confined to it, which is the
+    // positional half of what `Block` means. Outside one, the root of the
+    // frame is the scope and that is every placement.
+    let scope = block_floor(frame, pos, surfaces)
+        .and_then(|floor| frame.placements.iter().position(|p| p.id == floor.id));
+    match scope {
+        Some(scope) => nearest_in_subtree(frame, pos, scope, None),
+        None => nearest_among_where(frame, pos, 0..frame.placements.len(), |_| true),
+    }
+}
+
+/// The nearest selectable run inside `scope`, else inside `scope`'s parent,
+/// and so on outward. Stops at the first container that holds one.
+///
+/// Outward and not straight to the root, because scope is the point: a press
+/// in a card's padding means that card. Walking out only when the inner
+/// container is empty of text keeps that meaning while still answering for a
+/// press in a bare `Spacer`, which holds nothing and never will.
+fn nearest_outward(
+    frame: &PetrifiedFrame,
+    pos: Point,
+    scope: usize,
+    bound: Option<usize>,
+) -> Option<&Placement> {
+    let mut cursor = Some(scope);
+    while let Some(at) = cursor {
+        if let Some(found) = nearest_in_subtree(frame, pos, at, bound) {
+            return Some(found);
+        }
+        // The walk outward stops at the floor. Past it is the page behind a
+        // dialog, which is exactly what a `Block` surface exists to make
+        // unreachable.
+        if Some(at) == bound {
+            break;
+        }
+        cursor = frame.placements.get(at).and_then(|p| p.parent);
+    }
     None
+}
+
+/// The nearest selectable run in `root`'s subtree, `root` itself included.
+fn nearest_in_subtree(
+    frame: &PetrifiedFrame,
+    pos: Point,
+    root: usize,
+    bound: Option<usize>,
+) -> Option<&Placement> {
+    // Placements are pre-order, so a subtree is a contiguous run starting at
+    // its own index — nothing before `root` can be inside it.
+    nearest_among_where(frame, pos, root..frame.placements.len(), |index| {
+        descends_from(frame, index, root)
+            && bound.is_none_or(|bound| descends_from(frame, index, bound))
+    })
+}
+
+/// The nearest selectable run among `range` that also passes `extra`.
+///
+/// "Nearest" is `(vertical gap, horizontal gap)` compared in that order, so
+/// the line the pointer is on beats every other line however far along it the
+/// run sits. A run the pointer is inside scores `(0.0, 0.0)` and wins, which
+/// is how an exact hit falls out of the same comparison rather than needing a
+/// case of its own.
+fn nearest_among_where(
+    frame: &PetrifiedFrame,
+    pos: Point,
+    range: std::ops::Range<usize>,
+    extra: impl Fn(usize) -> bool,
+) -> Option<&Placement> {
+    range
+        .filter(|&index| paints_text(frame, index) && !claimed_by_a_control(frame, index))
+        .filter(|&index| extra(index))
+        .map(|index| (gap_to(&frame.placements[index], pos), index))
+        .min_by(|(a, _), (b, _)| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)))
+        .map(|(_, index)| &frame.placements[index])
+}
+
+/// The `(vertical, horizontal)` gap between `pos` and a placement's rect and
+/// clip. Zero on an axis the position already falls inside.
+///
+/// The clip counts as well as the rect: a run scrolled out of its pane is
+/// still placed, and snapping a press to a run nobody can see would highlight
+/// nothing.
+fn gap_to(placement: &Placement, pos: Point) -> (f32, f32) {
+    let rect = placement.rect;
+    let clip = placement.clip;
+    let axis = |lo: f32, hi: f32, clip_lo: f32, clip_hi: f32, at: f32| {
+        let lo = lo.max(clip_lo);
+        let hi = hi.min(clip_hi);
+        if hi < lo {
+            // Fully clipped away on this axis: unreachable, not merely far.
+            return f32::INFINITY;
+        }
+        (lo - at).max(at - hi).max(0.0)
+    };
+    (
+        axis(rect.y, rect.y + rect.h, clip.y, clip.y + clip.h, pos.y),
+        axis(rect.x, rect.x + rect.w, clip.x, clip.x + clip.w, pos.x),
+    )
+}
+
+/// Whether `index` is `root` or lies inside it.
+fn descends_from(frame: &PetrifiedFrame, index: usize, root: usize) -> bool {
+    let mut cursor = Some(index);
+    while let Some(at) = cursor {
+        if at == root {
+            return true;
+        }
+        cursor = frame.placements.get(at).and_then(|p| p.parent);
+    }
+    false
+}
+
+/// Whether the placement at `index` paints a non-empty string of its own.
+///
+/// Two kinds carry running text. [`NodeKind::Text`] is the obvious one;
+/// [`NodeKind::Input`] paints its own value rather than hanging a child run
+/// under it, so a field whose text could not be selected was the operator's
+/// *"text is not highlightable in form, which is a text entry box"*. The
+/// painter draws both through one path (`crate::paint`), so a selection on
+/// either lands the same way.
+///
+/// The emptiness test is what keeps a zero-width run — a blank label, a
+/// placeholder that resolved to nothing — from winning a snap it would then
+/// highlight nothing in.
+pub(crate) fn paints_text(frame: &PetrifiedFrame, index: usize) -> bool {
+    paints_text_in(&frame.placements, &frame.content, index)
+}
+
+/// [`paints_text`] over a placement list and payload list that are not a
+/// frame yet. See [`claimed_by_a_control_in`] for why the pair exists.
+pub(crate) fn paints_text_in(
+    placements: &[Placement],
+    content: &[crate::frame::PaintContent],
+    index: usize,
+) -> bool {
+    let Some(placement) = placements.get(index) else {
+        return false;
+    };
+    if !matches!(placement.kind, NodeKind::Text | NodeKind::Input) {
+        return false;
+    }
+    content
+        .get(index)
+        .and_then(|content| content.text.as_ref())
+        .is_some_and(|text| !text.text.is_empty())
 }
 
 /// Whether a press over this placement is this placement's.
@@ -1313,9 +1557,18 @@ fn claims_a_press(placement: &Placement) -> bool {
 /// once, on the node that declares the interaction, and means it for its
 /// label, its glyph and its state text.
 fn claimed_by_a_control(frame: &PetrifiedFrame, index: usize) -> bool {
+    claimed_by_a_control_in(&frame.placements, index)
+}
+
+/// [`claimed_by_a_control`] over a placement list that is not a frame yet.
+///
+/// [`crate::layout::selection`] runs before the frame is sealed and holds the
+/// list directly. One body rather than two, so the rule the press obeys and
+/// the rule the highlight obeys cannot answer differently.
+pub(crate) fn claimed_by_a_control_in(placements: &[Placement], index: usize) -> bool {
     let mut cursor = Some(index);
     while let Some(at) = cursor {
-        let Some(placement) = frame.placements.get(at) else {
+        let Some(placement) = placements.get(at) else {
             return false;
         };
         if placement.semantics.owns_its_text {
@@ -1362,7 +1615,7 @@ fn blocks_positional_input(policy: InputPolicy) -> bool {
 mod tests {
     use super::{
         InputEvent, KeyCode, Modifiers, PointerButton, Route, activates, hit_test, hit_text,
-        required_interaction, route, route_pointer_exit, route_with_surfaces,
+        reach_text, required_interaction, route, route_pointer_exit, route_with_surfaces,
     };
     use crate::frame::{
         FrameDigest, PaintState, PetrifiedFrame, Placement, PlacementSemantics, TransitionActivity,
@@ -1406,7 +1659,30 @@ mod tests {
             .iter()
             .map(|p| crate::layout::Slot::new(p.rect))
             .collect();
-        let content = vec![crate::frame::PaintContent::default(); placements.len()];
+        // Every run carries a string, because in a real frame one does: the
+        // placement pass attaches a `TextPaint` to every `Text` and `Input`
+        // node it places, and `hit_text` refuses a run that paints nothing so
+        // an empty one cannot win a snap. A fixture of empty payloads would
+        // make every selection test pass for the wrong reason.
+        let content: Vec<crate::frame::PaintContent> = placements
+            .iter()
+            .map(|placement| {
+                if matches!(placement.kind, NodeKind::Text | NodeKind::Input) {
+                    crate::frame::PaintContent {
+                        text: Some(crate::frame::placement::TextPaint {
+                            text: placement.id.clone(),
+                            style: None,
+                            wrap: crate::tree::TextWrap::Clip,
+                            max_lines: None,
+                            runs: Vec::new(),
+                        }),
+                        ..crate::frame::PaintContent::default()
+                    }
+                } else {
+                    crate::frame::PaintContent::default()
+                }
+            })
+            .collect();
         PetrifiedFrame {
             seq: 1,
             digest,
@@ -1663,9 +1939,13 @@ mod tests {
         let surfaces = BTreeMap::from([("/dialog".to_owned(), InputPolicy::Block)]);
         let hit = hit_text(&f, Point::new(60.0, 55.0), &surfaces).unwrap();
         assert_eq!(hit.id, "/dialog/body");
-        // Inside the dialog's rect but not on its text: the prose underneath
-        // is behind the floor, so nothing is selected rather than the page.
-        assert!(hit_text(&f, Point::new(60.0, 120.0), &surfaces).is_none());
+        // Inside the dialog's rect but not on its text. The snap answers, and
+        // the whole question is *what* it snaps to: the dialog's own body,
+        // never the prose underneath, which is behind the floor. Before the
+        // snap existed this asserted `is_none()`, which tested the same rule
+        // through a `None` that has since stopped being the right answer.
+        let below = hit_text(&f, Point::new(60.0, 120.0), &surfaces).expect("snapped");
+        assert_eq!(below.id, "/dialog/body");
         // And outside the dialog entirely, which is the swallow rule.
         assert!(hit_text(&f, Point::new(10.0, 10.0), &surfaces).is_none());
     }
@@ -1749,11 +2029,12 @@ mod tests {
         assert!(hit_text(&f, Point::new(30.0, 25.0), &BTreeMap::new()).is_none());
     }
 
-    /// The gap between two paragraphs. Named rather than left to be
-    /// discovered: a browser walks outward to the nearest run, and this does
-    /// not, so the press clears the selection instead of moving it.
+    /// The gap between two paragraphs. This used to answer `None`, and the
+    /// operator's report was *"I have to start my drag basically on top of
+    /// the text"*, so it snaps to the nearest run in the container the press
+    /// did land in.
     #[test]
-    fn a_press_on_no_text_at_all_finds_no_run() {
+    fn a_press_beside_the_words_snaps_to_them() {
         let f = frame(vec![
             kid(
                 "/page",
@@ -1764,7 +2045,142 @@ mod tests {
                 None,
             ),
             kid(
-                "/page/item",
+                "/page/top",
+                NodeKind::Text,
+                Rect::new(10.0, 10.0, 100.0, 20.0),
+                0,
+                &[],
+                Some(0),
+            ),
+            kid(
+                "/page/bottom",
+                NodeKind::Text,
+                Rect::new(10.0, 100.0, 100.0, 20.0),
+                0,
+                &[],
+                Some(0),
+            ),
+        ]);
+        // Below the first run and well above the second.
+        let hit = hit_text(&f, Point::new(20.0, 45.0), &BTreeMap::new()).expect("snapped");
+        assert_eq!(hit.id, "/page/top", "35 units up beats 55 units down");
+        // Far to the right of the first run, and nearer the second by
+        // straight-line distance. The line the pointer is on still wins,
+        // which is the whole reason the comparison is lexicographic.
+        let hit = hit_text(&f, Point::new(190.0, 20.0), &BTreeMap::new()).expect("snapped");
+        assert_eq!(hit.id, "/page/top");
+    }
+
+    /// The move's question is not the press's. A drag that has reached a
+    /// button extends through it: the runs on either side are selected and
+    /// the button's own label is not, which is what a browser's
+    /// `user-select: none` does. The press would have answered `None` at the
+    /// same position, and correctly — a press *there* is the button's.
+    #[test]
+    fn a_drag_reaches_past_a_control_the_press_would_have_stopped_at() {
+        let f = frame(vec![
+            kid(
+                "/page",
+                NodeKind::Stack,
+                Rect::new(0.0, 0.0, 200.0, 200.0),
+                0,
+                &[],
+                None,
+            ),
+            kid(
+                "/page/before",
+                NodeKind::Text,
+                Rect::new(0.0, 0.0, 200.0, 20.0),
+                0,
+                &[],
+                Some(0),
+            ),
+            control(
+                "/page/btn",
+                Rect::new(0.0, 40.0, 200.0, 20.0),
+                0,
+                &[Interaction::Click],
+                Some(0),
+            ),
+            kid(
+                "/page/btn/label",
+                NodeKind::Text,
+                Rect::new(10.0, 44.0, 60.0, 12.0),
+                0,
+                &[],
+                Some(2),
+            ),
+            kid(
+                "/page/after",
+                NodeKind::Text,
+                Rect::new(0.0, 80.0, 200.0, 20.0),
+                0,
+                &[],
+                Some(0),
+            ),
+        ]);
+        let on_the_label = Point::new(30.0, 50.0);
+        assert!(
+            hit_text(&f, on_the_label, &BTreeMap::new()).is_none(),
+            "a press on a button's label is the button's"
+        );
+        let reached = reach_text(&f, on_the_label, &BTreeMap::new()).expect("the drag reaches on");
+        assert!(
+            reached.id == "/page/before" || reached.id == "/page/after",
+            "the drag landed on {}, which is the label it must skip",
+            reached.id
+        );
+        // And a drag that is genuinely over a run takes that run.
+        assert_eq!(
+            reach_text(&f, Point::new(30.0, 85.0), &BTreeMap::new()).map(|p| p.id.as_str()),
+            Some("/page/after")
+        );
+    }
+
+    /// A snap that has nowhere to land is still no selection: a frame whose
+    /// only run is inside a control has nothing to offer a press in the
+    /// margin.
+    #[test]
+    fn a_press_beside_a_page_with_no_lent_text_finds_nothing() {
+        let f = frame(vec![
+            kid(
+                "/page",
+                NodeKind::Stack,
+                Rect::new(0.0, 0.0, 200.0, 200.0),
+                0,
+                &[],
+                None,
+            ),
+            control(
+                "/page/btn",
+                Rect::new(10.0, 10.0, 100.0, 20.0),
+                0,
+                &[],
+                Some(0),
+            ),
+            kid(
+                "/page/btn/label",
+                NodeKind::Text,
+                Rect::new(14.0, 14.0, 92.0, 12.0),
+                0,
+                &[],
+                Some(1),
+            ),
+        ]);
+        // The label is the only run on the page, and it is the button's.
+        assert!(hit_text(&f, Point::new(20.0, 80.0), &BTreeMap::new()).is_none());
+        // And the same press on a page whose one run is lent finds it.
+        let lent = frame(vec![
+            kid(
+                "/page",
+                NodeKind::Stack,
+                Rect::new(0.0, 0.0, 200.0, 200.0),
+                0,
+                &[],
+                None,
+            ),
+            kid(
+                "/page/prose",
                 NodeKind::Text,
                 Rect::new(10.0, 10.0, 100.0, 20.0),
                 0,
@@ -1772,7 +2188,11 @@ mod tests {
                 Some(0),
             ),
         ]);
-        assert!(hit_text(&f, Point::new(20.0, 80.0), &BTreeMap::new()).is_none());
+        assert_eq!(
+            hit_text(&lent, Point::new(20.0, 80.0), &BTreeMap::new()).map(|p| p.id.as_str()),
+            Some("/page/prose"),
+            "the negative above must be about the claim, not about the geometry"
+        );
     }
 
     #[test]

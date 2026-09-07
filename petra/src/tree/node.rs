@@ -676,7 +676,8 @@ pub struct Semantics {
     #[serde(default, skip_serializing_if = "is_false")]
     pub focus_run: bool,
     /// This control owns the text inside it: a press there is the control's,
-    /// and no selection anchors in it.
+    /// no selection anchors in it, and a span that crosses it steps over its
+    /// words rather than highlighting or copying them.
     ///
     /// # Why the flag is an opt *out*
     ///
@@ -695,16 +696,27 @@ pub struct Semantics {
     ///
     /// # Who sets it
     ///
-    /// A control whose **press acts**: a button, a tab, a menu item, a
-    /// trigger that opens a list. Dragging across one of those would fire it
-    /// and highlight its label at the same time, because the catalog
+    /// The question is **chrome or content**, and Carbon's own markup answers
+    /// it: `user-select: none` is what a browser puts on a form control and
+    /// never on the `<label>`, `<a>` or `<div>` beside one.
+    ///
+    /// So a `<button>` sets it — a button, a tab, a menu item, a trigger that
+    /// opens a list. Its label names it, and dragging across one fires it and
+    /// highlights its own name at the same time, because the catalog
     /// activates on the press and not on the release.
     ///
-    /// A control whose press only *selects* does not set it: a table row, a
-    /// tree item, a list row, a code well. Those carry content, the press is
-    /// not destructive, and a browser lets you drag a highlight through them.
+    /// Nothing else does. A table row, a tree item, a list row and a code
+    /// well carry content and their press only selects. A checkbox's caption,
+    /// a radio's, a toggle's are `<label>`s beside the control. A link, a
+    /// breadcrumb item, a tile and the UI shell's nav rows are `<a>`s, whose
+    /// words are the destination's name and not the control's chrome. Each of
+    /// those pays for it — a drag that starts on one still fires it — and the
+    /// operator took that trade on 2026-09-06 and again on 2026-09-07:
+    /// *"check boxes need their text highlightable"*, *"links stop copying
+    /// too"*.
+    ///
     /// `every_press_acting_control_owns_its_text` holds the library to that
-    /// line from both sides.
+    /// line from both sides, and names each exception with its reason.
     ///
     /// It reaches a whole subtree. A button says it once, on the node that
     /// declares the interaction, and its label, its glyph and its state text

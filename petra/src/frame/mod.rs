@@ -15,7 +15,7 @@ use std::collections::BTreeSet;
 use crate::geom::Rect;
 use crate::layout::reuse::{FrameMemo, ReuseState, ReuseStats};
 use crate::layout::{LayoutCtx, Proposal, SizeProposal, Slot};
-use crate::tree::{KeyPath, ValidatedTree};
+use crate::tree::{KeyPath, Role, ValidatedTree};
 
 pub use digest::{FrameDigest, canonical_decimal, hash_text};
 pub use placement::{
@@ -98,6 +98,91 @@ pub struct PetrifiedFrame {
 }
 
 impl PetrifiedFrame {
+    /// Everything under the highlight, as plain text laid out the way the
+    /// frame lays it out.
+    ///
+    /// `None` when nothing is selected. The bytes come from
+    /// [`PaintContent::text`] and the ranges from [`PaintContent::selection`],
+    /// which is the same pair the painter fills its bands from — so what
+    /// leaves on the clipboard is by construction what the operator can see
+    /// lit up. There is no second derivation of either to drift.
+    ///
+    /// # What "laid out the way the frame lays it out" means
+    ///
+    /// Three rules, and each one is a fact the frame already holds rather
+    /// than a guess about intent:
+    ///
+    /// 1. **Two runs on the same line are one line of text.** Same line means
+    ///    their rects overlap vertically. They are joined by a single space
+    ///    unless one side already supplies whitespace at the seam, which is
+    ///    what keeps `"Read "` + `"the inline form"` from gaining a second
+    ///    gap and `"1."` + `"Clone"` from losing the only one it had.
+    ///
+    /// 2. **A new line starts a new line.**
+    ///
+    /// 3. **A run inside nested lists is indented two spaces per level below
+    ///    the first.** The level is the count of [`Role::List`] and
+    ///    [`Role::Tree`] ancestors, which is exact; reading the indent off the
+    ///    rects would be reading a number the layout chose for pixels back as
+    ///    though it were structure.
+    ///
+    /// The operator asked for markdown — *"This should also probably copy to
+    /// clip in markdown if we can?"* — and this is as far as that goes
+    /// honestly. An ordered list's markers are painted text (`1.`, `a.`,
+    /// `i.`) and copy themselves. An unordered list's are drawn shapes
+    /// (`crate::component::list`: *"a typed marker cannot be sized, centred
+    /// or snapped"*), so they are not in the text and are not invented here.
+    /// A link has no target in the model at all — [`crate::component::link`]
+    /// takes a label and no href — so `[text](url)` has no url to write.
+    /// Transcribing pictures into syntax is a separate decision from copying
+    /// text, and it is not this function's to make.
+    #[must_use]
+    pub fn selected_text(&self) -> Option<String> {
+        let mut out = String::new();
+        let mut previous: Option<&Placement> = None;
+        for (index, content) in self.content.iter().enumerate() {
+            let (Some(range), Some(text)) = (content.selection.clone(), content.text.as_ref())
+            else {
+                continue;
+            };
+            let Some(taken) = text.text.get(range) else {
+                continue;
+            };
+            let placement = &self.placements[index];
+            match previous {
+                None => out.push_str(&self.indent_of(index)),
+                Some(previous) if shares_a_line(previous, placement) => {
+                    if !out.ends_with(char::is_whitespace)
+                        && !taken.starts_with(char::is_whitespace)
+                    {
+                        out.push(' ');
+                    }
+                }
+                Some(_) => {
+                    out.push('\n');
+                    out.push_str(&self.indent_of(index));
+                }
+            }
+            out.push_str(taken);
+            previous = Some(placement);
+        }
+        (!out.is_empty()).then_some(out)
+    }
+
+    /// The leading spaces for a run, two per list level below the first.
+    fn indent_of(&self, index: usize) -> String {
+        let mut levels = 0usize;
+        let mut cursor = Some(index);
+        while let Some(at) = cursor {
+            let placement = &self.placements[at];
+            if matches!(placement.semantics.role, Some(Role::List | Role::Tree)) {
+                levels += 1;
+            }
+            cursor = placement.parent;
+        }
+        " ".repeat(levels.saturating_sub(1) * 2)
+    }
+
     /// The placement with `id`, if the frame has one.
     #[must_use]
     pub fn placement(&self, id: &str) -> Option<&Placement> {
@@ -329,6 +414,16 @@ pub fn petrify_with_memo<'a>(
     (frame, stats)
 }
 
+/// Whether two placements sit on the same line of the picture.
+///
+/// Overlap on the vertical, not equality of `y`: a link and the prose it sits
+/// in are the same line even when one is a point taller than the other, and a
+/// list marker and its label are the same line even when the marker is
+/// centred in a taller row.
+fn shares_a_line(a: &Placement, b: &Placement) -> bool {
+    a.rect.y < b.rect.y + b.rect.h && b.rect.y < a.rect.y + a.rect.h
+}
+
 /// Negotiate `tree` against `viewport` and produce a frame with an identity.
 ///
 /// The root is offered the viewport exactly and **placed into the viewport**,
@@ -376,14 +471,35 @@ pub fn petrify(
         path.is_empty(),
         "the walk must leave the path as it found it"
     );
-    let reused_hashes = sink.reused_hashes().to_vec();
+    let mut reused_hashes = sink.reused_hashes().to_vec();
     let placed = sink.into_parts();
-    let (placements, content, subtree_len, slots) = (
+    let (mut placements, mut content, subtree_len, slots) = (
         placed.placements,
         placed.content,
         placed.subtree_len,
         placed.slots,
     );
+    // The one payload member no walk can write, because whether a run is
+    // inside the span depends on placements the walk had not reached when it
+    // passed that run. See `crate::layout::selection`.
+    if let Some(selection) = ctx.state.text_selection.as_ref() {
+        let touched = crate::layout::selection::resolve(&mut placements, &mut content, selection);
+        // A highlight written onto a subtree carried over from the previous
+        // frame makes the hash that came with it a lie. `FrameMemo::dirty_ids`
+        // already refuses to carry a subtree the selection touches, so this
+        // clears nothing on any pass that behaved; it is here because the
+        // failure it prevents — a stale Merkle hash over a changed picture —
+        // is silent, and one `if` is cheaper than the frame that proves it.
+        for index in touched {
+            let mut cursor = Some(index);
+            while let Some(at) = cursor {
+                if let Some(slot) = reused_hashes.get_mut(at) {
+                    *slot = None;
+                }
+                cursor = placements[at].parent;
+            }
+        }
+    }
     // Computed once: the array is what a reuse pass needs, and the root
     // entry is what the frame digest is built from — no reason to walk the
     // Merkle tree a second time to get the same root hash.

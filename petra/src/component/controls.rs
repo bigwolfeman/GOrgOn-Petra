@@ -167,9 +167,12 @@ fn labelled_box(
     // the optical midline.
     row.props.align = Some(Align::Center);
     row.props.padding = Some(pad(SPACING_02, SPACING_01));
-    let mut node = row
-        .interactive(Role::Button, label, intents)
-        .owning_its_text();
+    // No `owning_its_text`: a checkbox's and a radio's caption is a `<label>`
+    // in Carbon, and `user-select: none` is what a browser puts on the
+    // control, never on the label beside it. The operator: *"check boxes need
+    // their text highlightable"*. `crate::component::link` carries the full
+    // argument and the price.
+    let mut node = row.interactive(Role::Button, label, intents);
     // The caller's, because the two controls that share this row do not
     // have the same room under them and the operator caught the difference
     // on 2026-09-06: *"radio button needs the under bar, the other bar is
@@ -620,13 +623,13 @@ fn toggle_sized(
         Some(SPACING_05),
         vec![label_node, appearance],
     );
-    let mut node = column
-        .interactive(
-            Role::Button,
-            label,
-            &[Interaction::Focus, Interaction::Click],
-        )
-        .owning_its_text();
+    // Lends its text for `labelled_box`'s reason: Carbon's toggle wraps both
+    // the caption and the On/Off word in the `<label>`, not in the button.
+    let mut node = column.interactive(
+        Role::Button,
+        label,
+        &[Interaction::Focus, Interaction::Click],
+    );
     node.semantics.selected = on;
     node
 }
