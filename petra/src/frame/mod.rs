@@ -6,6 +6,7 @@
 //! completed frame (`contracts/frame-identity.md`).
 
 pub mod digest;
+mod markdown;
 pub mod placement;
 pub mod rounding;
 pub mod viewport;
@@ -15,7 +16,7 @@ use std::collections::BTreeSet;
 use crate::geom::Rect;
 use crate::layout::reuse::{FrameMemo, ReuseState, ReuseStats};
 use crate::layout::{LayoutCtx, Proposal, SizeProposal, Slot};
-use crate::tree::{KeyPath, Role, ValidatedTree};
+use crate::tree::{KeyPath, ValidatedTree};
 
 pub use digest::{FrameDigest, canonical_decimal, hash_text};
 pub use placement::{
@@ -120,22 +121,23 @@ impl PetrifiedFrame {
     ///
     /// 2. **A new line starts a new line.**
     ///
-    /// 3. **A run inside nested lists is indented two spaces per level below
-    ///    the first.** The level is the count of [`Role::List`] and
-    ///    [`Role::Tree`] ancestors, which is exact; reading the indent off the
-    ///    rects would be reading a number the layout chose for pixels back as
-    ///    though it were structure.
+    /// 3. **A line begins with whatever [`markdown::line_lead`] puts there**:
+    ///    an indent of two spaces per list level below the first, then the
+    ///    Markdown a mark drawn immediately in front of the run declared in
+    ///    [`crate::tree::Props::markdown`]. A drawn list bullet says `-`, so
+    ///    a copied list is a list wherever it is pasted. Nothing here
+    ///    recognises a bullet; the component that drew one says what it
+    ///    stands for.
     ///
     /// The operator asked for markdown — *"This should also probably copy to
-    /// clip in markdown if we can?"* — and this is as far as that goes
-    /// honestly. An ordered list's markers are painted text (`1.`, `a.`,
-    /// `i.`) and copy themselves. An unordered list's are drawn shapes
-    /// (`crate::component::list`: *"a typed marker cannot be sized, centred
-    /// or snapped"*), so they are not in the text and are not invented here.
-    /// A link has no target in the model at all — [`crate::component::link`]
-    /// takes a label and no href — so `[text](url)` has no url to write.
-    /// Transcribing pictures into syntax is a separate decision from copying
-    /// text, and it is not this function's to make.
+    /// clip in markdown if we can?"* — and this is how far that goes. Bullets
+    /// are Markdown. An ordered list's markers are painted text and copy
+    /// themselves verbatim (`1.`, `a.`, `i.`), which Markdown does not read
+    /// as a nested list; rewriting them to `1.` at every level would throw
+    /// away a depth cue the operator can see on screen, so they are left as
+    /// the picture has them. A link has no target in the model at all —
+    /// [`crate::component::link`] takes a label and no href — so
+    /// `[text](url)` has no url to write.
     #[must_use]
     pub fn selected_text(&self) -> Option<String> {
         let mut out = String::new();
@@ -145,12 +147,16 @@ impl PetrifiedFrame {
             else {
                 continue;
             };
+            // Whether this run was taken whole from its start, asked before
+            // the range is spent: it decides whether a mark drawn in front of
+            // the run belongs on the clipboard. See `markdown::line_lead`.
+            let from_the_top = range.start == 0;
             let Some(taken) = text.text.get(range) else {
                 continue;
             };
             let placement = &self.placements[index];
             match previous {
-                None => out.push_str(&self.indent_of(index)),
+                None => out.push_str(&markdown::line_lead(self, index, from_the_top)),
                 Some(previous) if shares_a_line(previous, placement) => {
                     if !out.ends_with(char::is_whitespace)
                         && !taken.starts_with(char::is_whitespace)
@@ -160,27 +166,13 @@ impl PetrifiedFrame {
                 }
                 Some(_) => {
                     out.push('\n');
-                    out.push_str(&self.indent_of(index));
+                    out.push_str(&markdown::line_lead(self, index, from_the_top));
                 }
             }
             out.push_str(taken);
             previous = Some(placement);
         }
         (!out.is_empty()).then_some(out)
-    }
-
-    /// The leading spaces for a run, two per list level below the first.
-    fn indent_of(&self, index: usize) -> String {
-        let mut levels = 0usize;
-        let mut cursor = Some(index);
-        while let Some(at) = cursor {
-            let placement = &self.placements[at];
-            if matches!(placement.semantics.role, Some(Role::List | Role::Tree)) {
-                levels += 1;
-            }
-            cursor = placement.parent;
-        }
-        " ".repeat(levels.saturating_sub(1) * 2)
     }
 
     /// The placement with `id`, if the frame has one.

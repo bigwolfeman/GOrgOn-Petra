@@ -8280,15 +8280,16 @@ mod tests {
         assert_eq!(
             cam.clipboard().last().map(String::as_str),
             Some(concat!(
-                "Inbox\n  Archive\n    2026\n      March\n",
-                "Disc\n  Ring\n    Square\n      Dash\n",
-                "Fixed square\nat every level\n",
+                "- Inbox\n  - Archive\n    - 2026\n      - March\n",
+                "- Disc\n  - Ring\n    - Square\n      - Dash\n",
+                "- Fixed square\n- at every level\n",
                 "1. Clone\n2. Build\n  a. Compile\n  b. Link\n",
                 "    i. Static\n    ii. Dynamic\n3. Run"
             )),
-            "one line per line, two spaces per level below the first, and \
-             each ordered marker joined to its label by the one space the \
-             layout put between them"
+            "one line per line, two spaces per level below the first, every \
+             drawn bullet as Markdown's `-` whatever mark it drew, and each \
+             ordered marker left as the counter the picture shows, joined to \
+             its label by the one space the layout put between them"
         );
 
         // And the picture agrees with the string, on runs from three
@@ -8452,7 +8453,7 @@ mod tests {
         );
         assert_eq!(
             cam.clipboard().last().map(String::as_str),
-            Some("Inbox\n  Archive\n    2026\n      March"),
+            Some("- Inbox\n  - Archive\n    - 2026\n      - March"),
             "a press on the bullet snapped rightwards onto the word beside it"
         );
 
@@ -8469,9 +8470,12 @@ mod tests {
         );
         assert_eq!(
             cam.clipboard().last().map(String::as_str),
-            Some("  Archive\n    2026\n      March"),
+            Some("  - Archive\n    - 2026\n      - March"),
             "a press past the end of the line anchored there, so the line \
-             itself is behind the caret and the three under it are not"
+             itself is behind the caret and the three under it are not. \
+             `Inbox` keeps no bullet because it keeps no bytes: an empty \
+             range is dropped, and the three lines that are taken whole each \
+             lead with the mark their item drew"
         );
     }
 

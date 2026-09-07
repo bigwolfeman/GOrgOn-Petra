@@ -874,6 +874,12 @@ pub fn paint_content_of(node: &ViewNode) -> PaintContent {
             NodeKind::Canvas => props.canvas.clone(),
             _ => None,
         },
+        // Verbatim, and from every kind rather than from `Canvas` alone: the
+        // question this answers is "what does a reader take when there is no
+        // text here", and a future drawn mark on some other kind has the same
+        // hole. `selected_text` is what refuses to read it off a node that
+        // paints its own string.
+        markdown: props.markdown.clone(),
         // Never from the tree. A selection is made with a pointer over shaped
         // glyphs and is therefore host-derived interaction state, so it is
         // attached by `place` from `LayoutState`, the same way `caret` is

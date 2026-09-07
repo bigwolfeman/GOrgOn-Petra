@@ -377,6 +377,19 @@ pub struct PaintContent {
     /// An application reading its own node's range off the frame it is handed
     /// gets the same answer for the same reason.
     pub selection: Option<Range<usize>>,
+    /// The Markdown this node's picture stands for, carried verbatim from
+    /// [`crate::tree::Props::markdown`], which holds the whole argument.
+    ///
+    /// Read by [`crate::frame::PetrifiedFrame::selected_text`] and by nothing
+    /// that paints. A drawn list bullet says `-` here so that a copied list
+    /// arrives somewhere else as a list.
+    ///
+    /// Not a digest input, and the one field here that is not: it decides no
+    /// pixel, so two frames differing in it are the same picture and
+    /// `contracts/frame-identity.md`'s promise is untouched.
+    /// [`crate::frame::digest::hash_paint_content`] destructures it and drops
+    /// it on purpose.
+    pub markdown: Option<String>,
 }
 
 impl PaintContent {
@@ -1084,6 +1097,7 @@ mod tests {
                     caret: None,
                     canvas: None,
                     selection: None,
+                    markdown: None,
                 },
                 true,
             ),

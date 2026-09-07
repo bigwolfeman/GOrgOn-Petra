@@ -954,6 +954,39 @@ pub struct Props {
     /// `NodeKind::Canvas` alone.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub canvas: Option<std::sync::Arc<crate::draw::DrawList>>,
+    /// The Markdown this node's picture stands for, when a reader copies it.
+    ///
+    /// A node that draws a mark in place of a character has no text for the
+    /// clipboard to take: a list bullet is a [`Props::canvas`] and not a
+    /// glyph, deliberately, because *"a typed marker cannot be sized, centred
+    /// or snapped apart from a character"* (`crate::component::list`). Copying
+    /// a list therefore lost every bullet while the generated `1.` `2.`
+    /// counters — which are text — copied themselves.
+    ///
+    /// This is where the node that drew the picture says what the picture
+    /// says in words, and it is a declaration rather than a rule the frame
+    /// infers. The alternative was for
+    /// [`crate::frame::PetrifiedFrame::selected_text`] to recognise a bullet
+    /// by its shape — a canvas sitting before a label inside a
+    /// [`crate::tree::Role::ListItem`] — which puts one component's
+    /// arrangement into the engine's clipboard and gets the next drawn mark
+    /// wrong. A task list's drawn checkbox would say `- [ ]` here and need no
+    /// change anywhere else.
+    ///
+    /// Markdown, not a transcription. The mark Carbon draws at level two is
+    /// a filled square, and `-` is what a reader wants in a document; a `▪`
+    /// on the clipboard is a character no renderer reads as a list. The
+    /// indent the copy already carries makes the level plain.
+    ///
+    /// **Read only from nodes that paint no text of their own.** Set on a
+    /// `text` node it is inert, because the run's own string is already what
+    /// the clipboard takes and emitting both would say everything twice.
+    ///
+    /// Not a digest input: it changes no pixel. `crate::frame::digest`
+    /// destructures it and drops it, which is the decision that file's
+    /// no-rest-pattern comment exists to force.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub markdown: Option<String>,
     /// Registered painter name for `custom`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub custom_kind: Option<String>,

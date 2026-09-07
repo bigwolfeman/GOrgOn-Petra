@@ -67,6 +67,11 @@ use super::tokens::{SPACING_02, SPACING_07, t};
 use crate::geom::{Align, Axis};
 use crate::tree::{AxisConstraint, InsetRefs, Key, Role, Semantics, ViewNode};
 
+/// What a drawn bullet copies as. Markdown's list item, for every level:
+/// the mark Carbon draws changes with depth and Markdown's does not, and the
+/// depth is already in the indent [`crate::frame::markdown`] writes.
+const BULLET_MARKDOWN: &str = "-";
+
 /// The unordered marker column: Carbon's `$spacing-05` hang (`_list.scss:87`).
 const MARKER_COLUMN_UNORDERED: f32 = 16.0;
 /// The ordered marker column: the counter's `$spacing-06` hang, room for
@@ -290,7 +295,16 @@ fn marker_node(marker: &Marker, column: f32) -> ViewNode {
         // from `text.primary` (`token/shipped.rs`'s `ICON_TOKENS` doc), so
         // the bullet is the same ink as the label Carbon gives `$text-primary`
         // (`_list.scss:44`) rather than a second grey.
-        Marker::Glyph(bullet) => icon_toned("marker", bullet.mark(), IconTone::Primary),
+        Marker::Glyph(bullet) => {
+            let mut glyph = icon_toned("marker", bullet.mark(), IconTone::Primary);
+            // The picture says what it stands for, so a copied list arrives
+            // somewhere else as a list. Every bullet says `-`, not the mark
+            // it draws: `-` is what Markdown reads as an item, and the level
+            // the drawn dash/square/disc alternation encodes is already in
+            // the indent the copy carries. See `Props::markdown`.
+            glyph.props.markdown = Some(BULLET_MARKDOWN.to_owned());
+            glyph
+        }
     };
     set_column(&mut node, column);
     node

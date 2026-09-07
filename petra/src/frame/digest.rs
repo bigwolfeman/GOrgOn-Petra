@@ -261,6 +261,13 @@ pub fn hash_paint_content(content: &PaintContent) -> u64 {
         caret,
         canvas,
         selection,
+        // Dropped, and the only field here that is: the Markdown a picture
+        // stands for reaches the clipboard, never a pixel. Two frames
+        // differing in it are the same picture, which is exactly what a frame
+        // digest promises to say (`contracts/frame-identity.md` §2). Hashing
+        // it would put a clipboard concern into frame identity and move
+        // `DOMAIN` for a change no screenshot can show.
+        markdown: _,
     } = content;
 
     let mut w = Canonical::new();
@@ -1161,6 +1168,7 @@ mod tests {
             caret: None,
             canvas: None,
             selection: None,
+            markdown: None,
         }
     }
 
@@ -1695,6 +1703,7 @@ mod tests {
             caret: None,
             canvas: None,
             selection: None,
+            markdown: None,
         };
         assert_ne!(hash_paint_content(&content), hash_text("Fibers"));
     }
@@ -1712,6 +1721,7 @@ mod tests {
             caret: None,
             canvas: None,
             selection: None,
+            markdown: None,
         };
         assert_ne!(
             hash_paint_content(&split("ab", "c")),
@@ -1726,6 +1736,7 @@ mod tests {
             caret: None,
             canvas: None,
             selection: None,
+            markdown: None,
         };
         let empty = PaintContent {
             image: Some(String::new()),
@@ -1745,6 +1756,7 @@ mod tests {
             caret: None,
             canvas: None,
             selection: None,
+            markdown: None,
         };
         assert_ne!(
             hash_paint_content(&with(one)),
