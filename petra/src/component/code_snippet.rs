@@ -7,7 +7,8 @@
 //! - [`code_snippet`] — single line, height 40, fill [`SURFACE_RAISED`].
 //! - [`code_snippet_multi`] — multi-line, min-height 288.
 //! - [`code_snippet_inline`] — inline, height 16, radius [`SHAPE_SM`]
-//!   (SCSS 4px; style-page 2px is stale).
+//!   (SCSS 4px; style-page 2px is stale). The **whole chip is the copy
+//!   control**; see the constructor.
 //!
 //! Ink is [`super::tokens::TEXT_PRIMARY`]. Do not invent syntax colours.
 //! Copy is a labelled [`Role::Button`] (`"Copy"`) drawing
@@ -22,8 +23,8 @@ use super::pad;
 use super::stack;
 use super::text::text;
 use super::tokens::{
-    LINK_PRIMARY, SHAPE_SM, SIZE_MD, SPACING_02, SPACING_03, SPACING_05, SURFACE_LAYER_THREE,
-    SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_CODE, t,
+    LAYER_ACTIVE, LAYER_HOVER, LINK_PRIMARY, SHAPE_SM, SIZE_MD, SPACING_02, SPACING_03, SPACING_05,
+    SURFACE_LAYER_THREE, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_CODE, t,
 };
 use super::tooltip::tooltip_anchored;
 use crate::geom::{Align, Axis};
@@ -66,7 +67,12 @@ pub const COPY_FEEDBACK_SECONDS: f64 = 2.0;
 pub const COPY_FEEDBACK_KEY: &str = "copied";
 
 /// Key of the copy control inside any snippet that has one.
+///
+/// The inline variant has none: the chip itself is the control, which is
+/// what [`code_snippet_copied`] falls back to.
 const COPY_KEY: &str = "copy";
+/// Key of the code run inside every snippet.
+const CODE_KEY: &str = "code";
 /// Key of the glyph inside the copy control, which is what the feedback
 /// bubble anchors to. See [`code_snippet_copied`].
 const COPY_ICON_KEY: &str = "copy-icon";
@@ -116,7 +122,51 @@ pub fn code_snippet_multi(key: impl Into<Key>, code: impl Into<String>) -> ViewN
     })
 }
 
-/// Inline snippet. Height 16, radius sm. Display only — no copy button.
+/// The inline chip's accessible name, which is also what it does.
+///
+/// Carbon's own default for the control
+/// (`@carbon/react/lib/components/CodeSnippet/CodeSnippet.js`:
+/// `["aria-label"]: ariaLabel = "Copy to clipboard"`). The chip carries no
+/// glyph and no second word, so this name is the only channel that says the
+/// chip is pressable — which is why it is the control's name and not a
+/// tooltip.
+const INLINE_LABEL: &str = "Copy to clipboard";
+
+const INLINE_INTENTS: &[Interaction] = &[Interaction::Focus, Interaction::Click];
+
+/// Inline snippet. Height 16, radius sm. **The chip is a copy button.**
+///
+/// The operator, round five: *"the code snippet, the one with the smallest
+/// box, should auto copy and paste when clicked and do a little reaction to
+/// show it happened like the rest."*
+///
+/// That is Carbon's own inline snippet and this was the other branch of it.
+/// `CodeSnippet.js` renders `type="inline"` as a `Copy` — a real button whose
+/// `onClick` is `handleCopyClick` and whose feedback is the same `Copied!`
+/// bubble the other two wells show. The bare `<span>` this used to be is
+/// Carbon's `hideCopyButton` variant, which nothing in the catalog asked for.
+///
+/// # What the chip declares, and what it stops declaring
+///
+/// It gains [`Role::Button`], [`INLINE_LABEL`], and the hover and pressed
+/// fills `_code-snippet.scss:86-94` gives it — `$layer-hover` and
+/// `$layer-active`, the same pair every other pressable surface in this
+/// library uses, so the chip answers a pointer before it is pressed.
+///
+/// It loses its selectability, and that is not a regression but the same
+/// rule read from the other side. `gorgon_petra::input::hit_text` gives every
+/// run in the library a selection *unless* a control owns the press, and this
+/// chip now owns its own. A browser does exactly this: text inside a
+/// `<button>` is the button's. The two multi-word wells are where a person
+/// drags out a fragment, and they keep it.
+///
+/// # Focus wears a box here, and only here among the three
+///
+/// [`FocusFigure::Border`], which is Carbon's own figure for this control
+/// (`_code-snippet.scss:96`: `&:focus { border: 1px solid $focus }`) rather
+/// than the outline it draws elsewhere. The chip is [`INLINE_HEIGHT`] tall
+/// and sits in running prose: a bar under it needs its gap plus its thickness
+/// below the box, and there is a line of text there.
 pub fn code_snippet_inline(key: impl Into<Key>, code: impl Into<String>) -> ViewNode {
     let mut node = stack(
         key,
@@ -131,7 +181,28 @@ pub fn code_snippet_inline(key: impl Into<Key>, code: impl Into<String>) -> View
         ..InsetRefs::default()
     });
     let mut node = paint_well(node);
+    // Carbon's inline snippet is `display: inline` (`_code-snippet.scss:78`):
+    // it is a chip the width of the words in it, set into running prose. The
+    // other two variants are blocks and fill their column. Nothing said so
+    // until the chip became pressable, and then it mattered: a control the
+    // width of the card is a control a press lands on from three inches away
+    // from the thing it names.
+    node.props.align_self = Some(Align::Start);
     node.props.tokens.insert("radius".into(), t(SHAPE_SM));
+    node.props
+        .tokens
+        .insert("background@hover".into(), t(LAYER_HOVER));
+    node.props
+        .tokens
+        .insert("background@active".into(), t(LAYER_ACTIVE));
+    let mut node = node.interactive(Role::Button, INLINE_LABEL, INLINE_INTENTS);
+    // `paint_well` seats focus on the enclosing well and rings it with
+    // `Sides`, which is right for the two wells a run is dragged through and
+    // wrong for a chip that *is* the control. Both are re-answered here
+    // rather than being made conditional inside `paint_well`: the well's
+    // reasoning is about a run inside a container, and this node has neither.
+    node.semantics.focus_shown_on = FocusShownOn::Own;
+    node.semantics.focus_figure = FocusFigure::Border;
     node.with_constraints(pin_height(INLINE_HEIGHT))
 }
 
@@ -230,7 +301,7 @@ impl CodeInk {
 #[must_use]
 pub fn code_runs(mut node: ViewNode, runs: Vec<TextRun>) -> ViewNode {
     fn fill(node: &mut ViewNode, runs: &[TextRun]) -> bool {
-        if node.key.as_str() == "code" {
+        if node.key.as_str() == CODE_KEY {
             node.props.runs = runs.to_vec();
             return true;
         }
@@ -250,8 +321,12 @@ pub fn code_runs(mut node: ViewNode, runs: Vec<TextRun>) -> ViewNode {
 /// Say a snippet was copied, or stop saying it.
 ///
 /// Takes any of the three snippet constructors, the way [`code_runs`] does,
-/// and reaches the control keyed `"copy"` inside it. A snippet with no copy
-/// control — the inline variant — comes back unchanged.
+/// and reaches the copy control inside it. Two shapes, because the library
+/// has two: the two wells hang a button keyed [`COPY_KEY`] beside their run,
+/// and the inline chip **is** the button ([`code_snippet_inline`]), so there
+/// is nothing keyed `copy` to find. The fallback is the root itself, and only
+/// when the root is a [`Role::Button`] — a property of the control rather
+/// than a second magic key, so a well can never be mistaken for one.
 ///
 /// # What Carbon does
 ///
@@ -285,20 +360,27 @@ pub fn code_runs(mut node: ViewNode, runs: Vec<TextRun>) -> ViewNode {
 /// [`crate::tree::Anchor::Sibling`] resolves among siblings and the glyph is
 /// the one sibling it has. The two are concentric — the glyph is the only
 /// thing in the button, centred — so the bubble hangs under the middle of
-/// the control either way.
+/// the control either way. On the inline chip the one sibling is the code run
+/// itself, and the same sentence holds: the run is the only thing in the
+/// chip.
 #[must_use]
 pub fn code_snippet_copied(mut node: ViewNode, copied: bool) -> ViewNode {
     if !copied {
         return node;
     }
+    /// Say it on this node, hanging the bubble off `anchor` — the sibling
+    /// the zero-size surface resolves against.
+    fn say_copied(node: &mut ViewNode, anchor: &str) {
+        node.semantics.label = Some(COPY_FEEDBACK.to_owned());
+        node.children.push(Arc::new(tooltip_anchored(
+            COPY_FEEDBACK_KEY,
+            anchor,
+            COPY_FEEDBACK,
+        )));
+    }
     fn mark(node: &mut ViewNode) -> bool {
         if node.key.as_str() == COPY_KEY {
-            node.semantics.label = Some(COPY_FEEDBACK.to_owned());
-            node.children.push(Arc::new(tooltip_anchored(
-                COPY_FEEDBACK_KEY,
-                COPY_ICON_KEY,
-                COPY_FEEDBACK,
-            )));
+            say_copied(node, COPY_ICON_KEY);
             return true;
         }
         for child in &mut node.children {
@@ -310,7 +392,9 @@ pub fn code_snippet_copied(mut node: ViewNode, copied: bool) -> ViewNode {
         }
         false
     }
-    mark(&mut node);
+    if !mark(&mut node) && node.semantics.role == Some(Role::Button) {
+        say_copied(&mut node, CODE_KEY);
+    }
     node
 }
 
@@ -330,7 +414,7 @@ const CODE_INTENTS: &[Interaction] = &[Interaction::Focus, Interaction::Drag, In
 const CODE_LABEL: &str = "Code snippet";
 
 fn code_text(code: String, selectable: bool) -> ViewNode {
-    let mut node = text("code", code);
+    let mut node = text(CODE_KEY, code);
     // Carbon sets every snippet in `$code-01` / `$code-02`, which is IBM
     // Plex Mono. This bound nothing until 2026-09-05, so the catalog's code
     // snippet was set in the sans body face -- a code snippet whose columns
@@ -486,15 +570,18 @@ fn pin_height(h: f32) -> Constraints {
 #[cfg(test)]
 mod tests {
     use super::{
-        COPY_FEEDBACK, COPY_FEEDBACK_KEY, COPY_FEEDBACK_SECONDS, CodeInk, INLINE_HEIGHT, MULTI_MIN,
-        SHAPE_SM, SIZE_MD, SURFACE_LAYER_THREE, SURFACE_RAISED, code_runs, code_snippet,
-        code_snippet_copied, code_snippet_inline, code_snippet_multi,
+        COPY_FEEDBACK, COPY_FEEDBACK_KEY, COPY_FEEDBACK_SECONDS, CodeInk, INLINE_HEIGHT,
+        LAYER_ACTIVE, LAYER_HOVER, MULTI_MIN, SHAPE_SM, SIZE_MD, SURFACE_LAYER_THREE,
+        SURFACE_RAISED, code_runs, code_snippet, code_snippet_copied, code_snippet_inline,
+        code_snippet_multi,
     };
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
-    use crate::tree::{Interaction, NodeKind, Props, Registry, Role, ViewNode};
+    use crate::tree::{
+        FocusFigure, FocusShownOn, Interaction, NodeKind, Props, Registry, Role, ViewNode,
+    };
 
     fn named<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         descendant(node, key).unwrap_or_else(|| panic!("no descendant keyed `{key}`"))
@@ -564,12 +651,50 @@ mod tests {
         assert_eq!(INLINE_HEIGHT, 16.0);
         assert_eq!(token(&node, "radius"), Some(SHAPE_SM));
         assert_eq!(token(&node, "background"), Some(SURFACE_RAISED));
-        assert!(!node.is_interactive());
+    }
+
+    /// The chip is the copy control, and it carries no separate one.
+    ///
+    /// This test read the other way until 2026-09-06 — *"inline snippet has
+    /// no copy button"* — which was Carbon's `hideCopyButton` branch written
+    /// down as if it were the default. The operator: *"the code snippet, the
+    /// one with the smallest box, should auto copy and paste when clicked."*
+    #[test]
+    fn the_inline_chip_is_itself_the_copy_control() {
+        let node = code_snippet_inline("s", "ViewNode");
+        assert_eq!(node.semantics.role, Some(Role::Button));
+        assert_eq!(node.semantics.label.as_deref(), Some(super::INLINE_LABEL));
+        assert!(node.interactions.contains(&Interaction::Click));
+        assert!(node.interactions.contains(&Interaction::Focus));
         assert!(
             node.children
                 .iter()
                 .all(|child| child.semantics.role != Some(Role::Button)),
-            "inline snippet has no copy button"
+            "the chip is the control; a second button inside it would be two"
+        );
+        // The pointer has to be answered before the press, or a control that
+        // looks like a label is a control nobody presses.
+        assert_eq!(token(&node, "background@hover"), Some(LAYER_HOVER));
+        assert_eq!(token(&node, "background@active"), Some(LAYER_ACTIVE));
+        // Carbon's own figure for this one control, and the one that fits a
+        // 16-tall chip set in running prose.
+        assert_eq!(node.semantics.focus_figure, FocusFigure::Border);
+        assert_eq!(node.semantics.focus_shown_on, FocusShownOn::Own);
+    }
+
+    /// A run inside a control belongs to the control, which is the same rule
+    /// `gorgon_petra::input::hit_text` applies to every button label in the
+    /// library. The two multi-word wells are where a fragment gets dragged
+    /// out, and they keep their selection ground.
+    #[test]
+    fn the_inline_chips_run_is_not_a_selection_ground() {
+        let chip = code_snippet_inline("s", "ViewNode");
+        let run = named(&chip, "code");
+        assert_eq!(token(run, "selection"), None);
+        let well = code_snippet("s", "ViewNode");
+        assert_eq!(
+            token(named(&well, "code"), "selection"),
+            Some(SURFACE_LAYER_THREE)
         );
     }
 
@@ -830,11 +955,59 @@ mod tests {
         }
     }
 
-    /// The inline snippet has no copy control, so there is nothing to say.
+    /// The chip answers with the same word the two wells answer with, hung
+    /// off the one sibling it has.
+    ///
+    /// The operator asked for the reaction by name: *"do a little reaction to
+    /// show it happened like the rest."* "Like the rest" is load-bearing — a
+    /// second kind of acknowledgement would be a second thing to learn — so
+    /// this asserts the bubble is [`COPY_FEEDBACK`] under [`COPY_FEEDBACK_KEY`]
+    /// and that the accessible name moves with it, which is the pair the
+    /// wells are already held to.
     #[test]
-    fn an_inline_snippet_has_no_copy_control_and_no_feedback() {
+    fn the_inline_chip_says_copied_the_way_the_wells_do() {
         let bare = code_snippet_inline("s", "ViewNode");
-        assert_eq!(code_snippet_copied(bare.clone(), true), bare);
+        assert_eq!(
+            code_snippet_copied(bare.clone(), false),
+            bare,
+            "a chip that was not copied says nothing"
+        );
+        let said = code_snippet_copied(bare, true);
+        assert_eq!(said.semantics.label.as_deref(), Some(COPY_FEEDBACK));
+        let bubble = named(&said, COPY_FEEDBACK_KEY);
+        assert_eq!(bubble.semantics.label.as_deref(), Some(COPY_FEEDBACK));
+        // Anchored to the run, because on this control the run is the one
+        // sibling — the same sentence the wells' glyph anchor rests on.
+        assert!(
+            matches!(
+                &bubble.props.anchor,
+                Some(crate::tree::Anchor::Sibling { key, .. }) if key.as_str() == "code"
+            ),
+            "the bubble hangs off {:?} rather than the chip's own run",
+            bubble.props.anchor
+        );
+    }
+
+    /// A well is not a chip, and the fallback must not make it one. The two
+    /// wells keep saying it on their `copy` button.
+    #[test]
+    fn the_fallback_never_fires_on_a_well() {
+        for well in [
+            code_snippet("s", "ViewNode"),
+            code_snippet_multi("s", "ViewNode"),
+        ] {
+            let said = code_snippet_copied(well, true);
+            assert_ne!(
+                said.semantics.label.as_deref(),
+                Some(COPY_FEEDBACK),
+                "the well itself answered, so the fallback fired on a \
+                 control that has its own copy button"
+            );
+            assert_eq!(
+                named(&said, "copy").semantics.label.as_deref(),
+                Some(COPY_FEEDBACK)
+            );
+        }
     }
 
     const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };

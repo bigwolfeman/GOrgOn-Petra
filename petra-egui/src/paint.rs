@@ -103,10 +103,46 @@ pub const SILHOUETTE_SLOT: &str = "silhouette";
 pub const SHADOW_SLOT: &str = "shadow";
 
 /// Token slot filled behind the stretch of a node's text the operator has
-/// selected ([`gorgon_petra::frame::PaintContent::selection`]). Absent means
-/// no highlight is painted, whatever the frame says is selected — a node the
-/// design system has no selection ground for does not get one invented here.
+/// selected ([`gorgon_petra::frame::PaintContent::selection`]).
+///
+/// An **override**, not a requirement. A node that binds neither this nor
+/// [`SELECTION_INK_SLOT`] takes [`DEFAULT_SELECTION_TOKEN`] and
+/// [`DEFAULT_SELECTION_INK_TOKEN`]; a node that binds both takes what it
+/// bound. Binding exactly one is a defect and is reported as an unresolved
+/// slot rather than half-honoured, because a ground without its ink can sink
+/// a coloured run below AA and an ink without its ground recolours text for
+/// no visible reason.
 pub const SELECTION_SLOT: &str = "selection";
+
+/// The selection ground for every run that does not name its own.
+///
+/// # Why this is a default and not, like every other slot, a requirement
+///
+/// The painter invents no colours, and this does not: it names a token the
+/// design system already ships, the way [`DEFAULT_TEXT_TOKEN`] does for ink
+/// and [`crate::paint::focus`]'s ring does for the focus caret. What changed
+/// is who has to say it. Selectability used to be declared per component, and
+/// in the whole library exactly one component — the code snippet — ever
+/// declared it. The operator, reading the catalog: *"a lot of these text
+/// elements are not highlightable, like the lists. A lot are like this."*
+///
+/// # Why the accent and not a layer step
+///
+/// A selection has to be visible on `surface.base`, on all three layers, and
+/// in both themes, and no single step off any one of those is a step off the
+/// others — that is the whole reason the layer set alternates in light and
+/// climbs in dark. A saturated fill is the only ground that reads against
+/// every one of them, and it is what every desktop and every browser paints.
+/// `text.on-accent` is defined *as* the ink for this fill, so the pair is
+/// legible by construction rather than by measurement.
+///
+/// The code snippet keeps its own quieter pair: inside a well the highlight
+/// is read against one known surface, and there a layer step is the better
+/// picture. That is what the override is for.
+pub const DEFAULT_SELECTION_TOKEN: &str = "accent.primary";
+
+/// The ink a selected run takes over [`DEFAULT_SELECTION_TOKEN`].
+pub const DEFAULT_SELECTION_INK_TOKEN: &str = "text.on-accent";
 /// Token slot the selected stretch's glyphs are drawn in, over
 /// [`SELECTION_SLOT`]'s fill.
 ///
@@ -117,7 +153,8 @@ pub const SELECTION_SLOT: &str = "selection";
 /// takes this ink instead, exactly as `::selection { color }` does in a
 /// browser. Both are resolved together and neither is used alone: a node
 /// binding one and not the other gets no highlight and the missing slot is
-/// reported.
+/// reported. See [`DEFAULT_SELECTION_INK_TOKEN`] for what a node that binds
+/// neither takes.
 pub const SELECTION_INK_SLOT: &str = "selection-ink";
 
 /// Every token slot this painter knows how to use. Anything else a node binds
@@ -1708,12 +1745,21 @@ fn paint_one(
         // The selected stretch, resolved as a pair. Neither half is usable
         // alone: the fill without the ink can sink a coloured run below AA,
         // and the ink without the fill recolours text for no visible reason.
-        // A node that binds neither gets no highlight even when the frame
-        // says something in it is selected, which is the same rule every
-        // other slot is under — the painter never invents a token.
+        // So a node binding one and not the other is refused rather than
+        // half-honoured, and a node binding neither takes the shipped pair —
+        // which is a token the design system names, not a colour this painter
+        // chose (`DEFAULT_SELECTION_TOKEN`).
         let selection = content.selection.as_ref().and_then(|range| {
-            let ground = resolve_slot(&content.tokens, SELECTION_SLOT, state)?;
-            let ink = resolve_slot(&content.tokens, SELECTION_INK_SLOT, state)?;
+            let bound = content.tokens.contains_key(SELECTION_SLOT)
+                || content.tokens.contains_key(SELECTION_INK_SLOT);
+            let (ground, ink) = if bound {
+                (
+                    resolve_slot(&content.tokens, SELECTION_SLOT, state)?,
+                    resolve_slot(&content.tokens, SELECTION_INK_SLOT, state)?,
+                )
+            } else {
+                (DEFAULT_SELECTION_TOKEN, DEFAULT_SELECTION_INK_TOKEN)
+            };
             let ground = resolve_or_record(env.colors, ground, report)?;
             let ink = resolve_or_record(env.colors, ink, report)?;
             Some((range, ground, ink))

@@ -18,6 +18,11 @@ const SINGLE: &str = "pcargo test -p gorgon-petra --lib";
 const SNIP: &str = "snip";
 /// Key of the multi-line snippet.
 const SNIP_MULTI: &str = "snip-multi";
+/// Key of the inline chip, which is a copy control in its own right.
+const SNIP_INLINE: &str = "snip-in";
+/// The inline sample. A const for the same reason [`SINGLE`] is one: the
+/// chip hands this exact string back when it is pressed.
+const INLINE: &str = "cargo xtask gates";
 /// Key of the copy control inside either snippet (`code_snippet.rs`).
 const COPY: &str = "copy";
 
@@ -140,6 +145,9 @@ enum Well {
     Single,
     /// The multi-line snippet, keyed [`SNIP_MULTI`].
     Multi,
+    /// The inline chip, keyed [`SNIP_INLINE`]. It has no copy *button*; the
+    /// chip is the control (`component::code_snippet::code_snippet_inline`).
+    Inline,
 }
 
 /// The Code snippet page.
@@ -222,7 +230,10 @@ impl Page for CodeSnippet {
                         code_runs(code_snippet_multi(SNIP_MULTI, MULTI), shell_runs(MULTI)),
                         self.saying_copied(Well::Multi),
                     ),
-                    code_snippet_inline("snip-in", "cargo xtask gates"),
+                    code_snippet_copied(
+                        code_snippet_inline(SNIP_INLINE, INLINE),
+                        self.saying_copied(Well::Inline),
+                    ),
                 ],
             )],
         )
@@ -291,10 +302,15 @@ impl Page for CodeSnippet {
     /// segment test that asked the short question first would answer it for
     /// both wells.
     fn handle(&mut self, _event: &InputEvent, node: &str) -> bool {
-        if !path_has(node, COPY) {
+        // The inline chip is asked about first and is asked a different
+        // question: it has no `copy` segment on its path, because it has no
+        // copy button — it *is* one. Testing `COPY` before this would answer
+        // `false` for it and the chip would be a control that does nothing.
+        let (well, text) = if path_has(node, SNIP_INLINE) {
+            (Well::Inline, INLINE)
+        } else if !path_has(node, COPY) {
             return false;
-        }
-        let (well, text) = if path_has(node, SNIP_MULTI) {
+        } else if path_has(node, SNIP_MULTI) {
             (Well::Multi, MULTI)
         } else if path_has(node, SNIP) {
             (Well::Single, SINGLE)

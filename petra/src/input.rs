@@ -12,7 +12,7 @@ use std::ops::Range;
 
 use crate::frame::{PetrifiedFrame, Placement};
 use crate::geom::{Point, Size};
-use crate::tree::{InputPolicy, Interaction};
+use crate::tree::{InputPolicy, Interaction, NodeKind};
 
 /// A pointer button.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -1197,6 +1197,126 @@ fn dismiss_requests(
         .collect()
 }
 
+/// The text run a press at `pos` may start a selection in, or `None` when
+/// that press belongs to something else.
+///
+/// # Why this exists beside [`hit_test`] rather than inside it
+///
+/// Every other pointer gesture is aimed by a *declaration*: a node says
+/// [`Interaction::Click`] and the hit test finds it. A selection cannot be
+/// declared that way without saying it forty-two times and then saying it
+/// again for every component added after. The operator, on the catalog:
+///
+/// > *"a lot of these text elements are not highlightable, like the lists.
+/// > A lot are like this."*
+///
+/// So selectability is **derived**, and the rule is the one a browser applies
+/// without being asked: running text is selectable, and text that is part of
+/// a control is part of the control. Walking topmost-first, the first
+/// placement whose rect and clip contain `pos` and which is one of these
+/// three ends the search:
+///
+/// 1. **A `Text` placement with no control above it in the tree** is the
+///    target. "Above it in the tree", not "above it in paint order", and not
+///    the run itself: a code well's run declares [`Interaction::Drag`] to win
+///    its own capture and is the most selectable thing in the library.
+///
+/// 2. **A `Text` placement inside a control** ends the search with `None`.
+///    A button's label is a `Text` placement and it paints *above* its
+///    button, so reverse paint order meets the label first — without this
+///    clause every label in the library would be draggable, and the press
+///    that dragged it would never reach its own control. It ends the search
+///    rather than skipping, because the press is the control's and the
+///    paragraph the button is drawn over is not a second answer to it.
+///
+/// 3. **Anything else that claims a press** — [`Interaction::Click`] or
+///    [`Interaction::Drag`], the exact pair [`PointerState::route`]
+///    hit-tests on a press — ends the search with `None`, for the same
+///    reason.
+///
+/// Disabled is deliberately **not** consulted, and this is the one place in
+/// this module where it is not. A disabled control still owns its own rect as
+/// far as the reader is concerned; dragging a highlight across a greyed-out
+/// button's label is not a thing any surface does.
+///
+/// `surfaces` is the map [`route_with_surfaces`] takes, and is used for the
+/// same two things: a position outside an open [`InputPolicy::Block`]
+/// surface selects nothing, and nothing behind such a surface is reachable.
+/// A dialog's body text is selectable; the page text behind the dialog is
+/// not.
+///
+/// # What this does not do
+///
+/// It finds no run for a press that lands on no text — the gap between two
+/// paragraphs, the padding inside a card. A browser walks outward to the
+/// nearest run and starts there; this returns `None` and the press clears
+/// the selection instead. The nearest-run rule needs a distance metric over
+/// laid-out glyphs, which is on the host's side of the U-09 boundary, and
+/// nothing in the operator's report asks for it.
+#[must_use]
+pub fn hit_text<'a>(
+    frame: &'a PetrifiedFrame,
+    pos: Point,
+    surfaces: &BTreeMap<String, InputPolicy>,
+) -> Option<&'a Placement> {
+    if outside_an_open_modal(frame, pos, surfaces) {
+        return None;
+    }
+    let floor = block_floor(frame, pos, surfaces).map(|p| p.id.as_str());
+    let mut order: Vec<usize> = (0..frame.placements.len()).collect();
+    // The same order `PetrifiedFrame::paint_order` produces — a stable sort
+    // by z — kept as indices because clause 2 walks `parent`, which is an
+    // index into `placements` and not into the sorted view.
+    order.sort_by_key(|&i| frame.placements[i].z);
+    for &index in order.iter().rev() {
+        let placement = &frame.placements[index];
+        if placement.rect.contains(pos) && placement.clip.contains(pos) {
+            // Text first, and the two answers it can give are both final. A
+            // run outside every control is the target; a run inside one is
+            // the control's, and so is the press — walking on from it would
+            // find whatever the control is drawn over.
+            if placement.kind == NodeKind::Text {
+                return (!inside_a_control(frame, index)).then_some(placement);
+            }
+            if claims_a_press(placement) {
+                return None;
+            }
+        }
+        if floor == Some(placement.id.as_str()) {
+            return None;
+        }
+    }
+    None
+}
+
+/// Whether a press over this placement is this placement's.
+///
+/// The pair [`PointerState::route`] hit-tests for on a press, in the order it
+/// does: `Drag` first so a gesture can start, then `Click`. Written here as
+/// one predicate so [`hit_text`] cannot drift from the routing it defers to.
+fn claims_a_press(placement: &Placement) -> bool {
+    let actions = &placement.semantics.actions;
+    actions.contains(&Interaction::Drag) || actions.contains(&Interaction::Click)
+}
+
+/// Whether any ancestor of `index` [`claims_a_press`].
+///
+/// Not `index` itself: a code well's run declares [`Interaction::Drag`] to
+/// win its own capture and is the most selectable thing in the library.
+fn inside_a_control(frame: &PetrifiedFrame, index: usize) -> bool {
+    let mut cursor = frame.placements[index].parent;
+    while let Some(at) = cursor {
+        let Some(placement) = frame.placements.get(at) else {
+            return false;
+        };
+        if claims_a_press(placement) {
+            return true;
+        }
+        cursor = placement.parent;
+    }
+    false
+}
+
 /// Whether `pos` falls outside the bounds of any surface this frame placed
 /// whose policy [`blocks_positional_input`]. With more than one open (nested
 /// modals), `pos` must be inside every one of them, or the position counts
@@ -1232,7 +1352,7 @@ fn blocks_positional_input(policy: InputPolicy) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        InputEvent, KeyCode, Modifiers, PointerButton, Route, activates, hit_test,
+        InputEvent, KeyCode, Modifiers, PointerButton, Route, activates, hit_test, hit_text,
         required_interaction, route, route_pointer_exit, route_with_surfaces,
     };
     use crate::frame::{
@@ -1289,6 +1409,304 @@ mod tests {
             viewport,
             transitions: TransitionActivity::default(),
         }
+    }
+
+    /// The shape every `hit_text` fixture is built from: a real parent chain,
+    /// because clause 2 of the rule walks one. `node` alone cannot express
+    /// this — every placement it makes is a root.
+    fn kid(
+        id: &str,
+        kind: NodeKind,
+        rect: Rect,
+        z: i32,
+        actions: &[Interaction],
+        parent: Option<usize>,
+    ) -> Placement {
+        Placement {
+            kind,
+            parent,
+            ..node(id, rect, z, actions)
+        }
+    }
+
+    /// The whole point of the pass: text nobody declared anything about.
+    #[test]
+    fn a_run_no_control_covers_is_the_selection_target() {
+        let f = frame(vec![
+            kid(
+                "/page",
+                NodeKind::Stack,
+                Rect::new(0.0, 0.0, 200.0, 200.0),
+                0,
+                &[],
+                None,
+            ),
+            kid(
+                "/page/item",
+                NodeKind::Text,
+                Rect::new(10.0, 10.0, 100.0, 20.0),
+                0,
+                &[],
+                Some(0),
+            ),
+        ]);
+        let hit = hit_text(&f, Point::new(20.0, 15.0), &BTreeMap::new()).unwrap();
+        assert_eq!(hit.id, "/page/item");
+    }
+
+    /// Clause 2, and the reason the rule cannot be "every `Text` placement".
+    /// A button's label paints above its button, so reverse paint order meets
+    /// the label first; without the ancestor walk every label in the library
+    /// would be draggable and the press would never reach its own control.
+    #[test]
+    fn a_controls_own_label_is_not_selectable() {
+        let f = frame(vec![
+            kid(
+                "/page",
+                NodeKind::Stack,
+                Rect::new(0.0, 0.0, 200.0, 200.0),
+                0,
+                &[],
+                None,
+            ),
+            kid(
+                "/page/btn",
+                NodeKind::Stack,
+                Rect::new(10.0, 10.0, 100.0, 40.0),
+                0,
+                &[Interaction::Click],
+                Some(0),
+            ),
+            kid(
+                "/page/btn/label",
+                NodeKind::Text,
+                Rect::new(20.0, 20.0, 60.0, 20.0),
+                0,
+                &[],
+                Some(1),
+            ),
+        ]);
+        assert!(hit_text(&f, Point::new(30.0, 25.0), &BTreeMap::new()).is_none());
+    }
+
+    /// Clause 1. The label is skipped and the walk must then *stop*, not
+    /// carry on to whatever the button is drawn over — a press on a control
+    /// is the control's, and selecting the paragraph behind it would be the
+    /// same defect from the other side.
+    #[test]
+    fn a_press_on_a_control_does_not_select_the_page_behind_it() {
+        let f = frame(vec![
+            kid(
+                "/page",
+                NodeKind::Stack,
+                Rect::new(0.0, 0.0, 200.0, 200.0),
+                0,
+                &[],
+                None,
+            ),
+            kid(
+                "/page/prose",
+                NodeKind::Text,
+                Rect::new(0.0, 0.0, 200.0, 200.0),
+                0,
+                &[],
+                Some(0),
+            ),
+            kid(
+                "/page/btn",
+                NodeKind::Stack,
+                Rect::new(10.0, 10.0, 100.0, 40.0),
+                5,
+                &[Interaction::Click],
+                Some(0),
+            ),
+            kid(
+                "/page/btn/label",
+                NodeKind::Text,
+                Rect::new(20.0, 20.0, 60.0, 20.0),
+                5,
+                &[],
+                Some(2),
+            ),
+        ]);
+        assert!(hit_text(&f, Point::new(30.0, 25.0), &BTreeMap::new()).is_none());
+        // …and the same prose one pixel outside the button still selects.
+        let hit = hit_text(&f, Point::new(150.0, 25.0), &BTreeMap::new()).unwrap();
+        assert_eq!(hit.id, "/page/prose");
+    }
+
+    /// A code well's run declares `Drag` to win its own capture. The ancestor
+    /// walk starts at the *parent* for exactly this case: the run is the most
+    /// selectable thing in the library and it is also the one run that claims
+    /// its own press.
+    #[test]
+    fn a_run_that_drags_itself_is_still_its_own_selection_target() {
+        let f = frame(vec![
+            kid(
+                "/page",
+                NodeKind::Stack,
+                Rect::new(0.0, 0.0, 200.0, 200.0),
+                0,
+                &[],
+                None,
+            ),
+            kid(
+                "/page/well",
+                NodeKind::Surface,
+                Rect::new(0.0, 0.0, 200.0, 60.0),
+                0,
+                &[],
+                Some(0),
+            ),
+            kid(
+                "/page/well/code",
+                NodeKind::Text,
+                Rect::new(10.0, 10.0, 100.0, 20.0),
+                0,
+                &[Interaction::Drag],
+                Some(1),
+            ),
+        ]);
+        let hit = hit_text(&f, Point::new(20.0, 15.0), &BTreeMap::new()).unwrap();
+        assert_eq!(hit.id, "/page/well/code");
+    }
+
+    /// A scroll pane is an ancestor of nearly every run in the catalog and it
+    /// declares an interaction. If the ancestor walk asked "is any ancestor
+    /// interactive" rather than "does any ancestor claim a *press*", the
+    /// feature would be dead on arrival on every scrolling page.
+    #[test]
+    fn a_scrolling_pane_over_a_run_does_not_make_it_the_panes_text() {
+        let f = frame(vec![
+            kid(
+                "/pane",
+                NodeKind::Scroll,
+                Rect::new(0.0, 0.0, 200.0, 200.0),
+                0,
+                &[Interaction::Scroll],
+                None,
+            ),
+            kid(
+                "/pane/item",
+                NodeKind::Text,
+                Rect::new(10.0, 10.0, 100.0, 20.0),
+                0,
+                &[],
+                Some(0),
+            ),
+        ]);
+        let hit = hit_text(&f, Point::new(20.0, 15.0), &BTreeMap::new()).unwrap();
+        assert_eq!(hit.id, "/pane/item");
+    }
+
+    /// The floor, the same one `route_with_surfaces` applies: a dialog's body
+    /// text is selectable, and the page text the dialog covers is not.
+    #[test]
+    fn text_behind_an_open_modal_is_out_of_reach() {
+        let f = frame(vec![
+            kid(
+                "/page",
+                NodeKind::Stack,
+                Rect::new(0.0, 0.0, 200.0, 200.0),
+                0,
+                &[],
+                None,
+            ),
+            kid(
+                "/page/prose",
+                NodeKind::Text,
+                Rect::new(0.0, 0.0, 200.0, 200.0),
+                0,
+                &[],
+                Some(0),
+            ),
+            kid(
+                "/dialog",
+                NodeKind::Surface,
+                Rect::new(40.0, 40.0, 120.0, 120.0),
+                10,
+                &[],
+                None,
+            ),
+            kid(
+                "/dialog/body",
+                NodeKind::Text,
+                Rect::new(50.0, 50.0, 100.0, 20.0),
+                10,
+                &[],
+                Some(2),
+            ),
+        ]);
+        let surfaces = BTreeMap::from([("/dialog".to_owned(), InputPolicy::Block)]);
+        let hit = hit_text(&f, Point::new(60.0, 55.0), &surfaces).unwrap();
+        assert_eq!(hit.id, "/dialog/body");
+        // Inside the dialog's rect but not on its text: the prose underneath
+        // is behind the floor, so nothing is selected rather than the page.
+        assert!(hit_text(&f, Point::new(60.0, 120.0), &surfaces).is_none());
+        // And outside the dialog entirely, which is the swallow rule.
+        assert!(hit_text(&f, Point::new(10.0, 10.0), &surfaces).is_none());
+    }
+
+    /// Clause 1 does not consult `disabled`, and this is the case that says
+    /// why: a greyed-out button still owns its own rect, and dragging a
+    /// highlight across its label is not something any surface does.
+    #[test]
+    fn a_disabled_control_still_owns_its_own_rect() {
+        let mut disabled = kid(
+            "/page/btn",
+            NodeKind::Stack,
+            Rect::new(10.0, 10.0, 100.0, 40.0),
+            0,
+            &[Interaction::Click],
+            Some(0),
+        );
+        disabled.semantics.disabled = true;
+        let f = frame(vec![
+            kid(
+                "/page",
+                NodeKind::Stack,
+                Rect::new(0.0, 0.0, 200.0, 200.0),
+                0,
+                &[],
+                None,
+            ),
+            disabled,
+            kid(
+                "/page/btn/label",
+                NodeKind::Text,
+                Rect::new(20.0, 20.0, 60.0, 20.0),
+                0,
+                &[],
+                Some(1),
+            ),
+        ]);
+        assert!(hit_text(&f, Point::new(30.0, 25.0), &BTreeMap::new()).is_none());
+    }
+
+    /// The gap between two paragraphs. Named rather than left to be
+    /// discovered: a browser walks outward to the nearest run, and this does
+    /// not, so the press clears the selection instead of moving it.
+    #[test]
+    fn a_press_on_no_text_at_all_finds_no_run() {
+        let f = frame(vec![
+            kid(
+                "/page",
+                NodeKind::Stack,
+                Rect::new(0.0, 0.0, 200.0, 200.0),
+                0,
+                &[],
+                None,
+            ),
+            kid(
+                "/page/item",
+                NodeKind::Text,
+                Rect::new(10.0, 10.0, 100.0, 20.0),
+                0,
+                &[],
+                Some(0),
+            ),
+        ]);
+        assert!(hit_text(&f, Point::new(20.0, 80.0), &BTreeMap::new()).is_none());
     }
 
     #[test]

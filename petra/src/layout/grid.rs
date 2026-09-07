@@ -186,7 +186,13 @@ pub fn place(
                 // would otherwise report this grid as truncated.
                 continue;
             }
-            if align == Align::Stretch {
+            // `align_self` overrides the container's own `align` for this
+            // one child, exactly as `layout::stack` reads it. Read here as
+            // well as at `place_in_cell` because the two arms below gather
+            // *different evidence*, and a child placed by one rule while
+            // measured by the other would report a truncation it does not
+            // have — or hide one it does.
+            if child.props.align_self.unwrap_or(align) == Align::Stretch {
                 if child.constraints.horizontal.clamp(cell.w) > cell.w + FIT_EPSILON
                     || child.constraints.vertical.clamp(cell.h) > cell.h + FIT_EPSILON
                 {
@@ -241,7 +247,15 @@ pub fn place(
             let Some(cell) = cells.of(i) else {
                 continue;
             };
-            place_in_cell(child, ctx, path, cell, align, slot, sink);
+            place_in_cell(
+                child,
+                ctx,
+                path,
+                cell,
+                child.props.align_self.unwrap_or(align),
+                slot,
+                sink,
+            );
         }
     }
 
@@ -1077,7 +1091,16 @@ fn cumulative_offsets(origin: f32, sizes: &[f32], spacing: f32) -> Vec<f32> {
     offsets
 }
 
-/// Place one child into its resolved `cell`, per `GridProps::align`.
+/// Place one child into its resolved `cell`, per the alignment the caller
+/// resolved for it — the child's own `Props::align_self` where it declares
+/// one, and the grid's `align` otherwise.
+///
+/// A grid ignored `align_self` entirely until 2026-09-06, which made it a
+/// property a component could declare and silently not get. The case that
+/// found it: Carbon's inline code snippet is `display: inline` — a chip the
+/// width of the words in it — and every column in this library is a
+/// single-track `Grid`, so the chip filled the card. Nothing reported it,
+/// because "declared and dropped" is not a shape any gate here looks for.
 ///
 /// A cell is a box the child may be smaller than: every non-`Stretch`
 /// alignment measures the child against the cell size (it may answer
@@ -2145,6 +2168,50 @@ mod tests {
             placed[0].paint.truncated,
             "the grid clamped a child and must say so: {:?}",
             placed[0].paint
+        );
+    }
+
+    /// A grid honours a child's own `align_self`, the way a stack has since
+    /// it was written.
+    ///
+    /// The case that found the gap: Carbon's inline code snippet is
+    /// `display: inline` and declared `align_self: Start` to say so, and
+    /// every column in this library is a single-track `Grid` with
+    /// `Align::Stretch` — so the chip filled its card and the declaration
+    /// went nowhere. Nothing reported it. "Declared and dropped" is not a
+    /// shape any gate here looks for, which is why this test is written from
+    /// both sides: the opted-out child hugs, and its sibling still stretches.
+    #[test]
+    fn one_childs_align_self_hugs_while_its_sibling_still_stretches() {
+        let mut hugging = spacer("hug").with_constraints(max_on(Axis::Horizontal, 30.0));
+        hugging.props.align_self = Some(Align::Start);
+        let g = ViewNode::new(NodeKind::Grid, "g")
+            .with_props(Props {
+                columns: vec![TrackSize::Fixed { value: 200.0 }],
+                align: Some(Align::Stretch),
+                ..Props::default()
+            })
+            .with_children(vec![hugging, spacer("filling")]);
+        let mut h = Harness::new();
+        let mut path = path_at(&g);
+        let mut sink = PlacementList::new();
+        place(
+            &g,
+            &mut h.ctx(),
+            &mut path,
+            Slot::new(Rect::new(0.0, 0.0, 200.0, 100.0)),
+            &mut sink,
+        );
+        let placed = sink.as_slice();
+        assert_eq!(
+            placed[1].rect.w, 30.0,
+            "the child declaring `align_self: Start` still filled its 200-unit \
+             cell, so the grid dropped the declaration"
+        );
+        assert_eq!(
+            placed[2].rect.w, 200.0,
+            "the sibling that declared nothing must keep the grid's own \
+             Stretch"
         );
     }
 

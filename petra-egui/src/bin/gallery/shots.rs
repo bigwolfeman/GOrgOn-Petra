@@ -4305,6 +4305,209 @@ mod tests {
         );
     }
 
+    /// The operator, round five: *"the code snippet, the one with the
+    /// smallest box, should auto copy and paste when clicked and do a little
+    /// reaction to show it happened like the rest."*
+    ///
+    /// The inline chip was Carbon's `hideCopyButton` branch written down as
+    /// if it were the default. `CodeSnippet.js` renders `type="inline"` as a
+    /// `Copy` — a real button — and this drives the whole of that: the press,
+    /// the string leaving through `PlatformOutput` (not the frame, which is
+    /// where a page-level assertion would pass with the host wiring missing),
+    /// the same `Copied!` bubble the two wells raise, and the same two-second
+    /// clear. *"Like the rest"* is the load-bearing half of the ask.
+    #[test]
+    fn pressing_the_inline_chip_copies_it_and_says_so_like_the_wells_do() {
+        let mut cam = Camera::on("Code snippet");
+        assert!(
+            cam.clipboard().is_empty(),
+            "nothing is copied before anything is pressed"
+        );
+        assert_eq!(
+            cam.label("snip-in").as_deref(),
+            Some("Copy to clipboard"),
+            "the resting chip is named for what it does, which is the only \
+             channel that says a chip with no glyph is pressable"
+        );
+        // Carbon's chip is `display: inline` — the width of the words in it.
+        // It filled the whole card until `layout::grid` was taught to honour
+        // `align_self`, and a card-wide copy control is a press that lands
+        // three inches from the thing it names.
+        let (chip, well) = (cam.rect("snip-in"), cam.rect("snip-multi"));
+        assert!(
+            chip.w < well.w / 2.0,
+            "the chip is {} wide against a {}-wide well, so it is a block \
+             and not a chip",
+            chip.w,
+            well.w
+        );
+
+        cam.click("snip-in");
+        let shot = raster(&mut cam, "06-code-snippet-inline-copied");
+        assert_eq!(
+            cam.clipboard(),
+            ["cargo xtask gates".to_owned()],
+            "the chip copies its own line"
+        );
+        assert_eq!(
+            cam.paint("snip-in/copied/content/body")
+                .text
+                .as_ref()
+                .map(|run| run.text.as_str()),
+            Some("Copied!"),
+            "the chip answers with the same word the wells answer with"
+        );
+        assert_eq!(
+            cam.label("snip-in").as_deref(),
+            Some("Copied!"),
+            "and its accessible name moves with the word, as Carbon's does"
+        );
+        let bubble = cam.rect("snip-in/copied");
+        let inks: std::collections::HashSet<[u8; 4]> =
+            inset_pixels(&shot, bubble, 2).into_iter().collect();
+        assert!(
+            inks.len() > 2,
+            "the chip's bubble rasterizes to {} colours, so nothing is \
+             written in it",
+            inks.len()
+        );
+
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let two_seconds = (2.0 / FRAME_SECONDS).round() as usize + 1;
+        advance(&mut cam, two_seconds);
+        assert!(
+            !cam.has("copied"),
+            "the chip's feedback is still up two seconds later"
+        );
+        assert_eq!(cam.label("snip-in").as_deref(), Some("Copy to clipboard"));
+    }
+
+    /// The operator, round five: *"a lot of these text elements are not
+    /// highlightable, like the lists. A lot are like this."*
+    ///
+    /// A list item declares nothing — no role, no interaction, no selection
+    /// ground. That is the whole point of this test: what makes it selectable
+    /// is `gorgon_petra::input::hit_text`'s derived rule, and there is no line
+    /// in `component/list.rs` that could be deleted to break it. Before this
+    /// rule exactly one component in the library — the code snippet — had ever
+    /// declared itself selectable.
+    #[test]
+    fn dragging_across_a_list_item_highlights_the_words_it_crossed() {
+        let mut cam = Camera::on("List");
+        assert_eq!(
+            cam.selection("fix-0/label"),
+            None,
+            "nothing is selected before anything is dragged"
+        );
+        let resting = raster(&mut cam, "16-list-unselected");
+
+        let run = cam.rect("fix-0/label");
+        let mid = run.y + run.h / 2.0;
+        cam.drag_at(
+            Point::new(run.x + run.w * 0.25, mid),
+            Point::new(run.x + run.w * 0.75, mid),
+        );
+        let shot = raster(&mut cam, "16-list-selected");
+
+        let range = cam
+            .selection("fix-0/label")
+            .expect("a drag across a list item selected nothing at all");
+        let painted = cam.painted_text("fix-0/label");
+        let selected = painted[range.clone()].to_owned();
+        assert!(
+            !selected.is_empty() && selected.len() < painted.len(),
+            "the drag selected {selected:?} of {painted:?}, which is not a \
+             fragment"
+        );
+
+        // The band is on the screen, counted as a tone the run's rect did not
+        // carry before — the same measurement the code well's selection is
+        // held to, and for the same reason: a point sample lands on a glyph
+        // as easily as on the ground.
+        let (band, count) = new_tone(&resting, &shot, run);
+        assert!(
+            count > 100,
+            "the drag added no new tone to the item's rect, so nothing was \
+             painted behind the selected glyphs"
+        );
+        // `accent.primary` is `#0f62fe`: blue dominant, and far enough off
+        // the page's greys that the operator reads it as a step even with no
+        // red-green channel. Asserted as "blue leads the other two by a
+        // margin no grey can fake" rather than as an exact triple, because
+        // the band is composited over whatever the row's own ground is.
+        assert!(
+            u32::from(band[2]) > u32::from(band[0]) + 60
+                && u32::from(band[2]) > u32::from(band[1]) + 40,
+            "the selection band is {band:?}, which is not the accent fill: a \
+             highlight told apart from the page by luminance alone is one \
+             this operator cannot rely on"
+        );
+        // And it is a fragment, not the whole line.
+        let (left, right) = tone_span(&shot, run, band);
+        assert!(
+            left > run.x + 2.0 && right < run.x + run.w - 2.0,
+            "the highlight runs {left} to {right} across a run at {} to {}, \
+             so it is the whole label rather than the stretch dragged over",
+            run.x,
+            run.x + run.w
+        );
+
+        // The same band in light, measured against a light resting shot and
+        // not against the dark one — the ground under it goes from near-black
+        // to white, so a cross-theme difference would be mostly the theme.
+        // The pair is legible by construction, `text.on-accent` being defined
+        // as the ink for this fill, but a highlight that reads as a step in
+        // one theme and a smudge in the other is the defect this catalog
+        // keeps finding, so it is looked at rather than argued.
+        cam.light();
+        // A press on nothing drops the selection, which is the rule
+        // `hit_text` states and the way to get a clean resting shot.
+        press_empty_ground(&mut cam);
+        assert_eq!(
+            cam.selection("fix-0/label"),
+            None,
+            "a press on empty ground left the highlight up"
+        );
+        let resting = raster(&mut cam, "16-list-unselected-light");
+        cam.drag_at(
+            Point::new(run.x + run.w * 0.25, mid),
+            Point::new(run.x + run.w * 0.75, mid),
+        );
+        let lit = raster(&mut cam, "16-list-selected-light");
+        let (band, count) = new_tone(&resting, &lit, run);
+        assert!(
+            count > 100,
+            "the light theme painted no band behind the selected glyphs"
+        );
+        assert!(
+            u32::from(band[2]) > u32::from(band[0]) + 60
+                && u32::from(band[2]) > u32::from(band[1]) + 40,
+            "the light band is {band:?} rather than the accent fill"
+        );
+    }
+
+    /// The other half of the rule, and the one that would have broken the
+    /// library if it were missing: a button's label is a `Text` placement
+    /// that paints *above* its own button, so a naive "every run is
+    /// selectable" would have handed every press in the catalog to a label
+    /// and left every button inert.
+    #[test]
+    fn dragging_across_a_buttons_label_selects_nothing_and_the_button_still_hears_it() {
+        let mut cam = Camera::on("Button");
+        let run = cam.rect("btn-primary-label");
+        let mid = run.y + run.h / 2.0;
+        cam.drag_at(
+            Point::new(run.x + run.w * 0.25, mid),
+            Point::new(run.x + run.w * 0.75, mid),
+        );
+        assert_eq!(
+            cam.selection("btn-primary-label"),
+            None,
+            "a drag across a button's label selected it, so the label has \
+             taken a press its own button needed"
+        );
+    }
+
     /// Row 6, round 4. The operator: *"code snippet: I cant highlight text
     /// inside the code snippet blocks"*.
     ///

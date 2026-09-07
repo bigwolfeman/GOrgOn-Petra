@@ -73,8 +73,8 @@ use crate::focus_caret::FocusCaret;
 use crate::image::ImageSources;
 use crate::input::EventTranslator;
 use crate::paint::{
-    CaretOverlay, CaretPicture, CustomPainters, PaintReport, SELECTION_SLOT, caret_bands,
-    caret_clip_limit, focused_caret_target, paint_caret_overlay, paint_frame_with_caret,
+    CaretOverlay, CaretPicture, CustomPainters, PaintReport, caret_bands, caret_clip_limit,
+    focused_caret_target, paint_caret_overlay, paint_frame_with_caret,
 };
 use crate::schedule::FrameMotion;
 use crate::text::{FontFaces, GalleyShaper, Typography};
@@ -634,6 +634,12 @@ pub struct Host<A: App> {
     /// Where the pointer is, what it is over, and what it has captured. The
     /// pointer's peer of `focus`; see this module's doc.
     pointer: PointerState,
+    /// Whether the primary button is down on a run a selection anchored in.
+    ///
+    /// The half of a selection gesture no capture can hold: a paragraph
+    /// declares no [`Interaction::Drag`], so it is never granted one. See
+    /// [`App::apply_text_selection`].
+    selection_drag: bool,
     /// The underline that interpolates between focus targets. Host-owned so
     /// it never enters petrify or the digest; see `focus_caret`.
     caret: FocusCaret,
@@ -750,6 +756,7 @@ impl<A: App> Host<A> {
             picking: None,
             focus_taking: BTreeMap::new(),
             pointer: PointerState::new(),
+            selection_drag: false,
             caret: FocusCaret::new(),
             scene: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
@@ -2111,7 +2118,7 @@ impl<A: App> Host<A> {
             // and shaping is this crate's side of the U-09 boundary. Before
             // the application hears the event, so a copy control reading the
             // selection off this frame reads what this press just wrote.
-            self.apply_text_selection(event, &routing.outcome.route);
+            self.apply_text_selection(event);
             // Re-borrowed: `seat_pointer_focus` and `apply_scroll` above took
             // `&mut self`. Nothing between the routing and here places a
             // frame, so this is the frame the routing was computed against,
@@ -2387,42 +2394,63 @@ impl<A: App> Host<A> {
     ///
     /// # What makes a run selectable
     ///
-    /// Two declarations, both the component's: [`Interaction::Drag`], which
-    /// is what wins the press its capture, and a binding in the
-    /// [`SELECTION_SLOT`] token slot, which is the design system saying what
-    /// a selection looks like on this node. A text node with a drag and no
-    /// selection ground is something else being dragged, and is left alone.
-    fn apply_text_selection(&mut self, event: &InputEvent, route: &Route) {
+    /// Nothing the component says. [`gorgon_petra::input::hit_text`] derives
+    /// it from the frame: running text is selectable, and text inside a
+    /// control belongs to the control. That function carries the rule and the
+    /// reasoning; this one carries the gesture.
+    ///
+    /// It used to be two declarations, both the component's — a
+    /// [`Interaction::Drag`] and a [`crate::paint::SELECTION_SLOT`] binding — and exactly
+    /// one component in the library ever made them. The operator, looking at
+    /// the catalog: *"a lot of these text elements are not highlightable,
+    /// like the lists. A lot are like this."* A rule every author has to
+    /// remember is a rule that is remembered once.
+    ///
+    /// # Why the drag is tracked here and not read off the capture
+    ///
+    /// A capture is granted to a node that declares [`Interaction::Drag`],
+    /// and a paragraph declares nothing. So the extend step cannot ask
+    /// [`gorgon_petra::input::PointerState`] whether this gesture is still
+    /// running; it has to remember. `selection_drag` is that memory, set when
+    /// a press anchors and cleared by the release, the blur, and the pointer
+    /// leaving — the same three ends a capture has. It gives the same
+    /// guarantee the capture test gave, in the words of the gesture it is
+    /// actually about: a bare hover across a paragraph has no button down,
+    /// so it does not rewrite a selection made in it.
+    fn apply_text_selection(&mut self, event: &InputEvent) {
         match event {
             InputEvent::PointerPressed {
                 pos,
                 button: PointerButton::Primary,
                 ..
             } => {
-                let node = match route {
-                    Route::Pointer { node } => node.clone(),
-                    _ => {
-                        self.state.text_selection = None;
-                        return;
-                    }
-                };
-                // A press on anything else drops the selection, which is what
-                // every text surface does and what stops a stale highlight
-                // outliving the block it was made in.
-                self.state.text_selection =
+                // A press on anything that is not a selectable run drops the
+                // selection, which is what every text surface does and what
+                // stops a stale highlight outliving the block it was made in.
+                let node = self
+                    .last_frame
+                    .as_ref()
+                    .and_then(|frame| gorgon_petra::input::hit_text(frame, *pos, &self.last_scopes))
+                    .map(|run| run.id.clone());
+                self.state.text_selection = node.and_then(|node| {
                     Self::text_offset(&mut self.shaper, self.last_frame.as_ref(), &node, *pos)
-                        .map(|at| TextSelection::new(node, at));
+                        .map(|at| TextSelection::new(node, at))
+                });
+                self.selection_drag = self.state.text_selection.is_some();
             }
+            InputEvent::PointerReleased {
+                button: PointerButton::Primary,
+                ..
+            }
+            | InputEvent::WindowBlurred
+            | InputEvent::PointerLeft => self.selection_drag = false,
             InputEvent::PointerMoved { pos } => {
-                // Only the node that holds the capture extends its own
-                // selection. Without the capture test a bare hover across a
-                // code block would rewrite a selection made in it.
+                if !self.selection_drag {
+                    return;
+                }
                 let Some(node) = self.state.text_selection.as_ref().map(|s| s.node.clone()) else {
                     return;
                 };
-                if self.pointer.capture().is_none_or(|held| held.node != node) {
-                    return;
-                }
                 if let Some(at) =
                     Self::text_offset(&mut self.shaper, self.last_frame.as_ref(), &node, *pos)
                     && let Some(selection) = self.state.text_selection.as_mut()
@@ -2435,7 +2463,11 @@ impl<A: App> Host<A> {
     }
 
     /// The byte offset in `node`'s painted string under the window position
-    /// `pos`, or `None` when `node` is not a selectable run.
+    /// `pos`, or `None` when `node` paints no text this frame.
+    ///
+    /// Which runs are selectable is [`gorgon_petra::input::hit_text`]'s
+    /// answer and not this function's. This one only measures, and it
+    /// measures whatever `Text` placement it is handed.
     ///
     /// An associated function taking the two fields it needs rather than a
     /// method: it reads `last_frame` and writes through `shaper`, and the
@@ -2461,9 +2493,6 @@ impl<A: App> Host<A> {
             return None;
         }
         let content = frame.content.get(index)?;
-        if !content.tokens.contains_key(SELECTION_SLOT) {
-            return None;
-        }
         let text = content.text.as_ref()?;
         let request = TextRequest {
             text: &text.text,
