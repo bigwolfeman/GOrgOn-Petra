@@ -634,6 +634,13 @@ pub struct Host<A: App> {
     /// Where the pointer is, what it is over, and what it has captured. The
     /// pointer's peer of `focus`; see this module's doc.
     pointer: PointerState,
+    /// Text this host itself wants on the clipboard, taken and cleared by
+    /// the pass that runs after the input.
+    ///
+    /// Beside [`App::clipboard_request`] rather than through it: that channel
+    /// is the *application* asking, and this is the host answering a chord
+    /// over state the application does not own. See [`App::copy_selection`].
+    pending_copy: Option<String>,
     /// Whether the primary button is down on a run a selection anchored in.
     ///
     /// The half of a selection gesture no capture can hold: a paragraph
@@ -756,6 +763,7 @@ impl<A: App> Host<A> {
             picking: None,
             focus_taking: BTreeMap::new(),
             pointer: PointerState::new(),
+            pending_copy: None,
             selection_drag: false,
             caret: FocusCaret::new(),
             scene: Vec::new(),
@@ -1123,7 +1131,13 @@ impl<A: App> Host<A> {
         // After the input, not before: a press handled by this pass has to be
         // able to copy on this pass, or the operator's second press is what
         // copies what his first one selected.
-        if let Some(text) = self.app.clipboard_request() {
+        // Taken before the branch, never inside it: a request left sitting
+        // here would be answered by whatever the *next* pass copied.
+        let mine = self.pending_copy.take();
+        // The application's request wins. It is the more specific answer, and
+        // the two are different events anyway — the copy button is a press
+        // and the chord is a keystroke.
+        if let Some(text) = self.app.clipboard_request().or(mine) {
             ctx.copy_text(text);
         }
         // Same pass, same reason. A drop is input the window took before this
@@ -2131,6 +2145,12 @@ impl<A: App> Host<A> {
             if let Some(ended) = routing.ended {
                 self.app.handle(&ended.event(), &ended.route(), frame);
             }
+            // The copy chord over a selection. Here and not in the
+            // application, for the reason `copy_selection` gives; an
+            // application that answers the chord itself still wins, because
+            // `App::clipboard_request` is drained first. After the
+            // application's own turn, and after `frame`'s borrow ends.
+            self.copy_selection(event);
             if self.picture_must_rebuild(event) {
                 invalidate = true;
             }
@@ -2506,6 +2526,59 @@ impl<A: App> Host<A> {
             &galley,
             egui::vec2(pos.x - placement.rect.x, pos.y - placement.rect.y),
         ))
+    }
+
+    /// Put the selected bytes on the clipboard when the operator asks for
+    /// them, and report whether there were any.
+    ///
+    /// # Why the host and not the application
+    ///
+    /// The same argument [`App::apply_text_selection`] rests on, one step
+    /// further along. A selection is host-derived state: no application makes
+    /// one, none is told when one changes, and none can turn a window
+    /// position into a byte offset. An application asked to answer the chord
+    /// would be answering a question about a number it does not own.
+    ///
+    /// It was the application's until 2026-09-06, on the catalog's row 6,
+    /// which is exactly one page of forty-two. The operator had just been
+    /// given a highlight on every run in the library
+    /// (`gorgon_petra::input::hit_text`), and a highlight nobody can copy is
+    /// decoration.
+    ///
+    /// **The bytes come out of the frame.** `PaintContent` carries the string
+    /// that was painted and the range this host wrote onto it, so the
+    /// substring taken here is by construction the substring under the
+    /// highlight. There is no second copy of either to drift.
+    ///
+    /// Ctrl **or** Cmd, because the chord is the platform's and this host
+    /// runs on both.
+    fn copy_selection(&mut self, event: &InputEvent) -> bool {
+        let InputEvent::Key {
+            key: KeyCode::Char('c'),
+            pressed: true,
+            modifiers,
+            ..
+        } = event
+        else {
+            return false;
+        };
+        if !(modifiers.ctrl || modifiers.meta) {
+            return false;
+        }
+        let Some(node) = self.state.text_selection.as_ref().map(|s| s.node.as_str()) else {
+            return false;
+        };
+        let Some(content) = self.last_frame.as_ref().and_then(|f| f.content_of(node)) else {
+            return false;
+        };
+        let (Some(range), Some(text)) = (content.selection.clone(), content.text.as_ref()) else {
+            return false;
+        };
+        let Some(selected) = text.text.get(range) else {
+            return false;
+        };
+        self.pending_copy = Some(selected.to_owned());
+        true
     }
 
     fn apply_scroll(&mut self, node: &str, delta: Size) -> bool {

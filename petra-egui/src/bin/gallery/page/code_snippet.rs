@@ -4,8 +4,7 @@ use gorgon_petra::component::{
     COPY_FEEDBACK_SECONDS, CodeInk, code_runs, code_snippet, code_snippet_copied,
     code_snippet_inline, code_snippet_multi, section,
 };
-use gorgon_petra::frame::PetrifiedFrame;
-use gorgon_petra::input::{InputEvent, KeyCode};
+use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::{TextRun, ViewNode};
 
 use super::Page;
@@ -241,57 +240,6 @@ impl Page for CodeSnippet {
 
     fn clipboard_request(&mut self) -> Option<String> {
         self.pending.take()
-    }
-
-    /// The copy chord over a selection copies exactly the selected bytes.
-    ///
-    /// The operator, round 4: *"code snippet: I cant highlight text inside
-    /// the code snippet blocks"*. Highlighting is only half of that ask — a
-    /// selection nobody can copy is decoration — and the other half is the
-    /// chord every text surface answers.
-    ///
-    /// **The bytes come out of the frame, not out of this page's own
-    /// constants.** `PaintContent` carries the painted string and the range
-    /// the host wrote onto it, so the substring copied here is by
-    /// construction the substring under the highlight: there is no second
-    /// copy of either to drift. A page slicing `SINGLE` by a range read off
-    /// the frame would be right until the day the two strings differed, and
-    /// that is exactly the class of bug this repository calls theatre.
-    ///
-    /// `gesture` and not `handle`, because `handle` is handed a route and no
-    /// frame. This hook already receives the frame the route was computed
-    /// against, and the selection lives on that frame.
-    ///
-    /// Carbon's Copy **button** still copies the whole well
-    /// (`@carbon/react/lib/components/CodeSnippet/CodeSnippet.js`:
-    /// `copyText || innerCode.textContent`), which is why the button below is
-    /// unchanged: in a browser the button copies everything and the chord
-    /// copies the selection, and those are two different affordances rather
-    /// than two spellings of one.
-    fn gesture(&mut self, event: &InputEvent, node: &str, frame: &PetrifiedFrame) -> bool {
-        let InputEvent::Key {
-            key: KeyCode::Char('c'),
-            pressed: true,
-            modifiers,
-            ..
-        } = event
-        else {
-            return false;
-        };
-        if !(modifiers.ctrl || modifiers.meta) {
-            return false;
-        }
-        let Some(content) = frame.content_of(node) else {
-            return false;
-        };
-        let (Some(range), Some(text)) = (content.selection.clone(), content.text.as_ref()) else {
-            return false;
-        };
-        let Some(selected) = text.text.get(range) else {
-            return false;
-        };
-        self.pending = Some(selected.to_owned());
-        true
     }
 
     /// Copy puts the well's own text on the clipboard, and the well says so.

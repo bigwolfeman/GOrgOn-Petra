@@ -4452,6 +4452,32 @@ mod tests {
             run.x + run.w
         );
 
+        // And the chord takes it. This is the half that makes the highlight
+        // more than decoration, and until 2026-09-06 it existed on exactly
+        // one page of forty-two: the chord lived in row 6's own
+        // `Page::gesture`, so `Ctrl+C` over a selected list item copied
+        // nothing. It is `Host::copy_selection`'s now, over state no
+        // application owns.
+        let before = cam.clipboard().len();
+        cam.chord(
+            KeyCode::Char('c'),
+            Modifiers {
+                ctrl: true,
+                ..Modifiers::default()
+            },
+        );
+        let copied = cam.clipboard();
+        assert_eq!(
+            copied.len(),
+            before + 1,
+            "the copy chord put nothing on the clipboard"
+        );
+        assert_eq!(
+            copied.last().map(String::as_str),
+            Some(selected.as_str()),
+            "the chord copied something other than what is highlighted"
+        );
+
         // The same band in light, measured against a light resting shot and
         // not against the dark one — the ground under it goes from near-black
         // to white, so a cross-theme difference would be mostly the theme.
