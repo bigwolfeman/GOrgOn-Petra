@@ -48,9 +48,17 @@ const PANEL: [f32; 2] = [375.0, 900.0];
 /// 2, so this spike matches it.
 const CAPTURE_SCALE: f32 = 2.0;
 
-/// Absolute paths to one candidate face's three weights, read from disk at
-/// test time rather than `include_bytes!`'d — these are throwaway
-/// downloads under `ignored/font-spike/faces/`, never compiled in.
+/// Repository-relative paths to one candidate face's three weights, read
+/// from disk at test time rather than `include_bytes!`'d — these are
+/// throwaway downloads under `ignored/font-spike/faces/`, never compiled
+/// in.
+///
+/// `ignored/` is gitignored, so **these files are not in a fresh clone**
+/// and every test that needs them is `#[ignore]`d. Populate the directory
+/// with `ignored/font-spike/measure.py` before running one. An earlier
+/// version of this file hardcoded absolute paths into a git worktree that
+/// has since been deleted, which made the test unrunnable everywhere
+/// including the machine that wrote it.
 struct CandidatePaths {
     regular: &'static str,
     medium: &'static str,
@@ -63,9 +71,9 @@ struct CandidatePaths {
 /// proportional figures by default and is disqualified before it ever
 /// reaches a picture.
 const SOURCE_SANS_3: CandidatePaths = CandidatePaths {
-    regular: "/home/wolfe/projects/GOrgOn/.claude/worktrees/integrate/ignored/font-spike/faces/SourceSans3-Regular.ttf",
-    medium: "/home/wolfe/projects/GOrgOn/.claude/worktrees/integrate/ignored/font-spike/faces/SourceSans3-Medium.ttf",
-    bold: "/home/wolfe/projects/GOrgOn/.claude/worktrees/integrate/ignored/font-spike/faces/SourceSans3-Bold.ttf",
+    regular: "ignored/font-spike/faces/SourceSans3-Regular.ttf",
+    medium: "ignored/font-spike/faces/SourceSans3-Medium.ttf",
+    bold: "ignored/font-spike/faces/SourceSans3-Bold.ttf",
 };
 
 /// Register `paths`' three weights under the exact family names the shipped
@@ -408,7 +416,11 @@ mod tests {
 
     /// Source Sans 3, the one candidate that survived the digit-advance
     /// screen, both themes.
+    /// Needs the font corpus under `ignored/font-spike/faces/`, which is
+    /// gitignored and absent from a fresh clone. Run it only after
+    /// populating that directory; see [`CandidatePaths`].
     #[test]
+    #[ignore = "needs ignored/font-spike/faces/, which is not in the repo"]
     fn source_sans_3_candidate() {
         render("light", Some(&SOURCE_SANS_3), "source-sans-3-light");
         render("dark", Some(&SOURCE_SANS_3), "source-sans-3-dark");
