@@ -842,7 +842,7 @@ pub(crate) fn caret_clip_limit(
 ///
 /// `mark` is [`gorgon_petra::focus::marked_rect`]'s answer, not a
 /// placement's rect: for a ring or a pair of brackets the two are the same,
-/// and for a bar the horizontal extent is the control's label.
+/// and for a bar the horizontal extent is the control's content run.
 ///
 /// [`FocusFigure::Border`] answers that rect itself, because its two
 /// concentric strokes are struck *inside* it by [`paint_focus_figure`] and
@@ -1219,16 +1219,17 @@ pub(crate) struct SettledFigure<'a> {
 ///   Both follow the node's corner radius, the way a CSS `outline` follows
 ///   `border-radius`. The halo goes down first and the accent over it, so a
 ///   node too small to hold both loses the halo and keeps the indicator.
-/// * [`FocusFigure::BarUnder`] fills the bar and casts
-///   [`gorgon_petra::token::focus::BAR_SHADOW_TOKEN`] under it, which seats a
-///   3-unit strip on the card. That token is `shadow.raised`, not
-///   `shadow.overlay`: overlay drops four units under a three-unit bar, so
-///   its own pixels never meet the bar's and it stood as a second stripe
-///   below it (R6, light mode, 2026-09-05).
-/// * [`FocusFigure::Sides`] fills both bars and casts nothing. A 40-unit bar
-///   standing beside a filled well needs no seating, and any drop under its
-///   foot lands past the well's bottom rule and reads as the bar
-///   overhanging the well (rows 22 and 28, 2026-09-05).
+/// * Every remaining figure, [`FocusFigure::BarUnder`],
+///   [`FocusFigure::Sides`] and [`FocusFigure::BarInside`], fills its bars and
+///   casts [`gorgon_petra::token::focus::BAR_SHADOW_TOKEN`] behind each one,
+///   which seats a 3-unit strip on whatever it lies over. One shadow for the
+///   whole family, by the operator's ruling of 2026-09-06. See the block
+///   comment on `shadow_color` for the one that was withheld and why the
+///   reason for withholding it did not hold up.
+///
+///   The token is `shadow.raised`, not `shadow.overlay`: overlay drops four
+///   units under a three-unit bar, so its own pixels never meet the bar's
+///   and it stood as a second stripe below it (R6, light mode, 2026-09-05).
 fn paint_focus_figure(
     painter: &Painter,
     settled: SettledFigure<'_>,
@@ -1291,26 +1292,35 @@ fn paint_focus_figure(
         + f32::from(shadow_geom.spread)
         + f32::from(shadow_geom.blur)
         + f32::from(shadow_geom.offset[0].abs().max(shadow_geom.offset[1].abs()));
-    // `BarUnder` alone casts a shadow, and the operator asked about that on
-    // 2026-09-06: *"it looks like the cursors don't all have the same drop
-    // shadow? Hard to tell."* They do not, and the difference is measured
-    // rather than accidental.
+    // **Every bar casts the same shadow.** The operator ruled on this on
+    // 2026-09-06: *"not all the cursors have the same shadow. The underbar
+    // (original one) has it right."*
     //
-    // `BarUnder` hangs over the card below the control and the shadow is
-    // what seats it there. `Sides` was given the same shadow on 2026-09-06
-    // to make the set uniform, and `assert_hugs_well` went red on seven
-    // pages at once: the ground under a bracket's foot came back
-    // [27,27,27] against [34,34,34] beside it, a smudge past the well's
-    // bottom rule. That assertion exists because the smudge was reported.
-    // A bracket runs the full height of a control that is usually a well
-    // with a rule along its foot, so its shadow lands on that rule rather
-    // than on open card.
+    // It was `BarUnder` alone before that, and the reason given for holding
+    // the other two back does not survive checking. The first attempt at
+    // uniformity turned `assert_hugs_well` red on seven pages. The ground
+    // under a bracket's foot came back [27,27,27] against [34,34,34] beside
+    // it, and the comment here then claimed that assertion existed
+    // "because the smudge was reported". It does not. `git log -S` puts it
+    // in 04637c7, wave F1, written the same day as the figure it guards and
+    // by the same hand; the operator's only recorded shadow defect is R6
+    // (`ROUND4-DEFECTS.md:20`), which is `BarUnder` casting `shadow.overlay`
+    // and standing as a second stripe. The smudge assertion was a
+    // prophylactic dressed as a report, and it outranked the operator once.
+    // It has been rewritten to the property it can honestly claim: a
+    // shadow under the foot rather than a bleed, neutral and fading with
+    // distance, nowhere near the accent. That keeps its teeth against a bar
+    // growing downward and gains teeth against the shadow being dropped.
     //
-    // `BarInside` casts none for a third reason: it is painted inside the
-    // fill it marks, so there is nothing behind it to lift it off.
-    let shadow_color = (figure == FocusFigure::BarUnder)
-        .then(|| resolve_or_record(colors, gorgon_petra::token::focus::BAR_SHADOW_TOKEN, report))
-        .flatten();
+    // `Border` is still the exception, and it is the shape that makes it
+    // one: a ring has no behind. It is struck on the node's own edge and
+    // backed by a ground-coloured halo one band inside (`HALO_TOKEN`), and
+    // that halo is already the separation a shadow would be asked for. A
+    // rect shadow at `mark` would sit behind the *node*, not behind the
+    // ring, and would double whatever elevation the node carries itself.
+    // The `Border` arm returns above this line and never reaches it.
+    let shadow_color =
+        resolve_or_record(colors, gorgon_petra::token::focus::BAR_SHADOW_TOKEN, report);
     let mut painted = false;
     for bar in caret_bars(mark, figure, scale) {
         if !bar.is_positive() {
@@ -1323,13 +1333,16 @@ fn paint_focus_figure(
         let mut cast = painter.clone();
         cast.set_clip_rect(clip);
         if let Some(shadow_color) = shadow_color {
-            let shadow = egui::epaint::Shadow {
-                offset: shadow_geom.offset,
-                blur: shadow_geom.blur,
-                spread: shadow_geom.spread,
-                color: shadow_color,
-            };
-            cast.add(egui::Shape::Rect(shadow.as_shape(bar, 0.0)));
+            // `crate::shadow` and not `epaint::Shadow`, and its module doc
+            // carries the measurement: epaint cannot draw a shadow on a bar
+            // without leaving a diagonal seam at one corner, because it
+            // clamps the blur to the bar's 3-unit thickness and then invents
+            // a corner radius of half that. The operator found the seam on a
+            // `Sides` bar on 2026-09-06, where a four-pixel diagonal is as
+            // long as the bar is broad.
+            cast.add(egui::Shape::Mesh(std::sync::Arc::new(
+                crate::shadow::box_shadow(bar, shadow_geom, shadow_color),
+            )));
         }
         cast.rect_filled(bar, 0.0, color);
         painted = true;

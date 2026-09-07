@@ -35,6 +35,7 @@
 //! the pass's `FullOutput`. That is why [`super::Snapshotter::capture`] takes
 //! it, rather than trying to recover either from a bare `&Context`.
 
+use std::sync::OnceLock;
 use std::sync::mpsc::channel;
 use std::time::Duration;
 
@@ -101,7 +102,10 @@ fn bring_up() -> Result<(wgpu::Adapter, wgpu::Device, wgpu::Queue), CaptureError
 }
 
 impl Gpu {
-    /// Bring up a headless device, or say why not.
+    /// Bring up a headless device once, or say why not.
+    ///
+    /// Called only through [`Self::shared_device`], which caches whichever
+    /// answer this gives for the life of the process.
     ///
     /// `Backends::PRIMARY | Backends::GL` and no surface: nothing here needs
     /// a window, an X display, or a Wayland socket. `BROWSER_WEBGPU` and
@@ -109,7 +113,7 @@ impl Gpu {
     /// process, and the second would answer every capture with a blank image
     /// while reporting success, which is the exact failure this whole task
     /// exists to not commit.
-    pub(super) fn new() -> Result<Self, CaptureError> {
+    fn open_device() -> Result<(String, wgpu::Device, wgpu::Queue), CaptureError> {
         // Bring-up runs on its own thread with a bounded wait, for the same
         // reason `WAIT` bounds the polls below and for one more: adapter
         // enumeration is the one step that talks to a driver this process has
@@ -149,6 +153,50 @@ impl Gpu {
             }
         };
         let info = adapter.get_info();
+        Ok((
+            format!("{} ({:?}, {:?})", info.name, info.backend, info.device_type),
+            device,
+            queue,
+        ))
+    }
+
+    /// The one device this **process** opens, and the adapter line naming it.
+    ///
+    /// A [`Gpu`] used to call [`Self::open_device`] itself, so a process got
+    /// one `wgpu` device per [`super::Snapshotter`]. That is fine for the
+    /// driver, which builds one, and it is not fine for a test binary that
+    /// builds one per test: the gallery holds about sixty capture tests, and
+    /// at cargo's default thread count `request_device` began refusing with
+    /// `NoDevice("Not enough memory left.")` and
+    /// `NoDevice("Parent device is lost")` — a different test each run, on an
+    /// otherwise idle card with 29 of 32 GB free. `cargo xtask gates` failed
+    /// at random, which is worse than failing, because a gate nobody can
+    /// trust gets read as noise. This crate's own tests hit the same wall
+    /// earlier and from the other side, hanging rather than refusing, and
+    /// worked around it with a private mutex that was never carried across.
+    ///
+    /// **The device is the scarce thing, and it is the only thing shared
+    /// here.** `wgpu::Device` and `wgpu::Queue` are `Arc`-backed handles that
+    /// clone cheaply and take work from several threads at once, so captures
+    /// still run in parallel. What stays per-[`Gpu`] is the
+    /// [`egui_wgpu::Renderer`], which owns uploaded textures and mutates its
+    /// own buffers as it draws, and so is not something two threads may share.
+    /// Building one costs pipeline creation rather than a device; the price
+    /// is a font atlas per snapshotter, which is far below a device apiece.
+    ///
+    /// A failed bring-up is cached along with a successful one. That is
+    /// deliberate: every failure this can return means the driver is not
+    /// answering, [`BRINGUP_WAIT`] has already given it ten seconds, and
+    /// retrying it once per test would turn one named failure into sixty.
+    fn shared_device() -> Result<(String, wgpu::Device, wgpu::Queue), CaptureError> {
+        static SHARED: OnceLock<Result<(String, wgpu::Device, wgpu::Queue), CaptureError>> =
+            OnceLock::new();
+        SHARED.get_or_init(Self::open_device).clone()
+    }
+
+    /// A snapshotter's GPU: this process's device, and a renderer of its own.
+    pub(super) fn new() -> Result<Self, CaptureError> {
+        let (adapter, device, queue) = Self::shared_device()?;
         let renderer = egui_wgpu::Renderer::new(
             &device,
             TARGET_FORMAT,
@@ -161,7 +209,7 @@ impl Gpu {
             device,
             queue,
             renderer,
-            adapter: format!("{} ({:?}, {:?})", info.name, info.backend, info.device_type),
+            adapter,
         })
     }
 

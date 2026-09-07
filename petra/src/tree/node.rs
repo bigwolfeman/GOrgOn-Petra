@@ -431,7 +431,7 @@ pub enum FocusFigure {
     Border,
     /// A bar under the rect: [`crate::token::FocusRing::thickness`] tall,
     /// [`crate::token::FocusRing::gap`] below the bottom edge, and as wide
-    /// as the control's **leading label** — see
+    /// as the control's **content run** — see
     /// [`crate::focus::marked_rect`], which answers the width for both bar
     /// figures and says why it is not a fraction of the control.
     ///
@@ -474,15 +474,26 @@ pub enum FocusFigure {
     Sides,
     /// A bar on the rect's **own bottom edge, inside it**:
     /// [`crate::token::FocusRing::thickness`] tall, over the control's
-    /// leading label ([`crate::focus::marked_rect`]). The same stripe
+    /// content run ([`crate::focus::marked_rect`]). The same stripe
     /// [`Self::BarUnder`] draws, moved up out of the neighbour's rect and
     /// into the node's own — the seat is the **only** thing that differs
     /// between the two, which is what
     /// `the_two_bars_differ_only_in_where_they_sit` holds.
     ///
-    /// **The figure for a control that stacks flush.** Contained by
-    /// construction, exactly as [`Self::Border`] is, so it can never land on
-    /// the row below and never leaves a clip equal to the node's own rect.
+    /// **The figure for a control that stacks flush.** Its *fill* is
+    /// contained by construction, exactly as [`Self::Border`]'s is, so the
+    /// accent itself can never land on the row below.
+    ///
+    /// Its **shadow** does, and that is the point of it. Every bar has cast
+    /// [`crate::token::focus::BAR_SHADOW_TOKEN`] since the operator's ruling
+    /// of 2026-09-06 — *"not all the cursors have the same shadow"* — and a
+    /// shadow that stopped at the node's edge would not seat the stripe on
+    /// anything. It reaches the same eight units below the accent here as it
+    /// does under [`Self::BarUnder`], which is why the two still differ only
+    /// in where they sit. What this figure buys over `BarUnder` on a packed
+    /// row is that the *accent* stays home; the soft edge under it is a
+    /// third of the ground's contrast and reads as depth, not as a mark on
+    /// the neighbour.
     /// It is also still an underline, which is the shape the operator asks
     /// for and the shape a box is not.
     ///

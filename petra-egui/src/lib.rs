@@ -40,5 +40,6 @@ pub mod paint;
 #[cfg(not(target_arch = "wasm32"))]
 mod scene_cache;
 pub mod schedule;
+pub mod shadow;
 pub mod text;
 pub mod triangle;

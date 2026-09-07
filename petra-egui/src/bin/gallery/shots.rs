@@ -4573,6 +4573,30 @@ mod tests {
     // an `Action::Focus`, and reads the raster back: the caret is host-owned
     // geometry that no frame-level assertion can see.
 
+    /// What lies under a bracketed well, which decides whether the ground
+    /// below its feet can be measured at all.
+    ///
+    /// A `Sides` bar stands beside the well and casts down onto whatever is
+    /// there. On most pages that is open card, and the two feet's shadows
+    /// mirror each other exactly. On a page whose control opens a list or a
+    /// bubble *under* the field, the card is covered by that surface's own
+    /// `shadow.overlay`, which follows the well's footprint and not the
+    /// bar's: the inward side of each foot sits on it and the outward side
+    /// does not. Measured on `dd/field`, both feet read 31, 31, 32, 33 out
+    /// from the bar and then part, the inward side holding 32 while the
+    /// outward rises to the page's 34.
+    ///
+    /// That is the neighbour, not the bar, so [`Foot::UnderSurface`] skips
+    /// the symmetry probe rather than weakening it for every page.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Foot {
+        /// Open card below the well. The shadow's symmetry is measurable.
+        OnCard,
+        /// Another surface hangs under the well and darkens the ground the
+        /// probe would read.
+        UnderSurface,
+    }
+
     /// The two side bars the settled indicator draws around the well keyed
     /// `well_tail`, read back from the raster, or a panic naming which part
     /// of the figure is wrong.
@@ -4580,10 +4604,10 @@ mod tests {
     /// Asserts, from `FocusRing::STANDARD`'s own geometry: a bar of one
     /// accent colour `hug_gap` outside each side; each bar exactly the
     /// well's height, top and bottom; the gap between bar and well left as
-    /// ground; and the ground directly under each bar's foot the same as the
-    /// ground beside it, which is what a shadow smudge breaks. Returns the
-    /// bar colour so a caller can look for it elsewhere.
-    fn assert_hugs_well(cam: &mut Camera, well_tail: &str, shot: &str) -> [u8; 4] {
+    /// ground; and, under each foot, a shadow rather than a bleed. Neutral,
+    /// darker than the card 11 units further down, and nowhere near the
+    /// accent. Returns the bar colour so a caller can look for it elsewhere.
+    fn assert_hugs_well(cam: &mut Camera, well_tail: &str, shot: &str, foot: Foot) -> [u8; 4] {
         let ring = FocusRing::STANDARD;
         let well = cam.rect(well_tail);
         let img = raster(cam, shot);
@@ -4605,7 +4629,7 @@ mod tests {
             bar[2] > bar[0] && bar[2] > bar[1],
             "{well_tail}: the bar is not the accent: {bar:?}"
         );
-        for (side, x, outward) in [("left", lx, -1.0), ("right", rx, 1.0)] {
+        for (side, x, outward, band) in [("left", lx, -1.0, left), ("right", rx, 1.0, right)] {
             let beside = px(&img, x + outward * 6.0, mid_y);
             assert_ne!(bar, beside, "{well_tail}: the {side} bar bleeds outward");
             let gap = px(
@@ -4637,12 +4661,106 @@ mod tests {
                 under, bar,
                 "{well_tail}: the {side} bar overhangs the well's bottom rule"
             );
-            assert_eq!(
-                under,
-                px(&img, x + outward * 6.0, well.y + well.h + 1.5),
-                "{well_tail}: the ground under the {side} bar's foot is darker \
-                 than the ground beside it: a shadow smudge past the rule"
+            // What lies under the foot is the bar's **shadow**, and this
+            // pair of samples is what tells a shadow from a bleed.
+            //
+            // Until 2026-09-06 the line here read `assert_eq!(under,
+            // beside)`, no darkening at all past the rule, and it enforced a
+            // policy the operator has since reversed: *"not all the cursors
+            // have the same shadow. The underbar (original one) has it
+            // right."* Every bar casts one now, so the honest property is
+            // not "no shadow" but "a shadow and not a bar": a neutral
+            // darkening that fades out with distance, never the accent.
+            //
+            // `far` is sampled past the shadow's reach, offset 2 plus blur 6
+            // is 8, and inside `indicator_outset`'s 13, so it is ground the
+            // caret was already allowed to paint over and did not.
+            let far = px(&img, x, well.y + well.h + 11.0);
+            assert!(
+                under[2] <= bar[2] / 2,
+                "{well_tail}: under the {side} foot is the accent bleeding \
+                 down, not a shadow: {under:?} against a bar of {bar:?}"
             );
+            assert!(
+                under.iter().zip(far).all(|(u, f)| *u <= f) && under[..3] != far[..3],
+                "{well_tail}: the {side} bar's foot casts no shadow on the \
+                 card: {under:?} at 1.5 below the rule against {far:?} at 11"
+            );
+            // And that shadow is symmetric about the bar it belongs to.
+            //
+            // The operator's report of 2026-09-06: *"the vertical shadow has
+            // a visual bug."* `epaint::Shadow` clamps a blur to the caster's
+            // short side and then adds half of it back as a corner radius,
+            // so on a 3-unit bar the two corner arcs nearly meet and their
+            // feather skirts overlap. The shadow blends twice along one
+            // corner's 45-degree bisector and leaves a four-pixel diagonal
+            // darker than the rest of the shadow -- as long as a `Sides` bar
+            // is broad, which is why it read as a hook on the foot.
+            //
+            // `crate::shadow::box_shadow` draws the mesh instead and is
+            // symmetric by construction. This is that fix stated where the
+            // operator met it: in pixels, on seven pages, rather than only
+            // in the mesh's own unit test. Sampled inside `hug_gap` so
+            // neither probe leaves the card.
+            // And that shadow is symmetric about the bar it belongs to.
+            //
+            // The operator's report of 2026-09-06: *"the vertical shadow has
+            // a visual bug."* `epaint::Shadow` clamps a blur to the caster's
+            // short side and then adds half of it back as a corner radius,
+            // so on a 3-unit bar the two corner arcs nearly meet and their
+            // feather skirts overlap. The shadow blends twice along one
+            // corner's 45-degree bisector and leaves a four-pixel diagonal
+            // darker than the rest of the shadow. As long as a `Sides` bar
+            // is broad, which is why it read as a hook hanging off the foot.
+            // `crate::shadow::box_shadow` draws the mesh instead and is
+            // symmetric by construction; this states that fix where the
+            // operator met it, in pixels on seven pages, rather than only in
+            // the mesh's own unit test.
+            //
+            // **Mirrored in device columns, not logical units.** `px`
+            // truncates a logical coordinate into a device one, and the bar's
+            // centre falls on a device-pixel *boundary* -- three logical
+            // units is six device columns. Probing `x - d` against `x + d`
+            // therefore compares columns one apart and fails by a level or
+            // two on a gradient, which is what the first version of this
+            // check did on all seven pages. The true mirror of the column
+            // `k` left of the bar is the column `k` right of it.
+            //
+            // **The pairs run inside the bar as well as outside it.** Most of
+            // the seam lived *within* the bar's own six device columns, where
+            // the accent hides it until the fill ends and the shadow is left
+            // exposed. A check that only mirrored the ground beside the bar
+            // saw three of the four bad rows as clean.
+            //
+            // **Four columns out and no further.** Two logical units inward
+            // is where the well's own footprint starts, and on the three
+            // pages that open a list under the field that footprint carries
+            // the list's `shadow.overlay`. Past there the probe measures the
+            // neighbour, not the bar: measured on `dd/field`, both bars read
+            // 31, 31, 32, 33 on each side and then part, the inward side
+            // holding 32 while the outward rises to the page's 34.
+            if foot == Foot::OnCard {
+                let edge = |v: f32| (v * CAPTURE_SCALE).round() as i64;
+                let (bx0, bx1) = (edge(band.x), edge(band.x + band.w));
+                let mirrors = (0..(bx1 - bx0) / 2)
+                    .map(|i| (bx0 + i, bx1 - 1 - i))
+                    .chain((0..4).map(|k| (bx0 - 1 - k, bx1 + k)));
+                for (l, r) in mirrors {
+                    // Every device row from the first below the accent to the
+                    // sixth, so none of the four the seam occupied is stepped
+                    // over.
+                    for step in 1..=6 {
+                        let dy = ((well.y + well.h) * CAPTURE_SCALE) as u32 + step;
+                        assert_eq!(
+                            img.get_pixel(l as u32, dy).0,
+                            img.get_pixel(r as u32, dy).0,
+                            "{well_tail}: the {side} bar's shadow is lopsided \
+                             at device columns {l} and {r}, {step} row(s) \
+                             below the foot: a tessellation seam"
+                        );
+                    }
+                }
+            }
         }
         bar
     }
@@ -4677,7 +4795,7 @@ mod tests {
             leaf.x > well.x + 8.0,
             "the leaf sits past the glyph: {leaf:?} in {well:?}"
         );
-        assert_hugs_well(&mut cam, "/query", "28-search-focused");
+        assert_hugs_well(&mut cam, "/query", "28-search-focused", Foot::OnCard);
         // Where a hug of the leaf would stand: inside the well, beside the
         // glyph. It has to be the well's own fill.
         let img = raster(&mut cam, "28-search-focused");
@@ -4708,7 +4826,7 @@ mod tests {
             value.x + value.w < well.x + well.w - 40.0,
             "the steppers sit past the value"
         );
-        assert_hugs_well(&mut cam, "/n-md", "22-number-input-focused");
+        assert_hugs_well(&mut cam, "/n-md", "22-number-input-focused", Foot::OnCard);
         let img = raster(&mut cam, "22-number-input-focused");
         let inside = px(&img, well.x + 3.0, well.y + 3.0);
         assert_eq!(
@@ -4734,7 +4852,12 @@ mod tests {
             cam.ring()
         );
         let field = cam.rect("theme/field");
-        let bar = assert_hugs_well(&mut cam, "theme/field", "29-select-open-focused");
+        let bar = assert_hugs_well(
+            &mut cam,
+            "theme/field",
+            "29-select-open-focused",
+            Foot::UnderSurface,
+        );
         let img = raster(&mut cam, "29-select-open-focused");
         let row = device_row(&img, field.x, field.x + field.w, underline_row(field));
         assert!(
@@ -4757,7 +4880,12 @@ mod tests {
             cam.ring()
         );
         let field = cam.rect("dd/field");
-        let bar = assert_hugs_well(&mut cam, "dd/field", "11-dropdown-open-focused");
+        let bar = assert_hugs_well(
+            &mut cam,
+            "dd/field",
+            "11-dropdown-open-focused",
+            Foot::UnderSurface,
+        );
         let img = raster(&mut cam, "11-dropdown-open-focused");
         let row = device_row(&img, field.x, field.x + field.w, underline_row(field));
         assert!(
@@ -4796,7 +4924,12 @@ mod tests {
             cam.ring()
         );
         let field = cam.rect("compact/field");
-        let bar = assert_hugs_well(&mut cam, "compact/field", "10-date-picker-open-focused");
+        let bar = assert_hugs_well(
+            &mut cam,
+            "compact/field",
+            "10-date-picker-open-focused",
+            Foot::UnderSurface,
+        );
         let img = raster(&mut cam, "10-date-picker-open-focused");
         let row = device_row(&img, field.x, field.x + field.w, underline_row(field));
         assert!(
@@ -4817,7 +4950,12 @@ mod tests {
         cam.click("tt/trigger");
         assert!(cam.has("tt/tip"), "the click did not open the tip");
         let trigger = cam.rect("tt/trigger");
-        let bar = assert_hugs_well(&mut cam, "tt/trigger", "37-toggletip-open-focused");
+        let bar = assert_hugs_well(
+            &mut cam,
+            "tt/trigger",
+            "37-toggletip-open-focused",
+            Foot::UnderSurface,
+        );
         let img = raster(&mut cam, "37-toggletip-open-focused");
         let row = device_row(
             &img,
@@ -4880,7 +5018,12 @@ mod tests {
         // The whole `Sides` figure, checked band by band: a bar of one
         // accent `hug_gap` outside each edge, exactly the trigger's height,
         // with clean ground in the gap and under each foot.
-        let accent = assert_hugs_well(&mut cam, "mn-pair/trigger", "18-menu-shut-focused");
+        let accent = assert_hugs_well(
+            &mut cam,
+            "mn-pair/trigger",
+            "18-menu-shut-focused",
+            Foot::OnCard,
+        );
         let trigger = cam.rect("mn-pair/trigger");
         let mid_x = trigger.x + trigger.w / 2.0;
         // The middle of where a ring's accent band would be, on the
@@ -4944,7 +5087,12 @@ mod tests {
             "the click did not seat focus in the field: {:?}",
             cam.focused()
         );
-        assert_hugs_well(&mut cam, "field-md", "34-text-input-md-focused");
+        assert_hugs_well(
+            &mut cam,
+            "field-md",
+            "34-text-input-md-focused",
+            Foot::OnCard,
+        );
     }
 
     // ======================================================================

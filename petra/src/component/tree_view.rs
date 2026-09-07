@@ -147,7 +147,7 @@ fn tree_item_sized(
             swatch("lead", LEAD, height, None, None, None),
             disclosure,
             swatch("gap", CARET_GAP, height, None, None, None),
-            super::text::text("label", label.clone()),
+            super::text::text("label", label.clone()).with_focus_run(),
         ],
     );
     row.props.align = Some(Align::Center);
@@ -245,9 +245,25 @@ fn tree_item_sized(
     //
     // It also stays clear of the selected row's own mark, which a ring did
     // not: the accent bar runs down the row's **leading** edge, and a ring's
-    // left band runs down exactly those pixels. A stripe on the bottom edge
-    // shares nothing with it, so "selected" and "focused" stay two marks a
-    // person can tell apart.
+    // left band runs down exactly those pixels.
+    //
+    // "Stays clear" is the `with_focus_run` on the label above, and it was
+    // not always. Until 2026-09-06 this comment claimed a stripe on the
+    // bottom edge "shares nothing" with the accent bar, on the strength of
+    // the stripe being as wide as the label and so starting well to the
+    // right of it. `focus::marked_rect` then changed to span the control's
+    // **content run**, and the row's leading `swatch("bar", ...)` -- the
+    // selection mark itself -- is a childless leaf and so counted as
+    // content. The stripe started on top of the accent bar, the two marks
+    // met at the row's bottom-left corner, and a row that was both selected
+    // and focused wore one L-shaped bracket instead of two marks.
+    //
+    // The operator photographed it the same day: a 4-wide bar down rows
+    // 130..158 and a 3-tall stripe across rows 159..161, both starting at
+    // x = 52. A selection indicator is not content, and no geometric rule
+    // can know that -- a checkbox's box is also a childless leaf and must
+    // be included, or the bar jumps 24 units when the box is ticked. So the
+    // row declares it, which is what `Semantics::focus_run` is for.
     node.semantics.focus_figure = FocusFigure::BarInside;
     node.semantics.selected = selected;
     node.semantics.expanded = Some(expanded);
