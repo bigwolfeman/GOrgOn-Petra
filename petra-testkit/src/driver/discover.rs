@@ -15,7 +15,7 @@ use super::error::DriverError;
 
 /// Where a process's driver socket lives under `runtime_dir`, given its pid.
 /// Must agree exactly with `Server::socket_path_under`
-/// (`gorgon/petra-testkit/src/server/mod.rs`) — the two are never allowed to
+/// (`petra-testkit/src/server/mod.rs`) — the two are never allowed to
 /// drift, since a client using the wrong formula simply never connects.
 #[must_use]
 pub fn socket_path(runtime_dir: &Path, pid: u32) -> PathBuf {

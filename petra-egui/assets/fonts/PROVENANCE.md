@@ -1,7 +1,7 @@
 # Embedded font assets
 
 Every file here is embedded into the binary with `include_bytes!` from
-`gorgon/petra-egui/src/fonts.rs`. Nothing here is read from the filesystem at
+`petra-egui/src/fonts.rs`. Nothing here is read from the filesystem at
 run time, and that is the point: a frame digest that means the same thing on
 two machines cannot depend on a face the operator happens to have installed.
 

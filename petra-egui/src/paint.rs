@@ -1576,7 +1576,7 @@ fn paint_one(
             // And it may not leave the surface at all, which is what the
             // intersection with `screen_rect` is for. A shadow is allowed
             // outside its *node*; it is not allowed outside the *page*. The
-            // difference is not cosmetic: `gorgon/petra-egui/examples/parity.rs`
+            // difference is not cosmetic: `petra-egui/examples/parity.rs`
             // pins `RawInput::screen_rect` to a fixed rectangle so the two
             // targets lay out identically whatever size a window manager
             // grants, and `petra-parity` refuses the capture if anything is
@@ -2248,7 +2248,7 @@ mod tests {
     /// was outside.
     ///
     /// On a window that is only ever as large as the frame, nobody would
-    /// notice. `gorgon/petra-egui/examples/parity.rs` is not that: it pins
+    /// notice. `petra-egui/examples/parity.rs` is not that: it pins
     /// `RawInput::screen_rect` to a fixed rectangle so the native and web
     /// targets lay out identically whatever size a window manager grants, and
     /// the `petra-parity` lane refuses the capture outright if anything is

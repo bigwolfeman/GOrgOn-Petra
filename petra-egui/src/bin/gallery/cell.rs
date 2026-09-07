@@ -8,7 +8,8 @@
 use crate::inventory::{ROWS, Row};
 
 /// Inventory names wired into the catalog. Keep in lockstep with
-/// `gorgon/xtask/src/carbon.rs` `BUILT_COMPONENTS`.
+/// `gorgon/xtask/src/carbon.rs` `BUILT_COMPONENTS` — a `gorgon-xtask` gate
+/// that lives only in the private GOrgOn monorepo, not in this repository.
 ///
 /// Test-only, and deliberately so: this list is a second, hand-written copy of
 /// a fact `Cell` already derives, kept solely to fail loudly when the two

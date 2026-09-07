@@ -19,7 +19,7 @@
 //! [`gorgon_petra_testkit::driver_host::DriverHost`] stepping a headless
 //! [`gorgon_petra_egui::host::Host`] on its own thread, and a click counter
 //! wired through the real router — the same shape
-//! `gorgon/petra-testkit/tests/support/mod.rs`'s `CountingApp` uses, so a
+//! `petra-testkit/tests/support/mod.rs`'s `CountingApp` uses, so a
 //! `tree` query after an `act click` proves the click reached `App::handle`
 //! rather than merely that the verb answered (see that module's doc comment
 //! for why that distinction is the whole point).

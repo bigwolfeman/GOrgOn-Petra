@@ -357,7 +357,7 @@ impl FrameCounter {
 ///
 /// The frame this returns is byte-for-byte what [`petrify`] would have
 /// produced from the same tree — placements, paint payloads, subtree hashes
-/// and digest alike. `gorgon/petra/tests/incremental_frames.rs` asserts that
+/// and digest alike. `petra/tests/incremental_frames.rs` asserts that
 /// equality directly rather than comparing digests, because a pass that
 /// reused nothing would match on the digest too.
 ///

@@ -93,7 +93,7 @@ fn desktop_context() -> (Context, FontStackReport) {
         report.is_complete(),
         "the desktop font stack is incomplete on this machine, so SC-009 cannot be measured \
          here. This is a red result, not a skip — install the named faces or fix the candidate \
-         paths in gorgon/petra-egui/src/fonts.rs.\n{}",
+         paths in petra-egui/src/fonts.rs.\n{}",
         report.summary()
     );
     static ANNOUNCED: std::sync::Once = std::sync::Once::new();

@@ -13,7 +13,7 @@
 //! `parse`), and would surface only in a client nobody has written yet.
 //!
 //! Same shape as `gorgon-petra`'s own role-table invariant
-//! (`gorgon/petra/src/invariant.rs`): both hand-written halves come from one
+//! (`petra/src/invariant.rs`): both hand-written halves come from one
 //! closed enum instead of one written list, so there is nothing here for the
 //! two to drift *from* — but `as_wire`/`parse` are still two separate `match`
 //! arms someone edits by hand, and this is what notices if one arm moves

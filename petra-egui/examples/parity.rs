@@ -51,7 +51,7 @@
 //! Arabic, Devanagari, Thai, CJK, and four kinds of emoji — a plain
 //! pictograph, a variation-selector sequence, a zero-width-joiner sequence
 //! and a skin-tone modifier. Which of those the shipped font set can actually
-//! draw is a question for `gorgon/petra-egui/src/text.rs` and its own tests;
+//! draw is a question for `petra-egui/src/text.rs` and its own tests;
 //! what this file guarantees is that the *shaping* path meets them on both
 //! targets. A run that comes out as fallback boxes is a font gap, and the
 //! caption under the card says so rather than letting the page read as a
@@ -59,8 +59,10 @@
 //!
 //! # No literal style values
 //!
-//! `cargo xtask literal-style` scans `gorgon/petra-egui/examples`, this file
-//! included. Every colour, corner, gap and type step below is a name from
+//! `cargo xtask literal-style` (a `gorgon-xtask` lane that lives only in the
+//! private GOrgOn monorepo, not in this repository) scans
+//! `gorgon/petra-egui/examples` there. Every colour, corner, gap and type
+//! step below is a name from
 //! [`gorgon_petra::token::standard_vocabulary`], spelled out at its own call
 //! site so the text-based scan can see it.
 //!
@@ -319,7 +321,8 @@ impl Default for Parity {
 /// The variable the capture lane sets to freeze this page.
 ///
 /// Read by [`build_window`] on the native target only. Its spelling is a
-/// contract with `gorgon/xtask/src/parity/desktop.rs`, which sets it, and the
+/// contract with `gorgon/xtask/src/parity/desktop.rs` (the `gorgon-xtask`
+/// capture lane, private-monorepo-only), which sets it, and the
 /// two cannot drift silently: `main` prints `petra parity: frozen=<bool>` on
 /// stderr and `NativeWindow::open` fails the lane when it asked for a frozen
 /// page and did not get that line. The same shape the `WINDOW_TITLE` literal
@@ -1912,7 +1915,8 @@ mod web {
     /// where the `petra-parity` lane reads it from.
     ///
     /// Two elements rather than one, the same protocol
-    /// `gorgon/xtask/parity-wasm/digests.html` uses for the digest report: a
+    /// `gorgon/xtask/parity-wasm/digests.html` (the `gorgon-xtask` capture
+    /// lane, private-monorepo-only) uses for the digest report: a
     /// reader that polled the body alone could not tell "the module has not
     /// run yet" from "the module ran and measured nothing", and those are
     /// opposite answers. Both are `display: none` in the host page — this
@@ -2238,8 +2242,9 @@ mod tests {
     /// `hebrew` at `0` of 15, 10, 11 and 7. The assertion below is that
     /// split, not those counts: the counts move whenever
     /// `fonts::script_samples` is edited, and the split is the fact the lane
-    /// depends on. `gorgon/xtask/src/parity/glyphs.rs` holds the same split
-    /// as the browser-side requirement, and its `WEB_REQUIRED_SCRIPTS` is
+    /// depends on. `gorgon/xtask/src/parity/glyphs.rs` (private-monorepo-only)
+    /// holds the same split as the browser-side requirement, and its
+    /// `WEB_REQUIRED_SCRIPTS` is
     /// what goes red if this one ever changes without that one changing too.
     #[test]
     fn the_stack_a_browser_gets_draws_latin_and_emoji_and_nothing_else() {

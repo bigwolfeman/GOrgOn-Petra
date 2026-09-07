@@ -96,7 +96,8 @@ pub fn measure(node: &ViewNode, ctx: &mut LayoutCtx<'_>, proposal: SizeProposal)
 /// * The invariant becomes structural. `clip ⊆ rect` for every text
 ///   placement, so "a text run never paints outside the box it was given" is
 ///   a property of the frame, checkable without a renderer, and
-///   `gorgon/inspector/tests/layout_overlap.rs` checks it.
+///   `gorgon/inspector/tests/layout_overlap.rs` checks it — in the private
+///   GOrgOn monorepo, where `gorgon-inspector` lives; not in this repository.
 /// * `clip` is a digest input, so this moves the digest of every frame that
 ///   contains text. That is the intended, deliberate re-baseline recorded in
 ///   the owning agent note, not a side effect.

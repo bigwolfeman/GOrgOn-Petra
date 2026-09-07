@@ -214,7 +214,7 @@ pub fn place(
     // shows it. Accumulating absolutely makes the next leading edge the same
     // expression as this trailing edge, bit for bit, whenever the gap is zero
     // — and where the gap is not zero the rects do not abut, so there is no
-    // seam to close. `gorgon/petra/tests/layout_matrix.rs`'s
+    // seam to close. `petra/tests/layout_matrix.rs`'s
     // `abutting_rows_share_a_device_edge_from_a_shifted_origin` pins it.
     // `justify` only ever moves this starting point, or — `SpaceBetween` —
     // grows every gap by the same `spread`. It never changes how much room

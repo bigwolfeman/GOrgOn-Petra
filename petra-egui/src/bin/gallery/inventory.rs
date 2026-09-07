@@ -275,57 +275,16 @@ pub const ROWS: [Row; 42] = [
 mod tests {
     use super::{ROWS, Slice};
 
-    /// `INVENTORY.md`, read at compile time from the research tree it lives
-    /// in. Five `..` segments reach the repository root from
-    /// `gorgon/petra-egui/src/bin/gallery/`.
-    const INVENTORY_MD: &str = include_str!(
-        "../../../../../.agents/research/08-25-2026/Carbon-Component-Inventory/INVENTORY.md"
-    );
-
-    /// Every `| n | Component | ... | Slice |` row of the inventory table, as
-    /// `(number, component, slice letter)`.
-    fn parsed_inventory() -> Vec<(u8, String, char)> {
-        let mut rows = Vec::new();
-        for line in INVENTORY_MD.lines() {
-            let line = line.trim();
-            if !line.starts_with('|') {
-                continue;
-            }
-            let cells: Vec<&str> = line.trim_matches('|').split('|').map(str::trim).collect();
-            if cells.len() != 5 {
-                continue;
-            }
-            let Ok(number) = cells[0].parse::<u8>() else {
-                continue;
-            };
-            let mut letters = cells[4].chars();
-            let (Some(letter), None) = (letters.next(), letters.next()) else {
-                continue;
-            };
-            rows.push((number, cells[1].to_string(), letter));
-        }
-        rows
-    }
-
-    /// The scaffold's identity is only worth anything if it is the inventory's
-    /// identity. A hand-typed copy of a 42-row table drifts; this makes the
-    /// drift a failing test naming the row rather than a wrong gallery.
-    #[test]
-    fn the_rows_match_the_checked_in_inventory() {
-        let parsed = parsed_inventory();
-        assert_eq!(
-            parsed.len(),
-            ROWS.len(),
-            "INVENTORY.md has {} component rows, this scaffold has {}",
-            parsed.len(),
-            ROWS.len()
-        );
-        for (row, (number, component, letter)) in ROWS.iter().zip(parsed) {
-            assert_eq!(row.number, number, "row {number}: number");
-            assert_eq!(row.component, component, "row {number}: component name");
-            assert_eq!(row.slice.letter(), letter, "row {number}: slice");
-        }
-    }
+    // The GOrgOn monorepo carries a fifth test here,
+    // `the_rows_match_the_checked_in_inventory`, that parses
+    // `.agents/research/08-25-2026/Carbon-Component-Inventory/INVENTORY.md`
+    // via `include_str!` and checks it row for row against `ROWS` above.
+    // That research tree is monorepo-only planning documentation, outside
+    // `gorgon/petra-egui`, so it does not exist in this standalone
+    // repository and the test was removed here rather than shipped with a
+    // broken `include_str!` path. The three tests below, which check `ROWS`
+    // against itself, are unaffected and still run. The monorepo test still
+    // guards `ROWS` there.
 
     #[test]
     fn the_rows_are_numbered_one_to_forty_two_in_order() {

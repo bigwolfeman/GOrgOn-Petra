@@ -7,7 +7,7 @@
 //! requested from inside either of those files can never be foreign, and
 //! `host.rs`'s own unit tests are therefore structurally unable to play the
 //! part of a third-party painter. An integration test can: `file!()` here is
-//! `gorgon/petra-egui/tests/idle_audit.rs`, which is neither the toolkit nor
+//! `petra-egui/tests/idle_audit.rs`, which is neither the toolkit nor
 //! this host, which is exactly what a hosted painter's file looks like.
 //!
 //! What is under test is the *production* path, not a simulation of it:

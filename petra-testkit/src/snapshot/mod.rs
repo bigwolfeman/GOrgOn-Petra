@@ -462,7 +462,7 @@ impl Snapshotter {
 ///
 /// Through [`round_rect`], so the PNG's dimensions are the same device
 /// numbers `crate::wire::frame_result` puts on the wire for placements — one
-/// rounding rule, spent in one place (`gorgon/petra/src/frame/rounding.rs`).
+/// rounding rule, spent in one place (`petra/src/frame/rounding.rs`).
 fn device_rect(frame: &PetrifiedFrame) -> WireRect {
     let size = frame.viewport.size;
     let rect = round_rect(Rect::new(0.0, 0.0, size.w, size.h), frame.viewport.scale);

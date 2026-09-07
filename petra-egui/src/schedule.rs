@@ -106,7 +106,7 @@ pub fn foreign_causes(causes: &[egui::RepaintCause]) -> Vec<ForeignRepaint> {
 /// workspace path for a path dependency, a registry path for a crates.io one.
 /// Both carry the crate's own directory as a path component, so the match is
 /// on components, not on substrings. That distinction is load-bearing:
-/// `gorgon/petra-egui/examples/gallery.rs` contains the text `egui/` and is
+/// `petra-egui/examples/gallery.rs` contains the text `egui/` and is
 /// emphatically not a toolkit file, and a substring match would silently
 /// exempt every application example in this repository from the audit.
 fn is_accounted_for(file: &str) -> bool {
@@ -255,21 +255,18 @@ mod tests {
                 "/home/x/.cargo/registry/src/index.crates.io-1/eframe-0.36.1/src/native/run.rs",
                 12,
             ),
-            cause("gorgon/petra-egui/src/host.rs", 504),
-            cause("gorgon/petra-egui/src/schedule.rs", 55),
+            cause("petra-egui/src/host.rs", 504),
+            cause("petra-egui/src/schedule.rs", 55),
             cause(
                 "/home/x/.cargo/registry/src/index.crates.io-1/accesskit_winit-0.1/src/lib.rs",
                 3,
             ),
-            cause("gorgon/petra-egui/examples/gallery.rs", 214),
+            cause("petra-egui/examples/gallery.rs", 214),
             cause("src/panels/sparkline.rs", 77),
         ];
         let foreign = foreign_causes(&causes);
         assert_eq!(foreign.len(), 2, "{foreign:?}");
-        assert_eq!(
-            foreign[0].source,
-            "gorgon/petra-egui/examples/gallery.rs:214"
-        );
+        assert_eq!(foreign[0].source, "petra-egui/examples/gallery.rs:214");
         assert_eq!(foreign[1].source, "src/panels/sparkline.rs:77");
     }
 
@@ -314,13 +311,13 @@ mod tests {
     }
 
     /// The trap a substring match falls into: this crate's own directory has
-    /// `egui` in its name, so every file under `gorgon/petra-egui/` would be
+    /// `egui` in its name, so every file under `petra-egui/` would be
     /// exempted and no application example could ever be reported.
     #[test]
     fn this_crates_directory_is_not_mistaken_for_the_toolkit() {
-        assert!(!is_accounted_for("gorgon/petra-egui/examples/gallery.rs"));
-        assert!(!is_accounted_for("gorgon/petra-egui/src/paint.rs"));
-        assert!(is_accounted_for("gorgon/petra-egui/src/host.rs"));
+        assert!(!is_accounted_for("petra-egui/examples/gallery.rs"));
+        assert!(!is_accounted_for("petra-egui/src/paint.rs"));
+        assert!(is_accounted_for("petra-egui/src/host.rs"));
     }
 
     /// The focus-ring request at `host.rs:504` must never be read as a
@@ -328,8 +325,8 @@ mod tests {
     /// happens at most once per focus move.
     #[test]
     fn the_focus_ring_repaint_is_not_a_foreign_cause() {
-        assert!(is_accounted_for("gorgon/petra-egui/src/host.rs"));
-        assert!(foreign_causes(&[cause("gorgon/petra-egui/src/host.rs", 504)]).is_empty());
+        assert!(is_accounted_for("petra-egui/src/host.rs"));
+        assert!(foreign_causes(&[cause("petra-egui/src/host.rs", 504)]).is_empty());
     }
 
     #[test]

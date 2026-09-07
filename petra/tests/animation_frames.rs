@@ -489,7 +489,7 @@ fn scenario_4_an_ambient_definition_counts_once() {
 ///
 /// Simulated, and this is the honest limit of this test: it proves the
 /// scheduling *rule* over 3600 passes, not that a live `eframe` window paints
-/// nothing. The window-level claim needs `gorgon/petra-egui`'s host under a
+/// nothing. The window-level claim needs `petra-egui`'s host under a
 /// real event loop and is not made here.
 #[test]
 fn scenario_5_sixty_idle_seconds_ask_for_zero_frames() {

@@ -183,12 +183,10 @@ fn build_example(testkit: bool) -> PathBuf {
 ///
 /// This file deliberately builds with no Cargo features on (its own module
 /// doc, above) so it cannot rely on this crate's optional `nix` dependency
-/// — that is only pulled in behind the `testkit` feature — or on
-/// `tests/support/gorgond.rs::kill_process_group`, which depends on `nix`
-/// being present for that same reason. Shelling out to the `kill` binary,
-/// the same way this file's own `Command::new("kill")` already did before
-/// this fix, is what keeps this test buildable and correct with no
-/// features on.
+/// — that is only pulled in behind the `testkit` feature. Shelling out to
+/// the `kill` binary, the same way this file's own `Command::new("kill")`
+/// already did before this fix, is what keeps this test buildable and
+/// correct with no features on.
 ///
 /// # Errors
 /// The `kill` command failed to start, or exited non-zero.

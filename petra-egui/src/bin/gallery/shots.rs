@@ -7369,7 +7369,7 @@ mod tests {
     // ===== Wave ANCHOR: a surface docked to a viewport edge =====
 
     /// Carbon's toast region inset, `$spacing-05` = 16
-    /// (`gorgon/petra/src/token/shipped.rs:994`, `("spacing-05", 16.0)`).
+    /// (`petra/src/token/shipped.rs:994`, `("spacing-05", 16.0)`).
     const TOAST_DOCK_INSET: f32 = 16.0;
 
     /// Row 21. Carbon puts a toast in a top-trailing region. `Anchor::Viewport`

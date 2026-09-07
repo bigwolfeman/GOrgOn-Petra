@@ -14,22 +14,15 @@
 //! per binary that pulls it in. That is a build-graph fact, not a second
 //! *source*: there is exactly one place this code is written.
 //!
-//! [`gorgond`], [`inspector`] and [`journey`] are T044's addition: a real,
-//! subprocess-booted `gorgond`, a real inspector `Shell` hosted the same
-//! `DriverHost` way [`driven_server`] hosts [`CountingApp`] above, and the
-//! keyboard-only driver primitives both `tests/inspector_journey.rs` and
-//! T045's `tests/inspector_reconnect.rs` drive them with (FS-2: one journey
-//! harness, owned by T044).
-//!
-//! [`measure`] is T046/T064's addition: timed twins of a few of
-//! [`journey`]'s primitives, plus `p99`/`vm_rss_kb` — see that module's own
-//! doc comment for why the timing wrappers duplicate rather than reach into
-//! `journey.rs`.
-
-pub mod gorgond;
-pub mod inspector;
-pub mod journey;
-pub mod measure;
+//! T044's `gorgond`, `inspector`, `journey` and `measure` submodules drove a
+//! real `gorgond` daemon and a real `gorgon-inspector::app::Shell` under
+//! this harness. Both crates live only in the GOrgOn monorepo, so this
+//! standalone repository (filtered out of that monorepo, `gorgon-inspector`
+//! and `gorgon-kernel` excluded on purpose) cannot build them: the
+//! submodules, and the three test binaries that drove them
+//! (`inspector_journey.rs`, `inspector_reconnect.rs`, `semantic_audit.rs`),
+//! were removed rather than shipped as dead code or a feature flag with
+//! nothing behind it. That coverage still exists in the monorepo.
 
 use std::ops::Range;
 use std::path::Path;

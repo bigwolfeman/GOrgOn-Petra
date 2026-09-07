@@ -28,7 +28,7 @@
 //! the placements, not the hashes, not the digest. A settled frame is
 //! byte-identical to the frame `petrify` produced, so its digest is the digest
 //! of a build straight to the target, with no engine in the picture.
-//! `gorgon/petra/tests/animation_frames.rs` asserts exactly that equality.
+//! `petra/tests/animation_frames.rs` asserts exactly that equality.
 //!
 //! # What this engine cannot see
 //!

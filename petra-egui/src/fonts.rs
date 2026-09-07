@@ -9,7 +9,7 @@
 //! ## The design system: embedded, unconditional, identical everywhere
 //!
 //! [`DESIGN_SYSTEM_FACES`] is IBM Plex Sans in three weights plus IBM Plex
-//! Mono, `include_bytes!`'d out of `gorgon/petra-egui/assets/fonts`.
+//! Mono, `include_bytes!`'d out of `petra-egui/assets/fonts`.
 //! [`install_design_system`] puts them at the head of every family, and
 //! [`crate::host::Host::new`] calls it, so a product built on this crate
 //! draws in the shipped face without doing anything.
@@ -163,7 +163,7 @@ const MONO_REGULAR: &str = "gorgon-plex-mono-regular";
 /// module's family layout.
 ///
 /// Provenance, versions, SHA-256s, the licence, and the measurement behind
-/// the choice of face: `gorgon/petra-egui/assets/fonts/PROVENANCE.md`.
+/// the choice of face: `petra-egui/assets/fonts/PROVENANCE.md`.
 pub const DESIGN_SYSTEM_FACES: &[EmbeddedFace] = &[
     EmbeddedFace {
         name: SANS_REGULAR,

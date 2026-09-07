@@ -498,7 +498,7 @@ impl Flow {
 /// boundary, so `crate::frame::rounding` sent the two sides of one seam to
 /// device rows 162 and 163 — a visible one-pixel gap between two abutting
 /// quarter-hours, at scale 1.0, on a display with no fractional scaling at
-/// all. `gorgon/petra/tests/layout_matrix.rs`'s
+/// all. `petra/tests/layout_matrix.rs`'s
 /// `a_week_view_lays_out_from_one_grid` is what surfaced it.
 ///
 /// So a run that has a neighbour reads its far edge back out of the offsets
@@ -1078,7 +1078,7 @@ fn row_natural_height(
 /// `f32` disagrees often enough that `crate::frame::rounding` rounds the two
 /// sides of one seam to two different device pixels, leaving a one-pixel gap
 /// or overlap between columns that share an edge.
-/// `gorgon/petra/tests/layout_matrix.rs`'s
+/// `petra/tests/layout_matrix.rs`'s
 /// `abutting_grid_cells_share_a_device_edge_from_a_shifted_origin` pins it.
 fn cumulative_offsets(origin: f32, sizes: &[f32], spacing: f32) -> Vec<f32> {
     let spacing = spacing.max(0.0);

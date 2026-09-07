@@ -134,7 +134,7 @@ const INLINE_MAX_INLINE: f32 = 608.0;
 
 /// Carbon's toast region inset from the window, `$spacing-05` = 16.
 ///
-/// MEASURED `gorgon/petra/src/token/shipped.rs:994`, `("spacing-05", 16.0)`,
+/// MEASURED `petra/src/token/shipped.rs:994`, `("spacing-05", 16.0)`,
 /// which is this library's copy of `@carbon/layout`'s spacing ramp. The
 /// region itself is SOURCED: slice-c Notification records the toast as
 /// "non-modal, time-based, **top-of-screen**" and its motion as "slides in

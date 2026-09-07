@@ -1190,7 +1190,7 @@ mod tests {
     /// names", and stated a defect as though it were a design: the theme
     /// revision is one global number, so rebinding this node's `background`
     /// from `surface.raised` to `status.down` repainted the panel and moved no
-    /// digest. `gorgon/petra/tests/frame_digest_coverage.rs` is where the two
+    /// digest. `petra/tests/frame_digest_coverage.rs` is where the two
     /// bindings are now proven to differ.
     #[test]
     fn token_references_reach_the_payload() {
