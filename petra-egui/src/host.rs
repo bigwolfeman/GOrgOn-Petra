@@ -2598,19 +2598,51 @@ impl<A: App> Host<A> {
     /// [`gorgon_petra::frame::PetrifiedFrame::selected_text`] is the whole of
     /// it, and there is no second copy of either to drift.
     ///
-    /// Ctrl **or** Cmd, because the chord is the platform's and this host
-    /// runs on both.
+    /// # Why one event and not a chord
+    ///
+    /// This matched `Ctrl`-or-`Cmd` **+ C** as a keystroke until 2026-09-07,
+    /// and on a real window it never fired once. `egui-winit` recognises the
+    /// copy command in its own key handler and pushes `egui::Event::Copy`
+    /// *instead of* the keystroke, so the keystroke this waited for is one no
+    /// platform sends. Five capture tests asserted the clipboard and all five
+    /// passed, because the driver's injector was synthesizing the same
+    /// keystroke by hand — a closed loop between two pieces of this crate with
+    /// the window's own behaviour outside it. The operator found it: *"I can't
+    /// copy and paste from lists, I suspect I cant control c in more places
+    /// too."*
+    ///
+    /// Both halves moved. [`gorgon_petra::input::InputEvent::Copy`] carries
+    /// the intent, and `crate::inject::push_key` now emits `Event::Copy` for
+    /// the copy chord exactly as `egui-winit` does, so the driver and the
+    /// window produce the same event.
+    ///
+    /// # Why it answers the bare keystroke as well
+    ///
+    /// Because the seam that broke cannot be tested from this workspace, and
+    /// a feature must not rest on one reading of an untestable seam.
+    ///
+    /// `winit::event::KeyEvent` carries a `pub(crate) platform_specific`
+    /// field, so no crate but `winit` can construct one. There is therefore no
+    /// way, short of a physical keyboard on a mapped window, to prove that a
+    /// Ctrl+C press becomes `egui::Event::Copy` — only to read `egui-winit`'s
+    /// `is_copy_command` and believe it. Not reading it is what caused this
+    /// defect, and the cost was a feature green in every test and dead in the
+    /// operator's hands.
+    ///
+    /// So both shapes are answered. This is not a fallback hiding a broken
+    /// primary path: they are two real events that both mean *copy this*, and
+    /// answering one of them would bet the feature on an assumption nothing
+    /// here can check. `Event::Copy` is what a winit window and a browser both
+    /// send today; the chord is what any input layer that does not pre-digest
+    /// it would send.
+    ///
+    /// The hole this could re-open — a regressed injector staying green
+    /// through the keystroke — is closed somewhere else, by
+    /// `inject::tests::a_copy_chord_injects_the_platforms_copy_event_and_never_a_keystroke`,
+    /// which asserts the raw egui events and cannot be satisfied by a
+    /// keystroke.
     fn copy_selection(&mut self, event: &InputEvent) -> bool {
-        let InputEvent::Key {
-            key: KeyCode::Char('c'),
-            pressed: true,
-            modifiers,
-            ..
-        } = event
-        else {
-            return false;
-        };
-        if !(modifiers.ctrl || modifiers.meta) {
+        if !asks_for_a_copy(event) {
             return false;
         }
         let Some(selected) = self
@@ -2846,6 +2878,24 @@ fn physical_window_px(ctx: &Context) -> [u32; 2] {
 }
 
 /// The view a refused tree is replaced with, so the violations are on screen.
+/// Whether `event` is the operator asking for the selection to be copied.
+///
+/// Two shapes, both real. See [`App::copy_selection`], which carries the
+/// argument for why this is not one shape with a fallback.
+#[must_use]
+fn asks_for_a_copy(event: &InputEvent) -> bool {
+    match event {
+        InputEvent::Copy => true,
+        InputEvent::Key {
+            key: KeyCode::Char('c'),
+            pressed: true,
+            modifiers,
+            ..
+        } => modifiers.ctrl || modifiers.meta,
+        _ => false,
+    }
+}
+
 fn refusal_view(message: &str) -> ViewNode {
     let mut tokens = Props::default();
     tokens
@@ -4758,5 +4808,58 @@ mod tests {
         step(&ctx, &mut host, press_at(run));
         assert_eq!(host.state().focused.as_deref(), Some("/root/run"));
         assert_eq!(host.caret().id(), Some("/root/run"));
+    }
+
+    /// Both shapes of "copy this", and nothing else.
+    ///
+    /// The wiring below this predicate is one body, exercised end to end by
+    /// the gallery's six clipboard captures through `InputEvent::Copy`. What
+    /// only this test covers is the keystroke arm, which exists because the
+    /// `winit` to `egui` seam cannot be constructed in a test at all:
+    /// `winit::event::KeyEvent` carries a `pub(crate)` field, so no crate but
+    /// `winit` can build one.
+    #[test]
+    fn a_copy_is_the_platforms_copy_event_or_the_chord_and_nothing_else() {
+        use gorgon_petra::input::{InputEvent, KeyCode, Modifiers};
+        let chord = |modifiers, pressed| InputEvent::Key {
+            key: KeyCode::Char('c'),
+            pressed,
+            repeat: false,
+            modifiers,
+        };
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Modifiers::NONE
+        };
+        let meta = Modifiers {
+            meta: true,
+            ..Modifiers::NONE
+        };
+
+        assert!(super::asks_for_a_copy(&InputEvent::Copy));
+        assert!(super::asks_for_a_copy(&chord(ctrl, true)));
+        assert!(super::asks_for_a_copy(&chord(meta, true)), "Cmd+C on macOS");
+
+        assert!(
+            !super::asks_for_a_copy(&chord(Modifiers::NONE, true)),
+            "a bare c is a letter"
+        );
+        assert!(
+            !super::asks_for_a_copy(&chord(Modifiers::shift(), true)),
+            "Shift+C is a capital letter"
+        );
+        assert!(
+            !super::asks_for_a_copy(&chord(ctrl, false)),
+            "the release does not copy a second time"
+        );
+        assert!(
+            !super::asks_for_a_copy(&InputEvent::Key {
+                key: KeyCode::Char('x'),
+                pressed: true,
+                repeat: false,
+                modifiers: ctrl,
+            }),
+            "cut is not copy, and Petra has nothing that cuts"
+        );
     }
 }

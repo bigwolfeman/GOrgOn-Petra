@@ -596,10 +596,57 @@ fn push_scroll(raw: &mut RawInput, pos: Point, delta: Size) {
     });
 }
 
-/// A full keystroke: press, then release, matching a physical key tap.
+/// A full keystroke: press, then release, matching a physical key tap — or,
+/// for a clipboard command, the one semantic event a window would send in its
+/// place.
+///
+/// # Why a chord is not always a keystroke
+///
+/// `egui-winit` inspects every key press before it emits anything and, for
+/// cut, copy and paste, pushes `Event::Cut` / `Event::Copy` / `Event::Paste`
+/// and **returns without emitting the keystroke** (`egui-winit/src/lib.rs`,
+/// `is_copy_command` and its two siblings). So an injector that pushes
+/// `Event::Key { key: C, ctrl }` is not synthesizing what a keyboard produces
+/// — it is synthesizing something no keyboard produces, and every test driven
+/// through it is evidence about the injector rather than about the product.
+///
+/// That is not a hypothetical either. `Host::copy_selection` matched the
+/// keystroke, five capture tests asserted the clipboard through this
+/// function, all of them passed, and the operator found the feature dead on
+/// the real window: *"I can't copy and paste from lists, I suspect I cant
+/// control c in more places too."*
+///
+/// `contracts/driver-protocol.md` — "every `act` synthesizes the same
+/// low-level input events a physical device produces" — is the rule this
+/// keeps for cut and copy.
+///
+/// # The paste chord is still a keystroke, and that is a known gap
+///
+/// A window pushes `Event::Paste` carrying the **system clipboard's**
+/// contents, which an injector cannot know and must not invent. Emitting
+/// nothing would be faithful to one real state — a window with an empty
+/// clipboard sends no events either — but a driven step that silently does
+/// nothing and reports success is worse than a wrong one. So `Ctrl+V` still
+/// injects the keystroke it always did, which Petra reads as an ordinary key
+/// press.
+///
+/// Nothing in this workspace drives a paste chord today. Closing it properly
+/// means an action that carries the text to paste, and that is an addition to
+/// the driver's vocabulary rather than a repair to this function.
 fn push_key(raw: &mut RawInput, key: KeyCode, modifiers: Modifiers) -> Result<(), InjectError> {
     let egui_key = to_egui_key(key).ok_or(InjectError::UnsupportedKey(key))?;
     let mods = to_egui_modifiers(modifiers);
+    if is_copy_command(mods, egui_key) {
+        raw.events.push(Event::Copy);
+        return Ok(());
+    }
+    // Cut is the same seam and costs two lines. Petra has nothing that cuts,
+    // so `EventTranslator` drops this and counts it — which is a gap on the
+    // record rather than a driver quietly disagreeing with every window.
+    if is_cut_command(mods, egui_key) {
+        raw.events.push(Event::Cut);
+        return Ok(());
+    }
     for pressed in [true, false] {
         raw.events.push(Event::Key {
             key: egui_key,
@@ -610,6 +657,25 @@ fn push_key(raw: &mut RawInput, key: KeyCode, modifiers: Modifiers) -> Result<()
         });
     }
     Ok(())
+}
+
+/// `egui-winit`'s own predicate, kept byte-for-byte so the two cannot drift.
+///
+/// The `Insert` arm is Windows-only there and is Windows-only here for the
+/// same reason: a driver whose chord means something different from the
+/// platform's is a driver that proves nothing about the platform.
+fn is_copy_command(modifiers: egui::Modifiers, key: egui::Key) -> bool {
+    key == egui::Key::Copy
+        || (modifiers.command && key == egui::Key::C)
+        || (cfg!(target_os = "windows") && modifiers.ctrl && key == egui::Key::Insert)
+}
+
+/// `egui-winit`'s `is_cut_command`, kept beside its sibling for the same
+/// reason.
+fn is_cut_command(modifiers: egui::Modifiers, key: egui::Key) -> bool {
+    key == egui::Key::Cut
+        || (modifiers.command && key == egui::Key::X)
+        || (cfg!(target_os = "windows") && modifiers.shift && key == egui::Key::Delete)
 }
 
 #[cfg(test)]
@@ -1126,5 +1192,103 @@ mod tests {
             let back = crate::input::translate_modifiers(to_egui_modifiers(m));
             assert_eq!(back, m, "{m:?} did not round-trip");
         }
+    }
+
+    /// The copy chord must reach egui as the platform's own copy event, not
+    /// as a keystroke, because `egui-winit` never emits the keystroke.
+    ///
+    /// This is the seam the operator found broken: five capture tests
+    /// asserted a clipboard through this injector, this injector pushed
+    /// `Event::Key { C, ctrl }`, and `Host::copy_selection` matched it — a
+    /// closed loop between two pieces of this crate with the window's own
+    /// behaviour outside it. Asserting on the raw events is the only place
+    /// that loop can be cut, because everything downstream of here agrees
+    /// with everything else downstream of here by construction.
+    #[test]
+    fn a_copy_chord_injects_the_platforms_copy_event_and_never_a_keystroke() {
+        let mut raw = RawInput::default();
+        super::push_key(
+            &mut raw,
+            KeyCode::Char('c'),
+            Modifiers {
+                ctrl: true,
+                ..Modifiers::NONE
+            },
+        )
+        .expect("the copy chord injects");
+        assert_eq!(
+            raw.events,
+            vec![egui::Event::Copy],
+            "one semantic event and no keystroke, which is what \
+             `egui-winit`'s `is_copy_command` arm produces"
+        );
+
+        // Cmd+C, the same command on the other platform.
+        let mut raw = RawInput::default();
+        super::push_key(
+            &mut raw,
+            KeyCode::Char('c'),
+            Modifiers {
+                meta: true,
+                ..Modifiers::NONE
+            },
+        )
+        .expect("the copy chord injects");
+        assert_eq!(raw.events, vec![egui::Event::Copy]);
+
+        // Cut, the same seam. Petra has nothing that cuts, so this reaches
+        // the translator's dropped-event count rather than a handler — which
+        // is a gap on the record, not a driver disagreeing with every window.
+        let mut raw = RawInput::default();
+        super::push_key(
+            &mut raw,
+            KeyCode::Char('x'),
+            Modifiers {
+                ctrl: true,
+                ..Modifiers::NONE
+            },
+        )
+        .expect("the cut chord injects");
+        assert_eq!(raw.events, vec![egui::Event::Cut]);
+
+        // And a bare `c` is still a keystroke: the branch is about the
+        // command, not about the letter.
+        let mut raw = RawInput::default();
+        super::push_key(&mut raw, KeyCode::Char('c'), Modifiers::NONE).expect("a letter injects");
+        assert_eq!(raw.events.len(), 2, "press and release");
+        assert!(
+            raw.events.iter().all(|e| matches!(
+                e,
+                egui::Event::Key {
+                    key: egui::Key::C,
+                    ..
+                }
+            )),
+            "got {:?}",
+            raw.events
+        );
+    }
+
+    /// And the whole way through: a driven copy chord reaches the host as
+    /// [`InputEvent::Copy`]. The test above pins the injector's output; this
+    /// one pins that the translator agrees, so the two halves of the fix
+    /// cannot be reverted independently.
+    #[test]
+    fn a_driven_copy_chord_arrives_as_the_copy_event() {
+        let mut raw = RawInput::default();
+        super::push_key(
+            &mut raw,
+            KeyCode::Char('c'),
+            Modifiers {
+                ctrl: true,
+                ..Modifiers::NONE
+            },
+        )
+        .expect("the copy chord injects");
+        let mut translator = crate::input::EventTranslator::default();
+        assert_eq!(
+            translator.translate_all(&raw.events),
+            vec![InputEvent::Copy]
+        );
     }
 }

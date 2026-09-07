@@ -353,6 +353,32 @@ pub enum InputEvent {
         /// Whether the gesture finished or was cut short, and why.
         outcome: GestureOutcome,
     },
+    /// The operator asked for the selection to go on the clipboard.
+    ///
+    /// # Why this is an event and not a chord
+    ///
+    /// Because that is what the platform sends. `egui-winit` recognises the
+    /// copy command in its own key handler and pushes `egui::Event::Copy`,
+    /// **returning without emitting the keystroke at all** — so a host
+    /// watching for "the C key with control held" watches for something no
+    /// keyboard on any platform produces. That is not a hypothetical: this
+    /// crate's copy chord was written as a key match, every test that drove
+    /// it synthesized the keystroke directly, and the operator found it dead
+    /// on the real window: *"I can't copy and paste from lists, I suspect I
+    /// cant control c in more places too."*
+    ///
+    /// Reconstructing the chord instead would also be a lie in two of the
+    /// three ways it can arrive. The command is Cmd+C on macOS and Ctrl+C
+    /// elsewhere; there is a dedicated `Copy` key on some keyboards that
+    /// carries no modifier at all; and an Edit ▸ Copy menu item is a copy
+    /// with no keystroke behind it. One intent, several devices, so the
+    /// vocabulary names the intent. Text is in this file for the mirror
+    /// image of the same reason ([`InputEvent::Text`]).
+    ///
+    /// It is aimed by neither position nor focus. The selection this copies
+    /// is host-derived state that spans whatever runs it spans
+    /// ([`TextSelection`]), so there is no one node to route it to.
+    Copy,
 }
 
 impl InputEvent {
@@ -446,7 +472,10 @@ pub fn required_interaction_during(
         // node it names declared `Drag` to have been given the capture, so
         // that is the interaction it is heard under.
         InputEvent::GestureEnded { .. } => Some(Interaction::Drag),
-        InputEvent::WindowFocused | InputEvent::WindowBlurred => None,
+        // Neither is aimed at a node, so neither asks a node to declare
+        // anything. A copy reads a selection that may span twenty runs and
+        // belongs to none of them.
+        InputEvent::WindowFocused | InputEvent::WindowBlurred | InputEvent::Copy => None,
     }
 }
 

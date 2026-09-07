@@ -159,6 +159,15 @@ impl EventTranslator {
                     None
                 }
             },
+            // The platform's copy command, however it was made: Cmd+C, Ctrl+C,
+            // a dedicated `Copy` key, or an Edit menu item. `egui-winit`
+            // recognises all of those in its own key handler and pushes this
+            // instead of the keystroke, so this arm is the only way a copy
+            // reaches Petra from a real window. It was dropped as
+            // untranslated until 2026-09-07, which made
+            // `Host::copy_selection` unreachable outside a test that
+            // synthesized a keystroke by hand.
+            Event::Copy => Some(InputEvent::Copy),
             Event::WindowFocused(true) => Some(InputEvent::WindowFocused),
             Event::WindowFocused(false) => Some(InputEvent::WindowBlurred),
             other => {
@@ -496,8 +505,23 @@ mod tests {
         let mut t = translator();
         assert_eq!(t.translate(&Event::Zoom(1.1)), None);
         assert_eq!(t.translate(&Event::Zoom(1.2)), None);
-        assert_eq!(t.translate(&Event::Copy), None);
-        assert_eq!(t.untranslated(), [("Copy", 1), ("Zoom", 2)]);
+        assert_eq!(t.untranslated(), [("Zoom", 2)]);
+    }
+
+    /// The copy command is the only way a copy reaches Petra from a window:
+    /// `egui-winit` recognises it in its key handler and pushes this
+    /// *instead of* the keystroke. It was in the untranslated list above
+    /// until 2026-09-07, asserted as a known gap, while `Host::copy_selection`
+    /// waited for a `Ctrl+C` keystroke no platform sends.
+    #[test]
+    fn the_platforms_copy_command_is_a_petra_event_and_not_a_dropped_one() {
+        let mut t = translator();
+        assert_eq!(t.translate(&Event::Copy), Some(InputEvent::Copy));
+        assert!(
+            t.untranslated().is_empty(),
+            "a copy that reaches Petra is not a gap, got {:?}",
+            t.untranslated()
+        );
     }
 
     #[test]
