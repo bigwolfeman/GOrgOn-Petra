@@ -29,6 +29,6 @@ pub use props::{
 // (`gorgon/gorgond/src/ui.rs`) walks the same pairing `validate` walks,
 // rather than keeping a second copy of it.
 pub use validate::{
-    ANCHOR_PROP_KINDS, PADDING_PROP_KINDS, Registry, TOKEN_PROP_KINDS, TreeError, TreeErrors,
-    ValidatedTree, Violation, token_prop_refs, validate,
+    ANCHOR_PROP_KINDS, PADDING_PROP_KINDS, Prerequisites, Registry, TOKEN_PROP_KINDS, TreeError,
+    TreeErrors, ValidatedTree, Violation, token_prop_refs, validate,
 };

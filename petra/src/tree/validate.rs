@@ -415,6 +415,150 @@ pub enum Violation {
     },
 }
 
+/// What a validator must hold, beyond the subtree in front of it, before a
+/// [`Violation`] it found can be trusted.
+///
+/// [`validate`](fn@validate) is written for the shell: a whole tree, already expanded,
+/// judged against the live [`Registry`]. It is also run one step earlier,
+/// by the daemon's stage-1 acceptance of a plugin's contributed subtree
+/// (`gorgon/gorgond/src/ui.rs`), which has none of those three things. Every
+/// check that does not depend on them belongs at that earlier stage, because
+/// a refusal there returns from the plugin's own `ctx.ui:contribute` call
+/// while the call site is still on screen; every check that does depend on
+/// them must NOT run there, because the daemon's answer would be a guess and
+/// a wrong guess is a **false refusal** of a tree the shell would have drawn.
+///
+/// Which side of that line each violation falls on is stated once, here,
+/// by [`Violation::prerequisites`]. Every field defaults to "not needed" in
+/// the sense that most violations need none of them; a violation that needs
+/// one is the exception and says so.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Prerequisites {
+    /// Judging it read a name the **host** put in the [`Registry`]: a
+    /// registered painter, a declared transition, or the token vocabulary.
+    /// A validator without the live registry can only guess at these, and a
+    /// host that registers one more name turns the violation into a
+    /// non-violation.
+    pub registry: bool,
+    /// Judging it assumed the tree's component references were already
+    /// rewritten by [`crate::component::registry::expand`]. Before that
+    /// runs, a reference is the wire form a plugin legitimately sends, not
+    /// a mistake.
+    pub expansion: bool,
+    /// Judging it read something outside the subtree that carries it, in a
+    /// way that **splicing the subtree into a larger tree can change**: the
+    /// kind of the parent a contributed root does not have yet, or the set
+    /// of node ids an anchor may name. Sibling keys, in-subtree grid tracks
+    /// and in-subtree scroll ancestors are not this — splicing adds
+    /// ancestors and never removes them, so a violation found among them
+    /// stays one.
+    pub placement: bool,
+}
+
+impl Prerequisites {
+    /// Nothing beyond the node and the subtree around it.
+    const NONE: Self = Self {
+        registry: false,
+        expansion: false,
+        placement: false,
+    };
+    /// A name the host registered.
+    const REGISTRY: Self = Self {
+        registry: true,
+        ..Self::NONE
+    };
+}
+
+impl Violation {
+    /// What judging this violation needed beyond the subtree in front of
+    /// the validator. See [`Prerequisites`].
+    ///
+    /// The match is exhaustive on purpose and carries no `_` arm: a variant
+    /// added to [`Violation`] fails to compile until whoever added it
+    /// answers this question, in this file, next to the variant they wrote.
+    /// The alternative — a list of registry-dependent variants kept by the
+    /// daemon — is a second copy of a petra table living in another crate,
+    /// which is the drift this repository has already paid to remove once
+    /// (`.agents/notes/implemented/architecture/2026-09-07-one-token-prop-table.md`).
+    #[must_use]
+    pub fn prerequisites(&self) -> Prerequisites {
+        match self {
+            // The four registry reads in this module, and there are exactly
+            // four: `Registry::has_custom_kind`, `Registry::has_transition`,
+            // `Registry::vocabulary` and `Registry::slots`.
+            Self::UnregisteredCustomKind { .. } | Self::UnregisteredTransition { .. } => {
+                Prerequisites::REGISTRY
+            }
+            Self::UnknownTokenRef { .. } | Self::TokenKindMismatch { .. } => {
+                Prerequisites::REGISTRY
+            }
+
+            // A reference is what an unexpanded tree is *made of*.
+            Self::UnexpandedComponent { .. } => Prerequisites {
+                expansion: true,
+                ..Prerequisites::NONE
+            },
+
+            // Read the parent's kind. At the root of a contributed subtree
+            // there is no parent yet, and the slot the shell splices it
+            // under may well be a `grid` — so that one case, and only that
+            // one, cannot be judged before the splice.
+            Self::SpanOutsideGrid { parent } => Prerequisites {
+                placement: parent.is_none(),
+                ..Prerequisites::NONE
+            },
+            // Read the ids of the whole tree. A subtree carries only its
+            // own, and the splice both adds ids (the shell's) and rewrites
+            // its own (every contributed id gains the slot's path prefix),
+            // so an id that resolves to nothing here may resolve after the
+            // splice and vice versa.
+            Self::AnchorTargetMissing { .. } => Prerequisites {
+                placement: true,
+                ..Prerequisites::NONE
+            },
+
+            // Everything else is decided by the node, or by the subtree
+            // around it in a way the splice cannot undo.
+            Self::DuplicateSiblingKey { .. }
+            | Self::InteractiveWithoutSemantics { .. }
+            | Self::StatusRoleWithoutLabel { .. }
+            | Self::LeafWithChildren { .. }
+            | Self::MissingRequiredProp { .. }
+            | Self::ValueOutOfRange { .. }
+            | Self::ScrollParamOwnedByAncestor { .. }
+            | Self::PaddingOnLeafKind { .. }
+            | Self::TextRunsDoNotCoverTheText { .. }
+            | Self::GridSpanOutOfRange { .. }
+            | Self::AnchorCycle { .. }
+            | Self::UnknownStateName { .. }
+            | Self::ComponentRefOnWrongKind { .. } => Prerequisites::NONE,
+        }
+    }
+
+    /// Whether judging this violation read a name the host registered in
+    /// its [`Registry`] — `prerequisites().registry`, under the name the
+    /// question is usually asked by.
+    #[must_use]
+    pub fn needs_registry(&self) -> bool {
+        self.prerequisites().registry
+    }
+
+    /// Whether a validator holding a **contributed subtree alone** — no
+    /// live registry, no expansion, no parent — may refuse on this.
+    ///
+    /// This is the predicate the daemon's stage 1 filters
+    /// [`validate`](fn@validate)'s output through
+    /// (`gorgon/gorgond/src/ui.rs`, `accept_stage1`). `true` means the
+    /// answer cannot change between there and the shell, so refusing early
+    /// costs the author nothing and saves them a live contribution id for a
+    /// tree that can never be drawn.
+    #[must_use]
+    pub fn judgeable_standalone(&self) -> bool {
+        let needs = self.prerequisites();
+        !needs.registry && !needs.expansion && !needs.placement
+    }
+}
+
 /// A [`TokenKind`] rendered the way a refusal message names it. Not
 /// [`std::fmt::Display`] on [`TokenKind`] itself: that type lives in
 /// `token::value`, which this module does not own, and the wording here is
@@ -1574,6 +1718,12 @@ mod tests {
 
     fn stack(key: &str) -> ViewNode {
         ViewNode::new(NodeKind::Stack, key)
+    }
+
+    /// A [`TokenName`] from a literal that is known good, for fixtures where
+    /// the name's own validity is not what is under test.
+    fn token(name: &str) -> TokenName {
+        TokenName::new(name).expect("a well-formed token name")
     }
 
     /// A registry whose vocabulary declares exactly the two fixture gaps the
@@ -3380,6 +3530,214 @@ mod tests {
 
     fn probe_typography() -> TokenName {
         TokenName::new("text.probe").expect("a namespaced fixture name")
+    }
+
+    // ---- Prerequisites: which violations a partial validator may raise ----
+
+    /// The four registry reads in this module, one violation each, proved
+    /// registry-dependent the only way that means anything: **register the
+    /// name and watch the violation go away**.
+    ///
+    /// `Violation::prerequisites` could otherwise say anything it liked. A
+    /// test that only read the method back would agree with a wrong answer;
+    /// this one disagrees, because it drives the real `validate` twice per
+    /// case against two registries that differ in exactly one entry.
+    #[test]
+    fn every_registry_dependent_violation_goes_away_when_the_registry_declares_the_name() {
+        // 1. `Registry::has_custom_kind`.
+        let mut painter = ViewNode::new(NodeKind::Custom, "gauge");
+        painter.props.custom_kind = Some("gauge".to_owned());
+        let mut with_painter = Registry::new();
+        with_painter.register_custom_kind("gauge");
+
+        // 2. `Registry::has_transition`.
+        let mut animated = stack("fading");
+        animated.transition = Some(crate::tree::node::TransitionRef("fade".to_owned()));
+        let mut with_transition = Registry::new();
+        with_transition.register_transition("fade");
+
+        // 3. `Registry::vocabulary`.
+        let extra = TokenName::new("spacing.app-extra").expect("a well-formed token name");
+        let mut spaced = stack("spaced");
+        spaced.props.spacing = Some(extra.clone());
+        let mut vocab = standard_vocabulary();
+        vocab.declare(DesignToken::new(extra, TokenKind::Spacing));
+        let with_extra = Registry::with_vocabulary(vocab);
+
+        // 4. `Registry::slots`. A spacing token in the `background` paint
+        //    slot is a mismatch under the shipped schema and legal under a
+        //    host painter whose schema does not declare that slot.
+        let mut painted = stack("painted");
+        painted
+            .props
+            .tokens
+            .insert("background".to_owned(), token("spacing.sm"));
+        let with_own_painter =
+            Registry::with_vocabulary(standard_vocabulary()).with_slots(SlotSchema::new());
+
+        let bare = Registry::with_vocabulary(standard_vocabulary());
+        let cases: [(&str, &ViewNode, &Registry); 4] = [
+            ("custom kind", &painter, &with_painter),
+            ("transition", &animated, &with_transition),
+            ("vocabulary", &spaced, &with_extra),
+            ("slot schema", &painted, &with_own_painter),
+        ];
+        for (what, tree, permissive) in cases {
+            let refused = validate(tree, &bare)
+                .unwrap_err()
+                .as_slice()
+                .iter()
+                .map(|e| e.violation.clone())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                refused.len(),
+                1,
+                "the {what} fixture must produce exactly the one violation under test: {refused:?}"
+            );
+            assert!(
+                refused[0].needs_registry(),
+                "{what}: `validate` read the registry to find {:?}, so prerequisites() must say \
+                 so — a validator without the live registry would refuse a tree the host draws",
+                refused[0]
+            );
+            validate(tree, permissive).unwrap_or_else(|errs| {
+                panic!("{what}: declaring the name must make it legal, got {errs}")
+            });
+        }
+    }
+
+    /// The other direction, and the one that keeps the daemon honest: a
+    /// violation marked standalone must read the *same* on a registry that
+    /// declares nothing and on one that declares everything a host could.
+    ///
+    /// This is what makes stage-1 acceptance safe. If any of these answers
+    /// moved with the registry, the daemon would refuse a plugin's tree the
+    /// shell would have accepted, and a false refusal is a worse bug than
+    /// the late refusal this whole classification exists to remove.
+    #[test]
+    fn a_standalone_violation_reads_the_same_on_every_registry_a_host_could_build() {
+        let mut leaf_with_kids = ViewNode::new(NodeKind::Text, "label");
+        leaf_with_kids.children = vec![std::sync::Arc::new(stack("orphan"))];
+        let mut translucent = stack("ghost");
+        translucent.props.opacity = Some(4.0);
+        let tree = stack("root").with_children(vec![
+            ViewNode::new(NodeKind::Surface, "popover"),
+            leaf_with_kids,
+            translucent,
+            stack("twin"),
+            stack("twin"),
+        ]);
+
+        let mut everything = Registry::with_vocabulary(standard_vocabulary());
+        everything.register_custom_kind("gauge");
+        everything.register_transition("fade");
+        let registries = [
+            ("nothing declared", Registry::new()),
+            ("everything declared", everything),
+        ];
+        let seen: Vec<Vec<TreeError>> = registries
+            .iter()
+            .map(|(_, registry)| {
+                validate(&tree, registry)
+                    .unwrap_err()
+                    .as_slice()
+                    .iter()
+                    .filter(|e| e.violation.judgeable_standalone())
+                    .cloned()
+                    .collect()
+            })
+            .collect();
+        assert!(
+            seen[0].len() >= 5,
+            "the fixture must carry several standalone violations, got {:?}",
+            seen[0]
+        );
+        assert_eq!(
+            seen[0], seen[1],
+            "a standalone violation moved with the registry: {} vs {}",
+            registries[0].0, registries[1].0
+        );
+        // And the surface defect the daemon's stage 1 exists to catch is in
+        // the set, by name, so this fixture cannot quietly stop covering it.
+        assert!(
+            seen[0].iter().any(|e| matches!(
+                &e.violation,
+                Violation::MissingRequiredProp {
+                    kind: NodeKind::Surface,
+                    prop: "layer"
+                }
+            )),
+            "a `surface` with no layer is judgeable standalone: {:?}",
+            seen[0]
+        );
+    }
+
+    /// A component reference is the wire form a plugin sends, so refusing
+    /// one before expansion would refuse every contributed tree that names a
+    /// component. Marked `expansion`, and proved by expanding.
+    #[test]
+    fn an_unexpanded_component_is_the_one_violation_expansion_removes() {
+        let mut tree = ViewNode::new(NodeKind::Component, "box");
+        tree.component = Some(crate::tree::node::ComponentRef {
+            name: "checkbox".to_owned(),
+            params: serde_json::json!({
+                "key": "box",
+                "label": "Auto-reload",
+                "selected": false,
+            }),
+        });
+        let registry = Registry::with_vocabulary(standard_vocabulary());
+        let refused = validate(&tree, &registry).unwrap_err();
+        assert!(
+            refused
+                .as_slice()
+                .iter()
+                .any(|e| matches!(e.violation, Violation::UnexpandedComponent { .. })),
+            "{refused}"
+        );
+        for err in refused.as_slice() {
+            assert!(
+                !err.violation.judgeable_standalone(),
+                "a pre-expansion validator must not raise {}",
+                err.violation
+            );
+            assert!(
+                !err.violation.needs_registry(),
+                "expansion is not a registry fact: {}",
+                err.violation
+            );
+        }
+        let expanded = crate::component::registry::expand(&tree)
+            .unwrap_or_else(|err| panic!("{}: {}", err.component, err.reason));
+        validate(&expanded, &registry)
+            .unwrap_or_else(|errs| panic!("the expanded subtree must validate: {errs}"));
+    }
+
+    /// `SpanOutsideGrid` splits on its own field: a span on a node whose
+    /// parent is a `stack` is dead wherever that subtree ends up, but a span
+    /// on the ROOT of a contributed subtree is a question about the slot the
+    /// shell has not spliced it into yet.
+    #[test]
+    fn a_span_on_a_contributed_root_is_the_splices_question_not_the_daemons() {
+        assert!(
+            !Violation::SpanOutsideGrid { parent: None }.judgeable_standalone(),
+            "a subtree root has no parent yet; the slot it is spliced under may be a grid"
+        );
+        assert!(
+            Violation::SpanOutsideGrid {
+                parent: Some(NodeKind::Stack)
+            }
+            .judgeable_standalone(),
+            "a span under a stack is dead in every tree this subtree could join"
+        );
+        assert!(
+            !Violation::AnchorTargetMissing {
+                id: "/elsewhere".to_owned(),
+                known: Vec::new(),
+            }
+            .judgeable_standalone(),
+            "the splice both adds ids and re-prefixes the subtree's own"
+        );
     }
 
     /// One node that sets every prop in the three tables, each to a token of
