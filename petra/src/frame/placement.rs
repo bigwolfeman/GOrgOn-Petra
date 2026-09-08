@@ -7,7 +7,9 @@ use std::sync::Arc;
 use crate::draw::DrawList;
 use crate::geom::Rect;
 use crate::layout::Slot;
-use crate::tree::{Edge, FocusFigure, FocusShownOn, Interaction, NodeKind, Role, TextWrap};
+use crate::tree::{
+    Behaviour, Edge, FocusFigure, FocusShownOn, Interaction, NodeKind, Role, TextWrap,
+};
 
 /// Paint-relevant state that is not geometry but does change the picture.
 ///
@@ -176,6 +178,21 @@ pub struct PlacementSemantics {
     pub actions: Vec<Interaction>,
     /// Total rows behind a virtualized collection, materialized or not.
     pub total_count: Option<usize>,
+    /// The interaction this node declared, projected straight off
+    /// [`crate::tree::ViewNode::behaviour`] the way [`Self::disabled`] is
+    /// projected off its node.
+    ///
+    /// **Not** a digest input; see
+    /// [`crate::frame::digest::leaf_hash`]'s doc comment on why. The router
+    /// is the reader this projection exists for: it decides how a *routed
+    /// event* is interpreted, not what the frame *looks like*, so two
+    /// frames differing only here are one picture.
+    pub behaviour: Option<Behaviour>,
+    /// Whether this node claimed raw keyboard delivery, projected off
+    /// [`crate::tree::ViewNode::raw_claim`] on the same terms as
+    /// [`Self::behaviour`]: a routing fact with no paint consequence of its
+    /// own, so it is likewise not a digest input.
+    pub raw_claim: bool,
 }
 
 /// One node's final geometry and paint state for one frame.

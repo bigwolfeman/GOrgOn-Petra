@@ -2249,7 +2249,7 @@ impl<A: App> Host<A> {
                 None => PointerRouting {
                     outcome: RouteOutcome {
                         route: Route::Unrouted {
-                            reason: "no frame has been placed yet",
+                            reason: "no frame has been placed yet".into(),
                         },
                         dismiss: Vec::new(),
                     },
@@ -3715,7 +3715,16 @@ mod tests {
                 _ => "other".to_owned(),
             };
             let where_ = match route {
-                Route::Pointer { node } | Route::Keyboard { node } => node.clone(),
+                Route::Pointer { node } | Route::Keyboard { node } | Route::Raw { node } => {
+                    node.clone()
+                }
+                // This fixture drives `deliver_input`, which routes through
+                // `PointerState::route` → `route_with_surfaces`, never
+                // `route_with_reserved` — so `Reserved` cannot arrive here.
+                // Recorded rather than silently folded into `Unrouted` so a
+                // future caller that does start producing it is forced to
+                // decide what this fixture should say.
+                Route::Reserved { chord } => format!("reserved: {chord}"),
                 Route::Unrouted { reason } => format!("unrouted: {reason}"),
             };
             self.seen.push((kind, where_));

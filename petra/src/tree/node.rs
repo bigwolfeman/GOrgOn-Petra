@@ -205,6 +205,89 @@ pub enum Interaction {
     Key,
 }
 
+/// What a node's declared [`Behaviour`] *means*: which of four shapes the
+/// interpreted gesture takes.
+///
+/// A closed, four-member vocabulary, frozen in
+/// `specs/010-input-routing/contracts/input-intents.md` and derived from a
+/// survey of all 45 files under `crate::component`, not from imagination.
+/// `navigate`, `dismiss`, `sort` and `open` were considered and rejected:
+/// each is mechanically identical to [`Self::Activate`] or [`Self::Toggle`]
+/// at the [`Interaction`]/`GestureOutcome` level, so admitting them would add
+/// vocabulary the engine cannot honour differently.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Intent {
+    /// One shot, no state on the node, gated on `GestureOutcome::Completed`.
+    /// `component::button`, `component::modal`'s dismiss, `component::code_snippet`'s
+    /// copy affordance, `component::tag`'s dismiss cross, `component::link`,
+    /// `component::pagination`'s page buttons.
+    Activate,
+    /// A click flips one boolean the node itself carries.
+    /// `component::controls`' checkbox and toggle, `component::accordion`'s
+    /// header, `component::toggletip`, `component::menu_button`, and the
+    /// trigger of `component::dropdown`, `component::select` and
+    /// `component::date_picker`.
+    Toggle,
+    /// Sets `selected` true, exclusive among siblings; never flips back on
+    /// its own. `component::controls`' radio, `component::tabs`,
+    /// `component::content_switcher`, `component::tree_view`,
+    /// `component::structured_list`'s selectable row,
+    /// `component::list_box`.
+    Select,
+    /// Changes a bound value under `Interaction::Drag`, not gated on
+    /// `GestureOutcome::Completed` — the live middle of the drag is the
+    /// intent. `component::slider`, `component::structured_list`'s column
+    /// divider.
+    Adjust,
+}
+
+/// Which moment of a gesture a declared [`Intent`] fires at.
+///
+/// A closed, three-member vocabulary alongside [`Intent`], frozen in the same
+/// contract. A two-member press/release set cannot express a drag: the live
+/// middle of a slider drag *is* the entire meaning of the gesture, and it
+/// fires at neither endpoint, which is why [`Self::OnChange`] exists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Phase {
+    /// The button goes down. `component::slider`'s track press, which jumps
+    /// the value straight to the click point.
+    OnPress,
+    /// Fires repeatedly while the gesture is in force. `component::slider`'s
+    /// drag and `component::structured_list`'s column-divider drag; without
+    /// this member the two drag-driven components in the library are
+    /// unauthorable.
+    OnChange,
+    /// Release inside the node. The dominant case, and — per
+    /// `input.rs`'s router — the only outcome a component may treat as
+    /// activation.
+    OnRelease,
+}
+
+/// The interaction a node declares: what it means ([`Intent`]) and when it
+/// fires ([`Phase`]).
+///
+/// Two components in the shipped library deliberately carry **no**
+/// `Behaviour` at all, and that is not a gap:
+///
+/// * A text-editing control (`component::field`) has no honest phase to
+///   report — the commit boundary is host policy inside `route_above`, not
+///   something the component itself decides.
+/// * `component::code_snippet`'s code well: its `Drag` is native text
+///   selection on a read-only [`Role::TextInput`], not an authored intent.
+///
+/// [`ViewNode::behaviour`] is therefore `Option<Behaviour>`, and `None` is
+/// the correct value for both, never a placeholder for one not yet wired.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Behaviour {
+    /// What the interaction means.
+    pub intent: Intent,
+    /// When it fires.
+    pub phase: Phase,
+}
+
 /// What a node is, for the semantic tree.
 ///
 /// The wire form is the role name; a host role prints as `custom:<name>`
@@ -816,6 +899,35 @@ pub struct ViewNode {
     /// arrive without a name to expand.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub component: Option<ComponentRef>,
+    /// The interaction this node declares: what an event on it means, and
+    /// when it fires. See [`Behaviour`].
+    ///
+    /// Optional, shaped like [`Self::component`], so the field being added
+    /// changes no existing `ViewNode::new` call site (FR-014;
+    /// `specs/010-input-routing/spec.md`). A node that declares none is not
+    /// interaction-less — [`Self::interactions`] and
+    /// [`Semantics::role`]/[`Semantics::label`] still carry that — it is one
+    /// that either fires no [`Intent`] at all, or (`component::field`,
+    /// `component::code_snippet`'s code well) has no honest phase to report;
+    /// see [`Behaviour`]'s doc comment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub behaviour: Option<Behaviour>,
+    /// Whether this node claims raw keyboard delivery: while focus sits
+    /// inside it, matching key events reach it verbatim, ahead of the
+    /// binding table (`specs/010-input-routing/spec.md` FR-019…FR-021).
+    ///
+    /// A dedicated field rather than an [`Interaction`] variant, and that is
+    /// a decision already taken and not this field's to revisit:
+    /// `required_interaction_during` returns exactly one [`Interaction`] per
+    /// event, and there is no event whose *required* interaction is "raw" —
+    /// raw is a property of the receiver, not of the event. A raw-claiming
+    /// node still declares [`Interaction::Key`] to be routable at all; this
+    /// flag only says the binding table never gets a look at what it
+    /// receives. Routing on it is another agent's work — this field only
+    /// carries the declaration and its projection onto
+    /// [`crate::frame::PlacementSemantics`].
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub raw_claim: bool,
 }
 
 /// A component named on the wire, with the parameter table it was given.
@@ -860,6 +972,8 @@ impl ViewNode {
             ambient: false,
             children: Vec::new(),
             component: None,
+            behaviour: None,
+            raw_claim: false,
         }
     }
 
@@ -1001,6 +1115,23 @@ impl ViewNode {
         self
     }
 
+    /// Declare this node's [`Behaviour`]: what an event on it means, and
+    /// when it fires.
+    #[must_use]
+    pub fn with_behaviour(mut self, behaviour: Behaviour) -> Self {
+        self.behaviour = Some(behaviour);
+        self
+    }
+
+    /// Claim raw keyboard delivery: while focus sits inside this node,
+    /// matching key events reach it verbatim, ahead of the binding table.
+    /// See [`Self::raw_claim`].
+    #[must_use]
+    pub fn with_raw_claim(mut self) -> Self {
+        self.raw_claim = true;
+        self
+    }
+
     /// Whether this node declares any interaction.
     #[must_use]
     pub fn is_interactive(&self) -> bool {
@@ -1012,7 +1143,7 @@ impl ViewNode {
 mod tests {
     use std::sync::Arc;
 
-    use super::{Constraints, Interaction, NodeKind, Role, ViewNode};
+    use super::{Behaviour, Constraints, Intent, Interaction, NodeKind, Phase, Role, ViewNode};
     use crate::testing::gap;
     use crate::tree::props::Props;
 
@@ -1180,6 +1311,95 @@ mod tests {
         let b =
             ViewNode::new(NodeKind::Stack, "root").child(ViewNode::new(NodeKind::Text, "title"));
         assert!(!Arc::ptr_eq(&a.children[0], &b.children[0]));
+    }
+
+    /// `behaviour` is absent from the wire by default, so it costs nothing
+    /// on the 780 call sites that never set it.
+    #[test]
+    fn a_node_with_no_behaviour_carries_no_behaviour_key() {
+        let node = ViewNode::new(NodeKind::Text, "label");
+        assert_eq!(node.behaviour, None);
+        let json = serde_json::to_string(&node).unwrap();
+        assert!(!json.contains("behaviour"), "{json}");
+    }
+
+    /// Every `Intent`/`Phase` pairing round-trips through JSON with the
+    /// exact wire strings the contract freezes, hyphens included.
+    #[test]
+    fn behaviour_round_trips() {
+        let cases = [
+            (
+                Intent::Activate,
+                Phase::OnRelease,
+                r#""activate""#,
+                r#""on-release""#,
+            ),
+            (
+                Intent::Toggle,
+                Phase::OnPress,
+                r#""toggle""#,
+                r#""on-press""#,
+            ),
+            (
+                Intent::Select,
+                Phase::OnRelease,
+                r#""select""#,
+                r#""on-release""#,
+            ),
+            (
+                Intent::Adjust,
+                Phase::OnChange,
+                r#""adjust""#,
+                r#""on-change""#,
+            ),
+        ];
+        for (intent, phase, intent_wire, phase_wire) in cases {
+            let node =
+                ViewNode::new(NodeKind::Text, "n").with_behaviour(Behaviour { intent, phase });
+            let json = serde_json::to_string(&node).unwrap();
+            assert!(
+                json.contains(&format!(r#""intent":{intent_wire}"#)),
+                "{json}"
+            );
+            assert!(json.contains(&format!(r#""phase":{phase_wire}"#)), "{json}");
+            let back: ViewNode = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, node);
+            assert_eq!(back.behaviour, Some(Behaviour { intent, phase }));
+        }
+    }
+
+    /// A misspelled or invented member of either vocabulary is a compile
+    /// error for a Rust author and a deserialization error on the wire —
+    /// never a silent no-op. This is the wire half of that guarantee.
+    #[test]
+    fn an_unknown_intent_or_phase_name_is_refused() {
+        let bad_intent = serde_json::from_str::<ViewNode>(
+            r#"{"kind":"text","key":"n","behaviour":{"intent":"navigate","phase":"on-release"}}"#,
+        )
+        .unwrap_err();
+        assert!(bad_intent.to_string().contains("navigate"), "{bad_intent}");
+
+        let bad_phase = serde_json::from_str::<ViewNode>(
+            r#"{"kind":"text","key":"n","behaviour":{"intent":"activate","phase":"pressed"}}"#,
+        )
+        .unwrap_err();
+        assert!(bad_phase.to_string().contains("pressed"), "{bad_phase}");
+    }
+
+    /// `raw_claim` is absent from the wire when unset, present and `true`
+    /// when declared, and round-trips either way.
+    #[test]
+    fn raw_claim_round_trips() {
+        let plain = ViewNode::new(NodeKind::Custom, "term");
+        assert!(!plain.raw_claim);
+        assert!(!serde_json::to_string(&plain).unwrap().contains("raw_claim"));
+
+        let claimed = ViewNode::new(NodeKind::Custom, "term").with_raw_claim();
+        let json = serde_json::to_string(&claimed).unwrap();
+        assert!(json.contains(r#""raw_claim":true"#), "{json}");
+        let back: ViewNode = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, claimed);
+        assert!(back.raw_claim);
     }
 }
 

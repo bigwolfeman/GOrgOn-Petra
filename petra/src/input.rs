@@ -11,6 +11,8 @@ use std::collections::BTreeMap;
 
 use crate::frame::{PetrifiedFrame, Placement};
 use crate::geom::{Point, Size};
+use crate::keymap::chord::Chord;
+use crate::keymap::reserved::ReservedChords;
 use crate::tree::{InputPolicy, Interaction, NodeKind};
 
 /// A pointer button.
@@ -415,12 +417,38 @@ pub enum Route {
         /// Canonical id of the focused node.
         node: String,
     },
+    /// Delivered verbatim, ahead of any binding table, because focus sits
+    /// inside a node that declared a raw claim (spec 010 FR-019, FR-020).
+    ///
+    /// **Only [`route_with_reserved`] can produce this variant.** The plain
+    /// [`route`] never does — see its doc comment for why that split is the
+    /// whole of FR-021's guarantee, not an implementation detail of it.
+    Raw {
+        /// Canonical id of the node that claimed raw delivery.
+        node: String,
+    },
+    /// The event's chord is in the reserved set and the shell handles it,
+    /// no exceptions — not even a raw claim (spec 010 FR-021). Checked
+    /// before everything else in [`route_with_reserved`], including before
+    /// the raw-claim check, so a raw claim can never see it and can never
+    /// trap the operator behind it.
+    ///
+    /// Like [`Route::Raw`], only [`route_with_reserved`] can produce this.
+    Reserved {
+        /// The chord that matched the reserved set.
+        chord: Chord,
+    },
     /// Nothing accepted it: no node under the pointer accepts this event kind,
     /// or nothing has focus. The event is dropped, and the caller can say so —
     /// a silent drop is how a "the click did nothing" bug hides.
     Unrouted {
-        /// Why, in one phrase, for the driver's error text.
-        reason: &'static str,
+        /// Why, in one phrase, for the driver's error text. Most reasons are
+        /// fixed strings (`Cow::Borrowed`); a reason naming a specific node —
+        /// [`route_keyboard_from`]'s Block-boundary stop (spec 010 T011) is
+        /// the one case today — builds one at the call site
+        /// (`Cow::Owned`), because FR-024 requires naming *which* node
+        /// swallowed the event, not just that one did.
+        reason: std::borrow::Cow<'static, str>,
     },
 }
 
@@ -584,17 +612,122 @@ pub fn hit_test_above<'a>(
 /// offer of a new one it may decline.
 #[must_use]
 pub fn route(frame: &PetrifiedFrame, focused: Option<&str>, event: &InputEvent) -> Route {
-    route_above(frame, focused, event, None)
+    route_above(frame, focused, event, None, None)
+}
+
+/// [`route`], but able to return [`Route::Raw`] and [`Route::Reserved`] —
+/// the **only** function that can (spec 010 FR-005). `route` itself never
+/// does; see its lack of a `reserved` parameter as the whole of the
+/// guarantee, not an oversight.
+///
+/// # Why a second function and not a parameter on `route`
+///
+/// Spec 010 FR-021 requires an empty reserved set to be unrepresentable, and
+/// [`ReservedChords::new`] already refuses to build one. That guarantee is
+/// worth nothing if a caller can still reach verbatim delivery without a
+/// reserved set at all — which is exactly what an optional
+/// `reserved: Option<&ReservedChords>` parameter on `route` would allow:
+/// pass `None`, get `Raw` anyway. Two functions instead make "raw pass-through
+/// is unreachable unless the caller has supplied the escape hatch" a fact a
+/// caller reads off which function they called, not a rule they have to
+/// remember to uphold. **Do not collapse `route` and `route_with_reserved`
+/// into one signature.** A later reader who "simplifies" them away deletes
+/// this guarantee: it becomes reachable by passing `None`, precisely what the
+/// split exists to prevent.
+///
+/// # Order
+///
+/// Spec 010's interpretation order, §"The interpretation order":
+///
+/// 1. **The event is a key press whose chord is in `reserved`** →
+///    [`Route::Reserved`]. Checked first, ahead of the raw-claim check,
+///    so the reserved chord always escapes a raw claim (FR-021) — nothing
+///    below this can shadow it. This is the whole of US-6: a raw claim
+///    takes every key except this one, on purpose.
+/// 2. **Focus is inside a node holding a raw claim** — the focused node
+///    itself, or any ancestor, walked the same way
+///    [`route_keyboard_from`] climbs for an accepting ancestor — and the
+///    event is keystroke-shaped (`Key` or `Text`; a raw claim is a
+///    declaration about *keystrokes*, and positional events are routed by
+///    hit test regardless of focus, per FR-006) → [`Route::Raw`], verbatim,
+///    no binding table consulted (FR-020).
+/// 3. **Otherwise**, delegate to the same routing [`route`] uses.
+///
+/// # FR-005
+///
+/// This is the only place in the crate that decides an event is raw. There
+/// is deliberately no standalone "is a raw claim focused" query anywhere —
+/// two places to ask is one place to forget, and a later helper answering
+/// that question on its own would be exactly the kind of second place FR-005
+/// forbids.
+#[must_use]
+pub fn route_with_reserved(
+    frame: &PetrifiedFrame,
+    focused: Option<&str>,
+    event: &InputEvent,
+    reserved: &ReservedChords,
+) -> Route {
+    reserved_or_raw(frame, focused, event, reserved)
+        .unwrap_or_else(|| route_above(frame, focused, event, None, None))
+}
+
+/// The one place that decides an event is reserved or raw (FR-005).
+///
+/// Both [`route_with_reserved`] and [`route_with_surfaces`] ask here rather
+/// than each carrying its own copy of the rule. `None` means neither applies
+/// and the caller's ordinary routing runs.
+///
+/// The order is not negotiable: reserved is settled BEFORE raw, and before
+/// the frame is touched at all. A raw claim that could swallow the reserved
+/// chord is the trap the reserved set exists to prevent.
+fn reserved_or_raw(
+    frame: &PetrifiedFrame,
+    focused: Option<&str>,
+    event: &InputEvent,
+    reserved: &ReservedChords,
+) -> Option<Route> {
+    if let InputEvent::Key {
+        key,
+        pressed: true,
+        modifiers,
+        ..
+    } = event
+    {
+        let chord = Chord {
+            key: *key,
+            modifiers: *modifiers,
+        };
+        if reserved.contains(chord) {
+            return Some(Route::Reserved { chord });
+        }
+    }
+    if matches!(event, InputEvent::Key { .. } | InputEvent::Text(_))
+        && let Some(id) = focused
+        && let Some(start) = frame.placements.iter().position(|p| p.id == id)
+        && let Some(claimant) = ancestors_from(frame, start).find(|p| p.semantics.raw_claim)
+    {
+        // The claiming node, not necessarily `id` itself: focus may sit on a
+        // descendant of the node that actually declared the raw claim (the
+        // "OR any ancestor" half of the rule), and verbatim delivery goes to
+        // the claimant — the entity a raw claim exists to feed — not to
+        // whichever inner node the engine happens to consider focused.
+        return Some(Route::Raw {
+            node: claimant.id.clone(),
+        });
+    }
+    None
 }
 
 /// [`route`], with the positional branch hit-testing above `floor`
-/// ([`hit_test_above`]). [`route_with_surfaces`] is the caller that has a
-/// floor to pass; [`route`] passes none.
+/// ([`hit_test_above`]) and the keyboard branch's ancestor walk stopping at
+/// a `Block` surface named in `surfaces` (spec 010 T011). [`route_with_surfaces`]
+/// is the caller that has both to pass; [`route`] passes neither.
 fn route_above(
     frame: &PetrifiedFrame,
     focused: Option<&str>,
     event: &InputEvent,
     floor: Option<&str>,
+    surfaces: Option<&BTreeMap<String, InputPolicy>>,
 ) -> Route {
     if matches!(event, InputEvent::PointerLeft) {
         return route_pointer_exit(frame, None);
@@ -604,7 +737,7 @@ fn route_above(
     }
     let Some(interaction) = required_interaction(event) else {
         return Route::Unrouted {
-            reason: "window-level event, delivered to no node",
+            reason: "window-level event, delivered to no node".into(),
         };
     };
     if let Some(pos) = event.pointer_pos() {
@@ -613,30 +746,122 @@ fn route_above(
                 node: hit.id.clone(),
             },
             None => Route::Unrouted {
-                reason: "no node under the pointer accepts this event",
+                reason: "no node under the pointer accepts this event".into(),
             },
         };
     }
     let Some(id) = focused else {
         return Route::Unrouted {
-            reason: "nothing has focus",
+            reason: "nothing has focus".into(),
         };
     };
-    let Some(target) = frame.placement(id) else {
+    let Some(start) = frame.placements.iter().position(|p| p.id == id) else {
         return Route::Unrouted {
-            reason: "the focused node is not in this frame",
+            reason: "the focused node is not in this frame".into(),
         };
     };
-    let accepted = target.semantics.actions.contains(&interaction)
-        || (activates(event) && target.semantics.actions.contains(&Interaction::Click));
-    if target.semantics.disabled || !accepted {
-        return Route::Unrouted {
-            reason: "the focused node does not accept this event",
-        };
+    route_keyboard_from(frame, start, interaction, event, surfaces)
+}
+
+/// Walk from `start` up [`Placement::parent`] and deliver to the first node
+/// that accepts, the way [`hit_test_above`] naturally does for the pointer by
+/// scanning paint order in reverse — a modal's focused text field does not
+/// declare [`Interaction::Key`], so without this walk Escape can never reach
+/// the modal that contains it.
+///
+/// A disabled node is skipped, not treated as a stop: the walk continues past
+/// it to whatever is above. The [`activates`] fallback from
+/// [`Interaction::Click`] applies at every level climbed, not only at
+/// `start`, so Enter or Space still works an ancestor that only declares
+/// `Click`.
+///
+/// # The `Block` ceiling (spec 010 T011)
+///
+/// A modal is supposed to make the screen behind it inert
+/// (`route_with_surfaces`'s doc comment), and that has to hold for the
+/// keyboard just as much as for the pointer: before this, a keystroke that
+/// nothing *inside* an open modal accepted climbed straight past it to
+/// whatever the modal happened to be nested under, because this walk did not
+/// know surfaces existed. `surfaces` closes that: if `target` is itself a
+/// currently-open `Block` surface and it does not accept, the walk stops
+/// there — the surface is the last thing asked, exactly the way
+/// [`block_floor`] makes it the last thing a pointer hit test reaches — and
+/// reports which surface stopped it, rather than either silently climbing
+/// past it (the bug) or silently saying nothing (FR-024). `DismissOutside`
+/// and `Passthrough` are not a ceiling here for the same reason they are not
+/// a floor in [`block_floor`]: [`blocks_input`] is the one predicate both
+/// walks ask.
+///
+/// `surfaces` is `None` for [`route`] and [`route_with_reserved`], neither of
+/// which has a surface map to consult; the walk then behaves exactly as it
+/// did before this section existed.
+///
+/// The walk itself, and its bound, live in [`ancestors_from`].
+fn route_keyboard_from(
+    frame: &PetrifiedFrame,
+    start: usize,
+    interaction: Interaction,
+    event: &InputEvent,
+    surfaces: Option<&BTreeMap<String, InputPolicy>>,
+) -> Route {
+    for target in ancestors_from(frame, start) {
+        if !target.semantics.disabled {
+            let accepted = target.semantics.actions.contains(&interaction)
+                || (activates(event) && target.semantics.actions.contains(&Interaction::Click));
+            if accepted {
+                return Route::Keyboard {
+                    node: target.id.clone(),
+                };
+            }
+        }
+        if surfaces.is_some_and(|surfaces| {
+            surfaces
+                .get(&target.id)
+                .is_some_and(|policy| blocks_input(*policy))
+        }) {
+            return Route::Unrouted {
+                reason: format!(
+                    "the keyboard walk stopped at Block surface {:?}: nothing from the \
+                     focused node up to it accepts this event",
+                    target.id
+                )
+                .into(),
+            };
+        }
     }
-    Route::Keyboard {
-        node: id.to_owned(),
+    Route::Unrouted {
+        reason: "no node from the focused one up to the root accepts this event".into(),
     }
+}
+
+/// Walk from placement index `start` up [`Placement::parent`], yielding each
+/// placement climbed. The one ancestor walk in this file: both
+/// [`route_keyboard_from`] (looking for the first accepting ancestor) and
+/// [`route_with_reserved`] (looking for a raw claim anywhere on the path)
+/// climb through here rather than each keeping its own cursor loop.
+///
+/// Bounded to `placements.len() + 1` steps, the same bound
+/// [`route_keyboard_from`] carried before this walk was extracted:
+/// `crate::semantic`'s `a_frame_with_a_forward_parent_link_is_reported_not_panicked`
+/// already treats a forward or cyclic parent link as a real input shape a
+/// malformed frame can carry, and [`crate::focus::mod`]'s `descends_from`
+/// bounds its own walk the same way for the same reason — a frame this small
+/// cannot have a chain longer than its own placement count without repeating
+/// an index.
+fn ancestors_from(frame: &PetrifiedFrame, start: usize) -> impl Iterator<Item = &Placement> {
+    let placements = &frame.placements;
+    let mut cursor = Some(start);
+    let mut budget = placements.len() + 1;
+    std::iter::from_fn(move || {
+        if budget == 0 {
+            return None;
+        }
+        budget -= 1;
+        let index = cursor?;
+        let target = placements.get(index)?;
+        cursor = target.parent;
+        Some(target)
+    })
 }
 
 /// Route a pointer-exit ([`InputEvent::PointerLeft`]) to the node the pointer
@@ -660,17 +885,17 @@ fn route_above(
 pub fn route_pointer_exit(frame: &PetrifiedFrame, hovered: Option<&str>) -> Route {
     let Some(id) = hovered else {
         return Route::Unrouted {
-            reason: "the pointer left the window and no hovered node is tracked",
+            reason: "the pointer left the window and no hovered node is tracked".into(),
         };
     };
     let Some(target) = frame.placement(id) else {
         return Route::Unrouted {
-            reason: "the hovered node is not in this frame",
+            reason: "the hovered node is not in this frame".into(),
         };
     };
     if target.semantics.disabled || !target.semantics.actions.contains(&Interaction::Hover) {
         return Route::Unrouted {
-            reason: "the hovered node does not accept pointer-exit",
+            reason: "the hovered node does not accept pointer-exit".into(),
         };
     }
     Route::Pointer {
@@ -876,7 +1101,7 @@ impl PointerState {
                 self.pressed = false;
                 let ended = self.end_capture(CancelReason::Blurred);
                 PointerRouting {
-                    outcome: route_with_surfaces(frame, focused, event, surfaces),
+                    outcome: route_with_surfaces(frame, focused, event, surfaces, None),
                     ended,
                 }
             }
@@ -894,7 +1119,7 @@ impl PointerState {
                 PointerRouting {
                     outcome: RouteOutcome {
                         route: Route::Unrouted {
-                            reason: "escape cancelled the gesture holding the pointer",
+                            reason: "escape cancelled the gesture holding the pointer".into(),
                         },
                         dismiss: Vec::new(),
                     },
@@ -904,7 +1129,7 @@ impl PointerState {
             _ => match event.pointer_pos() {
                 Some(pos) => self.route_positional(frame, focused, surfaces, event, pos),
                 None => PointerRouting {
-                    outcome: route_with_surfaces(frame, focused, event, surfaces),
+                    outcome: route_with_surfaces(frame, focused, event, surfaces, None),
                     ended: None,
                 },
             },
@@ -1010,7 +1235,7 @@ impl PointerState {
 
         let swallowed = outside_an_open_modal(frame, pos, surfaces);
         self.hovered = self.derive_hover(frame, surfaces);
-        let mut outcome = route_with_surfaces(frame, focused, event, surfaces);
+        let mut outcome = route_with_surfaces(frame, focused, event, surfaces, None);
         if let InputEvent::PointerPressed { button, .. } = event
             && !swallowed
             && let Some(hit) = hit_test(frame, pos, Interaction::Drag)
@@ -1199,14 +1424,29 @@ pub fn route_with_surfaces(
     focused: Option<&str>,
     event: &InputEvent,
     surfaces: &BTreeMap<String, InputPolicy>,
+    reserved: Option<&ReservedChords>,
 ) -> RouteOutcome {
     let dismiss = dismiss_requests(frame, event, surfaces);
+    // The same escape-hatch rule [`route`] and [`route_with_reserved`] obey:
+    // `Raw` and `Reserved` are reachable only from a caller that supplied the
+    // set of chords that escape them. `None` here is exactly this function's
+    // previous behaviour, and it is what every pointer-only caller passes.
+    //
+    // A `Block` surface does NOT gate this. Reserved is settled before the
+    // frame is touched, so a modal cannot swallow the chord that exists to
+    // escape one, and a raw claim the operator has focused is theirs to type
+    // into whether or not a modal is open above something else.
+    if let Some(reserved) = reserved
+        && let Some(route) = reserved_or_raw(frame, focused, event, reserved)
+    {
+        return RouteOutcome { route, dismiss };
+    }
     if let Some(pos) = event.pointer_pos()
         && outside_an_open_modal(frame, pos, surfaces)
     {
         return RouteOutcome {
             route: Route::Unrouted {
-                reason: "outside every currently-open Block surface's bounds",
+                reason: "outside every currently-open Block surface's bounds".into(),
             },
             dismiss,
         };
@@ -1215,7 +1455,13 @@ pub fn route_with_surfaces(
         .pointer_pos()
         .and_then(|pos| block_floor(frame, pos, surfaces));
     RouteOutcome {
-        route: route_above(frame, focused, event, floor.map(|p| p.id.as_str())),
+        route: route_above(
+            frame,
+            focused,
+            event,
+            floor.map(|p| p.id.as_str()),
+            Some(surfaces),
+        ),
         dismiss,
     }
 }
@@ -1236,7 +1482,7 @@ fn block_floor<'a>(
     frame.paint_order().into_iter().rev().find(|p| {
         surfaces
             .get(&p.id)
-            .is_some_and(|policy| blocks_positional_input(*policy))
+            .is_some_and(|policy| blocks_input(*policy))
             && p.rect.contains(pos)
     })
 }
@@ -1609,7 +1855,7 @@ pub(crate) fn claimed_by_a_control_in(placements: &[Placement], index: usize) ->
 }
 
 /// Whether `pos` falls outside the bounds of any surface this frame placed
-/// whose policy [`blocks_positional_input`]. With more than one open (nested
+/// whose policy [`blocks_input`]. With more than one open (nested
 /// modals), `pos` must be inside every one of them, or the position counts
 /// as outside — a click cannot reach the screen behind either.
 fn outside_an_open_modal(
@@ -1619,13 +1865,16 @@ fn outside_an_open_modal(
 ) -> bool {
     surfaces
         .iter()
-        .filter(|(_, policy)| blocks_positional_input(**policy))
+        .filter(|(_, policy)| blocks_input(**policy))
         .filter_map(|(id, _)| frame.placement(id))
         .any(|surface| !surface.rect.contains(pos))
 }
 
 /// Whether a surface declaring `policy` makes its bounds a swallow boundary
-/// for positional input.
+/// for input — the pointer floor [`block_floor`] computes, and the keyboard
+/// ceiling [`route_keyboard_from`]'s walk stops at (spec 010 T011). One
+/// predicate for both, so the two walks cannot disagree about what `Block`
+/// means.
 ///
 /// Written as an exhaustive match rather than `policy == InputPolicy::Block`
 /// so that `Passthrough` and `DismissOutside` are each a named decision —
@@ -1633,7 +1882,7 @@ fn outside_an_open_modal(
 /// fourth policy landing later would fail to compile here until someone
 /// decided which side of this line it falls on, rather than silently
 /// inheriting `false`.
-fn blocks_positional_input(policy: InputPolicy) -> bool {
+fn blocks_input(policy: InputPolicy) -> bool {
     match policy {
         InputPolicy::Block => true,
         InputPolicy::Passthrough | InputPolicy::DismissOutside => false,
@@ -1643,8 +1892,9 @@ fn blocks_positional_input(policy: InputPolicy) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        InputEvent, KeyCode, Modifiers, PointerButton, Route, activates, hit_test, hit_text,
-        reach_text, required_interaction, route, route_pointer_exit, route_with_surfaces,
+        Chord, InputEvent, KeyCode, Modifiers, PointerButton, ReservedChords, Route, activates,
+        hit_test, hit_text, reach_text, required_interaction, route, route_pointer_exit,
+        route_with_reserved, route_with_surfaces,
     };
     use crate::frame::{
         FrameDigest, PaintState, PetrifiedFrame, Placement, PlacementSemantics, TransitionActivity,
@@ -2354,7 +2604,7 @@ mod tests {
             repeat: false,
             modifiers: Modifiers::NONE,
         };
-        let reasons: Vec<&str> = [
+        let reasons: Vec<String> = [
             route(&f, None, &key),
             route(&f, Some("/gone"), &key),
             route(&f, Some("/btn"), &typing),
@@ -2371,7 +2621,7 @@ mod tests {
         ]
         .iter()
         .map(|r| match r {
-            Route::Unrouted { reason } => *reason,
+            Route::Unrouted { reason } => reason.clone().into_owned(),
             other => panic!("expected Unrouted, got {other:?}"),
         })
         .collect();
@@ -2409,6 +2659,293 @@ mod tests {
                 "{key:?} on a focused button must land on it"
             );
         }
+    }
+
+    /// SC-001: a modal contains a focused text field that declares only
+    /// `TextEdit`, and Escape must still close the modal. Without the
+    /// ancestor walk the field alone is asked, it does not declare `Key`, and
+    /// Escape is silently dropped.
+    #[test]
+    fn escape_reaches_an_ancestor_from_a_focused_field() {
+        let f = frame(vec![
+            kid(
+                "/modal",
+                NodeKind::Stack,
+                Rect::new(0.0, 0.0, 200.0, 200.0),
+                0,
+                &[Interaction::Key],
+                None,
+            ),
+            kid(
+                "/modal/field",
+                NodeKind::Input,
+                Rect::new(10.0, 10.0, 100.0, 20.0),
+                0,
+                &[Interaction::TextEdit],
+                Some(0),
+            ),
+        ]);
+        let escape = InputEvent::Key {
+            key: KeyCode::Escape,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        assert_eq!(
+            route(&f, Some("/modal/field"), &escape),
+            Route::Keyboard {
+                node: "/modal".into()
+            }
+        );
+    }
+
+    /// [`Route::Keyboard`] names the node that accepted the event, which the
+    /// caller then delivers to — not the node that merely held focus.
+    #[test]
+    fn keyboard_route_names_the_accepting_node_not_the_focused_one() {
+        let f = frame(vec![
+            kid(
+                "/panel",
+                NodeKind::Stack,
+                Rect::new(0.0, 0.0, 200.0, 200.0),
+                0,
+                &[Interaction::Key],
+                None,
+            ),
+            kid(
+                "/panel/field",
+                NodeKind::Input,
+                Rect::new(10.0, 10.0, 100.0, 20.0),
+                0,
+                &[Interaction::TextEdit],
+                Some(0),
+            ),
+        ]);
+        let key = InputEvent::Key {
+            key: KeyCode::Char('q'),
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        let got = route(&f, Some("/panel/field"), &key);
+        assert_eq!(
+            got,
+            Route::Keyboard {
+                node: "/panel".into()
+            }
+        );
+        assert_ne!(
+            got,
+            Route::Keyboard {
+                node: "/panel/field".into()
+            }
+        );
+    }
+
+    /// A disabled ancestor is skipped, not treated as a stop: the walk
+    /// continues past it to whatever accepts above.
+    #[test]
+    fn a_disabled_ancestor_is_skipped_and_the_walk_continues() {
+        let mut disabled_mid = kid(
+            "/dialog/mid",
+            NodeKind::Stack,
+            Rect::new(0.0, 0.0, 150.0, 150.0),
+            0,
+            &[Interaction::Key],
+            Some(0),
+        );
+        disabled_mid.semantics.disabled = true;
+        let f = frame(vec![
+            kid(
+                "/dialog",
+                NodeKind::Stack,
+                Rect::new(0.0, 0.0, 200.0, 200.0),
+                0,
+                &[Interaction::Key],
+                None,
+            ),
+            disabled_mid,
+            kid(
+                "/dialog/mid/field",
+                NodeKind::Input,
+                Rect::new(10.0, 10.0, 100.0, 20.0),
+                0,
+                &[Interaction::TextEdit],
+                Some(1),
+            ),
+        ]);
+        let key = InputEvent::Key {
+            key: KeyCode::Escape,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        assert_eq!(
+            route(&f, Some("/dialog/mid/field"), &key),
+            Route::Keyboard {
+                node: "/dialog".into()
+            }
+        );
+    }
+
+    /// [`activates`]'s Enter/Space fallback to `Click` applies at every level
+    /// climbed, not only at the focused node itself.
+    #[test]
+    fn activation_fallback_applies_to_ancestors_too() {
+        let f = frame(vec![
+            kid(
+                "/row",
+                NodeKind::Stack,
+                Rect::new(0.0, 0.0, 200.0, 200.0),
+                0,
+                &[Interaction::Click],
+                None,
+            ),
+            kid(
+                "/row/label",
+                NodeKind::Text,
+                Rect::new(10.0, 10.0, 100.0, 20.0),
+                0,
+                &[Interaction::Focus],
+                Some(0),
+            ),
+        ]);
+        let enter = InputEvent::Key {
+            key: KeyCode::Enter,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        assert_eq!(
+            route(&f, Some("/row/label"), &enter),
+            Route::Keyboard {
+                node: "/row".into()
+            }
+        );
+    }
+
+    /// The three `Unrouted` causes on the keyboard path each carry their own
+    /// sentence: no focus, focus naming a node not in the frame, and a focus
+    /// chain that reaches the root without anything accepting.
+    #[test]
+    fn unrouted_reasons_distinguish_no_focus_from_no_accepting_ancestor() {
+        let f = frame(vec![
+            kid(
+                "/dialog",
+                NodeKind::Stack,
+                Rect::new(0.0, 0.0, 200.0, 200.0),
+                0,
+                &[],
+                None,
+            ),
+            kid(
+                "/dialog/field",
+                NodeKind::Input,
+                Rect::new(10.0, 10.0, 100.0, 20.0),
+                0,
+                &[Interaction::TextEdit],
+                Some(0),
+            ),
+        ]);
+        let key = InputEvent::Key {
+            key: KeyCode::Escape,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        let no_focus = match route(&f, None, &key) {
+            Route::Unrouted { reason } => reason,
+            other => panic!("expected Unrouted, got {other:?}"),
+        };
+        let not_in_frame = match route(&f, Some("/gone"), &key) {
+            Route::Unrouted { reason } => reason,
+            other => panic!("expected Unrouted, got {other:?}"),
+        };
+        let no_accepting_ancestor = match route(&f, Some("/dialog/field"), &key) {
+            Route::Unrouted { reason } => reason,
+            other => panic!("expected Unrouted, got {other:?}"),
+        };
+        assert_ne!(no_focus, not_in_frame);
+        assert_ne!(no_focus, no_accepting_ancestor);
+        assert_ne!(not_in_frame, no_accepting_ancestor);
+
+        // Positive control. Three distinct strings stay distinct even if the
+        // ancestor walk is deleted, so the asserts above cannot fail for the
+        // reason this test is named after. This half can: give the dialog the
+        // interaction its child lacks and the same focused field must now
+        // route UP to it. Remove the walk and this line fails.
+        let accepting = frame(vec![
+            kid(
+                "/dialog",
+                NodeKind::Stack,
+                Rect::new(0.0, 0.0, 200.0, 200.0),
+                0,
+                &[Interaction::Key],
+                None,
+            ),
+            kid(
+                "/dialog/field",
+                NodeKind::Input,
+                Rect::new(10.0, 10.0, 100.0, 20.0),
+                0,
+                &[Interaction::TextEdit],
+                Some(0),
+            ),
+        ]);
+        assert_eq!(
+            route(&accepting, Some("/dialog/field"), &key),
+            Route::Keyboard {
+                node: "/dialog".to_owned()
+            },
+            "the reason strings are only meaningful if the walk that produces \
+             the third one actually climbs"
+        );
+    }
+
+    /// A cyclic parent chain must terminate the walk rather than spin
+    /// forever. `crate::semantic`'s
+    /// `a_frame_with_a_forward_parent_link_is_reported_not_panicked` already
+    /// treats this shape as a real malformed-frame input; the keyboard walk
+    /// gets the same guarantee.
+    #[test]
+    fn a_cyclic_parent_chain_terminates_instead_of_hanging() {
+        // Built with valid parents first, then broken by direct mutation —
+        // `digest::digest` refuses a placement list that names a parent out
+        // of pre-order on construction, exactly as
+        // `a_frame_with_a_forward_parent_link_is_reported_not_panicked` in
+        // `crate::semantic` builds its own malformed fixture.
+        let mut f = frame(vec![
+            kid(
+                "/a",
+                NodeKind::Stack,
+                Rect::new(0.0, 0.0, 100.0, 100.0),
+                0,
+                &[],
+                None,
+            ),
+            kid(
+                "/b",
+                NodeKind::Stack,
+                Rect::new(0.0, 0.0, 100.0, 100.0),
+                0,
+                &[],
+                None,
+            ),
+        ]);
+        f.placements[0].parent = Some(1);
+        f.placements[1].parent = Some(0);
+        let key = InputEvent::Key {
+            key: KeyCode::Escape,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        assert_eq!(
+            route(&f, Some("/a"), &key),
+            Route::Unrouted {
+                reason: "no node from the focused one up to the root accepts this event".into(),
+            }
+        );
     }
 
     /// The widening is exactly two keys on press. Anything else still needs
@@ -2531,7 +3068,8 @@ mod tests {
     fn block_swallows_a_click_outside_its_own_bounds() {
         let f = modal_scenario();
         let surfaces = policy_map(InputPolicy::Block);
-        let outcome = route_with_surfaces(&f, None, &press(Point::new(10.0, 10.0)), &surfaces);
+        let outcome =
+            route_with_surfaces(&f, None, &press(Point::new(10.0, 10.0)), &surfaces, None);
         assert!(
             matches!(outcome.route, Route::Unrouted { .. }),
             "a click outside the modal must not reach /backdrop, got {:?}",
@@ -2553,7 +3091,8 @@ mod tests {
     fn block_is_opaque_to_a_click_inside_its_bounds_that_its_content_does_not_take() {
         let f = modal_scenario();
         let surfaces = policy_map(InputPolicy::Block);
-        let outcome = route_with_surfaces(&f, None, &press(Point::new(60.0, 60.0)), &surfaces);
+        let outcome =
+            route_with_surfaces(&f, None, &press(Point::new(60.0, 60.0)), &surfaces, None);
         assert!(
             matches!(outcome.route, Route::Unrouted { .. }),
             "a click inside the modal on nothing that accepts it must not reach \
@@ -2590,6 +3129,7 @@ mod tests {
             None,
             &press(Point::new(65.0, 65.0)),
             &surfaces,
+            None,
         );
         assert_eq!(
             on_content.route,
@@ -2612,8 +3152,13 @@ mod tests {
                 &[Interaction::Click],
             ),
         ]);
-        let on_surface =
-            route_with_surfaces(&absorbing, None, &press(Point::new(60.0, 60.0)), &surfaces);
+        let on_surface = route_with_surfaces(
+            &absorbing,
+            None,
+            &press(Point::new(60.0, 60.0)),
+            &surfaces,
+            None,
+        );
         assert_eq!(
             on_surface.route,
             Route::Pointer {
@@ -2639,7 +3184,8 @@ mod tests {
         ]);
         let mut surfaces = BTreeMap::new();
         surfaces.insert("/scrim".to_owned(), InputPolicy::Block);
-        let outcome = route_with_surfaces(&f, None, &press(Point::new(10.0, 10.0)), &surfaces);
+        let outcome =
+            route_with_surfaces(&f, None, &press(Point::new(10.0, 10.0)), &surfaces, None);
         assert!(
             matches!(outcome.route, Route::Unrouted { .. }),
             "got {:?}",
@@ -2660,7 +3206,8 @@ mod tests {
     fn passthrough_lets_a_click_outside_its_bounds_reach_whats_underneath() {
         let f = modal_scenario();
         let surfaces = policy_map(InputPolicy::Passthrough);
-        let outcome = route_with_surfaces(&f, None, &press(Point::new(10.0, 10.0)), &surfaces);
+        let outcome =
+            route_with_surfaces(&f, None, &press(Point::new(10.0, 10.0)), &surfaces, None);
         assert_eq!(
             outcome.route,
             Route::Pointer {
@@ -2677,7 +3224,8 @@ mod tests {
     fn dismiss_outside_reports_a_press_outside_its_bounds_and_still_routes_through() {
         let f = modal_scenario();
         let surfaces = policy_map(InputPolicy::DismissOutside);
-        let outcome = route_with_surfaces(&f, None, &press(Point::new(10.0, 10.0)), &surfaces);
+        let outcome =
+            route_with_surfaces(&f, None, &press(Point::new(10.0, 10.0)), &surfaces, None);
         assert_eq!(
             outcome.route,
             Route::Pointer {
@@ -2693,7 +3241,8 @@ mod tests {
     fn dismiss_outside_does_not_fire_for_a_press_inside_its_bounds() {
         let f = modal_scenario();
         let surfaces = policy_map(InputPolicy::DismissOutside);
-        let outcome = route_with_surfaces(&f, None, &press(Point::new(60.0, 60.0)), &surfaces);
+        let outcome =
+            route_with_surfaces(&f, None, &press(Point::new(60.0, 60.0)), &surfaces, None);
         assert!(outcome.dismiss.is_empty());
     }
 
@@ -2707,7 +3256,7 @@ mod tests {
         let moved = InputEvent::PointerMoved {
             pos: Point::new(10.0, 10.0),
         };
-        let outcome = route_with_surfaces(&f, None, &moved, &surfaces);
+        let outcome = route_with_surfaces(&f, None, &moved, &surfaces, None);
         assert!(outcome.dismiss.is_empty());
     }
 
@@ -2745,11 +3294,13 @@ mod tests {
         surfaces.insert("/inner".to_owned(), InputPolicy::Block);
 
         // Inside /outer but outside /inner: still blocked.
-        let between = route_with_surfaces(&f, None, &press(Point::new(30.0, 30.0)), &surfaces);
+        let between =
+            route_with_surfaces(&f, None, &press(Point::new(30.0, 30.0)), &surfaces, None);
         assert!(matches!(between.route, Route::Unrouted { .. }));
 
         // Inside both, on the inner dialog's own control: reaches it.
-        let inner_ok = route_with_surfaces(&f, None, &press(Point::new(65.0, 65.0)), &surfaces);
+        let inner_ok =
+            route_with_surfaces(&f, None, &press(Point::new(65.0, 65.0)), &surfaces, None);
         assert_eq!(
             inner_ok.route,
             Route::Pointer {
@@ -2760,7 +3311,7 @@ mod tests {
         // Inside both, on nothing the inner dialog accepts: the outer
         // dialog's full-size control is right there behind it and is not
         // reached, because the inner surface is the floor.
-        let inside = route_with_surfaces(&f, None, &press(Point::new(90.0, 90.0)), &surfaces);
+        let inside = route_with_surfaces(&f, None, &press(Point::new(90.0, 90.0)), &surfaces, None);
         assert!(
             matches!(inside.route, Route::Unrouted { .. }),
             "got {:?}",
@@ -2858,5 +3409,498 @@ mod tests {
             route_pointer_exit(&f, Some("/btn")),
             Route::Unrouted { .. }
         ));
+    }
+
+    /// A raw-claiming placement, focused directly, declaring `Key` so it is
+    /// still a legal target for ordinary keyboard routing.
+    fn raw_claim_node(id: &str, rect: Rect, parent: Option<usize>) -> Placement {
+        let mut p = kid(id, NodeKind::Custom, rect, 0, &[Interaction::Key], parent);
+        p.semantics.raw_claim = true;
+        p
+    }
+
+    fn key(k: KeyCode, modifiers: Modifiers) -> InputEvent {
+        InputEvent::Key {
+            key: k,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        }
+    }
+
+    /// FR-021's structural guarantee, half one: three-argument `route` never
+    /// returns `Raw`, even for a node that has declared a raw claim and is
+    /// directly focused. Verbatim delivery is unreachable through this
+    /// function, full stop — the missing `reserved` parameter is the whole
+    /// of the proof, and this test is what falsifies that if it is ever
+    /// broken.
+    #[test]
+    fn plain_route_never_returns_raw_even_for_a_raw_claim() {
+        let f = frame(vec![raw_claim_node(
+            "/term",
+            Rect::new(0.0, 0.0, 100.0, 100.0),
+            None,
+        )]);
+        let got = route(&f, Some("/term"), &key(KeyCode::Char('q'), Modifiers::NONE));
+        assert_eq!(
+            got,
+            Route::Keyboard {
+                node: "/term".into()
+            },
+            "a raw claim must not change what plain `route` returns: {got:?}"
+        );
+        assert_ne!(
+            got,
+            Route::Raw {
+                node: "/term".into()
+            }
+        );
+    }
+
+    /// `route_with_reserved` returns `Raw` when focus sits on a *descendant*
+    /// of the node that declared the claim — the "OR any ancestor" half of
+    /// the rule, walked the same way `route_keyboard_from` climbs for an
+    /// accepting ancestor. The node named is the claimant itself, not the
+    /// focused descendant: verbatim delivery goes to the entity the claim
+    /// exists to feed.
+    #[test]
+    fn focus_inside_a_raw_claim_routes_raw() {
+        let term = raw_claim_node("/term", Rect::new(0.0, 0.0, 200.0, 200.0), None);
+        let cursor = kid(
+            "/term/cursor",
+            NodeKind::Text,
+            Rect::new(10.0, 10.0, 10.0, 10.0),
+            0,
+            &[],
+            Some(0),
+        );
+        let f = frame(vec![term, cursor]);
+        let reserved = ReservedChords::default();
+        let got = route_with_reserved(
+            &f,
+            Some("/term/cursor"),
+            &key(KeyCode::Char('j'), Modifiers::NONE),
+            &reserved,
+        );
+        assert_eq!(
+            got,
+            Route::Raw {
+                node: "/term".into()
+            },
+            "focus inside the claiming node's subtree must route raw, \
+             naming the claimant: {got:?}"
+        );
+    }
+
+    /// The direct case: focus sits on the claiming node itself, exactly
+    /// US-5's shape ("A terminal node holds a raw claim and has focus.").
+    #[test]
+    fn focus_directly_on_a_raw_claim_routes_raw() {
+        let f = frame(vec![raw_claim_node(
+            "/term",
+            Rect::new(0.0, 0.0, 100.0, 100.0),
+            None,
+        )]);
+        let reserved = ReservedChords::default();
+        let got = route_with_reserved(
+            &f,
+            Some("/term"),
+            &key(KeyCode::Char('j'), Modifiers::NONE),
+            &reserved,
+        );
+        assert_eq!(
+            got,
+            Route::Raw {
+                node: "/term".into()
+            }
+        );
+    }
+
+    /// FR-021, US-6: the reserved chord always escapes a raw claim, checked
+    /// before the raw-claim test itself — the shell handles it, no
+    /// exceptions, and this is the test that proves a terminal cannot trap
+    /// the operator behind its own claim.
+    #[test]
+    fn the_reserved_chord_escapes_a_raw_claim() {
+        let f = frame(vec![raw_claim_node(
+            "/term",
+            Rect::new(0.0, 0.0, 200.0, 200.0),
+            None,
+        )]);
+        let reserved = ReservedChords::default();
+        let got = route_with_reserved(
+            &f,
+            Some("/term"),
+            &key(KeyCode::Escape, Modifiers::shift()),
+            &reserved,
+        );
+        assert_eq!(
+            got,
+            Route::Reserved {
+                chord: Chord::reserved_escape()
+            },
+            "the reserved chord must escape a raw claim even when the \
+             claiming node is exactly what is focused: {got:?}"
+        );
+    }
+
+    /// SC-004, both halves in one test: a raw-claiming node receives a
+    /// chord the shell has bound (the binding table is never consulted,
+    /// FR-020), and the reserved chord still returns focus even though it
+    /// is the exact same node holding the exact same claim. Either half
+    /// alone would be a half-truth: a router that always escapes on any
+    /// chord is not "raw", and one that never escapes traps the operator.
+    #[test]
+    fn a_raw_claim_takes_a_bound_chord_but_not_the_reserved_one() {
+        let f = frame(vec![raw_claim_node(
+            "/term",
+            Rect::new(0.0, 0.0, 200.0, 200.0),
+            None,
+        )]);
+        let reserved = ReservedChords::default();
+
+        // Half 1: ctrl-s is exactly the chord US-5 names as shell-bound —
+        // it still reaches the raw claim verbatim.
+        let ctrl_s = key(
+            KeyCode::Char('s'),
+            Modifiers {
+                ctrl: true,
+                ..Modifiers::NONE
+            },
+        );
+        let bound = route_with_reserved(&f, Some("/term"), &ctrl_s, &reserved);
+        assert_eq!(
+            bound,
+            Route::Raw {
+                node: "/term".into()
+            },
+            "a bound chord must still reach the raw claim: {bound:?}"
+        );
+
+        // Half 2: shift-esc, the reserved chord, still escapes.
+        let shift_esc = key(KeyCode::Escape, Modifiers::shift());
+        let escaped = route_with_reserved(&f, Some("/term"), &shift_esc, &reserved);
+        assert_eq!(
+            escaped,
+            Route::Reserved {
+                chord: Chord::reserved_escape()
+            },
+            "the reserved chord must still escape the same claim: {escaped:?}"
+        );
+    }
+
+    /// The reserved chord is checked before anything else, including before
+    /// there being any raw claim in the frame at all — the check does not
+    /// depend on focus being inside a claim, or on focus existing at all.
+    #[test]
+    fn the_reserved_chord_is_reserved_with_no_raw_claim_in_play() {
+        let f = frame(vec![node(
+            "/btn",
+            Rect::new(0.0, 0.0, 100.0, 100.0),
+            0,
+            &[Interaction::Click],
+        )]);
+        let reserved = ReservedChords::default();
+        let got = route_with_reserved(
+            &f,
+            None,
+            &key(KeyCode::Escape, Modifiers::shift()),
+            &reserved,
+        );
+        assert_eq!(
+            got,
+            Route::Reserved {
+                chord: Chord::reserved_escape()
+            }
+        );
+    }
+
+    /// A raw claim is a declaration about keystrokes (FR-019's own wording:
+    /// "takes keystrokes verbatim"), not about every event kind. A pointer
+    /// press elsewhere in the frame must still hit-test normally rather than
+    /// being redirected to whatever node happens to hold focus and a raw
+    /// claim — otherwise a raw claim on an unrelated, unfocused-by-pointer
+    /// node would silently break ordinary clicking anywhere else on screen
+    /// (spec 010 FR-006's principle: raw pass-through must not change
+    /// pointer routing).
+    #[test]
+    fn a_raw_claim_does_not_capture_pointer_events() {
+        let term = raw_claim_node("/term", Rect::new(0.0, 0.0, 50.0, 50.0), None);
+        let btn = kid(
+            "/btn",
+            NodeKind::Stack,
+            Rect::new(100.0, 100.0, 50.0, 50.0),
+            0,
+            &[Interaction::Click],
+            None,
+        );
+        let f = frame(vec![term, btn]);
+        let reserved = ReservedChords::default();
+        let press = InputEvent::PointerPressed {
+            pos: Point::new(120.0, 120.0),
+            button: PointerButton::Primary,
+            modifiers: Modifiers::NONE,
+        };
+        let got = route_with_reserved(&f, Some("/term"), &press, &reserved);
+        assert_eq!(
+            got,
+            Route::Pointer {
+                node: "/btn".into()
+            },
+            "a raw claim on the focused node must not steal a pointer \
+             press aimed elsewhere: {got:?}"
+        );
+    }
+
+    /// With no raw claim anywhere on the focus path and no reserved chord
+    /// match, `route_with_reserved` must behave exactly like `route` —
+    /// the escape hatch changes nothing when nobody has asked for it.
+    #[test]
+    fn route_with_reserved_matches_plain_route_when_nothing_claims_raw() {
+        let f = frame(vec![node(
+            "/field",
+            Rect::new(0.0, 0.0, 100.0, 20.0),
+            0,
+            &[Interaction::Key],
+        )]);
+        let reserved = ReservedChords::default();
+        let plain = route(
+            &f,
+            Some("/field"),
+            &key(KeyCode::Char('x'), Modifiers::NONE),
+        );
+        let with_reserved = route_with_reserved(
+            &f,
+            Some("/field"),
+            &key(KeyCode::Char('x'), Modifiers::NONE),
+            &reserved,
+        );
+        assert_eq!(plain, with_reserved);
+    }
+
+    /// A `/page` → `/modal` → `/modal/field` chain, with `/modal` open as a
+    /// surface under `policy`. `/page` declares `Key` and `/modal` does not,
+    /// so without a ceiling an Escape from the field would climb straight
+    /// past the modal to the page — exactly the bug T011 exists to close.
+    fn page_modal_field(policy: InputPolicy) -> (PetrifiedFrame, BTreeMap<String, InputPolicy>) {
+        let f = frame(vec![
+            kid(
+                "/page",
+                NodeKind::Stack,
+                Rect::new(0.0, 0.0, 200.0, 200.0),
+                0,
+                &[Interaction::Key],
+                None,
+            ),
+            kid(
+                "/modal",
+                NodeKind::Stack,
+                Rect::new(0.0, 0.0, 200.0, 200.0),
+                0,
+                &[],
+                Some(0),
+            ),
+            kid(
+                "/modal/field",
+                NodeKind::Input,
+                Rect::new(10.0, 10.0, 100.0, 20.0),
+                0,
+                &[Interaction::TextEdit],
+                Some(1),
+            ),
+        ]);
+        let surfaces = BTreeMap::from([("/modal".to_owned(), policy)]);
+        (f, surfaces)
+    }
+
+    /// Spec 010 T011, half one: an intervening `Block` surface stops the
+    /// keyboard walk at its own boundary, and the `Unrouted` reason names
+    /// it (FR-024) — the walk does not climb past `/modal` to `/page`, even
+    /// though `/page` would have accepted the Escape.
+    #[test]
+    fn an_intervening_block_surface_stops_the_keyboard_walk_and_names_itself() {
+        let (f, surfaces) = page_modal_field(InputPolicy::Block);
+        let escape = InputEvent::Key {
+            key: KeyCode::Escape,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        let got = route_with_surfaces(&f, Some("/modal/field"), &escape, &surfaces, None).route;
+        let Route::Unrouted { reason } = &got else {
+            panic!("expected Unrouted, the Block surface must stop the walk: {got:?}");
+        };
+        assert!(
+            reason.contains("/modal"),
+            "the reason must name the blocking surface, not just say \
+             'blocked': {reason:?}"
+        );
+        assert_ne!(
+            got,
+            Route::Keyboard {
+                node: "/page".into()
+            },
+            "the walk must not climb past the Block surface to a shared \
+             ancestor above it"
+        );
+    }
+
+    /// Spec 010 T011, half two: a rule that blocks everything passes half
+    /// one alone. `DismissOutside` must NOT stop the walk — the same
+    /// distinction [`block_floor`] already draws for the pointer.
+    #[test]
+    fn a_dismiss_outside_surface_does_not_stop_the_keyboard_walk() {
+        let (f, surfaces) = page_modal_field(InputPolicy::DismissOutside);
+        let escape = InputEvent::Key {
+            key: KeyCode::Escape,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        let got = route_with_surfaces(&f, Some("/modal/field"), &escape, &surfaces, None).route;
+        assert_eq!(
+            got,
+            Route::Keyboard {
+                node: "/page".into()
+            },
+            "a DismissOutside surface must not act as a ceiling: {got:?}"
+        );
+    }
+
+    /// `Passthrough` is the third policy and must behave like
+    /// `DismissOutside` here: neither is a ceiling, only `Block` is.
+    #[test]
+    fn a_passthrough_surface_does_not_stop_the_keyboard_walk() {
+        let (f, surfaces) = page_modal_field(InputPolicy::Passthrough);
+        let escape = InputEvent::Key {
+            key: KeyCode::Escape,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        let got = route_with_surfaces(&f, Some("/modal/field"), &escape, &surfaces, None).route;
+        assert_eq!(
+            got,
+            Route::Keyboard {
+                node: "/page".into()
+            }
+        );
+    }
+
+    /// T011's interaction with FR-021: prove the fixture actually would
+    /// swallow the chord (so the second half of this test proves something),
+    /// then prove the reserved chord escapes it anyway. `route_with_reserved`
+    /// checks the reserved set before it ever asks about surfaces or raw
+    /// claims, so a modal that could swallow the reserved chord would be the
+    /// same trap FR-021 exists to prevent, wearing a different hat — this is
+    /// the assertion that closes that gap.
+    #[test]
+    fn the_reserved_chord_escapes_a_block_surface_that_would_otherwise_swallow_it() {
+        let (f, surfaces) = page_modal_field(InputPolicy::Block);
+        let shift_esc = key(KeyCode::Escape, Modifiers::shift());
+
+        let blocked =
+            route_with_surfaces(&f, Some("/modal/field"), &shift_esc, &surfaces, None).route;
+        assert!(
+            matches!(&blocked, Route::Unrouted { reason } if reason.contains("/modal")),
+            "the fixture must actually demonstrate a swallow, or this test \
+             proves nothing: {blocked:?}"
+        );
+
+        let reserved = ReservedChords::default();
+        let escaped = route_with_reserved(&f, Some("/modal/field"), &shift_esc, &reserved);
+        assert_eq!(
+            escaped,
+            Route::Reserved {
+                chord: Chord::reserved_escape()
+            },
+            "the reserved chord must escape even a Block surface that would \
+             otherwise swallow the same keystroke: {escaped:?}"
+        );
+
+        // And it composes in the ONE function the shell actually calls.
+        // Before the escape hatch was threaded here, a caller had to choose
+        // between Block-surface awareness and reserved/raw semantics, and
+        // whichever it picked it silently lost the other.
+        let composed = route_with_surfaces(
+            &f,
+            Some("/modal/field"),
+            &shift_esc,
+            &surfaces,
+            Some(&reserved),
+        )
+        .route;
+        assert_eq!(
+            composed,
+            Route::Reserved {
+                chord: Chord::reserved_escape()
+            },
+            "route_with_surfaces given the escape hatch must reach the same \
+             answer as route_with_reserved: {composed:?}"
+        );
+    }
+
+    #[test]
+    fn a_raw_claim_is_reachable_through_the_surface_aware_path() {
+        // The other half of the composition. A terminal is a raw claim, and
+        // the shell routes through `route_with_surfaces`; if raw were
+        // unreachable there, no keystroke would ever arrive at a terminal.
+        let mut term = raw_claim_node("/modal/term", Rect::new(10.0, 10.0, 100.0, 20.0), Some(1));
+        term.semantics.actions = vec![Interaction::Key];
+        let f = frame(vec![
+            kid(
+                "/page",
+                NodeKind::Stack,
+                Rect::new(0.0, 0.0, 200.0, 200.0),
+                0,
+                &[Interaction::Key],
+                None,
+            ),
+            kid(
+                "/modal",
+                NodeKind::Stack,
+                Rect::new(0.0, 0.0, 200.0, 200.0),
+                0,
+                &[],
+                Some(0),
+            ),
+            term,
+        ]);
+        let surfaces = BTreeMap::from([("/modal".to_owned(), InputPolicy::Block)]);
+        let reserved = ReservedChords::default();
+        let ctrl_s = key(
+            KeyCode::Char('s'),
+            Modifiers {
+                ctrl: true,
+                ..Modifiers::NONE
+            },
+        );
+
+        let without = route_with_surfaces(&f, Some("/modal/term"), &ctrl_s, &surfaces, None).route;
+        assert!(
+            !matches!(without, Route::Raw { .. }),
+            "no escape hatch supplied, so Raw must stay unreachable: {without:?}"
+        );
+
+        let with =
+            route_with_surfaces(&f, Some("/modal/term"), &ctrl_s, &surfaces, Some(&reserved)).route;
+        assert!(
+            matches!(&with, Route::Raw { node } if node == "/modal/term"),
+            "the surface-aware path must deliver verbatim once the hatch is \
+             supplied: {with:?}"
+        );
+
+        // And the reserved chord still wins over that raw claim, in the same
+        // call, with a Block surface in play. All three concerns at once.
+        let escape = key(KeyCode::Escape, Modifiers::shift());
+        let out =
+            route_with_surfaces(&f, Some("/modal/term"), &escape, &surfaces, Some(&reserved)).route;
+        assert_eq!(
+            out,
+            Route::Reserved {
+                chord: Chord::reserved_escape()
+            },
+            "reserved must outrank a raw claim inside a Block surface: {out:?}"
+        );
     }
 }

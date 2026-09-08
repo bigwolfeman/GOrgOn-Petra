@@ -22,6 +22,7 @@ pub mod focus;
 pub mod frame;
 pub mod geom;
 pub mod input;
+pub mod keymap;
 pub mod layout;
 pub mod semantic;
 pub mod testing;

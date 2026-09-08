@@ -1757,7 +1757,20 @@ impl App for Gallery {
 
     fn handle(&mut self, event: &InputEvent, route: &Route, _frame: Option<&PetrifiedFrame>) {
         let node = match route {
-            Route::Pointer { node } | Route::Keyboard { node } => node.clone(),
+            Route::Pointer { node } | Route::Keyboard { node } | Route::Raw { node } => {
+                node.clone()
+            }
+            // This example's `Host` routes through `route_with_surfaces`,
+            // which never produces `Reserved` — the shell alone decides that
+            // (`route_with_reserved`, spec 010's interpretation order, step
+            // 1) and would resolve it before this example ever sees the
+            // event. Named explicitly rather than folded into `Unrouted` so
+            // a future wiring change cannot start matching this arm
+            // silently.
+            Route::Reserved { chord } => {
+                self.last_event = format!("reserved ({chord})");
+                return;
+            }
             Route::Unrouted { reason } => {
                 self.last_event = format!("unrouted ({reason})");
                 return;

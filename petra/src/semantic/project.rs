@@ -80,6 +80,15 @@ fn node_at(frame: &PetrifiedFrame, index: usize, children: Vec<SemanticNode>) ->
         focus_shown_on: _,
         focus_run: _,
         owns_its_text: _,
+        // Held out for a different reason than the two above: `behaviour`
+        // and `raw_claim` are routing facts, not accessibility payload —
+        // they say how an *event* reaching this node is interpreted, not
+        // what the node *is*. `SemanticNode` describes the tree to a screen
+        // reader and to `TreeQuery`; the router reads these two straight off
+        // `PlacementSemantics` on the placement itself
+        // (`contracts/frame-identity.md`), never through this projection.
+        behaviour: _,
+        raw_claim: _,
     } = &placement.semantics;
 
     let mut actions: Vec<Interaction> = actions.clone();

@@ -668,7 +668,17 @@ impl Catalog {
         }
 
         let node = match route {
-            Route::Pointer { node } | Route::Keyboard { node } => node.as_str(),
+            Route::Pointer { node } | Route::Keyboard { node } | Route::Raw { node } => {
+                node.as_str()
+            }
+            // The shell resolves a reserved chord before any `App` ever sees
+            // it (spec 010's interpretation order, step 1) — `Host` here
+            // routes through `route_with_surfaces`, which never produces
+            // this variant, so this arm cannot fire today. It is written out
+            // rather than folded into the `Unrouted` arm below so a later
+            // wiring change that starts producing it does not silently start
+            // matching the wrong branch.
+            Route::Reserved { .. } => return,
             // A pointer move or pointer-exit that landed on nothing is still
             // news to a page whose surface is revealed by hover: the pointer
             // has left the trigger for empty ground, and the tooltip has to
@@ -997,7 +1007,7 @@ mod tests {
                 modifiers: Modifiers::NONE,
             },
             &Route::Unrouted {
-                reason: "catalog test",
+                reason: "catalog test".into(),
             },
             Some(&frame),
         );

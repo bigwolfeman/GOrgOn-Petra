@@ -1038,6 +1038,10 @@ pub fn semantics_of(node: &ViewNode, id: &str, state: &LayoutState) -> Placement
         ambient: node.ambient,
         actions: node.interactions.clone(),
         total_count: node.props.total_count,
+        // App-declared, projected straight off the node the way `ambient`
+        // is one line up — spec 010's router reads these off the placement.
+        behaviour: node.behaviour,
+        raw_claim: node.raw_claim,
     }
 }
 

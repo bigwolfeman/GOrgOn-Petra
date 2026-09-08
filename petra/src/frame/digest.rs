@@ -632,6 +632,26 @@ fn leaf_bytes(scale: Scale, p: &Placement) -> Vec<u8> {
                 focus_shown_on: _,
                 focus_run: _,
                 owns_its_text: _,
+                // The digest question, answered explicitly rather than by
+                // accident (`contracts/frame-identity.md`, "The rest of the
+                // semantic payload"). `behaviour` says what an *event* on
+                // this node means and when it fires; it has no painter that
+                // reads it and it changes no rect, no clip, no token
+                // binding and no glyph. Two frames whose only difference is
+                // which `Intent`/`Phase` a node declares are the SAME
+                // PICTURE, so it is held out on the same terms as `role`:
+                // a future router that somehow painted from it would make
+                // this a defect, and the fix is the shape of this one —
+                // hash it and bump `DOMAIN`.
+                //
+                // `raw_claim` gets the identical analysis: it decides
+                // whether a *keyboard event* skips the binding table, which
+                // is a routing-time fact with no rect, no clip and no ink
+                // of its own. It is held out for the same reason and by the
+                // same argument, not merely because it arrived alongside
+                // `behaviour`.
+                behaviour: _,
+                raw_claim: _,
             },
         // Rewritable, not merely redundant: a subtree a reuse pass copies
         // from the previous frame is rebased onto its new position, and
@@ -1028,7 +1048,10 @@ mod tests {
     use crate::geom::Point;
     use crate::geom::{Rect, Scale, Size};
     use crate::token::ThemeMode;
-    use crate::tree::{Edge, FocusFigure, FocusShownOn, Interaction, NodeKind, Role, TextWrap};
+    use crate::tree::{
+        Behaviour, Edge, FocusFigure, FocusShownOn, Intent, Interaction, NodeKind, Phase, Role,
+        TextWrap,
+    };
 
     fn viewport() -> Viewport {
         Viewport {
@@ -1085,6 +1108,45 @@ mod tests {
         assert_ne!(digest(&vp, &a), digest(&vp, &b));
     }
 
+    /// The digest question, held to a test rather than left to the doc
+    /// comment alone. `behaviour` and `raw_claim` decide how an *event* is
+    /// interpreted, never what the frame looks like, so two placements that
+    /// differ only in them are the same picture and must share one digest —
+    /// even though neither field carries its `Default`, which is what would
+    /// make a hollow version of this test pass for the wrong reason.
+    #[test]
+    fn two_frames_differing_only_in_behaviour_have_one_digest() {
+        let vp = viewport();
+        let rect = Rect::new(0.0, 0.0, 10.0, 10.0);
+
+        let mut plain = placement("/root", rect);
+        plain.semantics.behaviour = None;
+        plain.semantics.raw_claim = false;
+
+        let mut with_behaviour = placement("/root", rect);
+        with_behaviour.semantics.behaviour = Some(Behaviour {
+            intent: Intent::Activate,
+            phase: Phase::OnRelease,
+        });
+        with_behaviour.semantics.raw_claim = true;
+
+        let mut different_behaviour = placement("/root", rect);
+        different_behaviour.semantics.behaviour = Some(Behaviour {
+            intent: Intent::Adjust,
+            phase: Phase::OnChange,
+        });
+        different_behaviour.semantics.raw_claim = false;
+
+        let d1 = digest(&vp, &[plain.clone()]);
+        let d2 = digest(&vp, &[with_behaviour]);
+        let d3 = digest(&vp, &[different_behaviour]);
+        assert_eq!(d1, d2, "behaviour/raw_claim must not move the digest");
+        assert_eq!(
+            d2, d3,
+            "two different Behaviour values must not move the digest either"
+        );
+    }
+
     /// A placement with every field set to something distinguishable, so a
     /// mutation of any one of them is a real change.
     ///
@@ -1136,6 +1198,15 @@ mod tests {
                 ambient: false,
                 actions: vec![Interaction::Click],
                 total_count: Some(9),
+                // Non-default on purpose, like the flags above: the pinned
+                // vectors below prove these two are held out of the leaf
+                // stream by staying unchanged with these set to something
+                // other than their `Default`.
+                behaviour: Some(Behaviour {
+                    intent: Intent::Toggle,
+                    phase: Phase::OnChange,
+                }),
+                raw_claim: true,
             },
             // Used as the sole placement in every fixture below, so it is
             // its own tree's root. `Some(0)` here — a self-referencing

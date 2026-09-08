@@ -1499,7 +1499,18 @@ impl App for Parity {
             return;
         }
         let node = match route {
-            Route::Pointer { node } | Route::Keyboard { node } => node.clone(),
+            Route::Pointer { node } | Route::Keyboard { node } | Route::Raw { node } => {
+                node.clone()
+            }
+            // Same reasoning as `gallery.rs`'s `App::handle`: this example's
+            // `Host` never produces `Reserved` (it routes through
+            // `route_with_surfaces`, not `route_with_reserved`), so this arm
+            // does not fire today. Named rather than folded into `Unrouted`
+            // so it cannot start silently doing the wrong thing later.
+            Route::Reserved { chord } => {
+                self.last_event = format!("reserved ({chord})");
+                return;
+            }
             Route::Unrouted { reason } => {
                 self.last_event = format!("unrouted ({reason})");
                 return;

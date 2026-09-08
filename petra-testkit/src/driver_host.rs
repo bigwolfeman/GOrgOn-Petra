@@ -345,7 +345,14 @@ mod tests {
 
         fn handle(&mut self, event: &InputEvent, route: &Route, _frame: Option<&PetrifiedFrame>) {
             let where_to = match route {
-                Route::Pointer { node } | Route::Keyboard { node } => node.clone(),
+                Route::Pointer { node } | Route::Keyboard { node } | Route::Raw { node } => {
+                    node.clone()
+                }
+                // The driven host routes through `route_with_surfaces`, not
+                // `route_with_reserved`, so `Reserved` cannot arrive here
+                // today. Recorded rather than folded into `Unrouted` so a
+                // future wiring change is forced to decide this on purpose.
+                Route::Reserved { chord } => format!("reserved: {chord}"),
                 Route::Unrouted { reason } => format!("unrouted: {reason}"),
             };
             self.routed.push((format!("{event:?}"), where_to));

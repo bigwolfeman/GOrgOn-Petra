@@ -753,6 +753,7 @@ mod tests {
             None,
             &press(Point::new(nav.x + nav.w / 2.0, nav.y + nav.h / 2.0)),
             &scopes,
+            None,
         );
         assert!(
             matches!(on_nav.route, Route::Unrouted { .. }),
@@ -769,6 +770,7 @@ mod tests {
                 primary.rect.y + primary.rect.h / 2.0,
             )),
             &scopes,
+            None,
         );
         assert_eq!(
             on_primary.route,

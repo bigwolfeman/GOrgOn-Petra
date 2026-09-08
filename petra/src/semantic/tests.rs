@@ -16,7 +16,8 @@ use crate::semantic::{
 use crate::testing::{GeneratedRows, Harness, MonoContent, validated};
 use crate::token::ThemeMode;
 use crate::tree::{
-    FocusFigure, FocusShownOn, Interaction, NodeKind, Props, Role, Semantics, ViewNode,
+    Behaviour, FocusFigure, FocusShownOn, Intent, Interaction, NodeKind, Phase, Props, Role,
+    Semantics, ViewNode,
 };
 
 const VIEWPORT: Size = Size { w: 200.0, h: 120.0 };
@@ -233,6 +234,48 @@ fn a_frame_with_no_placements_projects_no_tree() {
     frame.placements.clear();
     frame.content.clear();
     assert!(project(&frame).is_none());
+}
+
+/// `ViewNode::behaviour` and `ViewNode::raw_claim` reach `PlacementSemantics`
+/// through the real `petrify` pipeline — not a hand-built `PlacementSemantics`
+/// literal — so this is proof the router has something real to read off a
+/// petrified frame, not just a type that compiles.
+///
+/// It also proves the two are held out of the *semantic* projection: an
+/// operator-facing tree describes what a node is, not how an event on it
+/// routes, and `SemanticNode` carries neither field.
+#[test]
+fn behaviour_is_projected_onto_the_placement() {
+    let tree = ViewNode::new(NodeKind::Stack, "root").child(
+        ViewNode::new(NodeKind::Text, "toggle")
+            .with_behaviour(Behaviour {
+                intent: Intent::Toggle,
+                phase: Phase::OnChange,
+            })
+            .with_raw_claim(),
+    );
+    let frame = frame_of(1, &tree);
+    let placed = frame
+        .placements
+        .iter()
+        .find(|p| p.id == "/root/toggle")
+        .expect("the child was placed");
+    assert_eq!(
+        placed.semantics.behaviour,
+        Some(Behaviour {
+            intent: Intent::Toggle,
+            phase: Phase::OnChange,
+        })
+    );
+    assert!(placed.semantics.raw_claim);
+
+    // Neither field is accessibility payload; the semantic tree does not
+    // carry them, and never reaches them on the wire.
+    let projected = project(&frame).expect("root");
+    let node = projected.find("/root/toggle").expect("the child projects");
+    let wire = json(node);
+    assert!(!wire.contains("behaviour"), "{wire}");
+    assert!(!wire.contains("raw_claim"), "{wire}");
 }
 
 // ------------------------------------------------------------------ stable ids
