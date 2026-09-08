@@ -399,3 +399,18 @@ mod tests {
         assert_eq!(cache.evictions(), 10_000 - 32);
     }
 }
+
+// No Kani harness lives here, and the reason is a hard tool limit rather than
+// a gap. A capacity-2 `LruCache<u8, u8>` driven through 3 symbolic
+// insert/get steps, then checked for the same structural invariants
+// `check_invariants` asserts by hand, was written and run: it did not
+// terminate inside 600 s. The cost is not the trace length. `LruCache`'s
+// index is a `std::HashMap`, and CBMC cannot get through hashbrown's SIMD
+// group scan (`RawTableInner::find_insert_slot` reaching
+// `simd_bitmask_impl::<i8, 16>`). A minimal reproduction — one
+// `HashSet<u8>` insert plus one lookup, nothing else — reached 412 498
+// variables and 1 153 452 clauses with no verdict in 300 s, while the same
+// shape over a `BTreeSet` verified in 1.19 s. So this is a property of the
+// hasher, not of this module, and no amount of shrinking the bound here
+// would recover it. See
+// `.agents/notes/proposed/testing/2026-08-30-kani-bounded-verification.md`.

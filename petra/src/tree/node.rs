@@ -1182,3 +1182,49 @@ mod tests {
         assert!(!Arc::ptr_eq(&a.children[0], &b.children[0]));
     }
 }
+
+/// Bounded proofs over this module. See
+/// `.agents/notes/proposed/testing/2026-08-30-kani-bounded-verification.md`.
+#[cfg(kani)]
+mod proofs {
+    use super::AxisConstraint;
+
+    /// When both bounds are set and do not contradict (`min <= max`),
+    /// `clamp` always returns a value inside `[min, max]`, for every input
+    /// value including NaN and the infinities. `clamp` leans on
+    /// `f32::min`/`f32::max`'s NaN-is-not-preferred semantics to get this
+    /// without an explicit `is_nan` check, which is exactly the kind of
+    /// interaction a sampler is unlikely to hit.
+    #[kani::proof]
+    fn clamp_stays_within_noncontradictory_bounds() {
+        let min: f32 = kani::any();
+        let max: f32 = kani::any();
+        kani::assume(min.is_finite() && max.is_finite() && min <= max);
+        let value: f32 = kani::any();
+        let c = AxisConstraint {
+            min: Some(min),
+            max: Some(max),
+            priority: 0,
+        };
+        let out = c.clamp(value);
+        assert!(out.is_finite());
+        assert!(out >= min && out <= max);
+    }
+
+    /// When the two bounds contradict (`min > max`), `clamp` returns `min`
+    /// for every input value: the declared minimum always wins, which is
+    /// exactly what the doc comment on `clamp` claims in prose.
+    #[kani::proof]
+    fn clamp_prefers_min_when_bounds_contradict() {
+        let min: f32 = kani::any();
+        let max: f32 = kani::any();
+        kani::assume(min.is_finite() && max.is_finite() && min > max);
+        let value: f32 = kani::any();
+        let c = AxisConstraint {
+            min: Some(min),
+            max: Some(max),
+            priority: 0,
+        };
+        assert_eq!(c.clamp(value), min);
+    }
+}

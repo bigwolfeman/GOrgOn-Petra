@@ -362,3 +362,65 @@ mod tests {
         assert_eq!(extents(&items), [40.0]);
     }
 }
+
+/// Bounded proofs over this module. See
+/// `.agents/notes/proposed/testing/2026-08-30-kani-bounded-verification.md`.
+#[cfg(kani)]
+mod proofs {
+    use super::{Give, concede};
+
+    /// For 2 children with a non-negative floor no greater than their
+    /// starting extent, `concede` never leaves an item with a negative
+    /// extent, for any overflow amount, any scroll-absorb floor, and any
+    /// flexibility. `take` is called with three different floor closures
+    /// (`|g| g.floor`, `scroll_floor`, `|_| 0.0` for truncation), and this
+    /// checks all three keep their promise rather than trusting it by
+    /// inspection. Magnitudes are bounded so CBMC's float decision
+    /// procedure has a small search space, not the full `f32` range.
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn concede_never_leaves_a_negative_extent() {
+        let e0: f32 = kani::any();
+        let f0: f32 = kani::any();
+        let flex0: f32 = kani::any();
+        let has_scroll0: bool = kani::any();
+        let scroll_floor0: f32 = kani::any();
+
+        let e1: f32 = kani::any();
+        let f1: f32 = kani::any();
+        let flex1: f32 = kani::any();
+        let has_scroll1: bool = kani::any();
+        let scroll_floor1: f32 = kani::any();
+
+        let overflow: f32 = kani::any();
+
+        kani::assume(e0.is_finite() && f0.is_finite() && flex0.is_finite());
+        kani::assume(e1.is_finite() && f1.is_finite() && flex1.is_finite());
+        kani::assume(scroll_floor0.is_finite() && scroll_floor1.is_finite());
+        kani::assume(overflow.is_finite());
+        kani::assume((0.0..=1000.0).contains(&e0) && (0.0..=1000.0).contains(&e1));
+        kani::assume(f0 >= 0.0 && f0 <= e0);
+        kani::assume(f1 >= 0.0 && f1 <= e1);
+        kani::assume(flex0 >= 0.0 && flex1 >= 0.0);
+        kani::assume((0.0..=e0).contains(&scroll_floor0));
+        kani::assume((0.0..=e1).contains(&scroll_floor1));
+        kani::assume((-2000.0..=2000.0).contains(&overflow));
+
+        let mut g0 = Give::new(0, e0, f0, flex0);
+        if has_scroll0 {
+            g0 = g0.absorbing(scroll_floor0);
+        }
+        let mut g1 = Give::new(1, e1, f1, flex1);
+        if has_scroll1 {
+            g1 = g1.absorbing(scroll_floor1);
+        }
+
+        let mut items = [g0, g1];
+        let _ = concede(&mut items, overflow);
+
+        assert!(items[0].extent >= 0.0);
+        assert!(items[1].extent >= 0.0);
+        assert!(items[0].extent.is_finite());
+        assert!(items[1].extent.is_finite());
+    }
+}

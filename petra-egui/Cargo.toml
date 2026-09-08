@@ -4,7 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-rust-version.workspace = true
+# Above the workspace floor: egui/eframe/ecolor 0.36.1 require 1.95. This is
+# the only crate that pulls them, so it is the only crate that pays for them.
+rust-version = "1.95"
 description = "The only crate that knows egui: eframe host, layer painting, text shaping, input translation for Petra."
 publish = false
 

@@ -336,3 +336,16 @@ mod tests {
         assert_eq!(path.id(), "/a");
     }
 }
+
+// No Kani harness lives here, and the reason is a hard tool limit rather than
+// a gap. `escaped` is injective — the module doc's "no two distinct paths can
+// ever print the same id" — was written against a 3-letter alphabet (`a`, and
+// both separators `escaped` treats specially) over every 2-character key, the
+// smallest bound that still exercises both escape branches. It did not
+// terminate inside 600 s. The wall here is `String` rather than hashing:
+// CBMC's trace ends in `alloc::raw_vec::RawVecInner`, `capacity_overflow`,
+// and `handle_alloc_error`, so a growable allocation costs more than the
+// 81-key input space it was carrying. A proof of this property needs an
+// `escaped` that writes into a fixed buffer, which is a design change and not
+// a survey's business. See
+// `.agents/notes/proposed/testing/2026-08-30-kani-bounded-verification.md`.
