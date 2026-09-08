@@ -381,10 +381,10 @@ pub const ENTRIES: &[Entry] = &[
     )),
     // slider.rs — Slider.
     row!("slider", KeyLabelNumber, |p| lib::slider(
-        p.key, p.label, p.number
+        p.key, p.label, p.value
     )),
     row!("slider_readonly", KeyLabelNumber, |p| lib::slider_readonly(
-        p.key, p.label, p.number
+        p.key, p.label, p.value
     )),
 ];
 
@@ -540,7 +540,7 @@ mod tests {
             ),
             (
                 "{ key, label, value: number }",
-                json!({"key": "probe", "label": "Probe", "number": 42.0}),
+                json!({"key": "probe", "label": "Probe", "value": 42.0}),
             ),
             (
                 "{ key, label, value, children }",

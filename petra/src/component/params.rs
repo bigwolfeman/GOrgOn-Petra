@@ -159,7 +159,7 @@ shapes! {
         /// The visible text.
         label: String,
         /// The node's current value, as a number.
-        number: f32,
+        value: f32,
     }
         => "{ key: string, label: string, value: number }";
     /// 2 constructors.

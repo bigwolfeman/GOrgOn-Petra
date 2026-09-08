@@ -243,6 +243,134 @@ mod tests {
         node
     }
 
+    /// Split a rendered Luau table type into its `(field, type)` pairs.
+    ///
+    /// Depth-aware, because a field's type is itself a table
+    /// (`children: { ViewNode }`) often enough that a naive comma split gets
+    /// it wrong and then quietly under-tests.
+    fn luau_fields(luau: &str) -> Vec<(String, String)> {
+        let inner = luau
+            .trim()
+            .strip_prefix('{')
+            .and_then(|s| s.strip_suffix('}'))
+            .unwrap_or(luau);
+        let mut parts = Vec::new();
+        let mut depth = 0usize;
+        let mut current = String::new();
+        for ch in inner.chars() {
+            match ch {
+                '{' | '(' => {
+                    depth += 1;
+                    current.push(ch);
+                }
+                '}' | ')' => {
+                    depth = depth.saturating_sub(1);
+                    current.push(ch);
+                }
+                ',' if depth == 0 => {
+                    parts.push(std::mem::take(&mut current));
+                }
+                _ => current.push(ch),
+            }
+        }
+        parts.push(current);
+        parts
+            .into_iter()
+            .filter_map(|part| {
+                let (name, ty) = part.split_once(':')?;
+                let name = name.trim();
+                if name.is_empty() {
+                    return None;
+                }
+                Some((name.to_owned(), ty.trim().to_owned()))
+            })
+            .collect()
+    }
+
+    /// A plausible value for a rendered Luau type, or `None` when this test
+    /// cannot invent one and must say so rather than skip silently.
+    fn probe_value(ty: &str) -> Option<serde_json::Value> {
+        let ty = ty.trim().trim_end_matches('?');
+        // A union of table types (`{...} | {...}`) is a tagged variant. This
+        // test cannot pick an arm without encoding which one, so it declines
+        // and is counted as unprobed rather than guessing.
+        if ty.contains('|') && ty.contains('{') {
+            return None;
+        }
+        Some(match ty {
+            "string" => json!("probe"),
+            "number" => json!(1),
+            "boolean" => json!(false),
+            // Luau writes an array as `{ T }` and a record as
+            // `{ name: T, ... }`. The colon is the only thing separating
+            // them, and sending an array where a record is wanted produces a
+            // deserialize error that reads exactly like the name mismatch
+            // this test exists to catch.
+            _ if ty.starts_with('{') && !ty.contains(':') => json!([]),
+            _ => return None,
+        })
+    }
+
+    /// **Every rendered field name must be a field the deserializer accepts.**
+    ///
+    /// `Entry.luau` becomes the signature in `plugin.d.luau`, which is the
+    /// whole of an agent's knowledge of this API, and every shape carries
+    /// `deny_unknown_fields`. So a rendered name the struct does not have is
+    /// not cosmetic: the generated stub instructs an author to write the one
+    /// spelling stage 1 refuses, and the two failures cancel into a plugin
+    /// that type-checks and cannot mount.
+    ///
+    /// That shipped. `KeyLabelNumber` rendered `value: number` over a field
+    /// named `number`, and seven constructors carried it. Two instances were
+    /// fixed; this test is why a third cannot appear.
+    #[test]
+    fn every_rendered_field_name_is_one_the_deserializer_accepts() {
+        let mut unchecked: Vec<&str> = Vec::new();
+        for entry in entries() {
+            let fields = luau_fields(entry.luau);
+            assert!(
+                !fields.is_empty(),
+                "`{}` renders `{}`, which parses to no fields at all",
+                entry.name,
+                entry.luau
+            );
+            let mut probe = serde_json::Map::new();
+            let mut complete = true;
+            for (name, ty) in &fields {
+                match probe_value(ty) {
+                    Some(value) => {
+                        probe.insert(name.clone(), value);
+                    }
+                    None => complete = false,
+                }
+            }
+            if !complete {
+                unchecked.push(entry.name);
+                continue;
+            }
+            if let Err(err) = build(entry.name, &serde_json::Value::Object(probe)) {
+                let reason = err.reason.to_ascii_lowercase();
+                assert!(
+                    !reason.contains("unknown field") && !reason.contains("missing field"),
+                    "`{}` renders `{}` in plugin.d.luau, but its deserializer disagrees about \
+                     the field names: {}",
+                    entry.name,
+                    entry.luau,
+                    err.reason
+                );
+            }
+        }
+        // A shape this test cannot probe is reported, never silently skipped:
+        // an unprobed shape is an unchecked shape.
+        assert!(
+            unchecked.len() * 4 < entries().len(),
+            "{} of {} shapes carry a type this test cannot probe, so most of the \
+             registry is unchecked: {unchecked:?}",
+            unchecked.len(),
+            entries().len()
+        );
+    }
+
     /// Two groups registering one name is a merge error, not a last-one-wins.
     /// The rows are written by different hands; a silent shadow would give a
     /// plugin whichever module happened to be linked last.

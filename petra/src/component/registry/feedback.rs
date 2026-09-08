@@ -150,7 +150,7 @@ impl ParamShape for NotificationActionableKindParams {
 struct ProgressWithHelperParams {
     key: Key,
     label: String,
-    number: f32,
+    value: f32,
     helper: String,
 }
 impl ParamShape for ProgressWithHelperParams {
@@ -218,7 +218,7 @@ pub const ENTRIES: &[Entry] = &[
     row!("inline_loading", KeyLabelNumber, |p| lib::inline_loading(
         p.key,
         p.label,
-        f64::from(p.number)
+        f64::from(p.value)
     )),
     row!("inline_loading_finished", KeyLabel, |p| {
         lib::inline_loading_finished(p.key, p.label)
@@ -227,12 +227,12 @@ pub const ENTRIES: &[Entry] = &[
     row!("loading", KeyLabelNumber, |p| lib::loading(
         p.key,
         p.label,
-        f64::from(p.number)
+        f64::from(p.value)
     )),
     row!("loading_sm", KeyLabelNumber, |p| lib::loading_sm(
         p.key,
         p.label,
-        f64::from(p.number)
+        f64::from(p.value)
     )),
     // notification.rs — Notification.
     row!("notification", KeyLabelValue, |p| lib::notification(
@@ -262,13 +262,13 @@ pub const ENTRIES: &[Entry] = &[
     ),
     // progress.rs — Progress bar.
     row!("progress", KeyLabelNumber, |p| lib::progress(
-        p.key, p.label, p.number
+        p.key, p.label, p.value
     )),
     row!("progress_sm", KeyLabelNumber, |p| lib::progress_sm(
-        p.key, p.label, p.number
+        p.key, p.label, p.value
     )),
     row!("progress_with_helper", ProgressWithHelperParams, |p| {
-        lib::progress_with_helper(p.key, p.label, p.number, p.helper)
+        lib::progress_with_helper(p.key, p.label, p.value, p.helper)
     }),
     // progress_indicator.rs — Progress indicator.
     row!("progress_indicator", KeyChildren, |p| {
@@ -405,7 +405,7 @@ mod tests {
             ),
             (
                 "{ key, label, value: number }",
-                json!({"key": "probe", "label": "Probe", "number": 42.0}),
+                json!({"key": "probe", "label": "Probe", "value": 42.0}),
             ),
             (
                 "{ key, label, selected: boolean, value }",
