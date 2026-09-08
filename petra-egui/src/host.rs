@@ -46,6 +46,7 @@ use std::sync::Arc;
 
 use egui::{Context, Id, LayerId, Order};
 use gorgon_petra::anim::{FrameDecision, TransitionRegistry, wants_frame};
+use gorgon_petra::component::registry;
 use gorgon_petra::focus::FocusTree;
 use gorgon_petra::frame::{
     FrameCounter, PetrifiedFrame, Placement, TransitionActivity, Viewport, petrify,
@@ -60,13 +61,17 @@ use gorgon_petra::layout::{
     AnchorRects, ChangeSet, LayoutCtx, LayoutState, MeasureCache, RowSource, ScrollStack,
     TextRequest,
 };
+use gorgon_petra::semantic::{
+    ContributionId, ContributionLedger, ContributionStatus, PushOutcome, contribution_key,
+};
 use gorgon_petra::token::value::CoverageValue;
 use gorgon_petra::token::{
-    DesignToken, Presenter, StatusToken, Theme, ThemeSnapshot, TokenName, TokenValue, Vocabulary,
-    standard_vocabulary,
+    DesignToken, Presenter, StatusToken, Theme, ThemeSnapshot, TokenKind, TokenName, TokenValue,
+    Vocabulary, standard_vocabulary,
 };
 use gorgon_petra::tree::{
-    InputPolicy, Interaction, NodeKind, Props, Registry, ValidatedTree, ViewNode, validate,
+    InputPolicy, InsetRefs, Interaction, NodeKind, Props, Registry, TextWrap, ValidatedTree,
+    ViewNode, validate,
 };
 
 use crate::focus_caret::FocusCaret;
@@ -537,6 +542,95 @@ pub fn coverage_plan(value: CoverageValue) -> CoveragePlan {
     }
 }
 
+/// One surface a plugin contributed, as the shell holds it.
+///
+/// The shell-side peer of `gorgond`'s `Contribution`, and deliberately not
+/// the same type. `petra-egui` depends on nothing under `gorgon/`: linking
+/// the daemon into the renderer to reach one struct would put a ctl client,
+/// a kernel and a Lua host inside the process that draws. So the daemon's
+/// fiber id, row path and trace sequence stop at the process boundary, and
+/// what crosses is the three fields a picture needs. Spec 004's shell binary
+/// depends on both crates and is where the two are joined.
+///
+/// [`Contribution::tree`] is an **owned snapshot**, which is the whole of
+/// `contracts/surface-contribution.md` §8: the frame path holds a value, so
+/// there is nothing for it to call and no timeout to tune. A fiber that has
+/// stopped pushing leaves the last snapshot on screen.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Contribution {
+    /// The daemon's contribution id.
+    ///
+    /// Becomes the key `ui:<id>` the subtree is mounted under, which is what
+    /// makes every node beneath it attributable to its owning fiber through
+    /// the path alone (`contracts/surface-contribution.md` §9). No owner
+    /// field on any node, and no join.
+    pub id: ContributionId,
+    /// The publisher's revision of *this contribution*, which must not go
+    /// backwards for one id.
+    ///
+    /// [`ContributionLedger::accept`] drops a push whose revision is not
+    /// newer than the one on screen, so an out-of-order arrival cannot
+    /// replace a newer picture with an older one. A publisher that reused or
+    /// decremented a revision would instead have its new tree silently
+    /// ignored — so the obligation is stated here rather than assumed.
+    pub revision: u64,
+    /// The key of the node in the application's own tree this mounts under.
+    ///
+    /// A mount slot, not a paint slot ([`gorgon_petra::token::SlotSchema`]):
+    /// this names a place in the tree, that names a place on a rect.
+    pub slot: String,
+    /// The plugin's tree as the daemon accepted it, component references and
+    /// all. The shell expands it; see [`Host::set_contributions`].
+    pub tree: ViewNode,
+}
+
+/// What the shell did with one [`Contribution`] on the last frame it built.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MountOutcome {
+    /// Expanded, accepted by stage-2 `validate`, and spliced into its slot.
+    Mounted,
+    /// Expansion or stage-2 acceptance refused it, and the attributed error
+    /// card is on screen in its place, in its own slot. The string is what
+    /// the card says.
+    Refused(String),
+    /// No node in the application's tree carries that key, so there is
+    /// nowhere to mount. The card goes to the root instead when the root can
+    /// hold children; when it cannot, this report is the only record.
+    NoSuchSlot,
+    /// More than one node carries that key, so "the" slot does not exist.
+    /// Mounting under the first one found would put a plugin's surface
+    /// somewhere neither the plugin nor the shell author chose, so the shell
+    /// refuses instead of guessing. Carries how many were found.
+    AmbiguousSlot(usize),
+}
+
+/// One line of [`Host::mounts`]: what happened to one contribution.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MountReport {
+    /// The contribution's id.
+    pub id: ContributionId,
+    /// The slot it asked for.
+    pub slot: String,
+    /// What the shell did with it.
+    pub outcome: MountOutcome,
+}
+
+/// A contribution after expansion and stage-2 acceptance, ready to splice.
+///
+/// Prepared once per change to the contribution set or to the registry, not
+/// once per frame: expanding 161 registry rows and walking the result through
+/// `validate` at 60 Hz would be paid on every frame for a set that changes
+/// when a plugin loads. See [`Host::prepare_contributions`].
+struct Prepared {
+    id: ContributionId,
+    slot: String,
+    /// What is spliced: the expanded, accepted subtree re-keyed to `ui:<id>`,
+    /// or the error card that stands in its place.
+    node: ViewNode,
+    /// `Some` exactly when `node` is the error card, carrying its message.
+    refused: Option<String>,
+}
+
 /// Drives one Petra application inside an `eframe` window.
 pub struct Host<A: App> {
     app: A,
@@ -674,6 +768,35 @@ pub struct Host<A: App> {
     /// that starts the hop and held until settle so a mesh→blit switch
     /// cannot pop mid-flight.
     hop_blit: bool,
+    /// Every contributed surface this shell is currently showing, in the
+    /// order the publisher gave them.
+    ///
+    /// The order is the publisher's and is never re-sorted here: ordering
+    /// within a `list` slot is `TraceSeq` of the `contribute` call
+    /// (`contracts/surface-contribution.md` §6), and `TraceSeq` is a fact the
+    /// daemon owns. A shell that sorted by id would be inventing a second,
+    /// disagreeing order out of a number that only looks monotonic.
+    contributions: Vec<Contribution>,
+    /// `contributions` after expansion and stage-2 acceptance. Rebuilt when
+    /// `prepared_stale`, never per frame.
+    prepared: Vec<Prepared>,
+    /// Whether `prepared` was derived from the current contribution set *and*
+    /// the current registry. Set by [`Host::set_contributions`] and by every
+    /// path that can change the registry a contribution is accepted against.
+    prepared_stale: bool,
+    /// What the last built frame did with each contribution.
+    mounts: Vec<MountReport>,
+    /// One retained snapshot per live contribution, and whether each is
+    /// behind (`contracts/surface-contribution.md` §8).
+    ///
+    /// **Owned here, and therefore never shared.** `ContributionLedger` has
+    /// a `&mut` API and no interior lock, so a shell that took pushes on a
+    /// wire thread and rendered on another would have to wrap it. This host
+    /// answers that question by ownership instead: the ledger is reached only
+    /// through `&mut Host`, the render thread owns the `Host`, and a
+    /// transport hands pushes over by calling a method on it. No lock, and
+    /// no second owner to disagree with.
+    ledger: ContributionLedger,
 }
 
 impl<A: App> Host<A> {
@@ -775,6 +898,14 @@ impl<A: App> Host<A> {
             hop_passes: 0,
             last_hop_passes: 0,
             hop_blit: false,
+            contributions: Vec::new(),
+            prepared: Vec::new(),
+            // `true` rather than `false` on an empty set, so the one place
+            // that clears it is the one place that fills `prepared`. A
+            // `false` here would be a second claim about the same fact.
+            prepared_stale: true,
+            mounts: Vec::new(),
+            ledger: ContributionLedger::new(),
         }
     }
 
@@ -801,6 +932,12 @@ impl<A: App> Host<A> {
     /// [`Host::declare_status`], which are kept and re-applied on top of
     /// every theme.
     pub fn registry_mut(&mut self) -> &mut Registry {
+        // Conservative on purpose: this hands out `&mut Registry`, so a
+        // caller may register a custom kind or a transition that decides
+        // whether a contribution is acceptable, and nothing here can tell
+        // whether one did. Re-preparing costs one expand and one walk per
+        // contribution, and only on a call a host makes at startup.
+        self.prepared_stale = true;
         &mut self.registry
     }
 
@@ -925,6 +1062,14 @@ impl<A: App> Host<A> {
 
     fn bind_theme(&mut self, theme: &Theme) {
         *self.registry.vocabulary_mut() = composed_vocabulary(theme, &self.extra_vocabulary);
+        // Every contribution was accepted against the vocabulary this line
+        // just replaced. A tree that named a token the old theme defined and
+        // this one does not is no longer acceptable, and one refused for a
+        // name the new theme *does* define deserves its second chance. The
+        // one funnel every registry vocabulary change goes through, so this
+        // covers a theme publication, `declare_token` and `declare_status`
+        // alike.
+        self.prepared_stale = true;
         *self.shaper.typography_mut() = Typography::from_theme(theme, &self.faces);
         bind_glyph_coverage(&self.ctx, theme);
         // Every cached galley was shaped through the old map. The key
@@ -1181,7 +1326,13 @@ impl<A: App> Host<A> {
             .retain_theme_and_scale(viewport.theme_rev, viewport.scale);
         self.cache.apply(&self.app.take_changes());
 
-        let app_tree = self.app.view();
+        // The application's tree, then every contributed surface spliced into
+        // it. In this order and not the other: a contribution mounts *into* a
+        // node the application declares, so there is nothing to mount into
+        // until the application has answered. Each contribution was expanded
+        // and accepted when it was set; this splices the results.
+        let authored = self.app.view();
+        let app_tree = self.mount_contributions(authored);
         // `refusal_view` only exists to be assigned into on the error arm
         // below; the `let` with no initializer is what lets the borrow
         // minted there outlive the `match` (a binding declared outside the
@@ -1409,6 +1560,14 @@ impl<A: App> Host<A> {
     /// petrify. A caret in flight does not: the bar is not a placement.
     fn can_reuse_frame(&self, viewport: &Viewport, had_input: bool) -> bool {
         if had_input || !self.caret.is_moving() {
+            return false;
+        }
+        // A contribution set that changed since the last frame has to reach
+        // the screen on this pass. Without this a surface mounted while the
+        // focus caret happened to be mid-hop would wait out the hop before
+        // appearing, because this path paints the last picture and never asks
+        // for a tree.
+        if self.prepared_stale {
             return false;
         }
         let Some(frame) = self.last_frame.as_ref() else {
@@ -2850,6 +3009,311 @@ impl<A: App> Host<A> {
     pub fn last_hop_passes(&self) -> u32 {
         self.last_hop_passes
     }
+
+    /// Replace the set of contributed surfaces this shell shows.
+    ///
+    /// The shell end of `contracts/surface-contribution.md`'s mount path.
+    /// Every frame from here on splices each contribution into the node its
+    /// `slot` names, under the key `ui:<id>`.
+    ///
+    /// # What this is not
+    ///
+    /// It is not a transport. `petra-egui` depends on nothing under
+    /// `gorgon/` and must not: a ctl client inside the renderer would link
+    /// the daemon, its kernel and its Lua host into the process that draws.
+    /// Whoever holds the ctl connection calls this — spec 004's shell binary,
+    /// which may depend on both crates. The argument is an owned snapshot,
+    /// so nothing on the frame path can call back into a fiber
+    /// (`contracts/surface-contribution.md` §8): there is no timeout to tune
+    /// because there is no call.
+    ///
+    /// # Order
+    ///
+    /// Contributions are spliced into a slot in the order given here and are
+    /// never re-sorted. §6 makes that order `TraceSeq` of the `contribute`
+    /// call, which only the daemon knows.
+    ///
+    /// # Cost
+    ///
+    /// Expansion and stage-2 acceptance run **here**, once, not per frame.
+    /// A frame pays for a walk of the application's tree and a shallow clone
+    /// of the path down to each mount point; every other `Arc` in the tree is
+    /// handed on untouched, so the incremental-frame proof (`Arc::ptr_eq`)
+    /// still holds for the subtrees this did not enter.
+    ///
+    /// # Size
+    ///
+    /// Expansion is depth-capped ([`registry::MAX_DEPTH`]) and cannot loop —
+    /// a constructor in `gorgon_petra::component` has no way to name another
+    /// component — so an expanded tree is bounded by the size of what was
+    /// handed in. Bounding *that* is the caller's job: on the shipped path
+    /// the daemon's 16 MiB ctl frame cap is what does it.
+    pub fn set_contributions(&mut self, contributions: Vec<Contribution>) -> &mut Self {
+        // The frame this set first reaches. `peek`, not the last frame's
+        // seq: a snapshot accepted now is on screen at the next petrify, so
+        // its published age starts at zero there rather than at one.
+        let seq = self.counter.peek();
+        let mut kept: Vec<Contribution> = Vec::with_capacity(contributions.len());
+        for incoming in contributions {
+            match self.ledger.accept(incoming.id, incoming.revision, seq) {
+                PushOutcome::Advanced => kept.push(incoming),
+                // Not newer than what is already on screen, so taking it
+                // would replace a newer picture with an older one. The held
+                // snapshot stays, and the arrival is dropped rather than
+                // silently promoted.
+                PushOutcome::Superseded => {
+                    if let Some(held) = self.contributions.iter().find(|c| c.id == incoming.id) {
+                        kept.push(held.clone());
+                    }
+                }
+            }
+        }
+        // Everything the publisher no longer lists is retracted, which is the
+        // ordinary unload path (§7) rather than a bespoke `ui` teardown.
+        for gone in &self.contributions {
+            if !kept.iter().any(|c| c.id == gone.id) {
+                self.ledger.retract(gone.id);
+            }
+        }
+        self.contributions = kept;
+        self.prepared_stale = true;
+        // Measured sizes are keyed by canonical node id, and a contribution
+        // republished under the same `ui:<id>` reuses every id beneath it
+        // with different content. Without this the new text would be laid out
+        // to the old text's extent.
+        self.cache.apply(&ChangeSet::All);
+        // Nothing else will ask for a frame. A window sitting idle is the
+        // normal state of a shell (SC-002), and a plugin that mounted a
+        // surface into one would otherwise wait for an unrelated event.
+        self.ctx.request_repaint();
+        self
+    }
+
+    /// The contributions this shell was last given, in publication order.
+    #[must_use]
+    pub fn contributions(&self) -> &[Contribution] {
+        &self.contributions
+    }
+
+    /// What the last built frame did with each contribution.
+    ///
+    /// Read it. A [`MountOutcome::NoSuchSlot`] against a root that cannot
+    /// hold children is the one outcome with nothing on screen to show for
+    /// it, and this is where it is recorded.
+    ///
+    /// Empty until the first frame that builds a tree; a pass that reuses
+    /// the last frame does not rebuild this.
+    #[must_use]
+    pub fn mounts(&self) -> &[MountReport] {
+        &self.mounts
+    }
+
+    /// Record that this contribution's fiber owes an answer the shell has not
+    /// had, which is what makes the snapshot on screen stale (§8).
+    ///
+    /// Called by whoever sent the fiber something — a routed press on a
+    /// contributed control, say — never by the frame path, which sends
+    /// nothing. Returns whether the ledger holds that contribution at all.
+    ///
+    /// Staleness is *behind*, not *old*: a surface nobody has asked anything
+    /// of is never stale however long it has been on screen, and there is no
+    /// clock here to make it so.
+    pub fn contribution_behind(&mut self, id: ContributionId) -> bool {
+        let seq = self.counter.peek();
+        let marked = self.ledger.mark_behind(id, seq);
+        if marked {
+            // The stale flag rides `ContributionStatus::mount`, so the frame
+            // that carries it has to be rebuilt.
+            self.prepared_stale = true;
+            self.ctx.request_repaint();
+        }
+        marked
+    }
+
+    /// Every live contribution's retained-snapshot status as of the frame
+    /// last built: its revision, the frame it was accepted at, its age in
+    /// frames, and whether it is behind.
+    ///
+    /// The "age published beside it" §8 asks for.
+    #[must_use]
+    pub fn contribution_statuses(&self) -> Vec<ContributionStatus> {
+        self.ledger.statuses(self.counter.peek())
+    }
+
+    /// Expand every contribution and put it through stage-2 acceptance.
+    ///
+    /// **Expand, then validate.** The two are not interchangeable:
+    /// `validate` refuses [`NodeKind::Component`] by name and layout's own
+    /// arms `unreachable!` on it, so a reference that reached either would be
+    /// a refusal or a panic rather than a picture. Expansion is what turns
+    /// the name a plugin wrote into the subtree the library ships.
+    ///
+    /// Acceptance is [`validate`] against `self.registry` — the same
+    /// function and the same live registry an application's own tree goes
+    /// through in [`Host::pass`], which is what
+    /// `contracts/surface-contribution.md` §5's "no weaker, plugin-specific
+    /// path" asks for. A plugin naming a `custom` kind this host registered
+    /// is accepted for exactly the reason the application would be; one
+    /// naming a token this theme does not define is refused for exactly the
+    /// reason the application would be.
+    fn prepare_contributions(&mut self) {
+        let mut prepared = Vec::with_capacity(self.contributions.len());
+        for contribution in &self.contributions {
+            let outcome = match registry::expand(&contribution.tree) {
+                Err(err) => Err(format!("{}: {}", err.component, err.reason)),
+                Ok(expanded) => match validate(&expanded, &self.registry) {
+                    Ok(_) => Ok(expanded),
+                    Err(errors) => Err(errors.to_string()),
+                },
+            };
+            prepared.push(match outcome {
+                Ok(node) => Prepared {
+                    id: contribution.id,
+                    slot: contribution.slot.clone(),
+                    node,
+                    refused: None,
+                },
+                Err(reason) => Prepared {
+                    node: contribution_card(
+                        contribution.id,
+                        &contribution.slot,
+                        &reason,
+                        self.registry.vocabulary(),
+                    ),
+                    id: contribution.id,
+                    slot: contribution.slot.clone(),
+                    refused: Some(reason),
+                },
+            });
+        }
+        self.prepared = prepared;
+        self.prepared_stale = false;
+    }
+
+    /// `node` keyed `ui:<id>` and flagged with this contribution's staleness,
+    /// through the one call that does both.
+    ///
+    /// **After expansion, never before.** Expanding a component-rooted tree
+    /// returns what the constructor built, under the *constructor's* key, so
+    /// a tree keyed first would lose the key it was mounted under and two
+    /// contributions in one list slot could collide as
+    /// `Violation::DuplicateSiblingKey` — which refuses the whole tree, so
+    /// one plugin could refuse another's surface.
+    /// `gorgon_petra::semantic`'s
+    /// `a_contribution_is_mounted_after_its_components_are_expanded` pins it.
+    fn keyed(&self, id: ContributionId, node: ViewNode) -> ViewNode {
+        match self.ledger.status(id, self.counter.peek()) {
+            Some(status) => status.mount(node),
+            // Unreachable by construction: `self.contributions` only holds
+            // ids the ledger accepted, and only ids it no longer holds are
+            // retracted. Keyed anyway rather than left bare, because an
+            // unkeyed contribution is a sibling-key collision waiting to
+            // refuse somebody else's tree.
+            None => {
+                debug_assert!(false, "no ledger entry for a live contribution {id}");
+                let mut node = node;
+                node.key = contribution_key(id);
+                node
+            }
+        }
+    }
+
+    /// Splice every prepared contribution into `root` and report what
+    /// happened to each.
+    ///
+    /// Two walks, and they are the two halves of one question. The first
+    /// counts how many nodes carry each wanted key and records the child
+    /// index path to each, because a key is identity *within a parent* and
+    /// says nothing about the tree: two nodes may carry `shell.status-bar`,
+    /// and mounting under whichever the walk met first would put a plugin's
+    /// surface somewhere nobody chose. The second follows the recorded paths
+    /// and touches nothing else.
+    fn mount_contributions(&mut self, mut root: ViewNode) -> ViewNode {
+        if self.prepared_stale {
+            self.prepare_contributions();
+        }
+        if self.prepared.is_empty() {
+            self.mounts.clear();
+            return root;
+        }
+
+        let wanted: BTreeSet<&str> = self.prepared.iter().map(|p| p.slot.as_str()).collect();
+        let mut found: BTreeMap<&str, Vec<Vec<usize>>> = BTreeMap::new();
+        find_slots(&root, &wanted, &mut Vec::new(), &mut found);
+
+        // Collected rather than spliced as they are found: `root` is
+        // borrowed by the path walk above, and a card built inside the loop
+        // would need `self.registry` while `self.prepared` is borrowed.
+        let mut mounts = Vec::with_capacity(self.prepared.len());
+        let mut placed: Vec<(Vec<usize>, ViewNode)> = Vec::new();
+        let mut orphans: Vec<ViewNode> = Vec::new();
+        for prepared in &self.prepared {
+            let paths = found
+                .get(prepared.slot.as_str())
+                .map_or(&[][..], Vec::as_slice);
+            let outcome = match paths {
+                [path] => {
+                    placed.push((path.clone(), self.keyed(prepared.id, prepared.node.clone())));
+                    prepared
+                        .refused
+                        .clone()
+                        .map_or(MountOutcome::Mounted, MountOutcome::Refused)
+                }
+                [] => {
+                    orphans.push(self.keyed(
+                        prepared.id,
+                        contribution_card(
+                            prepared.id,
+                            &prepared.slot,
+                            &format!(
+                                "no node in this shell's tree carries the key `{}`",
+                                prepared.slot
+                            ),
+                            self.registry.vocabulary(),
+                        ),
+                    ));
+                    MountOutcome::NoSuchSlot
+                }
+                many => {
+                    orphans.push(self.keyed(
+                        prepared.id,
+                        contribution_card(
+                            prepared.id,
+                            &prepared.slot,
+                            &format!(
+                                "{} nodes carry the key `{}`, so which one is \"the\" slot has \
+                                 no answer; the shell refuses rather than guessing",
+                                many.len(),
+                                prepared.slot
+                            ),
+                            self.registry.vocabulary(),
+                        ),
+                    ));
+                    MountOutcome::AmbiguousSlot(many.len())
+                }
+            };
+            mounts.push(MountReport {
+                id: prepared.id,
+                slot: prepared.slot.clone(),
+                outcome,
+            });
+        }
+        self.mounts = mounts;
+
+        for (path, node) in placed {
+            attach(node_at_path(&mut root, &path), node);
+        }
+        // A card with nowhere to go still has to be visible, so it goes to
+        // the root. A root that cannot hold children leaves `Host::mounts`
+        // as the only record, which is why that accessor exists and why its
+        // doc says to read it.
+        if !orphans.is_empty() && root.kind.is_container() {
+            for card in orphans {
+                attach(&mut root, card);
+            }
+        }
+        root
+    }
 }
 
 impl<A: App> eframe::App for Host<A> {
@@ -2894,6 +3358,151 @@ fn asks_for_a_copy(event: &InputEvent) -> bool {
         } => modifiers.ctrl || modifiers.meta,
         _ => false,
     }
+}
+
+/// Record the child-index path of every node whose key is in `wanted`.
+///
+/// Read-only, so no `Arc` in the tree is cloned by looking. The paths are
+/// what let the splice reach a mount point while touching only its ancestors.
+fn find_slots<'a>(
+    node: &ViewNode,
+    wanted: &BTreeSet<&'a str>,
+    path: &mut Vec<usize>,
+    found: &mut BTreeMap<&'a str, Vec<Vec<usize>>>,
+) {
+    if let Some(slot) = wanted.get(node.key.as_str()) {
+        found.entry(slot).or_default().push(path.clone());
+    }
+    for (index, child) in node.children.iter().enumerate() {
+        path.push(index);
+        find_slots(child, wanted, path, found);
+        path.pop();
+    }
+}
+
+/// The node `path` names, cloning only the nodes on the way to it.
+///
+/// `Arc::make_mut` clones a node when it is shared and hands back the
+/// existing one when it is not, and either way its children stay the same
+/// allocations. So the ancestors of a mount point are rebuilt — they changed
+/// — and every subtree hanging off them is passed on by pointer, which is
+/// what keeps `Arc::ptr_eq` a usable proof of "unchanged" for the rest of the
+/// frame.
+///
+/// # Panics
+/// Never on a path from [`find_slots`] against the same tree: the indices
+/// came from that tree's own `children` vectors and nothing has resized them.
+fn node_at_path<'a>(root: &'a mut ViewNode, path: &[usize]) -> &'a mut ViewNode {
+    let mut node = root;
+    for &index in path {
+        node = Arc::make_mut(&mut node.children[index]);
+    }
+    node
+}
+
+/// Add `child` to `parent`, replacing a child that already carries its key.
+///
+/// Replacing rather than appending is what makes the splice unable to refuse
+/// the whole frame: two children with one key is `Violation::DuplicateSiblingKey`,
+/// which refuses the tree it is in — so a shell squatting on `ui:7` inside a
+/// mount slot would blank the window instead of losing an argument with the
+/// mount path. Contribution ids are unique, so no two contributions can reach
+/// this with the same key.
+fn attach(parent: &mut ViewNode, child: ViewNode) {
+    if let Some(taken) = parent.children.iter_mut().find(|old| old.key == child.key) {
+        *taken = Arc::new(child);
+    } else {
+        parent.children.push(Arc::new(child));
+    }
+}
+
+/// The card the shell paints in place of a contribution it could not mount.
+///
+/// Keyed `ui:<id>` like the subtree it stands in for, so a refused
+/// contribution is attributable by exactly the path a mounted one is
+/// (`contracts/surface-contribution.md` §9) and `who-owns ui:7` still
+/// answers.
+///
+/// # Why it checks the vocabulary before binding a token
+///
+/// This card is spliced into the application's tree and is then accepted
+/// against the application's registry along with it. `refusal_view` can bind
+/// `surface.base` and `status.down` unconditionally because it *replaces* the
+/// tree and is checked against the shipped vocabulary; this one cannot, and a
+/// card that refused acceptance would turn one plugin's bad tree into a
+/// blank window — the precise failure it exists to prevent. So it binds each
+/// token only where the live theme defines it at the right kind, and is a
+/// legible unstyled card under a theme that defines neither.
+fn contribution_card(
+    id: ContributionId,
+    slot: &str,
+    reason: &str,
+    vocabulary: &Vocabulary,
+) -> ViewNode {
+    let mut props = Props::default();
+    for (paint_slot, token) in [
+        // A card, so it sits on the shell's ground rather than repainting it.
+        ("background", "surface.raised"),
+        // Carbon's inline notification carries its severity on the leading
+        // edge, and this is the same shape for the same reason: the ground
+        // stays legible under any theme and the colour still says "error".
+        ("border-left", "support-error"),
+        ("foreground", "text.primary"),
+    ] {
+        if let Some(name) = declared(vocabulary, token, TokenKind::Color) {
+            props.tokens.insert(paint_slot.into(), name);
+        }
+    }
+    // Text flush against the edge of its own card reads as a rendering bug
+    // rather than as a message. Both of these are token references and are
+    // dropped when the live theme does not define the name, exactly as the
+    // colours above are.
+    props.padding = declared(vocabulary, "spacing-05", TokenKind::Spacing).map(InsetRefs::all);
+    props.spacing = declared(vocabulary, "spacing-03", TokenKind::Spacing);
+    // Keyed with the contribution's own key here too, even though
+    // `Host::keyed` sets it again: a card that left `Host::keyed`'s path
+    // would still be a well-formed, attributable node rather than one keyed
+    // whatever this function felt like.
+    let mut card = ViewNode::new(NodeKind::Stack, contribution_key(id))
+        .with_props(props)
+        .child(text_line(
+            "headline",
+            &format!("{id} was refused; it asked for the slot `{slot}`"),
+            declared(vocabulary, "typography.heading-sm", TokenKind::Typography),
+        ))
+        .child(text_line(
+            "reason",
+            reason,
+            declared(vocabulary, "typography.body", TokenKind::Typography),
+        ));
+    // The card is not interactive, so a label is not required — it is here
+    // because a screen reader that reached the two runs separately would
+    // announce a reason with nothing to attach it to.
+    card.semantics.label = Some(format!("refused contribution {id}"));
+    card
+}
+
+/// `token` as a [`TokenName`], but only when the live theme defines it at
+/// `kind`.
+///
+/// The gate on every token [`contribution_card`] binds. A card that named a
+/// token the application's registry has never heard of would be refused by
+/// the acceptance the whole application tree goes through, which would turn
+/// one plugin's bad tree into a blank window — the precise failure the card
+/// exists to prevent.
+fn declared(vocabulary: &Vocabulary, token: &str, kind: TokenKind) -> Option<TokenName> {
+    let name = TokenName::new(token).expect("a shipped token name is well-formed");
+    (vocabulary.kind_of(&name) == Some(kind)).then_some(name)
+}
+
+/// One run of text inside [`contribution_card`].
+fn text_line(key: &str, text: &str, style: Option<TokenName>) -> ViewNode {
+    ViewNode::new(NodeKind::Text, key).with_props(Props {
+        text: Some(text.to_owned()),
+        style,
+        wrap: Some(TextWrap::Wrap),
+        ..Props::default()
+    })
 }
 
 fn refusal_view(message: &str) -> ViewNode {
