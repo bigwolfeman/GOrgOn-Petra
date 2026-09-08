@@ -45,16 +45,32 @@
 //! that was not placed (FR-009): every node in the tree comes from a
 //! placement, and [`AuditRule::NodeIsNotAPlacement`] is the machine-checkable
 //! form of that promise.
+//!
+//! # Who authored a node, and how far behind it is
+//!
+//! Two more facts about the same tree, both for surfaces a plugin contributed
+//! rather than the host. [`owner_of`] answers *whose* a node is, from the
+//! `ui:7` segment its id already carries. [`ContributionLedger`] answers how
+//! old the snapshot on screen is, and whether the fiber owes the shell a
+//! newer one.
+//! Neither adds a field to [`SemanticNode`] and neither calls anything: the
+//! projection stays a pure function of a frame.
 
+mod attribution;
 mod audit;
 mod node;
 mod project;
 mod query;
+mod staleness;
 
+pub use attribution::{
+    CONTRIBUTION_KEY_PREFIX, ContributionId, contribution_key, owner_chain, owner_of,
+};
 pub use audit::{AUDIT_RULES, AuditRule, AuditViolation, audit};
 pub use node::{Bounds, NodeState, PreOrder, SemanticNode, SemanticTree};
 pub use project::project;
 pub use query::{StateFlag, TreeQuery};
+pub use staleness::{ContributionLedger, ContributionStatus, PushOutcome};
 
 #[cfg(test)]
 mod tests;

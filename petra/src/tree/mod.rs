@@ -11,8 +11,8 @@ pub mod validate;
 
 pub use key::{Key, KeyPath};
 pub use node::{
-    AxisConstraint, Constraints, FocusFigure, FocusShownOn, Interaction, NodeKind, ROLE_NAMES,
-    Role, Semantics, TransitionRef, ViewNode,
+    AxisConstraint, ComponentRef, Constraints, FocusFigure, FocusShownOn, Interaction, NodeKind,
+    ROLE_NAMES, Role, Semantics, TransitionRef, ViewNode,
 };
 // `Align` here is the anchor alignment `props` declares, not
 // `crate::geom::Align`, which is a child's cross-axis placement inside its
@@ -23,4 +23,12 @@ pub use props::{
     InsetRefs, Justify, Layer, NodeAnchor, Props, ScrollProps, StackProps, SurfaceProps, TextProps,
     TextRun, TextWrap, Tip, TrackSize, resolve_insets, resolve_spacing,
 };
-pub use validate::{Registry, TreeError, TreeErrors, ValidatedTree, Violation, validate};
+// `ANCHOR_PROP_KINDS` / `PADDING_PROP_KINDS` / `TOKEN_PROP_KINDS` and their
+// reader `token_prop_refs` are re-exported here because they are read from
+// outside this crate: the daemon's stage-1 `ui` acceptance
+// (`gorgon/gorgond/src/ui.rs`) walks the same pairing `validate` walks,
+// rather than keeping a second copy of it.
+pub use validate::{
+    ANCHOR_PROP_KINDS, PADDING_PROP_KINDS, Registry, TOKEN_PROP_KINDS, TreeError, TreeErrors,
+    ValidatedTree, Violation, token_prop_refs, validate,
+};

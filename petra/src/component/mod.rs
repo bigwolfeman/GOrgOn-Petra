@@ -78,6 +78,9 @@
 //! library does not cover (an arbitrary grid, a custom surface) is still
 //! composed from those primitives directly, which stay public (gate C1-10).
 
+pub mod params;
+pub mod registry;
+
 mod accordion;
 mod ai_label;
 mod breadcrumb;

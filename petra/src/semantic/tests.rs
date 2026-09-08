@@ -10,7 +10,9 @@ use std::collections::BTreeMap;
 
 use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify, round_rect};
 use crate::geom::{Scale, Size};
-use crate::semantic::{AuditRule, StateFlag, TreeQuery, audit, project};
+use crate::semantic::{
+    AuditRule, ContributionId, ContributionLedger, StateFlag, TreeQuery, audit, project,
+};
 use crate::testing::{GeneratedRows, Harness, MonoContent, validated};
 use crate::token::ThemeMode;
 use crate::tree::{
@@ -1004,5 +1006,366 @@ fn the_action_wire_names_are_the_contract_set() {
             "key"
         ],
         "the contract's action vocabulary and Interaction's wire form must agree"
+    );
+}
+
+// ------------------------------------------------------------ contribution
+
+/// A push that must land. Setup lines go through this, so no test can be set
+/// up by a push the ledger quietly dropped.
+fn push(ledger: &mut ContributionLedger, id: ContributionId, revision: u64, frame_seq: u64) {
+    assert_eq!(
+        ledger.accept(id, revision, frame_seq),
+        crate::semantic::PushOutcome::Advanced,
+        "setup push for {id} at revision {revision}"
+    );
+}
+
+/// A plugin's surface, as the fiber authored it: a panel with one line of
+/// text in it, keyed by whatever the plugin called its own root.
+fn surface(text: &str) -> ViewNode {
+    ViewNode::new(NodeKind::Stack, "panel")
+        .with_props(Props {
+            axis: Some(crate::geom::Axis::Vertical),
+            ..Props::default()
+        })
+        .child(ViewNode::new(NodeKind::Text, "line").with_props(Props {
+            text: Some(text.to_owned()),
+            ..Props::default()
+        }))
+}
+
+/// A `list` mount slot holding contributed surfaces in `contribute` order.
+fn slot(surfaces: Vec<ViewNode>) -> ViewNode {
+    let mut root = ViewNode::new(NodeKind::Stack, "root").with_props(Props {
+        axis: Some(crate::geom::Axis::Vertical),
+        ..Props::default()
+    });
+    for contributed in surfaces {
+        root = root.child(contributed);
+    }
+    root
+}
+
+/// Stage-2 acceptance as the shell runs it: the same `validate` and the same
+/// registry a host-authored tree gets, per the contract's §5. `validated`
+/// panics on a violation, and these tests need to read one.
+fn acceptance(tree: &ViewNode) -> Result<(), crate::tree::TreeErrors> {
+    let mut registry =
+        crate::tree::Registry::with_vocabulary(crate::testing::extended_vocabulary(tree));
+    crate::anim::shipped_registry().declare_into(&mut registry);
+    crate::tree::validate(tree, &registry).map(|_| ())
+}
+
+/// The §8 case, end to end through the engine: a fiber stops pushing, and the
+/// shell keeps rendering the snapshot it last accepted — marked stale, with
+/// its age beside it, and with nothing said about the plugin next to it.
+///
+/// The staleness travels the chain that already exists: `Semantics.stale` set
+/// by `ContributionStatus::mount`, carried into `PlacementSemantics` by the
+/// layout walk, projected into `NodeState.stale`, and selected by
+/// `StateFlag::Stale`. Nothing waits, and nothing here reads a clock: the age
+/// is frames.
+#[test]
+fn a_fiber_that_stops_pushing_keeps_its_last_snapshot_marked_stale_with_its_age() {
+    let seven = ContributionId::new(7);
+    let nine = ContributionId::new(9);
+    let mut ledger = ContributionLedger::new();
+    push(&mut ledger, seven, 1, 1);
+    push(&mut ledger, nine, 1, 1);
+
+    // The retained snapshots. Authored once; the shell re-mounts these exact
+    // trees every frame until a newer push replaces them.
+    let held_by_seven = surface("clock");
+    let held_by_nine = surface("battery");
+
+    let mount_at = |ledger: &ContributionLedger, frame: u64| {
+        slot(vec![
+            ledger
+                .status(seven, frame)
+                .expect("seven is retained")
+                .mount(held_by_seven.clone()),
+            ledger
+                .status(nine, frame)
+                .expect("nine is retained")
+                .mount(held_by_nine.clone()),
+        ])
+    };
+
+    let first = project(&frame_of(1, &mount_at(&ledger, 1))).expect("a root");
+    assert!(
+        !first.find("/root/ui:7").expect("spliced").state.stale,
+        "a contribution with nothing outstanding is current"
+    );
+
+    // Frame 2: the shell tells seven something happened. Seven never answers.
+    assert!(ledger.mark_behind(seven, 2));
+
+    let status = ledger.status(seven, 7).expect("the snapshot is retained");
+    assert_eq!(status.age_frames, 6, "accepted at 1, observed at 7");
+    assert_eq!(status.stale_for_frames(), Some(5), "behind since frame 2");
+    assert_eq!(status.revision, 1, "still the last push it managed");
+
+    let frame = frame_of(7, &mount_at(&ledger, 7));
+    let projected = project(&frame).expect("a root");
+
+    // It still renders: the same nodes, in the same places.
+    let ids: Vec<&str> = projected.iter().map(|node| node.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        [
+            "/root",
+            "/root/ui:7",
+            "/root/ui:7/line",
+            "/root/ui:9",
+            "/root/ui:9/line"
+        ]
+    );
+    assert_eq!(
+        projected.find("/root/ui:7").expect("spliced").bounds,
+        first.find("/root/ui:7").expect("spliced").bounds,
+        "a stale surface holds its place rather than collapsing"
+    );
+
+    // And it says so, through the one chain.
+    assert!(projected.find("/root/ui:7").expect("spliced").state.stale);
+    assert!(
+        !projected.find("/root/ui:9").expect("spliced").state.stale,
+        "one hung fiber says nothing about the plugin beside it"
+    );
+    let flagged: Vec<&str> = projected
+        .find_all(&TreeQuery::new().with_state(StateFlag::Stale))
+        .iter()
+        .map(|node| node.id.as_str())
+        .collect();
+    assert_eq!(
+        flagged,
+        ["/root/ui:7"],
+        "StateFlag::Stale selects the contribution root, the node that is behind"
+    );
+
+    // The age is published beside the surface, not smuggled into the node.
+    let published = serde_json::to_string(&status).expect("a status serializes");
+    assert_eq!(
+        published,
+        "{\"id\":\"ui:7\",\"revision\":1,\"accepted_at\":1,\"stale_since\":2,\
+         \"observed_at\":7,\"age_frames\":6}"
+    );
+}
+
+/// Keying each contribution by its own id is what keeps one plugin from
+/// refusing another's surface. The control is the alternative: splice two
+/// contributions under the keys their authors chose, and two plugins that both
+/// called their root `panel` take the whole tree down with
+/// `DuplicateSiblingKey`.
+#[test]
+fn two_contributions_in_one_slot_cannot_collide() {
+    let mut ledger = ContributionLedger::new();
+    let seven = ContributionId::new(7);
+    let nine = ContributionId::new(9);
+    push(&mut ledger, seven, 1, 1);
+    push(&mut ledger, nine, 1, 1);
+
+    let keyed_by_id = slot(vec![
+        ledger
+            .status(seven, 1)
+            .expect("retained")
+            .mount(surface("clock")),
+        ledger
+            .status(nine, 1)
+            .expect("retained")
+            .mount(surface("battery")),
+    ]);
+    assert!(
+        acceptance(&keyed_by_id).is_ok(),
+        "two contributions keyed ui:7 and ui:9 are two distinct siblings"
+    );
+
+    let keyed_by_author = slot(vec![surface("clock"), surface("battery")]);
+    let errors = acceptance(&keyed_by_author).expect_err("both roots are keyed `panel`");
+    assert!(
+        errors.as_slice().iter().any(|error| matches!(
+            &error.violation,
+            crate::tree::Violation::DuplicateSiblingKey { key } if key.as_str() == "panel"
+        )),
+        "without the id key, one plugin's choice of root key refuses the other's \
+         surface: {errors}"
+    );
+}
+
+/// Every node under a contribution names it, and no host node does. This is
+/// the whole of attribution: no owner field, no join, and the answer is a
+/// function of the id a node already has.
+#[test]
+fn every_contributed_node_is_attributable_to_its_contribution() {
+    let mut ledger = ContributionLedger::new();
+    let seven = ContributionId::new(7);
+    let nine = ContributionId::new(9);
+    push(&mut ledger, seven, 1, 1);
+    push(&mut ledger, nine, 1, 1);
+    let tree = slot(vec![
+        ledger
+            .status(seven, 1)
+            .expect("retained")
+            .mount(surface("clock")),
+        ledger
+            .status(nine, 1)
+            .expect("retained")
+            .mount(surface("battery")),
+    ]);
+    let projected = project(&frame_of(1, &tree)).expect("a root");
+
+    assert_eq!(
+        projected.contributions(),
+        vec![seven, nine],
+        "pre-order, which in a list slot is contribute order"
+    );
+    let root = projected
+        .contribution_root(seven)
+        .expect("seven is spliced here");
+    assert_eq!(root.id, "/root/ui:7");
+    for node in root {
+        assert_eq!(
+            crate::semantic::owner_of(&node.id),
+            Some(seven),
+            "{} is inside seven's subtree",
+            node.id
+        );
+        assert_eq!(ledger.owner_of(&node.id), Some(seven));
+    }
+    assert_eq!(
+        crate::semantic::owner_of(&projected.root().id),
+        None,
+        "the host's own slot belongs to no plugin"
+    );
+    assert_eq!(projected.contribution_root(ContributionId::new(8)), None);
+}
+
+/// A contribution retracted while a frame is in flight. The nodes already
+/// projected still name the fiber that authored them — an id is a key path and
+/// says what it always said — while the ledger, asked, says the surface is
+/// gone. Nothing special-cases the retraction: it is the ordinary unload path
+/// (§7), and the next frame simply does not mount it.
+#[test]
+fn a_retracted_contribution_still_names_its_author_for_the_frame_in_flight() {
+    let mut ledger = ContributionLedger::new();
+    let seven = ContributionId::new(7);
+    push(&mut ledger, seven, 1, 1);
+    let tree = slot(vec![
+        ledger
+            .status(seven, 1)
+            .expect("retained")
+            .mount(surface("clock")),
+    ]);
+    let projected = project(&frame_of(1, &tree)).expect("a root");
+
+    assert!(ledger.retract(seven));
+
+    let node = projected
+        .find("/root/ui:7/line")
+        .expect("still in this frame");
+    assert_eq!(
+        crate::semantic::owner_of(&node.id),
+        Some(seven),
+        "the id is unchanged, so it still says who wrote it"
+    );
+    assert_eq!(
+        ledger.owner_of(&node.id),
+        None,
+        "the shell no longer holds that contribution"
+    );
+    assert_eq!(ledger.status(seven, 1), None);
+    assert!(ledger.is_empty());
+}
+
+/// A plugin keying one of its own children `ui:9` buys nothing with it. Its
+/// nodes stay its own, contribution 9 is not reported as present, and asking
+/// for 9's root gets nothing back — the shell wrote one key here, at the
+/// mount slot, and only that one names anybody.
+#[test]
+fn a_plugin_cannot_key_its_own_node_into_another_contribution() {
+    let seven = ContributionId::new(7);
+    let nine = ContributionId::new(9);
+    let mut ledger = ContributionLedger::new();
+    push(&mut ledger, seven, 1, 1);
+    push(&mut ledger, nine, 1, 1);
+
+    let forging = ViewNode::new(NodeKind::Stack, "panel")
+        .with_props(Props {
+            axis: Some(crate::geom::Axis::Vertical),
+            ..Props::default()
+        })
+        .child(ViewNode::new(NodeKind::Text, "ui:9").with_props(Props {
+            text: Some("not nine's".to_owned()),
+            ..Props::default()
+        }));
+    let tree = slot(vec![
+        ledger.status(seven, 1).expect("retained").mount(forging),
+        ledger
+            .status(nine, 1)
+            .expect("retained")
+            .mount(surface("battery")),
+    ]);
+    let projected = project(&frame_of(1, &tree)).expect("a root");
+
+    assert_eq!(
+        crate::semantic::owner_of("/root/ui:7/ui:9"),
+        Some(seven),
+        "the forged node is still seven's"
+    );
+    assert_eq!(
+        crate::semantic::owner_chain("/root/ui:7/ui:9"),
+        vec![seven, nine],
+        "the chain records the attempt"
+    );
+    assert_eq!(ledger.owner_of("/root/ui:7/ui:9"), Some(seven));
+    assert_eq!(
+        projected.contributions(),
+        vec![seven, nine],
+        "the forged key is not a third contribution"
+    );
+    assert_eq!(
+        projected
+            .contribution_root(nine)
+            .expect("nine really is spliced")
+            .id,
+        "/root/ui:9",
+        "nine's root is where the shell put it, not where seven says"
+    );
+}
+
+/// Mount **after** expansion. `component::registry::expand` replaces a
+/// component-rooted node with what the constructor built, and the built node
+/// carries the constructor's own key — so a tree mounted first loses the key
+/// attribution depends on, and two plugins whose roots expand to the same key
+/// would then collide as `DuplicateSiblingKey`, which is the whole failure §6
+/// keys by id to prevent. This pins the ordering the shell has to keep.
+#[test]
+fn a_contribution_is_mounted_after_its_components_are_expanded() {
+    let seven = ContributionId::new(7);
+    let mut ledger = ContributionLedger::new();
+    push(&mut ledger, seven, 1, 1);
+    let status = ledger.status(seven, 1).expect("retained");
+
+    let mut reference = ViewNode::new(NodeKind::Component, "panel");
+    reference.component = Some(crate::tree::ComponentRef {
+        name: "accordion".to_owned(),
+        params: serde_json::json!({ "key": "panel", "children": [] }),
+    });
+
+    let expanded_then_mounted =
+        status.mount(crate::component::registry::expand(&reference).expect("accordion expands"));
+    assert_eq!(
+        expanded_then_mounted.key.as_str(),
+        "ui:7",
+        "the splice key survives, because expansion already happened"
+    );
+
+    let mounted_then_expanded =
+        crate::component::registry::expand(&status.mount(reference)).expect("accordion expands");
+    assert_eq!(
+        mounted_then_expanded.key.as_str(),
+        "panel",
+        "expanding a component-rooted tree drops the key it was mounted under"
     );
 }

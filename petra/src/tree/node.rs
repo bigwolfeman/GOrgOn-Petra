@@ -56,6 +56,24 @@ pub enum NodeKind {
     ///   would make the wider of the two behaviours apply to both, and the
     ///   wider one is "the digest is blind here".
     Canvas,
+    /// A named constructor from the component registry, not yet expanded.
+    ///
+    /// A plugin authoring a surface in Lua does not compose the component
+    /// library out of primitives; there are 180 public constructors in
+    /// `crate::component`, and re-deriving them in a second language means a
+    /// second implementation of each, free to drift from the one that draws.
+    /// A plugin names one instead, and
+    /// [`crate::component::registry::expand`] rewrites the reference into the
+    /// shipped subtree.
+    ///
+    /// This kind is a **wire form only**. It is gone before layout, before
+    /// the digest, and before `validate` finishes: expansion runs on the
+    /// shell side, immediately ahead of stage-2 acceptance, so a component
+    /// reference crosses the wire (small) while layout only ever sees
+    /// primitives. Nothing downstream of expansion may treat this kind as
+    /// drawable, and the arms that could silently absorb it — layout's
+    /// catch-alls — refuse it by name instead.
+    Component,
 }
 
 impl NodeKind {
@@ -77,6 +95,7 @@ impl NodeKind {
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Component => "component",
             Self::Stack => "stack",
             Self::Grid => "grid",
             Self::Overlay => "overlay",
@@ -789,6 +808,30 @@ pub struct ViewNode {
     /// a deserialized tree has no previous frame to be shared with.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<Arc<ViewNode>>,
+    /// Which registry constructor this node stands for, before expansion.
+    ///
+    /// `Some` exactly when [`NodeKind::Component`], and `None` on every other
+    /// kind; `validate` refuses both halves of that biconditional, so a
+    /// component reference cannot hide on a stack and a component node cannot
+    /// arrive without a name to expand.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub component: Option<ComponentRef>,
+}
+
+/// A component named on the wire, with the parameter table it was given.
+///
+/// The parameters stay unparsed here on purpose. Each registry row knows the
+/// shape its constructor wants and deserializes into it with
+/// `deny_unknown_fields`, so a misspelled parameter is refused by name rather
+/// than dropped by a permissive shared struct.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ComponentRef {
+    /// The constructor's name, matching its Rust function exactly.
+    pub name: String,
+    /// The parameter table, as written in Lua.
+    #[serde(default)]
+    pub params: serde_json::Value,
 }
 
 fn is_default_props(v: &Props) -> bool {
@@ -816,6 +859,7 @@ impl ViewNode {
             semantics: Semantics::default(),
             ambient: false,
             children: Vec::new(),
+            component: None,
         }
     }
 

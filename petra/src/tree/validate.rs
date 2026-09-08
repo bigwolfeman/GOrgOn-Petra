@@ -385,6 +385,34 @@ pub enum Violation {
         /// The names the dispatcher actually resolves.
         legal: Vec<&'static str>,
     },
+    /// A component reference reached `validate` without being expanded.
+    ///
+    /// `NodeKind::Component` is a wire form. A plugin names a constructor;
+    /// [`crate::component::registry::expand`] rewrites the reference into the
+    /// subtree that constructor builds, on the shell side, ahead of stage-2
+    /// acceptance. By the time a tree is validated against a live registry
+    /// there must be none left.
+    ///
+    /// Refused by name rather than ignored, because layout's arms
+    /// `unreachable!` on this kind: a reference that validates clean turns a
+    /// refusable tree into a panic one pass later.
+    UnexpandedComponent {
+        /// The constructor the reference names, or `None` when the node
+        /// carries no reference at all.
+        name: Option<String>,
+    },
+    /// A component reference is declared on a node that is not a component.
+    ///
+    /// The other half of `kind == Component` iff `component.is_some()`. A
+    /// reference parked on a stack is never expanded by anything, and the
+    /// next serialize would drop it silently, so the surface the author
+    /// described would simply not be there.
+    ComponentRefOnWrongKind {
+        /// The kind that carries the stray reference.
+        kind: &'static str,
+        /// The constructor it names.
+        name: String,
+    },
 }
 
 /// A [`TokenKind`] rendered the way a refusal message names it. Not
@@ -422,6 +450,24 @@ fn legal_set(legal: &[TokenName]) -> String {
 impl fmt::Display for Violation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::UnexpandedComponent { name } => match name {
+                Some(name) => write!(
+                    f,
+                    "still a reference to component `{name}` at validation; \
+                     `component::registry::expand` rewrites a reference into the subtree its \
+                     constructor builds and must run before the tree is validated"
+                ),
+                None => write!(
+                    f,
+                    "kind is `component` but no component is named, so there is nothing to \
+                     expand; a component node carries `component = {{ name, params }}`"
+                ),
+            },
+            Self::ComponentRefOnWrongKind { kind, name } => write!(
+                f,
+                "a `{kind}` node names component `{name}`; only a `component` node is expanded, \
+                 so this reference would be dropped and the surface it describes would not appear"
+            ),
             Self::DuplicateSiblingKey { key } => {
                 write!(
                     f,
@@ -796,6 +842,24 @@ fn check_node(
         });
     };
 
+    // `kind == Component` iff `component.is_some()`, both directions, before
+    // anything else looks at this node. A reference carries no props, no
+    // semantics and no children of its own, so every check below would read
+    // an empty node and pass it.
+    match (node.kind, node.component.as_ref()) {
+        (NodeKind::Component, reference) => {
+            push(Violation::UnexpandedComponent {
+                name: reference.map(|r| r.name.clone()),
+            });
+            return;
+        }
+        (kind, Some(reference)) => push(Violation::ComponentRefOnWrongKind {
+            kind: kind.as_str(),
+            name: reference.name.clone(),
+        }),
+        (_, None) => {}
+    }
+
     let has_label = node
         .semantics
         .label
@@ -947,32 +1011,17 @@ fn check_node(
     // violation already (`PaddingOnLeafKind`, `ScrollParamOwnedByAncestor`);
     // that a declaration is dead is a different fact from whether the name
     // in it is real, and both are worth refusing.
+    //
+    // Which prop takes which kind is not written here. It is read from
+    // [`token_prop_refs`], the one declaration of that pairing, so that the
+    // daemon's stage-1 acceptance
+    // (`gorgon/gorgond/src/ui.rs`) refuses exactly the references this
+    // function refuses. Those two used to be separate copies of the same
+    // four-row table; see
+    // `.agents/notes/implemented/architecture/2026-09-07-one-token-prop-table.md`.
     let vocabulary = registry.vocabulary();
-    for (prop, expected, reference) in [
-        ("spacing", TokenKind::Spacing, &node.props.spacing),
-        (
-            "column_spacing",
-            TokenKind::Spacing,
-            &node.props.column_spacing,
-        ),
-        ("row_spacing", TokenKind::Spacing, &node.props.row_spacing),
-        ("style", TokenKind::Typography, &node.props.style),
-    ] {
-        if let Some(name) = reference {
-            check_token_ref(vocabulary, prop, name, expected, &mut push);
-        }
-    }
-    if let Some(refs) = &node.props.padding {
-        for (prop, reference) in [
-            ("padding.top", &refs.top),
-            ("padding.right", &refs.right),
-            ("padding.bottom", &refs.bottom),
-            ("padding.left", &refs.left),
-        ] {
-            if let Some(name) = reference {
-                check_token_ref(vocabulary, prop, name, TokenKind::Spacing, &mut push);
-            }
-        }
+    for (prop, expected, name) in token_prop_refs(node) {
+        check_token_ref(vocabulary, prop, name, expected, &mut push);
     }
     // `props.tokens`'s keys are paint slots, not design-token kinds
     // (`tree::props`'s own doc comment on the field: the slot is "decided by
@@ -1001,16 +1050,10 @@ fn check_node(
     // The gap between an anchor and the surface it carries is a spacing
     // token for the reason `props.spacing` is one (FR-053), so it is checked
     // exactly the way `props.spacing` is — a literal cannot arrive here at
-    // all, because the field's type is `TokenName`.
-    if let Some(name) = node.props.anchor.as_ref().and_then(Anchor::offset) {
-        check_token_ref(
-            vocabulary,
-            "anchor.offset",
-            name,
-            TokenKind::Spacing,
-            &mut push,
-        );
-    }
+    // all, because the field's type is `TokenName`. It is a row of
+    // [`ANCHOR_PROP_KINDS`] and reaches `check_token_ref` through the loop
+    // above with every other fixed-kind prop.
+    //
     // A state-decorated key names a state the resolver will actually enter,
     // or it is refused here.
     //
@@ -1386,6 +1429,97 @@ fn legal_state_suffix(suffix: &str) -> bool {
             .any(|name| *name == bare && *name != "selected");
     }
     legal_state_suffixes().contains(&suffix)
+}
+
+/// Declare the fixed-kind styling props once, and derive from that single
+/// list both the public `(prop, kind)` tables and the reader
+/// [`token_prop_refs`] every acceptance path walks.
+///
+/// The point of the macro is that a row cannot exist in a table without an
+/// accessor, and an accessor cannot exist without a row: they are the same
+/// line of source. Two hand-written lists — one naming the props, one reading
+/// the fields — is what this replaces, and a third such list lived in
+/// `gorgon/gorgond/src/ui.rs` until it was deleted in favour of this reader.
+macro_rules! token_prop_tables {
+    (
+        $(#[$fixed_doc:meta])*
+        $fixed:ident { $( $fprop:literal => $fkind:ident, $fget:expr ; )+ }
+        $(#[$padding_doc:meta])*
+        $padding:ident { $( $pprop:literal => $pkind:ident, $pget:expr ; )+ }
+        $(#[$anchor_doc:meta])*
+        $anchor:ident { $( $aprop:literal => $akind:ident, $aget:expr ; )+ }
+    ) => {
+        $(#[$fixed_doc])*
+        pub const $fixed: &[(&str, TokenKind)] = &[ $( ($fprop, TokenKind::$fkind), )+ ];
+
+        $(#[$padding_doc])*
+        pub const $padding: &[(&str, TokenKind)] = &[ $( ($pprop, TokenKind::$pkind), )+ ];
+
+        $(#[$anchor_doc])*
+        pub const $anchor: &[(&str, TokenKind)] = &[ $( ($aprop, TokenKind::$akind), )+ ];
+
+        /// Every fixed-kind styling token reference `node` declares, as
+        /// `(prop, required kind, name)`, in table order. A prop the node
+        /// leaves unset yields nothing.
+        ///
+        /// This is the reader for [`TOKEN_PROP_KINDS`],
+        /// [`PADDING_PROP_KINDS`] and [`ANCHOR_PROP_KINDS`], and the only
+        /// place the pairing of a prop to its [`TokenKind`] is written.
+        /// [`validate`] walks it, and so does the daemon's stage-1 `ui`
+        /// acceptance, which runs before a plugin's `contribute` call
+        /// returns and has no `Registry` to validate against. Two walkers,
+        /// one table: adding a row here changes what both of them refuse.
+        ///
+        /// `props.tokens` is deliberately absent. Its keys are paint slots,
+        /// not props, and which kind a slot takes is a fact about the
+        /// registered painter that only [`Registry::slots`] knows.
+        pub fn token_prop_refs(
+            node: &ViewNode,
+        ) -> impl Iterator<Item = (&'static str, TokenKind, &TokenName)> {
+            // Each accessor is coerced to a higher-ranked fn pointer
+            // before it is called, so its output borrows `node` rather than
+            // a lifetime local to the closure.
+            type Get = for<'n> fn(&'n ViewNode) -> Option<&'n TokenName>;
+            [
+                $( ($fprop, TokenKind::$fkind, { let get: Get = $fget; get(node) }), )+
+                $( ($pprop, TokenKind::$pkind, { let get: Get = $pget; get(node) }), )+
+                $( ($aprop, TokenKind::$akind, { let get: Get = $aget; get(node) }), )+
+            ]
+            .into_iter()
+            .filter_map(|(prop, kind, name)| name.map(|name| (prop, kind, name)))
+        }
+    };
+}
+
+token_prop_tables! {
+    /// The styling props that live directly on [`Props`](crate::tree::Props)
+    /// and whose slot takes exactly one [`TokenKind`].
+    ///
+    /// Public because acceptance runs in two places: [`validate`], against a
+    /// live [`Registry`], and the daemon's stage-1 `ui` check, against
+    /// [`crate::token::standard_vocabulary`] alone. Read the pairing through
+    /// [`token_prop_refs`]; this table is for code that needs the prop names
+    /// themselves, such as a test that walks every one of them.
+    TOKEN_PROP_KINDS {
+        "spacing" => Spacing, |n: &ViewNode| n.props.spacing.as_ref();
+        "column_spacing" => Spacing, |n: &ViewNode| n.props.column_spacing.as_ref();
+        "row_spacing" => Spacing, |n: &ViewNode| n.props.row_spacing.as_ref();
+        "style" => Typography, |n: &ViewNode| n.props.style.as_ref();
+    }
+    /// The four edges of [`InsetRefs`](crate::tree::InsetRefs), split out
+    /// because they are reached through `props.padding` rather than sitting
+    /// on `Props` directly. Every edge is a spacing token.
+    PADDING_PROP_KINDS {
+        "padding.top" => Spacing, |n: &ViewNode| n.props.padding.as_ref().and_then(|p| p.top.as_ref());
+        "padding.right" => Spacing, |n: &ViewNode| n.props.padding.as_ref().and_then(|p| p.right.as_ref());
+        "padding.bottom" => Spacing, |n: &ViewNode| n.props.padding.as_ref().and_then(|p| p.bottom.as_ref());
+        "padding.left" => Spacing, |n: &ViewNode| n.props.padding.as_ref().and_then(|p| p.left.as_ref());
+    }
+    /// The gap an anchored node holds off its host, reached through
+    /// `props.anchor` and present on only some [`Anchor`] variants.
+    ANCHOR_PROP_KINDS {
+        "anchor.offset" => Spacing, |n: &ViewNode| n.props.anchor.as_ref().and_then(Anchor::offset);
+    }
 }
 
 /// One styling prop's declared token name against the vocabulary: refused if
@@ -1811,6 +1945,74 @@ mod tests {
             err.to_string().contains("has no children to inset"),
             "{err}"
         );
+    }
+
+    /// A component reference reaching `validate` is refused by name.
+    ///
+    /// It cannot be tolerated: layout's arms `unreachable!` on this kind, so a
+    /// reference that validated clean would panic one pass later instead of
+    /// producing a tree error an author can read.
+    #[test]
+    fn an_unexpanded_component_reference_is_refused_and_names_the_component() {
+        let mut node = ViewNode::new(NodeKind::Component, "c");
+        node.component = Some(crate::tree::ComponentRef {
+            name: "tag_sm".to_owned(),
+            params: serde_json::json!({ "key": "c", "label": "x" }),
+        });
+        let err = validate(&node, &spacing_registry()).unwrap_err();
+        assert_eq!(
+            err.as_slice()[0].violation,
+            Violation::UnexpandedComponent {
+                name: Some("tag_sm".to_owned()),
+            }
+        );
+        assert!(err.to_string().contains("tag_sm"), "{err}");
+        assert!(err.to_string().contains("registry::expand"), "{err}");
+    }
+
+    /// `kind = component` with nothing to expand: the tree names no
+    /// constructor, so no amount of expansion would produce anything.
+    #[test]
+    fn a_component_kind_carrying_no_reference_is_refused() {
+        let node = ViewNode::new(NodeKind::Component, "c");
+        let err = validate(&node, &spacing_registry()).unwrap_err();
+        assert_eq!(
+            err.as_slice()[0].violation,
+            Violation::UnexpandedComponent { name: None }
+        );
+        assert!(
+            err.to_string().contains("no component is named"),
+            "the message must say what is missing, got: {err}"
+        );
+    }
+
+    /// The other direction of the biconditional. A reference parked on a
+    /// stack is expanded by nothing and dropped by the next serialize, so the
+    /// surface the author described would simply be absent with no error.
+    #[test]
+    fn a_component_reference_on_a_non_component_kind_is_refused() {
+        let mut node = ViewNode::new(NodeKind::Stack, "s");
+        node.component = Some(crate::tree::ComponentRef {
+            name: "tag".to_owned(),
+            params: serde_json::Value::Null,
+        });
+        let err = validate(&node, &spacing_registry()).unwrap_err();
+        assert!(
+            err.as_slice().iter().any(|e| matches!(
+                &e.violation,
+                Violation::ComponentRefOnWrongKind { kind, name }
+                    if *kind == "stack" && name == "tag"
+            )),
+            "expected ComponentRefOnWrongKind, got {err}"
+        );
+    }
+
+    /// A tree that carries no reference at all is untouched by either check.
+    /// The pair above must not cost every ordinary node a false refusal.
+    #[test]
+    fn an_ordinary_tree_is_unaffected_by_the_component_checks() {
+        let node = ViewNode::new(NodeKind::Stack, "s");
+        assert!(validate(&node, &spacing_registry()).is_ok());
     }
 
     /// Colour runs must tile the text they colour.
@@ -3104,5 +3306,107 @@ mod tests {
             ),
             "{err}"
         );
+    }
+    /// Every row of the three prop tables is read back off a node that sets
+    /// it, in table order and under its declared name.
+    ///
+    /// The tables and the accessors come out of one macro invocation, so a
+    /// row without an accessor will not compile. What this pins is the
+    /// second half: that each accessor reads the field its row names, and
+    /// that nothing quietly stops being read.
+    #[test]
+    fn every_declared_token_prop_is_read_back_off_the_node() {
+        let node = node_declaring_every_token_prop();
+        let read: Vec<&str> = super::token_prop_refs(&node)
+            .map(|(prop, _, _)| prop)
+            .collect();
+        let declared: Vec<&str> = super::TOKEN_PROP_KINDS
+            .iter()
+            .chain(super::PADDING_PROP_KINDS)
+            .chain(super::ANCHOR_PROP_KINDS)
+            .map(|(prop, _)| *prop)
+            .collect();
+        assert_eq!(
+            read, declared,
+            "token_prop_refs must yield one entry per declared prop, in table order"
+        );
+    }
+
+    /// `validate` refuses a wrong-kind token in *every* declared prop, not
+    /// in the four it happened to be written against.
+    ///
+    /// This is half of the anti-drift proof for the one prop table. The
+    /// other half lives in `gorgond`
+    /// (`ui::tests::every_declared_token_prop_is_refused_by_both_stages`),
+    /// which runs the same table through stage-1 acceptance. Add a row to
+    /// the table and both tests widen with it; stop iterating the table on
+    /// either side and that side's test fails.
+    #[test]
+    fn validate_refuses_a_wrong_kind_token_in_every_declared_prop() {
+        let node = node_declaring_every_token_prop();
+        let err = validate(&node, &probe_registry()).unwrap_err();
+        let mut refused: Vec<String> = err
+            .as_slice()
+            .iter()
+            .filter_map(|e| match &e.violation {
+                Violation::TokenKindMismatch { prop, .. } => Some(prop.clone()),
+                _ => None,
+            })
+            .collect();
+        refused.sort();
+        let mut declared: Vec<String> = super::TOKEN_PROP_KINDS
+            .iter()
+            .chain(super::PADDING_PROP_KINDS)
+            .chain(super::ANCHOR_PROP_KINDS)
+            .map(|(prop, _)| (*prop).to_owned())
+            .collect();
+        declared.sort();
+        assert_eq!(refused, declared, "{err}");
+    }
+
+    /// A vocabulary with one name of each kind the prop tables ask for, so a
+    /// name is always *declared* and the only thing a prop can be wrong
+    /// about is its kind.
+    fn probe_registry() -> Registry {
+        let mut vocab = Vocabulary::new();
+        vocab.declare(DesignToken::new(probe_spacing(), TokenKind::Spacing));
+        vocab.declare(DesignToken::new(probe_typography(), TokenKind::Typography));
+        Registry::with_vocabulary(vocab)
+    }
+
+    fn probe_spacing() -> TokenName {
+        TokenName::new("spacing.probe").expect("a namespaced fixture name")
+    }
+
+    fn probe_typography() -> TokenName {
+        TokenName::new("text.probe").expect("a namespaced fixture name")
+    }
+
+    /// One node that sets every prop in the three tables, each to a token of
+    /// the wrong kind for its slot: a typography name wherever a spacing
+    /// token is required, a spacing name in `style`.
+    fn node_declaring_every_token_prop() -> ViewNode {
+        let wrong_for_spacing = probe_typography();
+        let mut props = Props {
+            spacing: Some(wrong_for_spacing.clone()),
+            column_spacing: Some(wrong_for_spacing.clone()),
+            row_spacing: Some(wrong_for_spacing.clone()),
+            style: Some(probe_spacing()),
+            padding: Some(InsetRefs {
+                top: Some(wrong_for_spacing.clone()),
+                right: Some(wrong_for_spacing.clone()),
+                bottom: Some(wrong_for_spacing.clone()),
+                left: Some(wrong_for_spacing.clone()),
+            }),
+            ..Props::default()
+        };
+        props.anchor = Some(Anchor::ViewportEdge {
+            edge: Edge::Top,
+            align: crate::tree::props::Align::default(),
+            offset: Some(wrong_for_spacing),
+        });
+        let mut node = ViewNode::new(NodeKind::Surface, "every-prop");
+        node.props = props;
+        node
     }
 }

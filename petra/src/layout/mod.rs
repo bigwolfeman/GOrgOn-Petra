@@ -925,6 +925,18 @@ fn measure_kind(
         // A canvas is a leaf that never reaches `ctx.content`: it has no
         // intrinsic size to ask for (`contracts/draw-list.md` §7).
         | NodeKind::Canvas => leaf::measure(node, ctx, proposal),
+        // Expansion (`crate::component::registry::expand`) runs on the shell
+        // side ahead of stage-2 acceptance, and `validate` refuses an
+        // unexpanded reference, so layout cannot be reached with one. Panic
+        // rather than fall into `leaf::measure`: a component silently
+        // measured as a zero-size leaf is a surface that renders blank with
+        // every frame-level test still green, which is the one failure this
+        // codebase has already paid for once.
+        NodeKind::Component => unreachable!(
+            "node `{}` is still a component reference at layout; \
+             `component::registry::expand` must run before the tree is laid out",
+            node.key
+        ),
     }
 }
 
@@ -942,6 +954,18 @@ fn place_kind(
     sink: &mut dyn PlacementSink,
 ) -> Option<CaretPaint> {
     match node.kind {
+        // Expansion (`crate::component::registry::expand`) runs on the shell
+        // side ahead of stage-2 acceptance, and `validate` refuses an
+        // unexpanded reference, so layout cannot be reached with one. Panic
+        // rather than fall into `leaf::measure`: a component silently
+        // measured as a zero-size leaf is a surface that renders blank with
+        // every frame-level test still green, which is the one failure this
+        // codebase has already paid for once.
+        NodeKind::Component => unreachable!(
+            "node `{}` is still a component reference at layout; \
+             `component::registry::expand` must run before the tree is laid out",
+            node.key
+        ),
         NodeKind::Stack => stack::place(node, ctx, path, slot, sink),
         NodeKind::Grid => grid::place(node, ctx, path, slot, sink),
         NodeKind::Overlay => overlay::place(node, ctx, path, slot, sink),
@@ -1021,6 +1045,9 @@ pub fn semantics_of(node: &ViewNode, id: &str, state: &LayoutState) -> Placement
 #[must_use]
 pub fn default_role(kind: NodeKind) -> Option<Role> {
     Some(match kind {
+        // A reference carries no role of its own; the expanded subtree's root
+        // carries whatever role its constructor gave it.
+        NodeKind::Component => return None,
         NodeKind::Stack | NodeKind::Grid | NodeKind::Overlay => Role::Pane,
         NodeKind::Scroll => Role::Scroll,
         NodeKind::Collection => Role::List,

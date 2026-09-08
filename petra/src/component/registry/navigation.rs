@@ -1,0 +1,744 @@
+//! Registry rows: navigation. See [`super`] for why this file exists.
+//!
+//! Each row names a public constructor in `petra/petra/src/component/`,
+//! deserializes its parameter table into a shape, and calls the shipped
+//! constructor. A row must never re-derive what the constructor does.
+//!
+//! Components: Breadcrumb, Content switcher, Link, Menu, Menu buttons,
+//! Pagination, Tabs, UI shell header, UI shell left panel, UI shell right
+//! panel. 36 constructors (see the `coverage` test at the bottom, which
+//! counts the source rather than trusting this comment).
+
+use serde::Deserialize;
+use serde_json::Value;
+
+use super::Entry;
+use crate::component::params::{
+    KeyChildren, KeyLabel, KeyLabelChildren, KeyLabelSelected, KeyOnly, ParamError, ParamShape,
+};
+use crate::component::{
+    IconMark, LeftPanelMode, PaginationPicker, breadcrumb, breadcrumb_item,
+    breadcrumb_item_current, contained_tab, contained_tab_bar, content_switcher,
+    content_switcher_item, link, link_inline, menu, menu_button, menu_item, pagination,
+    pagination_items, pagination_items_open, tab, tab_bar, ui_shell_header, ui_shell_header_action,
+    ui_shell_header_action_icon, ui_shell_header_menu_trigger, ui_shell_header_nav_item,
+    ui_shell_left_panel, ui_shell_left_panel_divider, ui_shell_left_panel_icon_item,
+    ui_shell_left_panel_icon_subitem, ui_shell_left_panel_in, ui_shell_left_panel_item,
+    ui_shell_left_panel_rail, ui_shell_left_panel_subitem, ui_shell_right_panel,
+    ui_shell_right_panel_divider, ui_shell_switcher, ui_shell_switcher_item, vertical_tab,
+    vertical_tab_bar,
+};
+use crate::tree::{Key, ViewNode};
+
+/// Deserialize `params` into `T`, naming the constructor being built.
+/// `serde_json`'s own error already names the offending field under
+/// `deny_unknown_fields` or a missing key, which is what makes G4 hold
+/// without any hand-written field matching here. Duplicated from
+/// `containment.rs`: this file may not import from a sibling group file any
+/// more than it may import from `params.rs`.
+fn parse<T: for<'de> Deserialize<'de>>(
+    component: &'static str,
+    params: &Value,
+) -> Result<T, ParamError> {
+    serde_json::from_value(params.clone()).map_err(|e| ParamError {
+        component: component.to_owned(),
+        reason: e.to_string(),
+    })
+}
+
+// --- one-off shapes, used only by this group -------------------------------
+
+/// Wire form of [`IconMark`]: the real enum has no serde support. All 30
+/// variants, kebab-cased; the union this renders as is what stops a plugin
+/// from naming an icon that does not exist.
+///
+/// 2 constructors (`ui_shell_header_action_icon`, `ui_shell_left_panel_icon_item`).
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum IconMarkParam {
+    Check,
+    Calendar,
+    ChevronDown,
+    ChevronUp,
+    ChevronLeft,
+    ChevronRight,
+    Close,
+    Copy,
+    Add,
+    Subtract,
+    Search,
+    Menu,
+    Notification,
+    Switcher,
+    CaretLeft,
+    CaretRight,
+    CheckmarkOutline,
+    CircleDash,
+    Incomplete,
+    Checkmark,
+    ErrorFilled,
+    WarningFilled,
+    InformationFilled,
+    CheckmarkFilled,
+    CaretDown,
+    Edit,
+    BulletDisc,
+    BulletCircle,
+    BulletSquare,
+    BulletDash,
+}
+
+impl From<IconMarkParam> for IconMark {
+    fn from(m: IconMarkParam) -> Self {
+        match m {
+            IconMarkParam::Check => IconMark::Check,
+            IconMarkParam::Calendar => IconMark::Calendar,
+            IconMarkParam::ChevronDown => IconMark::ChevronDown,
+            IconMarkParam::ChevronUp => IconMark::ChevronUp,
+            IconMarkParam::ChevronLeft => IconMark::ChevronLeft,
+            IconMarkParam::ChevronRight => IconMark::ChevronRight,
+            IconMarkParam::Close => IconMark::Close,
+            IconMarkParam::Copy => IconMark::Copy,
+            IconMarkParam::Add => IconMark::Add,
+            IconMarkParam::Subtract => IconMark::Subtract,
+            IconMarkParam::Search => IconMark::Search,
+            IconMarkParam::Menu => IconMark::Menu,
+            IconMarkParam::Notification => IconMark::Notification,
+            IconMarkParam::Switcher => IconMark::Switcher,
+            IconMarkParam::CaretLeft => IconMark::CaretLeft,
+            IconMarkParam::CaretRight => IconMark::CaretRight,
+            IconMarkParam::CheckmarkOutline => IconMark::CheckmarkOutline,
+            IconMarkParam::CircleDash => IconMark::CircleDash,
+            IconMarkParam::Incomplete => IconMark::Incomplete,
+            IconMarkParam::Checkmark => IconMark::Checkmark,
+            IconMarkParam::ErrorFilled => IconMark::ErrorFilled,
+            IconMarkParam::WarningFilled => IconMark::WarningFilled,
+            IconMarkParam::InformationFilled => IconMark::InformationFilled,
+            IconMarkParam::CheckmarkFilled => IconMark::CheckmarkFilled,
+            IconMarkParam::CaretDown => IconMark::CaretDown,
+            IconMarkParam::Edit => IconMark::Edit,
+            IconMarkParam::BulletDisc => IconMark::BulletDisc,
+            IconMarkParam::BulletCircle => IconMark::BulletCircle,
+            IconMarkParam::BulletSquare => IconMark::BulletSquare,
+            IconMarkParam::BulletDash => IconMark::BulletDash,
+        }
+    }
+}
+
+/// The Luau union for [`IconMarkParam`], spliced with `concat!` into every
+/// shape that carries an icon so the two never drift apart:
+/// `HeaderActionIconParams` and `LeftPanelIconItemParams` both expand this
+/// macro rather than retyping the 30-name union.
+macro_rules! icon_mark_luau {
+    () => {
+        "\"check\" | \"calendar\" | \"chevron-down\" | \"chevron-up\" | \"chevron-left\" | \
+         \"chevron-right\" | \"close\" | \"copy\" | \"add\" | \"subtract\" | \"search\" | \
+         \"menu\" | \"notification\" | \"switcher\" | \"caret-left\" | \"caret-right\" | \
+         \"checkmark-outline\" | \"circle-dash\" | \"incomplete\" | \"checkmark\" | \
+         \"error-filled\" | \"warning-filled\" | \"information-filled\" | \"checkmark-filled\" | \
+         \"caret-down\" | \"edit\" | \"bullet-disc\" | \"bullet-circle\" | \"bullet-square\" | \
+         \"bullet-dash\""
+    };
+}
+
+/// Wire form of [`PaginationPicker`]: the real enum has no serde support.
+///
+/// 1 constructor (`pagination_items_open`).
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum PaginationPickerParam {
+    PageSize,
+    Page,
+}
+
+impl From<PaginationPickerParam> for PaginationPicker {
+    fn from(p: PaginationPickerParam) -> Self {
+        match p {
+            PaginationPickerParam::PageSize => PaginationPicker::PageSize,
+            PaginationPickerParam::Page => PaginationPicker::Page,
+        }
+    }
+}
+
+/// Wire form of [`LeftPanelMode`]: the real enum has no serde support.
+/// Internally tagged on `type`, matching `M.track`'s convention
+/// (`gorgon/kernel-lua/src/ui/builders.lua`), so every variant — including
+/// the three unit ones — is a table, never a bare string.
+///
+/// 1 constructor (`ui_shell_left_panel_in`).
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "kebab-case", tag = "type")]
+enum LeftPanelModeParam {
+    Rail,
+    Fixed,
+    Expandable { expanded: bool },
+    Hidden,
+}
+
+impl From<LeftPanelModeParam> for LeftPanelMode {
+    fn from(m: LeftPanelModeParam) -> Self {
+        match m {
+            LeftPanelModeParam::Rail => LeftPanelMode::Rail,
+            LeftPanelModeParam::Fixed => LeftPanelMode::Fixed,
+            LeftPanelModeParam::Expandable { expanded } => LeftPanelMode::Expandable { expanded },
+            LeftPanelModeParam::Hidden => LeftPanelMode::Hidden,
+        }
+    }
+}
+
+/// `pagination` — 1 constructor. Two bare numbers; no shared shape has two
+/// numbers and no string, so this stays local.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PaginationParams {
+    key: Key,
+    page: u32,
+    page_count: u32,
+}
+impl ParamShape for PaginationParams {
+    const LUAU: &'static str = "{ key: string, page: number, page_count: number }";
+}
+
+/// `pagination_items` — 1 constructor.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PaginationItemsParams {
+    key: Key,
+    page: u32,
+    page_size: u32,
+    total_items: u32,
+}
+impl ParamShape for PaginationItemsParams {
+    const LUAU: &'static str =
+        "{ key: string, page: number, page_size: number, total_items: number }";
+}
+
+/// `pagination_items_open` — 1 constructor.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PaginationItemsOpenParams {
+    key: Key,
+    page: u32,
+    page_size: u32,
+    // An empty Lua table has no way to say "empty array" versus "empty
+    // map" (`convert.rs`'s `sequence` gives up at `raw_len() == 0`), so any
+    // `Vec<T>` field — not only `Vec<ViewNode>` — needs `#[serde(default)]`
+    // to accept `page_sizes = {}`.
+    #[serde(default)]
+    page_sizes: Vec<u32>,
+    total_items: u32,
+    picker: PaginationPickerParam,
+}
+impl ParamShape for PaginationItemsOpenParams {
+    const LUAU: &'static str = "{ key: string, page: number, page_size: number, \
+         page_sizes: { number }, total_items: number, picker: \"page-size\" | \"page\" }";
+}
+
+/// `ui_shell_header` — 1 constructor.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UiShellHeaderParams {
+    key: Key,
+    product_name: String,
+    #[serde(default)]
+    menu_trigger: Option<ViewNode>,
+    // An empty Lua table crosses as `{}`, a JSON object, not `[]`: Lua has
+    // no way to say "empty array" versus "empty map". `#[serde(default)]`
+    // is what lets `nav = {}`/`actions = {}` still mean the empty vector.
+    #[serde(default)]
+    nav: Vec<ViewNode>,
+    #[serde(default)]
+    actions: Vec<ViewNode>,
+}
+impl ParamShape for UiShellHeaderParams {
+    const LUAU: &'static str = "{ key: string, product_name: string, menu_trigger: ViewNode?, \
+         nav: { ViewNode }, actions: { ViewNode } }";
+}
+
+/// `ui_shell_header_menu_trigger` — 1 constructor. No shared shape is a bare
+/// `(key, bool)`, so this stays local.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct KeyOpenOnly {
+    key: Key,
+    open: bool,
+}
+impl ParamShape for KeyOpenOnly {
+    const LUAU: &'static str = "{ key: string, open: boolean }";
+}
+
+/// `menu_button`, `ui_shell_right_panel`, `ui_shell_switcher` — 3
+/// constructors sharing one `(key, label, bool, children)` shape. The real
+/// constructors name the bool `open` and the list `items`/`content`
+/// depending on the constructor; this shape's field names are generic
+/// because the wire table is the same across all three.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct KeyLabelOpenChildren {
+    key: Key,
+    label: String,
+    open: bool,
+    // See `UiShellHeaderParams`'s `nav`/`actions` for why.
+    #[serde(default)]
+    children: Vec<ViewNode>,
+}
+impl ParamShape for KeyLabelOpenChildren {
+    const LUAU: &'static str =
+        "{ key: string, label: string, open: boolean, children: { ViewNode } }";
+}
+
+/// `ui_shell_header_action_icon` — 1 constructor.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HeaderActionIconParams {
+    key: Key,
+    label: String,
+    mark: IconMarkParam,
+    active: bool,
+}
+impl ParamShape for HeaderActionIconParams {
+    const LUAU: &'static str = concat!(
+        "{ key: string, label: string, mark: ",
+        icon_mark_luau!(),
+        ", active: boolean }"
+    );
+}
+
+/// `ui_shell_left_panel_in` — 1 constructor.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LeftPanelInParams {
+    key: Key,
+    mode: LeftPanelModeParam,
+    // See `UiShellHeaderParams`'s `nav`/`actions` for why.
+    #[serde(default)]
+    items: Vec<ViewNode>,
+}
+impl ParamShape for LeftPanelInParams {
+    const LUAU: &'static str = "{ key: string, mode: { type: \"rail\" } | { type: \"fixed\" } | \
+         { type: \"expandable\", expanded: boolean } | { type: \"hidden\" }, \
+         items: { ViewNode } }";
+}
+
+/// `ui_shell_left_panel_item` — 1 constructor. Same shape as containment's
+/// `tree_item`/`tree_item_xs`, kept as a fresh local copy rather than a
+/// cross-file import: registry groups do not share private items with each
+/// other any more than they share `params.rs`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LeftPanelItemParams {
+    key: Key,
+    label: String,
+    expanded: bool,
+    selected: bool,
+    // See `UiShellHeaderParams`'s `nav`/`actions` for why.
+    #[serde(default)]
+    children: Vec<ViewNode>,
+}
+impl ParamShape for LeftPanelItemParams {
+    const LUAU: &'static str = "{ key: string, label: string, expanded: boolean, \
+         selected: boolean, children: { ViewNode } }";
+}
+
+/// `ui_shell_left_panel_icon_item` — 1 constructor.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LeftPanelIconItemParams {
+    key: Key,
+    label: String,
+    mark: IconMarkParam,
+    expanded: bool,
+    selected: bool,
+    // See `UiShellHeaderParams`'s `nav`/`actions` for why.
+    #[serde(default)]
+    children: Vec<ViewNode>,
+}
+impl ParamShape for LeftPanelIconItemParams {
+    const LUAU: &'static str = concat!(
+        "{ key: string, label: string, mark: ",
+        icon_mark_luau!(),
+        ", expanded: boolean, selected: boolean, children: { ViewNode } }"
+    );
+}
+
+macro_rules! row {
+    ($name:literal, $shape:ty, |$p:ident| $body:expr) => {{
+        fn ctor(v: &Value) -> Result<ViewNode, ParamError> {
+            let $p: $shape = parse($name, v)?;
+            Ok($body)
+        }
+        Entry {
+            name: $name,
+            ctor,
+            luau: <$shape as ParamShape>::LUAU,
+        }
+    }};
+}
+
+/// This group's constructors: one row per public `ViewNode`-returning
+/// constructor in the 10 navigation components. 36 rows; see the
+/// `coverage` test below, which counts the source rather than this list.
+pub const ENTRIES: &[Entry] = &[
+    row!("breadcrumb", KeyChildren, |p| breadcrumb(p.key, p.children)),
+    row!("breadcrumb_item", KeyLabel, |p| breadcrumb_item(
+        p.key, p.label
+    )),
+    row!("breadcrumb_item_current", KeyLabel, |p| {
+        breadcrumb_item_current(p.key, p.label)
+    }),
+    row!("content_switcher", KeyChildren, |p| content_switcher(
+        p.key, p.children
+    )),
+    row!("content_switcher_item", KeyLabelSelected, |p| {
+        content_switcher_item(p.key, p.label, p.selected)
+    }),
+    row!("link", KeyLabel, |p| link(p.key, p.label)),
+    row!("link_inline", KeyLabel, |p| link_inline(p.key, p.label)),
+    row!("menu", KeyLabelChildren, |p| menu(
+        p.key, p.label, p.children
+    )),
+    row!("menu_item", KeyLabel, |p| menu_item(p.key, p.label)),
+    row!("menu_button", KeyLabelOpenChildren, |p| menu_button(
+        p.key, p.label, p.open, p.children
+    )),
+    row!("pagination", PaginationParams, |p| pagination(
+        p.key,
+        p.page,
+        p.page_count
+    )),
+    row!("pagination_items", PaginationItemsParams, |p| {
+        pagination_items(p.key, p.page, p.page_size, p.total_items)
+    }),
+    row!("pagination_items_open", PaginationItemsOpenParams, |p| {
+        pagination_items_open(
+            p.key,
+            p.page,
+            p.page_size,
+            &p.page_sizes,
+            p.total_items,
+            p.picker.into(),
+        )
+    }),
+    row!("tab", KeyLabelSelected, |p| tab(p.key, p.label, p.selected)),
+    row!("contained_tab", KeyLabelSelected, |p| contained_tab(
+        p.key, p.label, p.selected
+    )),
+    row!("vertical_tab", KeyLabelSelected, |p| vertical_tab(
+        p.key, p.label, p.selected
+    )),
+    row!("tab_bar", KeyChildren, |p| tab_bar(p.key, p.children)),
+    row!("contained_tab_bar", KeyChildren, |p| contained_tab_bar(
+        p.key, p.children
+    )),
+    row!("vertical_tab_bar", KeyChildren, |p| vertical_tab_bar(
+        p.key, p.children
+    )),
+    row!("ui_shell_header", UiShellHeaderParams, |p| {
+        ui_shell_header(p.key, p.product_name, p.menu_trigger, p.nav, p.actions)
+    }),
+    row!("ui_shell_header_menu_trigger", KeyOpenOnly, |p| {
+        ui_shell_header_menu_trigger(p.key, p.open)
+    }),
+    row!("ui_shell_header_nav_item", KeyLabelSelected, |p| {
+        ui_shell_header_nav_item(p.key, p.label, p.selected)
+    }),
+    row!("ui_shell_header_action", KeyLabelSelected, |p| {
+        ui_shell_header_action(p.key, p.label, p.selected)
+    }),
+    row!("ui_shell_header_action_icon", HeaderActionIconParams, |p| {
+        ui_shell_header_action_icon(p.key, p.label, p.mark.into(), p.active)
+    }),
+    row!("ui_shell_left_panel_in", LeftPanelInParams, |p| {
+        ui_shell_left_panel_in(p.key, p.mode.into(), p.items)
+    }),
+    row!("ui_shell_left_panel", KeyChildren, |p| ui_shell_left_panel(
+        p.key, p.children
+    )),
+    row!("ui_shell_left_panel_rail", KeyChildren, |p| {
+        ui_shell_left_panel_rail(p.key, p.children)
+    }),
+    row!("ui_shell_left_panel_item", LeftPanelItemParams, |p| {
+        ui_shell_left_panel_item(p.key, p.label, p.expanded, p.selected, p.children)
+    }),
+    row!(
+        "ui_shell_left_panel_icon_item",
+        LeftPanelIconItemParams,
+        |p| ui_shell_left_panel_icon_item(
+            p.key,
+            p.label,
+            p.mark.into(),
+            p.expanded,
+            p.selected,
+            p.children
+        )
+    ),
+    row!("ui_shell_left_panel_subitem", KeyLabelSelected, |p| {
+        ui_shell_left_panel_subitem(p.key, p.label, p.selected)
+    }),
+    row!("ui_shell_left_panel_icon_subitem", KeyLabelSelected, |p| {
+        ui_shell_left_panel_icon_subitem(p.key, p.label, p.selected)
+    }),
+    row!("ui_shell_left_panel_divider", KeyOnly, |p| {
+        ui_shell_left_panel_divider(p.key)
+    }),
+    row!("ui_shell_right_panel", KeyLabelOpenChildren, |p| {
+        ui_shell_right_panel(p.key, p.label, p.open, p.children)
+    }),
+    row!("ui_shell_switcher", KeyLabelOpenChildren, |p| {
+        ui_shell_switcher(p.key, p.label, p.open, p.children)
+    }),
+    row!("ui_shell_switcher_item", KeyLabelSelected, |p| {
+        ui_shell_switcher_item(p.key, p.label, p.selected)
+    }),
+    row!("ui_shell_right_panel_divider", KeyOnly, |p| {
+        ui_shell_right_panel_divider(p.key)
+    }),
+];
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+    use std::fs;
+
+    use serde_json::json;
+
+    use super::*;
+
+    /// Every `pub fn` in this group's 8 source files whose first parameter
+    /// is `key: impl Into<Key>` and whose return type is `ViewNode`. Scanned
+    /// from the source text itself (not a hand list), so a constructor added
+    /// later without a row fails this test rather than silently shipping
+    /// unreachable from Lua.
+    fn constructors_in_source() -> BTreeSet<String> {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/component");
+        let files = [
+            "breadcrumb.rs",
+            "content_switcher.rs",
+            "link.rs",
+            "menu.rs",
+            "menu_button.rs",
+            "pagination.rs",
+            "tabs.rs",
+            "ui_shell.rs",
+        ];
+        let mut out = BTreeSet::new();
+        for file in files {
+            let path = format!("{dir}/{file}");
+            let src = fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+            let joined = src.replace('\n', " ");
+            let mut rest = joined.as_str();
+            while let Some(at) = rest.find("pub fn ") {
+                rest = &rest[at + "pub fn ".len()..];
+                let Some(paren) = rest.find('(') else { break };
+                let name = rest[..paren].trim().to_owned();
+                let Some(close) = matching_paren(rest, paren) else {
+                    break;
+                };
+                let args = &rest[paren + 1..close];
+                let after = &rest[close + 1..];
+                let Some(brace) = after.find('{') else { break };
+                let ret = after[..brace].trim();
+                let first_param_is_key = args.trim_start().starts_with("key: impl Into<Key>");
+                let returns_view_node = ret == "-> ViewNode";
+                if first_param_is_key && returns_view_node {
+                    out.insert(name);
+                }
+                rest = after;
+            }
+        }
+        out
+    }
+
+    /// Find the `)` matching the `(` at `open`, honouring nested parens.
+    fn matching_paren(s: &str, open: usize) -> Option<usize> {
+        let bytes = s.as_bytes();
+        let mut depth = 0i32;
+        for (i, &b) in bytes.iter().enumerate().skip(open) {
+            match b {
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(i);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// G2: every constructor the source declares has exactly one row.
+    #[test]
+    fn coverage_every_constructor_has_a_row() {
+        let source = constructors_in_source();
+        let registered: BTreeSet<String> = ENTRIES.iter().map(|e| e.name.to_owned()).collect();
+        let missing: Vec<_> = source.difference(&registered).collect();
+        assert!(
+            missing.is_empty(),
+            "constructors present in source but missing a registry row: {missing:?}"
+        );
+        let extra: Vec<_> = registered.difference(&source).collect();
+        assert!(
+            extra.is_empty(),
+            "registry rows naming no constructor found in source (renamed or removed?): {extra:?}"
+        );
+    }
+
+    /// G1: no name appears twice in this file's own list.
+    #[test]
+    fn no_duplicate_names_within_this_group() {
+        let mut seen = BTreeSet::new();
+        for e in ENTRIES {
+            assert!(
+                seen.insert(e.name),
+                "`{}` is registered twice in navigation",
+                e.name
+            );
+        }
+    }
+
+    /// Constructor pairs that build the same node ON PURPOSE, because one
+    /// delegates to the other with a fixed argument. Each entry names the
+    /// delegation so a reader can check it against the source; a pair NOT
+    /// listed here that collides in [`no_two_rows_build_the_same_node`] is a
+    /// mis-wired row, not an intentional alias.
+    const ALIASES: &[(&str, &str, &str)] = &[];
+
+    fn is_declared_alias(a: &str, b: &str) -> bool {
+        ALIASES
+            .iter()
+            .any(|(x, y, _)| (*x == a && *y == b) || (*x == b && *y == a))
+    }
+
+    /// A minimal, valid params table for each row, distinct enough between
+    /// rows that two different constructors could never coincidentally
+    /// produce the same `ViewNode`. This is what G3 calls each row with.
+    fn sample_params(name: &str) -> Value {
+        match name {
+            "breadcrumb" => json!({ "key": "k", "children": [] }),
+            "breadcrumb_item" => json!({ "key": "k", "label": "l" }),
+            "breadcrumb_item_current" => json!({ "key": "k", "label": "l-current" }),
+            "content_switcher" => json!({ "key": "k-cs", "children": [] }),
+            "content_switcher_item" => json!({ "key": "k", "label": "l", "selected": true }),
+            "link" => json!({ "key": "k", "label": "l" }),
+            "link_inline" => json!({ "key": "k", "label": "l-inline" }),
+            "menu" => json!({ "key": "k", "label": "l", "children": [] }),
+            "menu_item" => json!({ "key": "k", "label": "l" }),
+            "menu_button" => {
+                json!({ "key": "k", "label": "l", "open": true, "children": [] })
+            }
+            "pagination" => json!({ "key": "k", "page": 1, "page_count": 4 }),
+            "pagination_items" => {
+                json!({ "key": "k", "page": 1, "page_size": 10, "total_items": 42 })
+            }
+            "pagination_items_open" => json!({
+                "key": "k", "page": 1, "page_size": 10,
+                "page_sizes": [10, 20, 30], "total_items": 42, "picker": "page"
+            }),
+            "tab" => json!({ "key": "k", "label": "l", "selected": true }),
+            "contained_tab" => json!({ "key": "k", "label": "l-contained", "selected": true }),
+            "vertical_tab" => json!({ "key": "k", "label": "l-vertical", "selected": true }),
+            "tab_bar" => json!({ "key": "k", "children": [] }),
+            "contained_tab_bar" => json!({ "key": "k-contained-bar", "children": [] }),
+            "vertical_tab_bar" => json!({ "key": "k-vertical-bar", "children": [] }),
+            "ui_shell_header" => json!({
+                "key": "k", "product_name": "p", "menu_trigger": null, "nav": [], "actions": []
+            }),
+            "ui_shell_header_menu_trigger" => json!({ "key": "k", "open": true }),
+            "ui_shell_header_nav_item" => json!({ "key": "k", "label": "l", "selected": true }),
+            "ui_shell_header_action" => {
+                json!({ "key": "k", "label": "l-action", "selected": true })
+            }
+            "ui_shell_header_action_icon" => {
+                json!({ "key": "k", "label": "l", "mark": "close", "active": true })
+            }
+            "ui_shell_left_panel_in" => json!({
+                "key": "k", "mode": { "type": "rail" }, "items": []
+            }),
+            "ui_shell_left_panel" => json!({ "key": "k", "children": [] }),
+            "ui_shell_left_panel_rail" => json!({ "key": "k-rail", "children": [] }),
+            "ui_shell_left_panel_item" => json!({
+                "key": "k", "label": "l", "expanded": true, "selected": true, "children": []
+            }),
+            "ui_shell_left_panel_icon_item" => json!({
+                "key": "k", "label": "l", "mark": "close",
+                "expanded": true, "selected": true, "children": []
+            }),
+            "ui_shell_left_panel_subitem" => json!({ "key": "k", "label": "l", "selected": true }),
+            "ui_shell_left_panel_icon_subitem" => {
+                json!({ "key": "k", "label": "l-icon-sub", "selected": true })
+            }
+            "ui_shell_left_panel_divider" => json!({ "key": "k-left-divider" }),
+            "ui_shell_right_panel" => {
+                json!({ "key": "k", "label": "l", "open": true, "children": [] })
+            }
+            "ui_shell_switcher" => {
+                json!({ "key": "k-switcher", "label": "l", "open": true, "children": [] })
+            }
+            "ui_shell_switcher_item" => {
+                json!({ "key": "k", "label": "l-switcher-item", "selected": true })
+            }
+            "ui_shell_right_panel_divider" => json!({ "key": "k-right-divider" }),
+            other => panic!("no sample params written for `{other}`; add one"),
+        }
+    }
+
+    /// G3: no two rows build the same `ViewNode` from their own sample
+    /// params, unless the pair is a declared alias in [`ALIASES`]. Catches a
+    /// row wired to the wrong sibling constructor (a `tag_sm` row calling
+    /// `tag_lg`), which two identical outputs would reveal immediately.
+    #[test]
+    fn no_two_rows_build_the_same_node() {
+        let mut seen: Vec<(&str, ViewNode)> = Vec::new();
+        for e in ENTRIES {
+            let params = sample_params(e.name);
+            let node = (e.ctor)(&params).unwrap_or_else(|err| {
+                panic!("`{}` refused its own sample params: {err:?}", e.name)
+            });
+            for (other_name, other_node) in &seen {
+                if is_declared_alias(e.name, other_name) {
+                    continue;
+                }
+                assert!(
+                    &node != other_node,
+                    "`{}` and `{other_name}` built identical ViewNodes from distinct sample \
+                     params, and neither is a declared alias in ALIASES",
+                    e.name
+                );
+            }
+            seen.push((e.name, node));
+        }
+    }
+
+    /// G4: a misspelled field names itself, not just "deserialize failed".
+    #[test]
+    fn bad_field_name_is_named_in_the_error() {
+        let err = parse::<KeyLabel>("menu_item", &json!({ "key": "k", "lable": "typo" }))
+            .expect_err("misspelled field must be refused");
+        assert!(
+            err.reason.contains("lable") || err.reason.contains("unknown field"),
+            "error must name the bad field, got: {}",
+            err.reason
+        );
+    }
+
+    /// G6: every row's `luau` is the shape's own `ParamShape::LUAU`. The
+    /// `row!` macro reads `<$shape as ParamShape>::LUAU` directly rather
+    /// than a literal, so this holds by construction; spot-check the two
+    /// shapes whose union LUAU strings are the easiest to get wrong by hand.
+    #[test]
+    fn luau_strings_match_their_shape() {
+        let icon_row = ENTRIES
+            .iter()
+            .find(|e| e.name == "ui_shell_header_action_icon")
+            .expect("ui_shell_header_action_icon must be registered");
+        assert_eq!(icon_row.luau, HeaderActionIconParams::LUAU);
+
+        let panel_row = ENTRIES
+            .iter()
+            .find(|e| e.name == "ui_shell_left_panel_in")
+            .expect("ui_shell_left_panel_in must be registered");
+        assert_eq!(panel_row.luau, LeftPanelInParams::LUAU);
+    }
+}

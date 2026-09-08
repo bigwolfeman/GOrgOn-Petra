@@ -11,10 +11,14 @@ publish = false
 [dependencies]
 blake3.workspace = true
 serde.workspace = true
+# The component registry turns a wire parameter table into a `ViewNode`, and
+# the wire is JSON. Was a dev-dependency; promoted for
+# `component::registry`. Carries no egui-family crate, so
+# `xtask boundary` is unaffected.
+serde_json.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
-serde_json.workspace = true
 
 [lints]
 workspace = true
