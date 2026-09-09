@@ -1042,6 +1042,7 @@ pub fn semantics_of(node: &ViewNode, id: &str, state: &LayoutState) -> Placement
         // is one line up — spec 010's router reads these off the placement.
         behaviour: node.behaviour,
         raw_claim: node.raw_claim,
+        bindings: node.bindings.clone(),
     }
 }
 

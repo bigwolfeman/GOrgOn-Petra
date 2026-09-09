@@ -89,6 +89,13 @@ fn node_at(frame: &PetrifiedFrame, index: usize, children: Vec<SemanticNode>) ->
         // (`contracts/frame-identity.md`), never through this projection.
         behaviour: _,
         raw_claim: _,
+        // Held out on the identical terms as `behaviour` and `raw_claim`
+        // one line up: which keystrokes a node's bindings match is a
+        // routing fact, not something a screen reader or `TreeQuery`
+        // describes about the node. The router reads these straight off
+        // `PlacementSemantics` on the placement itself, never through this
+        // projection.
+        bindings: _,
     } = &placement.semantics;
 
     let mut actions: Vec<Interaction> = actions.clone();

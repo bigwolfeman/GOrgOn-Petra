@@ -97,6 +97,27 @@ pub struct Binding {
     pub owner: Owner,
 }
 
+/// The two checks a legal trigger and scope must both pass (FR-002,
+/// FR-013a), factored out of [`Binding::new`] so [`Binding::validate`] can
+/// run the identical rule against a `Binding` that reached this crate some
+/// other way than through `new` — deserialized off the wire, in
+/// particular, where serde reads every field (including the private
+/// `trigger`) directly and never calls `new` at all. Two copies of this
+/// check is exactly the drift `crate::tree::validate` exists to catch
+/// elsewhere in this crate; this module does not get a second copy of its
+/// own rule either.
+fn check_trigger_and_scope(trigger: &[Chord], scope: &Scope) -> Result<(), BindingError> {
+    if trigger.is_empty() {
+        return Err(BindingError::EmptyTrigger);
+    }
+    if *scope == Scope::Global
+        && let Some(chord) = trigger.iter().find(|c| is_bare_char(c))
+    {
+        return Err(BindingError::GlobalBareChar { chord: *chord });
+    }
+    Ok(())
+}
+
 impl Binding {
     /// Builds a binding, refusing an empty trigger (FR-002) or a
     /// global-scope binding on a bare character chord (FR-013a).
@@ -106,20 +127,31 @@ impl Binding {
         scope: Scope,
         owner: Owner,
     ) -> Result<Self, BindingError> {
-        if trigger.is_empty() {
-            return Err(BindingError::EmptyTrigger);
-        }
-        if scope == Scope::Global
-            && let Some(chord) = trigger.iter().find(|c| is_bare_char(c))
-        {
-            return Err(BindingError::GlobalBareChar { chord: *chord });
-        }
+        check_trigger_and_scope(&trigger, &scope)?;
         Ok(Self {
             trigger,
             command,
             scope,
             owner,
         })
+    }
+
+    /// Re-runs the same construction check [`Binding::new`] enforces,
+    /// against a `Binding` that already exists.
+    ///
+    /// Every `Binding` built through `new` already passed this — the point
+    /// is the `Binding` that did not. `Binding` derives `Deserialize`
+    /// directly, so a malformed one (an empty trigger, or a global-scope
+    /// trigger on a bare character chord) can arrive over the wire without
+    /// ever calling `new`, exactly the way a malformed `ViewNode` can. This
+    /// is what [`crate::tree::validate`] calls, once per binding a node
+    /// carries, to close that gap the same way it closes every other one.
+    ///
+    /// # Errors
+    /// The same [`BindingError`] `new` would have refused construction
+    /// with.
+    pub fn validate(&self) -> Result<(), BindingError> {
+        check_trigger_and_scope(&self.trigger, &self.scope)
     }
 
     /// The chord sequence that fires this binding.
@@ -259,6 +291,41 @@ mod tests {
         assert!(text.contains("editor.save"));
         assert!(text.contains("editor:1"));
         assert!(text.contains("editor"));
+    }
+
+    /// `validate` catches exactly what `new` refuses, on a `Binding` that
+    /// was never handed to `new` at all — a deserialized one, standing in
+    /// for what serde produces directly from the private `trigger` field.
+    #[test]
+    fn validate_catches_a_malformed_binding_that_skipped_new() {
+        let legal = Binding::new(
+            vec![ctrl_k()],
+            CommandName::builtin("save"),
+            Scope::Global,
+            Owner::Operator,
+        )
+        .unwrap();
+        assert_eq!(legal.validate(), Ok(()));
+
+        let json =
+            r#"{"trigger":[],"command":{"name":"save"},"scope":"global","owner":"operator"}"#;
+        let empty_trigger: Binding = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            empty_trigger.validate(),
+            Err(BindingError::EmptyTrigger),
+            "serde bypasses `new`, so an empty trigger must still be caught"
+        );
+
+        let json =
+            r#"{"trigger":["k"],"command":{"name":"save"},"scope":"global","owner":"operator"}"#;
+        let bare_global: Binding = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            bare_global.validate(),
+            Err(BindingError::GlobalBareChar {
+                chord: Chord::bare(KeyCode::Char('k'))
+            }),
+            "serde bypasses `new`, so a global bare-char trigger must still be caught"
+        );
     }
 
     #[test]

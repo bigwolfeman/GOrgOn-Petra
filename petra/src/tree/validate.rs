@@ -413,6 +413,23 @@ pub enum Violation {
         /// The constructor it names.
         name: String,
     },
+    /// A binding this node declares fails the same construction check
+    /// [`crate::keymap::binding::Binding::new`] enforces (FR-002, FR-013a):
+    /// an empty trigger, or a global-scope trigger on a bare character
+    /// chord.
+    ///
+    /// `Binding` derives `Deserialize` directly, reading `trigger` and
+    /// `scope` straight off the wire without ever calling `new` — the same
+    /// gap `UnexpandedComponent` closes for `NodeKind::Component`, for a
+    /// type one layer down. Refused here rather than left to whatever reads
+    /// [`crate::tree::node::ViewNode::bindings`] next, because a malformed
+    /// trigger would otherwise reach the resolver's trie
+    /// ([`crate::keymap::resolver::Resolver::insert`]) with no case in
+    /// front of it to catch what `Binding::new` already knows how to name.
+    MalformedBinding {
+        /// Why this binding is invalid.
+        reason: crate::keymap::binding::BindingError,
+    },
 }
 
 /// What a validator must hold, beyond the subtree in front of it, before a
@@ -531,7 +548,8 @@ impl Violation {
             | Self::GridSpanOutOfRange { .. }
             | Self::AnchorCycle { .. }
             | Self::UnknownStateName { .. }
-            | Self::ComponentRefOnWrongKind { .. } => Prerequisites::NONE,
+            | Self::ComponentRefOnWrongKind { .. }
+            | Self::MalformedBinding { .. } => Prerequisites::NONE,
         }
     }
 
@@ -612,6 +630,9 @@ impl fmt::Display for Violation {
                 "a `{kind}` node names component `{name}`; only a `component` node is expanded, \
                  so this reference would be dropped and the surface it describes would not appear"
             ),
+            Self::MalformedBinding { reason } => {
+                write!(f, "a declared binding is invalid: {reason}")
+            }
             Self::DuplicateSiblingKey { key } => {
                 write!(
                     f,
@@ -1047,6 +1068,15 @@ fn check_node(
             kind: node.kind,
             count: node.children.len(),
         });
+    }
+
+    // `Binding` derives `Deserialize` directly, so a malformed one can
+    // arrive here without ever passing through `Binding::new`'s own check.
+    // `validate` re-runs it, once per binding this node declares.
+    for binding in &node.bindings {
+        if let Err(reason) = binding.validate() {
+            push(Violation::MalformedBinding { reason });
+        }
     }
 
     // Every rule that turns on which kind of node this is, one named check
@@ -2095,6 +2125,74 @@ mod tests {
             err.to_string().contains("has no children to inset"),
             "{err}"
         );
+    }
+
+    /// A binding built through `Binding::new` never reaches this check able
+    /// to trip it — `new` already refused an empty trigger. This proves the
+    /// other path: `serde_json` builds a `Binding` directly, the same way a
+    /// contribution crossing the daemon boundary does, and `validate` still
+    /// catches what `new` would have.
+    #[test]
+    fn a_binding_with_an_empty_trigger_is_refused() {
+        let binding: crate::keymap::binding::Binding = serde_json::from_str(
+            r#"{"trigger":[],"command":{"name":"save"},"scope":"global","owner":"operator"}"#,
+        )
+        .unwrap();
+        let mut node = ViewNode::new(NodeKind::Text, "t");
+        node.bindings.push(binding);
+        let err = validate(&node, &spacing_registry()).unwrap_err();
+        assert_eq!(err.as_slice()[0].path, "/t");
+        assert_eq!(
+            err.as_slice()[0].violation,
+            Violation::MalformedBinding {
+                reason: crate::keymap::binding::BindingError::EmptyTrigger,
+            }
+        );
+        assert!(err.to_string().contains("at least one chord"), "{err}");
+    }
+
+    /// The other half of `Binding::new`'s own check (FR-013a): a
+    /// global-scope trigger on a bare character chord, built the same
+    /// wire-first way as the empty-trigger case above.
+    #[test]
+    fn a_global_binding_on_a_bare_char_is_refused() {
+        let binding: crate::keymap::binding::Binding = serde_json::from_str(
+            r#"{"trigger":["k"],"command":{"name":"save"},"scope":"global","owner":"operator"}"#,
+        )
+        .unwrap();
+        let mut node = ViewNode::new(NodeKind::Text, "t");
+        node.bindings.push(binding);
+        let err = validate(&node, &spacing_registry()).unwrap_err();
+        assert!(
+            matches!(
+                &err.as_slice()[0].violation,
+                Violation::MalformedBinding {
+                    reason: crate::keymap::binding::BindingError::GlobalBareChar { .. }
+                }
+            ),
+            "{err}"
+        );
+        assert!(err.to_string().contains("bare character chord"), "{err}");
+    }
+
+    /// A well-formed binding, built through `Binding::new`, validates
+    /// clean — the check above must not be a blanket refusal of anything
+    /// `ViewNode::bindings` carries.
+    #[test]
+    fn a_well_formed_binding_validates_clean() {
+        let binding = crate::keymap::binding::Binding::new(
+            vec![crate::keymap::chord::Chord::bare(
+                crate::input::KeyCode::Char('j'),
+            )],
+            crate::keymap::command::CommandName::builtin("down"),
+            crate::keymap::scope::Scope::Subtree {
+                root: "panel:1".to_owned(),
+            },
+            crate::keymap::binding::Owner::Plugin("vim-motions".to_owned()),
+        )
+        .unwrap();
+        let node = ViewNode::new(NodeKind::Text, "t").with_binding(binding);
+        assert!(validate(&node, &spacing_registry()).is_ok());
     }
 
     /// A component reference reaching `validate` is refused by name.

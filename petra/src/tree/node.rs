@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::keymap::binding::Binding;
 use crate::tree::key::Key;
 use crate::tree::props::Props;
 
@@ -928,6 +929,30 @@ pub struct ViewNode {
     /// [`crate::frame::PlacementSemantics`].
     #[serde(default, skip_serializing_if = "is_false")]
     pub raw_claim: bool,
+    /// Key bindings this node declares (spec 010 FR-007…FR-013a, FR-009).
+    ///
+    /// A binding rides as a field on the tree rather than as a second
+    /// payload type on the contribution ledger — a decision already taken,
+    /// not this field's to revisit. The daemon's `Contribution::tree`
+    /// (`gorgon/gorgond/src/ui.rs`) is monomorphic in [`ViewNode`], and its
+    /// `UiRegistry::register` is sealed `pub(crate)` on purpose, to keep
+    /// exactly one path a binding can enter the tree through. Riding on the
+    /// node also gives FR-009's
+    /// "gone in the same frame the fiber unloads" for free: a binding's
+    /// node is its declaration site, so retracting the node retracts the
+    /// binding, the same lifecycle every other per-node declaration
+    /// already has — nothing extra to track and nothing extra to leak. The
+    /// declaration site is not the same thing as the binding's
+    /// [`crate::keymap::scope::Scope`]: a node three levels deep may
+    /// declare a [`crate::keymap::scope::Scope::Global`] binding, and that
+    /// is legal — where a binding is *written* and where it is *reachable
+    /// from* are independent questions.
+    ///
+    /// Shaped like [`Self::behaviour`] and [`Self::component`]: `Vec::new()`
+    /// by default, so the field being added changes no existing
+    /// `ViewNode::new` call site, and absent from the wire when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bindings: Vec<Binding>,
 }
 
 /// A component named on the wire, with the parameter table it was given.
@@ -974,6 +999,7 @@ impl ViewNode {
             component: None,
             behaviour: None,
             raw_claim: false,
+            bindings: Vec::new(),
         }
     }
 
@@ -1132,6 +1158,13 @@ impl ViewNode {
         self
     }
 
+    /// Declare one key binding on this node. See [`Self::bindings`].
+    #[must_use]
+    pub fn with_binding(mut self, binding: Binding) -> Self {
+        self.bindings.push(binding);
+        self
+    }
+
     /// Whether this node declares any interaction.
     #[must_use]
     pub fn is_interactive(&self) -> bool {
@@ -1144,6 +1177,11 @@ mod tests {
     use std::sync::Arc;
 
     use super::{Behaviour, Constraints, Intent, Interaction, NodeKind, Phase, Role, ViewNode};
+    use crate::input::KeyCode;
+    use crate::keymap::binding::{Binding, Owner};
+    use crate::keymap::chord::Chord;
+    use crate::keymap::command::CommandName;
+    use crate::keymap::scope::Scope;
     use crate::testing::gap;
     use crate::tree::props::Props;
 
@@ -1400,6 +1438,49 @@ mod tests {
         let back: ViewNode = serde_json::from_str(&json).unwrap();
         assert_eq!(back, claimed);
         assert!(back.raw_claim);
+    }
+
+    /// `bindings` is absent from the wire when a node declares none, and
+    /// round-trips through JSON when it does — a global-scope binding and a
+    /// subtree-scope one together, so both `Scope` shapes are exercised.
+    #[test]
+    fn bindings_on_a_view_node_round_trip() {
+        let plain = ViewNode::new(NodeKind::Text, "n");
+        assert!(plain.bindings.is_empty());
+        assert!(!serde_json::to_string(&plain).unwrap().contains("bindings"));
+
+        let global = Binding::new(
+            vec![Chord {
+                key: KeyCode::Char('k'),
+                modifiers: crate::input::Modifiers {
+                    ctrl: true,
+                    ..crate::input::Modifiers::NONE
+                },
+            }],
+            CommandName::builtin("save"),
+            Scope::Global,
+            Owner::Operator,
+        )
+        .unwrap();
+        let subtree = Binding::new(
+            vec![Chord::bare(KeyCode::Char('j'))],
+            CommandName::scoped("vim-motions", "down"),
+            Scope::Subtree {
+                root: "panel:1".to_owned(),
+            },
+            Owner::Plugin("vim-motions".to_owned()),
+        )
+        .unwrap();
+
+        let node = ViewNode::new(NodeKind::Custom, "panel")
+            .with_binding(global.clone())
+            .with_binding(subtree.clone());
+        assert_eq!(node.bindings, vec![global, subtree]);
+
+        let json = serde_json::to_string(&node).unwrap();
+        assert!(json.contains("bindings"), "{json}");
+        let back: ViewNode = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, node);
     }
 }
 

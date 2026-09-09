@@ -885,7 +885,13 @@ impl<A: App> Host<A> {
             #[cfg(not(target_arch = "wasm32"))]
             picking: None,
             focus_taking: BTreeMap::new(),
-            pointer: PointerState::new(),
+            // The shell is the caller the escape-hatch design exists for.
+            // `PointerState::new()` can never produce `Route::Raw`, so a host
+            // built that way would leave raw pass-through unreachable in a
+            // real window no matter how much of it is implemented below.
+            // The default set is `shift-esc` (spec 010 FR-021a);
+            // `set_reserved_chords` replaces it from operator configuration.
+            pointer: PointerState::with_reserved(gorgon_petra::keymap::ReservedChords::default()),
             pending_copy: None,
             selection_drag: false,
             caret: FocusCaret::new(),
@@ -2918,6 +2924,23 @@ impl<A: App> Host<A> {
     /// the host and the engine cannot drift apart on what "moving" means.
     fn schedule(&self, ctx: &Context, frame: &PetrifiedFrame) {
         crate::schedule::request_if_moving(ctx, frame);
+    }
+
+    /// Replace the reserved chord set from operator configuration.
+    ///
+    /// FR-021 makes the set operator-configurable and FR-021a fixes the
+    /// default at `shift-esc`. The default is installed at construction, so a
+    /// host that never calls this still cannot trap the operator inside a raw
+    /// claim; this is the seam a settings file drives.
+    ///
+    /// The set cannot be empty: [`ReservedChords`] refuses that at
+    /// construction, so there is no way to reach a host with no way out.
+    pub fn set_reserved_chords(
+        &mut self,
+        reserved: gorgon_petra::keymap::ReservedChords,
+    ) -> &mut Self {
+        self.pointer.set_reserved(reserved);
+        self
     }
 
     /// Declare the transition definitions this application's trees name.
@@ -5239,6 +5262,60 @@ mod tests {
     /// which reports the exit dropped. The call below is that same function
     /// with the host's real hovered id — the thing lane A left a `None` in
     /// place of — and the assertion is that the two answers differ.
+    /// The host supplies the escape hatch, so raw pass-through is reachable
+    /// in a real window.
+    ///
+    /// This is the last link of a chain that was broken in three places at
+    /// once. `route` cannot produce `Route::Raw` without a reserved set;
+    /// `route_with_surfaces` could not produce it at all until it took one;
+    /// and `PointerState` passed `None` even after that. Each fix left the
+    /// next link still open, so raw pass-through stayed unreachable from a
+    /// running window while every unit test below it passed. A `None` here
+    /// means a terminal receives no keystrokes.
+    #[test]
+    fn the_host_supplies_the_reserved_chord_set() {
+        let ctx = headless();
+        let host = Host::new(&ctx, Demo::default(), default_presenter());
+        let reserved = host
+            .pointer()
+            .reserved()
+            .expect("the host must supply a reserved set, or Route::Raw is unreachable");
+        assert!(
+            reserved.contains(gorgon_petra::keymap::Chord::reserved_escape()),
+            "the default reserved chord is shift-esc (spec 010 FR-021a)"
+        );
+    }
+
+    /// And operator configuration can replace it, which is FR-021.
+    #[test]
+    fn the_host_reserved_set_is_replaceable_from_configuration() {
+        use gorgon_petra::input::{KeyCode, Modifiers};
+        use gorgon_petra::keymap::{Chord, ReservedChords};
+
+        let ctx = headless();
+        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        let custom = Chord {
+            key: KeyCode::Escape,
+            modifiers: Modifiers {
+                ctrl: true,
+                alt: true,
+                ..Modifiers::NONE
+            },
+        };
+        host.set_reserved_chords(
+            ReservedChords::new(vec![custom]).expect("a one-chord set is not empty"),
+        );
+        let reserved = host.pointer().reserved().expect("still set");
+        assert!(
+            reserved.contains(custom),
+            "the operator's chord took effect"
+        );
+        assert!(
+            !reserved.contains(Chord::reserved_escape()),
+            "and replaced the default rather than adding to it"
+        );
+    }
+
     #[test]
     fn pointer_exit_lands_on_the_hovered_node() {
         let ctx = headless();

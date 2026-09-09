@@ -652,6 +652,18 @@ fn leaf_bytes(scale: Scale, p: &Placement) -> Vec<u8> {
                 // `behaviour`.
                 behaviour: _,
                 raw_claim: _,
+                // Spec 010 FR-009's field on the tree, the same analysis
+                // again: which keystrokes a resolver's trie will match
+                // against this node is a routing-time fact, not a paint
+                // one. Two frames whose only difference is which
+                // `Binding`s a node carries — a plugin's fiber unloaded and
+                // retracted its bindings, say, with every rect, clip, token
+                // binding and glyph left exactly as they were — are the
+                // SAME PICTURE, so `bindings` is held out on the same terms
+                // as `behaviour` and `raw_claim`: a future reader that
+                // somehow painted from it would make this a defect, and the
+                // fix is the shape of this one — hash it and bump `DOMAIN`.
+                bindings: _,
             },
         // Rewritable, not merely redundant: a subtree a reuse pass copies
         // from the previous frame is rebased onto its new position, and
@@ -1047,6 +1059,11 @@ mod tests {
     use crate::frame::viewport::Viewport;
     use crate::geom::Point;
     use crate::geom::{Rect, Scale, Size};
+    use crate::input::KeyCode;
+    use crate::keymap::binding::{Binding, Owner};
+    use crate::keymap::chord::Chord;
+    use crate::keymap::command::CommandName;
+    use crate::keymap::scope::Scope;
     use crate::token::ThemeMode;
     use crate::tree::{
         Behaviour, Edge, FocusFigure, FocusShownOn, Intent, Interaction, NodeKind, Phase, Role,
@@ -1147,6 +1164,57 @@ mod tests {
         );
     }
 
+    /// The identical claim as the test above, for `bindings` (spec 010
+    /// FR-009): a binding decides how a keystroke is interpreted, never
+    /// what the frame looks like, so a node gaining or losing bindings is
+    /// the same picture.
+    #[test]
+    fn two_frames_differing_only_in_bindings_have_one_digest() {
+        let vp = viewport();
+        let rect = Rect::new(0.0, 0.0, 10.0, 10.0);
+        let ctrl = |c: char| Chord {
+            key: KeyCode::Char(c),
+            modifiers: crate::input::Modifiers {
+                ctrl: true,
+                ..crate::input::Modifiers::NONE
+            },
+        };
+        let binding = Binding::new(
+            vec![ctrl('j')],
+            CommandName::builtin("down"),
+            Scope::Global,
+            Owner::Operator,
+        )
+        .unwrap();
+
+        let mut none = placement("/root", rect);
+        none.semantics.bindings = Vec::new();
+
+        let mut one = placement("/root", rect);
+        one.semantics.bindings = vec![binding.clone()];
+
+        let mut different = placement("/root", rect);
+        different.semantics.bindings = vec![
+            binding,
+            Binding::new(
+                vec![ctrl('k')],
+                CommandName::builtin("up"),
+                Scope::Global,
+                Owner::Operator,
+            )
+            .unwrap(),
+        ];
+
+        let d1 = digest(&vp, &[none]);
+        let d2 = digest(&vp, &[one]);
+        let d3 = digest(&vp, &[different]);
+        assert_eq!(d1, d2, "bindings must not move the digest");
+        assert_eq!(
+            d2, d3,
+            "a different set of bindings must not move the digest either"
+        );
+    }
+
     /// A placement with every field set to something distinguishable, so a
     /// mutation of any one of them is a real change.
     ///
@@ -1207,6 +1275,26 @@ mod tests {
                     phase: Phase::OnChange,
                 }),
                 raw_claim: true,
+                // Non-empty on purpose, like the two above: the pinned
+                // vectors below prove `bindings` is held out of the leaf
+                // stream too, by staying unchanged with a real binding in
+                // the fixture rather than the empty `Vec` its `Default`
+                // would carry.
+                bindings: vec![
+                    Binding::new(
+                        vec![Chord {
+                            key: KeyCode::Char('k'),
+                            modifiers: crate::input::Modifiers {
+                                ctrl: true,
+                                ..crate::input::Modifiers::NONE
+                            },
+                        }],
+                        CommandName::builtin("save"),
+                        Scope::Global,
+                        Owner::Operator,
+                    )
+                    .unwrap(),
+                ],
             },
             // Used as the sole placement in every fixture below, so it is
             // its own tree's root. `Some(0)` here — a self-referencing

@@ -966,6 +966,21 @@ pub struct PointerState {
     /// and it stops looking pressed when the pointer leaves that control's
     /// rect without ever moving to a neighbour.
     pressed_on: Option<String>,
+    /// The chords that escape a raw claim, if this state was built with one.
+    ///
+    /// [`PointerState::route`] is the shell's one input entry — it handles
+    /// keyboard events as well as pointer ones — so this is the seam
+    /// [`route_with_surfaces`]'s own `reserved` parameter has to reach
+    /// through for a real running shell to ever see [`Route::Raw`] or
+    /// [`Route::Reserved`]. `None` (the default, and what
+    /// [`PointerState::new`] carries) reproduces exactly the behaviour
+    /// before this field existed: every call site below passes it straight
+    /// through as `reserved_or_raw`'s `None` case, so `Raw` and `Reserved`
+    /// stay as unreachable as [`route`] itself makes them (see
+    /// [`route_with_reserved`]'s doc comment on why that is a guarantee and
+    /// not an accident). [`PointerState::with_reserved`] is the only way to
+    /// supply one.
+    reserved: Option<ReservedChords>,
 }
 
 /// What one event did to a [`PointerState`], beyond where it routed.
@@ -1010,10 +1025,54 @@ impl GestureEnd {
 }
 
 impl PointerState {
-    /// Nothing under the pointer, nothing captured.
+    /// Nothing under the pointer, nothing captured, and no reserved set —
+    /// [`Route::Raw`] and [`Route::Reserved`] stay unreachable through
+    /// [`PointerState::route`] until [`PointerState::with_reserved`] builds
+    /// one instead.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Nothing under the pointer, nothing captured, and `reserved` as the
+    /// set of chords that escape a raw claim.
+    ///
+    /// This is the one way to make [`PointerState::route`] able to return
+    /// [`Route::Raw`] or [`Route::Reserved`] at all (`crate::keymap` mirrors
+    /// this same rule at the two-function split between [`route`] and
+    /// [`route_with_reserved`]): a `PointerState` built through
+    /// [`PointerState::new`] instead can never produce either, no matter
+    /// what the frame declares.
+    #[must_use]
+    pub fn with_reserved(reserved: ReservedChords) -> Self {
+        Self {
+            reserved: Some(reserved),
+            ..Self::default()
+        }
+    }
+
+    /// The reserved chord set this state was given, if any.
+    ///
+    /// `None` is the meaningful answer rather than an absence: it says this
+    /// state cannot produce [`Route::Raw`] or [`Route::Reserved`] at all. A
+    /// host that means to support a terminal and finds `None` here has found
+    /// its bug.
+    #[must_use]
+    pub fn reserved(&self) -> Option<&ReservedChords> {
+        self.reserved.as_ref()
+    }
+
+    /// Replace the reserved chord set on a state that already exists.
+    ///
+    /// The peer of [`PointerState::with_reserved`] for the case a host meets
+    /// in practice: the state is built once at startup and the operator's
+    /// configuration arrives later. It cannot widen the guarantee by
+    /// accident, because supplying a set is exactly what the guarantee asks
+    /// for; and it cannot narrow it to nothing, because [`ReservedChords`]
+    /// refuses to be empty at construction.
+    pub fn set_reserved(&mut self, reserved: ReservedChords) -> &mut Self {
+        self.reserved = Some(reserved);
+        self
     }
 
     /// Where the pointer is, or `None` before the first positional event and
@@ -1101,7 +1160,13 @@ impl PointerState {
                 self.pressed = false;
                 let ended = self.end_capture(CancelReason::Blurred);
                 PointerRouting {
-                    outcome: route_with_surfaces(frame, focused, event, surfaces, None),
+                    outcome: route_with_surfaces(
+                        frame,
+                        focused,
+                        event,
+                        surfaces,
+                        self.reserved.as_ref(),
+                    ),
                     ended,
                 }
             }
@@ -1129,7 +1194,13 @@ impl PointerState {
             _ => match event.pointer_pos() {
                 Some(pos) => self.route_positional(frame, focused, surfaces, event, pos),
                 None => PointerRouting {
-                    outcome: route_with_surfaces(frame, focused, event, surfaces, None),
+                    outcome: route_with_surfaces(
+                        frame,
+                        focused,
+                        event,
+                        surfaces,
+                        self.reserved.as_ref(),
+                    ),
                     ended: None,
                 },
             },
@@ -1235,7 +1306,8 @@ impl PointerState {
 
         let swallowed = outside_an_open_modal(frame, pos, surfaces);
         self.hovered = self.derive_hover(frame, surfaces);
-        let mut outcome = route_with_surfaces(frame, focused, event, surfaces, None);
+        let mut outcome =
+            route_with_surfaces(frame, focused, event, surfaces, self.reserved.as_ref());
         if let InputEvent::PointerPressed { button, .. } = event
             && !swallowed
             && let Some(hit) = hit_test(frame, pos, Interaction::Drag)
@@ -1892,8 +1964,8 @@ fn blocks_input(policy: InputPolicy) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        Chord, InputEvent, KeyCode, Modifiers, PointerButton, ReservedChords, Route, activates,
-        hit_test, hit_text, reach_text, required_interaction, route, route_pointer_exit,
+        Chord, InputEvent, KeyCode, Modifiers, PointerButton, PointerState, ReservedChords, Route,
+        activates, hit_test, hit_text, reach_text, required_interaction, route, route_pointer_exit,
         route_with_reserved, route_with_surfaces,
     };
     use crate::frame::{
@@ -3901,6 +3973,96 @@ mod tests {
                 chord: Chord::reserved_escape()
             },
             "reserved must outrank a raw claim inside a Block surface: {out:?}"
+        );
+    }
+
+    /// The one wiring line: `PointerState::route` is the shell's actual
+    /// input entry (not `route_with_reserved` directly), so this is the
+    /// proof `Route::Raw` and `Route::Reserved` are reachable *through it*
+    /// once it is built with a reserved set — not just through the free
+    /// functions a test can call on its own.
+    #[test]
+    fn pointer_state_delivers_reserved_and_raw() {
+        let f = frame(vec![raw_claim_node(
+            "/term",
+            Rect::new(0.0, 0.0, 100.0, 100.0),
+            None,
+        )]);
+        let surfaces = BTreeMap::new();
+        let mut pointer = PointerState::with_reserved(ReservedChords::default());
+
+        let ctrl_s = key(
+            KeyCode::Char('s'),
+            Modifiers {
+                ctrl: true,
+                ..Modifiers::NONE
+            },
+        );
+        let routing = pointer.route(&f, Some("/term"), &surfaces, &ctrl_s);
+        assert_eq!(
+            routing.outcome.route,
+            Route::Raw {
+                node: "/term".into()
+            },
+            "a PointerState built with a reserved set must deliver a raw \
+             claim verbatim through its one real input entry: {:?}",
+            routing.outcome.route
+        );
+
+        let shift_esc = key(KeyCode::Escape, Modifiers::shift());
+        let routing = pointer.route(&f, Some("/term"), &surfaces, &shift_esc);
+        assert_eq!(
+            routing.outcome.route,
+            Route::Reserved {
+                chord: Chord::reserved_escape()
+            },
+            "and the reserved chord must still escape the same claim through \
+             the same entry: {:?}",
+            routing.outcome.route
+        );
+    }
+
+    /// The other direction of the same guarantee `route` vs. `route_with_reserved`
+    /// already proves for the free functions: a `PointerState` built with
+    /// [`PointerState::new`] carries no reserved set, so the wiring this
+    /// leaf adds must not make `Raw` reachable through it by accident. The
+    /// same node, the same focus, the same keystroke as the test above —
+    /// the only thing that changed is which constructor built the state.
+    #[test]
+    fn pointer_state_without_a_reserved_set_never_produces_raw() {
+        let f = frame(vec![raw_claim_node(
+            "/term",
+            Rect::new(0.0, 0.0, 100.0, 100.0),
+            None,
+        )]);
+        let surfaces = BTreeMap::new();
+        let mut pointer = PointerState::new();
+
+        let ctrl_s = key(
+            KeyCode::Char('s'),
+            Modifiers {
+                ctrl: true,
+                ..Modifiers::NONE
+            },
+        );
+        let routing = pointer.route(&f, Some("/term"), &surfaces, &ctrl_s);
+        assert_ne!(
+            routing.outcome.route,
+            Route::Raw {
+                node: "/term".into()
+            },
+            "PointerState::new carries no reserved set, so Raw must stay \
+             unreachable through it: {:?}",
+            routing.outcome.route
+        );
+        assert_eq!(
+            routing.outcome.route,
+            Route::Keyboard {
+                node: "/term".into()
+            },
+            "with no escape hatch supplied, the same node routes through \
+             ordinary keyboard delivery instead: {:?}",
+            routing.outcome.route
         );
     }
 }

@@ -18,12 +18,39 @@
 
 use serde::Deserialize;
 
-use crate::tree::{Key, ViewNode};
+use crate::tree::{Intent, Key, Phase, ViewNode};
 
 /// A parameter shape: how it deserializes, and how it reads in Luau.
 pub trait ParamShape: for<'de> Deserialize<'de> {
     /// The Luau table type this shape renders as in `plugin.d.luau`.
     const LUAU: &'static str;
+}
+
+/// Spec 010 FR-015: [`Intent`] and [`Phase`] render as Luau string-literal
+/// unions, the same mechanism [`ParamShape::LUAU`] gives every table shape
+/// above, so a plugin author gets a type error at the call site for
+/// `"nagivate"` instead of a silent no-op at mount.
+///
+/// Neither is a *table* shape — `ParamShape::LUAU` calls that "the Luau
+/// table type this shape renders as", and a string-literal union is not a
+/// table — but the trait itself asks only for a rendered Luau type string
+/// and a `Deserialize` impl, both of which `Intent` and `Phase` already
+/// have (`tree::node`'s `#[serde(rename_all = "kebab-case")]`). Neither is
+/// registered as a component constructor's own top-level parameter shape —
+/// `crate::component::registry::entries` walks those, not this trait's
+/// every implementor — so `xtask::ui_stubs`'s `every_shape_is_a_table_type`
+/// never sees either impl and never needs to. What DOES need to see them is
+/// whatever renders a `behaviour: Behaviour` parameter's Luau type once a
+/// component constructor exposes one: a table type built from
+/// `Intent::LUAU` and `Phase::LUAU` (`{ intent: <Intent::LUAU>, phase:
+/// <Phase::LUAU> }`) rather than a second, hand-copied pair of string lists
+/// that the vocabulary in `tree::node` can drift out from under.
+impl ParamShape for Intent {
+    const LUAU: &'static str = "\"activate\" | \"toggle\" | \"select\" | \"adjust\"";
+}
+
+impl ParamShape for Phase {
+    const LUAU: &'static str = "\"on-press\" | \"on-change\" | \"on-release\"";
 }
 
 /// What went wrong turning a wire `params` table into a shape.
@@ -168,4 +195,55 @@ shapes! {
         key: Key,
     }
         => "{ key: string }";
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ParamShape;
+    use crate::tree::{Intent, Phase};
+
+    /// FR-015: a misspelled `Intent`/`Phase` name must be a Luau type
+    /// error at the call site, not a silent no-op at mount — so
+    /// `ParamShape::LUAU` must render both as a string-literal union naming
+    /// every wire variant, never as the unchecked `string` a closed
+    /// vocabulary has no business widening to.
+    ///
+    /// The expected union is built from `serde_json`'s own rendering of
+    /// each variant, in declaration order, rather than a second hand-typed
+    /// copy of the four/three wire strings: this is the test that would
+    /// catch `Intent::LUAU` or `Phase::LUAU` drifting from
+    /// `tree::node`'s `#[serde(rename_all = "kebab-case")]` vocabulary,
+    /// which a second hand-typed literal could not.
+    #[test]
+    fn intent_and_phase_render_as_string_literal_unions() {
+        let wire = |json: &str| json.to_owned();
+        let intents = [
+            Intent::Activate,
+            Intent::Toggle,
+            Intent::Select,
+            Intent::Adjust,
+        ];
+        let expected_intent = intents
+            .iter()
+            .map(|i| wire(&serde_json::to_string(i).unwrap()))
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert_eq!(<Intent as ParamShape>::LUAU, expected_intent);
+        assert_eq!(
+            <Intent as ParamShape>::LUAU,
+            "\"activate\" | \"toggle\" | \"select\" | \"adjust\""
+        );
+
+        let phases = [Phase::OnPress, Phase::OnChange, Phase::OnRelease];
+        let expected_phase = phases
+            .iter()
+            .map(|p| wire(&serde_json::to_string(p).unwrap()))
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert_eq!(<Phase as ParamShape>::LUAU, expected_phase);
+        assert_eq!(
+            <Phase as ParamShape>::LUAU,
+            "\"on-press\" | \"on-change\" | \"on-release\""
+        );
+    }
 }

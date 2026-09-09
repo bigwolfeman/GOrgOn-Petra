@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use crate::draw::DrawList;
 use crate::geom::Rect;
+use crate::keymap::binding::Binding;
 use crate::layout::Slot;
 use crate::tree::{
     Behaviour, Edge, FocusFigure, FocusShownOn, Interaction, NodeKind, Role, TextWrap,
@@ -193,6 +194,20 @@ pub struct PlacementSemantics {
     /// [`Self::behaviour`]: a routing fact with no paint consequence of its
     /// own, so it is likewise not a digest input.
     pub raw_claim: bool,
+    /// Key bindings this node declared, projected straight off
+    /// [`crate::tree::ViewNode::bindings`] the way [`Self::behaviour`] is
+    /// projected off its node.
+    ///
+    /// **Not** a digest input, for the identical argument
+    /// [`crate::frame::digest::leaf_hash`]'s doc comment makes for
+    /// `behaviour`: a binding decides how a *keystroke* is interpreted, not
+    /// what the frame *looks like*, so two frames differing only in which
+    /// bindings a node carries are one picture. Projected here rather than
+    /// left on the `ViewNode` alone because a resolver walking a placed
+    /// frame — gathering which bindings are currently live, the same way
+    /// [`Self::raw_claim`] is gathered by walking placements for a raw
+    /// claim on the focus path — has a `PetrifiedFrame` in hand and no tree.
+    pub bindings: Vec<Binding>,
 }
 
 /// One node's final geometry and paint state for one frame.
