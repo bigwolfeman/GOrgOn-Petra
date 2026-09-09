@@ -768,9 +768,113 @@ impl ContentMeasure for GalleyShaper {
     }
 }
 
+/// A host-registered measurer for one `Props.custom_kind` name.
+///
+/// Answers the same [`SizeProposal`] [`ContentMeasure::custom`] receives, so
+/// a measurer can honour `Zero`, `Unbounded`, `Unspecified` and `Exact`
+/// exactly as any other leaf does (`contracts/view-tree.md`) — a grid of
+/// `cols` cells at `cell_width` each, clamped to whatever the offer allows,
+/// say. This is the measurement mirror of
+/// [`crate::paint::CustomPainterFn`]: that closure is handed the placement
+/// this crate already resolved and paints *into* it; this one is handed the
+/// offer and answers *with* the extent the painter will get.
+pub type CustomMeasurerFn = dyn Fn(SizeProposal) -> Size;
+
+/// Host-registered measurers, keyed by the name `Props.custom_kind` carries.
+///
+/// The measurement mirror of [`crate::paint::CustomPainters`]: empty by
+/// default, so a tree with no host registration measures exactly what this
+/// crate shipped before this type existed — every custom name lands in
+/// [`GalleyShaper::unsupported_customs`] at [`Size::ZERO`]. Registration is
+/// opt-in per name, and last registration wins, the same rule
+/// [`crate::paint::CustomPainters::register`] and
+/// [`crate::image::ImageSources::register`] both use.
+#[derive(Default)]
+pub struct CustomMeasurers {
+    measurers: BTreeMap<String, Box<CustomMeasurerFn>>,
+}
+
+impl CustomMeasurers {
+    /// An empty registry: every custom name falls back to the shaper's own
+    /// answer, `Size::ZERO` recorded in `unsupported_customs`.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register `measurer` under `name`. Registering the same name twice
+    /// replaces the previous measurer rather than keeping both.
+    pub fn register(
+        &mut self,
+        name: impl Into<String>,
+        measurer: impl Fn(SizeProposal) -> Size + 'static,
+    ) {
+        self.measurers.insert(name.into(), Box::new(measurer));
+    }
+
+    /// The measurer registered for `name`, or `None` when nothing is.
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<&CustomMeasurerFn> {
+        self.measurers.get(name).map(|measurer| measurer.as_ref())
+    }
+}
+
+/// The [`ContentMeasure`] a running host measures through: text and images
+/// go to `shaper`, and a `custom` name goes to `measurers` first, falling
+/// back to `shaper` — which is where the pre-registry answer lives and stays
+/// (`GalleyShaper::custom`'s `Size::ZERO`-and-record behaviour) — when
+/// nothing is registered for it.
+///
+/// [`crate::paint`] keeps its shaper and its painter registry as two
+/// arguments to one function, because [`crate::paint::PaintContent`] already
+/// carries per-placement dispatch and a painter is reached only through
+/// `paint_frame_with_hosts`. Layout instead asks its whole measurement
+/// boundary through one [`ContentMeasure`] object, so [`Host::pass`] needs
+/// the shaper and the registry combined into one — this type is that
+/// combination, built fresh for each `petrify` call so it borrows nothing
+/// longer than the pass that uses it.
+///
+/// [`Host::pass`]: crate::host::Host::pass
+pub struct HostedContent<'a> {
+    shaper: &'a mut GalleyShaper,
+    measurers: &'a CustomMeasurers,
+}
+
+impl<'a> HostedContent<'a> {
+    /// Measure through `shaper`, consulting `measurers` for `custom` names
+    /// first.
+    #[must_use]
+    pub fn new(shaper: &'a mut GalleyShaper, measurers: &'a CustomMeasurers) -> Self {
+        Self { shaper, measurers }
+    }
+}
+
+impl ContentMeasure for HostedContent<'_> {
+    fn text(&mut self, req: &TextRequest<'_>) -> TextMeasurement {
+        self.shaper.text(req)
+    }
+
+    fn image(&mut self, source: &str, proposal: SizeProposal) -> Size {
+        self.shaper.image(source, proposal)
+    }
+
+    fn custom(&mut self, name: &str, proposal: SizeProposal) -> Size {
+        match self.measurers.get(name) {
+            // A registered measurer answers instead of the shaper's
+            // fallback — and does *not* touch `unsupported_customs`: that
+            // set means "asked for and nothing answered", which is no
+            // longer true for this name.
+            Some(measurer) => measurer(proposal),
+            None => self.shaper.custom(name, proposal),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ELLIPSIS, FontFaces, GalleyShaper, TextStyle, Typography};
+    use super::{
+        CustomMeasurers, ELLIPSIS, FontFaces, GalleyShaper, HostedContent, TextStyle, Typography,
+    };
     use egui::{Color32, Context, FontFamily, FontId, Galley, RawInput};
     use gorgon_petra::layout::{ContentMeasure, SizeProposal, TextRequest};
     use gorgon_petra::token::{TypographyFamily, TypographyValue, TypographyWeight, dark, light};
@@ -1629,6 +1733,61 @@ mod tests {
             gorgon_petra::geom::Size::ZERO
         );
         assert_eq!(s.unsupported_images(), ["icons/fiber.png"]);
+        assert_eq!(s.unsupported_customs(), ["gauge"]);
+    }
+
+    /// Last registration for a name wins, the same rule
+    /// [`crate::paint::CustomPainters`] uses.
+    #[test]
+    fn a_second_registration_replaces_the_first() {
+        let mut measurers = CustomMeasurers::new();
+        measurers.register("gauge", |_| gorgon_petra::geom::Size::new(1.0, 1.0));
+        measurers.register("gauge", |_| gorgon_petra::geom::Size::new(2.0, 2.0));
+        let size = measurers.get("gauge").expect("registered")(SizeProposal::unspecified());
+        assert_eq!(size, gorgon_petra::geom::Size::new(2.0, 2.0));
+    }
+
+    /// A name nothing is registered for has no entry at all — not a
+    /// zero-sized one — so a caller can tell "unregistered" from
+    /// "registered and answered zero".
+    #[test]
+    fn an_unregistered_name_has_no_entry() {
+        let measurers = CustomMeasurers::new();
+        assert!(measurers.get("gauge").is_none());
+    }
+
+    /// [`HostedContent`] answers a registered `custom` name from the
+    /// registry and leaves the shaper's own bookkeeping untouched for it.
+    #[test]
+    fn hosted_content_answers_a_registered_custom_name_from_the_registry() {
+        let h = Headless::new();
+        let mut s = h.shaper();
+        let mut measurers = CustomMeasurers::new();
+        measurers.register("gauge", |_| gorgon_petra::geom::Size::new(42.0, 24.0));
+        let mut content = HostedContent::new(&mut s, &measurers);
+        assert_eq!(
+            content.custom("gauge", SizeProposal::unspecified()),
+            gorgon_petra::geom::Size::new(42.0, 24.0)
+        );
+        assert!(
+            s.unsupported_customs().is_empty(),
+            "a registered name answered; it is not unsupported"
+        );
+    }
+
+    /// The fallback [`GalleyShaper::custom`] takes over, unchanged, when
+    /// [`HostedContent`] has no measurer for a name: registering *some*
+    /// names must not make an unregistered one silently succeed.
+    #[test]
+    fn hosted_content_falls_back_to_the_shaper_for_an_unregistered_name() {
+        let h = Headless::new();
+        let mut s = h.shaper();
+        let measurers = CustomMeasurers::new();
+        let mut content = HostedContent::new(&mut s, &measurers);
+        assert_eq!(
+            content.custom("gauge", SizeProposal::unspecified()),
+            gorgon_petra::geom::Size::ZERO
+        );
         assert_eq!(s.unsupported_customs(), ["gauge"]);
     }
 }

@@ -82,7 +82,7 @@ use crate::paint::{
     focused_caret_target, paint_caret_overlay, paint_frame_with_caret,
 };
 use crate::schedule::FrameMotion;
-use crate::text::{FontFaces, GalleyShaper, Typography};
+use crate::text::{CustomMeasurers, FontFaces, GalleyShaper, HostedContent, Typography};
 
 /// The egui layer every Petra frame paints into.
 ///
@@ -669,6 +669,13 @@ pub struct Host<A: App> {
     /// than being drawn or being silently skipped.
     painters: CustomPainters,
     images: ImageSources,
+    /// Host-supplied measurers for registered `custom` kinds — the
+    /// measurement half of `painters`, consulted through [`HostedContent`]
+    /// at every `petrify_frame` call. Starts empty, so a name with no
+    /// registration measures exactly what [`GalleyShaper::custom`] answered
+    /// before this field existed: `Size::ZERO`, recorded in
+    /// `unsupported_customs`.
+    measurers: CustomMeasurers,
     /// Every declared transition, the trajectories in flight, and the
     /// repaint decision. Held across passes because a trajectory that did not
     /// survive the frame that started it would restart every frame and never
@@ -871,6 +878,7 @@ impl<A: App> Host<A> {
             faces,
             painters: CustomPainters::new(),
             images: ImageSources::new(),
+            measurers: CustomMeasurers::new(),
             // The component library names `toggle-knob`. Installing the
             // shipped registry here is what makes a tree of library
             // constructors validate without every application repeating the
@@ -1097,6 +1105,22 @@ impl<A: App> Host<A> {
         &mut self.painters
     }
 
+    /// The measurer registry for `custom` kinds — the measurement mirror of
+    /// [`Host::painters_mut`], and the reason a hosted node can be sized
+    /// instead of merely drawn.
+    ///
+    /// Registering a measurer here is what gives a `custom` node real
+    /// extent through ordinary layout negotiation; without it, the node
+    /// measures to [`Size::ZERO`] and lands in
+    /// [`GalleyShaper::unsupported_customs`], exactly as before this
+    /// registry existed. A kind still needs [`Registry::register_custom_kind`]
+    /// to validate at all — that call and this one are as deliberately
+    /// separate as `registry_mut` and `painters_mut` already are: one makes
+    /// a tree acceptable, the other makes it take room.
+    pub fn measurers_mut(&mut self) -> &mut CustomMeasurers {
+        &mut self.measurers
+    }
+
     /// The image source registry.
     pub fn images_mut(&mut self) -> &mut ImageSources {
         &mut self.images
@@ -1220,8 +1244,17 @@ impl<A: App> Host<A> {
         viewport: Viewport,
         theme: &ThemeSnapshot,
     ) -> PetrifiedFrame {
+        // The shaper stays a concrete field — `Host::shaper`'s cache-stats
+        // and typography-map callers, and every internal caller that binds
+        // the theme into it, all want a `GalleyShaper`, not a trait object —
+        // so the pluggable half of `ContentMeasure` is this borrow, built
+        // fresh per call rather than stored: `measurers` never changes
+        // mid-pass, and a stored trait object would either alias
+        // `self.shaper` a second time or force `measurers` behind the same
+        // indirection for no benefit.
+        let mut content = HostedContent::new(&mut self.shaper, &self.measurers);
         let mut ctx_layout = LayoutCtx {
-            content: &mut self.shaper,
+            content: &mut content,
             rows: &mut self.app,
             cache: &mut self.cache,
             state: &self.state,
@@ -3581,9 +3614,9 @@ mod tests {
     };
     use egui::{Context, Event, Key, Modifiers, RawInput};
     use gorgon_petra::frame::PetrifiedFrame;
-    use gorgon_petra::geom::{Point, Rect};
+    use gorgon_petra::geom::{Point, Rect, Size};
     use gorgon_petra::input::{InputEvent, Route, route_pointer_exit};
-    use gorgon_petra::layout::RowSource;
+    use gorgon_petra::layout::{RowSource, SizeProposal};
     use gorgon_petra::token::TokenName;
     use gorgon_petra::tree::{
         Anchor, ClampRule, InputPolicy, Interaction, Layer, NodeKind, Props, Role, ViewNode,
@@ -3616,6 +3649,11 @@ mod tests {
         now: f64,
         /// Paths this app has been handed, dropped or picked, in order.
         dropped: Vec<std::path::PathBuf>,
+        /// Replace the whole tree with a single `custom` node named
+        /// `"gauge"`, for the measurement-registry tests. Kept as a
+        /// short-circuit at the top of `view` rather than woven into the
+        /// panel tree below, so every existing test's tree is untouched.
+        custom: bool,
     }
 
     /// A focusable, clickable, hoverable text button — a `Role::Button` node
@@ -3666,6 +3704,14 @@ mod tests {
                 return ViewNode::new(NodeKind::Stack, "root")
                     .child(ViewNode::new(NodeKind::Text, "dup"))
                     .child(ViewNode::new(NodeKind::Text, "dup"));
+            }
+            if self.custom {
+                return ViewNode::new(NodeKind::Stack, "root").child(
+                    ViewNode::new(NodeKind::Custom, "gauge").with_props(Props {
+                        custom_kind: Some("gauge".to_owned()),
+                        ..Props::default()
+                    }),
+                );
             }
             let mut panel = Props::default();
             panel
@@ -4591,6 +4637,39 @@ mod tests {
             "the title, the field's placeholder, and the button"
         );
         assert!(report.unresolved_tokens.is_empty(), "{report:?}");
+    }
+
+    /// A measurer registered on [`Host::measurers_mut`] is consulted by real
+    /// layout, end to end: the placed rect for the `custom` node is exactly
+    /// the size the measurer answered, not [`Size::ZERO`] and not the
+    /// viewport it was offered.
+    #[test]
+    fn a_registered_measurer_sizes_the_placement_it_measured() {
+        let ctx = headless();
+        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        host.app_mut().custom = true;
+        host.registry_mut().register_custom_kind("gauge");
+        host.measurers_mut()
+            .register("gauge", |_proposal: SizeProposal| Size::new(42.0, 24.0));
+        // A painter too, only so `paint_and_bake_scene`'s completeness check
+        // (`PaintReport::is_complete`) does not fail this pass over an
+        // unrelated gap: an unpainted `custom` node is `silent` regardless
+        // of how it measured. The assertion this test cares about is the
+        // placed rect below, not paint completeness.
+        host.painters_mut().register("gauge", |_painter, _ctx| true);
+        step(&ctx, &mut host, RawInput::default());
+
+        let frame = host.frame().expect("a frame");
+        let placement = frame
+            .placements
+            .iter()
+            .find(|p| p.id == "/root/gauge")
+            .expect("the gauge placement");
+        assert_eq!(
+            placement.rect,
+            Rect::new(0.0, 0.0, 42.0, 24.0),
+            "the measurer's answer, not the viewport it was offered"
+        );
     }
 
     /// The host is what reaches the clipboard, because the application has
