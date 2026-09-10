@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 pub mod focus;
 pub mod name;
 pub mod presenter;
+pub mod rule;
 pub mod selection;
 pub mod shipped;
 pub mod slot;

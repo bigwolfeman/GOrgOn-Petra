@@ -26,26 +26,21 @@
 //! module's own tests.
 
 use super::icon::{IconMark, IconTone, icon_toned};
+use super::pin_block;
 use super::stack;
 use super::text::text;
 use super::tokens::{BORDER_SUBTLE, LAYER_HOVER, SIZE_MD, SPACING_03, SPACING_05, SURFACE_BASE, t};
 use crate::geom::{Align, Axis};
-use crate::tree::{
-    AxisConstraint, Constraints, FocusFigure, InsetRefs, Interaction, Key, NodeKind, Role,
-    Semantics, ViewNode,
-};
+use crate::tree::{FocusFigure, InsetRefs, Interaction, Key, NodeKind, Role, Semantics, ViewNode};
 
 /// Carbon accordion header `sm` (`layout.use` min).
 const HEIGHT_SM: f32 = 32.0;
 /// Carbon accordion header `lg` (`layout.use` max).
 const HEIGHT_LG: f32 = 48.0;
-/// Item divider: `border-top: 1px solid $border-subtle`.
-const DIVIDER: f32 = 1.0;
 
 const _: () = assert!(HEIGHT_SM == 32.0);
 const _: () = assert!(SIZE_MD == 40.0);
 const _: () = assert!(HEIGHT_LG == 48.0);
-const _: () = assert!(DIVIDER == 1.0);
 
 const HEADER_INTENTS: &[Interaction] =
     &[Interaction::Focus, Interaction::Click, Interaction::Hover];
@@ -209,7 +204,7 @@ fn accordion_item_content(
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
     let mut header = header
-        .with_constraints(pin_height(header_h))
+        .with_constraints(pin_block(header_h))
         .interactive(Role::Button, label.clone(), HEADER_INTENTS)
         .owning_its_text();
     // `BarInside`: collapsed headers stack flush against each other, so the
@@ -247,8 +242,13 @@ fn accordion_item_content(
     item
 }
 
-/// 1px hairline. An empty stack, not a spacer: a spacer answers Unbounded
-/// with 65535 and would blow the item to viewport-width.
+/// The item's hairline, as [`super::rule`].
+///
+/// A [`NodeKind::Separator`], not a childless stack with a fill: this used to
+/// pin its own one logical unit and paint a flat rect, so it drew a flat line
+/// while the same `border.subtle` token grooved on a data-table row. The kind
+/// measures the material's own thickness and the painter grooves it; see
+/// [`crate::token::rule`] for both constructions.
 ///
 /// This is the item's *whole* edge, not decoration alongside another one.
 /// Until the A3 audit pass `accordion_item` bound the shared `"border"`
@@ -269,34 +269,14 @@ fn accordion_item_content(
 /// element standing in for Carbon's one edge; the item's own border was
 /// pure redundancy that happened to also be wrong.
 fn divider() -> ViewNode {
-    let mut node = stack("divider", Axis::Horizontal, None, vec![]);
-    node.props
-        .tokens
-        .insert("background".into(), t(BORDER_SUBTLE));
-    node.constraints.vertical = AxisConstraint {
-        min: Some(DIVIDER),
-        max: Some(DIVIDER),
-        priority: 0,
-    };
-    node
-}
-
-fn pin_height(h: f32) -> Constraints {
-    Constraints {
-        vertical: AxisConstraint {
-            min: Some(h),
-            max: Some(h),
-            priority: 0,
-        },
-        ..Constraints::default()
-    }
+    super::rule("divider", Axis::Horizontal, BORDER_SUBTLE)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{BORDER_SUBTLE, LAYER_HOVER};
     use super::{
-        DIVIDER, HEIGHT_LG, HEIGHT_SM, IconMark, IconTone, SIZE_MD, accordion, accordion_item,
+        HEIGHT_LG, HEIGHT_SM, IconMark, IconTone, SIZE_MD, accordion, accordion_item,
         accordion_item_lg, accordion_item_sm, icon_toned,
     };
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
@@ -441,9 +421,14 @@ mod tests {
         );
         let line = named(&item, "divider");
         assert_eq!(token(line, "background"), Some(BORDER_SUBTLE));
-        assert_eq!(line.constraints.vertical.min, Some(DIVIDER));
-        assert_eq!(line.constraints.vertical.max, Some(DIVIDER));
-        assert_eq!(DIVIDER, 1.0);
+        // 2026-09-09: the divider pins no thickness of its own any more, and
+        // that is the assertion. It used to pin one logical unit for a
+        // material that paints four device pixels, which is how it came to
+        // draw a flat line while a data-table row grooved on the same token.
+        // `NodeKind::Separator` measures `token::rule::thickness` instead.
+        assert_eq!(line.kind, NodeKind::Separator);
+        assert_eq!(line.constraints.vertical.min, None);
+        assert_eq!(line.constraints.vertical.max, None);
     }
 
     const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };

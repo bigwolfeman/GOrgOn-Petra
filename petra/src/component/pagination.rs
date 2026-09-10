@@ -38,6 +38,7 @@ use super::disabled;
 use super::dropdown::dropdown_option;
 use super::icon::{IconMark, IconTone, icon_toned};
 use super::list_box::{Dividers, list_box};
+use super::pin_block;
 use super::stack;
 use super::text::text;
 use super::tokens::{
@@ -54,16 +55,27 @@ const _: () = assert!(SIZE_MD == 40.0);
 
 const NAV_INTENTS: &[Interaction] = &[Interaction::Focus, Interaction::Click, Interaction::Hover];
 
-/// `border-inline-start: 1px solid $border-subtle` on each nav button and
-/// on the right group, `border-inline-end` on the left group, SOURCED
-/// `slice-d.md:57-58`. A real divider element rather than a `border-left`
-/// binding on the button: the buttons carry an opaque fill and sit flush
-/// in a `Stretch` row, which is the compositing shape an edge slot on a
-/// container cannot survive (see the module doc's item 1), and a sibling
-/// element draws the same one line either way.
-const DIVIDER_WIDTH: f32 = 1.0;
-/// The container's `border-block-start`.
-const RULE_HEIGHT: f32 = 1.0;
+/// What both of this bar's rules measure across themselves: the rule
+/// material's own thickness at scale 1, which is the scale every test in
+/// this module petrifies at.
+///
+/// Carbon writes `border-inline-start: 1px solid $border-subtle` on each nav
+/// button and on the right group, and `border-inline-end` on the left group
+/// (SOURCED `slice-d.md:57-58`). Both are separator elements here rather
+/// than edge-slot bindings on the buttons: the buttons carry an opaque fill
+/// and sit flush in a `Stretch` row, which is the compositing shape an edge
+/// slot on a container cannot survive (see the module doc's item 1), and a
+/// sibling element draws the same line either way.
+///
+/// **Not `1.0`.** These were one logical unit until 2026-09-09, which
+/// reserved a quarter of the room the two-stroke groove paints; the seam
+/// between the nav buttons is also the first vertical rule in this library
+/// to reach the material. Neither number is written at a call site any
+/// more — [`super::rule`] builds a `Separator` and the layout measures it.
+/// Which is why this is test-only: production code here has no number left
+/// to hold, and the tests still have placed geometry to check.
+#[cfg(test)]
+const RULE_UNITS: f32 = crate::token::rule::total_units();
 
 /// The page-size picker's key: the trigger a caller matches a press on,
 /// and the sibling its list box anchors to.
@@ -207,16 +219,8 @@ fn bar(
         priority: 0,
     };
 
-    let mut rule = stack("rule", Axis::Horizontal, None, vec![]);
-    rule.props
-        .tokens
-        .insert("background".into(), t(BORDER_SUBTLE));
+    let mut rule = super::rule("rule", Axis::Horizontal, BORDER_SUBTLE);
     rule.props.align_self = Some(Align::Stretch);
-    rule.constraints.vertical = AxisConstraint {
-        min: Some(RULE_HEIGHT),
-        max: Some(RULE_HEIGHT),
-        priority: 0,
-    };
 
     let mut node = stack(key, Axis::Vertical, None, vec![rule, row]);
     node.props.align = Some(Align::Stretch);
@@ -381,7 +385,7 @@ fn picker(
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
     let mut node = node
-        .with_constraints(pin_height(SIZE_MD))
+        .with_constraints(pin_block(SIZE_MD))
         .interactive(Role::Button, label, NAV_INTENTS)
         .owning_its_text();
     node.semantics.value = Some(value);
@@ -450,28 +454,23 @@ fn muted(key: &'static str, content: impl Into<String>) -> ViewNode {
     node
 }
 
-/// A 1px vertical line spanning the row's own height, standing in for the
-/// `border-inline-start` Carbon puts on the button itself (see
-/// [`DIVIDER_WIDTH`]'s doc for why this is a sibling element).
+/// The vertical seam spanning the row's own height, standing in for the
+/// `border-inline-start` Carbon puts on the button itself. A sibling element
+/// rather than an edge slot because the buttons carry an opaque fill and sit
+/// flush in a `Stretch` row, which is the compositing shape an edge slot on
+/// a container cannot survive; see the module doc's item 1. It is also the
+/// first vertical rule in this library to reach the material
+/// ([`crate::token::rule`]).
 ///
 /// The [`run`] grid's `Align::Stretch` grows it to the row's placed
-/// height. A **childless `Stack`**, not a `Spacer`: `stack::measure`
-/// returns `Size::ZERO` for a childless stack before it ever looks at what
-/// was offered, so leaving the vertical axis unconstrained costs nothing at
-/// measure time — only `Stretch`, read at *place* time once the row's real
-/// height is already settled, ever grows it. A `Spacer` answers "whatever
-/// is offered" on an unconstrained axis and reported a 900-unit bar once.
+/// height. A `Separator`, not a `Spacer`: a separator measures zero along
+/// its own axis under an unspecified offer, so leaving the vertical axis
+/// unconstrained costs nothing at measure time — only `Stretch`, read at
+/// *place* time once the row's real height is already settled, ever grows
+/// it. A `Spacer` answers "whatever is offered" on an unconstrained axis
+/// and reported a 900-unit bar once.
 fn nav_divider(key: &'static str) -> ViewNode {
-    let mut node = stack(key, Axis::Vertical, None, vec![]);
-    node.props
-        .tokens
-        .insert("background".into(), t(BORDER_SUBTLE));
-    node.constraints.horizontal = AxisConstraint {
-        min: Some(DIVIDER_WIDTH),
-        max: Some(DIVIDER_WIDTH),
-        priority: 0,
-    };
-    node
+    super::rule(key, Axis::Vertical, BORDER_SUBTLE)
 }
 
 /// A ghost icon button, 40×40: one 16 caret centred, the label in
@@ -515,17 +514,6 @@ fn nav_button(
     if unavailable { disabled(node) } else { node }
 }
 
-fn pin_height(h: f32) -> Constraints {
-    Constraints {
-        vertical: AxisConstraint {
-            min: Some(h),
-            max: Some(h),
-            priority: 0,
-        },
-        ..Constraints::default()
-    }
-}
-
 fn pin_square(side: f32) -> Constraints {
     Constraints {
         horizontal: AxisConstraint {
@@ -544,8 +532,7 @@ fn pin_square(side: f32) -> Constraints {
 #[cfg(test)]
 mod tests {
     use super::{
-        DIVIDER_WIDTH, PaginationPicker, RULE_HEIGHT, SIZE_MD, pagination, pagination_items,
-        pagination_items_open,
+        PaginationPicker, RULE_UNITS, SIZE_MD, pagination, pagination_items, pagination_items_open,
     };
     use crate::component::icon::{IconMark, IconTone, icon_toned};
     use crate::component::tokens::{BORDER_SUBTLE, LAYER_HOVER, SURFACE_RAISED};
@@ -884,11 +871,11 @@ mod tests {
                 "{label}: rule starts at the bar's left edge"
             );
             assert_eq!(rule.w, outer.w, "{label}: rule spans the bar's whole width");
-            assert_eq!(rule.h, RULE_HEIGHT, "{label}");
+            assert_eq!(rule.h, RULE_UNITS, "{label}");
             assert_eq!(bar.h, SIZE_MD, "{label}: the row is exactly md");
             assert_eq!(
                 outer.h,
-                SIZE_MD + RULE_HEIGHT,
+                SIZE_MD + RULE_UNITS,
                 "{label}: the bar's own height must not balloon"
             );
             let controls = rect_of(&frame, "/bar/controls");
@@ -899,7 +886,7 @@ mod tests {
             );
             for divider in ["/divider-page", "/divider-previous", "/divider-next"] {
                 let d = rect_of(&frame, divider);
-                assert_eq!(d.w, DIVIDER_WIDTH, "{label} {divider}");
+                assert_eq!(d.w, RULE_UNITS, "{label} {divider}");
                 assert_eq!(d.y, bar.y, "{label} {divider}: flush with the row's top");
                 assert_eq!(d.h, bar.h, "{label} {divider}: spans the row's full height");
             }

@@ -60,9 +60,9 @@
 //! [`structured_list_sized`]'s `dividers` flag is the "toggled off in code"
 //! half. [`structured_list`] passes `true`.
 //!
-//! A divider is a [`DIVIDER`]-wide grid track carrying a [`DIVIDER_RULE`]-wide
-//! rule down its centre. **The hit area is eight times the mark on purpose**:
-//! a one-unit drag target is not a thing a hand can hit, and the engine has
+//! A divider is a [`DIVIDER`]-wide grid track carrying a rule-material
+//! rule down its centre. **The hit area is wider than the mark on purpose**:
+//! a rule-width drag target is not a thing a hand can hit, and the engine has
 //! no way to widen a node's hit rect past its own placement, so the target
 //! *is* the track and the rule is what the eye gets. It declares
 //! [`Interaction::Drag`] and nothing else — not `Hover`, for the reason
@@ -94,8 +94,8 @@ use std::sync::Arc;
 use crate::frame::PetrifiedFrame;
 use crate::geom::{Align, Axis, Point};
 use crate::tree::{
-    AxisConstraint, Constraints, FocusFigure, InsetRefs, Interaction, Justify, Key, NodeKind,
-    Props, Role, Semantics, TrackSize, ViewNode,
+    AxisConstraint, FocusFigure, InsetRefs, Interaction, Justify, Key, NodeKind, Props, Role,
+    Semantics, TrackSize, ViewNode,
 };
 
 /// Carbon default structured-list row height (style page Size table). Not
@@ -111,14 +111,12 @@ const _: () = assert!(ROW_HEIGHT == 60.0);
 /// `$spacing-03` (8) expressed as a length rather than a token, because a
 /// track size is a number in this engine and not a token reference, and 8
 /// is the smallest step in Carbon's own spacing set that is still a target
-/// a pointer can land on. The rule the eye sees is [`DIVIDER_RULE`], so the
-/// target is eight times the mark.
+/// a pointer can land on. The rule the eye sees is the material's own
+/// thickness ([`crate::token::rule::thickness`]), so the target is about
+/// twice the mark. It used to be eight times: the rule was written here as
+/// one logical unit against a groove four device pixels deep, which is why
+/// this column seam painted a flat bright line beside grooved row rules.
 const DIVIDER: f32 = 8.0;
-
-/// The drawn width of the rule inside a divider: one unit, the same rule
-/// weight `border-top` gives a row, so a vertical seam and a horizontal one
-/// read as the same line.
-const DIVIDER_RULE: f32 = 1.0;
 
 /// The narrowest a column may be dragged.
 ///
@@ -369,7 +367,7 @@ fn lay_out_columns(row: &mut ViewNode, weights: &[f32], dividers: bool, names: &
 }
 
 /// One draggable column boundary: a [`DIVIDER`]-wide target with a
-/// [`DIVIDER_RULE`]-wide rule down its centre.
+/// rule down its centre, at the material's own width.
 ///
 /// `name` is the caption of the column to its left, so the accessible name
 /// says which boundary this is. A divider with no name to its left still
@@ -377,17 +375,7 @@ fn lay_out_columns(row: &mut ViewNode, weights: &[f32], dividers: bool, names: &
 /// audit violation (`ActionableNeedsRoleAndLabel`) and a blank string is
 /// not a name.
 fn column_divider(index: usize, name: Option<&String>) -> ViewNode {
-    let mut rule = ViewNode::new(NodeKind::Spacer, "rule").with_constraints(Constraints {
-        horizontal: AxisConstraint {
-            min: Some(DIVIDER_RULE),
-            max: Some(DIVIDER_RULE),
-            priority: 0,
-        },
-        ..Constraints::default()
-    });
-    rule.props
-        .tokens
-        .insert("background".into(), t(BORDER_SUBTLE));
+    let rule = super::rule("rule", Axis::Vertical, BORDER_SUBTLE);
 
     let label = match name {
         Some(name) if !name.trim().is_empty() => format!("Resize column {name}"),
@@ -1079,18 +1067,27 @@ mod tests {
         );
     }
 
-    /// The hit area is the whole track and the drawn rule is one unit
-    /// inside it, centred. A one-unit drag target is not a thing a hand can
-    /// hit; this is the number that makes the control usable and it is
-    /// measured in the frame, not asserted off the constant.
+    /// The hit area is the whole track and the drawn rule sits centred
+    /// inside it. A rule-width drag target is not a thing a hand can hit;
+    /// the track is the number that makes the control usable, and both are
+    /// measured in the frame rather than asserted off a constant.
+    ///
+    /// The rule's own width is the material's, not this module's: it is a
+    /// vertical `Separator` carrying `border.subtle`, so it measures the
+    /// same groove a row rule does. It was one logical unit until
+    /// 2026-09-09, which is why this seam painted a flat bright line beside
+    /// grooved row rules.
     #[test]
-    fn the_divider_target_is_eight_times_the_rule_it_draws() {
+    fn the_divider_target_is_wider_than_the_rule_it_draws() {
         let frame = petrify_lone(fixture());
         let target = rect_of(&frame, "/r0/div0");
         let rule = rect_of(&frame, "/r0/div0/rule");
         assert_eq!(target.w, DIVIDER);
-        assert_eq!(rule.w, 1.0);
-        assert_eq!(target.w, 8.0 * rule.w);
+        assert_eq!(rule.w, crate::token::rule::total_units());
+        assert!(
+            target.w > rule.w,
+            "the target ({target:?}) must be wider than the mark ({rule:?})"
+        );
         assert!(
             (rule.x - (target.x + (target.w - rule.w) / 2.0)).abs() < 0.51,
             "the rule ({rule:?}) is not centred in its target ({target:?})"

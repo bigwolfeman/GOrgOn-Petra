@@ -85,6 +85,7 @@ mod accordion;
 mod ai_label;
 mod breadcrumb;
 mod button;
+mod chrome_strip;
 mod code_snippet;
 mod contained_list;
 mod content_switcher;
@@ -139,6 +140,7 @@ pub use button::{
     button, button_2xl, button_lg, button_sm, button_xl, button_xs, danger_button,
     danger_ghost_button, danger_tertiary_button, ghost_button, primary_button, tertiary_button,
 };
+pub use chrome_strip::chrome_strip;
 pub use code_snippet::{
     COPY_FEEDBACK, COPY_FEEDBACK_KEY, COPY_FEEDBACK_SECONDS, CodeInk, code_runs, code_snippet,
     code_snippet_copied, code_snippet_inline, code_snippet_multi,
@@ -399,33 +401,44 @@ pub fn on_layer(mut node: ViewNode, depth: usize) -> ViewNode {
     node
 }
 
-/// A hairline rule across the inline axis, in `fill`.
+/// A hairline rule running along `axis`, in `fill`.
 ///
-/// Carbon draws a `1px solid $border-subtle` boundary between the rows of
-/// most of its list-shaped components, and binding the shared `"border"`
-/// token instead gets a four-sided box — `pagination.rs`'s own comment says
-/// so, and the UI shell header had exactly that defect. This is the one
-/// shape that draws one line.
+/// **The one way to write a standalone divider.** Carbon draws a `1px solid
+/// $border-subtle` boundary between the rows of most of its list-shaped
+/// components, and this is that line as a node of its own, for the cases
+/// where the rule does not belong to something else. Where it does — a
+/// table row, a field, a list option — bind an edge slot on that thing
+/// instead; `crate::token::rule` describes both constructions and why there
+/// are two.
 ///
-/// An empty `Stack`, not a `Spacer`: a spacer answers an unbounded query at
-/// a huge extent and would blow a `FitContent` grid track out to the
-/// viewport, where an empty stack measures zero on its main axis and lets
-/// [`crate::geom::Align::Stretch`] fill the cell it sits in.
+/// # Why this takes no thickness
 ///
-/// `ui_shell::accent_mark`, `tabs::indicator_bar` and two places in
-/// `pagination.rs` each grew their own copy of this before it had a home.
-/// They should come here; they are held open by other work as this lands.
+/// It used to, and that was the defect. A rule at [`crate::token::rule::MATERIAL_TOKEN`]
+/// (`border.subtle`) is a two-stroke groove four **absolute device pixels**
+/// deep, and seven dividers across this library each pinned their own one
+/// logical unit for it. They painted flat rather than clipped, because each
+/// was a childless stack carrying a `background` fill and a fill is not an
+/// edge slot, so the same token grooved in a data table and drew a flat line
+/// in an accordion. Both halves of that came from a number at the call site.
+///
+/// [`NodeKind::Separator`] removes the number: `measure_separator` answers
+/// [`crate::token::rule::thickness`] for the material and
+/// [`crate::layout::leaf::SEPARATOR_THICKNESS`] for anything else, and the
+/// painter grooves the whole rect. An author says *what the line is*, never
+/// how thick.
+///
+/// The run comes from the parent, which is the same arrangement the old
+/// childless stack relied on: a separator measures zero along its own axis
+/// under an unspecified offer and takes its length from
+/// [`crate::geom::Align::Stretch`] at place time. A parent that stretches
+/// nothing gives this a zero-length rule.
 #[must_use]
-pub fn rule(key: impl Into<Key>, thickness: f32, fill: &str) -> ViewNode {
-    let mut node = stack(key, crate::geom::Axis::Horizontal, None, vec![]);
+pub fn rule(key: impl Into<Key>, axis: crate::geom::Axis, fill: &str) -> ViewNode {
+    let mut node = ViewNode::new(NodeKind::Separator, key);
+    node.props.axis = Some(axis);
     node.props
         .tokens
         .insert("background".into(), tokens::t(fill));
-    node.constraints.vertical = crate::tree::AxisConstraint {
-        min: Some(thickness),
-        max: Some(thickness),
-        priority: 0,
-    };
     node
 }
 
@@ -569,6 +582,28 @@ pub(crate) fn swatch(
 /// named the way `InsetRefs::symmetric` itself is: horizontal first.
 pub(crate) fn pad(horizontal: &str, vertical: &str) -> InsetRefs {
     InsetRefs::symmetric(tokens::t(horizontal), tokens::t(vertical))
+}
+
+/// Pin `h` as both the minimum and maximum of the block (vertical) extent.
+///
+/// `ui_shell.rs`'s own `pin_block` and `button.rs`'s own `pin_height` were
+/// byte-for-byte the same four lines: two names for one definition, split
+/// across two files by nothing but which component happened to need it
+/// first. This is the one copy both call sites now share. (A handful of
+/// other components — `pagination`, `code_snippet`, `menu`, `accordion`,
+/// `content_switcher`, `contained_list`, `dropdown`, `toggletip`,
+/// `date_picker` — still carry their own private `pin_height`/`pin_square`
+/// helpers; unifying those is a separate, larger change this one does not
+/// make.)
+pub(crate) fn pin_block(h: f32) -> Constraints {
+    Constraints {
+        vertical: AxisConstraint {
+            min: Some(h),
+            max: Some(h),
+            priority: 0,
+        },
+        ..Constraints::default()
+    }
 }
 
 /// Logical extent of a [`caret`] on both axes: Carbon's 16px glyph box.

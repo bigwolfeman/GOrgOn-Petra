@@ -39,11 +39,10 @@ use super::tokens::{
     BORDER_SUBTLE, LAYER_HOVER, LAYER_SELECTED_INVERSE, SHAPE_SM, SIZE_MD, SPACING_01, SPACING_03,
     SPACING_05, SURFACE_BASE, TEXT_INVERSE, TEXT_MUTED, TYPOGRAPHY_BODY, TYPOGRAPHY_HEADING_SM, t,
 };
-use super::{pad, stack, swatch};
+use super::{pad, pin_block, stack, swatch};
 use crate::geom::{Align, Axis};
 use crate::tree::{
-    AxisConstraint, Constraints, Interaction, Justify, Key, NodeKind, Props, Role, Semantics,
-    TrackSize, ViewNode,
+    Interaction, Justify, Key, NodeKind, Props, Role, Semantics, TrackSize, ViewNode,
 };
 
 const _: () = assert!(SIZE_MD == 40.0);
@@ -157,22 +156,11 @@ pub fn content_switcher_item(
     );
 
     let mut node = node
-        .with_constraints(pin_height(SIZE_MD))
+        .with_constraints(pin_block(SIZE_MD))
         .interactive(Role::Button, label, ITEM_INTENTS)
         .owning_its_text();
     node.semantics.selected = selected;
     node
-}
-
-fn pin_height(h: f32) -> Constraints {
-    Constraints {
-        vertical: AxisConstraint {
-            min: Some(h),
-            max: Some(h),
-            priority: 0,
-        },
-        ..Constraints::default()
-    }
 }
 
 #[cfg(test)]

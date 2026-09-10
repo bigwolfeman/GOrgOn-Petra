@@ -57,6 +57,7 @@
 
 use super::icon::{IconBox, IconMark, IconTone, icon_in};
 use super::pad;
+use super::pin_block;
 use super::popover::popover_with;
 use super::stack;
 use super::text::text;
@@ -65,9 +66,7 @@ use super::tokens::{
     t,
 };
 use crate::geom::{Align, Axis};
-use crate::tree::{
-    AxisConstraint, Constraints, FocusFigure, FocusShownOn, Interaction, Key, Role, ViewNode,
-};
+use crate::tree::{FocusFigure, FocusShownOn, Interaction, Key, Role, ViewNode};
 
 /// Carbon toggletip content `max-inline-size` (`18rem`).
 const MAX_INLINE: f32 = 288.0;
@@ -157,23 +156,12 @@ fn trigger_button(key: impl Into<Key>, label: String) -> ViewNode {
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
     let mut node = node
-        .with_constraints(pin_height(SIZE_MD))
+        .with_constraints(pin_block(SIZE_MD))
         .interactive(Role::Button, label, TRIGGER_INTENTS)
         .owning_its_text();
     node.semantics.focus_figure = FocusFigure::Sides;
     node.semantics.focus_shown_on = FocusShownOn::Well;
     node
-}
-
-fn pin_height(h: f32) -> Constraints {
-    Constraints {
-        vertical: AxisConstraint {
-            min: Some(h),
-            max: Some(h),
-            priority: 0,
-        },
-        ..Constraints::default()
-    }
 }
 
 #[cfg(test)]

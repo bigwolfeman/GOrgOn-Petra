@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 use super::icon::{IconMark, IconTone, icon_toned};
 use super::pad;
+use super::pin_block;
 use super::stack;
 use super::text::text;
 use super::tokens::{
@@ -99,7 +100,7 @@ pub fn code_snippet(key: impl Into<Key>, code: impl Into<String>) -> ViewNode {
         right: Some(t(SPACING_05)),
         ..InsetRefs::default()
     });
-    paint_well(node).with_constraints(pin_height(SIZE_MD))
+    paint_well(node).with_constraints(pin_block(SIZE_MD))
 }
 
 /// Multi-line snippet. Min-height 288. Copy button labelled `"Copy"`.
@@ -205,7 +206,7 @@ pub fn code_snippet_inline(key: impl Into<Key>, code: impl Into<String>) -> View
     // reasoning is about a run inside a container, and this node has neither.
     node.semantics.focus_shown_on = FocusShownOn::Own;
     node.semantics.focus_figure = FocusFigure::Border;
-    node.with_constraints(pin_height(INLINE_HEIGHT))
+    node.with_constraints(pin_block(INLINE_HEIGHT))
 }
 
 /// What a stretch of code *is*, so the theme can decide what colour it takes.
@@ -557,17 +558,6 @@ fn paint_well(mut node: ViewNode) -> ViewNode {
     // with the multi-line well's own expand row.
     node.semantics.focus_figure = FocusFigure::Sides;
     node
-}
-
-fn pin_height(h: f32) -> Constraints {
-    Constraints {
-        vertical: AxisConstraint {
-            min: Some(h),
-            max: Some(h),
-            priority: 0,
-        },
-        ..Constraints::default()
-    }
 }
 
 #[cfg(test)]

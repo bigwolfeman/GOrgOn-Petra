@@ -40,6 +40,7 @@
 
 use super::icon::{IconMark, IconTone, icon_toned};
 use super::list_box::{Dividers, ListBoxSize, edge_row, list_box, list_box_field};
+use super::pin_block;
 use super::stack;
 use super::text::text;
 use super::tokens::{
@@ -47,9 +48,7 @@ use super::tokens::{
     TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_BODY_COMPACT, TYPOGRAPHY_LABEL, t,
 };
 use crate::geom::{Align, Axis};
-use crate::tree::{
-    AxisConstraint, Constraints, FocusFigure, Interaction, Key, Role, TextWrap, ViewNode,
-};
+use crate::tree::{FocusFigure, Interaction, Key, Role, TextWrap, ViewNode};
 
 const _: () = assert!(SIZE_MD == 40.0);
 
@@ -211,7 +210,7 @@ fn sized_dropdown_option(
         .tokens
         .insert("background@selected-hover".into(), t(LAYER_SELECTED_HOVER));
     let mut node = node
-        .with_constraints(pin_height(size.height()))
+        .with_constraints(pin_block(size.height()))
         .interactive(Role::Button, label, OPTION_INTENTS)
         .owning_its_text()
         // `BarInside`: options stack flush in the open menu, so the default
@@ -220,17 +219,6 @@ fn sized_dropdown_option(
         .with_focus_figure(FocusFigure::BarInside);
     node.semantics.selected = selected;
     node
-}
-
-fn pin_height(h: f32) -> Constraints {
-    Constraints {
-        vertical: AxisConstraint {
-            min: Some(h),
-            max: Some(h),
-            priority: 0,
-        },
-        ..Constraints::default()
-    }
 }
 
 #[cfg(test)]

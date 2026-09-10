@@ -51,6 +51,11 @@ pub(crate) const SPACING_09: &str = "spacing-09";
 /// component cites it without spelling `40.0` at the call site.
 pub(crate) const SIZE_MD: f32 = 40.0;
 
+/// Control height `size-lg`. See [`SIZE_MD`] for why this is numeric.
+/// Cited to the shipped ramp's own `("size-lg", 48.0)` entry
+/// (`crate::token::shipped`).
+pub(crate) const SIZE_LG: f32 = 48.0;
+
 pub(crate) const SHAPE_NONE: &str = "shape.corner-none";
 /// Carbon's popover corner (`$popover-border-radius`, 2px) — the one
 /// rounded corner a floating surface has. Carbon's fields, list boxes and

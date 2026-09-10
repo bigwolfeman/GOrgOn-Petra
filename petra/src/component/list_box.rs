@@ -55,9 +55,17 @@ use crate::tree::{
     TextWrap, Tip, ViewNode,
 };
 
-/// Height of the rule between two rows, and of the rule under a field.
-/// Carbon `convert.to-rem(1px)`.
+/// Height of the flat rule under a field, which is the number the row above
+/// it is sized against. Carbon `convert.to-rem(1px)`, and the same figure
+/// [`crate::layout::leaf::SEPARATOR_THICKNESS`] gives a separator whose tone
+/// is not the rule material — held equal below, because the field's own row
+/// arithmetic subtracts this and would leave a gap if the two drifted.
+///
+/// The **option** divider is a different case and takes no number from here:
+/// it carries `border.subtle`, so it measures the material's own thickness.
 const DIVIDER_HEIGHT: f32 = 1.0;
+
+const _: () = assert!(DIVIDER_HEIGHT == crate::layout::leaf::SEPARATOR_THICKNESS);
 
 const FIELD_INTENTS: &[Interaction] = &[Interaction::Focus, Interaction::Click, Interaction::Hover];
 
@@ -263,11 +271,7 @@ pub(crate) fn list_box_field(
     // under it and the field's slack trailing below both.
     row.constraints.vertical = pinned(height - DIVIDER_HEIGHT);
 
-    let mut rule = stack("rule", Axis::Horizontal, None, vec![]);
-    rule.props
-        .tokens
-        .insert("background".into(), t(BORDER_STRONG));
-    rule.constraints.vertical = pinned(DIVIDER_HEIGHT);
+    let rule = super::rule("rule", Axis::Horizontal, BORDER_STRONG);
 
     let mut node = stack(key, Axis::Vertical, None, vec![row, rule]);
     node.props.align = Some(CrossAlign::Stretch);
@@ -290,25 +294,28 @@ pub(crate) fn list_box_field(
     node
 }
 
-/// The rule between two rows: a transparent one-unit strip inset
-/// [`SPACING_05`] at each end, carrying the [`BORDER_SUBTLE`] line as its
-/// child. Two nodes rather than one because a fill paints a node's whole
-/// rect and padding insets only its children — the inset is what puts the
-/// line's ends 16 units in from the panel's edges, where Carbon's are.
+/// The rule between two rows: a transparent strip inset [`SPACING_05`] at
+/// each end, carrying the [`BORDER_SUBTLE`] line as its child. Two nodes
+/// rather than one because a fill paints a node's whole rect and padding
+/// insets only its children — the inset is what puts the line's ends 16
+/// units in from the panel's edges, where Carbon's are.
+///
+/// Neither node pins a height. The line is a [`NodeKind::Separator`], so it
+/// measures the rule material's own thickness at the live scale, and the
+/// strip is a vertical stack that takes its height from the line. Both used
+/// to pin one logical unit for a material four device pixels deep; see
+/// [`crate::token::rule`].
 fn divider(key: impl Into<Key>) -> ViewNode {
-    let mut line = stack("rule", Axis::Horizontal, None, vec![]);
-    line.props
-        .tokens
-        .insert("background".into(), t(BORDER_SUBTLE));
-    line.constraints.vertical = pinned(DIVIDER_HEIGHT);
+    let line = super::rule("rule", Axis::Horizontal, BORDER_SUBTLE);
     // The line takes the strip's whole padded interior across the strip.
     // A *vertical* strip, so that width comes from `Align::Stretch` on the
-    // cross axis rather than from a main-axis leftover claim: an empty
-    // stack measures zero on its main axis, and a priority-1 horizontal
-    // claim inside a horizontal strip placed it at width 0 in a panel 80
-    // wide — caught by pagination's own degenerate-rect check, which is
-    // stricter than a tree assertion and is why it showed there first.
-    // Same idiom as `ui_shell::accent_mark`, whose doc states the rule.
+    // cross axis rather than from a main-axis leftover claim: a separator
+    // measures zero along its own axis under an unspecified offer, and a
+    // priority-1 horizontal claim inside a horizontal strip placed it at
+    // width 0 in a panel 80 wide — caught by pagination's own degenerate-rect
+    // check, which is stricter than a tree assertion and is why it showed
+    // there first. Same idiom as `ui_shell::accent_mark`, whose doc states
+    // the rule.
     let mut node = stack(key, Axis::Vertical, None, vec![line]);
     node.props.align = Some(CrossAlign::Stretch);
     node.props.padding = Some(InsetRefs {
@@ -316,7 +323,6 @@ fn divider(key: impl Into<Key>) -> ViewNode {
         right: Some(t(SPACING_05)),
         ..InsetRefs::default()
     });
-    node.constraints.vertical = pinned(DIVIDER_HEIGHT);
     node
 }
 
@@ -425,7 +431,12 @@ mod tests {
             .collect();
         assert_eq!(keys, ["rename", "div-1", "delete", "div-2", "share"]);
         let rule = child(child(child(&divided, "content"), "div-1"), "rule");
-        assert_eq!(rule.constraints.vertical.min, Some(DIVIDER_HEIGHT));
+        // A separator pinning nothing: the option divider carries the rule
+        // material, so its thickness is measured from the material at the
+        // live scale rather than written here. It used to pin one logical
+        // unit for a groove four device pixels deep, and painted flat.
+        assert_eq!(rule.kind, NodeKind::Separator);
+        assert_eq!(rule.constraints.vertical.min, None);
         assert_eq!(
             rule.props.tokens.get("background").map(|t| t.as_str()),
             Some(BORDER_SUBTLE)
@@ -480,7 +491,12 @@ mod tests {
             rule.props.tokens.get("background").map(|t| t.as_str()),
             Some(BORDER_STRONG)
         );
-        assert_eq!(rule.constraints.vertical.max, Some(DIVIDER_HEIGHT));
+        // `border.strong` is a control boundary, not the rule material, so
+        // this one stays the flat single stroke it always was — and a
+        // separator measures `SEPARATOR_THICKNESS` for it, which is the
+        // number the row above is sized against.
+        assert_eq!(rule.kind, NodeKind::Separator);
+        assert_eq!(rule.constraints.vertical.max, None);
         let row = child(&node, "row");
         let value = child(row, "value");
         assert_eq!(value.props.text.as_deref(), Some("Dark"));
@@ -568,7 +584,10 @@ mod tests {
             (chevron.w - 16.0).abs() < 0.5,
             "a 16-unit glyph: {chevron:?}"
         );
-        assert!((rule.h - DIVIDER_HEIGHT).abs() < 0.01, "{rule:?}");
+        assert!(
+            (rule.h - DIVIDER_HEIGHT).abs() < 0.01,
+            "a flat rule stays one unit: {rule:?}"
+        );
         assert!(
             (rule.w - field.w).abs() < 0.5,
             "the rule spans the field: {rule:?}"

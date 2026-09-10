@@ -50,6 +50,7 @@
 
 use super::icon::{IconMark, IconTone, icon_toned};
 use super::pad;
+use super::pin_block;
 use super::stack;
 use super::text::text;
 use super::tokens::{
@@ -294,7 +295,7 @@ fn closed_field(
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
     let mut node = node
-        .with_constraints(pin_height(SIZE_MD))
+        .with_constraints(pin_block(SIZE_MD))
         .interactive(Role::Button, label, FIELD_INTENTS)
         .owning_its_text();
     node.semantics.expanded = Some(expanded);
@@ -467,7 +468,7 @@ fn month_header(year: i32, month: u32, calendar: Calendar) -> ViewNode {
             seat,
             step_control("next-month", "Next month", IconMark::ChevronRight),
         ]);
-    row.constraints = pin_height(SIZE_MD);
+    row.constraints = pin_block(SIZE_MD);
     row
 }
 
@@ -487,7 +488,7 @@ fn step_control(key: &str, label: &str, mark: IconMark) -> ViewNode {
     node.props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
-    node.with_constraints(pin_height(SIZE_MD))
+    node.with_constraints(pin_block(SIZE_MD))
         .interactive(Role::Button, label.to_owned(), FIELD_INTENTS)
         .owning_its_text()
 }
@@ -522,7 +523,7 @@ fn month_button(caption: ViewNode, name: String, choosing: bool) -> ViewNode {
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
     let mut node = node
-        .with_constraints(pin_height(SIZE_MD))
+        .with_constraints(pin_block(SIZE_MD))
         .interactive(
             Role::Button,
             format!("{name}, choose month and year"),
@@ -638,7 +639,7 @@ fn year_header(year: i32) -> ViewNode {
             seat,
             step_control("next-year", "Next year", IconMark::ChevronRight),
         ]);
-    row.constraints = pin_height(SIZE_MD);
+    row.constraints = pin_block(SIZE_MD);
     row
 }
 
@@ -713,7 +714,7 @@ fn month_cell(month: u32, selected: bool) -> ViewNode {
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
     let mut node = node
-        .with_constraints(pin_height(MONTH_CELL_H))
+        .with_constraints(pin_block(MONTH_CELL_H))
         .interactive(Role::Button, name.to_owned(), FIELD_INTENTS)
         .owning_its_text()
         // `Border`, for the day cell's second reason: a selected month fills
@@ -818,7 +819,7 @@ fn day_button(day: u32, selected: bool) -> ViewNode {
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
     let mut node = node
-        .with_constraints(pin_height(SIZE_MD))
+        .with_constraints(pin_block(SIZE_MD))
         .interactive(Role::Button, label, FIELD_INTENTS)
         .owning_its_text()
         // `Border`, and the day grid rules out both alternatives.
@@ -877,7 +878,7 @@ fn adjacent_cell(slot: usize, lead: usize, count: u32, prev_count: u32) -> ViewN
     cell.props
         .tokens
         .insert("background".into(), t(SURFACE_RAISED));
-    cell.with_constraints(pin_height(SIZE_MD))
+    cell.with_constraints(pin_block(SIZE_MD))
 }
 
 /// `child` in a seat that centres it on both axes inside its grid track.
@@ -886,17 +887,6 @@ fn centred(key: String, child: ViewNode) -> ViewNode {
     node.props.align = Some(Align::Center);
     node.props.justify = Some(Justify::Center);
     node
-}
-
-fn pin_height(h: f32) -> Constraints {
-    Constraints {
-        vertical: AxisConstraint {
-            min: Some(h),
-            max: Some(h),
-            priority: 0,
-        },
-        ..Constraints::default()
-    }
 }
 
 #[cfg(test)]

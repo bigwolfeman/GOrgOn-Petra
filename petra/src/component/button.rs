@@ -201,17 +201,15 @@
 //! outline *is* the control, the same reason a checkbox does.
 
 use super::icon::{IconMark, IconTone, icon_toned};
-use super::stack;
 use super::text::text;
 use super::tokens::{
     ACCENT_PRIMARY, BORDER_STRONG, BUTTON_DANGER_PRIMARY, ICON_DISABLED, ICON_ON_COLOR_DISABLED,
     LAYER_ACTIVE, LAYER_HOVER, LINK_PRIMARY, SHADOW_RAISED, SHAPE_MD, SIZE_MD, SPACING_03,
     SPACING_05, SURFACE_BASE, SURFACE_RAISED, TEXT_ON_ACCENT, TEXT_ON_COLOR, TEXT_PRIMARY, t,
 };
+use super::{pin_block, stack};
 use crate::geom::{Align, Axis};
-use crate::tree::{
-    AxisConstraint, Constraints, FocusFigure, InsetRefs, Interaction, Key, Role, ViewNode,
-};
+use crate::tree::{FocusFigure, InsetRefs, Interaction, Key, Role, ViewNode};
 
 /// Carbon `.cds--btn--xs` height. Numeric because `Constraints` stay extents
 /// (FR-053); [`super::tokens`] only ships [`SIZE_MD`].
@@ -437,17 +435,6 @@ fn danger_mark() -> ViewNode {
     icon_toned("mark", IconMark::WarningFilled, IconTone::Danger)
 }
 
-fn pin_height(h: f32) -> Constraints {
-    Constraints {
-        vertical: AxisConstraint {
-            min: Some(h),
-            max: Some(h),
-            priority: 0,
-        },
-        ..Constraints::default()
-    }
-}
-
 /// Carbon no-icon `padding-inline: $spacing-05`. Block is none: height is
 /// pinned. `$spacing-10` on the end is [`PAD_END_NO_ICON`], not bound.
 fn pad_inline() -> InsetRefs {
@@ -644,7 +631,7 @@ fn labelled(
     }
 
     let mut node = node
-        .with_constraints(pin_height(size.height()))
+        .with_constraints(pin_block(size.height()))
         .interactive(
             Role::Button,
             label,

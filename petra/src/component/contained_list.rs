@@ -12,15 +12,12 @@
 //!
 //! On-page header has no fill. Disclosed header fills [`SURFACE_RAISED`].
 
+use super::pin_block;
 use super::stack;
 use super::text::{heading, text};
 use super::tokens::{BORDER_SUBTLE, SPACING_05, SURFACE_RAISED, TEXT_MUTED, t};
 use crate::geom::{Align, Axis};
-use crate::tree::{AxisConstraint, Constraints, InsetRefs, Key, Role, Semantics, ViewNode};
-
-/// Carbon on-page header height (`$spacing-07` = 32).
-/// Carbon's boundary between rows: `1px solid $border-subtle`.
-const RULE: f32 = 1.0;
+use crate::tree::{InsetRefs, Key, Role, Semantics, ViewNode};
 
 const HEADER_ON_PAGE: f32 = 32.0;
 /// Carbon disclosed header height (style-page Structure: `$spacing-09` = 48).
@@ -77,7 +74,7 @@ fn contained(
             .tokens
             .insert("background".into(), t(SURFACE_RAISED));
     }
-    let header = header.with_constraints(pin_height(header_h));
+    let header = header.with_constraints(pin_block(header_h));
 
     // Carbon separates the header from the first row and each row from the
     // next with `1px solid $border-subtle`
@@ -91,7 +88,11 @@ fn contained(
     let mut children = Vec::with_capacity(items.len() * 2 + 1);
     children.push(header);
     for (i, item) in items.into_iter().enumerate() {
-        children.push(super::rule(format!("rule-{i}"), RULE, BORDER_SUBTLE));
+        children.push(super::rule(
+            format!("rule-{i}"),
+            Axis::Horizontal,
+            BORDER_SUBTLE,
+        ));
         children.push(item);
     }
 
@@ -107,17 +108,6 @@ fn contained(
         ..Semantics::default()
     };
     node
-}
-
-fn pin_height(h: f32) -> Constraints {
-    Constraints {
-        vertical: AxisConstraint {
-            min: Some(h),
-            max: Some(h),
-            priority: 0,
-        },
-        ..Constraints::default()
-    }
 }
 
 #[cfg(test)]

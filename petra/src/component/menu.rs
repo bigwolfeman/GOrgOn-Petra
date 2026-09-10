@@ -16,6 +16,7 @@
 //! omitted.
 
 use super::list_box::{Dividers, list_box};
+use super::pin_block;
 use super::stack;
 use super::text::text;
 use super::tokens::{
@@ -23,7 +24,7 @@ use super::tokens::{
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
-    AxisConstraint, Constraints, FocusFigure, InsetRefs, Interaction, Key, Role, TextWrap, ViewNode,
+    AxisConstraint, FocusFigure, InsetRefs, Interaction, Key, Role, TextWrap, ViewNode,
 };
 
 /// Carbon menu min-inline (`10rem`). Also the menu button trigger's
@@ -101,21 +102,10 @@ pub fn menu_item(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
     // them, so the default bar — five units below the bottom edge — would
     // paint on the next item rather than in empty space. The same stripe on
     // the item's own bottom edge is contained and cannot.
-    node.with_constraints(pin_height(SIZE_MD))
+    node.with_constraints(pin_block(SIZE_MD))
         .interactive(Role::Button, label, ITEM_INTENTS)
         .owning_its_text()
         .with_focus_figure(FocusFigure::BarInside)
-}
-
-fn pin_height(h: f32) -> Constraints {
-    Constraints {
-        vertical: AxisConstraint {
-            min: Some(h),
-            max: Some(h),
-            priority: 0,
-        },
-        ..Constraints::default()
-    }
 }
 
 #[cfg(test)]

@@ -106,13 +106,13 @@
 //! panel items), so none is built here.
 
 use super::icon::{IconBox, IconMark, IconTone, icon_in, icon_toned};
-use super::stack;
 use super::text::text;
 use super::tokens::{
     ACCENT_PRIMARY, BORDER_SUBTLE, LAYER_ACTIVE, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER,
     SPACING_03, SPACING_05, SPACING_07, SURFACE_BASE, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY,
     TYPOGRAPHY_BODY, TYPOGRAPHY_HEADING_SM, t,
 };
+use super::{pin_block, stack};
 use crate::geom::{Align, Axis};
 use crate::tree::{
     AxisConstraint, Constraints, FocusFigure, FocusShownOn, InsetRefs, Interaction, Justify, Key,
@@ -980,21 +980,13 @@ fn bind_row_states(node: &mut ViewNode) {
     }
 }
 
-/// A 1px rule between left-panel items. Width comes from the panel's own
-/// [`Align::Stretch`]; only the block-size is pinned here, the same trick
-/// [`accent_mark`] uses for a bar that must fill a cell it does not own the
-/// extent of.
+/// The rule between left-panel items. Width comes from the panel's own
+/// [`Align::Stretch`], the same trick [`accent_mark`] uses for a bar that
+/// must fill a cell it does not own the extent of; the thickness is the rule
+/// material's and is not pinned here, because it is not this module's to
+/// pick. See [`crate::token::rule`].
 pub fn ui_shell_left_panel_divider(key: impl Into<Key>) -> ViewNode {
-    let mut node = stack(key, Axis::Horizontal, None, vec![]);
-    node.props
-        .tokens
-        .insert("background".into(), t(BORDER_SUBTLE));
-    node.constraints.vertical = AxisConstraint {
-        min: Some(1.0),
-        max: Some(1.0),
-        priority: 0,
-    };
-    node
+    super::rule(key, Axis::Horizontal, BORDER_SUBTLE)
 }
 
 // ---------------------------------------------------------------------
@@ -1187,28 +1179,23 @@ pub fn ui_shell_switcher_item(
 /// deliberately narrower than the 256px panel — Carbon leaves a margin on
 /// both sides rather than running the rule edge to edge.
 ///
-/// The rule is 1 unit; the node is 17, because
-/// `.cds--switcher__item--divider` carries `margin: $spacing-03 $spacing-05`
-/// and the block half of that is 8 above and 8 below. A margin has no
+/// The node carries `$spacing-03` of padding above and below the rule,
+/// because `.cds--switcher__item--divider` carries `margin: $spacing-03
+/// $spacing-05` and the block half of that is 8 each way. A margin has no
 /// retained-mode equivalent, so the gap is padding on a wrapper — which is
 /// why the rule is a child and not the node itself. Flush against the rows
 /// above and below is what the reference shot says it is not.
+///
+/// The width is pinned because 224 is a **run length**, Carbon's own inset
+/// rule. The thickness is not pinned: that is the material's, and pinning it
+/// here at one unit is what made this divider paint a flat line while a
+/// data-table row grooved on the same token.
 pub fn ui_shell_right_panel_divider(key: impl Into<Key>) -> ViewNode {
-    let mut rule = stack("rule", Axis::Horizontal, None, vec![]);
-    rule.props
-        .tokens
-        .insert("background".into(), t(BORDER_SUBTLE));
-    rule.constraints = Constraints {
-        horizontal: AxisConstraint {
-            min: Some(SWITCHER_DIVIDER_WIDTH),
-            max: Some(SWITCHER_DIVIDER_WIDTH),
-            priority: 0,
-        },
-        vertical: AxisConstraint {
-            min: Some(1.0),
-            max: Some(1.0),
-            priority: 0,
-        },
+    let mut rule = super::rule("rule", Axis::Horizontal, BORDER_SUBTLE);
+    rule.constraints.horizontal = AxisConstraint {
+        min: Some(SWITCHER_DIVIDER_WIDTH),
+        max: Some(SWITCHER_DIVIDER_WIDTH),
+        priority: 0,
     };
     let mut node = stack(key, Axis::Vertical, None, vec![rule]);
     node.props.align = Some(Align::Center);
@@ -1279,17 +1266,6 @@ fn accent_mark(key: &'static str, along: Axis, thickness: f32, fill: Option<&str
         }
     }
     node
-}
-
-fn pin_block(h: f32) -> Constraints {
-    Constraints {
-        vertical: AxisConstraint {
-            min: Some(h),
-            max: Some(h),
-            priority: 0,
-        },
-        ..Constraints::default()
-    }
 }
 
 /// Carbon's 48x48 header hit box, with the width as a FLOOR rather than a
@@ -1785,11 +1761,17 @@ mod tests {
         assert_eq!(token(&subitem, "background@selected"), Some(LAYER_SELECTED));
     }
 
+    /// The divider pins no thickness of its own. That is the assertion: it
+    /// used to pin one logical unit for a material that paints four device
+    /// pixels, so it drew a flat line while a data-table row grooved on the
+    /// same token. `NodeKind::Separator` measures the material instead.
     #[test]
-    fn left_panel_divider_is_one_pixel_tall() {
+    fn left_panel_divider_pins_no_thickness_of_its_own() {
         let node = ui_shell_left_panel_divider("rule");
-        assert_eq!(node.constraints.vertical.min, Some(1.0));
-        assert_eq!(node.constraints.vertical.max, Some(1.0));
+        assert_eq!(node.kind, NodeKind::Separator);
+        assert_eq!(node.constraints.vertical.min, None);
+        assert_eq!(node.constraints.vertical.max, None);
+        assert_eq!(token(&node, "background"), Some(BORDER_SUBTLE));
     }
 
     // -- right panel -------------------------------------------------
@@ -1859,15 +1841,17 @@ mod tests {
         assert!(!rest.semantics.selected);
         assert_eq!(token(named(rest, "label"), "foreground"), Some(TEXT_MUTED));
 
-        // The rule is 224 wide inside a 17-tall block: 1 unit of rule plus
-        // `$spacing-03` above and below (`_switcher.scss`).
+        // The rule is 224 wide with `$spacing-03` above and below
+        // (`_switcher.scss`). The width is pinned because 224 is a run
+        // length; the thickness is not, because it is the material's.
         let divider = named(&node, "d1");
         let rule = named(divider, "rule");
+        assert_eq!(rule.kind, NodeKind::Separator);
         assert_eq!(
             rule.constraints.horizontal.min,
             Some(SWITCHER_DIVIDER_WIDTH)
         );
-        assert_eq!(rule.constraints.vertical.max, Some(1.0));
+        assert_eq!(rule.constraints.vertical.max, None);
         assert_eq!(SWITCHER_DIVIDER_WIDTH, 224.0);
     }
 

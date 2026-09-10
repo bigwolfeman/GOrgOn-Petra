@@ -176,7 +176,8 @@ pub fn place(
     // deliberately: a surface's own `max` describes the box it wants, and a
     // menu narrower than its trigger is exactly the picture this exists to
     // rule out.
-    if let Some(broadened) = fit_to_anchor(surface.fit, &plan, natural)
+    if let Some(broadened) =
+        fit_to_anchor(surface.fit, surface.anchor, &plan, viewport, natural, ctx)
         && broadened != natural
     {
         natural = broadened;
@@ -402,23 +403,50 @@ pub fn resolve_anchor_kind(
     }
 }
 
-/// The size a surface declaring `fit` takes against the anchor `plan`
-/// harvested, or `None` when the plan harvested no anchor and there is
-/// nothing to fit to.
+/// The size a surface declaring `fit` takes against the thing it is anchored
+/// to, or `None` when there is nothing to fit to.
 ///
 /// [`Fit::Anchor`] widens the cross axis — the axis that runs along the
 /// anchor's edge — to at least the anchor's own extent on it. The main axis
 /// is never touched: how far a menu hangs down is its content's business,
 /// not its trigger's. [`Fit::Content`] returns the size unchanged.
-fn fit_to_anchor(fit: Fit, plan: &AnchorPlan, natural: Size) -> Option<Size> {
-    let anchored = plan.anchored?;
-    match fit {
-        Fit::Content => Some(natural),
-        Fit::Anchor => Some(match anchored.edge.axis() {
-            Axis::Vertical => Size::new(natural.w.max(anchored.anchor_rect.w), natural.h),
-            Axis::Horizontal => Size::new(natural.w, natural.h.max(anchored.anchor_rect.h)),
-        }),
+///
+/// Two things can be anchored to, and both have an edge with an extent. A
+/// node anchor's extent is the rect the walk harvested, so it is read off
+/// `plan`. An [`Anchor::ViewportEdge`]'s extent is the window's own, less
+/// the inset that anchor already holds the surface off each end by, so it is
+/// read off `viewport` and never appears in `plan.anchored` at all. Every
+/// other anchor names no edge and answers `None`.
+fn fit_to_anchor(
+    fit: Fit,
+    anchor: &Anchor,
+    plan: &AnchorPlan,
+    viewport: Rect,
+    natural: Size,
+    ctx: &LayoutCtx<'_>,
+) -> Option<Size> {
+    if fit == Fit::Content {
+        return Some(natural);
     }
+    // A window edge is an anchor's edge. It harvests no rect, so `plan`
+    // carries no `anchored` for it, but the extent to match is not unknown:
+    // it is the window's own, less the inset the anchor already holds the
+    // surface off each end by. Reading `Fit::Anchor` as "content width" here
+    // is what left a bottom-docked status bar at its content width with the
+    // page showing through beside it -- the "a bar that does not fill"
+    // defect spec 005's addendum lists and never diagnosed.
+    if let Anchor::ViewportEdge { edge, offset, .. } = anchor {
+        let inset = ctx.spacing(&offset.clone());
+        return Some(match edge.axis() {
+            Axis::Vertical => Size::new((viewport.w - 2.0 * inset).max(natural.w), natural.h),
+            Axis::Horizontal => Size::new(natural.w, (viewport.h - 2.0 * inset).max(natural.h)),
+        });
+    }
+    let anchored = plan.anchored?;
+    Some(match anchored.edge.axis() {
+        Axis::Vertical => Size::new(natural.w.max(anchored.anchor_rect.w), natural.h),
+        Axis::Horizontal => Size::new(natural.w, natural.h.max(anchored.anchor_rect.h)),
+    })
 }
 
 /// Base width of a caret, along the near edge of the surface it belongs to.
@@ -3001,6 +3029,61 @@ mod tests {
                 "a {align:?}-aligned surface docked to the left edge"
             );
         }
+    }
+
+    /// A window edge is an anchor's edge, so `Fit::Anchor` fits to it.
+    ///
+    /// Until 2026-09-09 `fit_to_anchor` read only `plan.anchored`, which a
+    /// window edge never fills, so `Fit::Anchor` on a docked surface was a
+    /// silent no-op: a status bar docked to the bottom of the window sat at
+    /// its content width with the page showing through beside it. The main
+    /// axis is untouched either way, because how tall a docked strip is
+    /// stays its content's business.
+    #[test]
+    fn fit_anchor_spans_a_docked_surface_along_the_window_edge() {
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let mut node = docked(
+            Edge::Bottom,
+            Align::Start,
+            None,
+            ClampRule::Shrink,
+            Size::new(100.0, 50.0),
+        );
+        let content = place_surface(&node, viewport);
+        assert_eq!(
+            content.rect,
+            Rect::new(0.0, 550.0, 100.0, 50.0),
+            "Fit::Content leaves a docked surface at its content width"
+        );
+        node.props.fit = Some(crate::tree::Fit::Anchor);
+        let spanned = place_surface(&node, viewport);
+        assert_eq!(
+            spanned.rect,
+            Rect::new(0.0, 550.0, 800.0, 50.0),
+            "Fit::Anchor spans the window edge and leaves the height alone"
+        );
+    }
+
+    /// Spanning is to the anchor's own inset, not to the raw window.
+    ///
+    /// The offset holds a docked surface off the edge it docked to *and* off
+    /// each end of that edge (`Anchor::ViewportEdge`'s own doc: a docked
+    /// region is inset from a corner). A span that ignored it would put the
+    /// two ends flush while the docked edge stayed 16 out, which is the
+    /// three-sided inset nobody asked for.
+    #[test]
+    fn a_spanning_docked_surface_keeps_its_anchor_inset_at_both_ends() {
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let mut node = docked(
+            Edge::Bottom,
+            Align::Start,
+            Some(16.0),
+            ClampRule::Shrink,
+            Size::new(100.0, 50.0),
+        );
+        node.props.fit = Some(crate::tree::Fit::Anchor);
+        let placed = place_surface(&node, viewport);
+        assert_eq!(placed.rect, Rect::new(16.0, 534.0, 768.0, 50.0));
     }
 
     /// No offset means flush with the window, which is what absence meant

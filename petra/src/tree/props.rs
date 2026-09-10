@@ -754,8 +754,15 @@ pub enum Tip {
 ///
 /// Absent means [`Fit::Content`]: the surface is as broad as its content and
 /// its constraints say, which is what every anchored surface was before this
-/// field existed. Declared on a non-surface, or on a surface whose anchor
-/// names no node, it changes nothing.
+/// field existed. Declared on a non-surface it changes nothing, and the same
+/// goes for an anchor that names no edge at all ([`Anchor::Point`],
+/// [`Anchor::Viewport`]).
+///
+/// [`Anchor::ViewportEdge`] does name an edge, and `Fit::Anchor` fits to it:
+/// the window's own extent along that edge, less the inset the anchor
+/// already holds the surface off each end by. A docked status bar that spans
+/// its window is the shape this answers, and reading the window edge as "no
+/// anchor" is what left one sitting at its content width.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Fit {
@@ -766,6 +773,10 @@ pub enum Fit {
     /// needs it. The anchor's extent wins over the surface's own `max`
     /// constraint, because a list narrower than its field is the defect this
     /// exists to prevent.
+    ///
+    /// The edge is the harvested rect's for a node anchor and the window's
+    /// for an [`Anchor::ViewportEdge`]. Both are edges with an extent; only
+    /// one of them is a node.
     Anchor,
 }
 

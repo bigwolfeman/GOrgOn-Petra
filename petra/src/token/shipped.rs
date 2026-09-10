@@ -379,6 +379,83 @@ fn dark_border() -> [u8; 3] {
     quietest_grey_clearing(&DARK_LAYERS, MIN_DIVIDER_CONTRAST, ThemeMode::Dark)
 }
 
+/// The rule material's shadow stroke, in signed sRGB levels offset from the
+/// panel it sits on. Settled by operator sight-test 2026-09-07 and by the
+/// ratio measured in
+/// `docs/experiments/successes/2026-09-07-deboss-rule-contrast-ratio.md`:
+/// shadow to highlight holds 2.15:1 across every ground tried, light and
+/// dark. `specs/009-petra-design-language/contracts/design-language.md`'s
+/// "The construction" is the authority; this and
+/// [`RULE_HIGHLIGHT_DELTA`] are its two numbers.
+const RULE_SHADOW_DELTA: i16 = -28;
+
+/// The rule material's highlight stroke, directly below the shadow. See
+/// [`RULE_SHADOW_DELTA`].
+const RULE_HIGHLIGHT_DELTA: i16 = 13;
+
+/// One channel of `level`, offset by `delta` signed sRGB levels and clamped
+/// to `0..=255`.
+///
+/// This is the operation the contract calls "a signed level offset from the
+/// fill of the panel the rule sits on, applied per channel and clamped" —
+/// deliberately not a blend toward black or white. A blend is `lerp(base,
+/// extreme, t)`, which loses headroom exactly where a surface sits near that
+/// extreme (a light panel blending toward white does nothing); a clamped
+/// offset keeps whatever headroom is left and simply stops there. The first
+/// attempt at this material used a blend and shipped a sign error invisible
+/// on mid-grey and obvious on white
+/// (`.agents/notes/proposed/architecture/2026-09-07-rule-material-two-stroke-groove.md`,
+/// "Problem"); this function is the fix, not a second copy of the mistake
+/// with different numbers.
+fn offset_channel(level: u8, delta: i16) -> u8 {
+    (i16::from(level) + delta).clamp(0, i16::from(u8::MAX)) as u8
+}
+
+/// [`offset_channel`], applied to all three channels of `panel`. Applying
+/// the *same signed offset* to R, G and B independently is what "a tinted
+/// panel keeps its hue in the rule" means: a warm panel's shadow and
+/// highlight are still warm, because every channel moved by the same
+/// amount rather than every channel being pulled toward a shared grey
+/// extreme.
+fn rule_stroke(panel: [u8; 3], delta: i16) -> [u8; 3] {
+    [
+        offset_channel(panel[0], delta),
+        offset_channel(panel[1], delta),
+        offset_channel(panel[2], delta),
+    ]
+}
+
+/// Assign [`crate::token::rule::SHADOW_TOKEN`] and
+/// [`crate::token::rule::HIGHLIGHT_TOKEN`] into a theme's value map.
+///
+/// Computed from `layers[1]`, `surface.layer-one` — the panel every shipped
+/// horizontal rule is drawn on today (row rules, list separators, panel
+/// splits all sit on a card, never directly on the window ground). The
+/// contract's measured pair, 28 and 13, is a ratio law general enough to
+/// take any panel; this call site is the one place that currently has to
+/// pick which panel, and it picks the one the shipped catalog actually
+/// uses. A future rule drawn on a different panel calls
+/// [`rule_stroke`] again against that panel's own fill rather than reusing
+/// these two resolved tokens, so it keeps its own hue.
+///
+/// Both shipped themes land on the same pair, 28 and 13, from opposite
+/// directions: light's `#f2f2f2` (242) has exactly 13 levels of headroom to
+/// white, so the highlight lands precisely at the clamp; dark's `#222222`
+/// (34) has 34 levels of headroom to black, well clear of the 28-level
+/// shadow. Neither stroke silently clips past what the construction table
+/// in the contract records.
+fn insert_rule_material(values: &mut BTreeMap<TokenName, TokenValue>, layers: &[[u8; 3]; 4]) {
+    let panel = layers[1];
+    values.insert(
+        name(crate::token::rule::SHADOW_TOKEN),
+        opaque(rule_stroke(panel, RULE_SHADOW_DELTA)),
+    );
+    values.insert(
+        name(crate::token::rule::HIGHLIGHT_TOKEN),
+        opaque(rule_stroke(panel, RULE_HIGHLIGHT_DELTA)),
+    );
+}
+
 /// Light [`BORDER_STRONG_TOKEN`], the control-boundary tone: `#8c8c8c`, the
 /// first level clearing [`MIN_CONTROL_BOUNDARY`] on all four light layers
 /// (3.00:1 on `#f2f2f2`, 3.36:1 on `#ffffff`).
@@ -1888,6 +1965,18 @@ pub fn standard_vocabulary() -> Vocabulary {
         // *below* both text tones, because the defect this replaced was a
         // border that was too loud rather than one that was too faint.
         .declare(DesignToken::new(name(BORDER_TOKEN), TokenKind::Color))
+        // The two-stroke rule material: see `crate::token::rule` and
+        // `insert_rule_material`. Independent values, never computed by
+        // blending from a surface at paint time — the painter looks these
+        // two up exactly like any other colour token.
+        .declare(DesignToken::new(
+            name(crate::token::rule::SHADOW_TOKEN),
+            TokenKind::Color,
+        ))
+        .declare(DesignToken::new(
+            name(crate::token::rule::HIGHLIGHT_TOKEN),
+            TokenKind::Color,
+        ))
         // Elevation. Colour only: the offset, blur and spread that go with
         // these two live in `SHADOW_GEOMETRY` as shared Rust constants, for
         // the same reason the spacing and corner ramps are shared — a shadow
@@ -2065,6 +2154,7 @@ pub fn light() -> Theme {
     insert_layer_set(&mut values, &LIGHT_LAYERS);
     insert_accent(&mut values, &LIGHT_ACCENT, &LIGHT_LAYERS, LIGHT_TEXT[0]);
     insert_border(&mut values, &light_border());
+    insert_rule_material(&mut values, &LIGHT_LAYERS);
     insert_shadow_set(&mut values, &LIGHT_SHADOW_ALPHAS);
     values.insert(name("text.primary"), opaque(LIGHT_TEXT[0]));
     values.insert(name("text.muted"), opaque(LIGHT_TEXT[1]));
@@ -2165,6 +2255,7 @@ pub fn dark() -> Theme {
     insert_layer_set(&mut values, &DARK_LAYERS);
     insert_accent(&mut values, &DARK_ACCENT, &DARK_LAYERS, DARK_TEXT[0]);
     insert_border(&mut values, &dark_border());
+    insert_rule_material(&mut values, &DARK_LAYERS);
     insert_shadow_set(&mut values, &DARK_SHADOW_ALPHAS);
     values.insert(name("text.primary"), opaque(DARK_TEXT[0]));
     values.insert(name("text.muted"), opaque(DARK_TEXT[1]));
@@ -2252,10 +2343,11 @@ mod tests {
         BORDER_SUBTLE_TOKENS, BORDER_TOKEN, CornerRole, DANGER_FILL_TOKEN, DARK_LAYERS,
         FIELD_TOKENS, HOVER_STEP, ICON_TOKENS, LAYER_ACCENT_STATE_TOKENS, LAYER_ACCENT_TOKEN,
         LAYER_TOKENS, LIGHT_LAYERS, LINK_TOKEN, M, MIN_CONTROL_BOUNDARY, MIN_DIVIDER_CONTRAST,
-        MONO, ON_ACCENT_TOKEN, ON_COLOUR_TOKEN, R, RAISED_ALIAS, SANS, SCRIM_TOKEN,
-        SELECTED_HOVER_STEP, SELECTED_STEP, SHADOW_GEOMETRY, SHADOW_TOKENS, SHAPE_RAMP, SIZE_RAMP,
-        SPACING_ALIASES, SPACING_RAMP, SPRING_SET, SUPPORT_ALIASES, TYPOGRAPHY_RAMP, corner_for,
-        dark, light, lightness_of, standard_vocabulary,
+        MONO, ON_ACCENT_TOKEN, ON_COLOUR_TOKEN, R, RAISED_ALIAS, RULE_HIGHLIGHT_DELTA,
+        RULE_SHADOW_DELTA, SANS, SCRIM_TOKEN, SELECTED_HOVER_STEP, SELECTED_STEP, SHADOW_GEOMETRY,
+        SHADOW_TOKENS, SHAPE_RAMP, SIZE_RAMP, SPACING_ALIASES, SPACING_RAMP, SPRING_SET,
+        SUPPORT_ALIASES, TYPOGRAPHY_RAMP, corner_for, dark, light, lightness_of, opaque_value,
+        rule_stroke, standard_vocabulary,
     };
     use crate::token::ThemeMode;
     use crate::token::focus::RING_TOKEN;
@@ -3946,6 +4038,138 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The painter grooves an edge slot by comparing its bound token's
+    /// *name* against `crate::token::rule::MATERIAL_TOKEN`
+    /// (`gorgon-petra-egui`'s `paint.rs`, the `EDGE_SLOTS` loop). If this
+    /// string ever drifted from [`BORDER_TOKEN`] the painter would stop
+    /// grooving every existing divider, table row rule and list separator —
+    /// silently, because nothing else in the tree would look wrong, only the
+    /// paint.
+    #[test]
+    fn the_rule_material_token_matches_the_decorative_border_token() {
+        assert_eq!(
+            BORDER_TOKEN,
+            crate::token::rule::MATERIAL_TOKEN,
+            "the painter's groove trigger and this token's own name have \
+             drifted apart; every horizontal rule in the product would go \
+             back to a flat line with no test above this one noticing"
+        );
+    }
+
+    /// [`rule_stroke`] reproduces the exact pair the contract's construction
+    /// table and the ratio experiment settled on, on both shipped panels:
+    /// light's `#f2f2f2` (242) to 214 and 255, dark's `#222222` (34) to 6
+    /// and 47. These are not independently chosen — they are what
+    /// `docs/experiments/successes/2026-09-07-deboss-rule-contrast-ratio.md`
+    /// sampled off the rendered PNG bytes for its winning specimen, so this
+    /// test is the contract's numbers, typed in once.
+    #[test]
+    fn rule_strokes_land_on_the_contract_construction() {
+        assert_eq!(
+            rule_stroke(LIGHT_LAYERS[1], RULE_SHADOW_DELTA),
+            [214, 214, 214],
+            "light shadow: 242 - 28 must be 214"
+        );
+        assert_eq!(
+            rule_stroke(LIGHT_LAYERS[1], RULE_HIGHLIGHT_DELTA),
+            [255, 255, 255],
+            "light highlight: 242 + 13 must land exactly on white, the \
+             measured clamp point — not past it, and not short of it"
+        );
+        assert_eq!(
+            rule_stroke(DARK_LAYERS[1], RULE_SHADOW_DELTA),
+            [6, 6, 6],
+            "dark shadow: 34 - 28 must be 6, the experiment's row B \
+             'achieved rows' for the shipped dark ground"
+        );
+        assert_eq!(
+            rule_stroke(DARK_LAYERS[1], RULE_HIGHLIGHT_DELTA),
+            [47, 47, 47],
+            "dark highlight: 34 + 13 must be 47, the same row"
+        );
+
+        // And the shipped themes must carry exactly these values through
+        // `insert_rule_material`, not just the free function above — a
+        // theme is what the painter actually reads.
+        for (label, theme, shadow, highlight) in [
+            ("light", light(), [214u8, 214, 214], [255u8, 255, 255]),
+            ("dark", dark(), [6u8, 6, 6], [47u8, 47, 47]),
+        ] {
+            assert_eq!(
+                theme_color(&theme, crate::token::rule::SHADOW_TOKEN),
+                opaque_value(shadow),
+                "{label}: {} did not resolve to the contract's shadow level",
+                crate::token::rule::SHADOW_TOKEN
+            );
+            assert_eq!(
+                theme_color(&theme, crate::token::rule::HIGHLIGHT_TOKEN),
+                opaque_value(highlight),
+                "{label}: {} did not resolve to the contract's highlight \
+                 level",
+                crate::token::rule::HIGHLIGHT_TOKEN
+            );
+        }
+    }
+
+    /// The acceptance criterion this whole material exists to hold:
+    /// **the highlight stroke must resolve lighter than the panel a rule
+    /// draws on**, in both shipped themes. `#dddddd` (221) on a 242 panel is
+    /// the exact bug this catches — a "groove" with two shadows and no
+    /// highlight, shipped once and invisible on mid-grey specimens because
+    /// nobody sampled the actual pixels.
+    ///
+    /// Scoped to `surface.layer-one`, not every layer this theme owns:
+    /// [`insert_rule_material`] computes both strokes from that one panel —
+    /// the panel every shipped divider, table row rule and list separator
+    /// actually sits on — so that is the only surface this pair is
+    /// *sanctioned* to sit on today. Sweeping `surface.base` too would fail
+    /// for an unrelated reason in light mode (it is `#ffffff`, and the
+    /// highlight's own clamp also lands there, so "strictly lighter" is
+    /// false by a tie rather than by the regression this test exists to
+    /// catch) — a false failure this test must not produce.
+    #[test]
+    fn the_rule_highlight_resolves_lighter_than_the_panel_it_offsets() {
+        for (label, theme) in [("light", light()), ("dark", dark())] {
+            let panel = theme_color(&theme, "surface.layer-one");
+            let highlight = theme_color(&theme, crate::token::rule::HIGHLIGHT_TOKEN);
+            assert!(
+                highlight.relative_luminance() > panel.relative_luminance(),
+                "{label}: {} (luminance {:.4}) is not lighter than its own \
+                 panel, surface.layer-one (luminance {:.4}). A highlight \
+                 that is not lighter than the panel it sits on paints a \
+                 second shadow instead of a groove.",
+                crate::token::rule::HIGHLIGHT_TOKEN,
+                highlight.relative_luminance(),
+                panel.relative_luminance()
+            );
+
+            let shadow = theme_color(&theme, crate::token::rule::SHADOW_TOKEN);
+            assert!(
+                shadow.relative_luminance() < panel.relative_luminance(),
+                "{label}: {} (luminance {:.4}) is not darker than its own \
+                 panel, surface.layer-one (luminance {:.4})",
+                crate::token::rule::SHADOW_TOKEN,
+                shadow.relative_luminance(),
+                panel.relative_luminance()
+            );
+        }
+    }
+
+    /// A future author who changes [`RULE_SHADOW_DELTA`] or
+    /// [`RULE_HIGHLIGHT_DELTA`] and drifts off the measured ratio fails here
+    /// rather than in a screenshot. 2.15:1, shadow over highlight, within a
+    /// half percent — the tolerance the ratio experiment's own two accepted
+    /// specimens agreed to.
+    #[test]
+    fn the_rule_delta_ratio_matches_the_measured_construction() {
+        let ratio = f32::from(-RULE_SHADOW_DELTA) / f32::from(RULE_HIGHLIGHT_DELTA);
+        assert!(
+            (ratio - 2.15).abs() < 0.01,
+            "shadow:highlight is {ratio:.3}, not the measured 2.15:1 from \
+             docs/experiments/successes/2026-09-07-deboss-rule-contrast-ratio.md"
+        );
     }
 
     /// **One layer of tonal step is not a control boundary**, in either

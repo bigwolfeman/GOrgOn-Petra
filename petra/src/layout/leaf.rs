@@ -16,8 +16,29 @@ use crate::tree::{KeyPath, NodeKind, ViewNode};
 /// digest input.
 pub const SPACER_MAX_EXTENT: f32 = 65_535.0;
 
-/// Thickness of a separator across its run axis, in logical units.
+/// Thickness of a **flat** separator across its run axis, in logical units.
+///
+/// A separator carrying the rule material's trigger token measures
+/// [`crate::token::rule::thickness`] instead, which is the groove's four
+/// absolute device pixels converted at the display scale. The two are
+/// deliberately different numbers: a flat line is one logical unit at any
+/// density because it is a line, and a groove is a machined edge whose
+/// strokes are pinned to the physical pixel grid.
 pub const SEPARATOR_THICKNESS: f32 = 1.0;
+
+/// Whether this node's `background` is the rule material's trigger token.
+///
+/// Read at measure time as well as at paint time, because a separator's own
+/// thickness depends on it: the material needs four device pixels and a flat
+/// line needs one. Only the plain slot is consulted — a measurement has no
+/// interaction state, so `background@hover` cannot change how much room a
+/// rule reserves.
+pub(crate) fn is_material(node: &ViewNode) -> bool {
+    node.props
+        .tokens
+        .get("background")
+        .is_some_and(|token| token.as_str() == crate::token::rule::MATERIAL_TOKEN)
+}
 
 /// Measure a non-text leaf.
 pub fn measure(node: &ViewNode, ctx: &mut LayoutCtx<'_>, proposal: SizeProposal) -> Size {
@@ -31,7 +52,7 @@ pub fn measure(node: &ViewNode, ctx: &mut LayoutCtx<'_>, proposal: SizeProposal)
             spacer_extent(proposal.horizontal),
             spacer_extent(proposal.vertical),
         ),
-        NodeKind::Separator => measure_separator(node, proposal),
+        NodeKind::Separator => measure_separator(node, ctx, proposal),
         NodeKind::Custom => {
             let name = node.props.custom_kind.as_deref().unwrap_or("");
             ctx.content.custom(name, proposal)
@@ -122,14 +143,30 @@ fn spacer_extent(proposal: Proposal) -> f32 {
     }
 }
 
-fn measure_separator(node: &ViewNode, proposal: SizeProposal) -> Size {
+/// A separator's size: the run it was offered along `props.axis`, and a
+/// thickness it chooses for itself across that axis.
+///
+/// **The thickness is not the caller's to pick.** That is the whole point of
+/// the kind. Before 2026-09-09 a divider was written as a childless stack
+/// with a `border.subtle` fill and a pinned one-unit height, seven times
+/// across the component library, and every one of them reserved one logical
+/// unit for a material that paints four device pixels. They all painted flat
+/// because a fill is not an edge slot, so the defect was invisible until the
+/// same token grooved in a table and did not groove in an accordion. A kind
+/// that measures its own material cannot drift that way.
+fn measure_separator(node: &ViewNode, ctx: &LayoutCtx<'_>, proposal: SizeProposal) -> Size {
     let axis = node.props.axis.unwrap_or(Axis::Horizontal);
     let along = match proposal.axis(axis) {
         Proposal::Exact(v) => v.max(0.0),
         Proposal::Zero | Proposal::Unspecified => 0.0,
         Proposal::Unbounded => SPACER_MAX_EXTENT,
     };
-    Size::from_axes(axis, along, SEPARATOR_THICKNESS)
+    let across = if is_material(node) {
+        crate::token::rule::thickness(ctx.scale)
+    } else {
+        SEPARATOR_THICKNESS
+    };
+    Size::from_axes(axis, along, across)
 }
 
 fn measure_input(node: &ViewNode, ctx: &mut LayoutCtx<'_>, proposal: SizeProposal) -> Size {

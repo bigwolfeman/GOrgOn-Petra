@@ -1492,6 +1492,121 @@ struct PaintEnv<'a> {
     images: &'a mut ImageSources,
 }
 
+/// Paints the rule material's two-stroke groove along `edge` of `rect`
+/// instead of the flat single line every other edge slot draws.
+///
+/// `gorgon_petra::token::rule::SHADOW_UNITS` absolute device pixels of
+/// shadow, directly followed by `HIGHLIGHT_UNITS` of highlight — **light
+/// always comes from the top of the screen**, so the shadow band is the
+/// physically higher one on both `Edge::Top` and `Edge::Bottom`, matching
+/// the contract's "The construction". Both bands hug the inside of `edge`,
+/// the same convention [`edge_segment`] uses for the flat line this
+/// replaces.
+///
+/// Two filled rects sharing one exact boundary coordinate, not two strokes
+/// centred on two coordinates: a centred stroke rounds its own half-width
+/// independently of its neighbour and can leave a sub-pixel seam between
+/// them, where two rects built from one shared `y` cannot.
+///
+/// Returns the number of shapes painted (0 or 2), for [`paint_one`]'s own
+/// shape count — 0 rather than a partial groove if either stroke's token
+/// fails to resolve, because one stroke alone is not the material this
+/// document specifies and `resolve_or_record` has already recorded the
+/// miss.
+fn paint_rule_groove(
+    painter: &Painter,
+    rect: egui::Rect,
+    edge: Edge,
+    env: &PaintEnv<'_>,
+    report: &mut PaintReport,
+) -> usize {
+    use gorgon_petra::token::rule::{HIGHLIGHT_TOKEN, HIGHLIGHT_UNITS, SHADOW_TOKEN, SHADOW_UNITS};
+
+    let Some(shadow) = resolve_or_record(env.colors, SHADOW_TOKEN, report) else {
+        return 0;
+    };
+    let Some(highlight) = resolve_or_record(env.colors, HIGHLIGHT_TOKEN, report) else {
+        return 0;
+    };
+
+    // Absolute device pixels, converted to the logical units the rest of
+    // this file measures in — the same direction `device_snapped_width`
+    // converts, but with nothing left to round: `SHADOW_UNITS` and
+    // `HIGHLIGHT_UNITS` are already whole device-pixel counts, so dividing
+    // by the scale factor lands exactly on a device pixel boundary whenever
+    // `rect` itself does (it does: `rect` is `to_egui_snapped` before this
+    // function is ever called).
+    let factor = env.scale.factor();
+    let shadow_h = SHADOW_UNITS / factor;
+    let highlight_h = HIGHLIGHT_UNITS / factor;
+
+    let (shadow_rect, highlight_rect) = match edge {
+        Edge::Bottom => {
+            let highlight_rect = egui::Rect::from_min_max(
+                egui::pos2(rect.min.x, rect.max.y - highlight_h),
+                rect.max,
+            );
+            let shadow_rect = egui::Rect::from_min_max(
+                egui::pos2(rect.min.x, rect.max.y - highlight_h - shadow_h),
+                egui::pos2(rect.max.x, rect.max.y - highlight_h),
+            );
+            (shadow_rect, highlight_rect)
+        }
+        Edge::Top => {
+            let shadow_rect =
+                egui::Rect::from_min_max(rect.min, egui::pos2(rect.max.x, rect.min.y + shadow_h));
+            let highlight_rect = egui::Rect::from_min_max(
+                egui::pos2(rect.min.x, rect.min.y + shadow_h),
+                egui::pos2(rect.max.x, rect.min.y + shadow_h + highlight_h),
+            );
+            (shadow_rect, highlight_rect)
+        }
+        // Light comes from **above and to the left** (operator decision,
+        // 2026-09-09, from specimens), so shadow is always left of highlight
+        // here exactly as shadow is always above highlight in the two arms
+        // overhead. Same units, same pair, same ratio, and measured at the
+        // same levels: 6 then 47 on the dark panel, 214 then 255 on the
+        // light one.
+        //
+        // Straight overhead was the original construction and it is what
+        // excluded vertical rules: both walls of a vertical groove sit at
+        // the same angle to an overhead light, which is a uniform darkening
+        // and not a bevel. Moving the light costs the horizontal case
+        // nothing, because its upper wall still turns away and its lower
+        // wall still turns toward, so the shipped 28 and 13 stand unchanged.
+        Edge::Left => {
+            let shadow_rect =
+                egui::Rect::from_min_max(rect.min, egui::pos2(rect.min.x + shadow_h, rect.max.y));
+            let highlight_rect = egui::Rect::from_min_max(
+                egui::pos2(rect.min.x + shadow_h, rect.min.y),
+                egui::pos2(rect.min.x + shadow_h + highlight_h, rect.max.y),
+            );
+            (shadow_rect, highlight_rect)
+        }
+        Edge::Right => {
+            let highlight_rect = egui::Rect::from_min_max(
+                egui::pos2(rect.max.x - highlight_h, rect.min.y),
+                rect.max,
+            );
+            let shadow_rect = egui::Rect::from_min_max(
+                egui::pos2(rect.max.x - highlight_h - shadow_h, rect.min.y),
+                egui::pos2(rect.max.x - highlight_h, rect.max.y),
+            );
+            (shadow_rect, highlight_rect)
+        }
+    };
+
+    painter.rect_filled(shadow_rect, 0.0, shadow);
+    painter.rect_filled(highlight_rect, 0.0, highlight);
+    // Two filled rects, counted as two. A groove that reported no fill would
+    // be a node declaring paint and appearing to produce none, which is the
+    // exact shape `every_built_page_paints_with_nothing_silent` exists to
+    // catch — and it matters now that a separator's whole appearance is the
+    // groove rather than a background rect beside it.
+    report.fills += 2;
+    2
+}
+
 fn paint_one(
     painter: &Painter,
     placement: &Placement,
@@ -1603,23 +1718,49 @@ fn paint_one(
             shapes += 1;
         }
     }
-    if let Some(token) = resolve_slot(&content.tokens, BACKGROUND_SLOT, state)
-        && let Some(color) = resolve_or_record(env.colors, token, report)
-    {
-        match &outline {
-            None => {
-                painter.rect_filled(rect, corner_radius, color);
+    if let Some(token) = resolve_slot(&content.tokens, BACKGROUND_SLOT, state) {
+        // A separator does not have a rule along one edge. It **is** the
+        // rule, so its whole rect is the groove and its own fill slot is
+        // what names the material — there is no edge slot to bind, because
+        // there is nothing else in the node for an edge to belong to.
+        //
+        // This is the second of the two constructions
+        // `gorgon_petra::token::rule`'s module doc describes, and it exists
+        // because the first one cannot express a standalone divider. Seven
+        // of them shipped as a childless stack with a `border.subtle` fill,
+        // which painted a flat line while the same token grooved on a table
+        // row, and the author of each one had to pick a thickness by hand.
+        //
+        // Orientation comes off the rect rather than off `props.axis`,
+        // which the frame does not carry: a rule is thin across itself, so
+        // the long side is the run. `Edge::Top` and `Edge::Left` are the
+        // shadow-first arms, and since the rect is exactly the groove's
+        // thickness the opposite arms would land on the same pixels. A
+        // square separator is degenerate and takes the horizontal reading.
+        let separator = placement.kind == gorgon_petra::tree::NodeKind::Separator;
+        if separator && outline.is_none() && token == gorgon_petra::token::rule::MATERIAL_TOKEN {
+            let edge = if rect.width() >= rect.height() {
+                Edge::Top
+            } else {
+                Edge::Left
+            };
+            shapes += paint_rule_groove(painter, rect, edge, env, report);
+        } else if let Some(color) = resolve_or_record(env.colors, token, report) {
+            match &outline {
+                None => {
+                    painter.rect_filled(rect, corner_radius, color);
+                }
+                Some(points) => {
+                    painter.add(egui::Shape::convex_polygon(
+                        points.clone(),
+                        color,
+                        Stroke::NONE,
+                    ));
+                }
             }
-            Some(points) => {
-                painter.add(egui::Shape::convex_polygon(
-                    points.clone(),
-                    color,
-                    Stroke::NONE,
-                ));
-            }
+            report.fills += 1;
+            shapes += 1;
         }
-        report.fills += 1;
-        shapes += 1;
     }
     // An anchored surface's caret, drawn with the fill it continues and
     // therefore immediately after it: `crate::triangle` owns the shape, the
@@ -1689,6 +1830,35 @@ fn paint_one(
     // `border-bottom` keeps its bottom rule on the same device pixels. A
     // silhouette has no edges to pick from, so on a non-rect figure the
     // slot is recorded undrawn rather than drawn on the wrong shape.
+    //
+    // Any edge bound to the rule material's trigger token —
+    // `gorgon_petra::token::rule::MATERIAL_TOKEN`, the same string as
+    // `border.subtle` — grooves instead of drawing the flat line every other
+    // edge slot draws: see [`paint_rule_groove`]. All four edges, since the
+    // light moved to the top-left on 2026-09-09; before that a vertical
+    // groove had both walls at the same angle to an overhead light and
+    // painted a uniform darkening rather than a bevel.
+    //
+    // Unless the bound edges would meet at a corner. While rules were
+    // horizontal only, the contract's "never meet a corner" mandate cost
+    // nothing to keep: no stroke could reach one. Vertical rules remove that,
+    // so `corner_free` decides it explicitly, and a node binding a horizontal
+    // and a vertical edge to the material draws two flat lines rather than
+    // two walls of a bevelled box. Computed once, before the loop, because
+    // the answer is about the *set* of bound edges and no single pass through
+    // the loop can see it.
+    let grooves = {
+        let material = |slot: &str| {
+            resolve_slot(&content.tokens, slot, state)
+                .is_some_and(|token| token == gorgon_petra::token::rule::MATERIAL_TOKEN)
+        };
+        gorgon_petra::token::rule::corner_free(
+            material(BORDER_TOP_SLOT),
+            material(BORDER_RIGHT_SLOT),
+            material(BORDER_BOTTOM_SLOT),
+            material(BORDER_LEFT_SLOT),
+        )
+    };
     for (slot, edge) in EDGE_SLOTS {
         let Some(token) = resolve_slot(&content.tokens, slot, state) else {
             continue;
@@ -1698,6 +1868,10 @@ fn paint_one(
         };
         if outline.is_some() {
             report.undrawn.insert(slot.to_owned());
+            continue;
+        }
+        if grooves && token == gorgon_petra::token::rule::MATERIAL_TOKEN {
+            shapes += paint_rule_groove(painter, rect, edge, env, report);
             continue;
         }
         let width = device_snapped_width(1.0, env.scale);
@@ -3161,6 +3335,16 @@ mod tests {
     /// was a box, so every field in the catalog drew one. Read from the
     /// shapes egui received, at a fractional scale so the rule's depth has
     /// to be snapped to be one crisp row of device pixels.
+    ///
+    /// Fixture is `border-strong` (the control-boundary tone), not
+    /// `border.subtle`: this test's whole point is the *generic* edge-slot
+    /// mechanism, and since the rule material landed, `border.subtle`
+    /// specifically grooves instead of drawing one strip —
+    /// [`a_horizontal_rule_material_edge_paints_a_two_stroke_groove`] is
+    /// that test. `border-strong` still exercises the plain path this one
+    /// was written for: it is a state/control-boundary tone the contract
+    /// keeps flat on purpose (checkbox, radio, toggle track, field rule),
+    /// never a rule.
     #[test]
     fn a_bottom_border_is_one_strip_on_the_bottom_edge_and_no_box() {
         let scale = Scale::new(1.5).unwrap();
@@ -3169,7 +3353,7 @@ mod tests {
         let mut props = Props::default();
         props
             .tokens
-            .insert("border-bottom".into(), tok("border.subtle"));
+            .insert("border-bottom".into(), tok("border-strong"));
         let node = ViewNode::new(NodeKind::Stack, "root").with_props(props);
         let frame = petrify(
             1,
@@ -3227,6 +3411,277 @@ mod tests {
         assert!(
             (device - device.round()).abs() < 1e-4,
             "the rule is {device} device pixels, not a whole number"
+        );
+    }
+
+    /// `border-bottom` and `border-top`, each bound to `border.subtle`,
+    /// paint the rule material's two-stroke groove: two filled bands, no
+    /// stroke, shadow directly above highlight on both edges (light always
+    /// comes from the top of the screen, never from "inside the node"), at
+    /// exactly the theme's `rule.shadow` and `rule.highlight` colours and
+    /// exactly [`gorgon_petra::token::rule::SHADOW_UNITS`] +
+    /// [`gorgon_petra::token::rule::HIGHLIGHT_UNITS`] device pixels each.
+    /// This is acceptance criterion 2 of
+    /// `.agents/notes/proposed/architecture/2026-09-07-rule-material-two-stroke-groove.md`:
+    /// "A rule renders as four units: two of shadow above two of
+    /// highlight."
+    #[test]
+    fn a_horizontal_rule_material_edge_paints_a_two_stroke_groove() {
+        let scale = Scale::new(1.0).unwrap();
+        let host = Headless::new();
+        let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
+        let mut props = Props::default();
+        props
+            .tokens
+            .insert("border-bottom".into(), tok("border.subtle"));
+        props
+            .tokens
+            .insert("border-top".into(), tok("border.subtle"));
+        let node = ViewNode::new(NodeKind::Stack, "root").with_props(props);
+        let frame = petrify(
+            1,
+            validated(&node),
+            &mut h.ctx(),
+            Viewport::new(Size::new(240.0, 40.0), ThemeMode::Dark).with_scale(scale),
+            TransitionActivity::default(),
+        );
+        let mut shaper = host.shaper();
+        let report = paint_frame(&host.painter(), &frame, &mut shaper, &snapshot());
+        assert!(report.unresolved_tokens.is_empty(), "{report:?}");
+
+        let out = host.0.run_ui(RawInput::default(), |_| {});
+        let stroked = out
+            .shapes
+            .iter()
+            .any(|cs| matches!(&cs.shape, Shape::Rect(r) if r.stroke.width > 0.0));
+        assert!(!stroked, "a groove must not paint a box stroke");
+        let segments = out
+            .shapes
+            .iter()
+            .any(|cs| matches!(&cs.shape, Shape::LineSegment { .. }));
+        assert!(
+            !segments,
+            "a grooved edge must not also paint the old flat line segment"
+        );
+
+        let bands: Vec<(egui::Rect, Color32)> = out
+            .shapes
+            .iter()
+            .filter_map(|cs| match &cs.shape {
+                Shape::Rect(r) if r.stroke.width == 0.0 && r.fill != Color32::TRANSPARENT => {
+                    Some((r.rect, r.fill))
+                }
+                _ => None,
+            })
+            .collect();
+        let node_rect = to_egui_snapped(frame.placements[0].rect, scale);
+        out.drop_without_applying_deltas();
+
+        assert_eq!(
+            bands.len(),
+            4,
+            "two bands per grooved edge, two edges: {bands:?}"
+        );
+
+        let shadow = snapshot()
+            .color(gorgon_petra::token::rule::SHADOW_TOKEN)
+            .expect("rule.shadow resolves in the shipped dark theme");
+        let highlight = snapshot()
+            .color(gorgon_petra::token::rule::HIGHLIGHT_TOKEN)
+            .expect("rule.highlight resolves in the shipped dark theme");
+        assert_ne!(
+            shadow, highlight,
+            "the two strokes must be distinguishable colours or this test \
+             cannot tell them apart by fill alone"
+        );
+
+        let mut top: Vec<_> = bands
+            .iter()
+            .copied()
+            .filter(|(r, _)| r.center().y < node_rect.center().y)
+            .collect();
+        let mut bottom: Vec<_> = bands
+            .iter()
+            .copied()
+            .filter(|(r, _)| r.center().y >= node_rect.center().y)
+            .collect();
+        assert_eq!(top.len(), 2, "the top groove is two bands: {bands:?}");
+        assert_eq!(bottom.len(), 2, "the bottom groove is two bands: {bands:?}");
+        top.sort_by(|a, b| a.0.min.y.total_cmp(&b.0.min.y));
+        bottom.sort_by(|a, b| a.0.min.y.total_cmp(&b.0.min.y));
+
+        for (edge_name, [first, second]) in [
+            ("top", [top[0], top[1]]),
+            ("bottom", [bottom[0], bottom[1]]),
+        ] {
+            // Light always comes from the top of the screen: on both the
+            // top edge and the bottom edge, the physically higher band
+            // (smaller y) is the shadow and the lower one is the highlight.
+            assert_eq!(
+                first.1, shadow,
+                "{edge_name}: the physically higher band must be the shadow"
+            );
+            assert_eq!(
+                second.1, highlight,
+                "{edge_name}: the physically lower band must be the highlight"
+            );
+            for (rect, _) in [first, second] {
+                assert!(
+                    (rect.min.x - node_rect.min.x).abs() < 1e-4
+                        && (rect.max.x - node_rect.max.x).abs() < 1e-4,
+                    "{edge_name}: a band must span the node's full width: \
+                     {rect:?} in {node_rect:?}"
+                );
+            }
+            let shadow_h = first.0.height();
+            let highlight_h = second.0.height();
+            assert!(
+                (shadow_h - gorgon_petra::token::rule::SHADOW_UNITS / scale.factor()).abs() < 1e-4,
+                "{edge_name}: shadow band is {shadow_h} logical units, not \
+                 {} device pixels at this scale",
+                gorgon_petra::token::rule::SHADOW_UNITS
+            );
+            assert!(
+                (highlight_h - gorgon_petra::token::rule::HIGHLIGHT_UNITS / scale.factor()).abs()
+                    < 1e-4,
+                "{edge_name}: highlight band is {highlight_h} logical units, \
+                 not {} device pixels at this scale",
+                gorgon_petra::token::rule::HIGHLIGHT_UNITS
+            );
+            assert!(
+                (first.0.max.y - second.0.min.y).abs() < 1e-4,
+                "{edge_name}: the two bands must share one exact boundary, \
+                 no gap and no overlap: {first:?} {second:?}"
+            );
+        }
+        assert!(
+            (top[0].0.min.y - node_rect.min.y).abs() < 1e-4,
+            "the top groove hugs the node's own top edge: {top:?}"
+        );
+        assert!(
+            (bottom[1].0.max.y - node_rect.max.y).abs() < 1e-4,
+            "the bottom groove hugs the node's own bottom edge: {bottom:?}"
+        );
+    }
+
+    /// A vertical pair grooves like a horizontal one. `border-left` with
+    /// `border-right` is two parallel rules, not a corner, so both take the
+    /// material: four filled bands and no flat line segments.
+    ///
+    /// This asserted the opposite until 2026-09-09, when the light moved to
+    /// the top-left. Under an overhead light both walls of a vertical groove
+    /// sit at the same angle and paint a uniform darkening rather than a
+    /// bevel, which is what put vertical rules out of scope; from the
+    /// top-left the left wall turns away and the right wall turns toward,
+    /// and the horizontal case is unaffected because its own two walls
+    /// already did.
+    #[test]
+    fn a_parallel_vertical_pair_grooves_like_a_horizontal_one() {
+        let scale = Scale::new(1.0).unwrap();
+        let host = Headless::new();
+        let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
+        let mut props = Props::default();
+        props
+            .tokens
+            .insert("border-left".into(), tok("border.subtle"));
+        props
+            .tokens
+            .insert("border-right".into(), tok("border.subtle"));
+        let node = ViewNode::new(NodeKind::Stack, "root").with_props(props);
+        let frame = petrify(
+            1,
+            validated(&node),
+            &mut h.ctx(),
+            Viewport::new(Size::new(240.0, 40.0), ThemeMode::Dark).with_scale(scale),
+            TransitionActivity::default(),
+        );
+        let mut shaper = host.shaper();
+        let report = paint_frame(&host.painter(), &frame, &mut shaper, &snapshot());
+        assert!(report.unresolved_tokens.is_empty(), "{report:?}");
+
+        let out = host.0.run_ui(RawInput::default(), |_| {});
+        let segments: Vec<_> = out
+            .shapes
+            .iter()
+            .filter_map(|cs| match &cs.shape {
+                Shape::LineSegment { points, .. } => Some(*points),
+                _ => None,
+            })
+            .collect();
+        let bands = out
+            .shapes
+            .iter()
+            .filter(
+                |cs| matches!(&cs.shape, Shape::Rect(r) if r.stroke.width == 0.0 && r.fill != Color32::TRANSPARENT),
+            )
+            .count();
+        out.drop_without_applying_deltas();
+        assert_eq!(
+            segments.len(),
+            0,
+            "a material-bound vertical edge grooves, so it paints no flat \
+             line segment: {segments:?}"
+        );
+        assert_eq!(bands, 4, "two vertical grooves, two filled bands each");
+    }
+
+    /// The corner guard. A node binding a horizontal edge and a vertical
+    /// edge to the material would draw two walls of a bevelled box, which
+    /// the contract refuses as the retro tell ("Never meet a corner"). That
+    /// mandate used to cost nothing to keep, because rules were horizontal
+    /// only and no stroke could reach a corner; vertical rules removed the
+    /// guarantee, so `token::rule::corner_free` decides it and the painter
+    /// falls back to two flat lines.
+    ///
+    /// Falling back rather than drawing nothing is deliberate: the author
+    /// asked for a line on each edge and gets one. What they do not get is
+    /// a bevel.
+    #[test]
+    fn perpendicular_material_edges_draw_flat_lines_instead_of_a_bevelled_corner() {
+        let scale = Scale::new(1.0).unwrap();
+        let host = Headless::new();
+        let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
+        let mut props = Props::default();
+        props
+            .tokens
+            .insert("border-top".into(), tok("border.subtle"));
+        props
+            .tokens
+            .insert("border-left".into(), tok("border.subtle"));
+        let node = ViewNode::new(NodeKind::Stack, "root").with_props(props);
+        let frame = petrify(
+            1,
+            validated(&node),
+            &mut h.ctx(),
+            Viewport::new(Size::new(240.0, 40.0), ThemeMode::Dark).with_scale(scale),
+            TransitionActivity::default(),
+        );
+        let mut shaper = host.shaper();
+        let report = paint_frame(&host.painter(), &frame, &mut shaper, &snapshot());
+        assert!(report.unresolved_tokens.is_empty(), "{report:?}");
+
+        let out = host.0.run_ui(RawInput::default(), |_| {});
+        let segments = out
+            .shapes
+            .iter()
+            .filter(|cs| matches!(&cs.shape, Shape::LineSegment { .. }))
+            .count();
+        let bands = out
+            .shapes
+            .iter()
+            .filter(
+                |cs| matches!(&cs.shape, Shape::Rect(r) if r.stroke.width == 0.0 && r.fill != Color32::TRANSPARENT),
+            )
+            .count();
+        out.drop_without_applying_deltas();
+        assert_eq!(
+            segments, 2,
+            "one flat line per bound edge when the pair is a corner"
+        );
+        assert_eq!(
+            bands, 0,
+            "a corner must never groove: that is a bevelled box, which the \
+             contract refuses"
         );
     }
 

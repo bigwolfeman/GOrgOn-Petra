@@ -1749,6 +1749,13 @@ fn carbon_fields_are_a_fill_with_a_bottom_rule() {
         ("root/carbon2/dt-jobs/dt-r3", BORDER_SUBTLE, true),
         ("root/carbon2/dt-jobs/header", BORDER_SUBTLE, true),
         ("root/carbon5/stl-plans/stl-r1", BORDER_SUBTLE, true),
+        // A contained list's row separators used to appear here. They do
+        // not any more: `super::rule` builds a `NodeKind::Separator` whose
+        // own fill names the material, so it binds no edge slot at all and
+        // this sweep does not see it. That is the second of the two
+        // constructions `crate::token::rule` describes — a node that *is* a
+        // rule rather than a node with a rule along one edge — and every
+        // standalone divider in this library takes it as of 2026-09-09.
         ("root/controls/name", BORDER_STRONG, true),
         ("root/carbon2/fm-signup/fm-name", BORDER_STRONG, true),
         // Number input's steppers are as tall as the well and paint after
@@ -1782,8 +1789,9 @@ fn carbon_fields_are_a_fill_with_a_bottom_rule() {
     /// The read-only forms: a subtle rule and no fill.
     const RULED_READ_ONLY: [&str; 1] = ["root/carbon5/txt-readonly"];
     /// The entries of [`RULED`] that are not fields: a table's own row
-    /// boundary, which uses the same slot and answers to Carbon's table
-    /// anatomy rather than to its field anatomy.
+    /// boundary and a structured list's, both of which use the same slot and
+    /// answer to Carbon's table/list anatomy rather than to its field
+    /// anatomy.
     const RULED_NOT_FIELDS: [&str; 6] = [
         "root/carbon2/dt-jobs/dt-r0",
         "root/carbon2/dt-jobs/dt-r1",

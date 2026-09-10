@@ -47,15 +47,6 @@
 // the same reason, as `cat.rs`.
 #![allow(dead_code)]
 
-/// Throwaway visual spike (2026-09-07): debossed hairline rules and box
-/// bevels, for the operator to pick a direction by looking at pixels. A
-/// descendant module of `shots` (not a sibling declared in `main.rs`)
-/// because it needs [`Camera`]'s private fields to build its own
-/// `Camera<SpikeApp>`, exactly the way [`Camera::<Fixture>::fixture`] does.
-/// Delete this module (and this one line) once the operator has chosen.
-#[cfg(test)]
-mod rule_spike;
-
 use egui::{Context, Pos2, RawInput};
 use gorgon_petra::frame::{CaretPaint, PaintContent, PetrifiedFrame};
 use gorgon_petra::geom::{Point, Rect, Size};
@@ -3074,11 +3065,29 @@ mod tests {
         }
         // One rule per row: between the header and the first, and between
         // the two rows. None after the last, which would border nothing.
+        //
+        // The rule is not Carbon's `1px`: the separator carries the rule
+        // material, so the shipped painter grooves it — two device pixels
+        // of shadow above two of highlight — and the node reserves exactly
+        // those four.
+        //
+        // Asserted in **device** pixels, which is the unit the material is
+        // specified in. `Camera::rect` answers in logical units and this
+        // page captures at `CAPTURE_SCALE`, so the two differ by that
+        // factor. They did not use to: the rule pinned four *logical* units
+        // from a constant, which reserved eight device pixels here for a
+        // four-pixel groove, and the assertion below passed on it. Reading
+        // the material through `token::rule::thickness` is what removed
+        // both the constant and the mismatch.
+        let expected = gorgon_petra::token::rule::total_units();
         for i in 0..2 {
             let rule = cam.rect(&format!("cl/rule-{i}"));
+            let device = rule.h * CAPTURE_SCALE;
             assert!(
-                (rule.h - 1.0).abs() < 0.01,
-                "a Carbon boundary is 1px, this one is {:.2}",
+                (device - expected).abs() < 0.01,
+                "the rule material's groove is {expected} device pixels, \
+                 this one reserves {device:.2} ({:.2} logical at scale \
+                 {CAPTURE_SCALE})",
                 rule.h
             );
             assert!((rule.w - list.w).abs() < 0.5, "and spans the list");
@@ -3131,8 +3140,15 @@ mod tests {
     /// Sampled at each edge's midpoint, so a rule and a box are told apart
     /// by the top edge and the two sides reading as fill. `filled` says
     /// whether the fill differs from the ground above the field (a read-only
-    /// field is transparent).
-    fn assert_carbon_well(cam: &mut Camera, tail: &str, shot: &str, filled: bool) {
+    /// field is transparent). `grooved` says which material the bottom rule
+    /// is drawn in: `false` is `border-strong`, the control-boundary tone
+    /// every *interactive* well keeps flat and one device pixel deep; `true`
+    /// is `border.subtle`, the decorative tone a **read-only** field binds
+    /// (`field::bind_field_chrome`) and which the shipped painter now
+    /// grooves — see `crate::token::rule` and this contract's "Scope:
+    /// horizontal rules only", which does not carve out an exception for a
+    /// field, only for a *control's* boundary.
+    fn assert_carbon_well(cam: &mut Camera, tail: &str, shot: &str, filled: bool, grooved: bool) {
         let rect = cam.rect(tail);
         let img = raster(cam, shot);
         let (mid_x, mid_y) = (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
@@ -3163,11 +3179,45 @@ mod tests {
             rule[0], inside,
             "{tail}: there is no rule along the bottom edge"
         );
-        let fill_row = device_row(&img, rect.x, rect.x + rect.w, rule_row - 3);
-        assert!(
-            fill_row.iter().filter(|p| **p == inside).count() * 10 > fill_row.len() * 9,
-            "{tail}: the rule is thicker than one snapped pixel"
-        );
+        if grooved {
+            // Four device rows, shadow above highlight: `rule_row` and
+            // `rule_row - 1` are the highlight (the physically lower half,
+            // sampled here from the bottom up), `rule_row - 2` and
+            // `rule_row - 3` are the shadow, and the row above that must be
+            // back to the field's own fill — the groove is exactly four
+            // device pixels deep, not a thicker flat band.
+            let highlight_1 = device_row(&img, rect.x, rect.x + rect.w, rule_row - 1);
+            let shadow_0 = device_row(&img, rect.x, rect.x + rect.w, rule_row - 2);
+            let shadow_1 = device_row(&img, rect.x, rect.x + rect.w, rule_row - 3);
+            let past_the_groove = device_row(&img, rect.x, rect.x + rect.w, rule_row - 4);
+            assert!(
+                highlight_1.iter().all(|p| *p == rule[0]),
+                "{tail}: the highlight band is not two uniform rows"
+            );
+            assert!(
+                shadow_0.iter().all(|p| *p == shadow_0[0]),
+                "{tail}: the shadow band is not uniform"
+            );
+            assert_eq!(
+                shadow_1, shadow_0,
+                "{tail}: the shadow band is not two uniform rows"
+            );
+            assert_ne!(
+                shadow_0[0], rule[0],
+                "{tail}: shadow and highlight must be two distinguishable \
+                 strokes, not one flat band twice as deep"
+            );
+            assert_eq!(
+                past_the_groove[0], inside,
+                "{tail}: the groove is not exactly four device pixels deep"
+            );
+        } else {
+            let fill_row = device_row(&img, rect.x, rect.x + rect.w, rule_row - 3);
+            assert!(
+                fill_row.iter().filter(|p| **p == inside).count() * 10 > fill_row.len() * 9,
+                "{tail}: the rule is thicker than one snapped pixel"
+            );
+        }
         if filled {
             assert_ne!(above, inside, "{tail}: the field has no fill of its own");
         } else {
@@ -3185,16 +3235,16 @@ mod tests {
     fn a_text_field_is_a_fill_with_one_rule_under_it_and_no_box() {
         let mut cam = Camera::on("Text input");
         for tail in ["field-md", "field-sm", "field-lg"] {
-            assert_carbon_well(&mut cam, tail, "34-text-input-wells", true);
+            assert_carbon_well(&mut cam, tail, "34-text-input-wells", true, false);
         }
-        assert_carbon_well(&mut cam, "field-ro", "34-text-input-wells", false);
+        assert_carbon_well(&mut cam, "field-ro", "34-text-input-wells", false, true);
     }
 
     /// Row 28. The search well is the same anatomy, with the glass inset.
     #[test]
     fn the_search_field_is_a_carbon_well_with_the_glass_inside_it() {
         let mut cam = Camera::on("Search");
-        assert_carbon_well(&mut cam, "/query", "28-search-well", true);
+        assert_carbon_well(&mut cam, "/query", "28-search-well", true, false);
         let well = cam.rect("/query");
         let glass = cam.rect("query/magnifier");
         assert!(
@@ -3224,7 +3274,7 @@ mod tests {
     #[test]
     fn the_number_input_is_one_well_and_its_steppers_step() {
         let mut cam = Camera::on("Number input");
-        assert_carbon_well(&mut cam, "/n-md", "22-number-input-well", true);
+        assert_carbon_well(&mut cam, "/n-md", "22-number-input-well", true, false);
         let well = cam.rect("/n-md");
         let value = cam.rect("n-md/value");
         let dec = cam.rect("n-md/decrement");
