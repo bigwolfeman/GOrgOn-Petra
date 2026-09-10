@@ -40,15 +40,27 @@
 //! id for anything but the `scroll`'s own placement, and why a stale entry
 //! under a `stack`'s id cannot be mistaken for one.
 //!
-//! # Known approximation
-//! Row *positions* come from a uniform `index * estimated_extent` grid; row
-//! *sizes* come from actually measuring each materialized row, which may
-//! answer a different extent than the estimate (documented at
-//! [`place_collection`]). A window containing non-uniform rows can therefore
-//! show a small overlap or gap at those rows. Correcting that would mean
-//! measuring every row from index 0 to place one, which defeats
-//! virtualization; real content should keep `estimated_extent` close to the
-//! rows' true extent for the approximation to stay unnoticeable.
+//! # What `estimated_extent` governs, and what it cannot break
+//! The estimate answers the two questions nothing has measured yet: how long
+//! the whole scrollable content is (`measure_collection`, which never fetches
+//! a row — FR-009), and which index the visible window starts at
+//! (`place_collection`). Both are about rows that were never materialized, so
+//! an estimate is the only answer either can have.
+//!
+//! Inside the window it is not used at all. Rows are placed by a cursor that
+//! advances by each row's own measured extent, so two placed rows are
+//! disjoint however wrong the estimate is. This used to be `index *
+//! estimated_extent` for the position and the measured extent for the size,
+//! and the two disagreeing is a real defect rather than a rounding one: the
+//! inspector's fiber list declared 28 for rows that measure 44, and every row
+//! was drawn 16 units on top of the row above it. That shipped, passed every
+//! frame-level test, and was found by looking at the picture.
+//!
+//! So a wrong estimate now costs a scroll range that is long or short, and a
+//! window whose last row runs past where the grid said it would — which is
+//! what `overscan` absorbs. It can no longer make rows collide. Content still
+//! wants an honest `estimated_extent`; it is no longer load-bearing for
+//! whether the list is legible.
 
 use crate::frame::placement::{PaintState, Placement, PlacementSink};
 use crate::geom::{Axis, Rect, Size};
@@ -348,22 +360,31 @@ pub fn place_collection(
                 // rows (`RowSource::rows`'s contract); that shortfall is
                 // reported by placing fewer rows, never by fabricating the
                 // rest.
-                for (offset_in_window, row_node) in fetched.iter().enumerate() {
-                    let row_index = start_index + offset_in_window;
+
+                // Where this window starts still comes from the uniform
+                // grid, and has to: the rows above `start_index` were never
+                // materialized, so nothing has measured them and the
+                // estimate is the only answer available. Inside the window
+                // the estimate stops being used — see the running cursor at
+                // the end of the loop.
+                let mut main_origin =
+                    origin_along(slot.rect, axis) + start_index as f32 * row_extent;
+                for row_node in fetched.iter() {
                     let row_proposal =
                         SizeProposal::exact(Size::from_axes(axis, row_extent, cross_extent));
-                    // A row that measures a different extent than
-                    // `estimated_extent` is placed at its own measured
-                    // extent (see the module doc's "Known approximation").
                     let row_size = crate::layout::measure(row_node, ctx, path, row_proposal);
-                    let main_origin = origin_along(slot.rect, axis) + row_index as f32 * row_extent;
-                    let row_rect = axis_rect(
-                        slot.rect,
-                        axis,
-                        main_origin,
-                        row_size.along(axis),
-                        row_size.across(axis),
-                    );
+                    let row_along = row_size.along(axis);
+                    // Across the axis, the proposal was `exact`, and an
+                    // exact proposal is a contract: a row is as wide as the
+                    // list it sits in, whatever its own content measured.
+                    // Placing it at the measured extent instead is what left
+                    // a focus bar, a hover fill and a selected fill stopping
+                    // wherever that row's own text happened to stop, ragged
+                    // down the list. `max` rather than a plain substitution
+                    // so a row that genuinely overflows keeps its overflow
+                    // and the clip stays the thing that hides it.
+                    let row_across = row_size.across(axis).max(cross_extent);
+                    let row_rect = axis_rect(slot.rect, axis, main_origin, row_along, row_across);
                     // Inherit the scroll's viewport clip. Overscan rows sit
                     // outside it on purpose: they are placed so a later
                     // frame can scroll without a hole, and they are not
@@ -376,6 +397,14 @@ pub fn place_collection(
                         window: slot.window,
                     };
                     crate::layout::place(row_node, ctx, path, row_slot, sink);
+                    // The cursor advances by what this row actually
+                    // measured, never by the estimate. That is what makes
+                    // two placed rows disjoint no matter how wrong the
+                    // estimate is: it used to advance by `index *
+                    // estimated_extent`, so a list of 44-tall rows declaring
+                    // an estimate of 28 drew every row 16 units on top of
+                    // the one before it.
+                    main_origin += row_along;
                 }
             }
         }
@@ -777,9 +806,21 @@ mod tests {
     /// hole. Those rows sit outside the viewport clip: they are in the
     /// frame, and they are not visible. Tab follows [`Placement::is_visible`],
     /// so they are not reachable until the offset moves them in.
+    ///
+    /// The fixture pins each row to the 28 the collection estimates. It did
+    /// not, and could not: a bare `GeneratedRows` row measures one
+    /// `MonoContent` line (16). Under the old uniform grid the rows were
+    /// still *positioned* 28 apart, so this test saw hidden rows that its own
+    /// content never earned. Now that a row lands where its measured extent
+    /// puts it, eleven 16-unit rows all fit inside a 224-unit viewport and
+    /// nothing is hidden — an honest under-fill, and the reason the fixture
+    /// has to state its row height instead of borrowing the estimate's.
     #[test]
     fn overscan_rows_sit_outside_the_viewport_clip() {
-        let mut h = Harness::with(MonoContent::new(), GeneratedRows::new("fibers", 100));
+        let mut h = Harness::with(
+            MonoContent::new(),
+            GeneratedRows::new("fibers", 100).each_row_tall(28.0),
+        );
         let tree = scroll_with_collection(100, 28.0, 64.0);
         let mut path = KeyPath::root();
         let mut sink = PlacementList::new();
@@ -1225,6 +1266,108 @@ mod tests {
             unbounded.0
         );
         assert_eq!(unbounded.3, 0, "the control must not have evicted anything");
+    }
+
+    /// The defect the operator found in a screenshot, as a check.
+    ///
+    /// The inspector's fiber list declared `estimated_extent: 28` for rows
+    /// that measure 44 — a stale constant, `list_row`'s vertical padding
+    /// having moved from `spacing-02` to `spacing-04`. Every row was drawn 16
+    /// units on top of the row above it, and the tall ones ran off the bottom
+    /// of the card. Nothing in 130-odd frame-level tests could see it.
+    ///
+    /// Falsified against the old `main_origin = origin + row_index *
+    /// row_extent`, which failed with the actual, observed text
+    ///
+    /// ```text
+    /// /list/rows/row-1 starts at 28 but /list/rows/row-0 already runs to 44: rows overlap by 16
+    /// ```
+    #[test]
+    fn a_row_taller_than_the_estimate_does_not_land_on_top_of_the_row_above_it() {
+        let mut h = Harness::with(
+            MonoContent::new(),
+            GeneratedRows::new("fibers", 20).each_row_tall(44.0),
+        );
+        // The lie the fiber list was telling: 28 declared, 44 measured.
+        let tree = scroll_with_collection(20, 28.0, 0.0);
+        let mut path = KeyPath::root();
+        let mut sink = PlacementList::new();
+        crate::layout::place(
+            &tree,
+            &mut h.ctx(),
+            &mut path,
+            Slot::new(Rect::new(0.0, 0.0, 200.0, 224.0)),
+            &mut sink,
+        );
+
+        let mut rows: Vec<&Placement> = sink
+            .as_slice()
+            .iter()
+            .filter(|p| p.id.contains("/row-"))
+            .collect();
+        rows.sort_by(|a, b| a.rect.y.total_cmp(&b.rect.y));
+        assert!(
+            rows.len() >= 2,
+            "need two rows to compare; got {}",
+            rows.len()
+        );
+        for pair in rows.windows(2) {
+            let (above, below) = (pair[0], pair[1]);
+            let bottom = above.rect.y + above.rect.h;
+            assert!(
+                below.rect.y >= bottom,
+                "{} starts at {} but {} already runs to {}: rows overlap by {}",
+                below.id,
+                below.rect.y,
+                above.id,
+                bottom,
+                bottom - below.rect.y
+            );
+        }
+        // Not merely disjoint — flush. A list of uniform rows has no gaps
+        // either, which is what rules out "place everything a mile apart" as
+        // a way to pass the assertion above.
+        assert_eq!(rows[1].rect.y - rows[0].rect.y, 44.0);
+    }
+
+    /// A row is as wide as the list it sits in, whatever its own text
+    /// measured. The collection proposes its cross extent as `exact`, and
+    /// `place_collection` used to place the row at the extent it measured
+    /// instead — which is why a focus bar, a hover fill and a selected fill
+    /// all stopped wherever that row's text stopped.
+    ///
+    /// Falsified by putting `row_size.across(axis)` back: the assertion
+    /// failed with the actual, observed text
+    ///
+    /// ```text
+    /// assertion `left == right` failed: row 0 is 40 wide inside a 200-wide list
+    ///   left: 40.0
+    ///  right: 200.0
+    /// ```
+    #[test]
+    fn a_row_fills_the_lists_cross_extent_rather_than_hugging_its_own_text() {
+        let mut h = Harness::with(MonoContent::new(), GeneratedRows::new("fibers", 5));
+        let tree = scroll_with_collection(5, 16.0, 0.0);
+        let mut path = KeyPath::root();
+        let mut sink = PlacementList::new();
+        crate::layout::place(
+            &tree,
+            &mut h.ctx(),
+            &mut path,
+            Slot::new(Rect::new(0.0, 0.0, 200.0, 224.0)),
+            &mut sink,
+        );
+
+        let row = sink
+            .as_slice()
+            .iter()
+            .find(|p| p.id.ends_with("/row-0"))
+            .expect("row 0 was materialized");
+        assert_eq!(
+            row.rect.w, 200.0,
+            "row 0 is {} wide inside a 200-wide list",
+            row.rect.w
+        );
     }
 
     #[test]

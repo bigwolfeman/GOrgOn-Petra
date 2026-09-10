@@ -421,6 +421,17 @@ pub struct GeneratedRows {
     pub max_index_seen: usize,
     /// Rows served since construction.
     pub served: usize,
+    /// Height every synthesized row is pinned to, for a vertical list.
+    ///
+    /// `None` — the default — leaves a row as a bare text node, which under
+    /// [`MonoContent`] measures one `line_h` (16) tall whatever the
+    /// collection's `estimated_extent` says. That mismatch is fine for a test
+    /// about *which* rows a window selects, and wrong for one about where
+    /// they land: `place_collection` advances by each row's measured extent,
+    /// so a test that says "28-unit rows" and hands the engine 16-unit ones
+    /// is asserting against geometry it does not have. Set this to the same
+    /// number the collection estimates and the two agree.
+    pub row_height: Option<f32>,
 }
 
 impl GeneratedRows {
@@ -433,7 +444,16 @@ impl GeneratedRows {
             totals,
             max_index_seen: 0,
             served: 0,
+            row_height: None,
         }
+    }
+
+    /// The same source, with every row pinned to `height`. See
+    /// [`GeneratedRows::row_height`].
+    #[must_use]
+    pub fn each_row_tall(mut self, height: f32) -> Self {
+        self.row_height = Some(height);
+        self
     }
 
     /// The node this source synthesizes for row `index`.
@@ -442,6 +462,19 @@ impl GeneratedRows {
         ViewNode::new(NodeKind::Text, Key::new(format!("row-{index}"))).with_props(Props {
             text: Some(format!("row {index}")),
             ..Props::default()
+        })
+    }
+
+    /// [`GeneratedRows::row`], pinned to `height`.
+    #[must_use]
+    pub fn row_of_height(index: usize, height: f32) -> ViewNode {
+        Self::row(index).with_constraints(crate::tree::Constraints {
+            vertical: crate::tree::AxisConstraint {
+                min: Some(height),
+                max: Some(height),
+                priority: 0,
+            },
+            ..crate::tree::Constraints::default()
         })
     }
 }
@@ -455,7 +488,15 @@ impl RowSource for GeneratedRows {
         }
         self.max_index_seen = self.max_index_seen.max(end.saturating_sub(1));
         self.served += end - range.start;
-        (range.start..end).map(|i| Arc::new(Self::row(i))).collect()
+        let height = self.row_height;
+        (range.start..end)
+            .map(|i| {
+                Arc::new(match height {
+                    Some(h) => Self::row_of_height(i, h),
+                    None => Self::row(i),
+                })
+            })
+            .collect()
     }
 }
 

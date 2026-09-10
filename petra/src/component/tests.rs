@@ -2093,6 +2093,141 @@ fn named<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
     walk(node, key).unwrap_or_else(|| panic!("no descendant keyed `{key}`"))
 }
 
+/// A rule runs its container's full cross extent under every alignment.
+///
+/// Worth a test of its own because the opposite was believed, written down,
+/// and built on. [`super::chrome_strip`]'s own module doc claimed a rule
+/// "paints nothing at all" without `Align::Stretch`, so the strip stretched
+/// every child to keep its divider — and a stretched [`super::text`] paints
+/// its glyphs at the top of the box it was stretched into, which is how a
+/// status bar shipped with its label ten units above the controls beside it.
+///
+/// A separator takes its length from the size proposal it is offered, and a
+/// stack offers every child its own cross extent whatever it aligns them to.
+/// So all three alignments below place the same 40-unit rule, and the strip
+/// never needed to stretch anything. What it does need is the pinned height
+/// it already had: a separator measured under an *open* cross proposal
+/// answers the whole extent available and inflates its own row to the
+/// viewport, so a strip that pins nothing has a rule with nothing to bound
+/// it. The pin is the load-bearing property; the alignment never was.
+#[test]
+fn a_rule_runs_full_height_in_a_row_whatever_that_row_aligns_its_children_to() {
+    for align in [
+        crate::geom::Align::Start,
+        crate::geom::Align::Center,
+        crate::geom::Align::Stretch,
+    ] {
+        let mut row = super::stack(
+            "row",
+            Axis::Horizontal,
+            None,
+            vec![
+                ViewNode::new(NodeKind::Spacer, "tall").with_constraints(
+                    crate::tree::Constraints {
+                        vertical: crate::tree::AxisConstraint {
+                            min: Some(40.0),
+                            max: Some(40.0),
+                            priority: 0,
+                        },
+                        ..crate::tree::Constraints::default()
+                    },
+                ),
+                super::rule("rule", Axis::Vertical, BORDER_SUBTLE),
+            ],
+        );
+        row.props.align = Some(align);
+        // The row pins its own height, the way `chrome_strip` does. Without
+        // that the rule has nothing bounding it: a separator measured under
+        // an open cross proposal answers the whole extent on offer and
+        // inflates the row it is in to the viewport's own 700. That is the
+        // real reason a strip pins a height, and it is not the alignment.
+        let row = row.with_constraints(crate::tree::Constraints {
+            vertical: crate::tree::AxisConstraint {
+                min: Some(40.0),
+                max: Some(40.0),
+                priority: 0,
+            },
+            ..crate::tree::Constraints::default()
+        });
+        let root = ViewNode::new(NodeKind::Stack, "root")
+            .with_props(Props {
+                axis: Some(Axis::Horizontal),
+                ..Props::default()
+            })
+            .child(row);
+        let registry = accepting_registry();
+        let mut harness = Harness::new();
+        let viewport = Viewport::new(VIEWPORT, ThemeMode::Dark);
+        harness.scale = viewport.scale;
+        let frame = petrify(
+            1,
+            validated_with(&root, &registry),
+            &mut harness.ctx(),
+            viewport,
+            TransitionActivity::default(),
+        );
+        let run = frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/root/row/rule"))
+            .expect("the rule was placed")
+            .rect
+            .h;
+        assert_eq!(run, 40.0, "aligned {align:?}, the rule ran {run} of 40");
+    }
+}
+
+/// A rule asks for its own run, so a container that does not pin its cross
+/// extent still gets a line rather than nothing.
+///
+/// This is the case `align_self` on [`super::rule`] exists for, and the one
+/// the property has to earn its place against: inside `chrome_strip`, whose
+/// height is pinned, the stack already offers an exact cross extent and a
+/// separator measures it whatever the alignment is. Inside a content-sized
+/// row it does not, so a rule that waits for its parent to stretch it
+/// measures nothing and paints nothing — silently, with no error and no
+/// refused tree.
+///
+/// Falsified by removing `align_self` from `rule`: this failed with the
+/// actual, observed text
+///
+/// ```text
+/// assertion failed: run > 0.0: the rule ran 0 inside a 700-tall row
+/// ```
+#[test]
+fn a_rule_runs_full_height_in_a_row_that_pins_no_height_of_its_own() {
+    let row = super::stack(
+        "row",
+        Axis::Horizontal,
+        None,
+        vec![
+            ViewNode::new(NodeKind::Spacer, "tall").with_constraints(crate::tree::Constraints {
+                vertical: crate::tree::AxisConstraint {
+                    min: Some(40.0),
+                    max: Some(40.0),
+                    priority: 0,
+                },
+                ..crate::tree::Constraints::default()
+            }),
+            super::rule("rule", Axis::Vertical, BORDER_SUBTLE),
+        ],
+    );
+    let frame = petrify_lone(row);
+    let height = |suffix: &str| {
+        frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with(suffix))
+            .unwrap_or_else(|| panic!("nothing placed at {suffix}"))
+            .rect
+            .h
+    };
+    let run = height("/root/row/rule");
+    let row = height("/root/row");
+    assert!(run > 0.0, "the rule ran {run} inside a {row}-tall row");
+    assert_eq!(run, row, "the rule ran {run} of the row's {row}");
+}
+
 /// Petrify a single component under a vertical stack root.
 fn accepting_registry() -> Registry {
     let mut registry = Registry::with_vocabulary(standard_vocabulary());

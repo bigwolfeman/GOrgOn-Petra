@@ -176,7 +176,7 @@ pub use list::{
     Bullet, BulletScheme, list_item, list_item_with, ordered_list, unordered_list,
     unordered_list_with,
 };
-pub use list_row::list_row;
+pub use list_row::{LIST_ROW_EXTENT, list_row};
 pub use loading::{loading, loading_sm, spinner_phase};
 pub use menu::{menu, menu_item};
 pub use menu_button::menu_button;
@@ -427,11 +427,20 @@ pub fn on_layer(mut node: ViewNode, depth: usize) -> ViewNode {
 /// painter grooves the whole rect. An author says *what the line is*, never
 /// how thick.
 ///
-/// The run comes from the parent, which is the same arrangement the old
-/// childless stack relied on: a separator measures zero along its own axis
-/// under an unspecified offer and takes its length from
-/// [`crate::geom::Align::Stretch`] at place time. A parent that stretches
-/// nothing gives this a zero-length rule.
+/// # The run comes from the parent's cross extent, not from its alignment
+///
+/// A separator measures its length off the size proposal it is offered, and
+/// a stack offers every child its own full cross extent — so a rule runs the
+/// container's whole width or height under `Align::Start`, `Center` and
+/// `Stretch` alike. `component::tests`'s
+/// `a_rule_runs_full_height_in_a_row_whatever_that_row_aligns_its_children_to`
+/// measures all three off real frames, because this was believed to be a
+/// Stretch-only behaviour for long enough to distort a component around it
+/// (see [`super::chrome_strip`]).
+///
+/// What the parent still owes a rule is a cross extent worth running along.
+/// A row as tall as its own tallest child gives a rule exactly that much, so
+/// a strip that wants a full-height divider pins its height.
 #[must_use]
 pub fn rule(key: impl Into<Key>, axis: crate::geom::Axis, fill: &str) -> ViewNode {
     let mut node = ViewNode::new(NodeKind::Separator, key);

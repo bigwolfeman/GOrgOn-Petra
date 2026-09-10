@@ -24,7 +24,7 @@ use gorgon_petra::geom::Size;
 use gorgon_petra::layout::RowSource;
 use gorgon_petra::testing::{Harness, MonoContent, validated};
 use gorgon_petra::token::{ThemeMode, TokenName};
-use gorgon_petra::tree::{Key, NodeKind, Props, ViewNode};
+use gorgon_petra::tree::{AxisConstraint, Constraints, Key, NodeKind, Props, ViewNode};
 
 const TOTAL_ROWS: usize = 100_000;
 const ROW_EXTENT: f32 = 24.0;
@@ -265,10 +265,25 @@ impl RowSource for PrependableRows {
             .map(|i| {
                 let id = self.ids[i].clone();
                 Arc::new(
-                    ViewNode::new(NodeKind::Text, Key::new(id.clone())).with_props(Props {
-                        text: Some(id),
-                        ..Props::default()
-                    }),
+                    ViewNode::new(NodeKind::Text, Key::new(id.clone()))
+                        .with_props(Props {
+                            text: Some(id),
+                            ..Props::default()
+                        })
+                        // Pinned to the extent the collection estimates.
+                        // A bare text row measures one `MonoContent` line
+                        // (16), and the engine places rows by what they
+                        // measure, so without this the assertion below about
+                        // rows moving `PREPENDED * ROW_EXTENT` is checking
+                        // arithmetic the fixture never performs.
+                        .with_constraints(Constraints {
+                            vertical: AxisConstraint {
+                                min: Some(ROW_EXTENT),
+                                max: Some(ROW_EXTENT),
+                                priority: 0,
+                            },
+                            ..Constraints::default()
+                        }),
                 )
             })
             .collect()
