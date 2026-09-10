@@ -108,7 +108,10 @@ use super::tokens::{
 use super::{pad, stack, swatch};
 use crate::geom::{Align, Axis};
 use crate::token::{CornerRole, corner_for};
-use crate::tree::{AxisConstraint, Constraints, FocusFigure, Interaction, Key, Role, ViewNode};
+use crate::tree::{
+    AxisConstraint, Behaviour, Constraints, FocusFigure, Intent, Interaction, Key, Phase, Role,
+    ViewNode,
+};
 
 /// Carbon checkbox box (`_checkbox.scss` / style-page Structure): 16×16.
 const CHECKBOX_BOX: f32 = 16.0;
@@ -151,6 +154,16 @@ enum ToggleSize {
     Default,
     Small,
 }
+
+/// What a checkbox and a toggle both declare: one boolean, flipped when the
+/// press completes.
+///
+/// Named once because the two controls are the same gesture with two
+/// pictures, and a second hand-written copy is a second thing to drift.
+const TOGGLES_ON_RELEASE: Behaviour = Behaviour {
+    intent: Intent::Toggle,
+    phase: Phase::OnRelease,
+};
 
 /// A mark beside a label. `selected` is the semantic fact; the fill and the
 /// inner child (tick, dash, or dot) are the two visual channels.
@@ -320,6 +333,11 @@ pub fn checkbox(key: impl Into<Key>, label: impl Into<String>, checked: bool) ->
         // Four units to the next row. See `labelled_box`.
         FocusFigure::BarInside,
     )
+    // Spec 010 FR-013: a click flips the one boolean this node carries, on
+    // release. Declared here and not on `labelled_box`, so
+    // `checkbox_readonly` — which shares every line of that helper — does
+    // not inherit a behaviour it will not honour.
+    .with_behaviour(TOGGLES_ON_RELEASE)
 }
 
 /// The three states a checkbox can declare (Carbon's `checked`,
@@ -369,7 +387,8 @@ pub fn checkbox_indeterminate(key: impl Into<Key>, label: impl Into<String>) -> 
         checkbox_box(CheckState::Mixed),
         &[Interaction::Focus, Interaction::Click],
         FocusFigure::BarInside,
-    );
+    )
+    .with_behaviour(TOGGLES_ON_RELEASE);
     node.semantics.value = Some("mixed".into());
     node
 }
@@ -483,6 +502,14 @@ pub fn radio(key: impl Into<Key>, label: impl Into<String>, selected: bool) -> V
         // eleven to spare. The operator asked for it by name.
         FocusFigure::BarUnder,
     )
+    // Spec 010 FR-013. `Select`, not `Toggle`: a radio sets itself true and
+    // never flips back on its own, and exclusivity among its siblings is the
+    // caller's to answer, which is the whole difference between the two
+    // members.
+    .with_behaviour(Behaviour {
+        intent: Intent::Select,
+        phase: Phase::OnRelease,
+    })
 }
 
 /// A vertical radio group. Mutual exclusivity is the caller's `selected`
@@ -667,11 +694,15 @@ fn toggle_sized(
     );
     // Lends its text for `labelled_box`'s reason: Carbon's toggle wraps both
     // the caption and the On/Off word in the `<label>`, not in the button.
-    let mut node = column.interactive(
-        Role::Button,
-        label,
-        &[Interaction::Focus, Interaction::Click],
-    );
+    let mut node = column
+        .interactive(
+            Role::Button,
+            label,
+            &[Interaction::Focus, Interaction::Click],
+        )
+        // Spec 010 FR-013: the same declaration a checkbox makes, because a
+        // toggle is the same gesture drawn differently.
+        .with_behaviour(TOGGLES_ON_RELEASE);
     node.semantics.selected = on;
     node
 }

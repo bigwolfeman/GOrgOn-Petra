@@ -210,7 +210,9 @@ use super::tokens::{
 use super::{pin_block, stack};
 use crate::geom::{Align, Axis};
 use crate::token::{CornerRole, corner_for};
-use crate::tree::{FocusFigure, InsetRefs, Interaction, Key, Role, ViewNode};
+use crate::tree::{
+    Behaviour, FocusFigure, InsetRefs, Intent, Interaction, Key, Phase, Role, ViewNode,
+};
 
 /// Carbon `.cds--btn--xs` height. Numeric because `Constraints` stay extents
 /// (FR-053); [`super::tokens`] only ships [`SIZE_MD`].
@@ -652,6 +654,12 @@ fn labelled(
             // `crate::token::shipped` counts, aimed at the slot channel.
             &[Interaction::Focus, Interaction::Click, Interaction::Hover],
         )
+        // Spec 010 FR-013: one shot, no state on the node, on release. A
+        // button is the whole of `Intent::Activate`'s definition.
+        .with_behaviour(Behaviour {
+            intent: Intent::Activate,
+            phase: Phase::OnRelease,
+        })
         .owning_its_text()
         // *"side bars on toggle tip and buttons"* — the operator, 2026-09-05.
         // A button stands in a row of buttons with clear space above and

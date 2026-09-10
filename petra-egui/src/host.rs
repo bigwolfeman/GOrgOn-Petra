@@ -70,8 +70,8 @@ use gorgon_petra::token::{
     Vocabulary, standard_vocabulary,
 };
 use gorgon_petra::tree::{
-    InputPolicy, InsetRefs, Interaction, NodeKind, Props, Registry, TextWrap, ValidatedTree,
-    ViewNode, validate,
+    Behaviour, InputPolicy, InsetRefs, Intent, Interaction, NodeKind, Phase, Props, Registry,
+    TextWrap, ValidatedTree, ViewNode, validate,
 };
 
 use crate::focus_caret::FocusCaret;
@@ -154,6 +154,24 @@ pub trait App: RowSource {
     /// the same motion. Must name (directly or via [`ChangeSet::All`]) every
     /// node whose measured content this frame would answer differently for.
     fn take_changes(&mut self) -> ChangeSet;
+    /// A node's declared [`Behaviour`] fired.
+    ///
+    /// The routed event has just satisfied the [`Intent`]/[`Phase`] pair a
+    /// node published, and this says which node and which pair. It is the
+    /// *interpretation* of an event the application has already heard
+    /// through [`App::handle`], never a replacement for it: a component that
+    /// keeps its own state answers the raw event, and an application that
+    /// has to tell somebody else — a Lua fiber that contributed the control,
+    /// say — answers here.
+    ///
+    /// Called after [`App::handle`] has seen both the event and the gesture
+    /// end it caused, at most once per event.
+    ///
+    /// The default ignores it, for every application that owns every control
+    /// in its own tree and has nobody to report to.
+    fn intent(&mut self, fired: &FiredIntent) {
+        let _ = fired;
+    }
     /// Close every surface named in `ids`, each an
     /// [`InputPolicy::DismissOutside`] surface a press landed outside of.
     ///
@@ -735,6 +753,13 @@ pub struct Host<A: App> {
     /// Where the pointer is, what it is over, and what it has captured. The
     /// pointer's peer of `focus`; see this module's doc.
     pointer: PointerState,
+    /// The node the primary button last went down on, as the router named it.
+    ///
+    /// One event's worth of memory, for one decision:
+    /// [`fired_behaviour`]'s `OnRelease` phase on a node that never took the
+    /// capture. See the comment at its only write, in `deliver_input`, for
+    /// why this is not [`PointerState::pressed`].
+    pressed_on_node: Option<String>,
     /// Text this host itself wants on the clipboard, taken and cleared by
     /// the pass that runs after the input.
     ///
@@ -848,38 +873,107 @@ pub struct Host<A: App> {
 /// When T023 and T024 ship. The one-line test in this file's `tests` module
 /// names them, so the deletion has a failing test waiting for it rather than
 /// only a comment.
-fn tell_the_truth_about_interactivity(mut node: ViewNode) -> ViewNode {
-    disclaim_in_place(&mut node);
-    node
+/// One declared [`Behaviour`] that a routed event has just satisfied.
+///
+/// The node's canonical id, plus the pair it declared. The application does
+/// not have to hold the tree to read this: everything here is either the
+/// route's own answer or a copy of what the node published into the frame.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FiredIntent {
+    /// Canonical id of the node whose behaviour fired.
+    pub node: String,
+    /// What the node said the interaction means.
+    pub intent: Intent,
+    /// Which moment of the gesture this is.
+    pub phase: Phase,
 }
 
-/// [`tell_the_truth_about_interactivity`]'s recursion, in place.
+/// The behaviour `event` satisfied, if it satisfied one.
 ///
-/// Separate only because `ViewNode` has no `Default`, so a child behind an
-/// `Arc` cannot be taken out and put back; it is borrowed and edited instead.
-/// `Arc::make_mut` clones nothing in the case that runs — a contribution is
-/// prepared once per change to the set, and every node in it is uniquely held
-/// at that point.
-fn disclaim_in_place(node: &mut ViewNode) {
-    use gorgon_petra::tree::Interaction;
+/// Spec 010 T023. A node publishes a [`Behaviour`] into its placement, and
+/// this is the one place that decides whether a routed event is the moment
+/// that behaviour named. Everything it needs comes from the frame and the
+/// route, so it is a free function with no host state and a test can call it
+/// with a hand-built frame.
+///
+/// # The three phases, and how each is recognised
+///
+/// * [`Phase::OnPress`] — the primary button goes down on the node.
+/// * [`Phase::OnChange`] — a move arrives while that node holds the capture.
+///   `Route::Pointer` is unconditional under capture, so the routed id *is*
+///   the holder; a move that merely passes over a node routes there too, and
+///   `ended.is_none()` plus the capture's own routing is what separates
+///   them. This is the phase a slider drag fires at, and the only one that
+///   fires more than once per gesture.
+/// * [`Phase::OnRelease`] — the gesture completed on the node. Two shapes,
+///   because two kinds of control reach it:
+///   - a node that took the capture, which reports
+///     [`GestureOutcome::Completed`] through [`GestureEnd`];
+///   - a node that never took one, where the release lands on the node the
+///     press went down on. `pressed_before` carries that, snapshotted ahead
+///     of the routing that clears it.
+///
+/// # Enter and Space fire an `OnRelease` behaviour off a key *press*
+///
+/// [`gorgon_petra::input::activates`] matches `pressed: true` only, and that
+/// is not an oversight to work around here. A keyboard activation has no
+/// release half worth waiting for: the operator's Enter *is* the completed
+/// activation, and a control that waited for the key to come up would feel
+/// broken against every other application. So an activation keystroke routed
+/// to a node whose behaviour is `OnRelease` fires it, and a node declaring
+/// `OnPress` or `OnChange` hears nothing from the keyboard — a press phase
+/// exists to let a slider jump to a click point, which no keystroke has.
+#[must_use]
+fn fired_behaviour(
+    event: &InputEvent,
+    route: &Route,
+    ended: Option<&gorgon_petra::input::GestureEnd>,
+    pressed_before: Option<&str>,
+    frame: Option<&PetrifiedFrame>,
+) -> Option<FiredIntent> {
+    let frame = frame?;
+    let declared = |node: &str| -> Option<Behaviour> { frame.placement(node)?.semantics.behaviour };
+    let fire = |node: &str, want: Phase| {
+        let behaviour = declared(node)?;
+        (behaviour.phase == want).then(|| FiredIntent {
+            node: node.to_owned(),
+            intent: behaviour.intent,
+            phase: behaviour.phase,
+        })
+    };
 
-    const HONOURED_WITHOUT_THE_PLUGIN: [Interaction; 3] =
-        [Interaction::Focus, Interaction::Hover, Interaction::Scroll];
-
-    let claimed_something = node
-        .interactions
-        .iter()
-        .any(|i| !HONOURED_WITHOUT_THE_PLUGIN.contains(i));
-    if claimed_something {
-        node.interactions
-            .retain(|i| HONOURED_WITHOUT_THE_PLUGIN.contains(i));
-        // Only where something was actually dropped. A plain label was never
-        // claiming anything, and marking it read-only would put the word on
-        // nodes that have no value to be read-only *about*.
-        node.semantics.read_only = true;
+    // A completed capture is the strongest signal there is, and it arrives
+    // on the same event as the release that produced it, so it is asked
+    // first: a node that took the capture must not also be judged by the
+    // uncaptured rule below.
+    if let Some(ended) = ended {
+        return ended
+            .outcome
+            .is_completed()
+            .then(|| fire(&ended.node, Phase::OnRelease))
+            .flatten();
     }
-    for child in &mut node.children {
-        disclaim_in_place(std::sync::Arc::make_mut(child));
+    let Route::Pointer { node } = route else {
+        // A keyboard route reaches the focused node, and only an activation
+        // keystroke means anything to a behaviour.
+        if let Route::Keyboard { node } = route
+            && gorgon_petra::input::activates(event)
+        {
+            return fire(node, Phase::OnRelease);
+        }
+        return None;
+    };
+    match event {
+        InputEvent::PointerPressed {
+            button: PointerButton::Primary,
+            ..
+        } => fire(node, Phase::OnPress),
+        InputEvent::PointerReleased {
+            button: PointerButton::Primary,
+            ..
+        } if pressed_before == Some(node.as_str()) => fire(node, Phase::OnRelease),
+        InputEvent::PointerMoved { .. } => fire(node, Phase::OnChange),
+        _ => None,
     }
 }
 
@@ -977,6 +1071,7 @@ impl<A: App> Host<A> {
             // The default set is `shift-esc` (spec 010 FR-021a);
             // `set_reserved_chords` replaces it from operator configuration.
             pointer: PointerState::with_reserved(gorgon_petra::keymap::ReservedChords::default()),
+            pressed_on_node: None,
             pending_copy: None,
             selection_drag: false,
             caret: FocusCaret::new(),
@@ -2417,8 +2512,67 @@ impl<A: App> Host<A> {
             // The cause, then the consequence: a component hears the release
             // (or the blur, or the Escape) and then hears what it did to the
             // gesture, so it never has to infer the second from the first.
+            // Where the primary button last went down, as of *before* this
+            // event, and taken rather than read when this event is the
+            // release that answers it.
+            //
+            // A checkbox declares `Interaction::Click` and never `Drag`, so
+            // it is never granted the capture, so its release produces no
+            // `GestureEnd` and there is no `GestureOutcome::Completed` to
+            // read. This is what stands in for one. Comparing the press's
+            // routed node against the release's routed node is the whole of
+            // "a release outside a pressed control does not activate it" for
+            // an uncaptured node, and it asks the router both times rather
+            // than deriving one of the two answers some other way.
+            //
+            // Not `PointerState::pressed`, which looks like the same thing
+            // and is not: that reading is keyed on `hovered`, so it is
+            // `None` for any node that declares `Click` without `Hover` —
+            // `component::checkbox` and `component::controls`' radio and
+            // toggle, all three. It is the right answer for the *pressed
+            // highlight*, which is a fact about a node the operator can see
+            // lighting up, and the wrong one for this.
+            let pressed_before = match event {
+                InputEvent::PointerReleased {
+                    button: PointerButton::Primary,
+                    ..
+                } => self.pressed_on_node.take(),
+                // Nothing to release onto once the pointer is outside the
+                // window or the window is in the background: the button will
+                // come up somewhere this host never hears about.
+                InputEvent::PointerLeft | InputEvent::WindowBlurred => {
+                    self.pressed_on_node = None;
+                    None
+                }
+                _ => self.pressed_on_node.clone(),
+            };
+            if let (
+                InputEvent::PointerPressed {
+                    button: PointerButton::Primary,
+                    ..
+                },
+                Route::Pointer { node },
+            ) = (event, &routing.outcome.route)
+            {
+                self.pressed_on_node = Some(node.clone());
+            }
+            let ended = routing.ended.clone();
             if let Some(ended) = routing.ended {
                 self.app.handle(&ended.event(), &ended.route(), frame);
+            }
+            // Last, because an intent is the *interpretation* of what the
+            // application has now heard twice over: the event, then what it
+            // did to the gesture. A component that answers the raw event and
+            // an application that answers the intent must not disagree about
+            // which came first.
+            if let Some(fired) = fired_behaviour(
+                event,
+                &routing.outcome.route,
+                ended.as_ref(),
+                pressed_before.as_deref(),
+                frame,
+            ) {
+                self.app.intent(&fired);
             }
             // The copy chord over a selection. Here and not in the
             // application, for the reason `copy_selection` gives; an
@@ -3294,15 +3448,10 @@ impl<A: App> Host<A> {
         for contribution in &self.contributions {
             let outcome = match registry::expand(&contribution.tree) {
                 Err(err) => Err(format!("{}: {}", err.component, err.reason)),
-                Ok(expanded) => {
-                    // Before acceptance, so what `validate` passes is exactly
-                    // what ships.
-                    let expanded = tell_the_truth_about_interactivity(expanded);
-                    match validate(&expanded, &self.registry) {
-                        Ok(_) => Ok(expanded),
-                        Err(errors) => Err(errors.to_string()),
-                    }
-                }
+                Ok(expanded) => match validate(&expanded, &self.registry) {
+                    Ok(_) => Ok(expanded),
+                    Err(errors) => Err(errors.to_string()),
+                },
             };
             prepared.push(match outcome {
                 Ok(node) => Prepared {
@@ -3692,8 +3841,8 @@ pub fn default_presenter() -> Presenter {
 #[cfg(test)]
 mod tests {
     use super::{
-        App, ChangeSet, Host, coverage_plan, default_presenter, petra_layer, refusal_view,
-        tell_the_truth_about_interactivity,
+        App, ChangeSet, FiredIntent, Host, coverage_plan, default_presenter, fired_behaviour,
+        petra_layer, refusal_view,
     };
     use egui::{Context, Event, Key, Modifiers, RawInput};
     use gorgon_petra::frame::PetrifiedFrame;
@@ -3702,7 +3851,8 @@ mod tests {
     use gorgon_petra::layout::{RowSource, SizeProposal};
     use gorgon_petra::token::TokenName;
     use gorgon_petra::tree::{
-        Anchor, ClampRule, InputPolicy, Interaction, Layer, NodeKind, Props, Role, ViewNode,
+        Anchor, ClampRule, InputPolicy, Intent, Interaction, Layer, NodeKind, Phase, Props, Role,
+        ViewNode,
     };
     use std::ops::Range;
 
@@ -3737,6 +3887,12 @@ mod tests {
         /// short-circuit at the top of `view` rather than woven into the
         /// panel tree below, so every existing test's tree is untouched.
         custom: bool,
+        /// Mount a real `component::checkbox` in the tree, so the intent
+        /// tests drive the shipped control rather than a fixture that
+        /// declares whatever the test wishes it declared.
+        checkbox: bool,
+        /// Every behaviour the host has reported firing, in order.
+        intents: Vec<FiredIntent>,
     }
 
     /// A focusable, clickable, hoverable text button — a `Role::Button` node
@@ -3768,6 +3924,10 @@ mod tests {
             self.now = now;
         }
 
+        fn intent(&mut self, fired: &FiredIntent) {
+            self.intents.push(fired.clone());
+        }
+
         fn wake_at(&mut self) -> Option<f64> {
             self.wake_in.map(|delay| self.now + delay)
         }
@@ -3794,6 +3954,11 @@ mod tests {
                         custom_kind: Some("gauge".to_owned()),
                         ..Props::default()
                     }),
+                );
+            }
+            if self.checkbox {
+                return ViewNode::new(NodeKind::Stack, "root").child(
+                    gorgon_petra::component::checkbox("auto", "Auto-reload", false),
                 );
             }
             let mut panel = Props::default();
@@ -5722,92 +5887,274 @@ mod tests {
 
     // -- What a contributed control is allowed to claim. --
 
+    /// One primary release at `pos`.
+    fn release_at(pos: egui::Pos2) -> RawInput {
+        let mut input = RawInput::default();
+        input.events.push(Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::default(),
+        });
+        input
+    }
+
+    /// The centre of the one placement whose canonical id ends with
+    /// `suffix`. Sibling of `centre_of`, which wants the whole id.
+    fn centre_of_suffix(host: &Host<Demo>, suffix: &str) -> egui::Pos2 {
+        let rect = host
+            .frame()
+            .expect("a frame")
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with(suffix))
+            .unwrap_or_else(|| panic!("no placement id ends with {suffix}"))
+            .rect;
+        egui::Pos2::new(rect.x + rect.w / 2.0, rect.y + rect.h / 2.0)
+    }
+
     /// The operator's third complaint on 2026-09-09, in their words: "this
     /// auto reload tick box does not tick."
     ///
-    /// It cannot. Intent delivery is spec 010 Phase 4 — T023 and T024, both
-    /// unchecked — so a press on a contributed control routes to the
-    /// application, matches none of its own widget keys, and is dropped, with
-    /// no wire to have carried it anywhere either. What this pins is that the
-    /// frame stops *claiming* otherwise: a contributed control does not
-    /// declare `Click`, so it is not in `hit_test`'s candidate set, does not
-    /// take the pressed highlight, and says `read_only` where a reader can
-    /// see it.
+    /// This is the half of that this crate owns. A completed click on a real
+    /// `component::checkbox` reaches the application as the pair the checkbox
+    /// declared, so an application hosting a control it did not write has
+    /// something to forward. Whether anything is on the other end of that
+    /// forward is the shell's business, not the host's.
     ///
-    /// Delete this test when T023 and T024 ship — it is the failing test
-    /// waiting for that deletion, which is why it names them.
+    /// The checkbox is the shipped constructor on purpose. A fixture node
+    /// declaring `Toggle`/`OnRelease` by hand would pass this test whatever
+    /// `component::controls` says, which is the drift it exists to catch.
     ///
-    /// Falsified by returning `node` unchanged from
-    /// `tell_the_truth_about_interactivity`:
+    /// Falsified by dropping `.with_behaviour(TOGGLES_ON_RELEASE)` from
+    /// `component::checkbox`:
     ///
     /// ```text
-    /// a contributed control still declares [Focus, Click]: it will take the
-    /// press and nothing will honour it
+    /// a completed click on a checkbox fired []
     /// ```
     #[test]
-    fn a_contributed_control_declares_no_interaction_the_shell_cannot_honour() {
-        let checkbox = gorgon_petra::component::checkbox("auto", "Auto-reload", false);
-        assert!(
-            checkbox.interactions.contains(&Interaction::Click),
-            "the fixture is not a control: a checkbox that never declared Click proves nothing"
+    fn a_completed_click_on_a_checkbox_fires_the_pair_the_checkbox_declared() {
+        let ctx = Context::default();
+        let mut host = Host::new(
+            &ctx,
+            Demo {
+                checkbox: true,
+                ..Demo::default()
+            },
+            default_presenter(),
         );
-
-        let disclaimed = tell_the_truth_about_interactivity(checkbox);
-        assert!(
-            !disclaimed.interactions.contains(&Interaction::Click),
-            "a contributed control still declares {:?}: it will take the press and nothing will \
-             honour it",
-            disclaimed.interactions
+        step(&ctx, &mut host, RawInput::default());
+        let at = centre_of_suffix(&host, "/auto");
+        step(&ctx, &mut host, press_at(at));
+        step(&ctx, &mut host, release_at(at));
+        let fired = &host.app().intents;
+        assert_eq!(
+            fired.len(),
+            1,
+            "a completed click on a checkbox fired {fired:?}"
         );
+        assert_eq!(fired[0].intent, Intent::Toggle);
+        assert_eq!(fired[0].phase, Phase::OnRelease);
         assert!(
-            disclaimed.semantics.read_only,
-            "the control dropped its click without saying why; a reader sees an inert box and no \
-             reason for it"
-        );
-        assert!(
-            disclaimed.interactions.contains(&Interaction::Focus),
-            "read_only keeps focus order and the focus ring (`Semantics::read_only`'s own doc); \
-             this dropped them"
+            fired[0].node.ends_with("/auto"),
+            "the intent names {}, not the checkbox",
+            fired[0].node
         );
     }
 
-    /// The recursion. A plugin's tree is a strip of controls, not one
-    /// control, and the checkbox that lies is three levels down from the
-    /// surface the plugin contributed.
+    /// A release is only half a click. The press has to have been on the
+    /// same control.
+    ///
+    /// A checkbox declares `Click` and never `Drag`, so no `GestureEnd` is
+    /// produced on its release and there is no `GestureOutcome::Completed`
+    /// to read. `pressed_on_node` is what stands in for one, and this is the
+    /// case that proves it is load-bearing rather than decorative: press on
+    /// the page, drag onto the checkbox, release there. A release-outside
+    /// would not prove it — that release routes to whatever is under it, and
+    /// the page has no behaviour, so nothing fires whether the guard is
+    /// there or not.
+    ///
+    /// Falsified by dropping the `pressed_before == Some(node)` guard from
+    /// `fired_behaviour`:
+    ///
+    /// ```text
+    /// a release on the checkbox from a press that started elsewhere fired
+    /// [FiredIntent { node: "/root/auto", intent: Toggle, phase: OnRelease }]
+    /// ```
     #[test]
-    fn every_control_under_a_contributed_surface_is_disclaimed_not_just_the_root() {
-        let strip = gorgon_petra::component::chrome_strip(
-            "row",
-            vec![
-                gorgon_petra::component::text("title", "watcher"),
-                gorgon_petra::component::checkbox("auto", "Auto-reload", false),
-            ],
+    fn a_release_on_a_checkbox_whose_press_began_elsewhere_fires_nothing() {
+        let ctx = Context::default();
+        let mut host = Host::new(
+            &ctx,
+            Demo {
+                checkbox: true,
+                ..Demo::default()
+            },
+            default_presenter(),
         );
-        let disclaimed = tell_the_truth_about_interactivity(strip);
-        let mut claimed: Vec<String> = Vec::new();
-        fn walk(node: &ViewNode, path: &str, out: &mut Vec<String>) {
-            let here = format!("{path}/{}", node.key);
-            if node.interactions.contains(&Interaction::Click) {
-                out.push(here.clone());
-            }
-            for child in &node.children {
-                walk(child, &here, out);
-            }
+        step(&ctx, &mut host, RawInput::default());
+        let (_, outside) = placed_and_outside(&host, "/auto");
+        let at = centre_of_suffix(&host, "/auto");
+        step(&ctx, &mut host, press_at(outside));
+        step(&ctx, &mut host, release_at(at));
+        assert!(
+            host.app().intents.is_empty(),
+            "a release on the checkbox from a press that started elsewhere \
+             fired {:?}",
+            host.app().intents
+        );
+    }
+
+    /// A node that declares no behaviour is not given one.
+    ///
+    /// The fixture's own `button` helper is `Role::Button` with `Click`,
+    /// `Focus` and `Hover` and no `Behaviour` — which is every application
+    /// widget written before spec 010 and every one written after it that
+    /// keeps its own state. Those must keep reaching `App::handle` alone.
+    #[test]
+    fn a_widget_with_no_declared_behaviour_reports_no_intent() {
+        let ctx = Context::default();
+        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        step(&ctx, &mut host, RawInput::default());
+        let at = centre_of_suffix(&host, "/run");
+        step(&ctx, &mut host, press_at(at));
+        step(&ctx, &mut host, release_at(at));
+        assert!(
+            host.app().intents.is_empty(),
+            "a widget declaring no behaviour fired {:?}",
+            host.app().intents
+        );
+    }
+
+    /// Enter on a focused control fires its `OnRelease` behaviour off the key
+    /// *press*, because `input::activates` matches `pressed: true` only and a
+    /// keyboard activation has no release half worth waiting for.
+    ///
+    /// Written down as a test rather than only in `fired_behaviour`'s doc,
+    /// because the asymmetry is the kind of thing a later reader "fixes".
+    ///
+    /// Falsified by dropping the `Route::Keyboard` arm from
+    /// `fired_behaviour`:
+    ///
+    /// ```text
+    /// Enter on a focused checkbox fired []
+    /// ```
+    #[test]
+    fn enter_on_a_focused_checkbox_fires_its_release_behaviour() {
+        let ctx = Context::default();
+        let mut host = Host::new(
+            &ctx,
+            Demo {
+                checkbox: true,
+                ..Demo::default()
+            },
+            default_presenter(),
+        );
+        step(&ctx, &mut host, RawInput::default());
+        // Seat focus the way an operator does, with a click, then clear what
+        // that click reported so only the keystroke is left to read.
+        let at = centre_of_suffix(&host, "/auto");
+        step(&ctx, &mut host, press_at(at));
+        step(&ctx, &mut host, release_at(at));
+        host.app_mut().intents.clear();
+        let mut input = RawInput::default();
+        input.events.push(Event::Key {
+            key: Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::default(),
+        });
+        step(&ctx, &mut host, input);
+        let fired = &host.app().intents;
+        assert_eq!(
+            fired.len(),
+            1,
+            "Enter on a focused checkbox fired {fired:?}"
+        );
+        assert_eq!(fired[0].phase, Phase::OnRelease);
+    }
+
+    /// A cancelled gesture fires nothing, however it was cancelled.
+    ///
+    /// This is the captured half. A node declaring `Drag` takes the capture,
+    /// so its release reports a `GestureOutcome`, and `Completed` is the only
+    /// one a behaviour may fire on — the release-outside rule, the Escape
+    /// rule, the blur rule and the vanished rule all arrive here as one
+    /// value. Asserted against `fired_behaviour` with a real placed frame and
+    /// a synthesised end, because driving four different cancellations
+    /// through a window would test egui's event translation rather than this
+    /// decision.
+    ///
+    /// Falsified by dropping the `is_completed` test from
+    /// `fired_behaviour`:
+    ///
+    /// ```text
+    /// a gesture cancelled as Left fired an intent
+    /// ```
+    #[test]
+    fn a_cancelled_gesture_fires_nothing_however_it_was_cancelled() {
+        use gorgon_petra::input::{CancelReason, GestureEnd, GestureOutcome, PointerButton};
+
+        let ctx = Context::default();
+        let mut host = Host::new(
+            &ctx,
+            Demo {
+                checkbox: true,
+                ..Demo::default()
+            },
+            default_presenter(),
+        );
+        step(&ctx, &mut host, RawInput::default());
+        let frame = host.frame().expect("a frame");
+        let id = frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/auto"))
+            .expect("the checkbox is placed")
+            .id
+            .clone();
+        let release = InputEvent::PointerReleased {
+            pos: Point::new(0.0, 0.0),
+            button: PointerButton::Primary,
+            modifiers: gorgon_petra::input::Modifiers::default(),
+        };
+        let route = Route::Pointer { node: id.clone() };
+        assert!(
+            fired_behaviour(
+                &release,
+                &route,
+                Some(&GestureEnd {
+                    node: id.clone(),
+                    outcome: GestureOutcome::Completed,
+                }),
+                None,
+                Some(frame),
+            )
+            .is_some(),
+            "the fixture proves nothing: a completed capture fired no intent \
+             either, so the cancellations below are not the reason"
+        );
+        for reason in [
+            CancelReason::Left,
+            CancelReason::Escape,
+            CancelReason::Blurred,
+            CancelReason::Vanished,
+        ] {
+            assert_eq!(
+                fired_behaviour(
+                    &release,
+                    &route,
+                    Some(&GestureEnd {
+                        node: id.clone(),
+                        outcome: GestureOutcome::Cancelled(reason),
+                    }),
+                    None,
+                    Some(frame),
+                ),
+                None,
+                "a gesture cancelled as {reason:?} fired an intent"
+            );
         }
-        walk(&disclaimed, "", &mut claimed);
-        assert!(
-            claimed.is_empty(),
-            "these contributed nodes still declare Click: {claimed:?}"
-        );
-    }
-
-    /// The other direction: a label was never claiming anything, so it is not
-    /// marked read-only. `read_only` means "shows a value it will not let you
-    /// edit", and a heading has no value to be read-only about.
-    #[test]
-    fn a_contributed_label_is_not_marked_read_only() {
-        let label =
-            tell_the_truth_about_interactivity(gorgon_petra::component::text("title", "watcher"));
-        assert!(!label.semantics.read_only);
     }
 }
