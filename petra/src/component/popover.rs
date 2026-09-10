@@ -7,7 +7,8 @@
 //!    [`InputPolicy::DismissOutside`] (not a focus trap).
 //! 2. Content box — fill [`SURFACE_RAISED`] (Carbon `$layer`), elevation
 //!    [`SHADOW_OVERLAY`] (`drop-shadow(0 4px 4px rgba(0,0,0,.2))`), corner
-//!    [`SHAPE_XS`] (`$popover-border-radius`, 2px), padding [`SPACING_05`].
+//!    `shape.corner-xs` via [`crate::token::CornerRole::BoxedMark`]
+//!    (`$popover-border-radius`, 2px), padding [`SPACING_05`].
 //!    No outline: Carbon draws one only under `--border`, and the shadow is
 //!    what lifts the box off the page. Grows to content, capped at 368
 //!    (T070). Content is start-aligned, as text in a box is.
@@ -31,8 +32,9 @@
 use super::pad;
 use super::stack;
 use super::text::text;
-use super::tokens::{SHADOW_OVERLAY, SHAPE_XS, SPACING_03, SPACING_05, SURFACE_RAISED, t};
+use super::tokens::{SHADOW_OVERLAY, SPACING_03, SPACING_05, SURFACE_RAISED, t};
 use crate::geom::Axis;
+use crate::token::{CornerRole, corner_for};
 use crate::tree::{
     Align, Anchor, AxisConstraint, ClampRule, Constraints, Edge, InputPolicy, Key, Layer, NodeKind,
     Props, Role, Semantics, TextWrap, ViewNode,
@@ -43,6 +45,14 @@ use crate::tree::{
 const MAX_INLINE: f32 = 368.0;
 
 const _: () = assert!(MAX_INLINE == 368.0);
+
+/// The popover body has no declared minimum height — it grows to
+/// `children` — so this is a floor derived from the one thing that is
+/// fixed: `pad(SPACING_05, SPACING_05)` puts 16 units of padding above and
+/// below the content, for 32 with zero-height content. `CornerRole::BoxedMark`'s
+/// half-edge clause only fires at or below 4 units, so any real popover
+/// clears it comfortably.
+const HEIGHT_FLOOR: f32 = 32.0;
 
 /// An anchored popover whose body is one text run.
 ///
@@ -152,7 +162,13 @@ pub fn popover_with_placement(
         .tokens
         .insert("background".into(), t(SURFACE_RAISED));
     node.props.tokens.insert("shadow".into(), t(SHADOW_OVERLAY));
-    node.props.tokens.insert("radius".into(), t(SHAPE_XS));
+    // FR-022: the enum's own doc names "a popover's body" as the
+    // `CornerRole::BoxedMark` example, matching Carbon's own measured
+    // `$popover-border-radius` (2px, `_popover.scss:63`).
+    node.props.tokens.insert(
+        "radius".into(),
+        t(corner_for(CornerRole::BoxedMark, HEIGHT_FLOOR)),
+    );
     node.constraints = Constraints {
         horizontal: AxisConstraint {
             min: None,

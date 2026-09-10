@@ -1572,43 +1572,91 @@ pub enum CornerRole {
     Grouping,
     /// A surface floating free of the layout: a menu, a modal, a popover.
     Floating,
+    /// A **stadium**: a node whose intended radius is half its own shorter
+    /// edge at every size it ships. A toggle track and its knob, a tag, a
+    /// radio's box, a status dot, a spinner's ring, a slider's handle.
+    ///
+    /// The other four members name a *fixed* radius and let the half-edge
+    /// clause promote it when the node turns out to be small. This one names
+    /// the shape directly, and it exists because that promotion cannot
+    /// express a pill at a large size: `Floating`'s 8 is the largest radius
+    /// the ramp offers a role, so it only clears the half-edge test at or
+    /// under 16 units. A 24-unit toggle track and an 18-unit radio box are
+    /// both larger than that, and both are pills in Carbon at every size.
+    ///
+    /// Without this member the rule had two bad answers and no good one:
+    /// bind `shape.corner-full` as a literal and leave the component outside
+    /// FR-022 (which three of them did until 2026-09-10), or take the role's
+    /// fixed radius and render a rounded rectangle where Carbon draws a
+    /// stadium (which the toggle track and the tag did for one day, and the
+    /// operator would have met as a circular knob sitting in a boxy slot).
+    Pill,
 }
 
 /// The radius token a node takes, from what it is and how small it is.
 ///
-/// **One rule, five outcomes, and the fifth is geometry rather than role.**
-/// `shorter_edge` is the node's smaller dimension in logical units. When the
-/// radius the role asks for is at least half of that, the corner is a full
-/// stadium whatever the role said — which is the clause that collapses the
-/// inventory's 12-unit toggle track, 16-unit tag and 50%-radius radio and
-/// spinner into one answer instead of three. Without it the rule would have
-/// to enumerate them, and enumerating is what FR-022 exists to stop.
+/// **One rule, five outcomes, and two ways to reach the fifth.**
+/// `shorter_edge` is the node's smaller dimension in logical units.
 ///
-/// The half-edge test is run against the *ramp value*, not against the role,
-/// so it fires on the values this ramp actually holds rather than on a
-/// remembered table. A 24-unit-tall toggle track asking for [`Grouping`]'s 4
-/// gets 4 (4 < 12); a 4-unit-tall progress rail asking for the same gets
-/// `corner-full` (4 ≥ 2).
+/// A node whose intended radius is half its own shorter edge at every size
+/// it ships says so outright: [`CornerRole::Pill`] returns `corner-full` and
+/// never consults the geometry. That is the toggle track, the toggle knob,
+/// the tag, the radio's box, the status dot, the spinner's ring and the
+/// slider's handle — stadiums by design rather than by accident of being
+/// small.
+///
+/// A node that named a *fixed* radius is still promoted to a stadium when it
+/// turns out small enough that the radius it asked for would eat its own
+/// edge. That test runs against the *ramp value*, not against the role, so
+/// it fires on the values this ramp actually holds rather than on a
+/// remembered table: a 4-unit-tall progress rail asking for [`Grouping`]'s 4
+/// gets `corner-full` (4 ≥ 2), while a 24-unit-tall content switcher asking
+/// for the same 4 keeps it (4 < 12).
+///
+/// The promotion clause on its own was tried and is not enough, which is
+/// what [`CornerRole::Pill`] is for. `Floating`'s 8 is the largest radius
+/// any role asks for, so promotion can only ever fire at or under 16 units,
+/// and Carbon has pills well above that: a 24-unit toggle track, an 18-unit
+/// radio box, a 32-unit large tag. Routed through a fixed role, each of
+/// those renders as a rounded rectangle.
 ///
 /// Silence is not `none`. There is no `Option` in either position here: a
 /// caller has to say what the node is, which is FR-022's other half — a
 /// component with no radius binding has not chosen a square corner, it has
 /// not chosen.
 ///
-/// # No component calls this yet, on purpose
+/// # Step 7, landed: every `"radius"` binding in `component::` routes here
 ///
-/// The rule lands here ahead of its callers because rebinding a component's
-/// `radius` moves that component's frame digest and every stored capture of
-/// it, which `contracts/token-vocabulary.md` §11 puts at step 7 — one flag
-/// day for all 42, not forty-two small ones. This is step 4's half: the value
-/// and the rule, tested against both sides of the half-edge clause, so the
-/// flag day is a rebinding rather than a rebinding *and* a design argument.
+/// `contracts/token-vocabulary.md` §11 step 7 was the flag day this rule was
+/// built ahead of — one rebinding for all 42 components, not forty-two small
+/// ones, because rebinding a component's `radius` moves that component's
+/// frame digest and every stored capture of it. That day landed 2026-09-09:
+/// `component::button`, `list_row`, `tile`'s selection mark, `code_snippet`'s
+/// inline chip, `notification`, `content_switcher`, `popover` (and
+/// `ai_label`'s explainability panel, which shares its chrome), `section`,
+/// `modal`'s footer button, `controls`'s checkbox and toggle track, `status`,
+/// `slider`'s handle, `inline_loading`'s badge, `file_uploader`'s ring and
+/// `tag` all resolve their radius through a `CornerRole` and this function
+/// rather than a hardcoded `SHAPE_*` constant. See
+/// `.agents/notes/implemented/architecture/2026-09-09-corner-radius-flag-day-routes-every-component-through-corner-for.md`
+/// for the full accounting, including the values that moved: a button is now
+/// always `shape.corner-none`, and a checkbox's box moved off a flat square
+/// onto `shape.corner-xs`.
 ///
-/// That is a narrower promise than a token with no reader. An unread token
-/// autocompletes into a Lua author's file through the generated
-/// `token.d.luau` and resolves to something they cannot see; an unread
-/// operator is reachable only from Rust, returns a name the vocabulary
-/// declares, and is proved total by
+/// **No site in `component::` binds a radius literal any more.** That flag
+/// day left three behind — the radio box, the toggle knob and the AI-label
+/// bullet dot, all Carbon `border-radius: 50%` circles larger than the
+/// promotion clause can reach — and it routed the toggle track and the tag
+/// through fixed roles, which squared two shapes Carbon draws as stadiums.
+/// [`CornerRole::Pill`] closed both holes on 2026-09-10, and is the reason
+/// this rule can now claim every binding in the module rather than most of
+/// them.
+///
+/// This function's own totality still matters beyond who calls it today:
+/// an unread token autocompletes into a Lua author's file through the
+/// generated `token.d.luau` and resolves to something they cannot see, and
+/// an unread operator here — reachable only from Rust — returns a name the
+/// vocabulary declares regardless, proved total by
 /// [`tests::the_one_radius_rule_is_total_and_the_half_edge_clause_overrides_it`].
 #[must_use]
 pub fn corner_for(role: CornerRole, shorter_edge: f32) -> &'static str {
@@ -1617,6 +1665,13 @@ pub fn corner_for(role: CornerRole, shorter_edge: f32) -> &'static str {
         CornerRole::BoxedMark => (SHAPE_RAMP[1].0, SHAPE_RAMP[1].1),
         CornerRole::Grouping => (SHAPE_RAMP[2].0, SHAPE_RAMP[2].1),
         CornerRole::Floating => (SHAPE_RAMP[3].0, SHAPE_RAMP[3].1),
+        // Half of any edge, so the half-edge clause below would fire on
+        // every positive one. Returned here instead, and unconditionally,
+        // because a stadium is what the caller *said the node is*: a
+        // collapsed pill mid-animation is still a pill, and the zero-edge
+        // guard below exists to protect roles that named a fixed radius, not
+        // this one.
+        CornerRole::Pill => return CORNER_FULL,
     };
     // `radius > 0.0` keeps a zero-height node — a collapsed row, a spacer
     // mid-animation — from turning every square corner into a pill on the
@@ -1627,9 +1682,12 @@ pub fn corner_for(role: CornerRole, shorter_edge: f32) -> &'static str {
     token
 }
 
-/// The pill. Named separately from [`SHAPE_RAMP`] because [`corner_for`]'s
-/// half-edge clause reaches it by rule rather than by role, so it is not one
-/// of [`CornerRole`]'s four answers.
+/// The pill. Named separately from [`SHAPE_RAMP`] because it is not a fixed
+/// radius the way the other five steps are: it is a sentinel that always
+/// exceeds half of any control's shorter edge. Two paths reach it —
+/// [`CornerRole::Pill`], which names the stadium outright, and
+/// [`corner_for`]'s half-edge clause, which promotes a fixed radius that has
+/// grown large enough relative to a small node.
 const CORNER_FULL: &str = "shape.corner-full";
 
 /// Assign every [`SHAPE_RAMP`] step into a theme's value map. Both themes
@@ -4832,7 +4890,25 @@ mod tests {
             CornerRole::BoxedMark,
             CornerRole::Grouping,
             CornerRole::Floating,
+            CornerRole::Pill,
         ];
+        // A role added to the enum and forgotten here would leave this test
+        // claiming totality over a domain it no longer covers. This match is
+        // exhaustive, so adding a member stops the build in this file, one
+        // screen from the array that needs the member.
+        const fn every_role_is_listed_above(role: CornerRole) -> usize {
+            match role {
+                CornerRole::Tiled => 0,
+                CornerRole::BoxedMark => 1,
+                CornerRole::Grouping => 2,
+                CornerRole::Floating => 3,
+                CornerRole::Pill => 4,
+            }
+        }
+        assert_eq!(
+            roles.len(),
+            every_role_is_listed_above(CornerRole::Pill) + 1
+        );
 
         // Total: every role, at a comfortable size, resolves to a declared
         // shape token.
@@ -4854,6 +4930,27 @@ mod tests {
         assert_eq!(corner_for(CornerRole::BoxedMark, 200.0), "shape.corner-xs");
         assert_eq!(corner_for(CornerRole::Grouping, 200.0), "shape.corner-sm");
         assert_eq!(corner_for(CornerRole::Floating, 200.0), "shape.corner-md");
+        // Except `Pill`, which is the one member that names a shape rather
+        // than a radius. It is a stadium at 200 units and at 4, and that is
+        // the whole point of it: the promotion clause below can only reach a
+        // stadium at 16 units and under, so a role with a fixed radius
+        // cannot express Carbon's 24-unit toggle track or 18-unit radio box.
+        //
+        // Falsified by giving `Pill` `Floating`'s ramp entry instead of its
+        // own early return:
+        //
+        // ```text
+        // assertion `left == right` failed: a pill at 0 units is still a pill
+        //   left: "shape.corner-md"
+        //  right: "shape.corner-full"
+        // ```
+        for edge in [0.0, 4.0, 18.0, 24.0, 200.0] {
+            assert_eq!(
+                corner_for(CornerRole::Pill, edge),
+                "shape.corner-full",
+                "a pill at {edge} units is still a pill"
+            );
+        }
 
         // The clause fires when the role's radius reaches half the shorter
         // edge, whatever the role said. A 4-unit progress rail asking for a

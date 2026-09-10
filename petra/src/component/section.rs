@@ -3,12 +3,19 @@
 //! page).
 
 use super::text::heading;
-use super::tokens::{
-    SHADOW_RAISED, SHAPE_MD, SPACING_03, SPACING_04, SPACING_05, SURFACE_RAISED, t,
-};
+use super::tokens::{SHADOW_RAISED, SPACING_03, SPACING_04, SPACING_05, SURFACE_RAISED, t};
 use super::{pad, stack};
 use crate::geom::Axis;
+use crate::token::{CornerRole, corner_for};
 use crate::tree::{Key, ViewNode};
+
+/// `section` has no declared minimum height: it wraps a heading plus
+/// whatever `children` the caller passes, and neither is pinned. This is a
+/// conservative floor, not a measured one — a single heading line already
+/// clears it — chosen only to stand well above `CornerRole::Grouping`'s
+/// 8-unit half-edge threshold so the half-edge clause never fires on a
+/// real section.
+const HEIGHT_FLOOR: f32 = 40.0;
 
 /// A titled block: a [`heading`] above `children`, inside a padded,
 /// rounded, bordered card.
@@ -38,6 +45,14 @@ pub fn section(key: impl Into<Key>, title: impl Into<String>, children: Vec<View
     // it, and carrying nothing the fill was not already carrying. There is no
     // border token in the theme, which is why a text one had been conscripted.
     node.props.tokens.insert("shadow".into(), t(SHADOW_RAISED));
-    node.props.tokens.insert("radius".into(), t(SHAPE_MD));
+    // FR-022: `section` groups a heading and its children the way a tile or
+    // a content switcher groups controls — `CornerRole::Grouping`. This
+    // moves the card's corner from `shape.corner-md` (8) to `shape.corner-sm`
+    // (4); see `HEIGHT_FLOOR`'s own doc for why the edge passed is a floor,
+    // not a measurement.
+    node.props.tokens.insert(
+        "radius".into(),
+        t(corner_for(CornerRole::Grouping, HEIGHT_FLOOR)),
+    );
     node
 }

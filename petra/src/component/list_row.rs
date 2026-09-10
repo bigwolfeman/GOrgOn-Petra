@@ -2,11 +2,12 @@
 
 use super::text::text;
 use super::tokens::{
-    LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SHAPE_SM, SPACING_03, SPACING_04,
-    SPACING_05, SURFACE_BASE, t,
+    LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SPACING_03, SPACING_04, SPACING_05,
+    SURFACE_BASE, t,
 };
 use super::{pad, stack};
 use crate::geom::Axis;
+use crate::token::{CornerRole, corner_for};
 use crate::tree::{FocusFigure, Interaction, Key, Role, TextWrap, ViewNode};
 
 /// The block extent one [`list_row`] takes at the shipped theme, in logical
@@ -84,7 +85,15 @@ pub fn list_row(key: impl Into<Key>, label: impl Into<String>, selected: bool) -
     ] {
         node.props.tokens.insert(slot.into(), t(token));
     }
-    node.props.tokens.insert("radius".into(), t(SHAPE_SM));
+    // FR-022: a list row tiles/abuts the rows above and below it — the
+    // enum's own doc names "list rows" under `CornerRole::Tiled` — so it
+    // takes `shape.corner-none` regardless of its extent. This moves the
+    // row's corner from `shape.corner-sm` (4) to square, matching Carbon's
+    // own `.cds--contained-list-item`, which carries no `border-radius`.
+    node.props.tokens.insert(
+        "radius".into(),
+        t(corner_for(CornerRole::Tiled, LIST_ROW_EXTENT)),
+    );
 
     let mut node = node.interactive(
         Role::ListItem,

@@ -61,13 +61,30 @@ pub(crate) const SIZE_LG: f32 = 48.0;
 /// (`crate::token::shipped`).
 pub(crate) const SIZE_XS: f32 = 24.0;
 
+// `SHAPE_NONE`/`SHAPE_XS`/`SHAPE_SM`/`SHAPE_MD` carry `#[allow(dead_code)]`
+// since the 2026-09-09 corner-radius flag day (`contracts/
+// token-vocabulary.md` §11 step 7): every production call site now reaches
+// its radius through `crate::token::corner_for`, which holds its own copy
+// of these four literals in `SHAPE_RAMP`, rather than naming one of these
+// constants directly. They stay for [`ALL`]'s own reason — "the constants
+// below are real tokens" is a claim independent of whether any call site
+// happens to use one — and as the names a future direct binding would
+// reach for. Since `CornerRole::Pill` landed on 2026-09-10 that includes
+// `SHAPE_FULL`: the radio box, the toggle knob and the AI-label bullet were
+// the last three direct callers, and they now name the stadium through the
+// rule like every other radius in this module.
+#[allow(dead_code)]
 pub(crate) const SHAPE_NONE: &str = "shape.corner-none";
 /// Carbon's popover corner (`$popover-border-radius`, 2px) — the one
 /// rounded corner a floating surface has. Carbon's fields, list boxes and
 /// menus are square.
+#[allow(dead_code)]
 pub(crate) const SHAPE_XS: &str = "shape.corner-xs";
+#[allow(dead_code)]
 pub(crate) const SHAPE_SM: &str = "shape.corner-sm";
+#[allow(dead_code)]
 pub(crate) const SHAPE_MD: &str = "shape.corner-md";
+#[allow(dead_code)]
 pub(crate) const SHAPE_FULL: &str = "shape.corner-full";
 
 pub(crate) const SILHOUETTE_RECT: &str = "shape.silhouette-rect";

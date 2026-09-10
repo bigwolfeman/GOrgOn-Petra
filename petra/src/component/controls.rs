@@ -6,20 +6,38 @@
 //! different shapes. The shape channel is corner radius, which is enough
 //! here and only here: a square and a circle are the two ends of the rect
 //! family, so unlike `super::status` this pair needs no `silhouette` token
-//! to separate them. A checkbox is a sharp square ([`SHAPE_NONE`]), a radio
-//! and a toggle's track are full pills ([`SHAPE_FULL`]) — a round control
-//! reads as "one choice among several" the way a square one does not, which
-//! is the same distinction a browser's own checkbox/radio pair makes.
+//! to separate them. A checkbox is a nearly-sharp square (`shape.corner-xs`,
+//! via [`crate::token::CornerRole::BoxedMark`]); a radio and a toggle's
+//! track are full pills — a round control reads as "one choice among
+//! several" the way a square one does not, which is the same distinction a
+//! browser's own checkbox/radio pair makes.
 //!
-//! The checkbox was `shape.corner-sm`, not [`SHAPE_NONE`], until the two boxes
-//! were measured against each other on the 12x12 box they then painted
-//! into: a 4-unit radius against a full one is 0.828 logical units of
-//! outline deviation at its widest, under one device pixel at scale 1.0.
-//! The shipped corner ramp has no step between `none` and `sm`, so the only
-//! honest way to make the distinction visible was to take the rounding off
-//! — which also makes the checkbox a *square*, the shape the doc above
-//! already claimed it was. The boxes themselves are now Carbon's sizes:
-//! checkbox 16×16, radio 18×18 (T070, SCSS, not the style-page 20).
+//! The checkbox was `shape.corner-sm`, then flat `shape.corner-none` from
+//! 2026-08-25, until this file's own flag day (`contracts/
+//! token-vocabulary.md` §11 step 7) put it on `CornerRole::BoxedMark` — the
+//! enum's own doc names "a checkbox's box" as its example — which resolves
+//! to `shape.corner-xs` (2) on the 16-unit box. The interim square existed
+//! because the shipped ramp had no step between `none` and `sm` at the time:
+//! measured against radio on the same 12x12 box they then shared, a 4-unit
+//! radius against a full one was 0.828 logical units of outline deviation at
+//! its widest, under one device pixel at scale 1.0, so the only honest way
+//! to make the distinction visible was to take the rounding off entirely.
+//! `shape.corner-xs` (added 2026-08-25, FR-022) is exactly the step that was
+//! missing; the checkbox now takes it instead of standing in for a token
+//! that did not exist yet. The boxes themselves are Carbon's sizes: checkbox
+//! 16×16, radio 18×18 (T070, SCSS, not the style-page 20).
+//!
+//! The radio box, the toggle knob and the toggle track are all stadiums, and
+//! all three say so through [`crate::token::CornerRole::Pill`]. Carbon draws
+//! the first two with `border-radius: 50%` and the third with a fixed 12px
+//! on a 24-tall track, which is the same shape written a different way.
+//! `Pill` exists because the fixed per-role radii cannot express any of
+//! them: the largest is `Floating`'s 8, which only reaches a stadium on an
+//! edge of 16 or under, and these are 18, 18 and 24. For one day in
+//! September 2026 the track and the knob disagreed about it — the knob a
+//! literal circle, the track routed through `Grouping` and rendered as a
+//! 4-radius box — and a circular knob sitting in a boxy slot is what that
+//! looked like.
 //!
 //! Selection is never carried by fill colour alone: every control here also
 //! sets `Semantics.selected`, so the state survives with the colour turned
@@ -84,11 +102,12 @@ use super::icon::{IconMark, icon};
 use super::text::text;
 use super::tokens::{
     ACCENT_PRIMARY, BORDER_STRONG, BUTTON_DISABLED, ICON_DISABLED, ICON_ON_COLOR_DISABLED,
-    SHAPE_FULL, SHAPE_NONE, SPACING_01, SPACING_02, SPACING_03, SPACING_05, SURFACE_RAISED,
-    TEXT_MUTED, TEXT_ON_ACCENT, TEXT_ON_COLOR, TEXT_PRIMARY, t,
+    SPACING_01, SPACING_02, SPACING_03, SPACING_05, SURFACE_RAISED, TEXT_MUTED, TEXT_ON_ACCENT,
+    TEXT_ON_COLOR, TEXT_PRIMARY, t,
 };
 use super::{pad, stack, swatch};
 use crate::geom::{Align, Axis};
+use crate::token::{CornerRole, corner_for};
 use crate::tree::{AxisConstraint, Constraints, FocusFigure, Interaction, Key, Role, ViewNode};
 
 /// Carbon checkbox box (`_checkbox.scss` / style-page Structure): 16×16.
@@ -246,16 +265,20 @@ fn marked_box(size: f32, fill: &str, shape: &str, inner: ViewNode) -> ViewNode {
     node.with_constraints(pinned(size, size))
 }
 
+/// FR-022: a checkbox's box is [`crate::token::CornerRole::BoxedMark`]'s
+/// own named example, so both states resolve to `shape.corner-xs` (2) on
+/// the 16-unit box rather than a literal `SHAPE_NONE`.
 fn checkbox_mark(checked: bool) -> ViewNode {
+    let radius = corner_for(CornerRole::BoxedMark, CHECKBOX_BOX);
     if checked {
         marked_box(
             CHECKBOX_BOX,
             ACCENT_PRIMARY,
-            SHAPE_NONE,
+            radius,
             icon("tick", IconMark::Check),
         )
     } else {
-        empty_mark(CHECKBOX_BOX, SHAPE_NONE)
+        empty_mark(CHECKBOX_BOX, radius)
     }
 }
 
@@ -273,7 +296,7 @@ pub(crate) fn checkbox_box(state: CheckState) -> ViewNode {
         CheckState::Mixed => marked_box(
             CHECKBOX_BOX,
             ACCENT_PRIMARY,
-            SHAPE_NONE,
+            corner_for(CornerRole::BoxedMark, CHECKBOX_BOX),
             swatch(
                 "dash",
                 CHECKBOX_DASH_W,
@@ -418,6 +441,11 @@ pub fn checkbox_group(
 /// an even dot size, which stops being Carbon's `scale(0.5)`, or pixel
 /// snapping for small marks in the painter — see
 /// `.agents/notes/proposed/bug-fix/2026-09-04-a-half-pixel-inset-snaps-a-small-mark-off-centre.md`.
+// FR-022 reaches the radio box through `CornerRole::Pill`. Carbon's
+// `border-radius: 50%` is a proportional circle, so no *fixed* per-role
+// radius can express it — 8 is the largest `corner_for` offers and an
+// 18-unit box needs 9 — and `Pill` is the member that names the shape
+// instead of a number. See the module doc's own paragraph on this.
 pub fn radio(key: impl Into<Key>, label: impl Into<String>, selected: bool) -> ViewNode {
     let box_node = if selected {
         let mut node = swatch(
@@ -426,7 +454,7 @@ pub fn radio(key: impl Into<Key>, label: impl Into<String>, selected: bool) -> V
             RADIO_BOX,
             Some(ACCENT_PRIMARY),
             Some(BORDER_STRONG),
-            Some(SHAPE_FULL),
+            Some(corner_for(CornerRole::Pill, RADIO_BOX)),
         );
         // Carbon: `_radio-button.scss`'s disabled selector on
         // `.radio-button__appearance` (`border-color: $icon-disabled`) plus
@@ -443,7 +471,7 @@ pub fn radio(key: impl Into<Key>, label: impl Into<String>, selected: bool) -> V
             .insert("border@disabled".into(), t(ICON_DISABLED));
         node
     } else {
-        empty_mark(RADIO_BOX, SHAPE_FULL)
+        empty_mark(RADIO_BOX, corner_for(CornerRole::Pill, RADIO_BOX))
     };
     labelled_box(
         key,
@@ -541,6 +569,11 @@ fn toggle_sized(
     // Carbon's placement when both were put to him with the reference shot.
     // So the small on-toggle is the default size's anatomy at a smaller
     // scale: a pill and a plain knob, no mark.
+    // The knob is a `Pill` for the same reason as the radio box: Carbon's
+    // toggle handle is a `border-radius: 50%` circle at both sizes (18
+    // default, 10 small), and 18 is past what any fixed per-role radius can
+    // push to a stadium. Naming the shape keeps both sizes an exact circle
+    // rather than a circle at one size and a rounded square at the other.
     let mut knob = swatch(
         "knob",
         handle,
@@ -550,7 +583,7 @@ fn toggle_sized(
         // knob black in dark — see the module doc.
         Some(if on { TEXT_ON_COLOR } else { TEXT_PRIMARY }),
         None,
-        Some(SHAPE_FULL),
+        Some(corner_for(CornerRole::Pill, handle)),
     )
     .with_transition(crate::anim::TOGGLE_KNOB);
     // Carbon: `.cds--toggle--disabled .cds--toggle__switch::before {
@@ -579,7 +612,16 @@ fn toggle_sized(
         t(if on { ACCENT_PRIMARY } else { SURFACE_RAISED }),
     );
     track.props.tokens.insert("border".into(), t(BORDER_STRONG));
-    track.props.tokens.insert("radius".into(), t(SHAPE_FULL));
+    // FR-022: the track is a stadium at both sizes. Carbon writes it as a
+    // fixed 12px on the 24-tall track, which is exactly half that height,
+    // and the small track keeps the same shape at its own height. That is
+    // `Pill`, not a fixed radius that happens to be large: routed through
+    // `Grouping` the track drew a 4-radius box around a circular knob, which
+    // is what the rasterized toggle showed on 2026-09-09.
+    track
+        .props
+        .tokens
+        .insert("radius".into(), t(corner_for(CornerRole::Pill, track_h)));
     // Carbon: `.cds--toggle--disabled .cds--toggle__switch { background-color:
     // button.$button-disabled; }`, on and off alike (`_toggle.scss`).
     // `$button-disabled` is Carbon's own value, not a fade of the accent or

@@ -57,10 +57,11 @@ use super::on_layer;
 use super::stack;
 use super::text::{heading, text};
 use super::tokens::{
-    LAYER_HOVER, OVERLAY_SCRIM, SHADOW_RAISED, SHAPE_NONE, SPACING_03, SPACING_05, SPACING_09,
-    SURFACE_RAISED, t,
+    LAYER_HOVER, OVERLAY_SCRIM, SHADOW_RAISED, SPACING_03, SPACING_05, SPACING_09, SURFACE_RAISED,
+    t,
 };
 use crate::geom::{Align, Axis};
+use crate::token::{CornerRole, corner_for};
 use crate::tree::{
     Anchor, AxisConstraint, ClampRule, Constraints, FocusFigure, InputPolicy, InsetRefs,
     Interaction, Justify, Key, Layer, NodeKind, Props, Role, Semantics, TextWrap, TrackSize,
@@ -320,7 +321,17 @@ fn footer_button(mut node: ViewNode) -> ViewNode {
         bottom: None,
         left: Some(t(SPACING_05)),
     });
-    node.props.tokens.insert("radius".into(), t(SHAPE_NONE));
+    // FR-022: this button is full-bleed against the dialog's own edges —
+    // `CornerRole::Tiled`, the same role every other library button now
+    // takes (`component::button`). `Tiled` ignores the half-edge clause, so
+    // this stays `shape.corner-none` at any height; it is spelled out here
+    // rather than left to whatever `button()` bound, because the footer's
+    // own contract (flush, no shadow) should not depend on that default
+    // never changing.
+    node.props.tokens.insert(
+        "radius".into(),
+        t(corner_for(CornerRole::Tiled, FOOTER_HEIGHT)),
+    );
     node.props.tokens.remove("shadow");
     node
 }

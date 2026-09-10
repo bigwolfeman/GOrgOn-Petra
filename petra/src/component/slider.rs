@@ -9,7 +9,9 @@
 //!    press: Carbon jumps the value to wherever the track is clicked and
 //!    drags from there, so the rail declares [`Interaction::Drag`] too.
 //! 3. Min value — leftmost range label (`"0"`).
-//! 4. Handle — 14×14 circle ([`SHAPE_FULL`]) in [`LAYER_SELECTED_INVERSE`]
+//! 4. Handle — 14×14 circle (`shape.corner-full`, via
+//!    [`crate::token::CornerRole::Pill`]) in
+//!    [`LAYER_SELECTED_INVERSE`]
 //!    (SCSS `background: $layer-selected-inverse`; the style page's
 //!    `$icon-primary` is the documentation side of a T070 disagreement),
 //!    [`Interaction::Drag`] plus Focus, Click and Hover. The filled track
@@ -40,11 +42,12 @@ use super::stack;
 use super::swatch;
 use super::text::text;
 use super::tokens::{
-    BORDER_SUBTLE, LAYER_SELECTED_INVERSE, SHAPE_FULL, SIZE_MD, SPACING_03, SPACING_05, TEXT_MUTED,
+    BORDER_SUBTLE, LAYER_SELECTED_INVERSE, SIZE_MD, SPACING_03, SPACING_05, TEXT_MUTED,
     TEXT_PRIMARY, TYPOGRAPHY_BODY, t,
 };
 use crate::frame::PetrifiedFrame;
 use crate::geom::{Align, Axis, Point};
+use crate::token::{CornerRole, corner_for};
 use crate::tree::{
     AxisConstraint, Constraints, FocusFigure, Interaction, Key, NodeKind, Props, Role, TrackSize,
     ViewNode,
@@ -157,7 +160,15 @@ fn handle_node(label: String, value: String, size: f32, live: bool) -> ViewNode 
             None
         },
         None,
-        if size > 0.0 { Some(SHAPE_FULL) } else { None },
+        // FR-022: the handle is a disc at whatever size it ships, so it
+        // says `CornerRole::Pill` rather than leaning on the half-edge
+        // clause, which `Floating`'s 8 clears at today's 14 units and would
+        // stop clearing the day the handle grew past 16.
+        if size > 0.0 {
+            Some(corner_for(CornerRole::Pill, size))
+        } else {
+            None
+        },
     );
     handle = handle.with_constraints(pin_extent(size, size));
     if live {
@@ -329,14 +340,15 @@ mod tests {
         slider_readonly, slider_value_at, slider_value_of_input,
     };
     use crate::component::tokens::{
-        ACCENT_PRIMARY, BORDER_STRONG, BORDER_SUBTLE, LAYER_SELECTED_INVERSE, SHAPE_FULL, SIZE_MD,
-        SPACING_05, SURFACE_RAISED,
+        ACCENT_PRIMARY, BORDER_STRONG, BORDER_SUBTLE, LAYER_SELECTED_INVERSE, SIZE_MD, SPACING_05,
+        SURFACE_RAISED,
     };
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::Point;
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
+    use crate::token::{CornerRole, corner_for};
     use crate::tree::{Interaction, NodeKind, Props, Registry, Role, TrackSize, ViewNode};
 
     fn named<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
@@ -471,7 +483,10 @@ mod tests {
         assert_eq!(HANDLE, 14.0);
         // SCSS: `.cds--slider__thumb { background: $layer-selected-inverse }`.
         assert_eq!(token(handle, "background"), Some(LAYER_SELECTED_INVERSE));
-        assert_eq!(token(handle, "radius"), Some(SHAPE_FULL));
+        assert_eq!(
+            token(handle, "radius"),
+            Some(corner_for(CornerRole::Pill, HANDLE))
+        );
         assert_eq!(named(&node, "label").props.text.as_deref(), Some("Volume"));
         assert_eq!(named(&node, "min").props.text.as_deref(), Some("0"));
         assert_eq!(named(&node, "max").props.text.as_deref(), Some("100"));

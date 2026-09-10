@@ -5071,6 +5071,25 @@ mod tests {
             bar[2] > bar[0] && bar[2] > bar[1],
             "{well_tail}: the bar is not the accent: {bar:?}"
         );
+        // Device columns from logical units. `px` truncates, but a band's
+        // edges must round: three logical units is six device columns, and a
+        // truncated edge reads one column short on one side and not on the
+        // other.
+        let edge = |v: f32| (v * CAPTURE_SCALE).round() as i64;
+        // One mirrored pair of device columns, read on every row from the
+        // first below the accent to the sixth, so none of the four rows the
+        // seam occupied is stepped over.
+        let mirrored_below_the_foot = |l: i64, r: i64, what: &str| {
+            for step in 1..=6 {
+                let dy = ((well.y + well.h) * CAPTURE_SCALE) as u32 + step;
+                assert_eq!(
+                    img.get_pixel(l as u32, dy).0,
+                    img.get_pixel(r as u32, dy).0,
+                    "{well_tail}: {what}, at device columns {l} and {r}, \
+                     {step} row(s) below the foot: a tessellation seam"
+                );
+            }
+        };
         for (side, x, outward, band) in [("left", lx, -1.0, left), ("right", rx, 1.0, right)] {
             let beside = px(&img, x + outward * 6.0, mid_y);
             assert_ne!(bar, beside, "{well_tail}: the {side} bar bleeds outward");
@@ -5136,22 +5155,6 @@ mod tests {
             // so on a 3-unit bar the two corner arcs nearly meet and their
             // feather skirts overlap. The shadow blends twice along one
             // corner's 45-degree bisector and leaves a four-pixel diagonal
-            // darker than the rest of the shadow -- as long as a `Sides` bar
-            // is broad, which is why it read as a hook on the foot.
-            //
-            // `crate::shadow::box_shadow` draws the mesh instead and is
-            // symmetric by construction. This is that fix stated where the
-            // operator met it: in pixels, on seven pages, rather than only
-            // in the mesh's own unit test. Sampled inside `hug_gap` so
-            // neither probe leaves the card.
-            // And that shadow is symmetric about the bar it belongs to.
-            //
-            // The operator's report of 2026-09-06: *"the vertical shadow has
-            // a visual bug."* `epaint::Shadow` clamps a blur to the caster's
-            // short side and then adds half of it back as a corner radius,
-            // so on a 3-unit bar the two corner arcs nearly meet and their
-            // feather skirts overlap. The shadow blends twice along one
-            // corner's 45-degree bisector and leaves a four-pixel diagonal
             // darker than the rest of the shadow. As long as a `Sides` bar
             // is broad, which is why it read as a hook hanging off the foot.
             // `crate::shadow::box_shadow` draws the mesh instead and is
@@ -5161,47 +5164,82 @@ mod tests {
             //
             // **Mirrored in device columns, not logical units.** `px`
             // truncates a logical coordinate into a device one, and the bar's
-            // centre falls on a device-pixel *boundary* -- three logical
-            // units is six device columns. Probing `x - d` against `x + d`
-            // therefore compares columns one apart and fails by a level or
-            // two on a gradient, which is what the first version of this
-            // check did on all seven pages. The true mirror of the column
-            // `k` left of the bar is the column `k` right of it.
+            // centre falls on a device-pixel *boundary*. Probing `x - d`
+            // against `x + d` therefore compares columns one apart and fails
+            // by a level or two on a gradient, which is what the first
+            // version of this check did on all seven pages. The true mirror
+            // of the column `k` left of the bar is the column `k` right of
+            // it.
             //
-            // **The pairs run inside the bar as well as outside it.** Most of
-            // the seam lived *within* the bar's own six device columns, where
-            // the accent hides it until the fill ends and the shadow is left
-            // exposed. A check that only mirrored the ground beside the bar
-            // saw three of the four bad rows as clean.
-            //
-            // **Four columns out and no further.** Two logical units inward
-            // is where the well's own footprint starts, and on the three
-            // pages that open a list under the field that footprint carries
-            // the list's `shadow.overlay`. Past there the probe measures the
-            // neighbour, not the bar: measured on `dd/field`, both bars read
-            // 31, 31, 32, 33 on each side and then part, the inward side
-            // holding 32 while the outward rises to the page's 34.
+            // **This pass runs inside the bar's own columns and no wider.**
+            // Most of the seam lived *within* the bar's six device columns,
+            // where the accent hides it until the fill ends and the shadow
+            // is left exposed; a check that only mirrored the ground beside
+            // the bar saw three of the four bad rows as clean. The ground
+            // beside the bar is checked as well, but not against this bar:
+            // the left-against-right pass after this loop does that, and the
+            // comment there says why it cannot be done here.
             if foot == Foot::OnCard {
-                let edge = |v: f32| (v * CAPTURE_SCALE).round() as i64;
                 let (bx0, bx1) = (edge(band.x), edge(band.x + band.w));
-                let mirrors = (0..(bx1 - bx0) / 2)
-                    .map(|i| (bx0 + i, bx1 - 1 - i))
-                    .chain((0..4).map(|k| (bx0 - 1 - k, bx1 + k)));
-                for (l, r) in mirrors {
-                    // Every device row from the first below the accent to the
-                    // sixth, so none of the four the seam occupied is stepped
-                    // over.
-                    for step in 1..=6 {
-                        let dy = ((well.y + well.h) * CAPTURE_SCALE) as u32 + step;
-                        assert_eq!(
-                            img.get_pixel(l as u32, dy).0,
-                            img.get_pixel(r as u32, dy).0,
-                            "{well_tail}: the {side} bar's shadow is lopsided \
-                             at device columns {l} and {r}, {step} row(s) \
-                             below the foot: a tessellation seam"
-                        );
-                    }
+                for i in 0..(bx1 - bx0) / 2 {
+                    mirrored_below_the_foot(
+                        bx0 + i,
+                        bx1 - 1 - i,
+                        &format!("the {side} bar's own shadow is lopsided"),
+                    );
                 }
+            }
+        }
+        // The ground beside the bars, left figure against right figure.
+        //
+        // A bar is not mirrored by its own surroundings and never was. Card
+        // lies outside it; `hug_gap` of gap and then the well lie inside it.
+        // A pass that mirrors one bar against itself past its own columns is
+        // therefore comparing card against gap, and it passed until
+        // 2026-09-09 only because a well carrying a `corner-md` radius held
+        // its own shadow back out of that gap. The corner-radius flag day
+        // squared the menu trigger, the well's shadow moved one device
+        // column further in, and the fourth column out parted by a single
+        // level: 32 on the card against 31 in the gap, with the bar itself
+        // blameless.
+        //
+        // What *is* mirrored is the whole figure. `sides()` places two bars
+        // about a well, and the well's own shadow is symmetric about the
+        // well's own centre, so the honest partner of the k-th column
+        // outward of the left bar is the k-th column outward of the right
+        // bar, and likewise inward. Card then meets card and gap meets gap,
+        // the neighbour contributes the same darkening to both, and a seam
+        // on one corner of one bar still parts its pair.
+        //
+        // `hug_gap` device columns each way, because that is how much gap
+        // the figure itself leaves before an inward probe would land on the
+        // well. No distance is calibrated here.
+        //
+        // Falsified before it was kept. Expanding only the first bar's
+        // shadow caster by half a unit, symmetric about that bar's own
+        // centre, leaves the self-mirror above green and lands here:
+        //
+        // ```text
+        // mn-pair/trigger: the card outside the two bars is not the same
+        // ground, at device columns 569 and 758, 1 row(s) below the foot: a
+        // tessellation seam
+        //   left: [29, 29, 29, 255]
+        //  right: [30, 30, 30, 255]
+        // ```
+        if foot == Foot::OnCard {
+            let (lx0, lx1) = (edge(left.x), edge(left.x + left.w));
+            let (rx0, rx1) = (edge(right.x), edge(right.x + right.w));
+            for k in 0..edge(ring.hug_gap) {
+                mirrored_below_the_foot(
+                    lx0 - 1 - k,
+                    rx1 + k,
+                    "the card outside the two bars is not the same ground",
+                );
+                mirrored_below_the_foot(
+                    lx1 + k,
+                    rx0 - 1 - k,
+                    "the gap inside the two bars is not the same ground",
+                );
             }
         }
         bar

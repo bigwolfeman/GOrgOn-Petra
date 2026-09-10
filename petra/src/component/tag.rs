@@ -6,8 +6,14 @@
 //! hues here would put a colour decision in a component. High-contrast /
 //! outline uses [`BORDER_STRONG`].
 //!
-//! Sizes MEASURED `_tag.scss`: sm 18, md 24 (default), lg 32. Radius
-//! [`SHAPE_FULL`]. `min-inline-size` 32, `max-inline-size` 208.
+//! Sizes MEASURED `_tag.scss`: sm 18, md 24 (default), lg 32. Carbon's own
+//! radius is a fixed 16px at every size (not a percentage, `_tag.scss`),
+//! which is half the large tag's height and more than half of the two
+//! smaller ones — a stadium at all three. That is
+//! [`crate::token::CornerRole::Pill`], and it is the member FR-022 names for
+//! a tag. No *fixed* role radius can do it: the largest is `Floating`'s 8,
+//! which reaches a stadium only at 16 units and under. `min-inline-size` 32,
+//! `max-inline-size` 208.
 //!
 //! Read-only [`tag`] is not interactive. [`dismissible_tag`] is a labelled
 //! button `"Dismiss {label}"` drawing [`IconMark::Close`] (Carbon's
@@ -31,10 +37,11 @@ use super::icon::{IconMark, IconTone, icon_toned};
 use super::stack;
 use super::text::text;
 use super::tokens::{
-    BORDER_STRONG, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SHAPE_FULL, SPACING_03,
-    SPACING_04, SURFACE_RAISED, TEXT_PRIMARY, t,
+    BORDER_STRONG, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SPACING_03, SPACING_04,
+    SURFACE_RAISED, TEXT_PRIMARY, t,
 };
 use crate::geom::{Align, Axis};
+use crate::token::{CornerRole, corner_for};
 use crate::tree::{
     AxisConstraint, Constraints, InsetRefs, Interaction, Key, Role, TextWrap, ViewNode,
 };
@@ -187,7 +194,14 @@ fn shell(
     node.props
         .tokens
         .insert("background".into(), t(SURFACE_RAISED));
-    node.props.tokens.insert("radius".into(), t(SHAPE_FULL));
+    // FR-022: Carbon's 16px tag radius is half the 32-unit large tag and
+    // more than half of the two smaller ones, which is a stadium at every
+    // shipped height. `CornerRole::Pill` says that; `Floating`'s fixed 8
+    // said `shape.corner-md` and drew a rounded box, which is what the
+    // rasterized tag row showed on 2026-09-09.
+    node.props
+        .tokens
+        .insert("radius".into(), t(corner_for(CornerRole::Pill, height)));
     if border {
         node.props.tokens.insert("border".into(), t(BORDER_STRONG));
     }
@@ -216,13 +230,14 @@ mod tests {
         HEIGHT_LG, HEIGHT_MD, HEIGHT_SM, IconMark, IconTone, MAX_INLINE, MIN_INLINE,
         dismissible_tag, icon_toned, selectable_tag, tag, tag_lg, tag_sm,
     };
-    use crate::component::tokens::{
-        BORDER_STRONG, LAYER_HOVER, LAYER_SELECTED, SHAPE_FULL, SURFACE_RAISED,
-    };
+    use crate::component::tokens::{BORDER_STRONG, LAYER_HOVER, LAYER_SELECTED, SURFACE_RAISED};
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, inks, validated_with};
-    use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
+    use crate::token::{
+        ColorValue, CornerRole, Theme, ThemeMode, TokenName, TokenValue, corner_for,
+        standard_vocabulary,
+    };
     use crate::tree::{Interaction, NodeKind, Props, Registry, Role, ViewNode};
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
@@ -255,7 +270,10 @@ mod tests {
         assert!(node.interactions.is_empty());
         assert!(!node.is_interactive());
         assert!(node.semantics.role.is_none());
-        assert_eq!(token(&node, "radius"), Some(SHAPE_FULL));
+        assert_eq!(
+            token(&node, "radius"),
+            Some(corner_for(CornerRole::Pill, HEIGHT_MD))
+        );
         assert_eq!(token(&node, "background"), Some(SURFACE_RAISED));
         assert_eq!(
             token(&node, "border"),
@@ -274,7 +292,10 @@ mod tests {
         let lg = tag_lg("env", "prod");
         assert_eq!(lg.constraints.vertical.min, Some(HEIGHT_LG));
         assert_eq!(HEIGHT_LG, 32.0);
-        assert_eq!(token(&lg, "radius"), Some(SHAPE_FULL));
+        assert_eq!(
+            token(&lg, "radius"),
+            Some(corner_for(CornerRole::Pill, HEIGHT_LG))
+        );
     }
 
     #[test]

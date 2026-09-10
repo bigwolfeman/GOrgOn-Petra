@@ -24,8 +24,9 @@ use super::icon::{IconMark, icon};
 use super::loading::spinner_small;
 use super::stack;
 use super::text::text;
-use super::tokens::{ACCENT_PRIMARY, SHAPE_FULL, SPACING_03, TEXT_MUTED, t};
+use super::tokens::{ACCENT_PRIMARY, SPACING_03, TEXT_MUTED, t};
 use crate::geom::{Align, Axis};
+use crate::token::{CornerRole, corner_for};
 use crate::tree::{AxisConstraint, Constraints, Justify, Key, Role, Semantics, ViewNode};
 
 /// Carbon small loading spinner, the only size Inline loading uses.
@@ -64,7 +65,14 @@ pub fn inline_loading_finished(key: impl Into<Key>, label: impl Into<String>) ->
         .props
         .tokens
         .insert("background".into(), t(ACCENT_PRIMARY));
-    badge.props.tokens.insert("radius".into(), t(SHAPE_FULL));
+    // FR-022: a spinner ring is a disc at whatever size it ships, so it
+    // says `CornerRole::Pill` rather than leaning on the half-edge clause.
+    // `Floating`'s 8 would also reach `shape.corner-full` at today's 16
+    // units, and would silently stop the day the ring grew.
+    badge
+        .props
+        .tokens
+        .insert("radius".into(), t(corner_for(CornerRole::Pill, SPINNER)));
     let badge = badge.with_constraints(Constraints {
         horizontal: AxisConstraint {
             min: Some(SPINNER),

@@ -103,10 +103,11 @@ use super::pad;
 use super::stack;
 use super::text::text;
 use super::tokens::{
-    LAYER_HOVER, SHADOW_RAISED, SHAPE_SM, SPACING_03, SPACING_05, SURFACE_RAISED, TEXT_PRIMARY,
+    LAYER_HOVER, SHADOW_RAISED, SPACING_03, SPACING_05, SURFACE_RAISED, TEXT_PRIMARY,
     TYPOGRAPHY_HEADING_SM, t,
 };
 use crate::geom::{Align, Axis};
+use crate::token::{CornerRole, corner_for};
 // `crate::tree::Align` is the cross-axis half of an anchor and
 // `crate::geom::Align` is a child's alignment inside its parent's cell. Both
 // are used in this module, so the anchor one is spelled out at every use.
@@ -424,7 +425,16 @@ fn chrome(
     // any edge but the `border-left: 3px` rail, and the rail is gone by the
     // operator's decision. The card is a container, not a control, so it
     // takes a tone (`SURFACE_RAISED`) and `SHADOW_RAISED`, not an edge.
-    node.props.tokens.insert("radius".into(), t(SHAPE_SM));
+    //
+    // FR-022: the card groups a glyph, a text column and an optional action
+    // — `CornerRole::Grouping`. `INLINE_MIN_BLOCK` (48) is the one floor the
+    // card guarantees regardless of copy length, and it is always the
+    // shorter edge: the card's own `INLINE_MIN_INLINE` (288) never lets the
+    // width drop below it.
+    node.props.tokens.insert(
+        "radius".into(),
+        t(corner_for(CornerRole::Grouping, INLINE_MIN_BLOCK)),
+    );
     node.props.tokens.insert("shadow".into(), t(SHADOW_RAISED));
     node
 }

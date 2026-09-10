@@ -34,11 +34,10 @@ use super::stack;
 use super::swatch;
 use super::text::text;
 use super::tokens::{
-    SHAPE_FULL, SHAPE_NONE, SILHOUETTE_DIAMOND, SILHOUETTE_OCTAGON, SILHOUETTE_RECT,
-    SILHOUETTE_TRIANGLE, SPACING_03, t,
+    SILHOUETTE_DIAMOND, SILHOUETTE_OCTAGON, SILHOUETTE_RECT, SILHOUETTE_TRIANGLE, SPACING_03, t,
 };
 use crate::geom::{Align, Axis};
-use crate::token::{StatusShape, StatusToken};
+use crate::token::{CornerRole, StatusShape, StatusToken, corner_for};
 use crate::tree::{Key, Role, ViewNode};
 
 const DOT: f32 = 10.0;
@@ -61,8 +60,18 @@ fn marker_for(shape: StatusShape) -> (Option<&'static str>, &'static str) {
     match shape {
         // A full radius on a square box is a disc. The rect family already
         // spans square-to-circle, so a circle needs no figure of its own.
-        StatusShape::Circle => (Some(SHAPE_FULL), SILHOUETTE_RECT),
-        StatusShape::Square => (Some(SHAPE_NONE), SILHOUETTE_RECT),
+        //
+        // FR-022: `Circle` is a `CornerRole::Pill`, which names the stadium
+        // rather than arriving at one. A fixed role would also land on
+        // `shape.corner-full` at today's 10-unit dot (`Floating`'s 8 clears
+        // 10 / 2) and would quietly stop doing so the day the dot grew past
+        // 16. `Square` takes `CornerRole::Tiled`, which is always
+        // `shape.corner-none` — the dot never had a "tiles/abuts"
+        // relationship to anything, but `Tiled` is the only role FR-022
+        // offers that stays square at every size, which is what a status
+        // square needs.
+        StatusShape::Circle => (Some(corner_for(CornerRole::Pill, DOT)), SILHOUETTE_RECT),
+        StatusShape::Square => (Some(corner_for(CornerRole::Tiled, DOT)), SILHOUETTE_RECT),
         StatusShape::Triangle => (None, SILHOUETTE_TRIANGLE),
         StatusShape::Diamond => (None, SILHOUETTE_DIAMOND),
         StatusShape::Octagon => (None, SILHOUETTE_OCTAGON),

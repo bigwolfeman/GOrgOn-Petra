@@ -204,11 +204,12 @@ use super::icon::{IconMark, IconTone, icon_toned};
 use super::text::text;
 use super::tokens::{
     ACCENT_PRIMARY, BORDER_STRONG, BUTTON_DANGER_PRIMARY, ICON_DISABLED, ICON_ON_COLOR_DISABLED,
-    LAYER_ACTIVE, LAYER_HOVER, LINK_PRIMARY, SHADOW_RAISED, SHAPE_MD, SIZE_MD, SPACING_03,
-    SPACING_05, SURFACE_BASE, SURFACE_RAISED, TEXT_ON_ACCENT, TEXT_ON_COLOR, TEXT_PRIMARY, t,
+    LAYER_ACTIVE, LAYER_HOVER, LINK_PRIMARY, SHADOW_RAISED, SIZE_MD, SPACING_03, SPACING_05,
+    SURFACE_BASE, SURFACE_RAISED, TEXT_ON_ACCENT, TEXT_ON_COLOR, TEXT_PRIMARY, t,
 };
 use super::{pin_block, stack};
 use crate::geom::{Align, Axis};
+use crate::token::{CornerRole, corner_for};
 use crate::tree::{FocusFigure, InsetRefs, Interaction, Key, Role, ViewNode};
 
 /// Carbon `.cds--btn--xs` height. Numeric because `Constraints` stay extents
@@ -622,7 +623,16 @@ fn labelled(
             node.props.tokens.insert(slot.into(), t(token));
         }
     }
-    node.props.tokens.insert("radius".into(), t(SHAPE_MD));
+    // FR-022 (`token::shipped::corner_for`): a button tiles/abuts other
+    // chrome (it never floats free of the layout), so every size — 24 to
+    // 80 units tall — takes `shape.corner-none` regardless of height. This
+    // is the flag day's own motivating bug: a button used to bind
+    // `shape.corner-md` flat, and an inspector shot of a 32-unit button
+    // rendered as a full pill rather than a sharp rectangle.
+    node.props.tokens.insert(
+        "radius".into(),
+        t(corner_for(CornerRole::Tiled, size.height())),
+    );
     if let Some(shadow) = chrome.shadow {
         node.props.tokens.insert("shadow".into(), t(shadow));
     }

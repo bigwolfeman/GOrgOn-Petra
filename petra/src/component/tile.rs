@@ -67,11 +67,12 @@
 use super::icon::{IconMark, icon};
 use super::text::text;
 use super::tokens::{
-    ACCENT_PRIMARY, BORDER_STRONG, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SHAPE_NONE,
-    SPACING_03, SPACING_05, SURFACE_RAISED, t,
+    ACCENT_PRIMARY, BORDER_STRONG, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SPACING_03,
+    SPACING_05, SURFACE_RAISED, t,
 };
 use super::{CaretDirection, caret, pad, stack, swatch};
 use crate::geom::{Align, Axis};
+use crate::token::{CornerRole, corner_for};
 use crate::tree::{
     AxisConstraint, Constraints, FocusFigure, Interaction, Key, NodeKind, Props, Role, TrackSize,
     ViewNode,
@@ -224,7 +225,11 @@ pub fn selectable_tile(key: impl Into<Key>, label: impl Into<String>, selected: 
 /// box keeps its edge — with nothing inside it, the outline is the whole
 /// control. On: an [`ACCENT_PRIMARY`] box with [`IconMark::Check`] centred
 /// in it, the way [`super::progress_indicator`]'s complete mark is built.
-/// Sharp corners ([`SHAPE_NONE`]), matching the checkbox.
+///
+/// FR-022: a small boxed mark inside a control is `CornerRole::BoxedMark`
+/// — the enum's own doc names "a checkbox's box" as the example, and this
+/// mark is the same 16-unit box built the same way, so it takes the same
+/// `shape.corner-xs`, matching the checkbox's own move off `shape.corner-none`.
 fn selection_mark(selected: bool) -> ViewNode {
     if !selected {
         return swatch(
@@ -233,7 +238,7 @@ fn selection_mark(selected: bool) -> ViewNode {
             MARK,
             None,
             Some(BORDER_STRONG),
-            Some(SHAPE_NONE),
+            Some(corner_for(CornerRole::BoxedMark, MARK)),
         );
     }
     let tick = icon("mark", IconMark::Check);
@@ -252,7 +257,9 @@ fn selection_mark(selected: bool) -> ViewNode {
     node.props
         .tokens
         .insert("background".into(), t(ACCENT_PRIMARY));
-    node.props.tokens.insert("radius".into(), t(SHAPE_NONE));
+    node.props
+        .tokens
+        .insert("radius".into(), t(corner_for(CornerRole::BoxedMark, MARK)));
     node.with_constraints(Constraints {
         horizontal: AxisConstraint {
             min: Some(MARK),

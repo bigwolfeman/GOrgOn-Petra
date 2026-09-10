@@ -2,7 +2,7 @@
 //!
 //! Anatomy (docs + `_content-switcher.scss`), high-contrast default:
 //! 1. [`content_switcher`] — the group: one bordered row, radius 4
-//!    ([`SHAPE_SM`]), 1px [`BORDER_SUBTLE`] outline, every tab the same
+//!    (`shape.corner-sm`, via `CornerRole::Grouping`), 1px [`BORDER_SUBTLE`] outline, every tab the same
 //!    width (Carbon's `.cds--content-switcher-btn` is `inline-size: 100%`
 //!    inside a flex row, so N tabs share the row N ways — `08-content-
 //!    switcher.png` shows two tabs at exactly half each).
@@ -36,11 +36,12 @@
 //! engine that cannot paint a parent's edge over its children.
 
 use super::tokens::{
-    BORDER_SUBTLE, LAYER_HOVER, LAYER_SELECTED_INVERSE, SHAPE_SM, SIZE_MD, SPACING_01, SPACING_03,
+    BORDER_SUBTLE, LAYER_HOVER, LAYER_SELECTED_INVERSE, SIZE_MD, SPACING_01, SPACING_03,
     SPACING_05, SURFACE_BASE, TEXT_INVERSE, TEXT_MUTED, TYPOGRAPHY_BODY, TYPOGRAPHY_HEADING_SM, t,
 };
 use super::{pad, pin_block, stack, swatch};
 use crate::geom::{Align, Axis};
+use crate::token::{CornerRole, corner_for};
 use crate::tree::{
     Interaction, Justify, Key, NodeKind, Props, Role, Semantics, TrackSize, ViewNode,
 };
@@ -84,7 +85,15 @@ pub fn content_switcher(key: impl Into<Key>, items: Vec<ViewNode>) -> ViewNode {
             ..Props::default()
         })
         .with_children(children);
-    node.props.tokens.insert("radius".into(), t(SHAPE_SM));
+    // FR-022: the enum's own doc names "content switcher" under
+    // `CornerRole::Grouping`. The group's real height is `SIZE_MD` (40) plus
+    // two units of padding on each edge (44 total, per the module doc); `SIZE_MD`
+    // alone is already well clear of Grouping's 8-unit half-edge threshold, so
+    // it stands in for the padded total without inventing a new constant.
+    node.props.tokens.insert(
+        "radius".into(),
+        t(corner_for(CornerRole::Grouping, SIZE_MD)),
+    );
     node.props.tokens.insert("border".into(), t(BORDER_SUBTLE));
     node.semantics = Semantics {
         role: Some(Role::TabList),
@@ -166,13 +175,16 @@ pub fn content_switcher_item(
 #[cfg(test)]
 mod tests {
     use super::{
-        BORDER_SUBTLE, DIVIDER_HEIGHT, DIVIDER_WIDTH, LAYER_SELECTED_INVERSE, SHAPE_SM, SIZE_MD,
+        BORDER_SUBTLE, DIVIDER_HEIGHT, DIVIDER_WIDTH, LAYER_SELECTED_INVERSE, SIZE_MD,
         content_switcher, content_switcher_item,
     };
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Rect, Size};
     use crate::testing::{Harness, validated_with};
-    use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
+    use crate::token::{
+        ColorValue, CornerRole, Theme, ThemeMode, TokenName, TokenValue, corner_for,
+        standard_vocabulary,
+    };
     use crate::tree::{Interaction, NodeKind, Props, Registry, Role, TrackSize, ViewNode};
 
     fn named<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
@@ -214,7 +226,10 @@ mod tests {
         assert!(node.interactions.is_empty());
         assert!(!node.is_interactive());
         assert_eq!(node.kind, NodeKind::Grid);
-        assert_eq!(token(&node, "radius"), Some(SHAPE_SM));
+        assert_eq!(
+            token(&node, "radius"),
+            Some(corner_for(CornerRole::Grouping, SIZE_MD))
+        );
         assert_eq!(token(&node, "border"), Some(BORDER_SUBTLE));
     }
 

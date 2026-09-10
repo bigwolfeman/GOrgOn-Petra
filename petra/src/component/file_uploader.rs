@@ -79,11 +79,12 @@ use super::stack;
 use super::swatch;
 use super::text::text;
 use super::tokens::{
-    BORDER_STRONG, LAYER_HOVER, LINK_PRIMARY, SHAPE_FULL, SPACING_03, SPACING_04, SPACING_05,
-    SURFACE_BASE, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_BODY_COMPACT,
-    TYPOGRAPHY_HEADING_SM, TYPOGRAPHY_LABEL, t,
+    BORDER_STRONG, LAYER_HOVER, LINK_PRIMARY, SPACING_03, SPACING_04, SPACING_05, SURFACE_BASE,
+    SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_BODY_COMPACT, TYPOGRAPHY_HEADING_SM,
+    TYPOGRAPHY_LABEL, t,
 };
 use crate::geom::{Align, Axis};
+use crate::token::{CornerRole, corner_for};
 use crate::tree::{
     AxisConstraint, Constraints, FocusFigure, Interaction, Justify, Key, NodeKind, Role, ViewNode,
 };
@@ -238,13 +239,17 @@ pub fn file_uploader_item(
         // all, so the ring *is* the mark, and
         // `component::tests::containers_take_a_tone_and_controls_take_an_edge`
         // names `fu-f1/mark` as one of the library's measured edges.
+        // FR-022: the ring is a disc at whatever size it ships, so it says
+        // `CornerRole::Pill` rather than leaning on the half-edge clause,
+        // which `Floating`'s 8 clears at today's 16 units and would stop
+        // clearing the day the ring grew.
         swatch(
             "mark",
             MARK,
             MARK,
             None,
             Some(BORDER_STRONG),
-            Some(SHAPE_FULL),
+            Some(corner_for(CornerRole::Pill, MARK)),
         )
     };
     let status = if complete { "complete" } else { "uploading" };
@@ -420,7 +425,7 @@ fn pin(w: f32, h: f32) -> Constraints {
 #[cfg(test)]
 mod tests {
     use super::{
-        DROP_HEIGHT, ITEM_HEIGHT, ITEM_WIDTH, PROMPT, STATE_BOX, ZONE_WIDTH, file_uploader,
+        DROP_HEIGHT, ITEM_HEIGHT, ITEM_WIDTH, MARK, PROMPT, STATE_BOX, ZONE_WIDTH, file_uploader,
         file_uploader_item, file_uploader_item_edit, file_uploader_item_invalid,
         file_uploader_with,
     };
@@ -428,7 +433,10 @@ mod tests {
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Align, Axis, Size};
     use crate::testing::{Harness, validated_with};
-    use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
+    use crate::token::{
+        ColorValue, CornerRole, Theme, ThemeMode, TokenName, TokenValue, corner_for,
+        standard_vocabulary,
+    };
     use crate::tree::{Interaction, Justify, NodeKind, Props, Registry, Role, ViewNode};
 
     fn named<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
@@ -610,7 +618,7 @@ mod tests {
         assert_eq!(token(mark, "border"), Some(BORDER_STRONG));
         assert_eq!(
             token(mark, "radius"),
-            Some(crate::component::tokens::SHAPE_FULL)
+            Some(corner_for(CornerRole::Pill, MARK))
         );
         no_drag(&busy);
     }

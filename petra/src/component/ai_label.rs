@@ -48,7 +48,7 @@
 //! # T070 (SCSS wins)
 //! Slice-a's `SYNTHESIS.md` §5 eight-item docs-vs-SCSS list does not name
 //! AI label. The one number here sourced from SCSS rather than the style
-//! page is the popover radius (8px, `_slug.scss:330`, [`SHAPE_MD`]) —
+//! page is the popover radius (8px, `_slug.scss:330`, `shape.corner-md`) —
 //! slice-a marks it MEASURED, not SOURCED from prose, so there is no docs
 //! figure to record beside it.
 //!
@@ -85,10 +85,11 @@ use super::popover::{bubble_text, popover_with};
 use super::stack;
 use super::text::text;
 use super::tokens::{
-    BORDER_STRONG, BORDER_SUBTLE, LAYER_HOVER, SHAPE_FULL, SHAPE_MD, SIZE_MD, SPACING_02,
-    SPACING_03, SPACING_05, SURFACE_BASE, TEXT_PRIMARY, TYPOGRAPHY_LABEL, t,
+    BORDER_STRONG, BORDER_SUBTLE, LAYER_HOVER, SIZE_MD, SPACING_02, SPACING_03, SPACING_05,
+    SURFACE_BASE, TEXT_PRIMARY, TYPOGRAPHY_LABEL, t,
 };
 use crate::geom::{Align, Axis};
+use crate::token::{CornerRole, corner_for};
 use crate::tree::{
     AxisConstraint, Constraints, FocusFigure, InsetRefs, Interaction, Justify, Key, Role, TextWrap,
     ViewNode,
@@ -546,19 +547,34 @@ fn bullet_dot(key: impl Into<Key>, size: f32) -> ViewNode {
     node.props
         .tokens
         .insert("background".into(), t(BORDER_SUBTLE));
-    node.props.tokens.insert("radius".into(), t(SHAPE_FULL));
+    // A disc at all three inline steps (16/18/22, see
+    // `INLINE_SM`/`INLINE_MD`/`INLINE_LG`), which is what `CornerRole::Pill`
+    // names. No fixed per-role radius can do it: the largest is `Floating`'s
+    // 8, which only clears the half-edge test at 16, so a fixed role would
+    // draw a true circle at one size and a rounded square at the other two.
+    node.props
+        .tokens
+        .insert("radius".into(), t(corner_for(CornerRole::Pill, size)));
     node.constraints = square(size);
     node
 }
 
 /// The explainability popover (anatomy part 4): [`popover_with`]'s shell,
 /// re-seated to this component's own key numbers — 8px radius
-/// ([`SHAPE_MD`], MEASURED SCSS) and 24px container padding
-/// ([`SPACING_06`]) in place of the generic popover's 16px
-/// ([`super::tokens::SPACING_05`]).
+/// (`shape.corner-md` via [`crate::token::CornerRole::Floating`], MEASURED
+/// SCSS) and 24px container padding ([`SPACING_06`]) in place of the
+/// generic popover's 16px ([`super::tokens::SPACING_05`]).
 fn explainability_panel(label: String, anchor: impl Into<Key>, rows: Vec<ViewNode>) -> ViewNode {
     let mut panel = popover_with("panel", label, anchor, rows);
-    panel.props.tokens.insert("radius".into(), t(SHAPE_MD));
+    // The panel has no declared minimum height (it grows to `rows`); 24
+    // units of padding on both top and bottom edges (`pad(SPACING_06,
+    // SPACING_06)`, just below) already floors it at 48, well clear of
+    // `Floating`'s 16-unit half-edge threshold.
+    const HEIGHT_FLOOR: f32 = 48.0;
+    panel.props.tokens.insert(
+        "radius".into(),
+        t(corner_for(CornerRole::Floating, HEIGHT_FLOOR)),
+    );
     panel.props.padding = Some(pad(SPACING_06, SPACING_06));
     panel
 }
@@ -604,11 +620,14 @@ mod tests {
         ai_label_mini, ai_label_revert, ai_label_sm, ai_label_with_actions, ai_label_xl,
         ai_label_xs,
     };
-    use crate::component::tokens::{BORDER_STRONG, SHAPE_FULL, SHAPE_MD, SIZE_MD, SPACING_05};
+    use crate::component::tokens::{BORDER_STRONG, SHAPE_MD, SIZE_MD, SPACING_05};
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, validated, validated_with};
-    use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
+    use crate::token::{
+        ColorValue, CornerRole, Theme, ThemeMode, TokenName, TokenValue, corner_for,
+        standard_vocabulary,
+    };
     use crate::tree::{Interaction, NodeKind, Props, Registry, Role, ViewNode};
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
@@ -794,7 +813,10 @@ mod tests {
         assert_eq!(INLINE_MD, 18.0);
         let dot = child(trigger, "dot");
         assert_eq!(dot.constraints.horizontal.min, Some(BULLET_SMALL));
-        assert_eq!(token(dot, "radius"), Some(SHAPE_FULL));
+        assert_eq!(
+            token(dot, "radius"),
+            Some(corner_for(CornerRole::Pill, BULLET_SMALL))
+        );
         assert!(
             token(trigger, "border").is_none(),
             "inline trigger has a bullet, not a border"

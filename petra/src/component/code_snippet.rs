@@ -6,9 +6,10 @@
 //!
 //! - [`code_snippet`] — single line, height 40, fill [`SURFACE_RAISED`].
 //! - [`code_snippet_multi`] — multi-line, min-height 288.
-//! - [`code_snippet_inline`] — inline, height 16, radius [`SHAPE_SM`]
-//!   (SCSS 4px; style-page 2px is stale). The **whole chip is the copy
-//!   control**; see the constructor.
+//! - [`code_snippet_inline`] — inline, height 16, radius
+//!   [`crate::token::corner_for`]`(`[`crate::token::CornerRole::Grouping`]`,
+//!   16.0)` = `shape.corner-sm` (SCSS 4px; style-page 2px is stale). The
+//!   **whole chip is the copy control**; see the constructor.
 //!
 //! Ink is [`super::tokens::TEXT_PRIMARY`]. Do not invent syntax colours.
 //! Copy is a labelled [`Role::Button`] (`"Copy"`) drawing
@@ -24,12 +25,12 @@ use super::pin_block;
 use super::stack;
 use super::text::text;
 use super::tokens::{
-    LAYER_ACTIVE, LAYER_HOVER, LINK_PRIMARY, SHAPE_SM, SIZE_MD, SPACING_02, SPACING_03, SPACING_05,
+    LAYER_ACTIVE, LAYER_HOVER, LINK_PRIMARY, SIZE_MD, SPACING_02, SPACING_03, SPACING_05,
     SURFACE_LAYER_THREE, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_CODE, t,
 };
 use super::tooltip::tooltip_anchored;
 use crate::geom::{Align, Axis};
-use crate::token::TokenName;
+use crate::token::{CornerRole, TokenName, corner_for};
 use crate::tree::{
     AxisConstraint, Constraints, FocusFigure, FocusShownOn, InsetRefs, Interaction, Justify, Key,
     Role, TextRun, ViewNode,
@@ -189,7 +190,14 @@ pub fn code_snippet_inline(key: impl Into<Key>, code: impl Into<String>) -> View
     // width of the card is a control a press lands on from three inches away
     // from the thing it names.
     node.props.align_self = Some(Align::Start);
-    node.props.tokens.insert("radius".into(), t(SHAPE_SM));
+    // FR-022: the enum's own doc names "code snippet" under
+    // `CornerRole::Grouping`. The chip is pinned to `INLINE_HEIGHT` (16); its
+    // width is intrinsic to the code it copies, but padding plus even one
+    // glyph keeps it well above 16, so the height is the real shorter edge.
+    node.props.tokens.insert(
+        "radius".into(),
+        t(corner_for(CornerRole::Grouping, INLINE_HEIGHT)),
+    );
     node.props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
@@ -564,14 +572,16 @@ fn paint_well(mut node: ViewNode) -> ViewNode {
 mod tests {
     use super::{
         COPY_FEEDBACK, COPY_FEEDBACK_KEY, COPY_FEEDBACK_SECONDS, CodeInk, INLINE_HEIGHT,
-        LAYER_ACTIVE, LAYER_HOVER, MULTI_MIN, SHAPE_SM, SIZE_MD, SURFACE_LAYER_THREE,
-        SURFACE_RAISED, code_runs, code_snippet, code_snippet_copied, code_snippet_inline,
-        code_snippet_multi,
+        LAYER_ACTIVE, LAYER_HOVER, MULTI_MIN, SIZE_MD, SURFACE_LAYER_THREE, SURFACE_RAISED,
+        code_runs, code_snippet, code_snippet_copied, code_snippet_inline, code_snippet_multi,
     };
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, validated_with};
-    use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
+    use crate::token::{
+        ColorValue, CornerRole, Theme, ThemeMode, TokenName, TokenValue, corner_for,
+        standard_vocabulary,
+    };
     use crate::tree::{
         FocusFigure, FocusShownOn, Interaction, NodeKind, Props, Registry, Role, ViewNode,
     };
@@ -642,7 +652,10 @@ mod tests {
         assert_eq!(node.constraints.vertical.min, Some(INLINE_HEIGHT));
         assert_eq!(node.constraints.vertical.max, Some(INLINE_HEIGHT));
         assert_eq!(INLINE_HEIGHT, 16.0);
-        assert_eq!(token(&node, "radius"), Some(SHAPE_SM));
+        assert_eq!(
+            token(&node, "radius"),
+            Some(corner_for(CornerRole::Grouping, INLINE_HEIGHT))
+        );
         assert_eq!(token(&node, "background"), Some(SURFACE_RAISED));
     }
 
