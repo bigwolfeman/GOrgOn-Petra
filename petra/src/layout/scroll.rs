@@ -212,12 +212,28 @@ pub fn place(
         let offset = raw_offset.clamp(0.0, max_offset);
 
         let main_origin = origin_along(content, axis) - offset;
+        // Across the axis, `child_proposal` was `exact`, and an exact
+        // proposal is a contract: the content is as wide as the scrollport it
+        // sits in, whatever its own widest line measured. `max` rather than a
+        // plain substitution, so content that genuinely overflows keeps its
+        // overflow and stays reachable by scrolling.
+        //
+        // This read `content_size.across(axis)` alone until 2026-09-09, and
+        // the accident that hid it was that most scrolling content is wider
+        // than its port. The one that was not — the inspector's fiber-detail
+        // pane, 598 units of content in an 837-unit column — placed its card
+        // at 598 and left a 239-unit step down the right edge of the window,
+        // against the tab strip directly beneath it, which filled.
+        //
+        // The same sentence, for the same reason, is already three hundred
+        // lines below on a collection's rows (`place_collection`). Two places
+        // is one too many; both are in this file and both now say it.
         let child_rect = axis_rect(
             content,
             axis,
             main_origin,
             content_extent,
-            content_size.across(axis),
+            content_size.across(axis).max(viewport_size.across(axis)),
         );
         // The child is placed at its full content size so ordinary children
         // (a stack of rows, say) lay out naturally; only the *paint* clip is
@@ -1368,6 +1384,104 @@ mod tests {
             "row 0 is {} wide inside a 200-wide list",
             row.rect.w
         );
+    }
+
+    /// The scroll's cross axis is an exact offer, so the content is as wide
+    /// as the port, not as wide as its own widest line.
+    ///
+    /// The defect: the inspector's fiber-detail pane held 598 units of
+    /// content in an 837-unit column and was placed at 598, leaving a
+    /// 239-unit step down the right edge of the window against a tab strip
+    /// that filled. Every other scroll in the tree hid it, because scrolling
+    /// content is usually wider than its port.
+    ///
+    /// Falsified by putting `content_size.across(axis)` back on its own:
+    ///
+    /// ```text
+    /// the content was placed 120 wide in a 300-wide scrollport: it hugged
+    /// its own widest line instead of filling the port it was offered
+    /// ```
+    #[test]
+    fn content_narrower_than_the_scrollport_still_fills_it() {
+        let narrow = ViewNode::new(NodeKind::Spacer, "narrow").with_constraints(Constraints {
+            horizontal: AxisConstraint {
+                min: Some(120.0),
+                max: Some(120.0),
+                priority: 0,
+            },
+            vertical: AxisConstraint {
+                min: Some(80.0),
+                max: Some(80.0),
+                priority: 0,
+            },
+        });
+        let scroll = ViewNode::new(NodeKind::Scroll, "port")
+            .with_props(Props {
+                axis: Some(Axis::Vertical),
+                ..Props::default()
+            })
+            .child(narrow);
+        let mut h = Harness::new();
+        let mut path = KeyPath::root();
+        let mut sink = PlacementList::new();
+        crate::layout::place(
+            &scroll,
+            &mut h.ctx(),
+            &mut path,
+            Slot::new(Rect::new(0.0, 0.0, 300.0, 400.0)),
+            &mut sink,
+        );
+        let placed = sink.as_slice();
+        let content = placed
+            .iter()
+            .find(|p| p.id.ends_with("/narrow"))
+            .expect("the content was placed");
+        assert_eq!(
+            content.rect.w, 300.0,
+            "the content was placed {} wide in a 300-wide scrollport: it hugged its own widest \
+             line instead of filling the port it was offered",
+            content.rect.w
+        );
+    }
+
+    /// The other half: content genuinely wider than its port keeps its
+    /// overflow, so `max` and not a substitution.
+    #[test]
+    fn content_wider_than_the_scrollport_keeps_its_overflow() {
+        let wide = ViewNode::new(NodeKind::Spacer, "wide").with_constraints(Constraints {
+            horizontal: AxisConstraint {
+                min: Some(500.0),
+                max: Some(500.0),
+                priority: 0,
+            },
+            vertical: AxisConstraint {
+                min: Some(80.0),
+                max: Some(80.0),
+                priority: 0,
+            },
+        });
+        let scroll = ViewNode::new(NodeKind::Scroll, "port")
+            .with_props(Props {
+                axis: Some(Axis::Vertical),
+                ..Props::default()
+            })
+            .child(wide);
+        let mut h = Harness::new();
+        let mut path = KeyPath::root();
+        let mut sink = PlacementList::new();
+        crate::layout::place(
+            &scroll,
+            &mut h.ctx(),
+            &mut path,
+            Slot::new(Rect::new(0.0, 0.0, 300.0, 400.0)),
+            &mut sink,
+        );
+        let placed = sink.as_slice();
+        let content = placed
+            .iter()
+            .find(|p| p.id.ends_with("/wide"))
+            .expect("the content was placed");
+        assert_eq!(content.rect.w, 500.0, "the overflow was clamped away");
     }
 
     #[test]

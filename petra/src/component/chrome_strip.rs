@@ -20,14 +20,37 @@
 //!    the whole extent available — inflating the row it sits in to whatever
 //!    the viewport allows. A strip of chrome with a divider in it and no
 //!    declared height is not a strip; it is a full-height column.
+//! 4. **A divider as tall as the strip.** Bounding it is not the same as
+//!    sizing it. Given a height to run along, an undeclared `Separator`
+//!    takes *all* of it, so a status bar's group divider came out 40 units
+//!    tall beside a 16-unit label — a slab down the bar rather than a break
+//!    between two groups. See [`DIVIDER_EXTENT`].
 //!
 //! `chrome_strip` is the shipped default that carries the author past all
-//! three: it fixes the strip's own height so a `Separator` inside it has a
-//! bounded extent to run along, centres the cross axis so a control and the
-//! label beside it share one midline, and pads it so nothing sits flush
+//! four: it fixes the strip's own height so a `Separator` inside it has a
+//! bounded extent to run along, sizes an undeclared divider to a divider's
+//! extent rather than the strip's, centres the cross axis so a control and
+//! the label beside it share one midline, and pads it so nothing sits flush
 //! against the edge. Every value it sets is a token name or a cited
 //! constant, so a theme still owns the numbers — this component owns only
 //! the shape.
+//!
+//! # Why the strip reaches into its children at all
+//!
+//! Every other defect above is fixed by a property on the strip itself, and
+//! this one cannot be. `Props::align_self` exists and does not help: a stack
+//! offers every child its full cross extent under `Start`, `Center` and
+//! `Stretch` alike, and a separator answers whatever it is offered, so all
+//! three alignments place the same full-height rule (measured, not argued —
+//! `component::tests`'s
+//! `a_rule_runs_full_height_in_a_row_whatever_that_row_aligns_its_children_to`).
+//! The only thing that shortens a separator is a declared extent on the
+//! separator, so the strip declares one.
+//!
+//! It declares one **only where the author declared nothing**. An author who
+//! pins their own divider extent keeps it; the value this component supplies
+//! is a default, and the defect it removes was the absence of a default
+//! rather than the presence of a bad one.
 //!
 //! # Why centred rather than stretched
 //!
@@ -61,10 +84,28 @@
 //! this library's other components (a status bar, a toolbar) would
 //! otherwise each have had to rebuild.
 
-use super::tokens::{SIZE_LG, SPACING_02, SPACING_03, SPACING_05};
+use super::tokens::{SIZE_LG, SIZE_XS, SPACING_02, SPACING_03, SPACING_05};
 use super::{pad, pin_block, stack};
 use crate::geom::{Align, Axis};
-use crate::tree::{Key, ViewNode};
+use crate::tree::{Key, NodeKind, ViewNode};
+
+/// How far an undeclared divider runs inside a strip: [`SIZE_XS`] (24).
+///
+/// # Why 24 and not the strip's own 40
+///
+/// A divider's job is to read as a break between two groups on one line
+/// without competing with what it separates. The shipped demo's status bar
+/// holds three children at three extents — a 16-unit label, a 24-unit
+/// checkbox and a 40-unit button — and at the strip's full inner 40 the
+/// divider matched the loudest of them and read as a slab. `size-xs` is the
+/// shortest control extent the ramp names, which puts the divider under
+/// every control it sits between and above the type it sits beside.
+///
+/// Numeric for the same reason [`SIZE_MD`](super::tokens::SIZE_MD) is:
+/// `Constraints` are extents, not token references (FR-053), so this is how
+/// a component cites the ramp's `("size-xs", 24.0)` entry without spelling
+/// the number at the call site.
+pub const DIVIDER_EXTENT: f32 = SIZE_XS;
 
 /// A horizontal strip of chrome, `SIZE_LG` (48) tall, holding `children`
 /// gapped by [`SPACING_03`] (8).
@@ -82,10 +123,38 @@ use crate::tree::{Key, ViewNode};
 /// clearance [`super::section`] and [`super::list_row`] already spend.
 #[must_use]
 pub fn chrome_strip(key: impl Into<Key>, children: Vec<ViewNode>) -> ViewNode {
+    let children = children.into_iter().map(size_a_bare_divider).collect();
     let mut node = stack(key, Axis::Horizontal, Some(SPACING_03), children);
     node.props.align = Some(Align::Center);
     node.props.padding = Some(pad(SPACING_05, SPACING_02));
     node.with_constraints(pin_block(SIZE_LG))
+}
+
+/// Give a divider that declared no extent of its own [`DIVIDER_EXTENT`].
+///
+/// Three conditions, all necessary. It has to be a
+/// [`NodeKind::Separator`] — a stack child that merely happens to be short
+/// is not a divider. It has to run **across** the strip, which for a
+/// horizontal strip is [`Axis::Vertical`]: a horizontal separator inside a
+/// horizontal strip is a dash, and its length is its main extent, which is
+/// the stack's business and not this function's. And its block constraint
+/// has to be untouched, so an author who pinned a divider keeps what they
+/// asked for.
+fn size_a_bare_divider(child: ViewNode) -> ViewNode {
+    let is_cross_divider =
+        child.kind == NodeKind::Separator && child.props.axis == Some(Axis::Vertical);
+    let undeclared =
+        child.constraints.vertical.min.is_none() && child.constraints.vertical.max.is_none();
+    if is_cross_divider && undeclared {
+        // The vertical axis alone. `with_constraints` would replace the whole
+        // `Constraints` value, taking a divider's declared *thickness* with
+        // it — the one axis an author of a vertical rule is most likely to
+        // have set.
+        let mut child = child;
+        child.constraints.vertical = pin_block(DIVIDER_EXTENT).vertical;
+        return child;
+    }
+    child
 }
 
 #[cfg(test)]
@@ -144,6 +213,89 @@ mod tests {
             },
             ..Constraints::default()
         })
+    }
+
+    /// The fourth defect the module doc names, and the operator's own words
+    /// for it: "the watcher text looks weird especially beside the vertical
+    /// bar". The demo's status bar put a 40-unit rule between a 16-unit
+    /// label and the controls, so the divider was the tallest thing on a bar
+    /// whose job it was to separate two of them.
+    ///
+    /// Measured off a real frame, not off the constructor's output, because
+    /// a declared constraint that the layout then ignores would pass the
+    /// cheaper assertion.
+    ///
+    /// Falsified by deleting the `size_a_bare_divider` call from
+    /// `chrome_strip` and leaving everything else alone:
+    ///
+    /// ```text
+    /// the divider runs 40 units in a strip whose tallest control is 40:
+    /// it took the whole inner height rather than a divider's extent
+    /// ```
+    #[test]
+    fn a_bare_divider_runs_a_dividers_extent_not_the_strips() {
+        let node = chrome_strip(
+            "bar",
+            vec![
+                crate::component::text("label", "watcher"),
+                crate::component::rule("div", Axis::Vertical, "border.subtle"),
+                a_child("control"),
+            ],
+        );
+        let frame = petrify_lone(node);
+        let divider = placed_height(&frame, "bar/div");
+        let control = placed_height(&frame, "bar/control");
+        assert_eq!(
+            divider,
+            super::DIVIDER_EXTENT,
+            "the divider runs {divider} units in a strip whose tallest control is {control}: it \
+             took the whole inner height rather than a divider's extent"
+        );
+        assert!(
+            divider < control,
+            "a divider that is not shorter than the control it separates is not reading as a \
+             break: divider {divider}, control {control}"
+        );
+    }
+
+    /// The other half of the same rule: the default is a default. An author
+    /// who pins a divider keeps what they pinned, and the strip does not
+    /// overwrite it.
+    #[test]
+    fn a_divider_the_author_pinned_keeps_the_extent_the_author_pinned() {
+        let mut declared = crate::component::rule("div", Axis::Vertical, "border.subtle");
+        declared.constraints.vertical = crate::tree::AxisConstraint {
+            min: Some(SIZE_MD),
+            max: Some(SIZE_MD),
+            priority: 0,
+        };
+        let frame = petrify_lone(chrome_strip("bar", vec![declared, a_child("control")]));
+        assert_eq!(
+            placed_height(&frame, "bar/div"),
+            SIZE_MD,
+            "the strip overwrote an extent its author had already chosen"
+        );
+    }
+
+    /// A separator running *along* the strip is a dash, not a divider, and
+    /// its length is the stack's business. Pinning its block extent would be
+    /// pinning its thickness.
+    #[test]
+    fn a_separator_along_the_strip_is_left_alone() {
+        let node = chrome_strip(
+            "bar",
+            vec![crate::component::rule(
+                "dash",
+                Axis::Horizontal,
+                "border.subtle",
+            )],
+        );
+        let dash = node.children.first().expect("the strip kept its one child");
+        assert_eq!(
+            dash.constraints.vertical.min, None,
+            "a horizontal separator had its thickness pinned to a divider extent"
+        );
+        assert_eq!(dash.constraints.vertical.max, None);
     }
 
     /// S4.2: every declared field, off the node the constructor returns.
@@ -212,12 +364,22 @@ mod tests {
         );
     }
 
-    /// A vertical rule still runs the strip's full inner height now that the
-    /// strip centres rather than stretches. The strip's pinned height is what
-    /// bounds it, and that has not changed — see this module's doc on why
-    /// stretching was never the thing keeping the divider alive.
+    /// The strip, not the viewport, is what a rule inside it runs against.
+    ///
+    /// This asserted `== 40` — the strip's whole inner height — until the
+    /// strip learned to size a bare divider ([`super::DIVIDER_EXTENT`]), and
+    /// the number was never the claim. The claim is the ceiling: a
+    /// `Separator` under an open cross proposal answers the whole extent
+    /// available, so before the strip pinned its own height this same rule
+    /// came out 700 units tall and took the row with it. The two numbers
+    /// below are the strip's inner height and the viewport's; a rule that
+    /// escaped its strip lands on the second one.
+    ///
+    /// The other direction — a rule that runs the full 40 because its author
+    /// said so — is
+    /// [`tests::a_divider_the_author_pinned_keeps_the_extent_the_author_pinned`].
     #[test]
-    fn a_rule_in_a_centred_strip_still_runs_the_full_inner_height() {
+    fn a_rule_in_a_strip_is_bounded_by_the_strip_never_by_the_viewport() {
         let node = chrome_strip(
             "bar",
             vec![
@@ -231,7 +393,12 @@ mod tests {
         );
         let frame = petrify_lone(node);
         let run = placed_height(&frame, "bar/rule");
-        assert_eq!(run, 40.0, "the rule ran {run} of the strip's 40");
+        assert!(
+            run > 0.0 && run <= SIZE_MD,
+            "the rule ran {run} units against the strip's {SIZE_MD}-unit inner height and the \
+             viewport's {}: a rule that answers the viewport has escaped its strip",
+            VIEWPORT.h
+        );
     }
 
     /// A strip paints no fill of its own, so the surface it is mounted in

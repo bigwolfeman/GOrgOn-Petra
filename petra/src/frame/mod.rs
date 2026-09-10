@@ -441,19 +441,33 @@ pub fn petrify(
 ) -> PetrifiedFrame {
     let tree = &*tree;
     let mut path = KeyPath::root();
+    let viewport_rect = Rect::new(0.0, 0.0, viewport.size.w, viewport.size.h);
+    // Docks come off the window before anything is offered anything, for the
+    // reason `overlay_surface::DockInsets` gives: the page is what is left of
+    // the window once the bars docked to its edges have taken their strips,
+    // and the root cannot be offered a page that is computed from the root's
+    // own walk. Costs one pre-order walk that stops at the first dock, and
+    // measures nothing at all for the overwhelming majority of trees, which
+    // dock nothing (`DockInsets::is_empty`).
+    let docks = crate::layout::overlay_surface::dock_insets(tree, ctx, viewport_rect);
+    let page_rect = docks.deflate(viewport_rect);
     let offer = SizeProposal {
-        horizontal: Proposal::Exact(viewport.size.w),
-        vertical: Proposal::Exact(viewport.size.h),
+        horizontal: Proposal::Exact(page_rect.w),
+        vertical: Proposal::Exact(page_rect.h),
     };
     // The measure pass still runs: it populates the measurement cache that
     // `place` reads back, and skipping it would make every container
     // re-negotiate from scratch during placement.
     let _ = crate::layout::measure(tree, ctx, &mut path, offer);
-    let viewport_rect = Rect::new(0.0, 0.0, viewport.size.w, viewport.size.h);
     let slot = Slot {
-        rect: viewport_rect,
+        // The page for flow, the window for floats. A docked surface is
+        // placed against `Slot::window` at every depth
+        // (`overlay_surface`'s module doc) and starts its own clip chain at
+        // its own rect, so the bar this page was shortened for still reaches
+        // the window edge it docked to and still paints in the strip it took.
+        rect: page_rect,
         z: 0,
-        clip: viewport_rect,
+        clip: page_rect,
         opacity: 1.0,
         window: viewport_rect,
     };

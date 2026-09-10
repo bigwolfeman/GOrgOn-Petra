@@ -56,6 +56,11 @@ pub(crate) const SIZE_MD: f32 = 40.0;
 /// (`crate::token::shipped`).
 pub(crate) const SIZE_LG: f32 = 48.0;
 
+/// Control height `size-xs`. See [`SIZE_MD`] for why this is numeric.
+/// Cited to the shipped ramp's own `("size-xs", 24.0)` entry
+/// (`crate::token::shipped`).
+pub(crate) const SIZE_XS: f32 = 24.0;
+
 pub(crate) const SHAPE_NONE: &str = "shape.corner-none";
 /// Carbon's popover corner (`$popover-border-radius`, 2px) — the one
 /// rounded corner a floating surface has. Carbon's fields, list boxes and

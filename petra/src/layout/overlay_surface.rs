@@ -337,6 +337,167 @@ fn natural_size(
     })
 }
 
+/// The extents a tree's **docked** surfaces take out of the page, one per
+/// window edge.
+///
+/// # What makes a surface a dock rather than a float
+///
+/// Two declarations together, and neither alone is enough:
+///
+/// * [`Anchor::ViewportEdge`] — it is held against a *window* edge, so there
+///   is a page-side of it for content to be pushed onto. A node anchor has
+///   no such side; it floats over whatever opened it.
+/// * [`Fit::Anchor`] — it spans that edge. A surface as broad as its own
+///   content is sitting *in front of* the page, not taking a strip off it,
+///   and pushing the whole page off a toast's 320 units would be absurd.
+///
+/// Carbon's toast is the case this pair has to exclude and does: it is
+/// `Anchor::ViewportEdge` with the default [`Fit::Content`]
+/// (`crate::component::notification`), so it floats and the page keeps its
+/// full height. The shipped demo's status bar declares both and docks.
+///
+/// # Why the engine and not the shell
+///
+/// A shell can subtract a bar's height from its own page itself, and that is
+/// what the inspector was about to do. It would mean writing the bar's
+/// extent down a second time, in a second crate, in a second language from
+/// the plugin that declared it — and a second copy of a number is the defect
+/// class this engine spent 2026-09-09 removing from its own virtualized
+/// lists. The surface already says how tall it is. Nothing else should have
+/// to be told.
+///
+/// # Max per edge, not sum
+///
+/// Two surfaces docked to one edge overlap each other today: each is placed
+/// against the window, neither knows about the other, and stacking them is a
+/// separate design question about dock *order* that nothing has asked yet.
+/// What the page must clear is what is covered, and what is covered is the
+/// deeper of the two. Summing would reserve a strip nothing paints in.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct DockInsets {
+    /// Reserved along the top edge.
+    pub top: f32,
+    /// Reserved along the bottom edge.
+    pub bottom: f32,
+    /// Reserved along the leading edge.
+    pub left: f32,
+    /// Reserved along the trailing edge.
+    pub right: f32,
+}
+
+impl DockInsets {
+    /// Whether nothing is docked at all — the answer for every tree in the
+    /// library that has no status bar, which is nearly all of them.
+    #[must_use]
+    pub fn is_empty(self) -> bool {
+        self == Self::default()
+    }
+
+    /// `page` with each docked edge pulled in by what is docked there.
+    ///
+    /// Never past itself: a dock deeper than the window leaves a zero-extent
+    /// page rather than an inside-out one. That is a degenerate window, not a
+    /// degenerate rect, and the rest of layout should meet the first.
+    #[must_use]
+    pub fn deflate(self, page: Rect) -> Rect {
+        let w = (page.w - self.left - self.right).max(0.0);
+        let h = (page.h - self.top - self.bottom).max(0.0);
+        Rect::new(page.x + self.left, page.y + self.top, w, h)
+    }
+
+    fn take(&mut self, edge: Edge, extent: f32) {
+        let slot = match edge {
+            Edge::Top => &mut self.top,
+            Edge::Bottom => &mut self.bottom,
+            Edge::Left => &mut self.left,
+            Edge::Right => &mut self.right,
+        };
+        *slot = slot.max(extent);
+    }
+}
+
+/// Measure every dock in `root` and report what they take off `viewport`.
+///
+/// Runs before the placement walk, for the same reason
+/// [`crate::layout::AnchorRects`]'s harvest does: the answer is needed to
+/// build the slot the walk starts from, and a single pre-order walk cannot
+/// produce a value it also consumes at its own root.
+///
+/// A dock's own subtree is measured but not descended into by this walk: a
+/// surface nested inside a dock is that dock's business and is already
+/// inside the strip this reserves for.
+pub fn dock_insets(root: &ViewNode, ctx: &mut LayoutCtx<'_>, viewport: Rect) -> DockInsets {
+    fn walk(node: &ViewNode, ctx: &mut LayoutCtx<'_>, path: &mut KeyPath, out: &mut DockInsets) {
+        path.push(node.key.clone());
+        match dock_edge(node) {
+            Some(edge) => {
+                let extent = docked_extent(node, ctx, path, edge);
+                out.take(edge, extent);
+            }
+            None => {
+                for child in &node.children {
+                    walk(child, ctx, path, out);
+                }
+            }
+        }
+        path.pop();
+    }
+
+    let mut out = DockInsets::default();
+    // The viewport is not read here, only handed on: a dock's extent is its
+    // own content's, and how much of the window that leaves is
+    // `DockInsets::deflate`'s question. The parameter stays so the signature
+    // says what coordinate space the answer is in.
+    let _ = viewport;
+    walk(root, ctx, &mut KeyPath::root(), &mut out);
+    out
+}
+
+/// The window edge `node` docks to, or `None` if it is not a dock.
+///
+/// See [`DockInsets`] for why both halves of the test are load-bearing.
+fn dock_edge(node: &ViewNode) -> Option<Edge> {
+    if node.kind != crate::tree::NodeKind::Surface {
+        return None;
+    }
+    let surface = node.props.surface()?;
+    if surface.fit != Fit::Anchor {
+        return None;
+    }
+    match surface.anchor {
+        Anchor::ViewportEdge { edge, .. } => Some(*edge),
+        _ => None,
+    }
+}
+
+/// How deep a dock runs into the page: its own padded, constrained extent
+/// along the edge's normal, plus the offset its anchor holds it off the edge
+/// by.
+///
+/// The three lines that produce `natural` are the same three [`place`] runs,
+/// in the same order and for the same stated reasons — padding grows the box
+/// before the constraints clamp it, and the constraints bound the padded box
+/// rather than the content. A second, looser copy of that arithmetic would
+/// reserve a strip a different height from the one the surface then paints,
+/// which is worse than reserving none.
+fn docked_extent(node: &ViewNode, ctx: &mut LayoutCtx<'_>, path: &mut KeyPath, edge: Edge) -> f32 {
+    let padding = ctx.padding(&node.props.padding);
+    let mut natural = natural_size(node, ctx, path, padding);
+    natural.w += padding.along(Axis::Horizontal);
+    natural.h += padding.along(Axis::Vertical);
+    let natural = node.constraints.clamp_size(natural).sane();
+    let inset = ctx.spacing(&node.props.anchor.as_ref().and_then(Anchor::offset).cloned());
+    // `Edge::axis` is the axis the edge's *normal* runs along — the same
+    // reading [`viewport_edge_main_axis`] takes of it, which is why a
+    // top-docked surface's main axis is vertical there and its depth is its
+    // height here.
+    let depth = match edge.axis() {
+        Axis::Vertical => natural.h,
+        Axis::Horizontal => natural.w,
+    };
+    depth + inset
+}
+
 /// How [`place`] resolves one [`Anchor`] variant.
 ///
 /// Exposed so a caller (or a test) can see which of the five readings a
@@ -1664,6 +1825,185 @@ mod tests {
                 InputPolicy::DismissOutside,
                 Size::new(120.0, 60.0),
             ))
+    }
+
+    // -- Docks: what a bar anchored to a window edge takes off the page. --
+
+    /// A surface docked to `edge`, `depth` deep, spanning the edge it is on.
+    fn dock(key: &'static str, edge: Edge, depth: f32) -> ViewNode {
+        let mut inner = ViewNode::new(NodeKind::Spacer, "bar");
+        inner.constraints.vertical.min = Some(depth);
+        inner.constraints.vertical.max = Some(depth);
+        inner.constraints.horizontal.min = Some(depth);
+        inner.constraints.horizontal.max = Some(depth);
+        ViewNode::new(NodeKind::Surface, key)
+            .with_props(Props {
+                layer: Some(Layer::FrameWide),
+                anchor: Some(Anchor::ViewportEdge {
+                    edge,
+                    align: Align::Start,
+                    offset: None,
+                }),
+                fit: Some(crate::tree::Fit::Anchor),
+                ..Props::default()
+            })
+            .child(inner)
+    }
+
+    /// Petrify `tree` into a `window`-sized viewport and hand back the frame.
+    fn framed(tree: &ViewNode, window: Size) -> crate::frame::PetrifiedFrame {
+        let registry = crate::tree::Registry::with_vocabulary(crate::token::standard_vocabulary());
+        let mut h = Harness::new();
+        let viewport = crate::frame::Viewport::new(window, crate::token::ThemeMode::Dark);
+        h.scale = viewport.scale;
+        crate::frame::petrify(
+            1,
+            crate::testing::validated_with(tree, &registry),
+            &mut h.ctx(),
+            viewport,
+            crate::frame::TransitionActivity::default(),
+        )
+    }
+
+    fn rect_of(frame: &crate::frame::PetrifiedFrame, id: &str) -> Rect {
+        frame
+            .placements
+            .iter()
+            .find(|p| p.id == id)
+            .unwrap_or_else(|| {
+                panic!(
+                    "no placement {id}; had {:?}",
+                    frame.placements.iter().map(|p| &p.id).collect::<Vec<_>>()
+                )
+            })
+            .rect
+    }
+
+    /// The defect an operator's screenshot found on 2026-09-09: a plugin's
+    /// 48-unit status bar docked to the bottom of a 900-unit window, and the
+    /// shell's own tab body laid out 705..900 — its last 48 units behind the
+    /// bar, unreachable and unreadable, with nothing in the frame record
+    /// saying so.
+    ///
+    /// The page is what the bar leaves. The bar itself still reaches the
+    /// window edge it docked to, which is the half that makes this a
+    /// reservation rather than a margin.
+    ///
+    /// Falsified by offering the root `viewport_rect` again in
+    /// `frame::petrify` instead of `page_rect`:
+    ///
+    /// ```text
+    /// the page runs to 900 in a 900-unit window with a 48-unit bar docked
+    /// to its bottom edge: the last 48 units of the page are behind the bar
+    /// ```
+    #[test]
+    fn a_docked_edge_surface_takes_its_extent_out_of_the_page() {
+        let page = ViewNode::new(NodeKind::Stack, "page").with_props(Props {
+            axis: Some(Axis::Vertical),
+            ..Props::default()
+        });
+        let tree = ViewNode::new(NodeKind::Overlay, "root")
+            .child(page)
+            .child(dock("bar", Edge::Bottom, 48.0));
+        let frame = framed(&tree, Size::new(600.0, 900.0));
+
+        let page = rect_of(&frame, "/root/page");
+        assert_eq!(
+            page.bottom(),
+            852.0,
+            "the page runs to {} in a 900-unit window with a 48-unit bar docked to its bottom \
+             edge: the last 48 units of the page are behind the bar",
+            page.bottom()
+        );
+
+        let bar = rect_of(&frame, "/root/bar");
+        assert_eq!(
+            bar.bottom(),
+            900.0,
+            "the bar was pushed off its own window edge, at {}",
+            bar.bottom()
+        );
+        assert!(
+            page.bottom() <= bar.y,
+            "page bottom {} overlaps bar top {}",
+            page.bottom(),
+            bar.y
+        );
+    }
+
+    /// Every edge, and the page keeps the rest of the window.
+    #[test]
+    fn a_dock_on_each_edge_takes_a_strip_off_that_edge_alone() {
+        for (edge, want) in [
+            (Edge::Top, Rect::new(0.0, 24.0, 600.0, 876.0)),
+            (Edge::Bottom, Rect::new(0.0, 0.0, 600.0, 876.0)),
+            (Edge::Left, Rect::new(24.0, 0.0, 576.0, 900.0)),
+            (Edge::Right, Rect::new(0.0, 0.0, 576.0, 900.0)),
+        ] {
+            let tree = ViewNode::new(NodeKind::Overlay, "root")
+                .child(ViewNode::new(NodeKind::Stack, "page").with_props(Props {
+                    axis: Some(Axis::Vertical),
+                    ..Props::default()
+                }))
+                .child(dock("bar", edge, 24.0));
+            let frame = framed(&tree, Size::new(600.0, 900.0));
+            assert_eq!(rect_of(&frame, "/root/page"), want, "docked to {edge:?}");
+        }
+    }
+
+    /// The exclusion that keeps this from being absurd. Carbon's toast is
+    /// anchored to a window edge and is emphatically not a dock: it is as
+    /// broad as its own content (`Fit::Content`), it floats over the page,
+    /// and a page shoved 320 units down every time something was notified
+    /// would be a worse defect than the one docks fix.
+    #[test]
+    fn a_toast_anchored_to_the_same_edge_takes_nothing_off_the_page() {
+        let mut toast = dock("toast", Edge::Top, 48.0);
+        toast.props.fit = Some(crate::tree::Fit::Content);
+        let tree = ViewNode::new(NodeKind::Overlay, "root")
+            .child(ViewNode::new(NodeKind::Stack, "page").with_props(Props {
+                axis: Some(Axis::Vertical),
+                ..Props::default()
+            }))
+            .child(toast);
+        let frame = framed(&tree, Size::new(600.0, 900.0));
+        assert_eq!(
+            rect_of(&frame, "/root/page"),
+            Rect::new(0.0, 0.0, 600.0, 900.0),
+            "a floating toast shortened the page"
+        );
+    }
+
+    /// Two bars on one edge overlap each other, so what the page has to
+    /// clear is the deeper of them and not their sum. See `DockInsets`.
+    #[test]
+    fn two_docks_on_one_edge_reserve_the_deeper_one_not_both() {
+        let tree = ViewNode::new(NodeKind::Overlay, "root")
+            .child(ViewNode::new(NodeKind::Stack, "page").with_props(Props {
+                axis: Some(Axis::Vertical),
+                ..Props::default()
+            }))
+            .child(dock("thin", Edge::Bottom, 16.0))
+            .child(dock("thick", Edge::Bottom, 48.0));
+        let frame = framed(&tree, Size::new(600.0, 900.0));
+        assert_eq!(rect_of(&frame, "/root/page").h, 852.0);
+    }
+
+    /// A tree with nothing docked pays for one walk and gets the whole
+    /// window, which is every tree in the library but one.
+    #[test]
+    fn a_tree_with_no_dock_is_offered_the_whole_window() {
+        let tree = ViewNode::new(NodeKind::Overlay, "root").child(
+            ViewNode::new(NodeKind::Stack, "page").with_props(Props {
+                axis: Some(Axis::Vertical),
+                ..Props::default()
+            }),
+        );
+        let frame = framed(&tree, Size::new(600.0, 900.0));
+        assert_eq!(
+            rect_of(&frame, "/root/page"),
+            Rect::new(0.0, 0.0, 600.0, 900.0)
+        );
     }
 
     /// Place `tree` from a fresh harness: everything the walk produced, and

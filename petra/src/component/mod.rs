@@ -140,7 +140,7 @@ pub use button::{
     button, button_2xl, button_lg, button_sm, button_xl, button_xs, danger_button,
     danger_ghost_button, danger_tertiary_button, ghost_button, primary_button, tertiary_button,
 };
-pub use chrome_strip::chrome_strip;
+pub use chrome_strip::{DIVIDER_EXTENT, chrome_strip};
 pub use code_snippet::{
     COPY_FEEDBACK, COPY_FEEDBACK_KEY, COPY_FEEDBACK_SECONDS, CodeInk, code_runs, code_snippet,
     code_snippet_copied, code_snippet_inline, code_snippet_multi,

@@ -806,6 +806,83 @@ pub struct Host<A: App> {
     ledger: ContributionLedger,
 }
 
+/// Strip the interactions a contributed control cannot have honoured, and
+/// say so on every node that had one.
+///
+/// # This is a truth-telling measure, and it has a removal date
+///
+/// A contributed checkbox is hit-tested, takes the focus ring, joins the Tab
+/// order, and lights its `@hover` and `background@active` bindings under the
+/// pointer. It performs every affordance of a live control. Pressing it does
+/// nothing, and nothing anywhere reports that: the press routes to the
+/// application's `App::handle`, which matches it against the keys of its
+/// *own* widgets, finds none, and drops it. There is no wire for it to have
+/// travelled on either — `gorgond::verbs_ui` serves one verb, `ui-surfaces`,
+/// outbound only.
+///
+/// That is four absences, not one bug, and closing them is spec 010's Phase 4
+/// (US-4, "intent delivery"): no component declares a
+/// [`gorgon_petra::tree::Behaviour`] yet (`with_behaviour` is called from two
+/// tests and nowhere else); this host never reads
+/// `PlacementSemantics::behaviour` (T023); nothing delivers an intent to the
+/// owning fiber (T024); and the daemon has no inbound verb to carry it. Both
+/// tasks are unchecked in `specs/010-input-routing/tasks.md`.
+///
+/// Until they land, a contributed subtree is a **readout**. Declaring that is
+/// the difference between a picture that is behind the feature and a picture
+/// that lies about it. `Semantics::read_only` is the exact word for it, in
+/// the exact sense its own doc gives: the node keeps its place in focus
+/// order, keeps its focus ring, and keeps answering `Hover`; what it drops is
+/// the interaction it will not honour.
+///
+/// # What survives
+///
+/// [`Interaction::Focus`], [`Interaction::Hover`] and [`Interaction::Scroll`]
+/// stay. The first two are what `read_only` explicitly keeps, and the third
+/// is honoured by the engine itself rather than by the contributing plugin —
+/// a plugin's long list still scrolls, because scrolling never needed the
+/// plugin's agreement.
+///
+/// # When to delete this
+///
+/// When T023 and T024 ship. The one-line test in this file's `tests` module
+/// names them, so the deletion has a failing test waiting for it rather than
+/// only a comment.
+fn tell_the_truth_about_interactivity(mut node: ViewNode) -> ViewNode {
+    disclaim_in_place(&mut node);
+    node
+}
+
+/// [`tell_the_truth_about_interactivity`]'s recursion, in place.
+///
+/// Separate only because `ViewNode` has no `Default`, so a child behind an
+/// `Arc` cannot be taken out and put back; it is borrowed and edited instead.
+/// `Arc::make_mut` clones nothing in the case that runs — a contribution is
+/// prepared once per change to the set, and every node in it is uniquely held
+/// at that point.
+fn disclaim_in_place(node: &mut ViewNode) {
+    use gorgon_petra::tree::Interaction;
+
+    const HONOURED_WITHOUT_THE_PLUGIN: [Interaction; 3] =
+        [Interaction::Focus, Interaction::Hover, Interaction::Scroll];
+
+    let claimed_something = node
+        .interactions
+        .iter()
+        .any(|i| !HONOURED_WITHOUT_THE_PLUGIN.contains(i));
+    if claimed_something {
+        node.interactions
+            .retain(|i| HONOURED_WITHOUT_THE_PLUGIN.contains(i));
+        // Only where something was actually dropped. A plain label was never
+        // claiming anything, and marking it read-only would put the word on
+        // nodes that have no value to be read-only *about*.
+        node.semantics.read_only = true;
+    }
+    for child in &mut node.children {
+        disclaim_in_place(std::sync::Arc::make_mut(child));
+    }
+}
+
 impl<A: App> Host<A> {
     /// A host over `app`, using `ctx` for fonts and `presenter` for the theme.
     ///
@@ -3217,10 +3294,15 @@ impl<A: App> Host<A> {
         for contribution in &self.contributions {
             let outcome = match registry::expand(&contribution.tree) {
                 Err(err) => Err(format!("{}: {}", err.component, err.reason)),
-                Ok(expanded) => match validate(&expanded, &self.registry) {
-                    Ok(_) => Ok(expanded),
-                    Err(errors) => Err(errors.to_string()),
-                },
+                Ok(expanded) => {
+                    // Before acceptance, so what `validate` passes is exactly
+                    // what ships.
+                    let expanded = tell_the_truth_about_interactivity(expanded);
+                    match validate(&expanded, &self.registry) {
+                        Ok(_) => Ok(expanded),
+                        Err(errors) => Err(errors.to_string()),
+                    }
+                }
             };
             prepared.push(match outcome {
                 Ok(node) => Prepared {
@@ -3611,6 +3693,7 @@ pub fn default_presenter() -> Presenter {
 mod tests {
     use super::{
         App, ChangeSet, Host, coverage_plan, default_presenter, petra_layer, refusal_view,
+        tell_the_truth_about_interactivity,
     };
     use egui::{Context, Event, Key, Modifiers, RawInput};
     use gorgon_petra::frame::PetrifiedFrame;
@@ -5635,5 +5718,96 @@ mod tests {
             }),
             "cut is not copy, and Petra has nothing that cuts"
         );
+    }
+
+    // -- What a contributed control is allowed to claim. --
+
+    /// The operator's third complaint on 2026-09-09, in their words: "this
+    /// auto reload tick box does not tick."
+    ///
+    /// It cannot. Intent delivery is spec 010 Phase 4 — T023 and T024, both
+    /// unchecked — so a press on a contributed control routes to the
+    /// application, matches none of its own widget keys, and is dropped, with
+    /// no wire to have carried it anywhere either. What this pins is that the
+    /// frame stops *claiming* otherwise: a contributed control does not
+    /// declare `Click`, so it is not in `hit_test`'s candidate set, does not
+    /// take the pressed highlight, and says `read_only` where a reader can
+    /// see it.
+    ///
+    /// Delete this test when T023 and T024 ship — it is the failing test
+    /// waiting for that deletion, which is why it names them.
+    ///
+    /// Falsified by returning `node` unchanged from
+    /// `tell_the_truth_about_interactivity`:
+    ///
+    /// ```text
+    /// a contributed control still declares [Focus, Click]: it will take the
+    /// press and nothing will honour it
+    /// ```
+    #[test]
+    fn a_contributed_control_declares_no_interaction_the_shell_cannot_honour() {
+        let checkbox = gorgon_petra::component::checkbox("auto", "Auto-reload", false);
+        assert!(
+            checkbox.interactions.contains(&Interaction::Click),
+            "the fixture is not a control: a checkbox that never declared Click proves nothing"
+        );
+
+        let disclaimed = tell_the_truth_about_interactivity(checkbox);
+        assert!(
+            !disclaimed.interactions.contains(&Interaction::Click),
+            "a contributed control still declares {:?}: it will take the press and nothing will \
+             honour it",
+            disclaimed.interactions
+        );
+        assert!(
+            disclaimed.semantics.read_only,
+            "the control dropped its click without saying why; a reader sees an inert box and no \
+             reason for it"
+        );
+        assert!(
+            disclaimed.interactions.contains(&Interaction::Focus),
+            "read_only keeps focus order and the focus ring (`Semantics::read_only`'s own doc); \
+             this dropped them"
+        );
+    }
+
+    /// The recursion. A plugin's tree is a strip of controls, not one
+    /// control, and the checkbox that lies is three levels down from the
+    /// surface the plugin contributed.
+    #[test]
+    fn every_control_under_a_contributed_surface_is_disclaimed_not_just_the_root() {
+        let strip = gorgon_petra::component::chrome_strip(
+            "row",
+            vec![
+                gorgon_petra::component::text("title", "watcher"),
+                gorgon_petra::component::checkbox("auto", "Auto-reload", false),
+            ],
+        );
+        let disclaimed = tell_the_truth_about_interactivity(strip);
+        let mut claimed: Vec<String> = Vec::new();
+        fn walk(node: &ViewNode, path: &str, out: &mut Vec<String>) {
+            let here = format!("{path}/{}", node.key);
+            if node.interactions.contains(&Interaction::Click) {
+                out.push(here.clone());
+            }
+            for child in &node.children {
+                walk(child, &here, out);
+            }
+        }
+        walk(&disclaimed, "", &mut claimed);
+        assert!(
+            claimed.is_empty(),
+            "these contributed nodes still declare Click: {claimed:?}"
+        );
+    }
+
+    /// The other direction: a label was never claiming anything, so it is not
+    /// marked read-only. `read_only` means "shows a value it will not let you
+    /// edit", and a heading has no value to be read-only about.
+    #[test]
+    fn a_contributed_label_is_not_marked_read_only() {
+        let label =
+            tell_the_truth_about_interactivity(gorgon_petra::component::text("title", "watcher"));
+        assert!(!label.semantics.read_only);
     }
 }
