@@ -711,6 +711,18 @@ pub struct Semantics {
     /// Declared disabled state.
     #[serde(skip_serializing_if = "is_false")]
     pub disabled: bool,
+    /// Declared required state: this control must have a value before the
+    /// form that contains it can submit.
+    ///
+    /// Not a colour, and not only a colour. A required field sets this flag
+    /// **and** shows a marker that is not hue: the word `(required)` in the
+    /// accessible name, plus a `*` text child on the label. The operator is
+    /// red-green colour blind; a red asterisk alone is not a channel he can
+    /// read. Default false is omitted on the wire
+    /// (`skip_serializing_if = "is_false"`), so trees that never set this
+    /// serialise the same as they did before the field existed.
+    #[serde(skip_serializing_if = "is_false")]
+    pub required: bool,
     /// Declared read-only state: the node shows a value it will not let this
     /// author edit.
     ///

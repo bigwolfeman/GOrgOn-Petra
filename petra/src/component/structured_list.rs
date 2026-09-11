@@ -576,9 +576,9 @@ fn collect_text(node: &ViewNode) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        DIVIDER, DIVIDER_KEY, MARK, MIN_COLUMN, ROW_HEIGHT, SELECT_CELL, SPACING_03, SPACING_05,
-        SPACING_06, structured_list, structured_list_row, structured_list_sized,
-        structured_list_weights_at,
+        DIVIDER, DIVIDER_INTENTS, DIVIDER_KEY, MARK, MIN_COLUMN, ROW_HEIGHT, SELECT_CELL,
+        SPACING_03, SPACING_05, SPACING_06, structured_list, structured_list_row,
+        structured_list_sized, structured_list_weights_at,
     };
     use crate::component::icon::{IconMark, IconTone, icon_toned};
     use crate::component::text::text;
@@ -1207,6 +1207,98 @@ mod tests {
             structured_list_weights_at(&frame, &rect_id(&frame, "/r0/div0/rule"), pos, &weights);
         assert!(by_target.is_some());
         assert_eq!(by_target, by_rule);
+    }
+
+    /// Spec 009 R5 / T035: live draggable column-resize dividers must
+    /// survive. Neither Carbon nor MynaUI ships them. Falsify by deleting
+    /// the divider tracks, by dropping `Drag` from [`DIVIDER_INTENTS`], or
+    /// by making [`structured_list_weights_at`] return `None` on a placed
+    /// divider.
+    #[test]
+    fn draggable_column_resize_dividers_survive() {
+        fn declaring_drag(node: &ViewNode) -> Vec<&ViewNode> {
+            let mut out = Vec::new();
+            fn walk<'a>(node: &'a ViewNode, out: &mut Vec<&'a ViewNode>) {
+                if node.interactions.contains(&Interaction::Drag) {
+                    out.push(node);
+                }
+                for child in &node.children {
+                    walk(child, out);
+                }
+            }
+            walk(node, &mut out);
+            out
+        }
+
+        assert!(
+            DIVIDER_INTENTS.contains(&Interaction::Drag),
+            "a divider that cannot be dragged is not a resize control"
+        );
+
+        let weights = [2.0f32, 1.0, 1.0];
+        let node = structured_list_sized(
+            "plans",
+            vec![text("h0", "Plan"), text("h1", "Price"), text("h2", "Seats")],
+            vec![structured_list_row(
+                "r0",
+                vec![text("p0", "Basic"), text("c0", "$12"), text("s0", "3")],
+                false,
+            )],
+            &weights,
+            true,
+        );
+
+        let dividers = declaring_drag(&node);
+        assert!(
+            !dividers.is_empty(),
+            "deleting the column-resize dividers drops a capability neither Carbon nor MynaUI ships"
+        );
+        // One divider per boundary per row (header + data), never one per column.
+        assert_eq!(
+            dividers.len(),
+            2 * (weights.len() - 1),
+            "a weighted list of {} columns has {} boundaries in each of two rows; found {}",
+            weights.len(),
+            weights.len() - 1,
+            dividers.len()
+        );
+        for div in &dividers {
+            assert!(
+                div.key.as_str().starts_with(DIVIDER_KEY),
+                "{} declares Drag but is not a column divider",
+                div.key
+            );
+            assert_eq!(
+                div.interactions.as_slice(),
+                DIVIDER_INTENTS,
+                "{} must declare exactly DIVIDER_INTENTS",
+                div.key
+            );
+        }
+
+        let frame = petrify_lone(node);
+        let divider_id = rect_id(&frame, &format!("/r0/{DIVIDER_KEY}0"));
+        let target = rect_of(&frame, &format!("/r0/{DIVIDER_KEY}0"));
+        let pos = Point::new(target.x + target.w / 2.0, target.y + 1.0);
+        // `None` is the documented miss shape: the node is not a divider,
+        // the two columns were not placed, or they have less room than two
+        // MIN_COLUMNs. A live divider on a placed weighted list is none of
+        // those, so the answer is the caller's weights rewritten.
+        let next = structured_list_weights_at(&frame, &divider_id, pos, &weights)
+            .expect("a placed Drag divider must return weights, not None");
+        assert_eq!(
+            next.len(),
+            weights.len(),
+            "weights_at answers one weight per column, the same shape the caller passed in"
+        );
+        assert!(
+            (next[0] + next[1] - (weights[0] + weights[1])).abs() < 1e-4,
+            "only the pair either side of the divider moves; their sum is preserved"
+        );
+        assert_eq!(
+            next[2], weights[2],
+            "a column not beside the divider keeps its weight"
+        );
     }
 
     /// The id of the placement whose id ends `suffix`.

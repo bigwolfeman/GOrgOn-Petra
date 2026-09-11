@@ -59,6 +59,16 @@ const BUILT: &[&str] = &[
     "UI shell header",
     "UI shell left panel",
     "UI shell right panel",
+    "Avatar",
+    "Button group",
+    "Context menu",
+    "Drawer",
+    "Input group",
+    "Menubar",
+    "OTP",
+    "Rating",
+    "Textarea",
+    "Toggle button",
 ];
 
 /// What a cell holds.
@@ -158,6 +168,26 @@ pub enum Content {
     UiShellLeftPanel,
     /// Carbon UI shell right panel (inventory row 42).
     UiShellRightPanel,
+    /// Spec 009 avatar (catalog row 43).
+    Avatar,
+    /// Spec 009 button group (catalog row 44).
+    ButtonGroup,
+    /// Spec 009 context menu (catalog row 45).
+    ContextMenu,
+    /// Spec 009 drawer (catalog row 46).
+    Drawer,
+    /// Spec 009 input group (catalog row 47).
+    InputGroup,
+    /// Spec 009 menubar (catalog row 48).
+    Menubar,
+    /// Spec 009 OTP (catalog row 49).
+    Otp,
+    /// Spec 009 rating (catalog row 50).
+    Rating,
+    /// Spec 009 textarea (catalog row 51).
+    Textarea,
+    /// Spec 009 toggle button (catalog row 52).
+    ToggleButton,
 }
 
 fn content_for(name: &str) -> Content {
@@ -204,6 +234,16 @@ fn content_for(name: &str) -> Content {
         "UI shell header" => Content::UiShellHeader,
         "UI shell left panel" => Content::UiShellLeftPanel,
         "UI shell right panel" => Content::UiShellRightPanel,
+        "Avatar" => Content::Avatar,
+        "Button group" => Content::ButtonGroup,
+        "Context menu" => Content::ContextMenu,
+        "Drawer" => Content::Drawer,
+        "Input group" => Content::InputGroup,
+        "Menubar" => Content::Menubar,
+        "OTP" => Content::Otp,
+        "Rating" => Content::Rating,
+        "Textarea" => Content::Textarea,
+        "Toggle button" => Content::ToggleButton,
         _ => Content::Unbuilt,
     }
 }
@@ -276,9 +316,9 @@ mod tests {
     #[test]
     fn there_is_one_cell_per_inventory_row_in_inventory_order() {
         let roster = Cell::roster();
-        assert_eq!(roster.len(), 42);
+        assert_eq!(roster.len(), crate::inventory::ROWS.len());
         for (index, cell) in roster.iter().enumerate() {
-            let expected = u8::try_from(index + 1).expect("42 fits in u8");
+            let expected = u8::try_from(index + 1).expect("catalog length fits in u8");
             assert_eq!(cell.row.number, expected);
         }
     }
@@ -292,7 +332,7 @@ mod tests {
         assert_eq!(built.len(), BUILT.len(), "Wave 1 built-row count");
         let names: Vec<_> = built.iter().map(|c| c.row.component).collect();
         assert_eq!(names, BUILT);
-        assert_eq!(tally(&roster), (BUILT.len(), 42));
+        assert_eq!(tally(&roster), (BUILT.len(), crate::inventory::ROWS.len()));
         for cell in &roster {
             if BUILT.contains(&cell.row.component) {
                 assert!(cell.is_built());

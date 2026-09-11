@@ -73,6 +73,7 @@
 //! declare [`Interaction::Drag`]: an OS file-drop is a windowing event, not
 //! pointer capture.
 
+use super::field::warning_helper;
 use super::icon::{IconBox, IconMark, IconTone, icon_in};
 use super::pad;
 use super::stack;
@@ -321,7 +322,35 @@ pub fn file_uploader_item_invalid(
         IconBox::Glyph,
         IconTone::Primary,
     );
-    item_row(key, name, mark, "invalid", Some(message.into()))
+    let mut requirement = text("message", message.into());
+    requirement.props.style = Some(t(TYPOGRAPHY_LABEL));
+    requirement
+        .props
+        .tokens
+        .insert("foreground".into(), t(TEXT_PRIMARY));
+    item_row(key, name, mark, "invalid", Some(requirement))
+}
+
+/// The warning form: a [`IconMark::WarningFilled`] mark plus a warning
+/// helper line under the name.
+///
+/// Colour is not the only channel. The kind travels on the glyph's
+/// silhouette (a ring around a bang, which no other state in this
+/// component draws) and on [`warning_helper`]'s `Warning: {message}` line.
+/// The row itself takes no four-sided container border.
+#[must_use]
+pub fn file_uploader_item_warning(
+    key: impl Into<Key>,
+    name: impl Into<String>,
+    message: impl Into<String>,
+) -> ViewNode {
+    let mark = icon_in(
+        "mark",
+        IconMark::WarningFilled,
+        IconBox::Glyph,
+        IconTone::Primary,
+    );
+    item_row(key, name, mark, "warning", Some(warning_helper(message)))
 }
 
 /// The shared row: `1fr auto`, the name at the leading edge and one state
@@ -340,15 +369,15 @@ pub fn file_uploader_item_invalid(
 /// `component::tests::containers_take_a_tone_and_controls_take_an_edge`
 /// names. A wrapper would buy the missing unit and cost that id.
 ///
-/// The invalid form is the one that nests, because it has a second row
-/// (`.cds--form-requirement`) under the name and needs a `line` to hold the
-/// first one.
+/// The invalid and warning forms nest, because each has a second row
+/// (`.cds--form-requirement`, or the shared warning helper) under the name
+/// and needs a `line` to hold the first one.
 fn item_row(
     key: impl Into<Key>,
     name: impl Into<String>,
     control: ViewNode,
     status: &str,
-    message: Option<String>,
+    helper: Option<ViewNode>,
 ) -> ViewNode {
     let key = key.into();
     let name = name.into();
@@ -364,23 +393,12 @@ fn item_row(
     // reached for the chevron at its trailing edge.
     let line_children = vec![filename, ViewNode::new(NodeKind::Spacer, "spacer"), control];
 
-    let mut node = if let Some(message) = message {
+    let mut node = if let Some(helper) = helper {
         let mut line = stack("line", Axis::Horizontal, Some(SPACING_03), line_children);
         line.props.align = Some(Align::Center);
         line.props.justify = Some(Justify::SpaceBetween);
-        let mut requirement = text("message", message);
-        requirement.props.style = Some(t(TYPOGRAPHY_LABEL));
-        requirement
-            .props
-            .tokens
-            .insert("foreground".into(), t(TEXT_PRIMARY));
         // `gap: 12px 0` between a selected file's own grid rows.
-        stack(
-            key,
-            Axis::Vertical,
-            Some(SPACING_04),
-            vec![line, requirement],
-        )
+        stack(key, Axis::Vertical, Some(SPACING_04), vec![line, helper])
     } else {
         let mut row = stack(key, Axis::Horizontal, Some(SPACING_03), line_children);
         row.props.align = Some(Align::Center);
@@ -427,9 +445,12 @@ mod tests {
     use super::{
         DROP_HEIGHT, ITEM_HEIGHT, ITEM_WIDTH, MARK, PROMPT, STATE_BOX, ZONE_WIDTH, file_uploader,
         file_uploader_item, file_uploader_item_edit, file_uploader_item_invalid,
-        file_uploader_with,
+        file_uploader_item_warning, file_uploader_with,
     };
-    use crate::component::tokens::{BORDER_STRONG, LINK_PRIMARY, TEXT_MUTED};
+    use crate::component::tokens::{
+        ACCENT_PRIMARY, BORDER_STRONG, LINK_PRIMARY, SUPPORT_ERROR, TEXT_MUTED,
+    };
+    use crate::component::{IconMark, IconTone, icon_toned};
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Align, Axis, Size};
     use crate::testing::{Harness, validated_with};
@@ -666,6 +687,53 @@ mod tests {
             "`support-error` measures 3.79:1 on this row's fill in the dark \
              theme; AA wants 4.5, so the kind travels on the glyph and not \
              on a red ink this library does not have"
+        );
+        no_drag(&row);
+    }
+
+    /// Colour is not the only channel: the helper says `Warning: {message}`
+    /// and sits a WarningFilled mark beside it. The state mark is
+    /// WarningFilled too. The row itself is not a four-sided box.
+    #[test]
+    fn file_uploader_item_warning_says_so_in_words_and_a_glyph() {
+        let row = file_uploader_item_warning("f4", "notes.txt", "check the value");
+        assert_eq!(row.semantics.value.as_deref(), Some("warning"));
+        assert_eq!(named(&row, "line").props.axis, Some(Axis::Horizontal));
+        assert!(
+            token(&row, "border").is_none(),
+            "a selected-file row is a strip, not a boxed well; a four-sided \
+             container border is T053's finding"
+        );
+        assert_ne!(token(&row, "border"), Some(SUPPORT_ERROR));
+        assert_ne!(token(&row, "border"), Some(ACCENT_PRIMARY));
+        let helper = named(&row, "helper");
+        let message = named(helper, "message");
+        assert_eq!(message.kind, NodeKind::Text);
+        assert!(
+            message
+                .props
+                .text
+                .as_deref()
+                .is_some_and(|t| t.contains("Warning:")),
+            "the helper text must contain `Warning:`"
+        );
+        assert_eq!(
+            message.props.text.as_deref(),
+            Some("Warning: check the value")
+        );
+        let expected = icon_toned("mark", IconMark::WarningFilled, IconTone::Primary);
+        let helper_mark = named(helper, "mark");
+        assert_eq!(helper_mark.kind, NodeKind::Canvas);
+        assert_eq!(
+            helper_mark.props.canvas, expected.props.canvas,
+            "the helper's glyph is WarningFilled, not ErrorFilled and not a \
+             swatch"
+        );
+        let state_mark = named(named(&row, "line"), "mark");
+        assert_eq!(state_mark.kind, NodeKind::Canvas);
+        assert_eq!(
+            state_mark.props.canvas, expected.props.canvas,
+            "the state mark is WarningFilled, matching Carbon's warn row"
         );
         no_drag(&row);
     }

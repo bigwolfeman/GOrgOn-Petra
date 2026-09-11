@@ -1,11 +1,14 @@
 //! Carbon Code snippet (slice-a).
 //!
-//! Three variants, three constructors. No named sm/md/lg scale; each
-//! variant has its own fixed numbers (style page Structure; T070 prefers
-//! SCSS where they disagree):
+//! Three Carbon variants, plus the DSH-style capped well spec 009 Q7
+//! asked for. No named sm/md/lg scale; each variant has its own fixed
+//! numbers (style page Structure; T070 prefers SCSS where they disagree):
 //!
 //! - [`code_snippet`] — single line, height 40, fill [`SURFACE_RAISED`].
-//! - [`code_snippet_multi`] — multi-line, min-height 288.
+//! - [`code_snippet_multi`] — multi-line, min-height 288, unbounded max.
+//! - [`code_snippet_multi_capped`] — multi-line with a metadata row
+//!   (filename, language, line count as words) and a 16-line cap the
+//!   host lifts with `"Show more"` / `"Show less"`.
 //! - [`code_snippet_inline`] — inline, height 16, radius
 //!   [`crate::token::corner_for`]`(`[`crate::token::CornerRole::Grouping`]`,
 //!   16.0)` = `shape.corner-sm` (SCSS 4px; style-page 2px is stale). The
@@ -26,7 +29,8 @@ use super::stack;
 use super::text::text;
 use super::tokens::{
     LAYER_ACTIVE, LAYER_HOVER, LINK_PRIMARY, SIZE_MD, SPACING_02, SPACING_03, SPACING_05,
-    SURFACE_LAYER_THREE, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_CODE, t,
+    SURFACE_LAYER_THREE, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_BODY_COMPACT,
+    TYPOGRAPHY_CODE, TYPOGRAPHY_LABEL, t,
 };
 use super::tooltip::tooltip_anchored;
 use crate::geom::{Align, Axis};
@@ -40,10 +44,31 @@ use crate::tree::{
 const MULTI_MIN: f32 = 288.0;
 /// Carbon `.cds--snippet--inline` container height.
 const INLINE_HEIGHT: f32 = 16.0;
+/// Line height of [`TYPOGRAPHY_CODE`] (`typography.code` is 12/16).
+const CODE_LINE_HEIGHT: f32 = 16.0;
+
+/// Collapsed cap for [`code_snippet_multi_capped`], in source lines.
+///
+/// DSH's `ReadBlock` / `TerminalBlock` default is 16
+/// (`DEFAULT_READ_MAX_LINES`). Carbon's `maxCollapsedNumberOfRows`
+/// defaults to 15. Sixteen is the number this library picked; it is not
+/// a Carbon token. Times [`CODE_LINE_HEIGHT`] it is [`MULTI_CAP`] units.
+pub const MULTI_CAP_LINES: usize = 16;
+
+/// [`MULTI_CAP_LINES`] × the 16-unit line height of `typography.code`.
+///
+/// The vertical max on the code run while the capped well is collapsed.
+/// Not a pointer-stretched edge: the host lifts it by passing
+/// `expanded: true`.
+pub const MULTI_CAP: f32 = 256.0;
 
 const _: () = assert!(SIZE_MD == 40.0);
 const _: () = assert!(MULTI_MIN == 288.0);
 const _: () = assert!(INLINE_HEIGHT == 16.0);
+const _: () = assert!(CODE_LINE_HEIGHT == 16.0);
+const _: () = assert!(MULTI_CAP_LINES == 16);
+const _: () = assert!(MULTI_CAP == 256.0);
+const _: () = assert!(MULTI_CAP == (MULTI_CAP_LINES as f32) * CODE_LINE_HEIGHT);
 
 const COPY_INTENTS: &[Interaction] = &[Interaction::Focus, Interaction::Click];
 
@@ -78,6 +103,16 @@ const CODE_KEY: &str = "code";
 /// Key of the glyph inside the copy control, which is what the feedback
 /// bubble anchors to. See [`code_snippet_copied`].
 const COPY_ICON_KEY: &str = "copy-icon";
+/// Key of the expand control on [`code_snippet_multi_capped`].
+const EXPAND_KEY: &str = "expand";
+
+/// Visible label of the expand control while the cap is on.
+///
+/// Words, not a chevron. The button is keyed `"expand"`; this string is
+/// its name while collapsed.
+pub const SHOW_MORE: &str = "Show more";
+/// Visible label of the expand control while the cap is lifted.
+pub const SHOW_LESS: &str = "Show less";
 
 const _: () = assert!(COPY_FEEDBACK_SECONDS == 2.0);
 
@@ -105,6 +140,10 @@ pub fn code_snippet(key: impl Into<Key>, code: impl Into<String>) -> ViewNode {
 }
 
 /// Multi-line snippet. Min-height 288. Copy button labelled `"Copy"`.
+///
+/// Carbon's well: unbounded max, no metadata row. The capped form with
+/// filename, language, line count, and the expand control is
+/// [`code_snippet_multi_capped`].
 pub fn code_snippet_multi(key: impl Into<Key>, code: impl Into<String>) -> ViewNode {
     let mut node = stack(
         key,
@@ -122,6 +161,63 @@ pub fn code_snippet_multi(key: impl Into<Key>, code: impl Into<String>) -> ViewN
         },
         ..Constraints::default()
     })
+}
+
+/// Multi-line snippet with a metadata row and a DSH-style line cap.
+///
+/// [`code_snippet_multi`] is Carbon's well: min-height 288, grows with
+/// the run, copy at the trailing edge, no filename. This is the other
+/// well spec 009 Q7 asked for. Filename, language, and line count sit
+/// on a row of **words** above the run — not colour-only badges, because
+/// the operator is red-green colourblind and a tinted pill that said
+/// "Rust" only in hue would say nothing. Line count is derived from
+/// `code`, so a caller cannot hand a number that disagrees with the
+/// run. [`CodeInk`] still reaches the run through [`code_runs`]; this
+/// constructor does not invent a palette.
+///
+/// # The cap
+///
+/// DSH's `ReadBlock` / `TerminalBlock` collapse a long body at
+/// `DEFAULT_READ_MAX_LINES` (16). Carbon's `maxCollapsedNumberOfRows`
+/// defaults to 15. Sixteen is the number this library picked. Times the
+/// 16-unit line height of `typography.code` that is [`MULTI_CAP`] (256)
+/// units, which is the vertical max on the run while collapsed.
+///
+/// `expanded` is a declared fact, the same way [`super::accordion_item`]
+/// takes one. This function stores none of it. The host holds the bool
+/// (app-declared State later) and calls again.
+///
+/// The expand control is a button labelled [`SHOW_MORE`] or
+/// [`SHOW_LESS`] — words, not a chevron that would be the only channel.
+/// It mounts only when the run is longer than the cap; a two-line well
+/// that offered to expand would be lying.
+///
+/// The well keeps [`FocusFigure::Sides`]. A bar under the run would
+/// land on this expand row, which is why Sides was chosen; this
+/// constructor is that row, not a reason to reopen the figure.
+pub fn code_snippet_multi_capped(
+    key: impl Into<Key>,
+    code: impl Into<String>,
+    filename: impl Into<String>,
+    language: impl Into<String>,
+    expanded: bool,
+) -> ViewNode {
+    let code = code.into();
+    let filename = filename.into();
+    let language = language.into();
+    let lines = count_lines(&code);
+    let over_cap = lines > MULTI_CAP_LINES;
+    let mut children = vec![
+        meta_row(&filename, &language, lines),
+        code_body(code, expanded, over_cap),
+    ];
+    if over_cap {
+        children.push(expand_row(expanded));
+    }
+    let mut node = stack(key, Axis::Vertical, Some(SPACING_03), children);
+    node.props.align = Some(Align::Stretch);
+    node.props.padding = Some(pad(SPACING_05, SPACING_05));
+    paint_well(node)
 }
 
 /// The inline chip's accessible name, which is also what it does.
@@ -159,10 +255,10 @@ const INLINE_INTENTS: &[Interaction] = &[Interaction::Focus, Interaction::Click]
 /// rule read from the other side. `gorgon_petra::input::hit_text` gives every
 /// run in the library a selection *unless* a control owns the press, and this
 /// chip now owns its own. A browser does exactly this: text inside a
-/// `<button>` is the button's. The two multi-word wells are where a person
+/// `<button>` is the button's. The wells are where a person
 /// drags out a fragment, and they keep it.
 ///
-/// # Focus wears a box here, and only here among the three
+/// # Focus wears a box here, and only here — not on the wells
 ///
 /// [`FocusFigure::Border`], which is Carbon's own figure for this control
 /// (`_code-snippet.scss:96`: `&:focus { border: 1px solid $focus }`) rather
@@ -287,9 +383,10 @@ impl CodeInk {
 
 /// Lay colour runs over a snippet's code, for syntax highlighting.
 ///
-/// Takes any of the three snippet constructors and reaches the node keyed
+/// Takes any snippet constructor and reaches the node keyed
 /// `"code"` inside it — by key, not by kind, so it can never land on a copy
-/// button's label. Returns the node unchanged if there is none.
+/// button's label or the expand control's `"Show more"`. Returns the node
+/// unchanged if there is none.
 ///
 /// # This library ships no syntax palette, and this function does not invent
 /// one
@@ -331,9 +428,10 @@ pub fn code_runs(mut node: ViewNode, runs: Vec<TextRun>) -> ViewNode {
 
 /// Say a snippet was copied, or stop saying it.
 ///
-/// Takes any of the three snippet constructors, the way [`code_runs`] does,
+/// Takes any snippet constructor, the way [`code_runs`] does,
 /// and reaches the copy control inside it. Two shapes, because the library
-/// has two: the two wells hang a button keyed [`COPY_KEY`] beside their run,
+/// has two: the wells hang a button keyed [`COPY_KEY`] beside their run
+/// (on the capped well it sits on the metadata row),
 /// and the inline chip **is** the button ([`code_snippet_inline`]), so there
 /// is nothing keyed `copy` to find. The fallback is the root itself, and only
 /// when the root is a [`Role::Button`] — a property of the control rather
@@ -517,6 +615,95 @@ fn selectable_code(mut node: ViewNode) -> ViewNode {
     node
 }
 
+/// How many lines a reader of `code` would count.
+///
+/// `str::lines` drops a trailing terminator, so `"a\n"` is one line and
+/// an empty string is none. That is the line count the metadata row shows.
+fn count_lines(code: &str) -> usize {
+    code.lines().count()
+}
+
+fn line_count_label(n: usize) -> String {
+    if n == 1 {
+        "1 line".to_owned()
+    } else {
+        format!("{n} lines")
+    }
+}
+
+/// A metadata fact: visible text in [`TEXT_MUTED`], never a filled badge.
+fn meta_text(key: &str, content: impl Into<String>) -> ViewNode {
+    let mut node = text(key, content);
+    node.props.style = Some(t(TYPOGRAPHY_LABEL));
+    node.props.tokens.insert("foreground".into(), t(TEXT_MUTED));
+    node
+}
+
+/// Filename, language, and line count on the leading edge; copy on the
+/// trailing edge. Empty filename or language is omitted rather than drawn
+/// as a blank pill.
+fn meta_row(filename: &str, language: &str, lines: usize) -> ViewNode {
+    let mut facts = Vec::new();
+    if !filename.is_empty() {
+        facts.push(meta_text("filename", filename));
+    }
+    if !language.is_empty() {
+        facts.push(meta_text("language", language));
+    }
+    facts.push(meta_text("line-count", line_count_label(lines)));
+    let mut facts_row = stack("meta-facts", Axis::Horizontal, Some(SPACING_03), facts);
+    facts_row.props.align = Some(Align::Center);
+    let mut row = stack(
+        "meta",
+        Axis::Horizontal,
+        Some(SPACING_03),
+        vec![facts_row, copy_button()],
+    );
+    row.props.align = Some(Align::Center);
+    row.props.justify = Some(Justify::SpaceBetween);
+    row
+}
+
+fn code_body(code: String, expanded: bool, over_cap: bool) -> ViewNode {
+    let mut node = code_text(code, true);
+    if over_cap && !expanded {
+        node.props.max_lines = Some(MULTI_CAP_LINES);
+        node.constraints.vertical = AxisConstraint {
+            min: None,
+            max: Some(MULTI_CAP),
+            priority: 0,
+        };
+    }
+    node
+}
+
+fn expand_row(expanded: bool) -> ViewNode {
+    let mut row = stack(
+        "expand-row",
+        Axis::Horizontal,
+        None,
+        vec![expand_button(expanded)],
+    );
+    row.props.justify = Some(Justify::Start);
+    row
+}
+
+/// Worded expand control. The label is the channel; there is no chevron.
+fn expand_button(expanded: bool) -> ViewNode {
+    let label = if expanded { SHOW_LESS } else { SHOW_MORE };
+    let mut caption = text("label", label);
+    caption.props.style = Some(t(TYPOGRAPHY_BODY_COMPACT));
+    let mut node = stack(EXPAND_KEY, Axis::Horizontal, None, vec![caption]);
+    node.props.align = Some(Align::Center);
+    node.props.padding = Some(pad(SPACING_03, SPACING_02));
+    let mut node = node
+        .interactive(Role::Button, label, COPY_INTENTS)
+        .owning_its_text()
+        .with_focus_figure(FocusFigure::Sides);
+    node.semantics.expanded = Some(expanded);
+    node
+}
+
 /// The multi-line well's copy control, pushed to the trailing edge.
 ///
 /// A row with the button and `Justify::End`, rather than the button alone:
@@ -572,8 +759,9 @@ fn paint_well(mut node: ViewNode) -> ViewNode {
 mod tests {
     use super::{
         COPY_FEEDBACK, COPY_FEEDBACK_KEY, COPY_FEEDBACK_SECONDS, CodeInk, INLINE_HEIGHT,
-        LAYER_ACTIVE, LAYER_HOVER, MULTI_MIN, SIZE_MD, SURFACE_LAYER_THREE, SURFACE_RAISED,
-        code_runs, code_snippet, code_snippet_copied, code_snippet_inline, code_snippet_multi,
+        LAYER_ACTIVE, LAYER_HOVER, MULTI_CAP, MULTI_CAP_LINES, MULTI_MIN, SHOW_LESS, SHOW_MORE,
+        SIZE_MD, SURFACE_LAYER_THREE, SURFACE_RAISED, code_runs, code_snippet, code_snippet_copied,
+        code_snippet_inline, code_snippet_multi, code_snippet_multi_capped,
     };
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
@@ -601,6 +789,17 @@ mod tests {
 
     fn token<'a>(node: &'a ViewNode, slot: &str) -> Option<&'a str> {
         node.props.tokens.get(slot).map(|name| name.as_str())
+    }
+
+    fn many_lines(n: usize) -> String {
+        (1..=n)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn capped(code: &str, expanded: bool) -> ViewNode {
+        code_snippet_multi_capped("s", code, "main.rs", "rust", expanded)
     }
 
     #[test]
@@ -644,6 +843,114 @@ mod tests {
         assert_eq!(token(&node, "background"), Some(SURFACE_RAISED));
         named(&node, "copy");
         named(&node, "code");
+        assert!(
+            descendant(&node, "expand").is_none(),
+            "Carbon's well is not the capped form"
+        );
+        assert!(descendant(&node, "filename").is_none());
+    }
+
+    /// Filename, language, and line count are words, not colour-only badges.
+    #[test]
+    fn the_capped_well_shows_filename_language_and_line_count_as_text() {
+        let node = capped("fn main() {}\nfn other() {}", false);
+        assert_eq!(
+            named(&node, "filename").props.text.as_deref(),
+            Some("main.rs")
+        );
+        assert_eq!(named(&node, "language").props.text.as_deref(), Some("rust"));
+        assert_eq!(
+            named(&node, "line-count").props.text.as_deref(),
+            Some("2 lines")
+        );
+        // A badge would carry a fill that was the only channel. These
+        // facts are inked in muted text on the well, the same pair a
+        // comment uses, and they have no fill of their own.
+        for key in ["filename", "language", "line-count"] {
+            let fact = named(&node, key);
+            assert!(fact.props.text.is_some(), "{key} is missing its words");
+            assert_eq!(
+                token(fact, "background"),
+                None,
+                "{key} painted a fill, so the words are no longer the channel"
+            );
+            assert_eq!(token(fact, "foreground"), Some(super::TEXT_MUTED));
+        }
+        assert_eq!(
+            named(&capped("fn main() {}", false), "line-count")
+                .props
+                .text
+                .as_deref(),
+            Some("1 line")
+        );
+        assert!(
+            descendant(&capped("fn main() {}", false), "expand").is_none(),
+            "a one-line well that offered to expand would be lying"
+        );
+        assert!(
+            descendant(
+                &code_snippet_multi_capped("s", "fn main() {}", "", "", false),
+                "filename"
+            )
+            .is_none(),
+            "an empty filename is omitted, not drawn as a blank pill"
+        );
+    }
+
+    /// Collapsed caps at 16 lines / 256 units; expanded lifts both.
+    /// The expand control is a word, not a chevron.
+    #[test]
+    fn the_capped_well_caps_at_sixteen_lines_and_expands_with_words() {
+        assert_eq!(MULTI_CAP_LINES, 16);
+        assert_eq!(MULTI_CAP, 256.0);
+        assert_eq!(SHOW_MORE, "Show more");
+        assert_eq!(SHOW_LESS, "Show less");
+
+        let long = many_lines(20);
+        let collapsed = capped(&long, false);
+        let code = named(&collapsed, "code");
+        assert_eq!(code.props.max_lines, Some(MULTI_CAP_LINES));
+        assert_eq!(code.constraints.vertical.max, Some(MULTI_CAP));
+        let expand = named(&collapsed, "expand");
+        assert_eq!(expand.semantics.role, Some(Role::Button));
+        assert_eq!(expand.semantics.label.as_deref(), Some(SHOW_MORE));
+        assert_eq!(expand.semantics.expanded, Some(false));
+        assert!(expand.interactions.contains(&Interaction::Click));
+        assert!(expand.interactions.contains(&Interaction::Focus));
+        assert_eq!(
+            named(expand, "label").props.text.as_deref(),
+            Some(SHOW_MORE),
+            "the expand control's channel is the word, not a glyph"
+        );
+        assert_eq!(
+            named(expand, "label").kind,
+            crate::tree::NodeKind::Text,
+            "an icon-only chevron would be a Canvas here"
+        );
+
+        let opened = capped(&long, true);
+        let code = named(&opened, "code");
+        assert_eq!(code.props.max_lines, None);
+        assert_eq!(code.constraints.vertical.max, None);
+        let expand = named(&opened, "expand");
+        assert_eq!(expand.semantics.label.as_deref(), Some(SHOW_LESS));
+        assert_eq!(expand.semantics.expanded, Some(true));
+        assert_eq!(
+            named(expand, "label").props.text.as_deref(),
+            Some(SHOW_LESS)
+        );
+
+        // The well still wears Sides. This constructor is the expand row
+        // the figure was chosen to miss; it is not a reason to change it.
+        assert_eq!(collapsed.semantics.focus_figure, FocusFigure::Sides);
+        assert_eq!(collapsed.semantics.focus_shown_on, FocusShownOn::Well);
+        assert_eq!(opened.semantics.focus_figure, FocusFigure::Sides);
+        assert_eq!(
+            named(&collapsed, "code").props.text.as_deref(),
+            Some(long.as_str()),
+            "the cap hides lines in layout; the run still holds every byte \
+             so CodeInk tiles the same string"
+        );
     }
 
     #[test]
@@ -751,10 +1058,11 @@ mod tests {
     #[test]
     fn code_runs_colours_the_code_and_never_the_copy_label() {
         let runs = vec![CodeInk::Comment.over(2), CodeInk::Plain.over(2)];
-        for label in ["single", "multi", "inline"] {
+        for label in ["single", "multi", "inline", "capped"] {
             let bare = match label {
                 "single" => code_snippet("s", "abcd"),
                 "multi" => code_snippet_multi("s", "abcd"),
+                "capped" => code_snippet_multi_capped("s", "abcd", "main.rs", "rust", false),
                 _ => code_snippet_inline("s", "abcd"),
             };
             let node = code_runs(bare, runs.clone());
@@ -777,6 +1085,34 @@ mod tests {
         assert_eq!(code_runs(plain.clone(), runs), plain);
     }
 
+    /// `code_runs` still tiles the full string on a collapsed cap, and
+    /// never colours the metadata row or the expand caption.
+    #[test]
+    fn code_runs_keeps_the_ink_seam_on_a_capped_well() {
+        let code = many_lines(20);
+        let runs = vec![CodeInk::Plain.over(code.len())];
+        let node = code_runs(capped(&code, false), runs.clone());
+        assert_eq!(named(&node, "code").props.runs, runs);
+        assert_eq!(
+            named(&node, "code").props.text.as_deref(),
+            Some(code.as_str()),
+            "the cap is max_lines, not a sliced string, so the runs still cover"
+        );
+        for key in ["filename", "language", "line-count"] {
+            assert!(
+                named(&node, key).props.runs.is_empty(),
+                "{key} was coloured as if it were code"
+            );
+        }
+        assert!(
+            named(&named(&node, "expand"), "label")
+                .props
+                .runs
+                .is_empty(),
+            "the expand caption was coloured"
+        );
+    }
+
     /// A copied snippet says so in words, in both channels.
     ///
     /// Carbon's `feedback` default is `"Copied!"` and its `feedbackTimeout`
@@ -794,6 +1130,7 @@ mod tests {
         for (label, bare) in [
             ("single", code_snippet("s", "fn main() {}")),
             ("multi", code_snippet_multi("s", "line 1\nline 2")),
+            ("capped", capped("line 1\nline 2", false)),
         ] {
             let resting = code_snippet_copied(bare.clone(), false);
             assert_eq!(
@@ -843,6 +1180,7 @@ mod tests {
         for (label, node) in [
             ("single", code_snippet("s", "fn main() {}")),
             ("multi", code_snippet_multi("s", "line 1\nline 2")),
+            ("capped", capped("line 1\nline 2", false)),
         ] {
             let code = named(&node, "code");
             assert_eq!(code.semantics.role, Some(Role::TextInput), "{label}");
@@ -909,6 +1247,7 @@ mod tests {
         for (label, node) in [
             ("single", code_snippet("s", "pcargo test")),
             ("multi", code_snippet_multi("m", "pcargo test")),
+            ("capped", capped("pcargo test", false)),
         ] {
             assert_eq!(
                 node.semantics.focus_shown_on,
@@ -1001,6 +1340,7 @@ mod tests {
         for well in [
             code_snippet("s", "ViewNode"),
             code_snippet_multi("s", "ViewNode"),
+            capped("ViewNode", false),
         ] {
             let said = code_snippet_copied(well, true);
             assert_ne!(
@@ -1053,10 +1393,14 @@ mod tests {
     /// placed outside its parent.
     #[test]
     fn frame_geometry_has_no_degenerate_or_overflowing_placements() {
+        let long = many_lines(20);
         let cases: Vec<(&str, ViewNode)> = vec![
             ("single", code_snippet("s", "fn main() {}")),
             ("multi", code_snippet_multi("s", "line 1\nline 2")),
             ("inline", code_snippet_inline("s", "ViewNode")),
+            ("capped", capped("line 1\nline 2", false)),
+            ("capped collapsed", capped(&long, false)),
+            ("capped expanded", capped(&long, true)),
         ];
         for (label, node) in cases {
             let frame = petrify_lone(node);
@@ -1104,6 +1448,7 @@ mod tests {
         for (label, bare) in [
             ("single", code_snippet("s", "fn main() {}")),
             ("multi", code_snippet_multi("s", "line 1\nline 2")),
+            ("capped", capped("line 1\nline 2", false)),
         ] {
             let copy_rect = |node: ViewNode| {
                 let frame = petrify_lone(node);
@@ -1131,21 +1476,27 @@ mod tests {
         for (label, node) in [
             ("single", code_snippet("s", "fn main() {}")),
             ("multi", code_snippet_multi("s", "line 1\nline 2")),
+            ("capped", capped("line 1\nline 2", false)),
+            ("capped expand", capped(&many_lines(20), false)),
         ] {
             let frame = petrify_lone(node);
             let focus = crate::focus::FocusTree::from_placements(
                 &frame.placements,
                 &std::collections::BTreeMap::new(),
             );
-            let copy = frame
+            let buttons: Vec<_> = frame
                 .placements
                 .iter()
-                .find(|p| p.semantics.role == Some(Role::Button))
-                .unwrap_or_else(|| panic!("{label}: no copy button placed"));
-            assert!(
-                focus.order().iter().any(|id| id == &copy.id),
-                "{label}: copy button declares Focus but is not in focus order"
-            );
+                .filter(|p| p.semantics.role == Some(Role::Button))
+                .collect();
+            assert!(!buttons.is_empty(), "{label}: no copy button placed");
+            for button in buttons {
+                assert!(
+                    focus.order().iter().any(|id| id == &button.id),
+                    "{label}: {} declares Focus but is not in focus order",
+                    button.id
+                );
+            }
         }
     }
 
@@ -1175,6 +1526,8 @@ mod tests {
                 ("single", code_snippet("s", "fn main() {}")),
                 ("multi", code_snippet_multi("s", "line 1\nline 2")),
                 ("inline", code_snippet_inline("s", "ViewNode")),
+                ("capped", capped("line 1\nline 2", false)),
+                ("capped expand", capped(&many_lines(20), false)),
                 ("every ink", every_ink.clone()),
             ] {
                 let bg_name = node

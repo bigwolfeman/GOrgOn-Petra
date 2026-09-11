@@ -1,6 +1,8 @@
 //! Inventory row 1, Accordion.
 
-use gorgon_petra::component::{accordion, accordion_item, accordion_item_with, section};
+use gorgon_petra::component::{
+    accordion_item_spaced, accordion_item_with_spaced, accordion_spaced, section,
+};
 use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::ViewNode;
 
@@ -51,16 +53,16 @@ impl Page for Accordion {
             vec![filled_body(
                 "accordion",
                 sp("spacing.md"),
-                vec![accordion(
+                vec![accordion_spaced(
                     "acc",
                     vec![
-                        accordion_item(
+                        accordion_item_spaced(
                             ACC_0,
                             "First section",
                             self.open[0],
                             "The fibers scheduled this pass.",
                         ),
-                        accordion_item(
+                        accordion_item_spaced(
                             ACC_1,
                             "Second section",
                             self.open[1],
@@ -68,23 +70,24 @@ impl Page for Accordion {
                         ),
                         // Nested: an accordion inside an accordion item's
                         // panel. Carbon writes no rule for this either way
-                        // — see `accordion_item_with`'s doc — so it is
-                        // shown with that caveat rather than as conformance.
-                        accordion_item_with(
+                        // — see `accordion_item_with_spaced`'s doc — so it
+                        // is shown with that caveat rather than as
+                        // conformance.
+                        accordion_item_with_spaced(
                             ACC_NEST,
                             "Nested section",
                             self.nest,
-                            vec![accordion(
+                            vec![accordion_spaced(
                                 "inner",
                                 vec![
-                                    accordion_item(
+                                    accordion_item_spaced(
                                         ACC_NEST_0,
                                         "Nested first",
                                         self.inner[0],
                                         "One level in. The panel's own 16 \
                                          inline padding is the indent.",
                                     ),
-                                    accordion_item(
+                                    accordion_item_spaced(
                                         ACC_NEST_1,
                                         "Nested second",
                                         self.inner[1],

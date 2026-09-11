@@ -8,7 +8,7 @@ use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::ViewNode;
 
 use super::Page;
-use super::common::{body, path_has, sp};
+use super::common::{body, path_has, sp, wrapped};
 
 /// The rows, as the Carbon reference shot has them (`31-structured-list.png`).
 const ROWS: [(&str, &str, &str); 2] = [("sl-0", "kernel", "runtime"), ("sl-1", "petra", "layout")];
@@ -70,16 +70,23 @@ impl Page for StructuredList {
             vec![body(
                 "sl",
                 sp("spacing.md"),
-                vec![structured_list_sized(
-                    "sl",
-                    vec![text("h0", "Name"), text("h1", "Role")],
-                    rows,
-                    &self.weights,
-                    // The operator's round-3 ask: dividers on by default.
-                    // `structured_list_sized`'s flag is the "toggled off in
-                    // code" half; this page is the on case.
-                    true,
-                )],
+                vec![
+                    wrapped(
+                        "note",
+                        "This is also the Table row. Carbon Table is this \
+                         structured list; there is no second component.",
+                    ),
+                    structured_list_sized(
+                        "sl",
+                        vec![text("h0", "Name"), text("h1", "Role")],
+                        rows,
+                        &self.weights,
+                        // The operator's round-3 ask: dividers on by default.
+                        // `structured_list_sized`'s flag is the "toggled off in
+                        // code" half; this page is the on case.
+                        true,
+                    ),
+                ],
             )],
         )
     }

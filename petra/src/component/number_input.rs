@@ -39,7 +39,7 @@
 //! leaf, so the right bar stood in the middle of the well beside the
 //! Subtract glyph.
 
-use super::field::bind_field_chrome;
+use super::field::{SUPPORT_WARNING, bind_field_chrome, warning_helper};
 use super::icon::{IconMark, IconTone, icon_toned};
 use super::stack;
 use super::swatch;
@@ -68,6 +68,7 @@ const DIVIDER_HEIGHT: f32 = 16.0;
 enum Chrome {
     Enabled,
     Invalid,
+    Warning,
 }
 
 /// Numeric field, Carbon md (40), with Increment and Decrement buttons.
@@ -124,6 +125,31 @@ pub fn number_input_invalid(
     )
 }
 
+/// Warning md well: a [`SUPPORT_WARNING`] outline plus the shared helper.
+///
+/// Colour is not the only channel. The well outline is `$support-warning`
+/// on all four sides, and [`warning_helper`] carries `Warning: {message}`
+/// plus a [`IconMark::WarningFilled`] glyph. The well sits at `{key}/input`,
+/// the same depth as [`number_input_invalid`], so a value that moves from
+/// warn to legal does not re-key the node under the cursor.
+#[must_use]
+pub fn number_input_warning(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    value: impl Into<String>,
+    message: impl Into<String>,
+) -> ViewNode {
+    stack(
+        key,
+        Axis::Vertical,
+        Some(super::tokens::SPACING_02),
+        vec![
+            number_sized("input", label, value, SIZE_MD, Chrome::Warning),
+            warning_helper(message),
+        ],
+    )
+}
+
 fn number_sized(
     key: impl Into<Key>,
     label: impl Into<String>,
@@ -163,6 +189,18 @@ fn number_sized(
             // never the accent: the accent is the focus ring, and an invalid
             // well in the accent was indistinguishable from a focused one.
             well.props.tokens.insert("border".into(), t(SUPPORT_ERROR));
+        }
+        Chrome::Warning => {
+            well.props
+                .tokens
+                .insert("background".into(), t(SURFACE_RAISED));
+            // The warning hue, not the error and not the accent. Carbon's
+            // warn well is the invalid outline in `$support-warning`. The
+            // word and the bang glyph are the channels the operator can
+            // read; this edge is the third.
+            well.props
+                .tokens
+                .insert("border".into(), t(SUPPORT_WARNING));
         }
     }
     well.constraints.vertical.min = Some(height);
@@ -255,8 +293,8 @@ fn stepper(key: &'static str, label: &'static str, mark: IconMark, height: f32) 
 #[cfg(test)]
 mod tests {
     use super::{
-        IconMark, IconTone, SIZE_LG, SIZE_MD, SIZE_SM, icon_toned, number_input,
-        number_input_invalid, number_input_lg, number_input_sm,
+        IconMark, IconTone, SIZE_LG, SIZE_MD, SIZE_SM, SUPPORT_WARNING, icon_toned, number_input,
+        number_input_invalid, number_input_lg, number_input_sm, number_input_warning,
     };
     use crate::component::tokens::{
         ACCENT_PRIMARY, BORDER_STRONG, BORDER_SUBTLE, LAYER_HOVER, SUPPORT_ERROR, SURFACE_RAISED,
@@ -489,6 +527,62 @@ mod tests {
             Some("Invalid: must be a number")
         );
         assert_eq!(token(helper, "foreground"), Some(TEXT_PRIMARY));
+        let _ = child(well, "increment");
+        let _ = child(well, "decrement");
+    }
+
+    /// A warning well's edge is the warning hue, never the error and never
+    /// the accent, and the helper says so in words and in a glyph.
+    #[test]
+    fn number_input_warning_draws_the_warning_hue_and_says_so_in_words_and_a_glyph() {
+        let node = number_input_warning("count", "Replicas", "x", "check the value");
+        assert_eq!(node.kind, NodeKind::Stack);
+        assert!(node.semantics.role.is_none());
+        let well = child(&node, "input");
+        assert_eq!(token(well, "border"), Some(SUPPORT_WARNING));
+        assert_ne!(
+            token(well, "border"),
+            Some(SUPPORT_ERROR),
+            "a warning well must not wear the error outline"
+        );
+        assert_ne!(
+            token(well, "border"),
+            Some(ACCENT_PRIMARY),
+            "a warning well must not wear the accent: a focused well wears it too"
+        );
+        assert_eq!(
+            token(well, "border-bottom"),
+            None,
+            "the warning outline replaces the resting rule rather than stacking on it"
+        );
+        assert_eq!(token(well, "background"), Some(SURFACE_RAISED));
+        assert_eq!(well.constraints.vertical.min, Some(SIZE_MD));
+        let input = child(well, "value");
+        assert_eq!(input.semantics.role, Some(Role::TextInput));
+        let helper = child(&node, "helper");
+        let message = child(helper, "message");
+        assert_eq!(message.kind, NodeKind::Text);
+        assert!(
+            message
+                .props
+                .text
+                .as_deref()
+                .is_some_and(|t| t.contains("Warning:")),
+            "the helper text must contain `Warning:`"
+        );
+        assert_eq!(
+            message.props.text.as_deref(),
+            Some("Warning: check the value")
+        );
+        assert_eq!(token(message, "foreground"), Some(TEXT_PRIMARY));
+        let mark = child(helper, "mark");
+        let expected = icon_toned("mark", IconMark::WarningFilled, IconTone::Primary);
+        assert_eq!(mark.kind, NodeKind::Canvas);
+        assert_eq!(
+            mark.props.canvas, expected.props.canvas,
+            "the helper's glyph is WarningFilled, not ErrorFilled and not a \
+             swatch"
+        );
         let _ = child(well, "increment");
         let _ = child(well, "decrement");
     }

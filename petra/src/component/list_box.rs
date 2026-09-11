@@ -26,7 +26,9 @@
 //!    elevation [`SHADOW_OVERLAY`]. No padding, no border, no radius.
 //! 2. Content — one vertical `Stack` keyed `content`, children stretched to
 //!    the panel's width, no gap.
-//! 3. Rows — the caller's ([`super::dropdown_option`], [`super::menu_item`]).
+//! 3. Rows — [`menu_item`] for an action. A dropdown option is the same
+//!    height, type, padding and focus figure with a checkmark and selected
+//!    fills layered on ([`super::dropdown_option`]).
 //!    Between consecutive rows, when `dividers` asks for it, a one-unit
 //!    [`BORDER_SUBTLE`] rule inset [`SPACING_05`] at each end, which is
 //!    `.cds--list-box__menu-item__option`'s `border-top` at its
@@ -42,6 +44,7 @@
 //! rounded, outlined pills that hugged their own text.
 
 use super::icon::{IconMark, IconTone, icon_toned};
+use super::pin_block;
 use super::stack;
 use super::text::text;
 use super::tokens::{
@@ -107,15 +110,20 @@ const _: () = assert!(HEIGHT_LG == 48.0);
 /// `crate::geom::Size` (a width/height pair) is already in scope wherever
 /// a frame gets petrified, `data_table::RowSize` sidesteps the same clash.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ListBoxSize {
+pub enum ListBoxSize {
+    /// Extra-small row.
     Xs,
+    /// Small row.
     Sm,
+    /// Medium row, the default.
     Md,
+    /// Large row.
     Lg,
 }
 
 impl ListBoxSize {
-    pub(crate) fn height(self) -> f32 {
+    /// Carbon row height for this size, in layout units.
+    pub fn height(self) -> f32 {
         match self {
             Self::Xs => HEIGHT_XS,
             Self::Sm => HEIGHT_SM,
@@ -127,7 +135,7 @@ impl ListBoxSize {
 
 /// Whether the panel draws a rule between each pair of rows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Dividers {
+pub enum Dividers {
     /// A hairline between rows: the list box of a dropdown or a select.
     Between,
     /// Rows butt against each other: a menu.
@@ -136,7 +144,7 @@ pub(crate) enum Dividers {
 
 /// The flush panel, anchored under the sibling keyed `anchor`, holding
 /// `rows` top to bottom. `label` is the accessible name of the overlay.
-pub(crate) fn list_box(
+pub fn list_box(
     key: impl Into<Key>,
     label: impl Into<String>,
     anchor: impl Into<Key>,
@@ -202,11 +210,7 @@ pub(crate) fn list_box(
 /// children: with no slack the glyph sits 16 past the text, which is
 /// Carbon's field reserving `padding-right: 48px` for a 16-unit chevron
 /// sitting 16 from the edge with 16 clear before it.
-pub(crate) fn edge_row(
-    key: impl Into<Key>,
-    leading: ViewNode,
-    trailing: Option<ViewNode>,
-) -> ViewNode {
+pub fn edge_row(key: impl Into<Key>, leading: ViewNode, trailing: Option<ViewNode>) -> ViewNode {
     let mut children = vec![leading];
     children.extend(trailing);
     let mut node = stack(key, Axis::Horizontal, Some(SPACING_05), children);
@@ -218,6 +222,57 @@ pub(crate) fn edge_row(
         ..InsetRefs::default()
     });
     node
+}
+
+/// One action row. `label` is required (FR-058).
+///
+/// The label takes the row's whole width (priority 1 on the main axis) so
+/// the row is as wide as its container and the text sits at the leading
+/// edge; a single line, clipped rather than wrapped, because a menu item
+/// is a verb and not a paragraph.
+///
+/// Menu, a context menu and a menubar all want this row. [`super::menu`] is
+/// this plus overlay width bounds and `takes_focus`. A dropdown option is
+/// the same chrome with a trailing checkmark and selected fills.
+pub fn menu_item(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
+    let label = label.into();
+    let mut caption = text("label", label.clone());
+    caption.props.style = Some(t(TYPOGRAPHY_BODY_COMPACT));
+    caption.props.wrap = Some(TextWrap::Ellipsis);
+    caption
+        .props
+        .tokens
+        .insert("foreground".into(), t(TEXT_PRIMARY));
+    caption.constraints.horizontal = AxisConstraint {
+        min: None,
+        max: None,
+        priority: 1,
+    };
+    let mut node = stack(key, Axis::Horizontal, None, vec![caption]);
+    node.props.align = Some(CrossAlign::Center);
+    node.props.padding = Some(InsetRefs {
+        left: Some(t(SPACING_05)),
+        right: Some(t(SPACING_05)),
+        ..InsetRefs::default()
+    });
+    // `$layer`, the same fill as the container: a row is a region of the
+    // panel, not a card on it. `SURFACE_BASE` here painted every item as a
+    // dark pill on the lighter panel.
+    node.props
+        .tokens
+        .insert("background".into(), t(SURFACE_RAISED));
+    node.props
+        .tokens
+        .insert("background@hover".into(), t(LAYER_HOVER));
+    // `BarInside`. Menu items stack flush at `SIZE_MD` with no gap between
+    // them, so the default bar — five units below the bottom edge — would
+    // paint on the next item rather than in empty space. The same stripe on
+    // the item's own bottom edge is contained and cannot.
+    node.with_constraints(pin_block(SIZE_MD))
+        // Same three intents as the field: a row is also a button.
+        .interactive(Role::Button, label, FIELD_INTENTS)
+        .owning_its_text()
+        .with_focus_figure(FocusFigure::BarInside)
 }
 
 /// The closed field a list box opens from: Carbon's `.cds--list-box__field`
@@ -246,7 +301,7 @@ pub(crate) fn edge_row(
 /// bars beside it, the way a text input's is, and never the underline a
 /// button gets — which, with the list flush under the field, landed across
 /// the first option row (rows 11 and 29, 2026-09-05).
-pub(crate) fn list_box_field(
+pub fn list_box_field(
     key: impl Into<Key>,
     label: impl Into<String>,
     value: impl Into<String>,
@@ -336,19 +391,21 @@ fn pinned(h: f32) -> AxisConstraint {
 
 #[cfg(test)]
 mod tests {
-    use super::{DIVIDER_HEIGHT, Dividers, ListBoxSize, list_box, list_box_field};
+    use super::{
+        DIVIDER_HEIGHT, Dividers, ListBoxSize, SIZE_MD, list_box, list_box_field, menu_item,
+    };
     use crate::component::icon::{IconMark, IconTone, icon_toned};
-    use crate::component::menu::menu_item;
     use crate::component::tokens::{
-        BORDER_STRONG, BORDER_SUBTLE, SHADOW_OVERLAY, SURFACE_RAISED, TYPOGRAPHY_BODY_COMPACT,
+        BORDER_STRONG, BORDER_SUBTLE, SHADOW_OVERLAY, SPACING_05, SURFACE_RAISED,
+        TYPOGRAPHY_BODY_COMPACT,
     };
     use crate::frame::{TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, validated_with};
     use crate::token::{ThemeMode, standard_vocabulary};
     use crate::tree::{
-        Align, Anchor, Edge, Fit, InputPolicy, Interaction, Justify, Layer, NodeKind, Props,
-        Registry, Role, TextWrap, Tip, ViewNode,
+        Align, Anchor, Edge, Fit, FocusFigure, InputPolicy, Interaction, Justify, Layer, NodeKind,
+        Props, Registry, Role, TextWrap, Tip, ViewNode,
     };
 
     fn child<'a>(node: &'a crate::tree::ViewNode, key: &str) -> &'a crate::tree::ViewNode {
@@ -449,6 +506,39 @@ mod tests {
             .map(|c| c.key.as_str())
             .collect();
         assert_eq!(keys, ["rename", "delete", "share"]);
+    }
+
+    /// The shared action row: labelled button, md 40, label at the leading
+    /// edge, `$layer` fill, focus stripe inside the row.
+    #[test]
+    fn menu_item_is_a_labelled_button_at_height_40() {
+        let node = menu_item("rename", "Rename");
+        assert_eq!(node.semantics.role, Some(Role::Button));
+        assert_eq!(node.semantics.label.as_deref(), Some("Rename"));
+        assert_eq!(node.semantics.focus_figure, FocusFigure::BarInside);
+        assert_eq!(node.constraints.vertical.min, Some(SIZE_MD));
+        assert_eq!(node.constraints.vertical.max, Some(SIZE_MD));
+        assert!(node.interactions.contains(&Interaction::Click));
+        assert!(node.interactions.contains(&Interaction::Focus));
+        let label = child(&node, "label");
+        assert_eq!(label.props.text.as_deref(), Some("Rename"));
+        assert_eq!(
+            label.props.style.as_ref().map(|t| t.as_str()),
+            Some(TYPOGRAPHY_BODY_COMPACT)
+        );
+        assert_eq!(
+            label.constraints.horizontal.priority, 1,
+            "the label wins the row so the text sits at the leading edge"
+        );
+        let pad = node.props.padding.as_ref().expect("inline padding");
+        assert_eq!(pad.left.as_ref().map(|t| t.as_str()), Some(SPACING_05));
+        assert_eq!(pad.right.as_ref().map(|t| t.as_str()), Some(SPACING_05));
+        assert!(pad.top.is_none() && pad.bottom.is_none());
+        assert_eq!(
+            node.props.tokens.get("background").map(|t| t.as_str()),
+            Some(SURFACE_RAISED),
+            "a row is a region of the `$layer` panel, not a darker pill on it"
+        );
     }
 
     /// Accepted beside a control carrying the anchor key, two containers

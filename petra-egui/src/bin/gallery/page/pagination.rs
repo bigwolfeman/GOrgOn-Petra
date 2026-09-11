@@ -1,13 +1,34 @@
 //! Inventory row 23, Pagination.
+//!
+//! Two bars. The table bar is [`pagination_items`]: that constructor is
+//! [`pagination_page_size`] + [`pagination_range`] + [`pagination_numbers`]
+//! + [`pagination_nav`], plus the two pickers. The compact bar is
+//! numbers + nav only. The four pieces are not mounted a second time;
+//! their inner keys (`page-size-picker`, `range-text`) are hardcoded and
+//! a duplicate makes `Camera::click` panic.
 
-use gorgon_petra::component::{PaginationPicker, pagination_items, pagination_items_open, section};
+use gorgon_petra::component::{
+    PaginationPicker, heading, pagination_items, pagination_items_open, pagination_nav,
+    pagination_numbers, section,
+};
+// The other two pieces of bar 1. `pagination_items` already mounts them.
+// A second copy collides on hardcoded inner keys (`page-size-picker`,
+// `range-text`) and `Camera::click` panics when a tail matches twice.
+#[allow(
+    unused_imports,
+    reason = "kit names; pagination_items already mounts them"
+)]
+use gorgon_petra::component::{pagination_page_size, pagination_range};
 use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::ViewNode;
 
 use super::Page;
-use super::common::{body, dismisses, path_has, sp};
+use super::common::{body, dismisses, path_has, row, sp};
 
 const PAGER: &str = "pager";
+/// Ancestor of the numbers+nav bar. A chrome Next is keyed `next` with no
+/// such segment, so a press there still falls through to the catalog.
+const COMPACT: &str = "compact";
 /// The page sizes the picker offers and the size of the whole set: the
 /// numbers the Carbon reference shot was captured with
 /// (`ignored/carbon-ref/src/pages.jsx`: `pageSizes={[10, 20, 30]}`,
@@ -47,6 +68,10 @@ impl Pagination {
             Some(picker)
         };
     }
+
+    fn ours(node: &str) -> bool {
+        path_has(node, PAGER) || path_has(node, COMPACT)
+    }
 }
 
 impl Page for Pagination {
@@ -55,7 +80,13 @@ impl Page for Pagination {
     }
 
     fn body(&self) -> ViewNode {
-        let bar = match self.open {
+        // Bar 1 is items + range + numbers + nav. `pagination_items` is
+        // that composition (`pagination_page_size`, `pagination_range`,
+        // `pagination_numbers`, `pagination_nav`) plus the two pickers.
+        // Mounting the four pieces again would duplicate hardcoded inner
+        // keys (`page-size-picker`, `range-text`) and `Camera::click`
+        // panics when a tail matches twice.
+        let table = match self.open {
             Some(picker) => pagination_items_open(
                 PAGER,
                 self.pager,
@@ -66,15 +97,35 @@ impl Page for Pagination {
             ),
             None => pagination_items(PAGER, self.pager, self.page_size, TOTAL_ITEMS),
         };
+        // Bar 2 is numbers + nav only. Outer keys are unique; inner
+        // `previous` / `next` / `num-{n}` share names with bar 1, so
+        // handle accepts either ancestor.
+        let compact = row(
+            COMPACT,
+            sp("spacing.md"),
+            vec![
+                pagination_numbers("compact-nums", self.pager, self.page_count()),
+                pagination_nav("compact-nav", self.pager, self.page_count()),
+            ],
+        );
         section(
-            "pager",
+            "pages",
             "Pagination",
-            vec![body("pages", sp("spacing.md"), vec![bar])],
+            vec![body(
+                "bars",
+                sp("spacing.md"),
+                vec![
+                    heading("table-title", "Items, range, numbers, and nav"),
+                    table,
+                    heading("compact-title", "Numbers and nav"),
+                    compact,
+                ],
+            )],
         )
     }
 
     fn handle(&mut self, _event: &InputEvent, node: &str) -> bool {
-        if !path_has(node, PAGER) {
+        if !Self::ours(node) {
             return false;
         }
         if path_has(node, "page-size-picker") {
@@ -90,6 +141,11 @@ impl Page for Pagination {
             self.open = None;
         } else if let Some(page) =
             (1..=self.page_count()).find(|n| path_has(node, &format!("page-{n}")))
+        {
+            self.pager = page;
+            self.open = None;
+        } else if let Some(page) =
+            (1..=self.page_count()).find(|n| path_has(node, &format!("num-{n}")))
         {
             self.pager = page;
             self.open = None;

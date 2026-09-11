@@ -1,17 +1,31 @@
-//! Carbon Accordion (slice-a).
+//! Carbon Accordion (slice-a), plus spec 009's spaced-cards anatomy.
+//!
+//! Expansion is a `bool` the caller passes in (fiber State). It is not
+//! hover, focus, or any other tier-2 engine fact: an operator who reopens
+//! the shell and finds every section collapsed has lost something.
+//!
+//! Two list constructors. [`accordion`] is Carbon's flush column, split by
+//! a 1px divider; tests pin that divider, so it stays. [`accordion_spaced`]
+//! is the spec 009 card stack: [`SPACING_03`] between items, container fill
+//! [`SURFACE_BASE`]. Pair each with its item constructor.
 //!
 //! Anatomy (docs + `_accordion.scss`; T070 prefers SCSS):
-//! 1. [`accordion`] — the list container (`Role::List`).
-//! 2. [`accordion_item`] — one `<li>`; owns the 1px [`BORDER_SUBTLE`]
-//!    divider, drawn by its own [`divider`] child rather than by binding
-//!    `"border"` on the item — see that function's doc for why.
-//! 3. Header button — the whole click/focus target (`Role::Button`).
-//! 4. Chevron — [`IconMark::ChevronUp`] open, [`IconMark::ChevronDown`]
+//! 1. [`accordion`] — the flush list container (`Role::List`).
+//! 2. [`accordion_item`] — one `<li>` in that list; owns the 1px
+//!    [`BORDER_SUBTLE`] divider, drawn by its own [`divider`] child rather
+//!    than by binding `"border"` on the item — see that function's doc.
+//! 3. [`accordion_spaced`] — the card-stack container (`Role::List`).
+//! 4. [`accordion_item_spaced`] — one card: [`SURFACE_RAISED`] fill,
+//!    [`SHADOW_RAISED`], no divider, no four-sided border. Tile leaves the
+//!    shadow off so it stays distinct from [`super::section`]; a card
+//!    spends both, and this is a card.
+//! 5. Header button — the whole click/focus target (`Role::Button`).
+//! 6. Chevron — [`IconMark::ChevronUp`] open, [`IconMark::ChevronDown`]
 //!    shut, in [`IconTone::Primary`] (`fill: $icon-primary`, SCSS). Never
 //!    the only channel: `Semantics.expanded` is declared and the body is
 //!    mounted only while open (FR-026).
-//! 5. Title — the label, `body` type.
-//! 6. Body — present only while expanded.
+//! 7. Title — the label, `body` type.
+//! 8. Body — present only while expanded.
 //!
 //! Header height is the shared layout scale, clamped sm..lg: 32 / 40
 //! (default, [`SIZE_MD`]) / 48. Hover fill is [`LAYER_HOVER`]; `Hover`
@@ -29,7 +43,10 @@ use super::icon::{IconMark, IconTone, icon_toned};
 use super::pin_block;
 use super::stack;
 use super::text::text;
-use super::tokens::{BORDER_SUBTLE, LAYER_HOVER, SIZE_MD, SPACING_03, SPACING_05, SURFACE_BASE, t};
+use super::tokens::{
+    BORDER_SUBTLE, LAYER_HOVER, SHADOW_RAISED, SIZE_MD, SPACING_03, SPACING_05, SURFACE_BASE,
+    SURFACE_RAISED, t,
+};
 use crate::geom::{Align, Axis};
 use crate::tree::{FocusFigure, InsetRefs, Interaction, Key, NodeKind, Role, Semantics, ViewNode};
 
@@ -56,8 +73,28 @@ const HEADER_INTENTS: &[Interaction] =
 /// reads as one column, matching `_accordion.scss`'s `width: 100%` on
 /// `.cds--accordion`.
 pub fn accordion(key: impl Into<Key>, items: Vec<ViewNode>) -> ViewNode {
-    let mut node = stack(key, Axis::Vertical, None, items);
+    accordion_list(key, items, None, None)
+}
+
+/// Spec 009 spaced-cards list. [`SPACING_03`] between items so they read as
+/// separate cards, not one box split by hairlines. Container fill is
+/// [`SURFACE_BASE`]; each item is [`SURFACE_RAISED`]. Pair with
+/// [`accordion_item_spaced`].
+pub fn accordion_spaced(key: impl Into<Key>, items: Vec<ViewNode>) -> ViewNode {
+    accordion_list(key, items, Some(SPACING_03), Some(SURFACE_BASE))
+}
+
+fn accordion_list(
+    key: impl Into<Key>,
+    items: Vec<ViewNode>,
+    spacing: Option<&str>,
+    fill: Option<&str>,
+) -> ViewNode {
+    let mut node = stack(key, Axis::Vertical, spacing, items);
     node.props.align = Some(Align::Stretch);
+    if let Some(fill) = fill {
+        node.props.tokens.insert("background".into(), t(fill));
+    }
     node.semantics = Semantics {
         role: Some(Role::List),
         ..Semantics::default()
@@ -76,7 +113,7 @@ pub fn accordion_item(
     expanded: bool,
     body: impl Into<String>,
 ) -> ViewNode {
-    accordion_item_sized(key, label, expanded, body, SIZE_MD)
+    accordion_item_sized(key, label, expanded, body, SIZE_MD, ItemAnatomy::Flush)
 }
 
 /// [`accordion_item`] at Carbon `sm` (header 32).
@@ -86,7 +123,7 @@ pub fn accordion_item_sm(
     expanded: bool,
     body: impl Into<String>,
 ) -> ViewNode {
-    accordion_item_sized(key, label, expanded, body, HEIGHT_SM)
+    accordion_item_sized(key, label, expanded, body, HEIGHT_SM, ItemAnatomy::Flush)
 }
 
 /// [`accordion_item`] at Carbon `lg` (header 48).
@@ -96,7 +133,41 @@ pub fn accordion_item_lg(
     expanded: bool,
     body: impl Into<String>,
 ) -> ViewNode {
-    accordion_item_sized(key, label, expanded, body, HEIGHT_LG)
+    accordion_item_sized(key, label, expanded, body, HEIGHT_LG, ItemAnatomy::Flush)
+}
+
+/// One spaced-cards item at the default header height ([`SIZE_MD`] / 40).
+///
+/// Same contract as [`accordion_item`] for expansion, chevron, and the body
+/// mounted only while open. Fill is [`SURFACE_RAISED`], elevation is
+/// [`SHADOW_RAISED`], and there is no divider and no `"border"` slot.
+pub fn accordion_item_spaced(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    expanded: bool,
+    body: impl Into<String>,
+) -> ViewNode {
+    accordion_item_sized(key, label, expanded, body, SIZE_MD, ItemAnatomy::Spaced)
+}
+
+/// [`accordion_item_spaced`] at Carbon `sm` (header 32).
+pub fn accordion_item_spaced_sm(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    expanded: bool,
+    body: impl Into<String>,
+) -> ViewNode {
+    accordion_item_sized(key, label, expanded, body, HEIGHT_SM, ItemAnatomy::Spaced)
+}
+
+/// [`accordion_item_spaced`] at Carbon `lg` (header 48).
+pub fn accordion_item_spaced_lg(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    expanded: bool,
+    body: impl Into<String>,
+) -> ViewNode {
+    accordion_item_sized(key, label, expanded, body, HEIGHT_LG, ItemAnatomy::Spaced)
 }
 
 /// [`accordion_item`] whose panel holds nodes rather than one string.
@@ -122,7 +193,24 @@ pub fn accordion_item_with(
     expanded: bool,
     content: Vec<ViewNode>,
 ) -> ViewNode {
-    accordion_item_content(key, label, expanded, content, SIZE_MD)
+    accordion_item_content(key, label, expanded, content, SIZE_MD, ItemAnatomy::Flush)
+}
+
+/// [`accordion_item_with`] in the spaced-cards anatomy.
+pub fn accordion_item_with_spaced(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    expanded: bool,
+    content: Vec<ViewNode>,
+) -> ViewNode {
+    accordion_item_content(key, label, expanded, content, SIZE_MD, ItemAnatomy::Spaced)
+}
+
+/// Flush is Carbon's shipped accordion. Spaced is spec 009's card stack.
+#[derive(Clone, Copy)]
+enum ItemAnatomy {
+    Flush,
+    Spaced,
 }
 
 fn accordion_item_sized(
@@ -131,6 +219,7 @@ fn accordion_item_sized(
     expanded: bool,
     body: impl Into<String>,
     header_h: f32,
+    anatomy: ItemAnatomy,
 ) -> ViewNode {
     accordion_item_content(
         key,
@@ -138,6 +227,7 @@ fn accordion_item_sized(
         expanded,
         vec![text("body-text", body.into())],
         header_h,
+        anatomy,
     )
 }
 
@@ -147,6 +237,7 @@ fn accordion_item_content(
     expanded: bool,
     content: Vec<ViewNode>,
     header_h: f32,
+    anatomy: ItemAnatomy,
 ) -> ViewNode {
     let label = label.into();
     // Carbon's `.cds--accordion__arrow` is `ChevronRight` turned -270°
@@ -188,17 +279,22 @@ fn accordion_item_content(
         right: Some(t(SPACING_05)),
         ..InsetRefs::default()
     });
-    // Resting fill matches the page it sits on ([`SURFACE_BASE`]) rather than
-    // binding no `background` at all: an unbound slot with only
-    // `background@hover` beside it declares content the paint pass cannot
-    // resolve at rest, which the accounting counts as silent
+    // Resting fill must be bound alongside `background@hover`: an unbound
+    // slot with only the hover name beside it declares content the paint
+    // pass cannot resolve at rest, which the accounting counts as silent
     // (`gorgon_petra_egui::paint::PaintReport::silent`) — the same "no fill
     // fallthrough" every `chrome()` variant in [`super::button`] already
-    // avoids by binding `SURFACE_BASE` under `Variant::Ghost`.
+    // avoids by binding `SURFACE_BASE` under `Variant::Ghost`. Flush sits
+    // on the page (`SURFACE_BASE`); a spaced card sits on its own raised
+    // fill, so the header matches that.
+    let header_fill = match anatomy {
+        ItemAnatomy::Flush => SURFACE_BASE,
+        ItemAnatomy::Spaced => SURFACE_RAISED,
+    };
     header
         .props
         .tokens
-        .insert("background".into(), t(SURFACE_BASE));
+        .insert("background".into(), t(header_fill));
     header
         .props
         .tokens
@@ -207,9 +303,10 @@ fn accordion_item_content(
         .with_constraints(pin_block(header_h))
         .interactive(Role::Button, label.clone(), HEADER_INTENTS)
         .owning_its_text();
-    // `BarInside`: collapsed headers stack flush against each other, so the
+    // `BarInside`: collapsed flush headers stack against each other, so the
     // default bar would land on the next header rather than in empty space.
-    // The same stripe on the header's own bottom edge stays inside it.
+    // Spaced cards have a gap, but the stripe still belongs on the header's
+    // own bottom edge, inside the card.
     header.semantics.focus_figure = FocusFigure::BarInside;
     header.semantics.expanded = Some(expanded);
 
@@ -230,10 +327,18 @@ fn accordion_item_content(
         });
         children.push(panel);
     }
-    children.push(divider());
+    if matches!(anatomy, ItemAnatomy::Flush) {
+        children.push(divider());
+    }
 
     let mut item = stack(key, Axis::Vertical, None, children);
     item.props.align = Some(Align::Stretch);
+    if matches!(anatomy, ItemAnatomy::Spaced) {
+        item.props
+            .tokens
+            .insert("background".into(), t(SURFACE_RAISED));
+        item.props.tokens.insert("shadow".into(), t(SHADOW_RAISED));
+    }
     item.semantics = Semantics {
         role: Some(Role::ListItem),
         label: Some(label),
@@ -274,10 +379,13 @@ fn divider() -> ViewNode {
 
 #[cfg(test)]
 mod tests {
-    use super::{BORDER_SUBTLE, LAYER_HOVER};
+    use super::{
+        BORDER_SUBTLE, LAYER_HOVER, SHADOW_RAISED, SPACING_03, SURFACE_BASE, SURFACE_RAISED,
+    };
     use super::{
         HEIGHT_LG, HEIGHT_SM, IconMark, IconTone, SIZE_MD, accordion, accordion_item,
-        accordion_item_lg, accordion_item_sm, icon_toned,
+        accordion_item_lg, accordion_item_sm, accordion_item_spaced, accordion_item_spaced_lg,
+        accordion_item_spaced_sm, accordion_spaced, icon_toned,
     };
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
@@ -330,7 +438,7 @@ mod tests {
         assert_eq!(token(header, "background@hover"), Some(LAYER_HOVER));
         assert_eq!(
             token(header, "background"),
-            Some(super::SURFACE_BASE),
+            Some(SURFACE_BASE),
             "a resting `background` must be bound alongside `background@hover`, \
              or the header paints nothing when it is not hovered — the paint \
              pass counts that as silent, not empty"
@@ -522,6 +630,22 @@ mod tests {
                 "lg-open",
                 accordion_item_lg("a", "Large section", true, "body"),
             ),
+            (
+                "spaced-md-open",
+                accordion_item_spaced("a", "Section A", true, "The panel body."),
+            ),
+            (
+                "spaced-md-closed",
+                accordion_item_spaced("a", "Section A", false, "hidden"),
+            ),
+            (
+                "spaced-sm-open",
+                accordion_item_spaced_sm("a", "Small section", true, "body"),
+            ),
+            (
+                "spaced-lg-open",
+                accordion_item_spaced_lg("a", "Large section", true, "body"),
+            ),
         ];
         for (label, node) in cases {
             let frame = petrify_lone(node);
@@ -576,36 +700,174 @@ mod tests {
         );
     }
 
-    /// Check E: title and chevron ink against the header's own resting fill
-    /// (`surface.base`), read through `Props.opacity` (always 1.0 here, but
-    /// composited rather than assumed so a future faded label is caught).
+    /// Check E: title and chevron ink against the header's own resting fill,
+    /// read through `Props.opacity` (always 1.0 here, but composited rather
+    /// than assumed so a future faded label is caught). Flush sits on
+    /// `surface.base`; a spaced card sits on `surface.raised`.
     #[test]
     fn header_text_clears_aa_contrast_against_its_own_fill() {
         const MIN_TEXT_CONTRAST: f32 = 4.5;
+        let items = [
+            accordion_item("a", "Section A", false, "hidden"),
+            accordion_item_spaced("a", "Section A", false, "hidden"),
+        ];
         for theme in [crate::token::light(), crate::token::dark()] {
-            let item = accordion_item("a", "Section A", false, "hidden");
-            let header = named(&item, "header");
-            let bg_name = header
-                .props
-                .tokens
-                .get("background")
-                .expect("header binds a resting background");
-            let bg = color(&theme, bg_name.as_str());
-            for label_key in ["title", "chevron"] {
-                let label = named(header, label_key);
-                let inks = inks(label);
-                assert!(!inks.is_empty(), "{label_key} binds an ink");
-                let opacity = label.props.opacity.unwrap_or(1.0);
-                for fg_name in inks {
-                    let fg = color(&theme, fg_name.as_str()).faded(opacity).over(bg);
-                    let ratio = fg.contrast_ratio(bg);
-                    assert!(
-                        ratio >= MIN_TEXT_CONTRAST,
-                        "{label_key} at {ratio:.2}:1 against {bg_name} fails AA \
-                         {MIN_TEXT_CONTRAST}:1"
-                    );
+            for item in &items {
+                let header = named(item, "header");
+                let bg_name = header
+                    .props
+                    .tokens
+                    .get("background")
+                    .expect("header binds a resting background");
+                let bg = color(&theme, bg_name.as_str());
+                for label_key in ["title", "chevron"] {
+                    let label = named(header, label_key);
+                    let inks = inks(label);
+                    assert!(!inks.is_empty(), "{label_key} binds an ink");
+                    let opacity = label.props.opacity.unwrap_or(1.0);
+                    for fg_name in inks {
+                        let fg = color(&theme, fg_name.as_str()).faded(opacity).over(bg);
+                        let ratio = fg.contrast_ratio(bg);
+                        assert!(
+                            ratio >= MIN_TEXT_CONTRAST,
+                            "{label_key} at {ratio:.2}:1 against {bg_name} fails AA \
+                             {MIN_TEXT_CONTRAST}:1"
+                        );
+                    }
                 }
             }
         }
+    }
+
+    #[test]
+    fn accordion_stays_a_flush_list() {
+        let node = accordion(
+            "acc",
+            vec![accordion_item("a", "Section A", false, "hidden")],
+        );
+        assert_eq!(node.props.spacing, None);
+        assert!(token(&node, "background").is_none());
+        assert_eq!(node.props.align, Some(crate::geom::Align::Stretch));
+    }
+
+    #[test]
+    fn accordion_spaced_is_a_gapped_list_on_surface_base() {
+        let node = accordion_spaced(
+            "acc",
+            vec![accordion_item_spaced("a", "Section A", false, "hidden")],
+        );
+        assert_eq!(node.semantics.role, Some(Role::List));
+        assert!(node.interactions.is_empty());
+        assert_eq!(node.props.align, Some(crate::geom::Align::Stretch));
+        assert_eq!(
+            node.props.spacing.as_ref().map(|n| n.as_str()),
+            Some(SPACING_03)
+        );
+        assert_eq!(token(&node, "background"), Some(SURFACE_BASE));
+        assert!(token(&node, "border").is_none());
+    }
+
+    #[test]
+    fn accordion_item_spaced_declares_expanded_and_mounts_the_body_only_while_open() {
+        let open = accordion_item_spaced("a", "Section A", true, "the rest");
+        let header = named(&open, "header");
+        assert_eq!(header.semantics.expanded, Some(true));
+        assert_eq!(
+            named(&open, "chevron").props.canvas,
+            icon_toned("chevron", IconMark::ChevronUp, IconTone::Primary)
+                .props
+                .canvas,
+            "an open item points its chevron up"
+        );
+        named(&open, "body");
+        assert!(
+            open.children
+                .iter()
+                .all(|child| child.key.as_str() != "divider"),
+            "a spaced card has no flush divider"
+        );
+
+        let shut = accordion_item_spaced("a", "Section A", false, "the rest");
+        assert_eq!(named(&shut, "header").semantics.expanded, Some(false));
+        assert_eq!(
+            named(&shut, "chevron").props.canvas,
+            icon_toned("chevron", IconMark::ChevronDown, IconTone::Primary)
+                .props
+                .canvas,
+            "a shut item points its chevron down"
+        );
+        assert!(
+            shut.children
+                .iter()
+                .all(|child| child.key.as_str() != "body"),
+            "collapsed item drops the body child"
+        );
+    }
+
+    #[test]
+    fn accordion_item_spaced_is_a_raised_card_with_no_four_sided_border() {
+        let item = accordion_item_spaced("a", "Section A", false, "hidden");
+        assert_eq!(token(&item, "background"), Some(SURFACE_RAISED));
+        assert_eq!(token(&item, "shadow"), Some(SHADOW_RAISED));
+        assert!(
+            token(&item, "border").is_none(),
+            "a card is a surface step plus shadow, never a Tailwind box"
+        );
+        for edge in ["border-top", "border-right", "border-bottom", "border-left"] {
+            assert!(
+                token(&item, edge).is_none(),
+                "{edge} is still a border on the item"
+            );
+        }
+        assert_eq!(
+            token(named(&item, "header"), "background"),
+            Some(SURFACE_RAISED)
+        );
+        assert_eq!(
+            token(named(&item, "header"), "background@hover"),
+            Some(LAYER_HOVER)
+        );
+    }
+
+    #[test]
+    fn accordion_item_spaced_sm_and_lg_pin_carbon_header_heights() {
+        let sm = accordion_item_spaced_sm("a", "Small", false, "x");
+        assert_eq!(
+            named(&sm, "header").constraints.vertical.min,
+            Some(HEIGHT_SM)
+        );
+        let md = accordion_item_spaced("a", "Medium", false, "x");
+        assert_eq!(named(&md, "header").constraints.vertical.min, Some(SIZE_MD));
+        let lg = accordion_item_spaced_lg("a", "Large", false, "x");
+        assert_eq!(
+            named(&lg, "header").constraints.vertical.min,
+            Some(HEIGHT_LG)
+        );
+    }
+
+    #[test]
+    fn accordion_spaced_places_a_gap_between_items() {
+        let node = accordion_spaced(
+            "acc",
+            vec![
+                accordion_item_spaced("a", "First", false, "hidden"),
+                accordion_item_spaced("b", "Second", false, "hidden"),
+            ],
+        );
+        let frame = petrify_lone(node);
+        let find = |suffix: &str| {
+            frame
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with(suffix))
+                .unwrap_or_else(|| panic!("no placement ending {suffix}"))
+        };
+        let a = find("/a");
+        let b = find("/b");
+        let gap = b.rect.y - (a.rect.y + a.rect.h);
+        assert!(
+            gap > 1.0,
+            "spaced items must not sit flush (1px divider territory); gap was {gap}"
+        );
     }
 }

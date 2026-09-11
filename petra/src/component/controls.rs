@@ -98,6 +98,7 @@
 //! the off knob reads correctly in both polarities where a fixed white
 //! would vanish in light.
 
+use super::field::warning_helper;
 use super::icon::{IconMark, icon};
 use super::text::text;
 use super::tokens::{
@@ -434,6 +435,34 @@ pub fn checkbox_group(
     )
 }
 
+/// Stack a binary control over [`warning_helper`]. No container border:
+/// the helper's word and glyph are the channels, and boxing the row would
+/// be a second frame Carbon does not draw on checkbox or radio.
+fn with_warning(key: impl Into<Key>, control: ViewNode, message: impl Into<String>) -> ViewNode {
+    let mut node = stack(
+        key,
+        Axis::Vertical,
+        Some(SPACING_02),
+        vec![control, warning_helper(message)],
+    );
+    node.props.align = Some(Align::Stretch);
+    node
+}
+
+/// A checkbox plus a warning helper stacked below it.
+///
+/// Colour is not the only channel: the helper already carries
+/// `Warning: {message}` and a WarningFilled mark. This constructor does
+/// not wrap the control in a four-sided container border.
+pub fn checkbox_warning(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    checked: bool,
+    message: impl Into<String>,
+) -> ViewNode {
+    with_warning(key, checkbox("checkbox", label, checked), message)
+}
+
 /// A radio button: one choice among a group, drawn as an 18×18 circle.
 ///
 /// Selected: the keyed `"box"` fills solid with [`ACCENT_PRIMARY`].
@@ -510,6 +539,19 @@ pub fn radio(key: impl Into<Key>, label: impl Into<String>, selected: bool) -> V
         intent: Intent::Select,
         phase: Phase::OnRelease,
     })
+}
+
+/// A radio plus a warning helper stacked below it.
+///
+/// Same channels as [`checkbox_warning`]: the helper's word and glyph, and
+/// no four-sided container border around the row.
+pub fn radio_warning(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    selected: bool,
+    message: impl Into<String>,
+) -> ViewNode {
+    with_warning(key, radio("radio", label, selected), message)
 }
 
 /// A vertical radio group. Mutual exclusivity is the caller's `selected`
@@ -714,9 +756,10 @@ mod tests {
     };
     use super::{
         CHECKBOX_BOX, RADIO_BOX, TOGGLE_SM_TRACK_H, TOGGLE_SM_TRACK_W, TOGGLE_TRACK_H,
-        TOGGLE_TRACK_W, checkbox, checkbox_group, checkbox_indeterminate, checkbox_readonly, radio,
-        radio_group, toggle, toggle_sm,
+        TOGGLE_TRACK_W, checkbox, checkbox_group, checkbox_indeterminate, checkbox_readonly,
+        checkbox_warning, radio, radio_group, radio_warning, toggle, toggle_sm,
     };
+    use crate::component::{IconMark, IconTone, icon_toned};
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, validated_with};
@@ -881,6 +924,60 @@ mod tests {
         // Both items may be selected: the group does not clear siblings.
         assert!(named(&node, "a").semantics.selected);
         assert!(named(&node, "b").semantics.selected);
+    }
+
+    /// Colour is not the only channel: the helper says `Warning: {message}`
+    /// and sits a WarningFilled mark beside it. The wrapper is not a
+    /// four-sided box; a checkbox's outline is already its own.
+    fn assert_warning_helper(node: &ViewNode, message: &str) {
+        assert_eq!(node.kind, NodeKind::Stack);
+        assert_eq!(node.props.axis, Some(Axis::Vertical));
+        assert!(
+            node.semantics.role.is_none(),
+            "wrapper must not steal Button"
+        );
+        assert!(
+            !node.props.tokens.contains_key("border"),
+            "a warning control is not a four-sided box; the helper is the channel"
+        );
+        let message_node = named(node, "message");
+        let expected_text = format!("Warning: {message}");
+        assert_eq!(
+            message_node.props.text.as_deref(),
+            Some(expected_text.as_str())
+        );
+        let mark = named(node, "mark");
+        let expected = icon_toned("mark", IconMark::WarningFilled, IconTone::Primary);
+        assert_eq!(mark.kind, NodeKind::Canvas);
+        assert_eq!(
+            mark.props.canvas, expected.props.canvas,
+            "the helper's glyph is WarningFilled, not ErrorFilled and not a \
+             swatch"
+        );
+    }
+
+    #[test]
+    fn checkbox_warning_says_so_in_words_and_a_glyph() {
+        let node = checkbox_warning("c", "Agree", false, "required");
+        assert_warning_helper(&node, "required");
+        assert!(!named(&node, "checkbox").semantics.selected);
+        named(&node, "box");
+        named(&node, "label");
+        let on = checkbox_warning("c", "Agree", true, "looks old");
+        assert!(named(&on, "checkbox").semantics.selected);
+        assert_warning_helper(&on, "looks old");
+    }
+
+    #[test]
+    fn radio_warning_says_so_in_words_and_a_glyph() {
+        let node = radio_warning("r", "Other", false, "pick one");
+        assert_warning_helper(&node, "pick one");
+        assert!(!named(&node, "radio").semantics.selected);
+        named(&node, "box");
+        named(&node, "label");
+        let on = radio_warning("r", "Other", true, "unusual choice");
+        assert!(named(&on, "radio").semantics.selected);
+        assert_warning_helper(&on, "unusual choice");
     }
 
     #[test]

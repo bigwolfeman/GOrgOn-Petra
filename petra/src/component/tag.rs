@@ -1,10 +1,20 @@
-//! Carbon Tag (slice-e).
+//! Carbon Tag (slice-e), and the badge variants that extend it (D-092).
+//!
+//! Badge work lives here. There is no parallel `badge.rs`. One pill keeps
+//! one radius rule: every constructor binds [`crate::token::CornerRole::Pill`]
+//! through [`corner_for`]. Avatar is a leading child ([`tag_with_avatar`]).
+//! Colour is [`tag_status`], which takes a [`crate::token::StatusToken`] and
+//! routes through [`super::status`] so colour, shape, and text arrive
+//! together. A colour-only badge cannot be constructed: `StatusToken::new`
+//! refuses empty text, and this function never takes a bare hue.
 //!
 //! Four Carbon forms; this file ships three. Operational needs Popover
-//! (Wave 3) and is omitted. Colour variants (`$tag-background-red` …) are
-//! **skipped**: those names are not in [`super::tokens`], and inventing
-//! hues here would put a colour decision in a component. High-contrast /
-//! outline uses [`BORDER_STRONG`].
+//! (Wave 3) and is omitted. Colour variants (`$tag-background-red` …) and
+//! the eight-hue badge set are **skipped**: those names are not in
+//! [`super::tokens`], and inventing hues here would put a colour decision
+//! in a component. High-contrast / outline on the *selectable* form uses
+//! [`BORDER_STRONG`]. The badge constructors do not draw an outline as a
+//! four-sided border.
 //!
 //! Sizes MEASURED `_tag.scss`: sm 18, md 24 (default), lg 32. Carbon's own
 //! radius is a fixed 16px at every size (not a percentage, `_tag.scss`),
@@ -15,14 +25,18 @@
 //! which reaches a stadium only at 16 units and under. `min-inline-size` 32,
 //! `max-inline-size` 208.
 //!
-//! Read-only [`tag`] is not interactive. [`dismissible_tag`] is a labelled
-//! button `"Dismiss {label}"` drawing [`IconMark::Close`] (Carbon's
-//! `.cds--tag__close-icon`, `color: $icon-primary`, 16px glyph, slice-e);
-//! the label is what makes the close never icon-only (FR-026).
-//! [`selectable_tag`] is [`Role::Button`] plus
-//! `Semantics.selected`, plus [`IconMark::Check`] when selected — Carbon
-//! gives selectable tags no icon spec (unlike Structured list's own
-//! `RadioButtonChecked`, `.agents/research/08-25-2026/Carbon-Component-Inventory/slice-e.md`),
+//! Read-only [`tag`] is not interactive. [`tag_with_avatar`] is the same
+//! pill with a leading [`ViewNode`] (this file does not import `avatar.rs`).
+//! [`tag_status`] is the coloured badge, still not interactive: the
+//! [`Role::Status`] and label come from the token via [`super::status`].
+//! [`dismissible_tag`] is a labelled button `"Dismiss {label}"` drawing
+//! [`IconMark::Close`] (Carbon's `.cds--tag__close-icon`,
+//! `color: $icon-primary`, 16px glyph, slice-e); the label is what makes
+//! the close never icon-only (FR-026). [`selectable_tag`] is
+//! [`Role::Button`] plus `Semantics.selected`, plus [`IconMark::Check`]
+//! when selected — Carbon gives selectable tags no icon spec (unlike
+//! Structured list's own `RadioButtonChecked`,
+//! `.agents/research/08-25-2026/Carbon-Component-Inventory/slice-e.md`),
 //! but a measured render still failed the same test a spec would have
 //! caught: selectable tags carry only core tokens
 //! (`$layer`/`$border-inverse`/`$text-primary`, slice-e:150), and stepping
@@ -41,9 +55,9 @@ use super::tokens::{
     SURFACE_RAISED, TEXT_PRIMARY, t,
 };
 use crate::geom::{Align, Axis};
-use crate::token::{CornerRole, corner_for};
+use crate::token::{CornerRole, StatusToken, corner_for};
 use crate::tree::{
-    AxisConstraint, Constraints, InsetRefs, Interaction, Key, Role, TextWrap, ViewNode,
+    AxisConstraint, Constraints, InsetRefs, Interaction, Key, NodeKind, Role, TextWrap, ViewNode,
 };
 
 /// Carbon sm tag height (`1.125rem`).
@@ -143,6 +157,61 @@ pub fn selectable_tag(key: impl Into<Key>, label: impl Into<String>, selected: b
     node
 }
 
+/// Read-only tag with a leading avatar child.
+///
+/// The pill is the same shell as [`tag`]: md height, [`CornerRole::Pill`]
+/// via [`corner_for`], no border, no interactions. The avatar is a
+/// [`ViewNode`] so this file does not import `avatar.rs` (T008 is a sibling
+/// and a cycle here would be a split error). Its key is the caller's; do
+/// not collide with `"label"`.
+pub fn tag_with_avatar(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    avatar: ViewNode,
+) -> ViewNode {
+    let label = label.into();
+    shell(
+        key,
+        HEIGHT_MD,
+        SPACING_03,
+        vec![avatar, title_text("label", label)],
+        false,
+        false,
+    )
+}
+
+/// Coloured badge. Colour, shape, and text come from a [`StatusToken`]
+/// through [`super::status`] — never a bare hue, and never an outline
+/// drawn as a four-sided border.
+///
+/// The pill radius is the same [`CornerRole::Pill`] [`corner_for`] bind
+/// every other constructor in this file uses. The marker and label are
+/// lifted from [`super::status`] so this file does not re-derive a
+/// silhouette table. The pill fill stays [`SURFACE_RAISED`]; the status
+/// colour sits on the marker.
+pub fn tag_status(key: impl Into<Key>, token: &StatusToken) -> ViewNode {
+    // Colour, shape, and text come from status(); this file does not
+    // re-derive a silhouette table or bind a hue on the pill. The marker
+    // and label sit in this shell so the title ellipsizes under the tag's
+    // max-inline 208 and the node the caller holds is the Role::Status
+    // (one status, not a pill wrapping a second one).
+    let readout = super::status::status("status", token);
+    let parts: Vec<ViewNode> = readout
+        .children
+        .iter()
+        .map(|child| {
+            let mut part = (**child).clone();
+            if part.kind == NodeKind::Text {
+                part.props.wrap = Some(TextWrap::Ellipsis);
+            }
+            part
+        })
+        .collect();
+    let mut node = shell(key, HEIGHT_MD, SPACING_03, parts, false, false);
+    node.semantics = readout.semantics;
+    node
+}
+
 fn read_only_tag(
     key: impl Into<Key>,
     label: impl Into<String>,
@@ -228,17 +297,29 @@ fn shell(
 mod tests {
     use super::{
         HEIGHT_LG, HEIGHT_MD, HEIGHT_SM, IconMark, IconTone, MAX_INLINE, MIN_INLINE,
-        dismissible_tag, icon_toned, selectable_tag, tag, tag_lg, tag_sm,
+        dismissible_tag, icon_toned, selectable_tag, tag, tag_lg, tag_sm, tag_status,
+        tag_with_avatar, text,
     };
-    use crate::component::tokens::{BORDER_STRONG, LAYER_HOVER, LAYER_SELECTED, SURFACE_RAISED};
+    use crate::component::tokens::{
+        BORDER_STRONG, LAYER_HOVER, LAYER_SELECTED, SILHOUETTE_TRIANGLE, SURFACE_RAISED,
+    };
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, inks, validated_with};
     use crate::token::{
-        ColorValue, CornerRole, Theme, ThemeMode, TokenName, TokenValue, corner_for,
-        standard_vocabulary,
+        ColorValue, CornerRole, StatusShape, StatusToken, Theme, ThemeMode, TokenName, TokenValue,
+        corner_for, standard_vocabulary,
     };
     use crate::tree::{Interaction, NodeKind, Props, Registry, Role, ViewNode};
+
+    fn ok_status() -> StatusToken {
+        StatusToken::new(
+            TokenName::new("status.ok").unwrap(),
+            StatusShape::Circle,
+            "OK",
+        )
+        .unwrap()
+    }
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         node.children
@@ -375,7 +456,21 @@ mod tests {
 
     #[test]
     fn tag_does_not_invent_colour_tokens() {
-        let node = tag("env", "prod");
+        let nodes = [
+            tag("env", "prod"),
+            tag_sm("env", "prod"),
+            tag_lg("env", "prod"),
+            dismissible_tag("env", "prod"),
+            selectable_tag("env", "prod", true),
+            tag_with_avatar("who", "Ada", text("avatar", "A")),
+            tag_status("health", &ok_status()),
+        ];
+        for node in nodes {
+            assert_no_invented_hues(&node);
+        }
+    }
+
+    fn assert_no_invented_hues(node: &ViewNode) {
         for (slot, name) in &node.props.tokens {
             assert!(
                 !name.as_str().contains("red")
@@ -384,6 +479,102 @@ mod tests {
                 "skipped the 10-colour set, found {slot}={name}"
             );
         }
+        for child in &node.children {
+            assert_no_invented_hues(child);
+        }
+    }
+
+    #[test]
+    fn tag_with_avatar_leads_with_the_avatar_child() {
+        let node = tag_with_avatar("who", "Ada", text("avatar", "A"));
+        assert_eq!(node.children[0].key.as_str(), "avatar");
+        assert_eq!(child(&node, "avatar").props.text.as_deref(), Some("A"));
+        assert_eq!(child(&node, "label").props.text.as_deref(), Some("Ada"));
+        assert_eq!(
+            token(&node, "radius"),
+            Some(corner_for(CornerRole::Pill, HEIGHT_MD))
+        );
+        assert_eq!(token(&node, "background"), Some(SURFACE_RAISED));
+        assert_eq!(
+            token(&node, "border"),
+            None,
+            "badge constructors do not draw an outline as a four-sided border"
+        );
+        assert!(node.interactions.is_empty());
+        assert!(!node.is_interactive());
+        assert!(node.semantics.role.is_none());
+        assert_eq!(node.constraints.vertical.min, Some(HEIGHT_MD));
+        assert_eq!(node.constraints.vertical.max, Some(HEIGHT_MD));
+        assert_eq!(node.constraints.horizontal.min, Some(MIN_INLINE));
+        assert_eq!(node.constraints.horizontal.max, Some(MAX_INLINE));
+    }
+
+    #[test]
+    fn tag_status_routes_colour_through_status_not_a_pill_hue() {
+        let status = ok_status();
+        let node = tag_status("health", &status);
+        assert_eq!(node.semantics.role, Some(Role::Status));
+        assert_eq!(node.semantics.label.as_deref(), Some("OK"));
+        assert_eq!(
+            token(&node, "background"),
+            Some(SURFACE_RAISED),
+            "the pill is not a hue swap; status colour sits on the marker"
+        );
+        assert_eq!(
+            token(&node, "border"),
+            None,
+            "badge constructors do not draw an outline as a four-sided border"
+        );
+        assert_eq!(
+            token(&node, "radius"),
+            Some(corner_for(CornerRole::Pill, HEIGHT_MD))
+        );
+        let dot = child(&node, "dot");
+        assert_eq!(token(dot, "background"), Some("status.ok"));
+        assert!(
+            token(dot, "silhouette").is_some(),
+            "shape channel is present; colour is not the only channel"
+        );
+        assert_eq!(child(&node, "label").props.text.as_deref(), Some("OK"));
+        assert!(node.interactions.is_empty());
+        assert!(!node.is_interactive());
+        assert_eq!(node.constraints.vertical.min, Some(HEIGHT_MD));
+        assert_eq!(node.constraints.horizontal.max, Some(MAX_INLINE));
+    }
+
+    #[test]
+    fn tag_status_carries_shape_and_text_from_the_token() {
+        let degraded = StatusToken::new(
+            TokenName::new("status.degraded").unwrap(),
+            StatusShape::Triangle,
+            "Degraded",
+        )
+        .unwrap();
+        let node = tag_status("health", &degraded);
+        assert_eq!(node.semantics.label.as_deref(), Some("Degraded"));
+        assert_eq!(
+            child(&node, "label").props.text.as_deref(),
+            Some("Degraded")
+        );
+        let dot = child(&node, "dot");
+        assert_eq!(token(dot, "background"), Some("status.degraded"));
+        assert_eq!(
+            token(dot, "silhouette"),
+            Some(SILHOUETTE_TRIANGLE),
+            "the silhouette is status.rs's, not a hue table in this file"
+        );
+        let down = StatusToken::new(
+            TokenName::new("status.down").unwrap(),
+            StatusShape::Octagon,
+            "Down",
+        )
+        .unwrap();
+        let down_node = tag_status("health", &down);
+        assert_ne!(
+            token(child(&down_node, "dot"), "silhouette"),
+            token(dot, "silhouette"),
+            "two statuses differ in outline, not only in fill"
+        );
     }
 
     const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
@@ -434,6 +625,11 @@ mod tests {
             ("dismissible", dismissible_tag("env", "prod")),
             ("selectable-on", selectable_tag("env", "prod", true)),
             ("selectable-off", selectable_tag("env", "prod", false)),
+            (
+                "with-avatar",
+                tag_with_avatar("env", "Ada", text("avatar", "A")),
+            ),
+            ("status", tag_status("env", &ok_status())),
         ];
         for (label, node) in cases {
             let frame = petrify_lone(node);
@@ -475,6 +671,12 @@ mod tests {
             ("read-only", tag("env", "prod"), false),
             ("dismissible", dismissible_tag("env", "prod"), true),
             ("selectable", selectable_tag("env", "prod", false), true),
+            (
+                "with-avatar",
+                tag_with_avatar("env", "Ada", text("avatar", "A")),
+                false,
+            ),
+            ("status", tag_status("env", &ok_status()), false),
         ] {
             let frame = petrify_lone(node);
             let focus = crate::focus::FocusTree::from_placements(
@@ -512,6 +714,12 @@ mod tests {
                     selectable_tag("env", "prod", false),
                     vec!["label"],
                 ),
+                (
+                    "with-avatar",
+                    tag_with_avatar("env", "Ada", text("avatar", "A")),
+                    vec!["label", "avatar"],
+                ),
+                ("status", tag_status("env", &ok_status()), vec!["label"]),
             ] {
                 let pill_bg_name = node
                     .props

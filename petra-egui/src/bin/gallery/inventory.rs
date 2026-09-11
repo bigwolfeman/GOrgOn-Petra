@@ -26,6 +26,8 @@ pub enum Slice {
     E,
     /// `slice-f.md`
     F,
+    /// Spec 009 constructors that are not a Carbon inventory row.
+    G,
 }
 
 impl Slice {
@@ -38,6 +40,7 @@ impl Slice {
             Slice::D => 'D',
             Slice::E => 'E',
             Slice::F => 'F',
+            Slice::G => 'G',
         }
     }
 }
@@ -45,7 +48,7 @@ impl Slice {
 /// One row of `INVENTORY.md`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Row {
-    /// The row number, 1 through 42, as printed in the inventory.
+    /// The row number, 1 through the catalog length, as printed in the index.
     pub number: u8,
     /// Carbon's own name for the component, spelled as the inventory spells it.
     pub component: &'static str,
@@ -53,12 +56,14 @@ pub struct Row {
     pub slice: Slice,
 }
 
-/// Every inventory row, in inventory order.
-///
-/// The 42 are the scope, not a starting selection: `contracts/component-anatomy.md`
-/// §2 says each row ends built or excluded-with-a-reason, and that silence is
-/// not a third option.
-pub const ROWS: [Row; 42] = [
+/// Carbon inventory length. Spec 009 rows start after this.
+/// Tests walk this separately from [`ROWS`].
+#[allow(dead_code)]
+pub const CARBON_COUNT: usize = 42;
+
+/// Every catalog row, in order. Rows 1–42 are the Carbon inventory.
+/// Rows after that are spec 009 constructors that Carbon never numbered.
+pub const ROWS: [Row; 52] = [
     Row {
         number: 1,
         component: "Accordion",
@@ -269,6 +274,56 @@ pub const ROWS: [Row; 42] = [
         component: "UI shell right panel",
         slice: Slice::F,
     },
+    Row {
+        number: 43,
+        component: "Avatar",
+        slice: Slice::G,
+    },
+    Row {
+        number: 44,
+        component: "Button group",
+        slice: Slice::G,
+    },
+    Row {
+        number: 45,
+        component: "Context menu",
+        slice: Slice::G,
+    },
+    Row {
+        number: 46,
+        component: "Drawer",
+        slice: Slice::G,
+    },
+    Row {
+        number: 47,
+        component: "Input group",
+        slice: Slice::G,
+    },
+    Row {
+        number: 48,
+        component: "Menubar",
+        slice: Slice::G,
+    },
+    Row {
+        number: 49,
+        component: "OTP",
+        slice: Slice::G,
+    },
+    Row {
+        number: 50,
+        component: "Rating",
+        slice: Slice::G,
+    },
+    Row {
+        number: 51,
+        component: "Textarea",
+        slice: Slice::G,
+    },
+    Row {
+        number: 52,
+        component: "Toggle button",
+        slice: Slice::G,
+    },
 ];
 
 #[cfg(test)]
@@ -287,11 +342,14 @@ mod tests {
     // guards `ROWS` there.
 
     #[test]
-    fn the_rows_are_numbered_one_to_forty_two_in_order() {
+    fn the_rows_are_numbered_in_order() {
         for (index, row) in ROWS.iter().enumerate() {
-            let expected = u8::try_from(index + 1).expect("42 fits in u8");
+            let expected = u8::try_from(index + 1).expect("catalog length fits in u8");
             assert_eq!(row.number, expected);
         }
+        assert_eq!(ROWS.len(), super::CARBON_COUNT + 10);
+        assert_eq!(ROWS[super::CARBON_COUNT - 1].component, "UI shell right panel");
+        assert_eq!(ROWS[super::CARBON_COUNT].component, "Avatar");
     }
 
     #[test]
@@ -311,5 +369,7 @@ mod tests {
             let count = ROWS.iter().filter(|row| row.slice == slice).count();
             assert_eq!(count, 7, "slice {}", slice.letter());
         }
+        let extra = ROWS.iter().filter(|row| row.slice == Slice::G).count();
+        assert_eq!(extra, 10, "spec 009 rows");
     }
 }

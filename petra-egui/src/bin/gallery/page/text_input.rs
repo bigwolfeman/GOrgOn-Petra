@@ -1,7 +1,8 @@
 //! Inventory row 34, Text input.
 
 use gorgon_petra::component::{
-    field, field_lg, field_readonly, field_sm, field_validated, hinted, labeled, section, valued,
+    field, field_lg, field_readonly, field_required, field_sm, field_validated, field_warning,
+    hinted, labeled, section, valued,
 };
 use gorgon_petra::input::{InputEvent, KeyCode};
 use gorgon_petra::tree::ViewNode;
@@ -136,6 +137,8 @@ impl Page for TextInput {
                         // the value is there and cannot be changed.
                         valued(field_readonly(RO, "Read-only value"), "9p://kernel/0"),
                     ),
+                    field_required("field-req", "Fiber id"),
+                    field_warning("field-warn", "Owner", "looks old"),
                 ],
             )],
         )

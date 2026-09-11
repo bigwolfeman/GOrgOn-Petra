@@ -15,7 +15,7 @@
 //!
 //! `loading.rs` and `progress.rs` each carry real `pub fn ... -> ViewNode`
 //! constructors (`loading`/`loading_sm`, `progress`/`progress_sm`/
-//! `progress_with_helper`); `tag.rs` carries five. Spec 005's tasks.md still
+//! `progress_with_helper`); `tag.rs` carries seven. Spec 005's tasks.md still
 //! shows T086/T094/T102 unchecked, but the checkbox is a bookkeeping gap,
 //! not an implementation one — all three are registered below like every
 //! other constructor in this file.
@@ -29,6 +29,7 @@ use crate::component::params::{
     KeyChildren, KeyLabel, KeyLabelNumber, KeyLabelSelected, KeyLabelSelectedValue, KeyLabelValue,
     ParamError, ParamShape,
 };
+use crate::token::StatusToken;
 use crate::tree::{Key, ViewNode};
 
 /// See `registry/form.rs`'s `fail`: names the component being built so a
@@ -171,6 +172,31 @@ impl ParamShape for ProgressStepParams {
         "{ key: string, label: string, complete: boolean, current: boolean }";
 }
 
+/// `tag_with_avatar(key, label, avatar)`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct KeyLabelAvatar {
+    key: Key,
+    label: String,
+    avatar: ViewNode,
+}
+impl ParamShape for KeyLabelAvatar {
+    const LUAU: &'static str = "{ key: string, label: string, avatar: ViewNode }";
+}
+
+/// `tag_status(key, token)`. Colour, shape, and text come from the token;
+/// this row does not re-derive them.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TagStatusParams {
+    key: Key,
+    token: StatusToken,
+}
+impl ParamShape for TagStatusParams {
+    const LUAU: &'static str = "{ key: string, token: { name: string, shape: \"circle\" | \
+         \"triangle\" | \"square\" | \"diamond\" | \"octagon\", text: string } }";
+}
+
 // ---------------------------------------------------------------------
 // This group's constructors.
 // ---------------------------------------------------------------------
@@ -286,6 +312,12 @@ pub const ENTRIES: &[Entry] = &[
     )),
     row!("selectable_tag", KeyLabelSelected, |p| lib::selectable_tag(
         p.key, p.label, p.selected
+    )),
+    row!("tag_with_avatar", KeyLabelAvatar, |p| lib::tag_with_avatar(
+        p.key, p.label, p.avatar
+    )),
+    row!("tag_status", TagStatusParams, |p| lib::tag_status(
+        p.key, &p.token
     )),
 ];
 

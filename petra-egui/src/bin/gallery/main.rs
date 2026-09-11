@@ -99,6 +99,6 @@ mod tests {
         let roster = Cell::roster();
         let (_, total) = tally(&roster);
         assert_eq!(total, crate::inventory::ROWS.len());
-        assert_eq!(total, 42);
+        assert_eq!(total, crate::inventory::CARBON_COUNT + 10);
     }
 }

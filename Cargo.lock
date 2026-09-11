@@ -1563,6 +1563,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "gorgon-petra-compound"
+version = "0.0.0"
+dependencies = [
+ "gorgon-petra",
+ "serde",
+]
+
+[[package]]
 name = "gorgon-petra-egui"
 version = "0.0.0"
 dependencies = [

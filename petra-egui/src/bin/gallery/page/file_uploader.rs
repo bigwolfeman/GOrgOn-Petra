@@ -1,7 +1,8 @@
 //! Inventory row 12, File uploader.
 
 use gorgon_petra::component::{
-    file_uploader_item, file_uploader_item_edit, file_uploader_item_invalid, file_uploader_with,
+    file_uploader_item, file_uploader_item_edit, file_uploader_item_invalid,
+    file_uploader_item_warning, file_uploader_with,
     section,
 };
 use gorgon_petra::input::InputEvent;
@@ -66,6 +67,11 @@ impl Page for FileUploader {
             "fu-bad",
             "core.dump",
             "File is over 5 MB",
+        ));
+        rows.push(file_uploader_item_warning(
+            "fu-warn",
+            "stale.ndjson",
+            "older than the session",
         ));
         rows.push(wrapped(
             "note",

@@ -14,31 +14,39 @@ pub mod common;
 
 mod accordion;
 mod ai_label;
+mod avatar;
 mod breadcrumb;
 mod button;
+mod button_group;
 mod checkbox;
+mod context_menu;
 mod code_snippet;
 mod contained_list;
 mod content_switcher;
 mod data_table;
 mod date_picker;
+mod drawer;
 mod dropdown;
 mod file_uploader;
 mod form;
 mod inline_loading;
+mod input_group;
 mod link;
 mod list;
 mod loading;
 mod menu;
 mod menu_buttons;
+mod menubar;
 mod modal;
 mod notification;
 mod number_input;
+mod otp;
 mod pagination;
 mod popover;
 mod progress_bar;
 mod progress_indicator;
 mod radio_button;
+mod rating;
 mod search;
 mod select;
 mod slider;
@@ -46,8 +54,10 @@ mod structured_list;
 mod tabs;
 mod tag;
 mod text_input;
+mod textarea;
 mod tile;
 mod toggle;
+mod toggle_button;
 mod toggletip;
 mod tooltip;
 mod tree_view;
@@ -265,6 +275,16 @@ pub fn all() -> Vec<Box<dyn Page>> {
         Box::new(ui_shell_header::UiShellHeader::default()),
         Box::new(ui_shell_left_panel::UiShellLeftPanel::default()),
         Box::new(ui_shell_right_panel::UiShellRightPanel::default()),
+        Box::new(avatar::Avatar::default()),
+        Box::new(button_group::ButtonGroup::default()),
+        Box::new(context_menu::ContextMenu::default()),
+        Box::new(drawer::Drawer::default()),
+        Box::new(input_group::InputGroup::default()),
+        Box::new(menubar::Menubar::default()),
+        Box::new(otp::Otp::default()),
+        Box::new(rating::Rating::default()),
+        Box::new(textarea::Textarea::default()),
+        Box::new(toggle_button::ToggleButton::default()),
     ]
 }
 

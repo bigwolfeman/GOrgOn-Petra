@@ -1,16 +1,24 @@
 //! Inventory row 9, Data table.
 
-use gorgon_petra::component::{data_table, data_table_row, field_sm, section, text, valued};
+use gorgon_petra::component::{
+    data_table_row_expandable, data_table_row_lg, data_table_row_md, data_table_row_sm,
+    data_table_row_xl, data_table_row_xs, data_table_sort_header, data_table_zebra, disabled,
+    field_sm, section, text, valued,
+};
 use gorgon_petra::input::{InputEvent, KeyCode};
 use gorgon_petra::tree::ViewNode;
 
 use super::Page;
-use super::common::{body, path_has, sp};
+use super::common::{body, path_has, sp, wrapped};
 
-/// The rows, as the Carbon reference shot has them (`09-data-table.png`:
-/// kernel/runtime and petra/layout) plus two more so the row rules read
-/// as a run. The third field is the Kind column's opening value, which the
-/// page then owns and the operator can type over.
+/// The four rows the catalog tests drive (`dt-0`..`dt-3`). Same names as
+/// `09-data-table.png` (kernel/runtime, petra/layout) plus two more so the
+/// row rules read as a run. The third field is the Kind column's opening
+/// value, which the page then owns and the operator can type over.
+///
+/// Sizes: dt-0 is lg, the height the catalog's cursor and drag tests
+/// photograph. xs sits on the disabled row, then sm, md, xl, so all five
+/// constructors are on the page without shrinking the driven row.
 const ROWS: [(&str, &str, &str); 4] = [
     ("dt-0", "kernel", "runtime"),
     ("dt-1", "petra", "layout"),
@@ -18,11 +26,30 @@ const ROWS: [(&str, &str, &str); 4] = [
     ("dt-3", "helix", "editor"),
 ];
 
-/// The editable cell in each row, one key per row.
+/// The editable cell in each of [`ROWS`], one key per row.
 ///
 /// A key per row rather than one key reused: two siblings sharing a key is
 /// a tree-acceptance violation, and a route names the field it landed on.
 const KIND: [&str; ROWS.len()] = ["dt-kind-0", "dt-kind-1", "dt-kind-2", "dt-kind-3"];
+
+/// Index of the xs row in [`ROWS`]. Wrapped in [`disabled`] so the operator
+/// can see an unavailable row next to the live ones. Catalog tests still
+/// select it through select-all; they never click it. Not dt-0: that row
+/// is lg because a cursor pass and a drag-to-select photograph it.
+const DISABLED_ROW: usize = 3;
+
+/// Fifth size (xl). Not in [`ROWS`]: those four keep the Kind wells the
+/// catalog types into.
+const XL: (&str, &str, &str) = ("dt-4", "gorgond", "daemon");
+
+/// Expandable row, lg. A press toggles the body; select-all still selects it.
+const EXP: (&str, &str) = ("dt-exp", "supervisor");
+const EXP_BODY: &str = "Retry policy lives here. Mounted only while open.";
+
+/// [`ROWS`] plus [`XL`] plus [`EXP`].
+const N_SELECTED: usize = ROWS.len() + 2;
+const XL_INDEX: usize = ROWS.len();
+const EXP_INDEX: usize = ROWS.len() + 1;
 
 /// Live state of the Data table page.
 ///
@@ -43,17 +70,30 @@ const KIND: [&str; ROWS.len()] = ["dt-kind-0", "dt-kind-1", "dt-kind-2", "dt-kin
 /// (`field.rs`'s `EDITABLE_TEXT_INTENTS` includes `Click` for precisely
 /// this reason), and the keystrokes after it land here.
 pub struct DataTable {
-    selected: [bool; ROWS.len()],
-    /// What each row's Kind well holds.
+    /// One flag per body row: [`ROWS`], then [`XL`], then [`EXP`].
+    selected: [bool; N_SELECTED],
+    /// What each of [`ROWS`]' Kind wells holds.
     kinds: [String; ROWS.len()],
+    /// Sort direction on the Name header. `true` is ascending.
+    name_ascending: bool,
+    /// Whether [`EXP`]'s body is mounted.
+    expanded: bool,
 }
 
 impl Default for DataTable {
     fn default() -> Self {
-        // The reference shot opens with its second row selected.
+        // The reference shot opens with its second row selected, so
+        // select-all starts mixed: that is the tri-state the header
+        // derives, on screen at rest.
         Self {
-            selected: [false, true, false, false],
+            selected: {
+                let mut selected = [false; N_SELECTED];
+                selected[1] = true;
+                selected
+            },
             kinds: ROWS.map(|(_, _, kind)| kind.to_owned()),
+            name_ascending: true,
+            expanded: true,
         }
     }
 }
@@ -64,6 +104,13 @@ impl DataTable {
         let i = KIND.iter().position(|key| path_has(node, key))?;
         Some(&mut self.kinds[i])
     }
+
+    fn cells(&self, i: usize, name: &str) -> Vec<ViewNode> {
+        vec![
+            text("name", name),
+            valued(field_sm(KIND[i], "Kind"), self.kinds[i].clone()),
+        ]
+    }
 }
 
 impl Page for DataTable {
@@ -72,31 +119,59 @@ impl Page for DataTable {
     }
 
     fn body(&self) -> ViewNode {
-        let rows = ROWS
+        let mut rows: Vec<ViewNode> = ROWS
             .iter()
             .enumerate()
             .map(|(i, (key, name, _))| {
-                data_table_row(
-                    *key,
-                    vec![
-                        text("name", *name),
-                        valued(field_sm(KIND[i], "Kind"), self.kinds[i].clone()),
-                    ],
-                    self.selected[i],
-                )
+                let cells = self.cells(i, name);
+                let row = match i {
+                    0 => data_table_row_lg(*key, cells, self.selected[i]),
+                    1 => data_table_row_sm(*key, cells, self.selected[i]),
+                    2 => data_table_row_md(*key, cells, self.selected[i]),
+                    3 => data_table_row_xs(*key, cells, self.selected[i]),
+                    _ => unreachable!("ROWS is four entries"),
+                };
+                if i == DISABLED_ROW {
+                    disabled(row)
+                } else {
+                    row
+                }
             })
             .collect();
+        rows.push(data_table_row_xl(
+            XL.0,
+            vec![text("name", XL.1), text("kind", XL.2)],
+            self.selected[XL_INDEX],
+        ));
+        rows.push(data_table_row_expandable(
+            EXP.0,
+            vec![text("name", EXP.1), text("kind", "retry")],
+            self.selected[EXP_INDEX],
+            self.expanded,
+            EXP_BODY,
+        ));
         section(
             "table",
             "Data table",
             vec![body(
                 "dt",
                 sp("spacing.md"),
-                vec![data_table(
-                    "dt",
-                    vec![text("h0", "Name"), text("h1", "Kind")],
-                    rows,
-                )],
+                vec![
+                    wrapped(
+                        "note",
+                        "Five row sizes (xs 24 through xl 64), zebra on odd \
+                         rows, a sortable Name header, a disabled lg row, an \
+                         expandable row, and mixed select-all at rest.",
+                    ),
+                    data_table_zebra(
+                        "dt",
+                        vec![
+                            data_table_sort_header("h0", "Name", self.name_ascending),
+                            text("h1", "Kind"),
+                        ],
+                        rows,
+                    ),
+                ],
             )],
         )
     }
@@ -127,12 +202,27 @@ impl Page for DataTable {
             }
             return true;
         }
+        if path_has(node, "sort") {
+            self.name_ascending = !self.name_ascending;
+            return true;
+        }
         if path_has(node, "select-all") {
             let every = self.selected.iter().all(|s| *s);
-            self.selected = [!every; ROWS.len()];
+            self.selected = [!every; N_SELECTED];
+            return true;
+        }
+        if path_has(node, XL.0) {
+            self.selected[XL_INDEX] = !self.selected[XL_INDEX];
+            return true;
+        }
+        if path_has(node, EXP.0) {
+            self.expanded = !self.expanded;
             return true;
         }
         if let Some(i) = ROWS.iter().position(|(key, _, _)| path_has(node, key)) {
+            if i == DISABLED_ROW {
+                return true;
+            }
             self.selected[i] = !self.selected[i];
             return true;
         }

@@ -1,4 +1,13 @@
-//! Carbon Pagination (slice-d), the bar variant.
+//! Carbon Pagination (slice-d), as a kit of pieces (spec 009 T022, D-092).
+//!
+//! MynaUI's page is composable: a caller picks Previous/Next, a number row,
+//! a caption. Ours was a sealed bar. The bar remains ([`pagination`] and
+//! [`pagination_items`] still build it) but it is a composition of the
+//! same pieces a caller can pick on their own, not a second anatomy. We
+//! keep both jobs: the items-per-page picker **and** a page-number row.
+//! There is no four-sided boxed-border variant. First/Last are omitted:
+//! [`IconMark`] has no PageFirst / PageLast, and a doubled caret is not
+//! a cheap stand-in.
 //!
 //! Anatomy (usage page + `_pagination.scss` + `23-pagination.png`):
 //! 1. Container — `$layer` fill ([`SURFACE_RAISED`]), `border-block-start:
@@ -11,19 +20,26 @@
 //!    names as the one case an edge slot does not cover.
 //! 2. Left group — "Items per page:" plus the **page-size picker**
 //!    ([`picker`]: the value, a chevron, `Semantics.value`), closed by a
-//!    `border-inline-end` divider. Built by [`pagination_items`], which
-//!    knows the page size; [`pagination`] does not and omits the group
-//!    rather than invent one.
+//!    `border-inline-end` divider. [`pagination_page_size`] is the piece;
+//!    [`pagination_items`] composes it, [`pagination`] does not (it is
+//!    not told a page size and does not invent one).
 //! 3. Range text — "1–10 of 50 items" — filling the middle so the right
-//!    group sits at the bar's end. [`pagination_items`] only.
-//! 4. Right group — a `border-inline-start` divider, the **page picker**
-//!    and "of N pages", then Previous and Next, each behind its own divider
-//!    (slice-d:58). They are Carbon's ghost icon buttons: 40×40, a 16
-//!    `CaretLeft` / `CaretRight` glyph ([`IconMark`]) centred, labelled
-//!    "Previous" / "Next" in [`Semantics`] so the word is still there for a
-//!    reader who is not looking. Page 1 disables Previous via
-//!    [`super::disabled`] and draws its caret in [`IconTone::Disabled`];
-//!    the last page disables Next the same way.
+//!    group sits at the bar's end. [`pagination_range`] is the piece;
+//!    same math as [`derive`]. [`pagination_items`] only.
+//! 4. Page-number row — [`pagination_numbers`]: a compact window of page
+//!    buttons plus "…" (`U+2026`) for collapsed runs, e.g. 1 … 4 5 6 … 20.
+//!    The current page is [`Semantics.selected`] plus a
+//!    `background@selected` fill plus [`TYPOGRAPHY_HEADING_SM`] weight.
+//!    Fill is not enough on its own: `layer-selected` is a measured
+//!    2-of-255 sRGB step off `layer.raised` in the dark theme.
+//! 5. Right group — a `border-inline-start` divider, the **page picker**
+//!    and "of N pages", then [`pagination_nav`]: Previous and Next, each
+//!    behind its own divider (slice-d:58). They are Carbon's ghost icon
+//!    buttons: 40×40, a 16 `CaretLeft` / `CaretRight` glyph ([`IconMark`])
+//!    centred, labelled "Previous" / "Next" in [`Semantics`] so the word
+//!    is still there for a reader who is not looking. Page 1 disables
+//!    Previous via [`super::disabled`] and draws its caret in
+//!    [`IconTone::Disabled`]; the last page disables Next the same way.
 //!
 //! Carbon's two pickers are native `<select>`s, whose popup the browser
 //! draws. Here a picker is a [`Role::Button`] that opens a
@@ -31,8 +47,7 @@
 //! list for whichever picker is open, with the page sizes the caller
 //! offers or the pages 1..=N, as [`super::dropdown_option`] rows. The
 //! closed form ([`pagination_items`]) needs no option list, so it takes
-//! none. Pagination nav (page-number buttons) is a second Carbon variant
-//! and is omitted.
+//! none.
 
 use super::disabled;
 use super::dropdown::dropdown_option;
@@ -42,8 +57,9 @@ use super::pin_block;
 use super::stack;
 use super::text::text;
 use super::tokens::{
-    BORDER_SUBTLE, LAYER_HOVER, SIZE_MD, SPACING_03, SPACING_05, SURFACE_RAISED, TEXT_MUTED,
-    TEXT_PRIMARY, t,
+    BORDER_SUBTLE, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SIZE_MD, SPACING_03,
+    SPACING_05, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_BODY_COMPACT,
+    TYPOGRAPHY_HEADING_SM, t,
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
@@ -103,24 +119,29 @@ struct Open {
     page_sizes: Vec<u32>,
 }
 
-/// Pagination bar at Carbon md (40) with only the page controls: the
-/// right group of Carbon's anatomy, and no items-per-page group, because
-/// this constructor is not told a page size and does not invent one.
-/// `page` is 1-indexed.
+/// Pagination bar at Carbon md (40) with the compact cluster: the
+/// page-number row, the page picker, and Previous/Next. No items-per-page
+/// group, because this constructor is not told a page size and does not
+/// invent one. `page` is 1-indexed.
 ///
 /// `page_count` is the last page number. Previous is unavailable on page
 /// 1; Next is unavailable on the last page (and when there are no pages).
+#[must_use]
 pub fn pagination(key: impl Into<Key>, page: u32, page_count: u32) -> ViewNode {
     bar(key, None, page, page_count, None)
 }
 
 /// Carbon's full bar, pickers closed: items per page, the range of items
-/// on this page, and the page controls. `page` is 1-indexed; `page_size`
-/// is the number of items per page; `total_items` is the whole set.
+/// on this page, the page-number row, and the page controls. `page` is
+/// 1-indexed; `page_size` is the number of items per page; `total_items`
+/// is the whole set.
 ///
 /// The page count is `total_items / page_size` rounded up, and the range
 /// text is "first–last of total items" for this page. A `page_size` of 0
-/// is treated as 1 rather than dividing by it.
+/// is treated as 1 rather than dividing by it. Composes
+/// [`pagination_page_size`], [`pagination_range`], [`pagination_numbers`],
+/// and [`pagination_nav`] rather than a second sealed anatomy.
+#[must_use]
 pub fn pagination_items(
     key: impl Into<Key>,
     page: u32,
@@ -128,14 +149,15 @@ pub fn pagination_items(
     total_items: u32,
 ) -> ViewNode {
     let page_size = page_size.max(1);
-    let (page_count, range) = derive(page, page_size, total_items);
-    bar(key, Some((page_size, range)), page, page_count, None)
+    let (page_count, _) = derive(page, page_size, total_items);
+    bar(key, Some((page_size, total_items)), page, page_count, None)
 }
 
 /// [`pagination_items`] with `picker` open: its list box hangs under it,
 /// listing `page_sizes` (the caller's offer, as Carbon's `pageSizes` prop)
 /// or the pages `1..=page_count`. A press on a listed row is the caller's
 /// to handle; rows are keyed `size-{n}` and `page-{n}`.
+#[must_use]
 pub fn pagination_items_open(
     key: impl Into<Key>,
     page: u32,
@@ -145,10 +167,10 @@ pub fn pagination_items_open(
     picker: PaginationPicker,
 ) -> ViewNode {
     let page_size = page_size.max(1);
-    let (page_count, range) = derive(page, page_size, total_items);
+    let (page_count, _) = derive(page, page_size, total_items);
     bar(
         key,
-        Some((page_size, range)),
+        Some((page_size, total_items)),
         page,
         page_count,
         Some(Open {
@@ -158,82 +180,18 @@ pub fn pagination_items_open(
     )
 }
 
-/// The page count and the range caption for one page of a set.
-fn derive(page: u32, page_size: u32, total_items: u32) -> (u32, String) {
-    let page_count = total_items.div_ceil(page_size);
-    let first = page
-        .saturating_sub(1)
-        .saturating_mul(page_size)
-        .saturating_add(1);
-    let last = page.saturating_mul(page_size).min(total_items);
-    (
-        page_count,
-        format!("{first}\u{2013}{last} of {total_items} items"),
-    )
-}
-
-/// The bar: a 1-unit top rule over a 40-tall grid whose middle column is
-/// the `Weight` track that pushes the page controls to the end.
-fn bar(
+/// Items-per-page group: the "Items per page:" caption, the page-size
+/// picker, and the group's closing divider. `page_size` is the current
+/// value. `open_sizes` `Some` mounts the list of offered sizes under the
+/// picker, the same open form [`pagination_items_open`] uses for
+/// [`PaginationPicker::PageSize`].
+#[must_use]
+pub fn pagination_page_size(
     key: impl Into<Key>,
-    left: Option<(u32, String)>,
-    page: u32,
-    page_count: u32,
-    open: Option<Open>,
+    page_size: u32,
+    open_sizes: Option<&[u32]>,
 ) -> ViewNode {
-    let mut columns = Vec::with_capacity(3);
-    let mut cells = Vec::with_capacity(3);
-    match left {
-        Some((page_size, range)) => {
-            let sizes = open
-                .as_ref()
-                .filter(|o| o.picker == PaginationPicker::PageSize)
-                .map(|o| o.page_sizes.as_slice());
-            columns.push(TrackSize::FitContent);
-            cells.push(items_per_page(page_size, sizes));
-            columns.push(TrackSize::Weight { weight: 1.0 });
-            cells.push(range_cell(range));
-        }
-        None => {
-            columns.push(TrackSize::Weight { weight: 1.0 });
-            cells.push(stack("range", Axis::Horizontal, None, vec![]));
-        }
-    }
-    let pages_open = open
-        .as_ref()
-        .is_some_and(|o| o.picker == PaginationPicker::Page);
-    columns.push(TrackSize::FitContent);
-    cells.push(page_controls(page, page_count, pages_open));
-
-    let mut row = ViewNode::new(NodeKind::Grid, "bar")
-        .with_props(Props {
-            columns,
-            rows: vec![TrackSize::FitContent],
-            align: Some(Align::Stretch),
-            ..Props::default()
-        })
-        .with_children(cells);
-    row.constraints.vertical = AxisConstraint {
-        min: Some(SIZE_MD),
-        max: Some(SIZE_MD),
-        priority: 0,
-    };
-
-    let mut rule = super::rule("rule", Axis::Horizontal, BORDER_SUBTLE);
-    rule.props.align_self = Some(Align::Stretch);
-
-    let mut node = stack(key, Axis::Vertical, None, vec![rule, row]);
-    node.props.align = Some(Align::Stretch);
-    node.props
-        .tokens
-        .insert("background".into(), t(SURFACE_RAISED));
-    node
-}
-
-/// "Items per page:" plus the page-size picker, then the group's closing
-/// divider. Label padding 16 start (the container's `padding-inline`);
-/// the picker's own padding is 8 start / 16 end (slice-d:66).
-fn items_per_page(page_size: u32, open_sizes: Option<&[u32]>) -> ViewNode {
+    let page_size = page_size.max(1);
     let caption = cell(
         "label-cell",
         InsetRefs {
@@ -263,13 +221,294 @@ fn items_per_page(page_size: u32, open_sizes: Option<&[u32]>) -> ViewNode {
         )
     });
     run(
-        "items-per-page",
+        key,
         vec![
             caption,
             picker_cell("page-size-cell", trigger, menu),
             nav_divider("divider-items"),
         ],
     )
+}
+
+/// Range caption for this page of a set: "first–last of total items".
+/// Same math as the bar ([`derive`]). A `page_size` of 0 is treated as 1.
+#[must_use]
+pub fn pagination_range(
+    key: impl Into<Key>,
+    page: u32,
+    page_size: u32,
+    total_items: u32,
+) -> ViewNode {
+    let page_size = page_size.max(1);
+    let (_, range) = derive(page, page_size, total_items);
+    cell(
+        key,
+        InsetRefs {
+            left: Some(t(SPACING_05)),
+            ..InsetRefs::default()
+        },
+        muted("range-text", range),
+    )
+}
+
+/// Compact page-number row: a window around `page`, first and last always
+/// shown when they fall outside it, and "…" (`U+2026`) where a run of two
+/// or more pages collapsed. A gap of one page is shown as that page
+/// rather than an ellipsis (collapsing one number into a mark wastes a
+/// slot). `page` is 1-indexed. A `page_count` of 0 is an empty row.
+///
+/// The current page is distinguishable without hue: [`Semantics.selected`],
+/// a `background@selected` fill, and [`TYPOGRAPHY_HEADING_SM`] (same size
+/// as the unselected [`TYPOGRAPHY_BODY_COMPACT`], heavier weight). Number
+/// buttons are keyed `num-{n}` so they do not collide with the page
+/// picker's `page-{n}` option rows.
+#[must_use]
+pub fn pagination_numbers(key: impl Into<Key>, page: u32, page_count: u32) -> ViewNode {
+    if page_count == 0 {
+        return stack(key, Axis::Horizontal, None, vec![]);
+    }
+    let page = page.clamp(1, page_count);
+    let mut children = Vec::new();
+    let mut prev: Option<NumberSlot> = None;
+    for slot in number_slots(page, page_count) {
+        match slot {
+            NumberSlot::Page(n) => {
+                children.push(page_number_button(n, n == page));
+            }
+            NumberSlot::Ellipsis => {
+                // After page 1 it is the leading collapse; otherwise the
+                // trailing one. The two cannot share a key.
+                let slot_key = match prev {
+                    Some(NumberSlot::Page(1)) => "ellipsis-start",
+                    _ => "ellipsis-end",
+                };
+                children.push(ellipsis_mark(slot_key));
+            }
+        }
+        prev = Some(slot);
+    }
+    run(key, children)
+}
+
+/// Previous and Next. Page 1 disables Previous; the last page (and a
+/// count of zero) disables Next. Two channels on an unavailable button:
+/// [`super::disabled`] (no click, not in focus order) and the caret in
+/// [`IconTone::Disabled`]. Each button sits behind its own divider, the
+/// same seams the bar already drew.
+#[must_use]
+pub fn pagination_nav(key: impl Into<Key>, page: u32, page_count: u32) -> ViewNode {
+    let previous = nav_button("previous", "Previous", IconMark::CaretLeft, page <= 1);
+    let next = nav_button(
+        "next",
+        "Next",
+        IconMark::CaretRight,
+        page_count == 0 || page >= page_count,
+    );
+    run(
+        key,
+        vec![
+            nav_divider("divider-previous"),
+            previous,
+            nav_divider("divider-next"),
+            next,
+        ],
+    )
+}
+
+/// One slot in the compact page-number window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NumberSlot {
+    Page(u32),
+    Ellipsis,
+}
+
+/// Show-all budget: first + ellipsis + a 3-wide window + ellipsis + last.
+/// At or under this, every page is a button and no mark is needed.
+const NUMBER_BUDGET: u32 = 7;
+
+/// Compact window: always first and last; a run of three around `page`;
+/// an ellipsis where a gap of two or more pages was collapsed. `page` is
+/// already clamped to `1..=page_count`; `page_count` is at least 1.
+fn number_slots(page: u32, page_count: u32) -> Vec<NumberSlot> {
+    if page_count <= NUMBER_BUDGET {
+        return (1..=page_count).map(NumberSlot::Page).collect();
+    }
+
+    let mut start = page.saturating_sub(1).max(1);
+    let mut end = page.saturating_add(1).min(page_count);
+    if end.saturating_sub(start) < 2 {
+        if start == 1 {
+            end = 3.min(page_count);
+        } else {
+            start = page_count.saturating_sub(2).max(1);
+        }
+    }
+
+    let mut slots = Vec::with_capacity(NUMBER_BUDGET as usize);
+    if start > 1 {
+        slots.push(NumberSlot::Page(1));
+        if start == 3 {
+            slots.push(NumberSlot::Page(2));
+        } else if start > 3 {
+            slots.push(NumberSlot::Ellipsis);
+        }
+    }
+    for n in start..=end {
+        slots.push(NumberSlot::Page(n));
+    }
+    if end < page_count {
+        if end == page_count.saturating_sub(2) {
+            slots.push(NumberSlot::Page(page_count - 1));
+        } else if end < page_count.saturating_sub(2) {
+            slots.push(NumberSlot::Ellipsis);
+        }
+        slots.push(NumberSlot::Page(page_count));
+    }
+    slots
+}
+
+/// One page button. Selected uses weight + selected semantics + fill, never
+/// hue alone. Keyed `num-{n}` (see [`pagination_numbers`]).
+fn page_number_button(n: u32, selected: bool) -> ViewNode {
+    let label = format!("Page {n}");
+    let mut caption = text("label", n.to_string());
+    caption.props.style = Some(t(if selected {
+        TYPOGRAPHY_HEADING_SM
+    } else {
+        TYPOGRAPHY_BODY_COMPACT
+    }));
+    caption
+        .props
+        .tokens
+        .insert("foreground".into(), t(TEXT_PRIMARY));
+    let mut node = stack(format!("num-{n}"), Axis::Horizontal, None, vec![caption]);
+    node.props.align = Some(Align::Center);
+    node.props.justify = Some(Justify::Center);
+    node.props.padding = Some(pad_inline(SPACING_03, SPACING_03));
+    node.props
+        .tokens
+        .insert("background".into(), t(SURFACE_RAISED));
+    node.props
+        .tokens
+        .insert("background@hover".into(), t(LAYER_HOVER));
+    node.props
+        .tokens
+        .insert("background@selected".into(), t(LAYER_SELECTED));
+    node.props
+        .tokens
+        .insert("background@selected-hover".into(), t(LAYER_SELECTED_HOVER));
+    let mut node = node
+        .with_constraints(pin_at_least_md())
+        .interactive(Role::Button, label, NAV_INTENTS)
+        .owning_its_text();
+    node.semantics.selected = selected;
+    node.semantics.value = Some(n.to_string());
+    node
+}
+
+/// The collapsed-run mark. Not a button: this leaf does not mount an
+/// overflow menu of the hidden pages (Carbon's overflow button). Text is
+/// the single ellipsis character, not three dots.
+fn ellipsis_mark(key: &'static str) -> ViewNode {
+    cell(
+        key,
+        pad_inline(SPACING_03, SPACING_03),
+        muted("dots", "\u{2026}"),
+    )
+}
+
+/// Height pinned at md; width at least md so a one-digit page is a square
+/// and a three-digit page can grow.
+fn pin_at_least_md() -> Constraints {
+    Constraints {
+        horizontal: AxisConstraint {
+            min: Some(SIZE_MD),
+            max: None,
+            priority: 0,
+        },
+        vertical: AxisConstraint {
+            min: Some(SIZE_MD),
+            max: Some(SIZE_MD),
+            priority: 0,
+        },
+    }
+}
+
+/// The page count and the range caption for one page of a set.
+fn derive(page: u32, page_size: u32, total_items: u32) -> (u32, String) {
+    let page_count = total_items.div_ceil(page_size);
+    let first = page
+        .saturating_sub(1)
+        .saturating_mul(page_size)
+        .saturating_add(1);
+    let last = page.saturating_mul(page_size).min(total_items);
+    (
+        page_count,
+        format!("{first}\u{2013}{last} of {total_items} items"),
+    )
+}
+
+/// The bar: a 1-unit top rule over a 40-tall grid whose weight column is
+/// the range (or an empty spacer) that pushes the number row and the page
+/// controls to the end. Pieces, not a second anatomy.
+fn bar(
+    key: impl Into<Key>,
+    left: Option<(u32, u32)>,
+    page: u32,
+    page_count: u32,
+    open: Option<Open>,
+) -> ViewNode {
+    let mut columns = Vec::with_capacity(4);
+    let mut cells = Vec::with_capacity(4);
+    match left {
+        Some((page_size, total_items)) => {
+            let sizes = open
+                .as_ref()
+                .filter(|o| o.picker == PaginationPicker::PageSize)
+                .map(|o| o.page_sizes.as_slice());
+            columns.push(TrackSize::FitContent);
+            cells.push(pagination_page_size("items-per-page", page_size, sizes));
+            columns.push(TrackSize::Weight { weight: 1.0 });
+            cells.push(pagination_range("range", page, page_size, total_items));
+        }
+        None => {
+            columns.push(TrackSize::Weight { weight: 1.0 });
+            cells.push(stack("range", Axis::Horizontal, None, vec![]));
+        }
+    }
+    let pages_open = open
+        .as_ref()
+        .is_some_and(|o| o.picker == PaginationPicker::Page);
+    if page_count > 0 {
+        columns.push(TrackSize::FitContent);
+        cells.push(pagination_numbers("numbers", page, page_count));
+    }
+    columns.push(TrackSize::FitContent);
+    cells.push(page_controls(page, page_count, pages_open));
+
+    let mut row = ViewNode::new(NodeKind::Grid, "bar")
+        .with_props(Props {
+            columns,
+            rows: vec![TrackSize::FitContent],
+            align: Some(Align::Stretch),
+            ..Props::default()
+        })
+        .with_children(cells);
+    row.constraints.vertical = AxisConstraint {
+        min: Some(SIZE_MD),
+        max: Some(SIZE_MD),
+        priority: 0,
+    };
+
+    let mut rule = super::rule("rule", Axis::Horizontal, BORDER_SUBTLE);
+    rule.props.align_self = Some(Align::Stretch);
+
+    let mut node = stack(key, Axis::Vertical, None, vec![rule, row]);
+    node.props.align = Some(Align::Stretch);
+    node.props
+        .tokens
+        .insert("background".into(), t(SURFACE_RAISED));
+    node
 }
 
 /// A run of cells, each exactly as wide as it asks to be: a one-row grid
@@ -285,7 +524,7 @@ fn items_per_page(page_size: u32, open_sizes: Option<&[u32]>) -> ViewNode {
 /// stack settles a shortfall by squeezing its most flexible child, which
 /// for a text label means wrapping. A grid probes each column on its own
 /// and hands each child exactly that width.
-fn run(key: &'static str, children: Vec<ViewNode>) -> ViewNode {
+fn run(key: impl Into<Key>, children: Vec<ViewNode>) -> ViewNode {
     ViewNode::new(NodeKind::Grid, key)
         .with_props(Props {
             columns: vec![TrackSize::FitContent; children.len()],
@@ -296,22 +535,10 @@ fn run(key: &'static str, children: Vec<ViewNode>) -> ViewNode {
         .with_children(children)
 }
 
-/// The range text, centred on the bar, 16 off the divider before it.
-fn range_cell(range: String) -> ViewNode {
-    cell(
-        "range",
-        InsetRefs {
-            left: Some(t(SPACING_05)),
-            ..InsetRefs::default()
-        },
-        muted("range-text", range),
-    )
-}
-
 /// One padded, vertically centred text cell. The padding lives here and
 /// not on the text because a `Text` leaf has nothing to inset and the
 /// tree validator refuses the declaration.
-fn cell(key: &'static str, padding: InsetRefs, child: ViewNode) -> ViewNode {
+fn cell(key: impl Into<Key>, padding: InsetRefs, child: ViewNode) -> ViewNode {
     let mut node = stack(key, Axis::Horizontal, None, vec![child]);
     node.props.align = Some(Align::Center);
     node.props.padding = Some(padding);
@@ -393,9 +620,8 @@ fn picker(
     node
 }
 
-/// The right group: divider, page picker, "of N pages", divider,
-/// Previous, divider, Next. Page-select padding 16 start / 8 end
-/// (slice-d:67).
+/// The right group: divider, page picker, "of N pages", then
+/// [`pagination_nav`]. Page-select padding 16 start / 8 end (slice-d:67).
 fn page_controls(page: u32, page_count: u32, pages_open: bool) -> ViewNode {
     let trigger = picker(
         PAGE_PICKER,
@@ -425,24 +651,13 @@ fn page_controls(page: u32, page_count: u32, pages_open: bool) -> ViewNode {
         muted("page-count", format!("of {page_count} pages")),
     );
 
-    let previous = nav_button("previous", "Previous", IconMark::CaretLeft, page <= 1);
-    let next = nav_button(
-        "next",
-        "Next",
-        IconMark::CaretRight,
-        page_count == 0 || page >= page_count,
-    );
-
     run(
         "controls",
         vec![
             nav_divider("divider-page"),
             picker_cell("page-cell", trigger, menu),
             count,
-            nav_divider("divider-previous"),
-            previous,
-            nav_divider("divider-next"),
-            next,
+            pagination_nav("nav", page, page_count),
         ],
     )
 }
@@ -532,10 +747,15 @@ fn pin_square(side: f32) -> Constraints {
 #[cfg(test)]
 mod tests {
     use super::{
-        PaginationPicker, RULE_UNITS, SIZE_MD, pagination, pagination_items, pagination_items_open,
+        PaginationPicker, RULE_UNITS, SIZE_MD, derive, pagination, pagination_items,
+        pagination_items_open, pagination_nav, pagination_numbers, pagination_page_size,
+        pagination_range,
     };
     use crate::component::icon::{IconMark, IconTone, icon_toned};
-    use crate::component::tokens::{BORDER_SUBTLE, LAYER_HOVER, SURFACE_RAISED};
+    use crate::component::tokens::{
+        BORDER_SUBTLE, LAYER_HOVER, LAYER_SELECTED, SURFACE_RAISED, TYPOGRAPHY_BODY_COMPACT,
+        TYPOGRAPHY_HEADING_SM,
+    };
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Rect, Size};
     use crate::testing::{Harness, validated_with};
@@ -576,18 +796,19 @@ mod tests {
             "a 1-unit top rule over the 40-tall bar"
         );
         assert_eq!(
+            child_keys(named(&node, "bar")),
+            ["range", "numbers", "controls"],
+            "compact cluster: number row then the page controls"
+        );
+        assert_eq!(
             child_keys(named(&node, "controls")),
-            [
-                "divider-page",
-                "page-cell",
-                "page-count-cell",
-                "divider-previous",
-                "previous",
-                "divider-next",
-                "next"
-            ],
-            "Carbon's right group: divider, page picker, `of N pages`, then \
-             each nav button behind its own divider"
+            ["divider-page", "page-cell", "page-count-cell", "nav"],
+            "Carbon's right group: divider, page picker, `of N pages`, then nav"
+        );
+        assert_eq!(
+            child_keys(named(&node, "nav")),
+            ["divider-previous", "previous", "divider-next", "next"],
+            "each nav button behind its own divider"
         );
 
         for (key, label, mark) in [
@@ -655,7 +876,8 @@ mod tests {
         let node = pagination_items("pages", 1, 10, 50);
         assert_eq!(
             child_keys(named(&node, "bar")),
-            ["items-per-page", "range", "controls"]
+            ["items-per-page", "range", "numbers", "controls"],
+            "table bar composes items-per-page, range, numbers, nav"
         );
         let size = named(&node, "page-size-picker");
         assert_eq!(size.semantics.role, Some(Role::Button));
@@ -792,7 +1014,14 @@ mod tests {
     #[test]
     fn nav_buttons_and_pickers_carry_a_resting_background_under_their_hover_state() {
         let node = pagination_items("pages", 2, 10, 50);
-        for key in ["previous", "next", "page-picker", "page-size-picker"] {
+        for key in [
+            "previous",
+            "next",
+            "page-picker",
+            "page-size-picker",
+            "num-1",
+            "num-2",
+        ] {
             let button = named(&node, key);
             assert_eq!(
                 button.props.tokens.get("background").map(|t| t.as_str()),
@@ -1021,7 +1250,7 @@ mod tests {
             !order.contains(&placed("/previous")),
             "a disabled previous button must not be reachable"
         );
-        for key in ["/next", "/page-picker", "/page-size-picker"] {
+        for key in ["/next", "/page-picker", "/page-size-picker", "/num-2"] {
             assert!(
                 order.contains(&placed(key)),
                 "{key} declares Focus but is not in focus order"
@@ -1077,5 +1306,395 @@ mod tests {
             }
         }
         let _ = BORDER_SUBTLE;
+    }
+
+    fn caption_style<'a>(node: &'a ViewNode, key: &str) -> Option<&'a str> {
+        named(named(node, key), "label")
+            .props
+            .style
+            .as_ref()
+            .map(|t| t.as_str())
+    }
+
+    /// The documented compact window: page 5 of 20 is `1 … 4 5 6 … 20`.
+    #[test]
+    fn pagination_numbers_collapses_runs_with_ellipsis() {
+        let node = pagination_numbers("numbers", 5, 20);
+        assert_eq!(
+            child_keys(&node),
+            [
+                "num-1",
+                "ellipsis-start",
+                "num-4",
+                "num-5",
+                "num-6",
+                "ellipsis-end",
+                "num-20"
+            ]
+        );
+        assert_eq!(
+            named(named(&node, "ellipsis-start"), "dots")
+                .props
+                .text
+                .as_deref(),
+            Some("\u{2026}"),
+            "one ellipsis character, not three dots"
+        );
+        assert_eq!(
+            named(named(&node, "ellipsis-end"), "dots")
+                .props
+                .text
+                .as_deref(),
+            Some("\u{2026}")
+        );
+        assert!(
+            !named(&node, "ellipsis-start")
+                .interactions
+                .contains(&Interaction::Click)
+        );
+        assert_eq!(
+            named(&node, "num-5").semantics.label.as_deref(),
+            Some("Page 5")
+        );
+        assert_eq!(named(&node, "num-5").semantics.value.as_deref(), Some("5"));
+        assert_eq!(named(&node, "num-4").semantics.role, Some(Role::Button));
+    }
+
+    #[test]
+    fn pagination_numbers_shows_all_when_the_run_fits() {
+        let node = pagination_numbers("numbers", 3, 7);
+        assert_eq!(
+            child_keys(&node),
+            [
+                "num-1", "num-2", "num-3", "num-4", "num-5", "num-6", "num-7"
+            ]
+        );
+        assert!(!has_key(&node, "ellipsis-start"));
+        assert!(!has_key(&node, "ellipsis-end"));
+    }
+
+    #[test]
+    fn pagination_numbers_keeps_first_and_last_at_the_edges() {
+        let first = pagination_numbers("numbers", 1, 20);
+        assert_eq!(
+            child_keys(&first),
+            ["num-1", "num-2", "num-3", "ellipsis-end", "num-20"]
+        );
+        let last = pagination_numbers("numbers", 20, 20);
+        assert_eq!(
+            child_keys(&last),
+            ["num-1", "ellipsis-start", "num-18", "num-19", "num-20"]
+        );
+        let gap_one_leading = pagination_numbers("numbers", 4, 20);
+        assert_eq!(
+            child_keys(&gap_one_leading),
+            [
+                "num-1",
+                "num-2",
+                "num-3",
+                "num-4",
+                "num-5",
+                "ellipsis-end",
+                "num-20"
+            ],
+            "a gap of one page is that page, not an ellipsis"
+        );
+        let gap_one_trailing = pagination_numbers("numbers", 17, 20);
+        assert_eq!(
+            child_keys(&gap_one_trailing),
+            [
+                "num-1",
+                "ellipsis-start",
+                "num-16",
+                "num-17",
+                "num-18",
+                "num-19",
+                "num-20"
+            ]
+        );
+        let empty = pagination_numbers("numbers", 1, 0);
+        assert!(child_keys(&empty).is_empty());
+        let clamped_low = pagination_numbers("numbers", 0, 20);
+        assert!(named(&clamped_low, "num-1").semantics.selected);
+        let clamped_high = pagination_numbers("numbers", 99, 20);
+        assert!(named(&clamped_high, "num-20").semantics.selected);
+    }
+
+    /// Current page is selected semantics + fill + weight. Colour is never
+    /// the only channel: heading-sm is the same size as body-compact with
+    /// a heavier weight, and `layer-selected` is a measured 2-of-255 step
+    /// off the resting fill in the dark theme.
+    #[test]
+    fn current_page_is_selected_by_weight_and_semantics_not_hue_alone() {
+        let node = pagination_numbers("numbers", 5, 20);
+        let current = named(&node, "num-5");
+        let other = named(&node, "num-4");
+        assert!(current.semantics.selected);
+        assert!(!other.semantics.selected);
+        assert_eq!(
+            current
+                .props
+                .tokens
+                .get("background@selected")
+                .map(|t| t.as_str()),
+            Some(LAYER_SELECTED)
+        );
+        assert_eq!(caption_style(&node, "num-5"), Some(TYPOGRAPHY_HEADING_SM));
+        assert_eq!(caption_style(&node, "num-4"), Some(TYPOGRAPHY_BODY_COMPACT));
+        assert_eq!(caption_style(&node, "num-1"), Some(TYPOGRAPHY_BODY_COMPACT));
+        assert_eq!(
+            caption_style(&node, "num-20"),
+            Some(TYPOGRAPHY_BODY_COMPACT)
+        );
+    }
+
+    #[test]
+    fn pagination_range_uses_the_same_math_as_the_bar() {
+        let range = pagination_range("range", 1, 10, 50);
+        assert_eq!(
+            named(&range, "range-text").props.text.as_deref(),
+            Some("1\u{2013}10 of 50 items")
+        );
+        let last = pagination_range("range", 5, 10, 47);
+        assert_eq!(
+            named(&last, "range-text").props.text.as_deref(),
+            Some("41\u{2013}47 of 47 items")
+        );
+        let zero = pagination_range("range", 1, 0, 10);
+        assert_eq!(
+            named(&zero, "range-text").props.text.as_deref(),
+            Some("1\u{2013}1 of 10 items"),
+            "page_size 0 is treated as 1, same as the bar"
+        );
+    }
+
+    #[test]
+    fn pagination_page_size_is_the_items_per_page_picker() {
+        let node = pagination_page_size("items-per-page", 10, None);
+        let picker = named(&node, "page-size-picker");
+        assert_eq!(picker.semantics.role, Some(Role::Button));
+        assert_eq!(picker.semantics.label.as_deref(), Some("Items per page"));
+        assert_eq!(picker.semantics.value.as_deref(), Some("10"));
+        assert_eq!(picker.semantics.expanded, Some(false));
+        assert!(!has_key(&node, "menu"));
+        assert!(has_key(&node, "divider-items"));
+
+        let open = pagination_page_size("items-per-page", 20, Some(&[10, 20, 30]));
+        assert_eq!(
+            named(&open, "page-size-picker").semantics.expanded,
+            Some(true)
+        );
+        assert!(named(&open, "size-20").semantics.selected);
+        assert!(!named(&open, "size-10").semantics.selected);
+    }
+
+    #[test]
+    fn pagination_nav_disables_on_two_channels() {
+        let first = pagination_nav("nav", 1, 4);
+        let previous = named(&first, "previous");
+        assert!(previous.semantics.disabled);
+        assert!(!previous.interactions.contains(&Interaction::Click));
+        assert_eq!(
+            named(previous, "caret").props.canvas,
+            icon_toned("caret", IconMark::CaretLeft, IconTone::Disabled)
+                .props
+                .canvas
+        );
+        assert!(!named(&first, "next").semantics.disabled);
+
+        let last = pagination_nav("nav", 4, 4);
+        assert!(named(&last, "next").semantics.disabled);
+        assert_eq!(
+            named(named(&last, "next"), "caret").props.canvas,
+            icon_toned("caret", IconMark::CaretRight, IconTone::Disabled)
+                .props
+                .canvas
+        );
+        assert!(!named(&last, "previous").semantics.disabled);
+
+        let none = pagination_nav("nav", 1, 0);
+        assert!(named(&none, "previous").semantics.disabled);
+        assert!(named(&none, "next").semantics.disabled);
+    }
+
+    /// A table bar is items + range + numbers + nav. A compact cluster is
+    /// numbers + nav. The constructors remain; a caller can also compose
+    /// the pieces without them.
+    #[test]
+    fn a_caller_composes_items_range_numbers_and_nav() {
+        let table = super::stack(
+            "table",
+            Axis::Horizontal,
+            None,
+            vec![
+                pagination_page_size("items-per-page", 10, None),
+                pagination_range("range", 5, 10, 200),
+                pagination_numbers("numbers", 5, 20),
+                pagination_nav("nav", 5, 20),
+            ],
+        );
+        assert_eq!(
+            child_keys(&table),
+            ["items-per-page", "range", "numbers", "nav"]
+        );
+        assert_eq!(
+            named(&table, "range-text").props.text.as_deref(),
+            Some("41\u{2013}50 of 200 items")
+        );
+        assert!(named(&table, "num-5").semantics.selected);
+        assert!(!named(&table, "previous").semantics.disabled);
+        assert!(!named(&table, "next").semantics.disabled);
+
+        let compact = super::stack(
+            "compact",
+            Axis::Horizontal,
+            None,
+            vec![
+                pagination_numbers("numbers", 1, 20),
+                pagination_nav("nav", 1, 20),
+            ],
+        );
+        assert_eq!(child_keys(&compact), ["numbers", "nav"]);
+        assert!(!has_key(&compact, "items-per-page"));
+        assert!(named(&compact, "previous").semantics.disabled);
+        assert!(named(&compact, "num-1").semantics.selected);
+    }
+
+    #[test]
+    fn the_bar_composes_the_number_row() {
+        let node = pagination("pages", 5, 20);
+        assert_eq!(
+            child_keys(named(&node, "numbers")),
+            [
+                "num-1",
+                "ellipsis-start",
+                "num-4",
+                "num-5",
+                "num-6",
+                "ellipsis-end",
+                "num-20"
+            ]
+        );
+        assert!(named(&node, "num-5").semantics.selected);
+        let items = pagination_items("pages", 5, 10, 200);
+        assert!(has_key(&items, "items-per-page"));
+        assert!(has_key(&items, "numbers"));
+        assert!(has_key(&items, "nav"));
+        assert_eq!(
+            named(&items, "range-text").props.text.as_deref(),
+            Some("41\u{2013}50 of 200 items")
+        );
+        let none = pagination("pages", 1, 0);
+        assert!(
+            !has_key(&none, "numbers"),
+            "no page-number column when there are no pages (a 0-wide FitContent \
+             cell would petrify as a degenerate rect)"
+        );
+        assert!(named(&none, "previous").semantics.disabled);
+        assert!(named(&none, "next").semantics.disabled);
+    }
+
+    /// T023 / spec R5: the items-per-page picker is a capability. Dropping
+    /// [`pagination_page_size`], or dropping it from [`pagination_items`],
+    /// is the loss this fails on.
+    #[test]
+    fn items_per_page_picker_exists() {
+        let piece = pagination_page_size("items-per-page", 10, None);
+        let picker = named(&piece, "page-size-picker");
+        assert_eq!(picker.semantics.role, Some(Role::Button));
+        assert_eq!(picker.semantics.label.as_deref(), Some("Items per page"));
+        assert_eq!(picker.semantics.value.as_deref(), Some("10"));
+        assert_eq!(named(picker, "page-size").props.text.as_deref(), Some("10"));
+
+        let bar = pagination_items("pages", 1, 10, 50);
+        assert!(
+            has_key(&bar, "items-per-page"),
+            "pagination_items still composes the items-per-page group"
+        );
+        let bar_picker = named(&bar, "page-size-picker");
+        assert_eq!(bar_picker.semantics.role, Some(Role::Button));
+        assert_eq!(
+            bar_picker.semantics.label.as_deref(),
+            Some("Items per page")
+        );
+        assert_eq!(bar_picker.semantics.value.as_deref(), Some("10"));
+    }
+
+    /// T023 / spec R5: [`derive`] still computes the range caption and the
+    /// page count. Hardcoding "1–10 of 50 items", or truncating 47/10 to 4
+    /// pages, is the loss this fails on.
+    #[test]
+    fn derive_computes_range_and_page_count() {
+        for (page, page_size, total, pages, caption) in [
+            (1, 10, 50, 5, "1\u{2013}10 of 50 items"),
+            (2, 10, 50, 5, "11\u{2013}20 of 50 items"),
+            (5, 10, 47, 5, "41\u{2013}47 of 47 items"),
+            (1, 10, 10, 1, "1\u{2013}10 of 10 items"),
+        ] {
+            let (page_count, range) = derive(page, page_size, total);
+            assert_eq!(
+                page_count, pages,
+                "{total} items at {page_size} per page is {pages} pages, not truncated"
+            );
+            assert_eq!(range, caption, "page {page} of {total} at {page_size}");
+        }
+
+        let first = pagination_items("pages", 1, 10, 50);
+        assert_eq!(
+            named(&first, "range-text").props.text.as_deref(),
+            Some("1\u{2013}10 of 50 items")
+        );
+        assert_eq!(
+            named(&first, "page-count").props.text.as_deref(),
+            Some("of 5 pages")
+        );
+        let last = pagination_items("pages", 5, 10, 47);
+        assert_eq!(
+            named(&last, "range-text").props.text.as_deref(),
+            Some("41\u{2013}47 of 47 items"),
+            "the last page's range stops at the total"
+        );
+        assert_eq!(
+            named(&last, "page-count").props.text.as_deref(),
+            Some("of 5 pages"),
+            "47 items at 10 per page is 5 pages"
+        );
+        assert_eq!(
+            named(&pagination_range("range", 2, 10, 50), "range-text")
+                .props
+                .text
+                .as_deref(),
+            Some("11\u{2013}20 of 50 items"),
+            "the range piece uses the same math as derive"
+        );
+    }
+
+    /// T023 / spec R5: page 1 Previous is unavailable on two channels —
+    /// [`super::disabled`] (no click) and the caret in [`IconTone::Disabled`].
+    /// Keeping one and dropping the other is the loss this fails on.
+    #[test]
+    fn page_one_previous_is_disabled_on_two_channels() {
+        for (label, node) in [
+            ("nav", pagination_nav("nav", 1, 4)),
+            ("bar", pagination("pages", 1, 4)),
+            ("items", pagination_items("pages", 1, 10, 50)),
+        ] {
+            let previous = named(&node, "previous");
+            assert!(
+                previous.semantics.disabled,
+                "{label}: Previous on page 1 is disabled()"
+            );
+            assert!(
+                !previous.interactions.contains(&Interaction::Click),
+                "{label}: disabled() clears Click"
+            );
+            assert_eq!(
+                named(previous, "caret").props.canvas,
+                icon_toned("caret", IconMark::CaretLeft, IconTone::Disabled)
+                    .props
+                    .canvas,
+                "{label}: caret is IconTone::Disabled"
+            );
+        }
     }
 }

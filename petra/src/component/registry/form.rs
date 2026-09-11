@@ -14,16 +14,17 @@
 //! `every_view_node_constructor_has_exactly_one_row` test proves it by
 //! scanning the ten files' own source text, not by trusting this list.
 //!
-//! Nine shapes here are one-off: `KeyLabel`/`KeyLabelSelected`/
+//! Ten shapes here are one-off: `KeyLabel`/`KeyLabelSelected`/
 //! `KeyLabelValue`/`KeyLabelChildren`/`KeyLabelNumber` (from
-//! [`crate::component::params`]) cover 39 of these 48 rows; the rest need a
+//! [`crate::component::params`]) cover 41 of these 52 rows; the rest need a
 //! shape [`crate::component::params`] does not carry — `checkbox_tristate`'s
 //! three-state enum, `date_picker_showing`'s browsing-calendar enum, the two
 //! `_open` constructors' `(key, label, value, children)` quartet, a plain
-//! `(node, hint)`/`(node, value)` pair for `hinted`/`valued`, and three
-//! `message`-carrying shapes `field_invalid`/`field_validated`/
-//! `file_uploader_item_invalid`/`number_input_invalid` need. Each is defined
-//! once here and reused wherever its field set repeats.
+//! `(node, hint)`/`(node, value)` pair for `hinted`/`valued`, and the
+//! `message`-carrying shapes `field_invalid`/`field_warning`/
+//! `field_validated`/`file_uploader_item_invalid`/`number_input_invalid`/
+//! `checkbox_warning`/`radio_warning` need. Each is defined once here and
+//! reused wherever its field set repeats.
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -155,7 +156,7 @@ impl ParamShape for KeyLabelValueChildren {
         "{ key: string, label: string, value: string, children: { ViewNode } }";
 }
 
-/// `field_invalid`/`file_uploader_item_invalid`(key, label, message).
+/// `field_invalid`/`field_warning`/`file_uploader_item_invalid`(key, label, message).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct KeyLabelMessage {
@@ -165,6 +166,21 @@ struct KeyLabelMessage {
 }
 impl ParamShape for KeyLabelMessage {
     const LUAU: &'static str = "{ key: string, label: string, message: string }";
+}
+
+/// `checkbox_warning`/`radio_warning`(key, label, selected, message).
+/// The bool is `checked` on `checkbox_warning` and `selected` on
+/// `radio_warning`; the wire name is `selected`, matching [`KeyLabelSelected`].
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct KeyLabelSelectedMessage {
+    key: Key,
+    label: String,
+    selected: bool,
+    message: String,
+}
+impl ParamShape for KeyLabelSelectedMessage {
+    const LUAU: &'static str = "{ key: string, label: string, selected: boolean, message: string }";
 }
 
 /// `field_validated(key, label, message?)`: `message` is optional (`None`
@@ -262,9 +278,15 @@ pub const ENTRIES: &[Entry] = &[
     row!("checkbox_group", KeyLabelChildren, |p| lib::checkbox_group(
         p.key, p.label, p.children
     )),
+    row!("checkbox_warning", KeyLabelSelectedMessage, |p| {
+        lib::checkbox_warning(p.key, p.label, p.selected, p.message)
+    }),
     row!("radio", KeyLabelSelected, |p| lib::radio(
         p.key, p.label, p.selected
     )),
+    row!("radio_warning", KeyLabelSelectedMessage, |p| {
+        lib::radio_warning(p.key, p.label, p.selected, p.message)
+    }),
     row!("radio_group", KeyLabelChildren, |p| lib::radio_group(
         p.key, p.label, p.children
     )),
@@ -315,10 +337,16 @@ pub const ENTRIES: &[Entry] = &[
     row!("field_labeled", KeyLabel, |p| lib::field_labeled(
         p.key, p.label
     )),
+    row!("field_required", KeyLabel, |p| lib::field_required(
+        p.key, p.label
+    )),
     row!("field_readonly", KeyLabel, |p| lib::field_readonly(
         p.key, p.label
     )),
     row!("field_invalid", KeyLabelMessage, |p| lib::field_invalid(
+        p.key, p.label, p.message
+    )),
+    row!("field_warning", KeyLabelMessage, |p| lib::field_warning(
         p.key, p.label, p.message
     )),
     row!("field_validated", KeyLabelOptionalMessage, |p| {
@@ -345,6 +373,9 @@ pub const ENTRIES: &[Entry] = &[
     row!("file_uploader_item_invalid", KeyLabelMessage, |p| {
         lib::file_uploader_item_invalid(p.key, p.label, p.message)
     }),
+    row!("file_uploader_item_warning", KeyLabelMessage, |p| {
+        lib::file_uploader_item_warning(p.key, p.label, p.message)
+    }),
     // form.rs — Form.
     row!("form", KeyLabelChildren, |p| lib::form(
         p.key, p.label, p.children
@@ -361,6 +392,9 @@ pub const ENTRIES: &[Entry] = &[
     )),
     row!("number_input_invalid", KeyLabelValueMessage, |p| {
         lib::number_input_invalid(p.key, p.label, p.value, p.message)
+    }),
+    row!("number_input_warning", KeyLabelValueMessage, |p| {
+        lib::number_input_warning(p.key, p.label, p.value, p.message)
     }),
     // search.rs — Search.
     row!("search", KeyLabel, |p| lib::search(p.key, p.label)),
@@ -550,6 +584,18 @@ mod tests {
                 "{ key, label, message }",
                 json!({"key": "probe", "label": "Probe", "message": "Message"}),
             ),
+            (
+                "{ key, label, selected, message }",
+                json!({
+                    "key": "probe", "label": "Probe", "selected": true, "message": "Message"
+                }),
+            ),
+            (
+                "{ key, label, value, message }",
+                json!({
+                    "key": "probe", "label": "Probe", "value": "Value", "message": "Message"
+                }),
+            ),
         ];
         let shape_of = |luau: &str| -> Option<&'static str> {
             match luau {
@@ -572,11 +618,17 @@ mod tests {
                 "{ key: string, label: string, value: string, children: { ViewNode } }" => {
                     Some("{ key, label, value, children }")
                 }
-                // `field_invalid`/`file_uploader_item_invalid`: the only two
-                // rows sharing `KeyLabelMessage`, from two unrelated
-                // components — checked for the same reason.
+                // `field_invalid`/`field_warning`/`file_uploader_item_invalid`
+                // share `KeyLabelMessage` across two unrelated components —
+                // checked for the same reason.
                 "{ key: string, label: string, message: string }" => {
                     Some("{ key, label, message }")
+                }
+                "{ key: string, label: string, selected: boolean, message: string }" => {
+                    Some("{ key, label, selected, message }")
+                }
+                "{ key: string, label: string, value: string, message: string }" => {
+                    Some("{ key, label, value, message }")
                 }
                 _ => None,
             }

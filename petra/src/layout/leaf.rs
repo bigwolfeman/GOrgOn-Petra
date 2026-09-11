@@ -4,7 +4,7 @@
 use crate::frame::placement::{PaintState, Placement, PlacementSink};
 use crate::geom::{Axis, Size};
 use crate::layout::{LayoutCtx, Proposal, SizeProposal, Slot, semantics_of};
-use crate::tree::{KeyPath, NodeKind, ViewNode};
+use crate::tree::{KeyPath, NodeKind, TextWrap, ViewNode};
 
 /// The extent a spacer answers an `Unbounded` probe with when it declares no
 /// maximum.
@@ -189,11 +189,26 @@ fn measure_input(node: &ViewNode, ctx: &mut LayoutCtx<'_>, proposal: SizeProposa
         .horizontal
         .available()
         .map(|w| (w - 2.0 * inset).max(0.0));
+    // Input defaults to one line; a textarea sets wrap + max_lines.
+    //
+    // Props.wrap and Props.max_lines are both None on a plain field, and
+    // TextWrap's Default is Wrap. Feeding those through would grow field()
+    // the moment a parent offered a finite width, which is the opposite of
+    // a field. Clip plus a one-line cap is the field's silence. Wrap with
+    // the line cap left open is the textarea's declaration
+    // (`component/textarea.rs` sets Wrap and leaves max_lines alone; the
+    // well's vertical max is a constraint, not a line count).
+    let input_wrap = node.props.wrap.unwrap_or(TextWrap::Clip);
+    let input_max_lines = match node.props.max_lines {
+        Some(n) => Some(n),
+        None if input_wrap == TextWrap::Wrap => None,
+        None => Some(1),
+    };
     let req = crate::layout::TextRequest {
         text: content,
         style: props.style,
-        wrap: crate::tree::TextWrap::Clip,
-        max_lines: Some(1),
+        wrap: input_wrap,
+        max_lines: input_max_lines,
         available_width: inner_width,
     };
     let size = ctx.content.text(&req).size;
@@ -220,7 +235,7 @@ mod tests {
     use crate::geom::Size;
     use crate::layout::{Proposal, SizeProposal};
     use crate::testing::Harness;
-    use crate::tree::{KeyPath, NodeKind, Props, ViewNode};
+    use crate::tree::{KeyPath, NodeKind, Props, TextWrap, ViewNode};
 
     fn measured(node: &ViewNode, horizontal: Proposal) -> Size {
         let mut h = Harness::new();
@@ -262,6 +277,74 @@ mod tests {
         assert_eq!(
             unbounded.w, SPACER_MAX_EXTENT,
             "asked how wide it would like to be, a field wants the row"
+        );
+    }
+
+    /// Input defaults to one line. A textarea sets wrap (and optionally a
+    /// line cap); that is what lets the well grow with its content.
+    ///
+    /// MonoContent: 8.0 per character, 16.0 per line. `spacing-04` is 12
+    /// each side, so Exact(56) offers 32 of inner width, 4 chars per line.
+    /// Sixteen characters wrap to four lines when Wrap is on and uncapped.
+    #[test]
+    fn a_wrapping_field_grows_and_a_silent_field_stays_one_line() {
+        let text = "abcdefghijklmnop";
+        let offer = Proposal::Exact(56.0);
+
+        let silent = ViewNode::new(NodeKind::Input, "f").with_props(Props {
+            text: Some(text.into()),
+            ..Props::default()
+        });
+        let silent_size = measured(&silent, offer);
+        assert_eq!(
+            silent_size.h, 16.0,
+            "a field that sets neither wrap nor max_lines stays one line: {silent_size:?}"
+        );
+        assert_eq!(silent_size.w, 56.0, "an exact offer is still taken whole");
+
+        let empty = ViewNode::new(NodeKind::Input, "f").with_props(Props {
+            placeholder: Some(text.into()),
+            ..Props::default()
+        });
+        assert_eq!(
+            measured(&empty, offer).h,
+            16.0,
+            "an empty field still measures its placeholder, and still as one line"
+        );
+
+        let wrapping = ViewNode::new(NodeKind::Input, "f").with_props(Props {
+            text: Some(text.into()),
+            wrap: Some(TextWrap::Wrap),
+            ..Props::default()
+        });
+        let wrapping_size = measured(&wrapping, offer);
+        assert_eq!(
+            wrapping_size.h, 64.0,
+            "wrap without a line cap grows with the run: {wrapping_size:?}"
+        );
+        assert_eq!(wrapping_size.w, 56.0, "an exact offer is still taken whole");
+
+        let wrapping_empty = ViewNode::new(NodeKind::Input, "f").with_props(Props {
+            placeholder: Some(text.into()),
+            wrap: Some(TextWrap::Wrap),
+            ..Props::default()
+        });
+        assert_eq!(
+            measured(&wrapping_empty, offer).h,
+            64.0,
+            "an empty wrapping field still measures its placeholder, and the placeholder wraps"
+        );
+
+        let capped = ViewNode::new(NodeKind::Input, "f").with_props(Props {
+            text: Some(text.into()),
+            wrap: Some(TextWrap::Wrap),
+            max_lines: Some(2),
+            ..Props::default()
+        });
+        let capped_size = measured(&capped, offer);
+        assert_eq!(
+            capped_size.h, 32.0,
+            "wrap plus a line cap of two is two lines, not four: {capped_size:?}"
         );
     }
 

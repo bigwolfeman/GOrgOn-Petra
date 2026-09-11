@@ -78,26 +78,34 @@
 //! library does not cover (an arbitrary grid, a custom surface) is still
 //! composed from those primitives directly, which stay public (gate C1-10).
 
+pub mod kit;
 pub mod params;
 pub mod registry;
 
+pub(crate) use kit::{CARET_SIZE, CaretDirection, caret, pad, pin_block, stack, swatch};
+
 mod accordion;
 mod ai_label;
+mod avatar;
 mod breadcrumb;
 mod button;
+mod button_group;
 mod chrome_strip;
 mod code_snippet;
 mod contained_list;
 mod content_switcher;
+mod context_menu;
 mod controls;
 mod data_table;
 mod date_picker;
+mod drawer;
 mod dropdown;
 mod field;
 mod file_uploader;
 mod form;
 mod icon;
 mod inline_loading;
+mod input_group;
 mod link;
 mod list;
 mod list_box;
@@ -105,13 +113,16 @@ mod list_row;
 mod loading;
 mod menu;
 mod menu_button;
+mod menubar;
 mod modal;
 mod notification;
 mod number_input;
+mod otp;
 mod pagination;
 mod popover;
 mod progress;
 mod progress_indicator;
+mod rating;
 mod search;
 mod section;
 mod select;
@@ -121,7 +132,9 @@ mod structured_list;
 mod tabs;
 mod tag;
 mod text;
+mod textarea;
 mod tile;
+mod toggle_button;
 mod toggletip;
 mod tokens;
 mod tooltip;
@@ -129,27 +142,39 @@ mod tree_view;
 mod ui_shell;
 
 pub use accordion::{
-    accordion, accordion_item, accordion_item_lg, accordion_item_sm, accordion_item_with,
+    accordion, accordion_item, accordion_item_lg, accordion_item_sm, accordion_item_spaced,
+    accordion_item_spaced_lg, accordion_item_spaced_sm, accordion_item_with,
+    accordion_item_with_spaced, accordion_spaced,
 };
 pub use ai_label::{
     ai_label, ai_label_2xs, ai_label_inline, ai_label_inline_lg, ai_label_inline_sm, ai_label_lg,
     ai_label_mini, ai_label_revert, ai_label_sm, ai_label_with_actions, ai_label_xl, ai_label_xs,
 };
-pub use breadcrumb::{breadcrumb, breadcrumb_item, breadcrumb_item_current};
+pub use avatar::{
+    avatar, avatar_group, avatar_lg, avatar_md, avatar_with, avatar_with_image, avatar_with_status,
+    avatar_xs,
+};
+pub use breadcrumb::{
+    breadcrumb, breadcrumb_item, breadcrumb_item_current, breadcrumb_item_icon,
+    breadcrumb_overflow, breadcrumb_with_separator,
+};
 pub use button::{
     button, button_2xl, button_lg, button_sm, button_xl, button_xs, danger_button,
     danger_ghost_button, danger_tertiary_button, ghost_button, primary_button, tertiary_button,
 };
+pub use button_group::button_group;
 pub use chrome_strip::{DIVIDER_EXTENT, chrome_strip};
 pub use code_snippet::{
-    COPY_FEEDBACK, COPY_FEEDBACK_KEY, COPY_FEEDBACK_SECONDS, CodeInk, code_runs, code_snippet,
-    code_snippet_copied, code_snippet_inline, code_snippet_multi,
+    COPY_FEEDBACK, COPY_FEEDBACK_KEY, COPY_FEEDBACK_SECONDS, CodeInk, MULTI_CAP, MULTI_CAP_LINES,
+    SHOW_LESS, SHOW_MORE, code_runs, code_snippet, code_snippet_copied, code_snippet_inline,
+    code_snippet_multi, code_snippet_multi_capped,
 };
 pub use contained_list::{contained_list, contained_list_disclosed};
 pub use content_switcher::{content_switcher, content_switcher_item};
+pub use context_menu::context_menu;
 pub use controls::{
     CheckState, checkbox, checkbox_group, checkbox_indeterminate, checkbox_readonly,
-    checkbox_tristate, radio, radio_group, toggle, toggle_sm,
+    checkbox_tristate, checkbox_warning, radio, radio_group, radio_warning, toggle, toggle_sm,
 };
 pub use data_table::{
     data_table, data_table_row, data_table_row_expandable, data_table_row_lg, data_table_row_md,
@@ -157,20 +182,22 @@ pub use data_table::{
     data_table_zebra,
 };
 pub use date_picker::{Calendar, date_picker, date_picker_open, date_picker_showing};
+pub use drawer::{docked, drawer, sheet};
 pub use dropdown::{
     dropdown, dropdown_lg, dropdown_open, dropdown_option, dropdown_sm, dropdown_xs,
 };
 pub use field::{
-    field, field_fluid, field_invalid, field_labeled, field_lg, field_readonly, field_sm,
-    field_validated, hinted, labeled, valued,
+    field, field_fluid, field_invalid, field_labeled, field_lg, field_readonly, field_required,
+    field_sm, field_validated, field_warning, hinted, labeled, valued,
 };
 pub use file_uploader::{
     file_uploader, file_uploader_item, file_uploader_item_edit, file_uploader_item_invalid,
-    file_uploader_with,
+    file_uploader_item_warning, file_uploader_with,
 };
 pub use form::form;
 pub use icon::{IconBox, IconMark, IconTone, icon, icon_in, icon_toned};
 pub use inline_loading::{inline_loading, inline_loading_finished};
+pub use input_group::{input_group, input_group_with_addon};
 pub use link::{link, link_inline};
 pub use list::{
     Bullet, BulletScheme, list_item, list_item_with, ordered_list, unordered_list,
@@ -180,16 +207,24 @@ pub use list_row::{LIST_ROW_EXTENT, list_row};
 pub use loading::{loading, loading_sm, spinner_phase};
 pub use menu::{menu, menu_item};
 pub use menu_button::menu_button;
+pub use menubar::{menubar, menubar_top};
 pub use modal::{modal, modal_passive};
 pub use notification::{
     NotificationKind, notification, notification_actionable, notification_actionable_kind,
     notification_inline, notification_inline_kind, notification_toast, notification_toast_kind,
 };
-pub use number_input::{number_input, number_input_invalid, number_input_lg, number_input_sm};
-pub use pagination::{PaginationPicker, pagination, pagination_items, pagination_items_open};
+pub use number_input::{
+    number_input, number_input_invalid, number_input_lg, number_input_sm, number_input_warning,
+};
+pub use otp::otp;
+pub use pagination::{
+    PaginationPicker, pagination, pagination_items, pagination_items_open, pagination_nav,
+    pagination_numbers, pagination_page_size, pagination_range,
+};
 pub use popover::{popover, popover_with, popover_with_placement};
 pub use progress::{progress, progress_sm, progress_with_helper};
 pub use progress_indicator::{progress_indicator, progress_step};
+pub use rating::rating;
 pub use search::{search, search_lg, search_sm};
 pub use section::section;
 pub use select::{select, select_lg, select_open, select_sm};
@@ -201,9 +236,13 @@ pub use structured_list::{
     structured_list, structured_list_row, structured_list_sized, structured_list_weights_at,
 };
 pub use tabs::{contained_tab, contained_tab_bar, tab, tab_bar, vertical_tab, vertical_tab_bar};
-pub use tag::{dismissible_tag, selectable_tag, tag, tag_lg, tag_sm};
+pub use tag::{dismissible_tag, selectable_tag, tag, tag_lg, tag_sm, tag_status, tag_with_avatar};
 pub use text::{heading, text};
+pub use textarea::{
+    TEXTAREA_MAX_HEIGHT, textarea, textarea_invalid, textarea_validated, textarea_warning,
+};
 pub use tile::{clickable_tile, expandable_tile, selectable_tile, tile};
+pub use toggle_button::{toggle_button, toggle_button_group, toggle_button_icon};
 pub use toggletip::{toggletip, toggletip_with};
 pub use tooltip::{tooltip, tooltip_anchored};
 pub use tree_view::{tree_item, tree_item_xs, tree_view};
@@ -218,9 +257,8 @@ pub use ui_shell::{
 
 use std::sync::Arc;
 
-use crate::geom::Axis;
 use crate::token::{BORDER_SUBTLE_TOKENS, FIELD_TOKENS, LAYER_TOKENS, TokenName};
-use crate::tree::{AxisConstraint, Constraints, InsetRefs, Key, NodeKind, Props, ViewNode};
+use crate::tree::{Key, NodeKind, ViewNode};
 
 /// The deepest seat [`on_layer`] will honour.
 ///
@@ -522,182 +560,6 @@ pub fn layer_tokens(depth: usize) -> LayerTokens {
         field: FIELD_TOKENS[depth],
         border: BORDER_SUBTLE_TOKENS[depth],
     }
-}
-
-/// A `Stack` on `axis`, gapped by `spacing`, with no other props set.
-///
-/// Every component with more than one visual part is built from this — the
-/// one place `NodeKind::Stack` is spelled inside the library, so a bug in
-/// how a row or column is assembled has one place to be found and fixed
-/// rather than a dozen.
-pub(crate) fn stack(
-    key: impl Into<Key>,
-    axis: Axis,
-    spacing: Option<&str>,
-    children: Vec<ViewNode>,
-) -> ViewNode {
-    ViewNode::new(NodeKind::Stack, key)
-        .with_props(Props {
-            axis: Some(axis),
-            spacing: spacing.map(tokens::t),
-            ..Props::default()
-        })
-        .with_children(children)
-}
-
-/// A fixed-extent, unlabelled rectangle: the drawn box every swatch-shaped
-/// piece of chrome in the library is built from (a checkbox's box, a
-/// toggle's knob and pad, a status dot, a progress fill and track).
-///
-/// Never exported. A bare coloured box carries no semantics of its own —
-/// FR-058 has nothing to say about it because nothing here is interactive
-/// or labelled — which is exactly why it is a building block a component
-/// composes rather than a component the library ships on its own.
-pub(crate) fn swatch(
-    key: impl Into<Key>,
-    w: f32,
-    h: f32,
-    background: Option<&str>,
-    border: Option<&str>,
-    radius: Option<&str>,
-) -> ViewNode {
-    let mut props = Props::default();
-    if let Some(name) = background {
-        props.tokens.insert("background".into(), tokens::t(name));
-    }
-    if let Some(name) = border {
-        props.tokens.insert("border".into(), tokens::t(name));
-    }
-    if let Some(name) = radius {
-        props.tokens.insert("radius".into(), tokens::t(name));
-    }
-    ViewNode::new(NodeKind::Spacer, key)
-        .with_props(props)
-        .with_constraints(Constraints {
-            horizontal: AxisConstraint {
-                min: Some(w),
-                max: Some(w),
-                priority: 0,
-            },
-            vertical: AxisConstraint {
-                min: Some(h),
-                max: Some(h),
-                priority: 0,
-            },
-        })
-}
-
-/// [`InsetRefs::symmetric`] over two of this module's spacing constants,
-/// named the way `InsetRefs::symmetric` itself is: horizontal first.
-pub(crate) fn pad(horizontal: &str, vertical: &str) -> InsetRefs {
-    InsetRefs::symmetric(tokens::t(horizontal), tokens::t(vertical))
-}
-
-/// Pin `h` as both the minimum and maximum of the block (vertical) extent.
-///
-/// `ui_shell.rs`'s own `pin_block` and `button.rs`'s own `pin_height` were
-/// byte-for-byte the same four lines: two names for one definition, split
-/// across two files by nothing but which component happened to need it
-/// first. This is the one copy both call sites now share. (A handful of
-/// other components — `pagination`, `code_snippet`, `menu`, `accordion`,
-/// `content_switcher`, `contained_list`, `dropdown`, `toggletip`,
-/// `date_picker` — still carry their own private `pin_height`/`pin_square`
-/// helpers; unifying those is a separate, larger change this one does not
-/// make.)
-pub(crate) fn pin_block(h: f32) -> Constraints {
-    Constraints {
-        vertical: AxisConstraint {
-            min: Some(h),
-            max: Some(h),
-            priority: 0,
-        },
-        ..Constraints::default()
-    }
-}
-
-/// Logical extent of a [`caret`] on both axes: Carbon's 16px glyph box.
-pub(crate) const CARET_SIZE: f32 = 16.0;
-
-/// Which way a [`caret`] points.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CaretDirection {
-    /// Expanded: the triangle points down.
-    Down,
-    /// Collapsed: the triangle points right.
-    Right,
-}
-
-/// A disclosure caret: one filled triangle in [`tokens::ICON_SECONDARY`] on a
-/// 16×16 canvas, pointing [`CaretDirection::Down`] when the thing it fronts
-/// is open and [`CaretDirection::Right`] when it is shut.
-///
-/// Never exported, and not an [`IconMark`]. It predates the icon vocabulary
-/// growing past `Check`: [`IconMark::ChevronDown`] and
-/// [`IconMark::ChevronUp`] exist now (2026-09-04), and this is the shape a
-/// tree branch and an expandable tile still draw instead of spelling the
-/// word `expanded` next to their label. The pending swap is
-/// `icon_toned(key, IconMark::ChevronDown, IconTone::Secondary)` for the
-/// tile and a `ChevronRight` mark for the tree, then delete this; that is
-/// the tile and tree rows' owners' change. Like [`swatch`] it carries
-/// no semantics of its own: the branch or tile that composes it owns the
-/// `Semantics.expanded` fact, and the revealed children are the channel a
-/// reader who cannot see the triangle still gets (FR-026).
-///
-/// Geometry, canvas-local: an 8-wide, 4-tall isoceles triangle centred in
-/// the box, which is the CaretDown glyph's own proportion. The points are
-/// whole units so nothing in the fill lands on a half-pixel edge and gets
-/// snapped off centre at 1x (see
-/// `.agents/notes/proposed/bug-fix/2026-09-04-a-half-pixel-inset-snaps-a-small-mark-off-centre.md`).
-///
-/// # Panics
-/// Never in practice: one three-vertex convex path is inside every draw-list
-/// bound. A panic here means an edit broke convexity, which is a defect.
-pub(crate) fn caret(key: impl Into<Key>, direction: CaretDirection) -> ViewNode {
-    use crate::draw::{ColorRef, Command, DrawList, Paint, PathVerb};
-    use crate::geom::Point;
-
-    let (a, b, c) = match direction {
-        CaretDirection::Down => (
-            Point::new(4.0, 6.0),
-            Point::new(12.0, 6.0),
-            Point::new(8.0, 10.0),
-        ),
-        CaretDirection::Right => (
-            Point::new(6.0, 4.0),
-            Point::new(6.0, 12.0),
-            Point::new(10.0, 8.0),
-        ),
-    };
-    let paint = Paint::filled(ColorRef::Token(
-        tokens::t(tokens::ICON_SECONDARY).as_str().to_owned(),
-    ));
-    let list = DrawList::new(vec![Command::Path {
-        verbs: vec![
-            PathVerb::MoveTo(a),
-            PathVerb::LineTo(b),
-            PathVerb::LineTo(c),
-        ],
-        closed: true,
-        paint,
-    }])
-    .unwrap_or_else(|err| panic!("caret draw list refused: {err}"));
-    ViewNode::new(NodeKind::Canvas, key)
-        .with_props(Props {
-            canvas: Some(Arc::new(list)),
-            ..Props::default()
-        })
-        .with_constraints(Constraints {
-            horizontal: AxisConstraint {
-                min: Some(CARET_SIZE),
-                max: Some(CARET_SIZE),
-                priority: 0,
-            },
-            vertical: AxisConstraint {
-                min: Some(CARET_SIZE),
-                max: Some(CARET_SIZE),
-                priority: 0,
-            },
-        })
 }
 
 #[cfg(test)]

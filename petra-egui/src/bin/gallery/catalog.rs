@@ -500,7 +500,10 @@ impl App for Catalog {
     fn view(&mut self) -> ViewNode {
         let cell = self.current();
         let title = format!("{}  {}", cell.row.number, cell.row.component);
-        let slice = format!("slice {}", cell.row.slice.letter());
+        let slice = match cell.row.slice {
+            crate::inventory::Slice::G => "spec 009".to_owned(),
+            slice => format!("slice {}", slice.letter()),
+        };
         let status = if cell.is_built() { "BUILT" } else { "UNBUILT" };
 
         let mut main = column(
@@ -1093,7 +1096,10 @@ mod tests {
 
         app.page = 0;
         press(&mut app, PREV);
-        assert_eq!(app.current().row.number, 42);
+        assert_eq!(
+            app.current().row.number,
+            crate::inventory::ROWS.last().unwrap().number
+        );
         press(&mut app, NEXT);
         assert_eq!(app.current().row.number, 1);
     }
@@ -1161,6 +1167,12 @@ mod tests {
         assert!(find(&tree, "idx-1").is_some());
         assert!(find(&tree, "idx-36").is_some());
         assert!(find(&tree, "idx-42").is_some());
+        assert!(find(&tree, "idx-43").is_some());
+        assert!(find(
+            &tree,
+            &format!("idx-{}", crate::inventory::ROWS.len())
+        )
+        .is_some());
         assert!(
             find(&tree, "idx-36").unwrap().semantics.selected,
             "the open page is selected in the index"
@@ -1592,7 +1604,7 @@ mod tests {
             "a fresh host starts focus on row 1"
         );
 
-        for expected in 2..=42 {
+        for expected in 2..=crate::inventory::CARBON_COUNT {
             step(&ctx, &mut host, tab_key(false));
             let suffix = format!("/{IDX}{expected}");
             assert!(

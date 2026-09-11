@@ -4,10 +4,10 @@
 //! deserializes its parameter table into a shape, and calls the shipped
 //! constructor. A row must never re-derive what the constructor does.
 //!
-//! Components: Accordion, Contained list, List, Modal, Popover, Structured
-//! list, Tile, Toggletip, Tooltip, Tree view, Code snippet. 34 constructors
-//! (see the `coverage` test at the bottom, which counts the source rather
-//! than trusting this comment).
+//! Components: Accordion, Contained list, Context menu, List, Modal,
+//! Popover, Structured list, Tile, Toggletip, Tooltip, Tree view, Code
+//! snippet. 41 constructors (see the `coverage` test at the bottom, which
+//! counts the source rather than trusting this comment).
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -19,8 +19,10 @@ use crate::component::params::{
 };
 use crate::component::{
     Bullet, BulletScheme, accordion, accordion_item, accordion_item_lg, accordion_item_sm,
-    accordion_item_with, clickable_tile, code_snippet, code_snippet_inline, code_snippet_multi,
-    contained_list, contained_list_disclosed, expandable_tile, list_item, list_item_with, modal,
+    accordion_item_spaced, accordion_item_spaced_lg, accordion_item_spaced_sm, accordion_item_with,
+    accordion_item_with_spaced, accordion_spaced, clickable_tile, code_snippet,
+    code_snippet_inline, code_snippet_multi, code_snippet_multi_capped, contained_list,
+    contained_list_disclosed, context_menu, expandable_tile, list_item, list_item_with, modal,
     modal_passive, ordered_list, popover, popover_with, popover_with_placement, selectable_tile,
     structured_list, structured_list_row, structured_list_sized, tile, toggletip, toggletip_with,
     tooltip, tooltip_anchored, tree_item, tree_item_xs, tree_view, unordered_list,
@@ -90,8 +92,10 @@ impl From<BulletSchemeParam> for BulletScheme {
 }
 
 /// `accordion_item`, `accordion_item_sm`, `accordion_item_lg`,
-/// `expandable_tile` — 4 constructors sharing one `(key, label, bool, body)`
-/// shape under different field names for the bool (`expanded` here).
+/// `accordion_item_spaced`, `accordion_item_spaced_sm`,
+/// `accordion_item_spaced_lg`, `expandable_tile` — 7 constructors sharing
+/// one `(key, label, bool, body)` shape under different field names for the
+/// bool (`expanded` here).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct KeyLabelExpandedBody {
@@ -104,7 +108,7 @@ impl ParamShape for KeyLabelExpandedBody {
     const LUAU: &'static str = "{ key: string, label: string, expanded: boolean, body: string }";
 }
 
-/// `accordion_item_with` — 1 constructor.
+/// `accordion_item_with`, `accordion_item_with_spaced` — 2 constructors.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct KeyLabelExpandedChildren {
@@ -196,6 +200,26 @@ struct PopoverWithParams {
 impl ParamShape for PopoverWithParams {
     const LUAU: &'static str =
         "{ key: string, label: string, anchor: string, children: { ViewNode } }";
+}
+
+/// `context_menu(key, label, x, y, items)`. `x`/`y` are logical units, the
+/// top-left of [`crate::tree::Anchor::Point`]. The list is `children` on
+/// the wire, matching `menu`/`accordion` rather than the constructor's
+/// `items` name: Lua cannot send an empty array as `[]`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ContextMenuParams {
+    key: Key,
+    label: String,
+    x: f32,
+    y: f32,
+    // See `KeyLabelExpandedChildren`'s `children` for why.
+    #[serde(default)]
+    children: Vec<ViewNode>,
+}
+impl ParamShape for ContextMenuParams {
+    const LUAU: &'static str =
+        "{ key: string, label: string, x: number, y: number, children: { ViewNode } }";
 }
 
 /// `popover_with_placement` — 1 constructor. `Edge` and `Align` already
@@ -318,6 +342,21 @@ impl ParamShape for TreeItemParams {
          selected: boolean, children: { ViewNode } }";
 }
 
+/// `code_snippet_multi_capped(key, code, filename, language, expanded)`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CodeSnippetCappedParams {
+    key: Key,
+    code: String,
+    filename: String,
+    language: String,
+    expanded: bool,
+}
+impl ParamShape for CodeSnippetCappedParams {
+    const LUAU: &'static str =
+        "{ key: string, code: string, filename: string, language: string, expanded: boolean }";
+}
+
 macro_rules! row {
     ($name:literal, $shape:ty, |$p:ident| $body:expr) => {{
         fn ctor(v: &Value) -> Result<ViewNode, ParamError> {
@@ -333,10 +372,13 @@ macro_rules! row {
 }
 
 /// This group's constructors: one row per public `ViewNode`-returning
-/// constructor in the 11 containment components. 34 rows; see the
+/// constructor in the 12 containment components. 41 rows; see the
 /// `coverage` test below, which counts the source rather than this list.
 pub const ENTRIES: &[Entry] = &[
     row!("accordion", KeyChildren, |p| accordion(p.key, p.children)),
+    row!("accordion_spaced", KeyChildren, |p| accordion_spaced(
+        p.key, p.children
+    )),
     row!("accordion_item", KeyLabelExpandedBody, |p| accordion_item(
         p.key, p.label, p.expanded, p.body
     )),
@@ -346,9 +388,23 @@ pub const ENTRIES: &[Entry] = &[
     row!("accordion_item_lg", KeyLabelExpandedBody, |p| {
         accordion_item_lg(p.key, p.label, p.expanded, p.body)
     }),
+    row!("accordion_item_spaced", KeyLabelExpandedBody, |p| {
+        accordion_item_spaced(p.key, p.label, p.expanded, p.body)
+    }),
+    row!("accordion_item_spaced_sm", KeyLabelExpandedBody, |p| {
+        accordion_item_spaced_sm(p.key, p.label, p.expanded, p.body)
+    }),
+    row!("accordion_item_spaced_lg", KeyLabelExpandedBody, |p| {
+        accordion_item_spaced_lg(p.key, p.label, p.expanded, p.body)
+    }),
     row!("accordion_item_with", KeyLabelExpandedChildren, |p| {
         accordion_item_with(p.key, p.label, p.expanded, p.children)
     }),
+    row!(
+        "accordion_item_with_spaced",
+        KeyLabelExpandedChildren,
+        |p| accordion_item_with_spaced(p.key, p.label, p.expanded, p.children)
+    ),
     row!("contained_list", KeyLabelChildren, |p| contained_list(
         p.key, p.label, p.children
     )),
@@ -383,6 +439,9 @@ pub const ENTRIES: &[Entry] = &[
     row!("popover_with_placement", PopoverWithPlacementParams, |p| {
         popover_with_placement(p.key, p.label, p.anchor, p.edge, p.align, p.children)
     }),
+    row!("context_menu", ContextMenuParams, |p| context_menu(
+        p.key, p.label, p.x, p.y, p.children
+    )),
     row!("structured_list", StructuredListParams, |p| {
         structured_list(p.key, p.header, p.rows)
     }),
@@ -428,6 +487,9 @@ pub const ENTRIES: &[Entry] = &[
     row!("code_snippet_inline", KeyLabel, |p| code_snippet_inline(
         p.key, p.label
     )),
+    row!("code_snippet_multi_capped", CodeSnippetCappedParams, |p| {
+        code_snippet_multi_capped(p.key, p.code, p.filename, p.language, p.expanded)
+    }),
 ];
 
 #[cfg(test)]
@@ -439,7 +501,7 @@ mod tests {
 
     use super::*;
 
-    /// Every `pub fn` in this group's 11 source files whose first parameter
+    /// Every `pub fn` in this group's 12 source files whose first parameter
     /// is `key: impl Into<Key>` and whose return type is `ViewNode`. Scanned
     /// from the source text itself (not a hand list), so a constructor added
     /// later without a row fails this test rather than silently shipping
@@ -458,6 +520,7 @@ mod tests {
             "tooltip.rs",
             "tree_view.rs",
             "code_snippet.rs",
+            "context_menu.rs",
         ];
         let mut out = BTreeSet::new();
         for file in files {
@@ -547,6 +610,7 @@ mod tests {
     fn sample_params(name: &str) -> Value {
         match name {
             "accordion" => json!({ "key": "k", "children": [] }),
+            "accordion_spaced" => json!({ "key": "k", "children": [] }),
             "accordion_item" => json!({ "key": "k", "label": "l", "expanded": true, "body": "b" }),
             "accordion_item_sm" => {
                 json!({ "key": "k", "label": "l-sm", "expanded": true, "body": "b" })
@@ -554,7 +618,19 @@ mod tests {
             "accordion_item_lg" => {
                 json!({ "key": "k", "label": "l-lg", "expanded": true, "body": "b" })
             }
+            "accordion_item_spaced" => {
+                json!({ "key": "k", "label": "l", "expanded": true, "body": "b" })
+            }
+            "accordion_item_spaced_sm" => {
+                json!({ "key": "k", "label": "l-sm", "expanded": true, "body": "b" })
+            }
+            "accordion_item_spaced_lg" => {
+                json!({ "key": "k", "label": "l-lg", "expanded": true, "body": "b" })
+            }
             "accordion_item_with" => {
+                json!({ "key": "k", "label": "l", "expanded": true, "children": [] })
+            }
+            "accordion_item_with_spaced" => {
                 json!({ "key": "k", "label": "l", "expanded": true, "children": [] })
             }
             "contained_list" => json!({ "key": "k", "label": "title", "children": [] }),
@@ -590,6 +666,9 @@ mod tests {
             "popover_with_placement" => json!({
                 "key": "k", "label": "l", "anchor": "a",
                 "edge": "top", "align": "start", "children": []
+            }),
+            "context_menu" => json!({
+                "key": "k", "label": "l", "x": 24.0, "y": 48.0, "children": []
             }),
             // Two header cells: with only one column (the `header: []`
             // default), `lay_out_columns` has nothing to divide and
@@ -636,6 +715,13 @@ mod tests {
             "code_snippet" => json!({ "key": "k", "label": "code" }),
             "code_snippet_multi" => json!({ "key": "k", "label": "code-multi" }),
             "code_snippet_inline" => json!({ "key": "k", "label": "code-inline" }),
+            "code_snippet_multi_capped" => json!({
+                "key": "k",
+                "code": "fn main() {}",
+                "filename": "main.rs",
+                "language": "rust",
+                "expanded": false
+            }),
             other => panic!("no sample params written for `{other}`; add one"),
         }
     }

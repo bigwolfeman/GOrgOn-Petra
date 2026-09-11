@@ -24,6 +24,7 @@
 //! `validate` refuses an unexpanded one by name rather than ignoring it.
 
 use std::collections::BTreeMap;
+use std::sync::{Mutex, Once, OnceLock};
 
 use crate::component::params::ParamError;
 use crate::tree::ViewNode;
@@ -33,6 +34,7 @@ mod data;
 mod feedback;
 mod form;
 mod navigation;
+mod new_atomics;
 
 /// Build one component from its wire parameter table.
 pub type Ctor = fn(&serde_json::Value) -> Result<ViewNode, ParamError>;
@@ -50,6 +52,30 @@ pub struct Entry {
 }
 
 /// The five group files, merged by [`entries`].
+///
+/// These five slices are the original 42 Carbon components. Three things in
+/// this crate still assume that set is the whole of the registry, and this
+/// file names them rather than inheriting the assumption silently:
+///
+/// 1. `registry/data.rs` proves coverage with
+///    `include_str!("../data_table.rs")` against a sibling source file. A
+///    constructor in `gorgon-petra-compound` is not a sibling file, so that
+///    scan cannot see it and must not be asked to. The other group files
+///    scan the same way. Those checks are not rewritten here.
+/// 2. `GROUPS` panics when two in-crate groups register one name. An
+///    external slice is merged with the same uniqueness assert; a silent
+///    last-one-wins would give a plugin whichever crate happened to
+///    register last.
+/// 3. The stub generators walk the merged table: `gorgon/xtask/src/ui_stubs.rs`
+///    calls [`entries`] to render `plugin.d.luau`, and `token_stubs.rs` is
+///    the sibling generator that also assumes the in-crate vocabulary is
+///    complete. A constructor that is not in the table at first lookup is
+///    absent from the stubs, which is how a compound becomes unreachable
+///    from `ctx.ui`.
+///
+/// Compound constructors live in another crate, so a second `include_str`
+/// group of Petra source cannot see them. [`register_external`] is the
+/// hook that crate calls, before the first lookup.
 const GROUPS: &[(&str, &[Entry])] = &[
     ("containment", containment::ENTRIES),
     ("navigation", navigation::ENTRIES),
@@ -58,6 +84,11 @@ const GROUPS: &[(&str, &[Entry])] = &[
     ("data", data::ENTRIES),
 ];
 
+/// Extra slices from [`register_external`]. Wave-1 first-party atomics
+/// (`new_atomics::ENTRIES`) are pushed here by `seed_first_party` so
+/// they go through the same hook a compound crate will use.
+static EXTERNAL: Mutex<Vec<&'static [Entry]>> = Mutex::new(Vec::new());
+
 /// The merged table, built once.
 ///
 /// `expand` calls [`lookup`] once per component node and the daemon's stage-1
@@ -65,20 +96,74 @@ const GROUPS: &[(&str, &[Entry])] = &[
 /// per-call rebuild of a 180-row vector with an O(n²) uniqueness assert would
 /// be paid on every node of every contribution. The merge and its checks
 /// happen once per process instead, and `lookup` becomes a hash probe.
-static TABLE: std::sync::OnceLock<BTreeMap<&'static str, Entry>> = std::sync::OnceLock::new();
+static TABLE: OnceLock<BTreeMap<&'static str, Entry>> = OnceLock::new();
+
+fn external_lock() -> std::sync::MutexGuard<'static, Vec<&'static [Entry]>> {
+    EXTERNAL.lock().unwrap_or_else(|_| {
+        panic!(
+            "registry EXTERNAL mutex was poisoned; a prior register_external panic left the \
+             extra-entry list unusable"
+        )
+    })
+}
+
+/// Merge `rows` into `out`. A name already present is a merge error, never
+/// a last-one-wins: the rows are written by different hands (five in-crate
+/// groups, first-party atomics, a second crate) and a silent shadow would
+/// give a plugin whichever slice happened to be linked last.
+fn insert_rows(out: &mut BTreeMap<&'static str, Entry>, rows: &[Entry], source: &str) {
+    for row in rows {
+        assert!(
+            out.insert(row.name, *row).is_none(),
+            "component `{}` is registered twice; `{source}` cannot re-register a name \
+             another source already owns",
+            row.name
+        );
+    }
+}
+
+/// Push this crate's wave-1 atomics through [`register_external`] so they
+/// are in the table without a caller having to remember them. A compound
+/// crate still has to call [`register_external`] itself, before the first
+/// lookup.
+fn seed_first_party() {
+    static SEED: Once = Once::new();
+    SEED.call_once(|| {
+        register_external(new_atomics::ENTRIES);
+    });
+}
+
+/// Register constructors that do not live in this crate's five group files.
+///
+/// `gorgon-petra-compound` calls this with its view constructors before the
+/// first [`lookup`], [`entries`], [`build`], or [`expand`]. After `TABLE`
+/// is built, a late registration is invisible to those four and to the
+/// stub generators, so this panics rather than dropping the slice.
+///
+/// # Panics
+/// When `TABLE` is already initialized. The panic names that defect.
+pub fn register_external(entries: &'static [Entry]) {
+    let mut extra = external_lock();
+    if TABLE.get().is_some() {
+        panic!(
+            "register_external was called after the registry table was already built. A \
+             constructor registered this late is invisible to lookup, expand, and the stub \
+             generators that walk entries(). Call register_external before the first lookup."
+        );
+    }
+    extra.push(entries);
+}
 
 fn table() -> &'static BTreeMap<&'static str, Entry> {
+    seed_first_party();
     TABLE.get_or_init(|| {
+        let extra = external_lock();
         let mut out: BTreeMap<&'static str, Entry> = BTreeMap::new();
         for (group, rows) in GROUPS {
-            for row in *rows {
-                assert!(
-                    out.insert(row.name, *row).is_none(),
-                    "component `{}` is registered twice; `{group}` cannot re-register a name \
-                     another group already owns",
-                    row.name
-                );
-            }
+            insert_rows(&mut out, rows, group);
+        }
+        for rows in extra.iter() {
+            insert_rows(&mut out, rows, "external");
         }
         out
     })
@@ -87,7 +172,8 @@ fn table() -> &'static BTreeMap<&'static str, Entry> {
 /// Every registered constructor, in name order.
 ///
 /// # Panics
-/// When two groups register one name. That is a merge error, never a
+/// When two sources register one name (a `GROUPS` file, a
+/// [`register_external`] slice, or both). That is a merge error, never a
 /// last-one-wins: the rows are written by different hands and a silent shadow
 /// would give a plugin whichever module happened to be linked last.
 #[must_use]
@@ -474,6 +560,58 @@ mod tests {
             err.reason.contains("no component reference"),
             "got: {}",
             err.reason
+        );
+    }
+
+    /// Wave-1 atomics seed through [`register_external`] before the first
+    /// lookup, so a Lua plugin can name them without a caller remembering
+    /// to register this crate's own constructors.
+    #[test]
+    fn wave_1_atomics_are_named_in_the_table() {
+        for name in [
+            "textarea",
+            "textarea_invalid",
+            "textarea_validated",
+            "textarea_warning",
+            "avatar",
+            "avatar_xs",
+            "avatar_md",
+            "avatar_lg",
+            "avatar_with_image",
+            "avatar_with_status",
+            "avatar_with",
+            "rating",
+            "toggle_button",
+            "toggle_button_icon",
+            "toggle_button_group",
+            "tag_with_avatar",
+            "tag_status",
+            "code_snippet_multi_capped",
+        ] {
+            assert!(
+                lookup(name).is_some(),
+                "wave-1 atomic `{name}` is not in the registry table"
+            );
+        }
+    }
+
+    /// A late [`register_external`] is the defect this hook exists to
+    /// refuse: the table is already built, so the slice would be dropped.
+    #[test]
+    fn register_external_after_lookup_panics_and_names_the_defect() {
+        let _ = entries();
+        let panicked = std::panic::catch_unwind(|| {
+            register_external(&[]);
+        });
+        let payload = panicked.expect_err("a late register_external must panic");
+        let message = payload
+            .downcast_ref::<String>()
+            .map(|s| s.as_str())
+            .or_else(|| payload.downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        assert!(
+            message.contains("after the registry table was already built"),
+            "panic must name the late-registration defect, got: {message}"
         );
     }
 }

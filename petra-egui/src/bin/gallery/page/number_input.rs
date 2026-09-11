@@ -1,6 +1,6 @@
 //! Inventory row 22, Number input.
 
-use gorgon_petra::component::{labeled, number_input, section};
+use gorgon_petra::component::{labeled, number_input, number_input_warning, section};
 use gorgon_petra::input::{InputEvent, KeyCode};
 use gorgon_petra::tree::ViewNode;
 
@@ -57,11 +57,18 @@ impl Page for NumberInput {
             vec![filled_body(
                 "num",
                 sp("spacing.md"),
-                vec![labeled(
-                    "count",
-                    "Count",
-                    number_input(COUNT, "Count", self.value.clone()),
-                )],
+                vec![
+                    labeled(
+                        "count",
+                        "Count",
+                        number_input(COUNT, "Count", self.value.clone()),
+                    ),
+                    labeled(
+                        "warn-count",
+                        "Count (warning)",
+                        number_input_warning("n-warn", "Count", "999", "out of range"),
+                    ),
+                ],
             )],
         )
     }

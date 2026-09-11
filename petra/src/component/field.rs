@@ -11,6 +11,7 @@
 
 use std::sync::Arc;
 
+use super::icon::{IconMark, IconTone, icon_toned};
 use super::stack;
 use super::text::text;
 use super::tokens::{
@@ -22,6 +23,11 @@ use crate::tree::{
     AxisConstraint, Constraints, FocusFigure, FocusShownOn, Interaction, Key, NodeKind, Props,
     Role, ViewNode,
 };
+
+/// Carbon `$support-warning`, aliased onto `status.degraded` the way
+/// [`SUPPORT_ERROR`] aliases onto `status.down`. Bound here until `tokens.rs`
+/// re-exports it the way it re-exports the error name (spec 008 T037).
+pub(crate) const SUPPORT_WARNING: &str = "support-warning";
 
 /// What an editable text input declares.
 ///
@@ -58,6 +64,8 @@ enum FieldChrome {
     Enabled,
     /// Invalid: same fill, a [`SUPPORT_ERROR`] outline on all four sides.
     Invalid,
+    /// Warning: same fill, a [`SUPPORT_WARNING`] outline on all four sides.
+    Warning,
     /// Readable, not editable. Keeps Focus; drops Key and TextEdit. No fill,
     /// a subtle bottom rule.
     ReadOnly,
@@ -211,6 +219,42 @@ pub fn field_labeled(key: impl Into<Key>, label: impl Into<String>) -> ViewNode 
     )
 }
 
+/// Carbon Default anatomy with a required marker: muted label, a `*` text
+/// child, and a md Input whose accessible name is `{label} (required)`.
+///
+/// A bare [`field`] is a leaf `Input` and cannot carry a text child, so the
+/// required form is this labelled wrapper rather than a `required: bool` on
+/// [`field`]. Colour is not a channel: the star is a character, the
+/// accessible name says the word, and [`crate::tree::Semantics::required`]
+/// is set on both the wrapper and the input.
+pub fn field_required(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
+    let label = label.into();
+    let accessible = format!("{label} (required)");
+    let mut mark = text("required-mark", "*");
+    mark.props
+        .tokens
+        .insert("foreground".into(), t(TEXT_PRIMARY));
+    let mut label_row = stack(
+        "label-row",
+        Axis::Horizontal,
+        Some(SPACING_02),
+        vec![muted_label("label", label.clone()), mark],
+    );
+    label_row.props.align = Some(Align::Center);
+    let mut input = input_field("input", label, SIZE_MD, FieldChrome::Enabled);
+    input.semantics.label = Some(accessible);
+    input.semantics.required = true;
+    let mut node = stack(
+        key,
+        Axis::Vertical,
+        Some(SPACING_03),
+        vec![label_row, input],
+    );
+    node.props.align = Some(Align::Stretch);
+    node.semantics.required = true;
+    node
+}
+
 /// Invalid Default input plus a label-adjacent helper.
 ///
 /// Colour is not the only channel: the Input outline is [`SUPPORT_ERROR`]
@@ -223,6 +267,56 @@ pub fn field_invalid(
     message: impl Into<String>,
 ) -> ViewNode {
     field_validated(key, label, Some(message.into()))
+}
+
+/// Warning Default input plus a label-adjacent helper.
+///
+/// Colour is not the only channel: the Input outline is `$support-warning`
+/// on all four sides (Carbon's warn field is a 2px `$support-warning`
+/// outline, the same anatomy as invalid; this painter's edge is one unit),
+/// a helper child carries `Warning: {message}` in [`TEXT_PRIMARY`], and a
+/// [`IconMark::WarningFilled`] glyph sits beside that word. The operator is
+/// red-green colour blind; a yellow edge on its own is not a channel he can
+/// read.
+///
+/// The well sits at `{key}/input`, the same depth as [`field_invalid`], so
+/// a value that moves from warn to legal does not re-key the node under the
+/// cursor.
+pub fn field_warning(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    message: impl Into<String>,
+) -> ViewNode {
+    let mut children = vec![input_field("input", label, SIZE_MD, FieldChrome::Warning)];
+    children.push(warning_helper(message));
+    let mut node = stack(key, Axis::Vertical, Some(SPACING_02), children);
+    node.props.align = Some(Align::Stretch);
+    node
+}
+
+/// Helper line for a warning: [`IconMark::WarningFilled`] plus
+/// `Warning: {message}`.
+///
+/// Hue is not the only channel: the word and the bang-in-a-ring are.
+/// Checkbox and radio should call this later (T038); this is the one helper
+/// so those constructors do not grow a second copy.
+pub(super) fn warning_helper(message: impl Into<String>) -> ViewNode {
+    let mut message_node = text("message", format!("Warning: {}", message.into()));
+    message_node
+        .props
+        .tokens
+        .insert("foreground".into(), t(TEXT_PRIMARY));
+    let mut row = stack(
+        "helper",
+        Axis::Horizontal,
+        Some(SPACING_02),
+        vec![
+            icon_toned("mark", IconMark::WarningFilled, IconTone::Primary),
+            message_node,
+        ],
+    );
+    row.props.align = Some(Align::Center);
+    row
 }
 
 /// A Default input that carries its own validity.
@@ -418,10 +512,21 @@ fn input_field(
             // when it never was.
             props.tokens.insert("border".into(), t(SUPPORT_ERROR));
         }
+        FieldChrome::Warning => {
+            props.tokens.insert("background".into(), t(SURFACE_RAISED));
+            // The warning hue, not the error and not the accent, and on all
+            // four sides: Carbon's warn field is the invalid outline in
+            // `$support-warning`. The word and the bang glyph are the
+            // channels the operator can read; this edge is the third.
+            props.tokens.insert("border".into(), t(SUPPORT_WARNING));
+        }
     }
     let intents: &[Interaction] = match chrome {
         FieldChrome::ReadOnly => &[Interaction::Focus],
-        FieldChrome::Enabled | FieldChrome::Invalid | FieldChrome::Nested => EDITABLE_TEXT_INTENTS,
+        FieldChrome::Enabled
+        | FieldChrome::Invalid
+        | FieldChrome::Warning
+        | FieldChrome::Nested => EDITABLE_TEXT_INTENTS,
     };
     let mut node = ViewNode::new(NodeKind::Input, key)
         .with_props(props)
@@ -444,7 +549,10 @@ fn input_field(
     node.semantics.focus_figure = FocusFigure::Sides;
     node.semantics.focus_shown_on = match chrome {
         FieldChrome::Nested => FocusShownOn::OnWell,
-        FieldChrome::Enabled | FieldChrome::Invalid | FieldChrome::ReadOnly => FocusShownOn::Well,
+        FieldChrome::Enabled
+        | FieldChrome::Invalid
+        | FieldChrome::Warning
+        | FieldChrome::ReadOnly => FocusShownOn::Well,
     };
     node
 }
@@ -454,7 +562,8 @@ mod tests {
     use super::valued;
 
     use super::{
-        BORDER_STRONG, BORDER_SUBTLE, SUPPORT_ERROR, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY,
+        BORDER_STRONG, BORDER_SUBTLE, SUPPORT_ERROR, SUPPORT_WARNING, SURFACE_RAISED, TEXT_MUTED,
+        TEXT_PRIMARY,
     };
     // Not from `super`: no shipped code in this file names the accent any
     // more, and that is the change. The invalid field used to bind it, which
@@ -462,9 +571,11 @@ mod tests {
     // can assert the two differ.
     use super::{
         SIZE_FLUID, SIZE_LG, SIZE_MD, SIZE_SM, field, field_fluid, field_invalid, field_labeled,
-        field_lg, field_readonly, field_sm, field_validated, hinted, labeled,
+        field_lg, field_readonly, field_required, field_sm, field_validated, field_warning, hinted,
+        labeled,
     };
     use crate::component::tokens::{ACCENT_PRIMARY, SURFACE_BASE};
+    use crate::component::{IconMark, IconTone, icon_toned};
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, validated_with};
@@ -510,6 +621,8 @@ mod tests {
         for (label, node) in [
             ("labeled", field_labeled("f", "Name")),
             ("invalid", field_invalid("f", "Name", "required")),
+            ("required", field_required("f", "Name")),
+            ("warning", field_warning("f", "Name", "check the value")),
         ] {
             // The seat carries no figure assertion because it carries no
             // focus: `labeled` gives the wrapper no role and no
@@ -568,6 +681,11 @@ mod tests {
         assert!(node.interactions.contains(&Interaction::TextEdit));
         assert!(!node.semantics.read_only);
         assert!(!node.semantics.disabled);
+        assert!(
+            !node.semantics.required,
+            "required is opt-in; default false must not appear as a new fact \
+             on every existing field"
+        );
         assert!(node.children.is_empty(), "default field is a leaf Input");
     }
 
@@ -815,6 +933,105 @@ mod tests {
         assert_eq!(token(helper, "foreground"), Some(TEXT_PRIMARY));
     }
 
+    /// A required field declares the flag and shows a marker that is not
+    /// colour: a `*` text child plus `(required)` in the accessible name.
+    ///
+    /// Both halves matter. A red asterisk with no word is the channel the
+    /// operator cannot read; a semantics flag with no picture is a tree
+    /// fact nobody can see. The placeholder stays the label, so the empty
+    /// well does not print "Name (required)" twice.
+    #[test]
+    fn field_required_declares_the_flag_and_shows_a_star() {
+        let node = field_required("name", "Fiber name");
+        assert_eq!(node.kind, NodeKind::Stack);
+        assert!(
+            node.semantics.required,
+            "the constructor result answers required"
+        );
+        assert!(
+            node.semantics.role.is_none(),
+            "wrapper must not steal TextInput"
+        );
+        let star = child(child(&node, "label-row"), "required-mark");
+        assert_eq!(star.kind, NodeKind::Text);
+        assert_eq!(star.props.text.as_deref(), Some("*"));
+        assert_eq!(token(star, "foreground"), Some(TEXT_PRIMARY));
+        let label = child(child(&node, "label-row"), "label");
+        assert_eq!(label.props.text.as_deref(), Some("Fiber name"));
+        let input = child(&node, "input");
+        assert_eq!(input.kind, NodeKind::Input);
+        assert_eq!(input.semantics.role, Some(Role::TextInput));
+        assert!(input.semantics.required);
+        assert_eq!(
+            input.semantics.label.as_deref(),
+            Some("Fiber name (required)")
+        );
+        assert_eq!(
+            input.props.placeholder.as_deref(),
+            Some("Fiber name"),
+            "the empty well shows the label, not the spoken suffix"
+        );
+        assert_carbon_well(input, "required input");
+    }
+
+    /// A warning field's edge is the warning hue, never the error and never
+    /// the accent, and the helper says so in words and in a glyph.
+    ///
+    /// Three channels, none of them hue alone. The operator is red-green
+    /// colour blind; a yellow edge on its own is not a signal he can read.
+    /// The inequality against `SUPPORT_ERROR` is asserted explicitly because
+    /// the defect this exists to prevent is binding the error outline and
+    /// calling it a warning.
+    #[test]
+    fn field_warning_draws_the_warning_hue_and_says_so_in_words_and_a_glyph() {
+        let node = field_warning("name", "Fiber name", "check the value");
+        assert_eq!(node.kind, NodeKind::Stack);
+        assert!(
+            node.semantics.role.is_none(),
+            "wrapper must not steal TextInput"
+        );
+        let input = child(&node, "input");
+        assert_eq!(input.kind, NodeKind::Input);
+        assert_eq!(input.semantics.role, Some(Role::TextInput));
+        assert_eq!(input.constraints.vertical.min, Some(SIZE_MD));
+        assert_eq!(token(input, "border"), Some(SUPPORT_WARNING));
+        assert_ne!(
+            token(input, "border"),
+            Some(SUPPORT_ERROR),
+            "a warning field must not wear the error outline"
+        );
+        assert_ne!(
+            token(input, "border"),
+            Some(ACCENT_PRIMARY),
+            "a warning field must not wear the accent: a focused field wears \
+             it too"
+        );
+        assert_eq!(
+            token(input, "border-bottom"),
+            None,
+            "the warning outline replaces the resting rule rather than \
+             stacking on it"
+        );
+        assert_eq!(token(input, "background"), Some(SURFACE_RAISED));
+        assert!(input.interactions.contains(&Interaction::TextEdit));
+        let helper = child(&node, "helper");
+        let message = child(helper, "message");
+        assert_eq!(message.kind, NodeKind::Text);
+        assert_eq!(
+            message.props.text.as_deref(),
+            Some("Warning: check the value")
+        );
+        assert_eq!(token(message, "foreground"), Some(TEXT_PRIMARY));
+        let mark = child(helper, "mark");
+        let expected = icon_toned("mark", IconMark::WarningFilled, IconTone::Primary);
+        assert_eq!(mark.kind, NodeKind::Canvas);
+        assert_eq!(
+            mark.props.canvas, expected.props.canvas,
+            "the helper's glyph is WarningFilled, not ErrorFilled and not a \
+             swatch"
+        );
+    }
+
     #[test]
     fn field_readonly_keeps_focus_and_drops_edit() {
         let node = field_readonly("name", "Fiber name");
@@ -885,6 +1102,11 @@ mod tests {
             ("labeled", field_labeled("name", "Fiber name")),
             ("readonly", field_readonly("name", "Fiber name")),
             ("invalid", field_invalid("name", "Fiber name", "required")),
+            ("required", field_required("name", "Fiber name")),
+            (
+                "warning",
+                field_warning("name", "Fiber name", "check the value"),
+            ),
             (
                 "disabled",
                 crate::component::disabled(field("name", "Fiber name")),

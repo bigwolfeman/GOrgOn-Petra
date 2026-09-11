@@ -5,9 +5,9 @@
 //! constructor. A row must never re-derive what the constructor does.
 //!
 //! Components: Breadcrumb, Content switcher, Link, Menu, Menu buttons,
-//! Pagination, Tabs, UI shell header, UI shell left panel, UI shell right
-//! panel. 36 constructors (see the `coverage` test at the bottom, which
-//! counts the source rather than trusting this comment).
+//! Menubar, Pagination, Tabs, UI shell header, UI shell left panel, UI
+//! shell right panel. 45 constructors (see the `coverage` test at the
+//! bottom, which counts the source rather than trusting this comment).
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -18,9 +18,11 @@ use crate::component::params::{
 };
 use crate::component::{
     IconMark, LeftPanelMode, PaginationPicker, breadcrumb, breadcrumb_item,
-    breadcrumb_item_current, contained_tab, contained_tab_bar, content_switcher,
-    content_switcher_item, link, link_inline, menu, menu_button, menu_item, pagination,
-    pagination_items, pagination_items_open, tab, tab_bar, ui_shell_header, ui_shell_header_action,
+    breadcrumb_item_current, breadcrumb_item_icon, breadcrumb_overflow, breadcrumb_with_separator,
+    contained_tab, contained_tab_bar, content_switcher, content_switcher_item, link, link_inline,
+    menu, menu_button, menu_item, menubar, menubar_top, pagination, pagination_items,
+    pagination_items_open, pagination_nav, pagination_numbers, pagination_page_size,
+    pagination_range, tab, tab_bar, ui_shell_header, ui_shell_header_action,
     ui_shell_header_action_icon, ui_shell_header_menu_trigger, ui_shell_header_nav_item,
     ui_shell_left_panel, ui_shell_left_panel_divider, ui_shell_left_panel_icon_item,
     ui_shell_left_panel_icon_subitem, ui_shell_left_panel_in, ui_shell_left_panel_item,
@@ -28,7 +30,7 @@ use crate::component::{
     ui_shell_right_panel_divider, ui_shell_switcher, ui_shell_switcher_item, vertical_tab,
     vertical_tab_bar,
 };
-use crate::tree::{Key, ViewNode};
+use crate::tree::{Edge, Key, ViewNode};
 
 /// Deserialize `params` into `T`, naming the constructor being built.
 /// `serde_json`'s own error already names the offending field under
@@ -186,8 +188,75 @@ impl From<LeftPanelModeParam> for LeftPanelMode {
     }
 }
 
-/// `pagination` — 1 constructor. Two bare numbers; no shared shape has two
-/// numbers and no string, so this stays local.
+/// `breadcrumb_with_separator(key, sep, crumbs)`. The list is `children` on
+/// the wire, matching [`KeyChildren`] on `breadcrumb`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BreadcrumbWithSeparatorParams {
+    key: Key,
+    sep: String,
+    // See `UiShellHeaderParams`'s `nav`/`actions` for why.
+    #[serde(default)]
+    children: Vec<ViewNode>,
+}
+impl ParamShape for BreadcrumbWithSeparatorParams {
+    const LUAU: &'static str = "{ key: string, sep: string, children: { ViewNode } }";
+}
+
+/// `breadcrumb_overflow(key, max_visible, crumbs)`. `max_visible` is `u32`
+/// on the wire; the constructor takes `usize`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BreadcrumbOverflowParams {
+    key: Key,
+    max_visible: u32,
+    // See `UiShellHeaderParams`'s `nav`/`actions` for why.
+    #[serde(default)]
+    children: Vec<ViewNode>,
+}
+impl ParamShape for BreadcrumbOverflowParams {
+    const LUAU: &'static str = "{ key: string, max_visible: number, children: { ViewNode } }";
+}
+
+/// `breadcrumb_item_icon(key, mark, label)`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BreadcrumbItemIconParams {
+    key: Key,
+    mark: IconMarkParam,
+    label: String,
+}
+impl ParamShape for BreadcrumbItemIconParams {
+    const LUAU: &'static str = concat!(
+        "{ key: string, mark: ",
+        icon_mark_luau!(),
+        ", label: string }"
+    );
+}
+
+/// `menubar(key, label, edge, items)`. `Edge` already derives `Deserialize`
+/// (`crate::tree::props`), same as containment's `popover_with_placement`.
+/// The list is `children` on the wire so `menubar_top` (`KeyLabelChildren`)
+/// and `menubar` share one Lua field name.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MenubarParams {
+    key: Key,
+    label: String,
+    edge: Edge,
+    // See `UiShellHeaderParams`'s `nav`/`actions` for why.
+    #[serde(default)]
+    children: Vec<ViewNode>,
+}
+impl ParamShape for MenubarParams {
+    const LUAU: &'static str = "{ key: string, label: string, \
+         edge: \"top\" | \"bottom\" | \"left\" | \"right\", \
+         children: { ViewNode } }";
+}
+
+/// `pagination`, `pagination_numbers`, `pagination_nav` — 3 constructors.
+/// Two bare numbers; no shared shape has two numbers and no string, so
+/// this stays local.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PaginationParams {
@@ -199,7 +268,7 @@ impl ParamShape for PaginationParams {
     const LUAU: &'static str = "{ key: string, page: number, page_count: number }";
 }
 
-/// `pagination_items` — 1 constructor.
+/// `pagination_items`, `pagination_range` — 2 constructors.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PaginationItemsParams {
@@ -232,6 +301,22 @@ struct PaginationItemsOpenParams {
 impl ParamShape for PaginationItemsOpenParams {
     const LUAU: &'static str = "{ key: string, page: number, page_size: number, \
          page_sizes: { number }, total_items: number, picker: \"page-size\" | \"page\" }";
+}
+
+/// `pagination_page_size(key, page_size, open_sizes?)`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PaginationPageSizeParams {
+    key: Key,
+    page_size: u32,
+    // Missing means the picker is closed (`None`). A present empty Lua
+    // table still needs `#[serde(default)]` on the inner Vec; wrapping in
+    // `Option` lets the field vanish entirely.
+    #[serde(default)]
+    open_sizes: Option<Vec<u32>>,
+}
+impl ParamShape for PaginationPageSizeParams {
+    const LUAU: &'static str = "{ key: string, page_size: number, open_sizes: { number }? }";
 }
 
 /// `ui_shell_header` — 1 constructor.
@@ -376,15 +461,26 @@ macro_rules! row {
 }
 
 /// This group's constructors: one row per public `ViewNode`-returning
-/// constructor in the 10 navigation components. 36 rows; see the
+/// constructor in the 11 navigation components. 45 rows; see the
 /// `coverage` test below, which counts the source rather than this list.
 pub const ENTRIES: &[Entry] = &[
     row!("breadcrumb", KeyChildren, |p| breadcrumb(p.key, p.children)),
+    row!(
+        "breadcrumb_with_separator",
+        BreadcrumbWithSeparatorParams,
+        |p| breadcrumb_with_separator(p.key, &p.sep, p.children)
+    ),
+    row!("breadcrumb_overflow", BreadcrumbOverflowParams, |p| {
+        breadcrumb_overflow(p.key, p.max_visible as usize, p.children)
+    }),
     row!("breadcrumb_item", KeyLabel, |p| breadcrumb_item(
         p.key, p.label
     )),
     row!("breadcrumb_item_current", KeyLabel, |p| {
         breadcrumb_item_current(p.key, p.label)
+    }),
+    row!("breadcrumb_item_icon", BreadcrumbItemIconParams, |p| {
+        breadcrumb_item_icon(p.key, p.mark.into(), p.label)
     }),
     row!("content_switcher", KeyChildren, |p| content_switcher(
         p.key, p.children
@@ -400,6 +496,12 @@ pub const ENTRIES: &[Entry] = &[
     row!("menu_item", KeyLabel, |p| menu_item(p.key, p.label)),
     row!("menu_button", KeyLabelOpenChildren, |p| menu_button(
         p.key, p.label, p.open, p.children
+    )),
+    row!("menubar", MenubarParams, |p| menubar(
+        p.key, p.label, p.edge, p.children
+    )),
+    row!("menubar_top", KeyLabelChildren, |p| menubar_top(
+        p.key, p.label, p.children
     )),
     row!("pagination", PaginationParams, |p| pagination(
         p.key,
@@ -419,6 +521,20 @@ pub const ENTRIES: &[Entry] = &[
             p.picker.into(),
         )
     }),
+    row!("pagination_page_size", PaginationPageSizeParams, |p| {
+        pagination_page_size(p.key, p.page_size, p.open_sizes.as_deref())
+    }),
+    row!("pagination_range", PaginationItemsParams, |p| {
+        pagination_range(p.key, p.page, p.page_size, p.total_items)
+    }),
+    row!("pagination_numbers", PaginationParams, |p| {
+        pagination_numbers(p.key, p.page, p.page_count)
+    }),
+    row!("pagination_nav", PaginationParams, |p| pagination_nav(
+        p.key,
+        p.page,
+        p.page_count
+    )),
     row!("tab", KeyLabelSelected, |p| tab(p.key, p.label, p.selected)),
     row!("contained_tab", KeyLabelSelected, |p| contained_tab(
         p.key, p.label, p.selected
@@ -504,7 +620,7 @@ mod tests {
 
     use super::*;
 
-    /// Every `pub fn` in this group's 8 source files whose first parameter
+    /// Every `pub fn` in this group's 9 source files whose first parameter
     /// is `key: impl Into<Key>` and whose return type is `ViewNode`. Scanned
     /// from the source text itself (not a hand list), so a constructor added
     /// later without a row fails this test rather than silently shipping
@@ -517,6 +633,7 @@ mod tests {
             "link.rs",
             "menu.rs",
             "menu_button.rs",
+            "menubar.rs",
             "pagination.rs",
             "tabs.rs",
             "ui_shell.rs",
@@ -578,7 +695,14 @@ mod tests {
             missing.is_empty(),
             "constructors present in source but missing a registry row: {missing:?}"
         );
-        let extra: Vec<_> = registered.difference(&source).collect();
+        // `menu_item` is `pub use`d from `list_box.rs` (`menu.rs`); the
+        // scanner only sees `pub fn` text, so a re-export is invisible.
+        // Lua still names it. Same rule as a constructor whose first
+        // param is not `key: impl Into<Key>`.
+        let extra: Vec<_> = registered
+            .difference(&source)
+            .filter(|name| *name != "menu_item")
+            .collect();
         assert!(
             extra.is_empty(),
             "registry rows naming no constructor found in source (renamed or removed?): {extra:?}"
@@ -617,8 +741,28 @@ mod tests {
     fn sample_params(name: &str) -> Value {
         match name {
             "breadcrumb" => json!({ "key": "k", "children": [] }),
+            "breadcrumb_with_separator" => json!({
+                "key": "k",
+                "sep": ">",
+                "children": [
+                    { "kind": "stack", "key": "c1" },
+                    { "kind": "stack", "key": "c2" }
+                ]
+            }),
+            "breadcrumb_overflow" => json!({
+                "key": "k",
+                "max_visible": 2,
+                "children": [
+                    { "kind": "stack", "key": "c1" },
+                    { "kind": "stack", "key": "c2" },
+                    { "kind": "stack", "key": "c3" }
+                ]
+            }),
             "breadcrumb_item" => json!({ "key": "k", "label": "l" }),
             "breadcrumb_item_current" => json!({ "key": "k", "label": "l-current" }),
+            "breadcrumb_item_icon" => {
+                json!({ "key": "k", "mark": "check", "label": "l" })
+            }
             "content_switcher" => json!({ "key": "k-cs", "children": [] }),
             "content_switcher_item" => json!({ "key": "k", "label": "l", "selected": true }),
             "link" => json!({ "key": "k", "label": "l" }),
@@ -628,6 +772,10 @@ mod tests {
             "menu_button" => {
                 json!({ "key": "k", "label": "l", "open": true, "children": [] })
             }
+            "menubar" => json!({
+                "key": "k", "label": "l", "edge": "bottom", "children": []
+            }),
+            "menubar_top" => json!({ "key": "k", "label": "l-menubar", "children": [] }),
             "pagination" => json!({ "key": "k", "page": 1, "page_count": 4 }),
             "pagination_items" => {
                 json!({ "key": "k", "page": 1, "page_size": 10, "total_items": 42 })
@@ -636,6 +784,14 @@ mod tests {
                 "key": "k", "page": 1, "page_size": 10,
                 "page_sizes": [10, 20, 30], "total_items": 42, "picker": "page"
             }),
+            "pagination_page_size" => json!({
+                "key": "k", "page_size": 10, "open_sizes": [10, 20, 30]
+            }),
+            "pagination_range" => {
+                json!({ "key": "k", "page": 1, "page_size": 10, "total_items": 42 })
+            }
+            "pagination_numbers" => json!({ "key": "k", "page": 1, "page_count": 4 }),
+            "pagination_nav" => json!({ "key": "k", "page": 1, "page_count": 4 }),
             "tab" => json!({ "key": "k", "label": "l", "selected": true }),
             "contained_tab" => json!({ "key": "k", "label": "l-contained", "selected": true }),
             "vertical_tab" => json!({ "key": "k", "label": "l-vertical", "selected": true }),

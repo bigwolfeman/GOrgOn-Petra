@@ -1,7 +1,8 @@
 //! Inventory row 5, Checkbox.
 
 use gorgon_petra::component::{
-    CheckState, checkbox, checkbox_group, checkbox_readonly, checkbox_tristate, disabled, section,
+    CheckState, checkbox, checkbox_group, checkbox_readonly, checkbox_tristate, checkbox_warning,
+    disabled, section,
 };
 use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::ViewNode;
@@ -60,6 +61,12 @@ impl Page for Checkbox {
                         // same shot rather than only one of the two.
                         disabled(checkbox("check-disabled", "Disabled", false)),
                         disabled(checkbox("check-disabled-on", "Disabled, on", true)),
+                        checkbox_warning(
+                            "check-warn",
+                            "Required consent",
+                            false,
+                            "must be checked",
+                        ),
                     ],
                 )],
             )],
