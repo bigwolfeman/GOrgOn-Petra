@@ -14,9 +14,13 @@
 //! cannot know a coordinate. The fiber that owns the surface records the
 //! press position as State and passes `x`, `y` on the next `view`
 //! (`contracts/view-fiber.md` §4.5). A button or a compound does that
-//! recording. Secondary click as an [`crate::tree::Interaction`] a node
-//! can ask for is T014 and is not this leaf. A primary trigger can already
-//! supply a point.
+//! recording, reacting to a routed [`crate::tree::Interaction::SecondaryClick`]
+//! through [`crate::input::route`]'s `Route::Pointer` the same way a
+//! dropdown's trigger reacts to `Click` — T014's job, landed, and not this
+//! leaf either: this file stays the overlay, and the gallery's own page
+//! (`bin/gallery/page/context_menu.rs`) is T014's real caller, driving a
+//! genuine secondary press rather than the primary-click stand-in it used
+//! before.
 
 use super::menu::menu;
 use crate::tree::{Anchor, Key, ViewNode};

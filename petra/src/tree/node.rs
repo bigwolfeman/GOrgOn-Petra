@@ -192,6 +192,17 @@ impl Constraints {
 pub enum Interaction {
     /// Primary activation.
     Click,
+    /// Secondary-button (right-click) activation, spec 009 T014.
+    ///
+    /// A distinct variant rather than a modifier on [`Self::Click`]: a node
+    /// that asks for one must not silently start accepting the other.
+    /// [`crate::input::required_interaction_during`] is where the split is
+    /// read off the pressed button, and a plain button — which declares
+    /// only `Click` — is unreachable by a secondary press both before and
+    /// after this variant existed. What changed is that a node can now
+    /// declare this one too, alongside `Click`, and be reachable by both;
+    /// see `component::context_menu`'s gallery page for a caller that does.
+    SecondaryClick,
     /// Press-move-release.
     Drag,
     /// Pointer entry and exit.

@@ -327,8 +327,8 @@ impl ActRequest {
             WireError::new(
                 ErrorKind::InvalidParams,
                 format!(
-                    "`kind` must be one of click, drag, hover, focus, text-edit, scroll, \
-                     key: {err}"
+                    "`kind` must be one of click, secondary-click, drag, hover, focus, \
+                     text-edit, scroll, key: {err}"
                 ),
             )
         })?;
@@ -371,6 +371,7 @@ impl ActRequest {
         let modifiers = modifiers(self.payload.modifiers);
         let action = match self.kind {
             Interaction::Click => Action::Click { modifiers },
+            Interaction::SecondaryClick => Action::SecondaryClick { modifiers },
             Interaction::Hover => Action::Hover,
             Interaction::Focus => Action::Focus,
             Interaction::Drag => {
@@ -469,7 +470,7 @@ fn parse_region(params: &Value) -> Result<Option<WireRect>, WireError> {
 mod tests {
     use serde_json::{Value, json};
 
-    use super::{Server, dispatch};
+    use super::{ActRequest, Action, Interaction, Server, dispatch};
     use crate::wire::{ErrorKind, Request};
 
     fn req(verb: &str, params: Value) -> Request {
@@ -658,7 +659,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_unknown_action_kind_is_invalid_params_and_lists_the_seven() {
+    async fn an_unknown_action_kind_is_invalid_params_and_lists_the_eight() {
         let (server, _hub, _bridge) = Server::new("test-app");
         let err = dispatch(
             &server,
@@ -671,6 +672,23 @@ mod tests {
         .unwrap_err();
         assert_eq!(err.kind, ErrorKind::InvalidParams);
         assert!(err.message.contains("text-edit"), "{}", err.message);
+    }
+
+    /// Spec 009 T014's wire spelling: `kind: "secondary-click"` parses to
+    /// [`Interaction::SecondaryClick`] and `ActRequest::to_action` maps it
+    /// to [`Action::SecondaryClick`] — the whole path a driver actually
+    /// takes, not just the enum the two exhaustive matches were made to
+    /// cover.
+    #[test]
+    fn kind_secondary_click_parses_and_maps_to_the_secondary_click_action() {
+        let params = json!({"kind": "secondary-click", "target": {"node_id": "/x"}});
+        let request = ActRequest::parse(&params).expect("secondary-click must parse");
+        assert_eq!(request.kind, Interaction::SecondaryClick);
+        let (_, action) = request.to_action(1.0).expect("must build an action");
+        assert!(
+            matches!(action, Action::SecondaryClick { .. }),
+            "kind: secondary-click must build Action::SecondaryClick, got {action:?}"
+        );
     }
 
     #[tokio::test]

@@ -480,6 +480,15 @@ pub fn required_interaction(event: &InputEvent) -> Option<Interaction> {
 /// gets when it asks "what is this event, right now" — and answering "hover"
 /// for the middle of a drag would be a lie about which contract the component
 /// is operating under.
+///
+/// A press or release also splits on which button produced it (spec 009
+/// T014): [`PointerButton::Secondary`] asks for
+/// [`Interaction::SecondaryClick`] and everything else asks for
+/// [`Interaction::Click`]. A node that declares only one of the two is
+/// reachable by only that button's press — a plain button (`Click` alone)
+/// does not become a right-click target, and a context menu's trigger
+/// (`SecondaryClick` alone, or both) does not start absorbing left clicks it
+/// never asked for.
 #[must_use]
 pub fn required_interaction_during(
     event: &InputEvent,
@@ -490,8 +499,11 @@ pub fn required_interaction_during(
     }
     match event {
         InputEvent::PointerMoved { .. } | InputEvent::PointerLeft => Some(Interaction::Hover),
-        InputEvent::PointerPressed { .. } | InputEvent::PointerReleased { .. } => {
-            Some(Interaction::Click)
+        InputEvent::PointerPressed { button, .. } | InputEvent::PointerReleased { button, .. } => {
+            Some(match button {
+                PointerButton::Secondary => Interaction::SecondaryClick,
+                PointerButton::Primary | PointerButton::Middle => Interaction::Click,
+            })
         }
         InputEvent::Scroll { .. } => Some(Interaction::Scroll),
         InputEvent::Key { .. } => Some(Interaction::Key),
@@ -3099,6 +3111,116 @@ mod tests {
         assert_eq!(required_interaction(&InputEvent::WindowFocused), None);
     }
 
+    /// Spec 009 T014: a press or release asks for [`Interaction::Click`] or
+    /// [`Interaction::SecondaryClick`] by which button produced it, not by
+    /// event kind alone — the split `each_event_kind_asks_for_the_interaction_it_needs`
+    /// does not exercise because every event it builds is a bare press with
+    /// no button to vary.
+    #[test]
+    fn a_press_or_release_asks_for_click_or_secondary_click_by_button() {
+        let secondary_press = InputEvent::PointerPressed {
+            pos: Point::ZERO,
+            button: PointerButton::Secondary,
+            modifiers: Modifiers::NONE,
+        };
+        assert_eq!(
+            required_interaction(&secondary_press),
+            Some(Interaction::SecondaryClick)
+        );
+        let secondary_release = InputEvent::PointerReleased {
+            pos: Point::ZERO,
+            button: PointerButton::Secondary,
+            modifiers: Modifiers::NONE,
+        };
+        assert_eq!(
+            required_interaction(&secondary_release),
+            Some(Interaction::SecondaryClick)
+        );
+        assert_eq!(
+            required_interaction(&press(Point::ZERO)),
+            Some(Interaction::Click),
+            "a primary press must keep asking for Click, not the new variant"
+        );
+        let middle_press = InputEvent::PointerPressed {
+            pos: Point::ZERO,
+            button: PointerButton::Middle,
+            modifiers: Modifiers::NONE,
+        };
+        assert_eq!(
+            required_interaction(&middle_press),
+            Some(Interaction::Click),
+            "the middle button is not secondary; it keeps the old, \
+             button-blind answer"
+        );
+    }
+
+    /// The reachability half of the same split: a node that declares only
+    /// [`Interaction::Click`] must stay unreachable by a secondary press,
+    /// and a node that declares only [`Interaction::SecondaryClick`] must
+    /// stay unreachable by a primary one. Neither variant silently widens
+    /// what the other accepts.
+    #[test]
+    fn a_node_declaring_only_one_of_click_or_secondary_click_is_unreachable_by_the_other_button() {
+        // Both rects sit inside `frame`'s fixed 200x200 clip and viewport
+        // (see this module's `node`/`frame` test helpers) — a rect placed
+        // past x=200 would be clipped out and fail every hit test for a
+        // reason unrelated to this test's actual claim.
+        let rect = Rect::new(0.0, 0.0, 80.0, 80.0);
+        let f = frame(vec![
+            node("/click-only", rect, 0, &[Interaction::Click]),
+            node(
+                "/secondary-only",
+                Rect::new(100.0, 0.0, 80.0, 80.0),
+                0,
+                &[Interaction::SecondaryClick],
+            ),
+        ]);
+        let secondary_press = InputEvent::PointerPressed {
+            pos: Point::new(40.0, 40.0),
+            button: PointerButton::Secondary,
+            modifiers: Modifiers::NONE,
+        };
+        assert!(
+            matches!(route(&f, None, &secondary_press), Route::Unrouted { .. }),
+            "a plain Click node must not start accepting a secondary press"
+        );
+        let primary_press_on_secondary_only = InputEvent::PointerPressed {
+            pos: Point::new(140.0, 40.0),
+            button: PointerButton::Primary,
+            modifiers: Modifiers::NONE,
+        };
+        assert!(
+            matches!(
+                route(&f, None, &primary_press_on_secondary_only),
+                Route::Unrouted { .. }
+            ),
+            "a SecondaryClick-only node must not start accepting a primary click"
+        );
+        // Each node is still reachable by the button it actually declared.
+        let secondary_on_its_own_node = InputEvent::PointerPressed {
+            pos: Point::new(140.0, 40.0),
+            button: PointerButton::Secondary,
+            modifiers: Modifiers::NONE,
+        };
+        assert_eq!(
+            route(&f, None, &secondary_on_its_own_node),
+            Route::Pointer {
+                node: "/secondary-only".into()
+            }
+        );
+        let primary_on_its_own_node = InputEvent::PointerPressed {
+            pos: Point::new(50.0, 50.0),
+            button: PointerButton::Primary,
+            modifiers: Modifiers::NONE,
+        };
+        assert_eq!(
+            route(&f, None, &primary_on_its_own_node),
+            Route::Pointer {
+                node: "/click-only".into()
+            }
+        );
+    }
+
     // -- route_with_surfaces: the three input policies. --------------------
 
     /// A frame with one plain clickable backdrop under one surface: the
@@ -4063,6 +4185,66 @@ mod tests {
             "with no escape hatch supplied, the same node routes through \
              ordinary keyboard delivery instead: {:?}",
             routing.outcome.route
+        );
+    }
+
+    /// Spec 009 T014, design question 2: a secondary press sets neither
+    /// pressed state nor a capture — "neither" is the answer
+    /// [`PointerState::route`]'s own "Only the primary: a right-click does
+    /// not press a control" comment already commits to. This pins it
+    /// against the new variant rather than trusting the comment alone to
+    /// stay true once a node can declare `SecondaryClick`.
+    #[test]
+    fn a_secondary_press_lights_no_pressed_state() {
+        // `Hover` is declared too: `pressed_on` is only ever set from
+        // `hovered` (`PointerState::route_positional`'s
+        // `self.pressed_on = self.hovered.clone()`), and `hovered` answers
+        // `None` for a node that never opted into `Hover` in the first
+        // place — the same rule `button::chrome`'s own doc names. Omitting
+        // it here would make the primary-press half of this test fail for
+        // a reason that has nothing to do with what it is pinning down.
+        let f = frame(vec![node(
+            "/btn",
+            Rect::new(0.0, 0.0, 100.0, 100.0),
+            0,
+            &[
+                Interaction::Click,
+                Interaction::SecondaryClick,
+                Interaction::Hover,
+            ],
+        )]);
+        let surfaces = BTreeMap::new();
+        let mut pointer = PointerState::new();
+        let secondary_press = InputEvent::PointerPressed {
+            pos: Point::new(50.0, 50.0),
+            button: PointerButton::Secondary,
+            modifiers: Modifiers::NONE,
+        };
+        let routing = pointer.route(&f, None, &surfaces, &secondary_press);
+        assert_eq!(
+            routing.outcome.route,
+            Route::Pointer {
+                node: "/btn".into()
+            },
+            "the press must still route: this is about pressed state, not \
+             delivery"
+        );
+        assert_eq!(
+            pointer.pressed(),
+            None,
+            "a secondary press must not light pressed state"
+        );
+
+        let primary_press = InputEvent::PointerPressed {
+            pos: Point::new(50.0, 50.0),
+            button: PointerButton::Primary,
+            modifiers: Modifiers::NONE,
+        };
+        pointer.route(&f, None, &surfaces, &primary_press);
+        assert_eq!(
+            pointer.pressed(),
+            Some("/btn"),
+            "a primary press on the same node must still light pressed state"
         );
     }
 }

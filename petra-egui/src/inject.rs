@@ -68,16 +68,24 @@ pub enum Target {
     Pos(Point),
 }
 
-/// The closed action vocabulary (`contracts/semantic-tree.md`): `click`,
-/// `drag`, `hover`, `focus`, `text-edit`, `scroll`, `key`. One variant per
-/// wire spelling, by construction — this enum and
-/// [`gorgon_petra::tree::Interaction`] name the same seven things because
-/// they are the same seven things.
+/// The closed action vocabulary (`contracts/semantic-tree.md`'s original
+/// seven, plus `secondary-click` from spec 009 T014): `click`,
+/// `secondary-click`, `drag`, `hover`, `focus`, `text-edit`, `scroll`,
+/// `key`. One variant per wire spelling, by construction — this enum and
+/// [`gorgon_petra::tree::Interaction`] name the same things because they
+/// are the same things.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
     /// A primary-button press and release at the target, with the pointer
     /// moved there first — the sequence a physical click produces.
     Click {
+        /// Modifiers held for both the press and the release.
+        modifiers: Modifiers,
+    },
+    /// A secondary-button (right-click) press and release at the target,
+    /// with the pointer moved there first — [`Action::Click`]'s counterpart,
+    /// for a node that declares [`gorgon_petra::tree::Interaction::SecondaryClick`].
+    SecondaryClick {
         /// Modifiers held for both the press and the release.
         modifiers: Modifiers,
     },
@@ -249,6 +257,10 @@ pub fn inject_action<A: App>(
         Action::Click { modifiers } => {
             let pos = resolve_point(host.frame(), target)?;
             push_click(raw, pos, *modifiers);
+        }
+        Action::SecondaryClick { modifiers } => {
+            let pos = resolve_point(host.frame(), target)?;
+            push_secondary_click(raw, pos, *modifiers);
         }
         Action::Drag { to, modifiers } => {
             let from = resolve_point(host.frame(), target)?;
@@ -561,6 +573,38 @@ pub fn push_pointer_up(raw: &mut RawInput, pos: Point, modifiers: Modifiers) {
 fn push_click(raw: &mut RawInput, pos: Point, modifiers: Modifiers) {
     push_pointer_down(raw, pos, modifiers);
     push_pointer_up(raw, pos, modifiers);
+}
+
+/// [`push_pointer_down`]'s secondary-button counterpart (spec 009 T014):
+/// the pointer moves to `pos` and the secondary button goes down there.
+pub fn push_pointer_down_secondary(raw: &mut RawInput, pos: Point, modifiers: Modifiers) {
+    let at = to_pos2(pos);
+    raw.events.push(Event::PointerMoved(at));
+    raw.events.push(Event::PointerButton {
+        pos: at,
+        button: EguiButton::Secondary,
+        pressed: true,
+        modifiers: to_egui_modifiers(modifiers),
+    });
+}
+
+/// [`push_pointer_up`]'s secondary-button counterpart: the secondary button
+/// comes up at `pos`, no move of its own, for the same reason
+/// [`push_pointer_up`] pushes none.
+pub fn push_pointer_up_secondary(raw: &mut RawInput, pos: Point, modifiers: Modifiers) {
+    raw.events.push(Event::PointerButton {
+        pos: to_pos2(pos),
+        button: EguiButton::Secondary,
+        pressed: false,
+        modifiers: to_egui_modifiers(modifiers),
+    });
+}
+
+/// The move-press-release sequence a physical secondary-button (right)
+/// click produces, all in **one** `RawInput` — [`push_click`]'s counterpart.
+fn push_secondary_click(raw: &mut RawInput, pos: Point, modifiers: Modifiers) {
+    push_pointer_down_secondary(raw, pos, modifiers);
+    push_pointer_up_secondary(raw, pos, modifiers);
 }
 
 /// The press-move-move-release sequence a physical primary-button drag

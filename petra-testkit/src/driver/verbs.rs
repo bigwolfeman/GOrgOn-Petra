@@ -6,9 +6,10 @@
 //! client-local enum: its `#[serde(rename_all = "kebab-case")]` already
 //! prints the exact wire spellings `semantic-tree.md`'s Action vocabulary
 //! fixes (`click`, `drag`, `hover`, `focus`, `text-edit`, `scroll`, `key`),
-//! and reusing it is what keeps "what a driver asks for" and "what the tree
-//! advertises in `actions`" the same type by construction — the exact
-//! divergence FR-027 forbids, restated for the client side of the wire.
+//! plus `secondary-click` added by spec 009 T014, and reusing it is what
+//! keeps "what a driver asks for" and "what the tree advertises in
+//! `actions`" the same type by construction — the exact divergence FR-027
+//! forbids, restated for the client side of the wire.
 
 use serde_json::Value;
 

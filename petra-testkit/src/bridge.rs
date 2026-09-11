@@ -50,7 +50,7 @@ pub enum Job {
     Act {
         /// What the action aims at: a node id, or a raw position.
         target: Target,
-        /// Which of the seven closed action kinds.
+        /// Which of the eight closed action kinds.
         action: Action,
     },
     /// Capture the frame this pass paints.

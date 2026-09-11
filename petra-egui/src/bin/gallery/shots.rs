@@ -20,7 +20,8 @@
 //! largest single class of defect on the list.
 //!
 //! [`gorgon_petra_egui::inject`] already carries the whole action vocabulary —
-//! click, drag, hover, focus, text-edit, scroll, key — and routes it through
+//! click, secondary-click, drag, hover, focus, text-edit, scroll, key — and
+//! routes it through
 //! the same translator a physical device goes through. This module is that
 //! driver bolted to the camera, so proving a dropdown opens costs three lines
 //! instead of forty:
@@ -396,6 +397,20 @@ impl<A: App> Camera<A> {
         )
     }
 
+    /// A secondary-button (right-click) press and release on the node whose
+    /// id ends `tail` — [`Camera::click`]'s counterpart, for a node that
+    /// declares [`gorgon_petra::tree::Interaction::SecondaryClick`] (spec
+    /// 009 T014).
+    pub fn secondary_click(&mut self, tail: &str) -> &mut Self {
+        let id = self.id(tail);
+        self.act(
+            Target::NodeId(id),
+            &Action::SecondaryClick {
+                modifiers: Modifiers::default(),
+            },
+        )
+    }
+
     /// Move the pointer onto the node whose id ends `tail`, pressing nothing.
     /// This is what a `slot@hover` binding and a hover-revealed tooltip need.
     pub fn hover(&mut self, tail: &str) -> &mut Self {
@@ -580,6 +595,20 @@ impl<A: App> Camera<A> {
         self.act(
             Target::Pos(Point::new(x, y)),
             &Action::Click {
+                modifiers: Modifiers::default(),
+            },
+        )
+    }
+
+    /// A secondary-button (right-click) press and release at a raw
+    /// position — [`Camera::click_at`]'s counterpart, and
+    /// [`Camera::secondary_click`] aimed by position instead of node id, so
+    /// a caller can prove a context menu opens at the exact point pressed
+    /// rather than at a node's centre.
+    pub fn secondary_click_at(&mut self, x: f32, y: f32) -> &mut Self {
+        self.act(
+            Target::Pos(Point::new(x, y)),
+            &Action::SecondaryClick {
                 modifiers: Modifiers::default(),
             },
         )
@@ -2334,6 +2363,52 @@ mod tests {
             !cam.has("mn-pair/menu"),
             "choosing an item did not close the menu"
         );
+    }
+
+    /// Row 45. T014's own acceptance: a real secondary (right) press opens
+    /// the context menu, at the exact point pressed — not the trigger's
+    /// centre and not a constant the page invented — and a press elsewhere
+    /// dismisses it through the same `DismissOutside` path every other
+    /// overlay uses.
+    #[test]
+    fn a_secondary_press_opens_the_context_menu_at_the_press_point() {
+        let mut cam = Camera::on("Context menu");
+        cam.shoot("45-context-menu-closed");
+        assert!(
+            !cam.has("/ctx"),
+            "the menu is placed before anything was pressed: the page \
+             mounts its open form at rest"
+        );
+        let trigger = cam.rect("show-ctx");
+        // Off-centre and well inside the trigger's own rect, so the check
+        // below tells a genuine press point apart from a hardcoded one or
+        // one silently snapped to the trigger's centre.
+        let (x, y) = (trigger.x + 6.0, trigger.y + 5.0);
+        assert!(
+            x < trigger.x + trigger.w && y < trigger.y + trigger.h,
+            "the chosen point must land inside the trigger: {x},{y} in {trigger:?}"
+        );
+        cam.secondary_click_at(x, y);
+        cam.shoot("45-context-menu-open");
+        assert!(
+            cam.has("/ctx"),
+            "a secondary press on the trigger placed no menu: the handler \
+             arm did not fire. Placed:\n  {}",
+            cam.ids().join("\n  ")
+        );
+        let menu = cam.rect("/ctx");
+        assert!(
+            (menu.x - x).abs() < 0.5 && (menu.y - y).abs() < 0.5,
+            "the menu's top-left must be the press point ({x}, {y}), got {menu:?}"
+        );
+        assert!(
+            cam.has("ctx-rename") && cam.has("ctx-copy") && cam.has("ctx-delete"),
+            "the menu opened with none of its rows"
+        );
+
+        press_empty_ground(&mut cam);
+        cam.shoot("45-context-menu-dismissed");
+        assert!(!cam.has("/ctx"), "a press outside did not dismiss the menu");
     }
 
     /// Row 18. Carbon's `Menu` seats keyboard focus on its first item when

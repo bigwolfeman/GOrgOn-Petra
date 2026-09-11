@@ -87,9 +87,9 @@ cam.click("dropdown-trigger");
 cam.shoot("11-dropdown-open");
 ```
 
-`click`, `hover`, `focus`, `type_into`, `key`, `scroll`, `drag`, and `click_at`
-/ `hover_at` for a raw position (pressing *outside* a menu is what dismisses
-it). Each of those is **one** pass: `drag` delivers press, both waypoints and
+`click`, `secondary_click`, `hover`, `focus`, `type_into`, `key`, `scroll`,
+`drag`, and `click_at` / `secondary_click_at` / `hover_at` for a raw position
+(pressing *outside* a menu is what dismisses it). Each of those is **one** pass: `drag` delivers press, both waypoints and
 the release in a single `RawInput`, which is right when you only ask where a
 gesture finished and blind to anything that needs more than one pass to go
 wrong.
