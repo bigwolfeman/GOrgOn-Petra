@@ -27,8 +27,8 @@ pub use name::{TokenName, TokenNameError};
 pub use presenter::Presenter;
 pub use selection::ThemeSelection;
 pub use shipped::{
-    BORDER_SUBTLE_TOKENS, CornerRole, FIELD_TOKENS, LAYER_TOKENS, SHADOW_GEOMETRY, ShadowGeometry,
-    corner_for, dark, light, standard_vocabulary,
+    BORDER_SUBTLE_TOKENS, CornerRole, CornerTokens, FIELD_TOKENS, Joined, LAYER_TOKENS,
+    SHADOW_GEOMETRY, ShadowGeometry, corner_for, corners_for, dark, light, standard_vocabulary,
 };
 pub use slot::{SlotSchema, SlotSpec, standard_slots};
 pub use snapshot::ThemeSnapshot;

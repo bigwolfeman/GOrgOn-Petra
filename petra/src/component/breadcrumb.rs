@@ -348,28 +348,70 @@ mod tests {
         assert_eq!(token(&node, "underline@hover"), Some(LINK_PRIMARY));
     }
 
-    /// The current page is the one crumb that is not a link: no role, no
-    /// interactions, page ink, and `selected` declared so the state is a
-    /// fact and not only a tone.
+    /// T025: the module doc (`:38-44`) names three channels that keep the
+    /// current page from reading as just another link — colour (never
+    /// [`LINK_PRIMARY`]), underline-on-hover (links only, Carbon's own
+    /// `:hover` rule), and focus order (links only) — because the operator
+    /// is red-green colour blind and colour alone is never a channel he
+    /// can read. This is one capability test asserting all three at once,
+    /// with a single failure point, replacing two unlabelled tests that
+    /// each covered one axis and could stay green while a regression broke
+    /// another: `the_current_crumb_is_not_a_link_and_declares_itself_selected`
+    /// and `the_current_crumb_is_not_in_focus_order`, both folded in here.
     ///
     /// Falsify by returning `breadcrumb_item(key, label)` from
-    /// `breadcrumb_item_current`: the interactions and the ink both fail.
+    /// `breadcrumb_item_current`: colour and hover both resolve to link
+    /// tone and `here` lands in focus order — every assertion below fails.
     #[test]
-    fn the_current_crumb_is_not_a_link_and_declares_itself_selected() {
-        let node = breadcrumb_item_current("here", "Rebuild");
-        assert_eq!(node.kind, NodeKind::Text);
-        assert_eq!(node.props.text.as_deref(), Some("Rebuild"));
-        assert_eq!(node.semantics.label.as_deref(), Some("Rebuild"));
+    fn the_current_crumb_differs_from_a_link_on_colour_hover_and_focus_order() {
+        let home = breadcrumb_item("home", "Home");
+        let here = breadcrumb_item_current("here", "Rebuild");
+
+        // Channel 1: colour. The current page never takes link ink.
+        assert_eq!(token(&home, "foreground"), Some(LINK_PRIMARY));
+        assert_eq!(token(&here, "foreground"), Some(TEXT_PRIMARY));
+        assert_ne!(token(&here, "foreground"), Some(LINK_PRIMARY));
+
+        // Channel 2: underline on hover. Links only.
+        assert_eq!(token(&home, "underline@hover"), Some(LINK_PRIMARY));
+        assert_eq!(token(&here, "underline@hover"), None);
+
+        // The current page also carries no role and no interactions, and
+        // declares `selected` as a fact rather than only a tone.
+        assert_eq!(here.kind, NodeKind::Text);
+        assert_eq!(here.props.text.as_deref(), Some("Rebuild"));
+        assert_eq!(here.semantics.label.as_deref(), Some("Rebuild"));
+        assert_eq!(here.semantics.role, None, "the current page is not a link");
+        assert!(here.interactions.is_empty());
+        assert!(!here.is_interactive());
         assert!(
-            node.semantics.selected,
+            here.semantics.selected,
             "Carbon's `[aria-current='page']` has to survive into the tree"
         );
-        assert_eq!(node.semantics.role, None, "the current page is not a link");
-        assert!(node.interactions.is_empty());
-        assert!(!node.is_interactive());
-        assert_eq!(token(&node, "foreground"), Some(TEXT_PRIMARY));
-        assert_ne!(token(&node, "foreground"), Some(LINK_PRIMARY));
-        assert_eq!(token(&node, "underline@hover"), None);
+
+        // Channel 3: focus order. A trail is where this is observable — a
+        // lone node has no order to be excluded from.
+        let trail = breadcrumb(
+            "trail",
+            vec![
+                breadcrumb_item("home", "Home"),
+                breadcrumb_item_current("here", "Rebuild"),
+            ],
+        );
+        let frame = petrify_lone(trail);
+        let focus = crate::focus::FocusTree::from_placements(
+            &frame.placements,
+            &std::collections::BTreeMap::new(),
+        );
+        let order = focus.order();
+        assert!(
+            order.iter().any(|id| id.ends_with("/home")),
+            "the leading crumb stays in focus order"
+        );
+        assert!(
+            !order.iter().any(|id| id.ends_with("/here")),
+            "the current page is not a link and is not in focus order"
+        );
     }
 
     /// A trail says both things at once, and the separator belongs to
@@ -721,44 +763,6 @@ mod tests {
                 "{id} declares Focus but is not in focus order"
             );
         }
-    }
-
-    /// The current page is not a link, so it is not in focus order. The
-    /// leading crumb still is. Falsify by returning `breadcrumb_item` from
-    /// `breadcrumb_item_current`: `here` lands in the order.
-    #[test]
-    fn the_current_crumb_is_not_in_focus_order() {
-        let node = breadcrumb(
-            "trail",
-            vec![
-                breadcrumb_item("home", "Home"),
-                breadcrumb_item_current("here", "Rebuild"),
-            ],
-        );
-        let frame = petrify_lone(node);
-        let focus = crate::focus::FocusTree::from_placements(
-            &frame.placements,
-            &std::collections::BTreeMap::new(),
-        );
-        let order = focus.order();
-        let here = frame
-            .placements
-            .iter()
-            .find(|p| p.id.as_str().ends_with("/here"))
-            .expect("current page placed");
-        assert!(here.semantics.selected);
-        // `text()` declares no role; layout's default_role for Text is Label.
-        // The load-bearing fact is that this node is not a Button and is
-        // not in focus order.
-        assert_ne!(here.semantics.role, Some(crate::tree::Role::Button));
-        assert!(
-            order.iter().any(|id| id.ends_with("/home")),
-            "the leading crumb stays in focus order"
-        );
-        assert!(
-            !order.iter().any(|id| id.ends_with("/here")),
-            "the current page is not a link and is not in focus order"
-        );
     }
 
     /// Check E: crumb labels and the `"/"` separator against the page

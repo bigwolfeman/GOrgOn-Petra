@@ -12,6 +12,7 @@
 use std::sync::Arc;
 
 use super::icon::{IconMark, IconTone, icon_toned};
+use super::kit;
 use super::stack;
 use super::text::text;
 use super::tokens::{
@@ -294,6 +295,31 @@ pub fn field_warning(
     node
 }
 
+/// A Default input plus a muted description line under it (T036).
+///
+/// Same shape as [`field_warning`] with [`kit::description`] in place of
+/// [`warning_helper`]: the well sits at `{key}/input`, the same depth as
+/// every other field variant, so a value that gains or loses a description
+/// does not re-key the node under the cursor. Position matches Carbon's own
+/// TextInput anatomy (`.agents/research/08-25-2026/Carbon-Component-Inventory/
+/// slice-e.md:185`: helper text sits below the field, not between the label
+/// and it) rather than File uploader's Description-above-the-control
+/// placement, which is specific to that component's own anatomy.
+pub fn field_described(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    description: impl Into<String>,
+) -> ViewNode {
+    let description = description.into();
+    let children = vec![
+        input_field("input", label, SIZE_MD, FieldChrome::Enabled),
+        kit::description("description", &description),
+    ];
+    let mut node = stack(key, Axis::Vertical, Some(SPACING_02), children);
+    node.props.align = Some(Align::Stretch);
+    node
+}
+
 /// Helper line for a warning: [`IconMark::WarningFilled`] plus
 /// `Warning: {message}`.
 ///
@@ -570,11 +596,11 @@ mod tests {
     // made it identical to a focused field. It survives here only so the test
     // can assert the two differ.
     use super::{
-        SIZE_FLUID, SIZE_LG, SIZE_MD, SIZE_SM, field, field_fluid, field_invalid, field_labeled,
-        field_lg, field_readonly, field_required, field_sm, field_validated, field_warning, hinted,
-        labeled,
+        SIZE_FLUID, SIZE_LG, SIZE_MD, SIZE_SM, field, field_described, field_fluid, field_invalid,
+        field_labeled, field_lg, field_readonly, field_required, field_sm, field_validated,
+        field_warning, hinted, labeled,
     };
-    use crate::component::tokens::{ACCENT_PRIMARY, SURFACE_BASE};
+    use crate::component::tokens::{ACCENT_PRIMARY, SURFACE_BASE, TYPOGRAPHY_BODY_COMPACT};
     use crate::component::{IconMark, IconTone, icon_toned};
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
@@ -1029,6 +1055,27 @@ mod tests {
             mark.props.canvas, expected.props.canvas,
             "the helper's glyph is WarningFilled, not ErrorFilled and not a \
              swatch"
+        );
+    }
+
+    /// T036: `field_described` puts [`kit::description`] under the well at
+    /// `{key}/input`, the same depth [`field_warning`] and [`field_invalid`]
+    /// use, in `body-compact-01` — not the `label-01` step
+    /// `file_uploader.rs` mistakenly used before this task, and not the
+    /// looser `body-01` [`kit::description`] itself shipped with.
+    #[test]
+    fn field_described_adds_a_muted_description_line_below_the_input() {
+        let node = field_described("name", "Fiber name", "Letters and dashes only");
+        assert_eq!(node.kind, NodeKind::Stack);
+        let input = child(&node, "input");
+        assert_eq!(input.kind, NodeKind::Input);
+        assert_eq!(input.semantics.role, Some(Role::TextInput));
+        let line = child(&node, "description");
+        assert_eq!(line.props.text.as_deref(), Some("Letters and dashes only"));
+        assert_eq!(token(line, "foreground"), Some(TEXT_MUTED));
+        assert_eq!(
+            line.props.style.as_ref().map(|s| s.as_str()),
+            Some(TYPOGRAPHY_BODY_COMPACT)
         );
     }
 

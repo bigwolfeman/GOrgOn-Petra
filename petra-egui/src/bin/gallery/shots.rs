@@ -932,6 +932,134 @@ impl Camera<Fixture> {
     }
 }
 
+/// One node whose bottom edge is the rule material
+/// ([`gorgon_petra::token::rule::MATERIAL_TOKEN`]) and whose radius is
+/// nonzero — the combination spec 009 T001-T003 exists for.
+///
+/// No shipped catalog page carries it: `field::bind_field_chrome` binds
+/// `border-strong`, the flat control-boundary tone, and the read-only
+/// field's own `border-subtle` rule (`field.rs`'s `FieldChrome::ReadOnly`)
+/// binds no radius at all. Building the node directly is the honest way to
+/// photograph the combination, the same reason [`Fixture`] exists for a
+/// focus figure no shipped component declares.
+struct RadiusGrooveFixture {
+    pending: Option<gorgon_petra::token::Theme>,
+}
+
+/// The probe's fixed size, in logical units. Comfortably larger on every
+/// side than [`PROBE_RADIUS_LOGICAL`] so the flat run and the arc are both
+/// unambiguously present in the capture.
+const PROBE_W: f32 = 160.0;
+const PROBE_H: f32 = 80.0;
+/// `shape.corner-md` — `CornerRole::Floating`'s own step — bound directly as
+/// a literal here (the fixture builds a raw node, not through a component
+/// constructor), comfortably larger than the groove's 4-device-pixel
+/// thickness at [`CAPTURE_SCALE`] so a sample point can sit inside the
+/// radius yet outside the groove's old, unclipped flat band.
+const PROBE_RADIUS_LOGICAL: f32 = 8.0;
+
+impl gorgon_petra::layout::RowSource for RadiusGrooveFixture {
+    fn rows(
+        &mut self,
+        _source: &str,
+        _range: std::ops::Range<usize>,
+    ) -> Vec<std::sync::Arc<gorgon_petra::tree::ViewNode>> {
+        Vec::new()
+    }
+}
+
+impl App for RadiusGrooveFixture {
+    fn view(&mut self) -> gorgon_petra::tree::ViewNode {
+        use gorgon_petra::token::TokenName;
+        use gorgon_petra::tree::{AxisConstraint, Constraints, InsetRefs, NodeKind, Props, ViewNode};
+
+        let mut probe_props = Props::default();
+        probe_props.tokens.insert(
+            "background".into(),
+            TokenName::new("surface.raised").expect("surface.raised is a valid token name"),
+        );
+        probe_props.tokens.insert(
+            "border-bottom".into(),
+            TokenName::new(gorgon_petra::token::rule::MATERIAL_TOKEN)
+                .expect("border.subtle is a valid token name"),
+        );
+        probe_props.tokens.insert(
+            "radius".into(),
+            TokenName::new("shape.corner-md").expect("shape.corner-md is a valid token name"),
+        );
+        let probe = ViewNode::new(NodeKind::Stack, "probe")
+            .with_props(probe_props)
+            .with_constraints(Constraints {
+                horizontal: AxisConstraint {
+                    min: Some(PROBE_W),
+                    max: Some(PROBE_W),
+                    priority: 0,
+                },
+                vertical: AxisConstraint {
+                    min: Some(PROBE_H),
+                    max: Some(PROBE_H),
+                    priority: 0,
+                },
+            });
+        let mut page = ViewNode::new(NodeKind::Stack, "page").with_children(vec![probe]);
+        page.props.padding = Some(InsetRefs::all(
+            TokenName::new("spacing.3xl").expect("spacing.3xl is a valid token name"),
+        ));
+        page.props.tokens.insert(
+            "background".into(),
+            TokenName::new("surface.base").expect("surface.base is a valid token name"),
+        );
+        page
+    }
+
+    fn handle(
+        &mut self,
+        _event: &gorgon_petra::input::InputEvent,
+        _route: &gorgon_petra::input::Route,
+        _frame: Option<&PetrifiedFrame>,
+    ) {
+    }
+
+    fn take_changes(&mut self) -> gorgon_petra::layout::ChangeSet {
+        gorgon_petra::layout::ChangeSet::All
+    }
+
+    fn theme_request(&mut self) -> Option<gorgon_petra::token::Theme> {
+        self.pending.take()
+    }
+}
+
+impl Camera<RadiusGrooveFixture> {
+    /// Host a [`RadiusGrooveFixture`] the same way [`Camera::fixture`] hosts
+    /// [`Fixture`].
+    fn radius_groove() -> Self {
+        let app = RadiusGrooveFixture {
+            pending: Some(gorgon_petra::token::light()),
+        };
+        let ctx = headless();
+        ctx.set_pixels_per_point(CAPTURE_SCALE);
+        let mut host = Host::new(&ctx, app, default_presenter());
+        ctx.run_ui(sized(RawInput::default()), |_| host.pass(&ctx))
+            .drop_without_applying_deltas();
+        host.set_reduced_motion(true);
+        let clock = ctx.input(|input| input.time);
+        let mut cam = Self {
+            ctx,
+            host,
+            shooter: Snapshotter::new(),
+            page: "fixture(radius-groove)".to_owned(),
+            clipboard: Vec::new(),
+            clock,
+            pointer: None,
+        };
+        // Two passes: the first delivers the theme request, the second lays
+        // out and paints under it — same as `Camera::fixture`.
+        cam.settle();
+        cam.settle();
+        cam
+    }
+}
+
 /// A dropped file that is only a path.
 ///
 /// `egui::DroppedFile` can also read its own bytes; nothing on Petra's side
@@ -1879,6 +2007,13 @@ mod tests {
     /// it moves the page and the range; the page-size picker opens a list
     /// under itself and a press on `20` reflows the whole bar to 3 pages;
     /// the page picker opens too and a press on a page number jumps to it.
+    ///
+    /// Next is reached as `controls/nav/next`, three segments, and not as
+    /// `nav/next`: the catalog chrome's own Prev/Next pair is `main/nav/next`,
+    /// so the two-segment tail matches twice and `Camera::click` refuses an
+    /// ambiguous tail. The `nav` segment arrived when `pagination_nav` became
+    /// a shared constructor the compact bar mounts too; this test still named
+    /// the pre-split `controls/next` and had been failing since.
     #[test]
     fn the_pagination_bar_pages_forward_and_its_pickers_pick() {
         let mut cam = Camera::on("Pagination");
@@ -1901,7 +2036,7 @@ mod tests {
         assert_eq!(leaf_text(&cam, "page"), "1");
         assert!(!cam.has("menu"), "no picker is open at rest");
 
-        cam.click("controls/next");
+        cam.click("controls/nav/next");
         let second = cam.shoot("23-pagination-page-two");
         assert_eq!(leaf_text(&cam, "page"), "2");
         assert_eq!(leaf_text(&cam, "range-text"), "11\u{2013}20 of 50 items");
@@ -3223,6 +3358,214 @@ mod tests {
         } else {
             assert_eq!(above, inside, "{tail}: a read-only field is not filled");
         }
+    }
+
+    /// Spec 009 T003. A node whose bottom edge grooves and whose radius
+    /// rounds its corners: the groove's arc must be struck from the exact
+    /// same centre and radius as the fill's own rounded boundary — no gap
+    /// where the fill's curve meets the groove's, and no seam where the
+    /// arc hands off to the straight run.
+    ///
+    /// **2026-09-11**: an earlier version of this test sampled one point on
+    /// the shadow band and passed on a defect a direct pixel read caught.
+    /// `paint_groove_corner` drew `shadow` as the ring nearest the true edge
+    /// and `highlight` as the ring behind it, unconditionally — correct for
+    /// `Edge::Top`/`Edge::Left`, backwards for `Edge::Bottom`/`Edge::Right`,
+    /// where `groove_bands`'s own per-edge contract puts highlight nearest
+    /// the edge (light from above-and-left). The single
+    /// point that version sampled landed inside a ring either way, so the
+    /// swap never showed up there, even though the arc it drew detached
+    /// from the fill's boundary with a gap of solid page ground and met the
+    /// straight run two device pixels out of place. This version instead
+    /// walks every device column across the corner and compares the
+    /// outermost non-background row at each one against the exact
+    /// quarter-circle the fill was struck from — the same centre and
+    /// radius `resolve_corner_radius` handed both painters — so a ring at
+    /// the wrong offset fails at the column where it happens rather than at
+    /// the one point the old version looked at.
+    ///
+    /// **Reverted**: `paint_groove_corner`'s near/far assignment forced
+    /// back to always-shadow-near (the code this test now exists to catch)
+    /// and run against this test. Real panic text:
+    ///
+    /// ```text
+    /// thread '…' panicked at petra-egui/src/bin/gallery/shots.rs:3527:13:
+    /// column 98: measured shadow edge Some(247), theoretical 241.71 —
+    /// gap of Some(5.2919006) device px; the arc detached from the fill's
+    /// own curve or the arc and the straight run meet at different offsets
+    /// ```
+    ///
+    /// Restored byte for byte afterward — see the gate note for the diff.
+    #[test]
+    fn a_rounded_corner_bends_the_groove_with_it_rather_than_squaring_past_it() {
+        use gorgon_petra::token::rule::{HIGHLIGHT_UNITS, SHADOW_UNITS};
+        use gorgon_petra::token::{ThemeSnapshot, light, rule};
+        use gorgon_petra_egui::paint::TokenSource;
+
+        let mut cam = Camera::<super::RadiusGrooveFixture>::radius_groove();
+        let rect = cam.rect("probe");
+        let img = raster(&mut cam, "t003-radius-groove");
+        let page_ground = px(&img, rect.x - 4.0, rect.y - 4.0);
+
+        // Device-pixel getter, bypassing `px`'s logical round-trip: this
+        // test needs exact device columns and rows, not the nearest logical
+        // point to one.
+        let sample = |dx: u32, dy: u32| -> [u8; 4] {
+            img.get_pixel(dx.min(img.width() - 1), dy.min(img.height() - 1))
+                .0
+        };
+
+        // Point 4 (2026-09-11 coordinator finding), answered first because
+        // the corner sweep below is built on the answer: are shadow and
+        // highlight really two different colours? Resolved from the
+        // shipped light theme through the same `TokenSource` the painter
+        // used for this capture, not typed as a literal here.
+        //
+        // They are, and highlight is the surprise: `insert_rule_material`
+        // (`petra/src/token/shipped.rs`) offsets `surface.layer-one`
+        // (`#f2f2f2`, 242) by `RULE_HIGHLIGHT_DELTA` (+13), landing on
+        // `#ffffff` — pure white, bit-identical to this fixture's page
+        // ground. That is a real, load-bearing fact about this theme, not
+        // a bug: it means a pixel read can never see the highlight ring's
+        // own outer edge, because there is nothing to distinguish it from
+        // the page around it. Every boundary this test checks below is
+        // therefore the *shadow* ring's edge — the one colour in the
+        // groove a pixel comparison can actually see — offset in from the
+        // true corner by the highlight ring's own thickness, the same
+        // offset `paint_groove_corner` gives it via `rect.shrink`.
+        let theme = ThemeSnapshot::new(light(), 1);
+        let shadow_color = theme
+            .color(rule::SHADOW_TOKEN)
+            .expect("rule.shadow is bound in the shipped light theme");
+        let highlight_color = theme
+            .color(rule::HIGHLIGHT_TOKEN)
+            .expect("rule.highlight is bound in the shipped light theme");
+        assert_ne!(
+            shadow_color, highlight_color,
+            "rule.shadow and rule.highlight resolve to the same colour in \
+             the light theme; the groove would read as a flat band even \
+             with correct geometry"
+        );
+        assert_eq!(
+            highlight_color.to_array(),
+            page_ground,
+            "rule.highlight no longer matches this fixture's page ground; \
+             if this fails, the theme changed and the corner sweep below \
+             must switch to detecting the highlight ring directly instead \
+             of assuming it is invisible"
+        );
+
+        // The SW corner's own circle, in device pixels — the same centre
+        // and radius `resolve_corner_radius` resolved for this node's fill
+        // *and* handed to `paint_rule_groove`'s arc, restated in device
+        // units rather than re-measured from a second capture.
+        // `SHADOW_UNITS`/`HIGHLIGHT_UNITS` are already absolute device
+        // pixels, and `Camera::radius_groove` pins `pixels_per_point` to
+        // `CAPTURE_SCALE`, so they need no further conversion here — the
+        // same identity `paint_rule_groove` relies on when it divides them
+        // by `env.scale.factor()` to reach logical points instead.
+        let near_h_dev = HIGHLIGHT_UNITS; // Edge::Bottom: highlight is nearest the edge
+        let far_h_dev = SHADOW_UNITS;
+        let radius_dev = super::PROBE_RADIUS_LOGICAL * CAPTURE_SCALE;
+        let shadow_radius_dev = radius_dev - near_h_dev; // the shadow ring's own concentric radius
+        let cx = (rect.x + super::PROBE_RADIUS_LOGICAL) * CAPTURE_SCALE;
+        let cy = (rect.y + rect.h - super::PROBE_RADIUS_LOGICAL) * CAPTURE_SCALE;
+        let bottom_row = bottom_device_row(rect);
+        let left_col = (rect.x * CAPTURE_SCALE).round() as i64;
+
+        // The outermost (closest-to-`bottom_row`) row in device column `dx`
+        // whose red channel departs from the page ground by more than AA
+        // noise, scanning upward from the probe's own bounding box. Since
+        // the highlight ring is optically identical to the ground (just
+        // proved above), that departure is always the shadow ring's own
+        // outer edge. A plain `!= page_ground` is too sensitive here: near
+        // where the arc runs closest to parallel with a vertical scan
+        // column (close to the tangent with the *unbound* left edge, well
+        // outside the span this test walks) the tessellator's antialiasing
+        // stretches a normally one-pixel fringe over several rows, and a
+        // stray two-or-three-unit ripple in that fringe would otherwise
+        // register as "the edge" many rows before the ring is actually
+        // solid. 15 sits well clear of that ripple (single digits) and well
+        // under the shadow-to-ground jump the real edge makes (41).
+        let measured_shadow_edge = |dx: u32| -> Option<u32> {
+            (0..=40u32).map(|up| bottom_row.saturating_sub(up)).find(|&row| {
+                let p = sample(dx, row);
+                (i32::from(p[0]) - i32::from(page_ground[0])).unsigned_abs() >= 15
+            })
+        };
+
+        // The shadow ring's edge, from its own quarter-circle: the arc for
+        // columns inside its (radius-minus-highlight-thickness) reach, the
+        // flat run — `near_h_dev` in from the true bottom edge — for
+        // columns past it.
+        let theoretical_shadow_edge = |dxf: f32| -> f32 {
+            if dxf < cx {
+                let dxc = cx - dxf;
+                if dxc > shadow_radius_dev {
+                    // Inside the highlight-only sliver at the very tip of
+                    // the arc: nothing here can be told apart from the
+                    // ground by colour, on either the correct or the buggy
+                    // painter. Skipped rather than guessed at.
+                    return f32::NAN;
+                }
+                cy - near_h_dev + (shadow_radius_dev * shadow_radius_dev - dxc * dxc).sqrt()
+            } else {
+                bottom_row as f32 - near_h_dev
+            }
+        };
+
+        // Walk from the true corner through the tangent point (`cx`, device
+        // column `left_col + radius_dev`) and eight columns into the
+        // straight run beyond it — the same span the 2026-09-11 pixel read
+        // covered (columns 102..114), plus enough straight run on either
+        // side to prove the flat band itself is untouched.
+        let mut checked = 0;
+        for step in 0..=(radius_dev as i64 + 8) {
+            let dx = left_col + step;
+            if dx < 0 {
+                continue;
+            }
+            let dx = dx as u32;
+            let dxf = dx as f32 + 0.5; // pixel centre
+            let expected = theoretical_shadow_edge(dxf);
+            if expected.is_nan() {
+                continue;
+            }
+            let measured = measured_shadow_edge(dx);
+            let gap = measured.map(|m| (m as f32 - expected).abs());
+            assert!(
+                gap.is_some_and(|g| g <= 1.5),
+                "column {dx}: measured shadow edge {measured:?}, \
+                 theoretical {expected:.2} — gap of \
+                 {gap:?} device px; the arc detached from the fill's own \
+                 curve or the arc and the straight run meet at different \
+                 offsets"
+            );
+            checked += 1;
+        }
+        assert!(checked > 4, "the corner sweep skipped almost everything");
+
+        // On the straight run, well clear of either corner: the bottommost
+        // device row is the near ring (highlight, for `Edge::Bottom`), the
+        // row above it is the far ring (shadow). Read back from the
+        // raster — the check that would have caught the near/far swap even
+        // on an edge with no radius at all, where the corner sweep above
+        // has nothing to say.
+        let straight_col = ((rect.x + rect.w / 2.0) * CAPTURE_SCALE) as u32;
+        let near = sample(straight_col, bottom_row);
+        let far = sample(straight_col, bottom_row - far_h_dev.round() as u32);
+        assert_eq!(
+            near,
+            highlight_color.to_array(),
+            "the device row nearest the true bottom edge is not the \
+             highlight colour on Edge::Bottom"
+        );
+        assert_eq!(
+            far,
+            shadow_color.to_array(),
+            "the device row behind the near ring is not the shadow colour \
+             on Edge::Bottom"
+        );
     }
 
     /// Row 34. Every text input on the page is a Carbon well.

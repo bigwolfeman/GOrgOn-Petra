@@ -75,14 +75,15 @@
 
 use super::field::warning_helper;
 use super::icon::{IconBox, IconMark, IconTone, icon_in};
+use super::kit;
 use super::pad;
 use super::stack;
 use super::swatch;
 use super::text::text;
 use super::tokens::{
     BORDER_STRONG, LAYER_HOVER, LINK_PRIMARY, SPACING_03, SPACING_04, SPACING_05, SURFACE_BASE,
-    SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_BODY_COMPACT, TYPOGRAPHY_HEADING_SM,
-    TYPOGRAPHY_LABEL, t,
+    SURFACE_RAISED, TEXT_PRIMARY, TYPOGRAPHY_BODY_COMPACT, TYPOGRAPHY_HEADING_SM, TYPOGRAPHY_LABEL,
+    t,
 };
 use crate::geom::{Align, Axis};
 use crate::token::{CornerRole, corner_for};
@@ -201,10 +202,7 @@ fn build_uploader(
 
     let mut children = vec![heading];
     if let Some(description) = description {
-        let mut line = text("description", description);
-        line.props.style = Some(t(TYPOGRAPHY_LABEL));
-        line.props.tokens.insert("foreground".into(), t(TEXT_MUTED));
-        children.push(line);
+        children.push(kit::description("description", &description));
     }
     children.push(zone);
 

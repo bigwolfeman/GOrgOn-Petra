@@ -100,6 +100,7 @@
 
 use super::field::warning_helper;
 use super::icon::{IconMark, icon};
+use super::kit;
 use super::text::text;
 use super::tokens::{
     ACCENT_PRIMARY, BORDER_STRONG, BUTTON_DISABLED, ICON_DISABLED, ICON_ON_COLOR_DISABLED,
@@ -176,6 +177,37 @@ fn labelled_box(
     intents: &[Interaction],
     figure: FocusFigure,
 ) -> ViewNode {
+    labelled_box_inner(key, label, selected, box_node, intents, figure, false)
+}
+
+/// Same row as [`labelled_box`], with Carbon's required marker added
+/// (T037): a `*` text child keyed `"required-mark"` beside the label, and
+/// `(required)` appended to the accessible name so the flag has a word as
+/// well as a glyph — mirrors [`super::field::field_required`]'s own two
+/// channels exactly, so the family reads as one decision rather than
+/// three. `Semantics.required` is set on the one node this row has; there
+/// is no separate wrapper/input pair to split it across the way
+/// `field_required` does.
+fn labelled_box_required(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    selected: bool,
+    box_node: ViewNode,
+    intents: &[Interaction],
+    figure: FocusFigure,
+) -> ViewNode {
+    labelled_box_inner(key, label, selected, box_node, intents, figure, true)
+}
+
+fn labelled_box_inner(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    selected: bool,
+    box_node: ViewNode,
+    intents: &[Interaction],
+    figure: FocusFigure,
+    required: bool,
+) -> ViewNode {
     let key = key.into();
     let label = label.into();
     let mut label_node = text("label", label.clone());
@@ -189,12 +221,18 @@ fn labelled_box(
         .props
         .tokens
         .insert("foreground@disabled".into(), t(ICON_DISABLED));
-    let mut row = stack(
-        key,
-        Axis::Horizontal,
-        Some(SPACING_03),
-        vec![box_node, label_node],
-    );
+    let mut children = vec![box_node, label_node];
+    let accessible = if required {
+        let mut mark = text("required-mark", "*");
+        mark.props
+            .tokens
+            .insert("foreground".into(), t(TEXT_PRIMARY));
+        children.push(mark);
+        format!("{label} (required)")
+    } else {
+        label.clone()
+    };
+    let mut row = stack(key, Axis::Horizontal, Some(SPACING_03), children);
     // Body line-height is 20; the checkbox is 16 and the radio is 18.
     // Start-align sits the mark on the top of the line; Center puts it on
     // the optical midline.
@@ -205,7 +243,7 @@ fn labelled_box(
     // control, never on the label beside it. The operator: *"check boxes need
     // their text highlightable"*. `crate::component::link` carries the full
     // argument and the price.
-    let mut node = row.interactive(Role::Button, label, intents);
+    let mut node = row.interactive(Role::Button, accessible, intents);
     // The caller's, because the two controls that share this row do not
     // have the same room under them and the operator caught the difference
     // on 2026-09-06: *"radio button needs the under bar, the other bar is
@@ -228,6 +266,7 @@ fn labelled_box(
     // tracked.
     node.semantics.focus_figure = figure;
     node.semantics.selected = selected;
+    node.semantics.required = required;
     node
 }
 
@@ -338,6 +377,25 @@ pub fn checkbox(key: impl Into<Key>, label: impl Into<String>, checked: bool) ->
     // release. Declared here and not on `labelled_box`, so
     // `checkbox_readonly` — which shares every line of that helper — does
     // not inherit a behaviour it will not honour.
+    .with_behaviour(TOGGLES_ON_RELEASE)
+}
+
+/// A required checkbox (T037): [`checkbox`]'s shape plus the marker
+/// [`labelled_box_required`] adds. See that function's doc for why the
+/// star and the accessible-name suffix are both there.
+pub fn checkbox_required(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    checked: bool,
+) -> ViewNode {
+    labelled_box_required(
+        key,
+        label,
+        checked,
+        checkbox_mark(checked),
+        &[Interaction::Focus, Interaction::Click],
+        FocusFigure::BarInside,
+    )
     .with_behaviour(TOGGLES_ON_RELEASE)
 }
 
@@ -463,6 +521,39 @@ pub fn checkbox_warning(
     with_warning(key, checkbox("checkbox", label, checked), message)
 }
 
+/// Stack a binary control over [`kit::description`] (T036). Same shape as
+/// [`with_warning`], below the control rather than beside its label — the
+/// same position as a checkbox group's own optional helper text and a
+/// radio group's legend-adjacent helper text in Carbon (there is no
+/// per-item description in Carbon's own Checkbox/RadioButton anatomy;
+/// this reuses the warning row's established position on this family
+/// rather than inventing a second one).
+fn with_description(
+    key: impl Into<Key>,
+    control: ViewNode,
+    description: impl Into<String>,
+) -> ViewNode {
+    let description = description.into();
+    let mut node = stack(
+        key,
+        Axis::Vertical,
+        Some(SPACING_02),
+        vec![control, kit::description("description", &description)],
+    );
+    node.props.align = Some(Align::Stretch);
+    node
+}
+
+/// A checkbox plus a muted description line stacked below it (T036).
+pub fn checkbox_described(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    checked: bool,
+    description: impl Into<String>,
+) -> ViewNode {
+    with_description(key, checkbox("checkbox", label, checked), description)
+}
+
 /// A radio button: one choice among a group, drawn as an 18×18 circle.
 ///
 /// Selected: the keyed `"box"` fills solid with [`ACCENT_PRIMARY`].
@@ -495,7 +586,31 @@ pub fn checkbox_warning(
 // 18-unit box needs 9 — and `Pill` is the member that names the shape
 // instead of a number. See the module doc's own paragraph on this.
 pub fn radio(key: impl Into<Key>, label: impl Into<String>, selected: bool) -> ViewNode {
-    let box_node = if selected {
+    labelled_box(
+        key,
+        label,
+        selected,
+        radio_box_node(selected),
+        &[Interaction::Focus, Interaction::Click],
+        // Sixteen units to the next row, so the default bar fits with
+        // eleven to spare. The operator asked for it by name.
+        FocusFigure::BarUnder,
+    )
+    // Spec 010 FR-013. `Select`, not `Toggle`: a radio sets itself true and
+    // never flips back on its own, and exclusivity among its siblings is the
+    // caller's to answer, which is the whole difference between the two
+    // members.
+    .with_behaviour(Behaviour {
+        intent: Intent::Select,
+        phase: Phase::OnRelease,
+    })
+}
+
+/// The disc [`radio`] and [`radio_required`] share: solid accent-filled
+/// when selected, [`empty_mark`]'s outline when not. Pulled out of
+/// [`radio`] so the required form (T037) does not fork this construction.
+fn radio_box_node(selected: bool) -> ViewNode {
+    if selected {
         let mut node = swatch(
             "box",
             RADIO_BOX,
@@ -520,21 +635,21 @@ pub fn radio(key: impl Into<Key>, label: impl Into<String>, selected: bool) -> V
         node
     } else {
         empty_mark(RADIO_BOX, corner_for(CornerRole::Pill, RADIO_BOX))
-    };
-    labelled_box(
+    }
+}
+
+/// A required radio (T037): [`radio`]'s shape plus the marker
+/// [`labelled_box_required`] adds. See that function's doc for why the
+/// star and the accessible-name suffix are both there.
+pub fn radio_required(key: impl Into<Key>, label: impl Into<String>, selected: bool) -> ViewNode {
+    labelled_box_required(
         key,
         label,
         selected,
-        box_node,
+        radio_box_node(selected),
         &[Interaction::Focus, Interaction::Click],
-        // Sixteen units to the next row, so the default bar fits with
-        // eleven to spare. The operator asked for it by name.
         FocusFigure::BarUnder,
     )
-    // Spec 010 FR-013. `Select`, not `Toggle`: a radio sets itself true and
-    // never flips back on its own, and exclusivity among its siblings is the
-    // caller's to answer, which is the whole difference between the two
-    // members.
     .with_behaviour(Behaviour {
         intent: Intent::Select,
         phase: Phase::OnRelease,
@@ -552,6 +667,16 @@ pub fn radio_warning(
     message: impl Into<String>,
 ) -> ViewNode {
     with_warning(key, radio("radio", label, selected), message)
+}
+
+/// A radio plus a muted description line stacked below it (T036).
+pub fn radio_described(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    selected: bool,
+    description: impl Into<String>,
+) -> ViewNode {
+    with_description(key, radio("radio", label, selected), description)
 }
 
 /// A vertical radio group. Mutual exclusivity is the caller's `selected`
@@ -753,12 +878,15 @@ fn toggle_sized(
 mod tests {
     use super::{
         ACCENT_PRIMARY, BUTTON_DISABLED, ICON_DISABLED, ICON_ON_COLOR_DISABLED, SPACING_05,
+        TEXT_PRIMARY,
     };
     use super::{
         CHECKBOX_BOX, RADIO_BOX, TOGGLE_SM_TRACK_H, TOGGLE_SM_TRACK_W, TOGGLE_TRACK_H,
-        TOGGLE_TRACK_W, checkbox, checkbox_group, checkbox_indeterminate, checkbox_readonly,
-        checkbox_warning, radio, radio_group, radio_warning, toggle, toggle_sm,
+        TOGGLE_TRACK_W, checkbox, checkbox_described, checkbox_group, checkbox_indeterminate,
+        checkbox_readonly, checkbox_required, checkbox_warning, radio, radio_described,
+        radio_group, radio_required, radio_warning, toggle, toggle_sm,
     };
+    use crate::component::tokens::{TEXT_MUTED, TYPOGRAPHY_BODY_COMPACT};
     use crate::component::{IconMark, IconTone, icon_toned};
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
@@ -978,6 +1106,81 @@ mod tests {
         let on = radio_warning("r", "Other", true, "unusual choice");
         assert!(named(&on, "radio").semantics.selected);
         assert_warning_helper(&on, "unusual choice");
+    }
+
+    /// T037: [`checkbox_required`] carries the same two channels
+    /// [`super::field::field_required`] does — a `*` child keyed
+    /// `"required-mark"` in [`TEXT_PRIMARY`], and `(required)` appended to
+    /// the accessible name — so the family reads as one decision rather
+    /// than three. A plain [`checkbox`] gets neither.
+    ///
+    /// Falsify by having `checkbox_required` call plain `checkbox`: the
+    /// panic is `no descendant keyed \`required-mark\`` from `named`.
+    #[test]
+    fn checkbox_required_declares_the_flag_and_shows_a_star_beside_the_label() {
+        let node = checkbox_required("agree", "Terms", false);
+        assert!(
+            node.semantics.required,
+            "the constructor result answers required"
+        );
+        let star = named(&node, "required-mark");
+        assert_eq!(star.props.text.as_deref(), Some("*"));
+        assert_eq!(
+            star.props.tokens.get("foreground").map(|t| t.as_str()),
+            Some(TEXT_PRIMARY)
+        );
+        assert_eq!(node.semantics.label.as_deref(), Some("Terms (required)"));
+
+        let plain = checkbox("agree", "Terms", false);
+        assert!(!plain.semantics.required, "a plain checkbox is not required");
+        assert_eq!(plain.semantics.label.as_deref(), Some("Terms"));
+    }
+
+    /// T037, radio's half of the same decision. See
+    /// `checkbox_required_declares_the_flag_and_shows_a_star_beside_the_label`
+    /// for the argument; not duplicated here.
+    #[test]
+    fn radio_required_declares_the_flag_and_shows_a_star_beside_the_label() {
+        let node = radio_required("choice", "Standard", false);
+        assert!(node.semantics.required);
+        let star = named(&node, "required-mark");
+        assert_eq!(star.props.text.as_deref(), Some("*"));
+        assert_eq!(node.semantics.label.as_deref(), Some("Standard (required)"));
+
+        let plain = radio("choice", "Standard", false);
+        assert!(!plain.semantics.required, "a plain radio is not required");
+        assert_eq!(plain.semantics.label.as_deref(), Some("Standard"));
+    }
+
+    /// T036: [`checkbox_described`] and [`radio_described`] stack
+    /// [`kit::description`] below the control, the position Carbon's own
+    /// helper text on this family uses (the checkbox/radio validation-msg
+    /// row this file already draws for `checkbox_warning`/`radio_warning`
+    /// is the same position, neutral tone). `body-compact-01`, not the
+    /// looser step the shared primitive shipped with before T036.
+    #[test]
+    fn checkbox_described_and_radio_described_add_a_muted_description_line_below_the_control() {
+        let node = checkbox_described("agree", "Terms", false, "Read before accepting");
+        assert!(!named(&node, "checkbox").semantics.selected);
+        let line = named(&node, "description");
+        assert_eq!(line.props.text.as_deref(), Some("Read before accepting"));
+        assert_eq!(
+            line.props.tokens.get("foreground").map(|t| t.as_str()),
+            Some(TEXT_MUTED)
+        );
+        assert_eq!(
+            line.props.style.as_ref().map(|s| s.as_str()),
+            Some(TYPOGRAPHY_BODY_COMPACT)
+        );
+
+        let node = radio_described("choice", "Standard", true, "Ships in 3 days");
+        assert!(named(&node, "radio").semantics.selected);
+        let line = named(&node, "description");
+        assert_eq!(line.props.text.as_deref(), Some("Ships in 3 days"));
+        assert_eq!(
+            line.props.tokens.get("foreground").map(|t| t.as_str()),
+            Some(TEXT_MUTED)
+        );
     }
 
     #[test]

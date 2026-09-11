@@ -6,10 +6,12 @@
 //! out-of-crate author uses the same helpers rather than forking them
 //! (spec 009 contract §8.1).
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::draw::{ColorRef, Command, DrawList, Paint, PathVerb};
 use crate::geom::{Axis, Point};
+use crate::token::{CornerTokens, TokenName};
 use crate::tree::{AxisConstraint, Constraints, InsetRefs, Key, NodeKind, Props, ViewNode};
 
 use super::tokens;
@@ -77,6 +79,25 @@ pub fn swatch(
                 priority: 0,
             },
         })
+}
+
+/// Binds all four of [`CornerTokens`]' names onto `tokens`, one per corner
+/// slot (`token::slot::standard_slots`'s `radius-top-left` …
+/// `radius-bottom-left`).
+///
+/// The plumbing [`super::button_group`]'s flush row and [`super::input_group`]'s
+/// seamless row both spend to turn a `CornerTokens` — usually
+/// `crate::token::corners_for`'s own answer — into an override on a child's
+/// `props.tokens`, so the four slot names are spelled once rather than once
+/// per caller.
+pub fn bind_corners(tokens: &mut BTreeMap<String, TokenName>, corners: CornerTokens) {
+    tokens.insert("radius-top-left".into(), tokens::t(corners.top_left));
+    tokens.insert("radius-top-right".into(), tokens::t(corners.top_right));
+    tokens.insert(
+        "radius-bottom-right".into(),
+        tokens::t(corners.bottom_right),
+    );
+    tokens.insert("radius-bottom-left".into(), tokens::t(corners.bottom_left));
 }
 
 /// [`InsetRefs::symmetric`] over two of this module's spacing constants,
@@ -191,14 +212,21 @@ pub fn caret(key: impl Into<Key>, direction: CaretDirection) -> ViewNode {
 
 /// Muted supporting text under a heading.
 ///
-/// Carbon `.cds--label-description`. Body type in [`tokens::TEXT_MUTED`].
-/// The heading is a sibling this function does not draw. File uploader
-/// already spelled this line; field, checkbox, and radio did not. One
+/// Carbon `.cds--label-description`: `body-compact-01`
+/// ([`tokens::TYPOGRAPHY_BODY_COMPACT`], 14/18) in [`tokens::TEXT_MUTED`],
+/// per the Carbon component inventory
+/// (`.agents/research/08-25-2026/Carbon-Component-Inventory/slice-b.md:198`).
+/// Not [`tokens::TYPOGRAPHY_BODY`] (`body-01`, 14/20) — the step this
+/// function shipped with until T036, and paragraph-loose next to a
+/// 40-unit control. The heading is a sibling this function does not draw.
+/// File uploader already spelled this line, off by the same step in the
+/// other direction ([`tokens::TYPOGRAPHY_LABEL`], `label-01`, 12/16, T036
+/// reconciled it here); field, checkbox, and radio had none at all. One
 /// helper so those call sites do not fork the tokens.
 pub fn description(key: impl Into<Key>, text: &str) -> ViewNode {
     let mut props = Props {
         text: Some(text.to_owned()),
-        style: Some(tokens::t(tokens::TYPOGRAPHY_BODY)),
+        style: Some(tokens::t(tokens::TYPOGRAPHY_BODY_COMPACT)),
         ..Props::default()
     };
     props

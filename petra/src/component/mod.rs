@@ -82,7 +82,7 @@ pub mod kit;
 pub mod params;
 pub mod registry;
 
-pub(crate) use kit::{CARET_SIZE, CaretDirection, caret, pad, pin_block, stack, swatch};
+pub(crate) use kit::{CARET_SIZE, CaretDirection, bind_corners, caret, pad, pin_block, stack, swatch};
 
 mod accordion;
 mod ai_label;
@@ -162,7 +162,7 @@ pub use button::{
     button, button_2xl, button_lg, button_sm, button_xl, button_xs, danger_button,
     danger_ghost_button, danger_tertiary_button, ghost_button, primary_button, tertiary_button,
 };
-pub use button_group::button_group;
+pub use button_group::{button_group, button_group_flush};
 pub use chrome_strip::{DIVIDER_EXTENT, chrome_strip};
 pub use code_snippet::{
     COPY_FEEDBACK, COPY_FEEDBACK_KEY, COPY_FEEDBACK_SECONDS, CodeInk, MULTI_CAP, MULTI_CAP_LINES,
@@ -173,8 +173,9 @@ pub use contained_list::{contained_list, contained_list_disclosed};
 pub use content_switcher::{content_switcher, content_switcher_item};
 pub use context_menu::context_menu;
 pub use controls::{
-    CheckState, checkbox, checkbox_group, checkbox_indeterminate, checkbox_readonly,
-    checkbox_tristate, checkbox_warning, radio, radio_group, radio_warning, toggle, toggle_sm,
+    CheckState, checkbox, checkbox_described, checkbox_group, checkbox_indeterminate,
+    checkbox_readonly, checkbox_required, checkbox_tristate, checkbox_warning, radio,
+    radio_described, radio_group, radio_required, radio_warning, toggle, toggle_sm,
 };
 pub use data_table::{
     data_table, data_table_row, data_table_row_expandable, data_table_row_lg, data_table_row_md,
@@ -187,8 +188,8 @@ pub use dropdown::{
     dropdown, dropdown_lg, dropdown_open, dropdown_option, dropdown_sm, dropdown_xs,
 };
 pub use field::{
-    field, field_fluid, field_invalid, field_labeled, field_lg, field_readonly, field_required,
-    field_sm, field_validated, field_warning, hinted, labeled, valued,
+    field, field_described, field_fluid, field_invalid, field_labeled, field_lg, field_readonly,
+    field_required, field_sm, field_validated, field_warning, hinted, labeled, valued,
 };
 pub use file_uploader::{
     file_uploader, file_uploader_item, file_uploader_item_edit, file_uploader_item_invalid,
@@ -197,7 +198,9 @@ pub use file_uploader::{
 pub use form::form;
 pub use icon::{IconBox, IconMark, IconTone, icon, icon_in, icon_toned};
 pub use inline_loading::{inline_loading, inline_loading_finished};
-pub use input_group::{input_group, input_group_with_addon};
+pub use input_group::{
+    input_group, input_group_seamless, input_group_with_addon, input_group_with_addon_seamless,
+};
 pub use link::{link, link_inline};
 pub use list::{
     Bullet, BulletScheme, list_item, list_item_with, ordered_list, unordered_list,

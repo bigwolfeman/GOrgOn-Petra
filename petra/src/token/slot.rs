@@ -134,12 +134,14 @@ impl SlotSchema {
 }
 
 /// The shipped slot schema: every paint slot the design system has
-/// committed to. Thirteen entries, and `gorgon-petra-egui`'s painter draws
-/// all thirteen — `standard_slots()` and that painter's `KNOWN_SLOTS` are the
+/// committed to. Seventeen entries, and `gorgon-petra-egui`'s painter draws
+/// all seventeen — `standard_slots()` and that painter's `KNOWN_SLOTS` are the
 /// same set, which `the_shipped_schema_is_exactly_what_the_painter_draws`
-/// holds them to. Six date from 2026-08-25; the four edge slots
+/// holds them to. Six date from 2026-08-25; the four border edge slots
 /// (`border-top` … `border-left`) from 2026-09-04, see below; the two
-/// selection slots from 2026-09-05, see below that.
+/// selection slots from 2026-09-05, see below that; the four corner radius
+/// slots (`radius-top-left` … `radius-bottom-left`) from spec 009 T002, see
+/// further below.
 ///
 /// # Five slots were retired on 2026-08-25 (FR-025)
 ///
@@ -276,6 +278,32 @@ impl SlotSchema {
 /// keep it is one nobody can see. The selected run therefore takes its own
 /// ink, exactly as `::selection { color }` does in a browser. A node binding
 /// one and not the other gets no highlight; they are resolved as a pair.
+///
+/// # The four corner radius slots (spec 009 T002)
+///
+/// `radius-top-left`, `radius-top-right`, `radius-bottom-right` and
+/// `radius-bottom-left` each name the radius token for exactly one corner of
+/// this node's rect, following the `border-top` … `border-left` precedent
+/// above: four independent slots rather than one `Corner` enum, so a node
+/// that wants one corner square and the rest rounded (a flush button group's
+/// first child, a seamless input row's inner seam) binds the corners that
+/// differ and leaves the rest alone.
+///
+/// **`radius` is the shorthand and stays one.** A corner slot left unbound
+/// takes `radius`'s value; a node that binds only `radius`, which is every
+/// binding site in `component::` before this slot existed, is unaffected —
+/// four absent overrides is the same picture a scalar radius always painted.
+/// A node binds none of the five and takes square corners, exactly as
+/// before. `token::shipped::corners_for` is what computes the four names for
+/// a caller that wants a role's radius on some corners and a square seam on
+/// others; a component may also bind the four names directly.
+///
+/// **Not a second policy about what a role's radius is.** `corners_for`
+/// never invents a radius the one-value `corner_for` would not have
+/// returned for the same role and extent — it only decides which of the
+/// four corners keeps that answer and which square. FR-022's "one rule, not
+/// a per-component table" holds across all five slots for exactly that
+/// reason.
 #[must_use]
 pub fn standard_slots() -> SlotSchema {
     let mut s = SlotSchema::new();
@@ -289,6 +317,10 @@ pub fn standard_slots() -> SlotSchema {
         .declare(SlotSpec::new("underline", TokenKind::Color, false))
         .declare(SlotSpec::new("shadow", TokenKind::Color, false))
         .declare(SlotSpec::new("radius", TokenKind::Shape, false))
+        .declare(SlotSpec::new("radius-top-left", TokenKind::Shape, false))
+        .declare(SlotSpec::new("radius-top-right", TokenKind::Shape, false))
+        .declare(SlotSpec::new("radius-bottom-right", TokenKind::Shape, false))
+        .declare(SlotSpec::new("radius-bottom-left", TokenKind::Shape, false))
         .declare(SlotSpec::new("silhouette", TokenKind::Silhouette, false))
         .declare(SlotSpec::new("selection", TokenKind::Color, false))
         .declare(SlotSpec::new("selection-ink", TokenKind::Color, false));
@@ -300,8 +332,8 @@ mod tests {
     use super::{SlotSpec, standard_slots};
     use crate::token::value::TokenKind;
 
-    /// The shipped schema is exactly the eleven slots the painter draws, at
-    /// the kinds it draws them.
+    /// The shipped schema is exactly the seventeen slots the painter draws,
+    /// at the kinds it draws them.
     ///
     /// The count is the load-bearing assertion, not the membership list. This
     /// schema once carried eleven entries against a six-entry painter for as
@@ -327,6 +359,10 @@ mod tests {
             ("underline", TokenKind::Color),
             ("shadow", TokenKind::Color),
             ("radius", TokenKind::Shape),
+            ("radius-top-left", TokenKind::Shape),
+            ("radius-top-right", TokenKind::Shape),
+            ("radius-bottom-right", TokenKind::Shape),
+            ("radius-bottom-left", TokenKind::Shape),
             ("silhouette", TokenKind::Silhouette),
             ("selection", TokenKind::Color),
             ("selection-ink", TokenKind::Color),

@@ -381,6 +381,12 @@ pub const ENTRIES: &[Entry] = &[
     row!("input_group_with_addon", KeyAddonField, |p| {
         lib::input_group_with_addon(p.key, p.addon, p.field)
     }),
+    row!("input_group_seamless", KeyChildren, |p| {
+        lib::input_group_seamless(p.key, p.children)
+    }),
+    row!("input_group_with_addon_seamless", KeyAddonField, |p| {
+        lib::input_group_with_addon_seamless(p.key, p.addon, p.field)
+    }),
     row!("otp", OtpParams, |p| lib::otp(p.key, p.length, &p.value)),
 ];
 

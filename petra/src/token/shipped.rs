@@ -1690,6 +1690,122 @@ pub fn corner_for(role: CornerRole, shorter_edge: f32) -> &'static str {
 /// grown large enough relative to a small node.
 const CORNER_FULL: &str = "shape.corner-full";
 
+/// Which of this node's four edges abut a sibling with nothing between them —
+/// the fact [`corners_for`] needs beyond [`corner_for`]'s `role` and
+/// `shorter_edge` to answer "what does *this* corner take".
+///
+/// A corner radius is not four independent design choices. It is one role
+/// plus one adjacency fact: a free corner takes the radius its role names,
+/// and a corner where a sibling's edge meets it is square, because two radii
+/// meeting leave a lens-shaped hole. `Joined` is that adjacency fact, named
+/// per edge because a corner is square when *either* of its two edges is
+/// joined — `top_left` is square when `top` or `left` is set, and so through
+/// the other three.
+///
+/// All four fields rather than the two a horizontal row (`button_group`,
+/// `input_group`) ever sets, because the rule is not itself horizontal: a
+/// future vertically-stacked group asks the same question of `top` and
+/// `bottom`, and a type that could only answer the horizontal half would be
+/// the per-component table FR-022 exists to prevent, aimed at one axis
+/// instead of all four components.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Joined {
+    /// This node's top edge meets a sibling with no gap.
+    pub top: bool,
+    /// This node's right edge meets a sibling with no gap.
+    pub right: bool,
+    /// This node's bottom edge meets a sibling with no gap.
+    pub bottom: bool,
+    /// This node's left edge meets a sibling with no gap.
+    pub left: bool,
+}
+
+impl Joined {
+    /// No edge is joined: every corner is free. [`corners_for`] under this
+    /// value returns four copies of exactly what [`corner_for`] returns for
+    /// the same `role` and `shorter_edge` —
+    /// [`tests::the_one_radius_rule_is_total_and_the_half_edge_clause_overrides_it`]
+    /// asserts the equivalence, because it is what keeps this one rule
+    /// rather than two.
+    pub const NONE: Self = Self {
+        top: false,
+        right: false,
+        bottom: false,
+        left: false,
+    };
+}
+
+/// The four corner radius tokens one node's rect paints with — the
+/// per-corner answer [`corners_for`] gives, in the schema's own clockwise
+/// order (`token::slot::standard_slots`'s `radius-top-left` …
+/// `radius-bottom-left`).
+///
+/// Not `gorgon_petra::draw::Corners`: that type is four *resolved radii* a
+/// canvas draws with directly. This is four *token names* a component binds
+/// through `props.tokens`, the same domain [`corner_for`] returns one of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CornerTokens {
+    /// The top-left corner's radius token.
+    pub top_left: &'static str,
+    /// The top-right corner's radius token.
+    pub top_right: &'static str,
+    /// The bottom-right corner's radius token.
+    pub bottom_right: &'static str,
+    /// The bottom-left corner's radius token.
+    pub bottom_left: &'static str,
+}
+
+/// [`corner_for`]'s per-corner sibling: one role, one adjacency fact, four
+/// answers.
+///
+/// **Still one rule.** This does not consult [`SHAPE_RAMP`] on its own or
+/// carry a second policy about what a role's radius is — every non-square
+/// corner this returns is [`corner_for`]'s own answer for `role` and
+/// `shorter_edge`, looked up once and copied into the three corners `joined`
+/// does not square. A component that wants four *unrelated* radii cannot
+/// reach them through this function, which is deliberate: FR-022 asks for
+/// one rule keyed on what a node is, not a per-component table, and a
+/// function that could bind four independent tokens would reopen exactly
+/// that table on the corner axis.
+///
+/// A corner is square — `shape.corner-none`, the same name [`CornerRole::Tiled`]
+/// already returns — when *either* of its two edges is joined:
+/// `top_left` squares on `joined.top || joined.left`, and the other three
+/// follow the same pattern one edge clockwise. Two rounded corners meeting
+/// at a shared edge would leave a lens-shaped gap between them; squaring the
+/// joined side is what a seamless row or a flush button group needs instead.
+///
+/// [`Joined::NONE`] never squares anything, so every corner takes
+/// `corner_for(role, shorter_edge)` unchanged — see [`Joined::NONE`]'s own
+/// doc for the test that holds this.
+#[must_use]
+pub fn corners_for(role: CornerRole, shorter_edge: f32, joined: Joined) -> CornerTokens {
+    let free = corner_for(role, shorter_edge);
+    let square = SHAPE_RAMP[0].0;
+    CornerTokens {
+        top_left: if joined.top || joined.left {
+            square
+        } else {
+            free
+        },
+        top_right: if joined.top || joined.right {
+            square
+        } else {
+            free
+        },
+        bottom_right: if joined.bottom || joined.right {
+            square
+        } else {
+            free
+        },
+        bottom_left: if joined.bottom || joined.left {
+            square
+        } else {
+            free
+        },
+    }
+}
+
 /// Assign every [`SHAPE_RAMP`] step into a theme's value map. Both themes
 /// call this rather than spelling the ramp out twice, for the same reason
 /// [`insert_spacing_ramp`] exists: a hand-copied ramp is a ramp that drifts.
@@ -2399,13 +2515,13 @@ mod tests {
     use super::{
         ACCENT_TOKEN, ACTIVE_STEP, ACTIVE_TOKEN, BORDER_INTERACTIVE_TOKEN, BORDER_STRONG_TOKEN,
         BORDER_SUBTLE_TOKENS, BORDER_TOKEN, CornerRole, DANGER_FILL_TOKEN, DARK_LAYERS,
-        FIELD_TOKENS, HOVER_STEP, ICON_TOKENS, LAYER_ACCENT_STATE_TOKENS, LAYER_ACCENT_TOKEN,
-        LAYER_TOKENS, LIGHT_LAYERS, LINK_TOKEN, M, MIN_CONTROL_BOUNDARY, MIN_DIVIDER_CONTRAST,
-        MONO, ON_ACCENT_TOKEN, ON_COLOUR_TOKEN, R, RAISED_ALIAS, RULE_HIGHLIGHT_DELTA,
-        RULE_SHADOW_DELTA, SANS, SCRIM_TOKEN, SELECTED_HOVER_STEP, SELECTED_STEP, SHADOW_GEOMETRY,
-        SHADOW_TOKENS, SHAPE_RAMP, SIZE_RAMP, SPACING_ALIASES, SPACING_RAMP, SPRING_SET,
-        SUPPORT_ALIASES, TYPOGRAPHY_RAMP, corner_for, dark, light, lightness_of, opaque_value,
-        rule_stroke, standard_vocabulary,
+        FIELD_TOKENS, HOVER_STEP, ICON_TOKENS, Joined, LAYER_ACCENT_STATE_TOKENS,
+        LAYER_ACCENT_TOKEN, LAYER_TOKENS, LIGHT_LAYERS, LINK_TOKEN, M, MIN_CONTROL_BOUNDARY,
+        MIN_DIVIDER_CONTRAST, MONO, ON_ACCENT_TOKEN, ON_COLOUR_TOKEN, R, RAISED_ALIAS,
+        RULE_HIGHLIGHT_DELTA, RULE_SHADOW_DELTA, SANS, SCRIM_TOKEN, SELECTED_HOVER_STEP,
+        SELECTED_STEP, SHADOW_GEOMETRY, SHADOW_TOKENS, SHAPE_RAMP, SIZE_RAMP, SPACING_ALIASES,
+        SPACING_RAMP, SPRING_SET, SUPPORT_ALIASES, TYPOGRAPHY_RAMP, corner_for, corners_for, dark,
+        light, lightness_of, opaque_value, rule_stroke, standard_vocabulary,
     };
     use crate::token::ThemeMode;
     use crate::token::focus::RING_TOKEN;
@@ -4985,6 +5101,104 @@ mod tests {
             "a zero-extent node has no shorter edge to be half of; the role \
              stands rather than collapsing to a pill"
         );
+
+        // corners_for's own totality, over the same five roles and
+        // `Joined::NONE` specifically: every corner must be exactly
+        // `corner_for`'s answer, unsquared. This is the equivalence the
+        // whole per-corner design rests on — one rule read four times, not
+        // two rules that could drift apart.
+        //
+        // Falsified by making `Joined::NONE` square `top_left` regardless:
+        //
+        // ```text
+        // assertion `left == right` failed: Tiled: Joined::NONE must return
+        // four copies of corner_for's own answer, or corners_for is a
+        // second rule rather than one rule read four times
+        //   left: ("shape.corner-none", "shape.corner-none", "shape.corner-none", "shape.corner-none")
+        //  right: ("shape.corner-none", "shape.corner-none", "shape.corner-none", "shape.corner-none")
+        // ```
+        for role in roles {
+            let free = corner_for(role, 200.0);
+            let none = corners_for(role, 200.0, Joined::NONE);
+            assert_eq!(
+                (
+                    none.top_left,
+                    none.top_right,
+                    none.bottom_right,
+                    none.bottom_left
+                ),
+                (free, free, free, free),
+                "{role:?}: Joined::NONE must return four copies of \
+                 corner_for's own answer, or corners_for is a second rule \
+                 rather than one rule read four times"
+            );
+        }
+
+        // Every one of the sixteen `Joined` combinations, for a role whose
+        // free answer is not already square — `Grouping` is `shape.corner-sm`
+        // at 200 units, so a squared corner is visibly distinguishable from
+        // an unsquared one, which a role that already answers `corner-none`
+        // could not prove.
+        let role = CornerRole::Grouping;
+        let free = corner_for(role, 200.0);
+        let square = SHAPE_RAMP[0].0;
+        for top in [false, true] {
+            for right in [false, true] {
+                for bottom in [false, true] {
+                    for left in [false, true] {
+                        let joined = Joined {
+                            top,
+                            right,
+                            bottom,
+                            left,
+                        };
+                        let corners = corners_for(role, 200.0, joined);
+                        assert_eq!(
+                            corners.top_left,
+                            if top || left { square } else { free },
+                            "top_left under {joined:?}"
+                        );
+                        assert_eq!(
+                            corners.top_right,
+                            if top || right { square } else { free },
+                            "top_right under {joined:?}"
+                        );
+                        assert_eq!(
+                            corners.bottom_right,
+                            if bottom || right { square } else { free },
+                            "bottom_right under {joined:?}"
+                        );
+                        assert_eq!(
+                            corners.bottom_left,
+                            if bottom || left { square } else { free },
+                            "bottom_left under {joined:?}"
+                        );
+                    }
+                }
+            }
+        }
+
+        // A joined edge squares even `Pill`, which otherwise ignores the
+        // geometry outright: a flush pair still meets on a flat seam, and
+        // the side that touches nothing keeps the stadium.
+        let flush = corners_for(
+            CornerRole::Pill,
+            200.0,
+            Joined {
+                right: true,
+                ..Joined::NONE
+            },
+        );
+        assert_eq!(
+            flush.top_right, square,
+            "a joined pill still squares on the seam"
+        );
+        assert_eq!(flush.bottom_right, square);
+        assert_eq!(
+            flush.top_left, "shape.corner-full",
+            "the free side keeps the pill"
+        );
+        assert_eq!(flush.bottom_left, "shape.corner-full");
     }
 
     /// The scrim is black in both themes, deeper in dark, and never opaque.

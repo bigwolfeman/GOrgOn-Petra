@@ -210,7 +210,8 @@ impl ParamShape for KeyLabelValueMessage {
     const LUAU: &'static str = "{ key: string, label: string, value: string, message: string }";
 }
 
-/// `file_uploader_with(key, label, description)`.
+/// `file_uploader_with(key, label, description)`/`field_described(key,
+/// label, description)`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct KeyLabelDescription {
@@ -220,6 +221,23 @@ struct KeyLabelDescription {
 }
 impl ParamShape for KeyLabelDescription {
     const LUAU: &'static str = "{ key: string, label: string, description: string }";
+}
+
+/// `checkbox_described`/`radio_described`(key, label, selected,
+/// description). The bool is `checked` on `checkbox_described` and
+/// `selected` on `radio_described`; the wire name is `selected`, matching
+/// [`KeyLabelSelectedMessage`]'s own convention.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct KeyLabelSelectedDescription {
+    key: Key,
+    label: String,
+    selected: bool,
+    description: String,
+}
+impl ParamShape for KeyLabelSelectedDescription {
+    const LUAU: &'static str =
+        "{ key: string, label: string, selected: boolean, description: string }";
 }
 
 /// `field.rs`'s `labeled(key, label, control)`.
@@ -281,11 +299,23 @@ pub const ENTRIES: &[Entry] = &[
     row!("checkbox_warning", KeyLabelSelectedMessage, |p| {
         lib::checkbox_warning(p.key, p.label, p.selected, p.message)
     }),
+    row!("checkbox_required", KeyLabelSelected, |p| {
+        lib::checkbox_required(p.key, p.label, p.selected)
+    }),
+    row!("checkbox_described", KeyLabelSelectedDescription, |p| {
+        lib::checkbox_described(p.key, p.label, p.selected, p.description)
+    }),
     row!("radio", KeyLabelSelected, |p| lib::radio(
         p.key, p.label, p.selected
     )),
     row!("radio_warning", KeyLabelSelectedMessage, |p| {
         lib::radio_warning(p.key, p.label, p.selected, p.message)
+    }),
+    row!("radio_required", KeyLabelSelected, |p| {
+        lib::radio_required(p.key, p.label, p.selected)
+    }),
+    row!("radio_described", KeyLabelSelectedDescription, |p| {
+        lib::radio_described(p.key, p.label, p.selected, p.description)
     }),
     row!("radio_group", KeyLabelChildren, |p| lib::radio_group(
         p.key, p.label, p.children
@@ -351,6 +381,9 @@ pub const ENTRIES: &[Entry] = &[
     )),
     row!("field_validated", KeyLabelOptionalMessage, |p| {
         lib::field_validated(p.key, p.label, p.message)
+    }),
+    row!("field_described", KeyLabelDescription, |p| {
+        lib::field_described(p.key, p.label, p.description)
     }),
     row!("labeled", KeyLabelControl, |p| lib::labeled(
         p.key, p.label, p.control

@@ -23,7 +23,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use egui::{Color32, Painter, Rgba, Stroke};
+use egui::{Color32, CornerRadius, Painter, Rgba, Stroke};
 use gorgon_petra::frame::{PaintContent, PetrifiedFrame, Placement, round_rect};
 use gorgon_petra::geom::{Rect as PetraRect, Scale};
 use gorgon_petra::layout::TextRequest;
@@ -79,6 +79,15 @@ pub const UNDERLINE_SLOT: &str = "underline";
 /// binds no `radius` paints square corners, the same default it had before
 /// this slot existed.
 pub const RADIUS_SLOT: &str = "radius";
+/// Overrides [`RADIUS_SLOT`] for the node's top-left corner only. Absent,
+/// [`RADIUS_SLOT`]'s shorthand applies — see [`resolve_corner_radius`].
+pub const RADIUS_TOP_LEFT_SLOT: &str = "radius-top-left";
+/// See [`RADIUS_TOP_LEFT_SLOT`]: the top-right corner.
+pub const RADIUS_TOP_RIGHT_SLOT: &str = "radius-top-right";
+/// See [`RADIUS_TOP_LEFT_SLOT`]: the bottom-right corner.
+pub const RADIUS_BOTTOM_RIGHT_SLOT: &str = "radius-bottom-right";
+/// See [`RADIUS_TOP_LEFT_SLOT`]: the bottom-left corner.
+pub const RADIUS_BOTTOM_LEFT_SLOT: &str = "radius-bottom-left";
 /// Token slot naming the outline family a node's background and border are
 /// drawn as. Resolves through a `shape.silhouette-*` token
 /// ([`gorgon_petra::token::Silhouette`]); a node that binds no `silhouette`
@@ -170,6 +179,10 @@ const KNOWN_SLOTS: &[&str] = &[
     FOREGROUND_SLOT,
     UNDERLINE_SLOT,
     RADIUS_SLOT,
+    RADIUS_TOP_LEFT_SLOT,
+    RADIUS_TOP_RIGHT_SLOT,
+    RADIUS_BOTTOM_RIGHT_SLOT,
+    RADIUS_BOTTOM_LEFT_SLOT,
     SHADOW_SLOT,
     SILHOUETTE_SLOT,
     SELECTION_SLOT,
@@ -391,6 +404,37 @@ fn resolve_radius_or_record(
         report.unresolved_tokens.insert(token.to_owned());
     }
     radius.unwrap_or(0.0)
+}
+
+/// Resolves a node's full per-corner radius: each of the four corner slots
+/// ([`RADIUS_TOP_LEFT_SLOT`] and its three siblings) overrides [`RADIUS_SLOT`]
+/// for its own corner; a corner that binds nothing of its own takes the
+/// shorthand, and a node that binds neither takes square — exactly the
+/// picture a single `radius` binding always painted, which is why every one
+/// of the 31 sites that bind only `radius` moves no pixel under this.
+///
+/// State-decorated (`radius@hover`, a corner slot's own `@hover`) resolves
+/// through [`resolve_slot`]'s usual precedence chain before the shorthand
+/// fallback is ever consulted, so a hovered node's per-corner override still
+/// wins over its own resting shorthand.
+fn resolve_corner_radius(
+    tokens: &BTreeMap<String, String>,
+    colors: &dyn TokenSource,
+    state: DerivedState,
+    report: &mut PaintReport,
+) -> CornerRadius {
+    let shorthand = resolve_slot(tokens, RADIUS_SLOT, state);
+    let mut corner = |slot: &str| -> u8 {
+        let token = resolve_slot(tokens, slot, state).or(shorthand);
+        let radius = token.map_or(0.0, |token| resolve_radius_or_record(colors, token, report));
+        radius.round().clamp(0.0, 255.0) as u8
+    };
+    CornerRadius {
+        nw: corner(RADIUS_TOP_LEFT_SLOT),
+        ne: corner(RADIUS_TOP_RIGHT_SLOT),
+        se: corner(RADIUS_BOTTOM_RIGHT_SLOT),
+        sw: corner(RADIUS_BOTTOM_LEFT_SLOT),
+    }
 }
 
 /// Resolve `token` to an outline family, recording it unresolved on a miss.
@@ -1441,29 +1485,257 @@ fn device_snapped_width(width: f32, scale: Scale) -> f32 {
     (width * factor).round().max(1.0) / factor
 }
 
+/// The two corner radii that flank `edge`, as `(near rect.min, near
+/// rect.max)` — the same min→max order [`edge_segment`] and
+/// [`paint_rule_groove`] already walk that edge in, so a caller never has to
+/// re-derive which corner is which.
+fn corner_pair_for_edge(edge: Edge, corner_radius: CornerRadius) -> (f32, f32) {
+    match edge {
+        Edge::Top => (f32::from(corner_radius.nw), f32::from(corner_radius.ne)),
+        Edge::Bottom => (f32::from(corner_radius.sw), f32::from(corner_radius.se)),
+        Edge::Left => (f32::from(corner_radius.nw), f32::from(corner_radius.sw)),
+        Edge::Right => (f32::from(corner_radius.ne), f32::from(corner_radius.se)),
+    }
+}
+
+/// Shrinks the span `[min, max]` inward by `start` from `min` and `end` from
+/// `max`, clamping at the midpoint rather than letting the two radii cross
+/// and reverse the span — a node whose corner radii exceed half its own
+/// extent has already gone through [`corner_for`]'s half-edge clause and
+/// come out a pill; this guard is for the case that has not, an author
+/// binding a per-corner radius the shorthand never had to answer for.
+fn shrink_span(min: f32, max: f32, start: f32, end: f32) -> (f32, f32) {
+    let mid = (min + max) / 2.0;
+    ((min + start).min(mid), (max - end).max(mid))
+}
+
 /// The two ends of a one-edge rule of stroke `width` along `edge` of `rect`,
 /// inset by half the width so the whole stroke lies inside the rect — the
 /// same pixels `StrokeKind::Inside` would put that edge of a four-sided
 /// outline on.
-fn edge_segment(rect: egui::Rect, edge: Edge, width: f32) -> [egui::Pos2; 2] {
+///
+/// Shortened at each end by that end's own corner radius. Without this a
+/// node with both a rounded corner and an edge slot bound there drew its
+/// line straight into the arc the fill and the four-sided border already
+/// curve away from — invisible while no component bound both (`field()`
+/// binds a rule and no radius; every radius-bound node was `CornerRole::Tiled`,
+/// itself always zero), and wrong the moment one did.
+fn edge_segment(
+    rect: egui::Rect,
+    edge: Edge,
+    width: f32,
+    corner_radius: CornerRadius,
+) -> [egui::Pos2; 2] {
     let half = width / 2.0;
+    let (start, end) = corner_pair_for_edge(edge, corner_radius);
     match edge {
-        Edge::Top => [
-            egui::pos2(rect.min.x, rect.min.y + half),
-            egui::pos2(rect.max.x, rect.min.y + half),
-        ],
-        Edge::Bottom => [
-            egui::pos2(rect.min.x, rect.max.y - half),
-            egui::pos2(rect.max.x, rect.max.y - half),
-        ],
-        Edge::Left => [
-            egui::pos2(rect.min.x + half, rect.min.y),
-            egui::pos2(rect.min.x + half, rect.max.y),
-        ],
-        Edge::Right => [
-            egui::pos2(rect.max.x - half, rect.min.y),
-            egui::pos2(rect.max.x - half, rect.max.y),
-        ],
+        Edge::Top => {
+            let (x0, x1) = shrink_span(rect.min.x, rect.max.x, start, end);
+            [
+                egui::pos2(x0, rect.min.y + half),
+                egui::pos2(x1, rect.min.y + half),
+            ]
+        }
+        Edge::Bottom => {
+            let (x0, x1) = shrink_span(rect.min.x, rect.max.x, start, end);
+            [
+                egui::pos2(x0, rect.max.y - half),
+                egui::pos2(x1, rect.max.y - half),
+            ]
+        }
+        Edge::Left => {
+            let (y0, y1) = shrink_span(rect.min.y, rect.max.y, start, end);
+            [
+                egui::pos2(rect.min.x + half, y0),
+                egui::pos2(rect.min.x + half, y1),
+            ]
+        }
+        Edge::Right => {
+            let (y0, y1) = shrink_span(rect.min.y, rect.max.y, start, end);
+            [
+                egui::pos2(rect.max.x - half, y0),
+                egui::pos2(rect.max.x - half, y1),
+            ]
+        }
+    }
+}
+
+/// One of the four corners a groove edge can end at, named so
+/// [`corner_box`] and [`single_corner_radius`] can say which without
+/// re-deriving it from `(Edge, bool)` twice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Corner {
+    Nw,
+    Ne,
+    Se,
+    Sw,
+}
+
+/// The two corners flanking `edge`, as `(near rect.min, near rect.max)` —
+/// the same order [`corner_pair_for_edge`] already answers as radii.
+fn edge_corners(edge: Edge) -> (Corner, Corner) {
+    match edge {
+        Edge::Top => (Corner::Nw, Corner::Ne),
+        Edge::Bottom => (Corner::Sw, Corner::Se),
+        Edge::Left => (Corner::Nw, Corner::Sw),
+        Edge::Right => (Corner::Ne, Corner::Se),
+    }
+}
+
+/// The `radius`-sized square this one corner's arc is drawn inside — sized
+/// so a stroke of `rect`'s real rounded-rect boundary, clipped to this box,
+/// shows nothing but that corner's own quarter arc: the tangent point where
+/// the arc meets each straight edge sits exactly on the box's far side, so
+/// no straight run from a neighbouring edge crosses into it.
+fn corner_box(rect: egui::Rect, corner: Corner, radius: f32) -> egui::Rect {
+    match corner {
+        Corner::Nw => egui::Rect::from_min_size(rect.min, egui::vec2(radius, radius)),
+        Corner::Ne => egui::Rect::from_min_max(
+            egui::pos2(rect.max.x - radius, rect.min.y),
+            egui::pos2(rect.max.x, rect.min.y + radius),
+        ),
+        Corner::Se => egui::Rect::from_min_max(
+            egui::pos2(rect.max.x - radius, rect.max.y - radius),
+            rect.max,
+        ),
+        Corner::Sw => egui::Rect::from_min_max(
+            egui::pos2(rect.min.x, rect.max.y - radius),
+            egui::pos2(rect.min.x + radius, rect.max.y),
+        ),
+    }
+}
+
+/// A [`CornerRadius`] with only `corner` set to `radius`, the other three
+/// square — the shape [`paint_groove_corner`] strokes `rect` with, so that,
+/// clipped to [`corner_box`], only this one corner's arc can appear.
+fn single_corner_radius(corner: Corner, radius: u8) -> CornerRadius {
+    let mut cr = CornerRadius::ZERO;
+    match corner {
+        Corner::Nw => cr.nw = radius,
+        Corner::Ne => cr.ne = radius,
+        Corner::Se => cr.se = radius,
+        Corner::Sw => cr.sw = radius,
+    }
+    cr
+}
+
+/// The groove's resolved thickness and colour for one edge, named by
+/// position relative to the true edge rather than by which of shadow or
+/// highlight they are — [`groove_bands`] already answers that per-edge (shadow
+/// nearest the true edge on `Edge::Top`/`Edge::Left`, highlight nearest on
+/// `Edge::Bottom`/`Edge::Right`, light from above-and-left), so
+/// [`paint_rule_groove`] resolves the swap once into `near`/`far` and
+/// [`paint_groove_corner`] never has to know which colour it is drawing,
+/// only which ring. Bundled so `paint_groove_corner` fits under seven
+/// arguments without folding four independently-named numbers into one bare
+/// tuple.
+struct GrooveStrokes {
+    near_h: f32,
+    far_h: f32,
+    near: Color32,
+    far: Color32,
+}
+
+/// Draws one corner's two concentric arcs of the groove — `strokes.near`
+/// against `rect`'s own true boundary, `strokes.far` directly inside it —
+/// clipped to [`corner_box`] so nothing of the straight walls elsewhere on
+/// `rect` leaks in. Which of shadow or highlight is `near` for this edge was
+/// already decided by the caller; see [`GrooveStrokes`].
+///
+/// **Why the two arcs stay parallel.** Both strokes are drawn with
+/// `StrokeKind::Inside` against `rect`'s own real rounded-rect boundary (the
+/// highlight ring against `rect` shrunk inward by `shadow_h`, radius reduced
+/// the same amount) — the exact geometric relationship a rounded rect's
+/// offset-inward curve already has to itself. Neither arc is hand-rolled, so
+/// there is no second curve construction that could drift from the one the
+/// fill and the four-sided border already draw.
+///
+/// Returns the number of shapes painted: 2 if `radius` is positive (one
+/// stroke per band), 0 if the corner is square and there is nothing to
+/// curve.
+fn paint_groove_corner(
+    painter: &Painter,
+    rect: egui::Rect,
+    corner: Corner,
+    radius: f32,
+    strokes: &GrooveStrokes,
+) -> usize {
+    if radius <= 0.0 {
+        return 0;
+    }
+    let mut clipped = painter.clone();
+    clipped.set_clip_rect(corner_box(rect, corner, radius).intersect(painter.clip_rect()));
+
+    let radius_u8 = radius.round().clamp(0.0, 255.0) as u8;
+    let near_h_u8 = strokes.near_h.round().clamp(0.0, 255.0) as u8;
+
+    clipped.rect_stroke(
+        rect,
+        single_corner_radius(corner, radius_u8),
+        Stroke::new(strokes.near_h, strokes.near),
+        egui::StrokeKind::Inside,
+    );
+    clipped.rect_stroke(
+        rect.shrink(strokes.near_h),
+        single_corner_radius(corner, radius_u8.saturating_sub(near_h_u8)),
+        Stroke::new(strokes.far_h, strokes.far),
+        egui::StrokeKind::Inside,
+    );
+    2
+}
+
+/// The flat middle run of a groove along `edge`: the same two rects
+/// [`paint_rule_groove`] always drew, shortened along the run axis by
+/// `start_r`/`end_r` so [`paint_groove_corner`] owns the curved ends instead.
+fn groove_bands(
+    rect: egui::Rect,
+    edge: Edge,
+    shadow_h: f32,
+    highlight_h: f32,
+    start_r: f32,
+    end_r: f32,
+) -> (egui::Rect, egui::Rect) {
+    match edge {
+        Edge::Bottom => {
+            let (x0, x1) = shrink_span(rect.min.x, rect.max.x, start_r, end_r);
+            let highlight_rect =
+                egui::Rect::from_min_max(egui::pos2(x0, rect.max.y - highlight_h), egui::pos2(x1, rect.max.y));
+            let shadow_rect = egui::Rect::from_min_max(
+                egui::pos2(x0, rect.max.y - highlight_h - shadow_h),
+                egui::pos2(x1, rect.max.y - highlight_h),
+            );
+            (shadow_rect, highlight_rect)
+        }
+        Edge::Top => {
+            let (x0, x1) = shrink_span(rect.min.x, rect.max.x, start_r, end_r);
+            let shadow_rect =
+                egui::Rect::from_min_max(egui::pos2(x0, rect.min.y), egui::pos2(x1, rect.min.y + shadow_h));
+            let highlight_rect = egui::Rect::from_min_max(
+                egui::pos2(x0, rect.min.y + shadow_h),
+                egui::pos2(x1, rect.min.y + shadow_h + highlight_h),
+            );
+            (shadow_rect, highlight_rect)
+        }
+        Edge::Left => {
+            let (y0, y1) = shrink_span(rect.min.y, rect.max.y, start_r, end_r);
+            let shadow_rect =
+                egui::Rect::from_min_max(egui::pos2(rect.min.x, y0), egui::pos2(rect.min.x + shadow_h, y1));
+            let highlight_rect = egui::Rect::from_min_max(
+                egui::pos2(rect.min.x + shadow_h, y0),
+                egui::pos2(rect.min.x + shadow_h + highlight_h, y1),
+            );
+            (shadow_rect, highlight_rect)
+        }
+        Edge::Right => {
+            let (y0, y1) = shrink_span(rect.min.y, rect.max.y, start_r, end_r);
+            let highlight_rect =
+                egui::Rect::from_min_max(egui::pos2(rect.max.x - highlight_h, y0), egui::pos2(rect.max.x, y1));
+            let shadow_rect = egui::Rect::from_min_max(
+                egui::pos2(rect.max.x - highlight_h - shadow_h, y0),
+                egui::pos2(rect.max.x - highlight_h, y1),
+            );
+            (shadow_rect, highlight_rect)
+        }
     }
 }
 
@@ -1508,15 +1780,24 @@ struct PaintEnv<'a> {
 /// independently of its neighbour and can leave a sub-pixel seam between
 /// them, where two rects built from one shared `y` cannot.
 ///
-/// Returns the number of shapes painted (0 or 2), for [`paint_one`]'s own
-/// shape count — 0 rather than a partial groove if either stroke's token
-/// fails to resolve, because one stroke alone is not the material this
-/// document specifies and `resolve_or_record` has already recorded the
-/// miss.
+/// **Shortened at both ends by the two corners `edge` touches**, with
+/// [`paint_groove_corner`] drawing a matching curved patch at each corner
+/// whose radius is positive. This was the photographed 2026-09-07 defect:
+/// two flat rects with a hardcoded `0.0` corner radius, full width
+/// regardless of what the fill and the four-sided border beside them curved
+/// away to. `corner_radius` is the same value [`paint_one`] already resolved
+/// for this node's fill and border, so a groove edge never disagrees with
+/// the rect it grooves.
+///
+/// Returns the number of shapes painted, for [`paint_one`]'s own shape count
+/// — 0 rather than a partial groove if either stroke's token fails to
+/// resolve, because one stroke alone is not the material this document
+/// specifies and `resolve_or_record` has already recorded the miss.
 fn paint_rule_groove(
     painter: &Painter,
     rect: egui::Rect,
     edge: Edge,
+    corner_radius: CornerRadius,
     env: &PaintEnv<'_>,
     report: &mut PaintReport,
 ) -> usize {
@@ -1536,65 +1817,20 @@ fn paint_rule_groove(
     // by the scale factor lands exactly on a device pixel boundary whenever
     // `rect` itself does (it does: `rect` is `to_egui_snapped` before this
     // function is ever called).
+    //
+    // Light comes from **above and to the left** (operator decision,
+    // 2026-09-09, from specimens), so shadow is always left of or above
+    // highlight. Straight overhead was the original construction and it is
+    // what excluded vertical rules: both walls of a vertical groove sit at
+    // the same angle to an overhead light, which is a uniform darkening and
+    // not a bevel. Moving the light costs the horizontal case nothing.
     let factor = env.scale.factor();
     let shadow_h = SHADOW_UNITS / factor;
     let highlight_h = HIGHLIGHT_UNITS / factor;
 
-    let (shadow_rect, highlight_rect) = match edge {
-        Edge::Bottom => {
-            let highlight_rect = egui::Rect::from_min_max(
-                egui::pos2(rect.min.x, rect.max.y - highlight_h),
-                rect.max,
-            );
-            let shadow_rect = egui::Rect::from_min_max(
-                egui::pos2(rect.min.x, rect.max.y - highlight_h - shadow_h),
-                egui::pos2(rect.max.x, rect.max.y - highlight_h),
-            );
-            (shadow_rect, highlight_rect)
-        }
-        Edge::Top => {
-            let shadow_rect =
-                egui::Rect::from_min_max(rect.min, egui::pos2(rect.max.x, rect.min.y + shadow_h));
-            let highlight_rect = egui::Rect::from_min_max(
-                egui::pos2(rect.min.x, rect.min.y + shadow_h),
-                egui::pos2(rect.max.x, rect.min.y + shadow_h + highlight_h),
-            );
-            (shadow_rect, highlight_rect)
-        }
-        // Light comes from **above and to the left** (operator decision,
-        // 2026-09-09, from specimens), so shadow is always left of highlight
-        // here exactly as shadow is always above highlight in the two arms
-        // overhead. Same units, same pair, same ratio, and measured at the
-        // same levels: 6 then 47 on the dark panel, 214 then 255 on the
-        // light one.
-        //
-        // Straight overhead was the original construction and it is what
-        // excluded vertical rules: both walls of a vertical groove sit at
-        // the same angle to an overhead light, which is a uniform darkening
-        // and not a bevel. Moving the light costs the horizontal case
-        // nothing, because its upper wall still turns away and its lower
-        // wall still turns toward, so the shipped 28 and 13 stand unchanged.
-        Edge::Left => {
-            let shadow_rect =
-                egui::Rect::from_min_max(rect.min, egui::pos2(rect.min.x + shadow_h, rect.max.y));
-            let highlight_rect = egui::Rect::from_min_max(
-                egui::pos2(rect.min.x + shadow_h, rect.min.y),
-                egui::pos2(rect.min.x + shadow_h + highlight_h, rect.max.y),
-            );
-            (shadow_rect, highlight_rect)
-        }
-        Edge::Right => {
-            let highlight_rect = egui::Rect::from_min_max(
-                egui::pos2(rect.max.x - highlight_h, rect.min.y),
-                rect.max,
-            );
-            let shadow_rect = egui::Rect::from_min_max(
-                egui::pos2(rect.max.x - highlight_h - shadow_h, rect.min.y),
-                egui::pos2(rect.max.x - highlight_h, rect.max.y),
-            );
-            (shadow_rect, highlight_rect)
-        }
-    };
+    let (start_r, end_r) = corner_pair_for_edge(edge, corner_radius);
+    let (shadow_rect, highlight_rect) =
+        groove_bands(rect, edge, shadow_h, highlight_h, start_r, end_r);
 
     painter.rect_filled(shadow_rect, 0.0, shadow);
     painter.rect_filled(highlight_rect, 0.0, highlight);
@@ -1604,7 +1840,28 @@ fn paint_rule_groove(
     // catch — and it matters now that a separator's whole appearance is the
     // groove rather than a background rect beside it.
     report.fills += 2;
-    2
+    let mut shapes = 2;
+
+    // `groove_bands` already answers which colour sits nearest the true
+    // edge for this `edge` (shadow for Top/Left, highlight for Bottom/Right
+    // — light from above-and-left, 2026-09-09). Resolved once here so
+    // `paint_groove_corner` draws its "near" ring against the same colour
+    // `groove_bands` put nearest the edge, rather than assuming shadow is
+    // always that ring.
+    let (near_h, near, far_h, far) = match edge {
+        Edge::Top | Edge::Left => (shadow_h, shadow, highlight_h, highlight),
+        Edge::Bottom | Edge::Right => (highlight_h, highlight, shadow_h, shadow),
+    };
+    let strokes = GrooveStrokes {
+        near_h,
+        far_h,
+        near,
+        far,
+    };
+    let (start_corner, end_corner) = edge_corners(edge);
+    shapes += paint_groove_corner(painter, rect, start_corner, start_r, &strokes);
+    shapes += paint_groove_corner(painter, rect, end_corner, end_r, &strokes);
+    shapes
 }
 
 fn paint_one(
@@ -1637,9 +1894,7 @@ fn paint_one(
     // `radius` and `silhouette` shape both the fill and the stroke below
     // them, so both are resolved once, ahead of either, rather than
     // duplicated into two arms that could drift apart.
-    let corner_radius = resolve_slot(&content.tokens, RADIUS_SLOT, state).map_or(0.0, |token| {
-        resolve_radius_or_record(env.colors, token, report)
-    });
+    let corner_radius = resolve_corner_radius(&content.tokens, env.colors, state, report);
     let figure = resolve_slot(&content.tokens, SILHOUETTE_SLOT, state)
         .map_or(Silhouette::Rect, |token| {
             resolve_silhouette_or_record(env.colors, token, report)
@@ -1744,7 +1999,7 @@ fn paint_one(
             } else {
                 Edge::Left
             };
-            shapes += paint_rule_groove(painter, rect, edge, env, report);
+            shapes += paint_rule_groove(painter, rect, edge, corner_radius, env, report);
         } else if let Some(color) = resolve_or_record(env.colors, token, report) {
             match &outline {
                 None => {
@@ -1871,11 +2126,11 @@ fn paint_one(
             continue;
         }
         if grooves && token == gorgon_petra::token::rule::MATERIAL_TOKEN {
-            shapes += paint_rule_groove(painter, rect, edge, env, report);
+            shapes += paint_rule_groove(painter, rect, edge, corner_radius, env, report);
             continue;
         }
         let width = device_snapped_width(1.0, env.scale);
-        painter.line_segment(edge_segment(rect, edge, width), Stroke::new(width, color));
+        painter.line_segment(edge_segment(rect, edge, width, corner_radius), Stroke::new(width, color));
         shapes += 1;
     }
 
@@ -3060,7 +3315,7 @@ mod tests {
             let rect = to_egui_snapped(frame.placements[0].rect, scale);
             assert_eq!(
                 points,
-                super::edge_segment(rect, edge, expected),
+                super::edge_segment(rect, edge, expected, CornerRadius::ZERO),
                 "{slot}: the line is not on the inside of its own edge"
             );
             let half = expected / 2.0;
