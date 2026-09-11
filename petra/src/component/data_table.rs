@@ -11,7 +11,8 @@
 //!    whose state is derived from the rows: checked when every row is
 //!    selected, mixed when some are, empty when none. Sortable headers are
 //!    a [`Role::Button`] labelled `"Sort {name}"` with [`Semantics.value`]
-//!    `"ascending"` / `"descending"` (the word is the second channel).
+//!    `"ascending"` / `"descending"` / `"sortable"` (the word is the second
+//!    channel; [`SortDirection`] is the closed set).
 //! 3. Body rows — [`data_table_row`]: [`Role::Row`], selectable,
 //!    `Semantics.selected` plus [`LAYER_SELECTED`] **plus a checkbox** in
 //!    the leading selection column (`td.cds--table-column-checkbox`,
@@ -280,21 +281,60 @@ pub fn data_table_row_expandable(
     node
 }
 
+/// The direction a sortable column header declares: which way the active
+/// sort runs, or that the column takes no part in it yet.
+///
+/// Three real states, not a boolean. A boolean can only ever spell
+/// "ascending" or "descending", which forces every column that is *not*
+/// the active sort to claim one of those anyway — see
+/// `gorgon_petra_compound::data_table::header_cells`'s prior doc comment,
+/// which said so outright: *"A column that is not the active sort shows as
+/// ascending: the atomic has no unsorted spelling."* A two-column table
+/// with one sorted column then rendered both columns claiming the same
+/// direction, because there was no third word to reach for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SortDirection {
+    /// The active sort, ascending.
+    Ascending,
+    /// The active sort, descending.
+    Descending,
+    /// Sortable, but not the active sort. Carbon's own neutral sort
+    /// affordance on an inactive sortable column: the column can be
+    /// sorted, nothing yet says which way it would run.
+    Sortable,
+}
+
+impl SortDirection {
+    /// The word this spends as both the visible caption and
+    /// [`Semantics.value`] — the accessible second channel a hue or an
+    /// arrow alone cannot carry. [`Self::Sortable`] gets its own word
+    /// rather than an empty caption, so an inactive sortable column still
+    /// reads as "you can sort this," not as nothing at all.
+    fn word(self) -> &'static str {
+        match self {
+            Self::Ascending => "ascending",
+            Self::Descending => "descending",
+            Self::Sortable => "sortable",
+        }
+    }
+}
+
 /// Sortable header cell: a [`Role::Button`] labelled `"Sort {name}"`.
 ///
-/// `ascending` selects [`Semantics.value`] `"ascending"` / `"descending"`.
-/// The same word is visible text, so sort direction is never an arrow
-/// alone. The cell role is stamped here so [`as_cell`] will not wrap again.
+/// `direction` selects [`Semantics.value`] `"ascending"` / `"descending"` /
+/// `"sortable"`. The same word is visible text, so sort direction is never
+/// an arrow alone. The cell role is stamped here so [`as_cell`] will not
+/// wrap again.
 pub fn data_table_sort_header(
     key: impl Into<Key>,
     name: impl Into<String>,
-    ascending: bool,
+    direction: SortDirection,
 ) -> ViewNode {
     let name = name.into();
-    let direction = if ascending { "ascending" } else { "descending" };
+    let word = direction.word();
     let accessible = format!("Sort {name}");
     let caption = header_text("name", name);
-    let dir = header_text("direction", direction);
+    let dir = header_text("direction", word);
     let mut button = stack(
         "sort",
         Axis::Horizontal,
@@ -318,7 +358,7 @@ pub fn data_table_sort_header(
     let mut button = button
         .interactive(Role::Button, accessible, SORT_INTENTS)
         .owning_its_text();
-    button.semantics.value = Some(direction.into());
+    button.semantics.value = Some(word.into());
 
     let mut cell = stack(key, Axis::Horizontal, None, vec![button]);
     // `as_cell` (`row_shell`) leaves a pre-built `Role::Cell` node alone,
@@ -626,10 +666,10 @@ fn collect_text(node: &ViewNode) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        HEIGHT_LG, HEIGHT_SM, HEIGHT_XL, HEIGHT_XS, IconMark, IconTone, SIZE_MD, data_table,
-        data_table_row, data_table_row_expandable, data_table_row_lg, data_table_row_md,
-        data_table_row_sm, data_table_row_xl, data_table_row_xs, data_table_sort_header,
-        data_table_zebra, icon_toned,
+        HEIGHT_LG, HEIGHT_SM, HEIGHT_XL, HEIGHT_XS, IconMark, IconTone, SIZE_MD, SortDirection,
+        data_table, data_table_row, data_table_row_expandable, data_table_row_lg,
+        data_table_row_md, data_table_row_sm, data_table_row_xl, data_table_row_xs,
+        data_table_sort_header, data_table_zebra, icon_toned,
     };
     use crate::component::controls::{CheckState, checkbox_box};
     use crate::component::text::text;
@@ -862,7 +902,7 @@ mod tests {
 
     #[test]
     fn sort_header_is_a_button_labelled_sort_name() {
-        let cell = data_table_sort_header("col-name", "Name", true);
+        let cell = data_table_sort_header("col-name", "Name", SortDirection::Ascending);
         assert_eq!(cell.semantics.role, Some(Role::Cell));
         let button = named(&cell, "sort");
         assert_eq!(button.semantics.role, Some(Role::Button));
@@ -890,7 +930,7 @@ mod tests {
             Some(TYPOGRAPHY_HEADING_SM)
         );
 
-        let desc = data_table_sort_header("col-name", "Name", false);
+        let desc = data_table_sort_header("col-name", "Name", SortDirection::Descending);
         assert_eq!(
             named(&desc, "sort").semantics.value.as_deref(),
             Some("descending")
@@ -899,7 +939,7 @@ mod tests {
         let table = data_table(
             "jobs",
             vec![
-                data_table_sort_header("h0", "Name", true),
+                data_table_sort_header("h0", "Name", SortDirection::Ascending),
                 text("h1", "Status"),
             ],
             vec![],
@@ -1047,7 +1087,7 @@ mod tests {
         data_table(
             "jobs",
             vec![
-                data_table_sort_header("h0", "Name", true),
+                data_table_sort_header("h0", "Name", SortDirection::Ascending),
                 text("h1", "Status"),
             ],
             vec![

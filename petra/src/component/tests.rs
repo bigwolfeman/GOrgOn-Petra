@@ -17,25 +17,25 @@ use crate::tree::{Interaction, NodeKind, Props, Registry, ViewNode};
 
 use super::tokens::{ACCENT_PRIMARY, BORDER_STRONG, BORDER_SUBTLE, TEXT_ON_ACCENT};
 use super::{
-    Calendar, MAX_LAYER_DEPTH, accordion, accordion_item, ai_label, ai_label_inline, breadcrumb,
-    breadcrumb_item, button, checkbox, clickable_tile, code_snippet, code_snippet_inline,
-    code_snippet_multi, contained_list, contained_list_disclosed, contained_tab, contained_tab_bar,
-    content_switcher, content_switcher_item, data_table, data_table_row, data_table_row_expandable,
-    data_table_sort_header, date_picker, date_picker_open, date_picker_showing, disabled,
-    dismissible_tag, dropdown, dropdown_open, dropdown_option, expandable_tile, field, field_fluid,
-    field_labeled, field_lg, field_readonly, field_sm, file_uploader, file_uploader_item, form,
-    heading, inline_loading, inline_loading_finished, layer_tokens, link, list_item,
-    list_item_with, list_row, loading, loading_sm, menu, menu_button, menu_item, modal,
-    notification_actionable, notification_inline, notification_toast, number_input, on_layer,
-    ordered_list, pagination, popover, primary_button, progress, progress_indicator, progress_sm,
-    progress_step, radio, search, section, select, select_lg, select_sm, selectable_tag,
-    selectable_tile, slider, slider_readonly, status, structured_list, structured_list_row, tab,
-    tab_bar, tag, tag_lg, tag_sm, text, tile, toggle, toggle_sm, toggletip, tooltip, tree_item,
-    tree_view, ui_shell_header, ui_shell_header_action, ui_shell_header_menu_trigger,
-    ui_shell_header_nav_item, ui_shell_left_panel, ui_shell_left_panel_divider,
-    ui_shell_left_panel_item, ui_shell_left_panel_rail, ui_shell_left_panel_subitem,
-    ui_shell_right_panel, ui_shell_right_panel_divider, ui_shell_switcher, ui_shell_switcher_item,
-    unordered_list, vertical_tab, vertical_tab_bar,
+    Calendar, MAX_LAYER_DEPTH, SortDirection, accordion, accordion_item, ai_label, ai_label_inline,
+    breadcrumb, breadcrumb_item, button, checkbox, clickable_tile, code_snippet,
+    code_snippet_inline, code_snippet_multi, contained_list, contained_list_disclosed,
+    contained_tab, contained_tab_bar, content_switcher, content_switcher_item, data_table,
+    data_table_row, data_table_row_expandable, data_table_sort_header, date_picker,
+    date_picker_open, date_picker_showing, disabled, dismissible_tag, dropdown, dropdown_open,
+    dropdown_option, expandable_tile, field, field_fluid, field_labeled, field_lg, field_readonly,
+    field_sm, file_uploader, file_uploader_item, form, heading, inline_loading,
+    inline_loading_finished, layer_tokens, link, list_item, list_item_with, list_row, loading,
+    loading_sm, menu, menu_button, menu_item, modal, notification_actionable, notification_inline,
+    notification_toast, number_input, on_layer, ordered_list, pagination, popover, primary_button,
+    progress, progress_indicator, progress_sm, progress_step, radio, search, section, select,
+    select_lg, select_sm, selectable_tag, selectable_tile, slider, slider_readonly, status,
+    structured_list, structured_list_row, tab, tab_bar, tag, tag_lg, tag_sm, text, tile, toggle,
+    toggle_sm, toggletip, tooltip, tree_item, tree_view, ui_shell_header, ui_shell_header_action,
+    ui_shell_header_menu_trigger, ui_shell_header_nav_item, ui_shell_left_panel,
+    ui_shell_left_panel_divider, ui_shell_left_panel_item, ui_shell_left_panel_rail,
+    ui_shell_left_panel_subitem, ui_shell_right_panel, ui_shell_right_panel_divider,
+    ui_shell_switcher, ui_shell_switcher_item, unordered_list, vertical_tab, vertical_tab_bar,
 };
 
 const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
@@ -325,7 +325,7 @@ fn full_gallery() -> ViewNode {
             data_table(
                 "dt-jobs",
                 vec![
-                    data_table_sort_header("dt-h0", "Name", true),
+                    data_table_sort_header("dt-h0", "Name", SortDirection::Ascending),
                     text("dt-h1", "Status"),
                 ],
                 vec![
@@ -1203,7 +1203,11 @@ fn no_shipped_component_spells_an_icon_as_its_name() {
             ),
             data_table(
                 "dt",
-                vec![data_table_sort_header("h", "Name", false)],
+                vec![data_table_sort_header(
+                    "h",
+                    "Name",
+                    SortDirection::Descending,
+                )],
                 vec![
                     data_table_row_expandable("r-open", vec![text("c", "a")], false, true, "more"),
                     data_table_row_expandable("r-shut", vec![text("c", "a")], false, false, "more"),

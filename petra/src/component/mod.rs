@@ -82,7 +82,9 @@ pub mod kit;
 pub mod params;
 pub mod registry;
 
-pub(crate) use kit::{CARET_SIZE, CaretDirection, bind_corners, caret, pad, pin_block, stack, swatch};
+pub(crate) use kit::{
+    CARET_SIZE, CaretDirection, bind_corners, caret, pad, pin_block, stack, swatch,
+};
 
 mod accordion;
 mod ai_label;
@@ -178,11 +180,13 @@ pub use controls::{
     radio_described, radio_group, radio_required, radio_warning, toggle, toggle_sm,
 };
 pub use data_table::{
-    data_table, data_table_row, data_table_row_expandable, data_table_row_lg, data_table_row_md,
-    data_table_row_sm, data_table_row_xl, data_table_row_xs, data_table_sort_header,
-    data_table_zebra,
+    SortDirection, data_table, data_table_row, data_table_row_expandable, data_table_row_lg,
+    data_table_row_md, data_table_row_sm, data_table_row_xl, data_table_row_xs,
+    data_table_sort_header, data_table_zebra,
 };
-pub use date_picker::{Calendar, date_picker, date_picker_open, date_picker_showing};
+pub use date_picker::{
+    Calendar, date_picker, date_picker_open, date_picker_showing, date_picker_showing_selection,
+};
 pub use drawer::{docked, drawer, sheet};
 pub use dropdown::{
     dropdown, dropdown_lg, dropdown_open, dropdown_option, dropdown_sm, dropdown_xs,

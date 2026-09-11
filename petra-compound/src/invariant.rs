@@ -95,8 +95,9 @@ fn standalone_violations(tree: &ViewNode, name: &str) {
     }
 }
 
-/// Non-empty, non-default: `Mode::Multi` still runs `date_picker_showing`'s
-/// full grid, which is where the hand-written day keys live.
+/// Non-empty, non-default: `Mode::Multi` still runs
+/// `date_picker_showing_selection`'s full grid, which is where the
+/// hand-written day keys live.
 fn calendar_props() -> CalendarProps {
     CalendarProps {
         label: "When".into(),

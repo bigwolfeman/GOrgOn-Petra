@@ -1000,18 +1000,26 @@ impl gorgon_petra::layout::RowSource for RadiusGrooveFixture {
 impl App for RadiusGrooveFixture {
     fn view(&mut self) -> gorgon_petra::tree::ViewNode {
         use gorgon_petra::token::TokenName;
-        use gorgon_petra::tree::{AxisConstraint, Constraints, InsetRefs, NodeKind, Props, ViewNode};
+        use gorgon_petra::tree::{
+            AxisConstraint, Constraints, InsetRefs, NodeKind, Props, ViewNode,
+        };
 
         let mut probe_props = Props::default();
         probe_props.tokens.insert(
             "background".into(),
             TokenName::new("surface.raised").expect("surface.raised is a valid token name"),
         );
-        probe_props.tokens.insert(
-            "border-bottom".into(),
-            TokenName::new(gorgon_petra::token::rule::MATERIAL_TOKEN)
-                .expect("border.subtle is a valid token name"),
-        );
+        // Bound before the slot is filled, unlike the two either side of it.
+        // The `literal-style` lane reads a slot's value as the second string
+        // literal after the marker it scans for, which is right when the
+        // value is written as a name and wrong when it is a const path: the
+        // next literal it reaches is then the `expect` message. Naming the
+        // value first leaves one literal, the slot, and nothing to misread.
+        // The old message also named a different token than the one this
+        // line builds.
+        let material = TokenName::new(gorgon_petra::token::rule::MATERIAL_TOKEN)
+            .expect("the shipped rule material is a well-formed token name");
+        probe_props.tokens.insert("border-bottom".into(), material);
         probe_props.tokens.insert(
             "radius".into(),
             TokenName::new("shape.corner-md").expect("shape.corner-md is a valid token name"),
@@ -3563,10 +3571,12 @@ mod tests {
         // solid. 15 sits well clear of that ripple (single digits) and well
         // under the shadow-to-ground jump the real edge makes (41).
         let measured_shadow_edge = |dx: u32| -> Option<u32> {
-            (0..=40u32).map(|up| bottom_row.saturating_sub(up)).find(|&row| {
-                let p = sample(dx, row);
-                (i32::from(p[0]) - i32::from(page_ground[0])).unsigned_abs() >= 15
-            })
+            (0..=40u32)
+                .map(|up| bottom_row.saturating_sub(up))
+                .find(|&row| {
+                    let p = sample(dx, row);
+                    (i32::from(p[0]) - i32::from(page_ground[0])).unsigned_abs() >= 15
+                })
         };
 
         // The shadow ring's edge, from its own quarter-circle: the arc for
@@ -9103,8 +9113,7 @@ mod tests {
     /// the five intents driven from one page, none of them by hand-setting
     /// state.
     #[test]
-    fn choosing_a_combobox_compound_option_closes_it_and_typing_after_reopening_narrows_it_again()
-     {
+    fn choosing_a_combobox_compound_option_closes_it_and_typing_after_reopening_narrows_it_again() {
         let mut cam = Camera::on("Combobox (compound)");
         assert!(
             cam.has("menu"),
@@ -9116,7 +9125,10 @@ mod tests {
         assert!(!cam.has("menu"), "choosing alpine did not close the list");
 
         cam.click("field");
-        assert!(cam.has("menu"), "a press on the field did not reopen the list");
+        assert!(
+            cam.has("menu"),
+            "a press on the field did not reopen the list"
+        );
         assert!(
             cam.has("opt-0"),
             "alpha should still be listed before narrowing further"
@@ -9144,8 +9156,7 @@ mod tests {
         // `.../calendar/calendar/content/...` is identical in all three
         // panes — only the leading pane key tells them apart — so every
         // tail below spells the whole chain from the pane key down.
-        const SINGLE_MONTH: &str =
-            "single/calendar/calendar/content/month-header/month-seat/month";
+        const SINGLE_MONTH: &str = "single/calendar/calendar/content/month-header/month-seat/month";
         const SINGLE_NEXT: &str = "single/calendar/calendar/content/month-header/next-month";
         const SINGLE_PREV: &str = "single/calendar/calendar/content/month-header/prev-month";
         const SINGLE_DAY_15: &str = "single/calendar/calendar/content/days/day-15";
@@ -9180,17 +9191,17 @@ mod tests {
              August's own picked day out of the selection"
         );
 
-        // `Calendar::view` marks only one day at a time — `grid_value`
-        // reads the earliest picked day in the browsed month off `State`'s
-        // `BTreeSet`, and `date_picker_showing`'s underlying atomic accepts
-        // one `value` — even when Multi mode has picked several. Multi
-        // starts at {4, 18, 27}, so day 4 is the one on screen; picking a
-        // day *earlier* than 4 is what makes the toggle's effect visible in
-        // the picture, and un-picking it is what proves day 4 was never
-        // dropped from the set, only outranked on screen.
+        // `Calendar::view` marks every day in the set through
+        // `date_picker_showing_selection`, not the single earliest one —
+        // `grid_value`'s old single-ISO-string reading (this comment used
+        // to describe it and call the outranking "correct") is what a
+        // freshly toggled Multi-mode day showing no fill was traced to.
+        // Multi starts at {4, 18, 27}: day 4 starts marked, day 2 does not,
+        // and toggling day 2 on must mark it *alongside* day 4, not instead
+        // of it.
         assert!(
             cam.selected(MULTI_DAY_4),
-            "day 4 is the earliest of Multi's three picks, so it starts marked"
+            "day 4 is one of Multi's three picks, so it starts marked"
         );
         assert!(
             !cam.selected(MULTI_DAY_2),
@@ -9202,10 +9213,9 @@ mod tests {
             "the press did not toggle day 2 on in Multi"
         );
         assert!(
-            !cam.selected(MULTI_DAY_4),
-            "day 2 is now the earliest pick in the browsed month, so the \
-             grid must mark it instead of day 4 — day 4 is still in the \
-             set, just outranked on screen"
+            cam.selected(MULTI_DAY_4),
+            "day 2 joining the selection must not un-mark day 4 — every \
+             picked day is marked, not only the earliest"
         );
         let after = cam.shoot("55-calendar-compound-multi-toggled");
         assert_ne!(before, after, "the interaction never reached the picture");
@@ -9217,8 +9227,66 @@ mod tests {
         );
         assert!(
             cam.selected(MULTI_DAY_4),
-            "removing day 2 must restore day 4 as the earliest mark — day \
-             4 was in the set the whole time"
+            "day 4 was in the set the whole time and toggling day 2 off \
+             again must leave it marked"
+        );
+    }
+
+    /// Calendar (compound), row 55, Range pane. The interior of a range
+    /// paints a real, measurably different pixel from the unmarked days
+    /// beside it, once the gallery re-seats the whole page one layer up
+    /// the way `Catalog::seated` always does.
+    ///
+    /// This is not provable at the tree level: `token(interior,
+    /// "background") == Some("surface.layer-two")` passes whether or not
+    /// the *painted* colour ends up distinguishable from the neighbour it
+    /// has to read against, because `surface.layer-two`/`surface.raised`
+    /// are depth-relative names `on_layer` rewrites at mount time. The
+    /// defect this guards was exactly that gap: `layer-selected` (a fixed
+    /// `layer-one + 7 L*`) and the re-seated resting fill both landed on
+    /// `(49, 49, 49)` here, one L* apart rather than the seven the name
+    /// promised, and every tree-level assertion on the token name still
+    /// passed. Only the raster shows it.
+    #[test]
+    fn the_range_interior_paints_a_different_pixel_from_the_unmarked_days_beside_it() {
+        const EDGE_3: &str = "range/calendar/calendar/content/days/day-3";
+        const INTERIOR_5: &str = "range/calendar/calendar/content/days/day-5";
+        const UNSELECTED_2: &str = "range/calendar/calendar/content/days/day-2";
+
+        let mut cam = Camera::on("Calendar (compound)");
+        let r3 = cam.rect(EDGE_3);
+        let r5 = cam.rect(INTERIOR_5);
+        let r2 = cam.rect(UNSELECTED_2);
+        let png = cam.shoot("55-calendar-compound-range-interior");
+        let img = image::load_from_memory(&png).unwrap().to_rgba8();
+        let sample = |r: Rect| {
+            let cx = r.x + r.w / 2.0;
+            let cy = r.y + r.h * 0.15; // near the top, clear of the digit glyph
+            let (dx, dy) = ((cx * CAPTURE_SCALE) as u32, (cy * CAPTURE_SCALE) as u32);
+            img.get_pixel(dx, dy).0
+        };
+        let edge = sample(r3);
+        let interior = sample(r5);
+        let unselected = sample(r2);
+        let separation = |a: [u8; 4], b: [u8; 4]| {
+            (i32::from(a[0]) - i32::from(b[0])).unsigned_abs()
+                + (i32::from(a[1]) - i32::from(b[1])).unsigned_abs()
+                + (i32::from(a[2]) - i32::from(b[2])).unsigned_abs()
+        };
+        // 30 is well clear of the one-L*-apart failure this replaced (a
+        // summed channel gap of about 6) and well under the real gap a
+        // working ramp step gives (about 51 here).
+        assert!(
+            separation(interior, unselected) > 30,
+            "interior day 5 painted {interior:?}, the unmarked day 2 beside \
+             it painted {unselected:?} — summed channel gap \
+             {}, too close to read as a band rather than one flat fill",
+            separation(interior, unselected)
+        );
+        assert!(
+            separation(edge, unselected) > 30,
+            "edge day 3 painted {edge:?}, indistinguishable from the \
+             unmarked day 2 beside it at {unselected:?}"
         );
     }
 

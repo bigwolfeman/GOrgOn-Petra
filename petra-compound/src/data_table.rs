@@ -11,7 +11,8 @@
 use std::collections::BTreeSet;
 
 use gorgon_petra::component::{
-    data_table, data_table_row, data_table_row_expandable, data_table_sort_header, text,
+    SortDirection, data_table, data_table_row, data_table_row_expandable, data_table_sort_header,
+    text,
 };
 use gorgon_petra::tree::ViewNode;
 use serde::{Deserialize, Serialize};
@@ -228,20 +229,25 @@ fn sorted_indices(state: &State, props: &Props) -> Vec<usize> {
 }
 
 /// Every column is a sort header so a click can become [`Intent::SortBy`].
-/// A column that is not the active sort shows as ascending: the atomic has
-/// no unsorted spelling.
+/// A column that is not the active sort shows [`SortDirection::Sortable`],
+/// never a forced `Ascending` — [`data_table_sort_header`] has a real
+/// unsorted spelling now, so this stops claiming a direction nothing chose.
 fn header_cells(state: &State, props: &Props) -> Vec<ViewNode> {
     props
         .columns
         .iter()
         .map(|col| {
-            let ascending = state
-                .sort
-                .as_ref()
-                .filter(|s| s.column == col.id)
-                .map(|s| s.ascending)
-                .unwrap_or(true);
-            data_table_sort_header(col.id.as_str(), col.label.as_str(), ascending)
+            let direction = state.sort.as_ref().filter(|s| s.column == col.id).map_or(
+                SortDirection::Sortable,
+                |s| {
+                    if s.ascending {
+                        SortDirection::Ascending
+                    } else {
+                        SortDirection::Descending
+                    }
+                },
+            );
+            data_table_sort_header(col.id.as_str(), col.label.as_str(), direction)
         })
         .collect()
 }
@@ -606,5 +612,57 @@ mod tests {
                 .as_deref(),
             Some("descending")
         );
+    }
+
+    /// The frame-level property `sort_header_carries_the_active_direction`
+    /// does not check: with the active sort on one column, every *other*
+    /// sortable column must not also claim `"ascending"` or `"descending"`.
+    /// This is the property that would have caught `header_cells`'s earlier
+    /// `unwrap_or(true)` — every non-active column claiming ascending too.
+    #[test]
+    fn at_most_one_column_declares_an_active_sort_direction() {
+        let props = sample_props();
+        let mut state = DataTable::init(&props);
+        DataTable::update(
+            &mut state,
+            Intent::SortBy {
+                column: "name".into(),
+            },
+        );
+        let node = DataTable::view(&state, &props);
+        let header = named(&node, "header");
+        let values: Vec<Option<String>> = header
+            .children
+            .iter()
+            .filter_map(|cell| find(cell, "sort"))
+            .map(|sort| sort.semantics.value.clone())
+            .collect();
+        assert_eq!(values.len(), 2, "sample_props has two columns");
+        let active = values
+            .iter()
+            .filter(|v| matches!(v.as_deref(), Some("ascending") | Some("descending")))
+            .count();
+        assert_eq!(
+            active, 1,
+            "exactly one column is the active sort: {values:?}"
+        );
+        let sortable = values
+            .iter()
+            .filter(|v| v.as_deref() == Some("sortable"))
+            .count();
+        assert_eq!(
+            sortable, 1,
+            "the other column is sortable, not silently claiming a \
+             direction nothing chose: {values:?}"
+        );
+    }
+
+    /// `named` panics when the key is missing; this returns `None` instead,
+    /// for a cell that is not a sort header at all (a plain `text` column).
+    fn find<'a>(node: &'a ViewNode, key: &str) -> Option<&'a ViewNode> {
+        if node.key.as_str() == key {
+            return Some(node);
+        }
+        node.children.iter().find_map(|c| find(c, key))
     }
 }

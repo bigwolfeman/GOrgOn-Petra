@@ -135,6 +135,25 @@ pub(crate) const OVERLAY_SCRIM: &str = "overlay.scrim";
 
 pub(crate) const SURFACE_BASE: &str = "surface.base";
 pub(crate) const SURFACE_RAISED: &str = "surface.raised";
+/// One step past [`SURFACE_RAISED`] on the layer ramp
+/// (`token::shipped::LAYER_TOKENS[2]`).
+///
+/// Spent, not for "the third fill" the way [`SURFACE_LAYER_THREE`] is, but
+/// for a fill that has to read as *one step lighter than whatever
+/// [`SURFACE_RAISED`] resolves to here* — `date_picker.rs`'s calendar range
+/// interior is the first caller. [`super::on_layer`] re-seats both names by
+/// the same table (`surface.raised` to `depth + 1`, this one to
+/// `depth + 2`), so wherever a host mounts the control, the interior stays
+/// exactly one ramp step ahead of the resting fill rather than landing on a
+/// fixed absolute tone that happens to coincide with it at some depths and
+/// not others — which is what [`LAYER_SELECTED`] did here: a fixed
+/// `layer-one + 7 L*` step, indistinguishable from a re-seated
+/// `surface.layer-two` once a host at re-seating depth one (`gallery.rs`'s
+/// `Catalog::seated`) moved the resting fill up to meet it. Measured on the
+/// capture, 2026-09-11: both `layer-selected` and the re-seated resting
+/// fill came out `(49, 49, 49)`, one L\* apart, not the seven the token's
+/// own name promised.
+pub(crate) const SURFACE_LAYER_TWO: &str = "surface.layer-two";
 /// The top of the layer ramp (`token::shipped::LAYER_TOKENS[3]`, `#444444`
 /// dark). A floating note that must separate itself from *whatever* it was
 /// dragged over -- the page at `#121212` or a card at `#222222` -- and
@@ -381,6 +400,7 @@ pub(crate) const ALL: &[&str] = &[
     OVERLAY_SCRIM,
     SURFACE_BASE,
     SURFACE_RAISED,
+    SURFACE_LAYER_TWO,
     LAYER_ACCENT,
     SUPPORT_ERROR,
     TEXT_PRIMARY,

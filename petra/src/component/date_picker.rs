@@ -48,14 +48,17 @@
 //! open. The field declares [`FocusFigure::Hug`], so that focus is two
 //! bars beside the field and never an underline across the calendar's top.
 
+use std::collections::BTreeSet;
+
 use super::icon::{IconMark, IconTone, icon_toned};
 use super::pad;
 use super::pin_block;
 use super::stack;
 use super::text::text;
 use super::tokens::{
-    ACCENT_PRIMARY, LAYER_HOVER, SHADOW_OVERLAY, SIZE_MD, SPACING_03, SPACING_05, SURFACE_RAISED,
-    TEXT_MUTED, TEXT_ON_ACCENT, TEXT_PRIMARY, TYPOGRAPHY_HEADING_SM, t,
+    ACCENT_PRIMARY, LAYER_HOVER, SHADOW_OVERLAY, SIZE_MD, SPACING_03, SPACING_05,
+    SURFACE_LAYER_TWO, SURFACE_RAISED, TEXT_MUTED, TEXT_ON_ACCENT, TEXT_PRIMARY,
+    TYPOGRAPHY_HEADING_SM, t,
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
@@ -206,28 +209,161 @@ impl Calendar {
 /// only when it falls in the month `calendar` is browsing. A value that
 /// does not parse marks nothing and still draws the month asked for, which
 /// is visibly wrong in the field and never wrong in the grid.
+///
+/// A one-day wrapper over [`date_picker_showing_selection`], kept as its
+/// own public constructor because its callers — the registry row that
+/// crosses the Lua wire among them — already depend on this exact
+/// signature.
 pub fn date_picker_showing(
     key: impl Into<Key>,
     label: impl Into<String>,
     value: impl Into<String>,
     calendar: Calendar,
 ) -> ViewNode {
+    let value = value.into();
+    date_picker_showing_selection(key, label, value.clone(), std::iter::once(value), calendar)
+}
+
+/// [`date_picker_showing`] widened to mark every day in `selected`, not
+/// only the single day `value` names. `value` still drives the field's own
+/// visible text, unchanged from [`date_picker_showing`]; `selected` is the
+/// full set the grid marks, each entry read as `YYYY-MM-DD`. An entry that
+/// does not parse, or that falls outside `calendar`'s browsed month, marks
+/// nothing for that entry — the same "wrong value marks nothing" rule
+/// [`date_picker_showing`] keeps for its own single day.
+///
+/// A marked day whose immediate calendar neighbour on either side is absent
+/// from `selected` is a **run's edge** and renders in the full accent fill
+/// ([`ACCENT_PRIMARY`]). A marked day held on both sides renders in
+/// [`SURFACE_LAYER_TWO`] instead — one step past whatever [`SURFACE_RAISED`]
+/// (the unmarked day's own fill) resolves to here, a luminance step rather
+/// than a second hue, so the distinction survives red-green colour
+/// blindness. This is [`SURFACE_LAYER_TWO`] and not the library's own
+/// `layer-selected` on purpose: `layer-selected` is a fixed step off
+/// `layer-one` with no notion of how deep this control is actually mounted
+/// ([`super::on_layer`]'s own doc), and a host that re-seats the calendar
+/// one layer up (every card-mounted component does) moves the unmarked
+/// day's fill up to meet it — `layer-selected` and the re-seated resting
+/// fill measured one L* apart on capture, not the seven the name promised.
+/// `SURFACE_LAYER_TWO` is one of [`super::on_layer`]'s four recognised
+/// names, so it re-seats by the same table `surface.raised` does and stays
+/// one real step ahead of it at every depth. A day picked alone
+/// (`Mode::Multi`, or `Mode::Range` before its second pick) is a run of one
+/// and is therefore always an edge — every `Mode::Multi` pick reads fully
+/// accented, and a completed range reads as an accented cap at each end
+/// with the lighter band between them, which is Carbon's own range-picker
+/// reading. Every marked day, edge or interior, still reports
+/// `Semantics.selected = true`: the band is a fill choice, not a change in
+/// what is selected.
+pub fn date_picker_showing_selection(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    value: impl Into<String>,
+    selected: impl IntoIterator<Item = impl AsRef<str>>,
+    calendar: Calendar,
+) -> ViewNode {
     let label = label.into();
     let value = value.into();
     let (year, month) = calendar.view();
-    // The selected day belongs to the month it was picked in. Browsing away
-    // from that month must not carry the accent fill with it onto whatever
-    // day happens to share the number.
-    let selected = match parse_date(&value) {
-        Some((y, m, day)) if y == year && m == month => day,
-        _ => 0,
-    };
+    let all: BTreeSet<(i32, u32, u32)> = selected
+        .into_iter()
+        .filter_map(|s| parse_date(s.as_ref()))
+        .collect();
+    let days = SelectedDays::in_month(&all, year, month);
     let field = closed_field("field", label.clone(), value, true);
     column(
         key,
         field,
-        Some(calendar_surface(label, year, month, selected, calendar)),
+        Some(calendar_surface(label, year, month, &days, calendar)),
     )
+}
+
+/// Which days of the month [`calendar_surface`] is browsing carry a mark,
+/// and which of those sit at the edge of a run of consecutive calendar days
+/// rather than in its interior. See [`date_picker_showing_selection`] for
+/// what the two draw as.
+struct SelectedDays {
+    /// Days of the browsed month present in the full selection.
+    days: BTreeSet<u32>,
+    /// The subset of [`Self::days`] with at least one calendar-adjacent
+    /// neighbour (possibly in an adjoining month) missing from the full
+    /// selection.
+    edges: BTreeSet<u32>,
+}
+
+impl SelectedDays {
+    /// `all` is the full selection, every calendar (year, month, day) it
+    /// named that parsed; `year`/`month` is the month the grid is browsing.
+    fn in_month(all: &BTreeSet<(i32, u32, u32)>, year: i32, month: u32) -> Self {
+        let days: BTreeSet<u32> = all
+            .iter()
+            .filter(|&&(y, m, _)| y == year && m == month)
+            .map(|&(_, _, d)| d)
+            .collect();
+        let edges = days
+            .iter()
+            .copied()
+            .filter(|&d| {
+                !all.contains(&prev_date(year, month, d))
+                    || !all.contains(&next_date(year, month, d))
+            })
+            .collect();
+        Self { days, edges }
+    }
+
+    fn fill(&self, day: u32) -> DayFill {
+        if self.edges.contains(&day) {
+            DayFill::Edge
+        } else if self.days.contains(&day) {
+            DayFill::Interior
+        } else {
+            DayFill::None
+        }
+    }
+}
+
+/// How a day in the grid is filled. [`date_picker_showing_selection`] names
+/// what each spends and why.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DayFill {
+    /// Not in the selection.
+    None,
+    /// In the selection, with both calendar-adjacent neighbours also in it.
+    Interior,
+    /// In the selection, and at least one calendar-adjacent neighbour is
+    /// not.
+    Edge,
+}
+
+impl DayFill {
+    fn is_selected(self) -> bool {
+        self != Self::None
+    }
+}
+
+/// The calendar day immediately before `(year, month, day)`, crossing a
+/// month or year boundary as Gregorian arithmetic requires.
+fn prev_date(year: i32, month: u32, day: u32) -> (i32, u32, u32) {
+    if day > 1 {
+        (year, month, day - 1)
+    } else if month > 1 {
+        let prev_month = month - 1;
+        (year, prev_month, days_in_month(year, prev_month))
+    } else {
+        (year - 1, 12, days_in_month(year - 1, 12))
+    }
+}
+
+/// See [`prev_date`]; the calendar day immediately after.
+fn next_date(year: i32, month: u32, day: u32) -> (i32, u32, u32) {
+    let last = days_in_month(year, month);
+    if day < last {
+        (year, month, day + 1)
+    } else if month < 12 {
+        (year, month + 1, 1)
+    } else {
+        (year + 1, 1, 1)
+    }
 }
 
 /// [`date_picker_showing`] browsing the month `value` names, in the compact
@@ -363,7 +499,7 @@ fn calendar_surface(
     label: String,
     year: i32,
     month: u32,
-    selected: u32,
+    selected: &SelectedDays,
     calendar: Calendar,
 ) -> ViewNode {
     let mut children = vec![
@@ -725,7 +861,7 @@ fn month_cell(month: u32, selected: bool) -> ViewNode {
 }
 
 /// The weekday row plus six week rows of the real month.
-fn month_grid(year: i32, month: u32, selected: u32) -> ViewNode {
+fn month_grid(year: i32, month: u32, selected: &SelectedDays) -> ViewNode {
     let lead = first_weekday(year, month);
     let count = days_in_month(year, month);
     let (prev_year, prev_month) = if month == 1 {
@@ -758,7 +894,7 @@ fn month_grid(year: i32, month: u32, selected: u32) -> ViewNode {
                 reason = "bounded by the branch: 1 <= day <= 31"
             )]
             let day = day as u32;
-            children.push(day_button(day, day == selected));
+            children.push(day_button(day, selected.fill(day)));
         } else {
             children.push(adjacent_cell(slot, lead, count, prev_count));
         }
@@ -786,17 +922,19 @@ fn month_grid(year: i32, month: u32, selected: u32) -> ViewNode {
     grid.with_children(children)
 }
 
-/// A day of the month on show. `selected` fills it with the accent, which
-/// is Carbon's `.cds--date-picker__day--selected`.
-fn day_button(day: u32, selected: bool) -> ViewNode {
+/// A day of the month on show. `fill` says whether, and how, it carries the
+/// selection: see [`date_picker_showing_selection`] for what
+/// [`DayFill::Edge`] and [`DayFill::Interior`] each draw as, and why.
+fn day_button(day: u32, fill: DayFill) -> ViewNode {
     let label = day.to_string();
     let mut caption = text("label", label.clone());
     caption.props.tokens.insert(
         "foreground".into(),
-        t(if selected {
-            TEXT_ON_ACCENT
-        } else {
-            TEXT_PRIMARY
+        t(match fill {
+            // Both selected fills below are light-to-mid tones; only the
+            // full accent needs the on-accent ink to clear AA.
+            DayFill::Edge => TEXT_ON_ACCENT,
+            DayFill::Interior | DayFill::None => TEXT_PRIMARY,
         }),
     );
     let mut node = stack(format!("day-{day}"), Axis::Horizontal, None, vec![caption]);
@@ -809,10 +947,10 @@ fn day_button(day: u32, selected: bool) -> ViewNode {
     // `a_state_decorated_token_always_has_a_resting_binding`).
     node.props.tokens.insert(
         "background".into(),
-        t(if selected {
-            ACCENT_PRIMARY
-        } else {
-            SURFACE_RAISED
+        t(match fill {
+            DayFill::Edge => ACCENT_PRIMARY,
+            DayFill::Interior => SURFACE_LAYER_TWO,
+            DayFill::None => SURFACE_RAISED,
         }),
     );
     node.props
@@ -847,7 +985,7 @@ fn day_button(day: u32, selected: bool) -> ViewNode {
         // The calendar's nav strip sits 40 units clear of the first week,
         // never fills with the accent, and keeps the default bar.
         .with_focus_figure(FocusFigure::Border);
-    node.semantics.selected = selected;
+    node.semantics.selected = fill.is_selected();
     node
 }
 
@@ -894,9 +1032,12 @@ mod tests {
     use super::{
         CALENDAR_H, CALENDAR_W, CHOOSER_H, Calendar, MONTH_CELL_H, MONTH_COLS, MONTH_ROWS,
         PropAlign, SIZE_MD, WEEK_ROWS, WEEKDAYS, date_picker, date_picker_open,
-        date_picker_showing, days_in_month, first_weekday, parse_date,
+        date_picker_showing, date_picker_showing_selection, days_in_month, first_weekday,
+        parse_date,
     };
-    use crate::component::tokens::{ACCENT_PRIMARY, BORDER_STRONG, SURFACE_RAISED};
+    use crate::component::tokens::{
+        ACCENT_PRIMARY, BORDER_STRONG, SURFACE_LAYER_TWO, SURFACE_RAISED,
+    };
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, validated_with};
@@ -1339,6 +1480,89 @@ mod tests {
         );
         let days = child(child(child(&home, "calendar"), "content"), "days");
         assert!(child(days, "day-30").semantics.selected);
+    }
+
+    /// [`date_picker_showing_selection`] marks every day in the selection,
+    /// not only one. A range (the 3rd through the 6th) reads as an accented
+    /// cap at each end with a lighter interior between them; a scattered
+    /// pick (three days with gaps) reads as three independently accented
+    /// squares, because each is a run of one and every run's own ends are
+    /// edges.
+    #[test]
+    fn a_selection_marks_every_day_edges_full_accent_interior_lighter() {
+        let view = Calendar::Compact {
+            year: 2026,
+            month: 8,
+        };
+        let range = date_picker_showing_selection(
+            "due",
+            "Due date",
+            "2026-08-03",
+            ["2026-08-03", "2026-08-04", "2026-08-05", "2026-08-06"],
+            view,
+        );
+        let days = child(child(child(&range, "calendar"), "content"), "days");
+        for day in [3, 6] {
+            let cell = child(days, &format!("day-{day}"));
+            assert!(cell.semantics.selected);
+            assert_eq!(
+                token(cell, "background"),
+                Some(ACCENT_PRIMARY),
+                "day {day} is a range edge"
+            );
+        }
+        for day in [4, 5] {
+            let cell = child(days, &format!("day-{day}"));
+            assert!(cell.semantics.selected);
+            assert_eq!(
+                token(cell, "background"),
+                Some(SURFACE_LAYER_TWO),
+                "day {day} is a range interior"
+            );
+        }
+        for day in [2, 7] {
+            assert!(!child(days, &format!("day-{day}")).semantics.selected);
+        }
+
+        let multi = date_picker_showing_selection(
+            "due",
+            "Due date",
+            "2026-08-03",
+            ["2026-08-03", "2026-08-10", "2026-08-20"],
+            view,
+        );
+        let days = child(child(child(&multi, "calendar"), "content"), "days");
+        for day in [3, 10, 20] {
+            let cell = child(days, &format!("day-{day}"));
+            assert!(cell.semantics.selected);
+            assert_eq!(
+                token(cell, "background"),
+                Some(ACCENT_PRIMARY),
+                "day {day} is picked alone, a run of one, always an edge"
+            );
+        }
+
+        // Cross-month awareness: the edge/interior read depends on the
+        // whole selection, not only the days visible in the browsed month.
+        let crossing = date_picker_showing_selection(
+            "due",
+            "Due date",
+            "2026-07-31",
+            ["2026-07-30", "2026-07-31", "2026-08-01", "2026-08-02"],
+            view,
+        );
+        let days = child(child(child(&crossing, "calendar"), "content"), "days");
+        assert_eq!(
+            token(child(days, "day-1"), "background"),
+            Some(SURFACE_LAYER_TWO),
+            "August 1st is held on both sides by the selection, even though \
+             its July neighbour is off screen"
+        );
+        assert_eq!(
+            token(child(days, "day-2"), "background"),
+            Some(ACCENT_PRIMARY),
+            "August 2nd is the range's far end"
+        );
     }
 
     /// The chooser is placed **inside** the calendar and above its day

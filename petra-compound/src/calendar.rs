@@ -2,15 +2,17 @@
 //!
 //! The constructors in `date_picker.rs` stay put (Q9). This module lifts the
 //! year/month-on-show that [`gorgon_petra::component::Calendar`] already
-//! carried, adds the selection set, and calls [`date_picker_showing`] for
-//! the grid. Date maths that `update` needs (`days_in_month`) is duplicated
-//! here because those helpers are crate-private in the picker.
+//! carried, adds the selection set, and calls
+//! [`date_picker_showing_selection`] with the whole set so every picked day
+//! is marked, not only one of them. Date maths that `update` needs
+//! (`days_in_month`) is duplicated here because those helpers are
+//! crate-private in the picker.
 //!
 //! Binding: spec 009 T032.
 
 use std::collections::BTreeSet;
 
-use gorgon_petra::component::{Calendar as DatePickerCalendar, date_picker_showing};
+use gorgon_petra::component::{Calendar as DatePickerCalendar, date_picker_showing_selection};
 use gorgon_petra::tree::ViewNode;
 use serde::{Deserialize, Serialize};
 
@@ -188,10 +190,11 @@ impl Compound for Calendar {
 
     fn view(state: &Self::State, props: &Self::Props) -> ViewNode {
         let month = state.month.clamp(1, 12);
-        date_picker_showing(
+        date_picker_showing_selection(
             CALENDAR_KEY,
             props.label.as_str(),
-            grid_value(state),
+            field_value(state),
+            state.selected.iter().map(|d| d.iso()),
             DatePickerCalendar::Compact {
                 year: state.year,
                 month,
@@ -257,9 +260,11 @@ fn next_day(date: Date) -> Date {
     }
 }
 
-/// One ISO date [`date_picker_showing`] can parse: a selected day in the
-/// month on show, else the earliest selected day, else empty.
-fn grid_value(state: &State) -> String {
+/// The closed field's own visible text: a selected day in the month on
+/// show, else the earliest selected day, else empty. Only the field reads
+/// this now — the grid is marked from the whole of `state.selected`, in
+/// [`Calendar::view`], not from this single day.
+fn field_value(state: &State) -> String {
     state
         .selected
         .iter()
@@ -400,5 +405,47 @@ mod tests {
         Calendar::update(&mut state, Intent::Pick(date(2026, 8, 2)));
         assert_eq!(state.selected.len(), 1);
         assert!(state.selected.contains(&date(2026, 8, 2)));
+    }
+
+    /// The grid marks every day the state holds, not only one of them. This
+    /// is the frame-level property that would have caught the earlier
+    /// `date_picker_showing(..., grid_value(state), ...)` defect (a single
+    /// ISO string carrying the whole picture): the count of days the tree
+    /// marks `semantics.selected` on must equal `state.selected.len()`.
+    #[test]
+    fn every_selected_day_is_marked_not_only_one() {
+        let props = multi_props();
+        let mut state = Calendar::init(&props);
+        for d in [date(2026, 8, 3), date(2026, 8, 10), date(2026, 8, 20)] {
+            Calendar::update(&mut state, Intent::Pick(d));
+        }
+        assert_eq!(state.selected.len(), 3);
+        let node = Calendar::view(&state, &props);
+        assert_eq!(count_marked_days(&node), state.selected.len());
+    }
+
+    /// The gallery's own Range-pane seed (`page/calendar_compound.rs`,
+    /// Pick(3) then Pick(9)) fills the whole 3..=9 span and marks every one
+    /// of those seven days, not just the two picks.
+    #[test]
+    fn the_gallery_range_seed_fills_and_marks_the_whole_span() {
+        let props = range_props();
+        let mut state = Calendar::init(&props);
+        Calendar::update(&mut state, Intent::Pick(date(2026, 8, 3)));
+        Calendar::update(&mut state, Intent::Pick(date(2026, 8, 9)));
+        assert_eq!(state.selected.len(), 7);
+        let node = Calendar::view(&state, &props);
+        assert_eq!(count_marked_days(&node), 7);
+    }
+
+    /// Every node keyed `day-<n>` under `node` with `semantics.selected`
+    /// set, counted regardless of depth.
+    fn count_marked_days(node: &ViewNode) -> usize {
+        let here = usize::from(node.key.as_str().starts_with("day-") && node.semantics.selected);
+        here + node
+            .children
+            .iter()
+            .map(|c| count_marked_days(c))
+            .sum::<usize>()
     }
 }

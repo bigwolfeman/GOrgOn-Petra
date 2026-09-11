@@ -118,8 +118,23 @@ pub const ENTRIES: &[Entry] = &[
         DataTableRowExpandableParams,
         |p| lib::data_table_row_expandable(p.key, p.children, p.selected, p.expanded, p.body)
     ),
+    // The wire shape is still a bool (`selected`, reused here for
+    // "ascending"): the Lua host has no way to ask for
+    // `SortDirection::Sortable` yet. That third state is real only to
+    // Rust-side composition (`gorgon_petra_compound::data_table`), which
+    // calls `data_table_sort_header` directly and never through this row.
+    // Widening the wire itself is a separate, larger change (a new
+    // `ParamShape`, a new Luau union) and is not done here.
     row!("data_table_sort_header", KeyLabelSelected, |p| {
-        lib::data_table_sort_header(p.key, p.label, p.selected)
+        lib::data_table_sort_header(
+            p.key,
+            p.label,
+            if p.selected {
+                lib::SortDirection::Ascending
+            } else {
+                lib::SortDirection::Descending
+            },
+        )
     }),
 ];
 

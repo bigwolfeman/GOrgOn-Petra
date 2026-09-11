@@ -14,17 +14,18 @@
 //! `every_view_node_constructor_has_exactly_one_row` test proves it by
 //! scanning the ten files' own source text, not by trusting this list.
 //!
-//! Ten shapes here are one-off: `KeyLabel`/`KeyLabelSelected`/
+//! Eleven shapes here are one-off: `KeyLabel`/`KeyLabelSelected`/
 //! `KeyLabelValue`/`KeyLabelChildren`/`KeyLabelNumber` (from
-//! [`crate::component::params`]) cover 41 of these 52 rows; the rest need a
+//! [`crate::component::params`]) cover 41 of these 53 rows; the rest need a
 //! shape [`crate::component::params`] does not carry — `checkbox_tristate`'s
-//! three-state enum, `date_picker_showing`'s browsing-calendar enum, the two
-//! `_open` constructors' `(key, label, value, children)` quartet, a plain
-//! `(node, hint)`/`(node, value)` pair for `hinted`/`valued`, and the
-//! `message`-carrying shapes `field_invalid`/`field_warning`/
-//! `field_validated`/`file_uploader_item_invalid`/`number_input_invalid`/
-//! `checkbox_warning`/`radio_warning` need. Each is defined once here and
-//! reused wherever its field set repeats.
+//! three-state enum, `date_picker_showing`'s browsing-calendar enum,
+//! `date_picker_showing_selection`'s same enum plus the extra `selected`
+//! list, the two `_open` constructors' `(key, label, value, children)`
+//! quartet, a plain `(node, hint)`/`(node, value)` pair for
+//! `hinted`/`valued`, and the `message`-carrying shapes `field_invalid`/
+//! `field_warning`/`field_validated`/`file_uploader_item_invalid`/
+//! `number_input_invalid`/`checkbox_warning`/`radio_warning` need. Each is
+//! defined once here and reused wherever its field set repeats.
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -133,6 +134,27 @@ struct DatePickerShowingParams {
 }
 impl ParamShape for DatePickerShowingParams {
     const LUAU: &'static str = "{ key: string, label: string, value: string, calendar: \
+         { type: \"compact\", year: number, month: number } | \
+         { type: \"full\", year: number, month: number } | \
+         { type: \"choosing\", year: number, month: number } }";
+}
+
+/// `date_picker_showing_selection(key, label, value, selected, calendar)`.
+/// [`DatePickerShowingParams`] plus the one field it does not carry: the
+/// full set of days the grid marks, each `YYYY-MM-DD`, independent of
+/// `value` (which still drives only the field's own visible text).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DatePickerShowingSelectionParams {
+    key: Key,
+    label: String,
+    value: String,
+    selected: Vec<String>,
+    calendar: CalendarWire,
+}
+impl ParamShape for DatePickerShowingSelectionParams {
+    const LUAU: &'static str = "{ key: string, label: string, value: string, selected: \
+         {string}, calendar: \
          { type: \"compact\", year: number, month: number } | \
          { type: \"full\", year: number, month: number } | \
          { type: \"choosing\", year: number, month: number } }";
@@ -338,6 +360,17 @@ pub const ENTRIES: &[Entry] = &[
     row!("date_picker_showing", DatePickerShowingParams, |p| {
         lib::date_picker_showing(p.key, p.label, p.value, p.calendar.into())
     }),
+    row!(
+        "date_picker_showing_selection",
+        DatePickerShowingSelectionParams,
+        |p| lib::date_picker_showing_selection(
+            p.key,
+            p.label,
+            p.value,
+            p.selected,
+            p.calendar.into()
+        )
+    ),
     // dropdown.rs — Dropdown.
     row!("dropdown", KeyLabelValue, |p| lib::dropdown(
         p.key, p.label, p.value

@@ -1,9 +1,9 @@
 //! Inventory row 9, Data table.
 
 use gorgon_petra::component::{
-    data_table_row_expandable, data_table_row_lg, data_table_row_md, data_table_row_sm,
-    data_table_row_xl, data_table_row_xs, data_table_sort_header, data_table_zebra, disabled,
-    field_sm, section, text, valued,
+    SortDirection, data_table_row_expandable, data_table_row_lg, data_table_row_md,
+    data_table_row_sm, data_table_row_xl, data_table_row_xs, data_table_sort_header,
+    data_table_zebra, disabled, field_sm, section, text, valued,
 };
 use gorgon_petra::input::{InputEvent, KeyCode};
 use gorgon_petra::tree::ViewNode;
@@ -166,7 +166,15 @@ impl Page for DataTable {
                     data_table_zebra(
                         "dt",
                         vec![
-                            data_table_sort_header("h0", "Name", self.name_ascending),
+                            data_table_sort_header(
+                                "h0",
+                                "Name",
+                                if self.name_ascending {
+                                    SortDirection::Ascending
+                                } else {
+                                    SortDirection::Descending
+                                },
+                            ),
                             text("h1", "Kind"),
                         ],
                         rows,
