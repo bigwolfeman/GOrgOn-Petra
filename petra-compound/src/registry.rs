@@ -77,9 +77,15 @@ fn fail(component: &'static str, e: impl std::fmt::Display) -> ParamError {
 /// repeated here and converted, the same pattern
 /// `gorgon_petra::component::registry::new_atomics` uses for every
 /// constructor whose argument type is not already a wire shape.
+///
+/// `pub`: `gorgond`'s `gorgon-view-fiber::combobox` row hosts the same
+/// `combobox::Props` from a row's `config.props`, and needs the identical
+/// wire shape to build it. Reusing this type rather than a second,
+/// hand-rolled mirror in `gorgond` is what keeps the two parses from
+/// drifting apart — see `gorgon/gorgond/src/compound.rs`'s module doc.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ComboboxPropsWire {
+pub struct ComboboxPropsWire {
     label: String,
     items: Vec<String>,
 }
@@ -128,9 +134,12 @@ impl From<CommandItemWire> for command::Item {
     }
 }
 
+/// `pub` for the same reason as [`ComboboxPropsWire`]: `gorgond`'s
+/// `gorgon-view-fiber::command` row parses `command::Props` from a row's
+/// `config.props` through this exact wire shape.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct CommandPropsWire {
+pub struct CommandPropsWire {
     items: Vec<CommandItemWire>,
 }
 
@@ -167,9 +176,13 @@ fn command_ctor(params: &Value) -> Result<ViewNode, ParamError> {
 /// `calendar::Mode` already derives `Serialize`/`Deserialize` (it round-trips
 /// as part of `State`), so unlike the other four compounds this wire needs
 /// no mirror for it — only the struct around it.
+///
+/// `pub` for the same reason as [`ComboboxPropsWire`]: `gorgond`'s
+/// `gorgon-view-fiber::calendar` row parses `calendar::Props` from a row's
+/// `config.props` through this exact wire shape.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct CalendarPropsWire {
+pub struct CalendarPropsWire {
     label: String,
     #[serde(default)]
     mode: calendar::Mode,
@@ -240,9 +253,12 @@ impl From<DataTableRowWire> for data_table::Row {
     }
 }
 
+/// `pub` for the same reason as [`ComboboxPropsWire`]: `gorgond`'s
+/// `gorgon-view-fiber::data-table` row parses `data_table::Props` from a
+/// row's `config.props` through this exact wire shape.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct DataTablePropsWire {
+pub struct DataTablePropsWire {
     columns: Vec<DataTableColumnWire>,
     rows: Vec<DataTableRowWire>,
 }
@@ -284,9 +300,14 @@ fn data_table_ctor(params: &Value) -> Result<ViewNode, ParamError> {
 /// still has to exist and still has to be named in the params table: a
 /// row's contract is "props and state both come from the table", not
 /// "props when there happen to be any."
+///
+/// `pub` for the same reason as [`ComboboxPropsWire`]: `gorgond`'s
+/// `gorgon-view-fiber::selection-palette` row parses
+/// `selection_palette::Props` from a row's `config.props` through this
+/// exact (empty) wire shape.
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SelectionPalettePropsWire {}
+pub struct SelectionPalettePropsWire {}
 
 impl From<SelectionPalettePropsWire> for selection_palette::Props {
     fn from(_: SelectionPalettePropsWire) -> Self {

@@ -44,7 +44,10 @@ pub struct State {
 }
 
 /// Closed set of things that can happen to the palette.
-#[derive(Clone, Debug, PartialEq)]
+///
+/// `Deserialize` so [`gorgon_view_fiber::ViewFiber`] can decode it off the
+/// `ui:intent` bus (`ViewFiber`'s `C::Intent: DeserializeOwned` bound).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Intent {
     /// Flip [`State::bold`].
     ToggleBold,

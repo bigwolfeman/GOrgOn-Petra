@@ -6,18 +6,81 @@
 //! applied in [`Command::view`] because `update` does not see [`Props`].
 //!
 //! Binding: spec 009 T019.
+//!
+//! # The global chord (T019)
+//!
+//! [`view`](Command::view) carries `Ctrl+K` as a [`Scope::Global`]
+//! [`gorgon_petra::keymap::Binding`], on both the open and the closed root
+//! — closed, because that root is the one the operator sees *before* they
+//! ever press the chord, and a binding that only existed once the palette
+//! was already open could never open it. `Ctrl+K` is not a bare
+//! `KeyCode::Char` (FR-013a: `Binding::new` refuses one at global scope,
+//! `is_bare_char` in `gorgon-petra`'s `keymap/binding.rs` excludes any
+//! chord carrying `ctrl`), so it stays eligible while the operator types
+//! into an ordinary field. [`Owner::Plugin`] rather than
+//! [`Owner::Operator`]: this fiber is what declares the binding, not an
+//! operator dotfile override — `Owner::Operator` is FR-011's *other* case,
+//! the one a binding like this one can be outranked by.
+//!
+//! **Declaring the binding is not the same as dispatching it, and the other
+//! half does not exist yet.** Verified 2026-09-11 by searching the whole
+//! tree: `gorgon_petra::keymap::Resolver` is constructed nowhere outside its
+//! own module's tests, nothing reads `ViewNode::bindings` back off a frame,
+//! and no host turns a key press into a command. A published binding is
+//! inert today. The shell dispatcher is **spec 010 T046** — "wire the
+//! interpretation order in the shell dispatcher: reserved, then `route`'s
+//! `Raw`, then the binding table, then the `Route` from that same call"
+//! — unchecked, along with most of spec 010's binding phase.
+//!
+//! So this module and its host fiber (`gorgond`'s
+//! `gorgon-view-fiber::command` row, `gorgon/gorgond/src/compound.rs`) own
+//! exactly two things: declaring the binding, and holding the
+//! `ui(global-bindings)` grant FR-012 checks. They do not own dispatch, and
+//! nothing else owns it yet either. Do not read this as a pointer to code
+//! that lives somewhere else.
 
 use gorgon_petra::component::kit::stack;
 use gorgon_petra::component::{list_row, search, valued};
+use gorgon_petra::keymap::{Binding, Chord, CommandName, Owner, Scope};
 use gorgon_petra::token::TokenName;
 use gorgon_petra::tree::{
     Anchor, AxisConstraint, FocusFigure, InputPolicy, Layer, NodeKind, Props as NodeProps, Role,
     Semantics, Tip, ViewNode,
 };
-use gorgon_petra::{Align, Axis};
+use gorgon_petra::{Align, Axis, KeyCode, Modifiers};
 use serde::{Deserialize, Serialize};
 
 use crate::Compound;
+
+/// The declaring plugin/fiber id [`open_binding`] records on
+/// [`Owner::Plugin`]. Matches `gorgond::compound::COMMAND`
+/// (`gorgon/gorgond/src/compound.rs`) — kept as a literal here rather than
+/// imported, because `gorgon-petra-compound` must not depend on `gorgond`
+/// (the dependency edge points the other way).
+const OWNER_ID: &str = "gorgon-view-fiber::command";
+
+/// `Ctrl+K`, global scope, spec 010 FR-012/FR-013a. See the module doc's
+/// "The global chord" section.
+///
+/// # Panics
+/// Only if `Ctrl+K` at global scope stopped validating — which would mean
+/// `Binding::new`'s own FR-013a check started refusing a chord that carries
+/// `ctrl`, a change to `gorgon-petra`, not to this module.
+fn open_binding() -> Binding {
+    Binding::new(
+        vec![Chord {
+            key: KeyCode::Char('k'),
+            modifiers: Modifiers {
+                ctrl: true,
+                ..Modifiers::NONE
+            },
+        }],
+        CommandName::builtin("command-palette.toggle"),
+        Scope::Global,
+        Owner::Plugin(OWNER_ID.to_owned()),
+    )
+    .unwrap_or_else(|err| panic!("command palette's own Ctrl+K global binding: {err}"))
+}
 use crate::filter::filter_indices;
 
 /// Namespace over the command-palette triple. Never constructed as a value.
@@ -67,7 +130,10 @@ pub struct State {
 }
 
 /// Closed set of things that can happen to the palette.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// `Deserialize` so [`gorgon_view_fiber::ViewFiber`] can decode it off the
+/// `ui:intent` bus (`ViewFiber`'s `C::Intent: DeserializeOwned` bound).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Intent {
     /// Replace the query, reset the highlight to the first match, and open.
     Type {
@@ -120,7 +186,8 @@ impl Compound for Command {
 
     fn view(state: &Self::State, props: &Self::Props) -> ViewNode {
         if !state.open {
-            let mut node = stack(COMMAND_KEY, Axis::Vertical, None, Vec::new());
+            let mut node =
+                stack(COMMAND_KEY, Axis::Vertical, None, Vec::new()).with_binding(open_binding());
             node.semantics.expanded = Some(false);
             return node;
         }
@@ -173,7 +240,8 @@ impl Compound for Command {
                 takes_focus: Some(true),
                 ..NodeProps::default()
             })
-            .child(content);
+            .child(content)
+            .with_binding(open_binding());
         node.props
             .tokens
             .insert("background".into(), token("surface.raised"));
@@ -246,6 +314,45 @@ mod tests {
         assert_ne!(node.kind, NodeKind::Surface);
         assert_eq!(node.semantics.expanded, Some(false));
         assert_ne!(node.semantics.role, Some(Role::Overlay));
+    }
+
+    /// T019: the closed root — the one the operator sees *before* pressing
+    /// the chord — must carry the global binding, or the chord could never
+    /// open the palette in the first place.
+    #[test]
+    fn the_closed_root_carries_the_global_open_binding() {
+        let props = sample_props();
+        let node = Command::view(&Command::init(&props), &props);
+        assert_eq!(node.bindings.len(), 1, "{:?}", node.bindings);
+        let binding = &node.bindings[0];
+        assert_eq!(binding.scope, gorgon_petra::keymap::Scope::Global);
+        assert_eq!(
+            binding.trigger(),
+            &[gorgon_petra::keymap::Chord {
+                key: gorgon_petra::KeyCode::Char('k'),
+                modifiers: gorgon_petra::Modifiers {
+                    ctrl: true,
+                    ..gorgon_petra::Modifiers::NONE
+                },
+            }],
+            "Ctrl+K, not a bare char (FR-013a)"
+        );
+        assert!(
+            binding.validate().is_ok(),
+            "Binding::new's own construction-time check must still accept it: {binding}"
+        );
+    }
+
+    /// The open root carries the same binding — the palette must not lose
+    /// its own toggle chord the moment it opens.
+    #[test]
+    fn the_open_root_also_carries_the_global_open_binding() {
+        let props = sample_props();
+        let mut state = Command::init(&props);
+        Command::update(&mut state, Intent::Open);
+        let node = Command::view(&state, &props);
+        assert_eq!(node.bindings.len(), 1, "{:?}", node.bindings);
+        assert_eq!(node.bindings[0].scope, gorgon_petra::keymap::Scope::Global);
     }
 
     #[test]

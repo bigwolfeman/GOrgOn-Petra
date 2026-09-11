@@ -120,7 +120,10 @@ pub struct State {
 }
 
 /// Closed set of things that can happen to the table.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// `Deserialize` so [`gorgon_view_fiber::ViewFiber`] can decode it off the
+/// `ui:intent` bus (`ViewFiber`'s `C::Intent: DeserializeOwned` bound).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Intent {
     /// Toggle `id` in [`State::selection`].
     SelectRow {
