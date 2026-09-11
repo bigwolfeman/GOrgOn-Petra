@@ -1,11 +1,12 @@
 //! Inventory row 23, Pagination.
 //!
-//! Two bars. The table bar is [`pagination_items`]: that constructor is
-//! [`pagination_page_size`] + [`pagination_range`] + [`pagination_numbers`]
-//! + [`pagination_nav`], plus the two pickers. The compact bar is
-//! numbers + nav only. The four pieces are not mounted a second time;
-//! their inner keys (`page-size-picker`, `range-text`) are hardcoded and
-//! a duplicate makes `Camera::click` panic.
+//! Two bars. The table bar is [`pagination_items`], which composes the page
+//! size picker, the range caption, the number row and the nav, plus the two
+//! pickers. The compact bar is the number row and the nav only.
+//!
+//! The four pieces are not mounted a second time. Their inner keys
+//! (`page-size-picker`, `range-text`) are hardcoded, and a duplicate key
+//! makes `Camera::click` panic.
 
 use gorgon_petra::component::{
     PaginationPicker, heading, pagination_items, pagination_items_open, pagination_nav,

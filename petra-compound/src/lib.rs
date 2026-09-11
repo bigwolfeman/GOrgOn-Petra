@@ -46,6 +46,7 @@ pub mod combobox;
 pub mod command;
 pub mod data_table;
 pub mod filter;
+pub mod invariant;
 pub mod selection_palette;
 
 pub use calendar::Calendar;

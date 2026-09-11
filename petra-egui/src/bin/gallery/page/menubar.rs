@@ -33,15 +33,11 @@ enum Open {
 /// The bar itself is [`menubar_top`]: it docks to the window's top edge.
 /// Open menus are a different constructor. This page mounts [`menu`] as a
 /// sibling of the open label, keyed `trigger`, the same pair row 18 uses.
+#[derive(Default)]
 pub struct Menubar {
     open: Option<Open>,
 }
 
-impl Default for Menubar {
-    fn default() -> Self {
-        Self { open: None }
-    }
-}
 
 impl Menubar {
     fn slot(which: Open, open: Option<Open>) -> ViewNode {

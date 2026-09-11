@@ -1105,7 +1105,7 @@ mod tests {
             );
         }
         assert!(
-            named(&named(&node, "expand"), "label")
+            named(named(&node, "expand"), "label")
                 .props
                 .runs
                 .is_empty(),

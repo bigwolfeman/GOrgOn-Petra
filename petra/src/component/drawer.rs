@@ -298,7 +298,7 @@ mod tests {
         );
         assert_eq!(padding_token(&node), Some((SPACING_05, SPACING_05)));
         assert_eq!(
-            child(&child(&node, "content"), "copy")
+            child(child(&node, "content"), "copy")
                 .props
                 .text
                 .as_deref(),

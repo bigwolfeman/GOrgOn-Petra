@@ -91,7 +91,7 @@ mod tests {
             .unwrap_or_else(|| panic!("missing child {key}"))
     }
 
-    fn mark_at<'a>(node: &'a ViewNode, i: u32) -> &'a ViewNode {
+    fn mark_at(node: &ViewNode, i: u32) -> &ViewNode {
         child(child(node, "marks"), &format!("mark-{i}"))
     }
 

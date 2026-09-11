@@ -88,7 +88,7 @@ mod tests {
         ];
         assert_eq!(
             filter_indices(&items, "needle", |r| r.name.as_str()),
-            vec![]
+            Vec::<usize>::new()
         );
         assert_eq!(
             filter_indices(&items, "needle", |r| r.hidden.as_str()),

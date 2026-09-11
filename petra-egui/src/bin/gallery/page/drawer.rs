@@ -18,15 +18,11 @@ const CLOSE: &str = "close-drawer";
 /// A gallery that cannot page is not a gallery. `sheet()` would close
 /// on an outside press; Passthrough leaves the panel up and lets the
 /// chrome through. Start closed so the first frame is the trigger.
+#[derive(Default)]
 pub struct Drawer {
     open: bool,
 }
 
-impl Default for Drawer {
-    fn default() -> Self {
-        Self { open: false }
-    }
-}
 
 impl Page for Drawer {
     fn row(&self) -> &'static str {

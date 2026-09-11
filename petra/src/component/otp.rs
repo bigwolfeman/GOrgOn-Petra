@@ -116,7 +116,7 @@ mod tests {
         node.props.tokens.get(slot).map(|name| name.as_str())
     }
 
-    fn well_at<'a>(node: &'a ViewNode, i: u32) -> &'a ViewNode {
+    fn well_at(node: &ViewNode, i: u32) -> &ViewNode {
         child(node, &format!("d{i}"))
     }
 

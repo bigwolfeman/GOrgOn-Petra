@@ -17,15 +17,11 @@ const BOTH: &str = "tb-both";
 /// Live state of the Toggle button page: which of the three is pressed.
 /// Single-select is a caller convention; the group constructor does not
 /// clear siblings.
+#[derive(Default)]
 pub struct ToggleButton {
     pressed: u8,
 }
 
-impl Default for ToggleButton {
-    fn default() -> Self {
-        Self { pressed: 0 }
-    }
-}
 
 impl Page for ToggleButton {
     fn row(&self) -> &'static str {
