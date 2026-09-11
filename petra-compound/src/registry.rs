@@ -253,14 +253,38 @@ impl From<DataTableRowWire> for data_table::Row {
     }
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DataTableActionWire {
+    id: String,
+    label: String,
+}
+
+impl From<DataTableActionWire> for data_table::ActionItem {
+    fn from(w: DataTableActionWire) -> Self {
+        data_table::ActionItem::new(w.id, w.label)
+    }
+}
+
 /// `pub` for the same reason as [`ComboboxPropsWire`]: `gorgond`'s
 /// `gorgon-view-fiber::data-table` row parses `data_table::Props` from a
 /// row's `config.props` through this exact wire shape.
+///
+/// `batch_actions`/`row_actions`/`loading` are `#[serde(default)]` (T034):
+/// a row written before the toolbar tier existed still parses — an empty
+/// batch/row-action list and `loading: false` is the pre-T034 behaviour
+/// exactly, not a guess at one.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DataTablePropsWire {
     columns: Vec<DataTableColumnWire>,
     rows: Vec<DataTableRowWire>,
+    #[serde(default)]
+    batch_actions: Vec<DataTableActionWire>,
+    #[serde(default)]
+    row_actions: Vec<DataTableActionWire>,
+    #[serde(default)]
+    loading: bool,
 }
 
 impl From<DataTablePropsWire> for data_table::Props {
@@ -268,6 +292,9 @@ impl From<DataTablePropsWire> for data_table::Props {
         data_table::Props {
             columns: w.columns.into_iter().map(Into::into).collect(),
             rows: w.rows.into_iter().map(Into::into).collect(),
+            batch_actions: w.batch_actions.into_iter().map(Into::into).collect(),
+            row_actions: w.row_actions.into_iter().map(Into::into).collect(),
+            loading: w.loading,
         }
     }
 }
@@ -281,8 +308,11 @@ struct DataTableWire {
 
 impl ParamShape for DataTableWire {
     const LUAU: &'static str = "{ props: { columns: { { id: string, label: string } }, rows: \
-         { { id: string, cells: { string }, body: string? } } }, state: { sort: { column: \
-         string, ascending: boolean }?, selection: { string }?, expansion: { string }? } }";
+         { { id: string, cells: { string }, body: string? } }, batch_actions: { { id: string, \
+         label: string } }?, row_actions: { { id: string, label: string } }?, loading: boolean? \
+         }, state: { sort: { column: string, ascending: boolean }?, selection: { string }?, \
+         expansion: { string }?, query: string?, hidden_columns: { string }?, column_menu_open: \
+         boolean?, row_menu_open: string? } }";
 }
 
 fn data_table_ctor(params: &Value) -> Result<ViewNode, ParamError> {

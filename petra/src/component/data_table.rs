@@ -39,23 +39,78 @@
 //! tallest body row's height (docs, "Rows": the column-header row must
 //! match the body row size).
 //!
-//! Omitted, honestly: batch-actions toolbar, sticky header (layout has
-//! no sticky), column resize (Carbon v11 does not ship it), the row menu.
 //! Body text stays `TEXT_PRIMARY` where Carbon uses `$text-secondary`
 //! at rest and `$text-primary` on the selected row; a child's foreground
 //! cannot follow its row's state in this engine. Zebra is
 //! [`data_table_zebra`].
+//!
+//! Still omitted, honestly: sticky header (this layout engine has no
+//! scroll-region/`position: sticky` equivalent — `reserve_expand_column`'s
+//! trailing sibling, [`reserve_menu_column`], is the closest thing to a
+//! per-column mechanism it has, and a scrolling `thead` is a different
+//! problem) and column resize (Carbon v11 does not ship it as a Data Table
+//! variant either — `Carbon-Component-Inventory/slice-b.md`'s own
+//! "VERIFIED ABSENT" note).
+//!
+//! # T034: the toolbar tier (spec 009)
+//!
+//! Six more anatomy pieces, all Carbon-numbered in the usage page's own
+//! "Formatting > Anatomy" list:
+//!
+//! - **Anatomy 2, Toolbar** — [`data_table_toolbar`]: a search field at the
+//!   leading edge (grows), trailing controls (e.g. a column-visibility
+//!   [`super::menu_button`]) hugging the trailing edge. A `Grid` with one
+//!   [`TrackSize::Weight`] column and one [`TrackSize::FitContent`] column,
+//!   not [`super::list_box::edge_row`]'s `SpaceBetween` stack: `edge_row`
+//!   gives slack to the *gap*, and a toolbar wants the slack inside the
+//!   search field, the way `data_table` itself already grows every row to
+//!   the table's width.
+//! - **Anatomy 2a, Batch action bar** — [`data_table_batch_bar`]: replaces
+//!   the toolbar (Carbon: "slides in over the toolbar", slice-b) while any
+//!   row is selected. `ACCENT_PRIMARY`/`TEXT_ON_ACCENT`: the vocabulary has
+//!   no `background-brand` token Carbon's own SCSS names, and this is the
+//!   same accent/on-accent pair [`super::menu_button`]'s primary trigger
+//!   already spends, so the substitution is provably readable rather than
+//!   invented. [`data_table_batch_cancel`] is its leading "×" control.
+//! - **Anatomy 5, Row menu** — [`data_table_row_menu_trigger`] plus
+//!   [`reserve_menu_column`]: a trailing `FitContent` column, the mirror of
+//!   the leading chevron's [`reserve_expand_column`]. Carbon's own glyph is
+//!   `OverflowMenuVertical` (a kebab); this icon set has no kebab mark, so
+//!   the trigger reuses [`IconMark::Menu`] — the closest shape available —
+//!   and, as everywhere else in this file, the glyph is never the only
+//!   channel: `Semantics.label` carries the real word. Always visible
+//!   rather than opacity-0-until-hover
+//!   (`.cds--data-table--visible-overflow-menu` is Carbon's own always-on
+//!   modifier, not an invention).
+//! - **Skeleton** — [`data_table_skeleton`]: placeholder bars
+//!   ([`super::kit::swatch`], Carbon's measured 16×64), `Semantics.skeleton`
+//!   on every bar. Deliberately carries **no** `Role` anywhere in the tree
+//!   — not `Role::Table`, not `Role::Row`, not `Role::Cell` — so a screen
+//!   reader never announces placeholder content as a real table, row or
+//!   cell, and [`super::super::focus::FocusTree`] never seats one: no node
+//!   here declares [`Interaction::Focus`], so nothing skeleton ever enters
+//!   focus order or a selection count.
+//!
+//! Column visibility, search/filter state, batch-action identity and the
+//! per-row menu's own open/shut and item list are the *compound's* job
+//! (`gorgon_petra_compound::data_table`), not this file's: they are all
+//! state a caller holds across renders, and every atomic in this crate is
+//! an argument-driven pure function with none.
 
 use std::sync::Arc;
 
 use super::controls::{CheckState, checkbox_box};
 use super::icon::{IconMark, IconTone, icon_toned};
+use super::list_box::edge_row;
+use super::menu::menu;
 use super::pad;
 use super::stack;
+use super::swatch;
 use super::text::{as_compact_heading, text};
 use super::tokens::{
-    BORDER_SUBTLE, LAYER_ACCENT, LAYER_ACCENT_HOVER, LAYER_HOVER, LAYER_SELECTED,
-    LAYER_SELECTED_HOVER, SIZE_MD, SPACING_03, SPACING_05, SURFACE_BASE, t,
+    ACCENT_PRIMARY, BORDER_SUBTLE, LAYER_ACCENT, LAYER_ACCENT_HOVER, LAYER_HOVER, LAYER_SELECTED,
+    LAYER_SELECTED_HOVER, SIZE_MD, SPACING_03, SPACING_04, SPACING_05, SURFACE_BASE,
+    TEXT_ON_ACCENT, TEXT_PRIMARY, TYPOGRAPHY_BODY_COMPACT, t,
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
@@ -87,6 +142,19 @@ const SELECT_ALL: &str = "select-all";
 const EXPAND: &str = "expand";
 /// The accessible name of the header's select-all checkbox.
 const SELECT_ALL_LABEL: &str = "Select all rows";
+/// The key of a row's trailing row-menu cell, and of the blank
+/// [`reserve_menu_column`] stands in for it on a row with no menu of its
+/// own.
+const ROW_MENU: &str = "row-menu";
+
+/// Skeleton placeholder bar (style page "Structure", `data-table-skeleton.scss`
+/// MEASURED): header/cell bars are 16 tall, 64 wide.
+const SKELETON_BAR_W: f32 = 64.0;
+/// See [`SKELETON_BAR_W`].
+const SKELETON_BAR_H: f32 = 16.0;
+
+const _: () = assert!(SKELETON_BAR_W == 64.0);
+const _: () = assert!(SKELETON_BAR_H == 16.0);
 
 const ROW_INTENTS: &[Interaction] = &[Interaction::Focus, Interaction::Click, Interaction::Hover];
 const SORT_INTENTS: &[Interaction] = &[Interaction::Focus, Interaction::Click, Interaction::Hover];
@@ -129,6 +197,23 @@ pub fn data_table(key: impl Into<Key>, header: Vec<ViewNode>, rows: Vec<ViewNode
     } else {
         rows
     };
+    // Trailing counterpart of `expandable`/`reserve_expand_column`, above:
+    // a row built by `data_table_row_actions` ends its own top-level
+    // children with a cell keyed `row-menu`; every row (and the header)
+    // that did not build its own gets a matching blank, so every row's
+    // `Grid` still declares the identical column-track sequence the
+    // `Stretch` note below depends on.
+    let has_menu = rows.iter().any(|row| {
+        row.children
+            .last()
+            .is_some_and(|c| c.key.as_str() == ROW_MENU)
+    });
+    let rows: Vec<ViewNode> = if has_menu {
+        rows.into_iter().map(reserve_menu_column).collect()
+    } else {
+        rows
+    };
+
     let selected = rows.iter().filter(|row| row.semantics.selected).count();
     let all = match selected {
         0 => CheckState::Unchecked,
@@ -136,7 +221,11 @@ pub fn data_table(key: impl Into<Key>, header: Vec<ViewNode>, rows: Vec<ViewNode
         _ => CheckState::Mixed,
     };
 
-    let mut children = vec![header_row("header", header, height, all, expandable)];
+    let mut header = header_row("header", header, height, all, expandable);
+    if has_menu {
+        header = reserve_menu_column(header);
+    }
+    let mut children = vec![header];
     children.extend(rows);
     let mut node = stack(key, Axis::Vertical, None, children);
     // Every row is a `Grid` (see `row_shell`) whose column tracks resolve
@@ -207,6 +296,81 @@ pub fn data_table_row_lg(key: impl Into<Key>, cells: Vec<ViewNode>, selected: bo
 /// [`data_table_row`] at xl (64).
 pub fn data_table_row_xl(key: impl Into<Key>, cells: Vec<ViewNode>, selected: bool) -> ViewNode {
     data_table_row_sized(key, cells, selected, RowSize::Xl)
+}
+
+/// [`data_table_row`] with a trailing row-menu column (T034, anatomy 5).
+///
+/// `menu` is the whole trigger-plus-overlay control, built by the caller —
+/// this atomic does not know whether the menu is open, only where its
+/// column goes. Appended *after* the row is fully built (fills, `Role::Row`,
+/// focus figure already bound), the same way [`reserve_expand_column`]
+/// mutates an already-built row rather than threading a flag through
+/// [`row_shell`]: neither `data_table_row`'s own five callers nor
+/// [`row_shell`]'s signature change, so this is the one row constructor
+/// that opts in rather than a new parameter every other row gained and
+/// never uses.
+pub fn data_table_row_actions(
+    key: impl Into<Key>,
+    cells: Vec<ViewNode>,
+    selected: bool,
+    menu: ViewNode,
+) -> ViewNode {
+    let mut row = data_table_row_sized(key, cells, selected, RowSize::Lg);
+    append_menu_column(&mut row, menu);
+    row
+}
+
+/// Push a trailing `FitContent` column and its cell onto an already-built
+/// row's own `Grid` props/children — see [`data_table_row_actions`].
+///
+/// Finds that `Grid` the same way [`reserve_menu_column`] does, and for the
+/// same reason: an expandable row's root is a vertical `stack` of `cells`
+/// and an optional body, not the `Grid` every other row is, so pushing onto
+/// whichever node the caller handed over would put a column on the wrong
+/// node. One walk, both callers, so a blank reservation and a real trigger
+/// can never disagree about which node carries the trailing column.
+fn append_menu_column(row: &mut ViewNode, menu: ViewNode) {
+    let target: &mut ViewNode = if row.kind == NodeKind::Grid {
+        row
+    } else {
+        match row.children.iter_mut().find(|c| c.key.as_str() == "cells") {
+            Some(cells) => Arc::make_mut(cells),
+            None => row,
+        }
+    };
+    target.props.columns.push(TrackSize::FitContent);
+    target.children.push(Arc::new(as_cell(ROW_MENU, menu)));
+}
+
+/// [`data_table_row_expandable`] with a trailing row-menu column (T034,
+/// anatomy 5) — the expandable row's [`data_table_row_actions`].
+///
+/// Until 2026-09-11 there was no such constructor and the compound
+/// documented the absence as "a documented scope limit, not an oversight",
+/// on the grounds that "the chevron and the menu trigger both want the
+/// leading/trailing edge of the same row shell". They do not: the chevron
+/// sits *inside* the leading selection cell and the menu column is a
+/// trailing top-level sibling, and [`reserve_menu_column`] already walks
+/// into an expandable row's nested `cells` `Grid` to put a blank there.
+/// The visible cost of the limit was a table whose rows disagreed — three
+/// of four carrying a menu glyph and the expandable one carrying a blank,
+/// which reads as a bug rather than as a rule.
+///
+/// Same append-after-build shape as [`data_table_row_actions`], through the
+/// same [`append_menu_column`], so neither row constructor grows a
+/// parameter the other four never use.
+#[must_use]
+pub fn data_table_row_expandable_actions(
+    key: impl Into<Key>,
+    cells: Vec<ViewNode>,
+    selected: bool,
+    expanded: bool,
+    body: impl Into<String>,
+    menu: ViewNode,
+) -> ViewNode {
+    let mut row = data_table_row_expandable(key, cells, selected, expanded, body);
+    append_menu_column(&mut row, menu);
+    row
 }
 
 /// Expandable body row at lg. `body` is mounted only while `expanded`.
@@ -373,6 +537,330 @@ pub fn data_table_sort_header(
     cell
 }
 
+/// A trailing toolbar control that opens a menu: the column-visibility
+/// picker is its one caller today.
+///
+/// **Not [`super::menu_button`], and the difference is not cosmetic.** A
+/// Carbon Menu button is a *primary* button — `ACCENT_PRIMARY` fill,
+/// `TEXT_ON_ACCENT` label, height md 40, `min-inline-size` 160 — because it
+/// is the page's own call to action (`menu_button.rs`'s module doc states
+/// each of those as Carbon facts). A table toolbar's settings control is
+/// none of those things: it sits *inside* the toolbar, shares the toolbar's
+/// own ground, and is one of several trailing controls rather than the
+/// thing the page is for. Reusing `menu_button` here put a blue call to
+/// action beside a search field and stood it 40 tall inside a 48-tall
+/// toolbar, so its bottom edge floated eight units above the field it sits
+/// flush against — measured on the row 56 capture, 2026-09-11, at 81 device
+/// pixels against the field's 95.
+///
+/// So: [`SURFACE_BASE`], the toolbar's own fill, which is Carbon's ghost
+/// treatment; [`TEXT_PRIMARY`] label and an [`IconTone::Primary`] chevron;
+/// and [`HEIGHT_LG`] pinned both ways so it can only ever be the toolbar's
+/// own height.
+///
+/// [`FocusFigure::Border`], not `Sides`. A `Sides` figure draws its two
+/// bars seven units *outside* the control, which is right for a control
+/// with padding around it and wrong for one flush against a toolbar edge:
+/// the bars land on the card behind the toolbar and on the neighbour. Not
+/// `BarInside` either — a bar figure marks the *content run* and
+/// `focus::marked_rect` excludes an `Input` from that run, so a bar here
+/// would mark the chevron.
+///
+/// `Semantics.expanded` is declared and the menu is mounted only while
+/// open, so shut-versus-open is never carried by colour alone.
+#[must_use]
+pub fn data_table_toolbar_menu(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    open: bool,
+    items: Vec<ViewNode>,
+) -> ViewNode {
+    let label = label.into();
+    let mut caption = text("label", label.clone());
+    caption.props.style = Some(t(TYPOGRAPHY_BODY_COMPACT));
+    caption
+        .props
+        .tokens
+        .insert("foreground".into(), t(TEXT_PRIMARY));
+    let chevron = icon_toned(
+        "caret",
+        if open {
+            IconMark::ChevronUp
+        } else {
+            IconMark::ChevronDown
+        },
+        IconTone::Primary,
+    );
+    let mut trigger = edge_row("trigger", caption, Some(chevron));
+    trigger
+        .props
+        .tokens
+        .insert("background".into(), t(SURFACE_BASE));
+    trigger
+        .props
+        .tokens
+        .insert("background@hover".into(), t(LAYER_HOVER));
+    let mut trigger = trigger
+        .with_constraints(crate::tree::Constraints {
+            horizontal: AxisConstraint::default(),
+            vertical: AxisConstraint {
+                min: Some(HEIGHT_LG),
+                max: Some(HEIGHT_LG),
+                priority: 0,
+            },
+        })
+        .interactive(Role::Button, label.clone(), TOOLBAR_MENU_INTENTS)
+        .owning_its_text()
+        .with_focus_figure(FocusFigure::Border);
+    trigger.semantics.expanded = Some(open);
+    let mut children = vec![trigger];
+    if open {
+        children.push(menu("menu", label, items));
+    }
+    let mut node = stack(key, Axis::Vertical, None, children);
+    node.semantics.expanded = Some(open);
+    node
+}
+
+/// What [`data_table_toolbar_menu`]'s trigger accepts. Same three a
+/// [`super::menu_button`] trigger accepts, for the same reasons.
+const TOOLBAR_MENU_INTENTS: &[Interaction] =
+    &[Interaction::Focus, Interaction::Click, Interaction::Hover];
+
+/// Carbon Toolbar (T034, anatomy 2): `search` grows, `trailing` controls
+/// (the column-visibility [`data_table_toolbar_menu`]) hug the trailing edge.
+///
+/// A `Grid` with one [`TrackSize::Weight`] column and one
+/// [`TrackSize::FitContent`] column — see the module doc's "T034" section
+/// for why this is not [`edge_row`]. Height pairs with the table's own row
+/// size (style page "Toolbar": large 48 with lg/xl rows, small 32 with
+/// xs/sm); this file's tables are always lg, so the toolbar is always
+/// [`HEIGHT_LG`].
+pub fn data_table_toolbar(
+    key: impl Into<Key>,
+    search: ViewNode,
+    trailing: Vec<ViewNode>,
+) -> ViewNode {
+    let actions = stack(
+        "toolbar-actions",
+        Axis::Horizontal,
+        Some(SPACING_03),
+        trailing,
+    );
+    let mut node = ViewNode::new(NodeKind::Grid, key)
+        .with_props(Props {
+            columns: vec![TrackSize::Weight { weight: 1.0 }, TrackSize::FitContent],
+            rows: vec![TrackSize::Weight { weight: 1.0 }],
+            align: Some(Align::Stretch),
+            padding: Some(InsetRefs {
+                left: Some(t(SPACING_05)),
+                right: Some(t(SPACING_05)),
+                ..InsetRefs::default()
+            }),
+            ..Props::default()
+        })
+        .with_children(vec![reseat_flush_focus(search), actions]);
+    node.props
+        .tokens
+        .insert("background".into(), t(SURFACE_BASE));
+    node.constraints.vertical.min = Some(HEIGHT_LG);
+    node
+}
+
+/// Re-seat a control's focus figure for a container with no padding.
+///
+/// `search` seats [`FocusFigure::Sides`], which draws its two bars seven
+/// units *outside* the control. That is right for a field with a card's
+/// padding around it and wrong at a toolbar's leading edge: the field's own
+/// left edge is the toolbar's, so the leading bar lands on the card behind
+/// the toolbar and the trailing one lands on whichever control sits flush
+/// beside it. Both were visible on the row 56 capture, 2026-09-11, as a
+/// six-pixel blue tick outside the toolbar and a second one in the seam.
+///
+/// [`FocusFigure::Border`] and not `BarInside`, which is the other figure
+/// that stays inside its control: a bar figure marks the *content run*, and
+/// `focus::marked_rect` excludes a [`NodeKind::Input`] from that run because
+/// an input is its own focus target. A search field's only other content is
+/// its magnifier, so `BarInside` would draw a stub under the icon and
+/// nothing under the text.
+///
+/// The well and the holder must agree — focus is *shown on* the field and
+/// *held by* its `input` child — so the children are re-seated too. The
+/// gallery's `a_control_and_the_node_it_shows_focus_on_agree_about_the_figure`
+/// refuses a holder that declares a shape nothing draws.
+fn reseat_flush_focus(mut node: ViewNode) -> ViewNode {
+    node.semantics.focus_figure = FocusFigure::Border;
+    for child in &mut node.children {
+        Arc::make_mut(child).semantics.focus_figure = FocusFigure::Border;
+    }
+    node
+}
+
+/// Carbon Batch action bar (T034, anatomy 2a): replaces
+/// [`data_table_toolbar`] while any row is selected ("slides in over the
+/// toolbar", slice-b). `cancel` is [`data_table_batch_cancel`]; `actions`
+/// are the author's own batch buttons.
+///
+/// `ACCENT_PRIMARY`/[`TEXT_ON_ACCENT`] stand in for Carbon's
+/// `$background-brand`: that name is not in this vocabulary, and this is
+/// the same accent/on-accent pair [`super::menu_button`]'s primary trigger
+/// already spends against the same fill, which is how the contrast test
+/// below is provably not a guess.
+pub fn data_table_batch_bar(
+    key: impl Into<Key>,
+    count: usize,
+    cancel: ViewNode,
+    actions: Vec<ViewNode>,
+) -> ViewNode {
+    let mut count_text = text(
+        "count",
+        format!("{count} item{} selected", if count == 1 { "" } else { "s" }),
+    );
+    count_text
+        .props
+        .tokens
+        .insert("foreground".into(), t(TEXT_ON_ACCENT));
+    let mut leading = stack(
+        "batch-leading",
+        Axis::Horizontal,
+        Some(SPACING_04),
+        vec![cancel, count_text],
+    );
+    leading.props.align = Some(Align::Center);
+    let mut trailing = stack("batch-actions", Axis::Horizontal, Some(SPACING_03), actions);
+    trailing.props.align = Some(Align::Center);
+
+    let mut node = edge_row(key, leading, Some(trailing));
+    node.props
+        .tokens
+        .insert("background".into(), t(ACCENT_PRIMARY));
+    node.constraints.vertical.min = Some(HEIGHT_LG);
+    node
+}
+
+/// The batch bar's leading "cancel selection" control: an "×" on the same
+/// [`ACCENT_PRIMARY`] fill the rest of [`data_table_batch_bar`] draws on.
+pub fn data_table_batch_cancel(key: impl Into<Key>) -> ViewNode {
+    icon_only_button(key, IconMark::Close, IconTone::OnAccent, "Cancel selection")
+}
+
+/// One of [`data_table_batch_bar`]'s own action buttons: `label` in
+/// [`TEXT_ON_ACCENT`], never [`super::ghost_button`] or [`super::menu_item`]
+/// — both of those bind link/primary ink tuned for a resting `surface.raised`
+/// ground, not [`ACCENT_PRIMARY`], and reusing either here risks the same
+/// contrast failure `tokens.rs`'s own `SUPPORT_ERROR` doc warns about
+/// (`field_invalid` drawing in the same blue a focused field used).
+pub fn data_table_batch_action(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
+    let label = label.into();
+    let mut caption = text("label", label.clone());
+    caption
+        .props
+        .tokens
+        .insert("foreground".into(), t(TEXT_ON_ACCENT));
+    let mut node = stack(key, Axis::Horizontal, None, vec![caption]);
+    node.props.align = Some(Align::Center);
+    node.interactive(Role::Button, label, ICON_BUTTON_INTENTS)
+        .with_focus_figure(FocusFigure::Sides)
+}
+
+/// Row-menu trigger (T034, anatomy 5): an icon-only [`Role::Button`] in a
+/// row's trailing [`ROW_MENU`] column, always visible
+/// (`.cds--data-table--visible-overflow-menu`, Carbon's own always-on
+/// modifier — not opacity-0-until-hover, which this engine's frame model
+/// has no per-row hover state to key off outside the row's own click
+/// target).
+///
+/// Carbon's own glyph is `OverflowMenuVertical`, a kebab; this icon set
+/// ships no kebab mark ([`super::icon::IconMark`]'s own list), so this
+/// reuses [`IconMark::Menu`] — the closest shape available. Never the only
+/// channel: `label` is the real accessible name, the same rule every other
+/// icon-only mark in this file already keeps (the search magnifier, the
+/// sort arrows).
+pub fn data_table_row_menu_trigger(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
+    icon_only_button(key, IconMark::Menu, IconTone::Primary, label)
+}
+
+const ICON_BUTTON_INTENTS: &[Interaction] =
+    &[Interaction::Focus, Interaction::Click, Interaction::Hover];
+
+/// Shared shape of [`data_table_batch_cancel`] and
+/// [`data_table_row_menu_trigger`]: one glyph, no visible text, a real
+/// accessible name.
+fn icon_only_button(
+    key: impl Into<Key>,
+    mark: IconMark,
+    tone: IconTone,
+    label: impl Into<String>,
+) -> ViewNode {
+    let glyph = icon_toned("glyph", mark, tone);
+    let mut node = stack(key, Axis::Horizontal, None, vec![glyph]);
+    node.props.align = Some(Align::Center);
+    node.interactive(Role::Button, label, ICON_BUTTON_INTENTS)
+        .with_focus_figure(FocusFigure::Sides)
+}
+
+/// Carbon Skeleton (T034): a whole-table loading placeholder
+/// (`data-table-skeleton.scss`), `ncols` header bars and `nrows` body-row
+/// bars, all [`super::kit::swatch`] rectangles measured 16 tall, 64 wide
+/// (style page "Structure").
+///
+/// Deliberately carries **no [`Role`] anywhere** — not `Table`, not `Row`,
+/// not `Cell` — and no node here declares [`Interaction::Focus`]. A
+/// skeleton table is not reachable in focus order, cannot be selected (no
+/// `select-all`, no row checkboxes, no `Semantics.selected` field exists to
+/// set), and a screen reader has nothing shaped like a table row to
+/// announce. `Semantics.skeleton` is set on every bar — the engine's own
+/// state-resolution rank (`token::state::InteractionRank::Skeleton`,
+/// "outranks everything: a placeholder is not hoverable, pressable, or
+/// disabled-looking") — so a future `background@skeleton` binding on this
+/// module's own tokens would already reach the right nodes; today the bars
+/// bind a plain resting [`LAYER_ACCENT`] ("a recessed fill... where an area
+/// is filled to recede, spend this" — this module's own tokens doc) because
+/// nothing here has a hover/active state to switch the fill by.
+pub fn data_table_skeleton(key: impl Into<Key>, ncols: usize, nrows: usize) -> ViewNode {
+    let ncols = ncols.max(1);
+    let mut children = vec![skeleton_row("header", ncols)];
+    for i in 0..nrows {
+        children.push(skeleton_row(format!("skeleton-row-{i}"), ncols));
+    }
+    let mut node = stack(key, Axis::Vertical, None, children);
+    node.props.align = Some(Align::Stretch);
+    node
+}
+
+fn skeleton_row(key: impl Into<Key>, ncols: usize) -> ViewNode {
+    let bars: Vec<ViewNode> = (0..ncols).map(skeleton_cell).collect();
+    let mut node = ViewNode::new(NodeKind::Grid, key)
+        .with_props(Props {
+            columns: std::iter::repeat_n(TrackSize::Weight { weight: 1.0 }, ncols).collect(),
+            rows: vec![TrackSize::Weight { weight: 1.0 }],
+            align: Some(Align::Stretch),
+            ..Props::default()
+        })
+        .with_children(bars);
+    node.constraints.vertical.min = Some(HEIGHT_LG);
+    node.props
+        .tokens
+        .insert("border-bottom".into(), t(BORDER_SUBTLE));
+    node
+}
+
+fn skeleton_cell(index: usize) -> ViewNode {
+    let mut bar = swatch(
+        "bar",
+        SKELETON_BAR_W,
+        SKELETON_BAR_H,
+        Some(LAYER_ACCENT),
+        None,
+        None,
+    );
+    bar.semantics.skeleton = true;
+    let mut cell = stack(format!("c{index}"), Axis::Horizontal, None, vec![bar]);
+    cell.props.padding = Some(cell_padding_inline());
+    cell.props.align = Some(Align::Center);
+    cell
+}
+
 fn data_table_row_sized(
     key: impl Into<Key>,
     cells: Vec<ViewNode>,
@@ -536,6 +1024,52 @@ fn reserve_expand_column(mut row: ViewNode) -> ViewNode {
     row
 }
 
+/// Give a row with no row-menu of its own the trailing blank
+/// [`data_table_row_actions`]'s real trigger occupies elsewhere in the
+/// table — the mirror of [`reserve_expand_column`], on the trailing edge
+/// instead of nested inside the leading cell, because a row-menu column is
+/// a plain top-level sibling of every other cell rather than something
+/// packed inside the selection cell.
+fn reserve_menu_column(mut row: ViewNode) -> ViewNode {
+    // An expandable row's own root is `stack(key, Vertical, [cells, body?])`
+    // (`data_table_row_expandable`), not the `Grid` every other row is — the
+    // real trailing column always lives on the *cells* `Grid`, so the blank
+    // reservation has to find that same nested node rather than pushing
+    // onto whichever node it was handed. `reserve_expand_column` already
+    // walks into a child keyed `cells` for exactly this shape; this mirrors
+    // it on the trailing side.
+    let target: &mut ViewNode = if row.kind == NodeKind::Grid {
+        &mut row
+    } else {
+        match row.children.iter_mut().find(|c| c.key.as_str() == "cells") {
+            Some(cells) => Arc::make_mut(cells),
+            None => &mut row,
+        }
+    };
+    let has = target
+        .children
+        .last()
+        .is_some_and(|c| c.key.as_str() == ROW_MENU);
+    if !has {
+        target.props.columns.push(TrackSize::FitContent);
+        target.children.push(Arc::new(menu_column_blank()));
+    }
+    row
+}
+
+/// The blank [`reserve_menu_column`] inserts: a [`Role::Cell`] with nothing
+/// in it, the same width class ([`TrackSize::FitContent`]) as a real
+/// [`data_table_row_menu_trigger`] cell so every row's columns still match.
+fn menu_column_blank() -> ViewNode {
+    let mut cell = stack(ROW_MENU, Axis::Horizontal, None, Vec::new());
+    cell.props.padding = Some(cell_padding_inline());
+    cell.semantics = Semantics {
+        role: Some(Role::Cell),
+        ..Semantics::default()
+    };
+    cell
+}
+
 /// One row's cells, laid out as a `Grid`: the selection column sized to its
 /// content, then `ncols` equal [`TrackSize::Weight`] columns.
 ///
@@ -564,7 +1098,7 @@ fn row_shell(
         cells
             .into_iter()
             .enumerate()
-            .map(|(i, cell)| as_cell(i, cell)),
+            .map(|(i, cell)| as_cell(format!("c{i}"), cell)),
     );
     let mut node = ViewNode::new(NodeKind::Grid, key)
         .with_props(Props {
@@ -591,11 +1125,19 @@ fn cell_padding_inline() -> InsetRefs {
     }
 }
 
-fn as_cell(index: usize, node: ViewNode) -> ViewNode {
+/// Wrap `node` as a [`Role::Cell`] keyed `key`, unless it already declared
+/// the role itself (e.g. [`data_table_sort_header`]'s own doc comment,
+/// which built its cell by hand for exactly this reason).
+///
+/// Takes the key directly rather than a column index — [`row_shell`]'s
+/// call site still spells `format!("c{i}")` positionally, but
+/// [`append_menu_column`] wants the stable [`ROW_MENU`] key regardless of
+/// how many data columns came before it.
+fn as_cell(key: impl Into<Key>, node: ViewNode) -> ViewNode {
     if node.semantics.role == Some(Role::Cell) {
         return node;
     }
-    let mut wrap = stack(format!("c{index}"), Axis::Horizontal, None, vec![node]);
+    let mut wrap = stack(key, Axis::Horizontal, None, vec![node]);
     wrap.props.padding = Some(cell_padding_inline());
     wrap.props.align = Some(Align::Center);
     wrap.semantics = Semantics {
@@ -667,18 +1209,22 @@ fn collect_text(node: &ViewNode) -> String {
 mod tests {
     use super::{
         HEIGHT_LG, HEIGHT_SM, HEIGHT_XL, HEIGHT_XS, IconMark, IconTone, SIZE_MD, SortDirection,
-        data_table, data_table_row, data_table_row_expandable, data_table_row_lg,
-        data_table_row_md, data_table_row_sm, data_table_row_xl, data_table_row_xs,
-        data_table_sort_header, data_table_zebra, icon_toned,
+        data_table, data_table_batch_bar, data_table_batch_cancel, data_table_row,
+        data_table_row_actions, data_table_row_expandable, data_table_row_lg, data_table_row_md,
+        data_table_row_menu_trigger, data_table_row_sm, data_table_row_xl, data_table_row_xs,
+        data_table_skeleton, data_table_sort_header, data_table_toolbar, data_table_zebra,
+        icon_toned,
     };
     use crate::component::controls::{CheckState, checkbox_box};
+    use crate::component::search;
     use crate::component::text::text;
     use crate::component::tokens::{
-        BORDER_SUBTLE, LAYER_ACCENT, LAYER_SELECTED, SURFACE_BASE, TYPOGRAPHY_HEADING_SM,
+        ACCENT_PRIMARY, BORDER_SUBTLE, LAYER_ACCENT, LAYER_SELECTED, SURFACE_BASE,
+        TYPOGRAPHY_HEADING_SM,
     };
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
-    use crate::testing::{Harness, validated_with};
+    use crate::testing::{Harness, inks, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
     use crate::tree::{Interaction, NodeKind, Props, Registry, Role, ViewNode};
 
@@ -1249,6 +1795,432 @@ mod tests {
                     }
                 }
                 walk_text(row, bg, &theme, MIN_TEXT_CONTRAST, row_key);
+            }
+        }
+    }
+
+    // ===== T034: the toolbar tier =====
+
+    #[test]
+    fn toolbar_grows_search_and_hugs_trailing_controls() {
+        let node = data_table_toolbar(
+            "toolbar",
+            search("search", "Filter rows"),
+            vec![text("columns-trigger", "Columns")],
+        );
+        assert_eq!(node.kind, NodeKind::Grid);
+        assert_eq!(node.constraints.vertical.min, Some(HEIGHT_LG));
+        assert_eq!(HEIGHT_LG, 48.0);
+        assert_eq!(token(&node, "background"), Some(SURFACE_BASE));
+        assert_eq!(
+            node.props.columns,
+            vec![
+                crate::tree::TrackSize::Weight { weight: 1.0 },
+                crate::tree::TrackSize::FitContent
+            ],
+            "search grows, the trailing group hugs its content"
+        );
+        assert_eq!(named(&node, "input").semantics.role, Some(Role::TextInput));
+        assert_eq!(
+            named(&node, "columns-trigger").props.text.as_deref(),
+            Some("Columns")
+        );
+    }
+
+    /// Falsify by swapping the two `TrackSize`s: the search column would
+    /// hug and the trailing column would grow, exactly backwards.
+    #[test]
+    fn toolbar_search_column_is_the_one_that_grows() {
+        let node = data_table_toolbar("toolbar", search("search", "Filter"), vec![]);
+        assert_eq!(
+            node.props.columns[0],
+            crate::tree::TrackSize::Weight { weight: 1.0 }
+        );
+        assert_eq!(node.props.columns[1], crate::tree::TrackSize::FitContent);
+    }
+
+    #[test]
+    fn batch_bar_shows_count_cancel_and_actions_on_the_accent_fill() {
+        let node = data_table_batch_bar(
+            "batch",
+            2,
+            data_table_batch_cancel("cancel"),
+            vec![text("delete", "Delete")],
+        );
+        assert_eq!(node.constraints.vertical.min, Some(HEIGHT_LG));
+        assert_eq!(token(&node, "background"), Some(ACCENT_PRIMARY));
+        assert_eq!(
+            named(&node, "count").props.text.as_deref(),
+            Some("2 items selected")
+        );
+        assert_eq!(named(&node, "cancel").semantics.role, Some(Role::Button));
+        assert_eq!(
+            named(&node, "cancel").semantics.label.as_deref(),
+            Some("Cancel selection")
+        );
+        assert_eq!(named(&node, "delete").props.text.as_deref(), Some("Delete"));
+    }
+
+    /// Singular/plural agreement, the second channel a colour-blind reader
+    /// gets beside the count itself.
+    #[test]
+    fn batch_bar_count_text_is_singular_for_exactly_one() {
+        let one = data_table_batch_bar("batch", 1, data_table_batch_cancel("cancel"), vec![]);
+        assert_eq!(
+            named(&one, "count").props.text.as_deref(),
+            Some("1 item selected")
+        );
+        let three = data_table_batch_bar("batch", 3, data_table_batch_cancel("cancel"), vec![]);
+        assert_eq!(
+            named(&three, "count").props.text.as_deref(),
+            Some("3 items selected")
+        );
+    }
+
+    #[test]
+    fn batch_cancel_and_row_menu_trigger_are_icon_only_buttons_with_a_real_label() {
+        let cancel = data_table_batch_cancel("cancel");
+        assert_eq!(cancel.semantics.role, Some(Role::Button));
+        assert_eq!(cancel.semantics.label.as_deref(), Some("Cancel selection"));
+        assert!(cancel.interactions.contains(&Interaction::Click));
+        assert!(
+            !cancel.children.iter().any(|c| c.props.text.is_some()),
+            "no visible text; the label is the accessible name alone"
+        );
+
+        let trigger = data_table_row_menu_trigger("trigger", "Row actions for alpha");
+        assert_eq!(trigger.semantics.role, Some(Role::Button));
+        assert_eq!(
+            trigger.semantics.label.as_deref(),
+            Some("Row actions for alpha")
+        );
+        assert_eq!(
+            named(&trigger, "glyph").props.canvas,
+            icon_toned("glyph", IconMark::Menu, IconTone::Primary)
+                .props
+                .canvas,
+            "no dedicated kebab mark exists; the trigger reuses IconMark::Menu"
+        );
+    }
+
+    /// [`data_table_row_actions`] gets a real trailing `row-menu` cell; a
+    /// plain [`data_table_row`] mixed into the same table gets the blank
+    /// [`super::reserve_menu_column`] stands in, and every row (header
+    /// included) ends up with the identical column-track count.
+    #[test]
+    fn a_row_menu_column_is_reserved_on_every_row_and_the_header() {
+        let table = data_table(
+            "jobs",
+            vec![text("h0", "Name")],
+            vec![
+                data_table_row("r0", vec![text("n0", "alpha")], false),
+                data_table_row_actions(
+                    "r1",
+                    vec![text("n1", "bravo")],
+                    false,
+                    data_table_row_menu_trigger("trigger", "Row actions for bravo"),
+                ),
+            ],
+        );
+        let header = named(&table, "header");
+        let r0 = named(&table, "r0");
+        let r1 = named(&table, "r1");
+        assert_eq!(header.props.columns.len(), r0.props.columns.len());
+        assert_eq!(r0.props.columns.len(), r1.props.columns.len());
+        assert_eq!(
+            header.children.last().map(|c| c.key.as_str()),
+            Some("row-menu")
+        );
+        assert_eq!(r0.children.last().map(|c| c.key.as_str()), Some("row-menu"));
+        assert_eq!(r1.children.last().map(|c| c.key.as_str()), Some("row-menu"));
+        assert!(
+            named(r0, "row-menu").children.is_empty(),
+            "r0 built no menu of its own; its reserved cell is blank"
+        );
+        assert!(
+            named(r1, "row-menu")
+                .children
+                .iter()
+                .any(|c| c.key.as_str() == "trigger"),
+            "r1's own trigger survives under its real row-menu cell"
+        );
+
+        let plain = data_table(
+            "jobs",
+            vec![text("h0", "Name")],
+            vec![data_table_row("r0", vec![text("n0", "alpha")], false)],
+        );
+        assert_ne!(
+            named(&plain, "r0").children.last().map(|c| c.key.as_str()),
+            Some("row-menu"),
+            "a table with no row-menu column reserves nothing"
+        );
+    }
+
+    /// An expandable row mixed with a row-actions row in the same table:
+    /// `data_table_row_expandable`'s own root is a `Stack` of `[cells,
+    /// body?]`, not the `Grid` `reserve_menu_column` assumes every row is —
+    /// exactly the shape [`reserve_expand_column`] already special-cases by
+    /// walking into a child keyed `cells`. The blank reservation must land
+    /// on that same nested `Grid`, never as a stray third sibling of `cells`
+    /// and `body`.
+    #[test]
+    fn the_blank_row_menu_column_lands_inside_an_expandable_rows_own_cells_grid() {
+        let table = data_table(
+            "jobs",
+            vec![text("h0", "Name")],
+            vec![
+                data_table_row_expandable(
+                    "r0",
+                    vec![text("n0", "alpha")],
+                    false,
+                    true,
+                    "more detail",
+                ),
+                data_table_row_actions(
+                    "r1",
+                    vec![text("n1", "bravo")],
+                    false,
+                    data_table_row_menu_trigger("trigger", "Row actions for bravo"),
+                ),
+            ],
+        );
+        let r0 = named(&table, "r0");
+        assert_eq!(
+            r0.kind,
+            NodeKind::Stack,
+            "an expandable row's own root is the vertical stack of cells+body"
+        );
+        assert!(
+            r0.children.iter().all(|c| c.key.as_str() != "row-menu"),
+            "the blank must not land as a stray third sibling of cells/body: {:?}",
+            r0.children
+                .iter()
+                .map(|c| c.key.as_str())
+                .collect::<Vec<_>>()
+        );
+        let cells = named(r0, "cells");
+        assert_eq!(
+            cells.children.last().map(|c| c.key.as_str()),
+            Some("row-menu"),
+            "the blank belongs on the nested cells Grid, the same place a real trigger would sit"
+        );
+        assert!(named(cells, "row-menu").children.is_empty());
+    }
+
+    /// A skeleton table carries no `Role` and no `Interaction::Focus`
+    /// anywhere — falsify by giving `skeleton_row` `Role::Row`: this test
+    /// would then find a role and fail its own first assertion.
+    #[test]
+    fn skeleton_declares_no_role_and_nothing_reachable() {
+        let node = data_table_skeleton("skeleton", 3, 4);
+        fn walk(node: &ViewNode, roles: &mut Vec<Role>, focusable: &mut bool) {
+            if let Some(role) = &node.semantics.role {
+                roles.push(role.clone());
+            }
+            if node.interactions.contains(&Interaction::Focus) {
+                *focusable = true;
+            }
+            for child in &node.children {
+                walk(child, roles, focusable);
+            }
+        }
+        let mut roles = Vec::new();
+        let mut focusable = false;
+        walk(&node, &mut roles, &mut focusable);
+        assert!(
+            roles.is_empty(),
+            "a skeleton must declare no Role: {roles:?}"
+        );
+        assert!(!focusable, "a skeleton must declare no Interaction::Focus");
+    }
+
+    #[test]
+    fn skeleton_bars_are_marked_skeleton_ncols_by_nrows_plus_one_header() {
+        let node = data_table_skeleton("skeleton", 2, 3);
+        fn bars(node: &ViewNode, count: &mut usize) {
+            if node.semantics.skeleton {
+                *count += 1;
+                assert_eq!(
+                    node.kind,
+                    NodeKind::Spacer,
+                    "the skeleton flag belongs to the bar itself, key {:?}",
+                    node.key
+                );
+            }
+            for child in &node.children {
+                bars(child, count);
+            }
+        }
+        let mut count = 0;
+        bars(&node, &mut count);
+        assert_eq!(count, 2 * (3 + 1), "2 columns across the header + 3 rows");
+    }
+
+    const VIEWPORT2: Size = Size { w: 900.0, h: 700.0 };
+
+    fn petrify_lone2(node: ViewNode) -> PetrifiedFrame {
+        let root = ViewNode::new(NodeKind::Stack, "root")
+            .with_props(Props {
+                axis: Some(Axis::Vertical),
+                ..Props::default()
+            })
+            .child(node);
+        let registry = Registry::with_vocabulary(standard_vocabulary());
+        let mut harness = Harness::new();
+        let viewport = Viewport::new(VIEWPORT2, ThemeMode::Dark);
+        harness.scale = viewport.scale;
+        petrify(
+            1,
+            validated_with(&root, &registry),
+            &mut harness.ctx(),
+            viewport,
+            TransitionActivity::default(),
+        )
+    }
+
+    /// Check C/D across the toolbar, the batch bar and a skeleton table:
+    /// real rects, nothing overflowing its parent.
+    #[test]
+    fn toolbar_tier_frame_geometry_has_no_degenerate_or_overflowing_placements() {
+        for node in [
+            data_table_toolbar(
+                "toolbar",
+                search("search", "Filter rows"),
+                vec![text("columns-trigger", "Columns")],
+            ),
+            data_table_batch_bar(
+                "batch",
+                2,
+                data_table_batch_cancel("cancel"),
+                vec![text("delete", "Delete")],
+            ),
+            data_table_skeleton("skeleton", 3, 2),
+        ] {
+            let frame = petrify_lone2(node);
+            assert!(!frame.placements.is_empty(), "nothing placed");
+            for p in &frame.placements {
+                assert!(
+                    p.rect.w > 0.0 && p.rect.h > 0.0,
+                    "{} placed with a degenerate rect {:?}",
+                    p.id,
+                    p.rect
+                );
+                assert!(
+                    !p.paint.overflowed,
+                    "{} drew content larger than its own rect",
+                    p.id
+                );
+                if let Some(parent_idx) = p.parent {
+                    let parent = &frame.placements[parent_idx];
+                    let fits = p.rect.x >= parent.rect.x - 0.01
+                        && p.rect.y >= parent.rect.y - 0.01
+                        && p.rect.x + p.rect.w <= parent.rect.x + parent.rect.w + 0.01
+                        && p.rect.y + p.rect.h <= parent.rect.y + parent.rect.h + 0.01;
+                    assert!(
+                        fits,
+                        "{} (rect {:?}) extends outside its parent {} (rect {:?})",
+                        p.id, p.rect, parent.id, parent.rect
+                    );
+                }
+            }
+        }
+    }
+
+    /// Check F: the batch bar's cancel control and a row-menu trigger are
+    /// reachable; nothing in a skeleton table is.
+    #[test]
+    fn row_menu_and_batch_cancel_are_reachable_and_skeleton_is_not() {
+        let batch = data_table_batch_bar(
+            "batch",
+            1,
+            data_table_batch_cancel("cancel"),
+            vec![text("delete", "Delete")],
+        );
+        let frame = petrify_lone2(batch);
+        let focus = crate::focus::FocusTree::from_placements(
+            &frame.placements,
+            &std::collections::BTreeMap::new(),
+        );
+        let order = focus.order();
+        let cancel = frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/cancel"))
+            .expect("cancel is placed");
+        assert!(order.iter().any(|o| o == &cancel.id));
+
+        let table = data_table(
+            "jobs",
+            vec![text("h0", "Name")],
+            vec![data_table_row_actions(
+                "r0",
+                vec![text("n0", "alpha")],
+                false,
+                data_table_row_menu_trigger("trigger", "Row actions for alpha"),
+            )],
+        );
+        let frame = petrify_lone2(table);
+        let focus = crate::focus::FocusTree::from_placements(
+            &frame.placements,
+            &std::collections::BTreeMap::new(),
+        );
+        let order = focus.order();
+        let trigger = frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/trigger"))
+            .expect("the row-menu trigger is placed");
+        assert!(order.iter().any(|o| o == &trigger.id));
+
+        let skeleton = data_table_skeleton("skeleton", 2, 2);
+        let frame = petrify_lone2(skeleton);
+        let focus = crate::focus::FocusTree::from_placements(
+            &frame.placements,
+            &std::collections::BTreeMap::new(),
+        );
+        assert!(
+            focus.order().is_empty(),
+            "nothing in a skeleton table is reachable"
+        );
+    }
+
+    /// Check E: the batch bar's count text and cancel glyph against its
+    /// own `ACCENT_PRIMARY` fill, in both themes — the substitution this
+    /// module's doc comment claims for Carbon's `$background-brand`.
+    #[test]
+    fn batch_bar_text_and_glyph_clear_aa_contrast_against_the_accent_fill() {
+        const MIN_TEXT_CONTRAST: f32 = 4.5;
+        for theme in [crate::token::light(), crate::token::dark()] {
+            let node = data_table_batch_bar(
+                "batch",
+                2,
+                data_table_batch_cancel("cancel"),
+                vec![text("delete", "Delete")],
+            );
+            let bg_name = node
+                .props
+                .tokens
+                .get("background")
+                .expect("batch bar binds a resting background");
+            let bg = color(&theme, bg_name.as_str());
+            let cancel = named(&node, "cancel");
+            for (label, part) in [
+                ("count", named(&node, "count")),
+                ("cancel/glyph", named(cancel, "glyph")),
+            ] {
+                let names = inks(part);
+                assert!(!names.is_empty(), "{label} binds an ink");
+                let opacity = part.props.opacity.unwrap_or(1.0);
+                for fg_name in names {
+                    let fg = color(&theme, fg_name.as_str()).faded(opacity).over(bg);
+                    let ratio = fg.contrast_ratio(bg);
+                    assert!(
+                        ratio >= MIN_TEXT_CONTRAST,
+                        "{label} at {ratio:.2}:1 against {} fails AA {MIN_TEXT_CONTRAST}:1",
+                        fg_name.as_str()
+                    );
+                }
             }
         }
     }

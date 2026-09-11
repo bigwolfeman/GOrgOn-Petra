@@ -5,8 +5,10 @@
 //! [`crate::component::params`], and calls the shipped constructor. A row
 //! must never re-derive what the constructor does.
 //!
-//! File covered: `data_table.rs` (Data table) — ten public constructors,
-//! all registered below. The `every_view_node_constructor_has_exactly_one_row`
+//! File covered: `data_table.rs` (Data table) — seventeen public
+//! constructors (ten pre-T034, plus T034's toolbar tier: search/filter,
+//! column visibility, the batch bar, the row menu, and the skeleton), all
+//! registered below. The `every_view_node_constructor_has_exactly_one_row`
 //! test proves it by scanning that file's own source text, not by trusting
 //! this list.
 
@@ -15,7 +17,9 @@ use serde_json::Value;
 
 use super::Entry;
 use crate::component as lib;
-use crate::component::params::{KeyChildrenSelected, KeyLabelSelected, ParamError, ParamShape};
+use crate::component::params::{
+    KeyChildrenSelected, KeyLabel, KeyLabelSelected, KeyOnly, ParamError, ParamShape,
+};
 use crate::tree::{Key, ViewNode};
 
 /// See `registry/form.rs`'s `fail`: names the component being built so a
@@ -85,6 +89,111 @@ impl ParamShape for DataTableRowExpandableParams {
     const LUAU: &'static str = "{ key: string, children: { ViewNode }, selected: boolean, expanded: boolean, body: string }";
 }
 
+/// `data_table_row_expandable_actions(key, cells, selected, expanded, body,
+/// menu)` (T034, anatomy 5): the expandable row's own row-menu form. The
+/// union of `DataTableRowExpandableParams` and the `menu` field, spelled
+/// out rather than composed because a `#[serde(flatten)]` on a struct with
+/// `deny_unknown_fields` is a known serde conflict and this file's other
+/// twelve shapes are flat too.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DataTableRowExpandableActionsParams {
+    key: Key,
+    /// See `DataTableParams::header`'s doc: same reason.
+    #[serde(default)]
+    cells: Vec<ViewNode>,
+    selected: bool,
+    expanded: bool,
+    body: String,
+    menu: ViewNode,
+}
+impl ParamShape for DataTableRowExpandableActionsParams {
+    const LUAU: &'static str = "{ key: string, cells: { ViewNode }, selected: boolean, expanded: boolean, body: string, menu: ViewNode }";
+}
+
+/// `data_table_row_actions(key, cells, selected, menu)` (T034, anatomy 5).
+/// `menu` is a single built `ViewNode` (the trigger-plus-overlay control),
+/// not one of the shared shapes: no other row constructor in this file
+/// takes both a `Vec<ViewNode>` and a lone `ViewNode`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DataTableRowActionsParams {
+    key: Key,
+    /// See `DataTableParams::header`'s doc: same reason.
+    #[serde(default)]
+    cells: Vec<ViewNode>,
+    selected: bool,
+    menu: ViewNode,
+}
+impl ParamShape for DataTableRowActionsParams {
+    const LUAU: &'static str =
+        "{ key: string, cells: { ViewNode }, selected: boolean, menu: ViewNode }";
+}
+
+/// `data_table_toolbar_menu(key, label, open, items)` (T034, anatomy 2):
+/// the toolbar's own settings control. Same four fields as
+/// `menu_button`'s row in `navigation.rs`, declared here rather than
+/// shared because the two constructors are different controls that happen
+/// to take the same arguments, and a shared shape would invite the next
+/// reader to conclude they are interchangeable. They are not: see
+/// `data_table_toolbar_menu`'s own doc.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DataTableToolbarMenuParams {
+    key: Key,
+    label: String,
+    open: bool,
+    /// See `DataTableParams::header`'s doc: same reason.
+    #[serde(default)]
+    items: Vec<ViewNode>,
+}
+impl ParamShape for DataTableToolbarMenuParams {
+    const LUAU: &'static str = "{ key: string, label: string, open: boolean, items: { ViewNode } }";
+}
+
+/// `data_table_toolbar(key, search, trailing)` (T034, anatomy 2).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DataTableToolbarParams {
+    key: Key,
+    search: ViewNode,
+    /// See `DataTableParams::header`'s doc: same reason.
+    #[serde(default)]
+    trailing: Vec<ViewNode>,
+}
+impl ParamShape for DataTableToolbarParams {
+    const LUAU: &'static str = "{ key: string, search: ViewNode, trailing: { ViewNode } }";
+}
+
+/// `data_table_batch_bar(key, count, cancel, actions)` (T034, anatomy 2a).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DataTableBatchBarParams {
+    key: Key,
+    count: usize,
+    cancel: ViewNode,
+    /// See `DataTableParams::header`'s doc: same reason.
+    #[serde(default)]
+    actions: Vec<ViewNode>,
+}
+impl ParamShape for DataTableBatchBarParams {
+    const LUAU: &'static str =
+        "{ key: string, count: number, cancel: ViewNode, actions: { ViewNode } }";
+}
+
+/// `data_table_skeleton(key, ncols, nrows)` (T034). Two `usize` fields; no
+/// shared shape carries a bare number pair.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DataTableSkeletonParams {
+    key: Key,
+    ncols: usize,
+    nrows: usize,
+}
+impl ParamShape for DataTableSkeletonParams {
+    const LUAU: &'static str = "{ key: string, ncols: number, nrows: number }";
+}
+
 // ---------------------------------------------------------------------
 // This group's constructors.
 // ---------------------------------------------------------------------
@@ -135,6 +244,38 @@ pub const ENTRIES: &[Entry] = &[
                 lib::SortDirection::Descending
             },
         )
+    }),
+    // ---- T034: the toolbar tier -------------------------------------
+    row!("data_table_row_actions", DataTableRowActionsParams, |p| {
+        lib::data_table_row_actions(p.key, p.cells, p.selected, p.menu)
+    }),
+    row!(
+        "data_table_row_expandable_actions",
+        DataTableRowExpandableActionsParams,
+        |p| lib::data_table_row_expandable_actions(
+            p.key, p.cells, p.selected, p.expanded, p.body, p.menu
+        )
+    ),
+    row!("data_table_toolbar", DataTableToolbarParams, |p| {
+        lib::data_table_toolbar(p.key, p.search, p.trailing)
+    }),
+    row!("data_table_toolbar_menu", DataTableToolbarMenuParams, |p| {
+        lib::data_table_toolbar_menu(p.key, p.label, p.open, p.items)
+    }),
+    row!("data_table_batch_bar", DataTableBatchBarParams, |p| {
+        lib::data_table_batch_bar(p.key, p.count, p.cancel, p.actions)
+    }),
+    row!("data_table_batch_cancel", KeyOnly, |p| {
+        lib::data_table_batch_cancel(p.key)
+    }),
+    row!("data_table_batch_action", KeyLabel, |p| {
+        lib::data_table_batch_action(p.key, p.label)
+    }),
+    row!("data_table_row_menu_trigger", KeyLabel, |p| {
+        lib::data_table_row_menu_trigger(p.key, p.label)
+    }),
+    row!("data_table_skeleton", DataTableSkeletonParams, |p| {
+        lib::data_table_skeleton(p.key, p.ncols, p.nrows)
     }),
 ];
 
@@ -236,6 +377,14 @@ mod tests {
                 json!({"key": "probe", "children": [], "selected": true}),
             ),
             (
+                // `data_table_batch_action`/`data_table_row_menu_trigger`:
+                // T034's own pair sharing `KeyLabel`, the same "one-off
+                // shape used by few constructors" risk the `header`/`rows`
+                // probe above already flags.
+                "{ key, label }",
+                json!({"key": "probe", "label": "Probe"}),
+            ),
+            (
                 // Two rows, not zero: `data_table_zebra` only differs from
                 // `data_table` by tagging odd-indexed rows, so an empty
                 // `rows` gives both nothing to diverge on and would collide
@@ -262,6 +411,7 @@ mod tests {
                 "{ key: string, children: { ViewNode }, selected: boolean }" => {
                     Some("{ key, children, selected: boolean }")
                 }
+                "{ key: string, label: string }" => Some("{ key, label }"),
                 // `data_table`/`data_table_zebra`: the only two rows
                 // sharing `DataTableParams`. Checked here rather than left
                 // out — a one-off shape used by exactly two constructors is

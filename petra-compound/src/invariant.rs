@@ -134,6 +134,9 @@ fn data_table_props() -> DataTableProps {
             Row::new("r1", ["alpha", "busy"]).with_body("more"),
             Row::new("r2", ["bravo", "ready"]),
         ],
+        batch_actions: Vec::new(),
+        row_actions: Vec::new(),
+        loading: false,
     }
 }
 

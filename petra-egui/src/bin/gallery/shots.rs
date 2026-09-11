@@ -9351,16 +9351,166 @@ mod tests {
             "a second press on the active sort header did not flip direction"
         );
 
-        assert!(cam.selected("f1"), "f1 opens selected");
-        assert!(!cam.selected("f2"), "f2 must not start selected");
-        cam.click("f2");
-        let after = cam.shoot("56-data-table-compound-sorted-and-selected");
-        assert!(cam.selected("f2"), "the press did not select f2");
         assert!(
-            cam.selected("f1"),
-            "selecting f2 must not have cleared f1's own selection"
+            !cam.selected("f0") && !cam.selected("f2"),
+            "nothing is selected at rest, so the toolbar is what row 56 shows"
+        );
+        cam.click("f2");
+        assert!(cam.selected("f2"), "the press did not select f2");
+        cam.click("f0");
+        let after = cam.shoot("56-data-table-compound-sorted-and-selected");
+        assert!(cam.selected("f0"), "the press did not select f0");
+        assert!(
+            cam.selected("f2"),
+            "selecting f0 must not have cleared f2's own selection"
         );
         assert_ne!(before, after, "the interaction never reached the picture");
+    }
+
+    /// Data table (compound), row 56, T034. Nothing is selected at rest, so
+    /// the toolbar is what the page shows (see
+    /// `page/data_table_compound.rs`'s own `Default` for why that is the
+    /// resting state and not a seeded selection). Selecting a row replaces
+    /// the toolbar with the batch bar, and the batch bar's own Cancel
+    /// control puts the toolbar back — the batch bar is a pure function of
+    /// the selection in both directions, never a second flag that can
+    /// disagree with it.
+    #[test]
+    fn the_batch_bar_replaces_the_toolbar_and_cancel_returns_to_it() {
+        let mut cam = Camera::on("Data table (compound)");
+        assert!(cam.has("search"), "the toolbar shows at rest");
+        assert!(
+            !cam.has("cancel"),
+            "the batch bar must not be mounted with nothing selected"
+        );
+        let with_toolbar = cam.shoot("56-data-table-compound-toolbar");
+
+        cam.click("f0");
+        assert!(
+            cam.selected("f0"),
+            "selecting a row did not reach the compound"
+        );
+        assert!(
+            cam.has("cancel"),
+            "selecting a row did not bring the batch bar up"
+        );
+        assert!(
+            !cam.has("search"),
+            "the toolbar must be gone once the batch bar is up"
+        );
+        let with_batch_bar = cam.shoot("56-data-table-compound-batch-bar");
+        assert_ne!(
+            with_batch_bar, with_toolbar,
+            "the transition never reached the picture"
+        );
+
+        cam.click("cancel");
+        assert!(!cam.selected("f0"), "cancel did not clear the selection");
+        assert!(
+            cam.has("search"),
+            "the toolbar did not take the batch bar's place again"
+        );
+        assert!(
+            !cam.has("cancel"),
+            "the batch bar must be gone, not just hidden"
+        );
+    }
+
+    /// Data table (compound), row 56, T034. Typing into the toolbar's
+    /// search field narrows the visible rows through `Intent::Search`, the
+    /// same live-intent shape row 53's combobox and row 54's command
+    /// palette already prove for their own fields.
+    #[test]
+    fn typing_into_the_data_table_compound_search_narrows_the_rows() {
+        let mut cam = Camera::on("Data table (compound)");
+        assert!(cam.has("search"), "the toolbar shows at rest");
+        assert!(cam.has("f0"));
+        assert!(cam.has("f1"));
+        assert!(cam.has("f2"));
+        assert!(cam.has("f3"));
+
+        cam.type_into("input", "layout");
+        assert!(cam.has("f1"), "layout (f1) must still match its own name");
+        assert!(!cam.has("f0"), "scheduler (f0) must drop out of \"layout\"");
+        assert!(!cam.has("f2"), "trace (f2) must drop out of \"layout\"");
+        assert!(!cam.has("f3"), "snapshot (f3) must drop out of \"layout\"");
+        let narrowed = cam.shoot("56-data-table-compound-search-narrowed");
+
+        // `type_into` commits a whole string as one append (matching
+        // `InputEvent::Text`'s own composed-character contract — see
+        // `page/data_table_compound.rs`'s `handle`), so clearing the field
+        // takes one `KeyCode::Backspace` per character rather than a
+        // second, empty `type_into` — this proves `Intent::Search` with an
+        // empty query restores every row, the half typing "layout" above
+        // cannot reach on its own.
+        for _ in "layout".chars() {
+            cam.key(gorgon_petra::input::KeyCode::Backspace);
+        }
+        assert!(cam.has("f0"), "an empty query must restore every row");
+        assert!(cam.has("f2"));
+        assert!(cam.has("f3"));
+        let restored = cam.shoot("56-data-table-compound-search-cleared");
+        assert_ne!(
+            narrowed, restored,
+            "the interaction never reached the picture"
+        );
+    }
+
+    /// Data table (compound), row 56, T034. The column-visibility trigger
+    /// opens a menu of checkboxes, one per column; unchecking one drops
+    /// that column's header *and* every row's matching cell together.
+    #[test]
+    fn opening_the_column_visibility_menu_lists_checkboxes_and_hiding_one_drops_its_column() {
+        let mut cam = Camera::on("Data table (compound)");
+        assert!(!cam.has("col-status"), "the menu starts shut");
+        cam.click("columns/trigger");
+        assert!(
+            cam.has("col-status"),
+            "opening Columns did not mount its checkboxes"
+        );
+        assert!(
+            cam.selected("col-status"),
+            "Status starts visible, so its box starts checked"
+        );
+        assert!(
+            cam.has("status/sort"),
+            "the Status header is still up before hiding it"
+        );
+        let open = cam.shoot("56-data-table-compound-columns-open");
+
+        cam.click("col-status");
+        assert!(!cam.selected("col-status"), "the checkbox did not flip");
+        assert!(
+            !cam.has("status/sort"),
+            "hiding Status did not remove its header cell"
+        );
+        let hidden = cam.shoot("56-data-table-compound-status-hidden");
+        assert_ne!(open, hidden, "the interaction never reached the picture");
+    }
+
+    /// Data table (compound), row 56, T034. A row's own menu trigger opens
+    /// a list of that row's actions; choosing one closes the menu, the
+    /// same `Intent::Choose`-style "return to rest" the module doc explains
+    /// for `Intent::RowAction`.
+    #[test]
+    fn opening_a_rows_menu_lists_its_actions_and_choosing_one_closes_it() {
+        let mut cam = Camera::on("Data table (compound)");
+        assert!(!cam.has("row-action-rename"), "no row menu starts open");
+        cam.click("f0/row-menu/row-menu-ctl/trigger");
+        assert!(
+            cam.has("row-action-rename"),
+            "opening f0's menu did not mount its actions"
+        );
+        assert!(cam.has("row-action-delete"));
+        let open = cam.shoot("56-data-table-compound-row-menu-open");
+
+        cam.click("row-action-rename");
+        assert!(
+            !cam.has("row-action-rename"),
+            "choosing an action did not close the menu"
+        );
+        let closed = cam.shoot("56-data-table-compound-row-menu-closed");
+        assert_ne!(open, closed, "the interaction never reached the picture");
     }
 
     /// Selection palette (compound), row 57. The trigger relocates the

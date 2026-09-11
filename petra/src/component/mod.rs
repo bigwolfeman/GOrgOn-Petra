@@ -180,9 +180,12 @@ pub use controls::{
     radio_described, radio_group, radio_required, radio_warning, toggle, toggle_sm,
 };
 pub use data_table::{
-    SortDirection, data_table, data_table_row, data_table_row_expandable, data_table_row_lg,
-    data_table_row_md, data_table_row_sm, data_table_row_xl, data_table_row_xs,
-    data_table_sort_header, data_table_zebra,
+    SortDirection, data_table, data_table_batch_action, data_table_batch_bar,
+    data_table_batch_cancel, data_table_row, data_table_row_actions, data_table_row_expandable,
+    data_table_row_expandable_actions, data_table_row_lg, data_table_row_md,
+    data_table_row_menu_trigger, data_table_row_sm, data_table_row_xl, data_table_row_xs,
+    data_table_skeleton, data_table_sort_header, data_table_toolbar, data_table_toolbar_menu,
+    data_table_zebra,
 };
 pub use date_picker::{
     Calendar, date_picker, date_picker_open, date_picker_showing, date_picker_showing_selection,
