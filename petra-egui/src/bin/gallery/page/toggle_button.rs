@@ -1,9 +1,7 @@
 //! Catalog row 52, Toggle button.
 
-use gorgon_petra::component::{
-    section, toggle_button, toggle_button_group, toggle_button_icon,
-};
 use gorgon_petra::component::IconMark;
+use gorgon_petra::component::{section, toggle_button, toggle_button_group, toggle_button_icon};
 use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::ViewNode;
 
@@ -21,7 +19,6 @@ const BOTH: &str = "tb-both";
 pub struct ToggleButton {
     pressed: u8,
 }
-
 
 impl Page for ToggleButton {
     fn row(&self) -> &'static str {

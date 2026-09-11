@@ -1,8 +1,6 @@
 //! Catalog row 43, Avatar.
 
-use gorgon_petra::component::{
-    avatar, avatar_group, avatar_lg, avatar_md, avatar_xs, section,
-};
+use gorgon_petra::component::{avatar, avatar_group, avatar_lg, avatar_md, avatar_xs, section};
 use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::ViewNode;
 
@@ -45,11 +43,7 @@ impl Page for Avatar {
                     ),
                     avatar_group(
                         "av-group",
-                        vec![
-                            avatar("g0", "AB"),
-                            avatar("g1", "CD"),
-                            avatar("g2", "EF"),
-                        ],
+                        vec![avatar("g0", "AB"), avatar("g1", "CD"), avatar("g2", "EF")],
                         2,
                     ),
                 ],

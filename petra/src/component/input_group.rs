@@ -113,8 +113,7 @@ pub fn input_group_with_addon_seamless(
 #[cfg(test)]
 mod tests {
     use super::{
-        input_group, input_group_seamless, input_group_with_addon,
-        input_group_with_addon_seamless,
+        input_group, input_group_seamless, input_group_with_addon, input_group_with_addon_seamless,
     };
     use crate::geom::{Align, Axis};
     use crate::tree::{NodeKind, ViewNode};

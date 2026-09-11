@@ -23,7 +23,6 @@ pub struct Drawer {
     open: bool,
 }
 
-
 impl Page for Drawer {
     fn row(&self) -> &'static str {
         "Drawer"

@@ -51,14 +51,8 @@ impl Default for DataTableCompoundPage {
                 column: "name".into(),
             },
         );
-        DataTableCompound::update(
-            &mut state,
-            Intent::SelectRow { id: "f1".into() },
-        );
-        DataTableCompound::update(
-            &mut state,
-            Intent::ToggleExpand { id: "f1".into() },
-        );
+        DataTableCompound::update(&mut state, Intent::SelectRow { id: "f1".into() });
+        DataTableCompound::update(&mut state, Intent::ToggleExpand { id: "f1".into() });
         Self { props, state }
     }
 }

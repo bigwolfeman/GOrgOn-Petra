@@ -1,7 +1,7 @@
 //! Catalog row 50, Rating.
 
-use gorgon_petra::component::{section, rating};
 use gorgon_petra::component::IconMark;
+use gorgon_petra::component::{rating, section};
 use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::ViewNode;
 

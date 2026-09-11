@@ -1105,10 +1105,7 @@ mod tests {
             );
         }
         assert!(
-            named(named(&node, "expand"), "label")
-                .props
-                .runs
-                .is_empty(),
+            named(named(&node, "expand"), "label").props.runs.is_empty(),
             "the expand caption was coloured"
         );
     }

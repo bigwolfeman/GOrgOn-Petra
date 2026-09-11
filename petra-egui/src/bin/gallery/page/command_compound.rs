@@ -84,7 +84,12 @@ impl Page for CommandCompoundPage {
     }
 
     fn handle(&mut self, event: &InputEvent, node: &str) -> bool {
-        if let Some(idx) = self.props.items.iter().position(|it| path_has(node, &it.id)) {
+        if let Some(idx) = self
+            .props
+            .items
+            .iter()
+            .position(|it| path_has(node, &it.id))
+        {
             let filtered =
                 filter_indices(&self.props.items, &self.state.query, |it| it.label.as_str());
             if let Some(pos) = filtered.iter().position(|&i| i == idx) {

@@ -1172,11 +1172,7 @@ mod tests {
         assert!(find(&tree, "idx-36").is_some());
         assert!(find(&tree, "idx-42").is_some());
         assert!(find(&tree, "idx-43").is_some());
-        assert!(find(
-            &tree,
-            &format!("idx-{}", crate::inventory::ROWS.len())
-        )
-        .is_some());
+        assert!(find(&tree, &format!("idx-{}", crate::inventory::ROWS.len())).is_some());
         assert!(
             find(&tree, "idx-36").unwrap().semantics.selected,
             "the open page is selected in the index"

@@ -117,7 +117,8 @@ impl Page for InputGroup {
     }
 
     fn handle(&mut self, event: &InputEvent, node: &str) -> bool {
-        let target = if path_has(node, HOST) || path_has(node, HOST_PAIR)
+        let target = if path_has(node, HOST)
+            || path_has(node, HOST_PAIR)
             || path_has(node, HOST_SEAMLESS)
             || path_has(node, HOST_PAIR_SEAMLESS)
         {

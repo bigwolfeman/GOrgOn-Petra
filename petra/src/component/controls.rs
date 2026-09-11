@@ -383,11 +383,7 @@ pub fn checkbox(key: impl Into<Key>, label: impl Into<String>, checked: bool) ->
 /// A required checkbox (T037): [`checkbox`]'s shape plus the marker
 /// [`labelled_box_required`] adds. See that function's doc for why the
 /// star and the accessible-name suffix are both there.
-pub fn checkbox_required(
-    key: impl Into<Key>,
-    label: impl Into<String>,
-    checked: bool,
-) -> ViewNode {
+pub fn checkbox_required(key: impl Into<Key>, label: impl Into<String>, checked: bool) -> ViewNode {
     labelled_box_required(
         key,
         label,
@@ -1132,7 +1128,10 @@ mod tests {
         assert_eq!(node.semantics.label.as_deref(), Some("Terms (required)"));
 
         let plain = checkbox("agree", "Terms", false);
-        assert!(!plain.semantics.required, "a plain checkbox is not required");
+        assert!(
+            !plain.semantics.required,
+            "a plain checkbox is not required"
+        );
         assert_eq!(plain.semantics.label.as_deref(), Some("Terms"));
     }
 

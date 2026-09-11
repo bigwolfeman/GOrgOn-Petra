@@ -378,7 +378,10 @@ mod tests {
             assert_eq!(row.number, expected);
         }
         assert_eq!(ROWS.len(), super::CARBON_COUNT + 15);
-        assert_eq!(ROWS[super::CARBON_COUNT - 1].component, "UI shell right panel");
+        assert_eq!(
+            ROWS[super::CARBON_COUNT - 1].component,
+            "UI shell right panel"
+        );
         assert_eq!(ROWS[super::CARBON_COUNT].component, "Avatar");
     }
 

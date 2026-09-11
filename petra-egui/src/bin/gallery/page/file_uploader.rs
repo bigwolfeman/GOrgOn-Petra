@@ -2,8 +2,7 @@
 
 use gorgon_petra::component::{
     file_uploader_item, file_uploader_item_edit, file_uploader_item_invalid,
-    file_uploader_item_warning, file_uploader_with,
-    section,
+    file_uploader_item_warning, file_uploader_with, section,
 };
 use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::ViewNode;

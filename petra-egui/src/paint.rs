@@ -1698,8 +1698,10 @@ fn groove_bands(
     match edge {
         Edge::Bottom => {
             let (x0, x1) = shrink_span(rect.min.x, rect.max.x, start_r, end_r);
-            let highlight_rect =
-                egui::Rect::from_min_max(egui::pos2(x0, rect.max.y - highlight_h), egui::pos2(x1, rect.max.y));
+            let highlight_rect = egui::Rect::from_min_max(
+                egui::pos2(x0, rect.max.y - highlight_h),
+                egui::pos2(x1, rect.max.y),
+            );
             let shadow_rect = egui::Rect::from_min_max(
                 egui::pos2(x0, rect.max.y - highlight_h - shadow_h),
                 egui::pos2(x1, rect.max.y - highlight_h),
@@ -1708,8 +1710,10 @@ fn groove_bands(
         }
         Edge::Top => {
             let (x0, x1) = shrink_span(rect.min.x, rect.max.x, start_r, end_r);
-            let shadow_rect =
-                egui::Rect::from_min_max(egui::pos2(x0, rect.min.y), egui::pos2(x1, rect.min.y + shadow_h));
+            let shadow_rect = egui::Rect::from_min_max(
+                egui::pos2(x0, rect.min.y),
+                egui::pos2(x1, rect.min.y + shadow_h),
+            );
             let highlight_rect = egui::Rect::from_min_max(
                 egui::pos2(x0, rect.min.y + shadow_h),
                 egui::pos2(x1, rect.min.y + shadow_h + highlight_h),
@@ -1718,8 +1722,10 @@ fn groove_bands(
         }
         Edge::Left => {
             let (y0, y1) = shrink_span(rect.min.y, rect.max.y, start_r, end_r);
-            let shadow_rect =
-                egui::Rect::from_min_max(egui::pos2(rect.min.x, y0), egui::pos2(rect.min.x + shadow_h, y1));
+            let shadow_rect = egui::Rect::from_min_max(
+                egui::pos2(rect.min.x, y0),
+                egui::pos2(rect.min.x + shadow_h, y1),
+            );
             let highlight_rect = egui::Rect::from_min_max(
                 egui::pos2(rect.min.x + shadow_h, y0),
                 egui::pos2(rect.min.x + shadow_h + highlight_h, y1),
@@ -1728,8 +1734,10 @@ fn groove_bands(
         }
         Edge::Right => {
             let (y0, y1) = shrink_span(rect.min.y, rect.max.y, start_r, end_r);
-            let highlight_rect =
-                egui::Rect::from_min_max(egui::pos2(rect.max.x - highlight_h, y0), egui::pos2(rect.max.x, y1));
+            let highlight_rect = egui::Rect::from_min_max(
+                egui::pos2(rect.max.x - highlight_h, y0),
+                egui::pos2(rect.max.x, y1),
+            );
             let shadow_rect = egui::Rect::from_min_max(
                 egui::pos2(rect.max.x - highlight_h - shadow_h, y0),
                 egui::pos2(rect.max.x - highlight_h, y1),
@@ -2130,7 +2138,10 @@ fn paint_one(
             continue;
         }
         let width = device_snapped_width(1.0, env.scale);
-        painter.line_segment(edge_segment(rect, edge, width, corner_radius), Stroke::new(width, color));
+        painter.line_segment(
+            edge_segment(rect, edge, width, corner_radius),
+            Stroke::new(width, color),
+        );
         shapes += 1;
     }
 

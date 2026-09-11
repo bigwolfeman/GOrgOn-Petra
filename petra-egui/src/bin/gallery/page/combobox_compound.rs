@@ -49,12 +49,7 @@ impl Default for ComboboxCompoundPage {
         // picture shows the interactive states 42 other rows already cover
         // the closed one for.
         let mut state = ComboboxCompound::init(&props);
-        ComboboxCompound::update(
-            &mut state,
-            Intent::Type {
-                query: "al".into(),
-            },
-        );
+        ComboboxCompound::update(&mut state, Intent::Type { query: "al".into() });
         ComboboxCompound::update(&mut state, Intent::Highlight { index: 1 });
         Self { props, state }
     }

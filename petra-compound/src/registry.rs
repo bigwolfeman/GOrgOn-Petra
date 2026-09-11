@@ -302,8 +302,7 @@ struct SelectionPaletteWire {
 }
 
 impl ParamShape for SelectionPaletteWire {
-    const LUAU: &'static str =
-        "{ props: {}, state: { bold: boolean?, italic: boolean?, point: { x: number, y: \
+    const LUAU: &'static str = "{ props: {}, state: { bold: boolean?, italic: boolean?, point: { x: number, y: \
          number }? } }";
 }
 
@@ -386,7 +385,10 @@ mod tests {
             "data_table_compound",
             "selection_palette_compound",
         ] {
-            assert!(lookup(name).is_some(), "{name} missing from the merged table");
+            assert!(
+                lookup(name).is_some(),
+                "{name} missing from the merged table"
+            );
         }
     }
 
@@ -474,7 +476,12 @@ mod tests {
         let table = find(&node, "table").expect("root data table");
         // Row 0 is the header; body rows follow, sorted ascending by name:
         // alpha (r1) before bravo (r0).
-        let row_keys: Vec<&str> = table.children.iter().skip(1).map(|c| c.key.as_str()).collect();
+        let row_keys: Vec<&str> = table
+            .children
+            .iter()
+            .skip(1)
+            .map(|c| c.key.as_str())
+            .collect();
         assert_eq!(row_keys, vec!["r1", "r0"]);
     }
 
@@ -513,8 +520,7 @@ mod tests {
             "props": {},
             "state": { "bold": true, "italic": false, "point": { "x": 12.0, "y": 34.0 } }
         });
-        let node =
-            build("selection_palette_compound", &params).expect("valid params must build");
+        let node = build("selection_palette_compound", &params).expect("valid params must build");
         assert_eq!(node.props.anchor, Some(Anchor::Point { x: 12.0, y: 34.0 }));
         let marks = find(&node, "marks").expect("the mark group");
         let bold = find(marks, "bold").expect("bold toggle");

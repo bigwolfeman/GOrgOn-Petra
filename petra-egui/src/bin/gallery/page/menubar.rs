@@ -38,7 +38,6 @@ pub struct Menubar {
     open: Option<Open>,
 }
 
-
 impl Menubar {
     fn slot(which: Open, open: Option<Open>) -> ViewNode {
         let (id, label, items): (&str, &str, &[(&str, &str)]) = match which {
@@ -118,12 +117,10 @@ impl Page for Menubar {
             || (self.open == Some(Open::File) && path_has(node, TRIGGER))
         {
             Some(Open::File)
-        } else if path_has(node, EDIT)
-            || (self.open == Some(Open::Edit) && path_has(node, TRIGGER))
+        } else if path_has(node, EDIT) || (self.open == Some(Open::Edit) && path_has(node, TRIGGER))
         {
             Some(Open::Edit)
-        } else if path_has(node, VIEW)
-            || (self.open == Some(Open::View) && path_has(node, TRIGGER))
+        } else if path_has(node, VIEW) || (self.open == Some(Open::View) && path_has(node, TRIGGER))
         {
             Some(Open::View)
         } else {
@@ -152,7 +149,7 @@ impl Page for Menubar {
 
 #[cfg(test)]
 mod tests {
-    use super::{EDIT, FILE, TRIGGER, VIEW, Menubar};
+    use super::{EDIT, FILE, Menubar, TRIGGER, VIEW};
     use crate::page::Page;
     use crate::page::common::find;
     use gorgon_petra::geom::Point;

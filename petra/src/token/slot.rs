@@ -319,7 +319,11 @@ pub fn standard_slots() -> SlotSchema {
         .declare(SlotSpec::new("radius", TokenKind::Shape, false))
         .declare(SlotSpec::new("radius-top-left", TokenKind::Shape, false))
         .declare(SlotSpec::new("radius-top-right", TokenKind::Shape, false))
-        .declare(SlotSpec::new("radius-bottom-right", TokenKind::Shape, false))
+        .declare(SlotSpec::new(
+            "radius-bottom-right",
+            TokenKind::Shape,
+            false,
+        ))
         .declare(SlotSpec::new("radius-bottom-left", TokenKind::Shape, false))
         .declare(SlotSpec::new("silhouette", TokenKind::Silhouette, false))
         .declare(SlotSpec::new("selection", TokenKind::Color, false))

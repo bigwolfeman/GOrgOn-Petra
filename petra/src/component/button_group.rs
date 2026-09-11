@@ -33,8 +33,8 @@
 //! only ever touches the four corner slots, never the fill, the border, or
 //! the label.
 
-use super::{bind_corners, stack};
 use super::tokens::SPACING_02;
+use super::{bind_corners, stack};
 use crate::geom::{Align, Axis};
 use crate::token::{CornerRole, Joined, corners_for};
 use crate::tree::{Key, ViewNode};
@@ -72,7 +72,11 @@ pub fn button_group(key: impl Into<Key>, children: Vec<ViewNode>) -> ViewNode {
 /// so the visible change is the two free ends gaining `Grouping`'s radius
 /// and the gap between children going to zero.
 #[must_use]
-pub fn button_group_flush(key: impl Into<Key>, height: f32, mut children: Vec<ViewNode>) -> ViewNode {
+pub fn button_group_flush(
+    key: impl Into<Key>,
+    height: f32,
+    mut children: Vec<ViewNode>,
+) -> ViewNode {
     let count = children.len();
     for (i, child) in children.iter_mut().enumerate() {
         let joined = Joined {
