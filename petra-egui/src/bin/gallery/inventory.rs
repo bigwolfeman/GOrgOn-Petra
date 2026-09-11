@@ -63,7 +63,7 @@ pub const CARBON_COUNT: usize = 42;
 
 /// Every catalog row, in order. Rows 1–42 are the Carbon inventory.
 /// Rows after that are spec 009 constructors that Carbon never numbered.
-pub const ROWS: [Row; 52] = [
+pub const ROWS: [Row; 57] = [
     Row {
         number: 1,
         component: "Accordion",
@@ -324,6 +324,36 @@ pub const ROWS: [Row; 52] = [
         component: "Toggle button",
         slice: Slice::G,
     },
+    // Rows 53-57: the five spec 009 compounds (`gorgon-petra-compound`'s
+    // `Compound` triple), hosted directly rather than built from pure
+    // atomics. Not a Carbon inventory row any more than 43-52 are, so
+    // `Slice::G` again. Appended, per the established pattern above,
+    // never inserted among the numbered 1-42 or reordering 43-52.
+    Row {
+        number: 53,
+        component: "Combobox (compound)",
+        slice: Slice::G,
+    },
+    Row {
+        number: 54,
+        component: "Command (compound)",
+        slice: Slice::G,
+    },
+    Row {
+        number: 55,
+        component: "Calendar (compound)",
+        slice: Slice::G,
+    },
+    Row {
+        number: 56,
+        component: "Data table (compound)",
+        slice: Slice::G,
+    },
+    Row {
+        number: 57,
+        component: "Selection palette (compound)",
+        slice: Slice::G,
+    },
 ];
 
 #[cfg(test)]
@@ -347,7 +377,7 @@ mod tests {
             let expected = u8::try_from(index + 1).expect("catalog length fits in u8");
             assert_eq!(row.number, expected);
         }
-        assert_eq!(ROWS.len(), super::CARBON_COUNT + 10);
+        assert_eq!(ROWS.len(), super::CARBON_COUNT + 15);
         assert_eq!(ROWS[super::CARBON_COUNT - 1].component, "UI shell right panel");
         assert_eq!(ROWS[super::CARBON_COUNT].component, "Avatar");
     }
@@ -370,6 +400,6 @@ mod tests {
             assert_eq!(count, 7, "slice {}", slice.letter());
         }
         let extra = ROWS.iter().filter(|row| row.slice == Slice::G).count();
-        assert_eq!(extra, 10, "spec 009 rows");
+        assert_eq!(extra, 15, "spec 009 rows");
     }
 }

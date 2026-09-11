@@ -18,12 +18,16 @@ mod avatar;
 mod breadcrumb;
 mod button;
 mod button_group;
+mod calendar_compound;
 mod checkbox;
+mod combobox_compound;
+mod command_compound;
 mod context_menu;
 mod code_snippet;
 mod contained_list;
 mod content_switcher;
 mod data_table;
+mod data_table_compound;
 mod date_picker;
 mod drawer;
 mod dropdown;
@@ -49,6 +53,7 @@ mod radio_button;
 mod rating;
 mod search;
 mod select;
+mod selection_palette_compound;
 mod slider;
 mod structured_list;
 mod tabs;
@@ -285,6 +290,11 @@ pub fn all() -> Vec<Box<dyn Page>> {
         Box::new(rating::Rating::default()),
         Box::new(textarea::Textarea::default()),
         Box::new(toggle_button::ToggleButton::default()),
+        Box::new(combobox_compound::ComboboxCompoundPage::default()),
+        Box::new(command_compound::CommandCompoundPage::default()),
+        Box::new(calendar_compound::CalendarCompoundPage::default()),
+        Box::new(data_table_compound::DataTableCompoundPage::default()),
+        Box::new(selection_palette_compound::SelectionPaletteCompoundPage::default()),
     ]
 }
 

@@ -11,6 +11,13 @@ publish = false
 [dependencies]
 gorgon-petra = { path = "../petra" }
 serde.workspace = true
+# Only for `registry.rs`'s `Ctor` shape, which `gorgon_petra::component::
+# registry::Entry` already fixes as `fn(&serde_json::Value) -> ...` — this
+# crate does not choose the wire format, it matches the one the registry
+# already committed to. `gorgon-petra` itself already depends on this crate
+# for the same reason (`petra/Cargo.toml`), so this adds nothing new to the
+# dependency graph, only a direct edge to what was already there transitively.
+serde_json.workspace = true
 
 [lints]
 workspace = true

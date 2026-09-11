@@ -11,8 +11,8 @@ use gorgon_petra::component::kit::stack;
 use gorgon_petra::component::{list_row, search, valued};
 use gorgon_petra::token::TokenName;
 use gorgon_petra::tree::{
-    Anchor, AxisConstraint, InputPolicy, Layer, NodeKind, Props as NodeProps, Role, Semantics, Tip,
-    ViewNode,
+    Anchor, AxisConstraint, FocusFigure, InputPolicy, Layer, NodeKind, Props as NodeProps, Role,
+    Semantics, Tip, ViewNode,
 };
 use gorgon_petra::{Align, Axis};
 use serde::{Deserialize, Serialize};
@@ -124,7 +124,29 @@ impl Compound for Command {
             node.semantics.expanded = Some(false);
             return node;
         }
-        let field = valued(search("field", "Command"), state.query.as_str());
+        // `search` seats `FocusFigure::Sides`, which draws its two bars
+        // seven units *outside* the control. That is right for a field with
+        // a card's padding around it and wrong here: the palette is
+        // full-bleed, so the field's own edges are the overlay's edges and
+        // the two bars hang in the page behind it, touching nothing.
+        //
+        // `Border` and not `BarInside`, which is the other figure that stays
+        // inside its control: a bar figure marks the *content run*, and
+        // `marked_rect` excludes `NodeKind::Input` from that run because an
+        // input is its own focus target. A search field's only other content
+        // is its magnifier, so `BarInside` here draws a 13-unit stub under
+        // the icon and nothing under the text. A ring on the field's own
+        // rect is what a command palette shows and what Carbon specifies.
+        //
+        // The well and the holder must agree: focus is *shown on* the field
+        // and *held by* its `input` child, and
+        // `a_control_and_the_node_it_shows_focus_on_agree_about_the_figure`
+        // refuses a holder that declares a shape nothing draws.
+        let mut field = valued(search("field", "Command"), state.query.as_str());
+        field.semantics.focus_figure = FocusFigure::Border;
+        for child in &mut field.children {
+            std::sync::Arc::make_mut(child).semantics.focus_figure = FocusFigure::Border;
+        }
         let mut children = vec![field];
         children.extend(
             matching(state, props)

@@ -11,8 +11,8 @@ use gorgon_petra::Point;
 use gorgon_petra::component::{toggle_button, toggle_button_group};
 use gorgon_petra::token::TokenName;
 use gorgon_petra::tree::{
-    Anchor, ClampRule, InputPolicy, Layer, NodeKind, Props as NodeProps, Role, Semantics, Tip,
-    ViewNode,
+    Anchor, ClampRule, FocusFigure, InputPolicy, Layer, NodeKind, Props as NodeProps, Role,
+    Semantics, Tip, ViewNode,
 };
 use serde::{Deserialize, Serialize};
 
@@ -83,11 +83,17 @@ impl Compound for SelectionPalette {
     }
 
     fn view(state: &Self::State, _props: &Self::Props) -> ViewNode {
+        // A mark sits flush against the palette's own edge, so the two bars
+        // `toggle_button` seats with `FocusFigure::Sides` would be drawn
+        // seven units outside the palette, on the page behind it. `BarInside`
+        // is the figure for a flush control. Every mark takes it, not only
+        // the first and last: the figure a control wears should not change
+        // with how many siblings happen to sit beside it.
         let group = toggle_button_group(
             "marks",
             vec![
-                toggle_button("bold", "Bold", state.bold),
-                toggle_button("italic", "Italic", state.italic),
+                flush_mark(toggle_button("bold", "Bold", state.bold)),
+                flush_mark(toggle_button("italic", "Italic", state.italic)),
             ],
         );
         let mut node = ViewNode::new(NodeKind::Surface, PALETTE_KEY)
@@ -120,6 +126,15 @@ impl Compound for SelectionPalette {
 
 fn token(name: &'static str) -> TokenName {
     TokenName::new(name).unwrap_or_else(|err| panic!("shipped token {name:?}: {err}"))
+}
+
+/// One mark of the palette, re-seated for a container with no padding.
+///
+/// See the call site in [`SelectionPalette::view`] for why `Sides` cannot be
+/// worn here.
+fn flush_mark(mut node: ViewNode) -> ViewNode {
+    node.semantics.focus_figure = FocusFigure::BarInside;
+    node
 }
 
 #[cfg(test)]

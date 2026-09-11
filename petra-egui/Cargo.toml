@@ -13,6 +13,11 @@ publish = false
 [dependencies]
 egui = "0.36.1"
 gorgon-petra = { path = "../petra" }
+# The gallery's own compound pages host `gorgon-petra-compound`'s triples
+# directly (spec 009 T006/T018/T019/T028a/T032's five). This crate depends on
+# `gorgon-petra` and `serde` only, so it carries no egui and nothing from
+# `gorgon/` — D-069 survives.
+gorgon-petra-compound = { path = "../petra-compound" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The system file dialog, and the only host-facing crate in this workspace

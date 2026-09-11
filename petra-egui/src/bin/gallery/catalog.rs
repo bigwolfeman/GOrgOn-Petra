@@ -504,7 +504,11 @@ impl App for Catalog {
             crate::inventory::Slice::G => "spec 009".to_owned(),
             slice => format!("slice {}", slice.letter()),
         };
-        let status = if cell.is_built() { "BUILT" } else { "UNBUILT" };
+        let status = if self.current().is_built() {
+            "BUILT"
+        } else {
+            "UNBUILT"
+        };
 
         let mut main = column(
             "main",

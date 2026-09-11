@@ -1568,6 +1568,7 @@ version = "0.0.0"
 dependencies = [
  "gorgon-petra",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1577,6 +1578,7 @@ dependencies = [
  "eframe",
  "egui",
  "gorgon-petra",
+ "gorgon-petra-compound",
  "gorgon-petra-testkit",
  "image",
  "rfd",

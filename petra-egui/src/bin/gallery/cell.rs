@@ -69,6 +69,11 @@ const BUILT: &[&str] = &[
     "Rating",
     "Textarea",
     "Toggle button",
+    "Combobox (compound)",
+    "Command (compound)",
+    "Calendar (compound)",
+    "Data table (compound)",
+    "Selection palette (compound)",
 ];
 
 /// What a cell holds.
@@ -188,6 +193,18 @@ pub enum Content {
     Textarea,
     /// Spec 009 toggle button (catalog row 52).
     ToggleButton,
+    /// Spec 009 combobox compound (catalog row 53).
+    ComboboxCompound,
+    /// Spec 009 command compound (catalog row 54).
+    CommandCompound,
+    /// Spec 009 calendar compound (catalog row 55).
+    CalendarCompound,
+    /// Spec 009 data table compound (catalog row 56). Row 9 is the same
+    /// anatomy built from pure view functions; this row is the triple that
+    /// owns the state behind it.
+    DataTableCompound,
+    /// Spec 009 selection palette compound (catalog row 57).
+    SelectionPaletteCompound,
 }
 
 fn content_for(name: &str) -> Content {
@@ -244,6 +261,11 @@ fn content_for(name: &str) -> Content {
         "Rating" => Content::Rating,
         "Textarea" => Content::Textarea,
         "Toggle button" => Content::ToggleButton,
+        "Combobox (compound)" => Content::ComboboxCompound,
+        "Command (compound)" => Content::CommandCompound,
+        "Calendar (compound)" => Content::CalendarCompound,
+        "Data table (compound)" => Content::DataTableCompound,
+        "Selection palette (compound)" => Content::SelectionPaletteCompound,
         _ => Content::Unbuilt,
     }
 }

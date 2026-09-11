@@ -9092,4 +9092,228 @@ mod tests {
              keeps its own words"
         );
     }
+
+    // ===== Spec 009 compounds (rows 53-57): pages that host
+    // `gorgon-petra-compound`'s `Compound` triple directly, not a
+    // resting screenshot of `view`. =====
+
+    /// Combobox (compound), row 53. Choosing an option closes the list, a
+    /// press on the field reopens it through `Intent::Open`, and typing
+    /// after that narrows the list again through `Intent::Type` — three of
+    /// the five intents driven from one page, none of them by hand-setting
+    /// state.
+    #[test]
+    fn choosing_a_combobox_compound_option_closes_it_and_typing_after_reopening_narrows_it_again()
+     {
+        let mut cam = Camera::on("Combobox (compound)");
+        assert!(
+            cam.has("menu"),
+            "the page opens already narrowed to \"al\", so the list is up"
+        );
+        let before = cam.shoot("53-combobox-compound-open");
+
+        cam.click("opt-2");
+        assert!(!cam.has("menu"), "choosing alpine did not close the list");
+
+        cam.click("field");
+        assert!(cam.has("menu"), "a press on the field did not reopen the list");
+        assert!(
+            cam.has("opt-0"),
+            "alpha should still be listed before narrowing further"
+        );
+
+        cam.type_here("pine");
+        let after = cam.shoot("53-combobox-compound-narrowed");
+        assert!(
+            !cam.has("opt-0"),
+            "typing \"pine\" onto \"al\" did not reach the compound's own \
+             state: alpha should have dropped out of \"alpine\""
+        );
+        assert!(cam.has("opt-2"), "alpine must still match \"alpine\"");
+        assert_ne!(before, after, "the interaction never reached the picture");
+    }
+
+    /// Calendar (compound), row 55. A month arrow browses one pane without
+    /// touching its selection, and a day press in a different pane's Multi
+    /// mode toggles that day on — two panes, two intents, neither one
+    /// touching the other's state.
+    #[test]
+    fn a_month_arrow_browses_one_calendar_compound_pane_and_a_day_press_toggles_another() {
+        // `Camera::id`'s tail match is a literal suffix, not a path-segment
+        // test like `common::path_has`, and the trailing chain under
+        // `.../calendar/calendar/content/...` is identical in all three
+        // panes — only the leading pane key tells them apart — so every
+        // tail below spells the whole chain from the pane key down.
+        const SINGLE_MONTH: &str =
+            "single/calendar/calendar/content/month-header/month-seat/month";
+        const SINGLE_NEXT: &str = "single/calendar/calendar/content/month-header/next-month";
+        const SINGLE_PREV: &str = "single/calendar/calendar/content/month-header/prev-month";
+        const SINGLE_DAY_15: &str = "single/calendar/calendar/content/days/day-15";
+        const MULTI_DAY_2: &str = "multi/calendar/calendar/content/days/day-2";
+        const MULTI_DAY_4: &str = "multi/calendar/calendar/content/days/day-4";
+
+        let mut cam = Camera::on("Calendar (compound)");
+        assert_eq!(cam.painted_text(SINGLE_MONTH), "August 2026");
+        let before = cam.shoot("55-calendar-compound-open");
+
+        cam.click(SINGLE_NEXT);
+        assert_eq!(
+            cam.painted_text(SINGLE_MONTH),
+            "September 2026",
+            "the arrow did not browse the Single pane"
+        );
+        assert!(
+            !cam.selected(SINGLE_DAY_15),
+            "day 15 of September was never picked, so it must not show \
+             selected just because August's day 15 is in the set"
+        );
+
+        cam.click(SINGLE_PREV);
+        assert_eq!(
+            cam.painted_text(SINGLE_MONTH),
+            "August 2026",
+            "the back arrow did not return to August"
+        );
+        assert!(
+            cam.selected(SINGLE_DAY_15),
+            "the round trip through September must not have dropped \
+             August's own picked day out of the selection"
+        );
+
+        // `Calendar::view` marks only one day at a time — `grid_value`
+        // reads the earliest picked day in the browsed month off `State`'s
+        // `BTreeSet`, and `date_picker_showing`'s underlying atomic accepts
+        // one `value` — even when Multi mode has picked several. Multi
+        // starts at {4, 18, 27}, so day 4 is the one on screen; picking a
+        // day *earlier* than 4 is what makes the toggle's effect visible in
+        // the picture, and un-picking it is what proves day 4 was never
+        // dropped from the set, only outranked on screen.
+        assert!(
+            cam.selected(MULTI_DAY_4),
+            "day 4 is the earliest of Multi's three picks, so it starts marked"
+        );
+        assert!(
+            !cam.selected(MULTI_DAY_2),
+            "day 2 must not start selected in Multi"
+        );
+        cam.click(MULTI_DAY_2);
+        assert!(
+            cam.selected(MULTI_DAY_2),
+            "the press did not toggle day 2 on in Multi"
+        );
+        assert!(
+            !cam.selected(MULTI_DAY_4),
+            "day 2 is now the earliest pick in the browsed month, so the \
+             grid must mark it instead of day 4 — day 4 is still in the \
+             set, just outranked on screen"
+        );
+        let after = cam.shoot("55-calendar-compound-multi-toggled");
+        assert_ne!(before, after, "the interaction never reached the picture");
+
+        cam.click(MULTI_DAY_2);
+        assert!(
+            !cam.selected(MULTI_DAY_2),
+            "a second press on day 2 did not toggle it back off"
+        );
+        assert!(
+            cam.selected(MULTI_DAY_4),
+            "removing day 2 must restore day 4 as the earliest mark — day \
+             4 was in the set the whole time"
+        );
+    }
+
+    /// Command (compound), row 54. Typing narrows the overlay's list and
+    /// choosing an item closes it, the same `Type`/`Choose` pair the
+    /// combobox test above drives, through the frame-wide overlay shape
+    /// instead.
+    #[test]
+    fn typing_into_the_command_compound_narrows_its_list_and_choosing_closes_it() {
+        let mut cam = Camera::on("Command (compound)");
+        assert!(
+            cam.has("close-window"),
+            "the page opens with every item listed"
+        );
+        let before = cam.shoot("54-command-compound-open");
+
+        cam.click("field");
+        cam.type_here("open");
+        assert!(!cam.has("close-window"), "typing did not narrow the list");
+        assert!(cam.has("open-file"), "the matching item dropped out too");
+
+        cam.click("open-file");
+        let after = cam.shoot("54-command-compound-chosen");
+        assert!(
+            !cam.has("open-file"),
+            "choosing an item did not close the overlay"
+        );
+        assert_ne!(before, after, "the interaction never reached the picture");
+    }
+
+    /// Data table (compound), row 56. A second press on the active sort
+    /// header flips its direction and reorders every row; a press on a
+    /// different, non-expandable row adds to the selection rather than
+    /// replacing it — the row itself is the only interactive target
+    /// `data_table_row` declares, so the press is aimed at the row's own
+    /// id, exactly as row 9's own page already establishes.
+    #[test]
+    fn sorting_the_data_table_compound_flips_row_order_and_a_press_adds_a_selection() {
+        let mut cam = Camera::on("Data table (compound)");
+        let before = cam.shoot("56-data-table-compound-open");
+
+        fn row_order(cam: &Camera<crate::catalog::Catalog>) -> Vec<String> {
+            let tree = cam.tree();
+            let table = crate::page::common::find(&tree, "table").expect("root data table");
+            table
+                .children
+                .iter()
+                .skip(1)
+                .map(|c| c.key.as_str().to_owned())
+                .collect()
+        }
+        assert_eq!(
+            row_order(&cam),
+            vec!["f1", "f0", "f3", "f2"],
+            "ascending by name at rest: layout, scheduler, snapshot, trace"
+        );
+
+        cam.click("name/sort");
+        assert_eq!(
+            row_order(&cam),
+            vec!["f2", "f3", "f0", "f1"],
+            "a second press on the active sort header did not flip direction"
+        );
+
+        assert!(cam.selected("f1"), "f1 opens selected");
+        assert!(!cam.selected("f2"), "f2 must not start selected");
+        cam.click("f2");
+        let after = cam.shoot("56-data-table-compound-sorted-and-selected");
+        assert!(cam.selected("f2"), "the press did not select f2");
+        assert!(
+            cam.selected("f1"),
+            "selecting f2 must not have cleared f1's own selection"
+        );
+        assert_ne!(before, after, "the interaction never reached the picture");
+    }
+
+    /// Selection palette (compound), row 57. The trigger relocates the
+    /// overlay through `Intent::Move`, and a press on its own Italic
+    /// control flips that mark without touching Bold.
+    #[test]
+    fn moving_the_selection_palette_compound_relocates_it_and_a_press_flips_its_own_mark() {
+        let mut cam = Camera::on("Selection palette (compound)");
+        assert!(cam.selected("bold"), "the page opens with bold pressed");
+        assert!(!cam.selected("italic"));
+        let before = cam.shoot("57-selection-palette-compound-open");
+
+        let at_rest = cam.rect("palette");
+        cam.click("move-selection");
+        let moved = cam.rect("palette");
+        assert_ne!(at_rest, moved, "the trigger did not move the overlay");
+
+        cam.click("italic");
+        assert!(cam.selected("italic"), "the press did not toggle italic");
+        assert!(cam.selected("bold"), "toggling italic must not clear bold");
+        let after = cam.shoot("57-selection-palette-compound-moved");
+        assert_ne!(before, after, "the interaction never reached the picture");
+    }
 }
