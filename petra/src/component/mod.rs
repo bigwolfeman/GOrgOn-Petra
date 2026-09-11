@@ -94,6 +94,10 @@ mod button;
 mod button_group;
 mod chrome_strip;
 mod code_snippet;
+/// The colour-blindness lane at the level of a rendered component.
+/// Test-only; see `crate::token::colourblind` for the arithmetic.
+#[cfg(test)]
+mod colourblind;
 mod contained_list;
 mod content_switcher;
 mod context_menu;
