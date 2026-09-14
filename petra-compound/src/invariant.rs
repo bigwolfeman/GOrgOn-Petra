@@ -121,6 +121,7 @@ fn command_props() -> CommandProps {
             Item::new("save", "Save"),
             Item::new("close", "Close window"),
         ],
+        ..CommandProps::default()
     }
 }
 

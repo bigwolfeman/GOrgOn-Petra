@@ -123,30 +123,105 @@ fn combobox_ctor(params: &Value) -> Result<ViewNode, ParamError> {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct CommandModeWire {
+    /// One character; serde `char` refuses a longer string at parse time.
+    key: char,
+    label: String,
+}
+
+impl From<CommandModeWire> for command::Mode {
+    fn from(w: CommandModeWire) -> Self {
+        command::Mode::new(w.key, w.label)
+    }
+}
+
+/// `icon` is omitted: [`gorgon_petra::component::IconMark`] is a large
+/// enum without `Deserialize`, and the wire cannot name it without
+/// copying the whole vocabulary. Shortcut and categories cover the
+/// author-facing item fields that YAML/Lua can spell.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CommandItemWire {
     id: String,
     label: String,
+    #[serde(default)]
+    shortcut: Option<String>,
+    #[serde(default)]
+    categories: Vec<String>,
 }
 
 impl From<CommandItemWire> for command::Item {
     fn from(w: CommandItemWire) -> Self {
-        command::Item::new(w.id, w.label)
+        command::Item {
+            categories: w.categories,
+            shortcut: w.shortcut,
+            ..command::Item::new(w.id, w.label)
+        }
     }
+}
+
+fn default_list_columns() -> u8 {
+    1
+}
+
+fn default_tile_columns() -> u8 {
+    4
 }
 
 /// `pub` for the same reason as [`ComboboxPropsWire`]: `gorgond`'s
 /// `gorgon-view-fiber::command` row parses `command::Props` from a row's
 /// `config.props` through this exact wire shape.
+///
+/// `mode_surface` is not a wire field. It is a `ViewNode` the host passes
+/// in Rust only; a YAML/Lua row that names it is refused
+/// (`deny_unknown_fields`).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CommandPropsWire {
     items: Vec<CommandItemWire>,
+    #[serde(default = "default_list_columns")]
+    list_columns: u8,
+    #[serde(default = "default_tile_columns")]
+    tile_columns: u8,
+    #[serde(default)]
+    default_view: command::ViewKind,
+    #[serde(default)]
+    modes: Vec<CommandModeWire>,
 }
 
 impl From<CommandPropsWire> for command::Props {
     fn from(w: CommandPropsWire) -> Self {
         command::Props {
             items: w.items.into_iter().map(Into::into).collect(),
+            list_columns: w.list_columns,
+            tile_columns: w.tile_columns,
+            default_view: w.default_view,
+            modes: w.modes.into_iter().map(Into::into).collect(),
+            mode_surface: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+struct CommandStateWire {
+    query: String,
+    highlighted: usize,
+    open: bool,
+    view: command::ViewKind,
+    category: Option<String>,
+    favorites: Vec<String>,
+}
+
+impl From<CommandStateWire> for command::State {
+    fn from(w: CommandStateWire) -> Self {
+        command::State {
+            query: w.query,
+            highlighted: w.highlighted,
+            open: w.open,
+            view: w.view,
+            category: w.category,
+            favorites: w.favorites.into_iter().collect(),
         }
     }
 }
@@ -155,18 +230,21 @@ impl From<CommandPropsWire> for command::Props {
 #[serde(deny_unknown_fields)]
 struct CommandWire {
     props: CommandPropsWire,
-    state: command::State,
+    state: CommandStateWire,
 }
 
 impl ParamShape for CommandWire {
-    const LUAU: &'static str = "{ props: { items: { { id: string, label: string } } }, state: \
-         { query: string?, highlighted: number?, open: boolean? } }";
+    const LUAU: &'static str = "{ props: { items: { { id: string, label: string, shortcut: \
+         string?, categories: { string }? } }, list_columns: number?, tile_columns: number?, \
+         default_view: (\"list\" | \"tiles\")?, modes: { { key: string, label: string } }? }, \
+         state: { query: string?, highlighted: number?, open: boolean?, view: (\"list\" | \
+         \"tiles\")?, category: string?, favorites: { string }? } }";
 }
 
 fn command_ctor(params: &Value) -> Result<ViewNode, ParamError> {
     let wire: CommandWire =
         serde_json::from_value(params.clone()).map_err(|e| fail("command_compound", e))?;
-    Ok(Command::view(&wire.state, &wire.props.into()))
+    Ok(Command::view(&wire.state.into(), &wire.props.into()))
 }
 
 // ---------------------------------------------------------------------
@@ -562,6 +640,85 @@ mod tests {
         )
         .expect("valid params must build");
         assert_eq!(open.semantics.role, Some(Role::Overlay));
+    }
+
+    /// The pre-modes fixture `{ items: [{id, label}] }` is still the
+    /// documented YAML/Lua shape. Omitted columns, view, modes, category
+    /// and favorites take the wire defaults rather than failing parse.
+    #[test]
+    fn command_props_wire_old_fixture_gets_the_documented_defaults() {
+        let wire: super::CommandPropsWire = serde_json::from_value(json!({
+            "items": [{"id": "open", "label": "Open"}]
+        }))
+        .expect("items-only props must still parse");
+        assert_eq!(wire.list_columns, 1);
+        assert_eq!(wire.tile_columns, 4);
+        assert_eq!(wire.default_view, crate::command::ViewKind::List);
+        assert!(wire.modes.is_empty());
+        let state: super::CommandStateWire = serde_json::from_value(json!({
+            "query": "",
+            "highlighted": 0,
+            "open": false
+        }))
+        .expect("query/highlighted/open state must still parse");
+        assert_eq!(state.view, crate::command::ViewKind::List);
+        assert_eq!(state.category, None);
+        assert!(state.favorites.is_empty());
+    }
+
+    #[test]
+    fn command_row_accepts_categories_shortcut_modes_and_view() {
+        register();
+        let node = build(
+            "command_compound",
+            &json!({
+                "props": {
+                    "items": [{
+                        "id": "open",
+                        "label": "Open",
+                        "shortcut": "Ctrl+O",
+                        "categories": ["File"]
+                    }],
+                    "list_columns": 2,
+                    "tile_columns": 6,
+                    "default_view": "tiles",
+                    "modes": [{"key": "f", "label": "Files"}]
+                },
+                "state": {
+                    "query": "",
+                    "highlighted": 0,
+                    "open": true,
+                    "view": "list",
+                    "category": "File",
+                    "favorites": ["open"]
+                }
+            }),
+        )
+        .expect("full command wire must build");
+        assert_eq!(node.semantics.role, Some(Role::Overlay));
+    }
+
+    /// Hosts pass `mode_surface` in Rust only. Naming it on the YAML/Lua
+    /// wire is a misspelling, not a slot.
+    #[test]
+    fn command_row_refuses_mode_surface_on_props() {
+        register();
+        let err = build(
+            "command_compound",
+            &json!({
+                "props": {
+                    "items": [{"id": "open", "label": "Open"}],
+                    "mode_surface": {}
+                },
+                "state": { "query": "", "highlighted": 0, "open": false }
+            }),
+        )
+        .expect_err("mode_surface is not a wire field");
+        assert!(
+            err.reason.contains("mode_surface"),
+            "refusal must name the unknown field: {}",
+            err.reason
+        );
     }
 
     #[test]

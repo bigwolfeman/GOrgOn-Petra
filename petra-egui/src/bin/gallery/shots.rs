@@ -9369,11 +9369,10 @@ mod tests {
     }
 
     /// Command (compound), row 54. Typing narrows the overlay's list and
-    /// choosing an item closes it, the same `Type`/`Choose` pair the
-    /// combobox test above drives, through the frame-wide overlay shape
-    /// instead.
+    /// Enter chooses, the same `Type`/`Choose` pair the combobox test
+    /// above drives, through the frame-wide overlay shape instead.
     #[test]
-    fn typing_into_the_command_compound_narrows_its_list_and_choosing_closes_it() {
+    fn typing_into_the_command_compound_narrows_its_list_and_enter_chooses() {
         let mut cam = Camera::on("Command (compound)");
         assert!(
             cam.has("close-window"),
@@ -9386,13 +9385,86 @@ mod tests {
         assert!(!cam.has("close-window"), "typing did not narrow the list");
         assert!(cam.has("open-file"), "the matching item dropped out too");
 
-        cam.click("open-file");
+        cam.key(KeyCode::Enter);
         let after = cam.shoot("54-command-compound-chosen");
         assert!(
             !cam.has("open-file"),
-            "choosing an item did not close the overlay"
+            "Enter did not choose and close the overlay"
         );
         assert_ne!(before, after, "the interaction never reached the picture");
+    }
+
+    /// `>` is the favorites prefix. The page seeds `rebuild` through
+    /// `Intent::ToggleFavorite` after init, so that tile is what `>` shows.
+    #[test]
+    fn typing_gt_shows_the_seeded_favorite_as_tiles() {
+        let mut cam = Camera::on("Command (compound)");
+        cam.click("field");
+        cam.type_here(">");
+        assert!(
+            cam.has("rebuild"),
+            "typing \">\" must keep the seeded favorite; ids: {:?}",
+            cam.ids()
+        );
+        assert!(
+            !cam.has("close-window"),
+            "an un-favorited command must drop out of the \">\" tile set; ids: {:?}",
+            cam.ids()
+        );
+        cam.shoot("54-command-favorites");
+    }
+
+    /// `>f` is a registered mode. The page fills `mode_surface` with a
+    /// `files-slot` node; Petra must mount that node, not invent a picker.
+    #[test]
+    fn typing_gt_f_mounts_the_files_slot() {
+        let mut cam = Camera::on("Command (compound)");
+        cam.click("field");
+        cam.type_here(">f");
+        assert!(
+            cam.has("files-slot"),
+            "typing \">f\" must mount the page-filled files slot; ids: {:?}",
+            cam.ids()
+        );
+        cam.shoot("54-command-files-slot");
+    }
+
+    /// The page's "Open tiles" button fires `Intent::OpenTiles`. Commands
+    /// stay mounted, now as tiles.
+    #[test]
+    fn open_tiles_shows_command_tiles() {
+        let mut cam = Camera::on("Command (compound)");
+        cam.click("open-tiles");
+        assert!(
+            cam.has("rebuild"),
+            "Open tiles must keep the catalog mounted; ids: {:?}",
+            cam.ids()
+        );
+        cam.shoot("54-command-tiles");
+    }
+
+    /// A category chip intersects the catalog. `copy-path` sits in both
+    /// Edit and Files; `close-window` is Files only, so it drops out of
+    /// Edit.
+    #[test]
+    fn clicking_a_category_chip_filters_the_list() {
+        let mut cam = Camera::on("Command (compound)");
+        assert!(
+            cam.has("close-window"),
+            "rest lists every item before a chip is pressed"
+        );
+        cam.click("cat-Edit");
+        assert!(
+            cam.has("rebuild") && cam.has("edit") && cam.has("copy-path"),
+            "Edit must keep the Edit-tagged commands; ids: {:?}",
+            cam.ids()
+        );
+        assert!(
+            !cam.has("close-window") && !cam.has("open-file"),
+            "Edit must drop Files-only commands; ids: {:?}",
+            cam.ids()
+        );
+        cam.shoot("54-command-category");
     }
 
     /// Data table (compound), row 56. A second press on the active sort
