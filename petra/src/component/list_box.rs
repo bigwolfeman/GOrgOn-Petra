@@ -48,8 +48,8 @@ use super::pin_block;
 use super::stack;
 use super::text::text;
 use super::tokens::{
-    BORDER_STRONG, BORDER_SUBTLE, LAYER_HOVER, SHADOW_OVERLAY, SIZE_MD, SPACING_05, SURFACE_RAISED,
-    TEXT_PRIMARY, TYPOGRAPHY_BODY_COMPACT, t,
+    BORDER_STRONG, BORDER_SUBTLE, LAYER_HOVER, SHADOW_OVERLAY, SIZE_MD, SPACING_03, SPACING_05,
+    SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_BODY_COMPACT, t,
 };
 use crate::geom::{Align as CrossAlign, Axis};
 use crate::tree::{
@@ -234,8 +234,30 @@ pub fn edge_row(key: impl Into<Key>, leading: ViewNode, trailing: Option<ViewNod
 /// Menu, a context menu and a menubar all want this row. [`super::menu`] is
 /// this plus overlay width bounds and `takes_focus`. A dropdown option is
 /// the same chrome with a trailing checkmark and selected fills.
+///
+/// A leading icon, a trailing shortcut, or a submenu chevron go through
+/// [`menu_item_with`]; this is that constructor with none of them.
 pub fn menu_item(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
+    menu_item_with(key, label, None, None, false)
+}
+
+/// [`menu_item`] with the parts a context menu and a menubar actually show:
+/// an optional leading icon, a muted trailing shortcut, and a submenu
+/// chevron. Row chrome is the same as [`menu_item`]: md 40, `$layer` fill,
+/// hover [`LAYER_HOVER`], [`FocusFigure::BarInside`], [`Role::Button`],
+/// inline padding [`SPACING_05`], no four-sided border.
+pub fn menu_item_with(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    icon: Option<IconMark>,
+    shortcut: Option<&str>,
+    submenu: bool,
+) -> ViewNode {
     let label = label.into();
+    let mut leading = Vec::new();
+    if let Some(mark) = icon {
+        leading.push(icon_toned("icon", mark, IconTone::Primary));
+    }
     let mut caption = text("label", label.clone());
     caption.props.style = Some(t(TYPOGRAPHY_BODY_COMPACT));
     caption.props.wrap = Some(TextWrap::Ellipsis);
@@ -248,8 +270,37 @@ pub fn menu_item(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
         max: None,
         priority: 1,
     };
-    let mut node = stack(key, Axis::Horizontal, None, vec![caption]);
+    leading.push(caption);
+    let mut trailing = Vec::new();
+    if let Some(keys) = shortcut {
+        let mut hint = text("shortcut", keys);
+        hint.props.style = Some(t(TYPOGRAPHY_BODY_COMPACT));
+        hint.props.tokens.insert("foreground".into(), t(TEXT_MUTED));
+        trailing.push(hint);
+    }
+    if submenu {
+        trailing.push(icon_toned(
+            "chevron",
+            IconMark::ChevronRight,
+            IconTone::Primary,
+        ));
+    }
+    // A text node answers its ink width as both min and max, so a
+    // priority-1 label cannot grow and push the shortcut to the trailing
+    // edge. Two groups plus SpaceBetween is the same split `edge_row`
+    // uses for a field value and its chevron.
+    let (children, justify, spacing) = if trailing.is_empty() {
+        (leading, None, Some(SPACING_03))
+    } else {
+        (
+            vec![cluster("run", leading), cluster("meta", trailing)],
+            Some(Justify::SpaceBetween),
+            None,
+        )
+    };
+    let mut node = stack(key, Axis::Horizontal, spacing, children);
     node.props.align = Some(CrossAlign::Center);
+    node.props.justify = justify;
     node.props.padding = Some(InsetRefs {
         left: Some(t(SPACING_05)),
         right: Some(t(SPACING_05)),
@@ -273,6 +324,18 @@ pub fn menu_item(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
         .interactive(Role::Button, label, FIELD_INTENTS)
         .owning_its_text()
         .with_focus_figure(FocusFigure::BarInside)
+}
+
+/// One or many children as a hugging run. A single child is returned as
+/// itself so a label-only leading group stays keyed `label`, not wrapped
+/// in a `run` stack a walker would have to look through.
+fn cluster(key: &'static str, mut children: Vec<ViewNode>) -> ViewNode {
+    if children.len() == 1 {
+        return children.pop().expect("len == 1");
+    }
+    let mut node = stack(key, Axis::Horizontal, Some(SPACING_03), children);
+    node.props.align = Some(CrossAlign::Center);
+    node
 }
 
 /// The closed field a list box opens from: Carbon's `.cds--list-box__field`
@@ -393,10 +456,11 @@ fn pinned(h: f32) -> AxisConstraint {
 mod tests {
     use super::{
         DIVIDER_HEIGHT, Dividers, ListBoxSize, SIZE_MD, list_box, list_box_field, menu_item,
+        menu_item_with,
     };
     use crate::component::icon::{IconMark, IconTone, icon_toned};
     use crate::component::tokens::{
-        BORDER_STRONG, BORDER_SUBTLE, SHADOW_OVERLAY, SPACING_05, SURFACE_RAISED,
+        BORDER_STRONG, BORDER_SUBTLE, SHADOW_OVERLAY, SPACING_05, SURFACE_RAISED, TEXT_MUTED,
         TYPOGRAPHY_BODY_COMPACT,
     };
     use crate::frame::{TransitionActivity, Viewport, petrify};
@@ -409,11 +473,14 @@ mod tests {
     };
 
     fn child<'a>(node: &'a crate::tree::ViewNode, key: &str) -> &'a crate::tree::ViewNode {
-        node.children
-            .iter()
-            .find(|c| c.key.as_str() == key)
-            .map(|c| c.as_ref())
-            .unwrap_or_else(|| panic!("missing child {key}"))
+        named(node, key).unwrap_or_else(|| panic!("missing descendant {key}"))
+    }
+
+    fn named<'a>(node: &'a crate::tree::ViewNode, key: &str) -> Option<&'a crate::tree::ViewNode> {
+        if node.key.as_str() == key {
+            return Some(node);
+        }
+        node.children.iter().find_map(|c| named(c, key))
     }
 
     fn rows() -> Vec<crate::tree::ViewNode> {
@@ -538,6 +605,51 @@ mod tests {
             node.props.tokens.get("background").map(|t| t.as_str()),
             Some(SURFACE_RAISED),
             "a row is a region of the `$layer` panel, not a darker pill on it"
+        );
+    }
+
+    /// Icon, muted shortcut, submenu chevron, no four-sided border. Chrome
+    /// is still the labelled md-40 button [`menu_item`] is.
+    #[test]
+    fn menu_item_with_places_icon_muted_shortcut_and_submenu_chevron() {
+        let node = menu_item_with("save", "Save", Some(IconMark::Copy), Some("⌘S"), true);
+        assert_eq!(node.semantics.role, Some(Role::Button));
+        assert_eq!(node.semantics.label.as_deref(), Some("Save"));
+        assert_eq!(node.semantics.focus_figure, FocusFigure::BarInside);
+        assert_eq!(node.constraints.vertical.min, Some(SIZE_MD));
+        assert_eq!(node.constraints.vertical.max, Some(SIZE_MD));
+        assert_eq!(node.props.justify, Some(Justify::SpaceBetween));
+        let keys: Vec<&str> = node.children.iter().map(|c| c.key.as_str()).collect();
+        assert_eq!(keys, ["run", "meta"]);
+        let icon = child(&node, "icon");
+        assert_eq!(
+            icon.props.canvas,
+            icon_toned("icon", IconMark::Copy, IconTone::Primary)
+                .props
+                .canvas
+        );
+        let label = child(&node, "label");
+        assert_eq!(label.props.text.as_deref(), Some("Save"));
+        let shortcut = child(&node, "shortcut");
+        assert_eq!(shortcut.props.text.as_deref(), Some("⌘S"));
+        assert_eq!(
+            shortcut.props.style.as_ref().map(|t| t.as_str()),
+            Some(TYPOGRAPHY_BODY_COMPACT)
+        );
+        assert_eq!(
+            shortcut.props.tokens.get("foreground").map(|t| t.as_str()),
+            Some(TEXT_MUTED)
+        );
+        let chevron = child(&node, "chevron");
+        assert_eq!(
+            chevron.props.canvas,
+            icon_toned("chevron", IconMark::ChevronRight, IconTone::Primary)
+                .props
+                .canvas
+        );
+        assert!(
+            !node.props.tokens.contains_key("border"),
+            "a menu row has no four-sided container border"
         );
     }
 

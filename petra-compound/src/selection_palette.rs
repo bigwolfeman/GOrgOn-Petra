@@ -9,7 +9,7 @@
 
 use gorgon_petra::Point;
 use gorgon_petra::component::{toggle_button, toggle_button_group};
-use gorgon_petra::token::TokenName;
+use gorgon_petra::token::{CornerRole, TokenName, corner_for};
 use gorgon_petra::tree::{
     Anchor, ClampRule, FocusFigure, InputPolicy, Layer, NodeKind, Props as NodeProps, Role,
     Semantics, Tip, ViewNode,
@@ -118,6 +118,12 @@ impl Compound for SelectionPalette {
         node.props
             .tokens
             .insert("shadow".into(), token("shadow.overlay"));
+        // Floating overlay card. Short edge is the toggle-button md height
+        // the marks use; `corner_for` picks the ramp step, never a literal.
+        node.props.tokens.insert(
+            "radius".into(),
+            token(corner_for(CornerRole::Floating, 40.0)),
+        );
         node.semantics = Semantics {
             role: Some(Role::Overlay),
             label: Some("Format".into()),
@@ -143,11 +149,12 @@ fn flush_mark(mut node: ViewNode) -> ViewNode {
 #[cfg(test)]
 mod tests {
     use gorgon_petra::Point;
+    use gorgon_petra::token::{CornerRole, corner_for};
     use gorgon_petra::tree::{Anchor, Layer, Role, Tip, ViewNode};
 
     use crate::Compound;
 
-    use super::{Intent, PALETTE_KEY, Props, SelectionPalette};
+    use super::{Intent, PALETTE_KEY, Props, SelectionPalette, token};
 
     fn named<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         fn walk<'a>(node: &'a ViewNode, key: &str) -> Option<&'a ViewNode> {
@@ -192,6 +199,14 @@ mod tests {
         assert_eq!(node.props.layer, Some(Layer::Popup));
         assert_eq!(node.props.tip, Some(Tip::Flush));
         assert_eq!(node.props.anchor, Some(Anchor::Point { x: 12.0, y: 34.0 }));
+        assert!(
+            node.props.tokens.contains_key("radius"),
+            "the palette is a floating overlay card"
+        );
+        assert_eq!(
+            node.props.tokens.get("radius"),
+            Some(&token(corner_for(CornerRole::Floating, 40.0))),
+        );
         assert!(
             !node.props.tokens.contains_key("border"),
             "the palette is a raised overlay, not a box"

@@ -16,7 +16,9 @@ use crate::tree::{AxisConstraint, Constraints, InsetRefs, Key, NodeKind, Props, 
 
 use super::tokens;
 
-pub use super::list_box::{Dividers, ListBoxSize, edge_row, list_box, list_box_field, menu_item};
+pub use super::list_box::{
+    Dividers, ListBoxSize, edge_row, list_box, list_box_field, menu_item, menu_item_with,
+};
 
 /// A `Stack` on `axis`, gapped by `spacing`, with no other props set.
 ///

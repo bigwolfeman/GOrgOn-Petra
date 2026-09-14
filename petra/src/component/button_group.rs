@@ -2,8 +2,12 @@
 //!
 //! This is the container only. Our seven button variants and six sizes in
 //! [`super::button`] stay. Callers pass `button()` / `primary_button()` /
-//! etc. as children; this file does not restyle them and does not grow a
-//! button vocabulary of its own.
+//! etc. as children; this file does not grow a button vocabulary of its
+//! own. It does re-seat each child's [`crate::tree::FocusFigure`] to
+//! [`crate::tree::FocusFigure::BarUnder`]: a lone button wears
+//! [`crate::tree::FocusFigure::Sides`], and those bars paint in the gap
+//! (spaced) or the seam (flush). The under bar sits below the row, which
+//! both forms have room for. The flush constructor also rewrites corners.
 //!
 //! # Anatomy
 //!
@@ -28,28 +32,30 @@
 //! [`crate::token::corners_for`], which spec 009 T002 added: one role plus
 //! one adjacency fact (`crate::token::Joined`) in, four corner tokens out.
 //! `bind_corners` writes those four onto a child's own `props.tokens`,
-//! overriding whatever `radius` the child's own constructor bound — which
-//! is why this file can style children it does not otherwise inspect: it
-//! only ever touches the four corner slots, never the fill, the border, or
+//! overriding whatever `radius` the child's own constructor bound. This
+//! file otherwise does not inspect a child: it touches the four corner
+//! slots (flush only), the focus figure, never the fill, the border, or
 //! the label.
 
 use super::tokens::SPACING_02;
 use super::{bind_corners, stack};
 use crate::geom::{Align, Axis};
 use crate::token::{CornerRole, Joined, corners_for};
-use crate::tree::{Key, ViewNode};
+use crate::tree::{FocusFigure, Key, ViewNode};
 
 /// A horizontal, gapped row of already-built buttons.
 ///
 /// `children` are `button()` / `primary_button()` / etc. nodes. This
-/// constructor does not inspect them, does not restyle them, and does
-/// not take a variant argument. No role of its own: the buttons carry
-/// chrome, role, and label; this node is the row.
+/// constructor does not take a variant argument. No role of its own: the
+/// buttons carry chrome, role, and label; this node is the row. Each
+/// child's focus figure is re-seated to [`FocusFigure::BarUnder`] (see
+/// [`seat_bar_under`]).
 ///
 /// No fill, no shadow, no four-sided border. Gap is [`SPACING_02`]. See
 /// [`button_group_flush`] for the zero-gap, squared-seam form.
 #[must_use]
-pub fn button_group(key: impl Into<Key>, children: Vec<ViewNode>) -> ViewNode {
+pub fn button_group(key: impl Into<Key>, mut children: Vec<ViewNode>) -> ViewNode {
+    seat_bar_under(&mut children);
     let mut node = stack(key, Axis::Horizontal, Some(SPACING_02), children);
     node.props.align = Some(Align::Center);
     node
@@ -70,7 +76,9 @@ pub fn button_group(key: impl Into<Key>, children: Vec<ViewNode>) -> ViewNode {
 /// corner slots directly, in place of whatever `radius` the child bound —
 /// for every shipped button that is `CornerRole::Tiled`'s `shape.corner-none`,
 /// so the visible change is the two free ends gaining `Grouping`'s radius
-/// and the gap between children going to zero.
+/// and the gap between children going to zero. Focus figure is then
+/// re-seated to [`FocusFigure::BarUnder`] (see [`seat_bar_under`]): `Sides`
+/// would paint in the seam.
 #[must_use]
 pub fn button_group_flush(
     key: impl Into<Key>,
@@ -87,16 +95,32 @@ pub fn button_group_flush(
         let corners = corners_for(CornerRole::Grouping, height, joined);
         bind_corners(&mut child.props.tokens, corners);
     }
+    seat_bar_under(&mut children);
     let mut node = stack(key, Axis::Horizontal, None, children);
     node.props.align = Some(Align::Center);
     node
 }
 
+/// Re-seat every child's focus figure to [`FocusFigure::BarUnder`].
+///
+/// A lone `button()` wears [`FocusFigure::Sides`]. In a group those bars
+/// paint in the gap between neighbours, and in a flush group they paint
+/// in the seam. The under bar sits below the row, which both forms have
+/// room for. Same pattern as
+/// `gorgon_petra_compound::selection_palette`'s `flush_mark`, which
+/// re-seats `toggle_button`'s `Sides` to `BarInside`.
+fn seat_bar_under(children: &mut [ViewNode]) {
+    for child in children {
+        child.semantics.focus_figure = FocusFigure::BarUnder;
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::super::button::button;
     use super::{button_group, button_group_flush};
     use crate::geom::{Align, Axis};
-    use crate::tree::{NodeKind, ViewNode};
+    use crate::tree::{FocusFigure, NodeKind, ViewNode};
 
     fn leaf(key: &str) -> ViewNode {
         ViewNode::new(NodeKind::Text, key)
@@ -192,5 +216,27 @@ mod tests {
                 "a lone child touches nothing, so every corner is free"
             );
         }
+    }
+
+    #[test]
+    fn button_group_reseats_child_focus_figure_to_bar_under() {
+        let lone = button("save", "Save");
+        assert_eq!(
+            lone.semantics.focus_figure,
+            FocusFigure::Sides,
+            "the override is load-bearing only while a lone button wears Sides"
+        );
+
+        let spaced = button_group("row", vec![button("save", "Save")]);
+        assert_eq!(
+            spaced.children[0].semantics.focus_figure,
+            FocusFigure::BarUnder
+        );
+
+        let flush = button_group_flush("row", 40.0, vec![button("save", "Save")]);
+        assert_eq!(
+            flush.children[0].semantics.focus_figure,
+            FocusFigure::BarUnder
+        );
     }
 }

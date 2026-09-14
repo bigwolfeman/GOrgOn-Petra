@@ -69,11 +69,11 @@ use std::collections::BTreeSet;
 
 use gorgon_petra::component::kit::stack;
 use gorgon_petra::component::{
-    SortDirection, checkbox, data_table, data_table_batch_action, data_table_batch_bar,
-    data_table_batch_cancel, data_table_row, data_table_row_actions, data_table_row_expandable,
-    data_table_row_expandable_actions, data_table_row_menu_trigger, data_table_skeleton,
-    data_table_sort_header, data_table_toolbar, data_table_toolbar_menu, menu, menu_item, search,
-    text, valued,
+    SortDirection, checkbox, data_table_batch_action, data_table_batch_bar,
+    data_table_batch_cancel, data_table_menu, data_table_row, data_table_row_actions,
+    data_table_row_expandable, data_table_row_expandable_actions, data_table_row_menu_trigger,
+    data_table_sized, data_table_skeleton, data_table_sort_header, data_table_toolbar,
+    data_table_toolbar_menu, menu_item, search_lg, text, valued,
 };
 use gorgon_petra::tree::ViewNode;
 use gorgon_petra::{Align, Axis};
@@ -231,7 +231,7 @@ pub struct Sort {
 ///
 /// No field is `serde(skip)`: losing any of these on reload would surprise
 /// the operator (`view-fiber.md` §6, round-trip is the default).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct State {
     /// `None` means author order.
@@ -257,13 +257,17 @@ pub struct State {
     /// overflow menu closes the first) and a `BTreeSet` here would let two
     /// disagree about which the operator meant to act on.
     pub row_menu_open: Option<String>,
+    /// One weight per *visible* data column. Empty means equal split.
+    /// Not `Eq`: `f32` is not. A drag rewrites two neighbouring entries
+    /// and keeps their sum, the same contract as structured list.
+    pub weights: Vec<f32>,
 }
 
 /// Closed set of things that can happen to the table.
 ///
 /// `Deserialize` so [`gorgon_view_fiber::ViewFiber`] can decode it off the
 /// `ui:intent` bus (`ViewFiber`'s `C::Intent: DeserializeOwned` bound).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Intent {
     /// Toggle `id` in [`State::selection`].
     SelectRow {
@@ -328,6 +332,14 @@ pub enum Intent {
         id: String,
         /// [`ActionItem::id`].
         action: String,
+    },
+    /// Replace [`State::weights`]. The host (gallery page, later the
+    /// view-fiber) computes the new pair from the pointer; `update` stores
+    /// it. Length must match the visible column count or `view` falls back
+    /// to an equal split.
+    Resize {
+        /// New column weights.
+        weights: Vec<f32>,
     },
 }
 
@@ -404,6 +416,9 @@ impl Compound for DataTable {
             Intent::RowAction { id: _, action: _ } => {
                 state.row_menu_open = None;
             }
+            Intent::Resize { weights } => {
+                state.weights = weights;
+            }
         }
         Vec::new()
     }
@@ -423,7 +438,8 @@ impl Compound for DataTable {
             .into_iter()
             .map(|i| body_row(state, props, &props.rows[i]))
             .collect();
-        let table = data_table(TABLE_KEY, header, rows);
+        let weights = column_weights(state, props);
+        let table = data_table_sized(TABLE_KEY, header, rows, &weights, true, false);
 
         let bar = if state.selection.is_empty() {
             toolbar(state, props)
@@ -522,6 +538,23 @@ fn header_cells(state: &State, props: &Props) -> Vec<ViewNode> {
         .collect()
 }
 
+/// Weights for the visible data columns. Empty or a length mismatch
+/// (a column was hidden) falls back to an equal split so a drag never
+/// feeds `data_table_sized` a vec that does not match the header.
+fn column_weights(state: &State, props: &Props) -> Vec<f32> {
+    let n = props
+        .columns
+        .iter()
+        .filter(|col| !state.hidden_columns.contains(&col.id))
+        .count()
+        .max(1);
+    if state.weights.len() == n {
+        state.weights.clone()
+    } else {
+        vec![1.0; n]
+    }
+}
+
 /// A body row: visible cells (same [`State::hidden_columns`] filter as
 /// [`header_cells`]), plus, when [`Props::row_actions`] is non-empty, a
 /// trailing [`row_menu_control`] — on **every** row, expandable or not.
@@ -583,7 +616,7 @@ fn row_menu_control(state: &State, props: &Props, row_id: &str) -> ViewNode {
             .iter()
             .map(|a| menu_item(format!("{ROW_ACTION_PREFIX}{}", a.id), a.label.as_str()))
             .collect();
-        children.push(menu("menu", label, items));
+        children.push(data_table_menu("menu", label, items));
     }
     let mut node = stack("row-menu-ctl", Axis::Horizontal, None, children);
     node.semantics.expanded = Some(open);
@@ -593,7 +626,7 @@ fn row_menu_control(state: &State, props: &Props, row_id: &str) -> ViewNode {
 /// [`data_table_toolbar`]: the search field plus, when there is at least
 /// one column to hide, the column-visibility [`menu_button`].
 fn toolbar(state: &State, props: &Props) -> ViewNode {
-    let field = valued(search("search", "Search"), state.query.as_str());
+    let field = valued(search_lg("search", "Search"), state.query.as_str());
     let mut trailing = Vec::new();
     if !props.columns.is_empty() {
         trailing.push(column_menu(state, props));

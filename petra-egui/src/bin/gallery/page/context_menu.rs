@@ -1,39 +1,133 @@
 //! Catalog row 45, Context menu.
 
-use gorgon_petra::component::{button, context_menu, menu_item, section};
+use gorgon_petra::component::{
+    IconMark, button, context_menu, menu_flyout, menu_item_with, section,
+};
 use gorgon_petra::frame::PetrifiedFrame;
-use gorgon_petra::geom::Point;
+use gorgon_petra::geom::{Align, Axis, Point};
 use gorgon_petra::input::{InputEvent, PointerButton};
-use gorgon_petra::tree::{Interaction, ViewNode};
+use gorgon_petra::tree::{Interaction, NodeKind, Props, ViewNode};
 
 use super::Page;
 use super::common::{body, column, dismisses, path_has, sp, wrapped};
 
 const TRIGGER: &str = "show-ctx";
 const MENU: &str = "ctx";
-const ITEMS: [(&str, &str); 3] = [
-    ("ctx-rename", "Rename"),
-    ("ctx-copy", "Copy path"),
-    ("ctx-delete", "Delete"),
-];
+const ADD: &str = "ctx-add";
+const FLYOUT: &str = "ctx-add-flyout";
+const FLYOUT_TRIGGER: &str = "trigger";
+
+const CLOSE: [&str; 3] = ["ctx-undo", "ctx-copy", "ctx-delete"];
+const FOLDER: [&str; 3] = ["ctx-folder-work", "ctx-folder-personal", "ctx-folder-new"];
 
 /// Live state of the Context menu page.
 ///
 /// The overlay is [`gorgon_petra::tree::Anchor::Point`]: top-left of the
 /// panel at the pointer. That is a context menu, not a dropdown. Row 18
-/// (Menu) is the sibling-anchored dropdown. Starts closed so the trigger
-/// is what you click.
+/// (Menu) is the sibling-anchored dropdown. Starts open, fold-out included,
+/// so a rest snapshot photographs the panel rather than the closed trigger.
+/// Add to folder's flyout stays shut until the pointer sits on that row.
 pub struct ContextMenu {
     open: bool,
     at: Point,
+    /// Add to folder. Opened by hover, not at rest.
+    flyout: bool,
 }
 
 impl Default for ContextMenu {
     fn default() -> Self {
         Self {
-            open: false,
-            at: Point::new(0.0, 0.0),
+            open: true,
+            // In the page column, below the note. (24, 96) covered the
+            // index; (300, 200) covered the section title. 160-wide rows
+            // also cannot carry "Copy path" plus a shortcut, so that
+            // label is "Copy".
+            at: Point::new(340.0, 380.0),
+            flyout: false,
         }
+    }
+}
+
+impl ContextMenu {
+    fn close_menu(&mut self) {
+        self.open = false;
+        self.flyout = false;
+    }
+
+    fn over_submenu(node: &str) -> bool {
+        path_has(node, ADD)
+            || path_has(node, FLYOUT)
+            || path_has(node, "ctx-add-open")
+            || FOLDER.iter().any(|key| path_has(node, key))
+            || (path_has(node, FLYOUT_TRIGGER) && path_has(node, "ctx-add-open"))
+    }
+
+    fn add_row(&self) -> ViewNode {
+        let item = menu_item_with(
+            if self.flyout { FLYOUT_TRIGGER } else { ADD },
+            "Add to folder",
+            Some(IconMark::Add),
+            None,
+            true,
+        );
+        if !self.flyout {
+            return item;
+        }
+        // A hugging vertical stack, not `column()`. `column` is a one-track
+        // Grid with `Weight { 1.0 }` and would eat the list-box slot. The
+        // flyout is an overlay; the stack only has to keep `trigger` and
+        // the flyout as siblings, the same pair menubar uses for File.
+        ViewNode::new(NodeKind::Stack, "ctx-add-open")
+            .with_props(Props {
+                axis: Some(Axis::Vertical),
+                align: Some(Align::Stretch),
+                ..Props::default()
+            })
+            .with_children(vec![
+                item,
+                menu_flyout(
+                    FLYOUT,
+                    "Add to folder",
+                    vec![
+                        menu_item_with("ctx-folder-work", "Work", None, None, false),
+                        menu_item_with("ctx-folder-personal", "Personal", None, None, false),
+                        menu_item_with(
+                            "ctx-folder-new",
+                            "Create new folder",
+                            Some(IconMark::Add),
+                            None,
+                            false,
+                        ),
+                    ],
+                ),
+            ])
+    }
+
+    fn items(&self) -> Vec<ViewNode> {
+        vec![
+            menu_item_with(
+                "ctx-undo",
+                "Undo",
+                Some(IconMark::Edit),
+                Some("Ctrl+Z"),
+                false,
+            ),
+            menu_item_with(
+                "ctx-copy",
+                "Copy",
+                Some(IconMark::Copy),
+                Some("Ctrl+C"),
+                false,
+            ),
+            self.add_row(),
+            menu_item_with(
+                "ctx-delete",
+                "Delete",
+                Some(IconMark::Close),
+                Some("Ctrl+D"),
+                false,
+            ),
+        ]
     }
 }
 
@@ -58,10 +152,7 @@ impl Page for ContextMenu {
                 "Actions",
                 self.at.x,
                 self.at.y,
-                ITEMS
-                    .iter()
-                    .map(|(key, label)| menu_item(*key, *label))
-                    .collect(),
+                self.items(),
             ));
         }
         section(
@@ -75,6 +166,8 @@ impl Page for ContextMenu {
                         "ctx-note",
                         "Right-click Show menu to open it at the pointer; a \
                          plain click or Enter opens it at the button too. \
+                         Rows carry a leading icon and a Ctrl+ shortcut. \
+                         Hover Add to folder to fold it out to the right. \
                          Top-left of the panel is the press point. A \
                          dropdown from a button is row 18.",
                     ),
@@ -99,25 +192,37 @@ impl Page for ContextMenu {
     /// it lands outside the open menu's own rect — which the trigger's rect
     /// always is.
     fn gesture(&mut self, event: &InputEvent, node: &str, _frame: &PetrifiedFrame) -> bool {
-        if self.open || !path_has(node, TRIGGER) {
-            return false;
-        }
-        if let InputEvent::PointerPressed {
-            pos,
-            button: PointerButton::Secondary,
-            ..
-        } = event
-        {
-            self.at = *pos;
-            self.open = true;
-            return true;
+        match event {
+            InputEvent::PointerMoved { .. } if self.open => {
+                self.flyout = Self::over_submenu(node);
+            }
+            InputEvent::PointerLeft if self.open => {
+                self.flyout = false;
+            }
+            InputEvent::PointerPressed {
+                pos,
+                button: PointerButton::Secondary,
+                ..
+            } if !self.open && path_has(node, TRIGGER) => {
+                self.at = *pos;
+                self.open = true;
+                self.flyout = false;
+                return true;
+            }
+            _ => {}
         }
         false
     }
 
     fn handle(&mut self, event: &InputEvent, node: &str) -> bool {
-        if ITEMS.iter().any(|(key, _)| path_has(node, key)) {
-            self.open = false;
+        if path_has(node, ADD) || path_has(node, FLYOUT_TRIGGER) {
+            self.flyout = !self.flyout;
+            return true;
+        }
+        if FOLDER.iter().any(|key| path_has(node, key))
+            || CLOSE.iter().any(|key| path_has(node, key))
+        {
+            self.close_menu();
             return true;
         }
         if !path_has(node, TRIGGER) {
@@ -126,20 +231,100 @@ impl Page for ContextMenu {
         match event {
             InputEvent::PointerPressed { pos, .. } => {
                 if self.open {
-                    self.open = false;
+                    self.close_menu();
                 } else {
                     self.at = *pos;
                     self.open = true;
+                    self.flyout = false;
                 }
             }
-            _ => self.open = !self.open,
+            _ => {
+                self.open = !self.open;
+                self.flyout = false;
+            }
         }
         true
     }
 
     fn dismissed(&mut self, ids: &[String]) {
         if dismisses(ids, MENU) {
-            self.open = false;
+            self.close_menu();
+        } else if dismisses(ids, FLYOUT) {
+            self.flyout = false;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CLOSE, ContextMenu, FLYOUT, TRIGGER};
+    use crate::page::Page;
+    use crate::page::common::find;
+    use gorgon_petra::component::{IconMark, IconTone, icon_toned};
+    use gorgon_petra::geom::Point;
+    use gorgon_petra::input::{InputEvent, Modifiers, PointerButton};
+    use gorgon_petra::tree::ViewNode;
+
+    fn press() -> InputEvent {
+        InputEvent::PointerPressed {
+            pos: Point::ZERO,
+            button: PointerButton::Primary,
+            modifiers: Modifiers::NONE,
+        }
+    }
+
+    fn has_text(node: &ViewNode, text: &str) -> bool {
+        node.props.text.as_deref() == Some(text) || node.children.iter().any(|c| has_text(c, text))
+    }
+
+    #[test]
+    fn rest_open_shows_icons_shortcuts_and_the_folder_flyout() {
+        let mut page = ContextMenu::default();
+        let tree = page.body();
+        for key in CLOSE {
+            assert!(find(&tree, key).is_some(), "rest is missing {key}");
+        }
+        assert!(
+            find(&tree, FLYOUT).is_none(),
+            "the flyout stays shut until the pointer sits on Add to folder"
+        );
+        assert!(
+            find(&tree, "ctx-add").is_some(),
+            "the closed submenu row keeps key ctx-add"
+        );
+        assert!(
+            has_text(&tree, "Ctrl+Z"),
+            "Undo's shortcut is the secondary text"
+        );
+
+        let copy = find(&tree, "ctx-copy").expect("copy row");
+        let icon = find(copy, "icon").expect("copy leading icon");
+        assert_eq!(
+            icon.props.canvas,
+            icon_toned("icon", IconMark::Copy, IconTone::Primary)
+                .props
+                .canvas
+        );
+
+        assert!(page.handle(&press(), "/page/ctx-pair/show-ctx"));
+        let tree = page.body();
+        assert!(
+            find(&tree, "ctx-undo").is_none(),
+            "a press on Show menu must close the open panel"
+        );
+        assert!(find(&tree, FLYOUT).is_none());
+        assert!(find(&tree, TRIGGER).is_some());
+
+        assert!(page.handle(&press(), "/page/ctx-pair/show-ctx"));
+        let tree = page.body();
+        assert!(
+            find(&tree, "ctx-undo").is_some(),
+            "a second press must reopen the panel"
+        );
+        assert!(
+            find(&tree, FLYOUT).is_none(),
+            "reopening does not restore the fold-out; hover does"
+        );
+        assert!(find(&tree, "ctx-add").is_some());
     }
 }

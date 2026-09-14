@@ -1,14 +1,15 @@
 //! `list_row` — one selectable entry in a list.
 
+use super::icon::{IconMark, IconTone, icon_toned};
 use super::text::text;
 use super::tokens::{
     LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SPACING_03, SPACING_04, SPACING_05,
-    SURFACE_BASE, t,
+    SURFACE_BASE, TEXT_MUTED, TYPOGRAPHY_BODY_COMPACT, t,
 };
 use super::{pad, stack};
-use crate::geom::Axis;
+use crate::geom::{Align, Axis};
 use crate::token::{CornerRole, corner_for};
-use crate::tree::{FocusFigure, Interaction, Key, Role, TextWrap, ViewNode};
+use crate::tree::{FocusFigure, Interaction, Justify, Key, Role, TextWrap, ViewNode};
 
 /// The block extent one [`list_row`] takes at the shipped theme, in logical
 /// units: one `typography.body` line (20) plus the row's own `spacing-04`
@@ -59,9 +60,31 @@ pub const LIST_ROW_EXTENT: f32 = 44.0;
 /// when the pointer moves — which is exactly the second hit test by a second
 /// owner that FR-009 forbids.
 pub fn list_row(key: impl Into<Key>, label: impl Into<String>, selected: bool) -> ViewNode {
+    list_row_with(key, label, selected, None, None)
+}
+
+/// [`list_row`] with an optional leading icon and a muted trailing shortcut.
+///
+/// Chrome is the same as [`list_row`]: four fills, `CornerRole::Tiled`,
+/// [`FocusFigure::BarInside`], [`LIST_ROW_EXTENT`] padding, Hover/Focus/Click.
+/// Children sit on [`Axis::Horizontal`]. A shortcut is a trailing group
+/// under [`Justify::SpaceBetween`] — a text node cannot grow, so priority
+/// on the label cannot push the hotkey to the row's end. There is no
+/// four-sided `border` token.
+pub fn list_row_with(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    selected: bool,
+    icon: Option<IconMark>,
+    shortcut: Option<&str>,
+) -> ViewNode {
     let key = key.into();
     let label = label.into();
 
+    let mut leading = Vec::new();
+    if let Some(mark) = icon {
+        leading.push(icon_toned("icon", mark, IconTone::Primary));
+    }
     // One line, elided. A list row is a fixed-height thing — Carbon's
     // `.cds--contained-list-item` is, and a virtualizer needs it to be, since
     // `estimated_extent` is one number for the whole list. Left wrapping, the
@@ -70,7 +93,26 @@ pub fn list_row(key: impl Into<Key>, label: impl Into<String>, selected: bool) -
     // cannot show, the detail beside it can.
     let mut label_node = text("label", label.clone());
     label_node.props.wrap = Some(TextWrap::Ellipsis);
-    let mut node = stack(key, Axis::Horizontal, Some(SPACING_03), vec![label_node]);
+    leading.push(label_node);
+    let mut trailing = Vec::new();
+    if let Some(keys) = shortcut {
+        let mut hint = text("shortcut", keys);
+        hint.props.style = Some(t(TYPOGRAPHY_BODY_COMPACT));
+        hint.props.tokens.insert("foreground".into(), t(TEXT_MUTED));
+        trailing.push(hint);
+    }
+    let (children, justify, spacing) = if trailing.is_empty() {
+        (leading, None, Some(SPACING_03))
+    } else {
+        (
+            vec![cluster("run", leading), cluster("meta", trailing)],
+            Some(Justify::SpaceBetween),
+            None,
+        )
+    };
+    let mut node = stack(key, Axis::Horizontal, spacing, children);
+    node.props.align = Some(Align::Center);
+    node.props.justify = justify;
     // Carbon's `.cds--contained-list-item__content`: `padding: $spacing-04
     // $spacing-05`. It was `$spacing-03 $spacing-02` (8 and 4), which put
     // the rows 8px inside the header's own 16px inset — the two lined up
@@ -111,9 +153,22 @@ pub fn list_row(key: impl Into<Key>, label: impl Into<String>, selected: bool) -
     node
 }
 
+/// One or many children as a hugging run. A single child stays itself so a
+/// label-only row keeps `label` as its first child.
+fn cluster(key: &'static str, mut children: Vec<ViewNode>) -> ViewNode {
+    if children.len() == 1 {
+        return children.pop().expect("len == 1");
+    }
+    let mut node = stack(key, Axis::Horizontal, Some(SPACING_03), children);
+    node.props.align = Some(Align::Center);
+    node
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{LIST_ROW_EXTENT, list_row};
+    use super::{LIST_ROW_EXTENT, list_row, list_row_with};
+    use crate::component::icon::{IconMark, IconTone, icon_toned};
+    use crate::component::tokens::{TEXT_MUTED, TYPOGRAPHY_BODY_COMPACT};
     use crate::token::{TokenValue, shipped};
     use crate::tree::TextWrap;
 
@@ -166,5 +221,56 @@ mod tests {
         let node = list_row("row", "a very long fiber path that will not fit", false);
         let label = node.children.first().expect("a list row has a label");
         assert_eq!(label.props.wrap, Some(TextWrap::Ellipsis));
+    }
+
+    /// Icon, muted shortcut, selected still declared, no four-sided border.
+    #[test]
+    fn list_row_with_places_icon_and_muted_shortcut() {
+        let node = list_row_with(
+            "rebuild",
+            "Rebuild fiber",
+            true,
+            Some(IconMark::Menu),
+            Some("Ctrl+R"),
+        );
+        assert!(node.semantics.selected);
+        assert_eq!(node.props.justify, Some(crate::tree::Justify::SpaceBetween));
+        let keys: Vec<&str> = node.children.iter().map(|c| c.key.as_str()).collect();
+        assert_eq!(keys, ["run", "shortcut"]);
+        fn named<'a>(node: &'a crate::tree::ViewNode, key: &str) -> &'a crate::tree::ViewNode {
+            fn walk<'a>(
+                node: &'a crate::tree::ViewNode,
+                key: &str,
+            ) -> Option<&'a crate::tree::ViewNode> {
+                if node.key.as_str() == key {
+                    return Some(node);
+                }
+                node.children.iter().find_map(|c| walk(c, key))
+            }
+            walk(node, key).unwrap_or_else(|| panic!("missing descendant {key}"))
+        }
+        let icon = named(&node, "icon");
+        assert_eq!(
+            icon.props.canvas,
+            icon_toned("icon", IconMark::Menu, IconTone::Primary)
+                .props
+                .canvas
+        );
+        let label = named(&node, "label");
+        assert_eq!(label.props.text.as_deref(), Some("Rebuild fiber"));
+        let shortcut = named(&node, "shortcut");
+        assert_eq!(shortcut.props.text.as_deref(), Some("Ctrl+R"));
+        assert_eq!(
+            shortcut.props.style.as_ref().map(|t| t.as_str()),
+            Some(TYPOGRAPHY_BODY_COMPACT)
+        );
+        assert_eq!(
+            shortcut.props.tokens.get("foreground").map(|t| t.as_str()),
+            Some(TEXT_MUTED)
+        );
+        assert!(
+            !node.props.tokens.contains_key("border"),
+            "a list row has no four-sided container border"
+        );
     }
 }

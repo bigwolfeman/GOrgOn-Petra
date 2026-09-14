@@ -84,7 +84,7 @@
 
 use super::icon::{IconMark, IconTone, icon_toned};
 use super::stack;
-use super::text::as_compact_heading;
+use super::text::{as_compact_heading, ellipsis_text};
 use super::tokens::{
     BORDER_SUBTLE, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SPACING_03, SPACING_05,
     SPACING_06, SURFACE_BASE, t,
@@ -121,12 +121,12 @@ const DIVIDER: f32 = 8.0;
 /// The narrowest a column may be dragged.
 ///
 /// A cell carries `$spacing-05` (16) of inline padding on each side
-/// ([`cell_padding`]), so 32 is the width at which a column is all padding
-/// and no content. Dragging past that would hide text behind the next
-/// column rather than narrow it, so the drag stops there.
-const MIN_COLUMN: f32 = 32.0;
+/// ([`cell_padding`]), so 32 is all padding. Wrap then stacks one glyph
+/// per line. 96 is that padding plus 64 of content, the same floor
+/// [`super::data_table`] uses.
+const MIN_COLUMN: f32 = 96.0;
 
-const _: () = assert!(MIN_COLUMN == 2.0 * 16.0);
+const _: () = assert!(MIN_COLUMN == 96.0);
 
 /// The key prefix every divider carries: `div0` is the boundary between
 /// column 0 and column 1.
@@ -509,9 +509,13 @@ fn cell_padding(kind: CellKind) -> InsetRefs {
 
 fn as_cell(index: usize, node: ViewNode, kind: CellKind) -> ViewNode {
     if node.semantics.role == Some(Role::Cell) {
+        let mut node = node;
+        ellipsis_text(&mut node);
         return node;
     }
-    let mut wrap = stack(format!("c{index}"), Axis::Horizontal, None, vec![node]);
+    let mut inner = node;
+    ellipsis_text(&mut inner);
+    let mut wrap = stack(format!("c{index}"), Axis::Horizontal, None, vec![inner]);
     wrap.props.padding = Some(cell_padding(kind));
     // Top-aligned: Carbon's cell is padded, not centred, and the asymmetric
     // 16/24 block padding is what puts the text where the reference has it.

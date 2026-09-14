@@ -112,8 +112,13 @@ pub fn toggle_button_icon(
 /// No role of its own: `Role` has no group entry, and a container with
 /// no actions is outside `ActionableNeedsRoleAndLabel`. The buttons
 /// carry chrome, role, and the pressed fill; this node is the row.
+/// Each child's focus figure is re-seated from [`FocusFigure::Sides`]
+/// to [`FocusFigure::BarUnder`] so the caret sits under the row, not
+/// in the gap. A caller that already overrode the figure (the selection
+/// palette's `BarInside`) is left alone.
 #[must_use]
-pub fn toggle_button_group(key: impl Into<Key>, children: Vec<ViewNode>) -> ViewNode {
+pub fn toggle_button_group(key: impl Into<Key>, mut children: Vec<ViewNode>) -> ViewNode {
+    seat_bar_under(&mut children);
     let mut node = stack(key, Axis::Horizontal, Some(SPACING_02), children);
     node.props.align = Some(Align::Center);
     // No radius token: a radius with no fill is a silent placement
@@ -121,6 +126,14 @@ pub fn toggle_button_group(key: impl Into<Key>, children: Vec<ViewNode>) -> View
     // then the children keep Grouping on their own chrome and the
     // row only spaces them.
     node
+}
+
+fn seat_bar_under(children: &mut [ViewNode]) {
+    for child in children {
+        if child.semantics.focus_figure == FocusFigure::Sides {
+            child.semantics.focus_figure = FocusFigure::BarUnder;
+        }
+    }
 }
 
 fn built(
@@ -211,7 +224,8 @@ mod tests {
         standard_vocabulary,
     };
     use crate::tree::{
-        Behaviour, Intent, Interaction, NodeKind, Phase, Props, Registry, Role, ViewNode,
+        Behaviour, FocusFigure, Intent, Interaction, NodeKind, Phase, Props, Registry, Role,
+        ViewNode,
     };
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
@@ -379,6 +393,19 @@ mod tests {
         assert!(named(&node, "bold").semantics.selected);
         assert!(named(&node, "italic").semantics.selected);
         assert!(!named(&node, "under").semantics.selected);
+        assert_eq!(
+            named(&node, "bold").semantics.focus_figure,
+            FocusFigure::BarUnder,
+            "a grouped toggle wears the under bar, not Sides in the gap"
+        );
+        let mut kept = toggle_button("keep", "Keep", false);
+        kept.semantics.focus_figure = FocusFigure::BarInside;
+        let grouped = toggle_button_group("keep-group", vec![kept]);
+        assert_eq!(
+            grouped.children[0].semantics.focus_figure,
+            FocusFigure::BarInside,
+            "a caller that already overrode the figure is left alone"
+        );
     }
 
     const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };

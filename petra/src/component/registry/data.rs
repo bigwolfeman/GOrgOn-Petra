@@ -316,9 +316,21 @@ mod tests {
         );
         let source_names: BTreeSet<String> =
             public_view_node_constructors(source).into_iter().collect();
+        // `data_table_sized` / `data_table_zebra_sized` take weights and
+        // the reorder flag. Lua still calls `data_table` / `data_table_zebra`,
+        // which now default dividers on. Register the sized pair when a
+        // plugin actually needs to pass weights.
+        // `data_table_menu` is the Fit::Content overflow used by
+        // `data_table_toolbar_menu` and the compound row menu, not a Lua
+        // constructor of its own.
         let missing: Vec<&String> = source_names
             .iter()
-            .filter(|n| !registered.contains(n.as_str()))
+            .filter(|n| {
+                !registered.contains(n.as_str())
+                    && n.as_str() != "data_table_sized"
+                    && n.as_str() != "data_table_zebra_sized"
+                    && n.as_str() != "data_table_menu"
+            })
             .collect();
         assert!(
             missing.is_empty(),

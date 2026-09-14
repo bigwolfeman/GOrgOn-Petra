@@ -2373,20 +2373,45 @@ mod tests {
         );
     }
 
-    /// Row 45. T014's own acceptance: a real secondary (right) press opens
-    /// the context menu, at the exact point pressed — not the trigger's
-    /// centre and not a constant the page invented — and a press elsewhere
-    /// dismisses it through the same `DismissOutside` path every other
-    /// overlay uses.
+    /// Row 45. Rest mounts the open panel (icons, Ctrl+ shortcuts, Add to
+    /// folder flyout) so a snapshot of rest is the menu, not the closed
+    /// trigger. T014 still holds: dismiss, then a real secondary press
+    /// reopens it at the exact point pressed — not the trigger's centre and
+    /// not a constant the page invented — and a press elsewhere dismisses
+    /// it through the same `DismissOutside` path every other overlay uses.
     #[test]
     fn a_secondary_press_opens_the_context_menu_at_the_press_point() {
         let mut cam = Camera::on("Context menu");
-        cam.shoot("45-context-menu-closed");
+        cam.shoot("45-context-menu-open");
         assert!(
-            !cam.has("/ctx"),
-            "the menu is placed before anything was pressed: the page \
-             mounts its open form at rest"
+            cam.has("/ctx"),
+            "rest must mount the open menu. Placed:\n  {}",
+            cam.ids().join("\n  ")
         );
+        assert!(
+            cam.has("ctx-undo")
+                && cam.has("ctx-copy")
+                && cam.has("ctx-delete")
+                && cam.has("ctx-add"),
+            "rest is missing a row. Placed:\n  {}",
+            cam.ids().join("\n  ")
+        );
+        assert!(
+            !cam.has("ctx-add-flyout"),
+            "the fold-out must wait for hover, not sit open at rest"
+        );
+        cam.hover("ctx-add");
+        cam.shoot("45-context-menu-flyout");
+        assert!(
+            cam.has("ctx-add-flyout"),
+            "hovering Add to folder did not fold it out. Placed:\n  {}",
+            cam.ids().join("\n  ")
+        );
+
+        press_empty_ground(&mut cam);
+        cam.shoot("45-context-menu-dismissed");
+        assert!(!cam.has("/ctx"), "a press outside did not dismiss the menu");
+
         let trigger = cam.rect("show-ctx");
         // Off-centre and well inside the trigger's own rect, so the check
         // below tells a genuine press point apart from a hardcoded one or
@@ -2397,7 +2422,7 @@ mod tests {
             "the chosen point must land inside the trigger: {x},{y} in {trigger:?}"
         );
         cam.secondary_click_at(x, y);
-        cam.shoot("45-context-menu-open");
+        cam.shoot("45-context-menu-at-point");
         assert!(
             cam.has("/ctx"),
             "a secondary press on the trigger placed no menu: the handler \
@@ -2410,13 +2435,66 @@ mod tests {
             "the menu's top-left must be the press point ({x}, {y}), got {menu:?}"
         );
         assert!(
-            cam.has("ctx-rename") && cam.has("ctx-copy") && cam.has("ctx-delete"),
+            cam.has("ctx-undo") && cam.has("ctx-copy") && cam.has("ctx-delete"),
             "the menu opened with none of its rows"
         );
+    }
 
-        press_empty_ground(&mut cam);
-        cam.shoot("45-context-menu-dismissed");
-        assert!(!cam.has("/ctx"), "a press outside did not dismiss the menu");
+    /// Row 48. Rest mounts File open with Open Recent folded out, so a
+    /// snapshot of rest is the fold-out, not a closed bar.
+    #[test]
+    fn the_menubar_rest_shows_file_and_the_open_recent_flyout() {
+        let mut cam = Camera::on("Menubar");
+        cam.shoot("48-menubar-open");
+        assert!(
+            cam.has("mb-file-menu"),
+            "rest must mount File. Placed:\n  {}",
+            cam.ids().join("\n  ")
+        );
+        assert!(
+            !cam.has("mb-file-recent"),
+            "Open Recent must wait for hover, not sit open at rest"
+        );
+        cam.hover("mb-file-recent-item");
+        cam.shoot("48-menubar-flyout");
+        assert!(
+            cam.has("mb-file-recent"),
+            "hovering Open Recent did not fold it out. Placed:\n  {}",
+            cam.ids().join("\n  ")
+        );
+        assert!(
+            cam.has("mb-edit") && cam.has("mb-view"),
+            "Edit and View must stay on the bar while File is open"
+        );
+    }
+
+    /// Row 52. A grouped toggle wears the under bar, not the vertical
+    /// `Sides` pair a lone `toggle_button()` keeps.
+    #[test]
+    fn a_toggle_in_a_group_draws_the_under_bar() {
+        let mut cam = Camera::on("Toggle button");
+        cam.focus("tb-list");
+        cam.settle();
+        cam.shoot("52-toggle-button-focused");
+        assert!(
+            cam.focused().is_some(),
+            "focus did not land on a grouped toggle"
+        );
+    }
+
+    /// Row 44. A grouped button wears the under bar, not the vertical
+    /// `Sides` pair a lone `button()` keeps. Rest does not draw focus, so
+    /// this test seats it.
+    #[test]
+    fn a_button_in_a_group_draws_the_under_bar() {
+        let mut cam = Camera::on("Button group");
+        cam.focus("bg-primary");
+        cam.settle();
+        cam.shoot("44-button-group-focused");
+        assert!(
+            cam.focused().is_some(),
+            "focus did not land on a grouped button"
+        );
     }
 
     /// Row 18. Carbon's `Menu` seats keyboard focus on its first item when
@@ -9367,6 +9445,67 @@ mod tests {
         assert_ne!(before, after, "the interaction never reached the picture");
     }
 
+    /// A drag on the Name/Status separator must move the boundary and must
+    /// not select or expand a row. The compound page used to treat a press
+    /// on `div0` as a press on the row that contains it.
+    #[test]
+    fn dragging_a_compound_data_table_divider_resizes_and_does_not_select() {
+        let mut cam = Camera::on("Data table (compound)");
+        cam.shoot("56-data-table-compound-before-resize");
+        assert!(
+            !cam.selected("f0") && !cam.selected("f2") && !cam.selected("f3"),
+            "rest must not start with a selection, or the batch bar hides the table"
+        );
+        let before = cam.rect("header/div0");
+        let to = Point::new(before.x - 80.0, before.y + before.h / 2.0);
+        cam.drag("header/div0", to);
+        cam.shoot("56-data-table-compound-after-resize");
+        assert!(
+            !cam.selected("f0") && !cam.selected("f2") && !cam.selected("f3"),
+            "dragging the separator selected a row. Placed:\n  {}",
+            cam.ids().join("\n  ")
+        );
+        let after = cam.rect("header/div0");
+        assert!(
+            (after.x - before.x).abs() > 20.0,
+            "the Name/Status boundary did not move: {before:?} → {after:?}"
+        );
+        assert!(
+            cam.has("f0") && cam.has("f1") && cam.has("f2") && cam.has("f3"),
+            "the drag dropped a row. Placed:\n  {}",
+            cam.ids().join("\n  ")
+        );
+    }
+
+    /// A drag that tries to collapse Name to nothing must stop at the
+    /// column floor. Wrap-at-zero stacked "Name" as one glyph per line
+    /// and grew every row; Ellipsis plus the 96-unit min keeps one line.
+    #[test]
+    fn dragging_a_data_table_column_stops_before_text_stacks() {
+        let mut cam = Camera::on("Data table (compound)");
+        let before = cam.rect("header/div0");
+        let header_h = cam.rect("header").h;
+        cam.drag(
+            "header/div0",
+            Point::new(before.x - 2000.0, before.y + before.h / 2.0),
+        );
+        cam.shoot("56-data-table-compound-column-at-min");
+        let name = cam.rect("/header/name");
+        assert!(name.w >= 90.0, "Name collapsed under the floor: {name:?}");
+        let header = cam.rect("header");
+        assert!(
+            (header.h - header_h).abs() < 1.0,
+            "the header grew from wrapping: was {header_h}, now {}",
+            header.h
+        );
+        let row = cam.rect("f0");
+        assert!(
+            (row.h - header_h).abs() < 8.0,
+            "a body row grew from wrapping: header {header_h} row {}",
+            row.h
+        );
+    }
+
     /// Data table (compound), row 56, T034. Nothing is selected at rest, so
     /// the toolbar is what the page shows (see
     /// `page/data_table_compound.rs`'s own `Default` for why that is the
@@ -9384,6 +9523,14 @@ mod tests {
             "the batch bar must not be mounted with nothing selected"
         );
         let with_toolbar = cam.shoot("56-data-table-compound-toolbar");
+        let search = cam.rect("search");
+        let table = cam.rect("/data-table/table");
+        assert!(
+            (search.x - table.x).abs() < 0.5,
+            "toolbar search must share the table's leading edge; search.x={} table.x={}",
+            search.x,
+            table.x
+        );
 
         cam.click("f0");
         assert!(
@@ -9477,6 +9624,26 @@ mod tests {
             "the Status header is still up before hiding it"
         );
         let open = cam.shoot("56-data-table-compound-columns-open");
+        let menu = cam.rect("/columns/menu");
+        let name = cam.rect("col-name");
+        let table = cam.rect("/data-table/table");
+        assert!(
+            name.x >= menu.x - 0.5 && name.x + name.w <= menu.x + menu.w + 0.5,
+            "Columns menu does not wrap Name: name={:?} menu={:?}",
+            name,
+            menu
+        );
+        assert!(
+            menu.x + menu.w <= table.x + table.w + 1.0,
+            "Columns menu overflows the table: menu={:?} table={:?}",
+            menu,
+            table
+        );
+        assert!(
+            menu.w >= 160.0 - 0.5,
+            "Columns menu is narrower than Carbon's 160 min: {}",
+            menu.w
+        );
 
         cam.click("col-status");
         assert!(!cam.selected("col-status"), "the checkbox did not flip");
@@ -9503,6 +9670,21 @@ mod tests {
         );
         assert!(cam.has("row-action-delete"));
         let open = cam.shoot("56-data-table-compound-row-menu-open");
+        let menu = cam.rect("/row-menu-ctl/menu");
+        let rename = cam.rect("row-action-rename");
+        let table = cam.rect("/data-table/table");
+        assert!(
+            rename.x >= menu.x - 0.5 && rename.x + rename.w <= menu.x + menu.w + 0.5,
+            "row menu does not wrap Rename: rename={:?} menu={:?}",
+            rename,
+            menu
+        );
+        assert!(
+            menu.x + menu.w <= table.x + table.w + 1.0,
+            "row menu overflows the table: menu={:?} table={:?}",
+            menu,
+            table
+        );
 
         cam.click("row-action-rename");
         assert!(

@@ -31,6 +31,18 @@ pub fn path_has(node: &str, key: &str) -> bool {
     node.split('/').any(|part| part == key)
 }
 
+/// A column divider (`div0`, `div1`, …) or a row-reorder grip. A press on
+/// either sits inside a row's path, so `path_has(node, row_id)` would treat
+/// a resize as a row click if the handler did not skip these first.
+pub fn path_is_column_chrome(node: &str) -> bool {
+    node.split('/').any(|part| {
+        part == "grip"
+            || part.strip_prefix("div").is_some_and(|digits| {
+                !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
+            })
+    })
+}
+
 /// Whether any of the dismissed surface ids `ids` is the surface keyed
 /// `key` — the test a page runs in [`super::Page::dismissed`].
 ///

@@ -185,11 +185,12 @@ pub use controls::{
 };
 pub use data_table::{
     SortDirection, data_table, data_table_batch_action, data_table_batch_bar,
-    data_table_batch_cancel, data_table_row, data_table_row_actions, data_table_row_expandable,
-    data_table_row_expandable_actions, data_table_row_lg, data_table_row_md,
-    data_table_row_menu_trigger, data_table_row_sm, data_table_row_xl, data_table_row_xs,
-    data_table_skeleton, data_table_sort_header, data_table_toolbar, data_table_toolbar_menu,
-    data_table_zebra,
+    data_table_batch_cancel, data_table_grip_row, data_table_menu, data_table_row,
+    data_table_row_actions, data_table_row_expandable, data_table_row_expandable_actions,
+    data_table_row_lg, data_table_row_md, data_table_row_menu_trigger, data_table_row_sm,
+    data_table_row_xl, data_table_row_xs, data_table_sized, data_table_skeleton,
+    data_table_sort_header, data_table_toolbar, data_table_toolbar_menu, data_table_weights_at,
+    data_table_zebra, data_table_zebra_sized,
 };
 pub use date_picker::{
     Calendar, date_picker, date_picker_open, date_picker_showing, date_picker_showing_selection,
@@ -217,9 +218,9 @@ pub use list::{
     Bullet, BulletScheme, list_item, list_item_with, ordered_list, unordered_list,
     unordered_list_with,
 };
-pub use list_row::{LIST_ROW_EXTENT, list_row};
+pub use list_row::{LIST_ROW_EXTENT, list_row, list_row_with};
 pub use loading::{loading, loading_sm, spinner_phase};
-pub use menu::{menu, menu_item};
+pub use menu::{menu, menu_flyout, menu_item, menu_item_with};
 pub use menu_button::menu_button;
 pub use menubar::{menubar, menubar_top};
 pub use modal::{modal, modal_passive};

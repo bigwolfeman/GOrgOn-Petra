@@ -1,4 +1,4 @@
-//! Carbon Data table (slice-b). No column resize.
+//! Carbon Data table (slice-b). Column resize is on by default.
 //!
 //! Anatomy (usage page + `_data-table.scss` + `09-data-table.png`), the
 //! parts this file ships:
@@ -48,9 +48,11 @@
 //! scroll-region/`position: sticky` equivalent — `reserve_expand_column`'s
 //! trailing sibling, [`reserve_menu_column`], is the closest thing to a
 //! per-column mechanism it has, and a scrolling `thead` is a different
-//! problem) and column resize (Carbon v11 does not ship it as a Data Table
-//! variant either — `Carbon-Component-Inventory/slice-b.md`'s own
-//! "VERIFIED ABSENT" note).
+//! problem). Column resize is a deliberate departure: Carbon v11 does not
+//! ship it, the operator asked for it by name on every columnar surface,
+//! and [`data_table_sized`]'s `dividers` flag is how a caller declines.
+//! Row reorder is the same shape: `reorderable` inserts a grip cell that
+//! declares [`Interaction::Drag`].
 //!
 //! # T034: the toolbar tier (spec 009)
 //!
@@ -106,16 +108,17 @@ use super::menu::menu;
 use super::pad;
 use super::stack;
 use super::swatch;
-use super::text::{as_compact_heading, text};
+use super::text::{as_compact_heading, ellipsis_text, text};
 use super::tokens::{
     ACCENT_PRIMARY, BORDER_SUBTLE, LAYER_ACCENT, LAYER_ACCENT_HOVER, LAYER_HOVER, LAYER_SELECTED,
     LAYER_SELECTED_HOVER, SIZE_MD, SPACING_03, SPACING_04, SPACING_05, SURFACE_BASE,
     TEXT_ON_ACCENT, TEXT_PRIMARY, TYPOGRAPHY_BODY_COMPACT, t,
 };
-use crate::geom::{Align, Axis};
+use crate::frame::PetrifiedFrame;
+use crate::geom::{Align, Axis, Point};
 use crate::tree::{
-    AxisConstraint, FocusFigure, InsetRefs, Interaction, Key, NodeKind, Props, Role, Semantics,
-    TrackSize, ViewNode,
+    Anchor, AxisConstraint, Edge, Fit, FocusFigure, InsetRefs, Interaction, Justify, Key, NodeKind,
+    Props, Role, Semantics, TrackSize, ViewNode,
 };
 
 /// Carbon extra-small row height.
@@ -158,6 +161,28 @@ const _: () = assert!(SKELETON_BAR_H == 16.0);
 
 const ROW_INTENTS: &[Interaction] = &[Interaction::Focus, Interaction::Click, Interaction::Hover];
 const SORT_INTENTS: &[Interaction] = &[Interaction::Focus, Interaction::Click, Interaction::Hover];
+const DIVIDER: f32 = 8.0;
+const DIVIDER_KEY: &str = "div";
+const GRIP_KEY: &str = "grip";
+/// Narrowest a data column may be dragged.
+///
+/// A cell spends `$spacing-05` (16) on each side, so a 32-unit floor is
+/// all padding. Wrap then stacks one glyph per line and the row grows —
+/// the compound table shot of 2026-09-13. 96 is that padding plus 64 of
+/// content: a short header still reads, and [`TextWrap::Ellipsis`] keeps
+/// the row at one line.
+const MIN_COLUMN: f32 = 96.0;
+
+const _: () = assert!(MIN_COLUMN == 96.0);
+/// Carbon `.cds--table-column-checkbox` `min-inline-size: 2.5rem`.
+const SELECT_COL: f32 = 40.0;
+/// [`SELECT_COL`] plus a 16-unit chevron and [`SPACING_03`] (8) between.
+const SELECT_COL_EXPAND: f32 = 64.0;
+/// Icon 16 plus the cell's `$spacing-05` inline pad on both sides.
+const MENU_COL: f32 = 48.0;
+const GRIP_COL: f32 = 48.0;
+const DIVIDER_INTENTS: &[Interaction] = &[Interaction::Drag];
+const GRIP_INTENTS: &[Interaction] = &[Interaction::Drag];
 
 #[derive(Clone, Copy)]
 enum RowSize {
@@ -184,8 +209,43 @@ impl RowSize {
 ///
 /// The header's select-all checkbox reads the rows' `selected` facts; the
 /// header's height is the tallest row's; and if any row is expandable the
-/// header and every other row reserve the chevron column.
+/// header and every other row reserve the chevron column. Column dividers
+/// are on; row reorder is off. See [`data_table_sized`].
 pub fn data_table(key: impl Into<Key>, header: Vec<ViewNode>, rows: Vec<ViewNode>) -> ViewNode {
+    let ncols = header.len().max(1);
+    data_table_sized(key, header, rows, &vec![1.0; ncols], true, false)
+}
+
+/// [`data_table`] with column weights, divider policy, and row reorder.
+///
+/// `weights` is one entry per data column (not the leading select cell).
+/// `dividers` is the "toggled off in code" half: `false` builds the same
+/// table with no divider tracks. `reorderable` inserts a grip cell after
+/// the select column; the page owns the order, the same way it owns the
+/// weights.
+pub fn data_table_sized(
+    key: impl Into<Key>,
+    header: Vec<ViewNode>,
+    rows: Vec<ViewNode>,
+    weights: &[f32],
+    dividers: bool,
+    reorderable: bool,
+) -> ViewNode {
+    let names: Vec<String> = header.iter().map(collect_text).collect();
+    let weights = normalise_weights(weights, names.len().max(1));
+    let mut node = assemble_data_table(key, header, rows);
+    for row in &mut node.children {
+        lay_out_columns(Arc::make_mut(row), &weights, dividers, reorderable, &names);
+    }
+    pin_chrome_columns(&mut node);
+    node
+}
+
+fn assemble_data_table(
+    key: impl Into<Key>,
+    header: Vec<ViewNode>,
+    rows: Vec<ViewNode>,
+) -> ViewNode {
     let rows: Vec<ViewNode> = rows.into_iter().map(ensure_row).collect();
     let height = rows
         .iter()
@@ -252,6 +312,19 @@ pub fn data_table_zebra(
     header: Vec<ViewNode>,
     rows: Vec<ViewNode>,
 ) -> ViewNode {
+    let ncols = header.len().max(1);
+    data_table_zebra_sized(key, header, rows, &vec![1.0; ncols], true, false)
+}
+
+/// [`data_table_zebra`] with the same extra arguments as [`data_table_sized`].
+pub fn data_table_zebra_sized(
+    key: impl Into<Key>,
+    header: Vec<ViewNode>,
+    rows: Vec<ViewNode>,
+    weights: &[f32],
+    dividers: bool,
+    reorderable: bool,
+) -> ViewNode {
     let rows = rows
         .into_iter()
         .enumerate()
@@ -264,7 +337,269 @@ pub fn data_table_zebra(
             row
         })
         .collect();
-    data_table(key, header, rows)
+    data_table_sized(key, header, rows, weights, dividers, reorderable)
+}
+
+/// The column weights a drag on the divider `node` to `pos` asks for.
+/// Peer of [`super::structured_list_weights_at`].
+#[must_use]
+pub fn data_table_weights_at(
+    frame: &PetrifiedFrame,
+    node: &str,
+    pos: Point,
+    weights: &[f32],
+) -> Option<Vec<f32>> {
+    let (row, index) = divider_of(node)?;
+    if index + 1 >= weights.len() {
+        return None;
+    }
+    let columns = data_column_rects(frame, row);
+    let left = columns.get(index)?.rect;
+    let right = columns.get(index + 1)?.rect;
+    let travel = right.right() - left.x - DIVIDER;
+    if travel <= 2.0 * MIN_COLUMN {
+        return None;
+    }
+    let want = (pos.x - DIVIDER / 2.0 - left.x).clamp(MIN_COLUMN, travel - MIN_COLUMN);
+    let pair = weights[index] + weights[index + 1];
+    let mut out = weights.to_vec();
+    out[index] = pair * want / travel;
+    out[index + 1] = pair - out[index];
+    Some(out)
+}
+
+/// Direct data-cell placements of `row`, in column order.
+///
+/// Sort headers keep their own keys (`name`, `h0`) because they already
+/// declare `Role::Cell`, so looking up `{row}/c0` misses the header. Skip
+/// select, grip, dividers, and the trailing row-menu.
+fn data_column_rects<'a>(frame: &'a PetrifiedFrame, row: &str) -> Vec<&'a crate::frame::Placement> {
+    let prefix = format!("{row}/");
+    frame
+        .placements
+        .iter()
+        .filter(|p| {
+            let Some(rest) = p.id.strip_prefix(&prefix) else {
+                return false;
+            };
+            if rest.contains('/') {
+                return false;
+            }
+            if rest == SELECT_CELL || rest == GRIP_KEY || rest == ROW_MENU {
+                return false;
+            }
+            if rest
+                .strip_prefix(DIVIDER_KEY)
+                .is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
+            {
+                return false;
+            }
+            true
+        })
+        .collect()
+}
+
+/// The row key a drag on a grip should move, if `node` names a grip.
+#[must_use]
+pub fn data_table_grip_row(node: &str) -> Option<&str> {
+    let mut prev = "";
+    for segment in node.split('/') {
+        if segment == GRIP_KEY {
+            return Some(prev).filter(|s| !s.is_empty());
+        }
+        prev = segment;
+    }
+    None
+}
+
+fn divider_of(node: &str) -> Option<(&str, usize)> {
+    let mut offset = 0usize;
+    for segment in node.split('/') {
+        let start = offset;
+        offset += segment.len() + 1;
+        if let Some(index) = segment
+            .strip_prefix(DIVIDER_KEY)
+            .and_then(|digits| digits.parse::<usize>().ok())
+        {
+            return Some((&node[..start.saturating_sub(1)], index));
+        }
+    }
+    None
+}
+
+fn normalise_weights(weights: &[f32], ncols: usize) -> Vec<f32> {
+    (0..ncols)
+        .map(|i| match weights.get(i) {
+            Some(w) if *w > 0.0 && w.is_finite() => *w,
+            _ => 1.0,
+        })
+        .collect()
+}
+
+fn lay_out_columns(
+    row: &mut ViewNode,
+    weights: &[f32],
+    dividers: bool,
+    reorderable: bool,
+    names: &[String],
+) {
+    let target: &mut ViewNode = if row.kind == NodeKind::Grid {
+        row
+    } else {
+        match row.children.iter_mut().find(|c| c.key.as_str() == "cells") {
+            Some(cells) => Arc::make_mut(cells),
+            None => return,
+        }
+    };
+    if target.kind != NodeKind::Grid {
+        return;
+    }
+    let leading = target
+        .children
+        .first()
+        .is_some_and(|c| c.key.as_str() == SELECT_CELL);
+    let trailing = target
+        .children
+        .last()
+        .is_some_and(|c| c.key.as_str() == ROW_MENU);
+    let start = usize::from(leading);
+    let end = target.children.len() - usize::from(trailing);
+    if end <= start {
+        return;
+    }
+    let is_header = target.key.as_str() == "header";
+    let old = std::mem::take(&mut target.children);
+    let mut children: Vec<Arc<ViewNode>> = Vec::with_capacity(old.len() + end);
+    let mut columns: Vec<TrackSize> = Vec::with_capacity(old.len() + end);
+    let mut data_i = 0usize;
+    for (i, cell) in old.into_iter().enumerate() {
+        if i < start {
+            children.push(cell);
+            columns.push(TrackSize::FitContent);
+            if reorderable {
+                children.push(Arc::new(if is_header { grip_blank() } else { grip_cell() }));
+                columns.push(TrackSize::FitContent);
+            }
+            continue;
+        }
+        if i >= end {
+            children.push(cell);
+            columns.push(TrackSize::FitContent);
+            continue;
+        }
+        if data_i > 0 && dividers {
+            children.push(Arc::new(column_divider(data_i - 1, names.get(data_i - 1))));
+            columns.push(TrackSize::Fixed { value: DIVIDER });
+        }
+        children.push(cell);
+        columns.push(TrackSize::Weight {
+            weight: weights.get(data_i).copied().unwrap_or(1.0),
+        });
+        data_i += 1;
+    }
+    target.props.columns = columns;
+    target.children = children;
+}
+
+/// FitContent chrome (select, grip, row-menu) sizes independently on each
+/// row. A header blank is narrower than a hamburger, a chevron row is
+/// wider than a spacer row, and the Weight columns then start at three
+/// different x positions. Pin those tracks to one width so a resize
+/// cannot un-align the table.
+fn pin_chrome_columns(table: &mut ViewNode) {
+    let mut expand = false;
+    for row in &table.children {
+        visit_row_grid(row, &mut |grid| {
+            if grid
+                .children
+                .iter()
+                .any(|c| c.key.as_str() == SELECT_CELL && has_expand(c))
+            {
+                expand = true;
+            }
+        });
+    }
+    let select_w = if expand {
+        SELECT_COL_EXPAND
+    } else {
+        SELECT_COL
+    };
+    for row in &mut table.children {
+        visit_row_grid_mut(Arc::make_mut(row), &mut |grid| {
+            for (i, child) in grid.children.iter().enumerate() {
+                let w = match child.key.as_str() {
+                    SELECT_CELL => Some(select_w),
+                    GRIP_KEY => Some(GRIP_COL),
+                    ROW_MENU => Some(MENU_COL),
+                    _ => None,
+                };
+                if let Some(w) = w {
+                    if let Some(col) = grid.props.columns.get_mut(i) {
+                        *col = TrackSize::Fixed { value: w };
+                    }
+                }
+            }
+        });
+    }
+}
+
+fn has_expand(select: &ViewNode) -> bool {
+    select.children.iter().any(|c| c.key.as_str() == EXPAND)
+}
+
+fn visit_row_grid(row: &ViewNode, f: &mut impl FnMut(&ViewNode)) {
+    if row.kind == NodeKind::Grid {
+        f(row);
+        return;
+    }
+    if let Some(cells) = row.children.iter().find(|c| c.key.as_str() == "cells") {
+        f(cells);
+    }
+}
+
+fn visit_row_grid_mut(row: &mut ViewNode, f: &mut impl FnMut(&mut ViewNode)) {
+    if row.kind == NodeKind::Grid {
+        f(row);
+        return;
+    }
+    if let Some(cells) = row.children.iter_mut().find(|c| c.key.as_str() == "cells") {
+        f(Arc::make_mut(cells));
+    }
+}
+
+fn column_divider(index: usize, name: Option<&String>) -> ViewNode {
+    let rule = super::rule("rule", Axis::Vertical, BORDER_SUBTLE);
+    let label = match name {
+        Some(name) if !name.trim().is_empty() => format!("Resize column {name}"),
+        _ => format!("Resize column {}", index + 1),
+    };
+    let mut node = stack(
+        format!("{DIVIDER_KEY}{index}"),
+        Axis::Horizontal,
+        None,
+        vec![rule],
+    );
+    node.props.align = Some(Align::Stretch);
+    node.props.justify = Some(Justify::Center);
+    node.interactive(Role::Separator, label, DIVIDER_INTENTS)
+}
+
+fn grip_cell() -> ViewNode {
+    let mark = icon_toned("icon", IconMark::Menu, IconTone::Primary);
+    let mut cell = stack(GRIP_KEY, Axis::Horizontal, None, vec![mark]);
+    cell.props.padding = Some(cell_padding_inline());
+    cell.props.align = Some(Align::Center);
+    cell.interactive(Role::Button, "Reorder row", GRIP_INTENTS)
+}
+
+fn grip_blank() -> ViewNode {
+    let mut cell = stack(GRIP_KEY, Axis::Horizontal, None, Vec::new());
+    cell.props.padding = Some(cell_padding_inline());
+    cell.semantics = Semantics {
+        role: Some(Role::Cell),
+        ..Semantics::default()
+    };
+    cell
 }
 
 /// One selectable body row at Carbon's default height, lg (48).
@@ -615,10 +950,37 @@ pub fn data_table_toolbar_menu(
     trigger.semantics.expanded = Some(open);
     let mut children = vec![trigger];
     if open {
-        children.push(menu("menu", label, items));
+        children.push(data_table_menu("menu", label, items));
     }
     let mut node = stack(key, Axis::Vertical, None, children);
     node.semantics.expanded = Some(open);
+    node
+}
+
+/// Overflow menu for a table toolbar control or a row's own trigger.
+///
+/// [`menu`]'s default [`Fit::Anchor`] copies the trigger's width. A Columns
+/// trigger is one word plus a chevron; a row-menu trigger is a 16-unit
+/// glyph. Checkbox rows and "Rename"/"Delete" need more than that, and a
+/// menu item ellipsizes rather than growing the panel, so the labels clip
+/// or the 160-wide box hangs off the table's trailing edge. [`Fit::Content`]
+/// lets the 160/288 bound size to the items. [`Align::End`] hangs the panel
+/// from the trigger's trailing edge so a trailing control stays inside the
+/// table.
+#[must_use]
+pub fn data_table_menu(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    items: Vec<ViewNode>,
+) -> ViewNode {
+    let mut node = menu(key, label, items);
+    node.props.fit = Some(Fit::Content);
+    node.props.anchor = Some(Anchor::Sibling {
+        key: "trigger".into(),
+        edge: Edge::Bottom,
+        align: crate::tree::Align::End,
+        offset: None,
+    });
     node
 }
 
@@ -652,11 +1014,6 @@ pub fn data_table_toolbar(
             columns: vec![TrackSize::Weight { weight: 1.0 }, TrackSize::FitContent],
             rows: vec![TrackSize::Weight { weight: 1.0 }],
             align: Some(Align::Stretch),
-            padding: Some(InsetRefs {
-                left: Some(t(SPACING_05)),
-                right: Some(t(SPACING_05)),
-                ..InsetRefs::default()
-            }),
             ..Props::default()
         })
         .with_children(vec![reseat_flush_focus(search), actions]);
@@ -1109,6 +1466,7 @@ fn row_shell(
         })
         .with_children(children);
     node.constraints.vertical.min = Some(height);
+    node.constraints.vertical.max = Some(height);
     node
 }
 
@@ -1135,9 +1493,13 @@ fn cell_padding_inline() -> InsetRefs {
 /// how many data columns came before it.
 fn as_cell(key: impl Into<Key>, node: ViewNode) -> ViewNode {
     if node.semantics.role == Some(Role::Cell) {
+        let mut node = node;
+        ellipsis_text(&mut node);
         return node;
     }
-    let mut wrap = stack(key, Axis::Horizontal, None, vec![node]);
+    let mut inner = node;
+    ellipsis_text(&mut inner);
+    let mut wrap = stack(key, Axis::Horizontal, None, vec![inner]);
     wrap.props.padding = Some(cell_padding_inline());
     wrap.props.align = Some(Align::Center);
     wrap.semantics = Semantics {
@@ -1209,12 +1571,14 @@ fn collect_text(node: &ViewNode) -> String {
 mod tests {
     use super::{
         HEIGHT_LG, HEIGHT_SM, HEIGHT_XL, HEIGHT_XS, IconMark, IconTone, SIZE_MD, SortDirection,
-        data_table, data_table_batch_bar, data_table_batch_cancel, data_table_row,
-        data_table_row_actions, data_table_row_expandable, data_table_row_lg, data_table_row_md,
-        data_table_row_menu_trigger, data_table_row_sm, data_table_row_xl, data_table_row_xs,
-        data_table_skeleton, data_table_sort_header, data_table_toolbar, data_table_zebra,
+        data_table, data_table_batch_bar, data_table_batch_cancel, data_table_menu, data_table_row,
+        data_table_row_actions, data_table_row_expandable, data_table_row_expandable_actions,
+        data_table_row_lg, data_table_row_md, data_table_row_menu_trigger, data_table_row_sm,
+        data_table_row_xl, data_table_row_xs, data_table_skeleton, data_table_sort_header,
+        data_table_toolbar, data_table_toolbar_menu, data_table_weights_at, data_table_zebra,
         icon_toned,
     };
+    use crate::component::checkbox;
     use crate::component::controls::{CheckState, checkbox_box};
     use crate::component::search;
     use crate::component::text::text;
@@ -1223,10 +1587,10 @@ mod tests {
         TYPOGRAPHY_HEADING_SM,
     };
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
-    use crate::geom::{Axis, Size};
+    use crate::geom::{Align, Axis, Point, Size};
     use crate::testing::{Harness, inks, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
-    use crate::tree::{Interaction, NodeKind, Props, Registry, Role, ViewNode};
+    use crate::tree::{Anchor, Edge, Fit, Interaction, NodeKind, Props, Registry, Role, ViewNode};
 
     fn named<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         fn walk<'a>(node: &'a ViewNode, key: &str) -> Option<&'a ViewNode> {
@@ -1245,11 +1609,25 @@ mod tests {
     fn no_drag(node: &ViewNode) {
         assert!(
             !node.interactions.contains(&Interaction::Drag),
-            "data table `{}` declared Drag; Carbon v11 has no column resize",
+            "data table `{}` declared Drag",
             node.key
         );
         for child in &node.children {
             no_drag(child);
+        }
+    }
+
+    fn drag_only_on_dividers_and_grips(node: &ViewNode) {
+        if node.interactions.contains(&Interaction::Drag) {
+            let key = node.key.as_str();
+            assert!(
+                key.starts_with(super::DIVIDER_KEY) || key == super::GRIP_KEY,
+                "data table `{}` declared Drag but is not a divider or grip",
+                node.key
+            );
+        }
+        for child in &node.children {
+            drag_only_on_dividers_and_grips(child);
         }
     }
 
@@ -1278,6 +1656,11 @@ mod tests {
             Some(HEIGHT_LG),
             "the header matches the body row height, and the default is lg"
         );
+        assert_eq!(
+            header.constraints.vertical.max,
+            Some(HEIGHT_LG),
+            "a dragged-narrow column must not grow the row by wrapping"
+        );
         assert_eq!(HEIGHT_LG, 48.0);
         assert_eq!(named(header, "c0").semantics.role, Some(Role::Cell));
         assert_eq!(named(header, "c1").semantics.role, Some(Role::Cell));
@@ -1286,7 +1669,75 @@ mod tests {
         assert_eq!(named(row, "select").semantics.role, Some(Role::Cell));
         assert_eq!(named(row, "c0").semantics.role, Some(Role::Cell));
         assert_eq!(named(row, "c1").semantics.role, Some(Role::Cell));
-        no_drag(&node);
+        drag_only_on_dividers_and_grips(&node);
+        assert!(
+            named(row, "div0").interactions.contains(&Interaction::Drag),
+            "the default table exposes a draggable column separator"
+        );
+    }
+
+    #[test]
+    fn table_cell_text_ellipsizes_rather_than_wrapping() {
+        use crate::tree::TextWrap;
+        let row = data_table_row("r0", vec![text("n0", "scheduler")], false);
+        assert_eq!(named(&row, "n0").props.wrap, Some(TextWrap::Ellipsis));
+        let header = data_table_sort_header("h0", "Name", SortDirection::Ascending);
+        assert_eq!(named(&header, "name").props.wrap, Some(TextWrap::Ellipsis));
+        assert_eq!(
+            named(&header, "direction").props.wrap,
+            Some(TextWrap::Ellipsis)
+        );
+    }
+
+    #[test]
+    fn dragging_a_divider_stops_at_the_minimum_column() {
+        let table = data_table(
+            "jobs",
+            vec![text("h0", "Name"), text("h1", "Status")],
+            vec![data_table_row(
+                "r0",
+                vec![text("n0", "alpha"), text("s0", "ready")],
+                false,
+            )],
+        );
+        let frame = petrify_lone(table);
+        let node = frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/header/div0"))
+            .expect("the header divider is placed")
+            .id
+            .clone();
+        let left = placed(&frame, "/header/c0");
+        let right = placed(&frame, "/header/c1");
+        let travel = right.rect.right() - left.rect.x - super::DIVIDER;
+        let weights = [1.0f32, 1.0];
+        let squashed = data_table_weights_at(
+            &frame,
+            &node,
+            Point::new(left.rect.x - 1000.0, left.rect.y + 1.0),
+            &weights,
+        )
+        .expect("a drag on a live divider resolves");
+        let width = squashed[0] / (squashed[0] + squashed[1]) * travel;
+        assert!(
+            (width - super::MIN_COLUMN).abs() < 1.0,
+            "the first column was dragged to {width}, past the {} floor",
+            super::MIN_COLUMN
+        );
+        let other = data_table_weights_at(
+            &frame,
+            &node,
+            Point::new(right.rect.right() + 1000.0, left.rect.y + 1.0),
+            &weights,
+        )
+        .expect("a drag past the right end resolves");
+        let other_w = other[1] / (other[0] + other[1]) * travel;
+        assert!(
+            (other_w - super::MIN_COLUMN).abs() < 1.0,
+            "the second column was dragged to {other_w}, past the {} floor",
+            super::MIN_COLUMN
+        );
     }
 
     /// Row 9, round 2 ("not in carbon style"): Carbon's column header row
@@ -1493,7 +1944,7 @@ mod tests {
         let header = named(&table, "header");
         assert_eq!(named(header, "h0").semantics.role, Some(Role::Cell));
         assert_eq!(named(header, "c1").semantics.role, Some(Role::Cell));
-        no_drag(&table);
+        drag_only_on_dividers_and_grips(&table);
     }
 
     #[test]
@@ -1593,7 +2044,7 @@ mod tests {
             Some(LAYER_ACCENT),
             "slice-b: Zebra rows are `$layer-accent`"
         );
-        no_drag(&node);
+        drag_only_on_dividers_and_grips(&node);
     }
 
     const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
@@ -1719,6 +2170,56 @@ mod tests {
         }
     }
 
+    /// A hamburger is wider than the header's blank menu cell, and an
+    /// expanded row's chevron is wider than a spacer. FitContent chrome
+    /// then shifts every Weight column. Compound row 56 showed that as
+    /// three different Name/Status splits.
+    #[test]
+    fn a_menu_and_an_expand_do_not_shift_the_data_columns() {
+        let table = data_table(
+            "jobs",
+            vec![
+                data_table_sort_header("h0", "Name", SortDirection::Ascending),
+                text("h1", "Status"),
+            ],
+            vec![
+                data_table_row_actions(
+                    "r0",
+                    vec![text("n", "a"), text("s", "ready")],
+                    false,
+                    data_table_row_menu_trigger("m0", "Row"),
+                ),
+                data_table_row_expandable_actions(
+                    "r1",
+                    vec![text("n", "b"), text("s", "idle")],
+                    false,
+                    true,
+                    "more",
+                    data_table_row_menu_trigger("m1", "Row"),
+                ),
+            ],
+        );
+        let frame = petrify_lone(table);
+        let x_of = |suffix: &str| {
+            frame
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with(suffix))
+                .unwrap_or_else(|| panic!("{suffix} is not placed"))
+                .rect
+                .x
+        };
+        let header_div = x_of("/header/div0");
+        assert_eq!(x_of("/r0/div0"), header_div, "plain row divider drifted");
+        assert_eq!(
+            x_of("/r1/cells/div0"),
+            header_div,
+            "expandable row divider drifted"
+        );
+        assert_eq!(x_of("/header/h0"), x_of("/r0/c0"));
+        assert_eq!(x_of("/header/h0"), x_of("/r1/cells/c0"));
+    }
+
     /// Check F: enabled rows, the sort button and the select-all control
     /// are reachable; a disabled row is not.
     #[test]
@@ -1837,6 +2338,110 @@ mod tests {
             crate::tree::TrackSize::Weight { weight: 1.0 }
         );
         assert_eq!(node.props.columns[1], crate::tree::TrackSize::FitContent);
+    }
+
+    #[test]
+    fn data_table_menu_fits_content_and_hangs_from_the_trailing_edge() {
+        let node = data_table_menu("menu", "Columns", vec![checkbox("col-name", "Name", true)]);
+        assert_eq!(node.props.fit, Some(Fit::Content));
+        match &node.props.anchor {
+            Some(Anchor::Sibling {
+                key, edge, align, ..
+            }) => {
+                assert_eq!(key.as_str(), "trigger");
+                assert_eq!(*edge, Edge::Bottom);
+                assert_eq!(*align, crate::tree::Align::End);
+            }
+            other => panic!("expected Sibling trailing-bottom, got {other:?}"),
+        }
+    }
+
+    fn placed<'a>(frame: &'a PetrifiedFrame, tail: &str) -> &'a crate::frame::Placement {
+        frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with(tail))
+            .unwrap_or_else(|| {
+                let ids: Vec<&str> = frame.placements.iter().map(|p| p.id.as_str()).collect();
+                panic!("no placement ending {tail}, have {ids:?}")
+            })
+    }
+
+    #[test]
+    fn toolbar_search_shares_the_table_leading_edge() {
+        let toolbar = data_table_toolbar(
+            "toolbar",
+            search("search", "Filter"),
+            vec![text("columns-trigger", "Columns")],
+        );
+        let table = data_table(
+            "table",
+            vec![text("h0", "Name")],
+            vec![data_table_row("r0", vec![text("n0", "alpha")], false)],
+        );
+        let node = ViewNode::new(NodeKind::Stack, "data-table")
+            .with_props(Props {
+                axis: Some(Axis::Vertical),
+                align: Some(Align::Stretch),
+                ..Props::default()
+            })
+            .with_children(vec![toolbar, table]);
+        let frame = petrify_lone2(node);
+        let search = placed(&frame, "/search");
+        let table = placed(&frame, "/table");
+        assert!(
+            (search.rect.x - table.rect.x).abs() < 0.5,
+            "search.x={} table.x={}",
+            search.rect.x,
+            table.rect.x
+        );
+    }
+
+    #[test]
+    fn an_open_columns_menu_wraps_its_rows_and_stays_inside_the_toolbar() {
+        let menu = data_table_toolbar_menu(
+            "columns",
+            "Columns",
+            true,
+            vec![
+                checkbox("col-name", "Name", true),
+                checkbox("col-status", "Status", true),
+            ],
+        );
+        let frame = petrify_lone2(data_table_toolbar(
+            "toolbar",
+            search("search", "Filter"),
+            vec![menu],
+        ));
+        let panel = placed(&frame, "/columns/menu");
+        let name = placed(&frame, "/col-name");
+        let status = placed(&frame, "/col-status");
+        assert!(
+            name.rect.x >= panel.rect.x - 0.5
+                && name.rect.x + name.rect.w <= panel.rect.x + panel.rect.w + 0.5,
+            "Name row is not inside the menu: name={:?} menu={:?}",
+            name.rect,
+            panel.rect
+        );
+        assert!(
+            status.rect.x >= panel.rect.x - 0.5
+                && status.rect.x + status.rect.w <= panel.rect.x + panel.rect.w + 0.5,
+            "Status row is not inside the menu: status={:?} menu={:?}",
+            status.rect,
+            panel.rect
+        );
+        let toolbar = placed(&frame, "/toolbar");
+        assert!(
+            panel.rect.x + panel.rect.w <= toolbar.rect.x + toolbar.rect.w + 1.0,
+            "menu overflows toolbar: menu={:?} toolbar={:?}",
+            panel.rect,
+            toolbar.rect
+        );
+        assert!(
+            panel.rect.w >= 160.0 - 0.5,
+            "Carbon menu min is 160, got {}",
+            panel.rect.w
+        );
     }
 
     #[test]

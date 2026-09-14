@@ -40,7 +40,7 @@
 //! that lives somewhere else.
 
 use gorgon_petra::component::kit::stack;
-use gorgon_petra::component::{list_row, search, valued};
+use gorgon_petra::component::{IconMark, list_row_with, search, valued};
 use gorgon_petra::keymap::{Binding, Chord, CommandName, Owner, Scope};
 use gorgon_petra::token::TokenName;
 use gorgon_petra::tree::{
@@ -96,6 +96,10 @@ pub struct Item {
     pub id: String,
     /// Visible caption, and the haystack [`crate::filter_indices`] reads.
     pub label: String,
+    /// Leading mark on the row. `None` leaves the label as the first child.
+    pub icon: Option<IconMark>,
+    /// Trailing hotkey caption. `None` omits the muted shortcut child.
+    pub shortcut: Option<String>,
 }
 
 impl Item {
@@ -105,6 +109,26 @@ impl Item {
         Self {
             id: id.into(),
             label: label.into(),
+            icon: None,
+            shortcut: None,
+        }
+    }
+
+    /// Place `icon` at the leading edge of the row.
+    #[must_use]
+    pub fn with_icon(self, icon: IconMark) -> Self {
+        Self {
+            icon: Some(icon),
+            ..self
+        }
+    }
+
+    /// Place a muted `shortcut` caption at the trailing edge of the row.
+    #[must_use]
+    pub fn with_shortcut(self, shortcut: impl Into<String>) -> Self {
+        Self {
+            shortcut: Some(shortcut.into()),
+            ..self
         }
     }
 }
@@ -221,10 +245,12 @@ impl Compound for Command {
                 .enumerate()
                 .map(|(pos, i)| {
                     let item = &props.items[i];
-                    list_row(
+                    list_row_with(
                         item.id.as_str(),
                         item.label.as_str(),
                         pos == state.highlighted,
+                        item.icon,
+                        item.shortcut.as_deref(),
                     )
                 }),
         );
@@ -273,6 +299,7 @@ fn token(name: &'static str) -> TokenName {
 
 #[cfg(test)]
 mod tests {
+    use gorgon_petra::component::IconMark;
     use gorgon_petra::tree::{Anchor, Layer, NodeKind, Role, ViewNode};
 
     use crate::Compound;
@@ -395,6 +422,34 @@ mod tests {
         Command::update(&mut state, Intent::Open);
         assert!(Command::update(&mut state, Intent::Choose).is_empty());
         assert!(!state.open);
+    }
+
+    #[test]
+    fn an_item_with_icon_and_shortcut_renders_those_on_the_row() {
+        let props = Props {
+            items: vec![
+                Item::new("rebuild", "Rebuild fiber")
+                    .with_icon(IconMark::Menu)
+                    .with_shortcut("Ctrl+R"),
+            ],
+        };
+        let mut state = Command::init(&props);
+        Command::update(&mut state, Intent::Open);
+        let node = Command::view(&state, &props);
+        let row = named(&node, "rebuild");
+        let keys: Vec<&str> = row.children.iter().map(|c| c.key.as_str()).collect();
+        assert_eq!(keys, ["run", "shortcut"]);
+        assert_eq!(
+            named(&row, "label").props.text.as_deref(),
+            Some("Rebuild fiber")
+        );
+        let shortcut = named(&row, "shortcut");
+        assert_eq!(shortcut.props.text.as_deref(), Some("Ctrl+R"));
+        assert_eq!(
+            shortcut.props.tokens.get("foreground").map(|t| t.as_str()),
+            Some("text.muted")
+        );
+        assert!(row.semantics.selected);
     }
 
     fn walks_to(node: &ViewNode, key: &str) -> bool {

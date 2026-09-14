@@ -1,15 +1,19 @@
 //! Inventory row 9, Data table.
 
 use gorgon_petra::component::{
-    SortDirection, data_table_row_expandable, data_table_row_lg, data_table_row_md,
-    data_table_row_sm, data_table_row_xl, data_table_row_xs, data_table_sort_header,
-    data_table_zebra, disabled, field_sm, section, text, valued,
+    SortDirection, data_table_grip_row, data_table_row_expandable, data_table_row_lg,
+    data_table_row_md, data_table_row_sm, data_table_row_xl, data_table_row_xs,
+    data_table_sort_header, data_table_weights_at, data_table_zebra_sized, disabled, field_sm,
+    section, text, valued,
 };
-use gorgon_petra::input::{InputEvent, KeyCode};
-use gorgon_petra::tree::ViewNode;
+use gorgon_petra::frame::PetrifiedFrame;
+use gorgon_petra::geom::Point;
+use gorgon_petra::input::InputEvent;
+use gorgon_petra::input::KeyCode;
+use gorgon_petra::tree::{Role, ViewNode};
 
 use super::Page;
-use super::common::{body, path_has, sp, wrapped};
+use super::common::{body, path_has, path_is_column_chrome, sp, wrapped};
 
 /// The four rows the catalog tests drive (`dt-0`..`dt-3`). Same names as
 /// `09-data-table.png` (kernel/runtime, petra/layout) plus two more so the
@@ -78,6 +82,12 @@ pub struct DataTable {
     name_ascending: bool,
     /// Whether [`EXP`]'s body is mounted.
     expanded: bool,
+    /// One weight per data column. A drag on a divider rewrites two of them.
+    weights: Vec<f32>,
+    /// Display order of body rows, indices into [`row_keys`].
+    order: Vec<usize>,
+    dragging_divider: bool,
+    dragging_row: Option<usize>,
 }
 
 impl Default for DataTable {
@@ -94,6 +104,10 @@ impl Default for DataTable {
             kinds: ROWS.map(|(_, _, kind)| kind.to_owned()),
             name_ascending: true,
             expanded: true,
+            weights: vec![1.0, 1.0],
+            order: (0..N_SELECTED).collect(),
+            dragging_divider: false,
+            dragging_row: None,
         }
     }
 }
@@ -111,6 +125,49 @@ impl DataTable {
             valued(field_sm(KIND[i], "Kind"), self.kinds[i].clone()),
         ]
     }
+
+    fn row_keys() -> [&'static str; N_SELECTED] {
+        let mut keys = [""; N_SELECTED];
+        for (i, (key, _, _)) in ROWS.iter().enumerate() {
+            keys[i] = *key;
+        }
+        keys[XL_INDEX] = XL.0;
+        keys[EXP_INDEX] = EXP.0;
+        keys
+    }
+
+    fn build_row(&self, i: usize) -> ViewNode {
+        if i < ROWS.len() {
+            let (key, name, _) = ROWS[i];
+            let cells = self.cells(i, name);
+            let row = match i {
+                0 => data_table_row_lg(key, cells, self.selected[i]),
+                1 => data_table_row_sm(key, cells, self.selected[i]),
+                2 => data_table_row_md(key, cells, self.selected[i]),
+                3 => data_table_row_xs(key, cells, self.selected[i]),
+                _ => unreachable!("ROWS is four entries"),
+            };
+            if i == DISABLED_ROW {
+                disabled(row)
+            } else {
+                row
+            }
+        } else if i == XL_INDEX {
+            data_table_row_xl(
+                XL.0,
+                vec![text("name", XL.1), text("kind", XL.2)],
+                self.selected[XL_INDEX],
+            )
+        } else {
+            data_table_row_expandable(
+                EXP.0,
+                vec![text("name", EXP.1), text("kind", "retry")],
+                self.selected[EXP_INDEX],
+                self.expanded,
+                EXP_BODY,
+            )
+        }
+    }
 }
 
 impl Page for DataTable {
@@ -119,37 +176,7 @@ impl Page for DataTable {
     }
 
     fn body(&self) -> ViewNode {
-        let mut rows: Vec<ViewNode> = ROWS
-            .iter()
-            .enumerate()
-            .map(|(i, (key, name, _))| {
-                let cells = self.cells(i, name);
-                let row = match i {
-                    0 => data_table_row_lg(*key, cells, self.selected[i]),
-                    1 => data_table_row_sm(*key, cells, self.selected[i]),
-                    2 => data_table_row_md(*key, cells, self.selected[i]),
-                    3 => data_table_row_xs(*key, cells, self.selected[i]),
-                    _ => unreachable!("ROWS is four entries"),
-                };
-                if i == DISABLED_ROW {
-                    disabled(row)
-                } else {
-                    row
-                }
-            })
-            .collect();
-        rows.push(data_table_row_xl(
-            XL.0,
-            vec![text("name", XL.1), text("kind", XL.2)],
-            self.selected[XL_INDEX],
-        ));
-        rows.push(data_table_row_expandable(
-            EXP.0,
-            vec![text("name", EXP.1), text("kind", "retry")],
-            self.selected[EXP_INDEX],
-            self.expanded,
-            EXP_BODY,
-        ));
+        let rows: Vec<ViewNode> = self.order.iter().map(|&i| self.build_row(i)).collect();
         section(
             "table",
             "Data table",
@@ -159,11 +186,12 @@ impl Page for DataTable {
                 vec![
                     wrapped(
                         "note",
-                        "Five row sizes (xs 24 through xl 64), zebra on odd \
-                         rows, a sortable Name header, a disabled lg row, an \
-                         expandable row, and mixed select-all at rest.",
+                        "Drag a column separator to resize. Drag the grip \
+                         at the leading edge of a row to reorder. Five row \
+                         sizes, zebra, a sortable Name header, a disabled \
+                         row, an expandable row, mixed select-all at rest.",
                     ),
-                    data_table_zebra(
+                    data_table_zebra_sized(
                         "dt",
                         vec![
                             data_table_sort_header(
@@ -178,6 +206,9 @@ impl Page for DataTable {
                             text("h1", "Kind"),
                         ],
                         rows,
+                        &self.weights,
+                        true,
+                        true,
                     ),
                 ],
             )],
@@ -185,6 +216,9 @@ impl Page for DataTable {
     }
 
     fn handle(&mut self, event: &InputEvent, node: &str) -> bool {
+        if path_is_column_chrome(node) {
+            return false;
+        }
         // The editable cell is checked **first**, and it swallows whatever
         // it does not use. Every route into a cell also names the row it is
         // in, so without this a press meant to put the caret in a well
@@ -236,4 +270,75 @@ impl Page for DataTable {
         }
         false
     }
+
+    fn gesture(&mut self, event: &InputEvent, node: &str, frame: &PetrifiedFrame) -> bool {
+        match event {
+            InputEvent::GestureEnded { .. } => {
+                let acted = self.dragging_divider || self.dragging_row.is_some();
+                self.dragging_divider = false;
+                self.dragging_row = None;
+                acted
+            }
+            InputEvent::PointerPressed { pos, .. } => {
+                if let Some(weights) = data_table_weights_at(frame, node, *pos, &self.weights) {
+                    self.weights = weights;
+                    self.dragging_divider = true;
+                    return true;
+                }
+                if let Some(key) = data_table_grip_row(node) {
+                    let keys = Self::row_keys();
+                    if let Some(i) = keys.iter().position(|k| *k == key) {
+                        if let Some(display) = self.order.iter().position(|&idx| idx == i) {
+                            self.dragging_row = Some(display);
+                            return true;
+                        }
+                    }
+                }
+                false
+            }
+            InputEvent::PointerMoved { pos } | InputEvent::PointerReleased { pos, .. } => {
+                if self.dragging_divider {
+                    if let Some(weights) = data_table_weights_at(frame, node, *pos, &self.weights) {
+                        self.weights = weights;
+                    }
+                    return true;
+                }
+                if let Some(from) = self.dragging_row {
+                    if let Some(to) = row_display_at(frame, *pos, &self.order, &Self::row_keys())
+                        && to != from
+                    {
+                        let idx = self.order.remove(from);
+                        let insert = if to > from { to - 1 } else { to };
+                        self.order.insert(insert.min(self.order.len()), idx);
+                        self.dragging_row = Some(insert.min(self.order.len().saturating_sub(1)));
+                    }
+                    return true;
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+}
+
+fn row_display_at(
+    frame: &PetrifiedFrame,
+    pos: Point,
+    order: &[usize],
+    keys: &[&str; N_SELECTED],
+) -> Option<usize> {
+    for placement in &frame.placements {
+        if placement.semantics.role != Some(Role::Row) {
+            continue;
+        }
+        if !placement.rect.contains(pos) {
+            continue;
+        }
+        for (display, &idx) in order.iter().enumerate() {
+            if path_has(&placement.id, keys[idx]) {
+                return Some(display);
+            }
+        }
+    }
+    None
 }

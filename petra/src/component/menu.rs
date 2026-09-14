@@ -7,20 +7,20 @@
 //!    this was [`super::popover::popover_with`], which put a beak on it,
 //!    padded it 16 on every side and centred the rows in the box — what
 //!    the operator read as "menu button does the same thing as popover".
-//! 2. Action item — [`menu_item`]: the shared list-box row in
-//!    [`super::list_box`]. This module re-exports it so `menu::menu_item`
-//!    stays the call site. The overlay here only adds width bounds and
-//!    `takes_focus`.
+//! 2. Action item — [`menu_item`] / [`menu_item_with`]: the shared list-box
+//!    row in [`super::list_box`]. This module re-exports both so
+//!    `menu::menu_item` stays the call site. The overlay here only adds
+//!    width bounds and `takes_focus`. [`menu_flyout`] is the same overlay
+//!    opening on the trigger's trailing edge, fitted to its own content.
 //!
 //! Container width is min 160 / max 288 (SCSS `$supported-sizes` map and
-//! style-page). Submenus, danger hover, and the `--with-icons` column are
-//! omitted.
+//! style-page). Danger hover is omitted.
 
 use super::list_box::{Dividers, list_box};
-use crate::tree::{AxisConstraint, Key, ViewNode};
+use crate::tree::{Align, Anchor, AxisConstraint, Edge, Fit, Key, ViewNode};
 
 #[doc(inline)]
-pub use super::list_box::menu_item;
+pub use super::list_box::{menu_item, menu_item_with};
 
 /// Carbon menu min-inline (`10rem`). Also the menu button trigger's
 /// minimum, which is how Carbon's shot has the two the same width.
@@ -54,15 +54,36 @@ pub fn menu(key: impl Into<Key>, label: impl Into<String>, items: Vec<ViewNode>)
     node
 }
 
+/// A submenu flyout: the same overlay as [`menu`], opening on the trigger's
+/// trailing edge and sized to its items rather than the trigger height.
+///
+/// [`Fit::Anchor`] would inherit a 40-unit trigger as the flyout's width.
+/// [`Fit::Content`] lets the 160/288 min/max bound the items instead.
+pub fn menu_flyout(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    items: Vec<ViewNode>,
+) -> ViewNode {
+    let mut node = menu(key, label, items);
+    node.props.anchor = Some(Anchor::Sibling {
+        key: "trigger".into(),
+        edge: Edge::Right,
+        align: Align::Start,
+        offset: None,
+    });
+    node.props.fit = Some(Fit::Content);
+    node
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{MAX_INLINE, MIN_INLINE, menu, menu_item};
+    use super::{MAX_INLINE, MIN_INLINE, menu, menu_flyout, menu_item};
     use crate::component::disabled;
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
-    use crate::tree::{Anchor, Fit, NodeKind, Props, Registry, Role, Tip, ViewNode};
+    use crate::tree::{Anchor, Edge, Fit, NodeKind, Props, Registry, Role, Tip, ViewNode};
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         node.children
@@ -116,6 +137,24 @@ mod tests {
             child(content, "delete").semantics.label.as_deref(),
             Some("Delete")
         );
+    }
+
+    /// A flyout opens to the right of its trigger and sizes to its items,
+    /// not the trigger's 40-unit height.
+    #[test]
+    fn menu_flyout_opens_to_the_right_and_fits_content() {
+        let node = menu_flyout("actions", "Actions", vec![menu_item("rename", "Rename")]);
+        match &node.props.anchor {
+            Some(Anchor::Sibling { key, edge, .. }) => {
+                assert_eq!(key.as_str(), "trigger");
+                assert_eq!(*edge, Edge::Right);
+            }
+            other => panic!("expected Anchor::Sibling, got {other:?}"),
+        }
+        assert_eq!(node.props.fit, Some(Fit::Content));
+        assert_eq!(node.props.takes_focus, Some(true));
+        assert_eq!(node.constraints.horizontal.min, Some(MIN_INLINE));
+        assert_eq!(node.constraints.horizontal.max, Some(MAX_INLINE));
     }
 
     /// `menu()` IS the anchored surface, naming a `trigger` sibling by bare

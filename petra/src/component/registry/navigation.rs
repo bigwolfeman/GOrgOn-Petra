@@ -6,7 +6,7 @@
 //!
 //! Components: Breadcrumb, Content switcher, Link, Menu, Menu buttons,
 //! Menubar, Pagination, Tabs, UI shell header, UI shell left panel, UI
-//! shell right panel. 45 constructors (see the `coverage` test at the
+//! shell right panel. 47 constructors (see the `coverage` test at the
 //! bottom, which counts the source rather than trusting this comment).
 
 use serde::Deserialize;
@@ -20,9 +20,9 @@ use crate::component::{
     IconMark, LeftPanelMode, PaginationPicker, breadcrumb, breadcrumb_item,
     breadcrumb_item_current, breadcrumb_item_icon, breadcrumb_overflow, breadcrumb_with_separator,
     contained_tab, contained_tab_bar, content_switcher, content_switcher_item, link, link_inline,
-    menu, menu_button, menu_item, menubar, menubar_top, pagination, pagination_items,
-    pagination_items_open, pagination_nav, pagination_numbers, pagination_page_size,
-    pagination_range, tab, tab_bar, ui_shell_header, ui_shell_header_action,
+    menu, menu_button, menu_flyout, menu_item, menu_item_with, menubar, menubar_top, pagination,
+    pagination_items, pagination_items_open, pagination_nav, pagination_numbers,
+    pagination_page_size, pagination_range, tab, tab_bar, ui_shell_header, ui_shell_header_action,
     ui_shell_header_action_icon, ui_shell_header_menu_trigger, ui_shell_header_nav_item,
     ui_shell_left_panel, ui_shell_left_panel_divider, ui_shell_left_panel_icon_item,
     ui_shell_left_panel_icon_subitem, ui_shell_left_panel_in, ui_shell_left_panel_item,
@@ -231,6 +231,27 @@ impl ParamShape for BreadcrumbItemIconParams {
         "{ key: string, mark: ",
         icon_mark_luau!(),
         ", label: string }"
+    );
+}
+
+/// `menu_item_with(key, label, icon?, shortcut?, submenu)`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MenuItemWithParams {
+    key: Key,
+    label: String,
+    #[serde(default)]
+    icon: Option<IconMarkParam>,
+    #[serde(default)]
+    shortcut: Option<String>,
+    #[serde(default)]
+    submenu: bool,
+}
+impl ParamShape for MenuItemWithParams {
+    const LUAU: &'static str = concat!(
+        "{ key: string, label: string, icon: ",
+        icon_mark_luau!(),
+        "?, shortcut: string?, submenu: boolean }"
     );
 }
 
@@ -461,7 +482,7 @@ macro_rules! row {
 }
 
 /// This group's constructors: one row per public `ViewNode`-returning
-/// constructor in the 11 navigation components. 45 rows; see the
+/// constructor in the 11 navigation components. 47 rows; see the
 /// `coverage` test below, which counts the source rather than this list.
 pub const ENTRIES: &[Entry] = &[
     row!("breadcrumb", KeyChildren, |p| breadcrumb(p.key, p.children)),
@@ -494,6 +515,16 @@ pub const ENTRIES: &[Entry] = &[
         p.key, p.label, p.children
     )),
     row!("menu_item", KeyLabel, |p| menu_item(p.key, p.label)),
+    row!("menu_item_with", MenuItemWithParams, |p| menu_item_with(
+        p.key,
+        p.label,
+        p.icon.map(Into::into),
+        p.shortcut.as_deref(),
+        p.submenu
+    )),
+    row!("menu_flyout", KeyLabelChildren, |p| menu_flyout(
+        p.key, p.label, p.children
+    )),
     row!("menu_button", KeyLabelOpenChildren, |p| menu_button(
         p.key, p.label, p.open, p.children
     )),
@@ -695,13 +726,16 @@ mod tests {
             missing.is_empty(),
             "constructors present in source but missing a registry row: {missing:?}"
         );
-        // `menu_item` is `pub use`d from `list_box.rs` (`menu.rs`); the
-        // scanner only sees `pub fn` text, so a re-export is invisible.
-        // Lua still names it. Same rule as a constructor whose first
-        // param is not `key: impl Into<Key>`.
+        // `menu_item` and `menu_item_with` are `pub use`d from
+        // `list_box.rs` (`menu.rs`); the scanner only sees `pub fn` text,
+        // so a re-export is invisible. Lua still names them. `menu_flyout`
+        // is the same filter for the same reason. Same rule as a
+        // constructor whose first param is not `key: impl Into<Key>`.
         let extra: Vec<_> = registered
             .difference(&source)
-            .filter(|name| *name != "menu_item")
+            .filter(|name| {
+                *name != "menu_item" && *name != "menu_item_with" && *name != "menu_flyout"
+            })
             .collect();
         assert!(
             extra.is_empty(),
@@ -769,6 +803,11 @@ mod tests {
             "link_inline" => json!({ "key": "k", "label": "l-inline" }),
             "menu" => json!({ "key": "k", "label": "l", "children": [] }),
             "menu_item" => json!({ "key": "k", "label": "l" }),
+            "menu_item_with" => json!({
+                "key": "k", "label": "l-with", "icon": "copy",
+                "shortcut": "⌘S", "submenu": true
+            }),
+            "menu_flyout" => json!({ "key": "k-flyout", "label": "l-flyout", "children": [] }),
             "menu_button" => {
                 json!({ "key": "k", "label": "l", "open": true, "children": [] })
             }

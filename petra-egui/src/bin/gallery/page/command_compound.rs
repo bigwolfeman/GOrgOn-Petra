@@ -7,7 +7,7 @@
 //! nothing at all, so this page owns a trigger of its own and drives
 //! `Command::update` from real presses and keystrokes.
 
-use gorgon_petra::component::{button, section};
+use gorgon_petra::component::{IconMark, button, section};
 use gorgon_petra::input::{InputEvent, KeyCode};
 use gorgon_petra::tree::ViewNode;
 use gorgon_petra_compound::Compound;
@@ -37,9 +37,21 @@ impl Default for CommandCompoundPage {
     fn default() -> Self {
         let props = Props {
             items: vec![
-                Item::new("rebuild", "Rebuild fiber"),
-                Item::new("open-file", "Open file"),
-                Item::new("close-window", "Close window"),
+                Item::new("rebuild", "Rebuild fiber")
+                    .with_icon(IconMark::Menu)
+                    .with_shortcut("Ctrl+R"),
+                Item::new("open-file", "Open file")
+                    .with_icon(IconMark::Search)
+                    .with_shortcut("Ctrl+O"),
+                Item::new("edit", "Edit buffer")
+                    .with_icon(IconMark::Edit)
+                    .with_shortcut("Ctrl+E"),
+                Item::new("copy-path", "Copy path")
+                    .with_icon(IconMark::Copy)
+                    .with_shortcut("Ctrl+C"),
+                Item::new("close-window", "Close window")
+                    .with_icon(IconMark::Close)
+                    .with_shortcut("Ctrl+W"),
             ],
         };
         let mut state = CommandCompound::init(&props);
@@ -67,8 +79,9 @@ impl Page for CommandCompoundPage {
                     wrapped(
                         "cmc-note",
                         "The same triple as spec 009 T019: a frame-wide \
-                         overlay driven through `Compound::update`. Open \
-                         command toggles it; typing filters the list.",
+                         overlay driven through `Compound::update`. Each \
+                         row has an icon and a Ctrl+ shortcut; type to \
+                         filter. Open command toggles it.",
                     ),
                     column(
                         "cmc-col",

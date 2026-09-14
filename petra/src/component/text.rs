@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use super::tokens::{TEXT_PRIMARY, TYPOGRAPHY_BODY, TYPOGRAPHY_HEADING, TYPOGRAPHY_HEADING_SM, t};
-use crate::tree::{Key, NodeKind, Props, ViewNode};
+use crate::tree::{Key, NodeKind, Props, TextWrap, ViewNode};
 
 /// A run of body text.
 ///
@@ -53,6 +53,7 @@ pub(crate) fn as_compact_heading(mut node: ViewNode) -> ViewNode {
             node.props
                 .tokens
                 .insert("foreground".into(), t(TEXT_PRIMARY));
+            node.props.wrap = Some(TextWrap::Ellipsis);
         }
         for child in &mut node.children {
             walk(Arc::make_mut(child));
@@ -60,4 +61,16 @@ pub(crate) fn as_compact_heading(mut node: ViewNode) -> ViewNode {
     }
     walk(&mut node);
     node
+}
+
+/// Single-line truncation on every text leaf. A table cell that Wraps at
+/// a dragged-narrow column stacks one glyph per line; Ellipsis keeps the
+/// row's height.
+pub(crate) fn ellipsis_text(node: &mut ViewNode) {
+    if node.kind == NodeKind::Text {
+        node.props.wrap = Some(TextWrap::Ellipsis);
+    }
+    for child in &mut node.children {
+        ellipsis_text(Arc::make_mut(child));
+    }
 }

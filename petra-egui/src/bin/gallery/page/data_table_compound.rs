@@ -8,7 +8,8 @@
 //! search, column visibility, batch actions, the row menu, are all live
 //! intents, not flags the page flips directly.
 
-use gorgon_petra::component::section;
+use gorgon_petra::component::{data_table_weights_at, section};
+use gorgon_petra::frame::PetrifiedFrame;
 use gorgon_petra::input::{InputEvent, KeyCode};
 use gorgon_petra::tree::ViewNode;
 use gorgon_petra_compound::Compound;
@@ -17,7 +18,7 @@ use gorgon_petra_compound::data_table::{
 };
 
 use super::Page;
-use super::common::{body, path_has, sp, wrapped};
+use super::common::{body, path_has, path_is_column_chrome, sp, wrapped};
 
 /// The column-visibility trigger's own key, and every checkbox inside its
 /// menu is prefixed `col-`.
@@ -51,6 +52,8 @@ fn sample_rows() -> Vec<Row> {
 pub struct DataTableCompoundPage {
     props: Props,
     state: State,
+    /// A press on a divider opened a resize that has not ended.
+    dragging: bool,
 }
 
 impl Default for DataTableCompoundPage {
@@ -87,7 +90,11 @@ impl Default for DataTableCompoundPage {
             },
         );
         DataTableCompound::update(&mut state, Intent::ToggleExpand { id: "f1".into() });
-        Self { props, state }
+        Self {
+            props,
+            state,
+            dragging: false,
+        }
     }
 }
 
@@ -119,6 +126,9 @@ impl Page for DataTableCompoundPage {
     }
 
     fn handle(&mut self, event: &InputEvent, node: &str) -> bool {
+        if path_is_column_chrome(node) {
+            return false;
+        }
         // The column-visibility trigger and its checkboxes: checked ahead
         // of the row block below because both a row's own row-menu trigger
         // and this one share the literal key `trigger`, and the column
@@ -230,6 +240,46 @@ impl Page for DataTableCompoundPage {
             return true;
         }
         false
+    }
+
+    fn gesture(&mut self, event: &InputEvent, node: &str, frame: &PetrifiedFrame) -> bool {
+        let n = self
+            .props
+            .columns
+            .iter()
+            .filter(|c| !self.state.hidden_columns.contains(&c.id))
+            .count()
+            .max(1);
+        let weights = if self.state.weights.len() == n {
+            self.state.weights.clone()
+        } else {
+            vec![1.0; n]
+        };
+        match event {
+            InputEvent::GestureEnded { .. } => {
+                let acted = self.dragging;
+                self.dragging = false;
+                acted
+            }
+            InputEvent::PointerPressed { pos, .. } => {
+                if let Some(next) = data_table_weights_at(frame, node, *pos, &weights) {
+                    DataTableCompound::update(&mut self.state, Intent::Resize { weights: next });
+                    self.dragging = true;
+                    return true;
+                }
+                false
+            }
+            InputEvent::PointerMoved { pos } | InputEvent::PointerReleased { pos, .. } => {
+                if !self.dragging {
+                    return false;
+                }
+                if let Some(next) = data_table_weights_at(frame, node, *pos, &weights) {
+                    DataTableCompound::update(&mut self.state, Intent::Resize { weights: next });
+                }
+                true
+            }
+            _ => false,
+        }
     }
 
     fn dismissed(&mut self, ids: &[String]) {
