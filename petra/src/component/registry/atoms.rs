@@ -1,16 +1,17 @@
-//! Registry rows: spec 013's 23 previously-unregistered constructors.
+//! Registry rows: spec 013's 25 previously-unregistered constructors.
 //!
 //! `button.rs`, `button_group.rs`, `text.rs`, `section.rs`, `icon.rs`,
 //! `drawer.rs`, and `list_row.rs` hold 25 `pub fn ... -> ViewNode`
 //! constructors with no registry row (`specs/013-lua-gallery-parity/spec.md`).
-//! 23 ship here. `text` and `button` are withheld: `install`
-//! (`gorgon/kernel-lua/src/ui/mod.rs:130`) merges every `MODULES` table into
-//! `builders.lua`'s own and errors if a name collides, and `builders.lua`
-//! already exports `text` and `button` as primitives. A `component::text` or
-//! `component::button` row cannot be registered under its own name until the
-//! operator picks one of the four ways out spec 013's T001 records. That
-//! ruling is not this task's to make, so those two names stay out of
-//! [`ENTRIES`] and out of the coverage test's required set below.
+//! 23 shipped first (T003); `text` and `button` followed in T001b, once
+//! T001a moved `builders.lua`'s thirteen primitives to `ui.node.*`
+//! (operator ruling, `specs/013-lua-gallery-parity/tasks.md` T001) and freed
+//! both plain names — `install` (`gorgon/kernel-lua/src/ui/mod.rs:130`)
+//! merges every `MODULES` table into `builders.lua`'s own and errors if a
+//! name collides, and `builders.lua` exported both as primitives before the
+//! move. `M.button`, the hand-ported composed builder, is deleted in the
+//! same change: `ui.button` is now this file's row, the same code Rust
+//! draws with.
 //!
 //! A new file rather than an extension of [`super::new_atomics`], because
 //! that file's own module doc scopes it to "wave-1 atomics that are not in
@@ -332,11 +333,13 @@ impl ParamShape for ListRowWithParams {
 }
 
 // ---------------------------------------------------------------------
-// This group's constructors. 23 of the 25 spec 013 counts across these
-// seven files; `text` and `button` are withheld, see the module doc.
+// This group's constructors: all 25 spec 013 counts across these seven
+// files. `text` and `button` shipped last (T001b), once T001a moved
+// `builders.lua`'s primitives to `ui.node.*` and freed both names.
 // ---------------------------------------------------------------------
 pub const ENTRIES: &[Entry] = &[
-    // -- button.rs (11 of 12; `button` itself is T001) -------------------
+    // -- button.rs (12 of 12) ---------------------------------------------
+    row!("button", KeyLabel, |p| lib::button(p.key, p.label)),
     row!("button_xs", KeyLabel, |p| lib::button_xs(p.key, p.label)),
     row!("button_sm", KeyLabel, |p| lib::button_sm(p.key, p.label)),
     row!("button_lg", KeyLabel, |p| lib::button_lg(p.key, p.label)),
@@ -367,7 +370,8 @@ pub const ENTRIES: &[Entry] = &[
     row!("button_group_flush", ButtonGroupFlushParams, |p| {
         lib::button_group_flush(p.key, p.height, p.children)
     }),
-    // -- text.rs (1 of 2; `text` itself is T001) --------------------------
+    // -- text.rs (2 of 2) --------------------------------------------------
+    row!("text", KeyLabel, |p| lib::text(p.key, p.label)),
     row!("heading", KeyLabel, |p| lib::heading(p.key, p.label)),
     // -- section.rs ---------------------------------------------------------
     row!("section", KeyLabelChildren, |p| lib::section(
@@ -473,19 +477,6 @@ mod tests {
         let mut source_names: BTreeSet<String> = BTreeSet::new();
         for (file, source) in sources {
             for name in public_view_node_constructors(source) {
-                // `text` and `button` are blocked on the operator ruling
-                // spec 013's T001 (`specs/013-lua-gallery-parity/tasks.md`)
-                // records: `install` (`gorgon/kernel-lua/src/ui/mod.rs:130`)
-                // merges every `MODULES` table into `builders.lua`'s own and
-                // errors on a name collision, and `builders.lua` already
-                // exports both names as primitives. A `component::text` or
-                // `component::button` row cannot be registered under its own
-                // name until the operator picks one of T001's four ways out,
-                // so both are excluded here rather than worked around.
-                if name == "text" || name == "button" {
-                    source_names.insert(name);
-                    continue;
-                }
                 if !registered.contains(name.as_str()) {
                     missing.push(format!("{name} ({file})"));
                 }
