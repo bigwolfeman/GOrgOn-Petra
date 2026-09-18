@@ -29,6 +29,7 @@ use std::sync::{Mutex, Once, OnceLock};
 use crate::component::params::ParamError;
 use crate::tree::ViewNode;
 
+mod atoms;
 mod containment;
 mod data;
 mod feedback;
@@ -130,6 +131,7 @@ fn seed_first_party() {
     static SEED: Once = Once::new();
     SEED.call_once(|| {
         register_external(new_atomics::ENTRIES);
+        register_external(atoms::ENTRIES);
     });
 }
 

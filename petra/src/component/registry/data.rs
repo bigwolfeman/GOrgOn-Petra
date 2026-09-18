@@ -181,6 +181,30 @@ impl ParamShape for DataTableBatchBarParams {
         "{ key: string, count: number, cancel: ViewNode, actions: { ViewNode } }";
 }
 
+/// `data_table_sized`/`data_table_zebra_sized`(key, header, rows, weights,
+/// dividers, reorderable). `DataTableParams`'s two `Vec<ViewNode>` fields
+/// plus the column-weight, divider-policy, and row-reorder trio the sized
+/// pair adds over the plain constructors. `weights` is `#[serde(default)]`
+/// for the same reason `header`/`rows` are: an empty Lua table for an empty
+/// weight list is indistinguishable from an empty map on the wire.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DataTableSizedParams {
+    key: Key,
+    #[serde(default)]
+    header: Vec<ViewNode>,
+    #[serde(default)]
+    rows: Vec<ViewNode>,
+    #[serde(default)]
+    weights: Vec<f32>,
+    dividers: bool,
+    reorderable: bool,
+}
+impl ParamShape for DataTableSizedParams {
+    const LUAU: &'static str = "{ key: string, header: { ViewNode }, rows: { ViewNode }, \
+         weights: { number }, dividers: boolean, reorderable: boolean }";
+}
+
 /// `data_table_skeleton(key, ncols, nrows)` (T034). Two `usize` fields; no
 /// shared shape carries a bare number pair.
 #[derive(Debug, Clone, Deserialize)]
@@ -277,6 +301,26 @@ pub const ENTRIES: &[Entry] = &[
     row!("data_table_skeleton", DataTableSkeletonParams, |p| {
         lib::data_table_skeleton(p.key, p.ncols, p.nrows)
     }),
+    row!("data_table_sized", DataTableSizedParams, |p| {
+        lib::data_table_sized(
+            p.key,
+            p.header,
+            p.rows,
+            &p.weights,
+            p.dividers,
+            p.reorderable,
+        )
+    }),
+    row!("data_table_zebra_sized", DataTableSizedParams, |p| {
+        lib::data_table_zebra_sized(
+            p.key,
+            p.header,
+            p.rows,
+            &p.weights,
+            p.dividers,
+            p.reorderable,
+        )
+    }),
 ];
 
 #[cfg(test)]
@@ -316,21 +360,12 @@ mod tests {
         );
         let source_names: BTreeSet<String> =
             public_view_node_constructors(source).into_iter().collect();
-        // `data_table_sized` / `data_table_zebra_sized` take weights and
-        // the reorder flag. Lua still calls `data_table` / `data_table_zebra`,
-        // which now default dividers on. Register the sized pair when a
-        // plugin actually needs to pass weights.
         // `data_table_menu` is the Fit::Content overflow used by
         // `data_table_toolbar_menu` and the compound row menu, not a Lua
         // constructor of its own.
         let missing: Vec<&String> = source_names
             .iter()
-            .filter(|n| {
-                !registered.contains(n.as_str())
-                    && n.as_str() != "data_table_sized"
-                    && n.as_str() != "data_table_zebra_sized"
-                    && n.as_str() != "data_table_menu"
-            })
+            .filter(|n| !registered.contains(n.as_str()) && n.as_str() != "data_table_menu")
             .collect();
         assert!(
             missing.is_empty(),
