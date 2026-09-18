@@ -18,6 +18,17 @@
 //! the original 42" — six named files, not these seven. Registered through
 //! [`super::register_external`] from `seed_first_party`, the same hook
 //! `new_atomics::ENTRIES` uses.
+//!
+//! # T007: four node modifiers, added after the 25
+//!
+//! `disabled`/`on_layer` (`component/mod.rs`) and `code_runs`/
+//! `code_snippet_copied` (`component/code_snippet.rs`) are `ViewNode ->
+//! ViewNode` modifiers over an already-built node, not fresh constructions —
+//! the same shape `registry/form.rs`'s `NodeAndHint`/`NodeAndValue` give
+//! `hinted`/`valued` (`field.rs`). They land in this file rather than a new
+//! one because nothing else in this tree groups "modifiers with no source
+//! file of their own"; see the coverage test's own doc for why their two
+//! source files are not added to the scan.
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -28,7 +39,7 @@ use crate::component::params::{
     KeyChildren, KeyLabel, KeyLabelChildren, KeyLabelSelected, ParamError, ParamShape,
 };
 use crate::component::{IconBox, IconMark, IconTone};
-use crate::tree::{Edge, InputPolicy, Key, ViewNode};
+use crate::tree::{Edge, InputPolicy, Key, TextRun, ViewNode};
 
 fn fail(component: &'static str, e: impl std::fmt::Display) -> ParamError {
     ParamError {
@@ -333,9 +344,68 @@ impl ParamShape for ListRowWithParams {
 }
 
 // ---------------------------------------------------------------------
-// This group's constructors: all 25 spec 013 counts across these seven
-// files. `text` and `button` shipped last (T001b), once T001a moved
-// `builders.lua`'s primitives to `ui.node.*` and freed both names.
+// T007: four modifiers over an already-built node, not fresh
+// constructions — the same shape `registry/form.rs`'s `NodeAndHint`/
+// `NodeAndValue` use for `hinted`/`valued` (`field.rs`). None of these four
+// carries a `key` of its own for the same reason those two don't: the
+// caller already built and keyed `node`, so a second key belongs to the
+// wrapper, not the params shape. `atoms.lua` hand-rolls the same
+// `keyed_component` exception `form.lua` documents for `hinted`/`valued`.
+// ---------------------------------------------------------------------
+
+/// `component/mod.rs`'s `disabled(node)`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NodeOnly {
+    node: ViewNode,
+}
+impl ParamShape for NodeOnly {
+    const LUAU: &'static str = "{ node: ViewNode }";
+}
+
+/// `component/mod.rs`'s `on_layer(node, depth)`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NodeAndDepth {
+    node: ViewNode,
+    depth: usize,
+}
+impl ParamShape for NodeAndDepth {
+    const LUAU: &'static str = "{ node: ViewNode, depth: number }";
+}
+
+/// `code_snippet.rs`'s `code_runs(node, runs)`. [`TextRun`] (`tree::props`)
+/// already derives `Deserialize` — its own `foreground` field goes through
+/// [`crate::token::TokenName`]'s validating `Deserialize`, so a run naming a
+/// style literal is refused at this boundary rather than reaching layout —
+/// so it is used directly here rather than wrapped, the same way
+/// [`DrawerSheetParams`] above uses `Edge`/`InputPolicy` directly.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NodeAndRuns {
+    node: ViewNode,
+    runs: Vec<TextRun>,
+}
+impl ParamShape for NodeAndRuns {
+    const LUAU: &'static str = "{ node: ViewNode, runs: { { len: number, foreground: string? } } }";
+}
+
+/// `code_snippet.rs`'s `code_snippet_copied(node, copied)`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NodeAndCopied {
+    node: ViewNode,
+    copied: bool,
+}
+impl ParamShape for NodeAndCopied {
+    const LUAU: &'static str = "{ node: ViewNode, copied: boolean }";
+}
+
+// ---------------------------------------------------------------------
+// This group's constructors: the 25 spec 013 counts across the seven files
+// below, plus T007's four modifiers. `text` and `button` shipped last
+// (T001b), once T001a moved `builders.lua`'s primitives to `ui.node.*` and
+// freed both names.
 // ---------------------------------------------------------------------
 pub const ENTRIES: &[Entry] = &[
     // -- button.rs (12 of 12) ---------------------------------------------
@@ -413,6 +483,13 @@ pub const ENTRIES: &[Entry] = &[
             p.shortcut.as_deref(),
         )
     }),
+    // -- T007: node modifiers (mod.rs, code_snippet.rs) --------------------
+    row!("disabled", NodeOnly, |p| lib::disabled(p.node)),
+    row!("on_layer", NodeAndDepth, |p| lib::on_layer(p.node, p.depth)),
+    row!("code_runs", NodeAndRuns, |p| lib::code_runs(p.node, p.runs)),
+    row!("code_snippet_copied", NodeAndCopied, |p| {
+        lib::code_snippet_copied(p.node, p.copied)
+    }),
 ];
 
 #[cfg(test)]
@@ -423,8 +500,33 @@ mod tests {
 
     use super::{
         ButtonGroupFlushParams, DockedParams, DrawerSheetParams, ENTRIES, IconInParams, IconParams,
-        IconTonedParams, ListRowWithParams,
+        IconTonedParams, ListRowWithParams, NodeAndCopied, NodeAndDepth, NodeAndRuns, NodeOnly,
     };
+
+    /// T007: `disabled`/`on_layer`/`code_runs`/`code_snippet_copied` are
+    /// registered in [`ENTRIES`] but deliberately outside the seven-file
+    /// scan below, and named here rather than folded into it, for two
+    /// separate reasons:
+    ///
+    /// - `disabled`/`on_layer` live in `component/mod.rs`. That file also
+    ///   defines `rule` (`mod.rs:498`) — a hand-port constructor still
+    ///   deliberately unregistered
+    ///   (`specs/013-lua-gallery-parity/tasks.md` T001c, an open decision
+    ///   this task does not own). Scanning the whole file would fail this
+    ///   test on `rule` for a reason T007 never decided, and `mod.rs` holds
+    ///   a great deal else besides — it is not a file one group can claim.
+    /// - `code_runs`/`code_snippet_copied` live in `code_snippet.rs`, which
+    ///   `registry/containment.rs` already scans for its own four
+    ///   constructors (`code_snippet`, `code_snippet_multi`,
+    ///   `code_snippet_inline`, `code_snippet_multi_capped`). Adding it here
+    ///   too would give one source file two coverage tests. It does not need
+    ///   to: `containment.rs`'s scan filters on `key: impl Into<Key>` being
+    ///   the first parameter, and both of these take `node: ViewNode`
+    ///   instead — the same structural fact this file's own heuristic below
+    ///   has no filter for, which is why the exception is named explicitly
+    ///   instead of relying on a filter this file doesn't have.
+    const MODIFIERS_OUTSIDE_THE_SCANNED_FILES: &[&str] =
+        &["disabled", "on_layer", "code_runs", "code_snippet_copied"];
 
     /// Every `pub fn ... -> ViewNode` in the seven files this group owns has
     /// exactly one row, found by scanning the files' own text rather than
@@ -489,12 +591,16 @@ mod tests {
         );
         let extra: Vec<&str> = registered
             .iter()
-            .filter(|name| !source_names.contains(**name))
+            .filter(|name| {
+                !source_names.contains(**name)
+                    && !MODIFIERS_OUTSIDE_THE_SCANNED_FILES.contains(*name)
+            })
             .copied()
             .collect();
         assert!(
             extra.is_empty(),
-            "these rows name no `pub fn ... -> ViewNode` in the seven files this group owns: {extra:?}"
+            "these rows name no `pub fn ... -> ViewNode` in the seven files this group owns, \
+             and are not in MODIFIERS_OUTSIDE_THE_SCANNED_FILES either: {extra:?}"
         );
     }
 
@@ -549,5 +655,37 @@ mod tests {
             "icon": "menu", "shortcut": "Ctrl+R",
         }))
         .expect("ListRowWithParams round-trips");
+    }
+
+    /// T007: the four modifier shapes round-trip through the wire table
+    /// their own `ParamShape::LUAU` describes, the same claim
+    /// `the_six_new_shapes_round_trip_through_serde_json_from_value` makes
+    /// for T002's shapes. [`NodeAndRuns`] is the one worth calling out: it
+    /// proves `TextRun` — a type this file does not declare and only wires
+    /// through — actually deserializes from a plain JSON object rather than
+    /// merely compiling against `#[derive(Deserialize)]`.
+    ///
+    /// **Falsified** by misspelling `NodeAndDepth`'s probe field as
+    /// `depth_wrong_field`. Real panic: "NodeAndDepth round-trips:
+    /// Error(\"unknown field `depth_wrong_field`, expected `node` or
+    /// `depth`\", line: 0, column: 0)", then the probe was restored
+    /// byte-identical.
+    #[test]
+    fn the_four_modifier_shapes_round_trip_through_serde_json_from_value() {
+        let node = json!({ "kind": "stack", "key": "n" });
+
+        serde_json::from_value::<NodeOnly>(json!({ "node": node })).expect("NodeOnly round-trips");
+
+        serde_json::from_value::<NodeAndDepth>(json!({ "node": node, "depth": 2 }))
+            .expect("NodeAndDepth round-trips");
+
+        serde_json::from_value::<NodeAndRuns>(json!({
+            "node": node,
+            "runs": [{ "len": 3 }, { "len": 4, "foreground": "text.muted" }],
+        }))
+        .expect("NodeAndRuns round-trips");
+
+        serde_json::from_value::<NodeAndCopied>(json!({ "node": node, "copied": true }))
+            .expect("NodeAndCopied round-trips");
     }
 }

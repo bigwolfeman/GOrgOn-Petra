@@ -29,6 +29,8 @@ mod cell;
 #[cfg(test)]
 mod font_spike;
 mod inventory;
+#[cfg(test)]
+mod lua_parity;
 mod page;
 #[cfg(test)]
 mod shots;

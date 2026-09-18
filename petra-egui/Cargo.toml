@@ -86,6 +86,40 @@ test = true
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 gorgon-petra-testkit = { path = "../petra-testkit", features = ["testkit"] }
 image = "0.25"
+# Monorepo-only, test-only, same shape as `gorgon-petra-testkit`'s own three
+# removed integration tests (`petra/README.md`'s Provenance section):
+# `gorgon-kernel-lua` lives at `gorgon/kernel-lua`, which exists only inside
+# the private GOrgOn monorepo this crate is filtered out of to publish
+# `GOrgOn-Petra`. `src/bin/gallery/lua_parity.rs` is what needs it — the
+# Lua/Rust tree-equality harness for spec 013 (`ctx.ui` builds a page's body,
+# `body()` builds the same page in Rust, and the harness asserts the two
+# `ViewNode` trees match). A production dependency in this direction would
+# break `cargo xtask petra-boundary`'s egui-never-reaches-`gorgon-petra` rule
+# in spirit even though the gate itself only walks `gorgon-petra`'s graph;
+# scoping it to `dev-dependencies` keeps it out of every shipped artifact and
+# out of the standalone `petra/` workspace's own build, the same way the
+# testkit's dependency on `gorgon-inspector` was. When `petra/` is mirrored
+# out, this line and `lua_parity.rs` are removed together, exactly like that
+# precedent — not silently broken and not shipped.
+gorgon-kernel-lua = { path = "../../gorgon/kernel-lua" }
+# `gorgon-kernel-lua`'s own `Lua`/`Table`/`Value` types are `mlua` types, so
+# `lua_parity.rs` needs the same crate directly rather than only through
+# `gorgon-kernel-lua`'s re-export surface (it has none for these).
+#
+# Spelled out rather than `{ workspace = true }`, and that is not a style
+# choice. `petra/` is its own workspace as well as a member of the monorepo's,
+# and `petra/Cargo.toml`'s `[workspace.dependencies]` does not declare `mlua`
+# — only the superproject's does. Inheriting here parses from the monorepo
+# root and fails outright the moment anything treats `petra/Cargo.toml` as the
+# workspace root, which `cargo xtask petra-boundary`,
+# `petra-compound-boundary` and `petra-testkit`'s own `exclusion` tests all
+# do. Version and features are copied from the superproject root verbatim so
+# the resolver still unifies on one Luau build.
+mlua = { version = "0.11", features = ["luau", "vendored", "serialize", "async", "send"] }
+# `serde_json::from_value::<ViewNode>` — the deserialize half of the round
+# trip `lua_parity.rs` runs, the same call `gorgon_kernel_lua::ui::mod.rs`'s
+# own `build()` helper makes.
+serde_json = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen = "0.2.127"
