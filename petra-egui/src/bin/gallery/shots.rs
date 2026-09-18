@@ -9434,13 +9434,173 @@ mod tests {
     #[test]
     fn open_tiles_shows_command_tiles() {
         let mut cam = Camera::on("Command (compound)");
+        // Overlay sits over the page buttons while open. Enter chooses
+        // and closes so Open tiles is hit-testable, then switch density.
+        cam.click("field");
+        cam.key(KeyCode::Enter);
         cam.click("open-tiles");
         assert!(
             cam.has("rebuild"),
             "Open tiles must keep the catalog mounted; ids: {:?}",
             cam.ids()
         );
+        let rebuild = cam.rect("rebuild");
+        assert!(
+            rebuild.h >= 80.0 && rebuild.w >= 80.0,
+            "Open tiles must mount Kickoff squares, not list rows: {rebuild:?}"
+        );
         cam.shoot("54-command-tiles");
+    }
+
+    /// Gallery 3-column list. Choose a row to close the overlay so the
+    /// page button is hit-testable, then open three columns.
+    #[test]
+    fn open_three_columns_splits_the_command_list() {
+        let mut cam = Camera::on("Command (compound)");
+        cam.click("field");
+        cam.key(KeyCode::Enter);
+        cam.click("open-cols-3");
+        assert!(
+            cam.has("rebuild") && cam.has("close-window"),
+            "3 columns must still list the catalog; ids: {:?}",
+            cam.ids()
+        );
+        let rebuild = cam.rect("rebuild");
+        let open = cam.rect("open-file");
+        assert!(
+            (rebuild.y - open.y).abs() < 1.0,
+            "Rebuild and Open file must sit on one row in 3-column layout: \
+             rebuild={rebuild:?} open={open:?}"
+        );
+        cam.shoot("54-command-3-columns");
+    }
+
+    /// The highlighted list row is the command Enter will run. It paints
+    /// `accent.primary` like a selected tile. Arrow Down walks the 2-column
+    /// grid by a visual row (stride 2: Rebuild → Edit buffer).
+    #[test]
+    fn arrow_down_moves_the_command_cursor_and_the_accent_bar() {
+        let mut cam = Camera::on("Command (compound)");
+        assert!(
+            cam.selected("rebuild"),
+            "rest highlights the first command, the one Enter would run"
+        );
+        assert!(!cam.selected("edit") && !cam.selected("open-file"));
+        assert_eq!(
+            cam.token("rebuild", "background").as_deref(),
+            Some("accent.primary"),
+            "the command that will run must paint accent, not layer-selected"
+        );
+        assert_ne!(
+            cam.token("open-file", "background").as_deref(),
+            Some("accent.primary"),
+            "a command that will not run must not paint the accent fill"
+        );
+        cam.click("field");
+        cam.key(KeyCode::Down);
+        assert!(
+            cam.selected("edit"),
+            "Down in a 2-column list must land on the cell below Rebuild; ids: {:?}",
+            cam.ids()
+        );
+        assert!(!cam.selected("rebuild") && !cam.selected("open-file"));
+        assert_eq!(
+            cam.token("edit", "background").as_deref(),
+            Some("accent.primary")
+        );
+        assert_ne!(
+            cam.token("rebuild", "background").as_deref(),
+            Some("accent.primary")
+        );
+        cam.shoot("54-command-cursor");
+    }
+
+    /// Left and Right belong to the palette cursor, not to the chrome.
+    ///
+    /// The catalog pages on `Left`/`Right` (and `[`/`]`), so those two keys
+    /// are contested: `step_highlight` moves one grid cell, the chrome moves
+    /// one inventory row. `Catalog::route_event` settles it by offering an
+    /// arrow to the open page first and paging only when the page declines.
+    /// `arrow_down_...` above cannot see that rule, because `Down` is not a
+    /// paging key — this is the test that holds it.
+    ///
+    /// **Focus is seated on a row, not on the field, and that is the whole
+    /// design of this test.** The chrome declines to page while the route
+    /// names a `Role::TextInput`, so a cursor sitting in the search field
+    /// is already safe and proves nothing. A command row is the state where
+    /// the chrome would really page, so it is the state that has to be
+    /// tested. `has("rebuild")` is how the catalog staying put is measured:
+    /// paging replaces the whole page, and the command ids go with it.
+    ///
+    /// Reverted 2026-09-18 by putting the arrow back under `route_event`'s
+    /// node requirement — `if !node.is_empty()` in place of `if (arrow ||
+    /// !node.is_empty())` — and this said
+    ///
+    /// ```text
+    /// Right paged the catalog away from Command (compound); the cursor
+    /// keys were eaten by the chrome
+    /// ```
+    #[test]
+    fn left_and_right_move_the_command_cursor_instead_of_paging_the_catalog() {
+        let mut cam = Camera::on("Command (compound)");
+        // Seats focus on a row rather than the field. A click highlights
+        // without choosing (`hovering_or_clicking_...` below), so this is a
+        // cursor move and the overlay stays open.
+        cam.click("rebuild");
+        assert!(
+            cam.selected("rebuild"),
+            "clicking a command must leave the cursor on it; ids: {:?}",
+            cam.ids()
+        );
+        cam.key(KeyCode::Right);
+        assert!(
+            cam.has("rebuild"),
+            "Right paged the catalog away from Command (compound); the \
+             cursor keys were eaten by the chrome"
+        );
+        assert!(
+            cam.selected("open-file"),
+            "Right must step one cell, from Rebuild to Open file; ids: {:?}",
+            cam.ids()
+        );
+        assert!(!cam.selected("rebuild"));
+        cam.shoot("54-command-cursor-right");
+        cam.key(KeyCode::Left);
+        assert!(
+            cam.has("rebuild"),
+            "Left paged the catalog away from Command (compound)"
+        );
+        assert!(
+            cam.selected("rebuild"),
+            "Left must step back one cell onto Rebuild; ids: {:?}",
+            cam.ids()
+        );
+    }
+
+    /// Hovering a command moves the list cursor onto it. Clicking it
+    /// highlights without choosing — Enter is what runs the command.
+    #[test]
+    fn hovering_or_clicking_a_command_moves_the_cursor_without_choosing() {
+        let mut cam = Camera::on("Command (compound)");
+        assert!(cam.selected("rebuild"));
+        cam.hover("open-file");
+        assert!(
+            cam.selected("open-file"),
+            "hover must move the cursor onto Open file; selected rebuild={} ids: {:?}",
+            cam.selected("rebuild"),
+            cam.ids()
+        );
+        assert!(
+            cam.has("open-file"),
+            "hover must not choose and close the overlay"
+        );
+        cam.click("close-window");
+        assert!(
+            cam.selected("close-window") && cam.has("rebuild"),
+            "click must highlight Close window and leave the overlay open; ids: {:?}",
+            cam.ids()
+        );
+        cam.shoot("54-command-hover-cursor");
     }
 
     /// A category chip intersects the catalog. `copy-path` sits in both

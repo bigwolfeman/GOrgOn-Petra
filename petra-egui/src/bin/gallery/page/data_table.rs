@@ -287,11 +287,11 @@ impl Page for DataTable {
                 }
                 if let Some(key) = data_table_grip_row(node) {
                     let keys = Self::row_keys();
-                    if let Some(i) = keys.iter().position(|k| *k == key) {
-                        if let Some(display) = self.order.iter().position(|&idx| idx == i) {
-                            self.dragging_row = Some(display);
-                            return true;
-                        }
+                    if let Some(i) = keys.iter().position(|k| *k == key)
+                        && let Some(display) = self.order.iter().position(|&idx| idx == i)
+                    {
+                        self.dragging_row = Some(display);
+                        return true;
                     }
                 }
                 false

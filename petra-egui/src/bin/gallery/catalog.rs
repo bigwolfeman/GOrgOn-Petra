@@ -641,12 +641,98 @@ impl Catalog {
     /// handler, then the chrome's Prev/Next. Split from `handle` so every
     /// early return here still lands on the dismissal delivery there.
     fn route_event(&mut self, event: &InputEvent, route: &Route, frame: Option<&PetrifiedFrame>) {
+        let node = match route {
+            Route::Pointer { node } | Route::Keyboard { node } | Route::Raw { node } => {
+                node.as_str()
+            }
+            // The shell resolves a reserved chord before any `App` ever sees
+            // it (spec 010's interpretation order, step 1) — `Host` here
+            // routes through `route_with_surfaces`, which never produces
+            // this variant, so this arm cannot fire today. It is written out
+            // rather than folded into the `Unrouted` arm below so a later
+            // wiring change that starts producing it does not silently start
+            // matching the wrong branch.
+            Route::Reserved { .. } => return,
+            // A pointer move or pointer-exit that landed on nothing is still
+            // news to a page whose surface is revealed by hover: the pointer
+            // has left the trigger for empty ground, and the tooltip has to
+            // hear that or it never closes. The empty path matches no key
+            // (`Page::gesture`), so no other page acts on it.
+            //
+            // A keystroke that routed nowhere yields the same empty path,
+            // and that is load-bearing rather than incidental: the chrome's
+            // own `[`, `]` and arrow paging lives *below* this match, so an
+            // early return here is an early return past it. It used to sit
+            // above, which is why returning was right then and is wrong now
+            // — with the paging moved down, `Left` and `Right` stopped
+            // turning the page whenever nothing held focus. Everything
+            // downstream already guards on an empty node, so the empty path
+            // costs nothing and the paging branch gets its turn.
+            Route::Unrouted { .. } => match event {
+                InputEvent::PointerMoved { .. } | InputEvent::PointerLeft => "",
+                InputEvent::Key { .. } => "",
+                _ => return,
+            },
+        };
+        // A gesture reaches the open page before the activation filter
+        // below, with the frame it was routed against: a pointer move under
+        // capture is not an activation, and a page turning it into a value
+        // needs a rect the route does not carry (`Page::gesture`). The route
+        // named a node, so the frame is there; `App::handle`'s doc says
+        // `None` comes only with an `Unrouted` route, and a first-pass
+        // unrouted move has no frame to offer.
+        if let Some(frame) = frame
+            && self
+                .open_page_mut()
+                .is_some_and(|page| page.gesture(event, node, frame))
+        {
+            return;
+        }
+        // Typing is not an activation, so it never passes the filter below
+        // and never reached a page. Arrow keys are the same: a command
+        // palette cursor lives on Up/Down/Left/Right. Offer both to the open
+        // page before the chrome's own paging, or `Left`/`Right` steal the
+        // palette's cursor.
+        //
+        // **Typing needs a node; an arrow does not.** An edit belongs to the
+        // field the route named, so an unrouted one goes nowhere. A palette
+        // owns its cursor whether or not anything inside it holds focus, and
+        // a command row is not a focus target — so requiring a node here is
+        // exactly what let `Right` page the catalog out from under an open
+        // palette. Pages that key off `path_has` decline an empty path by
+        // construction (`Page::gesture`'s own doc), so offering an unrouted
+        // arrow to all 42 costs nothing and is refused by 41 of them.
+        let typing = matches!(event, InputEvent::Text(_))
+            || matches!(
+                event,
+                InputEvent::Key {
+                    key: KeyCode::Backspace,
+                    pressed: true,
+                    ..
+                }
+            );
+        let arrow = matches!(
+            event,
+            InputEvent::Key {
+                key: KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right,
+                pressed: true,
+                ..
+            }
+        );
+        if typing || arrow {
+            if (arrow || !node.is_empty())
+                && let Some(page) = self.open_page_mut()
+                && page.handle(event, node)
+            {
+                return;
+            }
+            if typing {
+                return;
+            }
+        }
         // Whether this keystroke is aimed at something that accepts text.
-        // The chrome pages on `[`, `]` and the arrows, and a text field has
-        // to be able to *contain* those characters — a page shortcut that
-        // eats what the operator is typing is a worse bug than no shortcut.
-        // So the field wins whenever the route names a `Role::TextInput`,
-        // and the shortcut keeps working everywhere else.
+        // The chrome pages on `[`, `]` and the arrows when the open page
+        // did not consume them.
         let editing = match route {
             Route::Keyboard { node } => frame.is_some_and(|frame| {
                 frame
@@ -672,65 +758,6 @@ impl Catalog {
                 }
                 _ => {}
             }
-        }
-
-        let node = match route {
-            Route::Pointer { node } | Route::Keyboard { node } | Route::Raw { node } => {
-                node.as_str()
-            }
-            // The shell resolves a reserved chord before any `App` ever sees
-            // it (spec 010's interpretation order, step 1) — `Host` here
-            // routes through `route_with_surfaces`, which never produces
-            // this variant, so this arm cannot fire today. It is written out
-            // rather than folded into the `Unrouted` arm below so a later
-            // wiring change that starts producing it does not silently start
-            // matching the wrong branch.
-            Route::Reserved { .. } => return,
-            // A pointer move or pointer-exit that landed on nothing is still
-            // news to a page whose surface is revealed by hover: the pointer
-            // has left the trigger for empty ground, and the tooltip has to
-            // hear that or it never closes. The empty path matches no key
-            // (`Page::gesture`), so no other page acts on it. Every other
-            // unrouted event is dropped here as before.
-            Route::Unrouted { .. } => match event {
-                InputEvent::PointerMoved { .. } | InputEvent::PointerLeft => "",
-                _ => return,
-            },
-        };
-        // A gesture reaches the open page before the activation filter
-        // below, with the frame it was routed against: a pointer move under
-        // capture is not an activation, and a page turning it into a value
-        // needs a rect the route does not carry (`Page::gesture`). The route
-        // named a node, so the frame is there; `App::handle`'s doc says
-        // `None` comes only with an `Unrouted` route, and a first-pass
-        // unrouted move has no frame to offer.
-        if let Some(frame) = frame
-            && self
-                .open_page_mut()
-                .is_some_and(|page| page.gesture(event, node, frame))
-        {
-            return;
-        }
-        // Typing is not an activation, so it never passes the filter below
-        // and never reached a page. Deliver it here, and return either way:
-        // an edit must never fall through to the chrome's navigation, or a
-        // keystroke meant for a field would page the catalog.
-        if matches!(event, InputEvent::Text(_))
-            || matches!(
-                event,
-                InputEvent::Key {
-                    key: KeyCode::Backspace,
-                    pressed: true,
-                    ..
-                }
-            )
-        {
-            if !node.is_empty()
-                && let Some(page) = self.open_page_mut()
-            {
-                page.handle(event, node);
-            }
-            return;
         }
         if node.is_empty() || !activated(event) {
             return;

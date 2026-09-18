@@ -60,13 +60,13 @@ use std::collections::BTreeSet;
 
 use gorgon_petra::component::kit::{pad, stack};
 use gorgon_petra::component::{
-    IconMark, IconTone, icon_toned, list_row_with, search, selectable_tag, text, valued,
+    IconBox, IconMark, IconTone, icon_in, icon_toned, search, text, valued,
 };
 use gorgon_petra::keymap::{Binding, Chord, CommandName, Owner, Scope};
 use gorgon_petra::token::{CornerRole, TokenName, corner_for};
 use gorgon_petra::tree::{
-    Anchor, AxisConstraint, FocusFigure, InputPolicy, Interaction, Layer, NodeKind,
-    Props as NodeProps, Role, Semantics, TextWrap, Tip, TrackSize, ViewNode,
+    Anchor, AxisConstraint, Constraints, FocusFigure, InputPolicy, Interaction, Justify, Layer,
+    NodeKind, Props as NodeProps, Role, Semantics, TextWrap, Tip, TrackSize, ViewNode,
 };
 use gorgon_petra::{Align, Axis, KeyCode, Modifiers};
 use serde::{Deserialize, Serialize};
@@ -84,9 +84,10 @@ const OWNER_ID: &str = "gorgon-view-fiber::command";
 /// Root key of the node [`Command::view`] returns.
 const COMMAND_KEY: &str = "command";
 
-/// Favorite mark on a list row or command tile. Nested under the item id so
-/// a page can [`Intent::ToggleFavorite`] without [`Intent::Choose`].
-const FAV_KEY: &str = "fav";
+/// Kickoff-shaped command tile: one square, icon above the label.
+const TILE: f32 = 112.0;
+/// Category icon well, Kickoff's selected square.
+const CAT: f32 = 36.0;
 
 const TOGGLE_CMD: &str = "command-palette.toggle";
 const OPEN_LIST_CMD: &str = "command-palette.open-list";
@@ -220,6 +221,8 @@ pub struct Mode {
     pub key: char,
     /// Caption on the favorites-mode tile (`mode-{key}`).
     pub label: String,
+    /// Mark on that tile. `None` still shows the label.
+    pub icon: Option<IconMark>,
 }
 
 impl Mode {
@@ -229,6 +232,16 @@ impl Mode {
         Self {
             key,
             label: label.into(),
+            icon: None,
+        }
+    }
+
+    /// Place `icon` on the mode's tile.
+    #[must_use]
+    pub fn with_icon(self, icon: IconMark) -> Self {
+        Self {
+            icon: Some(icon),
+            ..self
         }
     }
 }
@@ -344,6 +357,28 @@ pub enum PaletteMode {
     },
 }
 
+/// Next filtered-list index for an arrow key.
+///
+/// `columns` is the grid stride: Down/Up jump one visual row, Left/Right
+/// move one cell. Clamps to `[0, n)`. `update` does not see [`Props`], so
+/// the host (gallery today, the shell dispatcher after T046) computes this
+/// and sends [`Intent::Highlight`].
+#[must_use]
+pub fn step_highlight(current: usize, n: usize, columns: u8, key: KeyCode) -> usize {
+    if n == 0 {
+        return 0;
+    }
+    let last = n - 1;
+    let cols = usize::from(columns.max(1));
+    match key {
+        KeyCode::Down => current.saturating_add(cols).min(last),
+        KeyCode::Up => current.saturating_sub(cols),
+        KeyCode::Right => current.saturating_add(1).min(last),
+        KeyCode::Left => current.saturating_sub(1),
+        _ => current,
+    }
+}
+
 impl PaletteMode {
     /// Prefix parse. Petra's half of the `>` slot; the host fills
     /// [`Props::mode_surface`] from [`Self::Extension`].
@@ -405,6 +440,7 @@ impl Compound for Command {
             }
             Intent::SetCategory { id } => {
                 state.category = id;
+                state.highlighted = 0;
             }
             Intent::ToggleFavorite { id } => {
                 if !state.favorites.remove(&id) {
@@ -448,35 +484,16 @@ impl Compound for Command {
 }
 
 fn search_field(state: &State) -> ViewNode {
-    // `search` seats `FocusFigure::Sides`, which draws its two bars
-    // seven units *outside* the control. That is right for a field with
-    // a card's padding around it and wrong here: the palette is
-    // full-bleed, so the field's own edges are the overlay's edges and
-    // the two bars hang in the page behind it, touching nothing.
-    //
-    // `Border` and not `BarInside`, which is the other figure that stays
-    // inside its control: a bar figure marks the *content run*, and
-    // `marked_rect` excludes `NodeKind::Input` from that run because an
-    // input is its own focus target. A search field's only other content
-    // is its magnifier, so `BarInside` here draws a 13-unit stub under
-    // the icon and nothing under the text. A ring on the field's own
-    // rect is what a command palette shows and what Carbon specifies.
-    //
-    // The well and the holder must agree: focus is *shown on* the field
-    // and *held by* its `input` child, and
-    // `a_control_and_the_node_it_shows_focus_on_agree_about_the_figure`
-    // refuses a holder that declares a shape nothing draws.
-    let mut field = valued(search("field", "Command"), state.query.as_str());
-    field.semantics.focus_figure = FocusFigure::Border;
-    for child in &mut field.children {
-        std::sync::Arc::make_mut(child).semantics.focus_figure = FocusFigure::Border;
-    }
-    field
+    // `search` seats `FocusFigure::Sides` — the two vertical bars. The
+    // overlay pads its content by `spacing-03` (8) so those bars sit on
+    // the overlay, not on the page behind it.
+    valued(search("field", "Command"), state.query.as_str())
 }
 
 fn open_overlay(children: Vec<ViewNode>, max_width: f32) -> ViewNode {
     let mut content = stack("content", Axis::Vertical, None, children);
     content.props.align = Some(Align::Stretch);
+    content.props.padding = Some(pad("spacing-03", "spacing-02"));
 
     let mut node = with_palette_bindings(
         ViewNode::new(NodeKind::Surface, COMMAND_KEY)
@@ -513,18 +530,29 @@ fn open_overlay(children: Vec<ViewNode>, max_width: f32) -> ViewNode {
 fn overlay_max(mode: &PaletteMode, state: &State, props: &Props) -> f32 {
     let list_max = {
         let n = props.list_columns.clamp(1, 3);
-        (320.0 * f32::from(n)).max(480.0).min(960.0)
+        (320.0 * f32::from(n)).clamp(480.0, 960.0)
     };
-    let tile_max = {
-        let n = props.tile_columns.clamp(3, 8);
-        (160.0 * f32::from(n)).min(1280.0)
+    let tile_max = |n: u8| {
+        let n = n.max(1);
+        (TILE * f32::from(n) + 8.0 * f32::from(n.saturating_sub(1)) + 32.0).clamp(320.0, 1280.0)
     };
     match (mode, state.view) {
         (PaletteMode::Commands, ViewKind::List)
         | (PaletteMode::Extension { .. }, ViewKind::List) => list_max,
         (PaletteMode::Commands, ViewKind::Tiles)
-        | (PaletteMode::Extension { .. }, ViewKind::Tiles)
-        | (PaletteMode::Favorites, _) => tile_max,
+        | (PaletteMode::Extension { .. }, ViewKind::Tiles) => {
+            let shown = command_indices(state, props).len() as u8;
+            tile_max(shown.min(props.tile_columns.clamp(3, 8)))
+        }
+        (PaletteMode::Favorites, _) => {
+            let shown = props
+                .items
+                .iter()
+                .filter(|item| state.favorites.contains(&item.id))
+                .count()
+                + props.modes.len();
+            tile_max((shown as u8).min(props.tile_columns.clamp(3, 8)).max(1))
+        }
     }
 }
 
@@ -540,21 +568,27 @@ fn command_indices(state: &State, props: &Props) -> Vec<usize> {
 
 fn command_results(state: &State, props: &Props) -> ViewNode {
     let hits = command_indices(state, props);
+    let hi = clamp_hi(state.highlighted, hits.len());
     match state.view {
         ViewKind::List => {
-            let rows = hits
+            let rows: Vec<ViewNode> = hits
                 .into_iter()
                 .enumerate()
                 .map(|(pos, i)| {
                     let item = &props.items[i];
-                    command_row(
-                        item,
-                        pos == state.highlighted,
-                        state.favorites.contains(&item.id),
-                    )
+                    command_row(item, pos == hi, state.favorites.contains(&item.id))
                 })
                 .collect();
-            weight_grid("results", props.list_columns.clamp(1, 3), rows)
+            let cols = props.list_columns.clamp(1, 3);
+            if cols <= 1 {
+                let mut node = stack("results", Axis::Vertical, None, rows);
+                node.props.align = Some(Align::Stretch);
+                node
+            } else {
+                let mut node = weight_grid("results", cols, rows);
+                node.props.row_spacing = None;
+                node
+            }
         }
         ViewKind::Tiles => {
             let tiles = hits
@@ -562,14 +596,10 @@ fn command_results(state: &State, props: &Props) -> ViewNode {
                 .enumerate()
                 .map(|(pos, i)| {
                     let item = &props.items[i];
-                    command_tile(
-                        item,
-                        pos == state.highlighted,
-                        state.favorites.contains(&item.id),
-                    )
+                    command_tile(item, pos == hi, state.favorites.contains(&item.id))
                 })
                 .collect();
-            weight_grid("results", props.tile_columns.clamp(3, 8), tiles)
+            tile_grid("results", props.tile_columns.clamp(3, 8), tiles)
         }
     }
 }
@@ -583,17 +613,19 @@ fn favorites_grid(state: &State, props: &Props) -> ViewNode {
         .collect();
     let item_hits = filter_indices(&favorited, remainder, |item| item.label.as_str());
     let mode_hits = filter_indices(&props.modes, remainder, |mode| mode.label.as_str());
+    let n = item_hits.len() + mode_hits.len();
+    let hi = clamp_hi(state.highlighted, n);
     let mut tiles = Vec::new();
     let mut pos = 0usize;
     for i in item_hits {
-        tiles.push(command_tile(favorited[i], pos == state.highlighted, true));
+        tiles.push(command_tile(favorited[i], pos == hi, true));
         pos += 1;
     }
     for i in mode_hits {
-        tiles.push(mode_tile(&props.modes[i], pos == state.highlighted));
+        tiles.push(mode_tile(&props.modes[i], pos == hi));
         pos += 1;
     }
-    weight_grid("results", props.tile_columns.clamp(3, 8), tiles)
+    tile_grid("results", props.tile_columns.clamp(3, 8), tiles)
 }
 
 fn unique_categories(items: &[Item]) -> Vec<String> {
@@ -616,63 +648,78 @@ fn category_strip(state: &State, props: &Props) -> Option<ViewNode> {
     if cats.is_empty() {
         return None;
     }
-    let mut chips = vec![selectable_tag("cat-all", "all", state.category.is_none())];
+    let mut chips = vec![category_button(
+        "cat-all",
+        "All",
+        IconMark::Switcher,
+        state.category.is_none(),
+    )];
     for name in cats {
         let selected = state.category.as_deref() == Some(name.as_str());
-        chips.push(selectable_tag(format!("cat-{name}"), name, selected));
+        chips.push(category_button(
+            format!("cat-{name}"),
+            name.as_str(),
+            category_icon(&name),
+            selected,
+        ));
     }
-    Some(stack(
-        "categories",
-        Axis::Horizontal,
-        Some("spacing-03"),
-        chips,
-    ))
+    let mut strip = stack("categories", Axis::Horizontal, Some("spacing-02"), chips);
+    strip.props.padding = Some(pad("spacing-03", "spacing-02"));
+    Some(strip)
 }
 
-fn command_row(item: &Item, selected: bool, favorited: bool) -> ViewNode {
-    list_row_with(
-        item.id.as_str(),
-        item.label.as_str(),
-        selected,
-        item.icon,
-        item.shortcut.as_deref(),
-    )
-    .child(favorite_mark(favorited))
-}
-
-fn command_tile(item: &Item, selected: bool, favorited: bool) -> ViewNode {
-    compact_tile(item.id.as_str(), item.label.as_str(), item.icon, selected)
-        .child(favorite_mark(favorited))
-}
-
-fn mode_tile(mode: &Mode, selected: bool) -> ViewNode {
-    compact_tile(
-        &format!("mode-{}", mode.key),
-        mode.label.as_str(),
-        None,
-        selected,
-    )
-}
-
-/// Compact command tile. Not [`gorgon_petra::component::selectable_tile`]
-/// (checkbox mark) and not [`gorgon_petra::component::clickable_tile`]
-/// (Carbon text tile). Kickoff-shaped: icon plus label, selected fill,
-/// [`Role::Button`].
-fn compact_tile(key: &str, label: &str, icon: Option<IconMark>, selected: bool) -> ViewNode {
-    let mut parts = Vec::new();
-    if let Some(mark) = icon {
-        parts.push(icon_toned("icon", mark, IconTone::Primary));
+fn category_icon(name: &str) -> IconMark {
+    match name {
+        "Edit" | "edit" => IconMark::Edit,
+        "Files" | "files" => IconMark::Copy,
+        _ => IconMark::Menu,
     }
-    let mut caption = text("label", label);
-    caption.props.wrap = Some(TextWrap::Ellipsis);
-    parts.push(caption);
-    let mut node = stack(key, Axis::Vertical, Some("spacing-03"), parts);
+}
+
+fn category_button(
+    key: impl Into<gorgon_petra::tree::Key>,
+    label: &str,
+    mark: IconMark,
+    selected: bool,
+) -> ViewNode {
+    let tone = if selected {
+        IconTone::OnAccent
+    } else {
+        IconTone::Primary
+    };
+    let glyph = icon_toned("icon", mark, tone);
+    let mut node = stack(key, Axis::Horizontal, None, vec![glyph]);
     node.props.align = Some(Align::Center);
-    node.props.padding = Some(pad("spacing-05", "spacing-04"));
-    bind_selected_fills(&mut node);
-    node.props
-        .tokens
-        .insert("radius".into(), token(corner_for(CornerRole::Tiled, 64.0)));
+    node.props.justify = Some(Justify::Center);
+    node.props.padding = Some(pad("spacing-02", "spacing-02"));
+    node.constraints = Constraints {
+        horizontal: AxisConstraint {
+            min: Some(CAT),
+            max: Some(CAT),
+            priority: 0,
+        },
+        vertical: AxisConstraint {
+            min: Some(CAT),
+            max: Some(CAT),
+            priority: 0,
+        },
+    };
+    node.props.tokens.insert(
+        "radius".into(),
+        token(corner_for(CornerRole::Grouping, CAT)),
+    );
+    if selected {
+        node.props
+            .tokens
+            .insert("background".into(), token("accent.primary"));
+    } else {
+        node.props
+            .tokens
+            .insert("background".into(), token("surface.raised"));
+        node.props
+            .tokens
+            .insert("background@hover".into(), token("layer-hover"));
+    }
     let mut node = node.interactive(
         Role::Button,
         label,
@@ -683,44 +730,178 @@ fn compact_tile(key: &str, label: &str, icon: Option<IconMark>, selected: bool) 
     node
 }
 
-fn favorite_mark(favorited: bool) -> ViewNode {
-    let mark = if favorited {
-        IconMark::CheckmarkFilled
+fn command_row(item: &Item, selected: bool, _favorited: bool) -> ViewNode {
+    let tone = if selected {
+        IconTone::OnAccent
     } else {
-        IconMark::CheckmarkOutline
+        IconTone::Primary
     };
-    let glyph = icon_toned("glyph", mark, IconTone::Primary);
-    let mut node = stack(FAV_KEY, Axis::Horizontal, None, vec![glyph]);
+    let ink = if selected {
+        "text.on-accent"
+    } else {
+        "text.primary"
+    };
+    let mut leading = Vec::new();
+    if let Some(mark) = item.icon {
+        leading.push(icon_toned("icon", mark, tone));
+    }
+    let mut caption = text("label", item.label.as_str());
+    caption.props.wrap = Some(TextWrap::Ellipsis);
+    caption.props.tokens.insert("foreground".into(), token(ink));
+    leading.push(caption);
+    let mut trailing = Vec::new();
+    if let Some(keys) = item.shortcut.as_deref() {
+        let mut hint = text("shortcut", keys);
+        hint.props.style = Some(token("typography.body-compact"));
+        hint.props.tokens.insert(
+            "foreground".into(),
+            token(if selected {
+                "text.on-accent"
+            } else {
+                "text.muted"
+            }),
+        );
+        trailing.push(hint);
+    }
+    let (children, justify, spacing) = if trailing.is_empty() {
+        (leading, None, Some("spacing-03"))
+    } else {
+        (
+            vec![hugging_run("run", leading), hugging_run("meta", trailing)],
+            Some(Justify::SpaceBetween),
+            None,
+        )
+    };
+    let mut node = stack(item.id.as_str(), Axis::Horizontal, spacing, children);
     node.props.align = Some(Align::Center);
-    let label = if favorited {
-        "Remove from favorites"
+    node.props.justify = justify;
+    node.props.padding = Some(pad("spacing-05", "spacing-04"));
+    if selected {
+        node.props
+            .tokens
+            .insert("background".into(), token("accent.primary"));
     } else {
-        "Add to favorites"
+        node.props
+            .tokens
+            .insert("background".into(), token("surface.raised"));
+        node.props
+            .tokens
+            .insert("background@hover".into(), token("layer-hover"));
+    }
+    node.props
+        .tokens
+        .insert("radius".into(), token(corner_for(CornerRole::Tiled, 44.0)));
+    let mut node = node.interactive(
+        Role::ListItem,
+        item.label.as_str(),
+        &[Interaction::Focus, Interaction::Click, Interaction::Hover],
+    );
+    // `Border`, not `Sides`. `Sides` is a two-bar figure drawn seven units
+    // outside the control, and a row in this grid has no seven units on
+    // either hand: the outer bar lands on the overlay's own rim and the
+    // inner one lands where the next column starts, so the neighbouring
+    // cell paints over it. MEASURED on `54-command-cursor-right.png` with
+    // the cursor stepped to Open file — the focused Rebuild row showed one
+    // 6-device-pixel accent bar at x 562 and no partner, which reads as an
+    // artifact rather than as focus. A ring on the row's own rect is what
+    // Carbon draws for a focused list item and it survives any column.
+    node.semantics.focus_figure = FocusFigure::Border;
+    node.semantics.selected = selected;
+    node
+}
+
+fn hugging_run(key: &'static str, mut children: Vec<ViewNode>) -> ViewNode {
+    if children.len() == 1 {
+        return children.pop().expect("len == 1");
+    }
+    let mut node = stack(key, Axis::Horizontal, Some("spacing-03"), children);
+    node.props.align = Some(Align::Center);
+    node
+}
+
+fn command_tile(item: &Item, selected: bool, _favorited: bool) -> ViewNode {
+    compact_tile(item.id.as_str(), item.label.as_str(), item.icon, selected)
+}
+
+fn mode_tile(mode: &Mode, selected: bool) -> ViewNode {
+    compact_tile(
+        &format!("mode-{}", mode.key),
+        mode.label.as_str(),
+        mode.icon,
+        selected,
+    )
+}
+
+/// Kickoff tile: fixed square, icon above a one-line label. Not Carbon
+/// [`gorgon_petra::component::selectable_tile`] (checkbox) and not
+/// [`gorgon_petra::component::clickable_tile`] (a text card).
+fn compact_tile(key: &str, label: &str, icon: Option<IconMark>, selected: bool) -> ViewNode {
+    let tone = if selected {
+        IconTone::OnAccent
+    } else {
+        IconTone::Primary
     };
+    let mut parts = Vec::new();
+    if let Some(mark) = icon {
+        parts.push(icon_in("icon", mark, IconBox::Header, tone));
+    }
+    let mut caption = text("label", label);
+    caption.props.wrap = Some(TextWrap::Ellipsis);
+    caption.props.style = Some(token("typography.body-compact"));
+    caption.props.tokens.insert(
+        "foreground".into(),
+        token(if selected {
+            "text.on-accent"
+        } else {
+            "text.primary"
+        }),
+    );
+    parts.push(caption);
+    let mut node = stack(key, Axis::Vertical, Some("spacing-03"), parts);
+    node.props.align = Some(Align::Center);
+    node.props.justify = Some(Justify::Center);
+    node.props.padding = Some(pad("spacing-03", "spacing-03"));
+    node.constraints = Constraints {
+        horizontal: AxisConstraint {
+            min: Some(TILE),
+            max: Some(TILE),
+            priority: 0,
+        },
+        vertical: AxisConstraint {
+            min: Some(TILE),
+            max: Some(TILE),
+            priority: 0,
+        },
+    };
+    node.props.tokens.insert(
+        "radius".into(),
+        token(corner_for(CornerRole::Grouping, TILE)),
+    );
+    if selected {
+        node.props
+            .tokens
+            .insert("background".into(), token("accent.primary"));
+    } else {
+        node.props
+            .tokens
+            .insert("background".into(), token("surface.base"));
+        node.props
+            .tokens
+            .insert("background@hover".into(), token("layer-hover"));
+    }
     let mut node = node.interactive(
         Role::Button,
         label,
         &[Interaction::Focus, Interaction::Click, Interaction::Hover],
     );
-    node.semantics.selected = favorited;
-    node.semantics.focus_figure = FocusFigure::BarInside;
-    if favorited {
-        node.props
-            .tokens
-            .insert("background".into(), token("layer-selected"));
-    }
+    node.semantics.selected = selected;
+    // A tile sits in the same grid a row does and loses a bar the same way.
+    node.semantics.focus_figure = FocusFigure::Border;
     node
 }
 
-fn bind_selected_fills(node: &mut ViewNode) {
-    for (slot, name) in [
-        ("background", "surface.base"),
-        ("background@hover", "layer-hover"),
-        ("background@selected", "layer-selected"),
-        ("background@selected-hover", "layer-selected-hover"),
-    ] {
-        node.props.tokens.insert(slot.into(), token(name));
-    }
+fn clamp_hi(highlighted: usize, n: usize) -> usize {
+    if n == 0 { 0 } else { highlighted.min(n - 1) }
 }
 
 fn weight_grid(key: &'static str, columns: u8, children: Vec<ViewNode>) -> ViewNode {
@@ -729,9 +910,22 @@ fn weight_grid(key: &'static str, columns: u8, children: Vec<ViewNode>) -> ViewN
             columns: vec![TrackSize::Weight { weight: 1.0 }; columns as usize],
             column_spacing: Some(token("spacing-03")),
             row_spacing: Some(token("spacing-03")),
+            align: Some(Align::Stretch),
             ..NodeProps::default()
         })
         .with_children(children)
+}
+
+fn tile_grid(key: &'static str, max_cols: u8, children: Vec<ViewNode>) -> ViewNode {
+    let cols = (children.len() as u8).clamp(1, max_cols);
+    let mut node = ViewNode::new(NodeKind::Grid, key).with_props(NodeProps {
+        columns: vec![TrackSize::Fixed { value: TILE }; cols as usize],
+        column_spacing: Some(token("spacing-03")),
+        row_spacing: Some(token("spacing-03")),
+        ..NodeProps::default()
+    });
+    node.props.padding = Some(pad("spacing-03", "spacing-03"));
+    node.with_children(children)
 }
 
 fn token(name: &'static str) -> TokenName {
@@ -742,14 +936,14 @@ fn token(name: &'static str) -> TokenName {
 mod tests {
     use gorgon_petra::component::{IconMark, text};
     use gorgon_petra::keymap::Scope;
-    use gorgon_petra::tree::{Anchor, Layer, NodeKind, Role, ViewNode};
+    use gorgon_petra::tree::{Anchor, FocusFigure, Layer, NodeKind, Role, ViewNode};
     use gorgon_petra::{KeyCode, Modifiers};
 
     use crate::Compound;
 
     use super::{
-        COMMAND_KEY, Command, FAV_KEY, Intent, Item, Mode, OPEN_LIST_CMD, OPEN_TILES_CMD,
-        PaletteMode, Props, TOGGLE_CMD, ViewKind,
+        COMMAND_KEY, Command, Intent, Item, Mode, OPEN_LIST_CMD, OPEN_TILES_CMD, PaletteMode,
+        Props, TOGGLE_CMD, ViewKind, step_highlight,
     };
 
     fn named<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
@@ -949,19 +1143,80 @@ mod tests {
         let node = Command::view(&state, &props);
         let row = named(&node, "rebuild");
         let keys: Vec<&str> = row.children.iter().map(|c| c.key.as_str()).collect();
-        assert_eq!(keys, ["run", "shortcut", FAV_KEY]);
+        assert_eq!(keys, ["run", "shortcut"]);
         assert_eq!(
-            named(&row, "label").props.text.as_deref(),
+            named(row, "label").props.text.as_deref(),
             Some("Rebuild fiber")
         );
-        let shortcut = named(&row, "shortcut");
+        let shortcut = named(row, "shortcut");
         assert_eq!(shortcut.props.text.as_deref(), Some("Ctrl+R"));
         assert_eq!(
             shortcut.props.tokens.get("foreground").map(|t| t.as_str()),
-            Some("text.muted")
+            Some("text.on-accent"),
+            "the highlighted row is the command that will run: on-accent ink"
+        );
+        assert_eq!(
+            row.props.tokens.get("background").map(|t| t.as_str()),
+            Some("accent.primary")
         );
         assert!(row.semantics.selected);
-        named(&row, FAV_KEY);
+        assert_eq!(row.semantics.focus_figure, FocusFigure::Border);
+    }
+
+    #[test]
+    fn highlight_moves_the_accent_bar_off_the_first_row() {
+        let props = sample_props();
+        let mut state = Command::init(&props);
+        Command::update(&mut state, Intent::Open);
+        let node = Command::view(&state, &props);
+        assert_eq!(
+            named(&node, "open")
+                .props
+                .tokens
+                .get("background")
+                .map(|t| t.as_str()),
+            Some("accent.primary")
+        );
+        assert_eq!(
+            named(&node, "save")
+                .props
+                .tokens
+                .get("background")
+                .map(|t| t.as_str()),
+            Some("surface.raised")
+        );
+        Command::update(&mut state, Intent::Highlight { index: 1 });
+        let node = Command::view(&state, &props);
+        assert!(!named(&node, "open").semantics.selected);
+        assert!(named(&node, "save").semantics.selected);
+        assert_eq!(
+            named(&node, "save")
+                .props
+                .tokens
+                .get("background")
+                .map(|t| t.as_str()),
+            Some("accent.primary")
+        );
+        assert_eq!(
+            named(&node, "open")
+                .props
+                .tokens
+                .get("background")
+                .map(|t| t.as_str()),
+            Some("surface.raised")
+        );
+    }
+
+    #[test]
+    fn step_highlight_walks_a_two_column_grid() {
+        assert_eq!(step_highlight(0, 5, 2, KeyCode::Down), 2);
+        assert_eq!(step_highlight(0, 5, 2, KeyCode::Right), 1);
+        assert_eq!(step_highlight(0, 5, 2, KeyCode::Up), 0);
+        assert_eq!(step_highlight(0, 5, 2, KeyCode::Left), 0);
+        assert_eq!(step_highlight(4, 5, 2, KeyCode::Down), 4);
+        assert_eq!(step_highlight(1, 5, 2, KeyCode::Left), 0);
+        assert_eq!(step_highlight(2, 5, 1, KeyCode::Down), 3);
+        assert_eq!(step_highlight(0, 0, 2, KeyCode::Down), 0);
     }
 
     #[test]
@@ -1023,7 +1278,6 @@ mod tests {
         let node = Command::view(&state, &props);
         let tile = named(&node, "close");
         assert_eq!(tile.semantics.role, Some(Role::Button));
-        named(&tile, FAV_KEY);
         assert!(
             !walks_to(&node, "open") && !walks_to(&node, "save"),
             "unfavorited commands must not mount on `>`"
@@ -1071,7 +1325,6 @@ mod tests {
         let node = Command::view(&state, &props);
         let tile = named(&node, "open");
         assert_eq!(tile.semantics.role, Some(Role::Button));
-        named(&tile, FAV_KEY);
         assert!(
             !has_list_item(&node),
             "tile density must not mount list_row"

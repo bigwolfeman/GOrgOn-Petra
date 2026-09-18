@@ -10,11 +10,13 @@
 //! too; the page fills `Props.mode_surface` when the query names a mode.
 
 use gorgon_petra::component::{IconMark, button, section, text};
+use gorgon_petra::frame::PetrifiedFrame;
 use gorgon_petra::input::{InputEvent, KeyCode};
 use gorgon_petra::tree::ViewNode;
 use gorgon_petra_compound::Compound;
 use gorgon_petra_compound::command::{
-    Command as CommandCompound, Intent, Item, Mode, Props, State, ViewKind as CommandView,
+    Command as CommandCompound, Intent, Item, Mode, PaletteMode, Props, State,
+    ViewKind as CommandView, step_highlight,
 };
 use gorgon_petra_compound::filter_indices;
 
@@ -28,6 +30,10 @@ const TRIGGER: &str = "open-command";
 const OPEN_LIST: &str = "open-list";
 /// Open the overlay in tile density.
 const OPEN_TILES: &str = "open-tiles";
+/// Open the overlay as a two-column list.
+const OPEN_COLS_2: &str = "open-cols-2";
+/// Open the overlay as a three-column list.
+const OPEN_COLS_3: &str = "open-cols-3";
 /// [`Command::view`]'s own root key, open or shut.
 const COMMAND: &str = "command";
 /// The search field [`Command::view`] mounts while open.
@@ -82,14 +88,8 @@ impl Default for CommandCompoundPage {
             tile_columns: 4,
             default_view: CommandView::List,
             modes: vec![
-                Mode {
-                    key: 'f',
-                    label: "Files".into(),
-                },
-                Mode {
-                    key: 'c',
-                    label: "Calculator".into(),
-                },
+                Mode::new('f', "Files").with_icon(IconMark::Search),
+                Mode::new('c', "Calculator").with_icon(IconMark::Add),
             ],
             mode_surface: None,
         };
@@ -128,29 +128,70 @@ impl CommandCompoundPage {
         props
     }
 
-    /// Indices `Command::view` would show for the current query, category,
-    /// and favorites, in author order. Used to map a clicked item id onto
-    /// [`Intent::Highlight`]'s filtered index.
+    /// Indices `Command::view` would show in [`PaletteMode::Commands`].
     fn matching_indices(&self) -> Vec<usize> {
-        let q = self.state.query.as_str();
-        if q.starts_with(">f") || q.starts_with(">c") {
-            return Vec::new();
-        }
-        if q.starts_with('>') {
-            return self
-                .props
-                .items
-                .iter()
-                .enumerate()
-                .filter(|(_, it)| self.state.favorites.contains(&it.id))
-                .map(|(i, _)| i)
-                .collect();
-        }
-        let mut idx = filter_indices(&self.props.items, q, |it| it.label.as_str());
+        let mut idx = filter_indices(&self.props.items, &self.state.query, |it| it.label.as_str());
         if let Some(cat) = &self.state.category {
             idx.retain(|&i| self.props.items[i].categories.iter().any(|c| c == cat));
         }
         idx
+    }
+
+    /// Keys in the order [`CommandCompound::view`] paints them, which is
+    /// also [`State::highlighted`]'s index space.
+    fn cursor_keys(&self) -> Vec<String> {
+        match PaletteMode::parse(&self.state.query, &self.props.modes) {
+            PaletteMode::Extension { .. } => Vec::new(),
+            PaletteMode::Favorites => {
+                let remainder = self.state.query.strip_prefix('>').unwrap_or("");
+                let favorited: Vec<&Item> = self
+                    .props
+                    .items
+                    .iter()
+                    .filter(|it| self.state.favorites.contains(&it.id))
+                    .collect();
+                let mut keys = Vec::new();
+                for i in filter_indices(&favorited, remainder, |it| it.label.as_str()) {
+                    keys.push(favorited[i].id.clone());
+                }
+                for i in filter_indices(&self.props.modes, remainder, |mode| mode.label.as_str()) {
+                    keys.push(format!("mode-{}", self.props.modes[i].key));
+                }
+                keys
+            }
+            PaletteMode::Commands => self
+                .matching_indices()
+                .into_iter()
+                .map(|i| self.props.items[i].id.clone())
+                .collect(),
+        }
+    }
+
+    fn cursor_columns(&self) -> u8 {
+        match PaletteMode::parse(&self.state.query, &self.props.modes) {
+            PaletteMode::Favorites => self.props.tile_columns.clamp(3, 8),
+            PaletteMode::Commands | PaletteMode::Extension { .. } => match self.state.view {
+                CommandView::Tiles => self.props.tile_columns.clamp(3, 8),
+                CommandView::List => self.props.list_columns.clamp(1, 3),
+            },
+        }
+    }
+
+    fn cursor_index_for(&self, node: &str) -> Option<usize> {
+        self.cursor_keys()
+            .iter()
+            .position(|key| path_has(node, key))
+    }
+
+    fn move_cursor(&mut self, key: KeyCode) {
+        let keys = self.cursor_keys();
+        let next = step_highlight(
+            self.state.highlighted,
+            keys.len(),
+            self.cursor_columns(),
+            key,
+        );
+        CommandCompound::update(&mut self.state, Intent::Highlight { index: next });
     }
 }
 
@@ -171,10 +212,11 @@ impl Page for CommandCompoundPage {
                         "cmc-note",
                         "The same triple as spec 009 T019: a frame-wide \
                          overlay driven through `Compound::update`. Type to \
-                         filter, `>` for favorite tiles, `>f` / `>c` for a \
-                         host-filled slot. Open list and Open tiles bind \
-                         the two densities; category chips filter without \
-                         clearing the query.",
+                         filter, arrows move the cursor, Enter chooses. \
+                         `>` for favorite tiles, `>f` / `>c` for a \
+                         host-filled slot. 1 / 2 / 3 columns and Tiles set \
+                         density; category icons filter without clearing \
+                         the query.",
                     ),
                     column(
                         "cmc-col",
@@ -185,8 +227,10 @@ impl Page for CommandCompoundPage {
                                 sp("spacing.sm"),
                                 vec![
                                     button(TRIGGER, "Open command"),
-                                    button(OPEN_LIST, "Open list"),
-                                    button(OPEN_TILES, "Open tiles"),
+                                    button(OPEN_LIST, "1 column"),
+                                    button(OPEN_COLS_2, "2 columns"),
+                                    button(OPEN_COLS_3, "3 columns"),
+                                    button(OPEN_TILES, "Tiles"),
                                 ],
                             ),
                             CommandCompound::view(&self.state, &self.view_props()),
@@ -198,6 +242,39 @@ impl Page for CommandCompoundPage {
     }
 
     fn handle(&mut self, event: &InputEvent, node: &str) -> bool {
+        if self.state.open {
+            if let Some(key) = arrow_key(event) {
+                self.move_cursor(key);
+                return true;
+            }
+            match event {
+                InputEvent::Text(typed) => {
+                    let mut query = self.state.query.clone();
+                    query.push_str(typed);
+                    CommandCompound::update(&mut self.state, Intent::Type { query });
+                    return true;
+                }
+                InputEvent::Key {
+                    key: KeyCode::Backspace,
+                    pressed: true,
+                    ..
+                } => {
+                    let mut query = self.state.query.clone();
+                    query.pop();
+                    CommandCompound::update(&mut self.state, Intent::Type { query });
+                    return true;
+                }
+                InputEvent::Key {
+                    key: KeyCode::Enter,
+                    pressed: true,
+                    ..
+                } => {
+                    CommandCompound::update(&mut self.state, Intent::Choose);
+                    return true;
+                }
+                _ => {}
+            }
+        }
         if path_has(node, FAV) && !is_enter(event) {
             if let Some(item) = self.props.items.iter().find(|it| path_has(node, &it.id)) {
                 CommandCompound::update(
@@ -213,11 +290,11 @@ impl Page for CommandCompoundPage {
             CommandCompound::update(&mut self.state, Intent::SetCategory { id: None });
             return true;
         }
-        if let Some(name) = segment_suffix(node, CAT_PREFIX) {
-            if name != "all" {
-                CommandCompound::update(&mut self.state, Intent::SetCategory { id: Some(name) });
-                return true;
-            }
+        if let Some(name) = segment_suffix(node, CAT_PREFIX)
+            && name != "all"
+        {
+            CommandCompound::update(&mut self.state, Intent::SetCategory { id: Some(name) });
+            return true;
         }
         if path_has(node, TRIGGER) {
             if self.state.open {
@@ -228,6 +305,19 @@ impl Page for CommandCompoundPage {
             return true;
         }
         if path_has(node, OPEN_LIST) {
+            self.props.list_columns = 1;
+            CommandCompound::update(&mut self.state, Intent::OpenList);
+            self.hold_open = true;
+            return true;
+        }
+        if path_has(node, OPEN_COLS_2) {
+            self.props.list_columns = 2;
+            CommandCompound::update(&mut self.state, Intent::OpenList);
+            self.hold_open = true;
+            return true;
+        }
+        if path_has(node, OPEN_COLS_3) {
+            self.props.list_columns = 3;
             CommandCompound::update(&mut self.state, Intent::OpenList);
             self.hold_open = true;
             return true;
@@ -237,54 +327,11 @@ impl Page for CommandCompoundPage {
             self.hold_open = true;
             return true;
         }
-        if let Some(idx) = self
-            .props
-            .items
-            .iter()
-            .position(|it| path_has(node, &it.id))
-        {
-            if is_enter(event) {
-                if self.state.open {
-                    CommandCompound::update(&mut self.state, Intent::Choose);
-                }
-                return true;
-            }
-            let filtered = self.matching_indices();
-            if let Some(pos) = filtered.iter().position(|&i| i == idx) {
-                CommandCompound::update(&mut self.state, Intent::Highlight { index: pos });
-                CommandCompound::update(&mut self.state, Intent::Choose);
-            }
+        if let Some(pos) = self.cursor_index_for(node) {
+            CommandCompound::update(&mut self.state, Intent::Highlight { index: pos });
             return true;
         }
         if path_has(node, FIELD) {
-            match event {
-                InputEvent::Text(typed) => {
-                    let mut query = self.state.query.clone();
-                    query.push_str(typed);
-                    CommandCompound::update(&mut self.state, Intent::Type { query });
-                }
-                InputEvent::Key {
-                    key: KeyCode::Backspace,
-                    pressed: true,
-                    ..
-                } => {
-                    let mut query = self.state.query.clone();
-                    query.pop();
-                    CommandCompound::update(&mut self.state, Intent::Type { query });
-                }
-                InputEvent::Key {
-                    key: KeyCode::Enter,
-                    pressed: true,
-                    ..
-                } if self.state.open => {
-                    CommandCompound::update(&mut self.state, Intent::Choose);
-                }
-                _ => {}
-            }
-            return true;
-        }
-        if self.state.open && is_enter(event) {
-            CommandCompound::update(&mut self.state, Intent::Choose);
             return true;
         }
         false
@@ -300,6 +347,32 @@ impl Page for CommandCompoundPage {
             CommandCompound::update(&mut self.state, Intent::Close);
         }
     }
+
+    fn focused(&mut self, node: Option<&str>) {
+        let Some(node) = node else {
+            return;
+        };
+        if let Some(pos) = self.cursor_index_for(node)
+            && self.state.highlighted != pos
+        {
+            CommandCompound::update(&mut self.state, Intent::Highlight { index: pos });
+        }
+    }
+
+    fn gesture(&mut self, event: &InputEvent, node: &str, _frame: &PetrifiedFrame) -> bool {
+        if !self.state.open {
+            return false;
+        }
+        if !matches!(event, InputEvent::PointerMoved { .. }) {
+            return false;
+        }
+        if let Some(pos) = self.cursor_index_for(node)
+            && self.state.highlighted != pos
+        {
+            CommandCompound::update(&mut self.state, Intent::Highlight { index: pos });
+        }
+        false
+    }
 }
 
 fn is_enter(event: &InputEvent) -> bool {
@@ -311,6 +384,17 @@ fn is_enter(event: &InputEvent) -> bool {
             ..
         }
     )
+}
+
+fn arrow_key(event: &InputEvent) -> Option<KeyCode> {
+    match event {
+        InputEvent::Key {
+            key: key @ (KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right),
+            pressed: true,
+            ..
+        } => Some(*key),
+        _ => None,
+    }
 }
 
 /// The rest of the first path segment of `node` spelled `<prefix><rest>`.

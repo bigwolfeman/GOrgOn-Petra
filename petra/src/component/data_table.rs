@@ -533,10 +533,10 @@ fn pin_chrome_columns(table: &mut ViewNode) {
                     ROW_MENU => Some(MENU_COL),
                     _ => None,
                 };
-                if let Some(w) = w {
-                    if let Some(col) = grid.props.columns.get_mut(i) {
-                        *col = TrackSize::Fixed { value: w };
-                    }
+                if let Some(w) = w
+                    && let Some(col) = grid.props.columns.get_mut(i)
+                {
+                    *col = TrackSize::Fixed { value: w };
                 }
             }
         });
