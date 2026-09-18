@@ -13,10 +13,15 @@
 //!    the accessible name.
 //! 2. Container — the dialog. 60% of the window wide (Carbon `md` at the
 //!    `lg` breakpoint, the reference app's own size), centred both ways,
-//!    [`SURFACE_RAISED`] with [`SHADOW_RAISED`]. **No border and no
-//!    radius**: Carbon's container is square, and its 1px `$border-subtle`
-//!    edge is the outline the operator refused on 2026-09-04 ("borders are
-//!    a no no").
+//!    [`SURFACE_RAISED`] with [`SHADOW_RAISED`]. **No border**: Carbon's 1px
+//!    `$border-subtle` container edge is the outline the operator refused on
+//!    2026-09-04 ("borders are a no no"). **Radius
+//!    [`CornerRole::Floating`]**, the same 8 a menu and a popover answer.
+//!    Carbon's container is square and this file said so until spec 009 T010;
+//!    the operator reversed it on 2026-09-18, asking for the shared radius
+//!    rather than a value unique to the modal. Carbon is a reference here,
+//!    not a conformance target, and the role's own doc already named a modal
+//!    as an example while this file bound nothing.
 //! 3. Header — the required title (`heading-03`), padded 16 on top and
 //!    inline, 16 below; and Close in a 48×48 hit box at the top-right.
 //! 4. Body — caller-supplied text, wrapped, padded 8 above and 48 below.
@@ -53,6 +58,7 @@
 
 use super::button::{button, primary_button};
 use super::icon::{IconBox, IconMark, IconTone, icon_in};
+use super::kit::bind_corners;
 use super::on_layer;
 use super::stack;
 use super::text::{heading, text};
@@ -61,7 +67,7 @@ use super::tokens::{
     t,
 };
 use crate::geom::{Align, Axis};
-use crate::token::{CornerRole, corner_for};
+use crate::token::{CornerRole, Joined, corner_for, corners_for};
 use crate::tree::{
     Anchor, AxisConstraint, ClampRule, Constraints, FocusFigure, InputPolicy, InsetRefs,
     Interaction, Justify, Key, Layer, NodeKind, Props, Role, Semantics, TextWrap, TrackSize,
@@ -76,6 +82,19 @@ const CLOSE_HIT: f32 = 48.0;
 const CLOSE_ICON: f32 = 20.0;
 /// MEASURED `_modal.scss` footer: `block-size: 4rem`.
 const FOOTER_HEIGHT: f32 = 64.0;
+
+/// A floor on the dialog's shorter edge, read by [`corner_for`] and by
+/// nothing else.
+///
+/// The dialog has no fixed size: it is 60% of the window wide
+/// ([`DIALOG_SHARE`]) and as tall as its rows. `corner_for` promotes a
+/// role's fixed radius to half the shorter edge when the node is smaller
+/// than twice that radius, and [`CornerRole::Floating`] is 8, so the
+/// promotion only fires under 16 units. A dialog carries a header and often
+/// a 64-unit footer, so it is never near that. This constant records the
+/// floor rather than measuring the node, and the answer is 8 at every size
+/// the modal ships.
+const DIALOG_FLOOR: f32 = FOOTER_HEIGHT;
 /// A minimum no window can satisfy, so the `Shrink` ladder places the
 /// surface on the window rect exactly. `f32::MAX`, not infinity: an
 /// infinite extent is not "sane" to `geom::Size::sane` and collapses to
@@ -201,6 +220,10 @@ fn dialog(title: &str, body: String, primary: Option<String>) -> ViewNode {
         .tokens
         .insert("background".into(), t(SURFACE_RAISED));
     node.props.tokens.insert("shadow".into(), t(SHADOW_RAISED));
+    node.props.tokens.insert(
+        "radius".into(),
+        t(corner_for(CornerRole::Floating, DIALOG_FLOOR)),
+    );
     node
 }
 
@@ -267,8 +290,22 @@ fn footer(primary: String) -> ViewNode {
             // Carbon's `$button-secondary` is a visibly lighter grey than
             // the dialog, and a Cancel in the dialog's own fill reads as a
             // label, not a control.
-            footer_button(on_layer(button("cancel", "Cancel"), 1)),
-            footer_button(primary_button("primary", primary)),
+            footer_button(
+                on_layer(button("cancel", "Cancel"), 1),
+                Joined {
+                    top: true,
+                    right: true,
+                    ..Joined::NONE
+                },
+            ),
+            footer_button(
+                primary_button("primary", primary),
+                Joined {
+                    top: true,
+                    left: true,
+                    ..Joined::NONE
+                },
+            ),
         ])
 }
 
@@ -277,7 +314,7 @@ fn footer(primary: String) -> ViewNode {
 /// (`padding-block-start: $spacing-05; align-items: flex-start`), square,
 /// and casts no shadow of its own — the footer is part of the container's
 /// silhouette, not four raised controls on it.
-fn footer_button(mut node: ViewNode) -> ViewNode {
+fn footer_button(mut node: ViewNode, joined: Joined) -> ViewNode {
     node.constraints.vertical = AxisConstraint {
         min: Some(FOOTER_HEIGHT),
         max: Some(FOOTER_HEIGHT),
@@ -321,16 +358,25 @@ fn footer_button(mut node: ViewNode) -> ViewNode {
         bottom: None,
         left: Some(t(SPACING_05)),
     });
-    // FR-022: this button is full-bleed against the dialog's own edges —
-    // `CornerRole::Tiled`, the same role every other library button now
-    // takes (`component::button`). `Tiled` ignores the half-edge clause, so
-    // this stays `shape.corner-none` at any height; it is spelled out here
-    // rather than left to whatever `button()` bound, because the footer's
-    // own contract (flush, no shadow) should not depend on that default
-    // never changing.
-    node.props.tokens.insert(
-        "radius".into(),
-        t(corner_for(CornerRole::Tiled, FOOTER_HEIGHT)),
+    // FR-022, and spec 009 T010 made this a per-corner question. A footer
+    // button is full-bleed against the dialog's own edges, so its outer
+    // bottom corner **is** the dialog's bottom corner and has to carry the
+    // dialog's radius. It bound `CornerRole::Tiled` flat until 2026-09-18,
+    // which was right while the dialog was square and wrong the moment it
+    // was not: MEASURED on `20-modal.png` with the dialog at
+    // `CornerRole::Floating`, the top corners curved over 16 device pixels
+    // while the left edge held x 480 and the primary's right edge held
+    // x 1919 for the whole footer — a dialog rounded on top and square on
+    // the bottom, because two tiled buttons painted over the rounding.
+    //
+    // `corners_for` is the mechanism `button_group` and `input_group`
+    // already use for the same shape of problem: one role, one adjacency
+    // fact, four answers. Cancel is joined at its top and right, the primary
+    // at its top and left, so each keeps exactly one free corner and it is
+    // the one that meets the dialog's own.
+    bind_corners(
+        &mut node.props.tokens,
+        corners_for(CornerRole::Floating, DIALOG_FLOOR, joined),
     );
     node.props.tokens.remove("shadow");
     node
@@ -411,14 +457,19 @@ fn close_button() -> ViewNode {
 
 #[cfg(test)]
 mod tests {
-    use super::{CLOSE_HIT, CLOSE_ICON, COVER_WINDOW, FOOTER_HEIGHT, modal, modal_passive};
+    use super::{
+        CLOSE_HIT, CLOSE_ICON, COVER_WINDOW, DIALOG_FLOOR, FOOTER_HEIGHT, modal, modal_passive,
+    };
     use crate::component::tokens::{LAYER_HOVER, OVERLAY_SCRIM, SURFACE_RAISED};
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Point, Rect, Size};
     use crate::input::{InputEvent, Modifiers, PointerButton, Route, route_with_surfaces};
     use crate::layout::overlay_surface::surface_scopes;
     use crate::testing::{Harness, validated_with};
-    use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
+    use crate::token::{
+        ColorValue, CornerRole, Theme, ThemeMode, TokenName, TokenValue, corner_for,
+        standard_vocabulary,
+    };
     use crate::tree::FocusFigure;
     use crate::tree::{
         Anchor, ClampRule, InputPolicy, Interaction, Layer, NodeKind, Props, Registry, Role,
@@ -469,9 +520,89 @@ mod tests {
         );
     }
 
+    /// Spec 009 T010's other half: the footer buttons carry the dialog's own
+    /// bottom corners.
+    ///
+    /// The dialog gained a radius and the two full-bleed footer buttons did
+    /// not, so they painted their square corners over it. MEASURED on
+    /// `20-modal.png` before the fix: the top corners curved over 16 device
+    /// pixels while the bottom-left edge held x 480 and the primary's
+    /// bottom-right held x 1919 for the whole 64-unit footer. A dialog
+    /// rounded on top and square on the bottom.
+    ///
+    /// Each button keeps exactly one free corner, the one that meets the
+    /// dialog's own. Cancel is joined at its top and right, the primary at
+    /// its top and left.
+    ///
+    /// Reverted 2026-09-18 by binding `corner_for(CornerRole::Tiled,
+    /// FOOTER_HEIGHT)` on both buttons again, the way this file did until
+    /// T010, and this said
+    ///
+    /// ```text
+    /// assertion `left == right` failed: cancel's bottom-left corner is the
+    /// dialog's own, so it carries the dialog's radius
+    ///   left: None
+    ///  right: Some("shape.corner-md")
+    /// ```
+    #[test]
+    fn the_footer_buttons_carry_the_dialogs_own_bottom_corners() {
+        let node = rebuild();
+        let free = corner_for(CornerRole::Floating, DIALOG_FLOOR);
+        let square = corner_for(CornerRole::Tiled, DIALOG_FLOOR);
+
+        let cancel = descendant(&node, "cancel");
+        assert_eq!(
+            token(cancel, "radius-bottom-left"),
+            Some(free),
+            "cancel's bottom-left corner is the dialog's own, so it carries \
+             the dialog's radius"
+        );
+        for slot in ["radius-top-left", "radius-top-right", "radius-bottom-right"] {
+            assert_eq!(
+                token(cancel, slot),
+                Some(square),
+                "cancel meets the body above it and the primary beside it, \
+                 so {slot} is a seam and stays square"
+            );
+        }
+
+        let primary = descendant(&node, "primary");
+        assert_eq!(
+            token(primary, "radius-bottom-right"),
+            Some(free),
+            "the primary's bottom-right corner is the dialog's own"
+        );
+        for slot in ["radius-top-left", "radius-top-right", "radius-bottom-left"] {
+            assert_eq!(
+                token(primary, slot),
+                Some(square),
+                "the primary meets the body above it and cancel beside it, \
+                 so {slot} is a seam and stays square"
+            );
+        }
+
+        // `button()` binds the flat `radius` slot and `bind_corners` does
+        // not clear it, so it is still here on both. That is safe and is the
+        // same state `button_group` leaves its children in: the four
+        // per-corner slots **override** the shorthand
+        // (`petra-egui::paint::RADIUS_TOP_LEFT_SLOT`'s own doc), rather than
+        // competing with it. Pinned rather than ignored, because a painter
+        // that ever reversed that precedence would square all four corners
+        // again and every assertion above would still pass.
+        for who in [cancel, primary] {
+            assert_eq!(
+                token(who, "radius"),
+                Some(square),
+                "the shorthand survives and must be the square the four \
+                 per-corner slots override"
+            );
+        }
+    }
+
     /// The surface is the scrim: it asks for more than any window so the
     /// `Shrink` ladder gives it the window, and it paints the scrim token.
-    /// The container inside it is the raised card, with no edge drawn.
+    /// The container inside it is the raised card, with a radius since spec
+    /// 009 T010 and still no edge drawn.
     #[test]
     fn the_surface_is_a_window_covering_scrim_and_the_container_has_no_border() {
         let node = rebuild();
@@ -488,8 +619,10 @@ mod tests {
         );
         assert_eq!(
             token(dialog, "radius"),
-            None,
-            "Carbon's container is square"
+            Some(corner_for(CornerRole::Floating, DIALOG_FLOOR)),
+            "spec 009 T010: the operator reversed the square container on \
+             2026-09-18 and asked for the shared floating radius, not one \
+             unique to the modal. This asserted `None` until then."
         );
         assert_eq!(token(&node, "border"), None);
     }

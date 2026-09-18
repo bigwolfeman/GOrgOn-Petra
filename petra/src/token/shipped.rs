@@ -1564,8 +1564,12 @@ pub enum CornerRole {
     /// components, none of which carry a `border-radius` anywhere in their
     /// SCSS.
     Tiled,
-    /// A small boxed mark **inside** a control: a checkbox's box, a popover's
-    /// body.
+    /// A small boxed mark **inside** a control: a checkbox's box.
+    ///
+    /// It named a popover's body too, until spec 009 T011 moved the popover
+    /// to [`CornerRole::Floating`] on 2026-09-18. One component may not be
+    /// the worked example for two roles, and a popover is not inside a
+    /// control — it floats over one.
     BoxedMark,
     /// A container that groups controls: a content switcher, a tile, a code
     /// snippet.

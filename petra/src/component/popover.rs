@@ -7,8 +7,13 @@
 //!    [`InputPolicy::DismissOutside`] (not a focus trap).
 //! 2. Content box — fill [`SURFACE_RAISED`] (Carbon `$layer`), elevation
 //!    [`SHADOW_OVERLAY`] (`drop-shadow(0 4px 4px rgba(0,0,0,.2))`), corner
-//!    `shape.corner-xs` via [`crate::token::CornerRole::BoxedMark`]
-//!    (`$popover-border-radius`, 2px), padding [`SPACING_05`].
+//!    `shape.corner-md` via [`crate::token::CornerRole::Floating`], padding
+//!    [`SPACING_05`]. Carbon's own `$popover-border-radius` is 2px and was
+//!    the role's first source; spec 009 T011 reassigned it on the operator's
+//!    call of 2026-09-18, because Carbon is a reference here and not a
+//!    conformance target, and because a popover is a surface floating free
+//!    of the layout in exactly the way a menu and a modal are. All three now
+//!    answer 8.
 //!    No outline: Carbon draws one only under `--border`, and the shadow is
 //!    what lifts the box off the page. Grows to content, capped at 368
 //!    (T070). Content is start-aligned, as text in a box is.
@@ -49,9 +54,9 @@ const _: () = assert!(MAX_INLINE == 368.0);
 /// The popover body has no declared minimum height — it grows to
 /// `children` — so this is a floor derived from the one thing that is
 /// fixed: `pad(SPACING_05, SPACING_05)` puts 16 units of padding above and
-/// below the content, for 32 with zero-height content. `CornerRole::BoxedMark`'s
-/// half-edge clause only fires at or below 4 units, so any real popover
-/// clears it comfortably.
+/// below the content, for 32 with zero-height content.
+/// [`crate::token::CornerRole::Floating`]'s half-edge clause only fires at
+/// or below 16 units, so any real popover clears it comfortably.
 const HEIGHT_FLOOR: f32 = 32.0;
 
 /// An anchored popover whose body is one text run.
@@ -162,12 +167,13 @@ pub fn popover_with_placement(
         .tokens
         .insert("background".into(), t(SURFACE_RAISED));
     node.props.tokens.insert("shadow".into(), t(SHADOW_OVERLAY));
-    // FR-022: the enum's own doc names "a popover's body" as the
-    // `CornerRole::BoxedMark` example, matching Carbon's own measured
-    // `$popover-border-radius` (2px, `_popover.scss:63`).
+    // FR-022: the enum's own doc names "a popover" as a
+    // `CornerRole::Floating` example, beside a menu and a modal. It also
+    // named it under `BoxedMark` until spec 009 T011; that entry is gone,
+    // because one component may not be the example for two roles.
     node.props.tokens.insert(
         "radius".into(),
-        t(corner_for(CornerRole::BoxedMark, HEIGHT_FLOOR)),
+        t(corner_for(CornerRole::Floating, HEIGHT_FLOOR)),
     );
     node.constraints = Constraints {
         horizontal: AxisConstraint {
@@ -190,7 +196,7 @@ mod tests {
     use super::{MAX_INLINE, popover, popover_with, popover_with_placement};
     use crate::component::text::text;
     use crate::component::tokens::{
-        SHADOW_OVERLAY, SHAPE_XS, SPACING_03, SPACING_05, SURFACE_RAISED,
+        SHADOW_OVERLAY, SHAPE_MD, SPACING_03, SPACING_05, SURFACE_RAISED,
     };
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::{Axis, Size};
@@ -250,7 +256,12 @@ mod tests {
         }
         assert_eq!(token(&node, "background"), Some(SURFACE_RAISED));
         assert_eq!(token(&node, "shadow"), Some(SHADOW_OVERLAY));
-        assert_eq!(token(&node, "radius"), Some(SHAPE_XS));
+        assert_eq!(
+            token(&node, "radius"),
+            Some(SHAPE_MD),
+            "spec 009 T011: a popover floats free of the layout the way a \
+             menu and a modal do, so all three answer `CornerRole::Floating`"
+        );
         assert_eq!(
             token(&node, "border"),
             None,
