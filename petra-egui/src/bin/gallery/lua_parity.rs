@@ -202,6 +202,42 @@ fn build_expanded(lua: &Lua, src: &str, path: &Path) -> ViewNode {
     })
 }
 
+/// Put `gorgon-petra-compound`'s five rows in `gorgon_petra`'s merged
+/// component table, so a page that names one expands instead of failing by
+/// name (spec 014 A3).
+///
+/// `gorgond`'s `boot::run` and `gorgon-inspector`'s `main` each make this
+/// call as their first act, for the same reason. This test process makes
+/// none of them, so it has to make its own: registration is per-process and
+/// the merged table is a `OnceLock`.
+///
+/// **Call this before the first thing in this binary that touches the
+/// registry — `expand`, `build`, `lookup`, `entries` or `shape_of`.**
+/// Whichever of those runs first freezes the table, and `register_external`
+/// panics rather than silently dropping a slice that arrives after
+/// (`petra/petra/src/component/registry/mod.rs`'s own doc). Today
+/// [`build_expanded`]'s `expand` is the only registry call in the `gallery`
+/// binary, and the walk below is its only caller, so one call at the top of
+/// that walk is enough. A test added here later that reaches the registry
+/// by another road has to call this too — `gorgon_petra_compound::registry
+/// ::register` is idempotent, so doing it defensively costs a `Once` check.
+///
+/// Falsified 2026-09-19 by deleting the call from the walk below, which is
+/// the state this file shipped in while spec 013's five compound pages were
+/// blocked:
+///
+/// ```text
+/// thread 'lua_parity::every_lua_page_source_builds_the_same_tree_as_its_rust_page'
+/// panicked at petra/petra-egui/src/bin/gallery/lua_parity.rs:196:9:
+/// .../lua_parity/pages/calendar_compound.lua: registry::expand refused this tree for
+/// `calendar_compound`: no component named `calendar_compound`; see docs/catalogs/components.md
+/// ```
+///
+/// Restored byte-identical afterwards and re-run green.
+fn register_compound_rows() {
+    gorgon_petra_compound::registry::register();
+}
+
 /// Walk `lua_parity/pages/`, and for every `<slug>.lua` file there, build it
 /// through Lua and compare it against the matching `page::all()` entry's own
 /// `body()`. See this module's own doc for what a green result here does and
@@ -212,6 +248,7 @@ fn build_expanded(lua: &Lua, src: &str, path: &Path) -> ViewNode {
 /// T009's 56 remaining pages splittable across parallel leaves.
 #[test]
 fn every_lua_page_source_builds_the_same_tree_as_its_rust_page() {
+    register_compound_rows();
     let pages_dir = lua_parity_dir().join("pages");
     let mut entries: Vec<PathBuf> = fs::read_dir(&pages_dir)
         .unwrap_or_else(|e| panic!("{}: {e}", pages_dir.display()))

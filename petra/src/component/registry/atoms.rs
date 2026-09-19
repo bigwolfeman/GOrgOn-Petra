@@ -38,7 +38,8 @@ use crate::component as lib;
 use crate::component::params::{
     KeyChildren, KeyLabel, KeyLabelChildren, KeyLabelSelected, ParamError, ParamShape,
 };
-use crate::component::{IconBox, IconMark, IconTone};
+use crate::component::registry::IconMarkParam;
+use crate::component::{IconBox, IconTone};
 use crate::tree::{Edge, InputPolicy, Key, TextRun, ViewNode};
 
 fn fail(component: &'static str, e: impl std::fmt::Display) -> ParamError {
@@ -63,101 +64,12 @@ macro_rules! row {
 }
 
 // ---------------------------------------------------------------------
-// Wire IconMark. Copied from `registry/navigation.rs` and
-// `registry/new_atomics.rs`: group files do not import siblings, and this
-// file follows the same rule. Extracting one shared wire enum is a later
-// simplification, not this leaf — the third file to say so.
-// ---------------------------------------------------------------------
-
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-enum IconMarkParam {
-    Check,
-    Calendar,
-    ChevronDown,
-    ChevronUp,
-    ChevronLeft,
-    ChevronRight,
-    Close,
-    Copy,
-    Add,
-    Subtract,
-    Search,
-    Menu,
-    Notification,
-    Switcher,
-    CaretLeft,
-    CaretRight,
-    CheckmarkOutline,
-    CircleDash,
-    Incomplete,
-    Checkmark,
-    ErrorFilled,
-    WarningFilled,
-    InformationFilled,
-    CheckmarkFilled,
-    CaretDown,
-    Edit,
-    BulletDisc,
-    BulletCircle,
-    BulletSquare,
-    BulletDash,
-}
-
-impl From<IconMarkParam> for IconMark {
-    fn from(m: IconMarkParam) -> Self {
-        match m {
-            IconMarkParam::Check => IconMark::Check,
-            IconMarkParam::Calendar => IconMark::Calendar,
-            IconMarkParam::ChevronDown => IconMark::ChevronDown,
-            IconMarkParam::ChevronUp => IconMark::ChevronUp,
-            IconMarkParam::ChevronLeft => IconMark::ChevronLeft,
-            IconMarkParam::ChevronRight => IconMark::ChevronRight,
-            IconMarkParam::Close => IconMark::Close,
-            IconMarkParam::Copy => IconMark::Copy,
-            IconMarkParam::Add => IconMark::Add,
-            IconMarkParam::Subtract => IconMark::Subtract,
-            IconMarkParam::Search => IconMark::Search,
-            IconMarkParam::Menu => IconMark::Menu,
-            IconMarkParam::Notification => IconMark::Notification,
-            IconMarkParam::Switcher => IconMark::Switcher,
-            IconMarkParam::CaretLeft => IconMark::CaretLeft,
-            IconMarkParam::CaretRight => IconMark::CaretRight,
-            IconMarkParam::CheckmarkOutline => IconMark::CheckmarkOutline,
-            IconMarkParam::CircleDash => IconMark::CircleDash,
-            IconMarkParam::Incomplete => IconMark::Incomplete,
-            IconMarkParam::Checkmark => IconMark::Checkmark,
-            IconMarkParam::ErrorFilled => IconMark::ErrorFilled,
-            IconMarkParam::WarningFilled => IconMark::WarningFilled,
-            IconMarkParam::InformationFilled => IconMark::InformationFilled,
-            IconMarkParam::CheckmarkFilled => IconMark::CheckmarkFilled,
-            IconMarkParam::CaretDown => IconMark::CaretDown,
-            IconMarkParam::Edit => IconMark::Edit,
-            IconMarkParam::BulletDisc => IconMark::BulletDisc,
-            IconMarkParam::BulletCircle => IconMark::BulletCircle,
-            IconMarkParam::BulletSquare => IconMark::BulletSquare,
-            IconMarkParam::BulletDash => IconMark::BulletDash,
-        }
-    }
-}
-
-macro_rules! icon_mark_luau {
-    () => {
-        "\"check\" | \"calendar\" | \"chevron-down\" | \"chevron-up\" | \"chevron-left\" | \
-         \"chevron-right\" | \"close\" | \"copy\" | \"add\" | \"subtract\" | \"search\" | \
-         \"menu\" | \"notification\" | \"switcher\" | \"caret-left\" | \"caret-right\" | \
-         \"checkmark-outline\" | \"circle-dash\" | \"incomplete\" | \"checkmark\" | \
-         \"error-filled\" | \"warning-filled\" | \"information-filled\" | \"checkmark-filled\" | \
-         \"caret-down\" | \"edit\" | \"bullet-disc\" | \"bullet-circle\" | \"bullet-square\" | \
-         \"bullet-dash\""
-    };
-}
-
-// ---------------------------------------------------------------------
 // Wire IconTone and IconBox. Neither derives `Deserialize` on the shipped
 // enum (`icon.rs`'s own three-name closed vocabulary is deliberate, see its
-// module doc), so these are wire copies the same way `IconMarkParam` above
-// is — local to this file, not shared.
+// module doc), so these are wire copies the same way
+// `registry::IconMarkParam` is — local to this file, and not shared until a
+// second crate needs them, which is what finally moved the icon mirror out
+// (`registry/icon_param.rs`).
 // ---------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -245,7 +157,7 @@ struct IconParams {
     mark: IconMarkParam,
 }
 impl ParamShape for IconParams {
-    const LUAU: &'static str = concat!("{ key: string, mark: ", icon_mark_luau!(), " }");
+    const LUAU: &'static str = concat!("{ key: string, mark: ", crate::icon_mark_luau!(), " }");
 }
 
 /// `icon_toned(key, mark, tone)`.
@@ -259,7 +171,7 @@ struct IconTonedParams {
 impl ParamShape for IconTonedParams {
     const LUAU: &'static str = concat!(
         "{ key: string, mark: ",
-        icon_mark_luau!(),
+        crate::icon_mark_luau!(),
         ", tone: ",
         icon_tone_luau!(),
         " }"
@@ -281,7 +193,7 @@ struct IconInParams {
 impl ParamShape for IconInParams {
     const LUAU: &'static str = concat!(
         "{ key: string, mark: ",
-        icon_mark_luau!(),
+        crate::icon_mark_luau!(),
         ", boxed: ",
         icon_box_luau!(),
         ", tone: ",
@@ -338,7 +250,7 @@ struct ListRowWithParams {
 impl ParamShape for ListRowWithParams {
     const LUAU: &'static str = concat!(
         "{ key: string, label: string, selected: boolean, icon: ",
-        icon_mark_luau!(),
+        crate::icon_mark_luau!(),
         "?, shortcut: string? }"
     );
 }
@@ -490,6 +402,10 @@ pub const ENTRIES: &[Entry] = &[
     row!("code_snippet_copied", NodeAndCopied, |p| {
         lib::code_snippet_copied(p.node, p.copied)
     }),
+    // -- right click, which had no constructor at all until 2026-09-19 ------
+    row!("also_secondary_click", NodeOnly, |p| {
+        lib::also_secondary_click(p.node)
+    }),
 ];
 
 #[cfg(test)]
@@ -525,8 +441,17 @@ mod tests {
     ///   instead — the same structural fact this file's own heuristic below
     ///   has no filter for, which is why the exception is named explicitly
     ///   instead of relying on a filter this file doesn't have.
-    const MODIFIERS_OUTSIDE_THE_SCANNED_FILES: &[&str] =
-        &["disabled", "on_layer", "code_runs", "code_snippet_copied"];
+    const MODIFIERS_OUTSIDE_THE_SCANNED_FILES: &[&str] = &[
+        "disabled",
+        "on_layer",
+        "code_runs",
+        "code_snippet_copied",
+        // `also_secondary_click` lives in `component/mod.rs` beside
+        // `disabled`, for the same reason `disabled` is excepted above: that
+        // file cannot be scanned while `rule` (`mod.rs:498`) stays
+        // deliberately unregistered under T001c.
+        "also_secondary_click",
+    ];
 
     /// Every `pub fn ... -> ViewNode` in the seven files this group owns has
     /// exactly one row, found by scanning the files' own text rather than

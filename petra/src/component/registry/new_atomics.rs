@@ -22,8 +22,8 @@ use serde_json::Value;
 
 use super::Entry;
 use crate::component as lib;
-use crate::component::IconMark;
 use crate::component::params::{KeyChildren, KeyLabel, ParamError, ParamShape};
+use crate::component::registry::IconMarkParam;
 use crate::token::StatusToken;
 use crate::tree::{Key, ViewNode};
 
@@ -46,96 +46,6 @@ macro_rules! row {
             luau: <$shape as ParamShape>::LUAU,
         }
     }};
-}
-
-// ---------------------------------------------------------------------
-// Wire IconMark. Copied from `registry/navigation.rs`: group files do not
-// import siblings, and this file follows the same rule. Extracting one
-// shared wire enum is a later simplification, not this leaf.
-// ---------------------------------------------------------------------
-
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-enum IconMarkParam {
-    Check,
-    Calendar,
-    ChevronDown,
-    ChevronUp,
-    ChevronLeft,
-    ChevronRight,
-    Close,
-    Copy,
-    Add,
-    Subtract,
-    Search,
-    Menu,
-    Notification,
-    Switcher,
-    CaretLeft,
-    CaretRight,
-    CheckmarkOutline,
-    CircleDash,
-    Incomplete,
-    Checkmark,
-    ErrorFilled,
-    WarningFilled,
-    InformationFilled,
-    CheckmarkFilled,
-    CaretDown,
-    Edit,
-    BulletDisc,
-    BulletCircle,
-    BulletSquare,
-    BulletDash,
-}
-
-impl From<IconMarkParam> for IconMark {
-    fn from(m: IconMarkParam) -> Self {
-        match m {
-            IconMarkParam::Check => IconMark::Check,
-            IconMarkParam::Calendar => IconMark::Calendar,
-            IconMarkParam::ChevronDown => IconMark::ChevronDown,
-            IconMarkParam::ChevronUp => IconMark::ChevronUp,
-            IconMarkParam::ChevronLeft => IconMark::ChevronLeft,
-            IconMarkParam::ChevronRight => IconMark::ChevronRight,
-            IconMarkParam::Close => IconMark::Close,
-            IconMarkParam::Copy => IconMark::Copy,
-            IconMarkParam::Add => IconMark::Add,
-            IconMarkParam::Subtract => IconMark::Subtract,
-            IconMarkParam::Search => IconMark::Search,
-            IconMarkParam::Menu => IconMark::Menu,
-            IconMarkParam::Notification => IconMark::Notification,
-            IconMarkParam::Switcher => IconMark::Switcher,
-            IconMarkParam::CaretLeft => IconMark::CaretLeft,
-            IconMarkParam::CaretRight => IconMark::CaretRight,
-            IconMarkParam::CheckmarkOutline => IconMark::CheckmarkOutline,
-            IconMarkParam::CircleDash => IconMark::CircleDash,
-            IconMarkParam::Incomplete => IconMark::Incomplete,
-            IconMarkParam::Checkmark => IconMark::Checkmark,
-            IconMarkParam::ErrorFilled => IconMark::ErrorFilled,
-            IconMarkParam::WarningFilled => IconMark::WarningFilled,
-            IconMarkParam::InformationFilled => IconMark::InformationFilled,
-            IconMarkParam::CheckmarkFilled => IconMark::CheckmarkFilled,
-            IconMarkParam::CaretDown => IconMark::CaretDown,
-            IconMarkParam::Edit => IconMark::Edit,
-            IconMarkParam::BulletDisc => IconMark::BulletDisc,
-            IconMarkParam::BulletCircle => IconMark::BulletCircle,
-            IconMarkParam::BulletSquare => IconMark::BulletSquare,
-            IconMarkParam::BulletDash => IconMark::BulletDash,
-        }
-    }
-}
-
-macro_rules! icon_mark_luau {
-    () => {
-        "\"check\" | \"calendar\" | \"chevron-down\" | \"chevron-up\" | \"chevron-left\" | \
-         \"chevron-right\" | \"close\" | \"copy\" | \"add\" | \"subtract\" | \"search\" | \
-         \"menu\" | \"notification\" | \"switcher\" | \"caret-left\" | \"caret-right\" | \
-         \"checkmark-outline\" | \"circle-dash\" | \"incomplete\" | \"checkmark\" | \
-         \"error-filled\" | \"warning-filled\" | \"information-filled\" | \"checkmark-filled\" | \
-         \"caret-down\" | \"edit\" | \"bullet-disc\" | \"bullet-circle\" | \"bullet-square\" | \
-         \"bullet-dash\""
-    };
 }
 
 macro_rules! status_token_luau {
@@ -248,7 +158,7 @@ struct RatingParams {
 impl ParamShape for RatingParams {
     const LUAU: &'static str = concat!(
         "{ key: string, value: number, max: number, mark: ",
-        icon_mark_luau!(),
+        crate::icon_mark_luau!(),
         " }"
     );
 }
@@ -278,7 +188,7 @@ struct KeyLabelPressedMark {
 impl ParamShape for KeyLabelPressedMark {
     const LUAU: &'static str = concat!(
         "{ key: string, label: string, pressed: boolean, mark: ",
-        icon_mark_luau!(),
+        crate::icon_mark_luau!(),
         " }"
     );
 }

@@ -34,8 +34,11 @@ mod containment;
 mod data;
 mod feedback;
 mod form;
+mod icon_param;
 mod navigation;
 mod new_atomics;
+
+pub use icon_param::IconMarkParam;
 
 /// Build one component from its wire parameter table.
 pub type Ctor = fn(&serde_json::Value) -> Result<ViewNode, ParamError>;

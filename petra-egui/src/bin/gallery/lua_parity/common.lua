@@ -79,5 +79,30 @@ return function(ui)
     return node
   end
 
+  -- `page/common.rs::wrapped`: a text leaf that wraps at its width.
+  --
+  -- **This one reaches further than the other four and the reader should
+  -- know it.** `wrapped` is gallery-private like its neighbours, but the
+  -- node it starts from is not: it calls `gorgon_petra::component::text`
+  -- and then sets `props.wrap`. Lua cannot do that in two steps, because
+  -- `ui.text` emits a component REFERENCE and `registry::expand_node`
+  -- returns `build(...)` whole, discarding every field set on the node
+  -- carrying the reference. So the two steps collapse into one primitive
+  -- here, and `component::text`'s two bindings are typed out by hand:
+  -- `style = typography.body` and `tokens.foreground = text.primary`
+  -- (`petra/petra/src/component/text.rs`). Read that function again before
+  -- editing this one; a binding added there and missed here is drift the
+  -- equality test will catch, on whichever of the 17 pages calls `wrapped`
+  -- first.
+  function M.wrapped(key, content)
+    return ui.node.text({
+      key = key,
+      text = content,
+      wrap = "wrap",
+      style = "typography.body",
+      tokens = { foreground = "text.primary" },
+    })
+  end
+
   return M
 end

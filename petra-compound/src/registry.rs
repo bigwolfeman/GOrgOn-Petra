@@ -35,14 +35,21 @@
 //! the only honest place to call it is a function the embedder calls
 //! itself, before touching the registry. That is what [`register`] is:
 //! idempotent (`std::sync::Once`), so a caller unsure whether an earlier
-//! call already happened may call it again for free. Today the only
-//! caller is this module's own test suite below, which proves the whole
-//! path — register, then look up by the wire name, then build a real
-//! `ViewNode` from a hand-written params table — genuinely works end to
-//! end. No production embedder calls it yet: the shell-side expansion path
-//! (`registry/mod.rs`'s "Where expansion happens") and the kernel-hosting
-//! fiber are later leaves' work, and wiring a call into, say, the gallery
-//! binary now would be a call with nothing on the other end of it.
+//! call already happened may call it again for free.
+//!
+//! The callers, each as early as it can be in its own process:
+//!
+//! * `gorgon/gorgond/src/boot.rs` and `gorgon/inspector/src/main.rs` — the
+//!   two production embedders.
+//! * `gorgon/xtask/src/ui_stubs.rs`'s `component_shapes` — spec 014 A1.
+//!   Without it the generator walks `entries()` before this slice arrives
+//!   and `plugin.d.luau` names none of these five, which is what made them
+//!   unreachable from Lua for as long as the hook existed.
+//! * `petra/petra-egui/src/bin/gallery/lua_parity.rs` — spec 014 A3, so the
+//!   parity harness can expand a page that names a compound.
+//! * This module's own test suite below, which proves the whole path —
+//!   register, look up by the wire name, build a real `ViewNode` from a
+//!   hand-written params table — end to end.
 
 use std::sync::Once;
 
@@ -50,7 +57,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use gorgon_petra::component::params::{ParamError, ParamShape};
-use gorgon_petra::component::registry::{Entry, register_external};
+use gorgon_petra::component::registry::{Entry, IconMarkParam, register_external};
 use gorgon_petra::tree::ViewNode;
 
 use crate::Compound;
@@ -127,18 +134,41 @@ struct CommandModeWire {
     /// One character; serde `char` refuses a longer string at parse time.
     key: char,
     label: String,
+    /// The mode tile's glyph, if it has one. See [`CommandItemWire::icon`]
+    /// for why this is a wire field at all.
+    #[serde(default)]
+    icon: Option<IconMarkParam>,
 }
 
 impl From<CommandModeWire> for command::Mode {
     fn from(w: CommandModeWire) -> Self {
-        command::Mode::new(w.key, w.label)
+        let mode = command::Mode::new(w.key, w.label);
+        match w.icon {
+            Some(mark) => mode.with_icon(mark.into()),
+            None => mode,
+        }
     }
 }
 
-/// `icon` is omitted: [`gorgon_petra::component::IconMark`] is a large
-/// enum without `Deserialize`, and the wire cannot name it without
-/// copying the whole vocabulary. Shortcut and categories cover the
-/// author-facing item fields that YAML/Lua can spell.
+/// Wire mirror of [`command::Item`].
+///
+/// `icon` used to be omitted here, on the reasoning that
+/// [`gorgon_petra::component::IconMark`] is a large enum without
+/// `Deserialize` and the wire could not name it without copying the whole
+/// 30-name vocabulary. That reasoning was sound and its conclusion was
+/// wrong: `gorgon_petra` had copied that vocabulary three times already
+/// (`registry/navigation.rs`, `registry/new_atomics.rs`,
+/// `registry/atoms.rs`, each saying extraction was a later leaf's job), so
+/// the cost of a fourth copy was the thing to remove, not the field. Spec
+/// 014 extracted the mirror to
+/// [`gorgon_petra::component::registry::IconMarkParam`] and this row uses
+/// it.
+///
+/// Dropping the field was not free: `Command::view` mounts a glyph child
+/// per item that carries one (`command.rs`'s `leading.push(icon_toned(…))`),
+/// so a Lua author naming `command_compound` could not reproduce a palette
+/// any Rust caller can build, and the gallery's own Command page — which
+/// gives all five of its items icons — had no expressible Lua form at all.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CommandItemWire {
@@ -148,6 +178,8 @@ struct CommandItemWire {
     shortcut: Option<String>,
     #[serde(default)]
     categories: Vec<String>,
+    #[serde(default)]
+    icon: Option<IconMarkParam>,
 }
 
 impl From<CommandItemWire> for command::Item {
@@ -155,6 +187,7 @@ impl From<CommandItemWire> for command::Item {
         command::Item {
             categories: w.categories,
             shortcut: w.shortcut,
+            icon: w.icon.map(Into::into),
             ..command::Item::new(w.id, w.label)
         }
     }
@@ -234,11 +267,16 @@ struct CommandWire {
 }
 
 impl ParamShape for CommandWire {
-    const LUAU: &'static str = "{ props: { items: { { id: string, label: string, shortcut: \
-         string?, categories: { string }? } }, list_columns: number?, tile_columns: number?, \
-         default_view: (\"list\" | \"tiles\")?, modes: { { key: string, label: string } }? }, \
-         state: { query: string?, highlighted: number?, open: boolean?, view: (\"list\" | \
-         \"tiles\")?, category: string?, favorites: { string }? } }";
+    const LUAU: &'static str = concat!(
+        "{ props: { items: { { id: string, label: string, shortcut: string?, categories: \
+         { string }?, icon: ",
+        gorgon_petra::icon_mark_luau!(),
+        "? } }, list_columns: number?, tile_columns: number?, default_view: (\"list\" | \
+         \"tiles\")?, modes: { { key: string, label: string, icon: ",
+        gorgon_petra::icon_mark_luau!(),
+        "? } }? }, state: { query: string?, highlighted: number?, open: boolean?, view: \
+         (\"list\" | \"tiles\")?, category: string?, favorites: { string }? } }"
+    );
 }
 
 fn command_ctor(params: &Value) -> Result<ViewNode, ParamError> {
@@ -390,7 +428,7 @@ impl ParamShape for DataTableWire {
          label: string } }?, row_actions: { { id: string, label: string } }?, loading: boolean? \
          }, state: { sort: { column: string, ascending: boolean }?, selection: { string }?, \
          expansion: { string }?, query: string?, hidden_columns: { string }?, column_menu_open: \
-         boolean?, row_menu_open: string? } }";
+         boolean?, row_menu_open: string?, weights: { number }? } }";
 }
 
 fn data_table_ctor(params: &Value) -> Result<ViewNode, ParamError> {
@@ -717,6 +755,101 @@ mod tests {
         assert!(
             err.reason.contains("mode_surface"),
             "refusal must name the unknown field: {}",
+            err.reason
+        );
+    }
+
+    /// **Icons cross the wire**, which they did not until spec 014. The
+    /// glyph `Command::view` mounts for an item that carries one is a child
+    /// of that item's row, so a wire that drops `icon` cannot build the
+    /// palette a Rust caller builds — and the gallery's own Command page
+    /// gives all five of its items an icon.
+    ///
+    /// The assertion is against `Command::view` called directly with the
+    /// same props, not against a hand-counted child list: one
+    /// implementation on both sides, so this fails exactly when the wire
+    /// stops carrying what `Props` carries.
+    ///
+    /// Falsified 2026-09-19 by dropping `icon: w.icon.map(Into::into)` from
+    /// `From<CommandItemWire> for command::Item`, which is what this file
+    /// shipped before:
+    ///
+    /// ```text
+    /// thread 'registry::tests::command_row_carries_item_and_mode_icons'
+    /// panicked at petra/petra-compound/src/registry.rs:823:9:
+    /// assertion `left == right` failed: the wire must build the same palette
+    /// Command::view builds from the same props
+    ///   left: ViewNode { kind: Surface, key: Key("command"), ...
+    /// ```
+    ///
+    /// — two whole trees, the way `ViewNode`'s `Debug` always reports a
+    /// mismatch; the difference is the `icon` child under the `rebuild` row
+    /// and under the `mode-f` tile.
+    ///
+    /// Restored byte-identical afterwards and re-run green.
+    #[test]
+    fn command_row_carries_item_and_mode_icons() {
+        use crate::Compound;
+        use crate::command::{Command, Item, Mode, Props, State, ViewKind};
+        use gorgon_petra::component::IconMark;
+
+        register();
+        let params = json!({
+            "props": {
+                "items": [{
+                    "id": "rebuild",
+                    "label": "Rebuild fiber",
+                    "shortcut": "Ctrl+R",
+                    "categories": ["Edit"],
+                    "icon": "menu"
+                }],
+                "modes": [{ "key": "f", "label": "Files", "icon": "search" }]
+            },
+            "state": { "query": "", "highlighted": 0, "open": true }
+        });
+        let built = build("command_compound", &params).expect("icons must parse");
+
+        let props = Props {
+            items: vec![
+                Item::new("rebuild", "Rebuild fiber")
+                    .with_icon(IconMark::Menu)
+                    .with_shortcut("Ctrl+R")
+                    .with_categories(["Edit"]),
+            ],
+            list_columns: 1,
+            tile_columns: 4,
+            default_view: ViewKind::List,
+            modes: vec![Mode::new('f', "Files").with_icon(IconMark::Search)],
+            mode_surface: None,
+        };
+        let state = State {
+            open: true,
+            ..State::default()
+        };
+        assert_eq!(
+            built,
+            Command::view(&state, &props),
+            "the wire must build the same palette Command::view builds from the same props"
+        );
+    }
+
+    /// An icon name outside `IconMark`'s closed vocabulary is refused by
+    /// name rather than silently dropped, which is the whole reason the wire
+    /// mirrors the enum instead of taking a free string.
+    #[test]
+    fn command_row_refuses_an_icon_name_that_does_not_exist() {
+        register();
+        let err = build(
+            "command_compound",
+            &json!({
+                "props": { "items": [{ "id": "a", "label": "A", "icon": "sparkles" }] },
+                "state": { "query": "", "highlighted": 0, "open": false }
+            }),
+        )
+        .expect_err("`sparkles` is not an IconMark");
+        assert!(
+            err.reason.contains("sparkles"),
+            "the refusal must name the icon the author wrote: {}",
             err.reason
         );
     }

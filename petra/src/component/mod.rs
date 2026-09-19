@@ -273,7 +273,7 @@ pub use ui_shell::{
 use std::sync::Arc;
 
 use crate::token::{BORDER_SUBTLE_TOKENS, FIELD_TOKENS, LAYER_TOKENS, TokenName};
-use crate::tree::{Key, NodeKind, ViewNode};
+use crate::tree::{Interaction, Key, NodeKind, ViewNode};
 
 /// The deepest seat [`on_layer`] will honour.
 ///
@@ -345,6 +345,69 @@ pub fn disabled(mut node: ViewNode) -> ViewNode {
         .into_iter()
         .map(|child| Arc::new(disabled(Arc::unwrap_or_clone(child))))
         .collect();
+    node
+}
+
+/// Declare that a node answers a right click as well as whatever it already
+/// answered.
+///
+/// # Why this exists at all
+///
+/// [`crate::tree::Interaction::SecondaryClick`] shipped with spec 009 T014
+/// and **no constructor in this crate declared it**, for eleven months. The
+/// one caller that wanted it, the gallery's Context menu page, reached past
+/// every constructor and pushed the variant onto a built node:
+///
+/// ```ignore
+/// let mut trigger = button(TRIGGER, "Show menu");
+/// trigger.interactions.push(Interaction::SecondaryClick);
+/// ```
+///
+/// That works in Rust and is unreachable from anywhere else. A registry
+/// caller sends a **name and a parameter table**; `registry::expand_node`
+/// replaces the reference with `build(..)` whole, so nothing set on the node
+/// carrying the reference survives. Right click was therefore a capability
+/// only a Rust host could grant, on a vocabulary both languages are supposed
+/// to share.
+///
+/// # Why a modifier and not a named button
+///
+/// Operator ruling, 2026-09-19. The alternative was
+/// `secondary_click_button(key, label)`, which matches how the twelve button
+/// variants already spell themselves — the size and the emphasis live in the
+/// name, never in an argument. It lost because it serves buttons and nothing
+/// else, and the capability is not a button's. A list row, a tile or a tag
+/// that wants a context menu wants exactly this and would each need their
+/// own constructor.
+///
+/// [`disabled`] is the precedent, and it is the stronger half of the
+/// argument: it already **clears** `interactions` through this same registry
+/// path. A modifier that appends one variant is a smaller freedom than one
+/// that removes them all.
+///
+/// # What it does not do
+///
+/// Only this node, never the subtree — the opposite of [`disabled`]. A right
+/// click is aimed at one target and routes to the node under the pointer;
+/// declaring it on a button's label as well would make the label a second
+/// target for the same gesture, and `required_interaction_during` would find
+/// two. `disabled` walks the subtree because unavailability is a fact about
+/// every part of a control. Reachability is a fact about one node.
+///
+/// It also appends rather than replaces, so a node keeps the `Click` it
+/// already declared and stays reachable by a primary press and by
+/// Enter/Space. That is what the Context menu page wants: right click is the
+/// documented trigger, and a plain click opens it too, so the control is not
+/// keyboard-dead.
+///
+/// Appending twice would declare the variant twice, which no reader of
+/// `interactions` expects, so a node that already declares it is returned
+/// unchanged.
+#[must_use]
+pub fn also_secondary_click(mut node: ViewNode) -> ViewNode {
+    if !node.interactions.contains(&Interaction::SecondaryClick) {
+        node.interactions.push(Interaction::SecondaryClick);
+    }
     node
 }
 

@@ -16,11 +16,12 @@ use super::Entry;
 use crate::component::params::{
     KeyChildren, KeyLabel, KeyLabelChildren, KeyLabelSelected, KeyOnly, ParamError, ParamShape,
 };
+use crate::component::registry::IconMarkParam;
 use crate::component::{
-    IconMark, LeftPanelMode, PaginationPicker, breadcrumb, breadcrumb_item,
-    breadcrumb_item_current, breadcrumb_item_icon, breadcrumb_overflow, breadcrumb_with_separator,
-    contained_tab, contained_tab_bar, content_switcher, content_switcher_item, link, link_inline,
-    menu, menu_button, menu_flyout, menu_item, menu_item_with, menubar, menubar_top, pagination,
+    LeftPanelMode, PaginationPicker, breadcrumb, breadcrumb_item, breadcrumb_item_current,
+    breadcrumb_item_icon, breadcrumb_overflow, breadcrumb_with_separator, contained_tab,
+    contained_tab_bar, content_switcher, content_switcher_item, link, link_inline, menu,
+    menu_button, menu_flyout, menu_item, menu_item_with, menubar, menubar_top, pagination,
     pagination_items, pagination_items_open, pagination_nav, pagination_numbers,
     pagination_page_size, pagination_range, tab, tab_bar, ui_shell_header, ui_shell_header_action,
     ui_shell_header_action_icon, ui_shell_header_menu_trigger, ui_shell_header_nav_item,
@@ -49,99 +50,6 @@ fn parse<T: for<'de> Deserialize<'de>>(
 }
 
 // --- one-off shapes, used only by this group -------------------------------
-
-/// Wire form of [`IconMark`]: the real enum has no serde support. All 30
-/// variants, kebab-cased; the union this renders as is what stops a plugin
-/// from naming an icon that does not exist.
-///
-/// 2 constructors (`ui_shell_header_action_icon`, `ui_shell_left_panel_icon_item`).
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-enum IconMarkParam {
-    Check,
-    Calendar,
-    ChevronDown,
-    ChevronUp,
-    ChevronLeft,
-    ChevronRight,
-    Close,
-    Copy,
-    Add,
-    Subtract,
-    Search,
-    Menu,
-    Notification,
-    Switcher,
-    CaretLeft,
-    CaretRight,
-    CheckmarkOutline,
-    CircleDash,
-    Incomplete,
-    Checkmark,
-    ErrorFilled,
-    WarningFilled,
-    InformationFilled,
-    CheckmarkFilled,
-    CaretDown,
-    Edit,
-    BulletDisc,
-    BulletCircle,
-    BulletSquare,
-    BulletDash,
-}
-
-impl From<IconMarkParam> for IconMark {
-    fn from(m: IconMarkParam) -> Self {
-        match m {
-            IconMarkParam::Check => IconMark::Check,
-            IconMarkParam::Calendar => IconMark::Calendar,
-            IconMarkParam::ChevronDown => IconMark::ChevronDown,
-            IconMarkParam::ChevronUp => IconMark::ChevronUp,
-            IconMarkParam::ChevronLeft => IconMark::ChevronLeft,
-            IconMarkParam::ChevronRight => IconMark::ChevronRight,
-            IconMarkParam::Close => IconMark::Close,
-            IconMarkParam::Copy => IconMark::Copy,
-            IconMarkParam::Add => IconMark::Add,
-            IconMarkParam::Subtract => IconMark::Subtract,
-            IconMarkParam::Search => IconMark::Search,
-            IconMarkParam::Menu => IconMark::Menu,
-            IconMarkParam::Notification => IconMark::Notification,
-            IconMarkParam::Switcher => IconMark::Switcher,
-            IconMarkParam::CaretLeft => IconMark::CaretLeft,
-            IconMarkParam::CaretRight => IconMark::CaretRight,
-            IconMarkParam::CheckmarkOutline => IconMark::CheckmarkOutline,
-            IconMarkParam::CircleDash => IconMark::CircleDash,
-            IconMarkParam::Incomplete => IconMark::Incomplete,
-            IconMarkParam::Checkmark => IconMark::Checkmark,
-            IconMarkParam::ErrorFilled => IconMark::ErrorFilled,
-            IconMarkParam::WarningFilled => IconMark::WarningFilled,
-            IconMarkParam::InformationFilled => IconMark::InformationFilled,
-            IconMarkParam::CheckmarkFilled => IconMark::CheckmarkFilled,
-            IconMarkParam::CaretDown => IconMark::CaretDown,
-            IconMarkParam::Edit => IconMark::Edit,
-            IconMarkParam::BulletDisc => IconMark::BulletDisc,
-            IconMarkParam::BulletCircle => IconMark::BulletCircle,
-            IconMarkParam::BulletSquare => IconMark::BulletSquare,
-            IconMarkParam::BulletDash => IconMark::BulletDash,
-        }
-    }
-}
-
-/// The Luau union for [`IconMarkParam`], spliced with `concat!` into every
-/// shape that carries an icon so the two never drift apart:
-/// `HeaderActionIconParams` and `LeftPanelIconItemParams` both expand this
-/// macro rather than retyping the 30-name union.
-macro_rules! icon_mark_luau {
-    () => {
-        "\"check\" | \"calendar\" | \"chevron-down\" | \"chevron-up\" | \"chevron-left\" | \
-         \"chevron-right\" | \"close\" | \"copy\" | \"add\" | \"subtract\" | \"search\" | \
-         \"menu\" | \"notification\" | \"switcher\" | \"caret-left\" | \"caret-right\" | \
-         \"checkmark-outline\" | \"circle-dash\" | \"incomplete\" | \"checkmark\" | \
-         \"error-filled\" | \"warning-filled\" | \"information-filled\" | \"checkmark-filled\" | \
-         \"caret-down\" | \"edit\" | \"bullet-disc\" | \"bullet-circle\" | \"bullet-square\" | \
-         \"bullet-dash\""
-    };
-}
 
 /// Wire form of [`PaginationPicker`]: the real enum has no serde support.
 ///
@@ -229,7 +137,7 @@ struct BreadcrumbItemIconParams {
 impl ParamShape for BreadcrumbItemIconParams {
     const LUAU: &'static str = concat!(
         "{ key: string, mark: ",
-        icon_mark_luau!(),
+        crate::icon_mark_luau!(),
         ", label: string }"
     );
 }
@@ -250,7 +158,7 @@ struct MenuItemWithParams {
 impl ParamShape for MenuItemWithParams {
     const LUAU: &'static str = concat!(
         "{ key: string, label: string, icon: ",
-        icon_mark_luau!(),
+        crate::icon_mark_luau!(),
         "?, shortcut: string?, submenu: boolean }"
     );
 }
@@ -405,7 +313,7 @@ struct HeaderActionIconParams {
 impl ParamShape for HeaderActionIconParams {
     const LUAU: &'static str = concat!(
         "{ key: string, label: string, mark: ",
-        icon_mark_luau!(),
+        crate::icon_mark_luau!(),
         ", active: boolean }"
     );
 }
@@ -462,7 +370,7 @@ struct LeftPanelIconItemParams {
 impl ParamShape for LeftPanelIconItemParams {
     const LUAU: &'static str = concat!(
         "{ key: string, label: string, mark: ",
-        icon_mark_luau!(),
+        crate::icon_mark_luau!(),
         ", expanded: boolean, selected: boolean, children: { ViewNode } }"
     );
 }

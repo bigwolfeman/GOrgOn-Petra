@@ -1,12 +1,12 @@
 //! Catalog row 45, Context menu.
 
 use gorgon_petra::component::{
-    IconMark, button, context_menu, menu_flyout, menu_item_with, section,
+    IconMark, also_secondary_click, button, context_menu, menu_flyout, menu_item_with, section,
 };
 use gorgon_petra::frame::PetrifiedFrame;
 use gorgon_petra::geom::{Align, Axis, Point};
 use gorgon_petra::input::{InputEvent, PointerButton};
-use gorgon_petra::tree::{Interaction, NodeKind, Props, ViewNode};
+use gorgon_petra::tree::{NodeKind, Props, ViewNode};
 
 use super::Page;
 use super::common::{body, column, dismisses, path_has, sp, wrapped};
@@ -140,12 +140,20 @@ impl Page for ContextMenu {
         // A right-click on this button is the real trigger (T014); the
         // press itself still opens it too, so the row is reachable with a
         // primary click or Enter/Space, exactly like every other button.
-        // `Interaction::SecondaryClick` is added rather than swapped in,
-        // so the node keeps `button()`'s own `Click` declaration and both
-        // buttons stay live.
-        let mut trigger = button(TRIGGER, "Show menu");
-        trigger.interactions.push(Interaction::SecondaryClick);
-        let mut pair = vec![trigger];
+        // `also_secondary_click` adds the variant rather than swapping it
+        // in, so the node keeps `button()`'s own `Click` declaration and
+        // both presses stay live.
+        //
+        // This was `trigger.interactions.push(Interaction::SecondaryClick)`
+        // until 2026-09-19. It is a named constructor now because the push
+        // had no Lua form at all: a component reference carries a name and
+        // a parameter table, and `registry::expand_node` discards whatever
+        // else is on the node holding it, so this one page was the only row
+        // of 57 that spec 013 could not port. Right click also had no
+        // constructor anywhere in `gorgon_petra` before this, so the page
+        // was reaching past the library for a capability the library never
+        // offered.
+        let mut pair = vec![also_secondary_click(button(TRIGGER, "Show menu"))];
         if self.open {
             pair.push(context_menu(
                 MENU,
