@@ -71,7 +71,7 @@ impl From<BulletParam> for Bullet {
 
 /// Wire form of [`BulletScheme`]: the real enum has no serde support.
 /// Internally tagged on `type`, matching `M.track`'s convention
-/// (`gorgon/kernel-lua/src/ui/builders.lua`), so every variant — including
+/// (`gorgon/lua-view/src/ui/builders.lua`), so every variant — including
 /// the two unit ones — is a table, never a bare string.
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "kebab-case", tag = "type")]

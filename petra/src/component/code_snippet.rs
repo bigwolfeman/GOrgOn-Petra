@@ -36,8 +36,20 @@ use super::tooltip::tooltip_anchored;
 use crate::geom::{Align, Axis};
 use crate::token::{CornerRole, TokenName, corner_for};
 use crate::tree::{
-    AxisConstraint, Constraints, FocusFigure, FocusShownOn, InsetRefs, Interaction, Justify, Key,
-    Role, TextRun, ViewNode,
+    AxisConstraint, Behaviour, Constraints, FocusFigure, FocusShownOn, InsetRefs, Intent,
+    Interaction, Justify, Key, Phase, Role, TextRun, ViewNode,
+};
+
+/// Spec 010: copy / inline-copy chip — one shot, no state on the node.
+const ACTIVATES_ON_RELEASE: Behaviour = Behaviour {
+    intent: Intent::Activate,
+    phase: Phase::OnRelease,
+};
+
+/// Spec 010: Show more / Show less flips `expanded` on the control.
+const TOGGLES_ON_RELEASE: Behaviour = Behaviour {
+    intent: Intent::Toggle,
+    phase: Phase::OnRelease,
 };
 
 /// Carbon `.cds--snippet--multi` `min-block-size`.
@@ -302,6 +314,7 @@ pub fn code_snippet_inline(key: impl Into<Key>, code: impl Into<String>) -> View
         .insert("background@active".into(), t(LAYER_ACTIVE));
     let mut node = node
         .interactive(Role::Button, INLINE_LABEL, INLINE_INTENTS)
+        .with_behaviour(ACTIVATES_ON_RELEASE)
         .owning_its_text();
     // `paint_well` seats focus on the enclosing well and rings it with
     // `Sides`, which is right for the two wells a run is dragged through and
@@ -698,6 +711,7 @@ fn expand_button(expanded: bool) -> ViewNode {
     node.props.padding = Some(pad(SPACING_03, SPACING_02));
     let mut node = node
         .interactive(Role::Button, label, COPY_INTENTS)
+        .with_behaviour(TOGGLES_ON_RELEASE)
         .owning_its_text()
         .with_focus_figure(FocusFigure::Sides);
     node.semantics.expanded = Some(expanded);
@@ -726,6 +740,7 @@ fn copy_button() -> ViewNode {
     node.props.align = Some(Align::Center);
     node.props.padding = Some(pad(SPACING_03, SPACING_02));
     node.interactive(Role::Button, "Copy", COPY_INTENTS)
+        .with_behaviour(ACTIVATES_ON_RELEASE)
         .owning_its_text()
         // A button: `Sides`, per the operator's rule. See `component::button`.
         .with_focus_figure(FocusFigure::Sides)
@@ -771,7 +786,8 @@ mod tests {
         standard_vocabulary,
     };
     use crate::tree::{
-        FocusFigure, FocusShownOn, Interaction, NodeKind, Props, Registry, Role, ViewNode,
+        Behaviour, FocusFigure, FocusShownOn, Intent, Interaction, NodeKind, Phase, Props,
+        Registry, Role, ViewNode,
     };
 
     fn named<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
@@ -1567,5 +1583,26 @@ mod tests {
                 walk_text(&node, bg, &theme, MIN_TEXT_CONTRAST, label);
             }
         }
+    }
+
+    /// Spec 010: the copy affordance declares Activate / OnRelease.
+    ///
+    /// Falsified by dropping `.with_behaviour(...)` from [`copy_button`]:
+    ///
+    /// ```text
+    /// code_snippet copy declared behaviour None
+    /// ```
+    #[test]
+    fn code_snippet_copy_declares_activate_on_release() {
+        let node = code_snippet("s", "let x = 1;");
+        assert_eq!(
+            named(&node, "copy").behaviour,
+            Some(Behaviour {
+                intent: Intent::Activate,
+                phase: Phase::OnRelease,
+            }),
+            "code_snippet copy declared behaviour {:?}",
+            named(&node, "copy").behaviour
+        );
     }
 }

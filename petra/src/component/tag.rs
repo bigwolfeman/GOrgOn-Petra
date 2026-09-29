@@ -57,7 +57,8 @@ use super::tokens::{
 use crate::geom::{Align, Axis};
 use crate::token::{CornerRole, StatusToken, corner_for};
 use crate::tree::{
-    AxisConstraint, Constraints, InsetRefs, Interaction, Key, NodeKind, Role, TextWrap, ViewNode,
+    AxisConstraint, Behaviour, Constraints, InsetRefs, Intent, Interaction, Key, NodeKind, Phase,
+    Role, TextWrap, ViewNode,
 };
 
 /// Carbon sm tag height (`1.125rem`).
@@ -114,6 +115,11 @@ pub fn dismissible_tag(key: impl Into<Key>, label: impl Into<String>) -> ViewNod
         false,
     )
     .interactive(Role::Button, accessible, INTERACTIVE)
+    // Spec 010: one shot, no state on the pill — the dismiss is Activate.
+    .with_behaviour(Behaviour {
+        intent: Intent::Activate,
+        phase: Phase::OnRelease,
+    })
     .owning_its_text()
 }
 
@@ -152,6 +158,11 @@ pub fn selectable_tag(key: impl Into<Key>, label: impl Into<String>, selected: b
         .insert("background@selected-hover".into(), t(LAYER_SELECTED_HOVER));
     let mut node = node
         .interactive(Role::Button, label, INTERACTIVE)
+        // Spec 010: one boolean on the pill, flipped on release.
+        .with_behaviour(Behaviour {
+            intent: Intent::Toggle,
+            phase: Phase::OnRelease,
+        })
         .owning_its_text();
     node.semantics.selected = selected;
     node

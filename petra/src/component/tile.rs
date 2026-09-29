@@ -74,8 +74,8 @@ use super::{CaretDirection, caret, pad, stack, swatch};
 use crate::geom::{Align, Axis};
 use crate::token::{CornerRole, corner_for};
 use crate::tree::{
-    AxisConstraint, Constraints, FocusFigure, Interaction, Key, NodeKind, Props, Role, TrackSize,
-    ViewNode,
+    AxisConstraint, Behaviour, Constraints, FocusFigure, Intent, Interaction, Key, NodeKind, Phase,
+    Props, Role, TrackSize, ViewNode,
 };
 
 /// Carbon `.cds--tile` `min-inline-size: 8rem`.
@@ -193,11 +193,13 @@ pub fn clickable_tile(
     body: impl Into<String>,
 ) -> ViewNode {
     let label = label.into();
-    with_interactive_chrome(shell(key, vec![text("body", body.into())]), false).interactive(
-        Role::Button,
-        label,
-        INTERACTIVE,
-    )
+    with_interactive_chrome(shell(key, vec![text("body", body.into())]), false)
+        .interactive(Role::Button, label, INTERACTIVE)
+        // Spec 010: one shot, no state on the tile.
+        .with_behaviour(Behaviour {
+            intent: Intent::Activate,
+            phase: Phase::OnRelease,
+        })
 }
 
 /// A selectable tile: one option in a caller-grouped set.
@@ -215,7 +217,13 @@ pub fn selectable_tile(key: impl Into<Key>, label: impl Into<String>, selected: 
         selection_mark(selected),
     );
     let node = with_interactive_chrome(shell(key, vec![row]), true);
-    let mut node = node.interactive(Role::Button, label, INTERACTIVE);
+    let mut node = node
+        .interactive(Role::Button, label, INTERACTIVE)
+        // Spec 010: one boolean on the tile, flipped on release.
+        .with_behaviour(Behaviour {
+            intent: Intent::Toggle,
+            phase: Phase::OnRelease,
+        });
     node.semantics.selected = selected;
     node
 }
@@ -304,11 +312,13 @@ pub fn expandable_tile(
         children.push(text("body", body.into()));
     }
 
-    let mut node = with_interactive_chrome(shell(key, children), false).interactive(
-        Role::Button,
-        label,
-        INTERACTIVE,
-    );
+    let mut node = with_interactive_chrome(shell(key, children), false)
+        .interactive(Role::Button, label, INTERACTIVE)
+        // Spec 010: expand/collapse is a Toggle on the whole surface.
+        .with_behaviour(Behaviour {
+            intent: Intent::Toggle,
+            phase: Phase::OnRelease,
+        });
     node.semantics.expanded = Some(expanded);
     node
 }

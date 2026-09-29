@@ -54,6 +54,18 @@
 //! for 56 of the 57 pages there are not two terms, there is one constructor
 //! wearing two hats.
 //!
+//! # T010: the chrome, and what its test adds
+//!
+//! `lua_catalog_chrome_builds_the_same_tree_as_the_rust_one` extends the
+//! same comparison one level up, from a page's `body()` to the chrome that
+//! frames it: `catalog.rs`'s `Catalog::view()`. Its Lua side is
+//! `lua_parity/catalog.lua`, the one file here that also transcribes
+//! *derived* values — `inventory.rs`'s 57-row roster, the index labels, the
+//! header strings — and it composes `common.lua` and the open page's own
+//! T009-proven body rather than rebuilding either. What the test does NOT
+//! cover is host-side behaviour — `seat_index_focus`, scrolling, event
+//! routing — because no Lua tree contributes those, by construction.
+//!
 //! # Why a page is one `.lua` file under `lua_parity/pages/`, not one match arm
 //!
 //! [`every_lua_page_source_builds_the_same_tree_as_its_rust_page`] discovers
@@ -103,9 +115,14 @@ use std::path::{Path, PathBuf};
 use gorgon_kernel_lua::convert::lua_to_json;
 use gorgon_kernel_lua::ui::install;
 use gorgon_petra::component::registry::expand;
+use gorgon_petra::geom::Point;
+use gorgon_petra::input::{InputEvent, Modifiers, PointerButton, Route};
+use gorgon_petra::token::ThemeMode;
 use gorgon_petra::tree::ViewNode;
+use gorgon_petra_egui::host::App;
 use mlua::{Function, Lua, Table, Value};
 
+use crate::catalog::{Catalog, THEME_DARK, THEME_LIGHT};
 use crate::page;
 
 /// Slug a `Page::row()` display name into the file stem its Lua proof and
@@ -301,6 +318,122 @@ fn every_lua_page_source_builds_the_same_tree_as_its_rust_page() {
         checked.len(),
         pages.len()
     );
+}
+
+/// The wire spelling [`ThemeMode`] takes in `catalog.lua`'s `state.theme`.
+/// One place, so the test cases and the seeded global cannot drift apart.
+fn theme_wire(mode: ThemeMode) -> &'static str {
+    match mode {
+        ThemeMode::Dark => "dark",
+        ThemeMode::Light => "light",
+    }
+}
+
+/// Reach the theme the way the driver does: a press on the chrome's own
+/// switcher segment (`catalog.rs`'s `route_event` chain), taken by the host
+/// on the next pass (`App::theme_request`). Deterministic whatever
+/// `initial_theme_mode()` read from the environment, because
+/// `Catalog::set_theme` only no-ops when the mode is already the one asked
+/// for.
+fn press_theme_segment(catalog: &mut Catalog, mode: ThemeMode) {
+    let id = match mode {
+        ThemeMode::Dark => THEME_DARK,
+        ThemeMode::Light => THEME_LIGHT,
+    };
+    catalog.handle(
+        &InputEvent::PointerPressed {
+            pos: Point::ZERO,
+            button: PointerButton::Primary,
+            modifiers: Modifiers::NONE,
+        },
+        &Route::Pointer {
+            node: format!("/page/root/{id}"),
+        },
+        None,
+    );
+    let _ = catalog.theme_request();
+}
+
+/// T010's proof: the Lua chrome mirror (`lua_parity/catalog.lua`) builds the
+/// same tree `catalog.rs`'s [`Catalog::view`] builds — roster, index pane,
+/// page header, Prev/Next and the theme switcher, around the open page's own
+/// body — for the open pages and themes the driver can actually land on.
+///
+/// The state is seeded through `catalog.lua`'s `state` global (its module
+/// doc): the open row by name, the theme, and the body as
+/// `pages/<slug>.lua` itself builds it (already proven equal to `body()` by
+/// the test above), so this comparison is whole-`view()` against whole-`view()`
+/// with nothing stubbed on either side.
+///
+/// What a green run here does and does not prove is the same shape as the
+/// page walk's — reachability, param fidelity, transcription, plus real
+/// drift in the hand-typed raw nodes (`common.lua`, `catalog.lua`) — and it
+/// explicitly does NOT prove `seat_index_focus`, scrolling or event
+/// routing: those are host-side (`Host`, `route`, the focus tree) and no Lua
+/// tree contributes them.
+///
+/// Falsified 2026-09-26 by changing `catalog.lua`'s `index` scroll's
+/// `overscan` from 64.0 to 32.0 and restoring it byte-identical afterwards
+/// (`diff` against a saved copy, empty, then re-verified green). The real
+/// panic, pointing at the field, both values, and the case that caught it:
+///
+/// ```text
+/// thread 'lua_parity::lua_catalog_chrome_builds_the_same_tree_as_the_rust_one'
+/// panicked at petra/petra-egui/src/bin/gallery/lua_parity.rs:417:13:
+/// .../lua_parity/catalog.lua ("Toggle", dark) has drifted from catalog.rs's view()
+///   at children[0].children[0].props.overscan
+///     lua:  32.0
+///     rust: 64.0
+/// ```
+#[test]
+fn lua_catalog_chrome_builds_the_same_tree_as_the_rust_one() {
+    register_compound_rows();
+    let path = lua_parity_dir().join("catalog.lua");
+    let src = fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let cases = [
+        ("Toggle", ThemeMode::Dark),
+        ("Toggle", ThemeMode::Light),
+        ("Modal", ThemeMode::Dark),
+        ("Avatar", ThemeMode::Light),
+    ];
+    for (component, mode) in cases {
+        // A fresh VM per case: `state` is a global, and a leaked one from
+        // the previous case would silently answer the next.
+        let lua = vm();
+        let body_path = lua_parity_dir()
+            .join("pages")
+            .join(format!("{}.lua", slug(component)));
+        let body_src = fs::read_to_string(&body_path)
+            .unwrap_or_else(|e| panic!("{}: {e}", body_path.display()));
+        let body: Value = lua
+            .load(&body_src)
+            .set_name(body_path.display().to_string())
+            .eval()
+            .unwrap_or_else(|e| panic!("{}: {e}", body_path.display()));
+        let state: Table = lua.create_table().expect("a state table");
+        state.set("open", component).expect("set state.open");
+        state
+            .set("theme", theme_wire(mode))
+            .expect("set state.theme");
+        state.set("body", body).expect("set state.body");
+        lua.globals()
+            .set("state", state)
+            .expect("set the state global");
+        let from_lua = build_expanded(&lua, &src, &path);
+
+        let mut catalog = Catalog::on_page(component);
+        press_theme_segment(&mut catalog, mode);
+        let from_rust = catalog.view();
+        if from_lua != from_rust {
+            panic!(
+                "{} (\"{}\", {}) has drifted from catalog.rs's view()\n{}",
+                path.display(),
+                component,
+                theme_wire(mode),
+                difference(&from_lua, &from_rust)
+            );
+        }
+    }
 }
 
 /// Name the FIRST place two page trees differ, as a path and a pair of

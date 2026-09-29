@@ -49,8 +49,8 @@ use crate::frame::PetrifiedFrame;
 use crate::geom::{Align, Axis, Point};
 use crate::token::{CornerRole, corner_for};
 use crate::tree::{
-    AxisConstraint, Constraints, FocusFigure, Interaction, Key, NodeKind, Props, Role, TrackSize,
-    ViewNode,
+    AxisConstraint, Behaviour, Constraints, FocusFigure, Intent, Interaction, Key, NodeKind, Phase,
+    Props, Role, TrackSize, ViewNode,
 };
 
 /// MEASURED `_slider.scss` track height. Style page lists 4px; T070 is 2.
@@ -87,6 +87,18 @@ const HANDLE_INTENTS: &[Interaction] = &[
 /// that were hovered would be reported to the page as a pointer position
 /// it never asked for.
 const RAIL_INTENTS: &[Interaction] = &[Interaction::Drag, Interaction::Click];
+
+/// Track press jumps the value. Spec 010 names this the whole of `OnPress`.
+const ADJUSTS_ON_PRESS: Behaviour = Behaviour {
+    intent: Intent::Adjust,
+    phase: Phase::OnPress,
+};
+
+/// Live drag. Spec 010 names this the whole of `OnChange`.
+const ADJUSTS_ON_CHANGE: Behaviour = Behaviour {
+    intent: Intent::Adjust,
+    phase: Phase::OnChange,
+};
 
 fn normalise(value: f32) -> f32 {
     if value.is_finite() {
@@ -174,6 +186,7 @@ fn handle_node(label: String, value: String, size: f32, live: bool) -> ViewNode 
     if live {
         handle = handle
             .interactive(Role::Button, label, HANDLE_INTENTS)
+            .with_behaviour(ADJUSTS_ON_CHANGE)
             .owning_its_text();
         handle.semantics.value = Some(value);
     }
@@ -248,7 +261,9 @@ fn slider_built(
         // gesture. The handle is painted after the rail, so a press on the
         // handle still names the handle (`input::hit_test` walks paint
         // order back to front); the rail catches the rest of the track.
-        rail = rail.interactive(Role::Pane, format!("{label} track"), RAIL_INTENTS);
+        rail = rail
+            .interactive(Role::Pane, format!("{label} track"), RAIL_INTENTS)
+            .with_behaviour(ADJUSTS_ON_PRESS);
     }
 
     // SOURCED style page: range labels carry `margin-right: 16px`, and the

@@ -9,7 +9,9 @@ use super::tokens::{
 use super::{pad, stack};
 use crate::geom::{Align, Axis};
 use crate::token::{CornerRole, corner_for};
-use crate::tree::{FocusFigure, Interaction, Justify, Key, Role, TextWrap, ViewNode};
+use crate::tree::{
+    Behaviour, FocusFigure, Intent, Interaction, Justify, Key, Phase, Role, TextWrap, ViewNode,
+};
 
 /// The block extent one [`list_row`] takes at the shipped theme, in logical
 /// units: one `typography.body` line (20) plus the row's own `spacing-04`
@@ -137,14 +139,21 @@ pub fn list_row_with(
         t(corner_for(CornerRole::Tiled, LIST_ROW_EXTENT)),
     );
 
-    let mut node = node.interactive(
-        Role::ListItem,
-        label,
-        // `Hover` is what makes the four fills above reachable: without it
-        // the engine never hit-tests this row for hover, and two of the four
-        // bindings are tokens nothing reads.
-        &[Interaction::Focus, Interaction::Click, Interaction::Hover],
-    );
+    let mut node = node
+        .interactive(
+            Role::ListItem,
+            label,
+            // `Hover` is what makes the four fills above reachable: without it
+            // the engine never hit-tests this row for hover, and two of the four
+            // bindings are tokens nothing reads.
+            &[Interaction::Focus, Interaction::Click, Interaction::Hover],
+        )
+        // Spec 010: exclusive among siblings; a second Select on another row
+        // is what clears this one — never a flip on its own.
+        .with_behaviour(Behaviour {
+            intent: Intent::Select,
+            phase: Phase::OnRelease,
+        });
     // `BarInside`, for the reason `component::menu` gives: list rows stack
     // flush, so a bar *under* one lands on the next. Seated on the row's own
     // bottom edge the same stripe cannot, and it is still an underline.
@@ -170,7 +179,29 @@ mod tests {
     use crate::component::icon::{IconMark, IconTone, icon_toned};
     use crate::component::tokens::{TEXT_MUTED, TYPOGRAPHY_BODY_COMPACT};
     use crate::token::{TokenValue, shipped};
-    use crate::tree::TextWrap;
+    use crate::tree::{Behaviour, Intent, Phase, TextWrap};
+
+    /// Spec 010: a selectable list row declares Select / OnRelease so a
+    /// contributed gallery page can hear the click as a FiredIntent.
+    ///
+    /// Falsified by dropping `.with_behaviour(...)` from [`list_row`]:
+    ///
+    /// ```text
+    /// list_row declared behaviour None
+    /// ```
+    #[test]
+    fn list_row_declares_select_on_release() {
+        let node = list_row("row", "a fiber", false);
+        assert_eq!(
+            node.behaviour,
+            Some(Behaviour {
+                intent: Intent::Select,
+                phase: Phase::OnRelease,
+            }),
+            "list_row declared behaviour {:?}",
+            node.behaviour
+        );
+    }
 
     /// [`LIST_ROW_EXTENT`] is the derivation, not a remembered number.
     ///

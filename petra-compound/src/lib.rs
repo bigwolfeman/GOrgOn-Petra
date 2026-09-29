@@ -7,6 +7,7 @@
 //! This crate depends on `gorgon-petra` and `serde` only. No egui, no kernel,
 //! no tokio. A compound that needs those is not a compound.
 
+use gorgon_petra::tree::{Intent as EngineIntent, Phase};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
@@ -39,6 +40,34 @@ pub trait Compound {
 
     /// Pure. Built from tier-1 constructors only.
     fn view(state: &Self::State, props: &Self::Props) -> gorgon_petra::tree::ViewNode;
+
+    /// Map a fired engine intent onto this compound's closed [`Self::Intent`].
+    ///
+    /// Spec 010 delivers `{contribution, node, intent, phase, value?, weights?}`
+    /// on `ui:intent`, where `intent`/`phase` are the engine vocabulary and
+    /// `node` is the leaf key the shell attributed (last path segment that
+    /// the contribution owns). Compounds whose `view` stamps known keys —
+    /// `prev-month`, `day-15`, `bold`, … — implement this so a real click
+    /// reaches `update` without stand-in buttons or a richer wire schema.
+    ///
+    /// Default: `None`. [`gorgon_view_fiber::ViewFiber`] then tries serde on
+    /// the payload (whole body, then the `intent` field). A miss is dropped
+    /// with a warning, never defaulted.
+    ///
+    /// `state` is in scope because some mappings (calendar day pick) need
+    /// the month on show; `value` / `weights` are the Adjust payloads when
+    /// present.
+    fn intent_from_fire(
+        state: &Self::State,
+        node: &str,
+        intent: EngineIntent,
+        phase: Phase,
+        value: Option<f64>,
+        weights: Option<&[f64]>,
+    ) -> Option<Self::Intent> {
+        let _ = (state, node, intent, phase, value, weights);
+        None
+    }
 }
 
 pub mod calendar;

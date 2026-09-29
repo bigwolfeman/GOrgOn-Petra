@@ -162,12 +162,12 @@ fn names(id: u64, component: &str, params: &str) -> Contribution {
 /// [`names`], at a chosen publisher revision.
 fn at(id: u64, revision: u64, component: &str, params: &str) -> Contribution {
     let mut node = ViewNode::new(NodeKind::Component, "surface");
-    node.component = Some(ComponentRef {
-        name: component.to_owned(),
-        params: params
+    node.component = Some(ComponentRef::literal(
+        component,
+        params
             .parse()
             .expect("the fixture's parameter table is JSON"),
-    });
+    ));
     Contribution {
         id: ContributionId::new(id),
         revision,

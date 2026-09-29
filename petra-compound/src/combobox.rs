@@ -35,7 +35,7 @@ pub struct Props {
 
 /// Query, highlight, and open-or-shut. Round-trips through reload as a whole.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct State {
     /// Text in the field. Also the filter needle.
     pub query: String,

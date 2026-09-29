@@ -47,7 +47,13 @@
 
 use super::text::text;
 use super::tokens::{LINK_PRIMARY, t};
-use crate::tree::{FocusFigure, Interaction, Key, Role, ViewNode};
+use crate::tree::{Behaviour, FocusFigure, Intent, Interaction, Key, Phase, Role, ViewNode};
+
+/// Spec 010: one shot on release — a link is Activate's definition beside button.
+const ACTIVATES_ON_RELEASE: Behaviour = Behaviour {
+    intent: Intent::Activate,
+    phase: Phase::OnRelease,
+};
 
 /// What a link answers to. `Hover` is here because the underline is
 /// revealed by it: a node that does not declare `Hover` is never hovered
@@ -91,6 +97,7 @@ fn link_built(key: impl Into<Key>, label: impl Into<String>, underline_slot: &st
     // look bad"* case, and it is also the rule that puts a button on `Sides`:
     // a link declares `Role::Button` because that is what it is.
     node.interactive(Role::Button, label, LINK_INTENTS)
+        .with_behaviour(ACTIVATES_ON_RELEASE)
         .with_focus_figure(FocusFigure::Sides)
 }
 
@@ -103,7 +110,9 @@ mod tests {
     use crate::geom::{Axis, Size};
     use crate::testing::{Harness, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
-    use crate::tree::{Interaction, NodeKind, Props, Registry, Role, ViewNode};
+    use crate::tree::{
+        Behaviour, Intent, Interaction, NodeKind, Phase, Props, Registry, Role, ViewNode,
+    };
 
     fn token<'a>(node: &'a ViewNode, slot: &str) -> Option<&'a str> {
         node.props.tokens.get(slot).map(|name| name.as_str())
@@ -288,5 +297,27 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Spec 010: a link declares Activate / OnRelease (breadcrumb items
+    /// compose this constructor).
+    ///
+    /// Falsified by dropping `.with_behaviour(...)` from [`link_built`]:
+    ///
+    /// ```text
+    /// link declared behaviour None
+    /// ```
+    #[test]
+    fn link_declares_activate_on_release() {
+        let node = link("docs", "Open docs");
+        assert_eq!(
+            node.behaviour,
+            Some(Behaviour {
+                intent: Intent::Activate,
+                phase: Phase::OnRelease,
+            }),
+            "link declared behaviour {:?}",
+            node.behaviour
+        );
     }
 }

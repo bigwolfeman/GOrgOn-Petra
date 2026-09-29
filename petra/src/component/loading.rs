@@ -187,6 +187,80 @@ pub fn spinner_phase(now: f64) -> f32 {
     phase
 }
 
+/// Rebuild every ambient loading-spinner canvas under `root` at host clock
+/// `now`.
+///
+/// A contributed tree is an owned snapshot: without this walk, an ambient
+/// canvas keeps asking for frames ([`crate::anim::wants_frame`]) but paints
+/// the phase it was published with. The host is the only clock that may
+/// drive these canvases (`contracts/draw-list.md` §8); Lua must not tick a
+/// spinner by republishing.
+///
+/// Matches canvases under a node whose [`Semantics::value`] is `"loading"`
+/// (the [`loading`] / [`loading_sm`] / [`super::inline_loading`] mark) and
+/// sized to Carbon's large or small spinner extent.
+pub fn advance_ambient_spinners(root: &mut ViewNode, now: f64) {
+    advance_walk(root, now, false);
+}
+
+fn advance_walk(node: &mut ViewNode, now: f64, under_loading: bool) {
+    let loading_here = under_loading || node.semantics.value.as_deref() == Some("loading");
+    if node.kind == NodeKind::Canvas
+        && node.ambient
+        && loading_here
+        && let Some(size) = spinner_size_of(node)
+    {
+        node.props.canvas = Some(Arc::new(spinner_list(size, now)));
+    }
+    for child in &mut node.children {
+        advance_walk(Arc::make_mut(child), now, loading_here);
+    }
+}
+
+fn spinner_size_of(node: &ViewNode) -> Option<LoadingSize> {
+    let extent = node
+        .constraints
+        .horizontal
+        .max
+        .or(node.constraints.horizontal.min)?;
+    if (extent - SIZE_LG).abs() < 0.5 {
+        Some(LoadingSize::Large)
+    } else if (extent - SIZE_SM).abs() < 0.5 {
+        Some(LoadingSize::Small)
+    } else {
+        None
+    }
+}
+
+fn spinner_list(size: LoadingSize, now: f64) -> DrawList {
+    let extent = size.extent();
+    let half = extent / 2.0;
+    let center = Point::new(half, half);
+    let radius = size.radius();
+    let stroke = size.stroke();
+    let mut commands = Vec::with_capacity(2);
+    if size.has_track() {
+        commands.push(Command::Ellipse {
+            center,
+            radii: Size::new(radius, radius),
+            paint: Paint::stroked(Stroke {
+                width: Width::Logical(stroke),
+                color: ColorRef::Token(t(LAYER_ACCENT).as_str().to_owned()),
+            }),
+        });
+    }
+    let start = spinner_phase(now) * std::f32::consts::TAU;
+    commands.push(Command::Path {
+        verbs: arc_verbs(center, radius, start, size.ink() * std::f32::consts::TAU),
+        closed: false,
+        paint: Paint::stroked(Stroke {
+            width: Width::Logical(stroke),
+            color: ColorRef::Token(t(ACCENT_PRIMARY).as_str().to_owned()),
+        }),
+    });
+    DrawList::new(commands).unwrap_or_else(|err| panic!("spinner draw list refused: {err}"))
+}
+
 /// Circular in-progress indicator, Carbon large (88), at the host clock
 /// `now` (seconds).
 ///
@@ -228,34 +302,9 @@ pub(crate) fn spinner_small(key: impl Into<Key>, now: f64) -> ViewNode {
 /// The arc at the phase `now` names, on an ambient canvas.
 fn spinner(key: impl Into<Key>, size: LoadingSize, now: f64) -> ViewNode {
     let extent = size.extent();
-    let half = extent / 2.0;
-    let center = Point::new(half, half);
-    let radius = size.radius();
-    let stroke = size.stroke();
-    let mut commands = Vec::with_capacity(2);
-    if size.has_track() {
-        commands.push(Command::Ellipse {
-            center,
-            radii: Size::new(radius, radius),
-            paint: Paint::stroked(Stroke {
-                width: Width::Logical(stroke),
-                color: ColorRef::Token(t(LAYER_ACCENT).as_str().to_owned()),
-            }),
-        });
-    }
     // The dash starts where an SVG circle's stroke starts, three o'clock,
     // and the whole picture turns clockwise with the phase.
-    let start = spinner_phase(now) * std::f32::consts::TAU;
-    commands.push(Command::Path {
-        verbs: arc_verbs(center, radius, start, size.ink() * std::f32::consts::TAU),
-        closed: false,
-        paint: Paint::stroked(Stroke {
-            width: Width::Logical(stroke),
-            color: ColorRef::Token(t(ACCENT_PRIMARY).as_str().to_owned()),
-        }),
-    });
-    let list =
-        DrawList::new(commands).unwrap_or_else(|err| panic!("spinner draw list refused: {err}"));
+    let list = spinner_list(size, now);
     ViewNode::new(NodeKind::Canvas, key)
         .with_props(Props {
             canvas: Some(Arc::new(list)),
@@ -279,8 +328,8 @@ fn spinner(key: impl Into<Key>, size: LoadingSize, now: f64) -> ViewNode {
 #[cfg(test)]
 mod tests {
     use super::{
-        CARBON_TURN_SECONDS, INK_LG, INK_SM, SIZE_LG, SIZE_SM, TURN_SECONDS, loading, loading_sm,
-        spinner_phase,
+        CARBON_TURN_SECONDS, INK_LG, INK_SM, SIZE_LG, SIZE_SM, TURN_SECONDS,
+        advance_ambient_spinners, loading, loading_sm, spinner_phase,
     };
     use crate::component::tokens::{ACCENT_PRIMARY, LAYER_ACCENT};
     use crate::draw::{ColorRef, Command, DrawList, PathVerb};
@@ -431,6 +480,22 @@ mod tests {
             list(&loading("w", "l", 0.0)),
             list(&loading("w", "l", 0.1)),
             "two phases are two different lists, and so two digests"
+        );
+    }
+
+    /// A frozen contributed spinner must turn when the host advances it —
+    /// without replacing the node or asking Lua to republish.
+    #[test]
+    fn advance_ambient_spinners_rewrites_a_frozen_loading_canvas() {
+        let mut tree = loading("load-lg", "Working", 0.0);
+        let before = list(&tree).clone();
+        advance_ambient_spinners(&mut tree, TURN_SECONDS / 4.0);
+        let after = list(&tree);
+        assert_ne!(before, *after, "host clock must rebuild the ambient canvas");
+        assert_eq!(
+            *after,
+            *list(&loading("load-lg", "Working", TURN_SECONDS / 4.0)),
+            "rewritten phase must match a freshly authored spinner"
         );
     }
 

@@ -13,7 +13,7 @@
 use std::collections::BTreeSet;
 
 use gorgon_petra::component::{Calendar as DatePickerCalendar, date_picker_showing_selection};
-use gorgon_petra::tree::ViewNode;
+use gorgon_petra::tree::{Intent as EngineIntent, Phase, ViewNode};
 use serde::{Deserialize, Serialize};
 
 use crate::Compound;
@@ -84,7 +84,7 @@ impl Default for Props {
 /// a component that took only the selected date could not say "August is
 /// selected, September is on screen".
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct State {
     /// Year the grid is browsing.
     pub year: i32,
@@ -204,6 +204,35 @@ impl Compound for Calendar {
             },
         )
     }
+
+    /// Leaf keys from [`date_picker_showing_selection`]'s Compact grid:
+    /// `prev-month` / `next-month` Activate, `day-<n>` Select. Year and
+    /// month for a day pick come from the month on show.
+    fn intent_from_fire(
+        state: &Self::State,
+        node: &str,
+        intent: EngineIntent,
+        phase: Phase,
+        _value: Option<f64>,
+        _weights: Option<&[f64]>,
+    ) -> Option<Self::Intent> {
+        if phase != Phase::OnRelease {
+            return None;
+        }
+        match (node, intent) {
+            ("prev-month", EngineIntent::Activate) => Some(Intent::PrevMonth),
+            ("next-month", EngineIntent::Activate) => Some(Intent::NextMonth),
+            (day, EngineIntent::Select) if day.starts_with("day-") => {
+                let n: u32 = day.strip_prefix("day-")?.parse().ok()?;
+                Some(Intent::Pick(Date {
+                    year: state.year,
+                    month: state.month.clamp(1, 12),
+                    day: n,
+                }))
+            }
+            _ => None,
+        }
+    }
 }
 
 /// Days in `month` of `year`, Gregorian. Same table as `date_picker.rs`.
@@ -321,6 +350,73 @@ mod tests {
         assert_eq!(state.year, 1970);
         assert_eq!(state.month, 1);
         assert!(state.selected.is_empty());
+    }
+
+    #[test]
+    fn intent_from_fire_maps_month_arrows_and_day_select() {
+        use gorgon_petra::tree::{Intent as EngineIntent, Phase};
+
+        let mut state = Calendar::init(&multi_props());
+        state.year = 2026;
+        state.month = 8;
+
+        assert_eq!(
+            Calendar::intent_from_fire(
+                &state,
+                "prev-month",
+                EngineIntent::Activate,
+                Phase::OnRelease,
+                None,
+                None,
+            ),
+            Some(Intent::PrevMonth)
+        );
+        assert_eq!(
+            Calendar::intent_from_fire(
+                &state,
+                "next-month",
+                EngineIntent::Activate,
+                Phase::OnRelease,
+                None,
+                None,
+            ),
+            Some(Intent::NextMonth)
+        );
+        assert_eq!(
+            Calendar::intent_from_fire(
+                &state,
+                "day-15",
+                EngineIntent::Select,
+                Phase::OnRelease,
+                None,
+                None,
+            ),
+            Some(Intent::Pick(date(2026, 8, 15)))
+        );
+        assert_eq!(
+            Calendar::intent_from_fire(
+                &state,
+                "day-15",
+                EngineIntent::Activate,
+                Phase::OnRelease,
+                None,
+                None,
+            ),
+            None,
+            "day cells declare Select, not Activate"
+        );
+        assert_eq!(
+            Calendar::intent_from_fire(
+                &state,
+                "prev-month",
+                EngineIntent::Activate,
+                Phase::OnPress,
+                None,
+                None,
+            ),
+            None,
+            "month arrows fire OnRelease"
+        );
     }
 
     #[test]

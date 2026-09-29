@@ -43,7 +43,8 @@ use super::{pad, pin_block, stack, swatch};
 use crate::geom::{Align, Axis};
 use crate::token::{CornerRole, corner_for};
 use crate::tree::{
-    Interaction, Justify, Key, NodeKind, Props, Role, Semantics, TrackSize, ViewNode,
+    Behaviour, Intent, Interaction, Justify, Key, NodeKind, Phase, Props, Role, Semantics,
+    TrackSize, ViewNode,
 };
 
 const _: () = assert!(SIZE_MD == 40.0);
@@ -167,6 +168,11 @@ pub fn content_switcher_item(
     let mut node = node
         .with_constraints(pin_block(SIZE_MD))
         .interactive(Role::Button, label, ITEM_INTENTS)
+        // Spec 010: exclusive among siblings in the switcher.
+        .with_behaviour(Behaviour {
+            intent: Intent::Select,
+            phase: Phase::OnRelease,
+        })
         .owning_its_text();
     node.semantics.selected = selected;
     node

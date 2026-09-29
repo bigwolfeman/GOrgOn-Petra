@@ -88,7 +88,14 @@ use super::tokens::{
 use crate::geom::{Align, Axis};
 use crate::token::{CornerRole, corner_for};
 use crate::tree::{
-    AxisConstraint, Constraints, FocusFigure, Interaction, Justify, Key, NodeKind, Role, ViewNode,
+    AxisConstraint, Behaviour, Constraints, FocusFigure, Intent, Interaction, Justify, Key,
+    NodeKind, Phase, Role, ViewNode,
+};
+
+/// Spec 010: drop zone / remove — one shot.
+const ACTIVATES_ON_RELEASE: Behaviour = Behaviour {
+    intent: Intent::Activate,
+    phase: Phase::OnRelease,
 };
 
 /// MEASURED `_file-uploader.scss:425` drop-container `block-size`.
@@ -198,6 +205,7 @@ fn build_uploader(
     zone.constraints = pin(ZONE_WIDTH, DROP_HEIGHT);
     let zone = zone
         .interactive(Role::Button, label.clone(), ZONE_INTENTS)
+        .with_behaviour(ACTIVATES_ON_RELEASE)
         .owning_its_text();
 
     let mut children = vec![heading];
@@ -295,6 +303,7 @@ pub fn file_uploader_item_edit(key: impl Into<Key>, name: impl Into<String>) -> 
     let remove = remove
         .with_constraints(pin(STATE_BOX, STATE_BOX))
         .interactive(Role::Button, format!("Remove {name}"), REMOVE_INTENTS)
+        .with_behaviour(ACTIVATES_ON_RELEASE)
         .owning_its_text()
         // A button: `Sides`, per the operator's rule. See `component::button`.
         .with_focus_figure(FocusFigure::Sides);
@@ -456,7 +465,9 @@ mod tests {
         ColorValue, CornerRole, Theme, ThemeMode, TokenName, TokenValue, corner_for,
         standard_vocabulary,
     };
-    use crate::tree::{Interaction, Justify, NodeKind, Props, Registry, Role, ViewNode};
+    use crate::tree::{
+        Behaviour, Intent, Interaction, Justify, NodeKind, Phase, Props, Registry, Role, ViewNode,
+    };
 
     fn named<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         fn walk<'a>(node: &'a ViewNode, key: &str) -> Option<&'a ViewNode> {
@@ -916,5 +927,26 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Spec 010: the drop zone declares Activate / OnRelease.
+    ///
+    /// Falsified by dropping `.with_behaviour(...)` from the zone builder:
+    ///
+    /// ```text
+    /// file_uploader zone declared behaviour None
+    /// ```
+    #[test]
+    fn file_uploader_zone_declares_activate_on_release() {
+        let node = file_uploader("up", "Upload files");
+        assert_eq!(
+            named(&node, "zone").behaviour,
+            Some(Behaviour {
+                intent: Intent::Activate,
+                phase: Phase::OnRelease,
+            }),
+            "file_uploader zone declared behaviour {:?}",
+            named(&node, "zone").behaviour
+        );
     }
 }

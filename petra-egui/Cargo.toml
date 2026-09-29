@@ -101,7 +101,15 @@ image = "0.25"
 # testkit's dependency on `gorgon-inspector` was. When `petra/` is mirrored
 # out, this line and `lua_parity.rs` are removed together, exactly like that
 # precedent — not silently broken and not shipped.
-gorgon-kernel-lua = { path = "../../gorgon/kernel-lua" }
+#
+# `default-features = false`: this workspace has no `[patch.crates-io]` for
+# `gorgon-kernel-lua`'s `luau-analyze`, so the default-on checker feature
+# would resolve crates.io's API-incompatible `luau-analyze 0.0.1` and fail to
+# compile `src/stubs.rs`. The harness only needs `ui::install` and
+# `convert::lua_to_json` (pure Lua builders and wire conversion), never the
+# pre-mount checker. See
+# .agents/incomplete/2026-09-27-petra-retained-bindings-leftovers.md.
+gorgon-kernel-lua = { path = "../../gorgon/kernel-lua", default-features = false }
 # `gorgon-kernel-lua`'s own `Lua`/`Table`/`Value` types are `mlua` types, so
 # `lua_parity.rs` needs the same crate directly rather than only through
 # `gorgon-kernel-lua`'s re-export surface (it has none for these).

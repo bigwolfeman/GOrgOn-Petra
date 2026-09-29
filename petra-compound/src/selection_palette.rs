@@ -11,8 +11,8 @@ use gorgon_petra::Point;
 use gorgon_petra::component::{toggle_button, toggle_button_group};
 use gorgon_petra::token::{CornerRole, TokenName, corner_for};
 use gorgon_petra::tree::{
-    Anchor, ClampRule, FocusFigure, InputPolicy, Layer, NodeKind, Props as NodeProps, Role,
-    Semantics, Tip, ViewNode,
+    Anchor, ClampRule, FocusFigure, InputPolicy, Intent as EngineIntent, Layer, NodeKind, Phase,
+    Props as NodeProps, Role, Semantics, Tip, ViewNode,
 };
 use serde::{Deserialize, Serialize};
 
@@ -33,7 +33,7 @@ pub struct Props;
 /// Round-trips through reload as a whole. The point is a gallery fake until
 /// spec 006 hands a real selection.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct State {
     /// Bold mark is on.
     pub bold: bool,
@@ -83,6 +83,24 @@ impl Compound for SelectionPalette {
             }
         }
         Vec::new()
+    }
+
+    fn intent_from_fire(
+        _state: &Self::State,
+        node: &str,
+        intent: EngineIntent,
+        phase: Phase,
+        _value: Option<f64>,
+        _weights: Option<&[f64]>,
+    ) -> Option<Self::Intent> {
+        if phase != Phase::OnRelease || intent != EngineIntent::Toggle {
+            return None;
+        }
+        match node {
+            "bold" => Some(Intent::ToggleBold),
+            "italic" => Some(Intent::ToggleItalic),
+            _ => None,
+        }
     }
 
     fn view(state: &Self::State, _props: &Self::Props) -> ViewNode {

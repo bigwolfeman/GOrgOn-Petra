@@ -236,9 +236,33 @@ fn demangled_symbols(binary: &std::path::Path) -> String {
     run_tool("nm", &["-C"], binary)
 }
 
-/// Every printable string embedded in `binary`, via `strings`.
+/// Every printable string the binary carries at run time, via `strings -d`
+/// (initialized, loaded data sections only).
+///
+/// `-d` is the contract, not a convenience: FR-042's claim is "no `.sock`
+/// string anywhere in its **rodata**". A bare `strings` also reads the
+/// DWARF sections, which name every symbol the codegen unit carried even
+/// after `--gc-sections` dropped its code — including `serde_core`'s
+/// `Deserialize for core::net::socket_addr::SocketAddr`, whose mangled name
+/// contains the substring `.sock`. That is what turned this check red on
+/// 2026-09-26 while the artifact was clean (verified: `nm -C` shows no
+/// socket symbols in the no-feature build, and `strings -d` finds zero
+/// `.sock`; the three bare-`strings` hits all sit past `.debug_str`'s file
+/// offset):
+///
+/// ```text
+/// thread 'no_testkit_feature_links_no_driver_server_or_socket' panicked at
+/// petra/petra-testkit/tests/exclusion.rs:262:5:
+/// the no-feature build of examples/driven carries a `.sock` string, which
+/// should only appear from the driver socket's path formula: "…/target/
+/// petra-exclusion-proof/no-feature/debug/examples/driven"
+/// ```
+///
+/// The mirror test keeps the check honest in the other direction: the
+/// `testkit` build's data sections carry exactly one `.sock`, the path
+/// formula's literal.
 fn embedded_strings(binary: &std::path::Path) -> String {
-    run_tool("strings", &[], binary)
+    run_tool("strings", &["-d"], binary)
 }
 
 /// FR-042: a build with no `testkit` feature links none of the driver

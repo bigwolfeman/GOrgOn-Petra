@@ -1392,10 +1392,10 @@ fn a_contribution_is_mounted_after_its_components_are_expanded() {
     let status = ledger.status(seven, 1).expect("retained");
 
     let mut reference = ViewNode::new(NodeKind::Component, "panel");
-    reference.component = Some(crate::tree::ComponentRef {
-        name: "accordion".to_owned(),
-        params: serde_json::json!({ "key": "panel", "children": [] }),
-    });
+    reference.component = Some(crate::tree::ComponentRef::literal(
+        "accordion",
+        serde_json::json!({ "key": "panel", "children": [] }),
+    ));
 
     let expanded_then_mounted =
         status.mount(crate::component::registry::expand(&reference).expect("accordion expands"));

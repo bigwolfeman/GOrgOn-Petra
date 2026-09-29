@@ -1681,12 +1681,23 @@ dependencies = [
  "async-trait",
  "futures",
  "gorgon-kernel",
- "luau-analyze",
+ "gorgon-lua-view",
  "mlua",
  "serde",
  "serde_json",
  "serde_yaml",
  "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "gorgon-lua-view"
+version = "0.0.0"
+dependencies = [
+ "gorgon-petra",
+ "mlua",
+ "serde_json",
+ "serde_yaml",
  "tracing",
 ]
 
@@ -2287,15 +2298,6 @@ checksum = "a86cc925d4053d0526ae7f5bc765dbd0d7a5d1a63d43974f4966cb349ca63295"
 dependencies = [
  "cc",
  "which",
-]
-
-[[package]]
-name = "luau-analyze"
-version = "0.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d2c04160ee6165909d3ea2e7b81db9533e05db1a3cb1172d352b0f33fe44c9d6"
-dependencies = [
- "cc",
 ]
 
 [[package]]

@@ -62,9 +62,27 @@ use super::tokens::{
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
-    Align as PropAlign, Anchor, AxisConstraint, ClampRule, Constraints, Edge, FocusFigure,
-    FocusShownOn, InputPolicy, Interaction, Justify, Key, Layer, NodeKind, Props, Role, Tip,
-    TrackSize, ViewNode,
+    Align as PropAlign, Anchor, AxisConstraint, Behaviour, ClampRule, Constraints, Edge,
+    FocusFigure, FocusShownOn, InputPolicy, Intent, Interaction, Justify, Key, Layer, NodeKind,
+    Phase, Props, Role, Tip, TrackSize, ViewNode,
+};
+
+/// Spec 010: field / month-chooser open-close.
+const TOGGLES_ON_RELEASE: Behaviour = Behaviour {
+    intent: Intent::Toggle,
+    phase: Phase::OnRelease,
+};
+
+/// Spec 010: day / month cells — exclusive among siblings.
+const SELECTS_ON_RELEASE: Behaviour = Behaviour {
+    intent: Intent::Select,
+    phase: Phase::OnRelease,
+};
+
+/// Spec 010: month/year step arrows — one shot.
+const ACTIVATES_ON_RELEASE: Behaviour = Behaviour {
+    intent: Intent::Activate,
+    phase: Phase::OnRelease,
 };
 
 /// Carbon calendar menu width (`18rem`). Independent of field size.
@@ -433,6 +451,7 @@ fn closed_field(
     let mut node = node
         .with_constraints(pin_block(SIZE_MD))
         .interactive(Role::Button, label, FIELD_INTENTS)
+        .with_behaviour(TOGGLES_ON_RELEASE)
         .owning_its_text();
     node.semantics.expanded = Some(expanded);
     // A well a person picks into: focus brackets its sides, as on a text
@@ -626,6 +645,7 @@ fn step_control(key: &str, label: &str, mark: IconMark) -> ViewNode {
         .insert("background@hover".into(), t(LAYER_HOVER));
     node.with_constraints(pin_block(SIZE_MD))
         .interactive(Role::Button, label.to_owned(), FIELD_INTENTS)
+        .with_behaviour(ACTIVATES_ON_RELEASE)
         .owning_its_text()
 }
 
@@ -665,6 +685,7 @@ fn month_button(caption: ViewNode, name: String, choosing: bool) -> ViewNode {
             format!("{name}, choose month and year"),
             FIELD_INTENTS,
         )
+        .with_behaviour(TOGGLES_ON_RELEASE)
         .owning_its_text();
     node.semantics.expanded = Some(choosing);
     node
@@ -852,6 +873,7 @@ fn month_cell(month: u32, selected: bool) -> ViewNode {
     let mut node = node
         .with_constraints(pin_block(MONTH_CELL_H))
         .interactive(Role::Button, name.to_owned(), FIELD_INTENTS)
+        .with_behaviour(SELECTS_ON_RELEASE)
         .owning_its_text()
         // `Border`, for the day cell's second reason: a selected month fills
         // `ACCENT_PRIMARY`, and a stripe on that fill cannot be seen.
@@ -959,6 +981,7 @@ fn day_button(day: u32, fill: DayFill) -> ViewNode {
     let mut node = node
         .with_constraints(pin_block(SIZE_MD))
         .interactive(Role::Button, label, FIELD_INTENTS)
+        .with_behaviour(SELECTS_ON_RELEASE)
         .owning_its_text()
         // `Border`, and the day grid rules out both alternatives.
         //
@@ -1043,8 +1066,8 @@ mod tests {
     use crate::testing::{Harness, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
     use crate::tree::{
-        Anchor, ClampRule, FocusFigure, FocusShownOn, Interaction, NodeKind, Props, Registry, Role,
-        Tip, ViewNode,
+        Anchor, Behaviour, ClampRule, FocusFigure, FocusShownOn, Intent, Interaction, NodeKind,
+        Phase, Props, Registry, Role, Tip, ViewNode,
     };
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
@@ -1820,5 +1843,27 @@ mod tests {
             }
             assert!(fills > 0, "the calendar draws at least one bar");
         }
+    }
+
+    /// Spec 010: the field trigger toggles the calendar on release.
+    ///
+    /// Falsified by dropping `.with_behaviour(...)` from the closed field:
+    ///
+    /// ```text
+    /// date_picker field declared behaviour None
+    /// ```
+    #[test]
+    fn date_picker_field_declares_toggle_on_release() {
+        let node = date_picker("when", "Date", "2026-09-25");
+        let field = child(&node, "field");
+        assert_eq!(
+            field.behaviour,
+            Some(Behaviour {
+                intent: Intent::Toggle,
+                phase: Phase::OnRelease,
+            }),
+            "date_picker field declared behaviour {:?}",
+            field.behaviour
+        );
     }
 }

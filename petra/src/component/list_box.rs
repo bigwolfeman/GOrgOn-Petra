@@ -53,9 +53,21 @@ use super::tokens::{
 };
 use crate::geom::{Align as CrossAlign, Axis};
 use crate::tree::{
-    Align, Anchor, AxisConstraint, ClampRule, Constraints, Edge, Fit, FocusFigure, FocusShownOn,
-    InputPolicy, InsetRefs, Interaction, Justify, Key, Layer, NodeKind, Props, Role, Semantics,
-    TextWrap, Tip, ViewNode,
+    Align, Anchor, AxisConstraint, Behaviour, ClampRule, Constraints, Edge, Fit, FocusFigure,
+    FocusShownOn, InputPolicy, InsetRefs, Intent, Interaction, Justify, Key, Layer, NodeKind,
+    Phase, Props, Role, Semantics, TextWrap, Tip, ViewNode,
+};
+
+/// Spec 010: menu action — one shot, no state on the row.
+const ACTIVATES_ON_RELEASE: Behaviour = Behaviour {
+    intent: Intent::Activate,
+    phase: Phase::OnRelease,
+};
+
+/// Spec 010: field opens/closes the list (dropdown / select / menu button).
+const TOGGLES_ON_RELEASE: Behaviour = Behaviour {
+    intent: Intent::Toggle,
+    phase: Phase::OnRelease,
 };
 
 /// Height of the flat rule under a field, which is the number the row above
@@ -322,6 +334,7 @@ pub fn menu_item_with(
     node.with_constraints(pin_block(SIZE_MD))
         // Same three intents as the field: a row is also a button.
         .interactive(Role::Button, label, FIELD_INTENTS)
+        .with_behaviour(ACTIVATES_ON_RELEASE)
         .owning_its_text()
         .with_focus_figure(FocusFigure::BarInside)
 }
@@ -405,6 +418,7 @@ pub fn list_box_field(
             ..Constraints::default()
         })
         .interactive(Role::Button, label, FIELD_INTENTS)
+        .with_behaviour(TOGGLES_ON_RELEASE)
         .owning_its_text();
     node.semantics.expanded = Some(expanded);
     node.semantics.focus_figure = FocusFigure::Sides;
@@ -468,8 +482,8 @@ mod tests {
     use crate::testing::{Harness, validated_with};
     use crate::token::{ThemeMode, standard_vocabulary};
     use crate::tree::{
-        Align, Anchor, Edge, Fit, FocusFigure, InputPolicy, Interaction, Justify, Layer, NodeKind,
-        Props, Registry, Role, TextWrap, Tip, ViewNode,
+        Align, Anchor, Behaviour, Edge, Fit, FocusFigure, InputPolicy, Intent, Interaction,
+        Justify, Layer, NodeKind, Phase, Props, Registry, Role, TextWrap, Tip, ViewNode,
     };
 
     fn child<'a>(node: &'a crate::tree::ViewNode, key: &str) -> &'a crate::tree::ViewNode {
@@ -849,5 +863,47 @@ mod tests {
                 placed.h
             );
         }
+    }
+
+    /// Spec 010: list-box field toggles open/closed on release.
+    ///
+    /// Falsified by dropping `.with_behaviour(...)` from [`list_box_field`]:
+    ///
+    /// ```text
+    /// list_box_field declared behaviour None
+    /// ```
+    #[test]
+    fn list_box_field_declares_toggle_on_release() {
+        let node = list_box_field("field", "Theme", "Dark", 40.0, IconMark::ChevronDown, false);
+        assert_eq!(
+            node.behaviour,
+            Some(Behaviour {
+                intent: Intent::Toggle,
+                phase: Phase::OnRelease,
+            }),
+            "list_box_field declared behaviour {:?}",
+            node.behaviour
+        );
+    }
+
+    /// Spec 010: menu items declare Activate / OnRelease.
+    ///
+    /// Falsified by dropping `.with_behaviour(...)` from [`menu_item_with`]:
+    ///
+    /// ```text
+    /// menu_item declared behaviour None
+    /// ```
+    #[test]
+    fn menu_item_declares_activate_on_release() {
+        let node = menu_item("rename", "Rename");
+        assert_eq!(
+            node.behaviour,
+            Some(Behaviour {
+                intent: Intent::Activate,
+                phase: Phase::OnRelease,
+            }),
+            "menu_item declared behaviour {:?}",
+            node.behaviour
+        );
     }
 }

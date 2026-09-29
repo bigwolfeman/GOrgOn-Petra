@@ -41,12 +41,15 @@
 //! by a second owner, and the two drift the first time a surface overlaps
 //! something (FR-009, R-A §7(a)).
 
+mod contributions;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use egui::{Context, Id, LayerId, Order};
 use gorgon_petra::anim::{FrameDecision, TransitionRegistry, wants_frame};
-use gorgon_petra::component::registry;
+use gorgon_petra::component::advance_ambient_spinners;
+use gorgon_petra::component::registry::bound::ExpandedTree;
 use gorgon_petra::focus::FocusTree;
 use gorgon_petra::frame::{
     FrameCounter, PetrifiedFrame, Placement, TransitionActivity, Viewport, petrify,
@@ -70,8 +73,12 @@ use gorgon_petra::token::{
     Vocabulary, standard_vocabulary,
 };
 use gorgon_petra::tree::{
-    Behaviour, InputPolicy, InsetRefs, Intent, Interaction, NodeKind, Phase, Props, Registry,
-    TextWrap, ValidatedTree, ViewNode, validate,
+    ApplyError, DirtyClass, PropKey, ResolveInputs, ResolvedTree, SlotChange, carries_bindings,
+    check_slot_versions,
+};
+use gorgon_petra::tree::{
+    Behaviour, InputPolicy, InsetRefs, Intent, Interaction, KeyPath, NodeKind, Phase, Props,
+    Registry, TextWrap, ValidatedTree, ViewNode, validate,
 };
 
 use crate::focus_caret::FocusCaret;
@@ -642,11 +649,50 @@ pub struct MountReport {
 struct Prepared {
     id: ContributionId,
     slot: String,
-    /// What is spliced: the expanded, accepted subtree re-keyed to `ui:<id>`,
-    /// or the error card that stands in its place.
+    /// The tree as offered: the expansion when expansion worked, the raw
+    /// contribution when it did not. Spliced only when nothing refused it;
+    /// the declaration a fold re-runs against when a value it reads arrives
+    /// late ([`Host::apply_slot_changes`]).
     node: ViewNode,
-    /// `Some` exactly when `node` is the error card, carrying its message.
+    /// Stage-2 acceptance refused it. This text is the card, and the tree is
+    /// never folded — a tree `validate` refused has a defect that no slot
+    /// value can repair.
     refused: Option<String>,
+    /// The fold refused it: a slot with no value yet, a value of the wrong
+    /// type. Same card treatment, but this one is re-folded by
+    /// [`Host::apply_slot_changes`], which is what lets the card give way the
+    /// moment the values arrive (design §8's snapshot-first order).
+    fold_refused: Option<String>,
+    /// Whether [`Self::node`] declares any property-value source
+    /// (`ViewNode::bound`). False is the pre-binding behaviour exactly: no
+    /// fold, and [`Self::drawn`] is `node` itself.
+    binds: bool,
+    /// The folded tree, kept across slot changes so
+    /// [`Host::apply_slot_changes`] can land a change on exactly the
+    /// properties the reverse index names instead of re-folding everything.
+    /// `Some` exactly when `binds` and the fold landed.
+    resolved: Option<ResolvedTree>,
+    /// The expansion with its regrowable units — the component references
+    /// whose bound parameters read slots. `Some` exactly when there is at
+    /// least one; [`Host::apply_slot_changes`] re-expands the units a batch
+    /// reaches and grafts them into [`Self::resolved`].
+    expanded: Option<ExpandedTree>,
+}
+
+impl Prepared {
+    /// Why a card stands in for this contribution, if one does.
+    fn refused(&self) -> Option<&str> {
+        self.refused.as_deref().or(self.fold_refused.as_deref())
+    }
+
+    /// What this frame places: the folded tree when the declaration binds
+    /// slots, the declaration otherwise. Never a refusal card — the mount
+    /// loop builds that where the vocabulary is reachable.
+    fn drawn(&self) -> &ViewNode {
+        self.resolved
+            .as_ref()
+            .map_or(&self.node, ResolvedTree::tree)
+    }
 }
 
 /// Drives one Petra application inside an `eframe` window.
@@ -664,6 +710,15 @@ pub struct Host<A: App> {
     shaper: GalleyShaper,
     translator: EventTranslator,
     cache: MeasureCache,
+    /// Where each contribution's tree last mounted, as the frame id of the
+    /// node it hangs under, keyed by its mount key (`ui:<id>`).
+    ///
+    /// A reverse-index site is reported in its own tree's ids — the tail of
+    /// the id the frame carries — while [`MeasureCache`] is keyed by full
+    /// frame ids. This map is the join, rebuilt on every mount
+    /// ([`Host::mount_contributions`]) and read by
+    /// [`Host::apply_slot_changes`] before a site may invalidate anything.
+    mounted_parents: BTreeMap<String, String>,
     counter: FrameCounter,
     state: LayoutState,
     presenter: Presenter,
@@ -818,6 +873,39 @@ pub struct Host<A: App> {
     prepared_stale: bool,
     /// What the last built frame did with each contribution.
     mounts: Vec<MountReport>,
+    /// Host clock for the pass in progress, seconds. Written in [`Host::pass`]
+    /// before contributions are spliced so ambient loading canvases can
+    /// resubmit at this phase without the publisher republishing.
+    pass_clock: f64,
+    /// Every slot value delivered through [`Host::apply_slot_changes`], by
+    /// name. The fold input: [`Prepared::resolved`] trees are folded against
+    /// it, and so is a binding the application's own tree declares. A slot
+    /// nothing delivered is an error naming it, never a defaulted value
+    /// (design §8: the table's snapshot arrives before the first fold).
+    slots: ResolveInputs,
+    /// The version every slot value in `slots` arrived at. The authority on
+    /// what is stale: a tree folded after several changes hold was handed its
+    /// values with no version history of its own
+    /// ([`ResolvedTree::resolve`] counts them as 0), so the one map that has
+    /// seen every [`Host::apply_slot_changes`] is what refuses a replay.
+    slot_versions: BTreeMap<String, u32>,
+    /// What [`Host::regrown_components`] answers: the components the last
+    /// landed batch re-expanded.
+    last_regrown: Vec<String>,
+    /// The application's own tree, folded: the retained half of the design
+    /// §5 pair for the tree the application owns. Empty index until the
+    /// application's tree first declares a binding.
+    retained_app: ResolvedTree,
+    /// The application's own fold is refusing — its values have not arrived.
+    /// What [`Host::apply_slot_changes`] watches so the refusal on screen
+    /// gives way to the tree when they do, without waiting for an unrelated
+    /// event (an idle shell is the normal state, SC-002).
+    app_fold_refused: bool,
+    /// A slot change landed since the frame on screen was built. The
+    /// [`Host::can_reuse_frame`] twin of `prepared_stale`: a caret hop paints
+    /// the last picture without asking for a tree, and a change that arrived
+    /// mid-hop must not be left waiting out the hop.
+    slots_stale: bool,
     /// One retained snapshot per live contribution, and whether each is
     /// behind (`contracts/surface-contribution.md` §8).
     ///
@@ -878,7 +966,7 @@ pub struct Host<A: App> {
 /// The node's canonical id, plus the pair it declared. The application does
 /// not have to hold the tree to read this: everything here is either the
 /// route's own answer or a copy of what the node published into the frame.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct FiredIntent {
     /// Canonical id of the node whose behaviour fired.
     pub node: String,
@@ -886,6 +974,15 @@ pub struct FiredIntent {
     pub intent: Intent,
     /// Which moment of the gesture this is.
     pub phase: Phase,
+    /// Normalised Adjust value in `[0, 1]`, when the intent is [`Intent::Adjust`]
+    /// and the node sits inside a slider the frame placed. Never a pointer
+    /// position — the host maps the pointer through
+    /// [`gorgon_petra::component::slider_value_at`] before the wire.
+    pub value: Option<f64>,
+    /// Adjusted column weights, when the intent is [`Intent::Adjust`] and the
+    /// node is a structured-list or data-table divider. Recovered from the
+    /// frame the same way as [`Self::value`]; never a pointer position.
+    pub weights: Option<Vec<f64>>,
 }
 
 /// The behaviour `event` satisfied, if it satisfied one.
@@ -935,10 +1032,20 @@ fn fired_behaviour(
     let declared = |node: &str| -> Option<Behaviour> { frame.placement(node)?.semantics.behaviour };
     let fire = |node: &str, want: Phase| {
         let behaviour = declared(node)?;
-        (behaviour.phase == want).then(|| FiredIntent {
+        if behaviour.phase != want {
+            return None;
+        }
+        let (value, weights) = if behaviour.intent == Intent::Adjust {
+            adjust_from_frame(frame, node, event)
+        } else {
+            (None, None)
+        };
+        Some(FiredIntent {
             node: node.to_owned(),
             intent: behaviour.intent,
             phase: behaviour.phase,
+            value,
+            weights,
         })
     };
 
@@ -975,6 +1082,34 @@ fn fired_behaviour(
         InputEvent::PointerMoved { .. } => fire(node, Phase::OnChange),
         _ => None,
     }
+}
+
+/// Map a pointer event on an Adjust node to the value or weights the frame
+/// can name — never the pointer position itself.
+fn adjust_from_frame(
+    frame: &PetrifiedFrame,
+    node: &str,
+    event: &InputEvent,
+) -> (Option<f64>, Option<Vec<f64>>) {
+    let Some(pos) = event.pointer_pos() else {
+        return (None, None);
+    };
+    if let Some(v) = gorgon_petra::component::slider_value_at(frame, node, pos) {
+        return (Some(f64::from(v)), None);
+    }
+    if let Some(current) = gorgon_petra::component::structured_list_placed_weights(frame, node)
+        && let Some(next) =
+            gorgon_petra::component::structured_list_weights_at(frame, node, pos, &current)
+    {
+        return (None, Some(next.into_iter().map(f64::from).collect()));
+    }
+    if let Some(current) = gorgon_petra::component::data_table_placed_weights(frame, node)
+        && let Some(next) =
+            gorgon_petra::component::data_table_weights_at(frame, node, pos, &current)
+    {
+        return (None, Some(next.into_iter().map(f64::from).collect()));
+    }
+    (None, None)
 }
 
 impl<A: App> Host<A> {
@@ -1040,6 +1175,7 @@ impl<A: App> Host<A> {
             shaper,
             translator: EventTranslator::new(),
             cache: MeasureCache::new(),
+            mounted_parents: BTreeMap::new(),
             counter: FrameCounter::new(),
             state: LayoutState::default(),
             presenter,
@@ -1091,6 +1227,13 @@ impl<A: App> Host<A> {
             // `false` here would be a second claim about the same fact.
             prepared_stale: true,
             mounts: Vec::new(),
+            pass_clock: 0.0,
+            slots: ResolveInputs::new(),
+            slot_versions: BTreeMap::new(),
+            last_regrown: Vec::new(),
+            retained_app: ResolvedTree::new(),
+            app_fold_refused: false,
+            slots_stale: false,
             ledger: ContributionLedger::new(),
         }
     }
@@ -1523,7 +1666,10 @@ impl<A: App> Host<A> {
         // the ancestor walk it requires.
         // The clock goes to the application before its change set is read,
         // so a view that depends on the clock can name what the clock moved.
+        // Kept on the host too: contributed ambient spinners resubmit from
+        // this value at mount time without the publisher republishing.
         let now = ctx.input(|input| input.time);
+        self.pass_clock = now;
         self.app.tick(now);
         // Immediately after the clock and not later: the application has just
         // been told what time it is, so this is the first moment it can name
@@ -1779,6 +1925,12 @@ impl<A: App> Host<A> {
         // appearing, because this path paints the last picture and never asks
         // for a tree.
         if self.prepared_stale {
+            return false;
+        }
+        // A slot change after the last petrify means the picture on screen is
+        // outdated; the hop must not paint it again. The next pass folds the
+        // new slot values.
+        if self.slots_stale {
             return false;
         }
         let Some(frame) = self.last_frame.as_ref() else {
@@ -3330,7 +3482,8 @@ impl<A: App> Host<A> {
     ///
     /// # Size
     ///
-    /// Expansion is depth-capped ([`registry::MAX_DEPTH`]) and cannot loop —
+    /// Expansion is depth-capped
+    /// ([`gorgon_petra::component::registry::MAX_DEPTH`]) and cannot loop —
     /// a constructor in `gorgon_petra::component` has no way to name another
     /// component — so an expanded tree is bounded by the size of what was
     /// handed in. Bounding *that* is the caller's job: on the shipped path
@@ -3374,6 +3527,274 @@ impl<A: App> Host<A> {
         // surface into one would otherwise wait for an unrelated event.
         self.ctx.request_repaint();
         self
+    }
+
+    /// Every retained tree that has folded: the contributions first, then the
+    /// application's own.
+    fn folded(&self) -> impl Iterator<Item = &ResolvedTree> {
+        self.prepared
+            .iter()
+            .filter_map(|prepared| prepared.resolved.as_ref())
+            .chain(std::iter::once(&self.retained_app))
+    }
+
+    /// Every `(node id, property)` the retained trees bind to `slot`.
+    ///
+    /// The reverse index a slot table hands to its dirty classes (task R-2);
+    /// exposed here so a caller can ask what a change would touch before it
+    /// sends one. It covers what is folded now: a tree still refusing its
+    /// missing values has no index yet and joins the answer the moment its
+    /// fold lands.
+    #[must_use]
+    pub fn slot_bindings(&self, slot: &str) -> Vec<(String, PropKey)> {
+        let mut out: Vec<(String, PropKey)> = Vec::new();
+        for tree in self.folded() {
+            out.extend(
+                tree.index()
+                    .get(slot)
+                    .iter()
+                    .map(|site| (site.node.clone(), site.prop)),
+            );
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// Canonical ids (tree-relative, `/ui:<id>/…`) of every component a
+    /// change to `slot` would re-expand: the component-parameter half of
+    /// [`Host::slot_bindings`].
+    #[must_use]
+    pub fn slot_components(&self, slot: &str) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .prepared
+            .iter()
+            .filter_map(|prepared| prepared.expanded.as_ref())
+            .flat_map(|expanded| {
+                expanded
+                    .units()
+                    .iter()
+                    .filter(|unit| unit.slots().contains(slot))
+                    .map(|unit| expanded.unit_id(unit))
+            })
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// The components the last [`Host::apply_slot_changes`] that landed
+    /// re-expanded, as canonical ids (tree-relative), sorted.
+    #[must_use]
+    pub fn regrown_components(&self) -> &[String] {
+        &self.last_regrown
+    }
+
+    /// Fold the retained trees against one batch of slot values (design §7).
+    ///
+    /// Atomic: one commit group across every retained tree, and it is applied
+    /// nowhere unless every tree accepts the batch. The rejection is by cause
+    /// — a stale version is the caller's bug (a slot table pushing an
+    /// out-of-order write), and swallowing it would draw a frame that lies
+    /// about what it holds.
+    ///
+    /// Returns what was re-folded, one `(node id, property)` per binding
+    /// site the batch touched, deduplicated and sorted: that is the caller's
+    /// report of where the change landed. A tree that binds none of the
+    /// changed slots is not refolded at all, so the cost is the touched
+    /// subtrees and not every retained tree (design §12's constant-fold
+    /// guarantee).
+    ///
+    /// A contribution card standing in for a tree whose values had not
+    /// arrived gives way on this call: the fold re-runs against what the
+    /// batch left behind (design §8), and the next pass splices the tree.
+    ///
+    /// Legacy `ChangeSet::All` path is untouched: `set_contributions` is
+    /// parallel surface for republish, and only the slot-driven updates here
+    /// invalidate by dirty class (design §5, task R-2).
+    ///
+    /// Invalidation is keyed: the layout-class sites the reverse index
+    /// reports, as full frame ids, and nothing else. A paint-class change
+    /// (selected, disabled, opacity, image) touches no measured size at all,
+    /// so it invalidates nothing and only asks for damage.
+    ///
+    /// A component whose bound parameter (`ComponentRef::bound`) reads a
+    /// changed slot re-expands — that component's subtree alone — inside the
+    /// same commit group; the regrown subtree is grafted onto the old one so
+    /// every unchanged node keeps its `Arc` and Merkle hash, and exactly the
+    /// nodes whose content moved join the keyed invalidation.
+    /// [`Host::regrown_components`] names what re-expanded.
+    pub fn apply_slot_changes(
+        &mut self,
+        changes: &[SlotChange],
+    ) -> Result<Vec<(String, PropKey)>, ApplyError> {
+        // The one stale check that matters — see `slot_versions`.
+        check_slot_versions(&self.slot_versions, changes)?;
+        let mut touched: Vec<(String, PropKey)> = Vec::new();
+        let mut dirty: BTreeSet<String> = BTreeSet::new();
+        let mut regrown: Vec<String> = Vec::new();
+        let changed: BTreeSet<&str> = changes.iter().map(|c| c.slot.as_str()).collect();
+        // The values a regrown component expands against. Only built when
+        // some contribution has a regrowable unit, because it copies the
+        // held values.
+        let after = self.prepared.iter().any(|p| p.expanded.is_some()).then(|| {
+            let mut after = self.slots.clone();
+            for change in changes {
+                after.insert(change.slot.as_str().to_owned(), change.value.clone());
+            }
+            after
+        });
+        // Clone-apply-commit: nothing is committed unless every tree accepts
+        // the batch (design §1's commit group). The clones share every `Arc`
+        // child they do not enter, and a batch is a slot table push, not a
+        // frame. A component whose bound parameter moved re-expands inside
+        // the same group, so a regrowth that refuses refuses the batch.
+        let mut commit: Vec<(usize, ResolvedTree, Option<ViewNode>)> = Vec::new();
+        for (ix, prepared) in self.prepared.iter().enumerate() {
+            if let Some(tree) = &prepared.resolved {
+                let mut next = tree.clone();
+                let sites = next.apply_slot_changes(changes)?;
+                let key = contribution_key(prepared.id);
+                let prefix = self.mounted_parents.get(key.as_str()).map(String::as_str);
+                record_sites(&mut touched, &mut dirty, prefix, sites);
+                let mut expansion = None;
+                if let (Some(expanded), Some(after)) = (&prepared.expanded, &after)
+                    && let Some(grown) = self.regrow(expanded, &mut next, &changed, after)?
+                {
+                    // Every node whose content the regrowth moved is named,
+                    // whatever its dirty class: a constructor re-run can move
+                    // constraints and text as readily as a fill.
+                    if let Some(prefix) = prefix {
+                        dirty.extend(grown.named().map(|id| format!("{prefix}{id}")));
+                    }
+                    regrown.extend(grown.units.into_iter().map(|unit| unit.id));
+                    expansion = Some(grown.expansion);
+                }
+                commit.push((ix, next, expansion));
+            }
+        }
+        let mut app_next = self.retained_app.clone();
+        // The application's tree is the frame's own root: its site ids are
+        // full frame ids already, joined with nothing.
+        record_sites(
+            &mut touched,
+            &mut dirty,
+            Some(""),
+            app_next.apply_slot_changes(changes)?,
+        );
+        for (ix, tree, expansion) in commit {
+            let prepared = &mut self.prepared[ix];
+            prepared.resolved = Some(tree);
+            if let Some(expansion) = expansion
+                && let Some(expanded) = &mut prepared.expanded
+            {
+                prepared.node = expansion.clone();
+                expanded.commit(expansion);
+            }
+        }
+        self.retained_app = app_next;
+        for change in changes {
+            self.slots
+                .insert(change.slot.as_str().to_owned(), change.value.clone());
+            self.slot_versions
+                .insert(change.slot.as_str().to_owned(), change.version);
+        }
+        regrown.sort();
+        regrown.dedup();
+        self.last_regrown = regrown;
+        // A fold that refused for want of values re-runs now, and its card
+        // gives way if they have all arrived. A re-fold that fails again
+        // still moves what is on screen — the card says a different cause —
+        // so it counts as a change below. The application's own tree
+        // re-folds every pass (`mount_contributions`), so a refusal there is
+        // the same signal without a fold here.
+        let app_refused = self.app_fold_refused;
+        let mut refolded = app_refused;
+        // A tree still refusing hangs as a card whose cause text this batch
+        // may have changed. No binding reports that, so whatever the last
+        // frame carried under the card's root joins the dirty set below.
+        //
+        // The retry re-prepares from the contribution as published rather
+        // than re-folding the last expansion: a card may be waiting on the
+        // slot a bound component parameter reads, and then there is no
+        // expansion yet to fold. A set replaced since the last pass
+        // (`prepared_stale`) is re-prepared whole at the next pass, against
+        // the values this batch just stored, so it needs no retry here.
+        let mut stale_roots: Vec<String> = Vec::new();
+        let retry: Vec<usize> = if self.prepared_stale {
+            Vec::new()
+        } else {
+            self.prepared
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| p.binds && p.fold_refused.is_some())
+                .map(|(ix, _)| ix)
+                .collect()
+        };
+        refolded |= self.prepared_stale;
+        for ix in retry {
+            refolded = true;
+            let id = self.prepared[ix].id;
+            let key = contribution_key(id);
+            let prefix = self.mounted_parents.get(key.as_str()).cloned();
+            let Some(contribution) = self.contributions.iter().find(|c| c.id == id) else {
+                panic!(
+                    "prepared contribution {id} has no published contribution while the prepared \
+                     set is current; the two are rebuilt together, so this is a host bug"
+                );
+            };
+            let fresh = self.prepare_one(contribution);
+            if let (None, Some(resolved)) = (fresh.refused(), &fresh.resolved) {
+                let sites = resolved
+                    .index()
+                    .iter()
+                    .flat_map(|(_, sites)| sites.iter().map(|site| (site.node.clone(), site.prop)))
+                    .collect();
+                record_sites(&mut touched, &mut dirty, prefix.as_deref(), sites);
+            }
+            // Whether the card gave way or now says a different cause, what
+            // the last frame carried under it is no longer what is drawn.
+            if let Some(prefix) = &prefix {
+                stale_roots.push(format!("{prefix}/{key}"));
+            }
+            self.prepared[ix] = fresh;
+        }
+        touched.sort();
+        touched.dedup();
+        if !touched.is_empty() || refolded {
+            // The content at risk under a card is exactly what the last
+            // frame carried beneath it; an application refusal swapped the
+            // whole root, which is every placement that frame has.
+            let last = self.last_frame.as_ref();
+            for root in stale_roots {
+                let under = format!("{root}/");
+                if let Some(frame) = last {
+                    for placement in &frame.placements {
+                        if placement.id == root || placement.id.starts_with(&under) {
+                            dirty.insert(placement.id.clone());
+                        }
+                    }
+                }
+            }
+            if app_refused && let Some(frame) = last {
+                for placement in &frame.placements {
+                    dirty.insert(placement.id.clone());
+                }
+            }
+            // What the pictures on screen hold was folded against the old
+            // values; `slots_stale` is what stops `can_reuse_frame` painting
+            // the last one again. The measure cache is invalidated by the
+            // dirty set alone: design §5's keyed `ChangeSet::Nodes`, never
+            // `ChangeSet::All`.
+            self.slots_stale = true;
+            let invalidation = if dirty.is_empty() {
+                ChangeSet::None
+            } else {
+                ChangeSet::Nodes(dirty)
+            };
+            self.cache.apply(&invalidation);
+            self.ctx.request_repaint();
+        }
+        Ok(touched)
     }
 
     /// The contributions this shell was last given, in publication order.
@@ -3443,36 +3864,19 @@ impl<A: App> Host<A> {
     /// is accepted for exactly the reason the application would be; one
     /// naming a token this theme does not define is refused for exactly the
     /// reason the application would be.
+    ///
+    /// Fold now, against every value delivered so far (design §8's
+    /// snapshot-first order). A slot with no value is a refusal naming it,
+    /// on its own card in the mount slot — the frame must not draw a picture
+    /// that lies — and the card gives way the moment the values arrive,
+    /// because `binds` stays set and `Host::apply_slot_changes` re-prepares.
+    /// [`Host::prepare_one`] is the per-contribution body.
     fn prepare_contributions(&mut self) {
-        let mut prepared = Vec::with_capacity(self.contributions.len());
-        for contribution in &self.contributions {
-            let outcome = match registry::expand(&contribution.tree) {
-                Err(err) => Err(format!("{}: {}", err.component, err.reason)),
-                Ok(expanded) => match validate(&expanded, &self.registry) {
-                    Ok(_) => Ok(expanded),
-                    Err(errors) => Err(errors.to_string()),
-                },
-            };
-            prepared.push(match outcome {
-                Ok(node) => Prepared {
-                    id: contribution.id,
-                    slot: contribution.slot.clone(),
-                    node,
-                    refused: None,
-                },
-                Err(reason) => Prepared {
-                    node: contribution_card(
-                        contribution.id,
-                        &contribution.slot,
-                        &reason,
-                        self.registry.vocabulary(),
-                    ),
-                    id: contribution.id,
-                    slot: contribution.slot.clone(),
-                    refused: Some(reason),
-                },
-            });
-        }
+        let prepared = self
+            .contributions
+            .iter()
+            .map(|contribution| self.prepare_one(contribution))
+            .collect();
         self.prepared = prepared;
         self.prepared_stale = false;
     }
@@ -3519,8 +3923,30 @@ impl<A: App> Host<A> {
         if self.prepared_stale {
             self.prepare_contributions();
         }
+        // The application's own tree folds here, before anything is spliced
+        // into it: a `bound` property in it resolves against the same held
+        // values as every contribution's, and a fold that refuses paints
+        // `refusal_view` with its cause rather than a picture that lies.
+        root = if carries_bindings(&root) {
+            match self.retained_app.refold(&root) {
+                Ok(()) => {
+                    self.app_fold_refused = false;
+                    self.retained_app.tree().clone()
+                }
+                Err(err) => {
+                    self.app_fold_refused = true;
+                    refusal_view(&format!(
+                        "a bound property in the application's tree refused to resolve: {err}"
+                    ))
+                }
+            }
+        } else {
+            self.app_fold_refused = false;
+            root
+        };
         if self.prepared.is_empty() {
             self.mounts.clear();
+            self.slots_stale = false;
             return root;
         }
 
@@ -3532,6 +3958,7 @@ impl<A: App> Host<A> {
         // borrowed by the path walk above, and a card built inside the loop
         // would need `self.registry` while `self.prepared` is borrowed.
         let mut mounts = Vec::with_capacity(self.prepared.len());
+        let mut recorded: Vec<(String, String)> = Vec::with_capacity(self.prepared.len());
         let mut placed: Vec<(Vec<usize>, ViewNode)> = Vec::new();
         let mut orphans: Vec<ViewNode> = Vec::new();
         for prepared in &self.prepared {
@@ -3540,11 +3967,32 @@ impl<A: App> Host<A> {
                 .map_or(&[][..], Vec::as_slice);
             let outcome = match paths {
                 [path] => {
-                    placed.push((path.clone(), self.keyed(prepared.id, prepared.node.clone())));
-                    prepared
-                        .refused
-                        .clone()
-                        .map_or(MountOutcome::Mounted, MountOutcome::Refused)
+                    if let Some(reason) = prepared.refused() {
+                        // A refused contribution still takes its own slot,
+                        // as the card that says why (and that gives way when
+                        // the values it was waiting on arrive).
+                        placed.push((
+                            path.clone(),
+                            self.keyed(
+                                prepared.id,
+                                contribution_card(
+                                    prepared.id,
+                                    &prepared.slot,
+                                    reason,
+                                    self.registry.vocabulary(),
+                                ),
+                            ),
+                        ));
+                        MountOutcome::Refused(reason.to_owned())
+                    } else {
+                        let mut node = prepared.drawn().clone();
+                        // Contributions are owned snapshots. Advance ambient
+                        // loading canvases to this pass's clock so a spinner
+                        // turns without Lua republishing every frame.
+                        advance_ambient_spinners(&mut node, self.pass_clock);
+                        placed.push((path.clone(), self.keyed(prepared.id, node)));
+                        MountOutcome::Mounted
+                    }
                 }
                 [] => {
                     orphans.push(self.keyed(
@@ -3579,12 +4027,23 @@ impl<A: App> Host<A> {
                     MountOutcome::AmbiguousSlot(many.len())
                 }
             };
+            // Where this artifact (tree or card) hangs in the frame — the
+            // join a reverse-index site needs before it may invalidate a
+            // measured size (task R-2). An orphan hangs under the root.
+            let parent = match paths {
+                [path] => id_at_path(&root, path),
+                _ => id_at_path(&root, &[]),
+            };
+            if let Some(parent) = parent {
+                recorded.push((contribution_key(prepared.id).to_string(), parent));
+            }
             mounts.push(MountReport {
                 id: prepared.id,
                 slot: prepared.slot.clone(),
                 outcome,
             });
         }
+        self.mounted_parents = recorded.into_iter().collect();
         self.mounts = mounts;
 
         for (path, node) in placed {
@@ -3599,6 +4058,9 @@ impl<A: App> Host<A> {
                 attach(&mut root, card);
             }
         }
+        // This pass folded every retained tree against the held slot data, so
+        // the change generation they carry is current.
+        self.slots_stale = false;
         root
     }
 }
@@ -3645,6 +4107,50 @@ fn asks_for_a_copy(event: &InputEvent) -> bool {
         } => modifiers.ctrl || modifiers.meta,
         _ => false,
     }
+}
+
+/// Fold sites to the host frame ids [`MeasureCache`] is keyed by, and record
+/// them as the properties this batch dirtied (design §5's keyed
+/// invalidation).
+///
+/// `prefix` is the frame id of the node the tree's re-keyed root
+/// (`ui:<id>`) mounts under — `Some("")` for the application's own tree,
+/// whose site ids are already full frame ids. `touched` keeps the
+/// tree-relative form the reverse index reports (the caller sees the same
+/// ids [`ResolvedTree::apply_slot_changes`] returns); only `dirty` — the
+/// measure cache's own vocabulary — joins the prefix. A site outside a
+/// layout dirty class joins `touched` alone: it changes what is painted,
+/// never what is measured (§5: paint vs layout).
+fn record_sites(
+    touched: &mut Vec<(String, PropKey)>,
+    dirty: &mut BTreeSet<String>,
+    prefix: Option<&str>,
+    sites: Vec<(String, PropKey)>,
+) {
+    for (node, key) in sites {
+        if let DirtyClass::Layout = key.dirty_class()
+            && let Some(prefix) = prefix
+        {
+            dirty.insert(format!("{prefix}{node}"));
+        }
+        touched.push((node, key));
+    }
+}
+
+/// The canonical frame id of the node `path` names under `root`.
+///
+/// The same walk [`find_slots`] indexes by, producing the same ids
+/// `layout::measure` keys [`MeasureCache`] with: root key, then one key per
+/// step of the child-index path.
+fn id_at_path(root: &ViewNode, path: &[usize]) -> Option<String> {
+    let mut at = KeyPath::root();
+    at.push(root.key.clone());
+    let mut node = root;
+    for &ix in path {
+        node = node.children.get(ix)?;
+        at.push(node.key.clone());
+    }
+    Some(at.id())
 }
 
 /// Record the child-index path of every node whose key is in `wanted`.
@@ -3846,13 +4352,13 @@ mod tests {
     };
     use egui::{Context, Event, Key, Modifiers, RawInput};
     use gorgon_petra::frame::PetrifiedFrame;
-    use gorgon_petra::geom::{Point, Rect, Size};
+    use gorgon_petra::geom::{Point, Rect, Scale, Size};
     use gorgon_petra::input::{InputEvent, Route, route_pointer_exit};
-    use gorgon_petra::layout::{RowSource, SizeProposal};
+    use gorgon_petra::layout::{MeasureKey, RowSource, SizeProposal};
     use gorgon_petra::token::TokenName;
     use gorgon_petra::tree::{
-        Anchor, ClampRule, InputPolicy, Intent, Interaction, Layer, NodeKind, Phase, Props, Role,
-        ViewNode,
+        Anchor, ClampRule, InputPolicy, Intent, Interaction, Layer, NodeKind, Phase, PropKey,
+        PropVal, Props, Role, SlotChange, SlotKey, SlotValue, ViewNode,
     };
     use std::ops::Range;
 
@@ -3891,6 +4397,13 @@ mod tests {
         /// tests drive the shipped control rather than a fixture that
         /// declares whatever the test wishes it declared.
         checkbox: bool,
+        /// Mount a real `component::slider`, for the Adjust-value fill.
+        slider: bool,
+        /// Bind `label`'s text to `title` and its `disabled` to `flag` — one
+        /// layout property and one paint property on one node, so the two
+        /// dirty classes are separable (task R-2). Nothing else in the tree
+        /// binds, so the sibling subtree is the untouched baseline.
+        bound_pair: bool,
         /// Every behaviour the host has reported firing, in order.
         intents: Vec<FiredIntent>,
     }
@@ -3960,6 +4473,22 @@ mod tests {
                 return ViewNode::new(NodeKind::Stack, "root").child(
                     gorgon_petra::component::checkbox("auto", "Auto-reload", false),
                 );
+            }
+            if self.slider {
+                return ViewNode::new(NodeKind::Stack, "root")
+                    .child(gorgon_petra::component::slider("vol", "Volume", 0.4));
+            }
+            if self.bound_pair {
+                let mut label = ViewNode::new(NodeKind::Text, "label");
+                label
+                    .bound
+                    .set(PropKey::Text, PropVal::Bind(SlotKey::new("title")));
+                label
+                    .bound
+                    .set(PropKey::Disabled, PropVal::Bind(SlotKey::new("flag")));
+                return ViewNode::new(NodeKind::Stack, "root")
+                    .child(label)
+                    .child(ViewNode::new(NodeKind::Text, "other"));
             }
             let mut panel = Props::default();
             panel
@@ -5736,6 +6265,132 @@ mod tests {
         );
     }
 
+    /// One sentinel measure entry per node id: what
+    /// [`MeasureCache::peek`] reports afterwards is exactly what the next
+    /// measure pass would recompute, with no timing anywhere.
+    fn measure_key(id: &str) -> MeasureKey {
+        MeasureKey {
+            node: id.to_owned(),
+            proposal: SizeProposal::unbounded(),
+            theme_rev: 0,
+            scale: Scale::ONE,
+        }
+    }
+
+    /// Drop one sentinel into the cache for every node the `bound_pair`
+    /// fixture places.
+    fn warm_sentinels(host: &mut Host<Demo>) {
+        for id in ["/root", "/root/label", "/root/other"] {
+            host.cache.insert(measure_key(id), Size::ZERO);
+        }
+        assert!(held(host, "/root/label"), "the warm-up must land");
+    }
+
+    /// Whether a sentinel for `id` survived.
+    fn held(host: &mut Host<Demo>, id: &str) -> bool {
+        host.cache.peek(&measure_key(id)).is_some()
+    }
+
+    /// A one-slot change of a layout-class property dirties exactly the
+    /// properties bound to that slot, and re-measures only the path their
+    /// sizes feed: the site and its ancestors, never the sibling subtree
+    /// (design §5's keyed invalidation, task R-2).
+    ///
+    /// The measure cache is the counter — a sentinel entry per node id, and
+    /// what survives [`Host::apply_slot_changes`] is what no measure pass
+    /// will recompute. Not a timer in sight.
+    #[test]
+    fn a_layout_slot_change_dirties_only_its_bound_sites() {
+        let ctx = headless();
+        let mut host = Host::new(
+            &ctx,
+            Demo {
+                bound_pair: true,
+                ..Demo::default()
+            },
+            default_presenter(),
+        );
+        step(&ctx, &mut host, RawInput::default());
+        host.apply_slot_changes(&[
+            SlotChange::new("title", 1, SlotValue::Str("seed".to_owned())),
+            SlotChange::new("flag", 1, SlotValue::Bool(false)),
+        ])
+        .expect("the first versions land");
+        step(&ctx, &mut host, RawInput::default());
+        warm_sentinels(&mut host);
+
+        let touched = host
+            .apply_slot_changes(&[SlotChange::new(
+                "title",
+                2,
+                SlotValue::Str("after".to_owned()),
+            )])
+            .expect("a newer version lands");
+        assert_eq!(
+            touched,
+            vec![("/root/label".to_owned(), PropKey::Text)],
+            "exactly the property bound to `title` moves"
+        );
+        assert!(
+            !held(&mut host, "/root/label"),
+            "the changed site is re-measured"
+        );
+        assert!(
+            !held(&mut host, "/root"),
+            "and so is its ancestor: the site's size fed it"
+        );
+        assert!(
+            held(&mut host, "/root/other"),
+            "the sibling subtree keeps every measurement it had — the \
+             damage stops at the subtree the change reached"
+        );
+    }
+
+    /// The same seam, one dirty class down: a paint-class property names its
+    /// site and invalidates no measurement at all (design §5: paint damage
+    /// only, no layout).
+    #[test]
+    fn a_paint_slot_change_dirties_no_measurement() {
+        let ctx = headless();
+        let mut host = Host::new(
+            &ctx,
+            Demo {
+                bound_pair: true,
+                ..Demo::default()
+            },
+            default_presenter(),
+        );
+        step(&ctx, &mut host, RawInput::default());
+        host.apply_slot_changes(&[
+            SlotChange::new("title", 1, SlotValue::Str("seed".to_owned())),
+            SlotChange::new("flag", 1, SlotValue::Bool(false)),
+        ])
+        .expect("the first versions land");
+        step(&ctx, &mut host, RawInput::default());
+        warm_sentinels(&mut host);
+
+        let touched = host
+            .apply_slot_changes(&[SlotChange::new("flag", 2, SlotValue::Bool(true))])
+            .expect("a newer version lands");
+        assert_eq!(
+            touched,
+            vec![("/root/label".to_owned(), PropKey::Disabled)],
+            "exactly the property bound to `flag` moves"
+        );
+        assert!(
+            held(&mut host, "/root/label"),
+            "paint is not a measurement: the site keeps its size"
+        );
+        assert!(
+            held(&mut host, "/root"),
+            "and its ancestor keeps its measurement"
+        );
+        assert!(
+            held(&mut host, "/root/other"),
+            "and every sibling keeps its measurement"
+        );
+    }
+
     /// Pass with no input until the window asks for nothing, and answer how
     /// many passes that took. Panics rather than spinning: a window that
     /// never settles is the failure, not a reason to hang.
@@ -6023,6 +6678,48 @@ mod tests {
             host.app().intents.is_empty(),
             "a widget declaring no behaviour fired {:?}",
             host.app().intents
+        );
+    }
+
+    /// A press on a slider rail fires Adjust / OnPress with the value the
+    /// frame names at that pointer — never the pointer itself.
+    ///
+    /// Falsified by dropping the `adjust_from_frame` fill from
+    /// `fired_behaviour`, or by dropping `.with_behaviour(ADJUSTS_ON_PRESS)`
+    /// from the rail:
+    ///
+    /// ```text
+    /// a press on the slider rail fired []
+    /// ```
+    /// or `value: None` on a non-empty fire.
+    #[test]
+    fn a_press_on_a_slider_rail_fires_adjust_with_a_value() {
+        let ctx = Context::default();
+        let mut host = Host::new(
+            &ctx,
+            Demo {
+                slider: true,
+                ..Demo::default()
+            },
+            default_presenter(),
+        );
+        step(&ctx, &mut host, RawInput::default());
+        let at = centre_of_suffix(&host, "/rail");
+        step(&ctx, &mut host, press_at(at));
+        let fired = &host.app().intents;
+        assert_eq!(fired.len(), 1, "a press on the slider rail fired {fired:?}");
+        assert_eq!(fired[0].intent, Intent::Adjust);
+        assert_eq!(fired[0].phase, Phase::OnPress);
+        let value = fired[0]
+            .value
+            .expect("Adjust on a slider must carry a value, never a bare intent");
+        assert!(
+            (0.0..=1.0).contains(&value),
+            "slider value must be normalised into [0, 1], got {value}"
+        );
+        assert!(
+            fired[0].weights.is_none(),
+            "a slider Adjust must not invent column weights"
         );
     }
 

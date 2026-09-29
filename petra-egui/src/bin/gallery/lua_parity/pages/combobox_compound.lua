@@ -18,7 +18,7 @@
 --
 -- Key first, params second: the wire shape is `{ props, state }` with
 -- `deny_unknown_fields` and no `key` field. See
--- `gorgon/kernel-lua/src/ui/compound.lua`.
+-- `gorgon/lua-view/src/ui/compound.lua`.
 --
 -- Falsified 2026-09-19 by changing `highlighted = 1` to `0`, then restored
 -- byte-identical and re-run green. The highlight moves which filtered row

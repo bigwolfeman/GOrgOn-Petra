@@ -284,7 +284,7 @@ impl Default for Props {
 /// Query, highlight, open-or-shut, density, category, and favorites.
 /// Round-trips through reload as a whole.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct State {
     /// Text in the search field. Also the filter needle, or a `>` prefix.
     pub query: String,

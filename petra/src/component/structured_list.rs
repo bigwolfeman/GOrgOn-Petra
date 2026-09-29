@@ -94,8 +94,8 @@ use std::sync::Arc;
 use crate::frame::PetrifiedFrame;
 use crate::geom::{Align, Axis, Point};
 use crate::tree::{
-    AxisConstraint, FocusFigure, InsetRefs, Interaction, Justify, Key, NodeKind, Props, Role,
-    Semantics, TrackSize, ViewNode,
+    AxisConstraint, Behaviour, FocusFigure, InsetRefs, Intent, Interaction, Justify, Key, NodeKind,
+    Phase, Props, Role, Semantics, TrackSize, ViewNode,
 };
 
 /// Carbon default structured-list row height (style page Size table). Not
@@ -141,6 +141,19 @@ const ROW_INTENTS: &[Interaction] = &[Interaction::Focus, Interaction::Click, In
 
 /// What a column divider declares. `Drag` alone: see the module doc.
 const DIVIDER_INTENTS: &[Interaction] = &[Interaction::Drag];
+
+/// Spec 010: exclusive among siblings; a second Select on another row clears
+/// this one.
+const SELECTS_ON_RELEASE: Behaviour = Behaviour {
+    intent: Intent::Select,
+    phase: Phase::OnRelease,
+};
+
+/// Spec 010: live column resize under drag.
+const ADJUSTS_ON_CHANGE: Behaviour = Behaviour {
+    intent: Intent::Adjust,
+    phase: Phase::OnChange,
+};
 
 /// Which padding mixin a cell takes.
 #[derive(Clone, Copy)]
@@ -240,7 +253,8 @@ pub fn structured_list_row(key: impl Into<Key>, cells: Vec<ViewNode>, selected: 
         // spans the list, so its side bars stand in the list's own padding
         // rather than on a neighbouring row, and the row's only other mark
         // is the `border-top` rule above — which a side bar never touches.
-        .with_focus_figure(FocusFigure::Sides);
+        .with_focus_figure(FocusFigure::Sides)
+        .with_behaviour(SELECTS_ON_RELEASE);
     node.semantics.selected = selected;
     node
 }
@@ -285,6 +299,26 @@ pub fn structured_list_weights_at(
     out[index] = pair * want / travel;
     out[index + 1] = pair - out[index];
     Some(out)
+}
+
+/// Column weights implied by the placed widths of the list containing `node`.
+///
+/// A host that holds no page state still needs something to hand
+/// [`structured_list_weights_at`]. Placed widths are that something: the
+/// arithmetic preserves the pair sum, so pixel widths are a valid starting
+/// vector. `None` when `node` names no divider or the columns have not been
+/// placed.
+#[must_use]
+pub fn structured_list_placed_weights(frame: &PetrifiedFrame, node: &str) -> Option<Vec<f32>> {
+    let (row, _) = divider_of(node)?;
+    let mut weights = Vec::new();
+    for i in 0.. {
+        match frame.placement(&format!("{row}/c{i}")) {
+            Some(p) => weights.push(p.rect.w.max(0.0)),
+            None => break,
+        }
+    }
+    (!weights.is_empty()).then_some(weights)
 }
 
 /// The row id and the column index of the divider `node` names, or `None`.
@@ -393,6 +427,7 @@ fn column_divider(index: usize, name: Option<&String>) -> ViewNode {
     // eight-unit target rather than against its leading edge.
     node.props.justify = Some(Justify::Center);
     node.interactive(Role::Separator, label, DIVIDER_INTENTS)
+        .with_behaviour(ADJUSTS_ON_CHANGE)
 }
 
 /// The trailing selection cell: the mark when the row is selected, a

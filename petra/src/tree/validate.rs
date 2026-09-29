@@ -430,6 +430,33 @@ pub enum Violation {
         /// Why this binding is invalid.
         reason: crate::keymap::binding::BindingError,
     },
+    /// A property claims two sources: a literal on `props`/`semantics` and a
+    /// [`crate::tree::binding::PropVal`] on
+    /// [`crate::tree::node::ViewNode::bound`] naming the same property.
+    ///
+    /// A property has exactly one source. The fold refuses this again at
+    /// value time ([`crate::tree::binding_eval::ResolveError::TwoSources`]),
+    /// for the paths that never reach acceptance with declarations intact.
+    PropertyWithTwoSources {
+        /// The property claiming two sources.
+        prop: crate::tree::binding::PropKey,
+    },
+    /// A property's source cannot produce the type the property holds —
+    /// a [`crate::tree::binding::PropVal::Lit`] of the wrong
+    /// [`crate::tree::binding::SlotValue`] shape, or a
+    /// [`crate::tree::binding::DeriveExpr`] whose result shape does not fit.
+    ///
+    /// Judged by [`crate::tree::binding::shape_for`], the same arithmetic
+    /// backs the fold's value-time refusals, so a tree cannot slip past one
+    /// boundary and die at the other with a different story. A
+    /// [`crate::tree::binding::PropVal::Bind`] is typed only once its slot
+    /// has a value, so it is accepted here and judged by the fold.
+    IllTypedBinding {
+        /// The property whose source cannot fill it.
+        prop: crate::tree::binding::PropKey,
+        /// What does not fit, and why.
+        reason: crate::tree::binding::ShapeFault,
+    },
 }
 
 /// What a validator must hold, beyond the subtree in front of it, before a
@@ -549,7 +576,9 @@ impl Violation {
             | Self::AnchorCycle { .. }
             | Self::UnknownStateName { .. }
             | Self::ComponentRefOnWrongKind { .. }
-            | Self::MalformedBinding { .. } => Prerequisites::NONE,
+            | Self::MalformedBinding { .. }
+            | Self::PropertyWithTwoSources { .. }
+            | Self::IllTypedBinding { .. } => Prerequisites::NONE,
         }
     }
 
@@ -632,6 +661,14 @@ impl fmt::Display for Violation {
             ),
             Self::MalformedBinding { reason } => {
                 write!(f, "a declared binding is invalid: {reason}")
+            }
+            Self::PropertyWithTwoSources { prop } => write!(
+                f,
+                "a `{prop}` property declares a literal and a binding; a property has exactly one \
+                 source"
+            ),
+            Self::IllTypedBinding { prop, reason } => {
+                write!(f, "a `{prop}` property's source cannot fill it: {reason}")
             }
             Self::DuplicateSiblingKey { key } => {
                 write!(
@@ -1076,6 +1113,25 @@ fn check_node(
     for binding in &node.bindings {
         if let Err(reason) = binding.validate() {
             push(Violation::MalformedBinding { reason });
+        }
+    }
+
+    // Property-value sources (`ViewNode::bound`; design §5 of the bound-slot
+    // note): one source per property, and a source that can produce what the
+    // property holds. Both checks are the fold's own refusals run early —
+    // `binding_eval.rs` refuses them again at value time with the same
+    // arithmetic — so a daemon's stage-1 acceptance turns a broken
+    // declaration away at the plugin's own `ui:contribute` call instead of
+    // leaving the shell to find it mid-fold.
+    for prop in crate::tree::binding::PropKey::ALL {
+        let Some(source) = node.bound.get(prop) else {
+            continue;
+        };
+        if crate::tree::binding_eval::literal_declared(node, prop) {
+            push(Violation::PropertyWithTwoSources { prop });
+        }
+        if let Err(reason) = crate::tree::binding::shape_for(source, prop) {
+            push(Violation::IllTypedBinding { prop, reason });
         }
     }
 
@@ -2203,10 +2259,10 @@ mod tests {
     #[test]
     fn an_unexpanded_component_reference_is_refused_and_names_the_component() {
         let mut node = ViewNode::new(NodeKind::Component, "c");
-        node.component = Some(crate::tree::ComponentRef {
-            name: "tag_sm".to_owned(),
-            params: serde_json::json!({ "key": "c", "label": "x" }),
-        });
+        node.component = Some(crate::tree::ComponentRef::literal(
+            "tag_sm",
+            serde_json::json!({ "key": "c", "label": "x" }),
+        ));
         let err = validate(&node, &spacing_registry()).unwrap_err();
         assert_eq!(
             err.as_slice()[0].violation,
@@ -2240,10 +2296,10 @@ mod tests {
     #[test]
     fn a_component_reference_on_a_non_component_kind_is_refused() {
         let mut node = ViewNode::new(NodeKind::Stack, "s");
-        node.component = Some(crate::tree::ComponentRef {
-            name: "tag".to_owned(),
-            params: serde_json::Value::Null,
-        });
+        node.component = Some(crate::tree::ComponentRef::literal(
+            "tag",
+            serde_json::Value::Null,
+        ));
         let err = validate(&node, &spacing_registry()).unwrap_err();
         assert!(
             err.as_slice().iter().any(|e| matches!(
@@ -3776,14 +3832,14 @@ mod tests {
     #[test]
     fn an_unexpanded_component_is_the_one_violation_expansion_removes() {
         let mut tree = ViewNode::new(NodeKind::Component, "box");
-        tree.component = Some(crate::tree::node::ComponentRef {
-            name: "checkbox".to_owned(),
-            params: serde_json::json!({
+        tree.component = Some(crate::tree::node::ComponentRef::literal(
+            "checkbox",
+            serde_json::json!({
                 "key": "box",
                 "label": "Auto-reload",
                 "selected": false,
             }),
-        });
+        ));
         let registry = Registry::with_vocabulary(standard_vocabulary());
         let refused = validate(&tree, &registry).unwrap_err();
         assert!(

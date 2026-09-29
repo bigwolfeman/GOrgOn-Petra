@@ -34,7 +34,14 @@ use super::tokens::{
 };
 use crate::geom::Axis;
 use crate::tree::{
-    AxisConstraint, Constraints, FocusFigure, Interaction, Key, Role, TextWrap, ViewNode,
+    AxisConstraint, Behaviour, Constraints, FocusFigure, Intent, Interaction, Key, Phase, Role,
+    TextWrap, ViewNode,
+};
+
+/// Spec 010: trigger opens/closes the menu.
+const TOGGLES_ON_RELEASE: Behaviour = Behaviour {
+    intent: Intent::Toggle,
+    phase: Phase::OnRelease,
 };
 
 const _: () = assert!(SIZE_MD == 40.0);
@@ -103,6 +110,7 @@ fn trigger(key: impl Into<Key>, label: String, open: bool) -> ViewNode {
             },
         })
         .interactive(Role::Button, label, TRIGGER_INTENTS)
+        .with_behaviour(TOGGLES_ON_RELEASE)
         .owning_its_text()
         .with_focus_figure(FocusFigure::Sides);
     node.semantics.expanded = Some(open);
@@ -120,7 +128,8 @@ mod tests {
     use crate::testing::{Harness, inks, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
     use crate::tree::{
-        Anchor, Interaction, Justify, NodeKind, Props, Registry, Role, Tip, ViewNode,
+        Anchor, Behaviour, Intent, Interaction, Justify, NodeKind, Phase, Props, Registry, Role,
+        Tip, ViewNode,
     };
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
@@ -397,5 +406,27 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Spec 010: the trigger toggles the menu on release.
+    ///
+    /// Falsified by dropping `.with_behaviour(...)` from the trigger:
+    ///
+    /// ```text
+    /// menu_button trigger declared behaviour None
+    /// ```
+    #[test]
+    fn menu_button_declares_toggle_on_release() {
+        let node = menu_button("actions", "Actions", false, Vec::new());
+        let trigger = child(&node, "trigger");
+        assert_eq!(
+            trigger.behaviour,
+            Some(Behaviour {
+                intent: Intent::Toggle,
+                phase: Phase::OnRelease,
+            }),
+            "menu_button trigger declared behaviour {:?}",
+            trigger.behaviour
+        );
     }
 }

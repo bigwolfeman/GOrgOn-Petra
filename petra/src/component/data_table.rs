@@ -117,8 +117,8 @@ use super::tokens::{
 use crate::frame::PetrifiedFrame;
 use crate::geom::{Align, Axis, Point};
 use crate::tree::{
-    Anchor, AxisConstraint, Edge, Fit, FocusFigure, InsetRefs, Interaction, Justify, Key, NodeKind,
-    Props, Role, Semantics, TrackSize, ViewNode,
+    Anchor, AxisConstraint, Behaviour, Edge, Fit, FocusFigure, InsetRefs, Intent, Interaction,
+    Justify, Key, NodeKind, Phase, Props, Role, Semantics, TrackSize, ViewNode,
 };
 
 /// Carbon extra-small row height.
@@ -183,6 +183,30 @@ const MENU_COL: f32 = 48.0;
 const GRIP_COL: f32 = 48.0;
 const DIVIDER_INTENTS: &[Interaction] = &[Interaction::Drag];
 const GRIP_INTENTS: &[Interaction] = &[Interaction::Drag];
+
+/// Spec 010: exclusive among siblings.
+const SELECTS_ON_RELEASE: Behaviour = Behaviour {
+    intent: Intent::Select,
+    phase: Phase::OnRelease,
+};
+
+/// Spec 010: live column resize under drag.
+const ADJUSTS_ON_CHANGE: Behaviour = Behaviour {
+    intent: Intent::Adjust,
+    phase: Phase::OnChange,
+};
+
+/// Spec 010: sort / icon / batch action — one shot.
+const ACTIVATES_ON_RELEASE: Behaviour = Behaviour {
+    intent: Intent::Activate,
+    phase: Phase::OnRelease,
+};
+
+/// Spec 010: toolbar menu / select-all — flips open or checked state.
+const TOGGLES_ON_RELEASE: Behaviour = Behaviour {
+    intent: Intent::Toggle,
+    phase: Phase::OnRelease,
+};
 
 #[derive(Clone, Copy)]
 enum RowSize {
@@ -366,6 +390,22 @@ pub fn data_table_weights_at(
     out[index] = pair * want / travel;
     out[index + 1] = pair - out[index];
     Some(out)
+}
+
+/// Column weights implied by the placed widths of the table containing `node`.
+///
+/// Peer of [`super::structured_list_placed_weights`]: a host with no page
+/// state recovers the current weights from the frame so
+/// [`data_table_weights_at`] can answer. `None` when `node` names no divider
+/// or the columns have not been placed.
+#[must_use]
+pub fn data_table_placed_weights(frame: &PetrifiedFrame, node: &str) -> Option<Vec<f32>> {
+    let (row, _) = divider_of(node)?;
+    let columns = data_column_rects(frame, row);
+    if columns.is_empty() {
+        return None;
+    }
+    Some(columns.iter().map(|p| p.rect.w.max(0.0)).collect())
 }
 
 /// Direct data-cell placements of `row`, in column order.
@@ -582,6 +622,7 @@ fn column_divider(index: usize, name: Option<&String>) -> ViewNode {
     node.props.align = Some(Align::Stretch);
     node.props.justify = Some(Justify::Center);
     node.interactive(Role::Separator, label, DIVIDER_INTENTS)
+        .with_behaviour(ADJUSTS_ON_CHANGE)
 }
 
 fn grip_cell() -> ViewNode {
@@ -590,6 +631,7 @@ fn grip_cell() -> ViewNode {
     cell.props.padding = Some(cell_padding_inline());
     cell.props.align = Some(Align::Center);
     cell.interactive(Role::Button, "Reorder row", GRIP_INTENTS)
+        .with_behaviour(ADJUSTS_ON_CHANGE)
 }
 
 fn grip_blank() -> ViewNode {
@@ -774,7 +816,8 @@ pub fn data_table_row_expandable(
     // that and will say so if the table ever loses it.
     let mut node = node
         .interactive(Role::Row, label, ROW_INTENTS)
-        .with_focus_figure(FocusFigure::Sides);
+        .with_focus_figure(FocusFigure::Sides)
+        .with_behaviour(SELECTS_ON_RELEASE);
     node.semantics.selected = selected;
     node.semantics.expanded = Some(expanded);
     node
@@ -856,6 +899,7 @@ pub fn data_table_sort_header(
         .insert("background@hover".into(), t(LAYER_ACCENT_HOVER));
     let mut button = button
         .interactive(Role::Button, accessible, SORT_INTENTS)
+        .with_behaviour(ACTIVATES_ON_RELEASE)
         .owning_its_text();
     button.semantics.value = Some(word.into());
 
@@ -945,6 +989,7 @@ pub fn data_table_toolbar_menu(
             },
         })
         .interactive(Role::Button, label.clone(), TOOLBAR_MENU_INTENTS)
+        .with_behaviour(TOGGLES_ON_RELEASE)
         .owning_its_text()
         .with_focus_figure(FocusFigure::Border);
     trigger.semantics.expanded = Some(open);
@@ -1117,6 +1162,7 @@ pub fn data_table_batch_action(key: impl Into<Key>, label: impl Into<String>) ->
     let mut node = stack(key, Axis::Horizontal, None, vec![caption]);
     node.props.align = Some(Align::Center);
     node.interactive(Role::Button, label, ICON_BUTTON_INTENTS)
+        .with_behaviour(ACTIVATES_ON_RELEASE)
         .with_focus_figure(FocusFigure::Sides)
 }
 
@@ -1153,6 +1199,7 @@ fn icon_only_button(
     let mut node = stack(key, Axis::Horizontal, None, vec![glyph]);
     node.props.align = Some(Align::Center);
     node.interactive(Role::Button, label, ICON_BUTTON_INTENTS)
+        .with_behaviour(ACTIVATES_ON_RELEASE)
         .with_focus_figure(FocusFigure::Sides)
 }
 
@@ -1236,7 +1283,8 @@ fn data_table_row_sized(
     // `Sides`, for the reason the expandable row above gives.
     let mut node = node
         .interactive(Role::Row, label, ROW_INTENTS)
-        .with_focus_figure(FocusFigure::Sides);
+        .with_focus_figure(FocusFigure::Sides)
+        .with_behaviour(SELECTS_ON_RELEASE);
     node.semantics.selected = selected;
     node
 }
@@ -1290,6 +1338,7 @@ fn select_all(all: CheckState) -> ViewNode {
     node.props.align = Some(Align::Center);
     let mut node = node
         .interactive(Role::Button, SELECT_ALL_LABEL, ROW_INTENTS)
+        .with_behaviour(TOGGLES_ON_RELEASE)
         .owning_its_text();
     node.semantics.selected = all == CheckState::Checked;
     if all == CheckState::Mixed {

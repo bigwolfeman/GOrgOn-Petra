@@ -50,8 +50,14 @@ use super::tokens::{
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
-    AxisConstraint, Constraints, FocusFigure, FocusShownOn, Interaction, Justify, Key, NodeKind,
-    Props, Role, ViewNode,
+    AxisConstraint, Behaviour, Constraints, FocusFigure, FocusShownOn, Intent, Interaction,
+    Justify, Key, NodeKind, Phase, Props, Role, ViewNode,
+};
+
+/// Spec 010: one-shot stepper click, no state on the node.
+const ACTIVATES_ON_RELEASE: Behaviour = Behaviour {
+    intent: Intent::Activate,
+    phase: Phase::OnRelease,
 };
 
 /// Carbon Default sm. `tokens` only ships [`SIZE_MD`] (md / 40).
@@ -287,6 +293,7 @@ fn stepper(key: &'static str, label: &'static str, mark: IconMark, height: f32) 
         label,
         &[Interaction::Focus, Interaction::Click, Interaction::Hover],
     )
+    .with_behaviour(ACTIVATES_ON_RELEASE)
     .owning_its_text()
 }
 
@@ -305,7 +312,8 @@ mod tests {
     use crate::testing::{Harness, inks, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
     use crate::tree::{
-        FocusFigure, FocusShownOn, Interaction, NodeKind, Props, Registry, Role, ViewNode,
+        Behaviour, FocusFigure, FocusShownOn, Intent, Interaction, NodeKind, Phase, Props,
+        Registry, Role, ViewNode,
     };
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
@@ -753,6 +761,31 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// Spec 010: steppers declare Activate / OnRelease so a gallery page
+    /// can hear +/- as a FiredIntent.
+    ///
+    /// Falsified by dropping `.with_behaviour(...)` from [`stepper`]:
+    ///
+    /// ```text
+    /// number_input stepper declared behaviour None
+    /// ```
+    #[test]
+    fn number_input_stepper_declares_activate_on_release() {
+        let node = number_input("qty", "Quantity", "3");
+        let want = Some(Behaviour {
+            intent: Intent::Activate,
+            phase: Phase::OnRelease,
+        });
+        for key in ["decrement", "increment"] {
+            assert_eq!(
+                child(&node, key).behaviour,
+                want,
+                "number_input {key} declared behaviour {:?}",
+                child(&node, key).behaviour
+            );
         }
     }
 }

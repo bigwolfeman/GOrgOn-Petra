@@ -48,12 +48,20 @@ use super::tokens::{
     TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_BODY_COMPACT, TYPOGRAPHY_LABEL, t,
 };
 use crate::geom::{Align, Axis};
-use crate::tree::{FocusFigure, Interaction, Key, Role, TextWrap, ViewNode};
+use crate::tree::{
+    Behaviour, FocusFigure, Intent, Interaction, Key, Phase, Role, TextWrap, ViewNode,
+};
 
 const _: () = assert!(SIZE_MD == 40.0);
 
 const OPTION_INTENTS: &[Interaction] =
     &[Interaction::Focus, Interaction::Click, Interaction::Hover];
+
+/// Spec 010: exclusive among siblings — selecting one option clears the others.
+const SELECTS_ON_RELEASE: Behaviour = Behaviour {
+    intent: Intent::Select,
+    phase: Phase::OnRelease,
+};
 
 /// Closed dropdown at Carbon md (40). `label` is the visible label above
 /// the field and the field's accessible name; `value` is the visible
@@ -212,6 +220,7 @@ fn sized_dropdown_option(
     let mut node = node
         .with_constraints(pin_block(size.height()))
         .interactive(Role::Button, label, OPTION_INTENTS)
+        .with_behaviour(SELECTS_ON_RELEASE)
         .owning_its_text()
         // `BarInside`: options stack flush in the open menu, so the default
         // bar *under* one would land on the next option. The same stripe on
@@ -236,8 +245,8 @@ mod tests {
     use crate::testing::{Harness, inks, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
     use crate::tree::{
-        Anchor, FocusFigure, FocusShownOn, Interaction, NodeKind, Props, Registry, Role, Tip,
-        ViewNode,
+        Anchor, Behaviour, FocusFigure, FocusShownOn, Intent, Interaction, NodeKind, Phase, Props,
+        Registry, Role, Tip, ViewNode,
     };
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
@@ -678,5 +687,26 @@ mod tests {
                 option.rect.h
             );
         }
+    }
+
+    /// Spec 010: an option declares Select / OnRelease.
+    ///
+    /// Falsified by dropping `.with_behaviour(...)` from [`sized_dropdown_option`]:
+    ///
+    /// ```text
+    /// dropdown_option declared behaviour None
+    /// ```
+    #[test]
+    fn dropdown_option_declares_select_on_release() {
+        let node = dropdown_option("dark", "Dark", false);
+        assert_eq!(
+            node.behaviour,
+            Some(Behaviour {
+                intent: Intent::Select,
+                phase: Phase::OnRelease,
+            }),
+            "dropdown_option declared behaviour {:?}",
+            node.behaviour
+        );
     }
 }

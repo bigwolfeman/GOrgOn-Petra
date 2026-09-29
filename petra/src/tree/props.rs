@@ -880,6 +880,19 @@ pub struct Props {
     /// scroll range before rows are materialized.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub estimated_extent: Option<f32>,
+    /// Rows a list-ish node draws directly, without a virtualized
+    /// [`crate::layout::RowSource`].
+    ///
+    /// The `Rows`-typed half of the bound-slot model
+    /// (design §5 of
+    /// `.agents/notes/proposed/architecture/2026-09-27-bound-slot-table-ui-model.md`):
+    /// `sort_by(rows, field_slot, dir_slot)` computes into this, and a
+    /// [`crate::tree::PropVal`] may bind it to a `Rows` slot the same way
+    /// [`Self::text`] binds to a scalar one. Absent from the wire when `None`,
+    /// so a tree that carries no rows serializes exactly as it did before
+    /// this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub items: Option<crate::tree::binding::Rows>,
     /// Text content for `text` and initial content for `input`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,

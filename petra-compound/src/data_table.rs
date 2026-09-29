@@ -75,7 +75,9 @@ use gorgon_petra::component::{
     data_table_sized, data_table_skeleton, data_table_sort_header, data_table_toolbar,
     data_table_toolbar_menu, menu_item, search_lg, text, valued,
 };
-use gorgon_petra::tree::ViewNode;
+use gorgon_petra::tree::{
+    Intent as EngineIntent, Phase, Rows, SlotChange, SlotKey, SlotValue, ViewNode,
+};
 use gorgon_petra::{Align, Axis};
 use serde::{Deserialize, Serialize};
 
@@ -231,8 +233,12 @@ pub struct Sort {
 ///
 /// No field is `serde(skip)`: losing any of these on reload would surprise
 /// the operator (`view-fiber.md` §6, round-trip is the default).
+///
+/// Unknown fields are refused: this is also the Lua wire shape for
+/// `data_table_compound`, and a misspelled field (`row_menu` for
+/// `row_menu_open`) otherwise parses as "menu shut" with no error.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct State {
     /// `None` means author order.
     pub sort: Option<Sort>,
@@ -423,6 +429,39 @@ impl Compound for DataTable {
         Vec::new()
     }
 
+    /// Row roots declare Select/OnRelease and are keyed by [`Row::id`].
+    /// Column-visibility checkboxes are `col-{id}` with Toggle. Sort headers
+    /// put Activate on an inner `"sort"` leaf shared across columns — that
+    /// leaf key alone cannot name [`Intent::SortBy`]; a column-keyed leaf or
+    /// a richer wire payload is still required for sort.
+    fn intent_from_fire(
+        _state: &Self::State,
+        node: &str,
+        intent: EngineIntent,
+        phase: Phase,
+        _value: Option<f64>,
+        weights: Option<&[f64]>,
+    ) -> Option<Self::Intent> {
+        if intent == EngineIntent::Adjust {
+            let weights = weights?;
+            return Some(Intent::Resize {
+                weights: weights.iter().map(|w| *w as f32).collect(),
+            });
+        }
+        if phase != Phase::OnRelease {
+            return None;
+        }
+        match (node, intent) {
+            (_, EngineIntent::Select) => Some(Intent::SelectRow { id: node.into() }),
+            (n, EngineIntent::Toggle) if n.starts_with(COLUMN_CHECK_PREFIX) => {
+                let id = n.strip_prefix(COLUMN_CHECK_PREFIX)?.to_owned();
+                Some(Intent::ToggleColumn { id })
+            }
+            (COLUMNS_KEY, EngineIntent::Toggle) => Some(Intent::ToggleColumnMenu),
+            _ => None,
+        }
+    }
+
     fn view(state: &Self::State, props: &Self::Props) -> ViewNode {
         if props.loading {
             let nrows = if props.rows.is_empty() {
@@ -450,6 +489,140 @@ impl Compound for DataTable {
         let mut node = stack(ROOT_KEY, Axis::Vertical, None, vec![bar, table]);
         node.props.align = Some(Align::Stretch);
         node
+    }
+}
+
+/// Why a §6 `Rows`-form selection write cannot be produced.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WriteFault {
+    /// A record's id field is missing or not text, so which row is selected
+    /// has no answer for it. Naming a `selected` field for that record
+    /// would be a guess — a missing referent fails loud, never silently
+    /// unselected (standing orders).
+    UnidentifiedRow {
+        /// Index of the record in the `Rows` value.
+        at: usize,
+        /// The id field the write was told to read.
+        field: String,
+    },
+}
+
+impl std::fmt::Display for WriteFault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnidentifiedRow { at, field } => write!(
+                f,
+                "row {at} has no `{field}` field holding text, so the \
+                 selection mirror cannot say whether it is selected"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for WriteFault {}
+
+/// Design §6's data-table behaviours as slot writes (D-109 step 4) — the
+/// `SlotChange` set of one commit group per interaction, no Lua and no
+/// daemon (design §6; the wiring lands with the shell's pixel turn, §8).
+///
+/// These are [`Compound::intent_from_fire`]'s other half along the same
+/// seam: `intent_from_fire` decides what a fire means, [`Compound::update`]
+/// decides the state, and these map the state it decided onto the table.
+/// Nothing here re-decides anything — the sort direction written is the
+/// direction [`Compound::update`] already flipped, which is why this is not
+/// a second mapping of the same interactions.
+impl DataTable {
+    /// §6's row select, `Rows` form: the selection field mirrored onto
+    /// every record of the `Rows` slot, as one whole-value write.
+    ///
+    /// Multi-select is a `Rows` slot whose records carry a selection field
+    /// (§6); [`SlotChange`] is a value delta, not a field patch (design §1),
+    /// so the write carries the whole value. `selection` is
+    /// [`State::selection`] after [`Compound::update`], which makes row
+    /// select, select-all and clear one write shape instead of three;
+    /// `id_field` names the record key carrying [`Row::id`]'s value and
+    /// `selected_field` the one carrying selection (a record's field is
+    /// written `Bool` whatever it held before — that field is this write's
+    /// by definition). A record whose id field is missing or not text is a
+    /// [`WriteFault`], never a quiet `false`.
+    ///
+    /// `at` is the version the `Rows` slot reaches at this commit (§2).
+    pub fn selection_writes(
+        rows_slot: impl Into<SlotKey>,
+        rows: &Rows,
+        id_field: &str,
+        selected_field: &str,
+        selection: &BTreeSet<String>,
+        at: u32,
+    ) -> Result<Vec<SlotChange>, WriteFault> {
+        let mut mirrored = Vec::with_capacity(rows.len());
+        for (index, record) in rows.iter().enumerate() {
+            let id = match record.get(id_field) {
+                Some(SlotValue::Str(id)) => id.clone(),
+                _ => {
+                    return Err(WriteFault::UnidentifiedRow {
+                        at: index,
+                        field: id_field.to_owned(),
+                    });
+                }
+            };
+            let mut record = record.clone();
+            record.insert(
+                selected_field.to_owned(),
+                SlotValue::Bool(selection.contains(&id)),
+            );
+            mirrored.push(record);
+        }
+        Ok(vec![SlotChange::new(
+            rows_slot,
+            at,
+            SlotValue::Rows(mirrored),
+        )])
+    }
+
+    /// §6's row select, `Register` form (single-select): one write naming
+    /// the row — `Enum := id`, the same `Str` `Enum` arrives as (design §3).
+    ///
+    /// The register holds *the* selected row, so this is the single-select
+    /// shape of the same interaction [`Self::selection_writes`] mirrors for
+    /// multi-select. `at` is the version the register reaches at this
+    /// commit.
+    #[must_use]
+    pub fn selection_register_write(
+        slot: impl Into<SlotKey>,
+        id: &str,
+        at: u32,
+    ) -> Vec<SlotChange> {
+        vec![SlotChange::new(slot, at, SlotValue::Str(id.to_owned()))]
+    }
+
+    /// §6's header click: sort column AND direction as ONE commit group —
+    /// two [`SlotChange`]s in one `Vec`, applied atomically (design §1's
+    /// `Commit`, "a sort column and its direction land together").
+    ///
+    /// `sort` is [`State::sort`] after [`Compound::update`] (a second click
+    /// on the active column has already flipped it there). The direction
+    /// word is `"asc"` / `"desc"` — what `DeriveExpr::SortBy` reads off the
+    /// direction slot (`gorgon_petra::tree::binding`). `column_at` and
+    /// `direction_at` are the two slots' own versions: versions are
+    /// per-slot, the commit group is what is atomic.
+    #[must_use]
+    pub fn sort_writes(
+        column_slot: impl Into<SlotKey>,
+        direction_slot: impl Into<SlotKey>,
+        sort: &Sort,
+        column_at: u32,
+        direction_at: u32,
+    ) -> Vec<SlotChange> {
+        let direction = if sort.ascending { "asc" } else { "desc" };
+        vec![
+            SlotChange::new(column_slot, column_at, SlotValue::Str(sort.column.clone())),
+            SlotChange::new(
+                direction_slot,
+                direction_at,
+                SlotValue::Str(direction.to_owned()),
+            ),
+        ]
     }
 }
 
@@ -1372,5 +1545,130 @@ mod tests {
         }
         count(&node, &mut bars);
         assert!(bars > 0, "a cold load still draws placeholder bars");
+    }
+
+    /// Design §6's data-table writes (D-109 step 4): one test per
+    /// interaction family asserting the exact `SlotChange` set.
+    mod slot_writes {
+        use std::collections::{BTreeMap, BTreeSet};
+
+        use gorgon_petra::tree::{Rows, SlotChange, SlotValue};
+
+        use super::super::{DataTable, Sort, WriteFault};
+
+        fn record(id: &str, status: &str) -> BTreeMap<String, SlotValue> {
+            let mut record = BTreeMap::new();
+            record.insert("id".to_owned(), SlotValue::Str(id.to_owned()));
+            record.insert("status".to_owned(), SlotValue::Str(status.to_owned()));
+            record
+        }
+
+        fn selected(id: &str, status: &str, on: bool) -> BTreeMap<String, SlotValue> {
+            let mut record = record(id, status);
+            record.insert("selected".to_owned(), SlotValue::Bool(on));
+            record
+        }
+
+        #[test]
+        fn a_row_select_is_exactly_one_whole_rows_write_mirroring_the_selection() {
+            let rows: Rows = vec![record("a", "ok"), record("b", "ok"), record("c", "bad")];
+            let selection: BTreeSet<String> = ["b".to_owned()].into_iter().collect();
+            let writes =
+                DataTable::selection_writes("rows", &rows, "id", "selected", &selection, 7)
+                    .unwrap();
+            assert_eq!(
+                writes,
+                vec![SlotChange::new(
+                    "rows",
+                    7,
+                    SlotValue::Rows(vec![
+                        selected("a", "ok", false),
+                        selected("b", "ok", true),
+                        selected("c", "bad", false),
+                    ]),
+                )],
+                "a row select writes exactly one change: the whole `Rows` \\
+                 value with the selection field mirrored on every record"
+            );
+        }
+
+        #[test]
+        fn a_record_without_an_id_fails_loud_instead_of_writing_a_guess() {
+            let mut anonymous = BTreeMap::new();
+            anonymous.insert("status".to_owned(), SlotValue::Str("ok".to_owned()));
+            let rows: Rows = vec![record("a", "ok"), anonymous];
+            let selection = BTreeSet::new();
+            let fault = DataTable::selection_writes("rows", &rows, "id", "selected", &selection, 7)
+                .expect_err("a record with no id field cannot say whether it is selected");
+            assert_eq!(
+                fault,
+                WriteFault::UnidentifiedRow {
+                    at: 1,
+                    field: "id".to_owned()
+                },
+                "the fault names the record and the field, and no write is \
+                 produced for a set that cannot be mirrored faithfully"
+            );
+            let said = fault.to_string();
+            assert!(said.contains("`id`"), "the fault names the field: {said}");
+            assert!(said.contains("row 1"), "the fault names the record: {said}");
+        }
+
+        #[test]
+        fn a_single_select_register_is_one_write_naming_the_row() {
+            assert_eq!(
+                DataTable::selection_register_write("selected", "b", 7),
+                vec![SlotChange::new(
+                    "selected",
+                    7,
+                    SlotValue::Str("b".to_owned())
+                )],
+                "single-select writes one change: the register holds the \\
+                 row id as the `Enum` `Str` the engine folds"
+            );
+        }
+
+        #[test]
+        fn a_header_sort_click_is_one_commit_group_of_column_and_direction() {
+            let group = DataTable::sort_writes(
+                "sort",
+                "sort_direction",
+                &Sort {
+                    column: "status".to_owned(),
+                    ascending: true,
+                },
+                4,
+                5,
+            );
+            assert_eq!(
+                group,
+                vec![
+                    SlotChange::new("sort", 4, SlotValue::Str("status".to_owned())),
+                    SlotChange::new("sort_direction", 5, SlotValue::Str("asc".to_owned())),
+                ],
+                "a header click is one commit group of exactly two writes — \\
+                 column and direction, each at its own slot's version — \\
+                 and the direction word is the one `SortBy` reads"
+            );
+            let flipped = DataTable::sort_writes(
+                "sort",
+                "sort_direction",
+                &Sort {
+                    column: "status".to_owned(),
+                    ascending: false,
+                },
+                6,
+                7,
+            );
+            assert_eq!(
+                flipped,
+                vec![
+                    SlotChange::new("sort", 6, SlotValue::Str("status".to_owned())),
+                    SlotChange::new("sort_direction", 7, SlotValue::Str("desc".to_owned())),
+                ],
+                "the flip `Compound::update` already decided is what gets \\
+                 written, as its own two-write group"
+            );
+        }
     }
 }

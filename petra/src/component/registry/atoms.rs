@@ -6,7 +6,7 @@
 //! 23 shipped first (T003); `text` and `button` followed in T001b, once
 //! T001a moved `builders.lua`'s thirteen primitives to `ui.node.*`
 //! (operator ruling, `specs/013-lua-gallery-parity/tasks.md` T001) and freed
-//! both plain names — `install` (`gorgon/kernel-lua/src/ui/mod.rs:130`)
+//! both plain names — `install` (`gorgon/lua-view/src/ui/mod.rs:130`)
 //! merges every `MODULES` table into `builders.lua`'s own and errors if a
 //! name collides, and `builders.lua` exported both as primitives before the
 //! move. `M.button`, the hand-ported composed builder, is deleted in the
@@ -40,7 +40,9 @@ use crate::component::params::{
 };
 use crate::component::registry::IconMarkParam;
 use crate::component::{IconBox, IconTone};
-use crate::tree::{Edge, InputPolicy, Key, TextRun, ViewNode};
+use crate::geom::Axis;
+use crate::token::TokenName;
+use crate::tree::{Edge, InputPolicy, InsetRefs, Key, TextRun, ViewNode};
 
 fn fail(component: &'static str, e: impl std::fmt::Display) -> ParamError {
     ParamError {
@@ -255,6 +257,28 @@ impl ParamShape for ListRowWithParams {
     );
 }
 
+/// `rule(key, axis, fill)`, T001c's second registered hand-port.
+///
+/// `fill` is [`TokenName`] rather than `String`: `component::tokens::t`
+/// panics on a name that is not a namespaced token, and `expand` runs on
+/// plugin-supplied input, so the wire shape validates the name at
+/// deserialization rather than letting a malformed one reach a panic inside
+/// a constructor — the same move `NodeAndRuns` below makes with `TextRun`'s
+/// own `foreground` field. Required, not defaulted to the rule material,
+/// because this shape mirrors the Rust signature exactly and no row in this
+/// registry invents a value default; `list_box`'s field rule passes
+/// `border-strong`, so `fill` is a real decision, not ceremony.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuleParams {
+    key: Key,
+    axis: Axis,
+    fill: TokenName,
+}
+impl ParamShape for RuleParams {
+    const LUAU: &'static str = "{ key: string, axis: \"horizontal\" | \"vertical\", fill: string }";
+}
+
 // ---------------------------------------------------------------------
 // T007: four modifiers over an already-built node, not fresh
 // constructions — the same shape `registry/form.rs`'s `NodeAndHint`/
@@ -313,11 +337,32 @@ impl ParamShape for NodeAndCopied {
     const LUAU: &'static str = "{ node: ViewNode, copied: boolean }";
 }
 
+/// `component/mod.rs`'s `padded(node, padding)`, the T010 addition to this
+/// block (spec 013's gallery chrome mirror needed a wire form for
+/// `catalog.rs`'s `index_row` inset override).
+///
+/// `padding` is [`InsetRefs`] used directly, the same move [`NodeAndRuns`]
+/// makes with [`TextRun`]: the wire type already derives `Deserialize`, and
+/// its four edges go through [`crate::token::TokenName`]'s validating
+/// `Deserialize`, so a misspelled spacing name is refused at this boundary
+/// rather than reaching layout.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NodeAndPadding {
+    node: ViewNode,
+    padding: InsetRefs,
+}
+impl ParamShape for NodeAndPadding {
+    const LUAU: &'static str = "{ node: ViewNode, padding: { top: string?, right: string?, bottom: string?, left: string? } }";
+}
+
 // ---------------------------------------------------------------------
 // This group's constructors: the 25 spec 013 counts across the seven files
-// below, plus T007's four modifiers. `text` and `button` shipped last
-// (T001b), once T001a moved `builders.lua`'s primitives to `ui.node.*` and
-// freed both names.
+// below, plus T007's four modifiers and T001c's two (`chrome_strip`, and
+// `mod.rs`'s `rule` — the two hand-ports `builders.lua` carried until that
+// change deleted them). `text` and `button` shipped last (T001b), once
+// T001a moved `builders.lua`'s primitives to `ui.node.*` and freed both
+// names.
 // ---------------------------------------------------------------------
 pub const ENTRIES: &[Entry] = &[
     // -- button.rs (12 of 12) ---------------------------------------------
@@ -395,9 +440,21 @@ pub const ENTRIES: &[Entry] = &[
             p.shortcut.as_deref(),
         )
     }),
+    // -- T001c: the last two hand-ports, `chrome_strip.rs` and `mod.rs`'s `rule` --
+    row!("chrome_strip", KeyChildren, |p| lib::chrome_strip(
+        p.key, p.children
+    )),
+    row!("rule", RuleParams, |p| {
+        lib::rule(p.key, p.axis, p.fill.as_str())
+    }),
     // -- T007: node modifiers (mod.rs, code_snippet.rs) --------------------
+    // T010 added `padded` and `seat_card`: both are doors for what
+    // `registry::expand_node` discards, one field and one walk
+    // (`mod.rs`'s `padded`/`seat_card` docs).
     row!("disabled", NodeOnly, |p| lib::disabled(p.node)),
     row!("on_layer", NodeAndDepth, |p| lib::on_layer(p.node, p.depth)),
+    row!("padded", NodeAndPadding, |p| lib::padded(p.node, p.padding)),
+    row!("seat_card", NodeOnly, |p| lib::seat_card(p.node)),
     row!("code_runs", NodeAndRuns, |p| lib::code_runs(p.node, p.runs)),
     row!("code_snippet_copied", NodeAndCopied, |p| {
         lib::code_snippet_copied(p.node, p.copied)
@@ -416,44 +473,32 @@ mod tests {
 
     use super::{
         ButtonGroupFlushParams, DockedParams, DrawerSheetParams, ENTRIES, IconInParams, IconParams,
-        IconTonedParams, ListRowWithParams, NodeAndCopied, NodeAndDepth, NodeAndRuns, NodeOnly,
+        IconTonedParams, ListRowWithParams, NodeAndCopied, NodeAndDepth, NodeAndPadding,
+        NodeAndRuns, NodeOnly, RuleParams,
     };
 
-    /// T007: `disabled`/`on_layer`/`code_runs`/`code_snippet_copied` are
-    /// registered in [`ENTRIES`] but deliberately outside the seven-file
-    /// scan below, and named here rather than folded into it, for two
-    /// separate reasons:
+    /// T007: `code_runs`/`code_snippet_copied` are registered in [`ENTRIES`]
+    /// but deliberately outside the scan below, and named here rather than
+    /// folded into it: they live in `code_snippet.rs`, which
+    /// `registry/containment.rs` already scans for its own four
+    /// constructors (`code_snippet`, `code_snippet_multi`,
+    /// `code_snippet_inline`, `code_snippet_multi_capped`). Adding it here
+    /// too would give one source file two coverage tests. It does not need
+    /// to: `containment.rs`'s scan filters on `key: impl Into<Key>` being
+    /// the first parameter, and both of these take `node: ViewNode`
+    /// instead — the same structural fact this file's own heuristic below
+    /// has no filter for, which is why the exception is named explicitly
+    /// instead of relying on a filter this file doesn't have.
     ///
-    /// - `disabled`/`on_layer` live in `component/mod.rs`. That file also
-    ///   defines `rule` (`mod.rs:498`) — a hand-port constructor still
-    ///   deliberately unregistered
-    ///   (`specs/013-lua-gallery-parity/tasks.md` T001c, an open decision
-    ///   this task does not own). Scanning the whole file would fail this
-    ///   test on `rule` for a reason T007 never decided, and `mod.rs` holds
-    ///   a great deal else besides — it is not a file one group can claim.
-    /// - `code_runs`/`code_snippet_copied` live in `code_snippet.rs`, which
-    ///   `registry/containment.rs` already scans for its own four
-    ///   constructors (`code_snippet`, `code_snippet_multi`,
-    ///   `code_snippet_inline`, `code_snippet_multi_capped`). Adding it here
-    ///   too would give one source file two coverage tests. It does not need
-    ///   to: `containment.rs`'s scan filters on `key: impl Into<Key>` being
-    ///   the first parameter, and both of these take `node: ViewNode`
-    ///   instead — the same structural fact this file's own heuristic below
-    ///   has no filter for, which is why the exception is named explicitly
-    ///   instead of relying on a filter this file doesn't have.
-    const MODIFIERS_OUTSIDE_THE_SCANNED_FILES: &[&str] = &[
-        "disabled",
-        "on_layer",
-        "code_runs",
-        "code_snippet_copied",
-        // `also_secondary_click` lives in `component/mod.rs` beside
-        // `disabled`, for the same reason `disabled` is excepted above: that
-        // file cannot be scanned while `rule` (`mod.rs:498`) stays
-        // deliberately unregistered under T001c.
-        "also_secondary_click",
-    ];
+    /// T007 also kept `component/mod.rs` off the scan because it then held
+    /// `rule`, a constructor deliberately unregistered under the open
+    /// T001c decision. T001c registers `rule`, so mod.rs's whole
+    /// `pub fn ... -> ViewNode` set (`disabled`, `also_secondary_click`,
+    /// `on_layer`, `rule`) now has rows and the file joins the scan below —
+    /// which is also why those three names are gone from this list.
+    const MODIFIERS_OUTSIDE_THE_SCANNED_FILES: &[&str] = &["code_runs", "code_snippet_copied"];
 
-    /// Every `pub fn ... -> ViewNode` in the seven files this group owns has
+    /// Every `pub fn ... -> ViewNode` in the nine files this group owns has
     /// exactly one row, found by scanning the files' own text rather than
     /// trusting a hand-written list — a constructor added later and never
     /// registered fails this the moment it lands, not at review time.
@@ -483,6 +528,11 @@ mod tests {
     /// **Falsified** by removing the `icon` row and re-running. Real panic:
     /// "these `pub fn ... -> ViewNode` constructors have no registry row:
     /// \[\"icon (icon.rs)\"\]", then the row was restored byte-identical.
+    ///
+    /// Re-falsified 2026-09-26 when the scan grew `chrome_strip.rs` and
+    /// `mod.rs` (T001c), by removing the `rule` row. Real panic: "these
+    /// `pub fn ... -> ViewNode` constructors have no registry row:
+    /// \[\"rule (mod.rs)\"\]", then the row was restored byte-identical.
     #[test]
     fn every_view_node_constructor_has_exactly_one_row() {
         let sources: &[(&str, &str)] = &[
@@ -493,6 +543,8 @@ mod tests {
             ("icon.rs", include_str!("../icon.rs")),
             ("drawer.rs", include_str!("../drawer.rs")),
             ("list_row.rs", include_str!("../list_row.rs")),
+            ("chrome_strip.rs", include_str!("../chrome_strip.rs")),
+            ("mod.rs", include_str!("../mod.rs")),
         ];
         let registered: BTreeSet<&str> = ENTRIES.iter().map(|e| e.name).collect();
         assert_eq!(
@@ -524,7 +576,7 @@ mod tests {
             .collect();
         assert!(
             extra.is_empty(),
-            "these rows name no `pub fn ... -> ViewNode` in the seven files this group owns, \
+            "these rows name no `pub fn ... -> ViewNode` in the nine files this group owns, \
              and are not in MODIFIERS_OUTSIDE_THE_SCANNED_FILES either: {extra:?}"
         );
     }
@@ -612,5 +664,46 @@ mod tests {
 
         serde_json::from_value::<NodeAndCopied>(json!({ "node": node, "copied": true }))
             .expect("NodeAndCopied round-trips");
+    }
+
+    /// T001c: `rule`'s new shape round-trips the wire table its own
+    /// `ParamShape::LUAU` describes — the one shape this change adds
+    /// (`chrome_strip` reuses `KeyChildren`, already probed by
+    /// `registry/mod.rs`'s field-name test). Worth calling out: `Axis` and
+    /// `TokenName` decode by their wire spellings (`horizontal`,
+    /// `border-subtle-01`), the same strings `component::rule` resolves.
+    ///
+    /// **Falsified** 2026-09-26 by spelling the axis `x` in the probe.
+    /// Real panic: "RuleParams round-trips: Error(\"unknown variant `x`,
+    /// expected `horizontal` or `vertical`\", line: 0, column: 0)", then
+    /// the probe was restored byte-identical.
+    #[test]
+    fn the_rule_shape_round_trips_through_serde_json_from_value() {
+        serde_json::from_value::<RuleParams>(json!({
+            "key": "r", "axis": "horizontal", "fill": "border-subtle-01",
+        }))
+        .expect("RuleParams round-trips");
+    }
+
+    /// T010: `padded`'s shape round-trips the wire table its own
+    /// `ParamShape::LUAU` describes. The point worth calling out is
+    /// [`InsetRefs`]: the shape passes the tree type through unmodified, so
+    /// the four edges decode by their real spellings and a token name is
+    /// validated by `TokenName`'s own `Deserialize` — a `padding` naming a
+    /// token that does not exist is refused here rather than at layout.
+    ///
+    /// **Falsified** 2026-09-26 by misspelling the edge as `topp`. Real
+    /// panic: "NodeAndPadding round-trips: Error(\"unknown field `topp`,
+    /// expected one of `top`, `right`, `bottom`, `left`\", line: 0,
+    /// column: 0)", then the probe was restored byte-identical.
+    #[test]
+    fn the_padded_shape_round_trips_through_serde_json_from_value() {
+        let node = json!({ "kind": "stack", "key": "n" });
+
+        serde_json::from_value::<NodeAndPadding>(json!({
+            "node": node,
+            "padding": { "top": "spacing-02", "right": "spacing-03", "bottom": "spacing-02", "left": "spacing-03" },
+        }))
+        .expect("NodeAndPadding round-trips");
     }
 }

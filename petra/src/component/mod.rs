@@ -81,6 +81,7 @@
 pub mod kit;
 pub mod params;
 pub mod registry;
+pub mod writes;
 
 pub(crate) use kit::{
     CARET_SIZE, CaretDirection, bind_corners, caret, pad, pin_block, stack, swatch,
@@ -185,12 +186,12 @@ pub use controls::{
 };
 pub use data_table::{
     SortDirection, data_table, data_table_batch_action, data_table_batch_bar,
-    data_table_batch_cancel, data_table_grip_row, data_table_menu, data_table_row,
-    data_table_row_actions, data_table_row_expandable, data_table_row_expandable_actions,
-    data_table_row_lg, data_table_row_md, data_table_row_menu_trigger, data_table_row_sm,
-    data_table_row_xl, data_table_row_xs, data_table_sized, data_table_skeleton,
-    data_table_sort_header, data_table_toolbar, data_table_toolbar_menu, data_table_weights_at,
-    data_table_zebra, data_table_zebra_sized,
+    data_table_batch_cancel, data_table_grip_row, data_table_menu, data_table_placed_weights,
+    data_table_row, data_table_row_actions, data_table_row_expandable,
+    data_table_row_expandable_actions, data_table_row_lg, data_table_row_md,
+    data_table_row_menu_trigger, data_table_row_sm, data_table_row_xl, data_table_row_xs,
+    data_table_sized, data_table_skeleton, data_table_sort_header, data_table_toolbar,
+    data_table_toolbar_menu, data_table_weights_at, data_table_zebra, data_table_zebra_sized,
 };
 pub use date_picker::{
     Calendar, date_picker, date_picker_open, date_picker_showing, date_picker_showing_selection,
@@ -219,7 +220,7 @@ pub use list::{
     unordered_list_with,
 };
 pub use list_row::{LIST_ROW_EXTENT, list_row, list_row_with};
-pub use loading::{loading, loading_sm, spinner_phase};
+pub use loading::{advance_ambient_spinners, loading, loading_sm, spinner_phase};
 pub use menu::{menu, menu_flyout, menu_item, menu_item_with};
 pub use menu_button::menu_button;
 pub use menubar::{menubar, menubar_top};
@@ -248,7 +249,8 @@ pub use slider::{
 };
 pub use status::status;
 pub use structured_list::{
-    structured_list, structured_list_row, structured_list_sized, structured_list_weights_at,
+    structured_list, structured_list_placed_weights, structured_list_row, structured_list_sized,
+    structured_list_weights_at,
 };
 pub use tabs::{contained_tab, contained_tab_bar, tab, tab_bar, vertical_tab, vertical_tab_bar};
 pub use tag::{dismissible_tag, selectable_tag, tag, tag_lg, tag_sm, tag_status, tag_with_avatar};
@@ -273,7 +275,7 @@ pub use ui_shell::{
 use std::sync::Arc;
 
 use crate::token::{BORDER_SUBTLE_TOKENS, FIELD_TOKENS, LAYER_TOKENS, TokenName};
-use crate::tree::{Interaction, Key, NodeKind, ViewNode};
+use crate::tree::{InsetRefs, Interaction, Key, NodeKind, ViewNode};
 
 /// The deepest seat [`on_layer`] will honour.
 ///
@@ -514,6 +516,86 @@ pub fn on_layer(mut node: ViewNode, depth: usize) -> ViewNode {
     node.props
         .tokens
         .insert("background".into(), tokens::t(reseated));
+    node
+}
+
+/// Re-seat a mounted subtree's fills against the card it sits on: [`on_layer`]
+/// at a flat depth of 1, over the card's descendants and not the card.
+///
+/// [`on_layer`] re-seats one node, so a caller that needs a whole subtree
+/// re-seated walks — this is that walk, named once. Depth is a flat 1 for the
+/// whole subtree rather than counting nesting, which is honest about what it
+/// is: the card is one step up from the page, and a component that nests its
+/// own surfaces deeper needs the `Surface` node kind [`on_layer`]'s own doc
+/// names as the real fix.
+///
+/// The card itself keeps its fill: it is the ground the content is re-seated
+/// *against*, and moving the ground too would undo the step the depth
+/// argument exists to take.
+///
+/// # Why this is a registry row and not a gallery-private walk
+///
+/// This walk used to live in `petra/petra-egui/src/bin/gallery/catalog.rs`
+/// (`Catalog::seated`/`Catalog::seat_card`), and spec 013 T010's Lua chrome
+/// mirror could not express it there: `registry::expand_node` returns
+/// `build(..)` whole, [`on_layer`] is shallow, and a Lua author cannot reach
+/// the nodes a constructor builds for itself. The mirror could either
+/// re-implement the walk over its own authored tables — a second
+/// implementation of the thing that draws, exactly what spec 013 exists to
+/// remove — or call this one. Registered in `registry/atoms.rs`:
+/// `catalog.rs` and a Lua `ui.seat_card{ node = … }` share one walk
+/// (`.agents/notes/implemented/architecture/2026-09-18-the-gallery-chrome-reaches-lua.md`).
+#[must_use]
+pub fn seat_card(mut card: ViewNode) -> ViewNode {
+    card.children = card
+        .children
+        .into_iter()
+        .map(|child| Arc::new(seated(ViewNode::clone(&child), 1)))
+        .collect();
+    card
+}
+
+/// [`seat_card`]'s walk: children first (they carry fills of their own), then
+/// the node. Recursive so a nested surface that binds a layer fill moves with
+/// its parent instead of staying behind one layer down.
+fn seated(mut node: ViewNode, depth: usize) -> ViewNode {
+    node.children = node
+        .children
+        .into_iter()
+        .map(|child| Arc::new(seated(ViewNode::clone(&child), depth)))
+        .collect();
+    on_layer(node, depth)
+}
+
+/// Put `padding` over whatever the node's own constructor baked.
+///
+/// **The way a caller changes a baked inset.** A constructor decides its own
+/// padding — [`list_row`] binds Carbon's item inset — and every other door is
+/// shut: `registry::expand_node` returns `build(...)` whole and discards the
+/// fields on the node carrying a component reference, so a `props.padding`
+/// written beside `ui.list_row{...}` never reaches the built node
+/// (`.agents/notes/proposed/architecture/2026-09-09-registered-constructor-override-channel.md`).
+/// This modifier is the narrow door through the registry for that one field;
+/// the general override channel that note sizes is still the eventual answer
+/// and is still open.
+///
+/// Its call site is the gallery's own index pane: 42 rows in 900 logical
+/// units, where Carbon's item inset dropped six rows off the bottom of the
+/// pane until the pane's own density was put back over it
+/// (`petra/petra-egui/src/bin/gallery/catalog.rs`'s `index_row`, its Lua
+/// mirror `lua_parity/catalog.lua`'s `index_row`). The four
+/// selection-state fills stay in the component — this changes the inset and
+/// nothing else, so a fifth selection state is still added once.
+///
+/// # What it deliberately does not do
+///
+/// Nothing beyond `props.padding`. Not the tokens, not the constraints, not
+/// the semantics: a modifier that could repaint a node's fill would be a fork
+/// of every component it touches, which is the same line [`on_layer`] draws
+/// and deliberately does not cross.
+#[must_use]
+pub fn padded(mut node: ViewNode, padding: InsetRefs) -> ViewNode {
+    node.props.padding = Some(padding);
     node
 }
 

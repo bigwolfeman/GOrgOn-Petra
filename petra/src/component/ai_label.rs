@@ -91,8 +91,20 @@ use super::tokens::{
 use crate::geom::{Align, Axis};
 use crate::token::{CornerRole, corner_for};
 use crate::tree::{
-    AxisConstraint, Constraints, FocusFigure, InsetRefs, Interaction, Justify, Key, Role, TextWrap,
-    ViewNode,
+    AxisConstraint, Behaviour, Constraints, FocusFigure, InsetRefs, Intent, Interaction, Justify,
+    Key, Phase, Role, TextWrap, ViewNode,
+};
+
+/// Spec 010: trigger opens/closes the explainability panel.
+const TOGGLES_ON_RELEASE: Behaviour = Behaviour {
+    intent: Intent::Toggle,
+    phase: Phase::OnRelease,
+};
+
+/// Spec 010: revert is a one-shot undo.
+const ACTIVATES_ON_RELEASE: Behaviour = Behaviour {
+    intent: Intent::Activate,
+    phase: Phase::OnRelease,
 };
 
 /// Carbon default-variant `mini`.
@@ -320,6 +332,7 @@ pub fn ai_label_revert(key: impl Into<Key>, label: impl Into<String>) -> ViewNod
         .insert("background@hover".into(), t(LAYER_HOVER));
     node.with_constraints(revert_box())
         .interactive(Role::Button, label, TRIGGER_INTENTS)
+        .with_behaviour(ACTIVATES_ON_RELEASE)
         .owning_its_text()
         // A button: `Sides`, per the operator's rule. See `component::button`.
         .with_focus_figure(FocusFigure::Sides)
@@ -434,6 +447,7 @@ fn trigger_button(key: impl Into<Key>, label: String, size: f32) -> ViewNode {
         .insert("background@hover".into(), t(LAYER_HOVER));
     node.with_constraints(square(size))
         .interactive(Role::Button, label, TRIGGER_INTENTS)
+        .with_behaviour(TOGGLES_ON_RELEASE)
         .owning_its_text()
         // A button: `Sides`, per the operator's rule. See `component::button`.
         .with_focus_figure(FocusFigure::Sides)
@@ -518,6 +532,7 @@ fn inline_trigger(key: impl Into<Key>, label: String, height: f32, bullet: f32) 
         ..Constraints::default()
     })
     .interactive(Role::Button, label, TRIGGER_INTENTS)
+    .with_behaviour(TOGGLES_ON_RELEASE)
     .owning_its_text()
     // A button: `Sides`, per the operator's rule. See `component::button`.
     .with_focus_figure(FocusFigure::Sides)

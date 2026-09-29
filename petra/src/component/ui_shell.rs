@@ -115,8 +115,27 @@ use super::tokens::{
 use super::{pin_block, stack};
 use crate::geom::{Align, Axis};
 use crate::tree::{
-    AxisConstraint, Constraints, FocusFigure, FocusShownOn, InsetRefs, Interaction, Justify, Key,
-    NodeKind, Props, Role, Semantics, TextWrap, TrackSize, ViewNode,
+    AxisConstraint, Behaviour, Constraints, FocusFigure, FocusShownOn, InsetRefs, Intent,
+    Interaction, Justify, Key, NodeKind, Phase, Props, Role, Semantics, TextWrap, TrackSize,
+    ViewNode,
+};
+
+/// Spec 010: product home / one-shot header name.
+const ACTIVATES_ON_RELEASE: Behaviour = Behaviour {
+    intent: Intent::Activate,
+    phase: Phase::OnRelease,
+};
+
+/// Spec 010: nav / panel / switcher rows — exclusive among siblings.
+const SELECTS_ON_RELEASE: Behaviour = Behaviour {
+    intent: Intent::Select,
+    phase: Phase::OnRelease,
+};
+
+/// Spec 010: menu trigger / header action panel open.
+const TOGGLES_ON_RELEASE: Behaviour = Behaviour {
+    intent: Intent::Toggle,
+    phase: Phase::OnRelease,
 };
 
 /// Carbon `mini-units(6)` (`_functions.scss`): the header's block-size,
@@ -281,6 +300,7 @@ fn header_name(key: &'static str, product_name: impl Into<String>) -> ViewNode {
     // edge, so it is inside the header bar by construction and cannot reach
     // the page under it or the row under it.
     node.interactive(Role::Button, product_name, INTENTS)
+        .with_behaviour(ACTIVATES_ON_RELEASE)
         .with_focus_figure(FocusFigure::BarInside)
 }
 
@@ -384,6 +404,7 @@ pub fn ui_shell_header_nav_item(
     // there; an invisible focus ring is not legible anywhere.
     let mut node = node
         .interactive(Role::Button, label, INTENTS)
+        .with_behaviour(SELECTS_ON_RELEASE)
         .with_focus_figure(FocusFigure::BarUnder);
     node.semantics.selected = current;
     node
@@ -530,6 +551,7 @@ fn header_action_sized(
     // `crate::component::link`.
     let mut node = node
         .interactive(Role::Button, label, INTENTS)
+        .with_behaviour(TOGGLES_ON_RELEASE)
         .owning_its_text()
         .with_focus_figure(FocusFigure::BarInside);
     node.semantics.selected = active;
@@ -770,6 +792,7 @@ fn left_panel_item(
     bind_row_states(&mut node);
     let mut node = node
         .interactive(Role::Button, label, INTENTS)
+        .with_behaviour(SELECTS_ON_RELEASE)
         .with_focus_figure(FocusFigure::BarInside);
     // See the `Head` declaration on `row` above: this item's rect spans its
     // expanded sub-menu, and the figure belongs on the title row.
@@ -836,6 +859,7 @@ fn left_panel_subitem(
     bind_row_states(&mut node);
     let mut node = node
         .interactive(Role::Button, label, INTENTS)
+        .with_behaviour(SELECTS_ON_RELEASE)
         .with_focus_figure(FocusFigure::BarInside);
     node.semantics.selected = selected;
     node
@@ -1170,7 +1194,9 @@ pub fn ui_shell_switcher_item(
         .with_props(props)
         .with_children(vec![caption])
         .with_constraints(pin_block(SWITCHER_ROW));
-    let mut node = node.interactive(Role::Button, label, INTENTS);
+    let mut node = node
+        .interactive(Role::Button, label, INTENTS)
+        .with_behaviour(SELECTS_ON_RELEASE);
     node.semantics.selected = selected;
     node
 }

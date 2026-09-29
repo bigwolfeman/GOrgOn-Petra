@@ -112,8 +112,15 @@ use crate::token::{CornerRole, corner_for};
 // `crate::geom::Align` is a child's alignment inside its parent's cell. Both
 // are used in this module, so the anchor one is spelled out at every use.
 use crate::tree::{
-    Anchor, AxisConstraint, ClampRule, Edge, FocusFigure, InputPolicy, InsetRefs, Interaction, Key,
-    Layer, NodeKind, Props, Role, Semantics, TextWrap, TrackSize, ViewNode,
+    Anchor, AxisConstraint, Behaviour, ClampRule, Edge, FocusFigure, InputPolicy, InsetRefs,
+    Intent, Interaction, Key, Layer, NodeKind, Phase, Props, Role, Semantics, TextWrap, TrackSize,
+    ViewNode,
+};
+
+/// Spec 010: actionable notification CTA — one shot.
+const ACTIVATES_ON_RELEASE: Behaviour = Behaviour {
+    intent: Intent::Activate,
+    phase: Phase::OnRelease,
 };
 
 /// Carbon toast `inline-size` below the `max` breakpoint (`18rem`).
@@ -465,6 +472,7 @@ fn action_button(key: impl Into<Key>, label: String) -> ViewNode {
         priority: 0,
     };
     node.interactive(Role::Button, label, ACTION_INTENTS)
+        .with_behaviour(ACTIVATES_ON_RELEASE)
         .owning_its_text()
         // A button: `Sides`, per the operator's rule. See `component::button`.
         .with_focus_figure(FocusFigure::Sides)
@@ -483,7 +491,8 @@ mod tests {
     use crate::testing::{Harness, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
     use crate::tree::{
-        InputPolicy, Interaction, Layer, NodeKind, Props, Registry, Role, TrackSize, ViewNode,
+        Behaviour, InputPolicy, Intent, Interaction, Layer, NodeKind, Phase, Props, Registry, Role,
+        TrackSize, ViewNode,
     };
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
@@ -964,5 +973,26 @@ mod tests {
             }
             walk_text(&node, shell_bg, &theme, MIN_TEXT_CONTRAST, &color);
         }
+    }
+
+    /// Spec 010: the actionable CTA declares Activate / OnRelease.
+    ///
+    /// Falsified by dropping `.with_behaviour(...)` from [`action_button`]:
+    ///
+    /// ```text
+    /// notification action declared behaviour None
+    /// ```
+    #[test]
+    fn notification_action_declares_activate_on_release() {
+        let node = notification_actionable("n", "Update", "Ready.", "Reload");
+        assert_eq!(
+            found(&node, "action").behaviour,
+            Some(Behaviour {
+                intent: Intent::Activate,
+                phase: Phase::OnRelease,
+            }),
+            "notification action declared behaviour {:?}",
+            found(&node, "action").behaviour
+        );
     }
 }

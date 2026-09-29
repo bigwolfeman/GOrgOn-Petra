@@ -42,7 +42,7 @@
 //! and the reference renders it as the bare word "Why" on the page ground.
 //! Ours did the same and the operator read it as a text label, because a
 //! `SURFACE_BASE` fill inside a catalog card **is** the card
-//! (`catalog.rs::seat_card` reseats it, and the trigger's whole row band
+//! (`component::seat_card` reseats it, and the trigger's whole row band
 //! measured a uniform `#222222`). Carbon's own convention for this trigger
 //! is an information icon, so the trigger now leads with
 //! [`IconMark::InformationFilled`] beside its label: a ringed glyph reads as
@@ -66,7 +66,15 @@ use super::tokens::{
     t,
 };
 use crate::geom::{Align, Axis};
-use crate::tree::{FocusFigure, FocusShownOn, Interaction, Key, Role, ViewNode};
+use crate::tree::{
+    Behaviour, FocusFigure, FocusShownOn, Intent, Interaction, Key, Phase, Role, ViewNode,
+};
+
+/// Spec 010: trigger opens/closes the tip.
+const TOGGLES_ON_RELEASE: Behaviour = Behaviour {
+    intent: Intent::Toggle,
+    phase: Phase::OnRelease,
+};
 
 /// Carbon toggletip content `max-inline-size` (`18rem`).
 const MAX_INLINE: f32 = 288.0;
@@ -158,6 +166,7 @@ fn trigger_button(key: impl Into<Key>, label: String) -> ViewNode {
     let mut node = node
         .with_constraints(pin_block(SIZE_MD))
         .interactive(Role::Button, label, TRIGGER_INTENTS)
+        .with_behaviour(TOGGLES_ON_RELEASE)
         .owning_its_text();
     node.semantics.focus_figure = FocusFigure::Sides;
     node.semantics.focus_shown_on = FocusShownOn::Well;

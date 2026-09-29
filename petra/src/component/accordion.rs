@@ -48,7 +48,10 @@ use super::tokens::{
     SURFACE_RAISED, t,
 };
 use crate::geom::{Align, Axis};
-use crate::tree::{FocusFigure, InsetRefs, Interaction, Key, NodeKind, Role, Semantics, ViewNode};
+use crate::tree::{
+    Behaviour, FocusFigure, InsetRefs, Intent, Interaction, Key, NodeKind, Phase, Role, Semantics,
+    ViewNode,
+};
 
 /// Carbon accordion header `sm` (`layout.use` min).
 const HEIGHT_SM: f32 = 32.0;
@@ -302,6 +305,11 @@ fn accordion_item_content(
     let mut header = header
         .with_constraints(pin_block(header_h))
         .interactive(Role::Button, label.clone(), HEADER_INTENTS)
+        // Spec 010: expand/collapse is a Toggle on the header.
+        .with_behaviour(Behaviour {
+            intent: Intent::Toggle,
+            phase: Phase::OnRelease,
+        })
         .owning_its_text();
     // `BarInside`: collapsed flush headers stack against each other, so the
     // default bar would land on the next header rather than in empty space.

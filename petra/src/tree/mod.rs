@@ -4,11 +4,25 @@
 //! the same), validated once at acceptance, then negotiated and petrified. No
 //! node holds a closure, a piece of state, or a toolkit type.
 
+pub mod binding;
+pub mod binding_eval;
+pub(crate) mod graft;
 pub mod key;
 pub mod node;
 pub mod props;
 pub mod validate;
 
+// Property-value sources (`Lit`/`Bind`/`Derive`) and their fold — the
+// retained-tree seam `Host::apply_slot_changes` drives (design §5 of
+// `.agents/notes/proposed/architecture/2026-09-27-bound-slot-table-ui-model.md`).
+pub use binding::{
+    BoundProps, BoundSite, DeriveExpr, DirtyClass, PropKey, PropType, PropVal, ReverseIndex, Row,
+    Rows, ShapeFault, SlotChange, SlotKey, SlotValue, result_shape, shape_for,
+};
+pub use binding_eval::{
+    ApplyError, BindTarget, ResolveError, ResolveInputs, ResolvedTree, carries_bindings,
+    check_slot_versions,
+};
 pub use key::{Key, KeyPath};
 pub use node::{
     AxisConstraint, Behaviour, ComponentRef, Constraints, FocusFigure, FocusShownOn, Intent,

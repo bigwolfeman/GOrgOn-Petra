@@ -30,15 +30,20 @@ use crate::component::params::ParamError;
 use crate::tree::ViewNode;
 
 mod atoms;
+pub mod bound;
 mod containment;
 mod data;
+mod expand;
 mod feedback;
 mod form;
 mod icon_param;
 mod navigation;
 mod new_atomics;
+mod openable;
 
+pub use expand::ExpandError;
 pub use icon_param::IconMarkParam;
+pub use openable::{openable, openable_param, openable_table};
 
 /// Build one component from its wire parameter table.
 pub type Ctor = fn(&serde_json::Value) -> Result<ViewNode, ParamError>;
@@ -231,89 +236,27 @@ pub const MAX_DEPTH: usize = 128;
 /// component — the registry is not reachable from `crate::component`'s
 /// constructors, only from here.
 ///
+/// A reference that binds openable parameters (`ComponentRef::bound`) is
+/// refused here by name: it cannot be expanded without the slot values it
+/// reads. [`bound::expand_with`] is the expansion that takes them.
+///
 /// # Errors
 /// When a reference names no registered constructor, when a parameter table
-/// does not fit its constructor's shape, or when the tree nests deeper than
-/// [`MAX_DEPTH`].
+/// does not fit its constructor's shape, when a reference binds parameters,
+/// or when the tree nests deeper than [`MAX_DEPTH`].
 pub fn expand(node: &ViewNode) -> Result<ViewNode, ParamError> {
-    expand_node(node, 0)
-}
-
-fn too_deep(what: &str) -> ParamError {
-    ParamError {
-        component: what.to_owned(),
-        reason: format!(
-            "contributed tree nests deeper than {MAX_DEPTH}; expansion refuses it rather than \
-             recursing further"
-        ),
-    }
-}
-
-fn expand_node(node: &ViewNode, depth: usize) -> Result<ViewNode, ParamError> {
-    if depth >= MAX_DEPTH {
-        return Err(too_deep(node.key.as_str()));
-    }
-    if node.kind == crate::tree::NodeKind::Component {
-        let reference = node.component.as_ref().ok_or_else(|| ParamError {
-            component: node.key.as_str().to_owned(),
-            reason: "kind is `component` but no component reference is declared; `validate` \
-                     should have refused this tree before expansion"
-                .to_owned(),
-        })?;
-        let params = expand_params(&reference.params, depth + 1)?;
-        // The built subtree is primitives: a constructor in `crate::component`
-        // cannot name another component, so there is nothing left to expand
-        // and no second walk to pay for.
-        return build(&reference.name, &params);
-    }
-    let mut out = node.clone();
-    out.children = node
-        .children
-        .iter()
-        .map(|child| expand_node(child, depth + 1).map(std::sync::Arc::new))
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(out)
-}
-
-/// Expand any component references embedded in a parameter table.
-///
-/// Parameters are still JSON here, so a nested node is an object carrying
-/// `"kind": "component"`. Walking JSON rather than deserializing first is what
-/// lets one function serve every parameter shape: a shape holding
-/// `Vec<ViewNode>` and one holding a single `ViewNode` need no separate case.
-fn expand_params(
-    params: &serde_json::Value,
-    depth: usize,
-) -> Result<serde_json::Value, ParamError> {
-    if depth >= MAX_DEPTH {
-        return Err(too_deep("<params>"));
-    }
-    match params {
-        serde_json::Value::Object(fields) => {
-            if fields.get("kind").and_then(serde_json::Value::as_str) == Some("component") {
-                let node: ViewNode =
-                    serde_json::from_value(params.clone()).map_err(|err| ParamError {
-                        component: "<nested>".to_owned(),
-                        reason: format!("nested component reference does not deserialize: {err}"),
-                    })?;
-                let built = expand_node(&node, depth)?;
-                return serde_json::to_value(built).map_err(|err| ParamError {
-                    component: "<nested>".to_owned(),
-                    reason: format!("expanded subtree does not re-serialize: {err}"),
-                });
-            }
-            let mut out = serde_json::Map::with_capacity(fields.len());
-            for (name, value) in fields {
-                out.insert(name.clone(), expand_params(value, depth + 1)?);
-            }
-            Ok(serde_json::Value::Object(out))
-        }
-        serde_json::Value::Array(items) => items
-            .iter()
-            .map(|item| expand_params(item, depth + 1))
-            .collect::<Result<Vec<_>, _>>()
-            .map(serde_json::Value::Array),
-        other => Ok(other.clone()),
+    match expand::expand_node(node, 0, &mut expand::Fold::literal()) {
+        Ok(tree) => Ok(tree),
+        Err(expand::ExpandError::Param(err)) => Err(err),
+        // A walk with no values refuses every `bound` entry before it
+        // evaluates one, so no source ever runs here. Reported rather than
+        // assumed, because a silent mapping would hide the day it does.
+        Err(expand::ExpandError::Resolve(err)) => Err(ParamError {
+            component: "<expand>".to_owned(),
+            reason: format!(
+                "a literal expansion evaluated a slot source, which it must never do: {err}"
+            ),
+        }),
     }
 }
 
@@ -327,10 +270,7 @@ mod tests {
 
     fn reference(key: &str, name: &str, params: serde_json::Value) -> ViewNode {
         let mut node = ViewNode::new(NodeKind::Component, key);
-        node.component = Some(ComponentRef {
-            name: name.to_owned(),
-            params,
-        });
+        node.component = Some(ComponentRef::literal(name, params));
         node
     }
 

@@ -24,8 +24,8 @@ use super::tokens::{
 use super::{pad, stack};
 use crate::geom::{Align, Axis};
 use crate::tree::{
-    AxisConstraint, Constraints, FocusFigure, Interaction, Key, NodeKind, Props, Role, Semantics,
-    TrackSize, ViewNode,
+    AxisConstraint, Behaviour, Constraints, FocusFigure, Intent, Interaction, Key, NodeKind, Phase,
+    Props, Role, Semantics, TrackSize, ViewNode,
 };
 
 /// Carbon line/contained tab height (`2.5rem`). [`SIZE_MD`] is that number.
@@ -224,6 +224,11 @@ fn tab_variant(
             ..Constraints::default()
         })
         .interactive(Role::Tab, label, intents)
+        // Spec 010: exclusive among siblings in the strip.
+        .with_behaviour(Behaviour {
+            intent: Intent::Select,
+            phase: Phase::OnRelease,
+        })
         .owning_its_text();
     node.semantics.selected = selected;
     // Carbon focuses a tab with the ring: `.cds--tabs__nav-link:focus` is

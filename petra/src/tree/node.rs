@@ -1,10 +1,12 @@
 //! The view node: plain nested data, no closures, no state, no toolkit types.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
 use crate::keymap::binding::Binding;
+use crate::tree::binding::{BoundProps, PropVal};
 use crate::tree::key::Key;
 use crate::tree::props::Props;
 
@@ -976,6 +978,24 @@ pub struct ViewNode {
     /// `ViewNode::new` call site, and absent from the wire when empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bindings: Vec<Binding>,
+    /// Property-value sources, expanded to literals before the frame's
+    /// digest is computed. `Lit(v) | Bind(SlotKey) | Derive(Expr)`
+    /// (design §5 of
+    /// `.agents/notes/proposed/architecture/2026-09-27-bound-slot-table-ui-model.md`);
+    /// see [`crate::tree::binding`] and the fold in
+    /// [`crate::tree::binding_eval`].
+    ///
+    /// A property has exactly one source: a property with a literal *and* an
+    /// entry here is refused ([`crate::tree::binding_eval::ResolveError::TwoSources`]).
+    /// Empty (and absent from the wire) for every tree that binds nothing,
+    /// so literal trees serialize exactly as they did before this field
+    /// existed (`contracts/frame-identity.md` v4 pins that).
+    ///
+    /// Distinct from [`Self::bindings`] (spec 010 keymap bindings): that is
+    /// what an event *means* when it lands on this node; this is what a
+    /// property *holds* and where the value comes from.
+    #[serde(default, skip_serializing_if = "BoundProps::is_empty")]
+    pub bound: BoundProps,
 }
 
 /// A component named on the wire, with the parameter table it was given.
@@ -992,6 +1012,29 @@ pub struct ComponentRef {
     /// The parameter table, as written in Lua.
     #[serde(default)]
     pub params: serde_json::Value,
+    /// Parameters whose value comes from a slot, keyed by parameter name.
+    ///
+    /// Only a parameter the component declares openable
+    /// ([`crate::component::registry::openable`]) may appear here, and never
+    /// alongside a literal of the same name in `params`. Expansion folds each
+    /// source to a literal before the constructor runs, and a later slot
+    /// commit re-expands this reference's subtree alone
+    /// (`.agents/notes/implemented/architecture/2026-09-28-bound-component-parameters.md`).
+    /// Empty — and absent from the wire — on every literal reference.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bound: BTreeMap<String, PropVal>,
+}
+
+impl ComponentRef {
+    /// A reference whose every parameter is a literal.
+    #[must_use]
+    pub fn literal(name: impl Into<String>, params: serde_json::Value) -> Self {
+        Self {
+            name: name.into(),
+            params,
+            bound: BTreeMap::new(),
+        }
+    }
 }
 
 fn is_default_props(v: &Props) -> bool {
@@ -1023,6 +1066,7 @@ impl ViewNode {
             behaviour: None,
             raw_claim: false,
             bindings: Vec::new(),
+            bound: BoundProps::default(),
         }
     }
 

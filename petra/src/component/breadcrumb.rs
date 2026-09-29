@@ -64,7 +64,15 @@ use super::stack;
 use super::text::text;
 use super::tokens::SPACING_03;
 use crate::geom::{Align, Axis};
-use crate::tree::{FocusFigure, Interaction, Key, Role, Semantics, ViewNode};
+use crate::tree::{
+    Behaviour, FocusFigure, Intent, Interaction, Key, Phase, Role, Semantics, ViewNode,
+};
+
+/// Spec 010: overflow ellipsis opens the hidden-crumbs menu.
+const TOGGLES_ON_RELEASE: Behaviour = Behaviour {
+    intent: Intent::Toggle,
+    phase: Phase::OnRelease,
+};
 
 /// Default separator Carbon writes with `::after { content: '/' }`.
 const DEFAULT_SEPARATOR: &str = "/";
@@ -232,6 +240,7 @@ fn overflow_ellipsis(hidden: Vec<ViewNode>) -> ViewNode {
     let items: Vec<ViewNode> = hidden.into_iter().map(as_hidden_item).collect();
     let trigger = text("trigger", ELLIPSIS)
         .interactive(Role::Button, OVERFLOW_LABEL, OVERFLOW_INTENTS)
+        .with_behaviour(TOGGLES_ON_RELEASE)
         .with_focus_figure(FocusFigure::BarUnder);
     let overlay = menu("hidden", OVERFLOW_LABEL, items);
     let mut node = stack("overflow", Axis::Horizontal, None, vec![trigger, overlay]);

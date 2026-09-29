@@ -42,8 +42,14 @@ use super::tokens::{
 use super::{CARET_SIZE, CaretDirection, caret, stack, swatch};
 use crate::geom::{Align, Axis};
 use crate::tree::{
-    AxisConstraint, FocusFigure, FocusShownOn, InsetRefs, Interaction, Key, NodeKind, Props, Role,
-    Semantics, TrackSize, ViewNode,
+    AxisConstraint, Behaviour, FocusFigure, FocusShownOn, InsetRefs, Intent, Interaction, Key,
+    NodeKind, Phase, Props, Role, Semantics, TrackSize, ViewNode,
+};
+
+/// Spec 010: exclusive among siblings.
+const SELECTS_ON_RELEASE: Behaviour = Behaviour {
+    intent: Intent::Select,
+    phase: Phase::OnRelease,
 };
 
 /// Carbon small / default node height.
@@ -237,7 +243,9 @@ fn tree_item_sized(
     ] {
         node.props.tokens.insert(slot.into(), t(token));
     }
-    let mut node = node.interactive(Role::TreeItem, label, ITEM_INTENTS);
+    let mut node = node
+        .interactive(Role::TreeItem, label, ITEM_INTENTS)
+        .with_behaviour(SELECTS_ON_RELEASE);
     node.semantics.focus_shown_on = FocusShownOn::OnHead;
     // `BarInside`: tree rows stack flush, so the default bar — five units
     // below the bottom edge — would land on the row below. This is the same
@@ -311,7 +319,9 @@ mod tests {
     use crate::geom::{Axis, Rect, Size};
     use crate::testing::{Harness, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
-    use crate::tree::{Interaction, NodeKind, Props, Registry, Role, ViewNode};
+    use crate::tree::{
+        Behaviour, Intent, Interaction, NodeKind, Phase, Props, Registry, Role, ViewNode,
+    };
 
     fn named<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         fn walk<'a>(node: &'a ViewNode, key: &str) -> Option<&'a ViewNode> {
@@ -825,5 +835,26 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Spec 010: a tree item declares Select / OnRelease.
+    ///
+    /// Falsified by dropping `.with_behaviour(...)` from the item builder:
+    ///
+    /// ```text
+    /// tree_item declared behaviour None
+    /// ```
+    #[test]
+    fn tree_item_declares_select_on_release() {
+        let node = tree_item("leaf", "Kernel", false, false, Vec::new());
+        assert_eq!(
+            node.behaviour,
+            Some(Behaviour {
+                intent: Intent::Select,
+                phase: Phase::OnRelease,
+            }),
+            "tree_item declared behaviour {:?}",
+            node.behaviour
+        );
     }
 }

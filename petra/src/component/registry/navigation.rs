@@ -72,7 +72,7 @@ impl From<PaginationPickerParam> for PaginationPicker {
 
 /// Wire form of [`LeftPanelMode`]: the real enum has no serde support.
 /// Internally tagged on `type`, matching `M.track`'s convention
-/// (`gorgon/kernel-lua/src/ui/builders.lua`), so every variant — including
+/// (`gorgon/lua-view/src/ui/builders.lua`), so every variant — including
 /// the three unit ones — is a table, never a bare string.
 ///
 /// 1 constructor (`ui_shell_left_panel_in`).

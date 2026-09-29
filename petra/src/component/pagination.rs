@@ -63,8 +63,20 @@ use super::tokens::{
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
-    AxisConstraint, Constraints, InsetRefs, Interaction, Justify, Key, NodeKind, Props, Role,
-    TrackSize, ViewNode,
+    AxisConstraint, Behaviour, Constraints, InsetRefs, Intent, Interaction, Justify, Key, NodeKind,
+    Phase, Props, Role, TrackSize, ViewNode,
+};
+
+/// Spec 010: page / prev / next — one shot navigation.
+const ACTIVATES_ON_RELEASE: Behaviour = Behaviour {
+    intent: Intent::Activate,
+    phase: Phase::OnRelease,
+};
+
+/// Spec 010: page-size / page pickers open a list.
+const TOGGLES_ON_RELEASE: Behaviour = Behaviour {
+    intent: Intent::Toggle,
+    phase: Phase::OnRelease,
 };
 
 const _: () = assert!(SIZE_MD == 40.0);
@@ -400,6 +412,7 @@ fn page_number_button(n: u32, selected: bool) -> ViewNode {
     let mut node = node
         .with_constraints(pin_at_least_md())
         .interactive(Role::Button, label, NAV_INTENTS)
+        .with_behaviour(ACTIVATES_ON_RELEASE)
         .owning_its_text();
     node.semantics.selected = selected;
     node.semantics.value = Some(n.to_string());
@@ -614,6 +627,7 @@ fn picker(
     let mut node = node
         .with_constraints(pin_block(SIZE_MD))
         .interactive(Role::Button, label, NAV_INTENTS)
+        .with_behaviour(TOGGLES_ON_RELEASE)
         .owning_its_text();
     node.semantics.value = Some(value);
     node.semantics.expanded = Some(open);
@@ -725,6 +739,7 @@ fn nav_button(
     let node = node
         .with_constraints(pin_square(SIZE_MD))
         .interactive(Role::Button, label, NAV_INTENTS)
+        .with_behaviour(ACTIVATES_ON_RELEASE)
         .owning_its_text();
     if unavailable { disabled(node) } else { node }
 }
@@ -760,7 +775,9 @@ mod tests {
     use crate::geom::{Axis, Rect, Size};
     use crate::testing::{Harness, validated_with};
     use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
-    use crate::tree::{Interaction, NodeKind, Props, Registry, Role, ViewNode};
+    use crate::tree::{
+        Behaviour, Intent, Interaction, NodeKind, Phase, Props, Registry, Role, ViewNode,
+    };
 
     fn named<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         fn walk<'a>(node: &'a ViewNode, key: &str) -> Option<&'a ViewNode> {
@@ -1696,5 +1713,33 @@ mod tests {
                 "{label}: caret is IconTone::Disabled"
             );
         }
+    }
+
+    /// Spec 010: page / nav buttons declare Activate / OnRelease.
+    ///
+    /// Falsified by dropping `.with_behaviour(...)` from page / nav builders:
+    ///
+    /// ```text
+    /// pagination button declared behaviour None
+    /// ```
+    #[test]
+    fn pagination_nav_declares_activate_on_release() {
+        let node = pagination_nav("nav", 2, 5);
+        let want = Some(Behaviour {
+            intent: Intent::Activate,
+            phase: Phase::OnRelease,
+        });
+        assert_eq!(
+            named(&node, "previous").behaviour,
+            want,
+            "pagination previous declared behaviour {:?}",
+            named(&node, "previous").behaviour
+        );
+        assert_eq!(
+            named(&node, "next").behaviour,
+            want,
+            "pagination next declared behaviour {:?}",
+            named(&node, "next").behaviour
+        );
     }
 }

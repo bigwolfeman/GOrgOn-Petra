@@ -94,6 +94,7 @@ fn fail(component: &'static str, e: impl std::fmt::Display) -> ParamError {
 #[serde(deny_unknown_fields)]
 pub struct ComboboxPropsWire {
     label: String,
+    #[serde(default)]
     items: Vec<String>,
 }
 
@@ -114,7 +115,7 @@ struct ComboboxWire {
 }
 
 impl ParamShape for ComboboxWire {
-    const LUAU: &'static str = "{ props: { label: string, items: { string } }, state: \
+    const LUAU: &'static str = "{ props: { label: string, items: { string }? }, state: \
          { query: string?, highlighted: number?, open: boolean? } }";
 }
 
@@ -211,6 +212,7 @@ fn default_tile_columns() -> u8 {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CommandPropsWire {
+    #[serde(default)]
     items: Vec<CommandItemWire>,
     #[serde(default = "default_list_columns")]
     list_columns: u8,
@@ -271,7 +273,7 @@ impl ParamShape for CommandWire {
         "{ props: { items: { { id: string, label: string, shortcut: string?, categories: \
          { string }?, icon: ",
         gorgon_petra::icon_mark_luau!(),
-        "? } }, list_columns: number?, tile_columns: number?, default_view: (\"list\" | \
+        "? } }?, list_columns: number?, tile_columns: number?, default_view: (\"list\" | \
          \"tiles\")?, modes: { { key: string, label: string, icon: ",
         gorgon_petra::icon_mark_luau!(),
         "? } }? }, state: { query: string?, highlighted: number?, open: boolean?, view: \
@@ -354,6 +356,7 @@ impl From<DataTableColumnWire> for data_table::Column {
 #[serde(deny_unknown_fields)]
 struct DataTableRowWire {
     id: String,
+    #[serde(default)]
     cells: Vec<String>,
     #[serde(default)]
     body: Option<String>,
@@ -389,11 +392,15 @@ impl From<DataTableActionWire> for data_table::ActionItem {
 /// `batch_actions`/`row_actions`/`loading` are `#[serde(default)]` (T034):
 /// a row written before the toolbar tier existed still parses — an empty
 /// batch/row-action list and `loading: false` is the pre-T034 behaviour
-/// exactly, not a guess at one.
+/// exactly, not a guess at one. `columns`/`rows` default too: Lua cannot
+/// send an empty list (it crosses as `{}`), so `ui.data_table_compound`
+/// omits one, and an empty table is a real state (nothing loaded yet).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DataTablePropsWire {
+    #[serde(default)]
     columns: Vec<DataTableColumnWire>,
+    #[serde(default)]
     rows: Vec<DataTableRowWire>,
     #[serde(default)]
     batch_actions: Vec<DataTableActionWire>,
@@ -423,8 +430,8 @@ struct DataTableWire {
 }
 
 impl ParamShape for DataTableWire {
-    const LUAU: &'static str = "{ props: { columns: { { id: string, label: string } }, rows: \
-         { { id: string, cells: { string }, body: string? } }, batch_actions: { { id: string, \
+    const LUAU: &'static str = "{ props: { columns: { { id: string, label: string } }?, rows: \
+         { { id: string, cells: { string }?, body: string? } }?, batch_actions: { { id: string, \
          label: string } }?, row_actions: { { id: string, label: string } }?, loading: boolean? \
          }, state: { sort: { column: string, ascending: boolean }?, selection: { string }?, \
          expansion: { string }?, query: string?, hidden_columns: { string }?, column_menu_open: \
@@ -618,6 +625,36 @@ mod tests {
         );
         let day29 = find(&node, "day-29").expect("day-29 must also be on the grid");
         assert!(!day29.semantics.selected, "only the picked day is marked");
+    }
+
+    /// A misspelled state field is a refusal naming the field, not a
+    /// silently default state (`row_menu` parsed as "menu shut" before).
+    #[test]
+    fn data_table_row_refuses_an_unknown_state_field() {
+        register();
+        let params = json!({
+            "props": { "columns": [{"id": "name", "label": "Name"}] },
+            "state": { "row_menu": "r0" }
+        });
+        let err = build("data_table_compound", &params)
+            .expect_err("an unknown state field must be refused");
+        assert!(
+            err.reason.contains("row_menu"),
+            "the refusal must name the field; got {}",
+            err.reason
+        );
+    }
+
+    /// `ui.data_table_compound` omits empty Lua lists (they would cross as
+    /// `{}`), so a table with no rows arrives without `rows` and must build.
+    #[test]
+    fn data_table_row_builds_with_rows_omitted() {
+        register();
+        let params = json!({
+            "props": { "columns": [{"id": "name", "label": "Name"}] },
+            "state": {}
+        });
+        build("data_table_compound", &params).expect("omitted rows mean no rows");
     }
 
     /// A sort and a selection recorded straight in `state` show up in the

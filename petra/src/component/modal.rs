@@ -69,9 +69,9 @@ use super::tokens::{
 use crate::geom::{Align, Axis};
 use crate::token::{CornerRole, Joined, corner_for, corners_for};
 use crate::tree::{
-    Anchor, AxisConstraint, ClampRule, Constraints, FocusFigure, InputPolicy, InsetRefs,
-    Interaction, Justify, Key, Layer, NodeKind, Props, Role, Semantics, TextWrap, TrackSize,
-    ViewNode,
+    Anchor, AxisConstraint, Behaviour, ClampRule, Constraints, FocusFigure, InputPolicy, InsetRefs,
+    Intent, Interaction, Justify, Key, Layer, NodeKind, Phase, Props, Role, Semantics, TextWrap,
+    TrackSize, ViewNode,
 };
 
 /// Carbon close-button hit box (`3rem`).
@@ -442,6 +442,11 @@ fn close_button() -> ViewNode {
         },
     })
     .interactive(Role::Button, "Close", CLOSE_INTENTS)
+    // Spec 010: dismiss is Activate — one shot, no state on the control.
+    .with_behaviour(Behaviour {
+        intent: Intent::Activate,
+        phase: Phase::OnRelease,
+    })
     .owning_its_text()
     // `BarUnder`, the operator's call of 2026-09-06 for this control.
     //
