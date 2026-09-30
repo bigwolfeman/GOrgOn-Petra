@@ -13,12 +13,29 @@
 //! each row is a promise that re-expanding the component on that
 //! parameter's slot commit is bounded and correct
 //! (`.agents/notes/implemented/architecture/2026-09-28-bound-component-parameters.md`).
+//!
+//! Two kinds of row are not a plain flag. `checkbox_tristate.state` is the
+//! three-state box as its wire spelling (`"unchecked"`, `"checked"`,
+//! `"mixed"`), so a `Str` (or enum) slot drives the indeterminate state and
+//! a value outside the three is the constructor's named refusal. The
+//! disclosure rows (`expanded` on an accordion item or an expandable tile)
+//! are *visibility*: the
+//! parameter decides whether the item's body is mounted at all, so a commit
+//! adds or removes that subtree by key inside the regrown unit.
 
 use crate::tree::PropType;
 
 /// `(component name, [(parameter, type)])`, sorted by component name.
 const OPENABLE: &[(&str, &[(&str, PropType)])] = &[
+    ("accordion_item_spaced", &[("expanded", PropType::Bool)]),
+    (
+        "accordion_item_with_spaced",
+        &[("expanded", PropType::Bool)],
+    ),
     ("checkbox", &[("selected", PropType::Bool)]),
+    ("checkbox_tristate", &[("state", PropType::Str)]),
+    ("contained_tab", &[("selected", PropType::Bool)]),
+    ("content_switcher_item", &[("selected", PropType::Bool)]),
     ("data_table_row", &[("selected", PropType::Bool)]),
     (
         "data_table_row_expandable",
@@ -30,10 +47,18 @@ const OPENABLE: &[(&str, &[(&str, PropType)])] = &[
     ("data_table_row_xl", &[("selected", PropType::Bool)]),
     ("data_table_row_xs", &[("selected", PropType::Bool)]),
     ("data_table_sort_header", &[("selected", PropType::Bool)]),
+    ("expandable_tile", &[("expanded", PropType::Bool)]),
     ("list_row", &[("selected", PropType::Bool)]),
+    ("radio", &[("selected", PropType::Bool)]),
+    ("selectable_tag", &[("selected", PropType::Bool)]),
+    ("selectable_tile", &[("selected", PropType::Bool)]),
+    ("tab", &[("selected", PropType::Bool)]),
     ("toggle", &[("selected", PropType::Bool)]),
     ("toggle_sm", &[("selected", PropType::Bool)]),
+    ("ui_shell_header_menu_trigger", &[("open", PropType::Bool)]),
+    ("ui_shell_header_nav_item", &[("selected", PropType::Bool)]),
     ("valued", &[("value", PropType::Str)]),
+    ("vertical_tab", &[("selected", PropType::Bool)]),
 ];
 
 /// The parameters `component` declares openable, with the type each holds.
@@ -113,6 +138,25 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The tristate's `Str` row admits exactly the three wire spellings: a
+    /// fourth string is the constructor's refusal naming the variants, never
+    /// a silent fallback to one of them.
+    #[test]
+    fn a_tristate_state_outside_the_three_is_refused_by_name() {
+        let entry = lookup("checkbox_tristate").expect("registered");
+        for state in ["unchecked", "checked", "mixed"] {
+            (entry.ctor)(&json!({ "key": "c", "label": "C", "state": state }))
+                .unwrap_or_else(|err| panic!("`{state}` builds: {}", err.reason));
+        }
+        let err = (entry.ctor)(&json!({ "key": "c", "label": "C", "state": "half" }))
+            .expect_err("a fourth state refuses");
+        assert!(
+            err.reason.contains("half") && err.reason.contains("mixed"),
+            "the refusal names the value and the variants: {}",
+            err.reason
+        );
     }
 
     #[test]
