@@ -30,7 +30,11 @@ fn rows() -> Vec<(&'static str, &'static str, Value)> {
             json!({ "label": "More", "body": "Below the fold." }),
         ),
         ("ui_shell_header_menu_trigger", "open", json!({})),
-        ("ui_shell_header_nav_item", "selected", json!({ "label": "Fibers" })),
+        (
+            "ui_shell_header_nav_item",
+            "selected",
+            json!({ "label": "Fibers" }),
+        ),
     ]
 }
 
