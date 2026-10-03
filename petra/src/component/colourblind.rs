@@ -26,6 +26,11 @@
 //! Each test below is one of those three, asked of every status-carrying
 //! component and every status in the live vocabulary rather than of a list
 //! written here.
+//!
+//! Every test in this file was proved live before it was trusted: on
+//! 2026-09-11 each one was reverted against a real production edit and the
+//! failure it printed recorded alongside the reverts
+//! (`.agents/notes/implemented/testing/2026-09-11-the-colourblindness-lane-reaches-component-instances.md`).
 
 use crate::component::icon::{IconBox, IconMark, IconTone, icon_in, icon_toned};
 use crate::component::{
@@ -120,17 +125,6 @@ fn status_carrying(token: &StatusToken) -> Vec<(&'static str, ViewNode)> {
 /// colour, a real token, gate C1-8 satisfied, nothing invented — and the
 /// whole separation lane would go on measuring three names no component
 /// paints.
-///
-/// Reverted 2026-09-11: `status.rs`'s dot bound `Some("accent.primary")`
-/// instead of `Some(status.name().as_str())`, and this said
-///
-/// ```text
-/// assertion `left == right` failed: status was handed status.degraded and
-/// painted accent.primary; a component that substitutes its own hue leaves
-/// the token sweep measuring a colour nothing draws
-///   left: "accent.primary"
-///  right: "status.degraded"
-/// ```
 #[test]
 fn every_status_a_component_paints_is_a_colour_the_separation_gate_sweeps() {
     let family = status_family();
@@ -164,19 +158,9 @@ fn every_status_a_component_paints_is_a_colour_the_separation_gate_sweeps() {
 /// because "follows from" is an argument and this is a measurement — and the
 /// two disagree the moment a component binds an alias whose value drifts.
 ///
-/// Reverted 2026-09-11 by putting Carbon's own alert triple back into
-/// `light()` — `#24a148`, `#f1c21b`, `#da1e28`, the palette FR-005 refuses —
-/// and this said
-///
-/// ```text
-/// light: a tag showing status.down and a tag showing status.ok are only
-/// ΔE*ab 20.4 apart to a deuteranope reader (floor is 30)
-/// ```
-///
-/// A weaker revert does not do it: moving `status.degraded` alone to
-/// `#f1c21b` and leaving the other two shipped leaves every pair above the
-/// floor and this test green. The collapse needs two Carbon hues at once,
-/// which is exactly the shape of the mistake the gate is here for.
+/// A single-token palette revert does not trip this: moving `status.degraded`
+/// alone to Carbon's `#f1c21b` leaves every pair above the floor. The collapse
+/// needs two Carbon hues at once — exactly the mistake the gate is here for.
 #[test]
 fn two_statuses_a_component_paints_stay_apart_to_a_dichromat() {
     let tokens = every_shipped_status();
@@ -223,14 +207,6 @@ fn two_statuses_a_component_paints_stay_apart_to_a_dichromat() {
 /// rather than demanding a fixed node, and the first cut of it — which
 /// demanded the role on the mark — failed on [`status`] for exactly that
 /// reason.
-///
-/// Reverted 2026-09-11 by deleting `presence_seat`'s silhouette insert, and
-/// this said
-///
-/// ```text
-/// avatar_with_status draws Circle with no silhouette; to a reader who
-/// cannot separate the hues that mark is a blank swatch
-/// ```
 #[test]
 fn a_status_mark_reads_without_its_colour_in_every_component_that_shows_one() {
     for shape in SHAPES {
@@ -271,18 +247,6 @@ fn a_status_mark_reads_without_its_colour_in_every_component_that_shows_one() {
 /// Checked through the rendered marks rather than by calling either table,
 /// because the observable claim is that one status looks like itself wherever
 /// it is shown, not that two private functions share a body.
-///
-/// Reverted 2026-09-11 by pointing one row of `avatar.rs`'s copy —
-/// `StatusShape::Diamond` — at `SILHOUETTE_OCTAGON`, which is exactly the
-/// one-line drift the copy makes possible, and this said
-///
-/// ```text
-/// assertion `left == right` failed: Diamond is one figure in a status
-/// readout and a different one on an avatar; avatar.rs's copy of the shape
-/// table has drifted
-///   left: Some("shape.silhouette-diamond")
-///  right: Some("shape.silhouette-octagon")
-/// ```
 #[test]
 fn the_avatar_and_the_readout_agree_on_every_status_silhouette() {
     for shape in SHAPES {
@@ -313,15 +277,6 @@ fn the_avatar_and_the_readout_agree_on_every_status_silhouette() {
 ///
 /// The ground is read out of the tree, so this measures what the component
 /// composes rather than what this file guesses it composes.
-///
-/// Reverted 2026-09-11 by painting `avatar.rs`'s `face` in
-/// `SUPPORT_WARNING` instead of `SURFACE_RAISED`, and this said
-///
-/// ```text
-/// light: avatar_with_status paints status.degraded on support-warning at
-/// 1.00:1, under the 3:1 floor — the mark the shape channel lives on is not
-/// visible to anybody
-/// ```
 #[test]
 fn a_status_mark_clears_the_contrast_floor_against_its_own_components_ground() {
     for (label, theme) in [("light", light()), ("dark", dark())] {
@@ -368,14 +323,6 @@ fn a_status_mark_clears_the_contrast_floor_against_its_own_components_ground() {
 /// and for a notification the silhouette *is* the glyph. Holding
 /// [`IconTone`] fixed removes colour from the comparison entirely, so a pair
 /// that matches here matches on screen for every reader.
-///
-/// Reverted 2026-09-11 by pointing `IconMark::WarningFilled` at
-/// `error_filled`, and this said
-///
-/// ```text
-/// assertion `left != right` failed: ErrorFilled and WarningFilled are the
-/// same picture at one tone, so the two severities differ only in hue
-/// ```
 #[test]
 fn the_four_alert_marks_are_four_different_pictures_at_one_tone() {
     let alerts = [
@@ -412,14 +359,6 @@ fn the_four_alert_marks_are_four_different_pictures_at_one_tone() {
 /// the sweep beside them: it holds the *shared* claim — a warning is a word
 /// plus a picture, never a hue — in one place, so a seventh variant added
 /// next to these six either joins the sweep or is visibly missing from it.
-///
-/// Reverted 2026-09-11 by giving `warning_helper` an
-/// `IconMark::ErrorFilled`, and this said
-///
-/// ```text
-/// assertion `left == right` failed: field_warning's helper draws something
-/// other than the warning glyph, so the severity rests on the text alone
-/// ```
 #[test]
 fn every_warning_variant_says_warning_in_words_and_a_glyph() {
     let want_glyph = icon_in(
