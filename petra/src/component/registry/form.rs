@@ -15,24 +15,28 @@
 //! scanning the ten files' own source text, not by trusting this list.
 //!
 //! Eleven shapes here are one-off: `KeyLabel`/`KeyLabelSelected`/
-//! `KeyLabelValue`/`KeyLabelChildren`/`KeyLabelNumber` (from
-//! [`crate::component::params`]) cover 41 of these 53 rows; the rest need a
-//! shape [`crate::component::params`] does not carry — `checkbox_tristate`'s
-//! three-state enum, `date_picker_showing`'s browsing-calendar enum,
-//! `date_picker_showing_selection`'s same enum plus the extra `selected`
-//! list, the two `_open` constructors' `(key, label, value, children)`
-//! quartet, a plain `(node, hint)`/`(node, value)` pair for
-//! `hinted`/`valued`, and the `message`-carrying shapes `field_invalid`/
-//! `field_warning`/`field_validated`/`file_uploader_item_invalid`/
-//! `number_input_invalid`/`checkbox_warning`/`radio_warning` need. Each is
-//! defined once here and reused wherever its field set repeats.
+//! `KeyLabelValue`/`KeyLabelChildren`/`KeyLabelNumber`/`KeyLabelMessage`/
+//! `KeyLabelOptionalMessage` (from [`crate::component::params`]) cover 44 of
+//! these 60 rows; the rest need a shape [`crate::component::params`] does not
+//! carry — `checkbox_tristate`'s three-state enum, `date_picker_showing`'s
+//! browsing-calendar enum, `date_picker_showing_selection`'s same enum plus
+//! the extra `selected` list, the two `_open` constructors'
+//! `(key, label, value, children)` quartet, a plain `(node, hint)`/
+//! `(node, value)` pair for `hinted`/`valued`, `file_uploader_with`/
+//! `field_described`'s `(key, label, description)`, `labeled`'s
+//! `(key, label, control)`, `checkbox_described`/`radio_described`'s
+//! `(key, label, selected, description)`, and the `message`-carrying shapes
+//! `checkbox_warning`/`radio_warning`/`number_input_invalid`/
+//! `number_input_warning` need. Each is defined once here and reused
+//! wherever its field set repeats.
 
 use serde::Deserialize;
 
 use super::Entry;
 use crate::component as lib;
 use crate::component::params::{
-    KeyLabel, KeyLabelChildren, KeyLabelNumber, KeyLabelSelected, KeyLabelValue, ParamShape,
+    KeyLabel, KeyLabelChildren, KeyLabelMessage, KeyLabelNumber, KeyLabelOptionalMessage,
+    KeyLabelSelected, KeyLabelValue, ParamShape,
 };
 use crate::tree::{Key, ViewNode};
 
@@ -147,18 +151,6 @@ impl ParamShape for KeyLabelValueChildren {
         "{ key: string, label: string, value: string, children: { ViewNode } }";
 }
 
-/// `field_invalid`/`field_warning`/`file_uploader_item_invalid`(key, label, message).
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct KeyLabelMessage {
-    key: Key,
-    label: String,
-    message: String,
-}
-impl ParamShape for KeyLabelMessage {
-    const LUAU: &'static str = "{ key: string, label: string, message: string }";
-}
-
 /// `checkbox_warning`/`radio_warning`(key, label, selected, message).
 /// The bool is `checked` on `checkbox_warning` and `selected` on
 /// `radio_warning`; the wire name is `selected`, matching [`KeyLabelSelected`].
@@ -172,20 +164,6 @@ struct KeyLabelSelectedMessage {
 }
 impl ParamShape for KeyLabelSelectedMessage {
     const LUAU: &'static str = "{ key: string, label: string, selected: boolean, message: string }";
-}
-
-/// `field_validated(key, label, message?)`: `message` is optional (`None`
-/// builds the enabled well, `Some` builds the invalid one with a helper).
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct KeyLabelOptionalMessage {
-    key: Key,
-    label: String,
-    #[serde(default)]
-    message: Option<String>,
-}
-impl ParamShape for KeyLabelOptionalMessage {
-    const LUAU: &'static str = "{ key: string, label: string, message: string? }";
 }
 
 /// `number_input_invalid(key, label, value, message)`.

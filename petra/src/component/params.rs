@@ -195,6 +195,50 @@ shapes! {
         key: Key,
     }
         => "{ key: string }";
+    /// 6 constructors. The message-carrying table `field_invalid`/
+    /// `field_warning`/`file_uploader_item_invalid`/
+    /// `file_uploader_item_warning`/`textarea_invalid`/`textarea_warning`
+    /// all take, whichever group file their row lives in.
+    KeyLabelMessage {
+        /// This node's key, unique among its siblings.
+        key: Key,
+        /// The visible text.
+        label: String,
+        /// The message shown with the node.
+        message: String,
+    }
+        => "{ key: string, label: string, message: string }";
+    /// 4 constructors. The real constructors name the list `children`/
+    /// `items`/`content` depending on the constructor; the wire name is
+    /// `children` for all four.
+    KeyLabelOpenChildren {
+        /// This node's key, unique among its siblings.
+        key: Key,
+        /// The visible text.
+        label: String,
+        /// Whether this node reads as open.
+        open: bool,
+        /// Child nodes, in paint order.
+        ///
+        /// `#[serde(default)]` because the Lua factory omits an empty table:
+        /// Lua cannot distinguish an empty list from an empty map, so sending
+        /// one would arrive as `{}` and fail to deserialize.
+        #[serde(default)]
+        children: Vec<ViewNode>,
+    }
+        => "{ key: string, label: string, open: boolean, children: { ViewNode } }";
+    /// 2 constructors. `message` is optional on the wire: `None` builds the
+    /// plain node, `Some` builds the invalid one with a helper.
+    KeyLabelOptionalMessage {
+        /// This node's key, unique among its siblings.
+        key: Key,
+        /// The visible text.
+        label: String,
+        /// The message shown with the node.
+        #[serde(default)]
+        message: Option<String>,
+    }
+        => "{ key: string, label: string, message: string? }";
 }
 
 #[cfg(test)]

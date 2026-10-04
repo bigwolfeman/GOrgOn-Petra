@@ -13,7 +13,8 @@ use serde::Deserialize;
 
 use super::Entry;
 use crate::component::params::{
-    KeyChildren, KeyLabel, KeyLabelChildren, KeyLabelSelected, KeyOnly, ParamShape,
+    KeyChildren, KeyLabel, KeyLabelChildren, KeyLabelOpenChildren, KeyLabelSelected, KeyOnly,
+    ParamShape,
 };
 use crate::component::registry::IconMarkParam;
 use crate::component::{
@@ -262,26 +263,6 @@ struct KeyOpenOnly {
 }
 impl ParamShape for KeyOpenOnly {
     const LUAU: &'static str = "{ key: string, open: boolean }";
-}
-
-/// `menu_button`, `ui_shell_right_panel`, `ui_shell_switcher` — 3
-/// constructors sharing one `(key, label, bool, children)` shape. The real
-/// constructors name the bool `open` and the list `items`/`content`
-/// depending on the constructor; this shape's field names are generic
-/// because the wire table is the same across all three.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct KeyLabelOpenChildren {
-    key: Key,
-    label: String,
-    open: bool,
-    // See `UiShellHeaderParams`'s `nav`/`actions` for why.
-    #[serde(default)]
-    children: Vec<ViewNode>,
-}
-impl ParamShape for KeyLabelOpenChildren {
-    const LUAU: &'static str =
-        "{ key: string, label: string, open: boolean, children: { ViewNode } }";
 }
 
 /// `ui_shell_header_action_icon` — 1 constructor.

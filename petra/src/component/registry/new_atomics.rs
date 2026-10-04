@@ -21,7 +21,9 @@ use serde::Deserialize;
 
 use super::Entry;
 use crate::component as lib;
-use crate::component::params::{KeyChildren, KeyLabel, ParamShape};
+use crate::component::params::{
+    KeyChildren, KeyLabel, KeyLabelMessage, KeyLabelOptionalMessage, ParamShape,
+};
 use crate::component::registry::IconMarkParam;
 use crate::token::StatusToken;
 use crate::tree::{Key, ViewNode};
@@ -36,34 +38,6 @@ macro_rules! status_token_luau {
 // ---------------------------------------------------------------------
 // One-off shapes. Field names match the Rust constructors.
 // ---------------------------------------------------------------------
-
-/// `textarea_invalid(key, label, message)`. Same field set as form.rs's
-/// local `KeyLabelMessage`; redefined here because group files do not
-/// import siblings — `registry/mod.rs` shares the `row!`/`parse` glue,
-/// not the one-off shapes.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct KeyLabelMessage {
-    key: Key,
-    label: String,
-    message: String,
-}
-impl ParamShape for KeyLabelMessage {
-    const LUAU: &'static str = "{ key: string, label: string, message: string }";
-}
-
-/// `textarea_validated(key, label, message?)`.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct KeyLabelOptionalMessage {
-    key: Key,
-    label: String,
-    #[serde(default)]
-    message: Option<String>,
-}
-impl ParamShape for KeyLabelOptionalMessage {
-    const LUAU: &'static str = "{ key: string, label: string, message: string? }";
-}
 
 /// `avatar` / `avatar_xs` / `avatar_md` / `avatar_lg`(key, initials).
 #[derive(Debug, Clone, Deserialize)]

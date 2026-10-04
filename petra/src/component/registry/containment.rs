@@ -13,8 +13,8 @@ use serde::Deserialize;
 
 use super::Entry;
 use crate::component::params::{
-    KeyChildren, KeyChildrenSelected, KeyLabel, KeyLabelChildren, KeyLabelSelected, KeyLabelValue,
-    ParamShape,
+    KeyChildren, KeyChildrenSelected, KeyLabel, KeyLabelChildren, KeyLabelOpenChildren,
+    KeyLabelSelected, KeyLabelValue, ParamShape,
 };
 use crate::component::{
     Bullet, BulletScheme, accordion, accordion_item, accordion_item_lg, accordion_item_sm,
@@ -280,22 +280,6 @@ struct KeyLabelOpenBody {
 }
 impl ParamShape for KeyLabelOpenBody {
     const LUAU: &'static str = "{ key: string, label: string, open: boolean, body: string }";
-}
-
-/// `toggletip_with` — 1 constructor.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct KeyLabelOpenChildren {
-    key: Key,
-    label: String,
-    open: bool,
-    // See `KeyLabelExpandedChildren`'s `children` for why.
-    #[serde(default)]
-    children: Vec<ViewNode>,
-}
-impl ParamShape for KeyLabelOpenChildren {
-    const LUAU: &'static str =
-        "{ key: string, label: string, open: boolean, children: { ViewNode } }";
 }
 
 /// `tooltip_anchored` — 1 constructor.
