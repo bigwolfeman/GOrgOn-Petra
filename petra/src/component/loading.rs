@@ -331,13 +331,13 @@ mod tests {
         CARBON_TURN_SECONDS, INK_LG, INK_SM, SIZE_LG, SIZE_SM, TURN_SECONDS,
         advance_ambient_spinners, loading, loading_sm, spinner_phase,
     };
+    use crate::component::tests::petrify_lone;
     use crate::component::tokens::{ACCENT_PRIMARY, LAYER_ACCENT};
     use crate::draw::{ColorRef, Command, DrawList, PathVerb};
-    use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
-    use crate::geom::{Axis, Point, Size};
-    use crate::testing::{Harness, validated_with};
-    use crate::token::{ThemeMode, standard_vocabulary};
-    use crate::tree::{NodeKind, Props, Registry, Role, ViewNode};
+
+    use crate::geom::Point;
+
+    use crate::tree::{NodeKind, Role, ViewNode};
 
     fn list(node: &ViewNode) -> &DrawList {
         node.props.canvas.as_ref().expect("the spinner is a canvas")
@@ -497,28 +497,6 @@ mod tests {
             *list(&loading("load-lg", "Working", TURN_SECONDS / 4.0)),
             "rewritten phase must match a freshly authored spinner"
         );
-    }
-
-    const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
-
-    fn petrify_lone(node: ViewNode) -> PetrifiedFrame {
-        let root = ViewNode::new(NodeKind::Stack, "root")
-            .with_props(Props {
-                axis: Some(Axis::Vertical),
-                ..Props::default()
-            })
-            .child(node);
-        let registry = Registry::with_vocabulary(standard_vocabulary());
-        let mut harness = Harness::new();
-        let viewport = Viewport::new(VIEWPORT, ThemeMode::Dark);
-        harness.scale = viewport.scale;
-        petrify(
-            1,
-            validated_with(&root, &registry),
-            &mut harness.ctx(),
-            viewport,
-            TransitionActivity::default(),
-        )
     }
 
     /// Check C/D: both spinners place with a real square rect, nothing

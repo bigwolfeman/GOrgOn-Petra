@@ -94,12 +94,11 @@ fn item_filler(index: usize) -> ViewNode {
 mod tests {
     use super::form;
     use crate::component::field::{field, field_labeled};
+    use crate::component::tests::{assert_fits_parent, petrify_lone};
     use crate::component::tokens::{SPACING_03, TEXT_MUTED};
-    use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
-    use crate::geom::{Axis, Size};
-    use crate::testing::{Harness, validated_with};
-    use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
-    use crate::tree::{NodeKind, Props, Registry, ViewNode};
+
+    use crate::token::{ColorValue, Theme, TokenName, TokenValue};
+    use crate::tree::{NodeKind, ViewNode};
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         node.children
@@ -209,32 +208,6 @@ mod tests {
         let _ = child(&node, "name");
     }
 
-    const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
-
-    fn accepting_registry() -> Registry {
-        Registry::with_vocabulary(standard_vocabulary())
-    }
-
-    fn petrify_lone(node: ViewNode) -> PetrifiedFrame {
-        let root = ViewNode::new(NodeKind::Stack, "root")
-            .with_props(Props {
-                axis: Some(Axis::Vertical),
-                ..Props::default()
-            })
-            .child(node);
-        let registry = accepting_registry();
-        let mut harness = Harness::new();
-        let viewport = Viewport::new(VIEWPORT, ThemeMode::Dark);
-        harness.scale = viewport.scale;
-        petrify(
-            1,
-            validated_with(&root, &registry),
-            &mut harness.ctx(),
-            viewport,
-            TransitionActivity::default(),
-        )
-    }
-
     fn color(theme: &Theme, name: &str) -> ColorValue {
         match theme.value(&TokenName::new(name).unwrap()).unwrap() {
             TokenValue::Color(c) => *c,
@@ -266,16 +239,7 @@ mod tests {
                 p.id
             );
             if let Some(parent_idx) = p.parent {
-                let parent = &frame.placements[parent_idx];
-                let fits = p.rect.x >= parent.rect.x - 0.01
-                    && p.rect.y >= parent.rect.y - 0.01
-                    && p.rect.x + p.rect.w <= parent.rect.x + parent.rect.w + 0.01
-                    && p.rect.y + p.rect.h <= parent.rect.y + parent.rect.h + 0.01;
-                assert!(
-                    fits,
-                    "{} (rect {:?}) extends outside its parent {} (rect {:?})",
-                    p.id, p.rect, parent.id, parent.rect
-                );
+                assert_fits_parent("", p, &frame.placements[parent_idx]);
             }
         }
     }

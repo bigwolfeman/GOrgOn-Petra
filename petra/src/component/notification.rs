@@ -485,13 +485,14 @@ mod tests {
         notification_actionable, notification_inline, notification_toast,
     };
     use crate::component::disabled;
+    use crate::component::tests::{assert_fits_parent, petrify_lone, petrify_root};
     use crate::component::tokens::{LAYER_HOVER, SURFACE_RAISED, TYPOGRAPHY_HEADING_SM};
-    use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
+    use crate::frame::PetrifiedFrame;
     use crate::geom::{Align, Axis, Size};
-    use crate::testing::{Harness, validated_with};
-    use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
+
+    use crate::token::{ColorValue, Theme, TokenName, TokenValue};
     use crate::tree::{
-        Behaviour, InputPolicy, Intent, Interaction, Layer, NodeKind, Phase, Props, Registry, Role,
+        Behaviour, InputPolicy, Intent, Interaction, Layer, NodeKind, Phase, Props, Role,
         TrackSize, ViewNode,
     };
 
@@ -738,20 +739,8 @@ mod tests {
 
     const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
 
-    fn accepting_registry() -> Registry {
-        Registry::with_vocabulary(standard_vocabulary())
-    }
-
-    fn petrify_lone(node: ViewNode) -> PetrifiedFrame {
-        petrify_all(vec![node])
-    }
-
     fn petrify_stretched(nodes: Vec<ViewNode>) -> PetrifiedFrame {
         petrify_column(nodes, Some(Align::Stretch))
-    }
-
-    fn petrify_all(nodes: Vec<ViewNode>) -> PetrifiedFrame {
-        petrify_column(nodes, None)
     }
 
     fn petrify_column(nodes: Vec<ViewNode>, align: Option<Align>) -> PetrifiedFrame {
@@ -763,17 +752,7 @@ mod tests {
         for node in nodes {
             root = root.child(node);
         }
-        let registry = accepting_registry();
-        let mut harness = Harness::new();
-        let viewport = Viewport::new(VIEWPORT, ThemeMode::Dark);
-        harness.scale = viewport.scale;
-        petrify(
-            1,
-            validated_with(&root, &registry),
-            &mut harness.ctx(),
-            viewport,
-            TransitionActivity::default(),
-        )
+        petrify_root(&root, VIEWPORT)
     }
 
     fn color(theme: &Theme, name: &str) -> ColorValue {
@@ -798,16 +777,7 @@ mod tests {
                 p.id
             );
             if let Some(parent_idx) = p.parent {
-                let parent = &frame.placements[parent_idx];
-                let fits = p.rect.x >= parent.rect.x - 0.01
-                    && p.rect.y >= parent.rect.y - 0.01
-                    && p.rect.x + p.rect.w <= parent.rect.x + parent.rect.w + 0.01
-                    && p.rect.y + p.rect.h <= parent.rect.y + parent.rect.h + 0.01;
-                assert!(
-                    fits,
-                    "{} (rect {:?}) extends outside its parent {} (rect {:?})",
-                    p.id, p.rect, parent.id, parent.rect
-                );
+                assert_fits_parent("", p, &frame.placements[parent_idx]);
             }
         }
     }

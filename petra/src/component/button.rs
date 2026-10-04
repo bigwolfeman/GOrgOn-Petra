@@ -700,43 +700,16 @@ mod tests {
         button_sm, button_xl, button_xs, danger_button, danger_ghost_button,
         danger_tertiary_button, ghost_button, primary_button, tertiary_button,
     };
+    use crate::component::tests::{assert_fits_parent, petrify_lone};
     // The glyph's tone. `button.rs` itself no longer names it — the mark is
     // an `IconTone` now — so the test module reaches for the token module
     // the same way `icon.rs` does.
     use crate::component::tokens::SUPPORT_ERROR;
-    use crate::frame::{TransitionActivity, Viewport, petrify};
-    use crate::geom::{Align, Axis, Size};
-    use crate::testing::{Harness, validated_with};
-    use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
-    use crate::tree::{Interaction, NodeKind, Props, Registry, Role, ViewNode};
 
-    const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
+    use crate::geom::Align;
 
-    fn accepting_registry() -> Registry {
-        let mut registry = Registry::with_vocabulary(standard_vocabulary());
-        crate::anim::shipped_registry().declare_into(&mut registry);
-        registry
-    }
-
-    fn petrify_lone(child: ViewNode) -> crate::frame::PetrifiedFrame {
-        let root = ViewNode::new(NodeKind::Stack, "root")
-            .with_props(Props {
-                axis: Some(Axis::Vertical),
-                ..Props::default()
-            })
-            .child(child);
-        let registry = accepting_registry();
-        let mut harness = Harness::new();
-        let viewport = Viewport::new(VIEWPORT, ThemeMode::Dark);
-        harness.scale = viewport.scale;
-        petrify(
-            1,
-            validated_with(&root, &registry),
-            &mut harness.ctx(),
-            viewport,
-            TransitionActivity::default(),
-        )
-    }
+    use crate::token::{ColorValue, Theme, TokenName, TokenValue};
+    use crate::tree::{Interaction, NodeKind, Role, ViewNode};
 
     fn placed_height(frame: &crate::frame::PetrifiedFrame, key: &str) -> f32 {
         let suffix = format!("/root/{key}");
@@ -1086,16 +1059,7 @@ mod tests {
                     p.id
                 );
                 if let Some(parent_idx) = p.parent {
-                    let parent = &frame.placements[parent_idx];
-                    let fits = p.rect.x >= parent.rect.x - 0.01
-                        && p.rect.y >= parent.rect.y - 0.01
-                        && p.rect.x + p.rect.w <= parent.rect.x + parent.rect.w + 0.01
-                        && p.rect.y + p.rect.h <= parent.rect.y + parent.rect.h + 0.01;
-                    assert!(
-                        fits,
-                        "{label}: {} (rect {:?}) extends outside its parent {} (rect {:?})",
-                        p.id, p.rect, parent.id, parent.rect
-                    );
+                    assert_fits_parent(label, p, &frame.placements[parent_idx]);
                 }
             }
         }

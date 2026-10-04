@@ -160,38 +160,14 @@ fn size_a_bare_divider(child: ViewNode) -> ViewNode {
 #[cfg(test)]
 mod tests {
     use super::chrome_strip;
+    use crate::component::tests::petrify_lone;
     use crate::component::tokens::SIZE_MD;
-    use crate::frame::{TransitionActivity, Viewport, petrify};
+
     use crate::geom::{Align, Axis, Size};
-    use crate::testing::{Harness, validated_with};
-    use crate::token::{ThemeMode, standard_vocabulary};
-    use crate::tree::{Constraints, NodeKind, Props, Registry, ViewNode};
+
+    use crate::tree::{Constraints, NodeKind, ViewNode};
 
     const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
-
-    fn accepting_registry() -> Registry {
-        Registry::with_vocabulary(standard_vocabulary())
-    }
-
-    fn petrify_lone(child: ViewNode) -> crate::frame::PetrifiedFrame {
-        let root = ViewNode::new(NodeKind::Stack, "root")
-            .with_props(Props {
-                axis: Some(Axis::Vertical),
-                ..Props::default()
-            })
-            .child(child);
-        let registry = accepting_registry();
-        let mut harness = Harness::new();
-        let viewport = Viewport::new(VIEWPORT, ThemeMode::Dark);
-        harness.scale = viewport.scale;
-        petrify(
-            1,
-            validated_with(&root, &registry),
-            &mut harness.ctx(),
-            viewport,
-            TransitionActivity::default(),
-        )
-    }
 
     fn placed_height(frame: &crate::frame::PetrifiedFrame, key: &str) -> f32 {
         let suffix = format!("/root/{key}");

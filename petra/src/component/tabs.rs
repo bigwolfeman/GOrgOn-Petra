@@ -403,11 +403,12 @@ fn indicator_bar(along: Axis, thickness: f32, fill: Option<&str>) -> ViewNode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
+    use crate::component::tests::{assert_fits_parent, petrify_lone_at};
+    use crate::frame::PetrifiedFrame;
     use crate::geom::Size;
-    use crate::testing::{Harness, validated_with};
-    use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
-    use crate::tree::{NodeKind, Registry};
+
+    use crate::token::{ColorValue, Theme, TokenName, TokenValue};
+    use crate::tree::NodeKind;
 
     fn named<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         fn walk<'a>(node: &'a ViewNode, key: &str) -> Option<&'a ViewNode> {
@@ -423,33 +424,11 @@ mod tests {
         node.children.iter().map(|c| c.key.as_str()).collect()
     }
 
+    /// The shared [`petrify_lone_at`] at the strip viewport
+    /// [`scrollable_row`]'s own fix needs to control — 400×200, so a strip
+    /// narrower than its tabs clips rather than compresses them.
     fn petrify_lone(child: ViewNode) -> crate::frame::PetrifiedFrame {
         petrify_lone_at(child, Size { w: 400.0, h: 200.0 })
-    }
-
-    /// [`petrify_lone`], parameterized on the viewport a lone child is
-    /// petrified against — the one number [`scrollable_row`]'s own fix
-    /// needs to control, to prove a strip narrower than its tabs clips
-    /// rather than compresses them.
-    fn petrify_lone_at(child: ViewNode, viewport_size: Size) -> crate::frame::PetrifiedFrame {
-        let root = ViewNode::new(NodeKind::Stack, "root")
-            .with_props(Props {
-                axis: Some(Axis::Vertical),
-                ..Props::default()
-            })
-            .child(child);
-        let mut registry = Registry::with_vocabulary(standard_vocabulary());
-        crate::anim::shipped_registry().declare_into(&mut registry);
-        let mut harness = Harness::new();
-        let viewport = Viewport::new(viewport_size, ThemeMode::Dark);
-        harness.scale = viewport.scale;
-        petrify(
-            1,
-            validated_with(&root, &registry),
-            &mut harness.ctx(),
-            viewport,
-            TransitionActivity::default(),
-        )
     }
 
     #[test]
@@ -728,16 +707,7 @@ mod tests {
                 p.id
             );
             if let Some(parent_idx) = p.parent {
-                let parent = &frame.placements[parent_idx];
-                let fits = p.rect.x >= parent.rect.x - 0.01
-                    && p.rect.y >= parent.rect.y - 0.01
-                    && p.rect.x + p.rect.w <= parent.rect.x + parent.rect.w + 0.01
-                    && p.rect.y + p.rect.h <= parent.rect.y + parent.rect.h + 0.01;
-                assert!(
-                    fits,
-                    "{label}: {} (rect {:?}) extends outside its parent {} (rect {:?})",
-                    p.id, p.rect, parent.id, parent.rect
-                );
+                assert_fits_parent(label, p, &frame.placements[parent_idx]);
             }
         }
     }

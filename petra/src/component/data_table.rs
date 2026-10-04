@@ -1630,16 +1630,17 @@ mod tests {
     use crate::component::checkbox;
     use crate::component::controls::{CheckState, checkbox_box};
     use crate::component::search;
+    use crate::component::tests::{assert_fits_parent, petrify_lone_at};
     use crate::component::text::text;
     use crate::component::tokens::{
         ACCENT_PRIMARY, BORDER_SUBTLE, LAYER_ACCENT, LAYER_SELECTED, SURFACE_BASE,
         TYPOGRAPHY_HEADING_SM,
     };
-    use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
+    use crate::frame::PetrifiedFrame;
     use crate::geom::{Align, Axis, Point, Size};
-    use crate::testing::{Harness, inks, validated_with};
-    use crate::token::{ColorValue, Theme, ThemeMode, TokenName, TokenValue, standard_vocabulary};
-    use crate::tree::{Anchor, Edge, Fit, Interaction, NodeKind, Props, Registry, Role, ViewNode};
+    use crate::testing::inks;
+    use crate::token::{ColorValue, Theme, TokenName, TokenValue};
+    use crate::tree::{Anchor, Edge, Fit, Interaction, NodeKind, Props, Role, ViewNode};
 
     fn named<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         fn walk<'a>(node: &'a ViewNode, key: &str) -> Option<&'a ViewNode> {
@@ -2098,28 +2099,8 @@ mod tests {
 
     const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
 
-    fn accepting_registry() -> Registry {
-        Registry::with_vocabulary(standard_vocabulary())
-    }
-
     fn petrify_lone(node: ViewNode) -> PetrifiedFrame {
-        let root = ViewNode::new(NodeKind::Stack, "root")
-            .with_props(Props {
-                axis: Some(Axis::Vertical),
-                ..Props::default()
-            })
-            .child(node);
-        let registry = accepting_registry();
-        let mut harness = Harness::new();
-        let viewport = Viewport::new(VIEWPORT, ThemeMode::Dark);
-        harness.scale = viewport.scale;
-        petrify(
-            1,
-            validated_with(&root, &registry),
-            &mut harness.ctx(),
-            viewport,
-            TransitionActivity::default(),
-        )
+        petrify_lone_at(node, VIEWPORT)
     }
 
     fn color(theme: &Theme, name: &str) -> ColorValue {
@@ -2173,16 +2154,7 @@ mod tests {
                 p.id
             );
             if let Some(parent_idx) = p.parent {
-                let parent = &frame.placements[parent_idx];
-                let fits = p.rect.x >= parent.rect.x - 0.01
-                    && p.rect.y >= parent.rect.y - 0.01
-                    && p.rect.x + p.rect.w <= parent.rect.x + parent.rect.w + 0.01
-                    && p.rect.y + p.rect.h <= parent.rect.y + parent.rect.h + 0.01;
-                assert!(
-                    fits,
-                    "{} (rect {:?}) extends outside its parent {} (rect {:?})",
-                    p.id, p.rect, parent.id, parent.rect
-                );
+                assert_fits_parent("", p, &frame.placements[parent_idx]);
             }
         }
     }
@@ -2435,7 +2407,7 @@ mod tests {
                 ..Props::default()
             })
             .with_children(vec![toolbar, table]);
-        let frame = petrify_lone2(node);
+        let frame = petrify_lone(node);
         let search = placed(&frame, "/search");
         let table = placed(&frame, "/table");
         assert!(
@@ -2457,7 +2429,7 @@ mod tests {
                 checkbox("col-status", "Status", true),
             ],
         );
-        let frame = petrify_lone2(data_table_toolbar(
+        let frame = petrify_lone(data_table_toolbar(
             "toolbar",
             search("search", "Filter"),
             vec![menu],
@@ -2711,28 +2683,6 @@ mod tests {
         assert_eq!(count, 2 * (3 + 1), "2 columns across the header + 3 rows");
     }
 
-    const VIEWPORT2: Size = Size { w: 900.0, h: 700.0 };
-
-    fn petrify_lone2(node: ViewNode) -> PetrifiedFrame {
-        let root = ViewNode::new(NodeKind::Stack, "root")
-            .with_props(Props {
-                axis: Some(Axis::Vertical),
-                ..Props::default()
-            })
-            .child(node);
-        let registry = Registry::with_vocabulary(standard_vocabulary());
-        let mut harness = Harness::new();
-        let viewport = Viewport::new(VIEWPORT2, ThemeMode::Dark);
-        harness.scale = viewport.scale;
-        petrify(
-            1,
-            validated_with(&root, &registry),
-            &mut harness.ctx(),
-            viewport,
-            TransitionActivity::default(),
-        )
-    }
-
     /// Check C/D across the toolbar, the batch bar and a skeleton table:
     /// real rects, nothing overflowing its parent.
     #[test]
@@ -2751,7 +2701,7 @@ mod tests {
             ),
             data_table_skeleton("skeleton", 3, 2),
         ] {
-            let frame = petrify_lone2(node);
+            let frame = petrify_lone(node);
             assert!(!frame.placements.is_empty(), "nothing placed");
             for p in &frame.placements {
                 assert!(
@@ -2766,16 +2716,7 @@ mod tests {
                     p.id
                 );
                 if let Some(parent_idx) = p.parent {
-                    let parent = &frame.placements[parent_idx];
-                    let fits = p.rect.x >= parent.rect.x - 0.01
-                        && p.rect.y >= parent.rect.y - 0.01
-                        && p.rect.x + p.rect.w <= parent.rect.x + parent.rect.w + 0.01
-                        && p.rect.y + p.rect.h <= parent.rect.y + parent.rect.h + 0.01;
-                    assert!(
-                        fits,
-                        "{} (rect {:?}) extends outside its parent {} (rect {:?})",
-                        p.id, p.rect, parent.id, parent.rect
-                    );
+                    assert_fits_parent("", p, &frame.placements[parent_idx]);
                 }
             }
         }
@@ -2791,7 +2732,7 @@ mod tests {
             data_table_batch_cancel("cancel"),
             vec![text("delete", "Delete")],
         );
-        let frame = petrify_lone2(batch);
+        let frame = petrify_lone(batch);
         let focus = crate::focus::FocusTree::from_placements(
             &frame.placements,
             &std::collections::BTreeMap::new(),
@@ -2814,7 +2755,7 @@ mod tests {
                 data_table_row_menu_trigger("trigger", "Row actions for alpha"),
             )],
         );
-        let frame = petrify_lone2(table);
+        let frame = petrify_lone(table);
         let focus = crate::focus::FocusTree::from_placements(
             &frame.placements,
             &std::collections::BTreeMap::new(),
@@ -2828,7 +2769,7 @@ mod tests {
         assert!(order.iter().any(|o| o == &trigger.id));
 
         let skeleton = data_table_skeleton("skeleton", 2, 2);
-        let frame = petrify_lone2(skeleton);
+        let frame = petrify_lone(skeleton);
         let focus = crate::focus::FocusTree::from_placements(
             &frame.placements,
             &std::collections::BTreeMap::new(),

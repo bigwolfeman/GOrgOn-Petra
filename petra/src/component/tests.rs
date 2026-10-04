@@ -2232,31 +2232,72 @@ fn a_rule_runs_full_height_in_a_row_that_pins_no_height_of_its_own() {
     assert_eq!(run, row, "the rule ran {run} of the row's {row}");
 }
 
-/// Petrify a single component under a vertical stack root.
-fn accepting_registry() -> Registry {
+/// The `Registry` every component frame test petrifies against: the shipped
+/// vocabulary plus every shipped transition name, so a `button` or `toggle`
+/// knob naming `crate::anim::*` is accepted. `Host::new` declares the same in
+/// a real host; acceptance refuses a name the registry has not been told
+/// about, so a test that builds its own registry has to as well. The anim
+/// names are a strict superset of the plain vocabulary, so this serves every
+/// component — one with no transition simply never looks the name up.
+pub(super) fn accepting_registry() -> Registry {
     let mut registry = Registry::with_vocabulary(standard_vocabulary());
     crate::anim::shipped_registry().declare_into(&mut registry);
     registry
 }
 
-fn petrify_lone(child: ViewNode) -> crate::frame::PetrifiedFrame {
+/// Petrify an already-built `root` at `viewport`, against [`accepting_registry`].
+/// This is the plumbing every component frame test shares; the root it is
+/// given is the part that differs (a lone child under a stack, a modal's
+/// page, a multi-child column).
+pub(super) fn petrify_root(root: &ViewNode, viewport: Size) -> crate::frame::PetrifiedFrame {
+    let registry = accepting_registry();
+    let mut harness = Harness::new();
+    let viewport = Viewport::new(viewport, ThemeMode::Dark);
+    harness.scale = viewport.scale;
+    petrify(
+        1,
+        validated_with(root, &registry),
+        &mut harness.ctx(),
+        viewport,
+        TransitionActivity::default(),
+    )
+}
+
+/// Petrify `child` alone under a vertical `Stack` root at `viewport`.
+pub(super) fn petrify_lone_at(child: ViewNode, viewport: Size) -> crate::frame::PetrifiedFrame {
     let root = ViewNode::new(NodeKind::Stack, "root")
         .with_props(Props {
             axis: Some(Axis::Vertical),
             ..Props::default()
         })
         .child(child);
-    let registry = accepting_registry();
-    let mut harness = Harness::new();
-    let viewport = Viewport::new(VIEWPORT, ThemeMode::Dark);
-    harness.scale = viewport.scale;
-    petrify(
-        1,
-        validated_with(&root, &registry),
-        &mut harness.ctx(),
-        viewport,
-        TransitionActivity::default(),
-    )
+    petrify_root(&root, viewport)
+}
+
+/// [`petrify_lone_at`] at the component-test [`VIEWPORT`].
+pub(super) fn petrify_lone(child: ViewNode) -> crate::frame::PetrifiedFrame {
+    petrify_lone_at(child, VIEWPORT)
+}
+
+/// The parent-bounds rule every component frame test asserts: a placed
+/// child's rect must sit inside its parent's (within one rounding error).
+/// `label` names the test case on failure — pass `""` for a single-frame
+/// check. The failure always names both nodes and both rects.
+pub(super) fn assert_fits_parent(
+    label: &str,
+    child: &crate::frame::placement::Placement,
+    parent: &crate::frame::placement::Placement,
+) {
+    let fits = child.rect.x >= parent.rect.x - 0.01
+        && child.rect.y >= parent.rect.y - 0.01
+        && child.rect.x + child.rect.w <= parent.rect.x + parent.rect.w + 0.01
+        && child.rect.y + child.rect.h <= parent.rect.y + parent.rect.h + 0.01;
+    let sep = if label.is_empty() { "" } else { ": " };
+    assert!(
+        fits,
+        "{label}{sep}{} (rect {:?}) extends outside its parent {} (rect {:?})",
+        child.id, child.rect, parent.id, parent.rect
+    );
 }
 
 /// Petrify a lone [`progress`] at `value` and return the widths the frame

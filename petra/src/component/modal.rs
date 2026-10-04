@@ -465,20 +465,18 @@ mod tests {
     use super::{
         CLOSE_HIT, CLOSE_ICON, COVER_WINDOW, DIALOG_FLOOR, FOOTER_HEIGHT, modal, modal_passive,
     };
+    use crate::component::tests::{assert_fits_parent, petrify_root};
     use crate::component::tokens::{LAYER_HOVER, OVERLAY_SCRIM, SURFACE_RAISED};
-    use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
+    use crate::frame::PetrifiedFrame;
     use crate::geom::{Axis, Point, Rect, Size};
     use crate::input::{InputEvent, Modifiers, PointerButton, Route, route_with_surfaces};
     use crate::layout::overlay_surface::surface_scopes;
-    use crate::testing::{Harness, validated_with};
-    use crate::token::{
-        ColorValue, CornerRole, Theme, ThemeMode, TokenName, TokenValue, corner_for,
-        standard_vocabulary,
-    };
+
+    use crate::token::{ColorValue, CornerRole, Theme, TokenName, TokenValue, corner_for};
     use crate::tree::FocusFigure;
     use crate::tree::{
-        Anchor, ClampRule, InputPolicy, Interaction, Layer, NodeKind, Props, Registry, Role,
-        TrackSize, ViewNode,
+        Anchor, ClampRule, InputPolicy, Interaction, Layer, NodeKind, Props, Role, TrackSize,
+        ViewNode,
     };
 
     fn descendant<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
@@ -749,18 +747,6 @@ mod tests {
 
     const VIEWPORT: Size = Size { w: 900.0, h: 700.0 };
 
-    fn accepting_registry() -> Registry {
-        // Every shipped transition name is declared here for the same reason
-        // `component::tests`'s own harness declares them: a `button` names
-        // `crate::anim::BUTTON_PRESS` and a `toggle` knob names `TOGGLE_KNOB`,
-        // and tree acceptance refuses a name the registry has not been told
-        // about. A host does this in `Host::new`; a test that builds its own
-        // registry has to do it too.
-        let mut registry = Registry::with_vocabulary(standard_vocabulary());
-        crate::anim::shipped_registry().declare_into(&mut registry);
-        registry
-    }
-
     /// The modal mounted the way an application mounts it: inside a card,
     /// inside a page column, never at the root.
     fn page_around(node: ViewNode) -> ViewNode {
@@ -787,17 +773,7 @@ mod tests {
     }
 
     fn petrify_page(root: &ViewNode) -> PetrifiedFrame {
-        let registry = accepting_registry();
-        let mut harness = Harness::new();
-        let viewport = Viewport::new(VIEWPORT, ThemeMode::Dark);
-        harness.scale = viewport.scale;
-        petrify(
-            1,
-            validated_with(root, &registry),
-            &mut harness.ctx(),
-            viewport,
-            TransitionActivity::default(),
-        )
+        petrify_root(root, VIEWPORT)
     }
 
     fn petrify_lone(node: ViewNode) -> PetrifiedFrame {
@@ -949,21 +925,12 @@ mod tests {
                 p.id
             );
             if let Some(parent_idx) = p.parent {
-                let parent = &frame.placements[parent_idx];
                 // The scrim is the one placement allowed past its parent:
                 // it is placed against the window, not the card.
                 if p.kind == NodeKind::Surface {
                     continue;
                 }
-                let fits = p.rect.x >= parent.rect.x - 0.01
-                    && p.rect.y >= parent.rect.y - 0.01
-                    && p.rect.x + p.rect.w <= parent.rect.x + parent.rect.w + 0.01
-                    && p.rect.y + p.rect.h <= parent.rect.y + parent.rect.h + 0.01;
-                assert!(
-                    fits,
-                    "{} (rect {:?}) extends outside its parent {} (rect {:?})",
-                    p.id, p.rect, parent.id, parent.rect
-                );
+                assert_fits_parent("", p, &frame.placements[parent_idx]);
             }
         }
     }
