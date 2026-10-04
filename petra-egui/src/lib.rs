@@ -41,5 +41,6 @@ pub mod paint;
 mod scene_cache;
 pub mod schedule;
 pub mod shadow;
+pub mod testing;
 pub mod text;
 pub mod triangle;

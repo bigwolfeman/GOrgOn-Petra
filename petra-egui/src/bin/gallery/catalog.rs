@@ -924,6 +924,7 @@ mod tests {
     use gorgon_petra::tree::{Registry, ViewNode};
     use gorgon_petra_egui::host::{App, Host, default_presenter};
     use gorgon_petra_egui::inject::{Action, Target, inject_action};
+    use gorgon_petra_egui::testing;
 
     /// `PETRA_GALLERY_THEME` decides the theme the window opens in.
     ///
@@ -1046,16 +1047,31 @@ mod tests {
         input
     }
 
+    /// The catalog's tests run at the window the catalog asks for (`WINDOW`),
+    /// not at egui's default screen rect (10000×10000 tall): the index pane
+    /// would then be as tall as its content and the five scroll tests would
+    /// have nothing to scroll. These are one-line sizings of
+    /// `gorgon_petra_egui::testing`'s procedure — the DD1 alias shape, with
+    /// the procedure itself living in one place (DD9).
     fn headless() -> Context {
-        let ctx = Context::default();
-        ctx.run_ui(sized(RawInput::default()), |_| {})
-            .drop_without_applying_deltas();
-        ctx
+        testing::headless_with(sized(RawInput::default()))
     }
 
-    fn step(ctx: &Context, host: &mut Host<Catalog>, input: RawInput) {
-        ctx.run_ui(sized(input), |_| host.pass(ctx))
-            .drop_without_applying_deltas();
+    fn construct<A: App>(app: A) -> (Context, Host<A>) {
+        testing::construct_in(headless(), app, default_presenter())
+    }
+
+    fn boot<A: App>(app: A) -> (Context, Host<A>) {
+        testing::boot_in(
+            headless(),
+            app,
+            default_presenter(),
+            sized(RawInput::default()),
+        )
+    }
+
+    fn step<A: App>(ctx: &Context, host: &mut Host<A>, input: RawInput) -> std::time::Duration {
+        testing::step(ctx, host, sized(input))
     }
 
     fn accepted(tree: &ViewNode) {
@@ -1202,9 +1218,7 @@ mod tests {
         // does not scroll; see its doc).
         let mut app = Catalog::default();
         app.go_to(23);
-        let ctx = headless();
-        let mut host = Host::new(&ctx, app, default_presenter());
-        step(&ctx, &mut host, RawInput::default());
+        let (_, mut host) = boot(app);
         assert!(
             host.focus()
                 .current()
@@ -1233,9 +1247,7 @@ mod tests {
     /// content height instead.
     #[test]
     fn the_index_pane_has_a_bounded_viewport_shorter_than_its_content() {
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Catalog::default(), default_presenter());
-        step(&ctx, &mut host, RawInput::default());
+        let (_, host) = boot(Catalog::default());
 
         let frame = host.frame().expect("a completed pass has a frame");
         let index = frame
@@ -1275,9 +1287,7 @@ mod tests {
     /// outside `catalog.rs`; see this audit's report.
     #[test]
     fn writing_the_index_pane_scroll_offset_reveals_row_forty_two() {
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Catalog::default(), default_presenter());
-        step(&ctx, &mut host, RawInput::default());
+        let (ctx, mut host) = boot(Catalog::default());
 
         let index_id = host
             .frame()
@@ -1330,9 +1340,7 @@ mod tests {
     /// doc in `gorgon-petra-egui`'s `host.rs`.
     #[test]
     fn wheeling_over_the_index_pane_writes_a_scroll_offset_and_shifts_the_frame() {
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Catalog::default(), default_presenter());
-        step(&ctx, &mut host, RawInput::default());
+        let (ctx, mut host) = boot(Catalog::default());
 
         let index_id = host
             .frame()
@@ -1407,9 +1415,7 @@ mod tests {
     /// row 42, and scrolling back up cannot go negative.
     #[test]
     fn wheeling_past_either_end_of_the_index_pane_clamps_the_offset() {
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Catalog::default(), default_presenter());
-        step(&ctx, &mut host, RawInput::default());
+        let (ctx, mut host) = boot(Catalog::default());
 
         let index_id = host
             .frame()
@@ -1523,9 +1529,7 @@ mod tests {
     /// have scrolled by the time it does.
     #[test]
     fn tab_from_the_last_visible_row_scrolls_the_index_pane_to_reveal_row_thirty_one() {
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Catalog::default(), default_presenter());
-        step(&ctx, &mut host, RawInput::default());
+        let (ctx, mut host) = boot(Catalog::default());
 
         let row_30_id = host
             .frame()
@@ -1592,9 +1596,7 @@ mod tests {
     /// fold the test above pins down.
     #[test]
     fn tab_walks_all_forty_two_index_rows_scrolling_as_it_goes() {
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Catalog::default(), default_presenter());
-        step(&ctx, &mut host, RawInput::default());
+        let (ctx, mut host) = boot(Catalog::default());
         assert!(
             host.focus()
                 .current()
@@ -1638,9 +1640,7 @@ mod tests {
             std::fs::create_dir_all(dir).expect("shot dir");
         }
 
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Catalog::default(), default_presenter());
-        step(&ctx, &mut host, RawInput::default());
+        let (ctx, mut host) = boot(Catalog::default());
 
         let index_id = host
             .frame()
@@ -1765,9 +1765,7 @@ mod tests {
 
     #[test]
     fn a_headless_pass_over_the_toggle_page_does_not_open_a_window() {
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Catalog::default(), default_presenter());
-        step(&ctx, &mut host, RawInput::default());
+        let (_, host) = boot(Catalog::default());
         assert!(
             host.frame().is_some(),
             "a headless pass must still produce a petrified frame"
@@ -1806,8 +1804,7 @@ mod tests {
                 continue;
             }
             let component = app.current().row.component.to_string();
-            let ctx = headless();
-            let mut host = Host::new(&ctx, app, default_presenter());
+            let (ctx, mut host) = construct(app);
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 step(&ctx, &mut host, RawInput::default());
             }));

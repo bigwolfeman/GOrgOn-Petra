@@ -4326,6 +4326,7 @@ mod tests {
         App, ChangeSet, FiredIntent, Host, coverage_plan, default_presenter, fired_behaviour,
         petra_layer, refusal_view,
     };
+    use crate::testing::{boot, boot_in, boot_with, construct, construct_with, headless, step};
     use egui::{Context, Event, Key, Modifiers, RawInput};
     use gorgon_petra::frame::PetrifiedFrame;
     use gorgon_petra::geom::{Point, Rect, Scale, Size};
@@ -4609,9 +4610,7 @@ mod tests {
     /// not.
     #[test]
     fn a_dropped_file_reaches_the_application_on_the_pass_that_took_it() {
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
-        step(&ctx, &mut host, RawInput::default());
+        let (ctx, mut host) = boot(Demo::default());
         assert!(host.app().dropped.is_empty(), "nothing was dropped yet");
 
         let input = RawInput {
@@ -4642,9 +4641,7 @@ mod tests {
     /// [`Host::seat_picked_dialog`].
     #[test]
     fn a_finished_dialog_delivers_its_files_and_frees_the_slot() {
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
-        step(&ctx, &mut host, RawInput::default());
+        let (ctx, mut host) = boot(Demo::default());
 
         host.seat_picked_dialog(vec![std::path::PathBuf::from("/tmp/picked.ndjson")]);
         step(&ctx, &mut host, RawInput::default());
@@ -4685,8 +4682,7 @@ mod tests {
     /// is the whole difference between a modal and a floating panel.
     #[test]
     fn a_press_outside_an_open_modal_is_swallowed() {
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        let (ctx, mut host) = construct(Demo::default());
         host.app_mut().modal = true;
         step(&ctx, &mut host, RawInput::default());
         let (_, outside) = placed_and_outside(&host, "/modal");
@@ -4712,8 +4708,7 @@ mod tests {
     /// told which surface to close, and the press still routes.
     #[test]
     fn a_press_outside_a_dismiss_surface_is_reported_and_still_routes() {
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        let (ctx, mut host) = construct(Demo::default());
         host.app_mut().menu = true;
         step(&ctx, &mut host, RawInput::default());
         let (_, outside) = placed_and_outside(&host, "/menu");
@@ -4751,8 +4746,7 @@ mod tests {
     /// `enter_open_modal` has, so the ring lands one frame later.
     #[test]
     fn a_focus_taking_overlay_seats_focus_inside_itself_and_hands_it_back() {
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        let (ctx, mut host) = construct(Demo::default());
         host.app_mut().menu_takes_focus = true;
         step(&ctx, &mut host, RawInput::default());
         host.focus_mut()
@@ -4787,9 +4781,7 @@ mod tests {
     /// and this fixture's menu is exactly that shape.
     #[test]
     fn an_overlay_that_does_not_declare_takes_focus_leaves_focus_alone() {
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
-        step(&ctx, &mut host, RawInput::default());
+        let (ctx, mut host) = boot(Demo::default());
         host.focus_mut()
             .focus("/root/run")
             .expect("run is focusable");
@@ -4814,8 +4806,7 @@ mod tests {
     /// very next pass and the menu would be a focus trap nothing could leave.
     #[test]
     fn a_focus_taking_overlay_does_not_drag_focus_back_every_frame() {
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        let (ctx, mut host) = construct(Demo::default());
         host.app_mut().menu_takes_focus = true;
         host.app_mut().menu = true;
         step(&ctx, &mut host, RawInput::default());
@@ -4847,8 +4838,7 @@ mod tests {
     /// the operator just pressed.
     #[test]
     fn closing_a_focus_taking_overlay_leaves_focus_where_a_press_put_it() {
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        let (ctx, mut host) = construct(Demo::default());
         host.app_mut().menu_takes_focus = true;
         host.app_mut().menu = true;
         step(&ctx, &mut host, RawInput::default());
@@ -4884,8 +4874,7 @@ mod tests {
     /// reporting every press: inside the surface, nothing is dismissed.
     #[test]
     fn a_press_inside_a_dismiss_surface_dismisses_nothing() {
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        let (ctx, mut host) = construct(Demo::default());
         host.app_mut().menu = true;
         step(&ctx, &mut host, RawInput::default());
         let (rect, _) = placed_and_outside(&host, "/menu");
@@ -4956,8 +4945,7 @@ mod tests {
             )
         }
 
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Demo::default(), Presenter::new(light()));
+        let (ctx, mut host) = construct_with(Demo::default(), Presenter::new(light()));
         // light's own text.coverage-curve is passes: 2.0 -- the one value
         // the atlas curve spends instead of a second paint. Not
         // TwoCoverageMinusCoverageSq "because it is light mode": see below.
@@ -5103,12 +5091,8 @@ mod tests {
                 .expect("overriding snap alone keeps the theme complete")
         }
 
-        let ctx = headless();
-        let mut host = Host::new(
-            &ctx,
-            Demo::default(),
-            Presenter::new(with_snap(light(), false)),
-        );
+        let (ctx, mut host) =
+            construct_with(Demo::default(), Presenter::new(with_snap(light(), false)));
         assert_eq!(
             bound_binning(&ctx),
             [true; 2],
@@ -5183,14 +5167,11 @@ mod tests {
         let other_theme = Theme::build(ThemeMode::Dark, &standard_vocabulary(), values)
             .expect("a complete shipped theme");
 
-        let ctx = headless();
         let demo = Demo {
             gutter: true,
             ..Demo::default()
         };
-        let mut host = Host::new(&ctx, demo, Presenter::new(app_theme));
-
-        step(&ctx, &mut host, RawInput::default());
+        let (ctx, mut host) = boot_with(demo, Presenter::new(app_theme));
         assert!(
             host.registry_mut().vocabulary().contains(&gutter),
             "the host must seed its registry from the theme it was built with"
@@ -5265,8 +5246,7 @@ mod tests {
         let ours = TokenName::new("spacing.app-gutter").unwrap();
         let theirs = TokenName::new("spacing.written-into-the-registry").unwrap();
 
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Demo::default(), Presenter::new(light()));
+        let (ctx, mut host) = construct_with(Demo::default(), Presenter::new(light()));
         host.declare_token(DesignToken::new(ours.clone(), TokenKind::Spacing));
         host.registry_mut()
             .vocabulary_mut()
@@ -5288,28 +5268,6 @@ mod tests {
         );
     }
 
-    fn headless() -> Context {
-        let ctx = Context::default();
-        ctx.run_ui(RawInput::default(), |_| {})
-            .drop_without_applying_deltas();
-        ctx
-    }
-
-    /// One frame, the way `eframe` drives it: the host's pass runs *inside* an
-    /// egui pass, because that is the only place a layer painter's shapes are
-    /// collected and a repaint request is observed.
-    fn step(ctx: &Context, host: &mut Host<Demo>, input: RawInput) -> std::time::Duration {
-        let out = ctx.run_ui(input, |_| host.pass(ctx));
-        let delay = out
-            .viewport_output
-            .values()
-            .map(|v| v.repaint_delay)
-            .min()
-            .unwrap_or(std::time::Duration::MAX);
-        out.drop_without_applying_deltas();
-        delay
-    }
-
     /// An application deadline reaches the window as a timed repaint.
     ///
     /// A picture that is a function of the clock but is **not moving** had no
@@ -5326,8 +5284,7 @@ mod tests {
     #[test]
     fn an_application_deadline_reaches_the_window_as_a_timed_repaint() {
         use std::time::Duration;
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        let (ctx, mut host) = construct(Demo::default());
         // The first pass seats focus and asks for one more to paint the ring
         // it just moved, so idle is measured after that has settled.
         let mut idle = Duration::ZERO;
@@ -5376,9 +5333,7 @@ mod tests {
 
     #[test]
     fn one_pass_produces_a_frame_that_paints_completely() {
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
-        step(&ctx, &mut host, RawInput::default());
+        let (_, host) = boot(Demo::default());
 
         let frame = host.frame().expect("a frame");
         assert_eq!(frame.seq, 1);
@@ -5398,8 +5353,7 @@ mod tests {
     /// viewport it was offered.
     #[test]
     fn a_registered_measurer_sizes_the_placement_it_measured() {
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        let (ctx, mut host) = construct(Demo::default());
         host.app_mut().custom = true;
         host.registry_mut().register_custom_kind("gauge");
         host.measurers_mut()
@@ -5473,8 +5427,7 @@ mod tests {
 
     #[test]
     fn frame_sequence_numbers_advance_and_never_repeat() {
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        let (ctx, mut host) = construct(Demo::default());
         let seqs: Vec<u64> = (0..3)
             .map(|_| {
                 step(&ctx, &mut host, RawInput::default());
@@ -5509,8 +5462,7 @@ mod tests {
     /// bound catches.
     #[test]
     fn an_idle_pass_requests_no_repaint() {
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        let (ctx, mut host) = construct(Demo::default());
         let passes = settle(&ctx, &mut host, 4);
         assert!(passes <= 3, "the host took {passes} passes to go idle");
         let delay = step(&ctx, &mut host, RawInput::default());
@@ -5525,8 +5477,7 @@ mod tests {
     /// must be reported as unrouted, not silently dropped.
     #[test]
     fn the_first_passs_events_are_reported_unrouted_not_swallowed() {
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        let (ctx, mut host) = construct(Demo::default());
         let mut input = RawInput::default();
         input.events.push(Event::Text("a".into()));
         step(&ctx, &mut host, input);
@@ -5553,9 +5504,7 @@ mod tests {
     /// real router — the same path a driver's synthetic key will take.
     #[test]
     fn a_keystroke_routes_to_the_focused_node() {
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
-        step(&ctx, &mut host, RawInput::default());
+        let (ctx, mut host) = boot(Demo::default());
         assert_eq!(host.state().focused.as_deref(), Some("/root/filter"));
 
         step(&ctx, &mut host, key_press(Key::A, Modifiers::NONE));
@@ -5574,9 +5523,7 @@ mod tests {
     /// stays `None` for every frame and every key press lands nowhere.
     #[test]
     fn tab_walks_focus_forward_and_shift_tab_walks_it_back() {
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
-        step(&ctx, &mut host, RawInput::default());
+        let (ctx, mut host) = boot(Demo::default());
         assert_eq!(
             host.state().focused.as_deref(),
             Some("/root/filter"),
@@ -5603,9 +5550,7 @@ mod tests {
     /// case that used to route nowhere.
     #[test]
     fn enter_works_the_focused_button_the_way_a_click_would() {
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
-        step(&ctx, &mut host, RawInput::default());
+        let (ctx, mut host) = boot(Demo::default());
         step(&ctx, &mut host, key_press(Key::Tab, Modifiers::NONE));
         assert_eq!(host.state().focused.as_deref(), Some("/root/run"));
 
@@ -5623,9 +5568,7 @@ mod tests {
     /// Home jumps to the first focusable.
     #[test]
     fn home_traverses_only_when_the_focused_node_cannot_use_it() {
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
-        step(&ctx, &mut host, RawInput::default());
+        let (ctx, mut host) = boot(Demo::default());
         assert_eq!(host.state().focused.as_deref(), Some("/root/filter"));
 
         step(&ctx, &mut host, key_press(Key::Home, Modifiers::NONE));
@@ -5666,9 +5609,7 @@ mod tests {
     /// node that is really in the new frame.
     #[test]
     fn focus_survives_the_focused_node_leaving_the_tree() {
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
-        step(&ctx, &mut host, RawInput::default());
+        let (ctx, mut host) = boot(Demo::default());
         step(&ctx, &mut host, key_press(Key::Tab, Modifiers::NONE));
         assert_eq!(host.state().focused.as_deref(), Some("/root/run"));
         let _ = passes_to_settle(&ctx, &mut host);
@@ -5690,9 +5631,7 @@ mod tests {
     /// that produced the placements, folded into the focus tree.
     #[test]
     fn a_blocking_surface_takes_focus_traps_tab_and_gives_it_back() {
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
-        step(&ctx, &mut host, RawInput::default());
+        let (ctx, mut host) = boot(Demo::default());
         assert_eq!(host.state().focused.as_deref(), Some("/root/filter"));
 
         host.app_mut().modal = true;
@@ -5773,8 +5712,7 @@ mod tests {
     /// chain and not three unconnected pieces.
     #[test]
     fn the_frame_the_host_paints_shows_where_focus_is() {
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        let (ctx, mut host) = construct(Demo::default());
         // The first pass seats focus after petrify, so its own frame is
         // ringless; the repaint it asks for is what produces the one below.
         settle(&ctx, &mut host, 4);
@@ -5816,8 +5754,7 @@ mod tests {
     /// requesting frames after landing would break SC-002.
     #[test]
     fn tab_does_not_leave_the_caret_running() {
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        let (ctx, mut host) = construct(Demo::default());
         settle(&ctx, &mut host, 4);
         step(&ctx, &mut host, key_press(Key::Tab, Modifiers::NONE));
         assert_eq!(host.state().focused.as_deref(), Some("/root/run"));
@@ -5837,8 +5774,7 @@ mod tests {
     /// Reduced motion is a snap, not a short flight.
     #[test]
     fn reduced_motion_snaps_the_caret_on_tab() {
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        let (ctx, mut host) = construct(Demo::default());
         settle(&ctx, &mut host, 4);
         host.set_reduced_motion(true);
         step(&ctx, &mut host, key_press(Key::Tab, Modifiers::NONE));
@@ -5852,8 +5788,7 @@ mod tests {
     /// rebuilt the tree. Flight paints the last petrified picture.
     #[test]
     fn a_flying_caret_does_not_rebuild_the_tree() {
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        let (ctx, mut host) = construct(Demo::default());
         settle(&ctx, &mut host, 4);
         step(&ctx, &mut host, key_press(Key::Tab, Modifiers::NONE));
         assert!(host.caret().is_moving(), "Tab must start a hop");
@@ -5884,8 +5819,7 @@ mod tests {
     /// have no GPU texture; the mesh cache is the scene.
     #[test]
     fn a_hop_does_not_repaint_placements_once_the_scene_is_cached() {
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        let (ctx, mut host) = construct(Demo::default());
         settle(&ctx, &mut host, 4);
         step(&ctx, &mut host, key_press(Key::Tab, Modifiers::NONE));
         assert!(host.caret().is_moving(), "Tab must start a hop");
@@ -5921,8 +5855,7 @@ mod tests {
     /// the indicator never appears at all.
     #[test]
     fn focus_moving_after_petrify_asks_for_another_frame() {
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        let (ctx, mut host) = construct(Demo::default());
 
         // Pass 1: nothing was focused when the frame was placed, and `update`
         // seats focus on the first focusable afterwards.
@@ -5989,13 +5922,11 @@ mod tests {
     /// A refused tree is shown, not swallowed and not fatal.
     #[test]
     fn a_refused_tree_is_painted_rather_than_hidden() {
-        let ctx = headless();
         let demo = Demo {
             bad_tree: true,
             ..Demo::default()
         };
-        let mut host = Host::new(&ctx, demo, default_presenter());
-        step(&ctx, &mut host, RawInput::default());
+        let (_, host) = boot(demo);
         let frame = host.frame().unwrap();
         let text = frame
             .content
@@ -6068,9 +5999,7 @@ mod tests {
     /// end of translate → route → publish → petrify.
     #[test]
     fn a_pointer_move_lights_exactly_the_node_under_it() {
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
-        step(&ctx, &mut host, RawInput::default());
+        let (ctx, mut host) = boot(Demo::default());
         assert!(hovered_ids(&host).is_empty(), "nothing is hovered at rest");
 
         let run = centre_of(&host, "/root/run");
@@ -6106,8 +6035,7 @@ mod tests {
     /// means a terminal receives no keystrokes.
     #[test]
     fn the_host_supplies_the_reserved_chord_set() {
-        let ctx = headless();
-        let host = Host::new(&ctx, Demo::default(), default_presenter());
+        let (_, host) = construct(Demo::default());
         let reserved = host
             .pointer()
             .reserved()
@@ -6124,8 +6052,7 @@ mod tests {
         use gorgon_petra::input::{KeyCode, Modifiers};
         use gorgon_petra::keymap::{Chord, ReservedChords};
 
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        let (_, mut host) = construct(Demo::default());
         let custom = Chord {
             key: KeyCode::Escape,
             modifiers: Modifiers {
@@ -6150,9 +6077,7 @@ mod tests {
 
     #[test]
     fn pointer_exit_lands_on_the_hovered_node() {
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
-        step(&ctx, &mut host, RawInput::default());
+        let (ctx, mut host) = boot(Demo::default());
         let run = centre_of(&host, "/root/run");
         step(&ctx, &mut host, move_to(run));
         // Focus is deliberately somewhere else, which is what the pre-fix
@@ -6211,9 +6136,7 @@ mod tests {
     /// quiet in general.
     #[test]
     fn a_hover_change_settles_on_the_next_frame() {
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
-        step(&ctx, &mut host, RawInput::default());
+        let (ctx, mut host) = boot(Demo::default());
         let run = centre_of(&host, "/root/run");
         let (_, outside) = placed_and_outside(&host, "/root/run");
 
@@ -6277,16 +6200,10 @@ mod tests {
     /// will recompute. Not a timer in sight.
     #[test]
     fn a_layout_slot_change_dirties_only_its_bound_sites() {
-        let ctx = headless();
-        let mut host = Host::new(
-            &ctx,
-            Demo {
-                bound_pair: true,
-                ..Demo::default()
-            },
-            default_presenter(),
-        );
-        step(&ctx, &mut host, RawInput::default());
+        let (ctx, mut host) = boot(Demo {
+            bound_pair: true,
+            ..Demo::default()
+        });
         host.apply_slot_changes(&[
             SlotChange::new("title", 1, SlotValue::Str("seed".to_owned())),
             SlotChange::new("flag", 1, SlotValue::Bool(false)),
@@ -6327,16 +6244,10 @@ mod tests {
     /// only, no layout).
     #[test]
     fn a_paint_slot_change_dirties_no_measurement() {
-        let ctx = headless();
-        let mut host = Host::new(
-            &ctx,
-            Demo {
-                bound_pair: true,
-                ..Demo::default()
-            },
-            default_presenter(),
-        );
-        step(&ctx, &mut host, RawInput::default());
+        let (ctx, mut host) = boot(Demo {
+            bound_pair: true,
+            ..Demo::default()
+        });
         host.apply_slot_changes(&[
             SlotChange::new("title", 1, SlotValue::Str("seed".to_owned())),
             SlotChange::new("flag", 1, SlotValue::Bool(false)),
@@ -6415,9 +6326,7 @@ mod tests {
     /// the mistake this test now exists to catch in both directions.
     #[test]
     fn a_press_on_a_click_only_control_presses_it_without_grabbing_it() {
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
-        step(&ctx, &mut host, RawInput::default());
+        let (ctx, mut host) = boot(Demo::default());
         let run = centre_of(&host, "/root/run");
 
         step(&ctx, &mut host, press_at(run));
@@ -6453,8 +6362,7 @@ mod tests {
     /// caret retargets. Clicking is not a second, silent focus world.
     #[test]
     fn a_press_on_a_focusable_moves_the_caret() {
-        let ctx = headless();
-        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
+        let (ctx, mut host) = construct(Demo::default());
         settle(&ctx, &mut host, 4);
         assert_eq!(host.state().focused.as_deref(), Some("/root/filter"));
         let run = centre_of(&host, "/root/run");
@@ -6565,16 +6473,15 @@ mod tests {
     /// ```
     #[test]
     fn a_completed_click_on_a_checkbox_fires_the_pair_the_checkbox_declared() {
-        let ctx = Context::default();
-        let mut host = Host::new(
-            &ctx,
+        let (ctx, mut host) = boot_in(
+            Context::default(),
             Demo {
                 checkbox: true,
                 ..Demo::default()
             },
             default_presenter(),
+            RawInput::default(),
         );
-        step(&ctx, &mut host, RawInput::default());
         let at = centre_of_suffix(&host, "/auto");
         step(&ctx, &mut host, press_at(at));
         step(&ctx, &mut host, release_at(at));
@@ -6614,16 +6521,15 @@ mod tests {
     /// ```
     #[test]
     fn a_release_on_a_checkbox_whose_press_began_elsewhere_fires_nothing() {
-        let ctx = Context::default();
-        let mut host = Host::new(
-            &ctx,
+        let (ctx, mut host) = boot_in(
+            Context::default(),
             Demo {
                 checkbox: true,
                 ..Demo::default()
             },
             default_presenter(),
+            RawInput::default(),
         );
-        step(&ctx, &mut host, RawInput::default());
         let (_, outside) = placed_and_outside(&host, "/auto");
         let at = centre_of_suffix(&host, "/auto");
         step(&ctx, &mut host, press_at(outside));
@@ -6644,9 +6550,12 @@ mod tests {
     /// keeps its own state. Those must keep reaching `App::handle` alone.
     #[test]
     fn a_widget_with_no_declared_behaviour_reports_no_intent() {
-        let ctx = Context::default();
-        let mut host = Host::new(&ctx, Demo::default(), default_presenter());
-        step(&ctx, &mut host, RawInput::default());
+        let (ctx, mut host) = boot_in(
+            Context::default(),
+            Demo::default(),
+            default_presenter(),
+            RawInput::default(),
+        );
         let at = centre_of_suffix(&host, "/run");
         step(&ctx, &mut host, press_at(at));
         step(&ctx, &mut host, release_at(at));
@@ -6670,16 +6579,15 @@ mod tests {
     /// or `value: None` on a non-empty fire.
     #[test]
     fn a_press_on_a_slider_rail_fires_adjust_with_a_value() {
-        let ctx = Context::default();
-        let mut host = Host::new(
-            &ctx,
+        let (ctx, mut host) = boot_in(
+            Context::default(),
             Demo {
                 slider: true,
                 ..Demo::default()
             },
             default_presenter(),
+            RawInput::default(),
         );
-        step(&ctx, &mut host, RawInput::default());
         let at = centre_of_suffix(&host, "/rail");
         step(&ctx, &mut host, press_at(at));
         let fired = &host.app().intents;
@@ -6714,16 +6622,15 @@ mod tests {
     /// ```
     #[test]
     fn enter_on_a_focused_checkbox_fires_its_release_behaviour() {
-        let ctx = Context::default();
-        let mut host = Host::new(
-            &ctx,
+        let (ctx, mut host) = boot_in(
+            Context::default(),
             Demo {
                 checkbox: true,
                 ..Demo::default()
             },
             default_presenter(),
+            RawInput::default(),
         );
-        step(&ctx, &mut host, RawInput::default());
         // Seat focus the way an operator does, with a click, then clear what
         // that click reported so only the keystroke is left to read.
         let at = centre_of_suffix(&host, "/auto");
@@ -6769,16 +6676,15 @@ mod tests {
     fn a_cancelled_gesture_fires_nothing_however_it_was_cancelled() {
         use gorgon_petra::input::{CancelReason, GestureEnd, GestureOutcome, PointerButton};
 
-        let ctx = Context::default();
-        let mut host = Host::new(
-            &ctx,
+        let (_, host) = boot_in(
+            Context::default(),
             Demo {
                 checkbox: true,
                 ..Demo::default()
             },
             default_presenter(),
+            RawInput::default(),
         );
-        step(&ctx, &mut host, RawInput::default());
         let frame = host.frame().expect("a frame");
         let id = frame
             .placements
