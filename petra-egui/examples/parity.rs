@@ -698,12 +698,7 @@ impl Parity {
     /// the galley cache.
     fn telemetry(&self) -> ViewNode {
         let mut stats = ViewNode::new(NodeKind::Grid, "stats").with_props(Props {
-            columns: vec![
-                TrackSize::Weight { weight: 1.0 },
-                TrackSize::Weight { weight: 1.0 },
-                TrackSize::Weight { weight: 1.0 },
-                TrackSize::Weight { weight: 1.0 },
-            ],
+            columns: vec![TrackSize::Weight { weight: 1.0 }; 4],
             column_spacing: sp("spacing.lg"),
             row_spacing: sp("spacing.md"),
             ..Props::default()

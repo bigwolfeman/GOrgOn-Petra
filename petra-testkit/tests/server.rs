@@ -378,7 +378,7 @@ async fn screenshot_returns_a_png_of_the_frame_it_names() {
     assert_eq!(acted["ok"], true, "{acted}");
 
     let reply = client.call(100, "screenshot", json!({})).await;
-    if reply["ok"] == false {
+    if reply["ok"].as_bool() == Some(false) {
         // A build with no reachable GPU adapter cannot capture. That is a
         // missing prerequisite, and the contract says a gate names it rather
         // than skipping (FR-043) — so this asserts the *shape* of the honest

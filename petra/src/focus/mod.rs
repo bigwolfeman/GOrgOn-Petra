@@ -1131,9 +1131,9 @@ mod tests {
         scopes.insert("/popup".to_owned(), InputPolicy::Passthrough);
         let mut tree = FocusTree::from_placements(&placements, &scopes);
         assert_eq!(tree.order(), ["/a", "/popup/inner", "/b"]);
-        tree.next();
-        tree.next();
-        tree.next();
+        for _ in 0..3 {
+            tree.next();
+        }
         assert_eq!(
             tree.current(),
             Some("/a"),

@@ -1586,11 +1586,7 @@ fn abutting_grid_cells_share_a_device_edge_from_a_shifted_origin() {
         let scale = Scale::new(scale).unwrap();
         let grid = ViewNode::new(NodeKind::Grid, "g")
             .with_props(Props {
-                columns: vec![
-                    TrackSize::Weight { weight: 1.0 },
-                    TrackSize::Weight { weight: 1.0 },
-                    TrackSize::Weight { weight: 1.0 },
-                ],
+                columns: vec![TrackSize::Weight { weight: 1.0 }; 3],
                 column_spacing: gap(0.0),
                 row_spacing: gap(0.0),
                 align: Some(Align::Stretch),

@@ -801,13 +801,7 @@ impl Gallery {
     fn telemetry(&self) -> ViewNode {
         let tiles = self.counters.tiles();
         let mut stats = ViewNode::new(NodeKind::Grid, "stats").with_props(Props {
-            columns: vec![
-                TrackSize::Weight { weight: 1.0 },
-                TrackSize::Weight { weight: 1.0 },
-                TrackSize::Weight { weight: 1.0 },
-                TrackSize::Weight { weight: 1.0 },
-                TrackSize::Weight { weight: 1.0 },
-            ],
+            columns: vec![TrackSize::Weight { weight: 1.0 }; 5],
             column_spacing: sp("spacing.lg"),
             row_spacing: sp("spacing.md"),
             ..Props::default()
