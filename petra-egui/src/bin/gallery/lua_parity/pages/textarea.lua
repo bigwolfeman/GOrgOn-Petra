@@ -13,7 +13,7 @@
 --   )])
 --
 -- `textarea_invalid`/`textarea_warning` take `message`, not `body`
--- (`registry::new_atomics::KeyLabelMessage`), so the Lua key differs from
+-- (`component::params::KeyLabelMessage`), so the Lua key differs from
 -- the Rust argument name for both.
 return ui.section({
   key = "areas",
