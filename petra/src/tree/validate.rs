@@ -1028,6 +1028,11 @@ fn check_grid_spans(node: &ViewNode, path: &KeyPath, errors: &mut Vec<TreeError>
     }
 }
 
+/// Every per-node rule, one named check per aspect, called in the order the
+/// violations are reported for this node. [`check_component_ref`] is the
+/// only one that can end the checks early: an unexpanded component reference
+/// carries no props, no semantics and no children to check. The per-kind
+/// rules sit in the dispatch below; everything else is unconditional.
 fn check_node(
     node: &ViewNode,
     registry: &Registry,
@@ -1044,24 +1049,66 @@ fn check_node(
         });
     };
 
-    // `kind == Component` iff `component.is_some()`, both directions, before
-    // anything else looks at this node. A reference carries no props, no
-    // semantics and no children of its own, so every check below would read
-    // an empty node and pass it.
+    if !check_component_ref(node, &mut push) {
+        return;
+    }
+    check_semantics(node, &mut push);
+    check_span_placement(node, parent, &mut push);
+    check_leaf_children(node, &mut push);
+    check_bindings(node, &mut push);
+    check_bound_props(node, &mut push);
+
+    // Every rule that turns on which kind of node this is, one named check
+    // per kind, in this order; a kind that carries no rules of its own falls
+    // through. A `collection` rule therefore has exactly one place to land,
+    // and a reader asking what a `surface` must declare finds the answer by
+    // name instead of by counting braces. Nothing here is order-sensitive
+    // across arms: a node has one kind, so at most one arm ever runs.
+    match node.kind {
+        NodeKind::Custom => check_custom_kind(node, registry, &mut push),
+        NodeKind::Grid => check_grid_tracks(node, &mut push),
+        NodeKind::Collection => check_collection(node, scroll, &mut push),
+        NodeKind::Surface => check_surface(node, &mut push),
+        _ => {}
+    }
+
+    check_opacity(node, &mut push);
+    check_padding(node, &mut push);
+    check_text_runs(node, &mut push);
+    check_transition(node, registry, &mut push);
+    check_token_refs(node, registry, &mut push);
+}
+
+/// `kind == Component` iff `component.is_some()`, both directions, before
+/// anything else looks at this node. A reference carries no props, no
+/// semantics and no children of its own, so every other check would read an
+/// empty node and pass it.
+///
+/// Returns `false` for the unexpanded-reference arm, which is that node's
+/// whole verdict: [`check_node`] runs nothing else on it.
+fn check_component_ref(node: &ViewNode, push: &mut impl FnMut(Violation)) -> bool {
     match (node.kind, node.component.as_ref()) {
         (NodeKind::Component, reference) => {
             push(Violation::UnexpandedComponent {
                 name: reference.map(|r| r.name.clone()),
             });
-            return;
+            false
         }
-        (kind, Some(reference)) => push(Violation::ComponentRefOnWrongKind {
-            kind: kind.as_str(),
-            name: reference.name.clone(),
-        }),
-        (_, None) => {}
+        (kind, Some(reference)) => {
+            push(Violation::ComponentRefOnWrongKind {
+                kind: kind.as_str(),
+                name: reference.name.clone(),
+            });
+            true
+        }
+        (_, None) => true,
     }
+}
 
+/// The semantic obligations every node carries: an interactive node names
+/// its role and its label, and a status-bearing role carries its text
+/// channel whether or not the node is interactive.
+fn check_semantics(node: &ViewNode, push: &mut impl FnMut(Violation)) {
     let has_label = node
         .semantics
         .label
@@ -1092,37 +1139,51 @@ fn check_node(
             role: role.as_wire(),
         });
     }
+}
 
-    // A span is read by the `grid` that seats this node. Anywhere else it is a
-    // dead declaration, and the counts themselves are checked by that grid in
-    // `check_grid_spans`, which is the only place that knows the tracks.
+/// A span is read by the `grid` that seats this node. Anywhere else it is a
+/// dead declaration, and the counts themselves are checked by that grid in
+/// [`check_grid_spans`], which is the only place that knows the tracks.
+fn check_span_placement(
+    node: &ViewNode,
+    parent: Option<NodeKind>,
+    push: &mut impl FnMut(Violation),
+) {
     if node.props.span.is_some() && parent != Some(NodeKind::Grid) {
         push(Violation::SpanOutsideGrid { parent });
     }
+}
 
+/// A leaf kind is laid out as one rect with its content drawn in it, so it
+/// has no layout for children and declares none.
+fn check_leaf_children(node: &ViewNode, push: &mut impl FnMut(Violation)) {
     if !node.kind.is_container() && !node.children.is_empty() {
         push(Violation::LeafWithChildren {
             kind: node.kind,
             count: node.children.len(),
         });
     }
+}
 
-    // `Binding` derives `Deserialize` directly, so a malformed one can
-    // arrive here without ever passing through `Binding::new`'s own check.
-    // `validate` re-runs it, once per binding this node declares.
+/// `Binding` derives `Deserialize` directly, so a malformed one can
+/// arrive here without ever passing through `Binding::new`'s own check.
+/// `validate` re-runs it, once per binding this node declares.
+fn check_bindings(node: &ViewNode, push: &mut impl FnMut(Violation)) {
     for binding in &node.bindings {
         if let Err(reason) = binding.validate() {
             push(Violation::MalformedBinding { reason });
         }
     }
+}
 
-    // Property-value sources (`ViewNode::bound`; design §5 of the bound-slot
-    // note): one source per property, and a source that can produce what the
-    // property holds. Both checks are the fold's own refusals run early —
-    // `binding_eval.rs` refuses them again at value time with the same
-    // arithmetic — so a daemon's stage-1 acceptance turns a broken
-    // declaration away at the plugin's own `ui:contribute` call instead of
-    // leaving the shell to find it mid-fold.
+/// Property-value sources (`ViewNode::bound`; design §5 of the bound-slot
+/// note): one source per property, and a source that can produce what the
+/// property holds. Both checks are the fold's own refusals run early —
+/// `binding_eval.rs` refuses them again at value time with the same
+/// arithmetic — so a daemon's stage-1 acceptance turns a broken
+/// declaration away at the plugin's own `ui:contribute` call instead of
+/// leaving the shell to find it mid-fold.
+fn check_bound_props(node: &ViewNode, push: &mut impl FnMut(Violation)) {
     for prop in crate::tree::binding::PropKey::ALL {
         let Some(source) = node.bound.get(prop) else {
             continue;
@@ -1134,21 +1195,10 @@ fn check_node(
             push(Violation::IllTypedBinding { prop, reason });
         }
     }
+}
 
-    // Every rule that turns on which kind of node this is, one named check
-    // per kind, in this order; a kind that carries no rules of its own falls
-    // through. A `collection` rule therefore has exactly one place to land,
-    // and a reader asking what a `surface` must declare finds the answer by
-    // name instead of by counting braces. Nothing here is order-sensitive
-    // across arms: a node has one kind, so at most one arm ever runs.
-    match node.kind {
-        NodeKind::Custom => check_custom_kind(node, registry, &mut push),
-        NodeKind::Grid => check_grid_tracks(node, &mut push),
-        NodeKind::Collection => check_collection(node, scroll, &mut push),
-        NodeKind::Surface => check_surface(node, &mut push),
-        _ => {}
-    }
-
+/// A declared `opacity` is a finite value in [0, 1].
+fn check_opacity(node: &ViewNode, push: &mut impl FnMut(Violation)) {
     if let Some(opacity) = node.props.opacity
         && !(opacity.is_finite() && (0.0..=1.0).contains(&opacity))
     {
@@ -1158,7 +1208,10 @@ fn check_node(
             expected: "a finite value in [0, 1]",
         });
     }
+}
 
+/// A leaf kind declares `padding`: a declaration no layout can honour.
+fn check_padding(node: &ViewNode, push: &mut impl FnMut(Violation)) {
     // `spacing` and every edge of `padding` used to be range-checked here.
     // They are token references now (FR-053), so there is no number in the
     // tree left to range-check: a `TokenName` has no sign and cannot be NaN,
@@ -1178,7 +1231,11 @@ fn check_node(
     if node.props.padding.is_some() && !node.kind.is_container() {
         push(Violation::PaddingOnLeafKind { kind: node.kind });
     }
+}
 
+/// `props.runs`, when declared, tiles `props.text` exactly: every byte in
+/// exactly one run, and no run boundary inside a `char`.
+fn check_text_runs(node: &ViewNode, push: &mut impl FnMut(Violation)) {
     if !node.props.runs.is_empty() {
         let text = node.props.text.as_deref().unwrap_or_default();
         let claimed: usize = node.props.runs.iter().map(|run| run.len).sum();
@@ -1203,7 +1260,10 @@ fn check_node(
             }
         }
     }
+}
 
+/// A declared transition names one the registry holds.
+fn check_transition(node: &ViewNode, registry: &Registry, push: &mut impl FnMut(Violation)) {
     if let Some(name) = node.transition.as_ref().map(|t| t.name().to_owned())
         && !registry.has_transition(&name)
     {
@@ -1216,7 +1276,12 @@ fn check_node(
                 .collect(),
         });
     }
+}
 
+/// Every styling token reference this node declares: the fixed-kind props'
+/// references and the `props.tokens` paint slots, against the vocabulary and
+/// the registry's slot schema.
+fn check_token_refs(node: &ViewNode, registry: &Registry, push: &mut impl FnMut(Violation)) {
     // A literal in a token slot (FR-013) used to be refused here: a
     // validate-time walk over `node.props.tokens` calling `is_style_literal`
     // on each `String` value, pushing `Violation::LiteralStyleValue` on a
@@ -1251,7 +1316,7 @@ fn check_node(
     // `.agents/notes/implemented/architecture/2026-09-07-one-token-prop-table.md`.
     let vocabulary = registry.vocabulary();
     for (prop, expected, name) in token_prop_refs(node) {
-        check_token_ref(vocabulary, prop, name, expected, &mut push);
+        check_token_ref(vocabulary, prop, name, expected, push);
     }
     // `props.tokens`'s keys are paint slots, not design-token kinds
     // (`tree::props`'s own doc comment on the field: the slot is "decided by
@@ -1616,7 +1681,7 @@ fn collect_anchors(
 }
 
 /// One paint-slot binding against the vocabulary and the registry's slot
-/// schema: the same rule the `props.tokens` loop in [`check_node`] applies,
+/// schema: the same rule the `props.tokens` loop in [`check_token_refs`] applies,
 /// so a per-state override can never be checked more loosely than the base
 /// binding it overrides.
 ///
