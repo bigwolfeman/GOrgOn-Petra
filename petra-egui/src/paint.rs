@@ -26,7 +26,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use egui::{Color32, CornerRadius, Painter, Rgba, Stroke};
 use gorgon_petra::frame::{PaintContent, PetrifiedFrame, Placement, round_rect};
 use gorgon_petra::geom::{Rect as PetraRect, Scale};
-use gorgon_petra::layout::TextRequest;
 use gorgon_petra::token::value::CoverageValue;
 use gorgon_petra::token::{
     DerivedState, FocusRing, InteractionRank, MotionValue, SHADOW_GEOMETRY, Silhouette,
@@ -34,7 +33,6 @@ use gorgon_petra::token::{
 };
 use gorgon_petra::tree::{Edge, FocusFigure, FocusShownOn, NodeKind};
 
-use crate::host::{COVERAGE_TOKEN, FALLBACK_COVERAGE, coverage_plan};
 use crate::image::ImageSources;
 use crate::text::GalleyShaper;
 
@@ -1872,6 +1870,67 @@ fn paint_rule_groove(
     shapes
 }
 
+// One paint fn per content kind, one module per fn. They reach the shared
+// plumbing through `super`; the call order in [`paint_one`] below is
+// Petra's paint order and is load-bearing.
+mod border;
+mod canvas;
+mod custom;
+mod edges;
+mod elevation;
+mod fill;
+mod image;
+mod surface_caret;
+mod text;
+
+/// Everything one placement's paint kinds share, resolved exactly once
+/// before [`paint_one`] dispatches to them.
+struct NodeChrome {
+    /// `placement.rect` snapped to the same device-pixel grid the digest
+    /// hashes — every rect the kinds draw comes from here.
+    rect: egui::Rect,
+    /// Which token family every slot below resolves through. Read once,
+    /// rather than at each of the six lookups: the rank is a property of the
+    /// node, and six copies of `resolve_state` is six chances for the border
+    /// to think it is hovered while the fill thinks it is pressed.
+    state: DerivedState,
+    /// [`resolve_state`]'s answer for `state`, read by the elevation kind.
+    rank: InteractionRank,
+    /// `radius` and `silhouette` shape both the fill and the stroke, so both
+    /// are resolved once, ahead of either, rather than duplicated into two
+    /// arms that could drift apart.
+    corner_radius: CornerRadius,
+    /// The closed outline the silhouette traces inside `rect`, or `None` for
+    /// [`Silhouette::Rect`] — which stays egui's own rounded rect.
+    outline: Option<Vec<egui::Pos2>>,
+}
+
+impl NodeChrome {
+    fn resolve(
+        placement: &Placement,
+        content: &PaintContent,
+        env: &PaintEnv<'_>,
+        report: &mut PaintReport,
+    ) -> Self {
+        let rect = to_egui_snapped(placement.rect, env.scale);
+        let state = DerivedState::of(&placement.semantics);
+        let rank = resolve_state(state);
+        let corner_radius = resolve_corner_radius(&content.tokens, env.colors, state, report);
+        let figure = resolve_slot(&content.tokens, SILHOUETTE_SLOT, state)
+            .map_or(Silhouette::Rect, |token| {
+                resolve_silhouette_or_record(env.colors, token, report)
+            });
+        let outline = silhouette_points(figure, rect);
+        Self {
+            rect,
+            state,
+            rank,
+            corner_radius,
+            outline,
+        }
+    }
+}
+
 fn paint_one(
     painter: &Painter,
     placement: &Placement,
@@ -1879,9 +1938,6 @@ fn paint_one(
     env: &mut PaintEnv<'_>,
     report: &mut PaintReport,
 ) -> Outcome {
-    let rect = to_egui_snapped(placement.rect, env.scale);
-    let mut shapes = 0_usize;
-
     // Every slot this painter does not understand is recorded by name,
     // matched on the *base* slot: `background@hover` is the `background`
     // slot bound for one state (`gorgon_petra::token::state`), not a seventh
@@ -1891,495 +1947,23 @@ fn paint_one(
             report.unknown_slots.insert(slot.clone());
         }
     }
+    let chrome = NodeChrome::resolve(placement, content, env, report);
 
-    // Which token family every slot below resolves through. Read once, here,
-    // rather than at each of the six lookups: the rank is a property of the
-    // node, and six copies of `resolve_state` is six chances for the border
-    // to think it is hovered while the fill thinks it is pressed.
-    let state = DerivedState::of(&placement.semantics);
-    let rank = resolve_state(state);
-
-    // `radius` and `silhouette` shape both the fill and the stroke below
-    // them, so both are resolved once, ahead of either, rather than
-    // duplicated into two arms that could drift apart.
-    let corner_radius = resolve_corner_radius(&content.tokens, env.colors, state, report);
-    let figure = resolve_slot(&content.tokens, SILHOUETTE_SLOT, state)
-        .map_or(Silhouette::Rect, |token| {
-            resolve_silhouette_or_record(env.colors, token, report)
-        });
-    let outline = silhouette_points(figure, rect);
-
-    // Elevation goes down first, because a shadow is behind the thing that
-    // casts it. Drawn after the fill it would sit *on* the card, which is not
-    // a subtle mistake -- it is an obviously wrong picture, and that is the
-    // reason this block is here rather than next to the border below.
-    if let Some(token) = resolve_slot(&content.tokens, SHADOW_SLOT, state) {
-        // A rectangular shadow under a triangle is worse than no shadow, and
-        // `epaint::Shadow::as_shape` can only make a `RectShape`. A node that
-        // asked for both gets its silhouette honoured and its elevation
-        // dropped, and nothing in `report` claims a shadow was drawn.
-        //
-        // A **disabled** node casts no shadow either, and that is FR-010
-        // rather than a style preference. Depth is this painter's "you can
-        // press this" channel, so a control that cannot be pressed must not
-        // have it: a button lying flat beside two that are lifted reads as
-        // unavailable *before* any of its colours do, and it survives a
-        // reader who cannot separate the colours at all. The disabled colour
-        // family is the second channel, not the only one — a colour-only
-        // disabled state is exactly what FR-010 forbids.
-        if outline.is_none()
-            && rank != InteractionRank::Disabled
-            && let Some(color) = resolve_or_record(env.colors, token, report)
-            && let Some((_, geometry)) = SHADOW_GEOMETRY.iter().find(|(name, _)| *name == token)
-        {
-            let shadow = egui::epaint::Shadow {
-                offset: geometry.offset,
-                blur: geometry.blur,
-                spread: geometry.spread,
-                color,
-            };
-            // A shadow is the one thing on this page that has to draw
-            // *outside* the node casting it, and every placement arrives here
-            // already clipped to its own bounds. Painting it through the
-            // inherited clip drew nothing at all: the token resolved, the
-            // report counted a fill, and the window was pixel-identical --
-            // the exact silent failure the design contract predicted for this
-            // block, arriving through a mechanism the contract did not.
-            //
-            // The clip is widened by the shadow's own reach and no further:
-            // `spread` grows the rect, `blur` feathers past that, and
-            // `offset` displaces the whole thing. A shadow cannot escape by
-            // more than it was declared to extend.
-            //
-            // And it may not leave the surface at all, which is what the
-            // intersection with `screen_rect` is for. A shadow is allowed
-            // outside its *node*; it is not allowed outside the *page*. The
-            // difference is not cosmetic: `petra-egui/examples/parity.rs`
-            // pins `RawInput::screen_rect` to a fixed rectangle so the two
-            // targets lay out identically whatever size a window manager
-            // grants, and `petra-parity` refuses the capture if anything is
-            // painted beyond that pin -- which is exactly what a card near the
-            // bottom edge did once elevation landed, because widening a clip
-            // by 13 units walks straight through a boundary nothing else in
-            // this painter can reach. `PaintEnv::page` is Petra's own
-            // viewport, which is the pinned rectangle on that page and the
-            // real surface everywhere else, so one intersection is correct in
-            // both cases.
-            let reach = f32::from(geometry.spread)
-                + f32::from(geometry.blur)
-                + f32::from(geometry.offset[0].abs().max(geometry.offset[1].abs()));
-            // `Painter::with_clip_rect` INTERSECTS -- `rect.intersect(self.clip_rect)`
-            // in egui-0.36.1's `painter.rs:73`. It can only ever narrow, so
-            // widening through it is a silent no-op, and that is exactly how
-            // the first attempt at this block failed: the shadow drew, and
-            // survived only in the corner cut-outs the card's own rounding
-            // left behind. `set_clip_rect` is the one that replaces.
-            let mut cast = painter.clone();
-            cast.set_clip_rect(painter.clip_rect().expand(reach).intersect(env.page));
-            cast.add(egui::Shape::Rect(shadow.as_shape(rect, corner_radius)));
-            report.fills += 1;
-            shapes += 1;
-        }
-    }
-    if let Some(token) = resolve_slot(&content.tokens, BACKGROUND_SLOT, state) {
-        // A separator does not have a rule along one edge. It **is** the
-        // rule, so its whole rect is the groove and its own fill slot is
-        // what names the material — there is no edge slot to bind, because
-        // there is nothing else in the node for an edge to belong to.
-        //
-        // This is the second of the two constructions
-        // `gorgon_petra::token::rule`'s module doc describes, and it exists
-        // because the first one cannot express a standalone divider. Seven
-        // of them shipped as a childless stack with a `border.subtle` fill,
-        // which painted a flat line while the same token grooved on a table
-        // row, and the author of each one had to pick a thickness by hand.
-        //
-        // Orientation comes off the rect rather than off `props.axis`,
-        // which the frame does not carry: a rule is thin across itself, so
-        // the long side is the run. `Edge::Top` and `Edge::Left` are the
-        // shadow-first arms, and since the rect is exactly the groove's
-        // thickness the opposite arms would land on the same pixels. A
-        // square separator is degenerate and takes the horizontal reading.
-        let separator = placement.kind == gorgon_petra::tree::NodeKind::Separator;
-        if separator && outline.is_none() && token == gorgon_petra::token::rule::MATERIAL_TOKEN {
-            let edge = if rect.width() >= rect.height() {
-                Edge::Top
-            } else {
-                Edge::Left
-            };
-            shapes += paint_rule_groove(painter, rect, edge, corner_radius, env, report);
-        } else if let Some(color) = resolve_or_record(env.colors, token, report) {
-            match &outline {
-                None => {
-                    painter.rect_filled(rect, corner_radius, color);
-                }
-                Some(points) => {
-                    painter.add(egui::Shape::convex_polygon(
-                        points.clone(),
-                        color,
-                        Stroke::NONE,
-                    ));
-                }
-            }
-            report.fills += 1;
-            shapes += 1;
-        }
-    }
-    // An anchored surface's caret, drawn with the fill it continues and
-    // therefore immediately after it: `crate::triangle` owns the shape, the
-    // engine owns the geometry (`contracts/anchored-placement.md` §5), and a
-    // surface that binds no background has no colour to draw one in.
-    //
-    // The fill goes through `resolve_slot`, not a bare map lookup, for the
-    // same reason the background above does: a hovered surface binding
-    // `background@hover` would otherwise grow a caret in its resting colour,
-    // and a caret that disagrees with the shape it continues is worse than no
-    // caret at all.
-    //
-    // Through a widened clip, for the shadow's reason: the caret is the
-    // other thing on this page that draws *outside* the node it belongs to
-    // (`caret_of` puts the tip `h` past the surface's near edge, back at the
-    // anchor), and every placement arrives here clipped to its own bounds.
-    // Painted through the inherited clip the caret drew nothing: the report
-    // counted a fill, `every_built_page_paints_with_nothing_silent` was
-    // green, and rows 24 and 38 showed a bubble with no beak. Widened by
-    // the caret's own depth and no further, and never past the page.
-    if let Some(caret) = &content.caret {
-        let fill = resolve_slot(&content.tokens, BACKGROUND_SLOT, state)
-            .and_then(|token| resolve_or_record(env.colors, token, report));
-        let mut cast = painter.clone();
-        cast.set_clip_rect(painter.clip_rect().expand(caret.h).intersect(env.page));
-        if crate::triangle::paint_caret(&cast, caret, fill, env.scale) {
-            report.fills += 1;
-            shapes += 1;
-        } else {
-            report.undrawn.insert("caret".to_owned());
-        }
-    }
-    if let Some(token) = resolve_slot(&content.tokens, BORDER_SLOT, state)
-        && let Some(color) = resolve_or_record(env.colors, token, report)
-    {
-        let width = device_snapped_width(1.0, env.scale);
-        match &outline {
-            None => {
-                painter.rect_stroke(
-                    rect,
-                    corner_radius,
-                    Stroke::new(width, color),
-                    egui::StrokeKind::Inside,
-                );
-            }
-            // A polygon stroke is centred on its path rather than inset the
-            // way `StrokeKind::Inside` insets a rect's. At the one-unit
-            // width this painter draws, that is half a logical unit of
-            // overhang on a marker whose whole job is to be a recognisable
-            // outline; correcting it would mean insetting the polygon, and
-            // an inset that shrinks a triangle is not the same operation on
-            // every figure. Left centred, and named here rather than
-            // silently different.
-            Some(points) => {
-                painter.add(egui::Shape::convex_polygon(
-                    points.clone(),
-                    Color32::TRANSPARENT,
-                    Stroke::new(width, color),
-                ));
-            }
-        }
-        shapes += 1;
-    }
-    // One edge at a time. Each bound edge slot is one line segment down the
-    // inside of that edge — the same placement `StrokeKind::Inside` gives
-    // the four-sided outline above, so a node that swaps `border` for
-    // `border-bottom` keeps its bottom rule on the same device pixels. A
-    // silhouette has no edges to pick from, so on a non-rect figure the
-    // slot is recorded undrawn rather than drawn on the wrong shape.
-    //
-    // Any edge bound to the rule material's trigger token —
-    // `gorgon_petra::token::rule::MATERIAL_TOKEN`, the same string as
-    // `border.subtle` — grooves instead of drawing the flat line every other
-    // edge slot draws: see [`paint_rule_groove`]. All four edges, since the
-    // light moved to the top-left on 2026-09-09; before that a vertical
-    // groove had both walls at the same angle to an overhead light and
-    // painted a uniform darkening rather than a bevel.
-    //
-    // Unless the bound edges would meet at a corner. While rules were
-    // horizontal only, the contract's "never meet a corner" mandate cost
-    // nothing to keep: no stroke could reach one. Vertical rules remove that,
-    // so `corner_free` decides it explicitly, and a node binding a horizontal
-    // and a vertical edge to the material draws two flat lines rather than
-    // two walls of a bevelled box. Computed once, before the loop, because
-    // the answer is about the *set* of bound edges and no single pass through
-    // the loop can see it.
-    let grooves = {
-        let material = |slot: &str| {
-            resolve_slot(&content.tokens, slot, state)
-                .is_some_and(|token| token == gorgon_petra::token::rule::MATERIAL_TOKEN)
-        };
-        gorgon_petra::token::rule::corner_free(
-            material(BORDER_TOP_SLOT),
-            material(BORDER_RIGHT_SLOT),
-            material(BORDER_BOTTOM_SLOT),
-            material(BORDER_LEFT_SLOT),
-        )
-    };
-    for (slot, edge) in EDGE_SLOTS {
-        let Some(token) = resolve_slot(&content.tokens, slot, state) else {
-            continue;
-        };
-        let Some(color) = resolve_or_record(env.colors, token, report) else {
-            continue;
-        };
-        if outline.is_some() {
-            report.undrawn.insert(slot.to_owned());
-            continue;
-        }
-        if grooves && token == gorgon_petra::token::rule::MATERIAL_TOKEN {
-            shapes += paint_rule_groove(painter, rect, edge, corner_radius, env, report);
-            continue;
-        }
-        let width = device_snapped_width(1.0, env.scale);
-        painter.line_segment(
-            edge_segment(rect, edge, width, corner_radius),
-            Stroke::new(width, color),
-        );
-        shapes += 1;
-    }
-
-    if let Some(text) = &content.text {
-        let token =
-            resolve_slot(&content.tokens, FOREGROUND_SLOT, state).unwrap_or(DEFAULT_TEXT_TOKEN);
-        let color = env.colors.color(token).unwrap_or_else(|| {
-            report.unresolved_tokens.insert(token.to_owned());
-            // Not a guess at the theme's intent: a visibly wrong colour is
-            // better than invisible text, and the unresolved token is in the
-            // report either way.
-            Color32::PLACEHOLDER
-        });
-        // A style token the shaper has no binding for still shapes — at the
-        // theme's body style, because blank text is worse on screen than
-        // text at the wrong size — so the only way it can be noticed is for
-        // the name to be reported here, the same as an unresolved colour.
-        if let Some(unresolved) = env
-            .shaper
-            .typography()
-            .resolve(text.style.as_deref())
-            .1
-            .map(str::to_owned)
-        {
-            report.unresolved_tokens.insert(unresolved);
-        }
-        // An `Input` is a leaf: padding is refused on it, so the chrome
-        // rect *is* the placement. The galley still has to sit inside that
-        // rect — 12 units in from the sides (`spacing-04`) and centred on
-        // the vertical, Carbon's md field. Painting at `rect.min` put the
-        // first glyph on the border. Shaping against the full width, then
-        // shifting in, would push the last glyph through the other border.
-        let input = placement.kind == gorgon_petra::tree::NodeKind::Input;
-        let inset_x = text_inset_x(placement.kind, env.colors);
-        let inner_w = (placement.rect.w - 2.0 * inset_x).max(0.0);
-        // Colour runs, resolved here because this is where the theme is. A
-        // run naming no token keeps `None` and takes `color` below, the same
-        // ink the whole line would have taken; a run naming one this theme
-        // cannot resolve is reported and then also falls back, for
-        // `Color32::PLACEHOLDER`'s reason above — visibly wrong beats
-        // invisible, and the name is in the report either way.
-        let runs: Vec<(usize, Option<Color32>)> = text
-            .runs
-            .iter()
-            .map(|run| {
-                let ink = run.foreground.as_deref().and_then(|name| {
-                    let found = env.colors.color(name);
-                    if found.is_none() {
-                        report.unresolved_tokens.insert(name.to_owned());
-                    }
-                    found
-                });
-                (run.len, ink)
-            })
-            .collect();
-        let request = TextRequest {
-            text: &text.text,
-            style: text.style.as_deref(),
-            wrap: text.wrap,
-            max_lines: text.max_lines,
-            available_width: Some(inner_w),
-        };
-        // The selected stretch, resolved as a pair. Neither half is usable
-        // alone: the fill without the ink can sink a coloured run below AA,
-        // and the ink without the fill recolours text for no visible reason.
-        // So a node binding one and not the other is refused rather than
-        // half-honoured, and a node binding neither takes the shipped pair —
-        // which is a token the design system names, not a colour this painter
-        // chose (`DEFAULT_SELECTION_TOKEN`).
-        let selection = content.selection.as_ref().and_then(|range| {
-            let bound = content.tokens.contains_key(SELECTION_SLOT)
-                || content.tokens.contains_key(SELECTION_INK_SLOT);
-            let (ground, ink) = if bound {
-                (
-                    resolve_slot(&content.tokens, SELECTION_SLOT, state)?,
-                    resolve_slot(&content.tokens, SELECTION_INK_SLOT, state)?,
-                )
-            } else {
-                (DEFAULT_SELECTION_TOKEN, DEFAULT_SELECTION_INK_TOKEN)
-            };
-            let ground = resolve_or_record(env.colors, ground, report)?;
-            let ink = resolve_or_record(env.colors, ink, report)?;
-            Some((range, ground, ink))
-        });
-        let runs = match &selection {
-            Some((range, _, ink)) => {
-                crate::text::runs_with_selection(&runs, text.text.len(), range, *ink)
-            }
-            None => runs,
-        };
-        let galley = env.shaper.galley_runs(&request, &runs);
-        let text_pos = if input {
-            let galley_h = galley.rect.height();
-            let inset_y = ((rect.height() - galley_h) * 0.5).max(0.0);
-            egui::pos2(rect.min.x + inset_x, rect.min.y + inset_y)
-        } else {
-            rect.min
-        };
-        // The atlas curve alone cannot reach every `passes` value the
-        // `text.coverage-curve` token allows (SPEC.md §2.3: no
-        // `FontColorTransferFunction` variant exists past two-pass
-        // compositing), so the rest is spent here, by painting the same
-        // galley `repeats` times under egui-wgpu's premultiplied
-        // source-over — which composites to `1 - (1-a)^repeats`, the same
-        // identity the atlas curve itself rests on
-        // (`crate::host::coverage_plan`'s doc comment names the trap this
-        // is the other half of). `report.texts` and `shapes` count the
-        // logical run once regardless of how many physical paints it took —
-        // see this module's doc comment and `PaintReport`'s.
-        // Behind the glyphs, so the ink above is read against this fill and
-        // not the other way round. One rectangle per row the selection
-        // crosses, from the galley about to be painted — the same galley, so
-        // the highlight and the letters cannot be measured differently.
-        if let Some((range, ground, _)) = &selection {
-            for band in crate::text::selection_rects(&galley, range) {
-                painter.rect_filled(band.translate(text_pos.to_vec2()), 0.0, *ground);
-                shapes += 1;
-            }
-        }
-        let coverage = env
-            .colors
-            .coverage(COVERAGE_TOKEN)
-            .unwrap_or(FALLBACK_COVERAGE);
-        let plan = coverage_plan(coverage);
-        for _ in 0..plan.repeats {
-            painter.galley(text_pos, galley.clone(), color);
-        }
-        if plan.fraction > 0.0 {
-            // ai-macs' fractional pass, ported verbatim: one further paint
-            // at the colour's alpha scaled by the fractional remainder, not
-            // the fraction silently dropped.
-            painter.galley(
-                text_pos,
-                galley.clone(),
-                color.gamma_multiply(plan.fraction),
-            );
-        }
-        report.texts += 1;
-        shapes += 1;
-        // The underline is a strip one snapped unit deep under each row,
-        // as wide as that row's glyphs, in the slot's own colour rather
-        // than the text's: Carbon's link underline is `currentColor`, but a
-        // slot that carried its own colour costs nothing more and is what
-        // lets `underline@hover` name a tone. Drawn after the glyphs so a
-        // descender crossing it stays legible.
-        if let Some(token) = resolve_slot(&content.tokens, UNDERLINE_SLOT, state)
-            && let Some(color) = resolve_or_record(env.colors, token, report)
-        {
-            let depth = device_snapped_width(1.0, env.scale);
-            for row in &galley.rows {
-                let run = row
-                    .rect_without_leading_space()
-                    .translate(text_pos.to_vec2());
-                if run.width() <= 0.0 {
-                    continue;
-                }
-                let strip = egui::Rect::from_min_size(
-                    egui::pos2(run.min.x, run.max.y - depth),
-                    egui::vec2(run.width(), depth),
-                );
-                painter.rect_filled(strip, 0.0, color);
-                shapes += 1;
-            }
-        }
-    }
-
-    if let Some(source) = &content.image {
-        // `resolve` is the whole of "decode/upload behind a source-keyed
-        // cache" (T081): a source this pass has drawn before comes back
-        // from the cache, a new one is decoded and uploaded once. Either
-        // way what comes back is a texture with its own natural size, and
-        // `image::contain` is the aspect handling — fit that size inside
-        // `rect`, the space Petra offered this node, without stretching it.
-        if let Some(handle) = env.images.resolve(painter.ctx(), source) {
-            let target = crate::image::contain(rect, handle.size_vec2());
-            let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-            painter.image(handle.id(), target, uv, Color32::WHITE);
-            report.images += 1;
-            shapes += 1;
-        } else {
-            // Not registered, or registered with pixels that failed to
-            // decode — either way this is the source that could not be
-            // drawn, named so the operator knows which picture is missing
-            // rather than that "an image" is.
-            report.undrawn.insert(format!("image:{source}"));
-        }
-    }
-    if let Some(list) = &content.canvas {
-        // A canvas is drawn by the engine, not by a host painter, which is
-        // the whole reason it is a second node kind rather than a mode of
-        // `custom`: every coordinate here is already in the digest, so what
-        // reaches the screen is a function of the frame's identity.
-        //
-        // Assets are the one part the digest cannot see — it hashes the
-        // asset's name and its rects, never decoded pixels — so a `Sprite`
-        // that does not resolve is counted rather than quietly skipped.
-        let ctx = painter.ctx().clone();
-        let mut assets = crate::draw::HostImages::new(env.images, &ctx);
-        let canvas = crate::draw::paint_canvas(
-            painter,
-            list,
-            placement.rect,
-            env.scale,
-            env.colors,
-            &mut assets,
-        );
-        report.missing_assets += canvas.missing_assets;
-        for name in &canvas.undrawn {
-            report.undrawn.insert(format!("canvas:{name}"));
-        }
-        if canvas.shapes > 0 {
-            report.canvases += 1;
-            shapes += canvas.shapes;
-        }
-    }
-    if let Some(name) = &content.custom {
-        let ctx = CustomPaintCtx {
-            rect,
-            clip: painter.clip_rect(),
-            opacity: painter.opacity(),
-            scale: env.scale,
-            tokens: env.colors,
-        };
-        // `is_some_and` rather than an `if let` that ignores the bool: a
-        // registered painter that draws nothing must be treated exactly
-        // like no painter at all, and this is the one line where that
-        // equivalence either holds or quietly stops holding.
-        if env
-            .painters
-            .get(name)
-            .is_some_and(|paint| paint(painter, &ctx))
-        {
-            report.customs += 1;
-            shapes += 1;
-        } else {
-            report.undrawn.insert(format!("custom:{name}"));
-        }
-    }
+    // The dispatch, in Petra's paint order and no other: a shadow lies
+    // behind the fill that casts it, the caret continues the fill, the
+    // chrome lies over both, and hosted content (text, image, canvas,
+    // custom) lands last. Each kind returns the shapes it emitted and every
+    // kind records into the same `PaintReport`.
+    let mut shapes = 0_usize;
+    shapes += elevation::paint_elevation(painter, content, &chrome, env, report);
+    shapes += fill::paint_fill(painter, placement, content, &chrome, env, report);
+    shapes += surface_caret::paint_surface_caret(painter, content, &chrome, env, report);
+    shapes += border::paint_border(painter, content, &chrome, env, report);
+    shapes += edges::paint_edge_rules(painter, content, &chrome, env, report);
+    shapes += text::paint_text(painter, placement, content, &chrome, env, report);
+    shapes += image::paint_image(painter, content, &chrome, env, report);
+    shapes += canvas::paint_canvas_node(painter, placement, content, env, report);
+    shapes += custom::paint_custom(painter, content, &chrome, env, report);
 
     if content.is_empty() {
         // Nothing was declared, so nothing missing. A `Stack` is a position
