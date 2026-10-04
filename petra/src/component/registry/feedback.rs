@@ -21,41 +21,15 @@
 //! other constructor in this file.
 
 use serde::Deserialize;
-use serde_json::Value;
 
 use super::Entry;
 use crate::component as lib;
 use crate::component::params::{
     KeyChildren, KeyLabel, KeyLabelNumber, KeyLabelSelected, KeyLabelSelectedValue, KeyLabelValue,
-    ParamError, ParamShape,
+    ParamShape,
 };
 use crate::token::StatusToken;
 use crate::tree::{Key, ViewNode};
-
-/// See `registry/form.rs`'s `fail`: names the component being built so a
-/// bad parameter table's message points at it.
-fn fail(component: &'static str, e: impl std::fmt::Display) -> ParamError {
-    ParamError {
-        component: component.to_owned(),
-        reason: e.to_string(),
-    }
-}
-
-/// See `registry/form.rs`'s `row!`: one [`Entry`] per macro invocation, a
-/// local `fn ctor` coerced to the bare `fn` pointer [`Entry::ctor`] holds.
-macro_rules! row {
-    ($name:literal, $shape:ty, |$p:ident| $body:expr) => {{
-        fn ctor(params: &Value) -> Result<ViewNode, ParamError> {
-            let $p: $shape = serde_json::from_value(params.clone()).map_err(|e| fail($name, e))?;
-            Ok($body)
-        }
-        Entry {
-            name: $name,
-            ctor,
-            luau: <$shape as ParamShape>::LUAU,
-        }
-    }};
-}
 
 // ---------------------------------------------------------------------
 // One-off shapes.

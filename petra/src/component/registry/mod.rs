@@ -26,8 +26,57 @@
 use std::collections::BTreeMap;
 use std::sync::{Mutex, Once, OnceLock};
 
+use serde::Deserialize;
+
 use crate::component::params::ParamError;
 use crate::tree::ViewNode;
+
+/// Deserialize `params` into `T`, naming the constructor being built.
+///
+/// The one owner of the registry's parse glue: every `row!` below and every
+/// external registry row (`gorgon-petra-compound`) produces its
+/// [`ParamError`] here. `serde_json`'s own error already names the offending
+/// field under `deny_unknown_fields` or a missing key, which is what makes G4
+/// hold without any hand-written field matching here.
+///
+/// `reason = e.to_string()` is contract-visible and stays serde's own text
+/// verbatim: the refusal strings are pinned by
+/// `specs/013-lua-gallery-parity/tasks.md` and the FR-056 shape in
+/// `specs/003-petra-layout-engine/contracts/view-tree.md`.
+pub fn parse<T: for<'de> Deserialize<'de>>(
+    component: &'static str,
+    params: &serde_json::Value,
+) -> Result<T, ParamError> {
+    serde_json::from_value(params.clone()).map_err(|e| ParamError {
+        component: component.to_owned(),
+        reason: e.to_string(),
+    })
+}
+
+/// Build one [`Entry`]: a name, the shape its params deserialize into, and
+/// the expression that calls the shipped constructor with the deserialized
+/// fields. The inner `fn ctor` is a local item, not a closure — [`Entry`]'s
+/// `ctor` field is a bare `fn` pointer, so nothing here may capture state.
+///
+/// Paths are `$crate`-qualified so the macro expands unchanged from any
+/// module in this crate or from a registry in another crate, if this is ever
+/// exported. The one-off wire shapes stay per group file; this moves only the
+/// plumbing.
+macro_rules! row {
+    ($name:literal, $shape:ty, |$p:ident| $body:expr) => {{
+        fn ctor(
+            v: &::serde_json::Value,
+        ) -> Result<$crate::tree::ViewNode, $crate::component::params::ParamError> {
+            let $p: $shape = $crate::component::registry::parse($name, v)?;
+            Ok($body)
+        }
+        $crate::component::registry::Entry {
+            name: $name,
+            ctor,
+            luau: <$shape as $crate::component::params::ParamShape>::LUAU,
+        }
+    }};
+}
 
 mod atoms;
 pub mod bound;

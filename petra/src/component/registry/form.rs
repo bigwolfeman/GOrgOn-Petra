@@ -28,44 +28,13 @@
 //! defined once here and reused wherever its field set repeats.
 
 use serde::Deserialize;
-use serde_json::Value;
 
 use super::Entry;
 use crate::component as lib;
 use crate::component::params::{
-    KeyLabel, KeyLabelChildren, KeyLabelNumber, KeyLabelSelected, KeyLabelValue, ParamError,
-    ParamShape,
+    KeyLabel, KeyLabelChildren, KeyLabelNumber, KeyLabelSelected, KeyLabelValue, ParamShape,
 };
 use crate::tree::{Key, ViewNode};
-
-/// Turn a `serde_json` deserialization failure into a [`ParamError`] naming
-/// the component being built. `deny_unknown_fields` on every shape here
-/// means `e.to_string()` already names the offending key (gate G4) —
-/// serde's own message for an unknown or missing field spells it out.
-fn fail(component: &'static str, e: impl std::fmt::Display) -> ParamError {
-    ParamError {
-        component: component.to_owned(),
-        reason: e.to_string(),
-    }
-}
-
-/// Build one [`Entry`]: a name, the shape its params deserialize into, and
-/// the expression that calls the shipped constructor with the deserialized
-/// fields. The inner `fn ctor` is a local item, not a closure — [`Entry`]'s
-/// `ctor` field is a bare `fn` pointer, so nothing here may capture state.
-macro_rules! row {
-    ($name:literal, $shape:ty, |$p:ident| $body:expr) => {{
-        fn ctor(params: &Value) -> Result<ViewNode, ParamError> {
-            let $p: $shape = serde_json::from_value(params.clone()).map_err(|e| fail($name, e))?;
-            Ok($body)
-        }
-        Entry {
-            name: $name,
-            ctor,
-            luau: <$shape as ParamShape>::LUAU,
-        }
-    }};
-}
 
 // ---------------------------------------------------------------------
 // One-off shapes. Never invented fields: each mirrors the Rust
@@ -735,8 +704,9 @@ mod tests {
     /// merely "deserialization failed". Every shape derives
     /// `#[serde(deny_unknown_fields)]`, so `serde_json::from_value`'s own
     /// message already names the field for both an unknown key and a
-    /// missing required one; this test pins that `fail` propagates that
-    /// message rather than replacing it with something generic.
+    /// missing required one; this test pins that
+    /// [`crate::component::registry::parse`] propagates that message rather
+    /// than replacing it with something generic.
     #[test]
     fn a_bad_parameter_table_names_the_offending_field() {
         let checkbox = ENTRIES

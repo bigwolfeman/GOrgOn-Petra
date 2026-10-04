@@ -18,35 +18,13 @@
 //! proves it by scanning those six files' own source text.
 
 use serde::Deserialize;
-use serde_json::Value;
 
 use super::Entry;
 use crate::component as lib;
-use crate::component::params::{KeyChildren, KeyLabel, ParamError, ParamShape};
+use crate::component::params::{KeyChildren, KeyLabel, ParamShape};
 use crate::component::registry::IconMarkParam;
 use crate::token::StatusToken;
 use crate::tree::{Key, ViewNode};
-
-fn fail(component: &'static str, e: impl std::fmt::Display) -> ParamError {
-    ParamError {
-        component: component.to_owned(),
-        reason: e.to_string(),
-    }
-}
-
-macro_rules! row {
-    ($name:literal, $shape:ty, |$p:ident| $body:expr) => {{
-        fn ctor(params: &Value) -> Result<ViewNode, ParamError> {
-            let $p: $shape = serde_json::from_value(params.clone()).map_err(|e| fail($name, e))?;
-            Ok($body)
-        }
-        Entry {
-            name: $name,
-            ctor,
-            luau: <$shape as ParamShape>::LUAU,
-        }
-    }};
-}
 
 macro_rules! status_token_luau {
     () => {
@@ -61,7 +39,8 @@ macro_rules! status_token_luau {
 
 /// `textarea_invalid(key, label, message)`. Same field set as form.rs's
 /// local `KeyLabelMessage`; redefined here because group files do not
-/// import siblings.
+/// import siblings — `registry/mod.rs` shares the `row!`/`parse` glue,
+/// not the one-off shapes.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct KeyLabelMessage {

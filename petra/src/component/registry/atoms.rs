@@ -31,39 +31,17 @@
 //! source files are not added to the scan.
 
 use serde::Deserialize;
-use serde_json::Value;
 
 use super::Entry;
 use crate::component as lib;
 use crate::component::params::{
-    KeyChildren, KeyLabel, KeyLabelChildren, KeyLabelSelected, ParamError, ParamShape,
+    KeyChildren, KeyLabel, KeyLabelChildren, KeyLabelSelected, ParamShape,
 };
 use crate::component::registry::IconMarkParam;
 use crate::component::{IconBox, IconTone};
 use crate::geom::Axis;
 use crate::token::TokenName;
 use crate::tree::{Edge, InputPolicy, InsetRefs, Key, TextRun, ViewNode};
-
-fn fail(component: &'static str, e: impl std::fmt::Display) -> ParamError {
-    ParamError {
-        component: component.to_owned(),
-        reason: e.to_string(),
-    }
-}
-
-macro_rules! row {
-    ($name:literal, $shape:ty, |$p:ident| $body:expr) => {{
-        fn ctor(params: &Value) -> Result<ViewNode, ParamError> {
-            let $p: $shape = serde_json::from_value(params.clone()).map_err(|e| fail($name, e))?;
-            Ok($body)
-        }
-        Entry {
-            name: $name,
-            ctor,
-            luau: <$shape as ParamShape>::LUAU,
-        }
-    }};
-}
 
 // ---------------------------------------------------------------------
 // Wire IconTone and IconBox. Neither derives `Deserialize` on the shipped

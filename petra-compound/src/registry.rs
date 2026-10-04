@@ -57,7 +57,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use gorgon_petra::component::params::{ParamError, ParamShape};
-use gorgon_petra::component::registry::{Entry, IconMarkParam, register_external};
+use gorgon_petra::component::registry::{Entry, IconMarkParam, parse, register_external};
 use gorgon_petra::tree::ViewNode;
 
 use crate::Compound;
@@ -66,13 +66,6 @@ use crate::combobox::{self, Combobox};
 use crate::command::{self, Command};
 use crate::data_table::{self, DataTable};
 use crate::selection_palette::{self, SelectionPalette};
-
-fn fail(component: &'static str, e: impl std::fmt::Display) -> ParamError {
-    ParamError {
-        component: component.to_owned(),
-        reason: e.to_string(),
-    }
-}
 
 // ---------------------------------------------------------------------
 // Combobox
@@ -120,8 +113,7 @@ impl ParamShape for ComboboxWire {
 }
 
 fn combobox_ctor(params: &Value) -> Result<ViewNode, ParamError> {
-    let wire: ComboboxWire =
-        serde_json::from_value(params.clone()).map_err(|e| fail("combobox_compound", e))?;
+    let wire: ComboboxWire = parse("combobox_compound", params)?;
     Ok(Combobox::view(&wire.state, &wire.props.into()))
 }
 
@@ -282,8 +274,7 @@ impl ParamShape for CommandWire {
 }
 
 fn command_ctor(params: &Value) -> Result<ViewNode, ParamError> {
-    let wire: CommandWire =
-        serde_json::from_value(params.clone()).map_err(|e| fail("command_compound", e))?;
+    let wire: CommandWire = parse("command_compound", params)?;
     Ok(Command::view(&wire.state.into(), &wire.props.into()))
 }
 
@@ -330,8 +321,7 @@ impl ParamShape for CalendarWire {
 }
 
 fn calendar_ctor(params: &Value) -> Result<ViewNode, ParamError> {
-    let wire: CalendarWire =
-        serde_json::from_value(params.clone()).map_err(|e| fail("calendar_compound", e))?;
+    let wire: CalendarWire = parse("calendar_compound", params)?;
     Ok(Calendar::view(&wire.state, &wire.props.into()))
 }
 
@@ -439,8 +429,7 @@ impl ParamShape for DataTableWire {
 }
 
 fn data_table_ctor(params: &Value) -> Result<ViewNode, ParamError> {
-    let wire: DataTableWire =
-        serde_json::from_value(params.clone()).map_err(|e| fail("data_table_compound", e))?;
+    let wire: DataTableWire = parse("data_table_compound", params)?;
     Ok(DataTable::view(&wire.state, &wire.props.into()))
 }
 
@@ -481,8 +470,7 @@ impl ParamShape for SelectionPaletteWire {
 }
 
 fn selection_palette_ctor(params: &Value) -> Result<ViewNode, ParamError> {
-    let wire: SelectionPaletteWire = serde_json::from_value(params.clone())
-        .map_err(|e| fail("selection_palette_compound", e))?;
+    let wire: SelectionPaletteWire = parse("selection_palette_compound", params)?;
     Ok(SelectionPalette::view(&wire.state, &wire.props.into()))
 }
 

@@ -10,12 +10,11 @@
 //! counts the source rather than trusting this comment).
 
 use serde::Deserialize;
-use serde_json::Value;
 
 use super::Entry;
 use crate::component::params::{
     KeyChildren, KeyChildrenSelected, KeyLabel, KeyLabelChildren, KeyLabelSelected, KeyLabelValue,
-    ParamError, ParamShape,
+    ParamShape,
 };
 use crate::component::{
     Bullet, BulletScheme, accordion, accordion_item, accordion_item_lg, accordion_item_sm,
@@ -29,20 +28,6 @@ use crate::component::{
     unordered_list_with,
 };
 use crate::tree::{Align, Edge, Key, ViewNode};
-
-/// Deserialize `params` into `T`, naming the constructor being built.
-/// `serde_json`'s own error already names the offending field under
-/// `deny_unknown_fields` or a missing key, which is what makes G4 hold
-/// without any hand-written field matching here.
-fn parse<T: for<'de> Deserialize<'de>>(
-    component: &'static str,
-    params: &Value,
-) -> Result<T, ParamError> {
-    serde_json::from_value(params.clone()).map_err(|e| ParamError {
-        component: component.to_owned(),
-        reason: e.to_string(),
-    })
-}
 
 // --- one-off shapes, used only by this group -------------------------------
 
@@ -357,20 +342,6 @@ impl ParamShape for CodeSnippetCappedParams {
         "{ key: string, code: string, filename: string, language: string, expanded: boolean }";
 }
 
-macro_rules! row {
-    ($name:literal, $shape:ty, |$p:ident| $body:expr) => {{
-        fn ctor(v: &Value) -> Result<ViewNode, ParamError> {
-            let $p: $shape = parse($name, v)?;
-            Ok($body)
-        }
-        Entry {
-            name: $name,
-            ctor,
-            luau: <$shape as ParamShape>::LUAU,
-        }
-    }};
-}
-
 /// This group's constructors: one row per public `ViewNode`-returning
 /// constructor in the 12 containment components. 41 rows; see the
 /// `coverage` test below, which counts the source rather than this list.
@@ -497,7 +468,7 @@ mod tests {
     use std::collections::BTreeSet;
     use std::fs;
 
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     use super::*;
 
@@ -837,10 +808,15 @@ mod tests {
     }
 
     /// G4: a misspelled field names itself, not just "deserialize failed".
+    /// Calls [`crate::component::registry::parse`], the one owner of the
+    /// registry's error wrapping.
     #[test]
     fn bad_field_name_is_named_in_the_error() {
-        let err = parse::<KeyLabel>("list_item", &json!({ "key": "k", "lable": "typo" }))
-            .expect_err("misspelled field must be refused");
+        let err = crate::component::registry::parse::<KeyLabel>(
+            "list_item",
+            &json!({ "key": "k", "lable": "typo" }),
+        )
+        .expect_err("misspelled field must be refused");
         assert!(
             err.reason.contains("lable") || err.reason.contains("unknown field"),
             "error must name the bad field, got: {}",
