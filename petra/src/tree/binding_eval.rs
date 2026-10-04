@@ -26,6 +26,8 @@ use super::binding::{
 };
 use super::key::KeyPath;
 use super::node::ViewNode;
+use super::validate::Registry;
+use crate::component::registry::bound::{ExpandedTree, Regrown};
 
 /// The values a fold resolves bindings against: slot name → current value.
 ///
@@ -855,6 +857,93 @@ struct Held {
     version: u32,
 }
 
+/// The held slot values and the version each arrived at: one bookkeeping
+/// table for slot state, wherever it is kept.
+///
+/// Every owner of slot state keeps one — a [`ResolvedTree`] keeps its own,
+/// and a host holding several trees keeps the one table that has seen every
+/// delivered batch. One implementation of hold/check/absorb is what keeps
+/// those tables from drifting apart in what "stale" means
+/// (`.agents/notes/implemented/simplification/2026-10-03-h4-value-landing-owner.md`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct HeldValues {
+    held: BTreeMap<String, Held>,
+}
+
+impl HeldValues {
+    /// Every `inputs` entry at version 0 — the stamp a fold gives values it
+    /// is handed rather than delivered, so delivered changes start at 1.
+    #[must_use]
+    pub fn folded(inputs: &ResolveInputs) -> Self {
+        Self {
+            held: inputs
+                .iter()
+                .map(|(slot, value)| {
+                    (
+                        slot.clone(),
+                        Held {
+                            value: value.clone(),
+                            version: 0,
+                        },
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    /// Whether every change in `batch` can land against these versions —
+    /// [`check_slot_versions`], the one definition of "newer".
+    ///
+    /// # Errors
+    /// [`ApplyError::StaleVersion`] naming the first change that is not
+    /// strictly newer; nothing lands here.
+    pub fn check(&self, batch: &[SlotChange]) -> Result<(), ApplyError> {
+        check_slot_versions(&self.versions(), batch)
+    }
+
+    /// Record what `batch` applied: value and version per slot, last writer
+    /// winning within the batch's own order.
+    pub fn absorb(&mut self, batch: &[SlotChange]) {
+        for change in batch {
+            self.held.insert(
+                change.slot.as_str().to_owned(),
+                Held {
+                    value: change.value.clone(),
+                    version: change.version,
+                },
+            );
+        }
+    }
+
+    /// The values, as a fold sees them.
+    #[must_use]
+    pub fn inputs(&self) -> ResolveInputs {
+        self.held
+            .iter()
+            .map(|(slot, held)| (slot.clone(), held.value.clone()))
+            .collect()
+    }
+
+    /// The value held for `slot`, if any has been delivered.
+    #[must_use]
+    pub fn value(&self, slot: &str) -> Option<&SlotValue> {
+        self.held.get(slot).map(|held| &held.value)
+    }
+
+    /// The version held for `slot`, if any has been delivered.
+    #[must_use]
+    pub fn version(&self, slot: &str) -> Option<u32> {
+        self.held.get(slot).map(|held| held.version)
+    }
+
+    fn versions(&self) -> BTreeMap<String, u32> {
+        self.held
+            .iter()
+            .map(|(slot, held)| (slot.clone(), held.version))
+            .collect()
+    }
+}
+
 /// The retained binding state: the folded tree, the reverse index, and the
 /// slot values with their versions.
 ///
@@ -868,7 +957,7 @@ struct Held {
 pub struct ResolvedTree {
     tree: ViewNode,
     index: ReverseIndex,
-    values: BTreeMap<String, Held>,
+    values: HeldValues,
 }
 
 impl Default for ResolvedTree {
@@ -886,7 +975,7 @@ impl ResolvedTree {
         Self {
             tree: ViewNode::new(super::node::NodeKind::Stack, "petra-unfolded"),
             index: ReverseIndex::default(),
-            values: BTreeMap::new(),
+            values: HeldValues::default(),
         }
     }
 
@@ -895,22 +984,10 @@ impl ResolvedTree {
         let mut index = ReverseIndex::default();
         let mut path = KeyPath::root();
         let tree = fold_tree(declared, &mut path, &mut Vec::new(), inputs, &mut index)?;
-        let values = inputs
-            .iter()
-            .map(|(slot, value)| {
-                (
-                    slot.clone(),
-                    Held {
-                        value: value.clone(),
-                        version: 0,
-                    },
-                )
-            })
-            .collect();
         Ok(Self {
             tree,
             index,
-            values,
+            values: HeldValues::folded(inputs),
         })
     }
 
@@ -1007,23 +1084,20 @@ impl ResolvedTree {
     /// The value held for `slot`, if any has been delivered.
     #[must_use]
     pub fn value(&self, slot: &str) -> Option<&SlotValue> {
-        self.values.get(slot).map(|held| &held.value)
+        self.values.value(slot)
     }
 
     /// The version held for `slot`, if any has been delivered.
     #[must_use]
     pub fn version(&self, slot: &str) -> Option<u32> {
-        self.values.get(slot).map(|held| held.version)
+        self.values.version(slot)
     }
 
     /// The current values, as a fold sees them — what a bound component
     /// re-expands against once a batch has landed.
     #[must_use]
     pub fn inputs(&self) -> ResolveInputs {
-        self.values
-            .iter()
-            .map(|(slot, held)| (slot.clone(), held.value.clone()))
-            .collect()
+        self.values.inputs()
     }
 
     /// Whether every change in `batch` can land against the versions this
@@ -1034,12 +1108,7 @@ impl ResolvedTree {
     /// it — one commit group applied atomically across every retained tree
     /// (design §1). Read-only; nothing lands here.
     pub fn check_slot_changes(&self, changes: &[SlotChange]) -> Result<(), ApplyError> {
-        let versions: BTreeMap<String, u32> = self
-            .values
-            .iter()
-            .map(|(slot, held)| (slot.clone(), held.version))
-            .collect();
-        check_slot_versions(&versions, changes)
+        self.values.check(changes)
     }
 
     /// Apply a batch of slot changes: values first, then exactly the
@@ -1102,15 +1171,7 @@ impl ResolvedTree {
         // content and the same values; an error here would mean `land` is not
         // deterministic in what it judges, and it is reported rather than
         // swallowed.
-        for change in changes {
-            self.values.insert(
-                change.slot.as_str().to_owned(),
-                Held {
-                    value: change.value.clone(),
-                    version: change.version,
-                },
-            );
-        }
+        self.values.absorb(changes);
         for (site, value) in planned {
             let node =
                 node_at_mut(&mut self.tree, &site.at).ok_or_else(|| ApplyError::SiteLost {
@@ -1122,6 +1183,60 @@ impl ResolvedTree {
         affected.sort();
         Ok(affected)
     }
+}
+
+/// What one tree's landing produced, before the caller commits it.
+#[derive(Clone, Debug)]
+pub struct Landed {
+    /// The fold with the batch applied and every regrown unit spliced in.
+    pub resolved: ResolvedTree,
+    /// The `(node id, property)` sites the batch re-computed, deduplicated
+    /// and sorted — [`ResolvedTree::apply_slot_changes`]'s answer.
+    pub sites: Vec<(String, PropKey)>,
+    /// The components that re-expanded, when any read a changed slot.
+    pub regrown: Option<Regrown>,
+}
+
+/// Land one batch on one retained fold: apply it, re-expand the bound
+/// components that read a changed slot against the values the batch leaves
+/// behind, and answer **uncommitted** — the caller commits when its whole
+/// commit group has accepted (a host holding several trees applies one
+/// group atomically) or at once (a single-tree runtime).
+///
+/// The one implementation of single-tree landing, so the egui `Host`'s
+/// `apply_slot_changes` and the shell-side view runtime cannot disagree
+/// about what landing a batch means. `expanded` is `None` for a fold with
+/// no expansion (the egui host's application tree). `current` is left
+/// exactly as it was, whatever the answer.
+///
+/// # Errors
+/// Any [`ResolvedTree::apply_slot_changes`] refusal, or [`ApplyError::Regrow`]
+/// when a regrown component refuses the new values; either refuses the whole
+/// batch.
+pub fn land_batch(
+    current: &ResolvedTree,
+    expanded: Option<&ExpandedTree>,
+    registry: &Registry,
+    changes: &[SlotChange],
+) -> Result<Landed, ApplyError> {
+    let mut resolved = current.clone();
+    let sites = resolved.apply_slot_changes(changes)?;
+    let regrown = if let Some(expanded) = expanded {
+        let changed: BTreeSet<&str> = changes.iter().map(|c| c.slot.as_str()).collect();
+        if expanded.reads_any(&changed) {
+            let after = resolved.inputs();
+            expanded.regrow_into(&mut resolved, &changed, &after, registry)?
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    Ok(Landed {
+        resolved,
+        sites,
+        regrown,
+    })
 }
 
 /// Whether any node in `root` declares a binding or derivation.
@@ -1541,5 +1656,33 @@ mod tests {
             ),
             Err(ShapeFault::TypeMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn land_batch_answers_uncommitted_and_leaves_the_current_tree_alone() {
+        let mut root = ViewNode::new(NodeKind::Stack, "root");
+        root = root.child(text_node(Some(PropVal::Bind(SlotKey::new("k")))));
+        let mut inputs = ResolveInputs::new();
+        inputs.insert("k".into(), str_value("v1"));
+        let tree = ResolvedTree::resolve(&root, &inputs).unwrap();
+
+        let landed = land_batch(
+            &tree,
+            None,
+            &Registry::default(),
+            &[SlotChange::new("k", 1, str_value("v2"))],
+        )
+        .unwrap();
+        assert_eq!(landed.sites, [("/root/t".to_owned(), PropKey::Text)]);
+        assert!(landed.regrown.is_none());
+        assert_eq!(
+            landed.resolved.tree().children[0].props.text.as_deref(),
+            Some("v2")
+        );
+        assert_eq!(
+            tree.tree().children[0].props.text.as_deref(),
+            Some("v1"),
+            "the current tree is untouched until the caller commits"
+        );
     }
 }

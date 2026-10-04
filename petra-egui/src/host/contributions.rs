@@ -6,14 +6,10 @@
 //! a commit — and `host.rs` is already far past the size a reader can hold
 //! (`.agents/notes/implemented/architecture/2026-09-28-bound-component-parameters.md`).
 
-use std::collections::BTreeSet;
-
 use gorgon_petra::component::registry::ExpandError;
-use gorgon_petra::component::registry::bound::{ExpandedTree, Regrown, expand_with};
+use gorgon_petra::component::registry::bound::expand_with;
 use gorgon_petra::semantic::contribution_key;
-use gorgon_petra::tree::{
-    ApplyError, Registry, ResolveInputs, ResolvedTree, carries_bindings, validate,
-};
+use gorgon_petra::tree::{Registry, ResolvedTree, carries_bindings, validate};
 
 use super::{App, Contribution, Host, Prepared};
 
@@ -47,7 +43,8 @@ impl<A: App> Host<A> {
             resolved: None,
             expanded: None,
         };
-        let mut expanded = match expand_with(&contribution.tree, &self.slots) {
+        let inputs = self.slots.inputs();
+        let mut expanded = match expand_with(&contribution.tree, &inputs) {
             Ok(expanded) => expanded,
             Err(ExpandError::Param(err)) => {
                 return refused(format!("{}: {}", err.component, err.reason));
@@ -81,7 +78,7 @@ impl<A: App> Host<A> {
         // regrown subtree is grafted onto.
         let binds = carries_bindings(&node) || regrows;
         let (resolved, fold_refused) = if binds {
-            match ResolvedTree::resolve(&node, &self.slots) {
+            match ResolvedTree::resolve(&node, &inputs) {
                 Ok(resolved) => (Some(resolved), None),
                 Err(err) => (None, Some(err.to_string())),
             }
@@ -98,18 +95,5 @@ impl<A: App> Host<A> {
             resolved,
             expanded: regrows.then_some(expanded),
         }
-    }
-
-    /// Re-expand the units of `expanded` that read a slot in `changed` and
-    /// splice them into `next`, accepted against this host's registry — the
-    /// shared [`ExpandedTree::regrow_into`], which owns the rules.
-    pub(super) fn regrow(
-        &self,
-        expanded: &ExpandedTree,
-        next: &mut ResolvedTree,
-        changed: &BTreeSet<&str>,
-        after: &ResolveInputs,
-    ) -> Result<Option<Regrown>, ApplyError> {
-        expanded.regrow_into(next, changed, after, &self.registry)
     }
 }

@@ -73,8 +73,8 @@ use gorgon_petra::token::{
     Vocabulary, standard_vocabulary,
 };
 use gorgon_petra::tree::{
-    ApplyError, DirtyClass, PropKey, ResolveInputs, ResolvedTree, SlotChange, carries_bindings,
-    check_slot_versions,
+    ApplyError, DirtyClass, HeldValues, PropKey, ResolvedTree, SlotChange, carries_bindings,
+    land_batch,
 };
 use gorgon_petra::tree::{
     Behaviour, InputPolicy, InsetRefs, Intent, Interaction, KeyPath, NodeKind, Phase, Props,
@@ -877,18 +877,18 @@ pub struct Host<A: App> {
     /// before contributions are spliced so ambient loading canvases can
     /// resubmit at this phase without the publisher republishing.
     pass_clock: f64,
-    /// Every slot value delivered through [`Host::apply_slot_changes`], by
-    /// name. The fold input: [`Prepared::resolved`] trees are folded against
-    /// it, and so is a binding the application's own tree declares. A slot
-    /// nothing delivered is an error naming it, never a defaulted value
-    /// (design §8: the table's snapshot arrives before the first fold).
-    slots: ResolveInputs,
-    /// The version every slot value in `slots` arrived at. The authority on
-    /// what is stale: a tree folded after several changes hold was handed its
-    /// values with no version history of its own
-    /// ([`ResolvedTree::resolve`] counts them as 0), so the one map that has
-    /// seen every [`Host::apply_slot_changes`] is what refuses a replay.
-    slot_versions: BTreeMap<String, u32>,
+    /// Every slot value delivered through [`Host::apply_slot_changes`], with
+    /// the version each arrived at — this host's [`HeldValues`] table. The
+    /// fold input: [`Prepared::resolved`] trees are folded against it, and so
+    /// is a binding the application's own tree declares. A slot nothing
+    /// delivered is an error naming it, never a defaulted value (design §8:
+    /// the table's snapshot arrives before the first fold).
+    ///
+    /// The authority on what is stale: a tree folded after several changes
+    /// hold was handed its values with no version history of its own
+    /// ([`ResolvedTree::resolve`] counts them as 0), so the one table that
+    /// has seen every [`Host::apply_slot_changes`] is what refuses a replay.
+    slots: HeldValues,
     /// What [`Host::regrown_components`] answers: the components the last
     /// landed batch re-expanded.
     last_regrown: Vec<String>,
@@ -1228,8 +1228,7 @@ impl<A: App> Host<A> {
             prepared_stale: true,
             mounts: Vec::new(),
             pass_clock: 0.0,
-            slots: ResolveInputs::new(),
-            slot_versions: BTreeMap::new(),
+            slots: HeldValues::default(),
             last_regrown: Vec::new(),
             retained_app: ResolvedTree::new(),
             app_fold_refused: false,
@@ -3627,39 +3626,26 @@ impl<A: App> Host<A> {
         &mut self,
         changes: &[SlotChange],
     ) -> Result<Vec<(String, PropKey)>, ApplyError> {
-        // The one stale check that matters — see `slot_versions`.
-        check_slot_versions(&self.slot_versions, changes)?;
+        // The one stale check that matters — see `slots`.
+        self.slots.check(changes)?;
         let mut touched: Vec<(String, PropKey)> = Vec::new();
         let mut dirty: BTreeSet<String> = BTreeSet::new();
         let mut regrown: Vec<String> = Vec::new();
-        let changed: BTreeSet<&str> = changes.iter().map(|c| c.slot.as_str()).collect();
-        // The values a regrown component expands against. Only built when
-        // some contribution has a regrowable unit, because it copies the
-        // held values.
-        let after = self.prepared.iter().any(|p| p.expanded.is_some()).then(|| {
-            let mut after = self.slots.clone();
-            for change in changes {
-                after.insert(change.slot.as_str().to_owned(), change.value.clone());
-            }
-            after
-        });
-        // Clone-apply-commit: nothing is committed unless every tree accepts
-        // the batch (design §1's commit group). The clones share every `Arc`
-        // child they do not enter, and a batch is a slot table push, not a
-        // frame. A component whose bound parameter moved re-expands inside
-        // the same group, so a regrowth that refuses refuses the batch.
+        // Clone-land-commit: `land_batch` answers uncommitted, and nothing is
+        // committed unless every tree accepts the batch (design §1's commit
+        // group). The clones share every `Arc` child they do not enter, and a
+        // batch is a slot table push, not a frame. A component whose bound
+        // parameter moved re-expands inside the same landing, so a regrowth
+        // that refuses refuses the batch.
         let mut commit: Vec<(usize, ResolvedTree, Option<ViewNode>)> = Vec::new();
         for (ix, prepared) in self.prepared.iter().enumerate() {
             if let Some(tree) = &prepared.resolved {
-                let mut next = tree.clone();
-                let sites = next.apply_slot_changes(changes)?;
+                let landed = land_batch(tree, prepared.expanded.as_ref(), &self.registry, changes)?;
                 let key = contribution_key(prepared.id);
                 let prefix = self.mounted_parents.get(key.as_str()).map(String::as_str);
-                record_sites(&mut touched, &mut dirty, prefix, sites);
+                record_sites(&mut touched, &mut dirty, prefix, landed.sites);
                 let mut expansion = None;
-                if let (Some(expanded), Some(after)) = (&prepared.expanded, &after)
-                    && let Some(grown) = self.regrow(expanded, &mut next, &changed, after)?
-                {
+                if let Some(grown) = landed.regrown {
                     // Every node whose content the regrowth moved is named,
                     // whatever its dirty class: a constructor re-run can move
                     // constraints and text as readily as a fill.
@@ -3669,18 +3655,13 @@ impl<A: App> Host<A> {
                     regrown.extend(grown.units.into_iter().map(|unit| unit.id));
                     expansion = Some(grown.expansion);
                 }
-                commit.push((ix, next, expansion));
+                commit.push((ix, landed.resolved, expansion));
             }
         }
-        let mut app_next = self.retained_app.clone();
+        let app_landed = land_batch(&self.retained_app, None, &self.registry, changes)?;
         // The application's tree is the frame's own root: its site ids are
         // full frame ids already, joined with nothing.
-        record_sites(
-            &mut touched,
-            &mut dirty,
-            Some(""),
-            app_next.apply_slot_changes(changes)?,
-        );
+        record_sites(&mut touched, &mut dirty, Some(""), app_landed.sites);
         for (ix, tree, expansion) in commit {
             let prepared = &mut self.prepared[ix];
             prepared.resolved = Some(tree);
@@ -3691,13 +3672,8 @@ impl<A: App> Host<A> {
                 expanded.commit(expansion);
             }
         }
-        self.retained_app = app_next;
-        for change in changes {
-            self.slots
-                .insert(change.slot.as_str().to_owned(), change.value.clone());
-            self.slot_versions
-                .insert(change.slot.as_str().to_owned(), change.version);
-        }
+        self.retained_app = app_landed.resolved;
+        self.slots.absorb(changes);
         regrown.sort();
         regrown.dedup();
         self.last_regrown = regrown;

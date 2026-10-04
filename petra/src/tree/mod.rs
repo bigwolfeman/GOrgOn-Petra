@@ -20,8 +20,8 @@ pub use binding::{
     Rows, ShapeFault, SlotChange, SlotKey, SlotValue, result_shape, shape_for,
 };
 pub use binding_eval::{
-    ApplyError, BindTarget, ResolveError, ResolveInputs, ResolvedTree, carries_bindings,
-    check_slot_versions,
+    ApplyError, BindTarget, HeldValues, Landed, ResolveError, ResolveInputs, ResolvedTree,
+    carries_bindings, check_slot_versions, land_batch,
 };
 pub use key::{Key, KeyPath};
 pub use node::{
