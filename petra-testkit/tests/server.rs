@@ -375,7 +375,7 @@ async fn screenshot_returns_a_png_of_the_frame_it_names() {
             json!({"kind": "click", "target": {"node_id": "/root/go"}, "timeout_ms": 5000}),
         )
         .await;
-    assert_eq!(acted["ok"], true, "{acted}");
+    assert!(acted["ok"].as_bool() == Some(true), "{acted}");
 
     let reply = client.call(100, "screenshot", json!({})).await;
     if reply["ok"].as_bool() == Some(false) {
