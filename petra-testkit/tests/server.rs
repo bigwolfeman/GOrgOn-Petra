@@ -338,7 +338,10 @@ async fn wait_settle_answers_settled_for_a_quiet_ui() {
         .call(100, "wait_settle", json!({"timeout_ms": 5000}))
         .await;
     assert!(reply["ok"].as_bool() == Some(true), "{reply}");
-    assert!(reply["result"]["settled"].as_bool() == Some(true), "{reply}");
+    assert!(
+        reply["result"]["settled"].as_bool() == Some(true),
+        "{reply}"
+    );
     assert!(
         reply["result"]["frame_seq"].as_u64().unwrap_or(0) > 0,
         "settled on no frame at all: {reply}"
