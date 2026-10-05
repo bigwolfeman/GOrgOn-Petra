@@ -89,7 +89,7 @@ async fn health_is_well_formed_over_the_real_socket() {
 
     let reply = client.call(1, "health", json!({})).await;
     assert_eq!(reply["id"], 1);
-    assert_eq!(reply["ok"], true, "{reply}");
+    assert!(reply["ok"].as_bool() == Some(true), "{reply}");
     let result = &reply["result"];
     assert_eq!(result["app"], "driver-test-app");
     assert_eq!(result["pid"], std::process::id());
@@ -109,12 +109,12 @@ async fn tree_round_trips_a_real_projected_tree() {
     let mut client = Client::new(stream);
 
     let full = client.call(1, "tree", json!({})).await;
-    assert_eq!(full["ok"], true, "{full}");
+    assert!(full["ok"].as_bool() == Some(true), "{full}");
     let root = &full["result"];
     assert_eq!(root["id"], "/root");
 
     let filtered = client.call(2, "tree", json!({"role": "button"})).await;
-    assert_eq!(filtered["ok"], true, "{filtered}");
+    assert!(filtered["ok"].as_bool() == Some(true), "{filtered}");
     let matches = filtered["result"]
         .as_array()
         .unwrap_or_else(|| panic!("expected an array of matches: {filtered}"));
@@ -144,9 +144,9 @@ async fn frame_carries_real_placements_and_an_honest_hosted_flag() {
     let mut client = Client::new(stream);
 
     let reply = client.call(1, "frame", json!({})).await;
-    assert_eq!(reply["ok"], true, "{reply}");
+    assert!(reply["ok"].as_bool() == Some(true), "{reply}");
     let result = &reply["result"];
-    assert_eq!(result["hosted"], false, "{result}");
+    assert!(result["hosted"].as_bool() == Some(false), "{result}");
     assert!(result["digest"].as_str().unwrap().len() == 64, "{result}");
     let placements = result["placements"].as_array().expect("placements array");
     assert!(
@@ -175,7 +175,7 @@ async fn an_unknown_verb_is_unknown_verb_over_the_wire() {
     let mut client = Client::new(stream);
 
     let reply = client.call(1, "not-a-real-verb", json!({})).await;
-    assert_eq!(reply["ok"], false, "{reply}");
+    assert!(reply["ok"].as_bool() == Some(false), "{reply}");
     assert_eq!(reply["error"]["kind"], "unknown-verb", "{reply}");
 }
 
@@ -187,7 +187,7 @@ async fn malformed_params_are_invalid_params_over_the_wire() {
     let mut client = Client::new(stream);
 
     let reply = client.call(1, "tree", json!({"role": 5})).await;
-    assert_eq!(reply["ok"], false, "{reply}");
+    assert!(reply["ok"].as_bool() == Some(false), "{reply}");
     assert_eq!(reply["error"]["kind"], "invalid-params", "{reply}");
 }
 
@@ -201,12 +201,12 @@ async fn a_non_json_line_is_invalid_params_not_a_dropped_connection() {
     let mut client = Client::new(stream);
 
     let reply = client.send_raw("not json at all").await;
-    assert_eq!(reply["ok"], false, "{reply}");
+    assert!(reply["ok"].as_bool() == Some(false), "{reply}");
     assert_eq!(reply["error"]["kind"], "invalid-params", "{reply}");
 
     // The connection survives: a well-formed request right after still works.
     let health = client.call(2, "health", json!({})).await;
-    assert_eq!(health["ok"], true, "{health}");
+    assert!(health["ok"].as_bool() == Some(true), "{health}");
 }
 
 /// The same-uid check runs on every real connection to this socket: a
@@ -223,7 +223,7 @@ async fn the_same_uid_peer_check_runs_and_accepts_this_process() {
     let stream = running_server(dir.path()).await;
     let mut client = Client::new(stream);
     let reply = client.call(1, "health", json!({})).await;
-    assert_eq!(reply["ok"], true, "{reply}");
+    assert!(reply["ok"].as_bool() == Some(true), "{reply}");
 }
 
 // ---------------------------------------------------------------------------
@@ -267,7 +267,7 @@ async fn act_clicks_a_real_button_and_reports_both_frames() {
             json!({"kind": "click", "target": {"node_id": "/root/go"}, "timeout_ms": 5000}),
         )
         .await;
-    assert_eq!(reply["ok"], true, "{reply}");
+    assert!(reply["ok"].as_bool() == Some(true), "{reply}");
     let applied = reply["result"]["applied_frame_seq"]
         .as_u64()
         .unwrap_or_else(|| panic!("no applied_frame_seq: {reply}"));
@@ -293,7 +293,7 @@ async fn act_clicks_a_real_button_and_reports_both_frames() {
 /// The driven application's button label, read over the socket.
 async fn button_label(client: &mut Client, id: i64) -> String {
     let reply = client.call(id, "tree", json!({"role": "button"})).await;
-    assert_eq!(reply["ok"], true, "{reply}");
+    assert!(reply["ok"].as_bool() == Some(true), "{reply}");
     let matches = reply["result"]
         .as_array()
         .unwrap_or_else(|| panic!("expected an array of matches: {reply}"));
@@ -317,7 +317,7 @@ async fn a_stale_node_id_fails_with_stale_node_and_names_it() {
             json!({"kind": "click", "target": {"node_id": "/root/never-existed"}}),
         )
         .await;
-    assert_eq!(reply["ok"], false, "{reply}");
+    assert!(reply["ok"].as_bool() == Some(false), "{reply}");
     assert_eq!(reply["error"]["kind"], "stale-node", "{reply}");
     assert!(
         reply["error"]["message"]
@@ -337,8 +337,8 @@ async fn wait_settle_answers_settled_for_a_quiet_ui() {
     let reply = client
         .call(100, "wait_settle", json!({"timeout_ms": 5000}))
         .await;
-    assert_eq!(reply["ok"], true, "{reply}");
-    assert_eq!(reply["result"]["settled"], true, "{reply}");
+    assert!(reply["ok"].as_bool() == Some(true), "{reply}");
+    assert!(reply["result"]["settled"].as_bool() == Some(true), "{reply}");
     assert!(
         reply["result"]["frame_seq"].as_u64().unwrap_or(0) > 0,
         "settled on no frame at all: {reply}"
@@ -441,7 +441,7 @@ async fn a_region_outside_the_viewport_is_refused() {
             json!({"region": {"x": 100000, "y": 100000, "w": 10, "h": 10}}),
         )
         .await;
-    assert_eq!(reply["ok"], false, "{reply}");
+    assert!(reply["ok"].as_bool() == Some(false), "{reply}");
     assert_eq!(reply["error"]["kind"], "invalid-params", "{reply}");
 }
 

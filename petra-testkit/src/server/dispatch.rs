@@ -624,7 +624,7 @@ mod tests {
         let matches = found.as_array().expect("a state query answers a list");
         assert_eq!(matches.len(), 1, "{found}");
         assert_eq!(matches[0]["id"], "/app/run");
-        assert_eq!(matches[0]["state"]["hovered"], true);
+        assert!(matches[0]["state"]["hovered"].as_bool() == Some(true));
 
         // Absent-means-false holds for the states that are not in force, so a
         // consumer written against the older block reads an unchanged tree.
@@ -732,7 +732,7 @@ mod tests {
         let result = dispatch(&server, &req("wait_settle", json!({"timeout_ms": 0})))
             .await
             .expect("wait_settle never errors");
-        assert_eq!(result["settled"], false);
+        assert!(result["settled"].as_bool() == Some(false));
         assert_eq!(result["frame_seq"], 0);
         assert!(
             !result["pending"]["blocking"]
