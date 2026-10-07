@@ -1,5 +1,6 @@
 //! The flag parameters opened for the Lua gallery's radio, tag, tile, UI
-//! shell header, toggle-button and left-panel pages, judged on the frame
+//! shell header, toggle-button, left-panel and right-panel pages, judged on
+//! the frame
 //! (`.agents/notes/implemented/architecture/2026-09-28-bound-component-parameters.md`).
 //!
 //! Each row must fold to exactly the picture the literal reference draws in
@@ -185,5 +186,77 @@ fn a_bound_left_panel_icon_subitem_selection_digests_the_literal_in_both_states_
         "ui_shell_left_panel_icon_subitem",
         "selected",
         &json!({ "label": "Fibers" }),
+    );
+}
+
+/// `ui_shell_switcher.open` is the right panel's whole open/shut state:
+/// `ui_shell_switcher` builds `right_panel`, which mounts the content
+/// either way and only pins the width (`pin_inline(if open {
+/// RIGHT_PANEL_WIDTH } else { 0.0 })` — "Shut is a zero-width panel that
+/// is still mounted, never an unmounted one"). A flag row, not a
+/// disclosure: the right-panel page's switcher and its items are always
+/// declared and only the picture moves.
+/// Falsified 2026-10-07 by removing `("ui_shell_switcher", &[("open",
+/// PropType::Bool)])` from `OPENABLE`, which is what that table shipped
+/// before the row joined:
+///
+/// ```text
+/// thread 'a_bound_switcher_open_digests_the_literal_in_both_states_and_grafts_alone' panicked at petra/tests/bound_components/support.rs:110:50:
+/// the page expands: Param(ParamError { component: "ui_shell_switcher", reason: "parameter `open` is not openable: a component expands from literal parameters, and `ui_shell_switcher` opens only [] to a slot" })
+/// ```
+///
+/// Restored byte-identical afterwards and re-run green.
+#[test]
+fn a_bound_switcher_open_digests_the_literal_in_both_states_and_grafts_alone() {
+    flag_reexpansion(
+        "ui_shell_switcher",
+        "open",
+        &json!({ "label": "App switcher" }),
+    );
+}
+
+/// `ui_shell_switcher_item.selected` marks the current app's row
+/// (`KeyLabelSelected::selected: bool`): it recolours the caption and
+/// declares `semantics.selected`, and the row's body is a fixed caption —
+/// no membership rides it.
+/// Falsified 2026-10-07 by removing the `("ui_shell_switcher_item",
+/// &[("selected", PropType::Bool)])` row from `OPENABLE`, which is what
+/// that table shipped before the row joined:
+///
+/// ```text
+/// thread 'a_bound_switcher_item_selection_digests_the_literal_in_both_states_and_grafts_alone' panicked at petra/tests/bound_components/support.rs:110:50:
+/// the page expands: Param(ParamError { component: "ui_shell_switcher_item", reason: "parameter `selected` is not openable: a component expands from literal parameters, and `ui_shell_switcher_item` opens only [] to a slot" })
+/// ```
+///
+/// Restored byte-identical afterwards and re-run green.
+#[test]
+fn a_bound_switcher_item_selection_digests_the_literal_in_both_states_and_grafts_alone() {
+    flag_reexpansion(
+        "ui_shell_switcher_item",
+        "selected",
+        &json!({ "label": "Petra" }),
+    );
+}
+
+/// `ui_shell_header_action.selected` is the action's persistent "its panel
+/// is open" condition (`KeyLabelSelected::selected: bool`, `active` in the
+/// constructor: glyph tone plus `$layer` fill) — the right-panel page
+/// binds it on the switcher trigger.
+/// Falsified 2026-10-07 by removing the `("ui_shell_header_action",
+/// &[("selected", PropType::Bool)])` row from `OPENABLE`, which is what
+/// that table shipped before the row joined:
+///
+/// ```text
+/// thread 'a_bound_header_action_selection_digests_the_literal_in_both_states_and_grafts_alone' panicked at petra/tests/bound_components/support.rs:110:50:
+/// the page expands: Param(ParamError { component: "ui_shell_header_action", reason: "parameter `selected` is not openable: a component expands from literal parameters, and `ui_shell_header_action` opens only [] to a slot" })
+/// ```
+///
+/// Restored byte-identical afterwards and re-run green.
+#[test]
+fn a_bound_header_action_selection_digests_the_literal_in_both_states_and_grafts_alone() {
+    flag_reexpansion(
+        "ui_shell_header_action",
+        "selected",
+        &json!({ "label": "App switcher" }),
     );
 }

@@ -19,9 +19,13 @@
 //! `"mixed"`), so a `Str` (or enum) slot drives the indeterminate state and
 //! a value outside the three is the constructor's named refusal. The
 //! disclosure rows (`expanded` on an accordion item, an expandable tile or a
-//! left-panel icon item) are *visibility*: the
-//! parameter decides whether the item's body is mounted at all, so a commit
-//! adds or removes that subtree by key inside the regrown unit.
+//! left-panel icon item, `open` on a menu button, a docked panel or a
+//! toggletip, `selected` on an AI label) are *visibility*: the parameter
+//! decides whether the item's body is mounted at all, so a commit adds or
+//! removes that subtree by key inside the regrown unit. A parameter on a
+//! fixed body is a plain flag: a right-panel switcher shut at width 0 is
+//! still mounted (`right_panel`'s own doc), and a row's or an action's
+//! `selected` only recolours what is always there.
 
 use crate::tree::PropType;
 
@@ -32,6 +36,7 @@ const OPENABLE: &[(&str, &[(&str, PropType)])] = &[
         "accordion_item_with_spaced",
         &[("expanded", PropType::Bool)],
     ),
+    ("ai_label", &[("selected", PropType::Bool)]),
     ("checkbox", &[("selected", PropType::Bool)]),
     ("checkbox_tristate", &[("state", PropType::Str)]),
     ("code_snippet_copied", &[("copied", PropType::Bool)]),
@@ -48,9 +53,11 @@ const OPENABLE: &[(&str, &[(&str, PropType)])] = &[
     ("data_table_row_xl", &[("selected", PropType::Bool)]),
     ("data_table_row_xs", &[("selected", PropType::Bool)]),
     ("data_table_sort_header", &[("selected", PropType::Bool)]),
+    ("docked", &[("open", PropType::Bool)]),
     ("dropdown_option", &[("selected", PropType::Bool)]),
     ("expandable_tile", &[("expanded", PropType::Bool)]),
     ("list_row", &[("selected", PropType::Bool)]),
+    ("menu_button", &[("open", PropType::Bool)]),
     ("otp", &[("value", PropType::Str)]),
     ("radio", &[("selected", PropType::Bool)]),
     ("selectable_tag", &[("selected", PropType::Bool)]),
@@ -60,6 +67,8 @@ const OPENABLE: &[(&str, &[(&str, PropType)])] = &[
     ("toggle_button", &[("pressed", PropType::Bool)]),
     ("toggle_button_icon", &[("pressed", PropType::Bool)]),
     ("toggle_sm", &[("selected", PropType::Bool)]),
+    ("toggletip_with", &[("open", PropType::Bool)]),
+    ("ui_shell_header_action", &[("selected", PropType::Bool)]),
     ("ui_shell_header_menu_trigger", &[("open", PropType::Bool)]),
     ("ui_shell_header_nav_item", &[("selected", PropType::Bool)]),
     (
@@ -70,6 +79,8 @@ const OPENABLE: &[(&str, &[(&str, PropType)])] = &[
         "ui_shell_left_panel_icon_subitem",
         &[("selected", PropType::Bool)],
     ),
+    ("ui_shell_switcher", &[("open", PropType::Bool)]),
+    ("ui_shell_switcher_item", &[("selected", PropType::Bool)]),
     ("valued", &[("value", PropType::Str)]),
     ("vertical_tab", &[("selected", PropType::Bool)]),
 ];
