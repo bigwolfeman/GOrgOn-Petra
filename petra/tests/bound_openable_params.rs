@@ -2,7 +2,8 @@
 //! (`.agents/notes/implemented/architecture/2026-09-28-bound-component-parameters.md`).
 //!
 //! `checkbox_tristate.state` drives the indeterminate box from a `Str` slot,
-//! and `expanded` on an accordion item decides whether its body exists. Both
+//! and `expanded` on an accordion item or a left-panel icon item decides
+//! whether its body or nested sub-menu exists. Both
 //! must fold to exactly the picture the literal reference draws (digest
 //! parity), and a commit must graft by key: only the regrown item's nodes
 //! and their ancestors move, and a sibling keeps its node and its hashes.
@@ -187,6 +188,129 @@ fn a_bound_visibility_mounts_and_unmounts_the_body_by_key() {
     assert!(
         appeared.iter().any(|id| id.starts_with("/page/open/body")),
         "opening mounts the body, moved {appeared:?}"
+    );
+    for id in &appeared {
+        assert!(
+            within(id, "/page/open") || ancestor_of(id, "/page/open"),
+            "{id} moved, but only the opened item and its ancestors may"
+        );
+    }
+    let (b, a) = (hashes(&closed), hashes(&open));
+    let still: Vec<&String> = b.keys().filter(|id| within(id, "/page/still")).collect();
+    assert!(!still.is_empty(), "the sibling item is placed");
+    for id in still {
+        assert_eq!(b[id], a[id], "sibling placement {id} keeps its hash");
+    }
+
+    commit(
+        &mut expanded,
+        &mut resolved,
+        &mut values,
+        &[SlotChange::new("shown", 4, flag(false))],
+    );
+    let shut = frame(resolved.tree());
+    assert_eq!(
+        shut.digest, closed.digest,
+        "closing again draws exactly the first closed picture"
+    );
+}
+
+/// The `ui_shell_left_panel_icon_item` params of a row keyed `key`, holding
+/// one literal subitem child — the left-panel page's Kernel row shape.
+fn icon_params(key: &str) -> Value {
+    let kid_key = format!("{key}-kid");
+    let kid_params = json!({ "key": kid_key.clone(), "label": "Fibers", "selected": false });
+    let kid = serde_json::to_value(reference(
+        &kid_key,
+        "ui_shell_left_panel_icon_subitem",
+        kid_params,
+        &[],
+    ))
+    .expect("a subitem serializes");
+    json!({
+        "key": key,
+        "label": "Kernel",
+        "mark": "switcher",
+        "selected": false,
+        "children": [kid],
+    })
+}
+
+fn icon_items(lit: Option<bool>) -> ViewNode {
+    // The literal sibling sits above the bound item, so the nested children
+    // the bound item mounts cannot shift it: any hash it loses is a graft
+    // defect, not layout.
+    let mut still = icon_params("still");
+    still["expanded"] = json!(true);
+    ViewNode::new(NodeKind::Stack, "page")
+        .child(reference(
+            "still",
+            "ui_shell_left_panel_icon_item",
+            still,
+            &[],
+        ))
+        .child(one(
+            "open",
+            "ui_shell_left_panel_icon_item",
+            icon_params("open"),
+            "expanded",
+            "shown",
+            lit.map(|b| json!(b)),
+        ))
+}
+
+/// Visibility on the left-panel icon item: `expanded` decides whether the
+/// nested sub-menu exists at all (`left_panel_item` mounts its `children`
+/// stack only while expanded and non-empty), so a commit adds or removes
+/// that subtree by key inside the regrown unit; both states digest the
+/// literal, and the open sibling keeps every hash throughout.
+/// Falsified 2026-10-07 by removing the `("ui_shell_left_panel_icon_item",
+/// &[("expanded", ...), ("selected", ...)])` row from `OPENABLE`, which is
+/// what that table shipped before the row joined:
+///
+/// ```text
+/// thread 'a_bound_left_panel_visibility_mounts_and_unmounts_the_nested_children_by_key' panicked at petra/tests/bound_components/support.rs:110:50:
+/// the page expands: Param(ParamError { component: "ui_shell_left_panel_icon_item", reason: "parameter `expanded` is not openable: a component expands from literal parameters, and `ui_shell_left_panel_icon_item` opens only [] to a slot" })
+/// ```
+///
+/// Restored byte-identical afterwards and re-run green.
+#[test]
+fn a_bound_left_panel_visibility_mounts_and_unmounts_the_nested_children_by_key() {
+    let mut values: ResolveInputs = [("shown".into(), flag(false))].into_iter().collect();
+    let (mut expanded, mut resolved) = seeded(&icon_items(None), &values);
+    let literal = |open: bool| expand(&icon_items(Some(open))).expect("the literal expands");
+    let closed = frame(resolved.tree());
+    assert_eq!(closed.digest, frame(&literal(false)).digest);
+    assert!(
+        !hashes(&closed)
+            .keys()
+            .any(|id| id.starts_with("/page/open/children")),
+        "a closed item mounts no nested children"
+    );
+
+    let sibling = Arc::clone(&resolved.tree().children[0]);
+    let named = commit(
+        &mut expanded,
+        &mut resolved,
+        &mut values,
+        &[SlotChange::new("shown", 2, flag(true))],
+    );
+    assert!(
+        named.iter().all(|id| within(id, "/page/open")),
+        "only the opened item may be named, named {named:?}"
+    );
+    assert!(
+        Arc::ptr_eq(&sibling, &resolved.tree().children[0]),
+        "the literal sibling keeps its node"
+    );
+    let open = frame(resolved.tree());
+    assert_eq!(open.digest, frame(&literal(true)).digest);
+    let appeared: Vec<String> = moved(&closed, &open).into_iter().collect();
+    assert!(
+        appeared
+            .iter()
+            .any(|id| id.starts_with("/page/open/children")),
+        "opening mounts the nested children, moved {appeared:?}"
     );
     for id in &appeared {
         assert!(

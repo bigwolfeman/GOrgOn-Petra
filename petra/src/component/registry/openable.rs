@@ -18,8 +18,8 @@
 //! three-state box as its wire spelling (`"unchecked"`, `"checked"`,
 //! `"mixed"`), so a `Str` (or enum) slot drives the indeterminate state and
 //! a value outside the three is the constructor's named refusal. The
-//! disclosure rows (`expanded` on an accordion item or an expandable tile)
-//! are *visibility*: the
+//! disclosure rows (`expanded` on an accordion item, an expandable tile or a
+//! left-panel icon item) are *visibility*: the
 //! parameter decides whether the item's body is mounted at all, so a commit
 //! adds or removes that subtree by key inside the regrown unit.
 
@@ -57,9 +57,19 @@ const OPENABLE: &[(&str, &[(&str, PropType)])] = &[
     ("selectable_tile", &[("selected", PropType::Bool)]),
     ("tab", &[("selected", PropType::Bool)]),
     ("toggle", &[("selected", PropType::Bool)]),
+    ("toggle_button", &[("pressed", PropType::Bool)]),
+    ("toggle_button_icon", &[("pressed", PropType::Bool)]),
     ("toggle_sm", &[("selected", PropType::Bool)]),
     ("ui_shell_header_menu_trigger", &[("open", PropType::Bool)]),
     ("ui_shell_header_nav_item", &[("selected", PropType::Bool)]),
+    (
+        "ui_shell_left_panel_icon_item",
+        &[("expanded", PropType::Bool), ("selected", PropType::Bool)],
+    ),
+    (
+        "ui_shell_left_panel_icon_subitem",
+        &[("selected", PropType::Bool)],
+    ),
     ("valued", &[("value", PropType::Str)]),
     ("vertical_tab", &[("selected", PropType::Bool)]),
 ];
