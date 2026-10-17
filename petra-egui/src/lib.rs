@@ -29,6 +29,7 @@
 pub mod invariant;
 
 pub mod accesskit;
+pub mod dispatch;
 pub mod draw;
 pub mod focus_caret;
 pub mod fonts;

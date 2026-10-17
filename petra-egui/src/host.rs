@@ -81,6 +81,7 @@ use gorgon_petra::tree::{
     Registry, TextWrap, ValidatedTree, ViewNode, validate,
 };
 
+use crate::dispatch::{self, Claim, Dispatcher, InputDecision, KeymapEvent};
 use crate::focus_caret::FocusCaret;
 use crate::image::ImageSources;
 use crate::input::EventTranslator;
@@ -178,6 +179,37 @@ pub trait App: RowSource {
     /// in its own tree and has nobody to report to.
     fn intent(&mut self, fired: &FiredIntent) {
         let _ = fired;
+    }
+    /// One interpreted input event, where it went, and why (spec 010
+    /// FR-024's audit record).
+    ///
+    /// Called exactly once per event [`Host::deliver_input`] interprets —
+    /// `raw`, `bound`, `intent` and `unrouted` all arrive here, pointer
+    /// moves and text input included, so an application filters the classes
+    /// it cares about rather than being handed a subset and wondering what
+    /// it missed. [`InputDecision::class`] and [`InputDecision::reason`] are
+    /// the trace line (`"raw: focus sits inside the raw claimant …"`).
+    ///
+    /// **An application that publishes bindings and does not override this
+    /// has dead keys**: a matched binding consumes the event
+    /// (`specs/010-input-routing/spec.md` FR-007), so the command's only
+    /// path to the application is this method. The default ignores the
+    /// record for applications that publish no bindings and have nothing to
+    /// dispatch — which is every fixture that only clicks and types.
+    fn decided(&mut self, decision: &InputDecision) {
+        let _ = decision;
+    }
+    /// A binding-table event the last [`Host::pass`] produced: a conflict
+    /// refusal (FR-010) or an operator displacement (FR-011).
+    ///
+    /// These are returned as values rather than logged anywhere
+    /// (`gorgon-petra` has no logger and should not grow one), so the
+    /// application is the one that writes its trace. **A caller that drops
+    /// them has made a visible choice rather than inherited a default** —
+    /// the default is that ignore, and it is stated here so it cannot be
+    /// inherited silently.
+    fn keymap_event(&mut self, event: &KeymapEvent) {
+        let _ = event;
     }
     /// Close every surface named in `ids`, each an
     /// [`InputPolicy::DismissOutside`] surface a press landed outside of.
@@ -754,6 +786,10 @@ pub struct Host<A: App> {
     /// survive the frame that started it would restart every frame and never
     /// move.
     motion: FrameMotion,
+    /// The binding table and its one in-flight chord sequence (spec 010's
+    /// interpretation order, steps 3–4); synced to the frame by
+    /// [`Host::place_frame`].
+    dispatcher: Dispatcher,
     last_frame: Option<PetrifiedFrame>,
     last_scopes: BTreeMap<String, InputPolicy>,
     last_report: Option<PaintReport>,
@@ -1191,6 +1227,7 @@ impl<A: App> Host<A> {
             // constructors validate without every application repeating the
             // slide. `set_transitions` merges on top and does not drop it.
             motion: FrameMotion::new(definitions),
+            dispatcher: Dispatcher::new(),
             last_frame: None,
             last_scopes: BTreeMap::new(),
             last_report: None,
@@ -1670,6 +1707,11 @@ impl<A: App> Host<A> {
         let now = ctx.input(|input| input.time);
         self.pass_clock = now;
         self.app.tick(now);
+        // The pending-sequence timeout (FR-013) runs on the same clock in the
+        // same breath: an in-flight chord sequence that has expired is gone
+        // before this pass's frame is built, so the indicator leaves on time
+        // rather than on the next keystroke.
+        let _ = self.dispatcher.tick(now);
         // Immediately after the clock and not later: the application has just
         // been told what time it is, so this is the first moment it can name
         // a deadline measured against it.
@@ -1893,7 +1935,7 @@ impl<A: App> Host<A> {
         if self.caret.is_moving() {
             ctx.request_repaint();
         }
-        self.last_frame = Some(frame);
+        self.place_frame(frame);
         // Input for the *next* pass is routed against this frame, so the
         // policies it was placed with have to survive with it. Recomputing
         // `surface_scopes` at input time would read the tree the application
@@ -1974,7 +2016,7 @@ impl<A: App> Host<A> {
             self.scene.clear();
             self.hop_blit = false;
         }
-        self.last_frame = Some(frame);
+        self.place_frame(frame);
         self.last_report = Some(report);
     }
 
@@ -2515,6 +2557,22 @@ impl<A: App> Host<A> {
     /// Keyboard focus follows a primary press onto a focusable node so the
     /// flying caret retargets. Walks up the id path because hit-test may
     /// name a child (the checkbox box) of the interactive row.
+    /// US-6's "focus returns to the shell": move focus to the first
+    /// reachable node and report whether it moved.
+    ///
+    /// `FocusTree` has no blur and the host keeps no focus history, and
+    /// FR-005 forbids re-deriving "is this node inside a raw claim" outside
+    /// the router — so "back where the operator was before the raw claim
+    /// took focus" is not expressible here and must not be faked with a
+    /// second raw query. [`FocusTree::first`] is the whole of "the shell"
+    /// this line can honestly mean: the top of the focus order, which is
+    /// shell chrome in every application that has any. A focus-history seam
+    /// is what improves this later.
+    fn return_focus_to_shell(&mut self) -> bool {
+        self.focus.first();
+        self.publish_focus()
+    }
+
     fn seat_pointer_focus(&mut self, id: &str) {
         let mut cur = id;
         loop {
@@ -2658,6 +2716,93 @@ impl<A: App> Host<A> {
             // `&mut self`. Nothing between the routing and here places a
             // frame, so this is the frame the routing was computed against,
             // or `None` on the first pass, matching the `Unrouted` route.
+            // Spec 010's interpretation order
+            // (`specs/010-input-routing/spec.md` §"The interpretation order",
+            // T046) runs here and nowhere else: reserved chords, then
+            // `route`'s `Raw`, then the binding table, then the `Route` from
+            // that same call — one `route` call, inspected twice (FR-005).
+            // [`dispatch::Dispatcher::claim`] answers steps 1–3; `None`
+            // means step 4 decides at the bottom of this loop.
+            let now = ctx.input(|input| input.time);
+            let active = {
+                let placements = self
+                    .last_frame
+                    .as_ref()
+                    .map_or(&[][..], |f| f.placements.as_slice());
+                dispatch::active_scopes(placements, self.state.focused.as_deref())
+            };
+            match self.dispatcher.claim(
+                event,
+                &routing.outcome.route,
+                routing.ended.is_some(),
+                &active,
+                now,
+            ) {
+                // Steps 1 and 2, the verbatim classes. Neither consulted the
+                // binding table (`claim` sees no table for either — FR-020),
+                // so neither is ever `Bound` by one.
+                Some(Claim::Verbatim(decision)) => {
+                    // The gesture this event ended is delivered to its own
+                    // route first: the Escape inside the reserved chord
+                    // releases a pointer capture the same way a bare Escape
+                    // does (`contracts/interaction-state.md` §7), and the
+                    // captured node must hear its stream end whichever node
+                    // the keystroke itself is destined for.
+                    if let Some(ended) = routing.ended.clone() {
+                        self.app
+                            .handle(&ended.event(), &ended.route(), self.last_frame.as_ref());
+                    }
+                    if matches!(routing.outcome.route, Route::Reserved { .. }) {
+                        // US-6, the shell's to perform: dismiss what a press
+                        // outside would have dismissed, hand focus back to
+                        // the shell, and leave the chord itself undelivered —
+                        // "the reserved chord never reaches the raw receiver"
+                        // is this arm existing (SC-004, second half).
+                        let dismiss: Vec<String> = self
+                            .last_scopes
+                            .iter()
+                            .filter(|(_, policy)| {
+                                matches!(
+                                    policy,
+                                    gorgon_petra::tree::props::InputPolicy::DismissOutside
+                                )
+                            })
+                            .map(|(id, _)| id.clone())
+                            .collect();
+                        if !dismiss.is_empty() {
+                            self.app.dismissed(&dismiss);
+                        }
+                        if self.return_focus_to_shell() {
+                            invalidate = true;
+                        }
+                    } else {
+                        // `Route::Raw`: the raw claimant receives the event
+                        // verbatim — [`App::handle`] is that delivery — with
+                        // nothing interpreted on the way past (FR-020).
+                        self.app
+                            .handle(event, &routing.outcome.route, self.last_frame.as_ref());
+                    }
+                    self.app.decided(&decision);
+                    if self.picture_must_rebuild(event) {
+                        invalidate = true;
+                    }
+                    continue;
+                }
+                // Step 3: the binding table matched and the event is
+                // consumed (FR-007). The dispatch record is its whole path
+                // to the application — `App::handle` never sees a key a
+                // binding answered.
+                Some(Claim::Consumed(decision)) => {
+                    self.app.decided(&decision);
+                    if self.picture_must_rebuild(event) {
+                        invalidate = true;
+                    }
+                    continue;
+                }
+                None => {}
+            }
+            // Re-borrowed after the match: `return_focus_to_shell` above
+            // takes `&mut self`, so no read of `last_frame` may span it.
             let frame = self.last_frame.as_ref();
             self.app.handle(event, &routing.outcome.route, frame);
             // The cause, then the consequence: a component hears the release
@@ -2716,14 +2861,15 @@ impl<A: App> Host<A> {
             // did to the gesture. A component that answers the raw event and
             // an application that answers the intent must not disagree about
             // which came first.
-            if let Some(fired) = fired_behaviour(
+            let fired = fired_behaviour(
                 event,
                 &routing.outcome.route,
                 ended.as_ref(),
                 pressed_before.as_deref(),
                 frame,
-            ) {
-                self.app.intent(&fired);
+            );
+            if let Some(fired) = &fired {
+                self.app.intent(fired);
             }
             // The copy chord over a selection. Here and not in the
             // application, for the reason `copy_selection` gives; an
@@ -2731,9 +2877,22 @@ impl<A: App> Host<A> {
             // `App::clipboard_request` is drained first. After the
             // application's own turn, and after `frame`'s borrow ends.
             self.copy_selection(event);
+            // Step 4's audit record (FR-024): what the `Route` from the same
+            // `route` call did, given the declared behaviour that fired on
+            // the way past — that same fact recorded, not a second
+            // interpretation of it.
+            let decision = self.dispatcher.classify_rest(&routing.outcome.route, fired);
+            self.app.decided(&decision);
             if self.picture_must_rebuild(event) {
                 invalidate = true;
             }
+        }
+        // A sequence in flight asks to be woken when its timeout expires, so
+        // the pending indicator (US-8) leaves on time rather than on the next
+        // keystroke: `Self::pass` runs [`dispatch::Dispatcher::tick`] on the
+        // same clock, and this schedules the pass that observes the expiry.
+        if !self.dispatcher.pending().is_empty() {
+            ctx.request_repaint_after(self.dispatcher.timeout());
         }
         invalidate
     }
@@ -2825,7 +2984,7 @@ impl<A: App> Host<A> {
         // `&mut self` call.
         if let Some(frame) = self.last_frame.take() {
             let _ = self.scroll_into_view(&frame, &target);
-            self.last_frame = Some(frame);
+            self.place_frame(frame);
         }
         self.pending_focus = Some(target);
     }
@@ -3356,6 +3515,42 @@ impl<A: App> Host<A> {
     ) -> &mut Self {
         self.pointer.set_reserved(reserved);
         self
+    }
+
+    /// Replace the operator's binding configuration (FR-011).
+    ///
+    /// Operator bindings are inserted after the frame's, so one *displaces* a
+    /// plugin binding on the same trigger and scope rather than being refused
+    /// by it — and the displacement is reported through
+    /// [`App::keymap_event`] on the next [`Host::pass`], never silently. The
+    /// `Owner` label on each binding is the authority: a mislabelled operator
+    /// entry loses to a plugin's exactly like a plugin's would.
+    pub fn set_operator_bindings(&mut self, bindings: Vec<gorgon_petra::keymap::Binding>) {
+        self.dispatcher.set_operator_bindings(bindings);
+    }
+
+    /// The chords typed so far of a pending multi-chord trigger (spec 010
+    /// US-8, FR-013) — the shell's observable state, so the pending
+    /// indicator is not guesswork. Empty when no sequence is in flight.
+    #[must_use]
+    pub fn pending_chords(&self) -> &[gorgon_petra::keymap::Chord] {
+        self.dispatcher.pending()
+    }
+
+    /// Install the frame input routing is computed against, bringing the
+    /// binding table in step with it in the same motion (FR-009: a fiber's
+    /// bindings are gone in the same frame the fiber unloads in).
+    ///
+    /// Every site that replaces `last_frame` goes through here. A second
+    /// direct assignment is a second place to forget the sync, and a binding
+    /// table one frame stale is exactly the class of bug that reads as "the
+    /// key stopped working after I closed that panel".
+    fn place_frame(&mut self, frame: PetrifiedFrame) {
+        let events = self.dispatcher.sync(&frame.placements);
+        for event in &events {
+            self.app.keymap_event(event);
+        }
+        self.last_frame = Some(frame);
     }
 
     /// Declare the transition definitions this application's trees name.
