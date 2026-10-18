@@ -12,13 +12,16 @@
 //!
 //! # What lives here and what does not
 //!
-//! Request/response envelopes, the closed error-kind vocabulary, and the
+//! Request/response envelopes, the closed error-kind vocabulary, the
 //! `frame` verb's placement wire shape — the one thing `gorgon-petra` has no
 //! serializable form for, because [`gorgon_petra::frame::Placement`] is an
 //! internal engine type, not a wire type, and the driver contract needs a
 //! *subset* of it (everything `contracts/frame-identity.md` §2's leaf hash
 //! reads, so a consumer can recompute the digest from `(viewport,
-//! placements)` alone) in device pixels, not logical units.
+//! placements)` alone) in device pixels, not logical units — and `act`'s
+//! chord and trigger wire forms (spec 010 T008), which reuse
+//! [`gorgon_petra::keymap::Chord`]'s own canonical text rather than spelling
+//! chords a second way.
 //!
 //! `tree`'s result is deliberately **not** wrapped in a type here:
 //! [`gorgon_petra::semantic::SemanticNode`] and
@@ -27,10 +30,13 @@
 //! time would be a parallel definition of a shape one crate already owns —
 //! [`crate::server`] serializes them directly.
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use gorgon_petra::frame::{PetrifiedFrame, round_rect};
+use gorgon_petra::keymap::{Chord, ChordParseError};
 
 /// One NDJSON request line: `{id, verb, params}`.
 ///
@@ -675,6 +681,20 @@ pub struct ActPayload {
     /// `key`: the key's name — see [`key_name`] for the spelling.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
+    /// `key`'s canonical chord spelling (spec 010 T008): one [`Chord`]'s text
+    /// form — `ctrl-k`, `ctrl-shift-p`, `alt-Left`, `f5` — see
+    /// [`parse_chord`]. Mutually exclusive with `key` and `trigger`, and it
+    /// refuses `modifiers`: a chord's modifiers ride in its text (`ctrl-k`),
+    /// so a second modifier spelling beside it would name two chords.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chord: Option<String>,
+    /// `key`'s sequence spelling (spec 010 T008): a non-empty [`WireTrigger`]
+    /// of canonical chord texts, injected as one key action per chord, in
+    /// order. Mutually exclusive with `key` and `chord`, and it refuses
+    /// `modifiers` for the same reason. One act, one `applied_frame_seq`: the
+    /// frame that consumed the sequence's last chord.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<WireTrigger>,
     /// `drag`: where the gesture ends, device pixels.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to: Option<WirePoint>,
@@ -760,6 +780,137 @@ pub fn parse_key(raw: &str) -> Option<gorgon_petra::KeyCode> {
     })
 }
 
+// ---------------------------------------------------------------------------
+// Chord and trigger wire forms (spec 010 T008)
+//
+// Beside the single-chord key encoding above, not over it: `ActPayload::key`
+// + `ActPayload::modifiers` predates spec 010 and keeps its meaning. The
+// chord form is [`gorgon_petra::keymap::Chord`]'s canonical text (spec 010
+// T005 owns that vocabulary — `ctrl-k`, `ctrl-shift-p`, `alt-Left`, `f5`),
+// and the trigger form is a non-empty sequence of those texts. One
+// vocabulary, one parser: [`chord_name`] and [`parse_chord`] are
+// `Display`/`FromStr` renamed for the wire, and a second chord syntax
+// invented here would be a second place for the same chord to mean two
+// things.
+// ---------------------------------------------------------------------------
+
+/// A chord's wire spelling: [`Chord`]'s canonical text form, unchanged.
+#[must_use]
+pub fn chord_name(chord: Chord) -> String {
+    chord.to_string()
+}
+
+/// Parse a chord's wire spelling — the exact inverse of [`chord_name`],
+/// through [`Chord`]'s own `FromStr`. A refusal carries the offending text
+/// and a reason ([`ChordParseError`]); nothing here re-spells either.
+pub fn parse_chord(raw: &str) -> Result<Chord, ChordParseError> {
+    raw.parse()
+}
+
+/// Why a trigger's wire form was refused.
+///
+/// Named and closed, like [`ChordParseError`] beside it: a malformed wire
+/// form names what it refused rather than defaulting it away.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TriggerError {
+    /// The sequence carries no chords (spec 010 FR-002) — the wire's copy of
+    /// `gorgon_petra::keymap::BindingError::EmptyTrigger`, refused at this
+    /// boundary so a `WireTrigger` that exists is one no consumer has to
+    /// re-check.
+    Empty,
+    /// One entry is not canonical chord text. `index` is zero-based.
+    MalformedChord {
+        /// Which entry, zero-based.
+        index: usize,
+        /// The chord parser's refusal, naming the text and the reason.
+        source: ChordParseError,
+    },
+}
+
+impl fmt::Display for TriggerError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => write!(
+                f,
+                "empty trigger: a trigger must carry at least one chord (spec 010 FR-002)"
+            ),
+            Self::MalformedChord { index, source } => {
+                write!(f, "trigger chord {} is not canonical: {source}", index + 1)
+            }
+        }
+    }
+}
+
+impl std::error::Error for TriggerError {}
+
+/// A trigger on the wire: a **non-empty** sequence of chords, spelled as one
+/// canonical chord text per entry — `["ctrl-k", "p"]`.
+///
+/// The empty sequence is refused at both doors — [`WireTrigger::new`] and
+/// `Deserialize` — with [`TriggerError::Empty`], because a wire that could
+/// carry one would leave spec 010 FR-002's invariant a second place to
+/// defend. Both doors funnel through [`WireTrigger::new`], which is the one
+/// check; a `WireTrigger` that exists carries at least one chord for every
+/// consumer, the same guarantee `Binding::new` gives a stored binding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WireTrigger(Vec<Chord>);
+
+impl WireTrigger {
+    /// Build one from a chord sequence, refusing an empty one.
+    ///
+    /// # Errors
+    /// [`TriggerError::Empty`] when `chords` is empty.
+    pub fn new(chords: Vec<Chord>) -> Result<Self, TriggerError> {
+        if chords.is_empty() {
+            return Err(TriggerError::Empty);
+        }
+        Ok(Self(chords))
+    }
+
+    /// The chords, in order. Never empty.
+    #[must_use]
+    pub fn chords(&self) -> &[Chord] {
+        &self.0
+    }
+
+    /// The wire form: one [`chord_name`] per chord, in order.
+    #[must_use]
+    pub fn to_wire(&self) -> Vec<String> {
+        self.0.iter().copied().map(chord_name).collect()
+    }
+
+    /// Parse the wire form — the exact inverse of [`WireTrigger::to_wire`],
+    /// and the one place the non-empty rule is checked.
+    ///
+    /// # Errors
+    /// [`TriggerError::Empty`] for an empty sequence;
+    /// [`TriggerError::MalformedChord`] naming the entry that is not
+    /// canonical chord text.
+    pub fn parse(raw: &[String]) -> Result<Self, TriggerError> {
+        let mut chords = Vec::with_capacity(raw.len());
+        for (index, text) in raw.iter().enumerate() {
+            match parse_chord(text) {
+                Ok(chord) => chords.push(chord),
+                Err(source) => return Err(TriggerError::MalformedChord { index, source }),
+            }
+        }
+        Self::new(chords)
+    }
+}
+
+impl Serialize for WireTrigger {
+    fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        ser.collect_seq(self.to_wire())
+    }
+}
+
+impl<'de> Deserialize<'de> for WireTrigger {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        let raw = Vec::<String>::deserialize(de)?;
+        Self::parse(&raw).map_err(|err| serde::de::Error::custom(err.to_string()))
+    }
+}
+
 /// `screenshot`'s result: `{seq, digest, png_base64, hosted}`.
 ///
 /// `png_base64` is text because the envelope is JSON, which has no byte
@@ -808,7 +959,13 @@ impl ScreenshotResult {
 
 #[cfg(test)]
 mod tests {
-    use super::{ErrorKind, Request, WirePlacement};
+    use gorgon_petra::keymap::Chord;
+    use gorgon_petra::{KeyCode, Modifiers};
+
+    use super::{
+        ActPayload, ErrorKind, Request, TriggerError, WirePlacement, WireTrigger, chord_name,
+        parse_chord,
+    };
 
     /// One `frame` placement with every field present, as the server emits it.
     fn placement_json() -> serde_json::Value {
@@ -882,5 +1039,110 @@ mod tests {
     #[test]
     fn an_unknown_spelling_does_not_parse() {
         assert_eq!(ErrorKind::parse("nope"), None);
+    }
+
+    // -- Chord and trigger wire forms (spec 010 T008) --
+
+    #[test]
+    fn the_chord_wire_form_is_the_canonical_text_form() {
+        for text in ["ctrl-k", "ctrl-shift-p", "alt-Left", "f5", "shift-esc"] {
+            let chord = parse_chord(text).expect("canonical text parses");
+            assert_eq!(chord_name(chord), text, "{text} must round-trip unchanged");
+        }
+    }
+
+    #[test]
+    fn a_chord_refusal_carries_the_text_and_a_reason() {
+        let err = parse_chord("banana").expect_err("banana names no key");
+        assert_eq!(err.input, "banana");
+        assert!(err.reason.contains("does not name a key"), "{err}");
+    }
+
+    #[test]
+    fn a_trigger_wires_as_an_array_of_canonical_chord_texts() {
+        let trigger = WireTrigger::new(vec![
+            Chord {
+                key: KeyCode::Char('k'),
+                modifiers: Modifiers {
+                    ctrl: true,
+                    ..Modifiers::NONE
+                },
+            },
+            Chord::bare(KeyCode::Char('p')),
+        ])
+        .expect("two chords");
+        assert_eq!(trigger.to_wire(), ["ctrl-k", "p"]);
+
+        let json = serde_json::to_value(&trigger).expect("WireTrigger serializes");
+        assert_eq!(json, serde_json::json!(["ctrl-k", "p"]));
+        let back: WireTrigger = serde_json::from_value(json).expect("round-trips");
+        assert_eq!(back, trigger);
+    }
+
+    /// Both halves, because a refusal only at construction would leave the
+    /// wire able to carry what construction refuses (FR-002).
+    #[test]
+    fn an_empty_trigger_is_refused_by_construction_and_on_the_wire() {
+        let err = WireTrigger::new(Vec::new()).expect_err("an empty trigger");
+        assert_eq!(err, TriggerError::Empty);
+        assert!(err.to_string().contains("at least one chord"), "{err}");
+
+        let err = serde_json::from_value::<WireTrigger>(serde_json::json!([]))
+            .expect_err("the wire refuses an empty trigger");
+        assert!(
+            err.to_string().contains("at least one chord"),
+            "the refusal must name the rule: {err}"
+        );
+    }
+
+    #[test]
+    fn a_malformed_trigger_entry_names_its_chord() {
+        let raw = ["ctrl-k".to_owned(), "banana".to_owned()];
+        let err = WireTrigger::parse(&raw).expect_err("banana is no chord");
+        assert_eq!(
+            err,
+            TriggerError::MalformedChord {
+                index: 1,
+                source: parse_chord("banana").expect_err("banana names no key"),
+            }
+        );
+        let text = err.to_string();
+        assert!(text.contains("chord 2"), "one-based entry named: {text}");
+        assert!(text.contains("banana"), "offending text named: {text}");
+    }
+
+    /// The form that predates spec 010 keeps its exact shape and meaning.
+    #[test]
+    fn the_act_payload_keeps_the_legacy_key_form() {
+        let payload: ActPayload =
+            serde_json::from_value(serde_json::json!({"key": "k", "modifiers": {"ctrl": true}}))
+                .expect("the legacy form parses");
+        assert_eq!(payload.key.as_deref(), Some("k"));
+        assert!(payload.chord.is_none(), "{payload:?}");
+        assert!(payload.trigger.is_none(), "{payload:?}");
+
+        let json = serde_json::to_value(&payload).expect("serializes");
+        assert_eq!(json["key"], "k");
+        assert!(json.get("chord").is_none(), "{json}");
+        assert!(json.get("trigger").is_none(), "{json}");
+    }
+
+    #[test]
+    fn the_act_payload_carries_the_chord_and_trigger_forms() {
+        let payload: ActPayload = serde_json::from_value(serde_json::json!({"chord": "ctrl-k"}))
+            .expect("the chord form parses");
+        assert_eq!(payload.chord.as_deref(), Some("ctrl-k"));
+
+        let payload: ActPayload =
+            serde_json::from_value(serde_json::json!({"trigger": ["ctrl-k", "p"]}))
+                .expect("the trigger form parses");
+        let trigger = payload.trigger.as_ref().expect("trigger present");
+        assert_eq!(trigger.to_wire(), ["ctrl-k", "p"]);
+
+        // Absent members stay absent-and-defaulted, so the old flat-optional
+        // set keeps parsing for every client that predates these two.
+        let payload: ActPayload =
+            serde_json::from_value(serde_json::json!({})).expect("an empty payload parses");
+        assert!(payload.key.is_none() && payload.chord.is_none() && payload.trigger.is_none());
     }
 }

@@ -253,23 +253,69 @@ async fn act(server: &Server, params: &Value) -> Result<Value, WireError> {
         return Err(no_frame_yet());
     };
     let scale = published.frame.viewport.scale.factor();
-    let (target, action) = request.to_action(scale)?;
-    match server.bridge().submit(Job::Act { target, action }).await {
-        Answer::Acted { applied_frame_seq } => {
-            let result =
-                settle::settle_after_act(server.hub(), applied_frame_seq, request.timeout_ms)
-                    .await?;
-            Ok(serde_json::to_value(result).expect("ActResult serializes"))
-        }
-        Answer::Refused(err) => Err(err),
-        // `Job::Act` is answered by exactly one arm of
-        // `DriverHost::step`, and it is not the capture arm.
-        Answer::Captured { .. } => Err(WireError::new(
+    let (target, actions) = request.to_actions(scale)?;
+    // `to_actions` never plans zero actions; if that ever changes, saying so
+    // beats reporting `applied_frame_seq: 0`, which `ActResult`'s contract
+    // reserves for "never serviced".
+    if actions.is_empty() {
+        return Err(WireError::new(
             ErrorKind::Timeout,
-            "the UI thread answered an action with a capture; this is a bug in \
-             gorgon-petra-testkit, not a protocol case",
-        )),
+            "the request produced no actions; this is a bug in gorgon-petra-testkit, not a \
+             protocol case",
+        ));
     }
+    // One submit per action, in order: a `payload.trigger`'s chords land as
+    // one key action each, each in its own pass, so a chord resolver sees the
+    // sequence exactly as a keyboard would produce it. The reported
+    // `applied_frame_seq` is the frame that consumed the sequence's last
+    // chord — the frame the sequence as a whole is done by.
+    let mut applied_frame_seq = 0;
+    let total = actions.len();
+    for (index, action) in actions.into_iter().enumerate() {
+        match server
+            .bridge()
+            .submit(Job::Act {
+                target: target.clone(),
+                action,
+            })
+            .await
+        {
+            Answer::Acted {
+                applied_frame_seq: seq,
+            } => applied_frame_seq = seq,
+            Answer::Refused(err) => {
+                // A sequence refused mid-way names the chord that failed and
+                // its place in the sequence: the chords before it are already
+                // injected and cannot be un-injected, so the caller needs to
+                // know exactly where the sequence stopped.
+                return Err(match &request.payload.trigger {
+                    Some(trigger) => WireError::new(
+                        err.kind,
+                        format!(
+                            "trigger chord {} of {} ({}) was refused: {}",
+                            index + 1,
+                            total,
+                            wire::chord_name(trigger.chords()[index]),
+                            err.message
+                        ),
+                    ),
+                    None => err,
+                });
+            }
+            // `Job::Act` is answered by exactly one arm of
+            // `DriverHost::step`, and it is not the capture arm.
+            Answer::Captured { .. } => {
+                return Err(WireError::new(
+                    ErrorKind::Timeout,
+                    "the UI thread answered an action with a capture; this is a bug in \
+                     gorgon-petra-testkit, not a protocol case",
+                ));
+            }
+        }
+    }
+    let result =
+        settle::settle_after_act(server.hub(), applied_frame_seq, request.timeout_ms).await?;
+    Ok(serde_json::to_value(result).expect("ActResult serializes"))
 }
 
 /// `wait_settle`: `{timeout_ms}` -> `{settled, frame_seq, pending}`.
@@ -363,11 +409,19 @@ impl ActRequest {
     /// `scale` converts every device-pixel point on the wire into the logical
     /// units [`gorgon_petra_egui::inject`] works in — one conversion, here,
     /// so no other call site has to remember which units it holds.
-    fn to_action(&self, scale: f32) -> Result<(Target, Action), WireError> {
+    ///
+    /// One `key` act carries one of three spellings — the sequence form
+    /// (`payload.trigger`), the canonical chord form (`payload.chord`), or
+    /// the legacy `payload.key` + `payload.modifiers` — and expands to one
+    /// [`Action::Key`] per chord, in order. The legacy path is unchanged.
+    fn to_actions(&self, scale: f32) -> Result<(Target, Vec<Action>), WireError> {
         let target = match &self.target {
             WireTarget::NodeId(id) => Target::NodeId(id.clone()),
             WireTarget::Pos(p) => Target::Pos(logical_point(*p, scale)),
         };
+        if self.payload.chord.is_some() || self.payload.trigger.is_some() {
+            return Ok((target, self.chord_actions()?));
+        }
         let modifiers = modifiers(self.payload.modifiers);
         let action = match self.kind {
             Interaction::Click => Action::Click { modifiers },
@@ -410,8 +464,9 @@ impl ActRequest {
                 let raw = self.payload.key.as_deref().ok_or_else(|| {
                     WireError::new(
                         ErrorKind::InvalidParams,
-                        "`key` needs `payload.key` — the key's name, e.g. `enter`, `page-up`, \
-                         `f5`, or a single character",
+                        "`key` needs `payload.key`, `payload.chord`, or `payload.trigger` — \
+                         the key's name (`enter`, `page-up`, `f5`, or a single character), one \
+                         canonical chord (`ctrl-k`), or a chord sequence (`[\"ctrl-k\", \"p\"]`)",
                     )
                 })?;
                 let key = wire::parse_key(raw).ok_or_else(|| {
@@ -423,7 +478,87 @@ impl ActRequest {
                 Action::Key { key, modifiers }
             }
         };
-        Ok((target, action))
+        Ok((target, vec![action]))
+    }
+
+    /// The chord spellings' actions: [`WireTrigger`]'s chords as one key
+    /// action each, in order, or one key action for `payload.chord`.
+    ///
+    /// They are `kind: "key"` forms only, mutually exclusive with the legacy
+    /// `payload.key`, and they refuse `payload.modifiers` — a chord's
+    /// modifiers ride in its text (`ctrl-k`), so a second modifier spelling
+    /// beside it would name two different chords.
+    fn chord_actions(&self) -> Result<Vec<Action>, WireError> {
+        if self.kind != Interaction::Key {
+            return Err(WireError::new(
+                ErrorKind::InvalidParams,
+                format!(
+                    "`payload.chord`/`payload.trigger` belongs to a `key` act; this act is \
+                     `kind: {}`",
+                    kind_name(self.kind)
+                ),
+            ));
+        }
+        let spellings = u8::from(self.payload.key.is_some())
+            + u8::from(self.payload.chord.is_some())
+            + u8::from(self.payload.trigger.is_some());
+        if spellings > 1 {
+            return Err(WireError::new(
+                ErrorKind::InvalidParams,
+                "one act names its key once: carry exactly one of `payload.key`, \
+                 `payload.chord`, `payload.trigger`"
+                    .to_owned(),
+            ));
+        }
+        if self.payload.modifiers != WireModifiers::default() {
+            return Err(WireError::new(
+                ErrorKind::InvalidParams,
+                "a chord's modifiers ride in its text (`ctrl-k`); `payload.modifiers` beside \
+                 `payload.chord`/`payload.trigger` would name two different chords"
+                    .to_owned(),
+            ));
+        }
+        if let Some(trigger) = &self.payload.trigger {
+            return Ok(trigger
+                .chords()
+                .iter()
+                .map(|chord| Action::Key {
+                    key: chord.key,
+                    modifiers: chord.modifiers,
+                })
+                .collect());
+        }
+        let raw = self.payload.chord.as_deref().ok_or_else(|| {
+            WireError::new(
+                ErrorKind::InvalidParams,
+                "`key` needs `payload.key`, `payload.chord`, or `payload.trigger`",
+            )
+        })?;
+        let chord = wire::parse_chord(raw).map_err(|err| {
+            WireError::new(
+                ErrorKind::InvalidParams,
+                format!(
+                    "`{raw}` is not canonical chord text: {}; see `wire::chord_name` for the \
+                     spelling",
+                    err.reason
+                ),
+            )
+        })?;
+        Ok(vec![Action::Key {
+            key: chord.key,
+            modifiers: chord.modifiers,
+        }])
+    }
+}
+
+/// The wire spelling of an [`Interaction`] — its own kebab-case serde form,
+/// which `driver/verbs.rs` relies on as the one vocabulary
+/// (`semantic-tree.md`'s Action spellings). Read through serde rather than
+/// written down a second time here.
+fn kind_name(kind: Interaction) -> String {
+    match serde_json::to_value(kind).expect("Interaction serializes to its wire spelling") {
+        Value::String(name) => name,
+        other => panic!("Interaction must serialize to its wire spelling, got {other}"),
     }
 }
 
@@ -468,9 +603,26 @@ fn parse_region(params: &Value) -> Result<Option<WireRect>, WireError> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use egui::{Context, Pos2, RawInput};
     use serde_json::{Value, json};
 
-    use super::{ActRequest, Action, Interaction, Server, dispatch};
+    use gorgon_petra::component::button;
+    use gorgon_petra::frame::PetrifiedFrame;
+    use gorgon_petra::input::{InputEvent, KeyCode, Modifiers, Route};
+    use gorgon_petra::layout::{ChangeSet, RowSource};
+    use gorgon_petra::token::{Presenter, dark};
+    use gorgon_petra::tree::{NodeKind, ViewNode};
+    use gorgon_petra_egui::host::{App, Host};
+    use gorgon_petra_egui::inject::Action;
+
+    use super::{ActRequest, Interaction, Server, dispatch};
+    use crate::bridge::UiBridge;
+    use crate::driver_host::DriverHost;
+    use crate::server::FrameHub;
+    use crate::snapshot::Snapshotter;
     use crate::wire::{ErrorKind, Request};
 
     fn req(verb: &str, params: Value) -> Request {
@@ -675,7 +827,7 @@ mod tests {
     }
 
     /// Spec 009 T014's wire spelling: `kind: "secondary-click"` parses to
-    /// [`Interaction::SecondaryClick`] and `ActRequest::to_action` maps it
+    /// [`Interaction::SecondaryClick`] and `ActRequest::to_actions` maps it
     /// to [`Action::SecondaryClick`] — the whole path a driver actually
     /// takes, not just the enum the two exhaustive matches were made to
     /// cover.
@@ -684,7 +836,9 @@ mod tests {
         let params = json!({"kind": "secondary-click", "target": {"node_id": "/x"}});
         let request = ActRequest::parse(&params).expect("secondary-click must parse");
         assert_eq!(request.kind, Interaction::SecondaryClick);
-        let (_, action) = request.to_action(1.0).expect("must build an action");
+        let mut actions = request.to_actions(1.0).expect("must build an action").1;
+        assert_eq!(actions.len(), 1, "one act, one action: {actions:?}");
+        let action = actions.pop().expect("one action above");
         assert!(
             matches!(action, Action::SecondaryClick { .. }),
             "kind: secondary-click must build Action::SecondaryClick, got {action:?}"
@@ -785,6 +939,356 @@ mod tests {
             max_seen.load(Ordering::SeqCst),
             1,
             "two action-order holders were inside the critical section at once"
+        );
+    }
+
+    // -- Chord and trigger acts (spec 010 T008) --
+
+    fn act_request(kind: &str, payload: Value) -> ActRequest {
+        ActRequest::parse(&json!({
+            "kind": kind,
+            "target": {"node_id": "/x"},
+            "payload": payload,
+        }))
+        .expect("the request parses")
+    }
+
+    /// The form that predates spec 010 keeps its exact meaning: one key
+    /// action, with the modifiers the payload named.
+    #[test]
+    fn the_legacy_key_form_still_builds_one_key_action() {
+        let request = act_request("key", json!({"key": "k", "modifiers": {"ctrl": true}}));
+        let actions = request.to_actions(1.0).expect("the legacy form builds").1;
+        assert_eq!(
+            actions,
+            vec![Action::Key {
+                key: KeyCode::Char('k'),
+                modifiers: Modifiers {
+                    ctrl: true,
+                    ..Modifiers::NONE
+                },
+            }]
+        );
+    }
+
+    #[test]
+    fn the_chord_form_builds_one_key_action_with_the_chords_own_modifiers() {
+        let request = act_request("key", json!({"chord": "ctrl-shift-p"}));
+        let actions = request.to_actions(1.0).expect("the chord form builds").1;
+        assert_eq!(
+            actions,
+            vec![Action::Key {
+                key: KeyCode::Char('p'),
+                modifiers: Modifiers {
+                    ctrl: true,
+                    shift: true,
+                    ..Modifiers::NONE
+                },
+            }]
+        );
+    }
+
+    #[test]
+    fn a_trigger_form_builds_one_key_action_per_chord_in_order() {
+        let request = act_request("key", json!({"trigger": ["ctrl-k", "alt-Left"]}));
+        let actions = request.to_actions(1.0).expect("the trigger form builds").1;
+        assert_eq!(
+            actions,
+            vec![
+                Action::Key {
+                    key: KeyCode::Char('k'),
+                    modifiers: Modifiers {
+                        ctrl: true,
+                        ..Modifiers::NONE
+                    },
+                },
+                Action::Key {
+                    key: KeyCode::Left,
+                    modifiers: Modifiers {
+                        alt: true,
+                        ..Modifiers::NONE
+                    },
+                },
+            ]
+        );
+    }
+
+    /// Two spellings of one key is one spelling too many, in every pairing —
+    /// checked as a set of three because a rule that caught only `key` +
+    /// `chord` would leave `chord` + `trigger` silently dropping the chord.
+    #[test]
+    fn one_act_names_its_key_once() {
+        for payload in [
+            json!({"key": "k", "chord": "ctrl-k"}),
+            json!({"key": "k", "trigger": ["ctrl-k"]}),
+            json!({"chord": "k", "trigger": ["ctrl-k"]}),
+        ] {
+            let request = act_request("key", payload.clone());
+            let err = request
+                .to_actions(1.0)
+                .expect_err("two spellings of one key must be refused");
+            assert_eq!(err.kind, ErrorKind::InvalidParams, "{payload}");
+            assert!(
+                err.message.contains("names its key once"),
+                "{payload}: {}",
+                err.message
+            );
+        }
+    }
+
+    #[test]
+    fn a_chord_form_refuses_a_second_modifier_spelling() {
+        let request = act_request("key", json!({"chord": "k", "modifiers": {"ctrl": true}}));
+        let err = request
+            .to_actions(1.0)
+            .expect_err("two modifier spellings must be refused");
+        assert_eq!(err.kind, ErrorKind::InvalidParams);
+        assert!(err.message.contains("payload.modifiers"), "{}", err.message);
+    }
+
+    #[test]
+    fn a_chord_form_is_a_key_act_only_and_says_which_act_refused_it() {
+        let request = act_request("click", json!({"trigger": ["ctrl-k"]}));
+        let err = request
+            .to_actions(1.0)
+            .expect_err("a click takes no trigger");
+        assert_eq!(err.kind, ErrorKind::InvalidParams);
+        assert!(err.message.contains("click"), "{}", err.message);
+        assert!(err.message.contains("`key` act"), "{}", err.message);
+    }
+
+    #[test]
+    fn a_malformed_chord_is_invalid_params_and_quotes_it() {
+        let request = act_request("key", json!({"chord": "banana"}));
+        let err = request.to_actions(1.0).expect_err("banana is no chord");
+        assert_eq!(err.kind, ErrorKind::InvalidParams);
+        assert!(err.message.contains("banana"), "{}", err.message);
+    }
+
+    #[tokio::test]
+    async fn an_empty_trigger_is_refused_and_names_the_rule() {
+        let (server, _hub, _bridge) = Server::new("test-app");
+        let err = dispatch(
+            &server,
+            &req(
+                "act",
+                json!({
+                    "kind": "key",
+                    "target": {"node_id": "/x"},
+                    "payload": {"trigger": []}
+                }),
+            ),
+        )
+        .await
+        .expect_err("the wire refuses an empty trigger");
+        assert_eq!(err.kind, ErrorKind::InvalidParams);
+        assert!(
+            err.message.contains("at least one chord"),
+            "the refusal must name FR-002's rule: {}",
+            err.message
+        );
+    }
+
+    // -- The same forms through a real host and a real injector --
+
+    /// Every key press the application hears, in order, with the modifiers
+    /// it heard them with.
+    #[derive(Clone, Default)]
+    struct KeyRecorder(Arc<Mutex<Vec<(KeyCode, Modifiers)>>>);
+
+    struct RecordingApp {
+        keys: KeyRecorder,
+    }
+
+    impl RowSource for RecordingApp {
+        fn rows(&mut self, _source: &str, _range: std::ops::Range<usize>) -> Vec<Arc<ViewNode>> {
+            Vec::new()
+        }
+    }
+
+    impl App for RecordingApp {
+        fn view(&mut self) -> ViewNode {
+            ViewNode::new(NodeKind::Stack, "root").child(button("go", "Go"))
+        }
+
+        fn handle(&mut self, event: &InputEvent, _route: &Route, _frame: Option<&PetrifiedFrame>) {
+            if let InputEvent::Key {
+                key,
+                pressed: true,
+                modifiers,
+                ..
+            } = event
+            {
+                self.keys
+                    .0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push((*key, *modifiers));
+            }
+        }
+
+        fn take_changes(&mut self) -> ChangeSet {
+            ChangeSet::All
+        }
+    }
+
+    /// A stepping [`DriverHost`] over a [`Server`]'s own hub and bridge,
+    /// stopping on drop. The same driven-app shape as `tests/support/mod.rs`
+    /// — a real `Host` and a real injector, no window — kept here because
+    /// integration-test support is not reachable from a unit-test module.
+    struct Stepper {
+        stop: Arc<AtomicBool>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl Drop for Stepper {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+        }
+    }
+
+    const WINDOW: [f32; 2] = [400.0, 300.0];
+
+    fn sized(mut input: RawInput) -> RawInput {
+        input.screen_rect = Some(egui::Rect::from_min_size(
+            Pos2::ZERO,
+            egui::vec2(WINDOW[0], WINDOW[1]),
+        ));
+        input
+    }
+
+    fn headless() -> Context {
+        let ctx = Context::default();
+        ctx.run_ui(sized(RawInput::default()), |_| {})
+            .drop_without_applying_deltas();
+        ctx
+    }
+
+    fn stepping_host(hub: FrameHub, bridge: UiBridge, keys: KeyRecorder) -> Stepper {
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = Arc::clone(&stop);
+        let thread = std::thread::spawn(move || {
+            let ctx = headless();
+            let host = Host::new(&ctx, RecordingApp { keys }, Presenter::new(dark()));
+            let mut driver = DriverHost::new(&ctx, host, hub, bridge, Snapshotter::new());
+            while !thread_stop.load(Ordering::SeqCst) {
+                driver
+                    .step(&ctx, sized(RawInput::default()))
+                    .drop_without_applying_deltas();
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        });
+        Stepper {
+            stop,
+            thread: Some(thread),
+        }
+    }
+
+    /// `act` refuses to act before a first frame exists; wait for one, the
+    /// same handshake `tests/support/mod.rs::driven_server` does.
+    async fn wait_for_frame(hub: &FrameHub) {
+        for _ in 0..500 {
+            if hub.current().is_some() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+        panic!("the stepping host never published a frame");
+    }
+
+    /// The load-bearing one for T008: one `act` carrying a `payload.trigger`
+    /// injects the chords in order through the real
+    /// [`gorgon_petra_egui::inject::inject_action`] and the real `Host::pass`,
+    /// and the application sees each chord with its own modifiers.
+    #[tokio::test]
+    async fn a_trigger_act_delivers_its_chords_in_order_through_the_real_host() {
+        let (server, hub, bridge) = Server::new("test-app");
+        let keys = KeyRecorder::default();
+        let _stepper = stepping_host(hub.clone(), bridge, keys.clone());
+        wait_for_frame(&hub).await;
+
+        let result = dispatch(
+            &server,
+            &req(
+                "act",
+                json!({
+                    "kind": "key",
+                    "target": {"node_id": "/root/go"},
+                    "payload": {"trigger": ["ctrl-k", "p"]}
+                }),
+            ),
+        )
+        .await
+        .expect("the trigger act is serviced");
+        assert!(
+            result["applied_frame_seq"].as_u64().unwrap_or(0) >= 1,
+            "a serviced act never reports frame 0: {result}"
+        );
+
+        let seen = keys
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(
+            *seen,
+            vec![
+                (
+                    KeyCode::Char('k'),
+                    Modifiers {
+                        ctrl: true,
+                        ..Modifiers::NONE
+                    }
+                ),
+                (KeyCode::Char('p'), Modifiers::NONE),
+            ],
+            "the application must hear the chords in order, each with its own modifiers"
+        );
+    }
+
+    /// A sequence refused mid-way names the chord that failed and its place
+    /// in the sequence — and stops there, having already injected what came
+    /// before (which no error can un-inject).
+    #[tokio::test]
+    async fn a_mid_trigger_refusal_names_the_chord_it_stopped_at() {
+        let (server, hub, bridge) = Server::new("test-app");
+        let keys = KeyRecorder::default();
+        let _stepper = stepping_host(hub.clone(), bridge, keys.clone());
+        wait_for_frame(&hub).await;
+
+        let err = dispatch(
+            &server,
+            &req(
+                "act",
+                json!({
+                    "kind": "key",
+                    "target": {"node_id": "/root/go"},
+                    "payload": {"trigger": ["ctrl-k", "~"]}
+                }),
+            ),
+        )
+        .await
+        .expect_err("`~` is canonical chord text the egui injector cannot turn into a key");
+        assert_eq!(err.kind, ErrorKind::InvalidParams);
+        assert!(err.message.contains('~'), "{}", err.message);
+        assert!(err.message.contains("2 of 2"), "{}", err.message);
+
+        let seen = keys
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(
+            *seen,
+            vec![(
+                KeyCode::Char('k'),
+                Modifiers {
+                    ctrl: true,
+                    ..Modifiers::NONE
+                }
+            )],
+            "the chord before the refusal is already injected; the sequence stops at the failure"
         );
     }
 }
