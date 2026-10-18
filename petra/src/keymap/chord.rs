@@ -356,6 +356,32 @@ mod tests {
         assert!(err.reason.contains("lower-case"));
     }
 
+    /// T006's boundary pair: `Function(u8)` refuses `f0` and `f25` on parse.
+    /// The range is 1..=24 — the same rule `petra-testkit`'s `parse_key`
+    /// names (`petra/petra-testkit/src/wire.rs`: "`f0` and `f25` name no
+    /// key"), so the chord text form and the wire form agree on where a
+    /// function key stops being one. Both halves, because a range rule that
+    /// refused `f1` and `f24` too would pass the refusals alone.
+    #[test]
+    fn f0_and_f25_are_refused_at_the_function_key_boundaries() {
+        for text in ["f0", "f25"] {
+            let err = text.parse::<Chord>().unwrap_err();
+            assert!(
+                err.reason.contains("out of range"),
+                "{text:?} must be refused out of range, got {:?}",
+                err.reason
+            );
+        }
+        assert_eq!(
+            "f1".parse::<Chord>().unwrap(),
+            Chord::bare(KeyCode::Function(1))
+        );
+        assert_eq!(
+            "f24".parse::<Chord>().unwrap(),
+            Chord::bare(KeyCode::Function(24))
+        );
+    }
+
     #[test]
     fn escape_alone_parses_as_esc_not_escape() {
         assert_eq!(
@@ -392,37 +418,82 @@ mod tests {
         assert!(err.to_string().contains("does not name a key"));
     }
 
+    /// Every named (non-character, non-function) key, the fourteen
+    /// [`named_key_text`] renders. One list for the exhaustive cross below
+    /// and the property strategy, so a fifteenth named key cannot be added
+    /// to one home and forgotten in the other.
+    const NAMED_KEYS: [KeyCode; 14] = [
+        KeyCode::Tab,
+        KeyCode::Enter,
+        KeyCode::Escape,
+        KeyCode::Space,
+        KeyCode::Backspace,
+        KeyCode::Delete,
+        KeyCode::Up,
+        KeyCode::Down,
+        KeyCode::Left,
+        KeyCode::Right,
+        KeyCode::Home,
+        KeyCode::End,
+        KeyCode::PageUp,
+        KeyCode::PageDown,
+    ];
+
+    /// T006's cross for the named keys, exhaustive where the proptest below
+    /// is statistical: fourteen keys times all sixteen modifier
+    /// combinations, every one asserted to round-trip. Deterministic, so
+    /// "the named keys are crossed with all sixteen combinations" is a fact
+    /// about this test and not about a seed.
+    #[test]
+    fn every_named_key_round_trips_under_every_modifier_combination() {
+        for key in NAMED_KEYS {
+            for bits in 0u8..16 {
+                let modifiers = Modifiers {
+                    shift: bits & 1 != 0,
+                    ctrl: bits & 2 != 0,
+                    alt: bits & 4 != 0,
+                    meta: bits & 8 != 0,
+                };
+                let chord = Chord { key, modifiers };
+                let text = chord.to_string();
+                let parsed: Chord = text
+                    .parse()
+                    .unwrap_or_else(|err| panic!("{text:?} must parse: {err}"));
+                assert_eq!(parsed, chord, "{text:?} round-tripped to a different chord");
+                assert_eq!(parsed.to_string(), text);
+            }
+        }
+    }
+
+    /// Any [`KeyCode`] variant: one of the fourteen named keys, a function
+    /// key in the representable 1..=24, or a lower-case character.
+    fn any_key_code() -> impl proptest::strategy::Strategy<Value = KeyCode> {
+        use proptest::strategy::Strategy as _;
+        proptest::prop_oneof![
+            proptest::sample::select(NAMED_KEYS.to_vec()),
+            (1u8..=24u8).prop_map(KeyCode::Function),
+            proptest::char::range('a', 'z').prop_map(KeyCode::Char),
+        ]
+    }
+
     use proptest::prop_assert_eq;
 
     proptest::proptest! {
+        /// T006's property test: every `KeyCode` variant crossed with the
+        /// sixteen modifier combinations. Folded from the two narrower
+        /// properties (`Char(a–z)` and `Function(1–24)` separately) that
+        /// preceded it — this is each of them plus the named keys, one
+        /// claim in one home.
         #[test]
-        fn display_from_str_round_trips_for_any_char_chord(
-            c in proptest::char::range('a', 'z'),
+        fn display_from_str_round_trips_for_any_key_code(
+            key in any_key_code(),
             ctrl in proptest::bool::ANY,
             shift in proptest::bool::ANY,
             alt in proptest::bool::ANY,
             meta in proptest::bool::ANY,
         ) {
             let chord = Chord {
-                key: KeyCode::Char(c),
-                modifiers: Modifiers { shift, ctrl, alt, meta },
-            };
-            let text = chord.to_string();
-            let parsed: Chord = text.parse().expect("canonical text must parse");
-            prop_assert_eq!(parsed, chord);
-            prop_assert_eq!(parsed.to_string(), text);
-        }
-
-        #[test]
-        fn display_from_str_round_trips_for_any_function_key(
-            n in 1u8..=24u8,
-            ctrl in proptest::bool::ANY,
-            shift in proptest::bool::ANY,
-            alt in proptest::bool::ANY,
-            meta in proptest::bool::ANY,
-        ) {
-            let chord = Chord {
-                key: KeyCode::Function(n),
+                key,
                 modifiers: Modifiers { shift, ctrl, alt, meta },
             };
             let text = chord.to_string();

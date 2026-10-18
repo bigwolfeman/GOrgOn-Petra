@@ -2500,6 +2500,131 @@ mod tests {
         );
     }
 
+    /// T015's pin: the keyboard walk (spec 010 phase 3) is a keyboard-only
+    /// rule, and the pointer keeps its own ancestor rules exactly as they
+    /// stand. One fixture, three claims:
+    ///
+    /// 1. A press a control stops — its label is its own text, the page
+    ///    behind it is not a second answer, and routing aims the press at
+    ///    the control under the pointer rather than at whatever holds focus.
+    /// 2. A drag from that same point reaches past the control, to the runs
+    ///    on either side of it.
+    /// 3. A pointer event never rides the keyboard walk to the focused
+    ///    node: the press below lands on the focused field's rect, where
+    ///    nothing declares `Click`, and the focus path's own ancestor
+    ///    (`/page`) *does* declare `Click` — so if the press had walked the
+    ///    focus path it would have been heard there. It is `Unrouted`, and
+    ///    the reason names the pointer, not the walk.
+    ///
+    /// If any leg moves, this phase touched the pointer path, which it must
+    /// not (the pointer branch has its own ancestor rule: the outward walk
+    /// in `nearest_outward`, and the parent climbs in `descends_from` and
+    /// `claimed_by_a_control_in`).
+    #[test]
+    fn pointer_routing_keeps_its_own_ancestor_rule() {
+        // `/page` is a hit-test region and a parent link, not a bounding
+        // box: it ends at y=100, so the field at y=120 is inside it as a
+        // child and outside it as a hit-test target. That separation is
+        // what makes leg 3 distinguish the two rules — the walk climbs the
+        // parent link, the hit test reads the rects.
+        let f = frame(vec![
+            kid(
+                "/page",
+                NodeKind::Stack,
+                Rect::new(0.0, 0.0, 200.0, 100.0),
+                0,
+                &[Interaction::Key, Interaction::Click],
+                None,
+            ),
+            kid(
+                "/page/before",
+                NodeKind::Text,
+                Rect::new(0.0, 0.0, 200.0, 20.0),
+                0,
+                &[],
+                Some(0),
+            ),
+            control(
+                "/page/btn",
+                Rect::new(0.0, 40.0, 200.0, 20.0),
+                0,
+                &[Interaction::Click],
+                Some(0),
+            ),
+            kid(
+                "/page/btn/label",
+                NodeKind::Text,
+                Rect::new(10.0, 44.0, 60.0, 12.0),
+                0,
+                &[],
+                Some(2),
+            ),
+            kid(
+                "/page/after",
+                NodeKind::Text,
+                Rect::new(0.0, 80.0, 200.0, 20.0),
+                0,
+                &[],
+                Some(0),
+            ),
+            kid(
+                "/page/field",
+                NodeKind::Input,
+                Rect::new(10.0, 120.0, 100.0, 20.0),
+                0,
+                &[Interaction::TextEdit, Interaction::Key],
+                Some(0),
+            ),
+        ]);
+        let on_the_label = Point::new(30.0, 50.0);
+        let press = InputEvent::PointerPressed {
+            pos: on_the_label,
+            button: PointerButton::Primary,
+            modifiers: Modifiers::NONE,
+        };
+
+        // 1. The press is the control's — and it is aimed by position, not
+        //    by the focus walk, with focus sitting on `/page/field`.
+        assert!(
+            hit_text(&f, on_the_label, &BTreeMap::new()).is_none(),
+            "a press on a button's label is the button's"
+        );
+        assert_eq!(
+            route(&f, Some("/page/field"), &press),
+            Route::Pointer {
+                node: "/page/btn".into()
+            }
+        );
+
+        // 2. The drag reaches past the same control.
+        let reached = reach_text(&f, on_the_label, &BTreeMap::new()).expect("the drag reaches on");
+        assert!(
+            reached.id == "/page/before" || reached.id == "/page/after",
+            "the drag landed on {}, which is the label it must skip",
+            reached.id
+        );
+
+        // 3. Not the focus walk: `/page` on the focus path accepts `Click`,
+        //    so a press that rode that walk would be `Keyboard { /page }`.
+        let on_the_field = InputEvent::PointerPressed {
+            pos: Point::new(30.0, 130.0),
+            button: PointerButton::Primary,
+            modifiers: Modifiers::NONE,
+        };
+        let got = route(&f, Some("/page/field"), &on_the_field);
+        assert!(
+            matches!(got, Route::Unrouted { .. }),
+            "a pointer event must not ride the keyboard walk to focus: {got:?}"
+        );
+        assert!(!matches!(got, Route::Keyboard { .. }), "{got:?}");
+        if let Route::Unrouted { reason } = &got {
+            assert!(
+                reason.contains("pointer"),
+                "the refusal must name the pointer-side rule, not the walk: {reason}"
+            );
+        }
+    }
+
     /// A snap that has nowhere to land is still no selection: a frame whose
     /// only run is inside a control has nothing to offer a press in the
     /// margin.
