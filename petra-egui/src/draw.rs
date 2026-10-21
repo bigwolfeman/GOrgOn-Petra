@@ -1008,10 +1008,13 @@ mod tests {
     fn a_registered_host_asset_draws_through_the_existing_registry() {
         let headless = Headless::new();
         let mut sources = crate::image::ImageSources::new();
-        sources.register(
-            "cat.png",
-            crate::image::ImagePixels::new(2, 2, vec![255; 2 * 2 * 4]),
-        );
+        sources
+            .register(
+                "cat.png",
+                crate::image::ImagePixels::try_new(2, 2, vec![255; 2 * 2 * 4])
+                    .expect("2x2 RGBA8 is exactly 16 bytes"),
+            )
+            .expect("valid pixels must register");
         let list = DrawList::new(vec![Command::Sprite {
             asset: AssetRef::host("cat.png"),
             dst: PetraRect::new(0.0, 0.0, 16.0, 16.0),

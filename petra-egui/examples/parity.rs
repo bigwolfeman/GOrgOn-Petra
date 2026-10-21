@@ -1121,7 +1121,8 @@ fn swatch_pixels() -> ImagePixels {
             rgba.extend_from_slice(&[level, level, level, 255]);
         }
     }
-    ImagePixels::new(SWATCH_EDGE, SWATCH_EDGE, rgba)
+    ImagePixels::try_new(SWATCH_EDGE, SWATCH_EDGE, rgba)
+        .expect("the generated swatch's byte count matches its declared dimensions")
 }
 
 // ---------------------------------------------------------------------------
@@ -1224,7 +1225,9 @@ fn build_window(ctx: &egui::Context, presenter: Presenter) -> ParityWindow {
     let mut host = Host::new(ctx, app, presenter);
     host.registry_mut().register_custom_kind(CUSTOM_KIND);
     register_meter(host.painters_mut(), meter.clone());
-    host.images_mut().register(SWATCH_SOURCE, swatch_pixels());
+    host.images_mut()
+        .register(SWATCH_SOURCE, swatch_pixels())
+        .expect("the generated swatch must register");
     // Both are defaults elsewhere; setting them here is what compiles them for
     // this target. The capacities are the shipped ones, so the page measures
     // the same as a host that never called this.

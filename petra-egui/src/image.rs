@@ -38,24 +38,36 @@ pub struct ImagePixels {
 }
 
 impl ImagePixels {
-    /// `rgba` must be exactly `width * height * 4` bytes. A source
-    /// registered with the wrong length is not rejected here — a
-    /// constructor that could fail would force every call site to handle an
-    /// error for what is, in practice, an authoring mistake made once — it
-    /// simply never resolves; see [`ImageSources::resolve`].
-    #[must_use]
-    pub fn new(width: usize, height: usize, rgba: Vec<u8>) -> Self {
-        Self {
+    /// `rgba` must be exactly `width * height * 4` bytes. Anything else is
+    /// refused here with [`PixelsError`] rather than accepted and silently
+    /// never resolving — FR-036's loud failure at registration time, per
+    /// `contracts/draw-list.md` §9: the infallible constructor is gone, not
+    /// kept beside this one.
+    pub fn try_new(width: usize, height: usize, rgba: Vec<u8>) -> Result<Self, PixelsError> {
+        check_len(width, height, rgba.len())?;
+        Ok(Self {
             width,
             height,
             rgba,
-        }
+        })
+    }
+
+    /// The byte-count invariant, re-checked at registration. `try_new` is
+    /// the only way a caller can build these pixels, so this passes for
+    /// anything constructed in public; [`ImageSources::register`] still
+    /// checks, because the registry is the loud gate and must refuse a
+    /// mismatch even if one reaches it past the constructor.
+    fn validate(&self) -> Result<(), PixelsError> {
+        check_len(self.width, self.height, self.rgba.len())
     }
 
     /// Turn these pixels into the type `egui::Context::load_texture` wants,
     /// or `None` when the byte count does not match the declared
-    /// dimensions — the one way this "decode" step can fail, since there is
-    /// no format to misparse.
+    /// dimensions. `try_new` and [`ImageSources::register`] both refuse
+    /// those bytes, so this guard only fires for pixels that reached the
+    /// registry past both — and when it does, the failure stays the same
+    /// shape it has always been: no texture, so [`crate::paint`] names the
+    /// source in `undrawn`.
     fn decode(&self) -> Option<ColorImage> {
         let expected = self.width.checked_mul(self.height)?.checked_mul(4)?;
         if self.rgba.len() != expected {
@@ -67,6 +79,55 @@ impl ImagePixels {
         ))
     }
 }
+
+/// `width * height * 4`, or the [`PixelsError`] naming what disagrees.
+fn check_len(width: usize, height: usize, len: usize) -> Result<(), PixelsError> {
+    let expected = width
+        .checked_mul(height)
+        .and_then(|pixels| pixels.checked_mul(4));
+    if expected == Some(len) {
+        Ok(())
+    } else {
+        Err(PixelsError { width, height, len })
+    }
+}
+
+/// A registration refused: the declared dimensions and the supplied byte
+/// length disagree, so the bytes cannot be RGBA8 pixels of the size
+/// claimed. Carries both numbers so the message names the mismatch
+/// wherever the failure surfaces — constructor, registration, or a log.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PixelsError {
+    /// The declared width in pixels.
+    pub width: usize,
+    /// The declared height in pixels.
+    pub height: usize,
+    /// How many bytes were supplied.
+    pub len: usize,
+}
+
+impl std::fmt::Display for PixelsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self
+            .width
+            .checked_mul(self.height)
+            .and_then(|pixels| pixels.checked_mul(4))
+        {
+            Some(expected) => write!(
+                f,
+                "image source {}x{} RGBA8 is {} bytes, got {}",
+                self.width, self.height, expected, self.len
+            ),
+            None => write!(
+                f,
+                "image source {}x{} RGBA8 overflows usize, got {} bytes",
+                self.width, self.height, self.len
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PixelsError {}
 
 /// Host-registered image sources, decoded and uploaded to the GPU behind a
 /// source-keyed cache.
@@ -88,7 +149,11 @@ impl ImageSources {
         Self::default()
     }
 
-    /// Register `source`'s pixel data.
+    /// Register `source`'s pixel data, refusing a byte-count mismatch with
+    /// [`PixelsError`] (FR-036) and leaving the registry untouched: a
+    /// refused registration keeps whatever is already registered under the
+    /// name — and if nothing is, the name resolves to nothing and
+    /// [`crate::paint`] names it in `undrawn`.
     ///
     /// Replacing an existing registration evicts its cached upload: the
     /// next [`ImageSources::resolve`] re-decodes and re-uploads rather than
@@ -96,10 +161,16 @@ impl ImageSources {
     /// eviction a host that hot-swaps a source (a live chart, a changed
     /// icon) would draw stale pixels forever, since the cache has no other
     /// way to learn the registration changed.
-    pub fn register(&mut self, source: impl Into<String>, pixels: ImagePixels) {
+    pub fn register(
+        &mut self,
+        source: impl Into<String>,
+        pixels: ImagePixels,
+    ) -> Result<(), PixelsError> {
+        pixels.validate()?;
         let source = source.into();
         self.uploaded.remove(&source);
         self.pixels.insert(source, pixels);
+        Ok(())
     }
 
     /// The texture for `source`, uploading it to `ctx` on first use and
@@ -153,7 +224,7 @@ pub fn contain(offer: Rect, natural: Vec2) -> Rect {
 
 #[cfg(test)]
 mod tests {
-    use super::{ImagePixels, ImageSources, contain};
+    use super::{ImagePixels, ImageSources, PixelsError, contain};
     use egui::{Context, Rect, Vec2, pos2, vec2};
 
     fn headless() -> Context {
@@ -171,14 +242,17 @@ mod tests {
         for _ in 0..(width * height) {
             rgba.extend_from_slice(&[255, 0, 0, 255]);
         }
-        ImagePixels::new(width, height, rgba)
+        ImagePixels::try_new(width, height, rgba)
+            .expect("fixture pixels must match their declared dimensions")
     }
 
     #[test]
     fn a_registered_source_resolves_to_a_texture_of_its_own_size() {
         let ctx = headless();
         let mut sources = ImageSources::new();
-        sources.register("logo", red_pixels(2, 1));
+        sources
+            .register("logo", red_pixels(2, 1))
+            .expect("valid fixture pixels must register");
 
         let handle = sources
             .resolve(&ctx, "logo")
@@ -193,14 +267,82 @@ mod tests {
         assert!(sources.resolve(&ctx, "nowhere").is_none());
     }
 
+    /// FR-036's refusal at the constructor: pixels whose byte count
+    /// disagrees with their declared dimensions are refused by name, not
+    /// accepted and silently never resolved.
+    #[test]
+    fn try_new_rejects_a_wrong_byte_count_with_the_named_error() {
+        let err = ImagePixels::try_new(4, 4, vec![0, 0, 0, 0])
+            .expect_err("4x4 RGBA8 needs 64 bytes, not 4");
+        assert_eq!(
+            err,
+            PixelsError {
+                width: 4,
+                height: 4,
+                len: 4
+            }
+        );
+        assert_eq!(err.to_string(), "image source 4x4 RGBA8 is 64 bytes, got 4");
+        assert!(
+            ImagePixels::try_new(2, 1, vec![0; 8]).is_ok(),
+            "a matching byte count must construct"
+        );
+    }
+
+    /// Registration is the loud gate (FR-036): `register` re-checks the
+    /// byte count and refuses a mismatch without touching the registry —
+    /// an entry already registered under the name keeps drawing.
+    #[test]
+    fn register_returns_err_for_a_wrong_byte_count() {
+        let ctx = headless();
+        let mut sources = ImageSources::new();
+        sources
+            .register("logo", red_pixels(2, 2))
+            .expect("valid fixture pixels must register");
+
+        // Built past `try_new` on purpose: field surgery is what makes
+        // `register`'s own check reachable, and what proves it is armed.
+        let bad = ImagePixels {
+            width: 4,
+            height: 4,
+            rgba: vec![1, 2, 3],
+        };
+        let err = sources
+            .register("logo", bad)
+            .expect_err("4x4 RGBA8 needs 64 bytes, not 3");
+        assert_eq!(
+            err,
+            PixelsError {
+                width: 4,
+                height: 4,
+                len: 3
+            }
+        );
+        assert!(
+            sources.resolve(&ctx, "logo").is_some(),
+            "a refused registration must leave the previous entry drawing"
+        );
+    }
+
     /// The one way "decode" can fail: pixel bytes that do not match the
-    /// declared dimensions. Registering fewer bytes than `width * height *
-    /// 4` demands must not panic and must not resolve.
+    /// declared dimensions. `try_new` and `register` both refuse those
+    /// bytes now; this is the last net for bytes that reach the registry
+    /// past both (field surgery, or a future in-crate constructor) — it
+    /// must not panic and must not resolve, so `crate::paint` names the
+    /// source in `undrawn` exactly as it names an unregistered one.
     #[test]
     fn a_source_with_the_wrong_byte_count_fails_to_resolve() {
         let ctx = headless();
         let mut sources = ImageSources::new();
-        sources.register("broken", ImagePixels::new(4, 4, vec![0, 0, 0, 0]));
+        // Past `try_new` and `register`, on purpose — see the doc above.
+        sources.pixels.insert(
+            "broken".into(),
+            ImagePixels {
+                width: 4,
+                height: 4,
+                rgba: vec![0, 0, 0, 0],
+            },
+        );
         assert!(
             sources.resolve(&ctx, "broken").is_none(),
             "4x4 RGBA8 needs 64 bytes, not 4"
@@ -215,15 +357,22 @@ mod tests {
     fn a_resolved_source_is_cached_rather_than_re_decoded_every_call() {
         let ctx = headless();
         let mut sources = ImageSources::new();
-        sources.register("logo", red_pixels(2, 2));
+        sources
+            .register("logo", red_pixels(2, 2))
+            .expect("valid fixture pixels must register");
         let first_id = sources.resolve(&ctx, "logo").expect("first resolve").id();
 
         // Reach past `register` (which would evict the cache on purpose)
         // straight into the private field, simulating a resolve call that
         // bypassed decoding because the answer was already cached.
-        sources
-            .pixels
-            .insert("logo".into(), ImagePixels::new(4, 4, vec![9; 3]));
+        sources.pixels.insert(
+            "logo".into(),
+            ImagePixels {
+                width: 4,
+                height: 4,
+                rgba: vec![9; 3],
+            },
+        );
 
         let second = sources
             .resolve(&ctx, "logo")
@@ -241,10 +390,14 @@ mod tests {
     fn re_registering_a_source_replaces_its_cached_texture() {
         let ctx = headless();
         let mut sources = ImageSources::new();
-        sources.register("logo", red_pixels(2, 1));
+        sources
+            .register("logo", red_pixels(2, 1))
+            .expect("valid fixture pixels must register");
         let first = sources.resolve(&ctx, "logo").expect("first").id();
 
-        sources.register("logo", red_pixels(4, 4));
+        sources
+            .register("logo", red_pixels(4, 4))
+            .expect("valid fixture pixels must register");
         let second = sources
             .resolve(&ctx, "logo")
             .expect("re-registered source must still resolve");

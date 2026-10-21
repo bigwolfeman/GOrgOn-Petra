@@ -4712,10 +4712,13 @@ mod tests {
         let mut shaper = host.shaper();
 
         let mut images = ImageSources::new();
-        images.register(
-            "gallery/logo",
-            ImagePixels::new(2, 1, vec![255, 0, 0, 255, 0, 255, 0, 255]),
-        );
+        images
+            .register(
+                "gallery/logo",
+                ImagePixels::try_new(2, 1, vec![255, 0, 0, 255, 0, 255, 0, 255])
+                    .expect("2x1 RGBA8 is exactly 8 bytes"),
+            )
+            .expect("valid pixels must register");
         let painters = CustomPainters::new();
         let report = paint_frame_with_hosts(
             &host.painter(),
@@ -4744,7 +4747,13 @@ mod tests {
         // A registry that has *something* registered, just not this name —
         // proves the miss is per-source, not "the registry is empty".
         let mut images = ImageSources::new();
-        images.register("gallery/logo", ImagePixels::new(1, 1, vec![0, 0, 0, 255]));
+        images
+            .register(
+                "gallery/logo",
+                ImagePixels::try_new(1, 1, vec![0, 0, 0, 255])
+                    .expect("1x1 RGBA8 is exactly 4 bytes"),
+            )
+            .expect("valid pixels must register");
         let painters = CustomPainters::new();
         let report = paint_frame_with_hosts(
             &host.painter(),
@@ -4763,18 +4772,28 @@ mod tests {
         assert!(!report.is_complete(), "{report:?}");
     }
 
-    /// A source registered with pixels that do not decode (wrong byte
-    /// count for the declared dimensions) fails to resolve exactly like an
-    /// unregistered one — named, not silently blank, not a panic.
+    /// FR-036: a wrong byte count can no longer sit in the registry and
+    /// fail at paint time — `ImagePixels::try_new` and `register` refuse
+    /// it — so this drives the refusal end to end: the bytes never
+    /// register, and a frame naming that source must still fail loudly at
+    /// paint time — named in `undrawn`, never silently blank, never a
+    /// panic, never complete. The refusal itself is pinned in
+    /// `image.rs::register_returns_err_for_a_wrong_byte_count`; the
+    /// undrawn-and-incomplete net is the same one an unregistered name
+    /// gets, pinned here through the refusal path.
     #[test]
-    fn a_source_that_fails_to_decode_is_named_in_undrawn() {
+    fn a_wrong_byte_count_is_refused_and_the_name_stays_undrawn() {
         let host = Headless::new();
         let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
         let frame = frame_of(&image_node("gallery/broken"), &mut h);
         let mut shaper = host.shaper();
 
+        let refused =
+            ImagePixels::try_new(4, 4, vec![1, 2, 3]).expect_err("4x4 RGBA8 needs 64 bytes, not 3");
+        assert_eq!(refused.len, 3, "{refused}");
+
+        // The refusal is why the registry is empty for this name.
         let mut images = ImageSources::new();
-        images.register("gallery/broken", ImagePixels::new(4, 4, vec![1, 2, 3]));
         let painters = CustomPainters::new();
         let report = paint_frame_with_hosts(
             &host.painter(),
