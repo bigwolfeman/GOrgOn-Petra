@@ -293,6 +293,10 @@ impl<A: App> Camera<A> {
     /// Callers name the node key they wrote in the component — `"dd-trigger"` —
     /// not the full `/root/body/.../dd-trigger` path, so a later reshuffle of
     /// the page's nesting does not silently turn a driving step into a no-op.
+    /// The tail matches on **path-segment boundaries**, the same rule
+    /// `common::path_has` matches routes by: `"field-md"` resolves the node
+    /// keyed `field-md` and not one keyed `skeleton-field-md`, whose key is a
+    /// different key that merely ends with the same letters.
     ///
     /// # Panics
     /// If nothing matches, or if more than one placement does. Both messages
@@ -305,7 +309,7 @@ impl<A: App> Camera<A> {
             .placements
             .iter()
             .map(|p| p.id.as_str())
-            .filter(|id| id.ends_with(tail) || id.ends_with(&format!("{tail}/")))
+            .filter(|id| tail_matches(id, tail))
             .collect();
         match hits.len() {
             1 => hits[0].to_owned(),
@@ -329,12 +333,12 @@ impl<A: App> Camera<A> {
     }
 
     /// Whether any placement's id ends with `tail`. For asserting a thing
-    /// appeared, or did not.
+    /// appeared, or did not. Segment boundaries, as [`Self::id`] resolves.
     pub fn has(&self, tail: &str) -> bool {
         self.frame()
             .placements
             .iter()
-            .any(|p| p.id.ends_with(tail) || p.id.ends_with(&format!("{tail}/")))
+            .any(|p| tail_matches(&p.id, tail))
     }
 
     /// Every placed id, for working out what a page actually built.
@@ -1158,6 +1162,31 @@ impl Camera<Catalog> {
     }
 }
 
+/// Whether placement id `id` carries `tail` as its trailing path segment or
+/// segments — the [`Camera::id`] resolution rule, shared with
+/// [`Camera::has`] so the two cannot drift apart.
+///
+/// `tail` is either one node key (`"btn-ghost"`) or a slash-joined path
+/// fragment (`"/row/rail"`, `"menu/content/mn-0"`). A match must land on
+/// segment boundaries: `"field-md"` names the node keyed `field-md`, never
+/// `skeleton-field-md`, which is a different key whose letters happen to end
+/// the same way. Trailing slashes on either side are layout noise, not
+/// segments, so both are trimmed first.
+fn tail_matches(id: &str, tail: &str) -> bool {
+    let id = id.trim_end_matches('/');
+    let tail = tail.trim_end_matches('/');
+    if tail.is_empty() {
+        return false;
+    }
+    if id == tail {
+        return true;
+    }
+    let Some(at) = id.len().checked_sub(tail.len()) else {
+        return false;
+    };
+    id[at..].starts_with(tail) && (tail.starts_with('/') || id[..at].ends_with('/'))
+}
+
 fn sized(mut input: RawInput) -> RawInput {
     input.screen_rect = Some(egui::Rect::from_min_size(
         Pos2::ZERO,
@@ -1497,11 +1526,12 @@ mod tests {
     #[test]
     fn hovering_a_ghost_button_changes_what_the_page_rasterizes_to() {
         let mut cam = Camera::on("Button");
+        let ghost = cam.id("btn-ghost");
         let resting = cam.shoot("_smoke-ghost-resting");
         cam.hover("btn-ghost");
         assert_eq!(
             cam.hovered().as_deref(),
-            Some("/page/shell/main-scroll/main/variants/buttons/kinds/btn-ghost"),
+            Some(ghost.as_str()),
             "the host did not even register the pointer over the ghost button, \
              so this test cannot say anything about painting"
         );
@@ -3060,7 +3090,26 @@ mod tests {
             pixels_in(&later, steps),
             "a still progress indicator changed between two frames"
         );
-        assert_eq!(cam.frame().transitions.ambient, 0);
+        // This page's own skeleton cell sits beside the still control now
+        // (spec 008 T020) and declares its shimmer ambient — that is a
+        // repaint the node asked for, not one the host invented. The claim
+        // here is that the still control is still, and that every ambient
+        // request on the page is a declared skeleton pulse: anything else
+        // scheduling itself is the unannounced repaint FR-017 forbids.
+        let frame = cam.frame();
+        let skeletons = frame
+            .placements
+            .iter()
+            .filter(|p| p.semantics.skeleton)
+            .count();
+        assert!(
+            skeletons > 0,
+            "the progress page's own skeleton cell is not on screen beside the control"
+        );
+        assert_eq!(
+            frame.transitions.ambient, skeletons,
+            "every ambient request on this page must be a declared skeleton pulse"
+        );
     }
 
     /// Row 21: no rail, and the toast is Carbon's 288.
@@ -4262,6 +4311,11 @@ mod tests {
                 if caret_is_covered(places, i, &[bar]) {
                     continue;
                 }
+                // Where the bar's own layer paints a ground over the bar,
+                // a neighbour strictly beneath that layer is covered by the
+                // ground and cannot read under the bar — see
+                // `bar_paints_on_a_grounded_surface`.
+                let grounded = bar_paints_on_a_grounded_surface(places, &frame.content, i, bar);
                 for (k, other) in places.iter().enumerate() {
                     // Two kinds of collision count. Another **control**, so
                     // the operator cannot tell which of the two the bar
@@ -4276,13 +4330,18 @@ mod tests {
                         .actions
                         .contains(&gorgon_petra::tree::Interaction::Focus);
                     let has_fill = frame.content[k].tokens.contains_key("background");
-                    if k == i || (!is_control && !has_fill) || !other.is_visible() || is_kin(i, k) {
+                    if k == i
+                        || (!is_control && !has_fill)
+                        || !other.is_visible()
+                        || is_kin(i, k)
+                        || (other.z < node.z && grounded)
+                    {
                         continue;
                     }
                     if overlaps(bar, other.rect) {
                         collisions.push(format!(
-                            "{}: {}'s bar {bar:?} lands on {}",
-                            cell.row.component, node.id, other.id
+                            "{}: {}'s bar {bar:?} lands on {} at {:?}",
+                            cell.row.component, node.id, other.id, other.rect
                         ));
                     }
                 }
@@ -4734,6 +4793,41 @@ mod tests {
                 && s.is_visible()
                 && marks.iter().any(|m| overlaps(*m, s.rect))
         })
+    }
+
+    /// Whether the bar of the node at `i` paints on a surface that draws its
+    /// own opaque ground over the whole bar.
+    ///
+    /// What a bar "lands on" is what the eye sees under it, which is the
+    /// topmost ground painted there, not every node whose rect happens to
+    /// span it. A node strictly beneath a grounded surface is invisible
+    /// wherever that ground reaches — the open calendar's month-header bars
+    /// run down over the skeleton card the `page-with-skeleton` column
+    /// places under them (spec 008 T020) and neither reads as the other's.
+    /// But a bar that escapes its own surface's rect really does draw on
+    /// whatever lies underneath, so the ground must cover the bar to count
+    /// as occluding it, and a surface painting no `background` token
+    /// occludes nothing.
+    fn bar_paints_on_a_grounded_surface(
+        places: &[gorgon_petra::frame::Placement],
+        content: &[gorgon_petra::frame::PaintContent],
+        i: usize,
+        bar: Rect,
+    ) -> bool {
+        let mut up = Some(i);
+        while let Some(k) = up {
+            let p = &places[k];
+            if p.kind == gorgon_petra::tree::NodeKind::Surface {
+                let s = p.rect;
+                let covers = bar.x >= s.x
+                    && bar.y >= s.y
+                    && bar.x + bar.w <= s.x + s.w
+                    && bar.y + bar.h <= s.y + s.h;
+                return covers && content[k].tokens.contains_key("background");
+            }
+            up = p.parent;
+        }
+        false
     }
 
     /// The triggers a focus-figure gate presses before it measures.

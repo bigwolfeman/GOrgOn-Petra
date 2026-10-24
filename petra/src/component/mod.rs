@@ -133,6 +133,7 @@ mod rating;
 mod search;
 mod section;
 mod select;
+mod skeleton;
 mod slider;
 mod status;
 mod structured_list;
@@ -244,6 +245,9 @@ pub use rating::rating;
 pub use search::{search, search_lg, search_sm};
 pub use section::section;
 pub use select::{select, select_lg, select_open, select_sm};
+pub use skeleton::{
+    SizeStep, SkeletonAnatomy, advance_ambient_skeletons, skeleton, skeleton_pulse_phase,
+};
 pub use slider::{
     slider, slider_input_text, slider_readonly, slider_value_at, slider_value_of_input,
 };

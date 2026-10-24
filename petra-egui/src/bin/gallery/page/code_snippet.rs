@@ -213,6 +213,42 @@ impl Page for CodeSnippet {
         (ends > self.now).then_some(ends)
     }
 
+    /// Carbon's code-snippet skeleton (`_snippet.scss`): the container is 56
+    /// (single) or 98 (multi) tall and its text bars are `--skeleton` spans,
+    /// 16 high × 100 %.
+    fn skeleton(&self, now: f64) -> Option<ViewNode> {
+        use gorgon_petra::component::{SizeStep, SkeletonAnatomy, skeleton};
+
+        use super::common::{column, sp};
+        Some(column(
+            "skeleton-blocks",
+            sp("spacing-05"),
+            vec![
+                skeleton(
+                    "skeleton-line-0",
+                    SkeletonAnatomy::Text,
+                    SizeStep::Md,
+                    320.0,
+                    now,
+                ),
+                skeleton(
+                    "skeleton-line-1",
+                    SkeletonAnatomy::Text,
+                    SizeStep::Md,
+                    320.0,
+                    now,
+                ),
+                skeleton(
+                    "skeleton-line-2",
+                    SkeletonAnatomy::Text,
+                    SizeStep::Md,
+                    320.0,
+                    now,
+                ),
+            ],
+        ))
+    }
+
     fn body(&self) -> ViewNode {
         section(
             "snippets",

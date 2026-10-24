@@ -200,13 +200,39 @@ local function page_body(state, row)
       string.lower(row.slice)
     ))
   end
-  return ui.seat_card("page-body", { node = raw })
+  local card = ui.seat_card("page-body", { node = raw })
+  if state.skeleton == nil then
+    return card
+  end
+  -- `Catalog::page_body`'s Some arm, verbatim: the page's own skeleton cell
+  -- stands BESIDE the re-seated card, its own top-level section at the same
+  -- depth, never inside the card (spec 008 T020).
+  --
+  -- The cell itself is seeded through `state.skeleton` from the Rust page's
+  -- own `Page::skeleton` (`lua_parity.rs`), not transcribed here: each of the
+  -- twenty pages with a skeleton composes its own block arrangement and
+  -- there is no Lua source for any of them yet. So what this mirror proves
+  -- is the scaffolding around the cell — the column's key and spacing, the
+  -- section's key/title, the body's key/spacing, and where each sits — and
+  -- the day a page's skeleton gets a Lua source of its own, seeding goes and
+  -- the transcription becomes the page module's.
+  return common.column("page-with-skeleton", "spacing.md", {
+    card,
+    ui.section({
+      key = "skeleton",
+      label = "Skeleton",
+      children = {
+        common.body("skeleton-body", "spacing.md", { state.skeleton }),
+      },
+    }),
+  })
 end
 
 assert(
   type(state) == "table",
   "catalog.lua: the harness must set the `state` global before evaluating this chunk: "
-    .. "{ open = <inventory row name>, theme = \"dark\" | \"light\", body = <the page's body tree> }"
+    .. "{ open = <inventory row name>, theme = \"dark\" | \"light\", body = <the page's body tree>, "
+    .. "skeleton = <the page's skeleton cell tree, when its Page::skeleton returns one> }"
 )
 assert(
   type(state.open) == "string",

@@ -31,6 +31,21 @@ impl Page for RadioButton {
         "Radio button"
     }
 
+    /// Carbon's radio-button skeleton (`_radio-button.scss`): the label bar,
+    /// 18×100 — the appearance slot is hidden (`display: none`), not
+    /// skeletonized.
+    fn skeleton(&self, now: f64) -> Option<ViewNode> {
+        use gorgon_petra::component::{SizeStep, SkeletonAnatomy, skeleton};
+
+        Some(skeleton(
+            "skeleton-label",
+            SkeletonAnatomy::Label,
+            SizeStep::Md,
+            100.0,
+            now,
+        ))
+    }
+
     fn body(&self) -> ViewNode {
         section(
             "group",

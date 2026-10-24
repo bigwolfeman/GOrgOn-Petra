@@ -50,6 +50,41 @@ impl Page for NumberInput {
         "Number input"
     }
 
+    /// Carbon's number-input skeleton (`_number-input.scss`): the field
+    /// block sized to the input — `layout.size('height')`, 32/40/48 by step.
+    fn skeleton(&self, now: f64) -> Option<ViewNode> {
+        use gorgon_petra::component::{SizeStep, SkeletonAnatomy, skeleton};
+
+        use super::common::{row, sp};
+        Some(row(
+            "skeleton-blocks",
+            sp("spacing-05"),
+            vec![
+                skeleton(
+                    "skeleton-field-sm",
+                    SkeletonAnatomy::Control,
+                    SizeStep::Sm,
+                    200.0,
+                    now,
+                ),
+                skeleton(
+                    "skeleton-field-md",
+                    SkeletonAnatomy::Control,
+                    SizeStep::Md,
+                    200.0,
+                    now,
+                ),
+                skeleton(
+                    "skeleton-field-lg",
+                    SkeletonAnatomy::Control,
+                    SizeStep::Lg,
+                    200.0,
+                    now,
+                ),
+            ],
+        ))
+    }
+
     fn body(&self) -> ViewNode {
         section(
             "number",

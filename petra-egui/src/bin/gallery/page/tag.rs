@@ -20,6 +20,40 @@ impl Page for Tag {
         "Tag"
     }
 
+    /// Carbon's tag skeleton (`_tag.scss`): 60 wide, 18/24/32 at sm/md/lg.
+    fn skeleton(&self, now: f64) -> Option<ViewNode> {
+        use gorgon_petra::component::{SizeStep, SkeletonAnatomy, skeleton};
+
+        use super::common::{row, sp};
+        Some(row(
+            "skeleton-blocks",
+            sp("spacing-05"),
+            vec![
+                skeleton(
+                    "skeleton-tag-sm",
+                    SkeletonAnatomy::Tag,
+                    SizeStep::Sm,
+                    60.0,
+                    now,
+                ),
+                skeleton(
+                    "skeleton-tag-md",
+                    SkeletonAnatomy::Tag,
+                    SizeStep::Md,
+                    60.0,
+                    now,
+                ),
+                skeleton(
+                    "skeleton-tag-lg",
+                    SkeletonAnatomy::Tag,
+                    SizeStep::Lg,
+                    60.0,
+                    now,
+                ),
+            ],
+        ))
+    }
+
     fn body(&self) -> ViewNode {
         section(
             "tags",

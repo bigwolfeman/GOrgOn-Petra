@@ -48,8 +48,8 @@ use std::sync::Arc;
 
 use egui::{Context, Id, LayerId, Order};
 use gorgon_petra::anim::{FrameDecision, TransitionRegistry, wants_frame};
-use gorgon_petra::component::advance_ambient_spinners;
 use gorgon_petra::component::registry::bound::ExpandedTree;
+use gorgon_petra::component::{advance_ambient_skeletons, advance_ambient_spinners};
 use gorgon_petra::focus::FocusTree;
 use gorgon_petra::frame::{
     FrameCounter, PetrifiedFrame, Placement, TransitionActivity, Viewport, petrify,
@@ -4159,8 +4159,17 @@ impl<A: App> Host<A> {
                         let mut node = prepared.drawn().clone();
                         // Contributions are owned snapshots. Advance ambient
                         // loading canvases to this pass's clock so a spinner
-                        // turns without Lua republishing every frame.
+                        // turns without Lua republishing every frame. The
+                        // skeleton's pulse is the same declared motion
+                        // (`specs/008-petra-carbon-variants/contracts/skeleton.md`);
+                        // under reduced motion it draws Carbon's own
+                        // `animation: none` rest state.
                         advance_ambient_spinners(&mut node, self.pass_clock);
+                        advance_ambient_skeletons(
+                            &mut node,
+                            self.pass_clock,
+                            self.motion.scheduler().engine().policy().reduced_motion(),
+                        );
                         placed.push((path.clone(), self.keyed(prepared.id, node)));
                         MountOutcome::Mounted
                     }

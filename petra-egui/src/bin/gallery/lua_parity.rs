@@ -112,7 +112,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use gorgon_kernel_lua::convert::lua_to_json;
+use gorgon_kernel_lua::convert::{json_to_lua, lua_to_json};
 use gorgon_kernel_lua::ui::install;
 use gorgon_petra::component::registry::expand;
 use gorgon_petra::geom::Point;
@@ -363,7 +363,15 @@ fn press_theme_segment(catalog: &mut Catalog, mode: ThemeMode) {
 /// doc): the open row by name, the theme, and the body as
 /// `pages/<slug>.lua` itself builds it (already proven equal to `body()` by
 /// the test above), so this comparison is whole-`view()` against whole-`view()`
-/// with nothing stubbed on either side.
+/// with nothing stubbed on either side. One seeded value is NOT transcribed
+/// from Lua source: `state.skeleton`, the page's own skeleton cell, comes
+/// from the Rust page's `Page::skeleton` because no Lua page source builds
+/// one yet (spec 008 T020 landed the cells twenty pages deep and only the
+/// bodies were ported). What that leaves this test proving about the
+/// skeleton is the scaffolding `catalog.rs` wraps the cell in — the
+/// `page-with-skeleton` column and the `Skeleton` section card's key, title,
+/// order and spacing — which is exactly the code that drifted when T020
+/// landed and this mirror had never heard of it.
 ///
 /// What a green run here does and does not prove is the same shape as the
 /// page walk's — reachability, param fidelity, transcription, plus real
@@ -411,18 +419,25 @@ fn lua_catalog_chrome_builds_the_same_tree_as_the_rust_one() {
             .eval()
             .unwrap_or_else(|e| panic!("{}: {e}", body_path.display()));
         let state: Table = lua.create_table().expect("a state table");
+        let mut catalog = Catalog::on_page(component);
+        press_theme_segment(&mut catalog, mode);
         state.set("open", component).expect("set state.open");
         state
             .set("theme", theme_wire(mode))
             .expect("set state.theme");
         state.set("body", body).expect("set state.body");
+        if let Some(cell) = catalog.skeleton_cell() {
+            let wire = serde_json::to_value(&cell)
+                .unwrap_or_else(|e| panic!("a skeleton cell does not serialize: {e}"));
+            let lua_cell = json_to_lua(&lua, &wire)
+                .unwrap_or_else(|e| panic!("a skeleton cell does not cross into Lua: {e}"));
+            state.set("skeleton", lua_cell).expect("set state.skeleton");
+        }
         lua.globals()
             .set("state", state)
             .expect("set the state global");
         let from_lua = build_expanded(&lua, &src, &path);
 
-        let mut catalog = Catalog::on_page(component);
-        press_theme_segment(&mut catalog, mode);
         let from_rust = catalog.view();
         if from_lua != from_rust {
             panic!(

@@ -36,6 +36,34 @@ impl Page for Toggle {
         "Toggle"
     }
 
+    /// Carbon's toggle skeleton (`_toggle.scss`): the knob, 18×18 circular,
+    /// beside the 24×8 rectangle the switch stands in for.
+    fn skeleton(&self, now: f64) -> Option<ViewNode> {
+        use gorgon_petra::component::{SizeStep, SkeletonAnatomy, skeleton};
+
+        use super::common::{row, sp};
+        Some(row(
+            "skeleton-blocks",
+            sp("spacing-05"),
+            vec![
+                skeleton(
+                    "skeleton-knob",
+                    SkeletonAnatomy::Knob,
+                    SizeStep::Md,
+                    18.0,
+                    now,
+                ),
+                skeleton(
+                    "skeleton-rect",
+                    SkeletonAnatomy::Sliver,
+                    SizeStep::Md,
+                    24.0,
+                    now,
+                ),
+            ],
+        ))
+    }
+
     fn body(&self) -> ViewNode {
         section(
             "states",

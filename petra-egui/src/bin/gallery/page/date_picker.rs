@@ -188,6 +188,41 @@ impl Page for DatePicker {
         "Date picker"
     }
 
+    /// Carbon's date-picker skeleton (`_date-picker-next.scss`): the input
+    /// skeleton is a 14×75 block; the range variant puts two at 143.5 wide.
+    fn skeleton(&self, now: f64) -> Option<ViewNode> {
+        use gorgon_petra::component::{SizeStep, SkeletonAnatomy, skeleton};
+
+        use super::common::{row, sp};
+        Some(row(
+            "skeleton-blocks",
+            sp("spacing-05"),
+            vec![
+                skeleton(
+                    "skeleton-input",
+                    SkeletonAnatomy::Caption,
+                    SizeStep::Md,
+                    75.0,
+                    now,
+                ),
+                skeleton(
+                    "skeleton-range-a",
+                    SkeletonAnatomy::Caption,
+                    SizeStep::Md,
+                    143.5,
+                    now,
+                ),
+                skeleton(
+                    "skeleton-range-b",
+                    SkeletonAnatomy::Caption,
+                    SizeStep::Md,
+                    143.5,
+                    now,
+                ),
+            ],
+        ))
+    }
+
     fn body(&self) -> ViewNode {
         section(
             "date",

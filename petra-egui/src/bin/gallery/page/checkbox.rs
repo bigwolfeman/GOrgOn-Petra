@@ -40,6 +40,20 @@ impl Page for Checkbox {
         "Checkbox"
     }
 
+    /// Carbon's checkbox skeleton (`_checkbox.scss`): the label text is a
+    /// `--skeleton` bar at `$spacing-05` (16) high × 100 wide.
+    fn skeleton(&self, now: f64) -> Option<ViewNode> {
+        use gorgon_petra::component::{SizeStep, SkeletonAnatomy, skeleton};
+
+        Some(skeleton(
+            "skeleton-label",
+            SkeletonAnatomy::Text,
+            SizeStep::Md,
+            100.0,
+            now,
+        ))
+    }
+
     fn body(&self) -> ViewNode {
         section(
             "states",

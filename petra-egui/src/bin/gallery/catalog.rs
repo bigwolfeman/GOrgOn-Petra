@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use egui::ViewportBuilder;
 use gorgon_petra::component::{
-    button, content_switcher, content_switcher_item, heading, list_row, seat_card, text,
+    button, content_switcher, content_switcher_item, heading, list_row, seat_card, section, text,
 };
 use gorgon_petra::frame::PetrifiedFrame;
 use gorgon_petra::geom::{Align, Axis};
@@ -28,7 +28,7 @@ use gorgon_petra::tree::{
 use gorgon_petra_egui::host::{App, FilePick, Host};
 
 use crate::cell::Cell;
-use crate::page::common::{column, path_has, row, sp, tok, wrapped};
+use crate::page::common::{body, column, path_has, row, sp, tok, wrapped};
 use crate::page::{self, Page};
 
 /// Inner size an interactive catalog window asks for. Not a layout pin: the
@@ -168,6 +168,10 @@ pub struct Catalog {
     /// every call, and `Host::rebind_theme_if_stale` rebinds and clears the
     /// shaper cache on every move of it.
     pending_theme: Option<ThemeMode>,
+    /// The host's clock for the pass about to build the open page's body,
+    /// forwarded from [`App::tick`] to [`Page::skeleton`]: the phase the
+    /// shared skeleton shape pulses at (spec 008 T020).
+    now: f64,
 }
 
 impl Default for Catalog {
@@ -191,6 +195,7 @@ impl Default for Catalog {
             // `initial_theme_mode()` is dark unless the environment says
             // otherwise, so the two agree.
             pending_theme: None,
+            now: 0.0,
         }
     }
 }
@@ -378,13 +383,44 @@ impl Catalog {
         })
     }
 
-    /// The open page's body, re-seated against its card.
+    /// The open page's own skeleton cell — the pulse its Skeleton section
+    /// card stands beside (spec 008 T020), or `None` for a page whose slice
+    /// documents no skeleton state.
+    ///
+    /// One home for the question rather than one per caller: [`Self::page_body`]
+    /// places the cell it returns, and `lua_parity`'s chrome proof seeds its
+    /// `state.skeleton` from the same call, so the Lua mirror and the Rust
+    /// chrome cannot disagree about which page has one or what phase it
+    /// pulses at.
+    pub(crate) fn skeleton_cell(&self) -> Option<ViewNode> {
+        self.open_page().and_then(|page| page.skeleton(self.now))
+    }
+
+    /// The open page's body, re-seated against its card, with the page's own
+    /// skeleton cell under it when the component has one (spec 008 T020).
     ///
     /// The re-seat walk is `component::seat_card` now, shared with the Lua
     /// chrome mirror through the registry
     /// (`.agents/notes/implemented/architecture/2026-09-18-the-gallery-chrome-reaches-lua.md`).
+    /// The skeleton cell sits *beside* the card rather than inside it and is
+    /// never re-seated: it is its own top-level section, a card at the same
+    /// depth the page body is.
     fn page_body(&self) -> ViewNode {
-        seat_card(self.page_body_raw())
+        match self.skeleton_cell() {
+            None => seat_card(self.page_body_raw()),
+            Some(cell) => column(
+                "page-with-skeleton",
+                sp("spacing.md"),
+                vec![
+                    seat_card(self.page_body_raw()),
+                    section(
+                        "skeleton",
+                        "Skeleton",
+                        vec![body("skeleton-body", sp("spacing.md"), vec![cell])],
+                    ),
+                ],
+            ),
+        }
     }
 
     fn page_body_raw(&self) -> ViewNode {
@@ -415,6 +451,7 @@ impl RowSource for Catalog {
 
 impl App for Catalog {
     fn tick(&mut self, now: f64) {
+        self.now = now;
         if let Some(page) = self.open_page_mut() {
             page.tick(now);
         }

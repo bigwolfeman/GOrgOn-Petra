@@ -44,6 +44,41 @@ impl Page for Breadcrumb {
         "Breadcrumb"
     }
 
+    /// Carbon's breadcrumb skeleton (`_breadcrumb.scss`): one `--skeleton`
+    /// link bar per crumb, 16 high (1rem) × 100 wide.
+    fn skeleton(&self, now: f64) -> Option<ViewNode> {
+        use gorgon_petra::component::{SizeStep, SkeletonAnatomy, skeleton};
+
+        use super::common::{row, sp};
+        Some(row(
+            "skeleton-blocks",
+            sp("spacing-05"),
+            vec![
+                skeleton(
+                    "skeleton-crumb-0",
+                    SkeletonAnatomy::Text,
+                    SizeStep::Md,
+                    100.0,
+                    now,
+                ),
+                skeleton(
+                    "skeleton-crumb-1",
+                    SkeletonAnatomy::Text,
+                    SizeStep::Md,
+                    100.0,
+                    now,
+                ),
+                skeleton(
+                    "skeleton-crumb-2",
+                    SkeletonAnatomy::Text,
+                    SizeStep::Md,
+                    100.0,
+                    now,
+                ),
+            ],
+        ))
+    }
+
     fn body(&self) -> ViewNode {
         // Carbon shows the ancestors of the current page and the current
         // page, and nothing below it. So the trail is `PATH[..=here]`, and

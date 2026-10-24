@@ -46,6 +46,41 @@ impl Page for Tabs {
         "Tabs"
     }
 
+    /// Carbon's tabs skeleton (`_tabs.scss`): each nav link is a 10rem slot
+    /// holding a `--skeleton` span, 14 high × 100 % of the slot (160 wide).
+    fn skeleton(&self, now: f64) -> Option<ViewNode> {
+        use gorgon_petra::component::{SizeStep, SkeletonAnatomy, skeleton};
+
+        use super::common::{row, sp};
+        Some(row(
+            "skeleton-blocks",
+            sp("spacing-05"),
+            vec![
+                skeleton(
+                    "skeleton-tab-0",
+                    SkeletonAnatomy::Caption,
+                    SizeStep::Md,
+                    160.0,
+                    now,
+                ),
+                skeleton(
+                    "skeleton-tab-1",
+                    SkeletonAnatomy::Caption,
+                    SizeStep::Md,
+                    160.0,
+                    now,
+                ),
+                skeleton(
+                    "skeleton-tab-2",
+                    SkeletonAnatomy::Caption,
+                    SizeStep::Md,
+                    160.0,
+                    now,
+                ),
+            ],
+        ))
+    }
+
     fn body(&self) -> ViewNode {
         let vertical = vertical_tab_bar(
             "vert-strip",

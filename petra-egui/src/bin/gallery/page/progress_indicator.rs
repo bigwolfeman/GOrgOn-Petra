@@ -15,6 +15,21 @@ impl Page for ProgressIndicator {
         "Progress indicator"
     }
 
+    /// Carbon's progress-indicator skeleton (`_progress.scss`): the label
+    /// bar only, 14×40 — an intentional partial-skeleton: the step icon and
+    /// connector line stay real even while the label shimmers.
+    fn skeleton(&self, now: f64) -> Option<ViewNode> {
+        use gorgon_petra::component::{SizeStep, SkeletonAnatomy, skeleton};
+
+        Some(skeleton(
+            "skeleton-label",
+            SkeletonAnatomy::Caption,
+            SizeStep::Md,
+            40.0,
+            now,
+        ))
+    }
+
     fn body(&self) -> ViewNode {
         section(
             "steps",

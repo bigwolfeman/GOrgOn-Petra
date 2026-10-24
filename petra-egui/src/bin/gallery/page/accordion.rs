@@ -46,6 +46,43 @@ impl Page for Accordion {
         "Accordion"
     }
 
+    /// Carbon's accordion skeleton (`_accordion.scss`): the item title is a
+    /// `--skeleton__text` bar (16 high × 100 % of the title slot); the
+    /// chevron arrow is NOT skeletonized — it stays a real icon at reduced
+    /// opacity.
+    fn skeleton(&self, now: f64) -> Option<ViewNode> {
+        use gorgon_petra::component::{SizeStep, SkeletonAnatomy, skeleton};
+
+        use super::common::{column, sp};
+        Some(column(
+            "skeleton-blocks",
+            sp("spacing-05"),
+            vec![
+                skeleton(
+                    "skeleton-item-0",
+                    SkeletonAnatomy::Text,
+                    SizeStep::Md,
+                    240.0,
+                    now,
+                ),
+                skeleton(
+                    "skeleton-item-1",
+                    SkeletonAnatomy::Text,
+                    SizeStep::Md,
+                    240.0,
+                    now,
+                ),
+                skeleton(
+                    "skeleton-item-2",
+                    SkeletonAnatomy::Text,
+                    SizeStep::Md,
+                    240.0,
+                    now,
+                ),
+            ],
+        ))
+    }
+
     fn body(&self) -> ViewNode {
         section(
             "items",

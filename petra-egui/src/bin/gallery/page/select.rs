@@ -29,6 +29,20 @@ impl Page for Select {
         "Select"
     }
 
+    /// Carbon's select skeleton (`_select.scss`): the input block, 2.5rem
+    /// (40) high at the md step, inline 100 %.
+    fn skeleton(&self, now: f64) -> Option<ViewNode> {
+        use gorgon_petra::component::{SizeStep, SkeletonAnatomy, skeleton};
+
+        Some(skeleton(
+            "skeleton-field",
+            SkeletonAnatomy::Control,
+            SizeStep::Md,
+            320.0,
+            now,
+        ))
+    }
+
     fn body(&self) -> ViewNode {
         let value = OPTIONS[self.selected].1;
         // `filled_body`, not `body`: a Carbon select is 100% of its

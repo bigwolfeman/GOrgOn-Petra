@@ -31,6 +31,21 @@ impl Page for Dropdown {
         "Dropdown"
     }
 
+    /// Carbon's dropdown skeleton (`_dropdown.scss`): the field block with
+    /// `border-radius-04`, the md step's 40-high fill at the field's inline
+    /// extent.
+    fn skeleton(&self, now: f64) -> Option<ViewNode> {
+        use gorgon_petra::component::{SizeStep, SkeletonAnatomy, skeleton};
+
+        Some(skeleton(
+            "skeleton-field",
+            SkeletonAnatomy::Control,
+            SizeStep::Md,
+            320.0,
+            now,
+        ))
+    }
+
     fn body(&self) -> ViewNode {
         let value = OPTIONS[self.selected].1;
         let field = if self.open {

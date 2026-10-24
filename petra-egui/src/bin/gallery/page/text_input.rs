@@ -100,6 +100,34 @@ impl Page for TextInput {
         "Text input"
     }
 
+    /// Carbon's text-input skeleton (`_text-input.scss`): the label is a
+    /// 14×75 `--skeleton` bar above the field block (32/40/48 by step).
+    fn skeleton(&self, now: f64) -> Option<ViewNode> {
+        use gorgon_petra::component::{SizeStep, SkeletonAnatomy, skeleton};
+
+        use super::common::{column, sp};
+        Some(column(
+            "skeleton-blocks",
+            sp("spacing-05"),
+            vec![
+                skeleton(
+                    "skeleton-label",
+                    SkeletonAnatomy::Caption,
+                    SizeStep::Md,
+                    75.0,
+                    now,
+                ),
+                skeleton(
+                    "skeleton-field-md",
+                    SkeletonAnatomy::Control,
+                    SizeStep::Md,
+                    320.0,
+                    now,
+                ),
+            ],
+        ))
+    }
+
     fn body(&self) -> ViewNode {
         section(
             "fields",

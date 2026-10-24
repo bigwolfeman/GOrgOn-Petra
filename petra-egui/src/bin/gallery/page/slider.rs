@@ -72,6 +72,35 @@ impl Page for Slider {
         "Slider"
     }
 
+    /// Carbon's slider skeleton (`_slider.scss`): the range labels are
+    /// 12×20 `--skeleton` blocks (min and max); the track and thumb are not
+    /// skeletonized — the track only gets `cursor: default`.
+    fn skeleton(&self, now: f64) -> Option<ViewNode> {
+        use gorgon_petra::component::{SizeStep, SkeletonAnatomy, skeleton};
+
+        use super::common::{row, sp};
+        Some(row(
+            "skeleton-blocks",
+            sp("spacing.md"),
+            vec![
+                skeleton(
+                    "skeleton-min",
+                    SkeletonAnatomy::Micro,
+                    SizeStep::Md,
+                    20.0,
+                    now,
+                ),
+                skeleton(
+                    "skeleton-max",
+                    SkeletonAnatomy::Micro,
+                    SizeStep::Md,
+                    20.0,
+                    now,
+                ),
+            ],
+        ))
+    }
+
     fn body(&self) -> ViewNode {
         section(
             "slide",

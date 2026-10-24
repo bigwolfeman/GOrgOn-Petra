@@ -19,6 +19,41 @@ impl Page for Button {
         "Button"
     }
 
+    /// Carbon's button skeleton (`_button.scss`): a 150-wide block at the
+    /// button's own step height (32/40/48 at sm/md/lg).
+    fn skeleton(&self, now: f64) -> Option<ViewNode> {
+        use gorgon_petra::component::{SizeStep, SkeletonAnatomy, skeleton};
+
+        use super::common::{row, sp};
+        Some(row(
+            "skeleton-blocks",
+            sp("spacing-05"),
+            vec![
+                skeleton(
+                    "skeleton-btn-sm",
+                    SkeletonAnatomy::Control,
+                    SizeStep::Sm,
+                    150.0,
+                    now,
+                ),
+                skeleton(
+                    "skeleton-btn-md",
+                    SkeletonAnatomy::Control,
+                    SizeStep::Md,
+                    150.0,
+                    now,
+                ),
+                skeleton(
+                    "skeleton-btn-lg",
+                    SkeletonAnatomy::Control,
+                    SizeStep::Lg,
+                    150.0,
+                    now,
+                ),
+            ],
+        ))
+    }
+
     fn body(&self) -> ViewNode {
         section(
             "variants",

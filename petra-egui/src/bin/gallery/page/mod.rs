@@ -115,6 +115,20 @@ pub trait Page {
     /// Build the body from this page's own state.
     fn body(&self) -> ViewNode;
 
+    /// The skeleton cell for this component's documented skeleton state
+    /// (spec 008 T020, FR-013): the one shared `skeleton` shape composed at
+    /// Carbon's published blocks for this component, at the host clock
+    /// `now` — a call with the right arguments, never a second drawing
+    /// routine (`specs/008-petra-carbon-variants/contracts/skeleton.md`).
+    ///
+    /// The chrome renders it as this page's own Skeleton cell, under the
+    /// page body. The default is `None`, for the pages whose slice
+    /// documents no skeleton state.
+    fn skeleton(&self, now: f64) -> Option<ViewNode> {
+        let _ = now;
+        None
+    }
+
     /// A theme this page wants the whole catalog switched to, taken and
     /// cleared.
     ///

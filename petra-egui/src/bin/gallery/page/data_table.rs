@@ -175,6 +175,16 @@ impl Page for DataTable {
         "Data table"
     }
 
+    /// Carbon's data-table skeleton (`data-table-skeleton.scss`): the
+    /// whole-table placeholder, header row plus body rows of 16×64 bars —
+    /// the shipped `data_table_skeleton` constructor (spec 005's T034).
+    fn skeleton(&self, now: f64) -> Option<ViewNode> {
+        use gorgon_petra::component::data_table_skeleton;
+
+        let _ = now;
+        Some(data_table_skeleton("skeleton", 3, 2))
+    }
+
     fn body(&self) -> ViewNode {
         let rows: Vec<ViewNode> = self.order.iter().map(|&i| self.build_row(i)).collect();
         section(

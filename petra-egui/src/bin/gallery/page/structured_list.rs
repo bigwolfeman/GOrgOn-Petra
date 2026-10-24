@@ -52,6 +52,34 @@ impl Page for StructuredList {
         "Structured list"
     }
 
+    /// Carbon's structured-list skeleton (`_structured-list.scss`): each
+    /// cell span is a `--skeleton` block, 16 high (1rem) × 75 % of the cell
+    /// inline, in the row's column track widths.
+    fn skeleton(&self, now: f64) -> Option<ViewNode> {
+        use gorgon_petra::component::{SizeStep, SkeletonAnatomy, skeleton};
+
+        use super::common::{column, row, sp};
+        let cell = |key: &str, inline: f32| {
+            skeleton(key, SkeletonAnatomy::Text, SizeStep::Md, inline, now)
+        };
+        Some(column(
+            "skeleton-blocks",
+            sp("spacing-05"),
+            vec![
+                row(
+                    "skeleton-row-0",
+                    sp("spacing.md"),
+                    vec![cell("skeleton-c00", 160.0), cell("skeleton-c01", 160.0)],
+                ),
+                row(
+                    "skeleton-row-1",
+                    sp("spacing.md"),
+                    vec![cell("skeleton-c10", 160.0), cell("skeleton-c11", 160.0)],
+                ),
+            ],
+        ))
+    }
+
     fn body(&self) -> ViewNode {
         let rows = ROWS
             .iter()
