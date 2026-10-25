@@ -185,6 +185,21 @@ impl Page for DataTable {
         Some(data_table_skeleton("skeleton", 3, 2))
     }
 
+    /// The documented disabled state (spec 008 T025, register row 149):
+    /// batch-action buttons only — the rows themselves are not "disabled"
+    /// (slice-b States), and the batch action is a composed `button`, so
+    /// `disabled()` on it resolves the button family's own `@disabled` pair.
+    fn disabled(&self) -> Vec<ViewNode> {
+        use super::common::row;
+        use gorgon_petra::component::{data_table_batch_action, disabled};
+
+        vec![disabled(row(
+            "disabled",
+            sp("spacing.md"),
+            vec![data_table_batch_action("disabled-batch", "Delete")],
+        ))]
+    }
+
     fn body(&self) -> ViewNode {
         let rows: Vec<ViewNode> = self.order.iter().map(|&i| self.build_row(i)).collect();
         section(

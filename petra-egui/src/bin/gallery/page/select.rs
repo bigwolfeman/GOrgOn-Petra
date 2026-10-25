@@ -43,6 +43,20 @@ impl Page for Select {
         ))
     }
 
+    /// The documented disabled state (spec 008 T025, register row 431):
+    /// `.cds--label` reads in `text.muted` and `.cds--select__arrow` in the
+    /// `$icon-disabled` fade (slice-e), with the field edge's own fade.
+    fn disabled(&self) -> Vec<ViewNode> {
+        use super::common::row;
+        use gorgon_petra::component::disabled;
+
+        vec![disabled(row(
+            "disabled",
+            sp("spacing.md"),
+            vec![select("disabled-select", "Theme", "Dark")],
+        ))]
+    }
+
     fn body(&self) -> ViewNode {
         let value = OPTIONS[self.selected].1;
         // `filled_body`, not `body`: a Carbon select is 100% of its

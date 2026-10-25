@@ -59,6 +59,20 @@ impl Page for Search {
         ))
     }
 
+    /// The documented disabled state (spec 008 T025, register row 413): the
+    /// `--disabled` modifier's field (slice-d States) — label and value in
+    /// `text.muted`, magnifier and field edge in their fades.
+    fn disabled(&self) -> Vec<ViewNode> {
+        use super::common::row;
+        use gorgon_petra::component::disabled;
+
+        vec![disabled(row(
+            "disabled",
+            sp("spacing.md"),
+            vec![search("disabled-search", "Search")],
+        ))]
+    }
+
     fn body(&self) -> ViewNode {
         section(
             "search",

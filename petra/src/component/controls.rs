@@ -213,14 +213,17 @@ fn labelled_box_inner(
     let mut label_node = text("label", label.clone());
     // Carbon: checkbox's `:disabled + label { color: $text-disabled }`
     // (`_checkbox.scss`) and radio's identical rule on
-    // `.radio-button__label` (`_radio-button.scss`). `$text-disabled` and
-    // `$icon-disabled` are byte-identical in every published theme
-    // (`_themes.scss`), so this reuses the name the box's own outline binds
-    // below rather than shipping a second token for one measured value.
+    // `.radio-button__label` (`_radio-button.scss`). `$text-disabled` is
+    // `$text-primary` at 25% — byte-identical to `$icon-disabled` — and
+    // that measures 1.31:1 on a light layer, under the 4.5:1 a label owes.
+    // Spec 008 FR-023 fixes the treatment: a disabled label is `text.muted`
+    // (5.70:1 light / 5.26:1 dark on `button-disabled`). `component::text`'s
+    // `disabled_label_ink` carries the rule; this rebind re-states it
+    // because this label is the one the tests read.
     label_node
         .props
         .tokens
-        .insert("foreground@disabled".into(), t(ICON_DISABLED));
+        .insert("foreground@disabled".into(), t(TEXT_MUTED));
     let mut children = vec![box_node, label_node];
     let accessible = if required {
         let mut mark = text("required-mark", "*");
@@ -829,17 +832,19 @@ fn toggle_sized(
         .insert("foreground".into(), t(TEXT_MUTED));
     // Carbon: `.cds--toggle--disabled .cds--toggle__label-text,
     // .cds--toggle--disabled .cds--toggle__text { color: $text-disabled; }`
-    // covers both the label and the On/Off word below — `$text-disabled` is
-    // byte-identical to `$icon-disabled` in every theme (see `labelled_box`).
+    // covers both the label and the On/Off word below. `$text-disabled` is
+    // the 25% fade that measures 1.31:1 on a light layer; the disabled
+    // label is `text.muted` instead (spec 008 FR-023, the measurement is in
+    // `component::text`'s `disabled_label_ink`).
     label_node
         .props
         .tokens
-        .insert("foreground@disabled".into(), t(ICON_DISABLED));
+        .insert("foreground@disabled".into(), t(TEXT_MUTED));
     let mut state = text("state", if on { "On" } else { "Off" });
     state
         .props
         .tokens
-        .insert("foreground@disabled".into(), t(ICON_DISABLED));
+        .insert("foreground@disabled".into(), t(TEXT_MUTED));
 
     let mut appearance = stack(
         "appearance",
@@ -1628,8 +1633,10 @@ mod tests {
                     .tokens
                     .get("foreground@disabled")
                     .map(|t| t.as_str()),
-                Some(ICON_DISABLED),
-                "{label}: the label text must fade under disabled too"
+                Some(TEXT_MUTED),
+                "{label}: the label must stay legible when disabled — \
+                 `text.muted`, not `$text-disabled`'s 25% fade (spec 008 \
+                 FR-023)"
             );
         }
     }
@@ -1682,8 +1689,10 @@ mod tests {
                     .tokens
                     .get("foreground@disabled")
                     .map(|t| t.as_str()),
-                Some(ICON_DISABLED),
-                "{label}: the label text must fade under disabled too"
+                Some(TEXT_MUTED),
+                "{label}: the label must stay legible when disabled — \
+                 `text.muted`, not `$text-disabled`'s 25% fade (spec 008 \
+                 FR-023)"
             );
         }
     }
@@ -1731,8 +1740,10 @@ mod tests {
                         .tokens
                         .get("foreground@disabled")
                         .map(|t| t.as_str()),
-                    Some(ICON_DISABLED),
-                    "{label}: {key} text must fade under disabled too"
+                    Some(TEXT_MUTED),
+                    "{label}: {key} must stay legible when disabled — \
+                     `text.muted`, not `$text-disabled`'s 25% fade (spec \
+                     008 FR-023)"
                 );
             }
         }

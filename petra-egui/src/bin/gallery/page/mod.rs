@@ -129,6 +129,20 @@ pub trait Page {
         None
     }
 
+    /// The disabled cell(s) for this component's documented disabled
+    /// state(s) (spec 008 T025, FR-022): the component's own constructor
+    /// under [`gorgon_petra::component::disabled`], one cell per manifest
+    /// `state` row (`contracts/disabled.md`'s binding register is keyed by
+    /// those rows). One cell wraps its samples in a single `disabled()` call,
+    /// so one cell is one coverage unit and one call site.
+    ///
+    /// The chrome renders each cell as this page's own Disabled section,
+    /// beside the page body. The default is empty, for the pages whose slice
+    /// documents no disabled state.
+    fn disabled(&self) -> Vec<ViewNode> {
+        Vec::new()
+    }
+
     /// A theme this page wants the whole catalog switched to, taken and
     /// cleared.
     ///

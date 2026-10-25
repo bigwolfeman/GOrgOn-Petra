@@ -1167,7 +1167,7 @@ impl Camera<Catalog> {
 /// [`Camera::has`] so the two cannot drift apart.
 ///
 /// `tail` is either one node key (`"btn-ghost"`) or a slash-joined path
-/// fragment (`"/row/rail"`, `"menu/content/mn-0"`). A match must land on
+/// fragment (`"vol/row/rail"`, `"menu/content/mn-0"`). A match must land on
 /// segment boundaries: `"field-md"` names the node keyed `field-md`, never
 /// `skeleton-field-md`, which is a different key whose letters happen to end
 /// the same way. Trailing slashes on either side are layout noise, not
@@ -1307,9 +1307,9 @@ mod tests {
     fn dragging_the_slider_handle_moves_the_fill_the_way_the_pointer_went() {
         let mut cam = Camera::on("Slider");
         let before = cam.shoot("30-slider-before-drag");
-        let fill_before = cam.rect("/rail/fill");
-        let rail = cam.rect("/row/rail");
-        let handle = cam.rect("/rail/handle");
+        let fill_before = cam.rect("vol/row/rail/fill");
+        let rail = cam.rect("vol/row/rail");
+        let handle = cam.rect("vol/row/rail/handle");
         assert!(
             (fill_before.w / rail.w - 0.4).abs() < 0.05,
             "the page opens at 40%, fill {} of rail {}",
@@ -1317,9 +1317,9 @@ mod tests {
             rail.w
         );
         let to = Point::new(rail.x + rail.w * 0.8, handle.y + handle.h / 2.0);
-        cam.drag("/rail/handle", to);
+        cam.drag("vol/row/rail/handle", to);
         let after = cam.shoot("30-slider-after-drag");
-        let fill_after = cam.rect("/rail/fill");
+        let fill_after = cam.rect("vol/row/rail/fill");
         assert!(
             fill_after.w > fill_before.w,
             "the pointer went right, so the fill must be wider: {} -> {}",
@@ -1332,7 +1332,7 @@ mod tests {
             fill_after.w,
             rail.w
         );
-        let handle_after = cam.rect("/rail/handle");
+        let handle_after = cam.rect("vol/row/rail/handle");
         assert!(
             (handle_after.x + handle_after.w / 2.0 - to.x).abs() < 1.5,
             "the handle's centre is under where the pointer let go: {} vs {}",
@@ -1382,8 +1382,8 @@ mod tests {
     fn the_slider_handle_is_painted_under_the_pointer_on_every_frame_of_a_drag() {
         let mut cam = Camera::at_scale("Slider", 1.0);
         cam.live_motion();
-        let rail = cam.rect("/row/rail");
-        let handle = cam.rect("/rail/handle");
+        let rail = cam.rect("vol/row/rail");
+        let handle = cam.rect("vol/row/rail/handle");
         let y = handle.y + handle.h / 2.0;
         let start = handle.x + handle.w / 2.0;
         // 40 frames x 4 units of travel has to finish short of the rail's end,
@@ -1397,7 +1397,7 @@ mod tests {
             start + 160.0,
             rail.x + rail.w - handle.w / 2.0
         );
-        cam.press("/rail/handle");
+        cam.press("vol/row/rail/handle");
         assert!(
             cam.host_caret_is_moving(),
             "the press must seat focus on the handle and start the caret hop, \
@@ -1410,7 +1410,7 @@ mod tests {
         for step in 1..=40i16 {
             let x = start + 4.0 * f32::from(step);
             cam.move_to(Point::new(x, y));
-            let painted = cam.rect("/rail/handle");
+            let painted = cam.rect("vol/row/rail/handle");
             let centre = painted.x + painted.w / 2.0;
             worst = worst.max((centre - x).abs());
             assert!(
@@ -1427,7 +1427,7 @@ mod tests {
             "worst tracking error over the drag was {worst:.3} units"
         );
         cam.release();
-        let released = cam.rect("/rail/handle");
+        let released = cam.rect("vol/row/rail/handle");
         assert!(
             (released.x + released.w / 2.0 - (start + 160.0)).abs() < 0.5,
             "the release leaves the handle where the last move put it"
@@ -1450,15 +1450,15 @@ mod tests {
     fn the_slider_handle_mid_drag_is_photographed_at_two_positions() {
         let mut cam = Camera::on("Slider");
         cam.live_motion();
-        let rail = cam.rect("/row/rail");
-        let handle = cam.rect("/rail/handle");
+        let rail = cam.rect("vol/row/rail");
+        let handle = cam.rect("vol/row/rail/handle");
         let y = handle.y + handle.h / 2.0;
         let start = handle.x + handle.w / 2.0;
         assert!(
             start + 240.0 < rail.x + rail.w - handle.w,
             "the drag must stay off `normalise`'s clamp"
         );
-        cam.press("/rail/handle");
+        cam.press("vol/row/rail/handle");
         for step in 1..=6i16 {
             cam.move_to(Point::new(start + 10.0 * f32::from(step), y));
         }
@@ -2098,7 +2098,7 @@ mod tests {
             cam.has("page-size-picker/chevron"),
             "the page-size picker has no chevron"
         );
-        assert_eq!(leaf_text(&cam, "page-size"), "10");
+        assert_eq!(leaf_text_in(&cam, "pager", "page-size"), "10");
         assert_eq!(leaf_text(&cam, "range-text"), "1\u{2013}10 of 50 items");
         assert_eq!(leaf_text(&cam, "page"), "1");
         assert!(!cam.has("menu"), "no picker is open at rest");
@@ -2109,14 +2109,14 @@ mod tests {
         assert_eq!(leaf_text(&cam, "range-text"), "11\u{2013}20 of 50 items");
         assert_ne!(first, second);
 
-        cam.click("page-size-picker");
+        cam.click("items-per-page/page-size-cell/page-size-picker");
         let sizes_open = cam.shoot("23-pagination-sizes-open");
         assert!(
             cam.has("page-size-cell/menu"),
             "the page-size picker did not open its list"
         );
-        let picker = cam.rect("page-size-picker");
-        let menu = cam.rect("page-size-cell/menu");
+        let picker = cam.rect("items-per-page/page-size-cell/page-size-picker");
+        let menu = cam.rect("items-per-page/page-size-cell/menu");
         assert!(
             menu.y >= picker.y + picker.h - 1.0 && (menu.x - picker.x).abs() < 1.0,
             "the list at {menu:?} does not hang under the picker at {picker:?}"
@@ -2126,7 +2126,7 @@ mod tests {
         cam.click("size-20");
         let twenty = cam.shoot("23-pagination-twenty-per-page");
         assert!(!cam.has("menu"), "choosing a size did not close the list");
-        assert_eq!(leaf_text(&cam, "page-size"), "20");
+        assert_eq!(leaf_text_in(&cam, "pager", "page-size"), "20");
         assert_eq!(leaf_text(&cam, "page-count"), "of 3 pages");
         assert_eq!(leaf_text(&cam, "range-text"), "21\u{2013}40 of 50 items");
         assert_ne!(sizes_open, twenty);
@@ -2741,7 +2741,7 @@ mod tests {
             (field.w - column.w).abs() < 0.5 && (field.h - 40.0).abs() < 0.5,
             "the field fills its column at Carbon's 40: {field:?} in {column:?}"
         );
-        let rule = cam.rect("field/rule");
+        let rule = cam.rect("theme/field/rule");
         assert!(
             (rule.h - 1.0).abs() < 0.5
                 && (rule.w - field.w).abs() < 0.5
@@ -2749,7 +2749,7 @@ mod tests {
             "the field's only border is a 1-unit rule along its bottom edge: \
              {rule:?} in {field:?}"
         );
-        let chevron = cam.rect("field/row/chevron");
+        let chevron = cam.rect("theme/field/row/chevron");
         assert!(
             (field.x + field.w - (chevron.x + chevron.w) - 16.0).abs() < 0.5,
             "the chevron ends 16 in from the field's trailing edge: {chevron:?} in {field:?}"
@@ -2787,7 +2787,7 @@ mod tests {
             !cam.has("theme/menu"),
             "choosing an option did not close the list"
         );
-        assert_eq!(leaf_text(&cam, "value"), "System");
+        assert_eq!(leaf_text_in(&cam, "theme", "value"), "System");
         cam.click("theme/field");
         assert!(
             cam.has("opt-system/mark") && !cam.has("opt-dark/mark"),
@@ -3135,8 +3135,8 @@ mod tests {
             (panel.w - 288.0).abs() < 0.5,
             "Carbon's toast is 288 wide, got {panel:?}"
         );
-        let glyph = cam.rect("panel/glyph");
-        let title = cam.rect("panel/details/title");
+        let glyph = cam.rect("nt/panel/glyph");
+        let title = cam.rect("nt/panel/details/title");
         assert!(
             glyph.x + glyph.w <= title.x,
             "the status glyph must lead the title, got {glyph:?} then {title:?}"
@@ -3892,10 +3892,10 @@ mod tests {
     #[test]
     fn the_slider_moves_on_press_and_drag_but_never_on_hover() {
         let mut cam = Camera::on("Slider");
-        let rail = cam.rect("/row/rail");
+        let rail = cam.rect("vol/row/rail");
         let mid_y = rail.y + rail.h / 2.0;
-        let at_rest = cam.rect("/rail/fill");
-        let handle = cam.rect("/rail/handle");
+        let at_rest = cam.rect("vol/row/rail/fill");
+        let handle = cam.rect("vol/row/rail/handle");
         // Across the track, then across the handle from its left edge to its
         // right. The handle is the one node here that declares `Hover`, and
         // a page that applied hover-routed moves would read the pointer's x
@@ -3908,7 +3908,7 @@ mod tests {
         for x in [handle.x + 1.0, handle.x + handle.w - 1.0, handle.x + 1.0] {
             cam.hover_at(x, mid_y);
             assert_eq!(
-                cam.rect("/rail/fill"),
+                cam.rect("vol/row/rail/fill"),
                 at_rest,
                 "the pointer crossed the rail and the handle with no button \
                  down and the fill moved: the page is dragging on hover"
@@ -3923,7 +3923,7 @@ mod tests {
         }
         cam.shoot("30-slider-hovered");
         cam.click_at(rail.x + rail.w * 0.8, mid_y);
-        let jumped = cam.rect("/rail/fill");
+        let jumped = cam.rect("vol/row/rail/fill");
         assert!(
             (jumped.w / rail.w - 0.8).abs() < 0.05,
             "a press on the track jumps the value there: fill {} of {}",
@@ -3932,8 +3932,8 @@ mod tests {
         );
         cam.shoot("30-slider-jumped");
         let far_below = Point::new(rail.x + rail.w * 0.2, mid_y + 200.0);
-        cam.drag("/rail/handle", far_below);
-        let dragged = cam.rect("/rail/fill");
+        cam.drag("vol/row/rail/handle", far_below);
+        let dragged = cam.rect("vol/row/rail/fill");
         assert!(
             (dragged.w / rail.w - 0.2).abs() < 0.05,
             "the pointer left the rail 200 units below it and let go at 20%; \
@@ -6928,11 +6928,11 @@ mod tests {
         }
 
         // The toast opens on Info. Press its action and the mark must change.
-        let toast_glyph = cam.rect("panel/glyph");
+        let toast_glyph = cam.rect("nt/panel/glyph");
         let before = inset_pixels(&shot, toast_glyph, 0);
-        cam.click("actions/action");
+        cam.click("nt/panel/details/actions/action");
         let after_shot = raster(&mut cam, "21-notification-stepped");
-        let after = inset_pixels(&after_shot, cam.rect("panel/glyph"), 0);
+        let after = inset_pixels(&after_shot, cam.rect("nt/panel/glyph"), 0);
         assert!(
             differing(&before, &after) > 20,
             "a click on the toast's action left its status mark unchanged"

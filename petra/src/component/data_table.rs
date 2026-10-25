@@ -110,9 +110,9 @@ use super::stack;
 use super::swatch;
 use super::text::{as_compact_heading, ellipsis_text, text};
 use super::tokens::{
-    ACCENT_PRIMARY, BORDER_SUBTLE, LAYER_ACCENT, LAYER_ACCENT_HOVER, LAYER_HOVER, LAYER_SELECTED,
-    LAYER_SELECTED_HOVER, SIZE_MD, SPACING_03, SPACING_04, SPACING_05, SURFACE_BASE,
-    TEXT_ON_ACCENT, TEXT_PRIMARY, TYPOGRAPHY_BODY_COMPACT, t,
+    ACCENT_PRIMARY, BORDER_SUBTLE, BUTTON_DISABLED, LAYER_ACCENT, LAYER_ACCENT_HOVER, LAYER_HOVER,
+    LAYER_SELECTED, LAYER_SELECTED_HOVER, SIZE_MD, SPACING_03, SPACING_04, SPACING_05,
+    SURFACE_BASE, TEXT_ON_ACCENT, TEXT_PRIMARY, TYPOGRAPHY_BODY_COMPACT, t,
 };
 use crate::frame::PetrifiedFrame;
 use crate::geom::{Align, Axis, Point};
@@ -1161,6 +1161,19 @@ pub fn data_table_batch_action(key: impl Into<Key>, label: impl Into<String>) ->
         .insert("foreground".into(), t(TEXT_ON_ACCENT));
     let mut node = stack(key, Axis::Horizontal, None, vec![caption]);
     node.props.align = Some(Align::Center);
+    // The filled-button family's disabled pair (Carbon's batch actions are
+    // `.cds--btn` anatomy — spec 008's Data table row): a disabled action
+    // swaps to Carbon's `$button-disabled` ground so its `text.muted` label
+    // clears 4.5:1 (5.70:1 light / 5.26:1 dark) instead of sitting faded on
+    // the bar's live accent at 1.29:1. The resting half is the same
+    // `ACCENT_PRIMARY` the bar paints, so the swap is invisible until the
+    // state is disabled — and it satisfies the resting-binding invariant.
+    node.props
+        .tokens
+        .insert("background".into(), t(ACCENT_PRIMARY));
+    node.props
+        .tokens
+        .insert("background@disabled".into(), t(BUTTON_DISABLED));
     node.interactive(Role::Button, label, ICON_BUTTON_INTENTS)
         .with_behaviour(ACTIVATES_ON_RELEASE)
         .with_focus_figure(FocusFigure::Sides)

@@ -223,6 +223,19 @@ impl Page for DatePicker {
         ))
     }
 
+    /// The documented disabled state (spec 008 T025, register row 166): the
+    /// field reads in `text.muted`, its edge in the `border@disabled` fade
+    /// (slice-b States; the field is `component::field`'s anatomy).
+    fn disabled(&self) -> Vec<ViewNode> {
+        use gorgon_petra::component::disabled;
+
+        vec![disabled(row(
+            "disabled",
+            sp("spacing.md"),
+            vec![date_picker("disabled-picker", "Date", "2026-10-24")],
+        ))]
+    }
+
     fn body(&self) -> ViewNode {
         section(
             "date",

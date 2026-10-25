@@ -249,6 +249,20 @@ impl Page for CodeSnippet {
         ))
     }
 
+    /// The documented disabled state (spec 008 T025, register row 87): the
+    /// code text and the copy button's label read in `text.muted`, the copy
+    /// glyph fades to `icon-disabled` (slice-a States: copy and expand both).
+    fn disabled(&self) -> Vec<ViewNode> {
+        use super::common::row;
+        use gorgon_petra::component::disabled;
+
+        vec![disabled(row(
+            "disabled",
+            sp("spacing.md"),
+            vec![code_snippet("disabled-snippet", "orgctl status")],
+        ))]
+    }
+
     fn body(&self) -> ViewNode {
         section(
             "snippets",

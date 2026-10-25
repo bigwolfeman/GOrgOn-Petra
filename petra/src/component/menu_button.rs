@@ -30,7 +30,8 @@ use super::menu::{MIN_INLINE, menu};
 use super::stack;
 use super::text::text;
 use super::tokens::{
-    ACCENT_PRIMARY, ICON_ON_COLOR_DISABLED, SIZE_MD, TEXT_ON_ACCENT, TYPOGRAPHY_BODY_COMPACT, t,
+    ACCENT_PRIMARY, BUTTON_DISABLED, SIZE_MD, TEXT_MUTED, TEXT_ON_ACCENT, TYPOGRAPHY_BODY_COMPACT,
+    t,
 };
 use crate::geom::Axis;
 use crate::tree::{
@@ -77,10 +78,17 @@ fn trigger(key: impl Into<Key>, label: String, open: bool) -> ViewNode {
         .props
         .tokens
         .insert("foreground".into(), t(TEXT_ON_ACCENT));
+    // Button's filled family (spec 008's Button row), not the on-colour
+    // fade this used to bind. A disabled trigger swaps its ground to
+    // Carbon's `$button-disabled` and its label to the label rule's
+    // `text.muted` (SC-014, `contracts/disabled.md`): the old pair left a
+    // 25 % label on a live accent fill, 2.00:1 on light — a label nobody
+    // can read. The chevron keeps `icon_on-color-disabled`, which is the
+    // mark family's fade, not a label's.
     caption
         .props
         .tokens
-        .insert("foreground@disabled".into(), t(ICON_ON_COLOR_DISABLED));
+        .insert("foreground@disabled".into(), t(TEXT_MUTED));
     let chevron = icon_toned(
         "caret",
         if open {
@@ -96,6 +104,13 @@ fn trigger(key: impl Into<Key>, label: String, open: bool) -> ViewNode {
     node.props
         .tokens
         .insert("background".into(), t(ACCENT_PRIMARY));
+    // The filled-button family's disabled ground (Carbon's
+    // `$button-disabled`), so the muted label above lands on a ground it
+    // clears 4.5:1 in (5.70:1 light / 5.26:1 dark,
+    // `contracts/disabled.md`'s measurements).
+    node.props
+        .tokens
+        .insert("background@disabled".into(), t(BUTTON_DISABLED));
     let mut node = node
         .with_constraints(Constraints {
             horizontal: AxisConstraint {

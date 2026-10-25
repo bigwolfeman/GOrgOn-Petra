@@ -48,8 +48,8 @@
 use super::icon::{IconMark, IconTone, icon_toned};
 use super::text::text;
 use super::tokens::{
-    ICON_DISABLED, LAYER_ACTIVE, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SHADOW_RAISED,
-    SIZE_MD, SPACING_02, SPACING_03, SPACING_05, SURFACE_RAISED, TEXT_PRIMARY,
+    LAYER_ACTIVE, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SHADOW_RAISED, SIZE_MD,
+    SPACING_02, SPACING_03, SPACING_05, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY,
     TYPOGRAPHY_BODY_COMPACT, t,
 };
 use super::{pin_block, stack};
@@ -156,10 +156,15 @@ fn built(
         .props
         .tokens
         .insert("foreground".into(), t(TEXT_PRIMARY));
+    // The label rule, not the mark fade (spec 008 FR-023 / SC-014,
+    // `contracts/disabled.md`): this is text on a `surface.raised` ground,
+    // and `icon-disabled` (text primary at 25 %) measures 1.31:1 on a light
+    // page — the faded label the SC-014 fix exists to stop. Marks on this
+    // button keep their own `icon-*@disabled` partners.
     caption
         .props
         .tokens
-        .insert("foreground@disabled".into(), t(ICON_DISABLED));
+        .insert("foreground@disabled".into(), t(TEXT_MUTED));
     parts.push(caption);
 
     let spacing = if parts.len() > 1 {

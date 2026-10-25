@@ -101,6 +101,20 @@ impl Page for Slider {
         ))
     }
 
+    /// The documented disabled state (spec 008 T025, register row 445): the
+    /// handle and track fade to `icon-disabled` and the label and value read
+    /// in `text.muted` (slice-e States).
+    fn disabled(&self) -> Vec<ViewNode> {
+        use super::common::row;
+        use gorgon_petra::component::disabled;
+
+        vec![disabled(row(
+            "disabled",
+            sp("spacing.md"),
+            vec![slider("disabled-slider", "Volume", 40.0)],
+        ))]
+    }
+
     fn body(&self) -> ViewNode {
         section(
             "slide",

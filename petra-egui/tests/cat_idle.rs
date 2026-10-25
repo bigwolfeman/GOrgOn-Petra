@@ -28,9 +28,9 @@ use gorgon_petra::geom::{Rect as PetraRect, Scale, Size};
 use gorgon_petra::input::{InputEvent, Route};
 use gorgon_petra::layout::{ChangeSet, RowSource};
 use gorgon_petra::testing::{Harness, extended_vocabulary, validated_with};
-use gorgon_petra::token::{Presenter, ThemeMode, ThemeSnapshot, dark};
+use gorgon_petra::token::{DerivedState, Presenter, ThemeMode, ThemeSnapshot, dark};
 use gorgon_petra::tree::{Registry, ViewNode};
-use gorgon_petra_egui::draw::{NoAssets, paint_canvas};
+use gorgon_petra_egui::draw::{Ink, NoAssets, paint_canvas};
 use gorgon_petra_egui::host::{App, Host};
 use std::ops::Range;
 
@@ -332,12 +332,13 @@ fn the_cat_draws_every_command_through_the_interpreter() {
         egui::Id::new("cat-scene-test"),
     ));
     let theme = ThemeSnapshot::new(dark(), 1);
+    let bindings = std::collections::BTreeMap::new();
     let report = paint_canvas(
         &painter,
         &list,
         PetraRect::new(0.0, WINDOW.h - Scene::HEIGHT, Scene::WIDTH, Scene::HEIGHT),
         Scale::new(1.25).unwrap(),
-        &theme,
+        Ink::new(&theme, &bindings, DerivedState::default()),
         &mut NoAssets,
     );
     ctx.run_ui(raw_at(0.0), |_| {})

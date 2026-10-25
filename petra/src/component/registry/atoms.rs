@@ -474,9 +474,13 @@ mod tests {
     /// `pub fn ... -> ViewNode` set (`disabled`, `also_secondary_click`,
     /// `on_layer`, `rule`) now has rows and the file joins the scan below —
     /// which is also why those three names are gone from this list.
+    /// Spec 008 (2026-10-24) then moved `disabled` out of `mod.rs` into its
+    /// own `component/disabled.rs`, so that file joins the scan too: the row
+    /// was never the question, the question is which files' constructors
+    /// this group owns.
     const MODIFIERS_OUTSIDE_THE_SCANNED_FILES: &[&str] = &["code_runs", "code_snippet_copied"];
 
-    /// Every `pub fn ... -> ViewNode` in the nine files this group owns has
+    /// Every `pub fn ... -> ViewNode` in the ten files this group owns has
     /// exactly one row, found by scanning the files' own text rather than
     /// trusting a hand-written list — a constructor added later and never
     /// registered fails this the moment it lands, not at review time.
@@ -522,6 +526,7 @@ mod tests {
             ("drawer.rs", include_str!("../drawer.rs")),
             ("list_row.rs", include_str!("../list_row.rs")),
             ("chrome_strip.rs", include_str!("../chrome_strip.rs")),
+            ("disabled.rs", include_str!("../disabled.rs")),
             ("mod.rs", include_str!("../mod.rs")),
         ];
         let registered: BTreeSet<&str> = ENTRIES.iter().map(|e| e.name).collect();
@@ -554,7 +559,7 @@ mod tests {
             .collect();
         assert!(
             extra.is_empty(),
-            "these rows name no `pub fn ... -> ViewNode` in the nine files this group owns, \
+            "these rows name no `pub fn ... -> ViewNode` in the ten files this group owns, \
              and are not in MODIFIERS_OUTSIDE_THE_SCANNED_FILES either: {extra:?}"
         );
     }

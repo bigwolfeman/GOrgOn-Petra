@@ -36,8 +36,9 @@
 //! engine that cannot paint a parent's edge over its children.
 
 use super::tokens::{
-    BORDER_SUBTLE, LAYER_HOVER, LAYER_SELECTED_INVERSE, SIZE_MD, SPACING_01, SPACING_03,
-    SPACING_05, SURFACE_BASE, TEXT_INVERSE, TEXT_MUTED, TYPOGRAPHY_BODY, TYPOGRAPHY_HEADING_SM, t,
+    BORDER_SUBTLE, BUTTON_DISABLED, LAYER_HOVER, LAYER_SELECTED_INVERSE, SIZE_MD, SPACING_01,
+    SPACING_03, SPACING_05, SURFACE_BASE, TEXT_INVERSE, TEXT_MUTED, TYPOGRAPHY_BODY,
+    TYPOGRAPHY_HEADING_SM, t,
 };
 use super::{pad, pin_block, stack, swatch};
 use crate::geom::{Align, Axis};
@@ -164,6 +165,16 @@ pub fn content_switcher_item(
         "background@selected-hover".into(),
         t(LAYER_SELECTED_INVERSE),
     );
+    // The disabled pair for the selected segment's inverse fill. The
+    // precedence chain is `slot@selected-R → slot@selected → slot@R → slot`,
+    // so `background@disabled` alone loses to `background@selected` here and
+    // the muted label stays on the inverse ground at 1.92:1 light / 1.48:1
+    // dark — the one label T027's probe caught under the floor. The ground
+    // swaps to Carbon's `$button-disabled`, which `text.muted` clears 4.5:1
+    // on (5.70:1 light / 5.26:1 dark, `contracts/disabled.md`).
+    node.props
+        .tokens
+        .insert("background@selected-disabled".into(), t(BUTTON_DISABLED));
 
     let mut node = node
         .with_constraints(pin_block(SIZE_MD))

@@ -31,7 +31,7 @@
 //! content and emitted nothing — and neither is allowed to read as a
 //! successful paint.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use egui::{Color32, Painter, Pos2, Rect, Shape, Stroke as EguiStroke, StrokeKind, Vec2};
 use gorgon_petra::draw::{
@@ -39,6 +39,7 @@ use gorgon_petra::draw::{
 };
 use gorgon_petra::frame::{round_coord, round_rect};
 use gorgon_petra::geom::{Point, Rect as PetraRect, Scale};
+use gorgon_petra::token::{DerivedState, resolve_slot};
 
 use crate::image::contain;
 use crate::paint::TokenSource;
@@ -170,7 +171,7 @@ pub fn paint_canvas(
     list: &DrawList,
     rect: PetraRect,
     scale: Scale,
-    colors: &dyn TokenSource,
+    ink: Ink<'_>,
     assets: &mut dyn CanvasAssets,
 ) -> CanvasReport {
     let bounds = snapped(rect, scale);
@@ -223,7 +224,7 @@ pub fn paint_canvas(
                     other,
                     state.transform,
                     scale,
-                    colors,
+                    &ink,
                     assets,
                     &mut report,
                 );
@@ -240,7 +241,7 @@ fn draw_one(
     command: &Command,
     transform: Affine,
     scale: Scale,
-    colors: &dyn TokenSource,
+    ink: &Ink<'_>,
     assets: &mut dyn CanvasAssets,
     report: &mut CanvasReport,
 ) {
@@ -266,12 +267,12 @@ fn draw_one(
             }
             let corners = to_corner_radius(*radius);
             let mut drew = false;
-            if let Some(fill) = resolve(colors, paint.fill.as_ref(), report) {
+            if let Some(fill) = ink.resolve(paint.fill.as_ref(), report) {
                 painter.add(Shape::rect_filled(target, corners, fill));
                 report.shapes += 1;
                 drew = true;
             }
-            if let Some(stroke) = resolve_stroke(colors, paint.stroke.as_ref(), scale, report) {
+            if let Some(stroke) = resolve_stroke(ink, paint.stroke.as_ref(), scale, report) {
                 painter.add(Shape::rect_stroke(
                     target,
                     corners,
@@ -308,7 +309,7 @@ fn draw_one(
             // it into an octagon. `closed_line` strokes on the centreline.
             let points = ellipse_points(at, radius, scale);
             let mut drew = false;
-            if let Some(fill) = resolve(colors, paint.fill.as_ref(), report) {
+            if let Some(fill) = ink.resolve(paint.fill.as_ref(), report) {
                 painter.add(Shape::convex_polygon(
                     points.clone(),
                     fill,
@@ -317,7 +318,7 @@ fn draw_one(
                 report.shapes += 1;
                 drew = true;
             }
-            if let Some(stroke) = resolve_stroke(colors, paint.stroke.as_ref(), scale, report) {
+            if let Some(stroke) = resolve_stroke(ink, paint.stroke.as_ref(), scale, report) {
                 painter.add(Shape::closed_line(points, stroke));
                 report.shapes += 1;
                 drew = true;
@@ -339,7 +340,7 @@ fn draw_one(
             let mut drew = false;
             // Fill first, so a stroke of the same path sits on top of it —
             // the order every other shape in this crate draws in.
-            if *closed && let Some(fill) = resolve(colors, paint.fill.as_ref(), report) {
+            if *closed && let Some(fill) = ink.resolve(paint.fill.as_ref(), report) {
                 // `DrawList::new` already refused a non-convex filled path, so
                 // this is a convex polygon by construction rather than by
                 // hope. That refusal is the reason this line is allowed to
@@ -353,7 +354,7 @@ fn draw_one(
                 report.shapes += 1;
                 drew = true;
             }
-            if let Some(stroke) = resolve_stroke(colors, paint.stroke.as_ref(), scale, report) {
+            if let Some(stroke) = resolve_stroke(ink, paint.stroke.as_ref(), scale, report) {
                 painter.add(if *closed {
                     Shape::closed_line(points, stroke)
                 } else {
@@ -403,7 +404,7 @@ fn draw_one(
                 Fit::Contain => contain(target, Vec2::new(uv.width(), uv.height()) * natural),
             };
             let colour = match tint {
-                Some(reference) => match resolve(colors, Some(reference), report) {
+                Some(reference) => match ink.resolve(Some(reference), report) {
                     Some(colour) => colour,
                     // The tint did not resolve. Drawing the asset untinted
                     // would be a different picture from the one declared, so
@@ -571,26 +572,66 @@ fn to_corner_radius(corners: Corners) -> egui::CornerRadius {
     }
 }
 
-/// Resolve a colour reference, recording an unresolved token by name.
+/// The ink a canvas resolves its colour references against.
 ///
-/// A miss draws nothing rather than guessing, the same rule
-/// `paint.rs`'s `resolve_or_record` follows for a fill: a shape in a colour
-/// nobody chose is worse than a shape that is not there, and the report says
-/// which token was missing either way.
-fn resolve(
-    colors: &dyn TokenSource,
-    reference: Option<&ColorRef>,
-    report: &mut CanvasReport,
-) -> Option<Color32> {
-    match reference? {
-        ColorRef::Token(name) => {
-            let colour = colors.color(name);
-            if colour.is_none() {
-                report.unresolved_tokens.insert(name.clone());
-            }
-            colour
+/// A canvas names its colours as token references (`icon-primary`), not as
+/// values, and two things can change what a name means. The frame's theme is
+/// the ordinary one. The **node's own token bindings** are the stateful one:
+/// a node that binds `icon-primary@disabled` asks for a different token when
+/// it is disabled, and the same [`resolve_slot`] precedence chain that picks
+/// `background@disabled` for a fill picks the swap here. That is how
+/// `component::icon` declares every mark's `@disabled` partner (spec 008
+/// FR-024); a name with no binding resolves exactly as written, which is
+/// what every canvas did before the state existed.
+/// [`Ink::new`] builds one at every call site; the fields are public because
+/// the frame's theme, the node's bindings, and the node's derived state are
+/// all caller-owned facts this struct only carries together.
+pub struct Ink<'a> {
+    /// The frame's theme snapshot.
+    pub colors: &'a dyn TokenSource,
+    /// The node's own token bindings (`props.tokens` verbatim, decorated
+    /// keys and all).
+    pub tokens: &'a BTreeMap<String, String>,
+    /// The derived interaction state those bindings decorate.
+    pub state: DerivedState,
+}
+
+impl<'a> Ink<'a> {
+    /// The three facts a canvas resolves its colour references against.
+    #[must_use]
+    pub fn new(
+        colors: &'a dyn TokenSource,
+        tokens: &'a BTreeMap<String, String>,
+        state: DerivedState,
+    ) -> Self {
+        Self {
+            colors,
+            tokens,
+            state,
         }
-        ColorRef::Rgba([r, g, b, a]) => Some(Color32::from_rgba_unmultiplied(*r, *g, *b, *a)),
+    }
+}
+
+impl Ink<'_> {
+    /// Resolve one colour reference: the node's binding for the name under
+    /// the derived state first, then the theme under the winning name.
+    ///
+    /// A miss draws nothing rather than guessing, the same rule
+    /// `paint.rs`'s `resolve_or_record` follows for a fill: a shape in a colour
+    /// nobody chose is worse than a shape that is not there, and the report says
+    /// which token was missing either way.
+    fn resolve(&self, reference: Option<&ColorRef>, report: &mut CanvasReport) -> Option<Color32> {
+        match reference? {
+            ColorRef::Token(name) => {
+                let name = resolve_slot(self.tokens, name.as_str(), self.state).unwrap_or(name);
+                let colour = self.colors.color(name);
+                if colour.is_none() {
+                    report.unresolved_tokens.insert(name.to_owned());
+                }
+                colour
+            }
+            ColorRef::Rgba([r, g, b, a]) => Some(Color32::from_rgba_unmultiplied(*r, *g, *b, *a)),
+        }
     }
 }
 
@@ -601,13 +642,13 @@ fn resolve(
 /// without the list's own bytes — and so its digest — moving when the scale
 /// does.
 fn resolve_stroke(
-    colors: &dyn TokenSource,
+    ink: &Ink<'_>,
     stroke: Option<&Stroke>,
     scale: Scale,
     report: &mut CanvasReport,
 ) -> Option<EguiStroke> {
     let Stroke { width, color } = stroke?;
-    let colour = resolve(colors, Some(color), report)?;
+    let colour = ink.resolve(Some(color), report)?;
     let logical = match width {
         Width::Logical(units) => *units,
         Width::Device(pixels) => pixels / scale.factor(),
@@ -620,12 +661,13 @@ fn resolve_stroke(
 
 #[cfg(test)]
 mod tests {
-    use super::{CanvasAssets, CanvasReport, HostImages, NoAssets, paint_canvas, snapped};
+    use super::{CanvasAssets, CanvasReport, HostImages, Ink, NoAssets, paint_canvas, snapped};
     use egui::{Color32, Shape};
     use gorgon_petra::draw::{
         Affine, AssetRef, ColorRef, Command, Corners, DrawList, Fit, Paint, PathVerb, Stroke, Width,
     };
     use gorgon_petra::geom::{Point, Rect as PetraRect, Scale, Size};
+    use gorgon_petra::token::DerivedState;
     use std::collections::BTreeMap;
 
     /// A `TokenSource` that knows two colours and nothing else, so an
@@ -693,7 +735,15 @@ mod tests {
         let headless = Headless::new();
         let painter = headless.painter();
         let colours = TwoColours::new();
-        let report = paint_canvas(&painter, list, rect, scale, &colours, assets);
+        let bindings = BTreeMap::new();
+        let report = paint_canvas(
+            &painter,
+            list,
+            rect,
+            scale,
+            Ink::new(&colours, &bindings, DerivedState::default()),
+            assets,
+        );
         let shapes = headless
             .0
             .graphics(|g| {
@@ -1025,13 +1075,14 @@ mod tests {
         .unwrap();
         let painter = headless.painter();
         let colours = TwoColours::new();
+        let bindings = BTreeMap::new();
         let mut assets = HostImages::new(&mut sources, &headless.0);
         let report = paint_canvas(
             &painter,
             &list,
             PetraRect::new(0.0, 0.0, 100.0, 100.0),
             Scale::ONE,
-            &colours,
+            Ink::new(&colours, &bindings, DerivedState::default()),
             &mut assets,
         );
         assert_eq!(report.missing_assets, 0, "{report:?}");
@@ -1054,7 +1105,7 @@ mod tests {
             &foreign,
             PetraRect::new(0.0, 0.0, 100.0, 100.0),
             Scale::ONE,
-            &colours,
+            Ink::new(&colours, &bindings, DerivedState::default()),
             &mut assets,
         );
         assert_eq!(report.missing_assets, 1);

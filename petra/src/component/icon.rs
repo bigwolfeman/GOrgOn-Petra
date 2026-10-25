@@ -45,7 +45,8 @@
 use std::sync::Arc;
 
 use super::tokens::{
-    ACCENT_PRIMARY, ICON_DISABLED, ICON_PRIMARY, ICON_SECONDARY, SUPPORT_ERROR, TEXT_ON_ACCENT, t,
+    ACCENT_PRIMARY, ICON_DISABLED, ICON_ON_COLOR_DISABLED, ICON_PRIMARY, ICON_SECONDARY,
+    SUPPORT_ERROR, TEXT_ON_ACCENT, t,
 };
 use crate::draw::{
     ColorRef, Command, Corners, DrawList, Paint, PathVerb, Stroke, Width, arc_verbs,
@@ -478,6 +479,32 @@ impl IconTone {
             Self::Danger => SUPPORT_ERROR,
         }
     }
+
+    /// The `@disabled` partner this tone binds when its control is
+    /// [`crate::component::disabled`]: the mark's own live tone named as a
+    /// slot, swapped by `crate::token::state`'s precedence chain.
+    ///
+    /// Two fades, chosen by ground, exactly as Carbon's `$icon-disabled`
+    /// family is measured in `token/shipped.rs`: a mark on a layer goes to
+    /// `$icon-disabled` (`$icon-primary` at 25%, the family test's pairing),
+    /// and a mark on a fill goes to `$icon-on-color-disabled`
+    /// (`$icon-on-color` at 25% — and [`Self::OnAccent`]'s
+    /// `text.on-accent` is the same ink, so that pairing is the measured
+    /// value at the same alpha). [`Self::Accent`] and [`Self::Danger`] are
+    /// marks on a layer and take the layer fade: the manifest's Button
+    /// disabled row says "all of them; greyed", mark included.
+    ///
+    /// The binding is declared here, on every mark [`icon_in`] builds, so
+    /// the pairing has one home; a component that wants a different
+    /// disabled mark binds the same key in its own tokens and wins.
+    fn disabled_tone(self) -> &'static str {
+        match self {
+            Self::OnAccent => ICON_ON_COLOR_DISABLED,
+            Self::Primary | Self::Secondary | Self::Disabled | Self::Accent | Self::Danger => {
+                ICON_DISABLED
+            }
+        }
+    }
 }
 
 impl IconMark {
@@ -517,11 +544,28 @@ pub fn icon_toned(key: impl Into<Key>, mark: IconMark, tone: IconTone) -> ViewNo
 pub fn icon_in(key: impl Into<Key>, mark: IconMark, boxed: IconBox, tone: IconTone) -> ViewNode {
     let size = mark.extent(boxed);
     let list = draw_list(mark, boxed, tone);
+    let mut props = Props {
+        canvas: Some(Arc::new(list)),
+        ..Props::default()
+    };
+    // The mark's own `@disabled` ink, per [`IconTone::disabled_tone`]: the
+    // canvas names its colours as token references, and the executor's
+    // `resolve` swaps the name through this binding for a disabled node
+    // (spec 008 FR-024's "bind the component's own `@disabled` tokens where
+    // Carbon specifies them" — Carbon specifies `$icon-disabled` /
+    // `$icon-on-color-disabled` for every disabled mark).
+    //
+    // The resting half is the identity binding the crate's
+    // `a_state_decorated_token_always_has_a_resting_binding` invariant
+    // requires: a `@disabled` binding with no resting partner would be a
+    // state decoration decorating a slot nobody declared.
+    let resting = tone.token();
+    props.tokens.insert(resting.to_owned(), t(resting));
+    props
+        .tokens
+        .insert(format!("{resting}@disabled"), t(tone.disabled_tone()));
     ViewNode::new(NodeKind::Canvas, key)
-        .with_props(Props {
-            canvas: Some(Arc::new(list)),
-            ..Props::default()
-        })
+        .with_props(props)
         .with_constraints(Constraints {
             horizontal: AxisConstraint {
                 min: Some(size),

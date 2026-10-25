@@ -80,6 +80,29 @@ impl Page for StructuredList {
         ))
     }
 
+    /// The documented disabled state (spec 008 T025, register row 461): the
+    /// Selectable variant's rows carry the state (the Default variant is not
+    /// operable and has none), so the cell is the selectable list with one
+    /// row selected — row text in `text.muted` under `disabled()`.
+    fn disabled(&self) -> Vec<ViewNode> {
+        use gorgon_petra::component::disabled;
+
+        vec![disabled(structured_list_sized(
+            "disabled",
+            vec![text("disabled-h0", "Name"), text("disabled-h1", "Role")],
+            vec![structured_list_row(
+                "disabled-row",
+                vec![
+                    text("disabled-name", "alpha"),
+                    text("disabled-role", "Fiber"),
+                ],
+                true,
+            )],
+            &[1.0, 2.0],
+            true,
+        ))]
+    }
+
     fn body(&self) -> ViewNode {
         let rows = ROWS
             .iter()

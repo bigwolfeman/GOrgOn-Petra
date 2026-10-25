@@ -85,6 +85,20 @@ impl Page for NumberInput {
         ))
     }
 
+    /// The documented disabled state (spec 008 T025, register row 340): the
+    /// field and its stepper buttons (slice-d States) — label and value in
+    /// `text.muted`, stepper glyphs and the field edge in their fades.
+    fn disabled(&self) -> Vec<ViewNode> {
+        use super::common::row;
+        use gorgon_petra::component::disabled;
+
+        vec![disabled(row(
+            "disabled",
+            sp("spacing.md"),
+            vec![number_input("disabled-number", "Replicas", "3")],
+        ))]
+    }
+
     fn body(&self) -> ViewNode {
         section(
             "number",

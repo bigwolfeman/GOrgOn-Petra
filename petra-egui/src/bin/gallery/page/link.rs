@@ -21,6 +21,19 @@ impl Page for Link {
         "Link"
     }
 
+    /// The documented disabled state (spec 008 T025, register row 240): a
+    /// disabled link reads in `text.muted` rather than Carbon's `$text-disabled`
+    /// fade (SC-014's label rule).
+    fn disabled(&self) -> Vec<ViewNode> {
+        use gorgon_petra::component::disabled;
+
+        vec![disabled(row(
+            "disabled",
+            sp("spacing.md"),
+            vec![link("disabled-link", "Open docs")],
+        ))]
+    }
+
     fn body(&self) -> ViewNode {
         section(
             "links",

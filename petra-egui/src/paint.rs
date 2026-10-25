@@ -1942,8 +1942,23 @@ fn paint_one(
     // matched on the *base* slot: `background@hover` is the `background`
     // slot bound for one state (`gorgon_petra::token::state`), not a seventh
     // slot this painter has never heard of.
+    //
+    // A canvas ink slot is one this painter reads: `draw::Ink::resolve`
+    // consults the node's binding under exactly the name the draw list
+    // paints with (`ColorRef::Token`), which is how `component::icon_in`
+    // and `component::kit::caret` bind their ink — a slot named after the
+    // ink token, with an `@disabled` partner the state chain can swap to.
+    // So a base the node's own list names is known by construction; one
+    // bound but never drawn is still invented and still reported.
+    let ink: std::collections::BTreeSet<&str> = content
+        .canvas
+        .as_ref()
+        .map_or_else(std::collections::BTreeSet::new, |list| {
+            list.color_tokens().collect()
+        });
     for slot in content.tokens.keys() {
-        if !KNOWN_SLOTS.contains(&base_slot(slot)) {
+        let base = base_slot(slot);
+        if !KNOWN_SLOTS.contains(&base) && !ink.contains(base) {
             report.unknown_slots.insert(slot.clone());
         }
     }
@@ -3124,6 +3139,72 @@ mod tests {
         // The text still painted, so the placement is drawn, not silent — the
         // unknown slot is a gap in the painter, not a lost placement.
         assert_eq!(report.drawn, 1, "{report:?}");
+    }
+
+    /// A canvas ink slot is a slot this painter reads, so it is not unknown
+    /// — but it is known only against the list that draws it.
+    ///
+    /// `component::icon_in` and `component::kit::caret` bind their ink as a
+    /// slot named after the ink token (`text.on-accent`, `icon-secondary`,
+    /// …) with an `@disabled` partner, because `draw::Ink::resolve` reads
+    /// the node's binding under exactly the name the draw list paints with.
+    /// Spec 008 FR-024's disabled marks made those bindings real, and
+    /// `examples/gallery.rs`'s SC-011 check then reported every one of them
+    /// as a slot this painter did not know. The second node below is the
+    /// other half and keeps [`a_genuinely_unknown_token_slot_is_recorded`]'s
+    /// teeth: a name bound where nothing draws it is still invented.
+    #[test]
+    fn a_canvas_ink_slot_is_known_only_against_the_list_that_draws_it() {
+        use gorgon_petra::draw::{ColorRef, Command, Corners, DrawList, Paint};
+        use gorgon_petra::geom::Rect as DrawRect;
+
+        let host = Headless::new();
+        let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
+        let draw = |name: &str| {
+            DrawList::new(vec![Command::Rect {
+                rect: DrawRect::new(0.0, 0.0, 20.0, 20.0),
+                radius: Corners::default(),
+                snap: false,
+                paint: Paint::filled(ColorRef::Token(name.to_owned())),
+            }])
+            .expect("one small rect is inside every draw-list bound")
+        };
+
+        let mut inked = Props {
+            canvas: Some(std::sync::Arc::new(draw("text.on-accent"))),
+            ..Props::default()
+        };
+        inked
+            .tokens
+            .insert("text.on-accent".into(), tok("text.on-accent"));
+        inked.tokens.insert(
+            "text.on-accent@disabled".into(),
+            tok("icon-on-color-disabled"),
+        );
+        let tree = ViewNode::new(NodeKind::Stack, "root")
+            .child(ViewNode::new(NodeKind::Canvas, "mark").with_props(inked));
+        let frame = frame_of(&tree, &mut h);
+        let mut shaper = host.shaper();
+        let report = paint_frame(&host.painter(), &frame, &mut shaper, &snapshot());
+        assert!(
+            report.unknown_slots.is_empty(),
+            "the ink slot is the name `draw::Ink::resolve` reads the binding \
+             under, so it is not unknown: {report:?}"
+        );
+
+        let mut bare = Props {
+            text: Some("hi".into()),
+            ..Props::default()
+        };
+        bare.tokens
+            .insert("text.on-accent".into(), tok("text.on-accent"));
+        let frame = frame_of(&ViewNode::new(NodeKind::Text, "t").with_props(bare), &mut h);
+        let mut shaper = host.shaper();
+        let report = paint_frame(&host.painter(), &frame, &mut shaper, &snapshot());
+        assert!(
+            report.unknown_slots.contains("text.on-accent"),
+            "bound on a node that never draws it: {report:?}"
+        );
     }
 
     /// The schema and the painter agree, exactly, in both directions.

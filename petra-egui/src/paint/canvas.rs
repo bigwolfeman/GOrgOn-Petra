@@ -31,7 +31,11 @@ pub(super) fn paint_canvas_node(
             list,
             placement.rect,
             env.scale,
-            env.colors,
+            crate::draw::Ink::new(
+                env.colors,
+                &content.tokens,
+                gorgon_petra::token::DerivedState::of(&placement.semantics),
+            ),
             &mut assets,
         );
         report.missing_assets += canvas.missing_assets;

@@ -81,9 +81,9 @@ use super::stack;
 use super::swatch;
 use super::text::text;
 use super::tokens::{
-    BORDER_STRONG, LAYER_HOVER, LINK_PRIMARY, SPACING_03, SPACING_04, SPACING_05, SURFACE_BASE,
-    SURFACE_RAISED, TEXT_PRIMARY, TYPOGRAPHY_BODY_COMPACT, TYPOGRAPHY_HEADING_SM, TYPOGRAPHY_LABEL,
-    t,
+    BORDER_STRONG, ICON_DISABLED, LAYER_HOVER, LINK_PRIMARY, SPACING_03, SPACING_04, SPACING_05,
+    SURFACE_BASE, SURFACE_RAISED, TEXT_PRIMARY, TYPOGRAPHY_BODY_COMPACT, TYPOGRAPHY_HEADING_SM,
+    TYPOGRAPHY_LABEL, t,
 };
 use crate::geom::{Align, Axis};
 use crate::token::{CornerRole, corner_for};
@@ -199,6 +199,14 @@ fn build_uploader(
         .tokens
         .insert("background".into(), t(SURFACE_BASE));
     zone.props.tokens.insert("border".into(), t(BORDER_STRONG));
+    // The disabled drop zone's edge: Carbon's `$border-disabled` (slice-b
+    // "File uploader" States), expressed with the crate's disabled-edge tone
+    // `icon-disabled` — the vocabulary has no `border-disabled` name, and
+    // this is the substitution `controls::empty_mark` records for the same
+    // Carbon family.
+    zone.props
+        .tokens
+        .insert("border@disabled".into(), t(ICON_DISABLED));
     zone.props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));

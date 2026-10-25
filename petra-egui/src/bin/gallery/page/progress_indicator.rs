@@ -30,6 +30,26 @@ impl Page for ProgressIndicator {
         ))
     }
 
+    /// The documented disabled state (spec 008 T025, register row 384): a
+    /// disabled step's label in `text.muted` and its status glyph in the
+    /// `$icon-disabled` fade (slice-d).
+    fn disabled(&self) -> Vec<ViewNode> {
+        use super::common::row;
+        use gorgon_petra::component::disabled;
+
+        vec![disabled(row(
+            "disabled",
+            sp("spacing.md"),
+            vec![progress_indicator(
+                "disabled-steps",
+                vec![
+                    progress_step("disabled-done", "Create", true, false),
+                    progress_step("disabled-step", "Review", false, false),
+                ],
+            )],
+        ))]
+    }
+
     fn body(&self) -> ViewNode {
         section(
             "steps",

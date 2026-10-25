@@ -46,6 +46,24 @@ impl Page for RadioButton {
         ))
     }
 
+    /// The documented disabled state (spec 008 T025, register row 397): the
+    /// ring and the selected fill fade to `icon-disabled`, the label to the
+    /// label rule's `text.muted` — off and on both shown, because the two
+    /// marks bind different slots.
+    fn disabled(&self) -> Vec<ViewNode> {
+        use super::common::row;
+        use gorgon_petra::component::disabled;
+
+        vec![disabled(row(
+            "disabled",
+            sp("spacing.md"),
+            vec![
+                radio("disabled-off", "Unavailable", false),
+                radio("disabled-on", "Unavailable", true),
+            ],
+        ))]
+    }
+
     fn body(&self) -> ViewNode {
         section(
             "group",

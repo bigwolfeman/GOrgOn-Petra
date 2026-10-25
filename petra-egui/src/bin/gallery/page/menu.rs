@@ -27,6 +27,39 @@ impl Page for Menu {
         "Menu"
     }
 
+    /// The documented disabled state (spec 008 T025, register row 273): a
+    /// disabled menu — item labels in `text.muted`, the item glyph in the
+    /// `icon-*@disabled` fade (slice-c States: Disabled is one of Menu's seven).
+    fn disabled(&self) -> Vec<ViewNode> {
+        use super::common::row;
+        use gorgon_petra::component::{IconMark, disabled, menu_item_with};
+
+        vec![disabled(row(
+            "disabled",
+            sp("spacing.md"),
+            // The trigger and the menu are siblings, because `menu` anchors
+            // to the sibling key `trigger` — a menu without one is refused
+            // at acceptance rather than floated over nothing.
+            vec![
+                button("trigger", "Actions"),
+                menu(
+                    "disabled-menu",
+                    "Actions",
+                    vec![
+                        menu_item("disabled-item", "Delete"),
+                        menu_item_with(
+                            "disabled-item-icon",
+                            "Archive",
+                            Some(IconMark::Check),
+                            None,
+                            false,
+                        ),
+                    ],
+                ),
+            ],
+        ))]
+    }
+
     fn body(&self) -> ViewNode {
         let mut pair = vec![button(TRIGGER, "Actions")];
         if self.open {

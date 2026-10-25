@@ -21,6 +21,26 @@ impl Page for ContentSwitcher {
         "Content switcher"
     }
 
+    /// The documented disabled state (spec 008 T025, register row 122): a
+    /// disabled switcher — item labels in `text.muted`, the inverse ground
+    /// structural and dropped with the painter's elevation.
+    fn disabled(&self) -> Vec<ViewNode> {
+        use super::common::row;
+        use gorgon_petra::component::disabled;
+
+        vec![disabled(row(
+            "disabled",
+            sp("spacing.md"),
+            vec![content_switcher(
+                "disabled-switcher",
+                vec![
+                    content_switcher_item("disabled-a", "Graph", true),
+                    content_switcher_item("disabled-b", "Grid", false),
+                ],
+            )],
+        ))]
+    }
+
     fn body(&self) -> ViewNode {
         section(
             "switcher",

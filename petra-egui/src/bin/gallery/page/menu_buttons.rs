@@ -23,6 +23,20 @@ impl Page for MenuButtons {
         "Menu buttons"
     }
 
+    /// The documented disabled state (spec 008 T025, register row 288): the
+    /// trigger is ordinary Button anatomy, so `disabled()` on it resolves the
+    /// filled family's own `@disabled` pair (register row 63 records it).
+    fn disabled(&self) -> Vec<ViewNode> {
+        use super::common::row;
+        use gorgon_petra::component::disabled;
+
+        vec![disabled(row(
+            "disabled",
+            sp("spacing.md"),
+            vec![menu_button("disabled-trigger", "Actions", false, vec![])],
+        ))]
+    }
+
     fn body(&self) -> ViewNode {
         section(
             "mb",

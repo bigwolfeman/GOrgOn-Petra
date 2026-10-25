@@ -24,6 +24,27 @@ impl Page for ContainedList {
         "Contained list"
     }
 
+    /// The documented disabled state (spec 008 T025, register row 107): a
+    /// disabled contained list — item text in `text.muted`, the item edge
+    /// in the `border@disabled` fade (slice-a States).
+    fn disabled(&self) -> Vec<ViewNode> {
+        use super::common::row;
+        use gorgon_petra::component::disabled;
+
+        vec![disabled(row(
+            "disabled",
+            sp("spacing.md"),
+            vec![contained_list(
+                "disabled-list",
+                "Fibers",
+                vec![
+                    list_row("disabled-row", "alpha", false),
+                    list_row("disabled-row-2", "beta", false),
+                ],
+            )],
+        ))]
+    }
+
     fn body(&self) -> ViewNode {
         section(
             "on-page",

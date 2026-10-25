@@ -91,7 +91,8 @@ impl ParamShape for NotificationKindParams {
     const LUAU: &'static str = "{ key: string, kind: \"error\" | \"warning\" | \"info\" | \"success\", title: string, body: string }";
 }
 
-/// `notification_actionable(key, title, body, action)`.
+/// `notification_actionable`/`notification_inline_actionable`(key, title,
+/// body, action). One shape for both: the field set is identical.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NotificationActionableParams {
@@ -104,7 +105,8 @@ impl ParamShape for NotificationActionableParams {
     const LUAU: &'static str = "{ key: string, title: string, body: string, action: string }";
 }
 
-/// `notification_actionable_kind(key, kind, title, body, action)`.
+/// `notification_actionable_kind`/`notification_inline_actionable_kind`(key,
+/// kind, title, body, action). One shape for both.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NotificationActionableKindParams {
@@ -259,6 +261,24 @@ pub const ENTRIES: &[Entry] = &[
         "notification_actionable_kind",
         NotificationActionableKindParams,
         |p| lib::notification_actionable_kind(p.key, p.kind.into(), p.title, p.body, p.action)
+    ),
+    row!(
+        "notification_inline_actionable",
+        NotificationActionableParams,
+        |p| lib::notification_inline_actionable(p.key, p.title, p.body, p.action)
+    ),
+    row!(
+        "notification_inline_actionable_kind",
+        NotificationActionableKindParams,
+        |p| {
+            lib::notification_inline_actionable_kind(
+                p.key,
+                p.kind.into(),
+                p.title,
+                p.body,
+                p.action,
+            )
+        }
     ),
     // progress.rs — Progress bar.
     row!("progress", KeyLabelNumber, |p| lib::progress(
@@ -421,6 +441,20 @@ mod tests {
                 "{ key, kind, title, body }",
                 json!({"key": "probe", "kind": "info", "title": "Title", "body": "Body"}),
             ),
+            (
+                "{ key, title, body, action }",
+                json!({"key": "probe", "title": "Title", "body": "Body", "action": "Act"}),
+            ),
+            (
+                "{ key, kind, title, body, action }",
+                json!({
+                    "key": "probe",
+                    "kind": "info",
+                    "title": "Title",
+                    "body": "Body",
+                    "action": "Act"
+                }),
+            ),
         ];
         let shape_of = |luau: &str| -> Option<&'static str> {
             match luau {
@@ -436,13 +470,19 @@ mod tests {
                 "{ key: string, label: string, selected: boolean, value: string }" => {
                     Some("{ key, label, selected: boolean, value }")
                 }
-                // `notification_toast_kind`/`notification_inline_kind`: the
-                // only two rows sharing `NotificationKindParams`. Checked
-                // here rather than left out — one-off shapes used by
-                // exactly two constructors are exactly where a copy-pasted
-                // row hides.
+                // `notification_toast_kind`/`notification_inline_kind`, and
+                // the two actionable pairs: the only rows sharing a
+                // notification shape. Checked here rather than left out —
+                // one-off shapes used by exactly two constructors are
+                // exactly where a copy-pasted row hides.
                 "{ key: string, kind: \"error\" | \"warning\" | \"info\" | \"success\", title: string, body: string }" => {
                     Some("{ key, kind, title, body }")
+                }
+                "{ key: string, title: string, body: string, action: string }" => {
+                    Some("{ key, title, body, action }")
+                }
+                "{ key: string, kind: \"error\" | \"warning\" | \"info\" | \"success\", title: string, body: string, action: string }" => {
+                    Some("{ key, kind, title, body, action }")
                 }
                 _ => None,
             }

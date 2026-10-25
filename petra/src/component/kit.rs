@@ -193,11 +193,24 @@ pub fn caret(key: impl Into<Key>, direction: CaretDirection) -> ViewNode {
         paint,
     }])
     .unwrap_or_else(|err| panic!("caret draw list refused: {err}"));
+    let mut props = Props {
+        canvas: Some(Arc::new(list)),
+        ..Props::default()
+    };
+    // The caret is canvas ink, so its disabled fade is the mark family's,
+    // not the label's: `$icon-secondary` at 25 % is Carbon's
+    // `$icon-disabled`, the same partner `icon_in` binds for every traced
+    // mark (`IconTone::disabled_tone`). The resting half is the identity
+    // binding the crate's resting-binding invariant requires.
+    props
+        .tokens
+        .insert("icon-secondary".into(), tokens::t(tokens::ICON_SECONDARY));
+    props.tokens.insert(
+        "icon-secondary@disabled".into(),
+        tokens::t(tokens::ICON_DISABLED),
+    );
     ViewNode::new(NodeKind::Canvas, key)
-        .with_props(Props {
-            canvas: Some(Arc::new(list)),
-            ..Props::default()
-        })
+        .with_props(props)
         .with_constraints(Constraints {
             horizontal: AxisConstraint {
                 min: Some(CARET_SIZE),
@@ -234,5 +247,10 @@ pub fn description(key: impl Into<Key>, text: &str) -> ViewNode {
     props
         .tokens
         .insert("foreground".into(), tokens::t(tokens::TEXT_MUTED));
+    // The muted line is already at the disabled ink's value; bind the
+    // partner explicitly so a later change to TEXT_MUTED cannot leave a
+    // disabled description out of step with the label rule (one home:
+    // `super::text::disabled_label_ink`).
+    super::text::disabled_label_ink(&mut props);
     ViewNode::new(NodeKind::Text, key).with_props(props)
 }

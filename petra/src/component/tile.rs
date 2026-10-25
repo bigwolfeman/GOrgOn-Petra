@@ -67,8 +67,8 @@
 use super::icon::{IconMark, icon};
 use super::text::text;
 use super::tokens::{
-    ACCENT_PRIMARY, BORDER_STRONG, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SPACING_03,
-    SPACING_05, SURFACE_RAISED, t,
+    ACCENT_PRIMARY, BORDER_STRONG, ICON_DISABLED, LAYER_HOVER, LAYER_SELECTED,
+    LAYER_SELECTED_HOVER, SPACING_03, SPACING_05, SURFACE_RAISED, t,
 };
 use super::{CaretDirection, caret, pad, stack, swatch};
 use crate::geom::{Align, Axis};
@@ -240,7 +240,7 @@ pub fn selectable_tile(key: impl Into<Key>, label: impl Into<String>, selected: 
 /// `shape.corner-xs`, matching the checkbox's own move off `shape.corner-none`.
 fn selection_mark(selected: bool) -> ViewNode {
     if !selected {
-        return swatch(
+        let mut node = swatch(
             "box",
             MARK,
             MARK,
@@ -248,6 +248,13 @@ fn selection_mark(selected: bool) -> ViewNode {
             Some(BORDER_STRONG),
             Some(corner_for(CornerRole::BoxedMark, MARK)),
         );
+        // The disabled mark is the checkbox's own pair (`controls::empty_mark`
+        // documents the `_checkbox.scss` quote): an outline-only mark is
+        // nothing but its outline, so the outline fades.
+        node.props
+            .tokens
+            .insert("border@disabled".into(), t(ICON_DISABLED));
+        return node;
     }
     let tick = icon("mark", IconMark::Check);
     let inset = ((MARK - tick.constraints.horizontal.min.unwrap_or(0.0)) * 0.5).max(0.0);
@@ -265,6 +272,11 @@ fn selection_mark(selected: bool) -> ViewNode {
     node.props
         .tokens
         .insert("background".into(), t(ACCENT_PRIMARY));
+    // The checked box greys with the checkbox's (`controls::marked_box`): a
+    // disabled-and-selected mark must not keep reading as a live accent.
+    node.props
+        .tokens
+        .insert("background@disabled".into(), t(ICON_DISABLED));
     node.props
         .tokens
         .insert("radius".into(), t(corner_for(CornerRole::BoxedMark, MARK)));

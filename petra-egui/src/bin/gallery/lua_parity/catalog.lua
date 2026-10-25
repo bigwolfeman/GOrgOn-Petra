@@ -201,38 +201,50 @@ local function page_body(state, row)
     ))
   end
   local card = ui.seat_card("page-body", { node = raw })
-  if state.skeleton == nil then
-    return card
+  -- `Catalog::page_body`, verbatim: the page's own state cells stand BESIDE
+  -- the re-seated card, each its own top-level section at the same depth,
+  -- never inside the card (spec 008 T025 disabled, T020 skeleton). Disabled
+  -- leads and Skeleton follows, the order `page_body` composes.
+  local sections = { card }
+  if state.disabled ~= nil and #state.disabled > 0 then
+    -- The cells themselves are seeded through `state.disabled` from the Rust
+    -- page's own `Page::disabled` (`lua_parity.rs`), not transcribed here:
+    -- each of the thirty states composes its own sample arrangement and
+    -- there is no Lua source for any of them yet. So what this mirror proves
+    -- is the scaffolding around the cells -- the column's key and spacing,
+    -- the section's key/title, the body's key/spacing, and where each sits.
+    table.insert(sections, ui.section({
+      key = "disabled",
+      label = "Disabled",
+      children = {
+        common.body("disabled-body", "spacing.md", state.disabled),
+      },
+    }))
   end
-  -- `Catalog::page_body`'s Some arm, verbatim: the page's own skeleton cell
-  -- stands BESIDE the re-seated card, its own top-level section at the same
-  -- depth, never inside the card (spec 008 T020).
-  --
-  -- The cell itself is seeded through `state.skeleton` from the Rust page's
-  -- own `Page::skeleton` (`lua_parity.rs`), not transcribed here: each of the
-  -- twenty pages with a skeleton composes its own block arrangement and
-  -- there is no Lua source for any of them yet. So what this mirror proves
-  -- is the scaffolding around the cell — the column's key and spacing, the
-  -- section's key/title, the body's key/spacing, and where each sits — and
-  -- the day a page's skeleton gets a Lua source of its own, seeding goes and
-  -- the transcription becomes the page module's.
-  return common.column("page-with-skeleton", "spacing.md", {
-    card,
-    ui.section({
+  if state.skeleton ~= nil then
+    -- The same seeding contract for `state.skeleton`, the page's own
+    -- skeleton cell; the day a page's state cell gets a Lua source of its
+    -- own, seeding goes and the transcription becomes the page module's.
+    table.insert(sections, ui.section({
       key = "skeleton",
       label = "Skeleton",
       children = {
         common.body("skeleton-body", "spacing.md", { state.skeleton }),
       },
-    }),
-  })
+    }))
+  end
+  if #sections == 1 then
+    return sections[1]
+  end
+  return common.column("page-with-sections", "spacing.md", sections)
 end
 
 assert(
   type(state) == "table",
   "catalog.lua: the harness must set the `state` global before evaluating this chunk: "
     .. "{ open = <inventory row name>, theme = \"dark\" | \"light\", body = <the page's body tree>, "
-    .. "skeleton = <the page's skeleton cell tree, when its Page::skeleton returns one> }"
+    .. "skeleton = <the page's skeleton cell tree, when its Page::skeleton returns one>, "
+    .. "disabled = <the page's disabled cell trees, when its Page::disabled returns any> }"
 )
 assert(
   type(state.open) == "string",

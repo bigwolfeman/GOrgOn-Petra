@@ -27,6 +27,8 @@ mod cat;
 mod catalog;
 mod cell;
 #[cfg(test)]
+mod disabled_states;
+#[cfg(test)]
 mod font_spike;
 mod inventory;
 #[cfg(test)]

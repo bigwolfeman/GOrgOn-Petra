@@ -396,30 +396,53 @@ impl Catalog {
         self.open_page().and_then(|page| page.skeleton(self.now))
     }
 
+    /// The open page's own disabled cell(s) (spec 008 T025) — one per
+    /// disabled state the component's slice documents, or none.
+    ///
+    /// One home for the question rather than one per caller, the same seam
+    /// [`Self::skeleton_cell`] is: [`Self::page_body`] places the cells it
+    /// returns, `lua_parity`'s chrome proof seeds its `state.disabled` from
+    /// the same call, and `disabled_states.rs` reads the treatment back out
+    /// of them — so the Lua mirror, the picture and the assertions can never
+    /// disagree about which page has a disabled cell or what it contains.
+    pub(crate) fn disabled_cells(&self) -> Vec<ViewNode> {
+        self.open_page()
+            .map(|page| page.disabled())
+            .unwrap_or_default()
+    }
+
     /// The open page's body, re-seated against its card, with the page's own
-    /// skeleton cell under it when the component has one (spec 008 T020).
+    /// disabled cell(s) and skeleton cell beside it when the component has
+    /// them (spec 008 T025, T020).
     ///
     /// The re-seat walk is `component::seat_card` now, shared with the Lua
     /// chrome mirror through the registry
     /// (`.agents/notes/implemented/architecture/2026-09-18-the-gallery-chrome-reaches-lua.md`).
-    /// The skeleton cell sits *beside* the card rather than inside it and is
-    /// never re-seated: it is its own top-level section, a card at the same
-    /// depth the page body is.
+    /// The state cells sit *beside* the card rather than inside it and are
+    /// never re-seated: each is its own top-level section, a card at the same
+    /// depth the page body is. Disabled leads and Skeleton follows: the
+    /// disabled state is a state of the component the page displays, and a
+    /// skeleton is the placeholder for one that has not arrived.
     fn page_body(&self) -> ViewNode {
-        match self.skeleton_cell() {
-            None => seat_card(self.page_body_raw()),
-            Some(cell) => column(
-                "page-with-skeleton",
-                sp("spacing.md"),
-                vec![
-                    seat_card(self.page_body_raw()),
-                    section(
-                        "skeleton",
-                        "Skeleton",
-                        vec![body("skeleton-body", sp("spacing.md"), vec![cell])],
-                    ),
-                ],
-            ),
+        let mut sections = vec![seat_card(self.page_body_raw())];
+        let cells = self.disabled_cells();
+        if !cells.is_empty() {
+            sections.push(section(
+                "disabled",
+                "Disabled",
+                vec![body("disabled-body", sp("spacing.md"), cells)],
+            ));
+        }
+        if let Some(cell) = self.skeleton_cell() {
+            sections.push(section(
+                "skeleton",
+                "Skeleton",
+                vec![body("skeleton-body", sp("spacing.md"), vec![cell])],
+            ));
+        }
+        match sections.len() {
+            1 => sections.pop().expect("one section"),
+            _ => column("page-with-sections", sp("spacing.md"), sections),
         }
     }
 

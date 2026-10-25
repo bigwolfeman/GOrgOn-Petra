@@ -363,13 +363,15 @@ fn press_theme_segment(catalog: &mut Catalog, mode: ThemeMode) {
 /// doc): the open row by name, the theme, and the body as
 /// `pages/<slug>.lua` itself builds it (already proven equal to `body()` by
 /// the test above), so this comparison is whole-`view()` against whole-`view()`
-/// with nothing stubbed on either side. One seeded value is NOT transcribed
-/// from Lua source: `state.skeleton`, the page's own skeleton cell, comes
-/// from the Rust page's `Page::skeleton` because no Lua page source builds
-/// one yet (spec 008 T020 landed the cells twenty pages deep and only the
-/// bodies were ported). What that leaves this test proving about the
-/// skeleton is the scaffolding `catalog.rs` wraps the cell in — the
-/// `page-with-skeleton` column and the `Skeleton` section card's key, title,
+/// with nothing stubbed on either side. Two seeded values are NOT
+/// transcribed from Lua source: `state.skeleton`, the page's own skeleton
+/// cell, and `state.disabled`, the page's own disabled cell(s) — both come
+/// from the Rust page's own `Page::skeleton` / `Page::disabled` because no
+/// Lua page source builds one yet (spec 008 T020 landed the cells twenty
+/// pages deep and only the bodies were ported). What that leaves this test
+/// proving about the disabled and skeleton cells is
+/// the scaffolding `catalog.rs` wraps each in — the
+/// `page-with-sections` column and each section card's key, title,
 /// order and spacing — which is exactly the code that drifted when T020
 /// landed and this mirror had never heard of it.
 ///
@@ -432,6 +434,16 @@ fn lua_catalog_chrome_builds_the_same_tree_as_the_rust_one() {
             let lua_cell = json_to_lua(&lua, &wire)
                 .unwrap_or_else(|e| panic!("a skeleton cell does not cross into Lua: {e}"));
             state.set("skeleton", lua_cell).expect("set state.skeleton");
+        }
+        let cells = catalog.disabled_cells();
+        if !cells.is_empty() {
+            let wire = serde_json::to_value(&cells)
+                .unwrap_or_else(|e| panic!("disabled cells do not serialize: {e}"));
+            let lua_cells = json_to_lua(&lua, &wire)
+                .unwrap_or_else(|e| panic!("disabled cells do not cross into Lua: {e}"));
+            state
+                .set("disabled", lua_cells)
+                .expect("set state.disabled");
         }
         lua.globals()
             .set("state", state)

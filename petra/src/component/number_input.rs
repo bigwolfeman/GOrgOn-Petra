@@ -234,6 +234,9 @@ fn value_field(key: &'static str, label: String, value: String, height: f32) -> 
         ..Props::default()
     };
     props.tokens.insert("foreground".into(), t(TEXT_PRIMARY));
+    // The value is content ink and takes the label rule's partner (spec 008
+    // FR-023, `contracts/disabled.md`'s Number input row).
+    super::text::disabled_label_ink(&mut props);
     let mut node = ViewNode::new(NodeKind::Input, key)
         .with_props(props)
         .interactive(Role::TextInput, label, super::field::EDITABLE_TEXT_INTENTS)

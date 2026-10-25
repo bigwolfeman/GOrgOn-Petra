@@ -49,6 +49,23 @@ impl Page for FileUploader {
         "File uploader"
     }
 
+    /// The documented disabled state (spec 008 T025, register row 207): the
+    /// drop zone's edge and the item's delete glyph fade to their
+    /// `@disabled` inks and the label reads in `text.muted` (slice-b).
+    fn disabled(&self) -> Vec<ViewNode> {
+        use super::common::row;
+        use gorgon_petra::component::disabled;
+
+        vec![disabled(row(
+            "disabled",
+            sp("spacing.md"),
+            vec![
+                file_uploader_with("disabled-uploader", "Add files", "Max 1 MB"),
+                file_uploader_item("disabled-item", "report.csv", false),
+            ],
+        ))]
+    }
+
     fn body(&self) -> ViewNode {
         let mut rows: Vec<ViewNode> = vec![
             // The heading, not the zone prompt. `file_uploader` draws

@@ -54,6 +54,23 @@ impl Page for Button {
         ))
     }
 
+    /// The documented disabled state (spec 008 T025, register row 63): the
+    /// filled pair swaps its ground to `button-disabled` and the tertiary
+    /// keeps only its faded edge — one cell covers both treatments.
+    fn disabled(&self) -> Vec<ViewNode> {
+        use gorgon_petra::component::disabled;
+
+        vec![disabled(row(
+            "disabled",
+            sp("spacing.md"),
+            vec![
+                primary_button("disabled-primary", "Primary"),
+                button("disabled-default", "Default"),
+                tertiary_button("disabled-tertiary", "Tertiary"),
+            ],
+        ))]
+    }
+
     fn body(&self) -> ViewNode {
         section(
             "variants",

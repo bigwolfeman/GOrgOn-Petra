@@ -95,8 +95,9 @@
 //! green / warning yellow) is **not** used either. Those names are not in
 //! [`super::tokens`], and painting red/green would fail FR-015.
 //!
-//! [`notification`] / [`notification_toast`] are a [`Role::Toast`]
-//! surface. [`notification_inline`] is in-flow [`Role::Status`].
+//! [`notification`] / [`notification_toast`] / [`notification_actionable`]
+//! are a [`Role::Toast`] surface. [`notification_inline`] /
+//! [`notification_inline_actionable`] are in-flow [`Role::Status`].
 
 use super::icon::{IconBox, IconMark, IconTone, icon_in};
 use super::pad;
@@ -262,8 +263,57 @@ pub fn notification_inline_kind(
     title: impl Into<String>,
     body: impl Into<String>,
 ) -> ViewNode {
+    inline_card(key, kind, title, body, Vec::new())
+}
+
+/// Inline card with one labelled action button — Carbon's Actionable /
+/// Inline pairing (`InlineNotification` with `actions`), which the toast's
+/// [`notification_actionable`] form is the docked twin of.
+///
+/// The one thing this form is not is docked: [`toast_surface`] is a
+/// [`NodeKind::Surface`] on [`Layer::Toast`], and layout routes every
+/// surface through overlay placement (`layout::mod`'s `place`), so it lands
+/// in the viewport's top-trailing corner whatever its parent is. A caller
+/// exhibiting a disabled action button in a column — the catalog's own
+/// Disabled section — needs the card in flow, or it lands on whatever toast
+/// the page is already showing.
+pub fn notification_inline_actionable(
+    key: impl Into<Key>,
+    title: impl Into<String>,
+    body: impl Into<String>,
+    action: impl Into<String>,
+) -> ViewNode {
+    notification_inline_actionable_kind(key, NotificationKind::default(), title, body, action)
+}
+
+/// [`notification_inline_actionable`] with the status field named.
+pub fn notification_inline_actionable_kind(
+    key: impl Into<Key>,
+    kind: NotificationKind,
+    title: impl Into<String>,
+    body: impl Into<String>,
+    action: impl Into<String>,
+) -> ViewNode {
+    inline_card(
+        key,
+        kind,
+        title,
+        body,
+        vec![action_button("action", action.into())],
+    )
+}
+
+/// The in-flow card both inline forms share: [`chrome`] plus Carbon's
+/// inline band and the [`Role::Status`] semantics.
+fn inline_card(
+    key: impl Into<Key>,
+    kind: NotificationKind,
+    title: impl Into<String>,
+    body: impl Into<String>,
+    extras: Vec<ViewNode>,
+) -> ViewNode {
     let title = title.into();
-    let mut node = chrome(key, kind, title.clone(), body, Vec::new());
+    let mut node = chrome(key, kind, title.clone(), body, extras);
     node.constraints.vertical.min = Some(INLINE_MIN_BLOCK);
     node.constraints.horizontal.min = Some(INLINE_MIN_INLINE);
     node.constraints.horizontal.max = Some(INLINE_MAX_INLINE);
@@ -482,7 +532,8 @@ fn action_button(key: impl Into<Key>, label: String) -> ViewNode {
 mod tests {
     use super::{
         INLINE_MAX_INLINE, INLINE_MIN_BLOCK, INLINE_MIN_INLINE, TOAST_INLINE, notification,
-        notification_actionable, notification_inline, notification_toast,
+        notification_actionable, notification_inline, notification_inline_actionable,
+        notification_toast,
     };
     use crate::component::disabled;
     use crate::component::tests::{assert_fits_parent, petrify_lone, petrify_root};
@@ -943,6 +994,41 @@ mod tests {
             }
             walk_text(&node, shell_bg, &theme, MIN_TEXT_CONTRAST, &color);
         }
+    }
+
+    /// The Actionable / Inline pairing: the card carries the same labelled
+    /// button the toast form does, and stays in flow — a `Surface` on
+    /// `Layer::Toast` here would route through overlay placement and dock
+    /// over whatever toast the caller is already showing (the catalog's
+    /// Notification page photographs its live toast under the Disabled
+    /// section; spec 008 T025).
+    #[test]
+    fn notification_inline_actionable_carries_a_button_and_stays_in_flow() {
+        let node = notification_inline_actionable(
+            "disabled",
+            "Build finished",
+            "The fibers are green.",
+            "View",
+        );
+        assert_ne!(
+            node.kind,
+            NodeKind::Surface,
+            "an inline card is in flow, not an overlay surface"
+        );
+        assert_eq!(node.props.layer, None, "and takes no toast layer");
+        assert_eq!(node.props.anchor, None, "and no viewport anchor");
+        assert_eq!(node.semantics.role, Some(Role::Status));
+        let action = found(&node, "action");
+        assert_eq!(action.semantics.role, Some(Role::Button));
+        assert_eq!(action.semantics.label.as_deref(), Some("View"));
+        assert_eq!(child(action, "label").props.text.as_deref(), Some("View"));
+        assert!(action.interactions.contains(&Interaction::Click));
+        assert_eq!(token(action, "background@hover"), Some(LAYER_HOVER));
+        assert_eq!(
+            node.constraints.horizontal.min,
+            Some(INLINE_MIN_INLINE),
+            "the actionable form holds the same Carbon band as the plain one"
+        );
     }
 
     /// Spec 010: the actionable CTA declares Activate / OnRelease.

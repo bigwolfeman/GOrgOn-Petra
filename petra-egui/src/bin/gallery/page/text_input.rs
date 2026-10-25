@@ -128,6 +128,20 @@ impl Page for TextInput {
         ))
     }
 
+    /// The documented disabled state (spec 008 T025, register row 521): the
+    /// Label's `$text-secondary` goes to the label rule's `text.muted` and
+    /// the field edge to its `border@disabled` fade (slice-e).
+    fn disabled(&self) -> Vec<ViewNode> {
+        use super::common::row;
+        use gorgon_petra::component::disabled;
+
+        vec![disabled(row(
+            "disabled",
+            sp("spacing.md"),
+            vec![valued(field("disabled-input", "Fiber name"), "gorgon")],
+        ))]
+    }
+
     fn body(&self) -> ViewNode {
         section(
             "fields",

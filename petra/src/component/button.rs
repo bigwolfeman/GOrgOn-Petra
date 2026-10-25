@@ -203,9 +203,9 @@
 use super::icon::{IconMark, IconTone, icon_toned};
 use super::text::text;
 use super::tokens::{
-    ACCENT_PRIMARY, BORDER_STRONG, BUTTON_DANGER_PRIMARY, ICON_DISABLED, ICON_ON_COLOR_DISABLED,
+    ACCENT_PRIMARY, BORDER_STRONG, BUTTON_DANGER_PRIMARY, BUTTON_DISABLED, ICON_DISABLED,
     LAYER_ACTIVE, LAYER_HOVER, LINK_PRIMARY, SHADOW_RAISED, SIZE_MD, SPACING_03, SPACING_05,
-    SURFACE_BASE, SURFACE_RAISED, TEXT_ON_ACCENT, TEXT_ON_COLOR, TEXT_PRIMARY, t,
+    SURFACE_BASE, SURFACE_RAISED, TEXT_MUTED, TEXT_ON_ACCENT, TEXT_ON_COLOR, TEXT_PRIMARY, t,
 };
 use super::{pin_block, stack};
 use crate::geom::{Align, Axis};
@@ -316,7 +316,13 @@ struct Chrome {
     foreground: &'static str,
     hover: Option<&'static str>,
     active: Option<&'static str>,
-    disabled_ink: &'static str,
+    /// Carbon's `$button-disabled` fill, for the variants that carry a fill
+    /// a disabled button must not keep (the accent, the danger red, the
+    /// raised grey). The *unfilled* variants bind no disabled fill on
+    /// purpose: a grey box behind a tertiary or ghost button would invent
+    /// a fill the variant does not have. Their edges take the crate's
+    /// disabled-edge tone instead — see `bound`.
+    disabled_background: Option<&'static str>,
     border: Option<&'static str>,
     shadow: Option<&'static str>,
 }
@@ -335,7 +341,7 @@ fn chrome(variant: Variant) -> Chrome {
             // is a known one.
             hover: None,
             active: None,
-            disabled_ink: ICON_ON_COLOR_DISABLED,
+            disabled_background: Some(BUTTON_DISABLED),
             border: None,
             shadow: Some(SHADOW_RAISED),
         },
@@ -344,7 +350,7 @@ fn chrome(variant: Variant) -> Chrome {
             foreground: TEXT_PRIMARY,
             hover: Some(LAYER_HOVER),
             active: Some(LAYER_ACTIVE),
-            disabled_ink: ICON_DISABLED,
+            disabled_background: Some(BUTTON_DISABLED),
             border: None,
             shadow: Some(SHADOW_RAISED),
         },
@@ -365,7 +371,7 @@ fn chrome(variant: Variant) -> Chrome {
             foreground: TEXT_ON_COLOR,
             hover: None,
             active: None,
-            disabled_ink: ICON_ON_COLOR_DISABLED,
+            disabled_background: Some(BUTTON_DISABLED),
             border: None,
             shadow: Some(SHADOW_RAISED),
         },
@@ -374,7 +380,7 @@ fn chrome(variant: Variant) -> Chrome {
             foreground: TEXT_PRIMARY,
             hover: Some(LAYER_HOVER),
             active: Some(LAYER_ACTIVE),
-            disabled_ink: ICON_DISABLED,
+            disabled_background: None,
             // The control boundary, not the decorative rule: a tertiary
             // button has no fill, so this edge is the only thing that says
             // a control is here. See `tokens::BORDER_SUBTLE` for the split.
@@ -387,7 +393,7 @@ fn chrome(variant: Variant) -> Chrome {
             foreground: LINK_PRIMARY,
             hover: Some(LAYER_HOVER),
             active: Some(LAYER_ACTIVE),
-            disabled_ink: ICON_DISABLED,
+            disabled_background: None,
             border: None,
             shadow: None,
         },
@@ -399,7 +405,7 @@ fn chrome(variant: Variant) -> Chrome {
             foreground: TEXT_PRIMARY,
             hover: Some(LAYER_HOVER),
             active: Some(LAYER_ACTIVE),
-            disabled_ink: ICON_DISABLED,
+            disabled_background: None,
             border: None,
             shadow: None,
         },
@@ -583,15 +589,23 @@ fn labelled(
         .props
         .tokens
         .insert("foreground".into(), t(chrome.foreground));
-    // The disabled family, declared here rather than patched on afterwards.
+    // The disabled ink, declared here rather than patched on afterwards.
     // `super::disabled` sets one flag; which token that flag reaches for is
     // the component's own decision, and putting it here is what stops a
     // caller from having to reach into a button's label child to express
     // "unavailable" (`contracts/interaction-state.md` §6).
+    //
+    // `text.muted`, not Carbon's `$text-disabled`: `$text-disabled` is
+    // `$text-primary` at 25% alpha and measures 1.31:1 on a light layer,
+    // under the 4.5:1 a label owes. Spec 008 FR-023 fixes the treatment,
+    // not the threshold — `component::text`'s `disabled_label_ink` carries
+    // the measurement, and the same value is bound here because this label
+    // rebinds `foreground` for its resting tone and must say what the swap
+    // back is.
     inner
         .props
         .tokens
-        .insert("foreground@disabled".into(), t(chrome.disabled_ink));
+        .insert("foreground@disabled".into(), t(TEXT_MUTED));
 
     // The two *unfilled* danger variants lead with Carbon's
     // `WarningFilled`. The filled one does not: see the module doc for the
@@ -640,6 +654,26 @@ fn labelled(
     }
     if let Some(border) = chrome.border {
         node.props.tokens.insert("border".into(), t(border));
+        // The disabled edge, on the unfilled variants whose boundary this
+        // is. `icon-disabled` — the crate's disabled-edge tone, the name
+        // `controls::empty_mark` binds on a checkbox's own outline under
+        // Carbon's `$icon-disabled` quote. Carbon's disabled button edge is
+        // `$button-disabled`, but that token is a *fill* here and an edge
+        // gone invisible is the thing `controls::empty_mark`'s comment
+        // warns about: the control must not stop looking like a control.
+        node.props
+            .tokens
+            .insert("border@disabled".into(), t(ICON_DISABLED));
+    }
+    if let Some(fill) = chrome.disabled_background {
+        // Carbon's `.cds--btn:disabled` fill — `$button-disabled`, the same
+        // value `controls::toggle` binds for its disabled track. The fill
+        // is most of what says "live": a disabled primary button that kept
+        // its accent fill would read as pressable however faded its label
+        // is. The unfilled variants deliberately bind none — see `Chrome`.
+        node.props
+            .tokens
+            .insert("background@disabled".into(), t(fill));
     }
 
     let mut node = node

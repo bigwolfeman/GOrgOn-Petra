@@ -83,6 +83,25 @@ impl Page for Accordion {
         ))
     }
 
+    /// The documented disabled state (spec 008 T025, register row 11): a
+    /// disabled accordion item — header label and chevron in the
+    /// `@disabled` inks the register names, elevation dropped by the painter.
+    fn disabled(&self) -> Vec<ViewNode> {
+        use super::common::row;
+        use gorgon_petra::component::disabled;
+
+        vec![disabled(row(
+            "disabled",
+            sp("spacing.md"),
+            vec![accordion_item_spaced(
+                "disabled-item",
+                "Fibers",
+                false,
+                "Unavailable",
+            )],
+        ))]
+    }
+
     fn body(&self) -> ViewNode {
         section(
             "items",

@@ -88,19 +88,24 @@ return function(ui)
   -- `ui.text` emits a component REFERENCE and `registry::expand_node`
   -- returns `build(...)` whole, discarding every field set on the node
   -- carrying the reference. So the two steps collapse into one primitive
-  -- here, and `component::text`'s two bindings are typed out by hand:
-  -- `style = typography.body` and `tokens.foreground = text.primary`
-  -- (`petra/petra/src/component/text.rs`). Read that function again before
-  -- editing this one; a binding added there and missed here is drift the
-  -- equality test will catch, on whichever of the 17 pages calls `wrapped`
-  -- first.
+  -- here, and `component::text`'s three bindings are typed out by hand:
+  -- `style = typography.body`, `tokens.foreground = text.primary`, and
+  -- `tokens["foreground@disabled"] = text.muted` (the disabled label ink
+  -- spec 008 binds on every text node,
+  -- `petra/petra/src/component/text.rs`'s `disabled_label_ink`). Read that
+  -- function again before editing this one; a binding added there and
+  -- missed here is drift the equality test will catch, on whichever of the
+  -- 17 pages calls `wrapped` first.
   function M.wrapped(key, content)
     return ui.node.text({
       key = key,
       text = content,
       wrap = "wrap",
       style = "typography.body",
-      tokens = { foreground = "text.primary" },
+      tokens = {
+        foreground = "text.primary",
+        ["foreground@disabled"] = "text.muted",
+      },
     })
   end
 

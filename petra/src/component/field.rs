@@ -16,8 +16,8 @@ use super::kit;
 use super::stack;
 use super::text::text;
 use super::tokens::{
-    BORDER_STRONG, BORDER_SUBTLE, SIZE_MD, SPACING_02, SPACING_03, SUPPORT_ERROR, SURFACE_RAISED,
-    TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_BODY, t,
+    BORDER_STRONG, BORDER_SUBTLE, ICON_DISABLED, SIZE_MD, SPACING_02, SPACING_03, SUPPORT_ERROR,
+    SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_BODY, t,
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
@@ -97,6 +97,16 @@ pub(super) fn bind_field_chrome(props: &mut Props) {
     props
         .tokens
         .insert("border-bottom".into(), t(BORDER_STRONG));
+    // The disabled edge: Carbon's disabled field rules take `$icon-disabled`
+    // on the well's rule (the checkbox's `_checkbox.scss` quote in
+    // `controls::empty_mark` is the same substitution at the same alpha), and
+    // the rule is the field's whole boundary — fading it is the one part of
+    // a disabled well that changes visibly besides its label. Shared here
+    // for the same reason the resting pair is: five components own this
+    // well.
+    props
+        .tokens
+        .insert("border-bottom@disabled".into(), t(ICON_DISABLED));
 }
 
 /// A muted label above `control`, Carbon's `.cds--label` (slice-e "Text
@@ -479,6 +489,10 @@ pub fn valued(mut node: ViewNode, value: impl Into<String>) -> ViewNode {
                 node.props
                     .tokens
                     .insert("foreground".into(), t(TEXT_PRIMARY));
+                // A filled well's value is content ink and takes the label
+                // rule's disabled partner (spec 008 FR-023): a disabled
+                // field's value fades to `text.muted`, not out of the floor.
+                super::text::disabled_label_ink(&mut node.props);
             }
             return true;
         }
@@ -515,6 +529,11 @@ fn input_field(
         ..Props::default()
     };
     props.tokens.insert("foreground".into(), t(TEXT_MUTED));
+    // The well's placeholder ink is a label to a reader who cannot see the
+    // empty box as empty: it takes the label rule's partner too (spec 008
+    // FR-023, `contracts/disabled.md`'s rows for Text input, Search,
+    // Number input and Slider).
+    super::text::disabled_label_ink(&mut props);
     match chrome {
         FieldChrome::Nested => {}
         FieldChrome::Enabled => bind_field_chrome(&mut props),

@@ -108,6 +108,26 @@ impl Page for Pagination {
         ))
     }
 
+    /// The documented disabled state (spec 008 T025, register row 352): the
+    /// nested controls under `disabled()` — the page-size Select beside a
+    /// nav whose Previous is unavailable on page 1 and therefore already
+    /// carries the production `disabled()` at `pagination.rs`'s
+    /// `previous_or_next`. The bar itself recolours nothing; the override
+    /// Carbon writes at `_pagination.scss:247-263` is the nested button's
+    /// own disabled ink.
+    fn disabled(&self) -> Vec<ViewNode> {
+        use gorgon_petra::component::disabled;
+
+        vec![disabled(row(
+            "disabled",
+            sp("spacing.md"),
+            vec![
+                pagination_page_size("disabled-page-size", 10, None),
+                pagination_nav("disabled-nav", 1, 3),
+            ],
+        ))]
+    }
+
     fn body(&self) -> ViewNode {
         // Bar 1 is items + range + numbers + nav. `pagination_items` is
         // that composition (`pagination_page_size`, `pagination_range`,

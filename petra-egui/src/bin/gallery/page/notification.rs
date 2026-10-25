@@ -1,7 +1,8 @@
 //! Inventory row 21, Notification.
 
 use gorgon_petra::component::{
-    NotificationKind, notification_actionable_kind, notification_inline_kind, section,
+    NotificationKind, notification_actionable_kind, notification_inline_actionable_kind,
+    notification_inline_kind, section,
 };
 use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::ViewNode;
@@ -72,6 +73,34 @@ impl Notification {
 impl Page for Notification {
     fn row(&self) -> &'static str {
         "Notification"
+    }
+
+    /// The documented disabled state (spec 008 T025, register row 321): the
+    /// action button only (slice-c) — a composed `button`, so `disabled()`
+    /// on it resolves the button family's pair and the notification shell,
+    /// which is not interactive, keeps its own look.
+    ///
+    /// Carbon's Actionable/**Inline** pairing, not the toast: a toast is an
+    /// overlay surface and layout docks it in the viewport's top-trailing
+    /// corner whatever its parent is — where this page's own live toast `nt`
+    /// already sits (shots.rs measures both at `x: 896, y: 16`). The cell is
+    /// in flow, so the Disabled section shows it instead of stacking it on
+    /// the control the toast-step test photographs.
+    fn disabled(&self) -> Vec<ViewNode> {
+        use super::common::row;
+        use gorgon_petra::component::disabled;
+
+        vec![disabled(row(
+            "disabled",
+            sp("spacing.md"),
+            vec![notification_inline_actionable_kind(
+                "disabled-notification",
+                NotificationKind::Info,
+                "Build finished",
+                "The fibers are green.",
+                "View",
+            )],
+        ))]
     }
 
     fn body(&self) -> ViewNode {

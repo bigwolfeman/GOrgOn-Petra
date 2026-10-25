@@ -110,6 +110,23 @@ impl Page for TreeView {
         "Tree view"
     }
 
+    /// The documented disabled state (spec 008 T025, register row 571): the
+    /// item label reads in `text.muted` and the caret fills the
+    /// `$icon-disabled` fade (slice-f).
+    fn disabled(&self) -> Vec<ViewNode> {
+        use super::common::row;
+        use gorgon_petra::component::disabled;
+
+        vec![disabled(row(
+            "disabled",
+            sp("spacing.md"),
+            vec![tree_view(
+                "disabled-tree",
+                vec![tree_item("disabled-item", "archived", false, false, vec![])],
+            )],
+        ))]
+    }
+
     fn body(&self) -> ViewNode {
         let roots: Vec<ViewNode> = Self::children_of(None)
             .into_iter()

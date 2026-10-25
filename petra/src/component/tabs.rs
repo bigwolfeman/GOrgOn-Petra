@@ -17,9 +17,9 @@
 
 use super::text::text;
 use super::tokens::{
-    ACCENT_PRIMARY, BORDER_SUBTLE, ICON_DISABLED, LAYER_HOVER, SIZE_MD, SPACING_01, SPACING_03,
-    SPACING_05, SURFACE_BASE, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_BODY,
-    TYPOGRAPHY_HEADING_SM, t,
+    ACCENT_PRIMARY, BORDER_SUBTLE, BUTTON_DISABLED, ICON_DISABLED, LAYER_HOVER, SIZE_MD,
+    SPACING_01, SPACING_03, SPACING_05, SURFACE_BASE, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY,
+    TYPOGRAPHY_BODY, TYPOGRAPHY_HEADING_SM, t,
 };
 use super::{pad, stack};
 use crate::geom::{Align, Axis};
@@ -125,10 +125,14 @@ fn tab_variant(
         "foreground".into(),
         t(if selected { TEXT_PRIMARY } else { TEXT_MUTED }),
     );
+    // Carbon (slice-e:137): "disabled label `$text-disabled`, border-bottom
+    // `$border-disabled`". The label takes the crate's disabled-label ink —
+    // `text.muted`, not `$text-disabled`'s 25% fade (spec 008 FR-023; the
+    // measurement lives in `component::text`'s `disabled_label_ink`).
     label_node
         .props
         .tokens
-        .insert("foreground@disabled".into(), t(ICON_DISABLED));
+        .insert("foreground@disabled".into(), t(TEXT_MUTED));
 
     let mut body = stack("body", Axis::Horizontal, None, vec![label_node]);
     body.props.align = Some(Align::Center);
@@ -143,7 +147,18 @@ fn tab_variant(
         (Variant::Line, false) => Some(BORDER_SUBTLE),
         (Variant::Contained | Variant::Vertical, false) => None,
     };
-    let mark = indicator_bar(along, thickness, fill);
+    let mut mark = indicator_bar(along, thickness, fill);
+    // Carbon's `$border-disabled` on the disabled tab's indicator
+    // (slice-e:137). Petra's vocabulary has no `border-disabled` name; the
+    // crate's disabled-edge tone is `icon-disabled` — the same substitution
+    // `controls::empty_mark` documents for a checkbox's outline. Only a
+    // mark that draws one: an indicator with no fill is silent, and a
+    // `@disabled` binding on it would draw a bar that is not there at rest.
+    if fill.is_some() {
+        mark.props
+            .tokens
+            .insert("background@disabled".into(), t(ICON_DISABLED));
+    }
 
     let (columns, rows, children, height) = match variant {
         Variant::Line => (
@@ -196,6 +211,12 @@ fn tab_variant(
             props
                 .tokens
                 .insert("background@hover".into(), t(LAYER_HOVER));
+            // Carbon (slice-e:137): a contained tab's disabled background
+            // "becomes `$button-disabled` (a button token reused here,
+            // MEASURED via the SCSS `@use '../button/tokens' as button`)".
+            props
+                .tokens
+                .insert("background@disabled".into(), t(BUTTON_DISABLED));
             props
                 .tokens
                 .insert("background@selected".into(), t(SURFACE_BASE));

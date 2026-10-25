@@ -81,6 +81,27 @@ impl Page for Tabs {
         ))
     }
 
+    /// The documented disabled state (spec 008 T025, register row 478): a
+    /// tab label reads in `text.muted` and the selected tab's indicator bar
+    /// fades to `icon-disabled` (slice-e: border-bottom `$border-disabled`),
+    /// so the cell leads with a selected tab under `disabled()`.
+    fn disabled(&self) -> Vec<ViewNode> {
+        use super::common::row;
+        use gorgon_petra::component::disabled;
+
+        vec![disabled(row(
+            "disabled",
+            sp("spacing.md"),
+            vec![tab_bar(
+                "disabled-tabs",
+                vec![
+                    tab("disabled-a", "Fibers", true),
+                    tab("disabled-b", "Graph", false),
+                ],
+            )],
+        ))]
+    }
+
     fn body(&self) -> ViewNode {
         let vertical = vertical_tab_bar(
             "vert-strip",

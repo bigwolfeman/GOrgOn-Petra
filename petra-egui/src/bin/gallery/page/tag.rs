@@ -54,6 +54,23 @@ impl Page for Tag {
         ))
     }
 
+    /// The documented disabled state (spec 008 T025, register row 506): the
+    /// Dismissible and Selectable tags both document disabled (slice-e) —
+    /// label in `text.muted`, the close glyph in the `icon-*@disabled` fade.
+    fn disabled(&self) -> Vec<ViewNode> {
+        use super::common::row;
+        use gorgon_petra::component::disabled;
+
+        vec![disabled(row(
+            "disabled",
+            sp("spacing.md"),
+            vec![
+                dismissible_tag("disabled-dismiss", "Prod"),
+                selectable_tag("disabled-select", "Prod", false),
+            ],
+        ))]
+    }
+
     fn body(&self) -> ViewNode {
         section(
             "tags",

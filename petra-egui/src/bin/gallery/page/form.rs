@@ -62,6 +62,32 @@ impl Page for Form {
         "Form"
     }
 
+    /// The two documented disabled states (spec 008 T025, register rows 221
+    /// and 223): `Form | state | disabled` is a disabled **child** — the
+    /// child's own family is the whole treatment and the shell recolours
+    /// nothing (slice-b States: the list describes the children) — and
+    /// `Form | state | disabled-fieldset` flags the shell, whose legend then
+    /// reads in `text.muted` (`fieldset[disabled] .cds--label`).
+    fn disabled(&self) -> Vec<ViewNode> {
+        use gorgon_petra::component::disabled;
+
+        vec![
+            // The fieldset case (manifest row 223): a live form holding one
+            // disabled field.
+            form(
+                "disabled-fieldset",
+                "Fibers",
+                vec![disabled(field("disabled-field", "Fiber name"))],
+            ),
+            // The whole form unavailable (row 221).
+            disabled(form(
+                "disabled-form",
+                "Fibers",
+                vec![field("disabled-form-field", "Fiber name")],
+            )),
+        ]
+    }
+
     fn body(&self) -> ViewNode {
         section(
             "form",

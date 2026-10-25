@@ -42,8 +42,8 @@ use super::stack;
 use super::swatch;
 use super::text::text;
 use super::tokens::{
-    BORDER_SUBTLE, LAYER_SELECTED_INVERSE, SIZE_MD, SPACING_03, SPACING_05, TEXT_MUTED,
-    TEXT_PRIMARY, TYPOGRAPHY_BODY, t,
+    BORDER_SUBTLE, ICON_DISABLED, LAYER_SELECTED_INVERSE, SIZE_MD, SPACING_03, SPACING_05,
+    TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_BODY, t,
 };
 use crate::frame::PetrifiedFrame;
 use crate::geom::{Align, Axis, Point};
@@ -158,6 +158,15 @@ fn range_label(key: &'static str, caption: &str) -> ViewNode {
 fn rail_cell(key: &'static str, background: &str) -> ViewNode {
     let mut cell = swatch(key, 0.0, TRACK_HEIGHT, Some(background), None, None);
     cell.constraints.horizontal = AxisConstraint::default();
+    // Carbon's disabled slider rests its track and thumb on
+    // `$layer-disabled` (slice-e "Slider" States). Petra's vocabulary has no
+    // `layer-disabled` name; the crate's disabled-mark tone is
+    // `icon-disabled`, the same substitution `controls::empty_mark` and the
+    // checkbox box bind. The rail is a mark, not label text, so the 25% fade
+    // is the right family (SC-014's floor is about labels).
+    cell.props
+        .tokens
+        .insert("background@disabled".into(), t(ICON_DISABLED));
     cell
 }
 
@@ -183,6 +192,15 @@ fn handle_node(label: String, value: String, size: f32, live: bool) -> ViewNode 
         },
     );
     handle = handle.with_constraints(pin_extent(size, size));
+    if size > 0.0 {
+        // The disabled thumb, same fade as `rail_cell`'s (Carbon's
+        // `$layer-disabled`). Only a handle that draws one: a zero-sized
+        // handle has no resting fill to decorate.
+        handle
+            .props
+            .tokens
+            .insert("background@disabled".into(), t(ICON_DISABLED));
+    }
     if live {
         handle = handle
             .interactive(Role::Button, label, HANDLE_INTENTS)
@@ -202,6 +220,9 @@ fn input_node(label: &str, value: f32, read_only: bool) -> ViewNode {
         ..Props::default()
     };
     props.tokens.insert("foreground".into(), t(TEXT_PRIMARY));
+    // The paired value is a label to the reader (spec 008 FR-023): a
+    // disabled slider's value fades to `text.muted` with the caption.
+    super::text::disabled_label_ink(&mut props);
     bind_field_chrome(&mut props);
     let intents: &[Interaction] = if read_only {
         &[Interaction::Focus]

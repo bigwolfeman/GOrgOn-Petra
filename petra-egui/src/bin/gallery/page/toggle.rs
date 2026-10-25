@@ -64,6 +64,25 @@ impl Page for Toggle {
         ))
     }
 
+    /// The documented disabled state (spec 008 T025, register row 547): the
+    /// track swaps to Carbon's `$button-disabled` and the knob to
+    /// `icon-on-color-disabled` (`_toggle.scss`'s `.cds--toggle--disabled`),
+    /// the label and state text to the label rule's `text.muted` — off and
+    /// on both shown, because the two knobs bind different slots.
+    fn disabled(&self) -> Vec<ViewNode> {
+        use super::common::row;
+        use gorgon_petra::component::disabled;
+
+        vec![disabled(row(
+            "disabled",
+            sp("spacing.md"),
+            vec![
+                toggle("disabled-off", "Autosave", false),
+                toggle("disabled-on", "Autosave", true),
+            ],
+        ))]
+    }
+
     fn body(&self) -> ViewNode {
         section(
             "states",

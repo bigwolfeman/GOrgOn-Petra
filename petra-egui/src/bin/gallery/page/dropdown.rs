@@ -46,6 +46,20 @@ impl Page for Dropdown {
         ))
     }
 
+    /// The documented disabled state (spec 008 T025, register row 191): the
+    /// documented Select pair at Dropdown's own anatomy — label and value in
+    /// `text.muted`, chevron and field edge in their `@disabled` fades.
+    fn disabled(&self) -> Vec<ViewNode> {
+        use super::common::row;
+        use gorgon_petra::component::disabled;
+
+        vec![disabled(row(
+            "disabled",
+            sp("spacing.md"),
+            vec![dropdown("disabled-dropdown", "Label", "Choose one")],
+        ))]
+    }
+
     fn body(&self) -> ViewNode {
         let value = OPTIONS[self.selected].1;
         let field = if self.open {
