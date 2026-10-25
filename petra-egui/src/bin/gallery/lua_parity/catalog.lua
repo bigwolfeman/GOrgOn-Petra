@@ -203,8 +203,9 @@ local function page_body(state, row)
   local card = ui.seat_card("page-body", { node = raw })
   -- `Catalog::page_body`, verbatim: the page's own state cells stand BESIDE
   -- the re-seated card, each its own top-level section at the same depth,
-  -- never inside the card (spec 008 T025 disabled, T020 skeleton). Disabled
-  -- leads and Skeleton follows, the order `page_body` composes.
+  -- never inside the card (spec 008 T025 disabled, T020 skeleton, T034
+  -- sizes). Disabled leads, Skeleton follows, Sizes last, the order
+  -- `page_body` composes.
   local sections = { card }
   if state.disabled ~= nil and #state.disabled > 0 then
     -- The cells themselves are seeded through `state.disabled` from the Rust
@@ -233,6 +234,21 @@ local function page_body(state, row)
       },
     }))
   end
+  if state.sizes ~= nil and #state.sizes > 0 then
+    -- The same seeding contract for `state.sizes`, the page's own
+    -- size-step cell(s) -- one per built size step of every sized
+    -- constructor the component ships (spec 008 T034, FR-025), seeded
+    -- from `Page::sizes` through `catalog.rs::size_cells` (the one home
+    -- the Rust side counts steps in). Sizes last, after Disabled and
+    -- Skeleton: a size step is the shape the component builds at.
+    table.insert(sections, ui.section({
+      key = "sizes",
+      label = "Sizes",
+      children = {
+        common.body("sizes-body", "spacing.md", state.sizes),
+      },
+    }))
+  end
   if #sections == 1 then
     return sections[1]
   end
@@ -244,7 +260,8 @@ assert(
   "catalog.lua: the harness must set the `state` global before evaluating this chunk: "
     .. "{ open = <inventory row name>, theme = \"dark\" | \"light\", body = <the page's body tree>, "
     .. "skeleton = <the page's skeleton cell tree, when its Page::skeleton returns one>, "
-    .. "disabled = <the page's disabled cell trees, when its Page::disabled returns any> }"
+    .. "disabled = <the page's disabled cell trees, when its Page::disabled returns any>, "
+    .. "sizes = <the page's size-step cell trees, when its Page::sizes returns any> }"
 )
 assert(
   type(state.open) == "string",

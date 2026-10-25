@@ -6,7 +6,9 @@
 //!    width (Carbon's `.cds--content-switcher-btn` is `inline-size: 100%`
 //!    inside a flex row, so N tabs share the row N ways — `08-content-
 //!    switcher.png` shows two tabs at exactly half each).
-//! 2. [`content_switcher_item`] — one tab button, height 40 ([`SIZE_MD`]),
+//! 2. [`content_switcher_item`] — one tab button, height 40 at md
+//!    ([`SIZE_MD`]; `content_switcher_sm` 32 / `content_switcher_lg` 48,
+//!    slice-b "Sizes"),
 //!    the same box whichever state it is in. Selected is never colour
 //!    alone: [`LAYER_SELECTED_INVERSE`] plus [`TEXT_INVERSE`] ink plus
 //!    `Semantics.selected` plus [`TYPOGRAPHY_HEADING_SM`] weight — Carbon
@@ -36,8 +38,8 @@
 //! engine that cannot paint a parent's edge over its children.
 
 use super::tokens::{
-    BORDER_SUBTLE, BUTTON_DISABLED, LAYER_HOVER, LAYER_SELECTED_INVERSE, SIZE_MD, SPACING_01,
-    SPACING_03, SPACING_05, SURFACE_BASE, TEXT_INVERSE, TEXT_MUTED, TYPOGRAPHY_BODY,
+    BORDER_SUBTLE, BUTTON_DISABLED, LAYER_HOVER, LAYER_SELECTED_INVERSE, SIZE_LG, SIZE_MD, SIZE_SM,
+    SPACING_01, SPACING_03, SPACING_05, SURFACE_BASE, TEXT_INVERSE, TEXT_MUTED, TYPOGRAPHY_BODY,
     TYPOGRAPHY_HEADING_SM, t,
 };
 use super::{pad, pin_block, stack, swatch};
@@ -48,7 +50,33 @@ use crate::tree::{
     TrackSize, ViewNode,
 };
 
+/// Carbon's content-switcher height ramp — slice-b "Sizes": sm 32, md 40,
+/// lg 48 (`_content-switcher.scss:23` `layout.use('size', $default: 'md')`).
+/// Closed on purpose: sm/md/lg is the whole documented scale, so a `match`
+/// here turns a step nobody wired into a compile error rather than a
+/// silently missing row — the trade [`super::list_box::ListBoxSize`]'s doc
+/// records.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SwitcherSize {
+    Sm,
+    Md,
+    Lg,
+}
+
+impl SwitcherSize {
+    /// Carbon's tab height for this step, in layout units.
+    fn height(self) -> f32 {
+        match self {
+            Self::Sm => SIZE_SM,
+            Self::Md => SIZE_MD,
+            Self::Lg => SIZE_LG,
+        }
+    }
+}
+
+const _: () = assert!(SIZE_SM == 32.0);
 const _: () = assert!(SIZE_MD == 40.0);
+const _: () = assert!(SIZE_LG == 48.0);
 
 const ITEM_INTENTS: &[Interaction] = &[Interaction::Focus, Interaction::Click, Interaction::Hover];
 
@@ -57,18 +85,40 @@ const ITEM_INTENTS: &[Interaction] = &[Interaction::Focus, Interaction::Click, I
 const DIVIDER_WIDTH: f32 = 1.0;
 const DIVIDER_HEIGHT: f32 = 16.0;
 
-/// The switcher group. `Role::TabList`, no interactions of its own.
+/// The switcher group at Carbon md (40). `Role::TabList`, no interactions
+/// of its own.
 ///
 /// A single-row `Grid`: every tab sits in a `Weight { 1.0 }` column so
 /// all of them share the row equally, and a `FitContent` column between
 /// each adjacent pair holds the divider. `align: Stretch` is what makes a
 /// tab fill its column; a `Stack` would let each tab hug its own label,
 /// which is how `List` and `Grid` came to be two different widths.
+///
+/// The group owns the size step: whatever height a tab arrives with, the
+/// group re-pins it to its own step, because Carbon's switcher is one
+/// sized box and every tab inherits it (`_content-switcher.scss:23` is one
+/// `layout.use('size')` on the container).
 pub fn content_switcher(key: impl Into<Key>, items: Vec<ViewNode>) -> ViewNode {
+    at(key, items, SwitcherSize::Md)
+}
+
+/// The switcher group at Carbon sm (32).
+pub fn content_switcher_sm(key: impl Into<Key>, items: Vec<ViewNode>) -> ViewNode {
+    at(key, items, SwitcherSize::Sm)
+}
+
+/// The switcher group at Carbon lg (48).
+pub fn content_switcher_lg(key: impl Into<Key>, items: Vec<ViewNode>) -> ViewNode {
+    at(key, items, SwitcherSize::Lg)
+}
+
+fn at(key: impl Into<Key>, items: Vec<ViewNode>, size: SwitcherSize) -> ViewNode {
+    let height = size.height();
     let mut columns = Vec::with_capacity(items.len() * 2);
     let mut children = Vec::with_capacity(items.len() * 2);
     let mut previous_selected = false;
-    for (i, item) in items.into_iter().enumerate() {
+    for (i, mut item) in items.into_iter().enumerate() {
+        item.constraints = pin_block(height);
         if i > 0 {
             let hidden = previous_selected || item.semantics.selected;
             columns.push(TrackSize::FitContent);
@@ -88,14 +138,14 @@ pub fn content_switcher(key: impl Into<Key>, items: Vec<ViewNode>) -> ViewNode {
         })
         .with_children(children);
     // FR-022: the enum's own doc names "content switcher" under
-    // `CornerRole::Grouping`. The group's real height is `SIZE_MD` (40) plus
-    // two units of padding on each edge (44 total, per the module doc); `SIZE_MD`
-    // alone is already well clear of Grouping's 8-unit half-edge threshold, so
-    // it stands in for the padded total without inventing a new constant.
-    node.props.tokens.insert(
-        "radius".into(),
-        t(corner_for(CornerRole::Grouping, SIZE_MD)),
-    );
+    // `CornerRole::Grouping`. The group's real height is the tab step (32/
+    // 40/48) plus two units of padding on each edge (36/44/52 total, per
+    // the module doc); the step alone is already well clear of Grouping's
+    // 8-unit half-edge threshold at every step, so it stands in for the
+    // padded total without inventing a new constant.
+    node.props
+        .tokens
+        .insert("radius".into(), t(corner_for(CornerRole::Grouping, height)));
     node.props.tokens.insert("border".into(), t(BORDER_SUBTLE));
     node.semantics = Semantics {
         role: Some(Role::TabList),
@@ -123,9 +173,11 @@ fn divider(index: usize, hidden: bool) -> ViewNode {
 
 /// One switcher tab. `Role::Button`, selected declared in `Semantics`.
 ///
-/// Height is Carbon md 40. Label padding is `$spacing-05` inline. The box
-/// is the same in both states — only the fill, the ink and the type weight
-/// change, so the pair never reflows when the selection moves.
+/// Height is Carbon md 40 on its own; inside a group the group's size
+/// step owns it (see [`content_switcher`]). Label padding is
+/// `$spacing-05` inline. The box is the same in both states — only the
+/// fill, the ink and the type weight change, so the pair never reflows
+/// when the selection moves.
 pub fn content_switcher_item(
     key: impl Into<Key>,
     label: impl Into<String>,
@@ -192,8 +244,8 @@ pub fn content_switcher_item(
 #[cfg(test)]
 mod tests {
     use super::{
-        BORDER_SUBTLE, DIVIDER_HEIGHT, DIVIDER_WIDTH, LAYER_SELECTED_INVERSE, SIZE_MD,
-        content_switcher, content_switcher_item,
+        BORDER_SUBTLE, DIVIDER_HEIGHT, DIVIDER_WIDTH, LAYER_SELECTED_INVERSE, SIZE_LG, SIZE_MD,
+        SIZE_SM, content_switcher, content_switcher_item, content_switcher_lg, content_switcher_sm,
     };
     use crate::component::tests::{assert_fits_parent, petrify_lone};
     use crate::frame::PetrifiedFrame;
@@ -495,6 +547,48 @@ mod tests {
                     bg_name.as_str()
                 );
             }
+        }
+    }
+
+    /// Spec 008 FR-027 / slice-b "Sizes": the switcher scales sm 32 / md 40 /
+    /// lg 48, and the group's step owns every item's height (the group
+    /// re-pins its children), so a mixed-height row cannot happen.
+    #[test]
+    fn switcher_sizes_scale_and_the_step_re_pins_every_item() {
+        /// One case: the step's builder and the height it must land on.
+        type Case = (fn(&str, Vec<ViewNode>) -> ViewNode, f32);
+        let cases: [Case; 3] = [
+            (|key, items| content_switcher_sm(key, items), SIZE_SM),
+            (|key, items| content_switcher(key, items), SIZE_MD),
+            (|key, items| content_switcher_lg(key, items), SIZE_LG),
+        ];
+        for (build, step) in cases {
+            let node = build(
+                "sw",
+                vec![
+                    content_switcher_item("a", "List", true),
+                    content_switcher_item("b", "Grid", false),
+                ],
+            );
+            let frame = petrify_lone(node);
+            for key in ["/sw/a", "/sw/b"] {
+                let rect = rect_of(&frame, key);
+                assert_eq!(
+                    rect.h, step,
+                    "{key} is not at the switcher's step height {step}"
+                );
+            }
+            // The group is the step plus two units of padding on each
+            // edge (`pad(SPACING_01, SPACING_01)`), 36/44/52 total — the
+            // geometry the module doc names and
+            // `the_group_draws_one_2px_corner_and_the_tab_radius_is_zero`
+            // already measures.
+            let group = rect_of(&frame, "/sw");
+            assert_eq!(
+                group.h,
+                step + 4.0,
+                "/sw is not at the padded step height {step} + 4"
+            );
         }
     }
 }

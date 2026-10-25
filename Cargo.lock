@@ -1695,6 +1695,7 @@ name = "gorgon-lua-view"
 version = "0.0.0"
 dependencies = [
  "gorgon-petra",
+ "libc",
  "mlua",
  "serde_json",
  "serde_yaml",

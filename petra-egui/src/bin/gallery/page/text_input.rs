@@ -100,6 +100,53 @@ impl Page for TextInput {
         "Text input"
     }
 
+    /// The four documented Text input steps (FR-025): sm 32, md 40, lg 48
+    /// and the fluid width variant, each labeled with the step it lands on.
+    /// Static fields: the live body below owns the interaction.
+    fn sizes(&self) -> Vec<ViewNode> {
+        use gorgon_petra::component::{field, field_fluid, field_lg, field_sm, text};
+
+        use super::common::{column, row, sp};
+        vec![column(
+            "size-steps",
+            sp("spacing-05"),
+            vec![
+                row(
+                    "size-sm",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-sm-label", "sm · 32"),
+                        field_sm("size-field-sm", "Label"),
+                    ],
+                ),
+                row(
+                    "size-md",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-md-label", "md · 40"),
+                        field("size-field-md", "Label"),
+                    ],
+                ),
+                row(
+                    "size-lg",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-lg-label", "lg · 48"),
+                        field_lg("size-field-lg", "Label"),
+                    ],
+                ),
+                row(
+                    "size-fluid",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-fluid-label", "fluid · full width"),
+                        field_fluid("size-field-fluid", "Label"),
+                    ],
+                ),
+            ],
+        )]
+    }
+
     /// Carbon's text-input skeleton (`_text-input.scss`): the label is a
     /// 14×75 `--skeleton` bar above the field block (32/40/48 by step).
     fn skeleton(&self, now: f64) -> Option<ViewNode> {

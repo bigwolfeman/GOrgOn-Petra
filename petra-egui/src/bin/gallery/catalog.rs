@@ -411,18 +411,35 @@ impl Catalog {
             .unwrap_or_default()
     }
 
+    /// The open page's size-step cell(s) (spec 008 T034, FR-025) — one per
+    /// built size step of every sized constructor the component ships.
+    ///
+    /// One home for the question rather than one per caller, the same seam
+    /// [`Self::skeleton_cell`] and [`Self::disabled_cells`] are:
+    /// [`Self::page_body`] places the cells it returns, `lua_parity`'s
+    /// chrome proof seeds its `state.sizes` from the same call, so the Lua
+    /// mirror and the Rust chrome cannot disagree about which page has a
+    /// ramp or how many steps it shows. A test can count every built step's
+    /// cell here and nowhere else.
+    pub(crate) fn size_cells(&self) -> Vec<ViewNode> {
+        self.open_page()
+            .map(|page| page.sizes())
+            .unwrap_or_default()
+    }
+
     /// The open page's body, re-seated against its card, with the page's own
-    /// disabled cell(s) and skeleton cell beside it when the component has
-    /// them (spec 008 T025, T020).
+    /// disabled cell(s), skeleton cell and size-step cell(s) beside it when
+    /// the component has them (spec 008 T025, T020, T034).
     ///
     /// The re-seat walk is `component::seat_card` now, shared with the Lua
     /// chrome mirror through the registry
     /// (`.agents/notes/implemented/architecture/2026-09-18-the-gallery-chrome-reaches-lua.md`).
     /// The state cells sit *beside* the card rather than inside it and are
     /// never re-seated: each is its own top-level section, a card at the same
-    /// depth the page body is. Disabled leads and Skeleton follows: the
-    /// disabled state is a state of the component the page displays, and a
-    /// skeleton is the placeholder for one that has not arrived.
+    /// depth the page body is. Disabled leads, Skeleton follows, Sizes last:
+    /// the disabled state is a state of the component the page displays, a
+    /// skeleton is the placeholder for one that has not arrived, and a size
+    /// step is the shape the component builds at (FR-025).
     fn page_body(&self) -> ViewNode {
         let mut sections = vec![seat_card(self.page_body_raw())];
         let cells = self.disabled_cells();
@@ -438,6 +455,14 @@ impl Catalog {
                 "skeleton",
                 "Skeleton",
                 vec![body("skeleton-body", sp("spacing.md"), vec![cell])],
+            ));
+        }
+        let cells = self.size_cells();
+        if !cells.is_empty() {
+            sections.push(section(
+                "sizes",
+                "Sizes",
+                vec![body("sizes-body", sp("spacing.md"), cells)],
             ));
         }
         match sections.len() {

@@ -185,6 +185,66 @@ impl Page for DataTable {
         Some(data_table_skeleton("skeleton", 3, 2))
     }
 
+    /// Carbon's table-row sizing (`_data-table.scss`, 24/32/40/48/64):
+    /// all five built steps side by side, each labeled with its step and the
+    /// row height it lands on (FR-025). Static cells — the ramp is geometry,
+    /// the live rows above own the editing.
+    fn sizes(&self) -> Vec<ViewNode> {
+        use gorgon_petra::component::{
+            data_table_row, data_table_row_lg, data_table_row_sm, data_table_row_xl,
+            data_table_row_xs, text,
+        };
+
+        use super::common::{column, row, sp};
+        let cells = || vec![text("name", "Row"), text("kind", "retry")];
+        vec![column(
+            "size-steps",
+            sp("spacing-05"),
+            vec![
+                row(
+                    "size-xs",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-xs-label", "xs · 24"),
+                        data_table_row_xs("size-dt-xs", cells(), false),
+                    ],
+                ),
+                row(
+                    "size-sm",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-sm-label", "sm · 32"),
+                        data_table_row_sm("size-dt-sm", cells(), false),
+                    ],
+                ),
+                row(
+                    "size-md",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-md-label", "md · 40"),
+                        data_table_row("size-dt-md", cells(), false),
+                    ],
+                ),
+                row(
+                    "size-lg",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-lg-label", "lg · 48"),
+                        data_table_row_lg("size-dt-lg", cells(), false),
+                    ],
+                ),
+                row(
+                    "size-xl",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-xl-label", "xl · 64"),
+                        data_table_row_xl("size-dt-xl", cells(), false),
+                    ],
+                ),
+            ],
+        )]
+    }
+
     /// The documented disabled state (spec 008 T025, register row 149):
     /// batch-action buttons only — the rows themselves are not "disabled"
     /// (slice-b States), and the batch action is a composed `button`, so

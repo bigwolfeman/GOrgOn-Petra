@@ -25,8 +25,8 @@
 //! operator could not tell the page from the Popover page.
 
 use super::icon::{IconMark, IconTone, icon_toned};
-use super::list_box::edge_row;
-use super::menu::{MIN_INLINE, menu};
+use super::list_box::{ListBoxSize, edge_row};
+use super::menu::{MIN_INLINE, menu_at};
 use super::stack;
 use super::text::text;
 use super::tokens::{
@@ -45,32 +45,83 @@ const TOGGLES_ON_RELEASE: Behaviour = Behaviour {
     phase: Phase::OnRelease,
 };
 
+/// The trigger's height comes from [`ListBoxSize`]'s ramp (xs 24 / sm 32 /
+/// md 40 / lg 48 — the ramp `list_box.rs` asserts), so the wave-1–4
+/// placeholder pin (`65c3c43`) that froze this trigger at `SIZE_MD` is
+/// gone; only the trigger's md-default assert remains, as a ramp point.
 const _: () = assert!(SIZE_MD == 40.0);
 const _: () = assert!(MIN_INLINE == 160.0);
 
 const TRIGGER_INTENTS: &[Interaction] =
     &[Interaction::Focus, Interaction::Click, Interaction::Hover];
 
-/// A labelled menu trigger. When `open` is true the node also carries a
-/// [`menu`] list box of `items`. `label` is required (FR-058).
+/// A labelled menu trigger at Carbon md (40). When `open` is true the node
+/// also carries a [`super::menu`] list box of `items` at the same step.
+/// `label` is required (FR-058).
 pub fn menu_button(
     key: impl Into<Key>,
     label: impl Into<String>,
     open: bool,
     items: Vec<ViewNode>,
 ) -> ViewNode {
+    menu_button_at(key, label, open, items, ListBoxSize::Md)
+}
+
+/// The trigger at Carbon xs (24), its open menu's rows with it.
+pub fn menu_button_xs(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    open: bool,
+    items: Vec<ViewNode>,
+) -> ViewNode {
+    menu_button_at(key, label, open, items, ListBoxSize::Xs)
+}
+
+/// The trigger at Carbon sm (32), its open menu's rows with it.
+pub fn menu_button_sm(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    open: bool,
+    items: Vec<ViewNode>,
+) -> ViewNode {
+    menu_button_at(key, label, open, items, ListBoxSize::Sm)
+}
+
+/// The trigger at Carbon lg (48), its open menu's rows with it.
+pub fn menu_button_lg(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    open: bool,
+    items: Vec<ViewNode>,
+) -> ViewNode {
+    menu_button_at(key, label, open, items, ListBoxSize::Lg)
+}
+
+/// Slice-c "Sizes": the menu-buttons ramp is "the same four-step ramp as
+/// Menu, keyed to the trigger button's size" (xs 24 / sm 32 / md 40 /
+/// lg 48), and the open menu's item heights follow the trigger — so the
+/// step threads trigger → menu. This replaces the wave-1–4 placeholder
+/// pin (`65c3c43`) that froze the trigger at `SIZE_MD` and refused the
+/// other three documented steps (FR-026).
+fn menu_button_at(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    open: bool,
+    items: Vec<ViewNode>,
+    size: ListBoxSize,
+) -> ViewNode {
     let label = label.into();
-    let trigger = trigger("trigger", label.clone(), open);
+    let trigger = trigger("trigger", label.clone(), open, size);
     let mut children = vec![trigger];
     if open {
-        children.push(menu("menu", label, items));
+        children.push(menu_at("menu", label, items, size));
     }
     let mut node = stack(key, Axis::Vertical, None, children);
     node.semantics.expanded = Some(open);
     node
 }
 
-fn trigger(key: impl Into<Key>, label: String, open: bool) -> ViewNode {
+fn trigger(key: impl Into<Key>, label: String, open: bool, size: ListBoxSize) -> ViewNode {
     let mut caption = text("label", label.clone());
     caption.props.style = Some(t(TYPOGRAPHY_BODY_COMPACT));
     caption.props.wrap = Some(TextWrap::Clip);
@@ -119,8 +170,8 @@ fn trigger(key: impl Into<Key>, label: String, open: bool) -> ViewNode {
                 priority: 0,
             },
             vertical: AxisConstraint {
-                min: Some(SIZE_MD),
-                max: Some(SIZE_MD),
+                min: Some(size.height()),
+                max: Some(size.height()),
                 priority: 0,
             },
         })

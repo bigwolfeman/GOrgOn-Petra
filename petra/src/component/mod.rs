@@ -178,8 +178,13 @@ pub use code_snippet::{
     SHOW_LESS, SHOW_MORE, code_runs, code_snippet, code_snippet_copied, code_snippet_inline,
     code_snippet_multi, code_snippet_multi_capped,
 };
-pub use contained_list::{contained_list, contained_list_disclosed};
-pub use content_switcher::{content_switcher, content_switcher_item};
+pub use contained_list::{
+    contained_list, contained_list_disclosed, contained_list_lg, contained_list_sm,
+    contained_list_xl,
+};
+pub use content_switcher::{
+    content_switcher, content_switcher_item, content_switcher_lg, content_switcher_sm,
+};
 pub use context_menu::context_menu;
 pub use controls::{
     CheckState, checkbox, checkbox_described, checkbox_group, checkbox_indeterminate,
@@ -224,8 +229,8 @@ pub use list::{
 };
 pub use list_row::{LIST_ROW_EXTENT, list_row, list_row_with};
 pub use loading::{advance_ambient_spinners, loading, loading_sm, spinner_phase};
-pub use menu::{menu, menu_flyout, menu_item, menu_item_with};
-pub use menu_button::menu_button;
+pub use menu::{menu, menu_flyout, menu_item, menu_item_with, menu_lg, menu_sm, menu_xs};
+pub use menu_button::{menu_button, menu_button_lg, menu_button_sm, menu_button_xs};
 pub use menubar::{menubar, menubar_top};
 pub use modal::{modal, modal_passive};
 pub use notification::{
@@ -238,8 +243,10 @@ pub use number_input::{
 };
 pub use otp::otp;
 pub use pagination::{
-    PaginationPicker, pagination, pagination_items, pagination_items_open, pagination_nav,
-    pagination_numbers, pagination_page_size, pagination_range,
+    PaginationPicker, pagination, pagination_items, pagination_items_lg, pagination_items_open,
+    pagination_items_sm, pagination_lg, pagination_nav, pagination_nav_lg, pagination_nav_sm,
+    pagination_numbers, pagination_numbers_lg, pagination_numbers_sm, pagination_page_size,
+    pagination_range, pagination_sm,
 };
 pub use popover::{popover, popover_with, popover_with_placement};
 pub use progress::{progress, progress_sm, progress_with_helper};

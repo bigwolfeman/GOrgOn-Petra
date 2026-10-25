@@ -143,6 +143,23 @@ pub trait Page {
         Vec::new()
     }
 
+    /// The size-step cell(s) for this component's built ramp (spec 008 T034,
+    /// FR-025): one cell per built size step of every sized constructor the
+    /// component ships — `tag_sm` / `tag` / `tag_lg` is three cells, not one.
+    /// "A constructor no page calls is an untested claim" (FR-025), so this
+    /// is the step census, complete or absent: a page whose component has a
+    /// ramp answers for every step of it here, even when its body already
+    /// shows one.
+    ///
+    /// The chrome renders the cells as this page's own Sizes section beside
+    /// the page body, and `lua_parity` seeds its `state.sizes` from the same
+    /// call (the seeding contract
+    /// [`super::catalog::Catalog::size_cells`] documents). The default is
+    /// empty, for the pages whose component has one height only.
+    fn sizes(&self) -> Vec<ViewNode> {
+        Vec::new()
+    }
+
     /// A theme this page wants the whole catalog switched to, taken and
     /// cleared.
     ///

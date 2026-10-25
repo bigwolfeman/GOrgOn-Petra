@@ -2100,23 +2100,27 @@ mod tests {
         );
         assert_eq!(leaf_text_in(&cam, "pager", "page-size"), "10");
         assert_eq!(leaf_text(&cam, "range-text"), "1\u{2013}10 of 50 items");
-        assert_eq!(leaf_text(&cam, "page"), "1");
+        assert_eq!(leaf_text_in(&cam, "pager", "page"), "1");
         assert!(!cam.has("menu"), "no picker is open at rest");
 
-        cam.click("controls/nav/next");
+        // Tails name `pager/bar` throughout: the FR-025 sizes row below the
+        // body mounts three more bars whose inner keys (`next`, `page`,
+        // `page-size-picker`, …) repeat by design, and `Camera::id` refuses
+        // an ambiguous tail — an ambiguous tail wants a longer one.
+        cam.click("pager/bar/controls/nav/next");
         let second = cam.shoot("23-pagination-page-two");
-        assert_eq!(leaf_text(&cam, "page"), "2");
+        assert_eq!(leaf_text_in(&cam, "pager", "page"), "2");
         assert_eq!(leaf_text(&cam, "range-text"), "11\u{2013}20 of 50 items");
         assert_ne!(first, second);
 
-        cam.click("items-per-page/page-size-cell/page-size-picker");
+        cam.click("pager/bar/items-per-page/page-size-cell/page-size-picker");
         let sizes_open = cam.shoot("23-pagination-sizes-open");
         assert!(
             cam.has("page-size-cell/menu"),
             "the page-size picker did not open its list"
         );
-        let picker = cam.rect("items-per-page/page-size-cell/page-size-picker");
-        let menu = cam.rect("items-per-page/page-size-cell/menu");
+        let picker = cam.rect("pager/bar/items-per-page/page-size-cell/page-size-picker");
+        let menu = cam.rect("pager/bar/items-per-page/page-size-cell/menu");
         assert!(
             menu.y >= picker.y + picker.h - 1.0 && (menu.x - picker.x).abs() < 1.0,
             "the list at {menu:?} does not hang under the picker at {picker:?}"
@@ -2127,11 +2131,11 @@ mod tests {
         let twenty = cam.shoot("23-pagination-twenty-per-page");
         assert!(!cam.has("menu"), "choosing a size did not close the list");
         assert_eq!(leaf_text_in(&cam, "pager", "page-size"), "20");
-        assert_eq!(leaf_text(&cam, "page-count"), "of 3 pages");
+        assert_eq!(leaf_text_in(&cam, "pager", "page-count"), "of 3 pages");
         assert_eq!(leaf_text(&cam, "range-text"), "21\u{2013}40 of 50 items");
         assert_ne!(sizes_open, twenty);
 
-        cam.click("page-picker");
+        cam.click("pager/bar/controls/page-cell/page-picker");
         assert!(
             cam.has("page-cell/menu"),
             "the page picker did not open its list"
@@ -2139,7 +2143,7 @@ mod tests {
         cam.click("page-3");
         let third = cam.shoot("23-pagination-page-three");
         assert!(!cam.has("menu"));
-        assert_eq!(leaf_text(&cam, "page"), "3");
+        assert_eq!(leaf_text_in(&cam, "pager", "page"), "3");
         assert_eq!(leaf_text(&cam, "range-text"), "41\u{2013}50 of 50 items");
         assert_ne!(twenty, third);
     }

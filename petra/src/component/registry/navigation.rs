@@ -6,7 +6,7 @@
 //!
 //! Components: Breadcrumb, Content switcher, Link, Menu, Menu buttons,
 //! Menubar, Pagination, Tabs, UI shell header, UI shell left panel, UI
-//! shell right panel. 47 constructors (see the `coverage` test at the
+//! shell right panel. 63 constructors (see the `coverage` test at the
 //! bottom, which counts the source rather than trusting this comment).
 
 use serde::Deserialize;
@@ -20,10 +20,13 @@ use crate::component::registry::IconMarkParam;
 use crate::component::{
     LeftPanelMode, PaginationPicker, breadcrumb, breadcrumb_item, breadcrumb_item_current,
     breadcrumb_item_icon, breadcrumb_overflow, breadcrumb_with_separator, contained_tab,
-    contained_tab_bar, content_switcher, content_switcher_item, link, link_inline, menu,
-    menu_button, menu_flyout, menu_item, menu_item_with, menubar, menubar_top, pagination,
-    pagination_items, pagination_items_open, pagination_nav, pagination_numbers,
-    pagination_page_size, pagination_range, tab, tab_bar, ui_shell_header, ui_shell_header_action,
+    contained_tab_bar, content_switcher, content_switcher_item, content_switcher_lg,
+    content_switcher_sm, link, link_inline, menu, menu_button, menu_button_lg, menu_button_sm,
+    menu_button_xs, menu_flyout, menu_item, menu_item_with, menu_lg, menu_sm, menu_xs, menubar,
+    menubar_top, pagination, pagination_items, pagination_items_lg, pagination_items_open,
+    pagination_items_sm, pagination_lg, pagination_nav, pagination_nav_lg, pagination_nav_sm,
+    pagination_numbers, pagination_numbers_lg, pagination_numbers_sm, pagination_page_size,
+    pagination_range, pagination_sm, tab, tab_bar, ui_shell_header, ui_shell_header_action,
     ui_shell_header_action_icon, ui_shell_header_menu_trigger, ui_shell_header_nav_item,
     ui_shell_left_panel, ui_shell_left_panel_divider, ui_shell_left_panel_icon_item,
     ui_shell_left_panel_icon_subitem, ui_shell_left_panel_in, ui_shell_left_panel_item,
@@ -364,12 +367,27 @@ pub const ENTRIES: &[Entry] = &[
     row!("content_switcher", KeyChildren, |p| content_switcher(
         p.key, p.children
     )),
+    row!("content_switcher_sm", KeyChildren, |p| content_switcher_sm(
+        p.key, p.children
+    )),
+    row!("content_switcher_lg", KeyChildren, |p| content_switcher_lg(
+        p.key, p.children
+    )),
     row!("content_switcher_item", KeyLabelSelected, |p| {
         content_switcher_item(p.key, p.label, p.selected)
     }),
     row!("link", KeyLabel, |p| link(p.key, p.label)),
     row!("link_inline", KeyLabel, |p| link_inline(p.key, p.label)),
     row!("menu", KeyLabelChildren, |p| menu(
+        p.key, p.label, p.children
+    )),
+    row!("menu_xs", KeyLabelChildren, |p| menu_xs(
+        p.key, p.label, p.children
+    )),
+    row!("menu_sm", KeyLabelChildren, |p| menu_sm(
+        p.key, p.label, p.children
+    )),
+    row!("menu_lg", KeyLabelChildren, |p| menu_lg(
         p.key, p.label, p.children
     )),
     row!("menu_item", KeyLabel, |p| menu_item(p.key, p.label)),
@@ -386,6 +404,15 @@ pub const ENTRIES: &[Entry] = &[
     row!("menu_button", KeyLabelOpenChildren, |p| menu_button(
         p.key, p.label, p.open, p.children
     )),
+    row!("menu_button_xs", KeyLabelOpenChildren, |p| menu_button_xs(
+        p.key, p.label, p.open, p.children
+    )),
+    row!("menu_button_sm", KeyLabelOpenChildren, |p| menu_button_sm(
+        p.key, p.label, p.open, p.children
+    )),
+    row!("menu_button_lg", KeyLabelOpenChildren, |p| menu_button_lg(
+        p.key, p.label, p.open, p.children
+    )),
     row!("menubar", MenubarParams, |p| menubar(
         p.key, p.label, p.edge, p.children
     )),
@@ -397,8 +424,24 @@ pub const ENTRIES: &[Entry] = &[
         p.page,
         p.page_count
     )),
+    row!("pagination_sm", PaginationParams, |p| pagination_sm(
+        p.key,
+        p.page,
+        p.page_count
+    )),
+    row!("pagination_lg", PaginationParams, |p| pagination_lg(
+        p.key,
+        p.page,
+        p.page_count
+    )),
     row!("pagination_items", PaginationItemsParams, |p| {
         pagination_items(p.key, p.page, p.page_size, p.total_items)
+    }),
+    row!("pagination_items_sm", PaginationItemsParams, |p| {
+        pagination_items_sm(p.key, p.page, p.page_size, p.total_items)
+    }),
+    row!("pagination_items_lg", PaginationItemsParams, |p| {
+        pagination_items_lg(p.key, p.page, p.page_size, p.total_items)
     }),
     row!("pagination_items_open", PaginationItemsOpenParams, |p| {
         pagination_items_open(
@@ -419,11 +462,27 @@ pub const ENTRIES: &[Entry] = &[
     row!("pagination_numbers", PaginationParams, |p| {
         pagination_numbers(p.key, p.page, p.page_count)
     }),
+    row!("pagination_numbers_sm", PaginationParams, |p| {
+        pagination_numbers_sm(p.key, p.page, p.page_count)
+    }),
+    row!("pagination_numbers_lg", PaginationParams, |p| {
+        pagination_numbers_lg(p.key, p.page, p.page_count)
+    }),
     row!("pagination_nav", PaginationParams, |p| pagination_nav(
         p.key,
         p.page,
         p.page_count
     )),
+    row!(
+        "pagination_nav_sm",
+        PaginationParams,
+        |p| pagination_nav_sm(p.key, p.page, p.page_count)
+    ),
+    row!(
+        "pagination_nav_lg",
+        PaginationParams,
+        |p| pagination_nav_lg(p.key, p.page, p.page_count)
+    ),
     row!("tab", KeyLabelSelected, |p| tab(p.key, p.label, p.selected)),
     row!("contained_tab", KeyLabelSelected, |p| contained_tab(
         p.key, p.label, p.selected
@@ -656,10 +715,15 @@ mod tests {
                 json!({ "key": "k", "mark": "check", "label": "l" })
             }
             "content_switcher" => json!({ "key": "k-cs", "children": [] }),
+            "content_switcher_sm" => json!({ "key": "k-cs-sm", "children": [] }),
+            "content_switcher_lg" => json!({ "key": "k-cs-lg", "children": [] }),
             "content_switcher_item" => json!({ "key": "k", "label": "l", "selected": true }),
             "link" => json!({ "key": "k", "label": "l" }),
             "link_inline" => json!({ "key": "k", "label": "l-inline" }),
             "menu" => json!({ "key": "k", "label": "l", "children": [] }),
+            "menu_xs" => json!({ "key": "k-menu-xs", "label": "l", "children": [] }),
+            "menu_sm" => json!({ "key": "k-menu-sm", "label": "l", "children": [] }),
+            "menu_lg" => json!({ "key": "k-menu-lg", "label": "l", "children": [] }),
             "menu_item" => json!({ "key": "k", "label": "l" }),
             "menu_item_with" => json!({
                 "key": "k", "label": "l-with", "icon": "copy",
@@ -669,13 +733,30 @@ mod tests {
             "menu_button" => {
                 json!({ "key": "k", "label": "l", "open": true, "children": [] })
             }
+            "menu_button_xs" => {
+                json!({ "key": "k-mb-xs", "label": "l", "open": true, "children": [] })
+            }
+            "menu_button_sm" => {
+                json!({ "key": "k-mb-sm", "label": "l", "open": true, "children": [] })
+            }
+            "menu_button_lg" => {
+                json!({ "key": "k-mb-lg", "label": "l", "open": true, "children": [] })
+            }
             "menubar" => json!({
                 "key": "k", "label": "l", "edge": "bottom", "children": []
             }),
             "menubar_top" => json!({ "key": "k", "label": "l-menubar", "children": [] }),
             "pagination" => json!({ "key": "k", "page": 1, "page_count": 4 }),
+            "pagination_sm" => json!({ "key": "k-pg-sm", "page": 1, "page_count": 4 }),
+            "pagination_lg" => json!({ "key": "k-pg-lg", "page": 1, "page_count": 4 }),
             "pagination_items" => {
                 json!({ "key": "k", "page": 1, "page_size": 10, "total_items": 42 })
+            }
+            "pagination_items_sm" => {
+                json!({ "key": "k-pgis-sm", "page": 1, "page_size": 10, "total_items": 42 })
+            }
+            "pagination_items_lg" => {
+                json!({ "key": "k-pgis-lg", "page": 1, "page_size": 10, "total_items": 42 })
             }
             "pagination_items_open" => json!({
                 "key": "k", "page": 1, "page_size": 10,
@@ -688,7 +769,15 @@ mod tests {
                 json!({ "key": "k", "page": 1, "page_size": 10, "total_items": 42 })
             }
             "pagination_numbers" => json!({ "key": "k", "page": 1, "page_count": 4 }),
+            "pagination_numbers_sm" => {
+                json!({ "key": "k-pgn-sm", "page": 1, "page_count": 4 })
+            }
+            "pagination_numbers_lg" => {
+                json!({ "key": "k-pgn-lg", "page": 1, "page_count": 4 })
+            }
             "pagination_nav" => json!({ "key": "k", "page": 1, "page_count": 4 }),
+            "pagination_nav_sm" => json!({ "key": "k-pgv-sm", "page": 1, "page_count": 4 }),
+            "pagination_nav_lg" => json!({ "key": "k-pgv-lg", "page": 1, "page_count": 4 }),
             "tab" => json!({ "key": "k", "label": "l", "selected": true }),
             "contained_tab" => json!({ "key": "k", "label": "l-contained", "selected": true }),
             "vertical_tab" => json!({ "key": "k", "label": "l-vertical", "selected": true }),

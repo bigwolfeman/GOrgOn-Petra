@@ -108,6 +108,100 @@ impl Page for Pagination {
         ))
     }
 
+    /// Carbon's pagination ramp (slice-d "Sizes": sm 32 / md 40 / lg 48;
+    /// "there is no xs/xl pagination size") — the three built steps side by
+    /// side, each labeled with its step and the height it lands on
+    /// (FR-025). Static bars: the live pager above owns the interaction.
+    fn sizes(&self) -> Vec<ViewNode> {
+        use gorgon_petra::component::{
+            pagination, pagination_items_lg, pagination_items_sm, pagination_lg, pagination_nav_lg,
+            pagination_nav_sm, pagination_numbers_lg, pagination_numbers_sm, pagination_sm, text,
+        };
+
+        use super::common::{column, row, sp};
+        vec![column(
+            "size-steps",
+            sp("spacing-05"),
+            vec![
+                row(
+                    "size-sm",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-sm-label", "sm · 32"),
+                        pagination_sm("size-pg-sm", 2, 5),
+                    ],
+                ),
+                row(
+                    "size-md",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-md-label", "md · 40"),
+                        pagination("size-pg-md", 2, 5),
+                    ],
+                ),
+                row(
+                    "size-lg",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-lg-label", "lg · 48"),
+                        pagination_lg("size-pg-lg", 2, 5),
+                    ],
+                ),
+                // The sized pieces are built steps of their own (the sm and
+                // lg bars above compose them): one cell per row so each wide
+                // piece gets the card's cell share (FR-025).
+                row(
+                    "size-items-sm",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-items-sm-label", "items sm · 32"),
+                        pagination_items_sm("size-items-sm-cell", 1, 10, 50),
+                    ],
+                ),
+                row(
+                    "size-items-lg",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-items-lg-label", "items lg · 48"),
+                        pagination_items_lg("size-items-lg-cell", 1, 10, 50),
+                    ],
+                ),
+                row(
+                    "size-numbers-sm",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-numbers-sm-label", "numbers sm · 32"),
+                        pagination_numbers_sm("size-numbers-sm-cell", 1, 5),
+                    ],
+                ),
+                row(
+                    "size-numbers-lg",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-numbers-lg-label", "numbers lg · 48"),
+                        pagination_numbers_lg("size-numbers-lg-cell", 1, 5),
+                    ],
+                ),
+                row(
+                    "size-nav-sm",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-nav-sm-label", "nav sm · 32"),
+                        pagination_nav_sm("size-nav-sm-cell", 1, 5),
+                    ],
+                ),
+                row(
+                    "size-nav-lg",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-nav-lg-label", "nav lg · 48"),
+                        pagination_nav_lg("size-nav-lg-cell", 1, 5),
+                    ],
+                ),
+            ],
+        )]
+    }
+
     /// The documented disabled state (spec 008 T025, register row 352): the
     /// nested controls under `disabled()` — the page-size Select beside a
     /// nav whose Previous is unavailable on page 1 and therefore already

@@ -59,6 +59,45 @@ impl Page for Search {
         ))
     }
 
+    /// Carbon's search sizing (`_search.scss`, 32/40/48 by step): the three
+    /// built steps side by side, each labeled with its step and the height
+    /// it lands on (FR-025).
+    fn sizes(&self) -> Vec<ViewNode> {
+        use gorgon_petra::component::{search_lg, search_sm, text};
+
+        use super::common::{column, row, sp};
+        vec![column(
+            "size-steps",
+            sp("spacing-05"),
+            vec![
+                row(
+                    "size-sm",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-sm-label", "sm · 32"),
+                        search_sm("size-search-sm", "Search"),
+                    ],
+                ),
+                row(
+                    "size-md",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-md-label", "md · 40"),
+                        search("size-search-md", "Search"),
+                    ],
+                ),
+                row(
+                    "size-lg",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-lg-label", "lg · 48"),
+                        search_lg("size-search-lg", "Search"),
+                    ],
+                ),
+            ],
+        )]
+    }
+
     /// The documented disabled state (spec 008 T025, register row 413): the
     /// `--disabled` modifier's field (slice-d States) — label and value in
     /// `text.muted`, magnifier and field edge in their fades.

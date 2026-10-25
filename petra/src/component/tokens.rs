@@ -61,6 +61,16 @@ pub(crate) const SIZE_LG: f32 = 48.0;
 /// (`crate::token::shipped`).
 pub(crate) const SIZE_XS: f32 = 24.0;
 
+/// Control height `size-sm`. See [`SIZE_MD`] for why this is numeric.
+/// Cited to the shipped ramp's own `("size-sm", 32.0)` entry
+/// (`crate::token::shipped`).
+pub(crate) const SIZE_SM: f32 = 32.0;
+
+/// Control height `size-xl`. See [`SIZE_MD`] for why this is numeric.
+/// Cited to the shipped ramp's own `("size-xl", 64.0)` entry
+/// (`crate::token::shipped`).
+pub(crate) const SIZE_XL: f32 = 64.0;
+
 // `SHAPE_NONE`/`SHAPE_XS`/`SHAPE_SM`/`SHAPE_MD` carry `#[allow(dead_code)]`
 // since the 2026-09-09 corner-radius flag day (`contracts/
 // token-vocabulary.md` §11 step 7): every production call site now reaches

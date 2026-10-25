@@ -57,8 +57,8 @@ use super::pin_block;
 use super::stack;
 use super::text::text;
 use super::tokens::{
-    BORDER_SUBTLE, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SIZE_MD, SPACING_03,
-    SPACING_05, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_BODY_COMPACT,
+    BORDER_SUBTLE, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SIZE_LG, SIZE_MD, SIZE_SM,
+    SPACING_03, SPACING_05, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_BODY_COMPACT,
     TYPOGRAPHY_HEADING_SM, t,
 };
 use crate::geom::{Align, Axis};
@@ -79,7 +79,35 @@ const TOGGLES_ON_RELEASE: Behaviour = Behaviour {
     phase: Phase::OnRelease,
 };
 
+/// Carbon's pagination ramp — slice-d "Sizes": sm 32, md 40, lg 48
+/// (`layout.use('size', $default: 'md', $min: 'xs', $max: 'lg')` at
+/// `_pagination.scss:34`; "there is no xs/xl pagination size" — pair an
+/// xs or xl data table with sm or lg instead). Closed on purpose: the
+/// step nobody wired is a compile error, not a silently missing row —
+/// the same trade [`super::content_switcher`]'s `SwitcherSize` records.
+/// This replaces the wave-1–4 placeholder pin (`65c3c43`) that froze the
+/// bar at md and refused the other two documented steps (FR-026).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PageBarSize {
+    Sm,
+    Md,
+    Lg,
+}
+
+impl PageBarSize {
+    /// Carbon's bar height for this step, in layout units.
+    fn height(self) -> f32 {
+        match self {
+            Self::Sm => SIZE_SM,
+            Self::Md => SIZE_MD,
+            Self::Lg => SIZE_LG,
+        }
+    }
+}
+
+const _: () = assert!(SIZE_SM == 32.0);
 const _: () = assert!(SIZE_MD == 40.0);
+const _: () = assert!(SIZE_LG == 48.0);
 
 const NAV_INTENTS: &[Interaction] = &[Interaction::Focus, Interaction::Click, Interaction::Hover];
 
@@ -140,7 +168,23 @@ struct Open {
 /// 1; Next is unavailable on the last page (and when there are no pages).
 #[must_use]
 pub fn pagination(key: impl Into<Key>, page: u32, page_count: u32) -> ViewNode {
-    bar(key, None, page, page_count, None)
+    pagination_at(key, page, page_count, PageBarSize::Md)
+}
+
+/// The compact bar at Carbon sm (32).
+#[must_use]
+pub fn pagination_sm(key: impl Into<Key>, page: u32, page_count: u32) -> ViewNode {
+    pagination_at(key, page, page_count, PageBarSize::Sm)
+}
+
+/// The compact bar at Carbon lg (48).
+#[must_use]
+pub fn pagination_lg(key: impl Into<Key>, page: u32, page_count: u32) -> ViewNode {
+    pagination_at(key, page, page_count, PageBarSize::Lg)
+}
+
+fn pagination_at(key: impl Into<Key>, page: u32, page_count: u32, size: PageBarSize) -> ViewNode {
+    bar(key, None, page, page_count, None, size.height())
 }
 
 /// Carbon's full bar, pickers closed: items per page, the range of items
@@ -160,9 +204,48 @@ pub fn pagination_items(
     page_size: u32,
     total_items: u32,
 ) -> ViewNode {
+    pagination_items_at(key, page, page_size, total_items, PageBarSize::Md)
+}
+
+/// The full bar at Carbon sm (32).
+#[must_use]
+pub fn pagination_items_sm(
+    key: impl Into<Key>,
+    page: u32,
+    page_size: u32,
+    total_items: u32,
+) -> ViewNode {
+    pagination_items_at(key, page, page_size, total_items, PageBarSize::Sm)
+}
+
+/// The full bar at Carbon lg (48).
+#[must_use]
+pub fn pagination_items_lg(
+    key: impl Into<Key>,
+    page: u32,
+    page_size: u32,
+    total_items: u32,
+) -> ViewNode {
+    pagination_items_at(key, page, page_size, total_items, PageBarSize::Lg)
+}
+
+fn pagination_items_at(
+    key: impl Into<Key>,
+    page: u32,
+    page_size: u32,
+    total_items: u32,
+    size: PageBarSize,
+) -> ViewNode {
     let page_size = page_size.max(1);
     let (page_count, _) = derive(page, page_size, total_items);
-    bar(key, Some((page_size, total_items)), page, page_count, None)
+    bar(
+        key,
+        Some((page_size, total_items)),
+        page,
+        page_count,
+        None,
+        size.height(),
+    )
 }
 
 /// [`pagination_items`] with `picker` open: its list box hangs under it,
@@ -189,6 +272,7 @@ pub fn pagination_items_open(
             picker,
             page_sizes: page_sizes.to_vec(),
         }),
+        PageBarSize::Md.height(),
     )
 }
 
@@ -202,6 +286,17 @@ pub fn pagination_page_size(
     key: impl Into<Key>,
     page_size: u32,
     open_sizes: Option<&[u32]>,
+) -> ViewNode {
+    pagination_page_size_at(key, page_size, open_sizes, PageBarSize::Md.height())
+}
+
+/// The items-per-page group at one bar step: every piece of the bar
+/// resolves its own height from the bar that composes it.
+fn pagination_page_size_at(
+    key: impl Into<Key>,
+    page_size: u32,
+    open_sizes: Option<&[u32]>,
+    height: f32,
 ) -> ViewNode {
     let page_size = page_size.max(1);
     let caption = cell(
@@ -219,6 +314,7 @@ pub fn pagination_page_size(
         page_size.to_string(),
         pad_inline(SPACING_03, SPACING_05),
         open_sizes.is_some(),
+        height,
     );
     let menu = open_sizes.map(|sizes| {
         list_box(
@@ -239,6 +335,7 @@ pub fn pagination_page_size(
             picker_cell("page-size-cell", trigger, menu),
             nav_divider("divider-items"),
         ],
+        height,
     )
 }
 
@@ -276,6 +373,22 @@ pub fn pagination_range(
 /// picker's `page-{n}` option rows.
 #[must_use]
 pub fn pagination_numbers(key: impl Into<Key>, page: u32, page_count: u32) -> ViewNode {
+    pagination_numbers_at(key, page, page_count, PageBarSize::Md.height())
+}
+
+/// The number row at Carbon sm (32).
+#[must_use]
+pub fn pagination_numbers_sm(key: impl Into<Key>, page: u32, page_count: u32) -> ViewNode {
+    pagination_numbers_at(key, page, page_count, PageBarSize::Sm.height())
+}
+
+/// The number row at Carbon lg (48).
+#[must_use]
+pub fn pagination_numbers_lg(key: impl Into<Key>, page: u32, page_count: u32) -> ViewNode {
+    pagination_numbers_at(key, page, page_count, PageBarSize::Lg.height())
+}
+
+fn pagination_numbers_at(key: impl Into<Key>, page: u32, page_count: u32, height: f32) -> ViewNode {
     if page_count == 0 {
         return stack(key, Axis::Horizontal, None, vec![]);
     }
@@ -285,7 +398,7 @@ pub fn pagination_numbers(key: impl Into<Key>, page: u32, page_count: u32) -> Vi
     for slot in number_slots(page, page_count) {
         match slot {
             NumberSlot::Page(n) => {
-                children.push(page_number_button(n, n == page));
+                children.push(page_number_button(n, n == page, height));
             }
             NumberSlot::Ellipsis => {
                 // After page 1 it is the leading collapse; otherwise the
@@ -299,7 +412,7 @@ pub fn pagination_numbers(key: impl Into<Key>, page: u32, page_count: u32) -> Vi
         }
         prev = Some(slot);
     }
-    run(key, children)
+    run(key, children, height)
 }
 
 /// Previous and Next. Page 1 disables Previous; the last page (and a
@@ -309,12 +422,35 @@ pub fn pagination_numbers(key: impl Into<Key>, page: u32, page_count: u32) -> Vi
 /// same seams the bar already drew.
 #[must_use]
 pub fn pagination_nav(key: impl Into<Key>, page: u32, page_count: u32) -> ViewNode {
-    let previous = nav_button("previous", "Previous", IconMark::CaretLeft, page <= 1);
+    pagination_nav_at(key, page, page_count, PageBarSize::Md.height())
+}
+
+/// Previous/Next at Carbon sm (32).
+#[must_use]
+pub fn pagination_nav_sm(key: impl Into<Key>, page: u32, page_count: u32) -> ViewNode {
+    pagination_nav_at(key, page, page_count, PageBarSize::Sm.height())
+}
+
+/// Previous/Next at Carbon lg (48).
+#[must_use]
+pub fn pagination_nav_lg(key: impl Into<Key>, page: u32, page_count: u32) -> ViewNode {
+    pagination_nav_at(key, page, page_count, PageBarSize::Lg.height())
+}
+
+fn pagination_nav_at(key: impl Into<Key>, page: u32, page_count: u32, height: f32) -> ViewNode {
+    let previous = nav_button(
+        "previous",
+        "Previous",
+        IconMark::CaretLeft,
+        page <= 1,
+        height,
+    );
     let next = nav_button(
         "next",
         "Next",
         IconMark::CaretRight,
         page_count == 0 || page >= page_count,
+        height,
     );
     run(
         key,
@@ -324,6 +460,7 @@ pub fn pagination_nav(key: impl Into<Key>, page: u32, page_count: u32) -> ViewNo
             nav_divider("divider-next"),
             next,
         ],
+        height,
     )
 }
 
@@ -381,7 +518,7 @@ fn number_slots(page: u32, page_count: u32) -> Vec<NumberSlot> {
 
 /// One page button. Selected uses weight + selected semantics + fill, never
 /// hue alone. Keyed `num-{n}` (see [`pagination_numbers`]).
-fn page_number_button(n: u32, selected: bool) -> ViewNode {
+fn page_number_button(n: u32, selected: bool, height: f32) -> ViewNode {
     let label = format!("Page {n}");
     let mut caption = text("label", n.to_string());
     caption.props.style = Some(t(if selected {
@@ -410,7 +547,7 @@ fn page_number_button(n: u32, selected: bool) -> ViewNode {
         .tokens
         .insert("background@selected-hover".into(), t(LAYER_SELECTED_HOVER));
     let mut node = node
-        .with_constraints(pin_at_least_md())
+        .with_constraints(pin_button(height))
         .interactive(Role::Button, label, NAV_INTENTS)
         .with_behaviour(ACTIVATES_ON_RELEASE)
         .owning_its_text();
@@ -430,18 +567,18 @@ fn ellipsis_mark(key: &'static str) -> ViewNode {
     )
 }
 
-/// Height pinned at md; width at least md so a one-digit page is a square
-/// and a three-digit page can grow.
-fn pin_at_least_md() -> Constraints {
+/// Height pinned at the bar's step; width at least that step's height so
+/// a one-digit page is a square and a three-digit page can grow.
+fn pin_button(height: f32) -> Constraints {
     Constraints {
         horizontal: AxisConstraint {
-            min: Some(SIZE_MD),
+            min: Some(height),
             max: None,
             priority: 0,
         },
         vertical: AxisConstraint {
-            min: Some(SIZE_MD),
-            max: Some(SIZE_MD),
+            min: Some(height),
+            max: Some(height),
             priority: 0,
         },
     }
@@ -461,15 +598,16 @@ fn derive(page: u32, page_size: u32, total_items: u32) -> (u32, String) {
     )
 }
 
-/// The bar: a 1-unit top rule over a 40-tall grid whose weight column is
-/// the range (or an empty spacer) that pushes the number row and the page
-/// controls to the end. Pieces, not a second anatomy.
+/// The bar: a 1-unit top rule over a grid pinned at the bar's step whose
+/// weight column is the range (or an empty spacer) that pushes the number
+/// row and the page controls to the end. Pieces, not a second anatomy.
 fn bar(
     key: impl Into<Key>,
     left: Option<(u32, u32)>,
     page: u32,
     page_count: u32,
     open: Option<Open>,
+    height: f32,
 ) -> ViewNode {
     let mut columns = Vec::with_capacity(4);
     let mut cells = Vec::with_capacity(4);
@@ -480,7 +618,12 @@ fn bar(
                 .filter(|o| o.picker == PaginationPicker::PageSize)
                 .map(|o| o.page_sizes.as_slice());
             columns.push(TrackSize::FitContent);
-            cells.push(pagination_page_size("items-per-page", page_size, sizes));
+            cells.push(pagination_page_size_at(
+                "items-per-page",
+                page_size,
+                sizes,
+                height,
+            ));
             columns.push(TrackSize::Weight { weight: 1.0 });
             cells.push(pagination_range("range", page, page_size, total_items));
         }
@@ -494,10 +637,10 @@ fn bar(
         .is_some_and(|o| o.picker == PaginationPicker::Page);
     if page_count > 0 {
         columns.push(TrackSize::FitContent);
-        cells.push(pagination_numbers("numbers", page, page_count));
+        cells.push(pagination_numbers_at("numbers", page, page_count, height));
     }
     columns.push(TrackSize::FitContent);
-    cells.push(page_controls(page, page_count, pages_open));
+    cells.push(page_controls(page, page_count, pages_open, height));
 
     let mut row = ViewNode::new(NodeKind::Grid, "bar")
         .with_props(Props {
@@ -508,8 +651,8 @@ fn bar(
         })
         .with_children(cells);
     row.constraints.vertical = AxisConstraint {
-        min: Some(SIZE_MD),
-        max: Some(SIZE_MD),
+        min: Some(height),
+        max: Some(height),
         priority: 0,
     };
 
@@ -524,8 +667,9 @@ fn bar(
     node
 }
 
-/// A run of cells, each exactly as wide as it asks to be: a one-row grid
-/// of `FitContent` columns on a row fixed at [`SIZE_MD`], stretched to it.
+/// One run of cells at the bar's step, each exactly as wide as it asks to
+/// be: a one-row grid of `FitContent` columns on a row fixed at `height`,
+/// stretched to it.
 /// The row is fixed rather than `FitContent` because a group with no
 /// 40-tall child would otherwise size its row to the captions and leave
 /// its divider short of the bar.
@@ -537,11 +681,11 @@ fn bar(
 /// stack settles a shortfall by squeezing its most flexible child, which
 /// for a text label means wrapping. A grid probes each column on its own
 /// and hands each child exactly that width.
-fn run(key: impl Into<Key>, children: Vec<ViewNode>) -> ViewNode {
+fn run(key: impl Into<Key>, children: Vec<ViewNode>, height: f32) -> ViewNode {
     ViewNode::new(NodeKind::Grid, key)
         .with_props(Props {
             columns: vec![TrackSize::FitContent; children.len()],
-            rows: vec![TrackSize::Fixed { value: SIZE_MD }],
+            rows: vec![TrackSize::Fixed { value: height }],
             align: Some(Align::Stretch),
             ..Props::default()
         })
@@ -595,6 +739,7 @@ fn picker(
     value: String,
     padding: InsetRefs,
     open: bool,
+    height: f32,
 ) -> ViewNode {
     let mut value_node = text(value_key, value.clone());
     value_node
@@ -625,7 +770,7 @@ fn picker(
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
     let mut node = node
-        .with_constraints(pin_block(SIZE_MD))
+        .with_constraints(pin_block(height))
         .interactive(Role::Button, label, NAV_INTENTS)
         .with_behaviour(TOGGLES_ON_RELEASE)
         .owning_its_text();
@@ -636,7 +781,7 @@ fn picker(
 
 /// The right group: divider, page picker, "of N pages", then
 /// [`pagination_nav`]. Page-select padding 16 start / 8 end (slice-d:67).
-fn page_controls(page: u32, page_count: u32, pages_open: bool) -> ViewNode {
+fn page_controls(page: u32, page_count: u32, pages_open: bool, height: f32) -> ViewNode {
     let trigger = picker(
         PAGE_PICKER,
         "page",
@@ -644,6 +789,7 @@ fn page_controls(page: u32, page_count: u32, pages_open: bool) -> ViewNode {
         page.to_string(),
         pad_inline(SPACING_05, SPACING_03),
         pages_open,
+        height,
     );
     let menu = pages_open.then(|| {
         list_box(
@@ -671,8 +817,9 @@ fn page_controls(page: u32, page_count: u32, pages_open: bool) -> ViewNode {
             nav_divider("divider-page"),
             picker_cell("page-cell", trigger, menu),
             count,
-            pagination_nav("nav", page, page_count),
+            pagination_nav_at("nav", page, page_count, height),
         ],
+        height,
     )
 }
 
@@ -702,16 +849,17 @@ fn nav_divider(key: &'static str) -> ViewNode {
     super::rule(key, Axis::Vertical, BORDER_SUBTLE)
 }
 
-/// A ghost icon button, 40×40: one 16 caret centred, the label in
-/// [`Semantics`] only. Unavailable: [`super::disabled`], and the caret in
-/// [`IconTone::Disabled`] — Carbon's `$icon-disabled` — because the caret
-/// is the whole visible button and a live-toned caret on a dead button is
-/// a button that lies.
+/// A ghost icon button, one caret square at the bar's step: the 16 caret
+/// centred, the label in [`Semantics`] only. Unavailable:
+/// [`super::disabled`], and the caret in [`IconTone::Disabled`] — Carbon's
+/// `$icon-disabled` — because the caret is the whole visible button and a
+/// live-toned caret on a dead button is a button that lies.
 fn nav_button(
     key: &'static str,
     label: &'static str,
     mark: IconMark,
     unavailable: bool,
+    height: f32,
 ) -> ViewNode {
     let tone = if unavailable {
         IconTone::Disabled
@@ -737,7 +885,7 @@ fn nav_button(
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
     let node = node
-        .with_constraints(pin_square(SIZE_MD))
+        .with_constraints(pin_square(height))
         .interactive(Role::Button, label, NAV_INTENTS)
         .with_behaviour(ACTIVATES_ON_RELEASE)
         .owning_its_text();

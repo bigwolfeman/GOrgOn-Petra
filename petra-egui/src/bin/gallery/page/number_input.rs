@@ -85,6 +85,45 @@ impl Page for NumberInput {
         ))
     }
 
+    /// Carbon's number-input sizing (`_number.scss`, 32/40/48 by step):
+    /// the three built steps side by side, each labeled with its step and
+    /// the height it lands on (FR-025).
+    fn sizes(&self) -> Vec<ViewNode> {
+        use gorgon_petra::component::{number_input_lg, number_input_sm, text};
+
+        use super::common::{column, row, sp};
+        vec![column(
+            "size-steps",
+            sp("spacing-05"),
+            vec![
+                row(
+                    "size-sm",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-sm-label", "sm · 32"),
+                        number_input_sm("size-num-sm", "Label", "1"),
+                    ],
+                ),
+                row(
+                    "size-md",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-md-label", "md · 40"),
+                        number_input("size-num-md", "Label", "1"),
+                    ],
+                ),
+                row(
+                    "size-lg",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-lg-label", "lg · 48"),
+                        number_input_lg("size-num-lg", "Label", "1"),
+                    ],
+                ),
+            ],
+        )]
+    }
+
     /// The documented disabled state (spec 008 T025, register row 340): the
     /// field and its stepper buttons (slice-d States) — label and value in
     /// `text.muted`, stepper glyphs and the field edge in their fades.

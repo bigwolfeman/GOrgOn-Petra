@@ -83,6 +83,75 @@ impl Page for Accordion {
         ))
     }
 
+    /// Carbon's accordion header sizing (`_accordion.scss` `layout.use`,
+    /// 32/40/48): the three built flush steps side by side, each labeled
+    /// with its step and the header height it lands on (FR-025).
+    fn sizes(&self) -> Vec<ViewNode> {
+        use gorgon_petra::component::{
+            accordion_item, accordion_item_lg, accordion_item_sm, accordion_item_spaced,
+            accordion_item_spaced_lg, accordion_item_spaced_sm, text,
+        };
+
+        use super::common::{column, row, sp};
+        vec![column(
+            "size-steps",
+            sp("spacing-05"),
+            vec![
+                row(
+                    "size-sm",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-sm-label", "sm · 32"),
+                        accordion_item_sm("size-acc-sm", "Section", true, "Body"),
+                    ],
+                ),
+                row(
+                    "size-md",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-md-label", "md · 40"),
+                        accordion_item("size-acc-md", "Section", true, "Body"),
+                    ],
+                ),
+                row(
+                    "size-lg",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-lg-label", "lg · 48"),
+                        accordion_item_lg("size-acc-lg", "Section", true, "Body"),
+                    ],
+                ),
+                // The spaced family carries its own ladder (FR-025): the
+                // flush ladder above and the spaced one are separate built
+                // steps, so each spaced step keeps its own cell.
+                row(
+                    "size-spaced-sm",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-spaced-sm-label", "spaced sm · 32"),
+                        accordion_item_spaced_sm("size-acc-sp-sm", "Section", true, "Body"),
+                    ],
+                ),
+                row(
+                    "size-spaced-md",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-spaced-md-label", "spaced md · 40"),
+                        accordion_item_spaced("size-acc-sp-md", "Section", true, "Body"),
+                    ],
+                ),
+                row(
+                    "size-spaced-lg",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-spaced-lg-label", "spaced lg · 48"),
+                        accordion_item_spaced_lg("size-acc-sp-lg", "Section", true, "Body"),
+                    ],
+                ),
+            ],
+        )]
+    }
+
     /// The documented disabled state (spec 008 T025, register row 11): a
     /// disabled accordion item — header label and chevron in the
     /// `@disabled` inks the register names, elevation dropped by the painter.

@@ -27,6 +27,74 @@ impl Page for Menu {
         "Menu"
     }
 
+    /// Carbon's menu-item heights (slice-c "Sizes": "driven by the
+    /// trigger that opened the menu") — the four built steps side by side,
+    /// each labeled with its step and the row height it lands on (FR-025).
+    /// Each pair owns its own `trigger` sibling, the key `menu` anchors to.
+    fn sizes(&self) -> Vec<ViewNode> {
+        use gorgon_petra::component::{menu_item, menu_lg, menu_sm, menu_xs, text};
+
+        use super::common::{column, sp};
+        vec![column(
+            "size-steps",
+            sp("spacing-05"),
+            vec![
+                column(
+                    "size-pair-xs",
+                    None,
+                    vec![
+                        text("size-xs-label", "xs · 24"),
+                        button("trigger", "Actions"),
+                        menu_xs(
+                            "size-menu-xs",
+                            "Actions",
+                            vec![menu_item("size-mn-xs-0", "Rename")],
+                        ),
+                    ],
+                ),
+                column(
+                    "size-pair-sm",
+                    None,
+                    vec![
+                        text("size-sm-label", "sm · 32"),
+                        button("trigger", "Actions"),
+                        menu_sm(
+                            "size-menu-sm",
+                            "Actions",
+                            vec![menu_item("size-mn-sm-0", "Rename")],
+                        ),
+                    ],
+                ),
+                column(
+                    "size-pair-md",
+                    None,
+                    vec![
+                        text("size-md-label", "md · 40"),
+                        button("trigger", "Actions"),
+                        menu(
+                            "size-menu-md",
+                            "Actions",
+                            vec![menu_item("size-mn-md-0", "Rename")],
+                        ),
+                    ],
+                ),
+                column(
+                    "size-pair-lg",
+                    None,
+                    vec![
+                        text("size-lg-label", "lg · 48"),
+                        button("trigger", "Actions"),
+                        menu_lg(
+                            "size-menu-lg",
+                            "Actions",
+                            vec![menu_item("size-mn-lg-0", "Rename")],
+                        ),
+                    ],
+                ),
+            ],
+        )]
+    }
+
     /// The documented disabled state (spec 008 T025, register row 273): a
     /// disabled menu — item labels in `text.muted`, the item glyph in the
     /// `icon-*@disabled` fade (slice-c States: Disabled is one of Menu's seven).
@@ -87,6 +155,12 @@ impl Page for Menu {
     }
 
     fn handle(&mut self, _event: &InputEvent, node: &str) -> bool {
+        // Only the body's pair is live: the sizes row's triggers and rows
+        // are a geometry display, and without this guard a press on one
+        // would toggle the body's menu.
+        if !path_has(node, "mn-pair") {
+            return false;
+        }
         if ITEMS.iter().any(|(key, _)| path_has(node, key)) {
             self.open = false;
         } else if path_has(node, TRIGGER) {

@@ -54,6 +54,71 @@ impl Page for Button {
         ))
     }
 
+    /// Carbon's button sizing (`_button.scss` `layout.use`, 24/32/40/48/
+    /// 64/80): all six built steps side by side, each labeled with its step
+    /// and the height it lands on (FR-025).
+    fn sizes(&self) -> Vec<ViewNode> {
+        use gorgon_petra::component::{
+            button_2xl, button_lg, button_sm, button_xl, button_xs, text,
+        };
+
+        use super::common::{column, row, sp};
+        vec![column(
+            "size-steps",
+            sp("spacing-05"),
+            vec![
+                row(
+                    "size-xs",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-xs-label", "xs · 24"),
+                        button_xs("size-btn-xs", "Button"),
+                    ],
+                ),
+                row(
+                    "size-sm",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-sm-label", "sm · 32"),
+                        button_sm("size-btn-sm", "Button"),
+                    ],
+                ),
+                row(
+                    "size-md",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-md-label", "md · 40"),
+                        button("size-btn-md", "Button"),
+                    ],
+                ),
+                row(
+                    "size-lg",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-lg-label", "lg · 48"),
+                        button_lg("size-btn-lg", "Button"),
+                    ],
+                ),
+                row(
+                    "size-xl",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-xl-label", "xl · 64"),
+                        button_xl("size-btn-xl", "Button"),
+                    ],
+                ),
+                row(
+                    "size-2xl",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-2xl-label", "2xl · 80"),
+                        button_2xl("size-btn-2xl", "Button"),
+                    ],
+                ),
+            ],
+        )]
+    }
+
     /// The documented disabled state (spec 008 T025, register row 63): the
     /// filled pair swaps its ground to `button-disabled` and the tertiary
     /// keeps only its faded edge — one cell covers both treatments.

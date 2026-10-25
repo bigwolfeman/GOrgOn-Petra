@@ -43,6 +43,45 @@ impl Page for Select {
         ))
     }
 
+    /// Carbon's select sizing (`_select.scss`, 32/40/48 by step): the three
+    /// built steps side by side, each labeled with its step and the height
+    /// it lands on (FR-025).
+    fn sizes(&self) -> Vec<ViewNode> {
+        use gorgon_petra::component::{select_lg, select_sm, text};
+
+        use super::common::{column, row, sp};
+        vec![column(
+            "size-steps",
+            sp("spacing-05"),
+            vec![
+                row(
+                    "size-sm",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-sm-label", "sm · 32"),
+                        select_sm("size-select-sm", "Label", "Option"),
+                    ],
+                ),
+                row(
+                    "size-md",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-md-label", "md · 40"),
+                        select("size-select-md", "Label", "Option"),
+                    ],
+                ),
+                row(
+                    "size-lg",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-lg-label", "lg · 48"),
+                        select_lg("size-select-lg", "Label", "Option"),
+                    ],
+                ),
+            ],
+        )]
+    }
+
     /// The documented disabled state (spec 008 T025, register row 431):
     /// `.cds--label` reads in `text.muted` and `.cds--select__arrow` in the
     /// `$icon-disabled` fade (slice-e), with the field edge's own fade.

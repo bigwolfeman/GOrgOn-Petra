@@ -6,7 +6,7 @@
 //!
 //! Components: Accordion, Contained list, Context menu, List, Modal,
 //! Popover, Structured list, Tile, Toggletip, Tooltip, Tree view, Code
-//! snippet. 41 constructors (see the `coverage` test at the bottom, which
+//! snippet. 44 constructors (see the `coverage` test at the bottom, which
 //! counts the source rather than trusting this comment).
 
 use serde::Deserialize;
@@ -21,11 +21,11 @@ use crate::component::{
     accordion_item_spaced, accordion_item_spaced_lg, accordion_item_spaced_sm, accordion_item_with,
     accordion_item_with_spaced, accordion_spaced, clickable_tile, code_snippet,
     code_snippet_inline, code_snippet_multi, code_snippet_multi_capped, contained_list,
-    contained_list_disclosed, context_menu, expandable_tile, list_item, list_item_with, modal,
-    modal_passive, ordered_list, popover, popover_with, popover_with_placement, selectable_tile,
-    structured_list, structured_list_row, structured_list_sized, tile, toggletip, toggletip_with,
-    tooltip, tooltip_anchored, tree_item, tree_item_xs, tree_view, unordered_list,
-    unordered_list_with,
+    contained_list_disclosed, contained_list_lg, contained_list_sm, contained_list_xl,
+    context_menu, expandable_tile, list_item, list_item_with, modal, modal_passive, ordered_list,
+    popover, popover_with, popover_with_placement, selectable_tile, structured_list,
+    structured_list_row, structured_list_sized, tile, toggletip, toggletip_with, tooltip,
+    tooltip_anchored, tree_item, tree_item_xs, tree_view, unordered_list, unordered_list_with,
 };
 use crate::tree::{Align, Edge, Key, ViewNode};
 
@@ -363,6 +363,21 @@ pub const ENTRIES: &[Entry] = &[
     row!("contained_list", KeyLabelChildren, |p| contained_list(
         p.key, p.label, p.children
     )),
+    row!(
+        "contained_list_sm",
+        KeyLabelChildren,
+        |p| contained_list_sm(p.key, p.label, p.children)
+    ),
+    row!(
+        "contained_list_lg",
+        KeyLabelChildren,
+        |p| contained_list_lg(p.key, p.label, p.children)
+    ),
+    row!(
+        "contained_list_xl",
+        KeyLabelChildren,
+        |p| contained_list_xl(p.key, p.label, p.children)
+    ),
     row!("contained_list_disclosed", KeyLabelChildren, |p| {
         contained_list_disclosed(p.key, p.label, p.children)
     }),
@@ -589,6 +604,9 @@ mod tests {
                 json!({ "key": "k", "label": "l", "expanded": true, "children": [] })
             }
             "contained_list" => json!({ "key": "k", "label": "title", "children": [] }),
+            "contained_list_sm" => json!({ "key": "k-cl-sm", "label": "title", "children": [] }),
+            "contained_list_lg" => json!({ "key": "k-cl-lg", "label": "title", "children": [] }),
+            "contained_list_xl" => json!({ "key": "k-cl-xl", "label": "title", "children": [] }),
             "contained_list_disclosed" => {
                 json!({ "key": "k", "label": "title-disclosed", "children": [] })
             }

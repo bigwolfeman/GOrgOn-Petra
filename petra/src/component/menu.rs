@@ -16,7 +16,8 @@
 //! Container width is min 160 / max 288 (SCSS `$supported-sizes` map and
 //! style-page). Danger hover is omitted.
 
-use super::list_box::{Dividers, list_box};
+use super::list_box::{Dividers, ListBoxSize, list_box};
+use super::pin_block;
 use crate::tree::{Align, Anchor, AxisConstraint, Edge, Fit, Key, ViewNode};
 
 #[doc(inline)]
@@ -31,13 +32,49 @@ const MAX_INLINE: f32 = 288.0;
 const _: () = assert!(MIN_INLINE == 160.0);
 const _: () = assert!(MAX_INLINE == 288.0);
 
-/// A floating menu of `items`, hosted on a list box.
+/// A floating menu of `items`, hosted on a list box, rows at Carbon md
+/// (40).
 ///
 /// Anchored to a sibling keyed `"trigger"` (the key [`super::menu_button`]
 /// uses for its button). `label` is the accessible name of the overlay.
 /// The min/max here bound the content; a trigger wider than 160 still gets
 /// a menu its own width (`Fit::Anchor`).
 pub fn menu(key: impl Into<Key>, label: impl Into<String>, items: Vec<ViewNode>) -> ViewNode {
+    menu_at(key, label, items, ListBoxSize::Md)
+}
+
+/// The menu at Carbon xs: rows 24.
+pub fn menu_xs(key: impl Into<Key>, label: impl Into<String>, items: Vec<ViewNode>) -> ViewNode {
+    menu_at(key, label, items, ListBoxSize::Xs)
+}
+
+/// The menu at Carbon sm: rows 32.
+pub fn menu_sm(key: impl Into<Key>, label: impl Into<String>, items: Vec<ViewNode>) -> ViewNode {
+    menu_at(key, label, items, ListBoxSize::Sm)
+}
+
+/// The menu at Carbon lg: rows 48.
+pub fn menu_lg(key: impl Into<Key>, label: impl Into<String>, items: Vec<ViewNode>) -> ViewNode {
+    menu_at(key, label, items, ListBoxSize::Lg)
+}
+
+/// The menu owns the row height. Slice-c "Sizes": "four menu-item heights,
+/// driven by the trigger that opened the menu" — xs 24 / sm 32 / md 40 /
+/// lg 48, the same ramp [`ListBoxSize`] names — so whatever row a caller
+/// builds, the menu re-pins it to the step the trigger chose (the same
+/// rule [`super::content_switcher`] applies to its tabs). This replaces
+/// the wave-1–4 placeholder pin (`65c3c43`) that froze rows at md and
+/// refused the other three documented steps (FR-026).
+pub(crate) fn menu_at(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    mut items: Vec<ViewNode>,
+    size: ListBoxSize,
+) -> ViewNode {
+    let height = size.height();
+    for item in &mut items {
+        item.constraints = pin_block(height);
+    }
     let mut node = list_box(key, label, "trigger", items, Dividers::None);
     node.constraints.horizontal = AxisConstraint {
         min: Some(MIN_INLINE),

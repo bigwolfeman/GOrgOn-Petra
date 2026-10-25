@@ -24,6 +24,66 @@ impl Page for ContainedList {
         "Contained list"
     }
 
+    /// Carbon's contained-list ramp (slice-a "Sizes"): on-page sm 32 /
+    /// md 40 / lg 48 with header and rows matching, xl header 48 / row 64,
+    /// and the disclosed pair — header 32 / row 48 — beside them. Each
+    /// labeled with its step and the heights it lands on (FR-025).
+    fn sizes(&self) -> Vec<ViewNode> {
+        use gorgon_petra::component::{
+            contained_list_disclosed, contained_list_lg, contained_list_sm, contained_list_xl,
+            list_row, text,
+        };
+
+        use super::common::{column, sp};
+        let rows = |tag: &str| vec![list_row(format!("size-clr-{tag}"), "alpha", false)];
+        vec![column(
+            "size-steps",
+            sp("spacing-05"),
+            vec![
+                column(
+                    "size-sm",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-sm-label", "sm · 32/32"),
+                        contained_list_sm("size-cl-sm", "Recent", rows("sm")),
+                    ],
+                ),
+                column(
+                    "size-md",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-md-label", "md · 40/40"),
+                        contained_list("size-cl-md", "Recent", rows("md")),
+                    ],
+                ),
+                column(
+                    "size-lg",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-lg-label", "lg · 48/48"),
+                        contained_list_lg("size-cl-lg", "Recent", rows("lg")),
+                    ],
+                ),
+                column(
+                    "size-xl",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-xl-label", "xl · 48/64"),
+                        contained_list_xl("size-cl-xl", "Recent", rows("xl")),
+                    ],
+                ),
+                column(
+                    "size-disclosed",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-disclosed-label", "disclosed · 32/48"),
+                        contained_list_disclosed("size-cl-disclosed", "Recent", rows("dis")),
+                    ],
+                ),
+            ],
+        )]
+    }
+
     /// The documented disabled state (spec 008 T025, register row 107): a
     /// disabled contained list — item text in `text.muted`, the item edge
     /// in the `border@disabled` fade (slice-a States).

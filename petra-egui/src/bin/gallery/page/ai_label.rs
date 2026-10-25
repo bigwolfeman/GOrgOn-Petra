@@ -49,6 +49,112 @@ impl Page for AiLabel {
         "AI label"
     }
 
+    /// Carbon's AI-label sizing (slice-a): the default variant's seven built
+    /// steps (16/20/24/32/40/48/64) and the inline trio (16/18/22), each
+    /// labeled with its step and the box height it lands on (FR-025).
+    fn sizes(&self) -> Vec<ViewNode> {
+        use gorgon_petra::component::{
+            ai_label_2xs, ai_label_inline, ai_label_inline_lg, ai_label_inline_sm, ai_label_lg,
+            ai_label_mini, ai_label_sm, ai_label_xl, ai_label_xs, text,
+        };
+
+        use super::common::{column, row, sp};
+        vec![
+            column(
+                "size-steps",
+                sp("spacing-05"),
+                vec![
+                    row(
+                        "size-mini",
+                        sp("spacing-03"),
+                        vec![
+                            text("size-mini-label", "mini · 16"),
+                            ai_label_mini("size-ai-mini", "AI", false, "Body"),
+                        ],
+                    ),
+                    row(
+                        "size-2xs",
+                        sp("spacing-03"),
+                        vec![
+                            text("size-2xs-label", "2xs · 20"),
+                            ai_label_2xs("size-ai-2xs", "AI", false, "Body"),
+                        ],
+                    ),
+                    row(
+                        "size-xs",
+                        sp("spacing-03"),
+                        vec![
+                            text("size-xs-label", "xs · 24"),
+                            ai_label_xs("size-ai-xs", "AI", false, "Body"),
+                        ],
+                    ),
+                    row(
+                        "size-sm",
+                        sp("spacing-03"),
+                        vec![
+                            text("size-sm-label", "sm · 32"),
+                            ai_label_sm("size-ai-sm", "AI", false, "Body"),
+                        ],
+                    ),
+                    row(
+                        "size-md",
+                        sp("spacing-03"),
+                        vec![
+                            text("size-md-label", "md · 40"),
+                            ai_label("size-ai-md", "AI", false, "Body"),
+                        ],
+                    ),
+                    row(
+                        "size-lg",
+                        sp("spacing-03"),
+                        vec![
+                            text("size-lg-label", "lg · 48"),
+                            ai_label_lg("size-ai-lg", "AI", false, "Body"),
+                        ],
+                    ),
+                    row(
+                        "size-xl",
+                        sp("spacing-03"),
+                        vec![
+                            text("size-xl-label", "xl · 64"),
+                            ai_label_xl("size-ai-xl", "AI", false, "Body"),
+                        ],
+                    ),
+                ],
+            ),
+            column(
+                "size-steps-inline",
+                sp("spacing-05"),
+                vec![
+                    row(
+                        "size-inline-sm",
+                        sp("spacing-03"),
+                        vec![
+                            text("size-inline-sm-label", "inline sm · 16"),
+                            ai_label_inline_sm("size-ai-inline-sm", "AI", false, "Body"),
+                        ],
+                    ),
+                    row(
+                        "size-inline-md",
+                        sp("spacing-03"),
+                        vec![
+                            text("size-inline-md-label", "inline md · 18"),
+                            ai_label_inline("size-ai-inline-md", "AI", false, "Body"),
+                        ],
+                    ),
+                    row(
+                        "size-inline-lg",
+                        sp("spacing-03"),
+                        vec![
+                            text("size-inline-lg-label", "inline lg · 22"),
+                            ai_label_inline_lg("size-ai-inline-lg", "AI", false, "Body"),
+                        ],
+                    ),
+                ],
+            ),
+        ]
+    }
+
     fn body(&self) -> ViewNode {
         section(
             "ai",

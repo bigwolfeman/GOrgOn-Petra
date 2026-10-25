@@ -110,6 +110,37 @@ impl Page for TreeView {
         "Tree view"
     }
 
+    /// Carbon's tree-item sizing (`_tree-view.scss`, 24/32): the two built
+    /// steps side by side, each labeled with its step and the row height it
+    /// lands on (FR-025).
+    fn sizes(&self) -> Vec<ViewNode> {
+        use gorgon_petra::component::{text, tree_item, tree_item_xs};
+
+        use super::common::{column, row, sp};
+        vec![column(
+            "size-steps",
+            sp("spacing-05"),
+            vec![
+                row(
+                    "size-xs",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-xs-label", "xs · 24"),
+                        tree_item_xs("size-tree-xs", "Node", true, true, vec![]),
+                    ],
+                ),
+                row(
+                    "size-md",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-md-label", "md · 32"),
+                        tree_item("size-tree-md", "Node", true, true, vec![]),
+                    ],
+                ),
+            ],
+        )]
+    }
+
     /// The documented disabled state (spec 008 T025, register row 571): the
     /// item label reads in `text.muted` and the caret fills the
     /// `$icon-disabled` fade (slice-f).

@@ -5,52 +5,146 @@
 //!
 //! Anatomy (docs + `_contained-list.scss`):
 //! 1. [`contained_list`] — outer container, `Role::List`.
-//! 2. Header — on-page height 32 (`$spacing-07`); disclosed height 48
+//! 2. Header — on-page height follows the size step (32/40/48 at
+//!    sm/md/lg, 48 at xl); the disclosed header is its own fixed 32
 //!    ([`contained_list_disclosed`]).
 //! 3. Title — `heading` on-page, muted `text` when disclosed.
-//! 4. Rows — caller-supplied children, stacked under the header.
+//! 4. Rows — caller-supplied children, stacked under the header, re-pinned
+//!    to the step's row height because the step sizes rows too.
 //!
 //! On-page header has no fill. Disclosed header fills [`SURFACE_RAISED`].
 
 use super::pin_block;
 use super::stack;
 use super::text::{heading, text};
-use super::tokens::{BORDER_SUBTLE, SPACING_05, SURFACE_RAISED, TEXT_MUTED, t};
+use super::tokens::{
+    BORDER_SUBTLE, SIZE_LG, SIZE_MD, SIZE_SM, SIZE_XL, SPACING_05, SURFACE_RAISED, TEXT_MUTED, t,
+};
 use crate::geom::{Align, Axis};
 use crate::tree::{InsetRefs, Key, Role, Semantics, ViewNode};
 
-const HEADER_ON_PAGE: f32 = 32.0;
-/// Carbon disclosed header height (style-page Structure: `$spacing-09` = 48).
-const HEADER_DISCLOSED: f32 = 48.0;
+/// Carbon's on-page contained-list ramp — slice-a "Sizes": `sm` 32, `md`
+/// 40, `lg` 48, with **header and row matching at each of those**, and
+/// `xl` header 48 / row 64 (the only step where the two diverge).
+/// Closed on purpose, the same trade [`super::content_switcher`]'s
+/// `SwitcherSize` records: a step nobody wired is a compile error, not a
+/// silently missing row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ListSize {
+    Sm,
+    Md,
+    Lg,
+    Xl,
+}
 
-const _: () = assert!(HEADER_ON_PAGE == 32.0);
-const _: () = assert!(HEADER_DISCLOSED == 48.0);
+impl ListSize {
+    /// The on-page header height for this step.
+    fn header(self) -> f32 {
+        match self {
+            Self::Sm => SIZE_SM,
+            Self::Md => SIZE_MD,
+            Self::Lg | Self::Xl => SIZE_LG,
+        }
+    }
 
-/// On-page contained list: header 32, no header fill, `Role::List`.
+    /// The row height for this step.
+    fn row(self) -> f32 {
+        match self {
+            Self::Sm => SIZE_SM,
+            Self::Md => SIZE_MD,
+            Self::Lg => SIZE_LG,
+            Self::Xl => SIZE_XL,
+        }
+    }
+}
+
+/// Disclosed header: 32 (slice-a "Disclosed: single named step, `lg`,
+/// header 32px / row 48px"). The named step is the ROW's height — the
+/// pre-T033 tree read `lg` as the header's and pinned the header at 48,
+/// which is the row figure. `lg` 32 = Carbon's `$spacing-07`.
+const HEADER_DISCLOSED: f32 = 32.0;
+/// Disclosed row height: 48 (`lg`).
+const ROW_DISCLOSED: f32 = 48.0;
+
+const _: () = assert!(SIZE_SM == 32.0);
+const _: () = assert!(SIZE_MD == 40.0);
+const _: () = assert!(SIZE_LG == 48.0);
+const _: () = assert!(SIZE_XL == 64.0);
+const _: () = assert!(HEADER_DISCLOSED == 32.0);
+const _: () = assert!(ROW_DISCLOSED == 48.0);
+
+/// On-page contained list at Carbon md (40): header 40, rows re-pinned to
+/// 40, no header fill, `Role::List`.
 pub fn contained_list(
     key: impl Into<Key>,
     title: impl Into<String>,
     items: Vec<ViewNode>,
 ) -> ViewNode {
-    contained(key, title, items, HEADER_ON_PAGE, false)
+    at(key, title, items, ListSize::Md)
 }
 
-/// Disclosed contained list: header 48, [`SURFACE_RAISED`] header fill.
+/// On-page contained list at Carbon sm (32).
+pub fn contained_list_sm(
+    key: impl Into<Key>,
+    title: impl Into<String>,
+    items: Vec<ViewNode>,
+) -> ViewNode {
+    at(key, title, items, ListSize::Sm)
+}
+
+/// On-page contained list at Carbon lg (48).
+pub fn contained_list_lg(
+    key: impl Into<Key>,
+    title: impl Into<String>,
+    items: Vec<ViewNode>,
+) -> ViewNode {
+    at(key, title, items, ListSize::Lg)
+}
+
+/// On-page contained list at Carbon xl: header 48, rows 64 — the one step
+/// where the two heights diverge.
+pub fn contained_list_xl(
+    key: impl Into<Key>,
+    title: impl Into<String>,
+    items: Vec<ViewNode>,
+) -> ViewNode {
+    at(key, title, items, ListSize::Xl)
+}
+
+/// Disclosed contained list: header 32, rows 48, [`SURFACE_RAISED`] header
+/// fill. Slice-a's one disclosed step, `lg`.
 pub fn contained_list_disclosed(
     key: impl Into<Key>,
     title: impl Into<String>,
     items: Vec<ViewNode>,
 ) -> ViewNode {
-    contained(key, title, items, HEADER_DISCLOSED, true)
+    contained(key, title, items, HEADER_DISCLOSED, ROW_DISCLOSED, true)
+}
+
+/// The list owns its size step: whatever height a caller's row arrives
+/// with, the list re-pins it to the step's row height (slice-a "Sizes":
+/// "header AND row all match"), the same rule [`super::content_switcher`]
+/// applies to its tabs.
+fn at(
+    key: impl Into<Key>,
+    title: impl Into<String>,
+    items: Vec<ViewNode>,
+    size: ListSize,
+) -> ViewNode {
+    contained(key, title, items, size.header(), size.row(), false)
 }
 
 fn contained(
     key: impl Into<Key>,
     title: impl Into<String>,
-    items: Vec<ViewNode>,
+    mut items: Vec<ViewNode>,
     header_h: f32,
+    row_h: f32,
     disclosed: bool,
 ) -> ViewNode {
+    for item in &mut items {
+        item.constraints = pin_block(row_h);
+    }
     let title = title.into();
     let title_node = if disclosed {
         let mut node = text("title", title.clone());
@@ -114,7 +208,8 @@ fn contained(
 mod tests {
     use super::super::text::text;
     use super::{
-        HEADER_DISCLOSED, HEADER_ON_PAGE, SURFACE_RAISED, contained_list, contained_list_disclosed,
+        HEADER_DISCLOSED, ROW_DISCLOSED, SURFACE_RAISED, contained_list, contained_list_disclosed,
+        contained_list_lg, contained_list_sm, contained_list_xl,
     };
     use crate::component::tests::{assert_fits_parent, petrify_lone};
 
@@ -135,8 +230,14 @@ mod tests {
         node.props.tokens.get(slot).map(|name| name.as_str())
     }
 
+    fn pinned(node: &ViewNode, key: &str) -> f32 {
+        let v = &named(node, key).constraints.vertical;
+        assert_eq!(v.min, v.max, "{key} is not pinned to one height");
+        v.min.expect("pinned")
+    }
+
     #[test]
-    fn contained_list_sets_role_list_and_header_is_32() {
+    fn contained_list_sets_role_list_and_the_default_is_md_40() {
         let node = contained_list(
             "cl",
             "Related",
@@ -147,24 +248,61 @@ mod tests {
         assert_eq!(node.semantics.label.as_deref(), Some("Related"));
         assert!(node.interactions.is_empty());
         assert!(!node.is_interactive());
-        let header = named(&node, "header");
-        assert_eq!(header.constraints.vertical.min, Some(HEADER_ON_PAGE));
-        assert_eq!(header.constraints.vertical.max, Some(HEADER_ON_PAGE));
-        assert_eq!(HEADER_ON_PAGE, 32.0);
-        assert_eq!(token(header, "background"), None);
-        named(&node, "r0");
-        named(&node, "r1");
+        assert_eq!(pinned(&node, "header"), 40.0);
+        assert_eq!(token(named(&node, "header"), "background"), None);
+        // Slice-a "Sizes": on-page "header AND row all match" — the list
+        // re-pins every caller row to the step (FR-027).
+        assert_eq!(pinned(&node, "r0"), 40.0);
+        assert_eq!(pinned(&node, "r1"), 40.0);
+    }
+
+    /// Slice-a "Sizes": on-page sm 32 / md 40 / lg 48 (header and rows
+    /// matching), xl header 48 / row 64 (the one divergent step).
+    #[test]
+    fn on_page_ramp_is_32_40_48_with_xl_at_header_48_row_64() {
+        for (label, node, header, row) in [
+            (
+                "sm",
+                contained_list_sm("cl", "S", vec![text("r0", "A")]),
+                32.0,
+                32.0,
+            ),
+            (
+                "md",
+                contained_list("cl", "M", vec![text("r0", "A")]),
+                40.0,
+                40.0,
+            ),
+            (
+                "lg",
+                contained_list_lg("cl", "L", vec![text("r0", "A")]),
+                48.0,
+                48.0,
+            ),
+            (
+                "xl",
+                contained_list_xl("cl", "X", vec![text("r0", "A")]),
+                48.0,
+                64.0,
+            ),
+        ] {
+            assert_eq!(pinned(&node, "header"), header, "{label} header");
+            assert_eq!(pinned(&node, "r0"), row, "{label} row");
+        }
     }
 
     #[test]
-    fn contained_list_disclosed_header_is_48_and_raised() {
+    fn contained_list_disclosed_header_is_32_rows_48_and_raised() {
         let node = contained_list_disclosed("cl", "Menu", vec![text("r0", "Alpha")]);
         assert_eq!(node.semantics.role, Some(Role::List));
-        let header = named(&node, "header");
-        assert_eq!(header.constraints.vertical.min, Some(HEADER_DISCLOSED));
-        assert_eq!(header.constraints.vertical.max, Some(HEADER_DISCLOSED));
-        assert_eq!(HEADER_DISCLOSED, 48.0);
-        assert_eq!(token(header, "background"), Some(SURFACE_RAISED));
+        assert_eq!(pinned(&node, "header"), HEADER_DISCLOSED);
+        assert_eq!(pinned(&node, "r0"), ROW_DISCLOSED);
+        assert_eq!(HEADER_DISCLOSED, 32.0);
+        assert_eq!(ROW_DISCLOSED, 48.0);
+        assert_eq!(
+            token(named(&node, "header"), "background"),
+            Some(SURFACE_RAISED)
+        );
     }
 
     #[test]
