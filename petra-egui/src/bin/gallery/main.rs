@@ -35,6 +35,8 @@ mod inventory;
 mod lua_parity;
 mod page;
 #[cfg(test)]
+mod pagination_nav_states;
+#[cfg(test)]
 mod shots;
 #[cfg(test)]
 mod warning_states;

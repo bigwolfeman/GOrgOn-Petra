@@ -6,7 +6,7 @@
 //!
 //! Components: Breadcrumb, Content switcher, Link, Menu, Menu buttons,
 //! Menubar, Pagination, Tabs, UI shell header, UI shell left panel, UI
-//! shell right panel. 63 constructors (see the `coverage` test at the
+//! shell right panel. 67 constructors (see the `coverage` test at the
 //! bottom, which counts the source rather than trusting this comment).
 
 use serde::Deserialize;
@@ -18,14 +18,15 @@ use crate::component::params::{
 };
 use crate::component::registry::IconMarkParam;
 use crate::component::{
-    LeftPanelMode, PaginationPicker, breadcrumb, breadcrumb_item, breadcrumb_item_current,
-    breadcrumb_item_icon, breadcrumb_overflow, breadcrumb_with_separator, contained_tab,
-    contained_tab_bar, content_switcher, content_switcher_item, content_switcher_lg,
+    LeftPanelMode, PaginationNavOverflow, PaginationPicker, breadcrumb, breadcrumb_item,
+    breadcrumb_item_current, breadcrumb_item_icon, breadcrumb_overflow, breadcrumb_with_separator,
+    contained_tab, contained_tab_bar, content_switcher, content_switcher_item, content_switcher_lg,
     content_switcher_sm, link, link_inline, menu, menu_button, menu_button_lg, menu_button_sm,
     menu_button_xs, menu_flyout, menu_item, menu_item_with, menu_lg, menu_sm, menu_xs, menubar,
     menubar_top, pagination, pagination_items, pagination_items_lg, pagination_items_open,
-    pagination_items_sm, pagination_lg, pagination_nav, pagination_nav_lg, pagination_nav_sm,
-    pagination_numbers, pagination_numbers_lg, pagination_numbers_sm, pagination_page_size,
+    pagination_items_sm, pagination_lg, pagination_nav, pagination_nav_lg, pagination_nav_open,
+    pagination_nav_sm, pagination_numbers, pagination_numbers_lg, pagination_numbers_sm,
+    pagination_page_size, pagination_prev_next, pagination_prev_next_lg, pagination_prev_next_sm,
     pagination_range, pagination_sm, tab, tab_bar, ui_shell_header, ui_shell_header_action,
     ui_shell_header_action_icon, ui_shell_header_menu_trigger, ui_shell_header_nav_item,
     ui_shell_left_panel, ui_shell_left_panel_divider, ui_shell_left_panel_icon_item,
@@ -53,6 +54,27 @@ impl From<PaginationPickerParam> for PaginationPicker {
         match p {
             PaginationPickerParam::PageSize => PaginationPicker::PageSize,
             PaginationPickerParam::Page => PaginationPicker::Page,
+        }
+    }
+}
+
+/// Wire form of [`PaginationNavOverflow`]: the real enum has no serde
+/// support. `start` is the gap after page 1, `end` the gap before the
+/// last page.
+///
+/// 1 constructor (`pagination_nav_open`).
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum PaginationNavOverflowParam {
+    Start,
+    End,
+}
+
+impl From<PaginationNavOverflowParam> for PaginationNavOverflow {
+    fn from(o: PaginationNavOverflowParam) -> Self {
+        match o {
+            PaginationNavOverflowParam::Start => PaginationNavOverflow::Start,
+            PaginationNavOverflowParam::End => PaginationNavOverflow::End,
         }
     }
 }
@@ -170,9 +192,10 @@ impl ParamShape for MenubarParams {
          children: { ViewNode } }";
 }
 
-/// `pagination`, `pagination_numbers`, `pagination_nav` — 3 constructors.
-/// Two bare numbers; no shared shape has two numbers and no string, so
-/// this stays local.
+/// `pagination`, `pagination_numbers`, `pagination_nav`,
+/// `pagination_prev_next` — 12 constructors (each name plus its sm and lg
+/// step). Two bare numbers; no shared shape has two numbers and no
+/// string, so this stays local.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PaginationParams {
@@ -217,6 +240,20 @@ struct PaginationItemsOpenParams {
 impl ParamShape for PaginationItemsOpenParams {
     const LUAU: &'static str = "{ key: string, page: number, page_size: number, \
          page_sizes: { number }, total_items: number, picker: \"page-size\" | \"page\" }";
+}
+
+/// `pagination_nav_open` — 1 constructor.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PaginationNavOpenParams {
+    key: Key,
+    page: u32,
+    page_count: u32,
+    overflow: PaginationNavOverflowParam,
+}
+impl ParamShape for PaginationNavOpenParams {
+    const LUAU: &'static str =
+        "{ key: string, page: number, page_count: number, overflow: \"start\" | \"end\" }";
 }
 
 /// `pagination_page_size(key, page_size, open_sizes?)`.
@@ -468,6 +505,8 @@ pub const ENTRIES: &[Entry] = &[
     row!("pagination_numbers_lg", PaginationParams, |p| {
         pagination_numbers_lg(p.key, p.page, p.page_count)
     }),
+    // The Pagination nav variant (spec 008 T043): page-number row,
+    // selected-page indicator, overflow affordance.
     row!("pagination_nav", PaginationParams, |p| pagination_nav(
         p.key,
         p.page,
@@ -483,6 +522,20 @@ pub const ENTRIES: &[Entry] = &[
         PaginationParams,
         |p| pagination_nav_lg(p.key, p.page, p.page_count)
     ),
+    row!("pagination_nav_open", PaginationNavOpenParams, |p| {
+        pagination_nav_open(p.key, p.page, p.page_count, p.overflow.into())
+    }),
+    // The bar's Previous/Next pair — the piece, not the variant. It was
+    // `pagination_nav` until the variant took the name.
+    row!("pagination_prev_next", PaginationParams, |p| {
+        pagination_prev_next(p.key, p.page, p.page_count)
+    }),
+    row!("pagination_prev_next_sm", PaginationParams, |p| {
+        pagination_prev_next_sm(p.key, p.page, p.page_count)
+    }),
+    row!("pagination_prev_next_lg", PaginationParams, |p| {
+        pagination_prev_next_lg(p.key, p.page, p.page_count)
+    }),
     row!("tab", KeyLabelSelected, |p| tab(p.key, p.label, p.selected)),
     row!("contained_tab", KeyLabelSelected, |p| contained_tab(
         p.key, p.label, p.selected
@@ -568,7 +621,7 @@ mod tests {
 
     use super::*;
 
-    /// Every `pub fn` in this group's 9 source files whose first parameter
+    /// Every `pub fn` in this group's 10 source files whose first parameter
     /// is `key: impl Into<Key>` and whose return type is `ViewNode`. Scanned
     /// from the source text itself (not a hand list), so a constructor added
     /// later without a row fails this test rather than silently shipping
@@ -583,6 +636,7 @@ mod tests {
             "menu_button.rs",
             "menubar.rs",
             "pagination.rs",
+            "pagination_nav.rs",
             "tabs.rs",
             "ui_shell.rs",
         ];
@@ -776,8 +830,23 @@ mod tests {
                 json!({ "key": "k-pgn-lg", "page": 1, "page_count": 4 })
             }
             "pagination_nav" => json!({ "key": "k", "page": 1, "page_count": 4 }),
-            "pagination_nav_sm" => json!({ "key": "k-pgv-sm", "page": 1, "page_count": 4 }),
-            "pagination_nav_lg" => json!({ "key": "k-pgv-lg", "page": 1, "page_count": 4 }),
+            "pagination_nav_sm" => json!({ "key": "k-pgnv-sm", "page": 1, "page_count": 4 }),
+            "pagination_nav_lg" => json!({ "key": "k-pgnv-lg", "page": 1, "page_count": 4 }),
+            // Page 5 of 20 so a collapsed run exists: at a page where the
+            // window shows every page there is no overflow button and the
+            // open form is the closed form, which G3 refuses.
+            "pagination_nav_open" => json!({
+                "key": "k", "page": 5, "page_count": 20, "overflow": "start"
+            }),
+            "pagination_prev_next" => {
+                json!({ "key": "k-ppn", "page": 1, "page_count": 4 })
+            }
+            "pagination_prev_next_sm" => {
+                json!({ "key": "k-ppn-sm", "page": 1, "page_count": 4 })
+            }
+            "pagination_prev_next_lg" => {
+                json!({ "key": "k-ppn-lg", "page": 1, "page_count": 4 })
+            }
             "tab" => json!({ "key": "k", "label": "l", "selected": true }),
             "contained_tab" => json!({ "key": "k", "label": "l-contained", "selected": true }),
             "vertical_tab" => json!({ "key": "k", "label": "l-vertical", "selected": true }),

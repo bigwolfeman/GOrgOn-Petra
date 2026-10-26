@@ -33,7 +33,7 @@
 //!    Fill is not enough on its own: `layer-selected` is a measured
 //!    2-of-255 sRGB step off `layer.raised` in the dark theme.
 //! 5. Right group — a `border-inline-start` divider, the **page picker**
-//!    and "of N pages", then [`pagination_nav`]: Previous and Next, each
+//!    and "of N pages", then [`pagination_prev_next`]: Previous and Next, each
 //!    behind its own divider (slice-d:58). They are Carbon's ghost icon
 //!    buttons: 40×40, a 16 `CaretLeft` / `CaretRight` glyph ([`IconMark`])
 //!    centred, labelled "Previous" / "Next" in [`Semantics`] so the word
@@ -68,13 +68,13 @@ use crate::tree::{
 };
 
 /// Spec 010: page / prev / next — one shot navigation.
-const ACTIVATES_ON_RELEASE: Behaviour = Behaviour {
+pub(super) const ACTIVATES_ON_RELEASE: Behaviour = Behaviour {
     intent: Intent::Activate,
     phase: Phase::OnRelease,
 };
 
 /// Spec 010: page-size / page pickers open a list.
-const TOGGLES_ON_RELEASE: Behaviour = Behaviour {
+pub(super) const TOGGLES_ON_RELEASE: Behaviour = Behaviour {
     intent: Intent::Toggle,
     phase: Phase::OnRelease,
 };
@@ -88,7 +88,7 @@ const TOGGLES_ON_RELEASE: Behaviour = Behaviour {
 /// This replaces the wave-1–4 placeholder pin (`65c3c43`) that froze the
 /// bar at md and refused the other two documented steps (FR-026).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PageBarSize {
+pub(super) enum PageBarSize {
     Sm,
     Md,
     Lg,
@@ -96,7 +96,7 @@ enum PageBarSize {
 
 impl PageBarSize {
     /// Carbon's bar height for this step, in layout units.
-    fn height(self) -> f32 {
+    pub(super) fn height(self) -> f32 {
         match self {
             Self::Sm => SIZE_SM,
             Self::Md => SIZE_MD,
@@ -109,7 +109,8 @@ const _: () = assert!(SIZE_SM == 32.0);
 const _: () = assert!(SIZE_MD == 40.0);
 const _: () = assert!(SIZE_LG == 48.0);
 
-const NAV_INTENTS: &[Interaction] = &[Interaction::Focus, Interaction::Click, Interaction::Hover];
+pub(super) const NAV_INTENTS: &[Interaction] =
+    &[Interaction::Focus, Interaction::Click, Interaction::Hover];
 
 /// What both of this bar's rules measure across themselves: the rule
 /// material's own thickness at scale 1, which is the scale every test in
@@ -196,7 +197,7 @@ fn pagination_at(key: impl Into<Key>, page: u32, page_count: u32, size: PageBarS
 /// text is "first–last of total items" for this page. A `page_size` of 0
 /// is treated as 1 rather than dividing by it. Composes
 /// [`pagination_page_size`], [`pagination_range`], [`pagination_numbers`],
-/// and [`pagination_nav`] rather than a second sealed anatomy.
+/// and [`pagination_prev_next`] rather than a second sealed anatomy.
 #[must_use]
 pub fn pagination_items(
     key: impl Into<Key>,
@@ -394,50 +395,61 @@ fn pagination_numbers_at(key: impl Into<Key>, page: u32, page_count: u32, height
     }
     let page = page.clamp(1, page_count);
     let mut children = Vec::new();
-    let mut prev: Option<NumberSlot> = None;
     for slot in number_slots(page, page_count) {
         match slot {
             NumberSlot::Page(n) => {
                 children.push(page_number_button(n, n == page, height));
             }
-            NumberSlot::Ellipsis => {
-                // After page 1 it is the leading collapse; otherwise the
-                // trailing one. The two cannot share a key.
-                let slot_key = match prev {
-                    Some(NumberSlot::Page(1)) => "ellipsis-start",
-                    _ => "ellipsis-end",
+            NumberSlot::Gap { first_hidden, .. } => {
+                // A gap from page 2 is the leading collapse; anything else
+                // is the trailing one. The two cannot share a key.
+                let slot_key = if first_hidden == 2 {
+                    "ellipsis-start"
+                } else {
+                    "ellipsis-end"
                 };
                 children.push(ellipsis_mark(slot_key));
             }
         }
-        prev = Some(slot);
     }
     run(key, children, height)
 }
 
-/// Previous and Next. Page 1 disables Previous; the last page (and a
+/// Previous and Next — the piece, not the variant. Carbon's two Pagination
+/// variants "share no anatomy beyond 'previous/next button' and
+/// 'container'" (slice-d:52), and this is the button pair both share; it
+/// was named `pagination_nav` until spec 008 T043 gave that name to the
+/// variant built in [`super::pagination_nav`] and renamed this to what it
+/// is (`.agents/notes/implemented/spec/2026-10-25-pagination-nav-variant.md`).
+///
+/// Page 1 disables Previous; the last page (and a
 /// count of zero) disables Next. Two channels on an unavailable button:
 /// [`super::disabled`] (no click, not in focus order) and the caret in
 /// [`IconTone::Disabled`]. Each button sits behind its own divider, the
 /// same seams the bar already drew.
 #[must_use]
-pub fn pagination_nav(key: impl Into<Key>, page: u32, page_count: u32) -> ViewNode {
-    pagination_nav_at(key, page, page_count, PageBarSize::Md.height())
+pub fn pagination_prev_next(key: impl Into<Key>, page: u32, page_count: u32) -> ViewNode {
+    pagination_prev_next_at(key, page, page_count, PageBarSize::Md.height())
 }
 
 /// Previous/Next at Carbon sm (32).
 #[must_use]
-pub fn pagination_nav_sm(key: impl Into<Key>, page: u32, page_count: u32) -> ViewNode {
-    pagination_nav_at(key, page, page_count, PageBarSize::Sm.height())
+pub fn pagination_prev_next_sm(key: impl Into<Key>, page: u32, page_count: u32) -> ViewNode {
+    pagination_prev_next_at(key, page, page_count, PageBarSize::Sm.height())
 }
 
 /// Previous/Next at Carbon lg (48).
 #[must_use]
-pub fn pagination_nav_lg(key: impl Into<Key>, page: u32, page_count: u32) -> ViewNode {
-    pagination_nav_at(key, page, page_count, PageBarSize::Lg.height())
+pub fn pagination_prev_next_lg(key: impl Into<Key>, page: u32, page_count: u32) -> ViewNode {
+    pagination_prev_next_at(key, page, page_count, PageBarSize::Lg.height())
 }
 
-fn pagination_nav_at(key: impl Into<Key>, page: u32, page_count: u32, height: f32) -> ViewNode {
+fn pagination_prev_next_at(
+    key: impl Into<Key>,
+    page: u32,
+    page_count: u32,
+    height: f32,
+) -> ViewNode {
     let previous = nav_button(
         "previous",
         "Previous",
@@ -464,11 +476,18 @@ fn pagination_nav_at(key: impl Into<Key>, page: u32, page_count: u32, height: f3
     )
 }
 
-/// One slot in the compact page-number window.
+/// One slot in the compact page-number window: a page, or the collapsed run
+/// of pages an ellipsis stands in for. The gap carries its hidden range so
+/// the Pagination nav variant can offer them in its overflow menu
+/// ([`super::pagination_nav`]) while the bar only draws the mark.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum NumberSlot {
+pub(super) enum NumberSlot {
     Page(u32),
-    Ellipsis,
+    /// Two or more collapsed pages, `first_hidden..=last_hidden`.
+    Gap {
+        first_hidden: u32,
+        last_hidden: u32,
+    },
 }
 
 /// Show-all budget: first + ellipsis + a 3-wide window + ellipsis + last.
@@ -478,7 +497,7 @@ const NUMBER_BUDGET: u32 = 7;
 /// Compact window: always first and last; a run of three around `page`;
 /// an ellipsis where a gap of two or more pages was collapsed. `page` is
 /// already clamped to `1..=page_count`; `page_count` is at least 1.
-fn number_slots(page: u32, page_count: u32) -> Vec<NumberSlot> {
+pub(super) fn number_slots(page: u32, page_count: u32) -> Vec<NumberSlot> {
     if page_count <= NUMBER_BUDGET {
         return (1..=page_count).map(NumberSlot::Page).collect();
     }
@@ -499,7 +518,10 @@ fn number_slots(page: u32, page_count: u32) -> Vec<NumberSlot> {
         if start == 3 {
             slots.push(NumberSlot::Page(2));
         } else if start > 3 {
-            slots.push(NumberSlot::Ellipsis);
+            slots.push(NumberSlot::Gap {
+                first_hidden: 2,
+                last_hidden: start - 1,
+            });
         }
     }
     for n in start..=end {
@@ -509,7 +531,10 @@ fn number_slots(page: u32, page_count: u32) -> Vec<NumberSlot> {
         if end == page_count.saturating_sub(2) {
             slots.push(NumberSlot::Page(page_count - 1));
         } else if end < page_count.saturating_sub(2) {
-            slots.push(NumberSlot::Ellipsis);
+            slots.push(NumberSlot::Gap {
+                first_hidden: end + 1,
+                last_hidden: page_count - 1,
+            });
         }
         slots.push(NumberSlot::Page(page_count));
     }
@@ -569,7 +594,7 @@ fn ellipsis_mark(key: &'static str) -> ViewNode {
 
 /// Height pinned at the bar's step; width at least that step's height so
 /// a one-digit page is a square and a three-digit page can grow.
-fn pin_button(height: f32) -> Constraints {
+pub(super) fn pin_button(height: f32) -> Constraints {
     Constraints {
         horizontal: AxisConstraint {
             min: Some(height),
@@ -681,7 +706,7 @@ fn bar(
 /// stack settles a shortfall by squeezing its most flexible child, which
 /// for a text label means wrapping. A grid probes each column on its own
 /// and hands each child exactly that width.
-fn run(key: impl Into<Key>, children: Vec<ViewNode>, height: f32) -> ViewNode {
+pub(super) fn run(key: impl Into<Key>, children: Vec<ViewNode>, height: f32) -> ViewNode {
     ViewNode::new(NodeKind::Grid, key)
         .with_props(Props {
             columns: vec![TrackSize::FitContent; children.len()],
@@ -695,14 +720,14 @@ fn run(key: impl Into<Key>, children: Vec<ViewNode>, height: f32) -> ViewNode {
 /// One padded, vertically centred text cell. The padding lives here and
 /// not on the text because a `Text` leaf has nothing to inset and the
 /// tree validator refuses the declaration.
-fn cell(key: impl Into<Key>, padding: InsetRefs, child: ViewNode) -> ViewNode {
+pub(super) fn cell(key: impl Into<Key>, padding: InsetRefs, child: ViewNode) -> ViewNode {
     let mut node = stack(key, Axis::Horizontal, None, vec![child]);
     node.props.align = Some(Align::Center);
     node.props.padding = Some(padding);
     node
 }
 
-fn pad_inline(start: &str, end: &str) -> InsetRefs {
+pub(super) fn pad_inline(start: &str, end: &str) -> InsetRefs {
     InsetRefs {
         left: Some(t(start)),
         right: Some(t(end)),
@@ -712,7 +737,11 @@ fn pad_inline(start: &str, end: &str) -> InsetRefs {
 
 /// A picker and, while open, its list box — siblings in one child list so
 /// the list's [`crate::tree::Anchor::Sibling`] resolves against the picker.
-fn picker_cell(key: &'static str, trigger: ViewNode, menu: Option<ViewNode>) -> ViewNode {
+pub(super) fn picker_cell(
+    key: &'static str,
+    trigger: ViewNode,
+    menu: Option<ViewNode>,
+) -> ViewNode {
     let mut parts = vec![trigger];
     parts.extend(menu);
     // A column, the same shape `dropdown` and `select` give their own pair,
@@ -780,7 +809,7 @@ fn picker(
 }
 
 /// The right group: divider, page picker, "of N pages", then
-/// [`pagination_nav`]. Page-select padding 16 start / 8 end (slice-d:67).
+/// [`pagination_prev_next`]. Page-select padding 16 start / 8 end (slice-d:67).
 fn page_controls(page: u32, page_count: u32, pages_open: bool, height: f32) -> ViewNode {
     let trigger = picker(
         PAGE_PICKER,
@@ -817,7 +846,7 @@ fn page_controls(page: u32, page_count: u32, pages_open: bool, height: f32) -> V
             nav_divider("divider-page"),
             picker_cell("page-cell", trigger, menu),
             count,
-            pagination_nav_at("nav", page, page_count, height),
+            pagination_prev_next_at("nav", page, page_count, height),
         ],
         height,
     )
@@ -854,7 +883,7 @@ fn nav_divider(key: &'static str) -> ViewNode {
 /// [`super::disabled`], and the caret in [`IconTone::Disabled`] — Carbon's
 /// `$icon-disabled` — because the caret is the whole visible button and a
 /// live-toned caret on a dead button is a button that lies.
-fn nav_button(
+pub(super) fn nav_button(
     key: &'static str,
     label: &'static str,
     mark: IconMark,
@@ -911,7 +940,7 @@ fn pin_square(side: f32) -> Constraints {
 mod tests {
     use super::{
         PaginationPicker, RULE_UNITS, SIZE_MD, derive, pagination, pagination_items,
-        pagination_items_open, pagination_nav, pagination_numbers, pagination_page_size,
+        pagination_items_open, pagination_numbers, pagination_page_size, pagination_prev_next,
         pagination_range,
     };
     use crate::component::icon::{IconMark, IconTone, icon_toned};
@@ -1620,8 +1649,8 @@ mod tests {
     }
 
     #[test]
-    fn pagination_nav_disables_on_two_channels() {
-        let first = pagination_nav("nav", 1, 4);
+    fn pagination_prev_next_disables_on_two_channels() {
+        let first = pagination_prev_next("nav", 1, 4);
         let previous = named(&first, "previous");
         assert!(previous.semantics.disabled);
         assert!(!previous.interactions.contains(&Interaction::Click));
@@ -1633,7 +1662,7 @@ mod tests {
         );
         assert!(!named(&first, "next").semantics.disabled);
 
-        let last = pagination_nav("nav", 4, 4);
+        let last = pagination_prev_next("nav", 4, 4);
         assert!(named(&last, "next").semantics.disabled);
         assert_eq!(
             named(named(&last, "next"), "caret").props.canvas,
@@ -1643,7 +1672,7 @@ mod tests {
         );
         assert!(!named(&last, "previous").semantics.disabled);
 
-        let none = pagination_nav("nav", 1, 0);
+        let none = pagination_prev_next("nav", 1, 0);
         assert!(named(&none, "previous").semantics.disabled);
         assert!(named(&none, "next").semantics.disabled);
     }
@@ -1661,7 +1690,7 @@ mod tests {
                 pagination_page_size("items-per-page", 10, None),
                 pagination_range("range", 5, 10, 200),
                 pagination_numbers("numbers", 5, 20),
-                pagination_nav("nav", 5, 20),
+                pagination_prev_next("nav", 5, 20),
             ],
         );
         assert_eq!(
@@ -1682,7 +1711,7 @@ mod tests {
             None,
             vec![
                 pagination_numbers("numbers", 1, 20),
-                pagination_nav("nav", 1, 20),
+                pagination_prev_next("nav", 1, 20),
             ],
         );
         assert_eq!(child_keys(&compact), ["numbers", "nav"]);
@@ -1806,7 +1835,7 @@ mod tests {
     #[test]
     fn page_one_previous_is_disabled_on_two_channels() {
         for (label, node) in [
-            ("nav", pagination_nav("nav", 1, 4)),
+            ("nav", pagination_prev_next("nav", 1, 4)),
             ("bar", pagination("pages", 1, 4)),
             ("items", pagination_items("pages", 1, 10, 50)),
         ] {
@@ -1837,8 +1866,8 @@ mod tests {
     /// pagination button declared behaviour None
     /// ```
     #[test]
-    fn pagination_nav_declares_activate_on_release() {
-        let node = pagination_nav("nav", 2, 5);
+    fn pagination_prev_next_declares_activate_on_release() {
+        let node = pagination_prev_next("nav", 2, 5);
         let want = Some(Behaviour {
             intent: Intent::Activate,
             phase: Phase::OnRelease,

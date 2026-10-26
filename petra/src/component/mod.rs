@@ -127,6 +127,7 @@ mod notification;
 mod number_input;
 mod otp;
 mod pagination;
+mod pagination_nav;
 mod popover;
 mod progress;
 mod progress_indicator;
@@ -246,9 +247,13 @@ pub use number_input::{
 pub use otp::otp;
 pub use pagination::{
     PaginationPicker, pagination, pagination_items, pagination_items_lg, pagination_items_open,
-    pagination_items_sm, pagination_lg, pagination_nav, pagination_nav_lg, pagination_nav_sm,
-    pagination_numbers, pagination_numbers_lg, pagination_numbers_sm, pagination_page_size,
-    pagination_range, pagination_sm,
+    pagination_items_sm, pagination_lg, pagination_numbers, pagination_numbers_lg,
+    pagination_numbers_sm, pagination_page_size, pagination_prev_next, pagination_prev_next_lg,
+    pagination_prev_next_sm, pagination_range, pagination_sm,
+};
+pub use pagination_nav::{
+    PaginationNavOverflow, pagination_nav, pagination_nav_lg, pagination_nav_open,
+    pagination_nav_sm,
 };
 pub use popover::{popover, popover_with, popover_with_placement};
 pub use progress::{progress, progress_sm, progress_with_helper};

@@ -397,7 +397,7 @@ fn scrollable_row(row: ViewNode) -> ViewNode {
 /// column to viewport-width. An empty stack measures zero and Stretch
 /// fills the cell, so the bar is as wide as the label and as thick as
 /// `thickness`.
-fn indicator_bar(along: Axis, thickness: f32, fill: Option<&str>) -> ViewNode {
+pub(super) fn indicator_bar(along: Axis, thickness: f32, fill: Option<&str>) -> ViewNode {
     let mut node = stack("indicator", along, None, vec![]);
     if let Some(name) = fill {
         node.props.tokens.insert("background".into(), t(name));
