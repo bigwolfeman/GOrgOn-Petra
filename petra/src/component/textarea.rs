@@ -11,12 +11,10 @@
 //! Focus geometry is host-owned; this file does not paint a ring. A
 //! keystroke is text, not an intent.
 
-use super::field::{EDITABLE_TEXT_INTENTS, SUPPORT_WARNING, bind_field_chrome, warning_helper};
+use super::field::{EDITABLE_TEXT_INTENTS, bind_field_chrome, invalid_helper, warning_helper};
 use super::stack;
-use super::text::text;
 use super::tokens::{
-    SIZE_MD, SPACING_02, SUPPORT_ERROR, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_BODY,
-    t,
+    SIZE_MD, SPACING_02, SUPPORT_ERROR, SUPPORT_WARNING, TEXT_MUTED, TYPOGRAPHY_BODY, t,
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
@@ -79,8 +77,10 @@ pub fn textarea(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
 /// Invalid textarea plus a label-adjacent helper.
 ///
 /// Colour is not the only channel: the Input outline is [`SUPPORT_ERROR`]
-/// on all four sides **and** a helper child carries `Invalid: {message}` in
-/// [`TEXT_PRIMARY`]. Same two channels as [`super::field::field_invalid`].
+/// on all four sides **and** the shared [`invalid_helper`] carries
+/// `Invalid: {message}` in [`TEXT_PRIMARY`] beside an
+/// [`IconMark::ErrorFilled`](super::icon::IconMark) glyph. Same channels as
+/// [`super::field::field_invalid`] because both reach the one FR-018 hook.
 #[must_use]
 pub fn textarea_invalid(
     key: impl Into<Key>,
@@ -93,9 +93,10 @@ pub fn textarea_invalid(
 /// Warning textarea plus a label-adjacent helper.
 ///
 /// Colour is not the only channel: the Input outline is [`SUPPORT_WARNING`]
-/// on all four sides, a helper child carries `Warning: {message}` in
-/// [`TEXT_PRIMARY`], and a [`super::icon::IconMark::WarningFilled`] glyph
-/// sits beside that word. The well sits at `{key}/input`, the same depth as
+/// on all four sides, the shared [`warning_helper`] carries
+/// `Warning: {message}` in [`TEXT_PRIMARY`], and an
+/// [`IconMark::WarningAltFilled`](super::icon::IconMark) glyph sits beside
+/// that word. The well sits at `{key}/input`, the same depth as
 /// [`textarea_invalid`], so warn to legal does not re-key the node under
 /// the cursor.
 #[must_use]
@@ -133,17 +134,7 @@ pub fn textarea_validated(
     };
     let mut children = vec![input_textarea("input", label, chrome)];
     if let Some(message) = message {
-        let mut helper = text("helper", format!("Invalid: {message}"));
-        // The word carries the state as well as the hue does: the operator
-        // is red-green colour blind and a red edge on its own is not a
-        // channel he can read. Ink stays primary so the message is
-        // legible; tinting it would trade a channel he has for one he
-        // does not.
-        helper
-            .props
-            .tokens
-            .insert("foreground".into(), t(TEXT_PRIMARY));
-        children.push(helper);
+        children.push(invalid_helper(message));
     }
     let mut node = stack(key, Axis::Vertical, Some(SPACING_02), children);
     node.props.align = Some(Align::Stretch);
@@ -162,17 +153,15 @@ fn input_textarea(key: impl Into<Key>, label: impl Into<String>, chrome: Chrome)
     match chrome {
         Chrome::Enabled => bind_field_chrome(&mut props),
         Chrome::Invalid => {
-            props.tokens.insert("background".into(), t(SURFACE_RAISED));
-            // The error hue, not the accent, and on all four sides: Carbon's
-            // invalid field is an outline, the one state where the well is
-            // boxed. Same token as [`super::field`]'s invalid well.
-            props.tokens.insert("border".into(), t(SUPPORT_ERROR));
+            // The error hue, not the accent, and on all four sides: the
+            // shared [`super::field::bind_validation_chrome`] dressing every
+            // form-family well wears.
+            super::field::bind_validation_chrome(&mut props, SUPPORT_ERROR);
         }
         Chrome::Warning => {
-            props.tokens.insert("background".into(), t(SURFACE_RAISED));
             // The warning hue, not the error and not the accent. Carbon's
             // warn well is the invalid outline in `$support-warning`.
-            props.tokens.insert("border".into(), t(SUPPORT_WARNING));
+            super::field::bind_validation_chrome(&mut props, SUPPORT_WARNING);
         }
     }
     let mut node = ViewNode::new(NodeKind::Input, key)
@@ -194,11 +183,10 @@ fn input_textarea(key: impl Into<Key>, label: impl Into<String>, chrome: Chrome)
 #[cfg(test)]
 mod tests {
     use super::{
-        EDITABLE_TEXT_INTENTS, SIZE_MD, SUPPORT_ERROR, SUPPORT_WARNING, SURFACE_RAISED,
-        TEXT_PRIMARY, TEXTAREA_MAX_HEIGHT, textarea, textarea_invalid, textarea_validated,
-        textarea_warning,
+        EDITABLE_TEXT_INTENTS, SIZE_MD, SUPPORT_ERROR, SUPPORT_WARNING, TEXTAREA_MAX_HEIGHT,
+        textarea, textarea_invalid, textarea_validated, textarea_warning,
     };
-    use crate::component::tokens::{ACCENT_PRIMARY, BORDER_STRONG};
+    use crate::component::tokens::{ACCENT_PRIMARY, BORDER_STRONG, SURFACE_RAISED, TEXT_PRIMARY};
     use crate::component::{IconMark, IconTone, icon_toned};
     use crate::tree::{FocusFigure, FocusShownOn, Interaction, NodeKind, Role, TextWrap, ViewNode};
 
@@ -306,9 +294,21 @@ mod tests {
         );
         assert_eq!(input.interactions.as_slice(), EDITABLE_TEXT_INTENTS);
         let helper = child(&node, "helper");
-        assert_eq!(helper.kind, NodeKind::Text);
-        assert_eq!(helper.props.text.as_deref(), Some("Invalid: required"));
-        assert_eq!(token(helper, "foreground"), Some(TEXT_PRIMARY));
+        assert_eq!(
+            helper.kind,
+            NodeKind::Stack,
+            "the helper is a mark + message row"
+        );
+        let message = child(helper, "message");
+        assert_eq!(message.props.text.as_deref(), Some("Invalid: required"));
+        assert_eq!(token(message, "foreground"), Some(TEXT_PRIMARY));
+        let mark = child(helper, "mark");
+        let expected = icon_toned("mark", IconMark::ErrorFilled, IconTone::Primary);
+        assert_eq!(
+            mark.props.canvas, expected.props.canvas,
+            "the helper's glyph is ErrorFilled, the paired error mark \
+             (spec 008 T039)"
+        );
     }
 
     /// A warning textarea's edge is the warning hue, never the error and
@@ -364,12 +364,12 @@ mod tests {
         );
         assert_eq!(token(message, "foreground"), Some(TEXT_PRIMARY));
         let mark = child(helper, "mark");
-        let expected = icon_toned("mark", IconMark::WarningFilled, IconTone::Primary);
+        let expected = icon_toned("mark", IconMark::WarningAltFilled, IconTone::Primary);
         assert_eq!(mark.kind, NodeKind::Canvas);
         assert_eq!(
             mark.props.canvas, expected.props.canvas,
-            "the helper's glyph is WarningFilled, not ErrorFilled and not a \
-             swatch"
+            "the helper's glyph is WarningAltFilled, the paired form-family \
+             warning mark (spec 008 T039) — not ErrorFilled and not a swatch"
         );
     }
 

@@ -143,6 +143,21 @@ pub trait Page {
         Vec::new()
     }
 
+    /// The warning cell(s) for this component's documented warning
+    /// state(s) (spec 008 US4, FR-019): the component's own
+    /// `*_warning` constructor, one cell per form-family component whose
+    /// slice documents a warning state. One cell is one coverage unit and
+    /// one call site.
+    ///
+    /// The chrome renders each cell as this page's own Warning section,
+    /// beside the page body, and `lua_parity` seeds its `state.warning`
+    /// from the same call (the seeding contract
+    /// [`super::catalog::Catalog::warning_cells`] documents). The default
+    /// is empty, for the pages whose slice documents no warning state.
+    fn warning(&self) -> Vec<ViewNode> {
+        Vec::new()
+    }
+
     /// The size-step cell(s) for this component's built ramp (spec 008 T034,
     /// FR-025): one cell per built size step of every sized constructor the
     /// component ships — `tag_sm` / `tag` / `tag_lg` is three cells, not one.

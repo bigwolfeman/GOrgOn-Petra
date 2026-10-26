@@ -201,12 +201,14 @@ pub use data_table::{
     data_table_toolbar_menu, data_table_weights_at, data_table_zebra, data_table_zebra_sized,
 };
 pub use date_picker::{
-    Calendar, date_picker, date_picker_open, date_picker_showing, date_picker_showing_selection,
+    Calendar, date_picker, date_picker_invalid, date_picker_open, date_picker_showing,
+    date_picker_showing_selection, date_picker_warning,
 };
 pub use disabled::disabled;
 pub use drawer::{docked, drawer, sheet};
 pub use dropdown::{
-    dropdown, dropdown_lg, dropdown_open, dropdown_option, dropdown_sm, dropdown_xs,
+    dropdown, dropdown_invalid, dropdown_lg, dropdown_open, dropdown_option, dropdown_sm,
+    dropdown_warning, dropdown_xs,
 };
 pub use field::{
     field, field_described, field_fluid, field_invalid, field_labeled, field_lg, field_readonly,
@@ -254,12 +256,13 @@ pub use progress_indicator::{progress_indicator, progress_step};
 pub use rating::rating;
 pub use search::{search, search_lg, search_sm};
 pub use section::section;
-pub use select::{select, select_lg, select_open, select_sm};
+pub use select::{select, select_invalid, select_lg, select_open, select_sm, select_warning};
 pub use skeleton::{
     SizeStep, SkeletonAnatomy, advance_ambient_skeletons, skeleton, skeleton_pulse_phase,
 };
 pub use slider::{
-    slider, slider_input_text, slider_readonly, slider_value_at, slider_value_of_input,
+    slider, slider_input_text, slider_invalid, slider_readonly, slider_value_at,
+    slider_value_of_input, slider_warning,
 };
 pub use status::status;
 pub use structured_list::{

@@ -72,6 +72,15 @@ impl Page for Slider {
         "Slider"
     }
 
+    /// The warning cell (spec 008 US4, FR-019): the slider's own
+    /// `slider_warning`, one cell — the state the slice documents. The
+    /// hue lands on the value input, never the rail.
+    fn warning(&self) -> Vec<ViewNode> {
+        use gorgon_petra::component::slider_warning;
+
+        vec![slider_warning("sl-warn", "Volume", 0.4, "out of range")]
+    }
+
     /// Carbon's slider skeleton (`_slider.scss`): the range labels are
     /// 12×20 `--skeleton` blocks (min and max); the track and thumb are not
     /// skeletonized — the track only gets `cursor: default`.

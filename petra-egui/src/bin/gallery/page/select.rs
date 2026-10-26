@@ -29,6 +29,14 @@ impl Page for Select {
         "Select"
     }
 
+    /// The warning cell (spec 008 US4, FR-019): the select's own
+    /// `select_warning`, one cell — the state the slice documents.
+    fn warning(&self) -> Vec<ViewNode> {
+        use gorgon_petra::component::select_warning;
+
+        vec![select_warning("sel-warn", "Theme", "Dark", "stale option")]
+    }
+
     /// Carbon's select skeleton (`_select.scss`): the input block, 2.5rem
     /// (40) high at the md step, inline 100 %.
     fn skeleton(&self, now: f64) -> Option<ViewNode> {

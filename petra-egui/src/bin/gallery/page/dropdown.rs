@@ -31,6 +31,14 @@ impl Page for Dropdown {
         "Dropdown"
     }
 
+    /// The warning cell (spec 008 US4, FR-019): the dropdown's own
+    /// `dropdown_warning`, one cell — the state the slice documents.
+    fn warning(&self) -> Vec<ViewNode> {
+        use gorgon_petra::component::dropdown_warning;
+
+        vec![dropdown_warning("dd-warn", "Theme", "Dark", "stale option")]
+    }
+
     /// Carbon's dropdown skeleton (`_dropdown.scss`): the field block with
     /// `border-radius-04`, the md step's 40-high fill at the field's inline
     /// extent.

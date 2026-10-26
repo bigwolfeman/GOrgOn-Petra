@@ -145,20 +145,26 @@ impl Page for NumberInput {
             vec![filled_body(
                 "num",
                 sp("spacing.md"),
-                vec![
-                    labeled(
-                        "count",
-                        "Count",
-                        number_input(COUNT, "Count", self.value.clone()),
-                    ),
-                    labeled(
-                        "warn-count",
-                        "Count (warning)",
-                        number_input_warning("n-warn", "Count", "999", "out of range"),
-                    ),
-                ],
+                vec![labeled(
+                    "count",
+                    "Count",
+                    number_input(COUNT, "Count", self.value.clone()),
+                )],
             )],
         )
+    }
+
+    /// The warning cell (spec 008 US4, FR-019) — the number well's own
+    /// warning state, its own section beside the body since
+    /// [`crate::catalog::Catalog::warning_cells`] became the one home for
+    /// the question. It sat in the body until then.
+    fn warning(&self) -> Vec<ViewNode> {
+        vec![number_input_warning(
+            "n-warn",
+            "Count",
+            "999",
+            "out of range",
+        )]
     }
 
     fn handle(&mut self, event: &InputEvent, node: &str) -> bool {

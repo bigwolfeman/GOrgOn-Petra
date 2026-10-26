@@ -38,14 +38,16 @@
 //! shipping it as public `_xs`/`_sm`/`_lg` siblings is deferred to whichever
 //! caller first needs an open dropdown at a size other than md.
 
+use super::field::{invalid_helper, validated_column, warning_helper};
 use super::icon::{IconMark, IconTone, icon_toned};
 use super::list_box::{Dividers, ListBoxSize, edge_row, list_box, list_box_field};
 use super::pin_block;
 use super::stack;
 use super::text::text;
 use super::tokens::{
-    LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SIZE_MD, SPACING_03, SURFACE_RAISED,
-    TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_BODY_COMPACT, TYPOGRAPHY_LABEL, t,
+    LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SIZE_MD, SPACING_03, SUPPORT_ERROR,
+    SUPPORT_WARNING, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_BODY_COMPACT,
+    TYPOGRAPHY_LABEL, t,
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
@@ -115,6 +117,41 @@ pub fn dropdown_open(
     options: Vec<ViewNode>,
 ) -> ViewNode {
     labelled(key, label, value, ListBoxSize::Md, Some(options))
+}
+
+/// Invalid dropdown: the md field wearing [`SUPPORT_ERROR`] on all four
+/// sides plus the shared [`invalid_helper`] row (FR-019).
+///
+/// The field keeps the key and depth [`dropdown`] gives it (`{key}/field`),
+/// and the outline replaces the field's resting rule rather than stacking
+/// on it — the same dressing as [`super::field::field_invalid`] and
+/// [`super::select::select_invalid`], through the one shared binder.
+pub fn dropdown_invalid(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    value: impl Into<String>,
+    message: impl Into<String>,
+) -> ViewNode {
+    validated_column(
+        labelled(key, label, value, ListBoxSize::Md, None),
+        SUPPORT_ERROR,
+        invalid_helper(message),
+    )
+}
+
+/// Warning dropdown: the md field wearing [`SUPPORT_WARNING`] plus the
+/// shared [`warning_helper`] row (FR-018/FR-020).
+pub fn dropdown_warning(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    value: impl Into<String>,
+    message: impl Into<String>,
+) -> ViewNode {
+    validated_column(
+        labelled(key, label, value, ListBoxSize::Md, None),
+        SUPPORT_WARNING,
+        warning_helper(message),
+    )
 }
 
 /// The column: label above field, plus the list box when `options` is
@@ -233,9 +270,9 @@ fn sized_dropdown_option(
 #[cfg(test)]
 mod tests {
     use super::{
-        IconMark, IconTone, ListBoxSize, SIZE_MD, dropdown, dropdown_lg, dropdown_open,
-        dropdown_option, dropdown_sm, dropdown_xs, icon_toned, labelled, open_field_of,
-        sized_dropdown_option,
+        IconMark, IconTone, ListBoxSize, SIZE_MD, dropdown, dropdown_invalid, dropdown_lg,
+        dropdown_open, dropdown_option, dropdown_sm, dropdown_warning, dropdown_xs, icon_toned,
+        labelled, open_field_of, sized_dropdown_option,
     };
     use crate::component::tests::{assert_fits_parent, petrify_lone};
     use crate::component::tokens::{
@@ -259,6 +296,78 @@ mod tests {
 
     fn token<'a>(node: &'a ViewNode, slot: &str) -> Option<&'a str> {
         node.props.tokens.get(slot).map(|name| name.as_str())
+    }
+
+    use crate::component::tokens::{ACCENT_PRIMARY, SUPPORT_ERROR, SUPPORT_WARNING, TEXT_PRIMARY};
+
+    /// The invalid state dresses the field in the shared form-family
+    /// chrome and says so in words and a glyph (spec 008 T039). Byte-tied
+    /// to [`super::super::select::select_invalid`] on purpose: Carbon's
+    /// Select and Dropdown are the same field.
+    #[test]
+    fn dropdown_invalid_pairs_an_error_outline_with_helper_text() {
+        let node = dropdown_invalid("theme", "Theme", "Dark", "required");
+        let field = child(&node, "field");
+        assert_eq!(token(field, "border"), Some(SUPPORT_ERROR));
+        assert_ne!(
+            token(field, "border"),
+            Some(ACCENT_PRIMARY),
+            "an invalid field must not wear the accent: a focused field wears \
+             it too"
+        );
+        assert_eq!(
+            token(field, "border-bottom"),
+            None,
+            "the outline replaces the resting rule rather than stacking on it"
+        );
+        let helper = child(&node, "helper");
+        let message = child(helper, "message");
+        assert_eq!(message.props.text.as_deref(), Some("Invalid: required"));
+        assert_eq!(token(message, "foreground"), Some(TEXT_PRIMARY));
+        let expected = icon_toned("mark", IconMark::ErrorFilled, IconTone::Primary);
+        assert_eq!(
+            child(helper, "mark").props.canvas,
+            expected.props.canvas,
+            "the helper's glyph is the paired error mark (spec 008 T039)"
+        );
+    }
+
+    /// The warning state: the warning hue, and the word and the
+    /// triangle-with-bang beside it — the channels a greyscale reader has.
+    #[test]
+    fn dropdown_warning_draws_the_warning_hue_and_says_so_in_words_and_a_glyph() {
+        let node = dropdown_warning("theme", "Theme", "Dark", "check the value");
+        let field = child(&node, "field");
+        assert_eq!(token(field, "border"), Some(SUPPORT_WARNING));
+        assert_ne!(
+            token(field, "border"),
+            Some(SUPPORT_ERROR),
+            "a warning field must not wear the error outline"
+        );
+        assert_ne!(
+            token(field, "border"),
+            Some(ACCENT_PRIMARY),
+            "a warning field must not wear the accent: a focused field wears it too"
+        );
+        assert_eq!(
+            token(field, "border-bottom"),
+            None,
+            "the outline replaces the resting rule rather than stacking on it"
+        );
+        let helper = child(&node, "helper");
+        let message = child(helper, "message");
+        assert_eq!(
+            message.props.text.as_deref(),
+            Some("Warning: check the value")
+        );
+        assert_eq!(token(message, "foreground"), Some(TEXT_PRIMARY));
+        let expected = icon_toned("mark", IconMark::WarningAltFilled, IconTone::Primary);
+        assert_eq!(
+            child(helper, "mark").props.canvas,
+            expected.props.canvas,
+            "the helper's glyph is the triangle-with-bang, whose silhouette is \
+             what a greyscale reader distinguishes from error's circle-with-slash"
+        );
     }
 
     #[test]

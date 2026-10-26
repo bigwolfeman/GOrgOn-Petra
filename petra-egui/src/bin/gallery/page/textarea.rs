@@ -34,7 +34,7 @@ impl Page for Textarea {
     fn body(&self) -> ViewNode {
         section(
             "areas",
-            "Default, invalid, warning",
+            "Default, invalid",
             vec![filled_body(
                 "ta-body",
                 sp("spacing.md"),
@@ -49,14 +49,17 @@ impl Page for Textarea {
                         "Invalid",
                         textarea_invalid(BAD, "Invalid", "must not be empty"),
                     ),
-                    labeled(
-                        "warn-item",
-                        "Warning",
-                        textarea_warning(WARN, "Warning", "looks old"),
-                    ),
                 ],
             )],
         )
+    }
+
+    /// The warning cell (spec 008 US4, FR-019) — the area's own warning
+    /// state, its own section beside the body since
+    /// [`crate::catalog::Catalog::warning_cells`] became the one home for
+    /// the question. It sat in the body until then.
+    fn warning(&self) -> Vec<ViewNode> {
+        vec![textarea_warning(WARN, "Warning", "looks old")]
     }
 
     fn handle(&mut self, event: &InputEvent, node: &str) -> bool {

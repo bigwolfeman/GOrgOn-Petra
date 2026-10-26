@@ -188,6 +188,19 @@ impl Page for DatePicker {
         "Date picker"
     }
 
+    /// The warning cell (spec 008 US4, FR-019): the picker's own
+    /// `date_picker_warning`, one cell — the state the slice documents.
+    fn warning(&self) -> Vec<ViewNode> {
+        use gorgon_petra::component::date_picker_warning;
+
+        vec![date_picker_warning(
+            "dp-warn",
+            "Due date",
+            "2026-08-30",
+            "date is in the past",
+        )]
+    }
+
     /// Carbon's date-picker skeleton (`_date-picker-next.scss`): the input
     /// skeleton is a 14×75 block; the range variant puts two at 143.5 wide.
     fn skeleton(&self, now: f64) -> Option<ViewNode> {

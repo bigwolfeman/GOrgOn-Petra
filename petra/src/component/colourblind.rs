@@ -363,7 +363,7 @@ fn the_four_alert_marks_are_four_different_pictures_at_one_tone() {
 fn every_warning_variant_says_warning_in_words_and_a_glyph() {
     let want_glyph = icon_in(
         "mark",
-        IconMark::WarningFilled,
+        IconMark::WarningAltFilled,
         IconBox::Glyph,
         IconTone::Primary,
     );

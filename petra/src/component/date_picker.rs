@@ -50,14 +50,15 @@
 
 use std::collections::BTreeSet;
 
+use super::field::{invalid_helper, validated_column, warning_helper};
 use super::icon::{IconMark, IconTone, icon_toned};
 use super::pad;
 use super::pin_block;
 use super::stack;
 use super::text::text;
 use super::tokens::{
-    ACCENT_PRIMARY, LAYER_HOVER, SHADOW_OVERLAY, SIZE_MD, SPACING_03, SPACING_05,
-    SURFACE_LAYER_TWO, SURFACE_RAISED, TEXT_MUTED, TEXT_ON_ACCENT, TEXT_PRIMARY,
+    ACCENT_PRIMARY, LAYER_HOVER, SHADOW_OVERLAY, SIZE_MD, SPACING_03, SPACING_05, SUPPORT_ERROR,
+    SUPPORT_WARNING, SURFACE_LAYER_TWO, SURFACE_RAISED, TEXT_MUTED, TEXT_ON_ACCENT, TEXT_PRIMARY,
     TYPOGRAPHY_HEADING_SM, t,
 };
 use crate::geom::{Align, Axis};
@@ -146,6 +147,42 @@ pub fn date_picker(
     let label = label.into();
     let field = closed_field("field", label, value, false);
     column(key, field, None)
+}
+
+/// Invalid date picker: the field wearing [`SUPPORT_ERROR`] on all four
+/// sides plus the shared [`invalid_helper`] row (FR-019).
+///
+/// The field keeps the key and depth [`date_picker`] gives it
+/// (`{key}/field`), so a value that turns legal does not re-key the node
+/// under the cursor, and the outline replaces the field's resting rule —
+/// the one shared dressing
+/// ([`super::field::bind_validation_chrome`]).
+pub fn date_picker_invalid(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    value: impl Into<String>,
+    message: impl Into<String>,
+) -> ViewNode {
+    validated_column(
+        date_picker(key, label, value),
+        SUPPORT_ERROR,
+        invalid_helper(message),
+    )
+}
+
+/// Warning date picker: the field wearing [`SUPPORT_WARNING`] plus the
+/// shared [`warning_helper`] row (FR-018/FR-020).
+pub fn date_picker_warning(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    value: impl Into<String>,
+    message: impl Into<String>,
+) -> ViewNode {
+    validated_column(
+        date_picker(key, label, value),
+        SUPPORT_WARNING,
+        warning_helper(message),
+    )
 }
 
 /// What an open calendar is showing: which month the grid is browsing, and
@@ -1054,9 +1091,9 @@ fn centred(key: String, child: ViewNode) -> ViewNode {
 mod tests {
     use super::{
         CALENDAR_H, CALENDAR_W, CHOOSER_H, Calendar, MONTH_CELL_H, MONTH_COLS, MONTH_ROWS,
-        PropAlign, SIZE_MD, WEEK_ROWS, WEEKDAYS, date_picker, date_picker_open,
-        date_picker_showing, date_picker_showing_selection, days_in_month, first_weekday,
-        parse_date,
+        PropAlign, SIZE_MD, WEEK_ROWS, WEEKDAYS, date_picker, date_picker_invalid,
+        date_picker_open, date_picker_showing, date_picker_showing_selection, date_picker_warning,
+        days_in_month, first_weekday, parse_date,
     };
     use crate::component::tests::{assert_fits_parent, petrify_lone};
     use crate::component::tokens::{
@@ -1079,6 +1116,77 @@ mod tests {
 
     fn token<'a>(node: &'a ViewNode, slot: &str) -> Option<&'a str> {
         node.props.tokens.get(slot).map(|name| name.as_str())
+    }
+
+    use crate::component::icon::{IconMark, IconTone, icon_toned};
+    use crate::component::tokens::{SUPPORT_ERROR, SUPPORT_WARNING, TEXT_PRIMARY};
+
+    /// The invalid state dresses the field in the shared form-family
+    /// chrome and says so in words and a glyph (spec 008 T039).
+    #[test]
+    fn date_picker_invalid_pairs_an_error_outline_with_helper_text() {
+        let node = date_picker_invalid("due", "Due date", "2026-08-30", "required");
+        let field = child(&node, "field");
+        assert_eq!(token(field, "border"), Some(SUPPORT_ERROR));
+        assert_ne!(
+            token(field, "border"),
+            Some(ACCENT_PRIMARY),
+            "an invalid field must not wear the accent: a focused field wears \
+             it too"
+        );
+        assert_eq!(
+            token(field, "border-bottom"),
+            None,
+            "the outline replaces the resting rule rather than stacking on it"
+        );
+        let helper = child(&node, "helper");
+        let message = child(helper, "message");
+        assert_eq!(message.props.text.as_deref(), Some("Invalid: required"));
+        assert_eq!(token(message, "foreground"), Some(TEXT_PRIMARY));
+        let expected = icon_toned("mark", IconMark::ErrorFilled, IconTone::Primary);
+        assert_eq!(
+            child(helper, "mark").props.canvas,
+            expected.props.canvas,
+            "the helper's glyph is the paired error mark (spec 008 T039)"
+        );
+    }
+
+    /// The warning state: the warning hue, and the word and the
+    /// triangle-with-bang beside it — the channels a greyscale reader has.
+    #[test]
+    fn date_picker_warning_draws_the_warning_hue_and_says_so_in_words_and_a_glyph() {
+        let node = date_picker_warning("due", "Due date", "2026-08-30", "check the value");
+        let field = child(&node, "field");
+        assert_eq!(token(field, "border"), Some(SUPPORT_WARNING));
+        assert_ne!(
+            token(field, "border"),
+            Some(SUPPORT_ERROR),
+            "a warning field must not wear the error outline"
+        );
+        assert_ne!(
+            token(field, "border"),
+            Some(ACCENT_PRIMARY),
+            "a warning field must not wear the accent: a focused field wears it too"
+        );
+        assert_eq!(
+            token(field, "border-bottom"),
+            None,
+            "the outline replaces the resting rule rather than stacking on it"
+        );
+        let helper = child(&node, "helper");
+        let message = child(helper, "message");
+        assert_eq!(
+            message.props.text.as_deref(),
+            Some("Warning: check the value")
+        );
+        assert_eq!(token(message, "foreground"), Some(TEXT_PRIMARY));
+        let expected = icon_toned("mark", IconMark::WarningAltFilled, IconTone::Primary);
+        assert_eq!(
+            child(helper, "mark").props.canvas,
+            expected.props.canvas,
+            "the helper's glyph is the triangle-with-bang, whose silhouette is \
+             what a greyscale reader distinguishes from error's circle-with-slash"
+        );
     }
 
     /// The closed form is a column whose `field` is the button, the same

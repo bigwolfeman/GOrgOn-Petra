@@ -411,6 +411,23 @@ impl Catalog {
             .unwrap_or_default()
     }
 
+    /// The open page's own warning cell(s) (spec 008 US4) — one per
+    /// warning state the component's slice documents, or none.
+    ///
+    /// One home for the question rather than one per caller, the same seam
+    /// [`Self::skeleton_cell`], [`Self::disabled_cells`] and
+    /// [`Self::size_cells`] are: [`Self::page_body`] places the cells it
+    /// returns, `lua_parity`'s chrome proof seeds its `state.warning` from
+    /// the same call, and `warning_states.rs` reads the treatment back out
+    /// of them — so the Lua mirror, the picture and the assertions can
+    /// never disagree about which page has a warning cell or what it
+    /// contains.
+    pub(crate) fn warning_cells(&self) -> Vec<ViewNode> {
+        self.open_page()
+            .map(|page| page.warning())
+            .unwrap_or_default()
+    }
+
     /// The open page's size-step cell(s) (spec 008 T034, FR-025) — one per
     /// built size step of every sized constructor the component ships.
     ///
@@ -436,10 +453,12 @@ impl Catalog {
     /// (`.agents/notes/implemented/architecture/2026-09-18-the-gallery-chrome-reaches-lua.md`).
     /// The state cells sit *beside* the card rather than inside it and are
     /// never re-seated: each is its own top-level section, a card at the same
-    /// depth the page body is. Disabled leads, Skeleton follows, Sizes last:
-    /// the disabled state is a state of the component the page displays, a
-    /// skeleton is the placeholder for one that has not arrived, and a size
-    /// step is the shape the component builds at (FR-025).
+    /// depth the page body is. Disabled leads, Warning follows, Skeleton
+    /// and Sizes last: the disabled state is a state of the component the
+    /// page displays, a warning is a validation state of the live one
+    /// (FR-019), a skeleton is the placeholder for one that has not
+    /// arrived, and a size step is the shape the component builds at
+    /// (FR-025).
     fn page_body(&self) -> ViewNode {
         let mut sections = vec![seat_card(self.page_body_raw())];
         let cells = self.disabled_cells();
@@ -448,6 +467,14 @@ impl Catalog {
                 "disabled",
                 "Disabled",
                 vec![body("disabled-body", sp("spacing.md"), cells)],
+            ));
+        }
+        let cells = self.warning_cells();
+        if !cells.is_empty() {
+            sections.push(section(
+                "warning",
+                "Warning",
+                vec![body("warning-body", sp("spacing.md"), cells)],
             ));
         }
         if let Some(cell) = self.skeleton_cell() {

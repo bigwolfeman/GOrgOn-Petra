@@ -216,7 +216,10 @@ pub const VISIONS: [(&str, &[[f32; 3]; 3]); 2] =
 pub const SIMULATION_MODELS: [(&str, &[[f32; 3]; 3]); 4] = [
     ("VBM 1999 deuteranope (= the repo's matrix)", &DEUTERANOPE),
     ("VBM 1999 protanope (= the repo's matrix)", &PROTANOPE),
-    ("Machado 2009 deuteranopia, severity 1.0", &MACHADO_DEUTERANOPE),
+    (
+        "Machado 2009 deuteranopia, severity 1.0",
+        &MACHADO_DEUTERANOPE,
+    ),
     ("Machado 2009 protanopia, severity 1.0", &MACHADO_PROTANOPE),
 ];
 

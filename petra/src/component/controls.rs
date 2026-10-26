@@ -1057,7 +1057,7 @@ mod tests {
     }
 
     /// Colour is not the only channel: the helper says `Warning: {message}`
-    /// and sits a WarningFilled mark beside it. The wrapper is not a
+    /// and sits a WarningAltFilled mark beside it. The wrapper is not a
     /// four-sided box; a checkbox's outline is already its own.
     fn assert_warning_helper(node: &ViewNode, message: &str) {
         assert_eq!(node.kind, NodeKind::Stack);
@@ -1077,12 +1077,12 @@ mod tests {
             Some(expected_text.as_str())
         );
         let mark = named(node, "mark");
-        let expected = icon_toned("mark", IconMark::WarningFilled, IconTone::Primary);
+        let expected = icon_toned("mark", IconMark::WarningAltFilled, IconTone::Primary);
         assert_eq!(mark.kind, NodeKind::Canvas);
         assert_eq!(
             mark.props.canvas, expected.props.canvas,
-            "the helper's glyph is WarningFilled, not ErrorFilled and not a \
-             swatch"
+            "the helper's glyph is WarningAltFilled, the paired form-family \
+             warning mark (spec 008 T039) — not ErrorFilled and not a swatch"
         );
     }
 

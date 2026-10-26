@@ -36,6 +36,8 @@ mod lua_parity;
 mod page;
 #[cfg(test)]
 mod shots;
+#[cfg(test)]
+mod warning_states;
 
 use std::process::ExitCode;
 

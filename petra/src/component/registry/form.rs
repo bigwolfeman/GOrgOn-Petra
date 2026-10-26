@@ -179,6 +179,20 @@ impl ParamShape for KeyLabelValueMessage {
     const LUAU: &'static str = "{ key: string, label: string, value: string, message: string }";
 }
 
+/// `slider_invalid`/`slider_warning`(key, label, value, message). `f32` in
+/// Rust; Luau has one number type, as [`KeyLabelNumber`] says.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct KeyLabelNumberMessage {
+    key: Key,
+    label: String,
+    value: f32,
+    message: String,
+}
+impl ParamShape for KeyLabelNumberMessage {
+    const LUAU: &'static str = "{ key: string, label: string, value: number, message: string }";
+}
+
 /// `file_uploader_with(key, label, description)`/`field_described(key,
 /// label, description)`.
 #[derive(Debug, Clone, Deserialize)]
@@ -318,6 +332,12 @@ pub const ENTRIES: &[Entry] = &[
             p.calendar.into()
         )
     ),
+    row!("date_picker_invalid", KeyLabelValueMessage, |p| {
+        lib::date_picker_invalid(p.key, p.label, p.value, p.message)
+    }),
+    row!("date_picker_warning", KeyLabelValueMessage, |p| {
+        lib::date_picker_warning(p.key, p.label, p.value, p.message)
+    }),
     // dropdown.rs — Dropdown.
     row!("dropdown", KeyLabelValue, |p| lib::dropdown(
         p.key, p.label, p.value
@@ -336,6 +356,12 @@ pub const ENTRIES: &[Entry] = &[
     }),
     row!("dropdown_option", KeyLabelSelected, |p| {
         lib::dropdown_option(p.key, p.label, p.selected)
+    }),
+    row!("dropdown_invalid", KeyLabelValueMessage, |p| {
+        lib::dropdown_invalid(p.key, p.label, p.value, p.message)
+    }),
+    row!("dropdown_warning", KeyLabelValueMessage, |p| {
+        lib::dropdown_warning(p.key, p.label, p.value, p.message)
     }),
     // field.rs — Text input.
     row!("field", KeyLabel, |p| lib::field(p.key, p.label)),
@@ -426,6 +452,12 @@ pub const ENTRIES: &[Entry] = &[
     row!("select_open", KeyLabelValueChildren, |p| lib::select_open(
         p.key, p.label, p.value, p.children
     )),
+    row!("select_invalid", KeyLabelValueMessage, |p| {
+        lib::select_invalid(p.key, p.label, p.value, p.message)
+    }),
+    row!("select_warning", KeyLabelValueMessage, |p| {
+        lib::select_warning(p.key, p.label, p.value, p.message)
+    }),
     // slider.rs — Slider.
     row!("slider", KeyLabelNumber, |p| lib::slider(
         p.key, p.label, p.value
@@ -433,6 +465,12 @@ pub const ENTRIES: &[Entry] = &[
     row!("slider_readonly", KeyLabelNumber, |p| lib::slider_readonly(
         p.key, p.label, p.value
     )),
+    row!("slider_invalid", KeyLabelNumberMessage, |p| {
+        lib::slider_invalid(p.key, p.label, p.value, p.message)
+    }),
+    row!("slider_warning", KeyLabelNumberMessage, |p| {
+        lib::slider_warning(p.key, p.label, p.value, p.message)
+    }),
 ];
 
 #[cfg(test)]
@@ -529,7 +567,13 @@ mod tests {
     /// the same tie at the open form: both call their own private
     /// `labelled(key, label, value, <Md size>, Some(options))`, and this
     /// probe measured them byte-identical at that size — not assumed from
-    /// the closed-form tie above.
+    /// the closed-form tie above. `select_invalid`/`dropdown_invalid` and
+    /// `select_warning`/`dropdown_warning` are the same tie in the two
+    /// validation states (spec 008 FR-019): each dresses its own
+    /// `labelled`'s `list_box_field` through the one shared
+    /// [`crate::component::field::validated_column`], so the states differ
+    /// only in the support token and the helper — measured byte-identical
+    /// by this probe, not assumed from the closed-form tie.
     const ALIASES: &[(&str, &str, &str)] = &[
         (
             "select",
@@ -550,6 +594,16 @@ mod tests {
             "select_open",
             "dropdown_open",
             "both call their own private labelled(.., SIZE_MD/ListBoxSize::Md, Some(options));              measured byte-identical at that size, same anatomy as select/dropdown",
+        ),
+        (
+            "select_invalid",
+            "dropdown_invalid",
+            "both dress list_box_field at ListBoxSize::Md through field::validated_column with SUPPORT_ERROR; measured byte-identical, same intentional tie as select/dropdown",
+        ),
+        (
+            "select_warning",
+            "dropdown_warning",
+            "both dress list_box_field at ListBoxSize::Md through field::validated_column with SUPPORT_WARNING; measured byte-identical, same intentional tie as select/dropdown",
         ),
     ];
 
@@ -590,6 +644,10 @@ mod tests {
                 json!({"key": "probe", "label": "Probe", "value": 42.0}),
             ),
             (
+                "{ key, label, value: number, message }",
+                json!({"key": "probe", "label": "Probe", "value": 42.0, "message": "Message"}),
+            ),
+            (
                 "{ key, label, value, children }",
                 json!({"key": "probe", "label": "Probe", "value": "Value", "children": []}),
             ),
@@ -623,6 +681,9 @@ mod tests {
                 "{ key: string, label: string, value: string }" => Some("{ key, label, value }"),
                 "{ key: string, label: string, value: number }" => {
                     Some("{ key, label, value: number }")
+                }
+                "{ key: string, label: string, value: number, message: string }" => {
+                    Some("{ key, label, value: number, message }")
                 }
                 // `select_open`/`dropdown_open`: the only two rows sharing
                 // `KeyLabelValueChildren`. Checked here rather than left out

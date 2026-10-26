@@ -17,18 +17,13 @@ use super::stack;
 use super::text::text;
 use super::tokens::{
     BORDER_STRONG, BORDER_SUBTLE, ICON_DISABLED, SIZE_MD, SPACING_02, SPACING_03, SUPPORT_ERROR,
-    SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_BODY, t,
+    SUPPORT_WARNING, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_BODY, t,
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
     AxisConstraint, Constraints, FocusFigure, FocusShownOn, Interaction, Key, NodeKind, Props,
     Role, ViewNode,
 };
-
-/// Carbon `$support-warning`, aliased onto `status.degraded` the way
-/// [`SUPPORT_ERROR`] aliases onto `status.down`. Bound here until `tokens.rs`
-/// re-exports it the way it re-exports the error name (spec 008 T037).
-pub(crate) const SUPPORT_WARNING: &str = "support-warning";
 
 /// What an editable text input declares.
 ///
@@ -107,6 +102,58 @@ pub(super) fn bind_field_chrome(props: &mut Props) {
     props
         .tokens
         .insert("border-bottom@disabled".into(), t(ICON_DISABLED));
+}
+
+/// The invalid or warning dressing on a form well's `props`: the house
+/// fill with [`SUPPORT_ERROR`] or [`SUPPORT_WARNING`] on all four sides in
+/// place of the resting bottom rule.
+///
+/// One home for the state hue every form-family well wears (FR-019). The
+/// outline **replaces** the resting rule rather than stacking on it — the
+/// `border-bottom` [`bind_field_chrome`] laid down is removed here — because
+/// Carbon's invalid field is one 2px box and a red box over a grey underline
+/// draws two boundaries in two hues. Never the accent: the accent is the
+/// focus ring, and a state well in the accent is indistinguishable from a
+/// focused one.
+pub(super) fn bind_validation_chrome(props: &mut Props, support: &str) {
+    props.tokens.insert("background".into(), t(SURFACE_RAISED));
+    props.tokens.insert("border".into(), t(support));
+    props.tokens.remove("border-bottom");
+}
+
+/// The shape of every `*_invalid` / `*_warning` constructor over a
+/// form-family column (FR-019): the column [`labeled`] or the component's
+/// own `labelled` builds, its `"field"` child dressed in `support`'s
+/// chrome, and the shared helper row below it.
+///
+/// The field keeps the key and depth it has in the resting form, so a value
+/// that moves from warn to legal does not re-key the node under the
+/// operator's cursor. Where the well carries its underline as a `"rule"`
+/// child ([`super::list_box::list_box_field`]'s well) rather than as
+/// `border-bottom`, that child is recoloured to `support` too: one hue on
+/// the boundary, whichever mechanism draws it, and never a layout change —
+/// removing the child would move the row above it.
+///
+/// Children are shared nodes ([`Arc`]), so the dressing goes through
+/// `Arc::get_mut`, which is safe here because this runs on the column's own
+/// construction path before anything can share it — and loud if that ever
+/// stops being true.
+pub(super) fn validated_column(mut column: ViewNode, support: &str, helper: ViewNode) -> ViewNode {
+    let field = column
+        .children
+        .iter_mut()
+        .find(|c| c.key.as_str() == "field")
+        .unwrap_or_else(|| panic!("a validated form column must carry a child keyed \"field\""));
+    let field = Arc::get_mut(field)
+        .expect("a validated column's field child is uniquely owned at construction");
+    bind_validation_chrome(&mut field.props, support);
+    if let Some(rule) = field.children.iter_mut().find(|c| c.key.as_str() == "rule") {
+        let rule =
+            Arc::get_mut(rule).expect("a field's rule child is uniquely owned at construction");
+        rule.props.tokens.insert("background".into(), t(support));
+    }
+    column.children.push(Arc::new(helper));
+    column
 }
 
 /// A muted label above `control`, Carbon's `.cds--label` (slice-e "Text
@@ -270,8 +317,11 @@ pub fn field_required(key: impl Into<Key>, label: impl Into<String>) -> ViewNode
 ///
 /// Colour is not the only channel: the Input outline is [`SUPPORT_ERROR`]
 /// on all four sides (Carbon's invalid field is a 2px `$support-error`
-/// outline, slice-e; this painter's edge is one unit) **and** a helper child
-/// carries `Invalid: {message}` in [`TEXT_PRIMARY`].
+/// outline, slice-e; this painter's edge is one unit) **and**
+/// [`invalid_helper`] carries `Invalid: {message}` in [`TEXT_PRIMARY`]
+/// beside an [`IconMark::ErrorFilled`] glyph. Against
+/// [`field_warning`] that is two non-colour channels — word and silhouette
+/// — which is the pair spec 008 T039 asserts (FR-018/FR-020).
 pub fn field_invalid(
     key: impl Into<Key>,
     label: impl Into<String>,
@@ -282,13 +332,16 @@ pub fn field_invalid(
 
 /// Warning Default input plus a label-adjacent helper.
 ///
-/// Colour is not the only channel: the Input outline is `$support-warning`
+/// Colour is not the only channel: the Input outline is [`SUPPORT_WARNING`]
 /// on all four sides (Carbon's warn field is a 2px `$support-warning`
 /// outline, the same anatomy as invalid; this painter's edge is one unit),
-/// a helper child carries `Warning: {message}` in [`TEXT_PRIMARY`], and a
-/// [`IconMark::WarningFilled`] glyph sits beside that word. The operator is
-/// red-green colour blind; a yellow edge on its own is not a channel he can
-/// read.
+/// and [`warning_helper`] carries `Warning: {message}` in [`TEXT_PRIMARY`]
+/// beside an [`IconMark::WarningAltFilled`] glyph — the triangle-with-bang
+/// that pairs with [`field_invalid`]'s [`IconMark::ErrorFilled`]
+/// circle-with-slash the way Carbon pairs `WarningAltFilled` with
+/// `WarningFilled` through `useNormalizedInputProps` (FR-018). The operator
+/// is red-green colour blind; a yellow edge on its own is not a channel he
+/// can read.
 ///
 /// The well sits at `{key}/input`, the same depth as [`field_invalid`], so
 /// a value that moves from warn to legal does not re-key the node under the
@@ -330,14 +383,19 @@ pub fn field_described(
     node
 }
 
-/// Helper line for a warning: [`IconMark::WarningFilled`] plus
-/// `Warning: {message}`.
+/// The shared state-helper row: the state's paired glyph plus
+/// `{prefix}: {message}` in [`TEXT_PRIMARY`], whatever the state.
 ///
-/// Hue is not the only channel: the word and the bang-in-a-ring are.
-/// Checkbox and radio should call this later (T038); this is the one helper
-/// so those constructors do not grow a second copy.
-pub(super) fn warning_helper(message: impl Into<String>) -> ViewNode {
-    let mut message_node = text("message", format!("Warning: {}", message.into()));
+/// One shape for both states because FR-018's pairing is a shared
+/// convention, not a per-component choice: Carbon injects `{icon,
+/// description}` for every form field's state through
+/// `useNormalizedInputProps`, and this — reached through
+/// [`invalid_helper`] and [`warning_helper`] — is this library's version of
+/// that hook. Warning and error therefore differ in exactly the two
+/// channels spec 008 T039 measures: the word and the glyph's silhouette
+/// (circle-with-slash against triangle-with-bang), never the hue alone.
+fn state_helper(prefix: &str, mark: IconMark, message: impl Into<String>) -> ViewNode {
+    let mut message_node = text("message", format!("{prefix}: {}", message.into()));
     message_node
         .props
         .tokens
@@ -346,13 +404,39 @@ pub(super) fn warning_helper(message: impl Into<String>) -> ViewNode {
         "helper",
         Axis::Horizontal,
         Some(SPACING_02),
-        vec![
-            icon_toned("mark", IconMark::WarningFilled, IconTone::Primary),
-            message_node,
-        ],
+        vec![icon_toned("mark", mark, IconTone::Primary), message_node],
     );
     row.props.align = Some(Align::Center);
     row
+}
+
+/// Helper line for an invalid state: [`IconMark::ErrorFilled`] plus
+/// `Invalid: {message}`.
+///
+/// The error half of the one shared glyph pairing (FR-018), against
+/// [`warning_helper`]'s [`IconMark::WarningAltFilled`]. It used to be an
+/// unadorned `text` node, hand-rolled inside each caller, which left the
+/// error state word-only while warning grew a glyph — a pair with only one
+/// member drawn.
+///
+/// Ink stays [`TEXT_PRIMARY`] rather than Carbon's `$text-error` (which
+/// tints error text while warning text keeps `$text-primary`): tinting
+/// would trade a channel the operator has for one he does not. The
+/// divergence from Carbon is recorded with the T038 measurement in the
+/// Phase 6 agent note, as spec 005 FR-005 requires.
+pub(super) fn invalid_helper(message: impl Into<String>) -> ViewNode {
+    state_helper("Invalid", IconMark::ErrorFilled, message)
+}
+
+/// Helper line for a warning: [`IconMark::WarningAltFilled`] plus
+/// `Warning: {message}`.
+///
+/// Hue is not the only channel: the word and the triangle-with-bang are,
+/// and against [`invalid_helper`]'s circle-with-slash the pair reads in
+/// greyscale (spec 008 T039). Checkbox, radio and the whole form family
+/// call this one helper (FR-018) so no constructor grows a second copy.
+pub(super) fn warning_helper(message: impl Into<String>) -> ViewNode {
+    state_helper("Warning", IconMark::WarningAltFilled, message)
 }
 
 /// A Default input that carries its own validity.
@@ -379,17 +463,7 @@ pub fn field_validated(
     };
     let mut children = vec![input_field("input", label, SIZE_MD, chrome)];
     if let Some(message) = message {
-        let mut helper = text("helper", format!("Invalid: {message}"));
-        // The word carries the state as well as the hue does, which is the
-        // point: the operator is red-green colour blind and a red edge on
-        // its own is not a channel he can read. Ink stays primary so the
-        // message is legible; tinting it would trade a channel he has for
-        // one he does not.
-        helper
-            .props
-            .tokens
-            .insert("foreground".into(), t(TEXT_PRIMARY));
-        children.push(helper);
+        children.push(invalid_helper(message));
     }
     let mut node = stack(key, Axis::Vertical, Some(SPACING_02), children);
     // A vertical stack's cross axis is the width, so this is what passes a
@@ -548,22 +622,20 @@ fn input_field(
                 .insert("border-bottom".into(), t(BORDER_SUBTLE));
         }
         FieldChrome::Invalid => {
-            props.tokens.insert("background".into(), t(SURFACE_RAISED));
-            // The error hue, not the accent, and on all four sides: Carbon's
-            // invalid field is an outline, the one state where the field is
-            // boxed. These were the same token as the accent once, so an
+            // The error hue, not the accent, and on all four sides: the
+            // shared [`bind_validation_chrome`] dressing every form well
+            // wears. These were the same token as the accent once, so an
             // invalid field and a focused field drew the identical blue
             // edge. `SUPPORT_ERROR`'s doc says why the name looked missing
             // when it never was.
-            props.tokens.insert("border".into(), t(SUPPORT_ERROR));
+            bind_validation_chrome(&mut props, SUPPORT_ERROR);
         }
         FieldChrome::Warning => {
-            props.tokens.insert("background".into(), t(SURFACE_RAISED));
-            // The warning hue, not the error and not the accent, and on all
-            // four sides: Carbon's warn field is the invalid outline in
-            // `$support-warning`. The word and the bang glyph are the
-            // channels the operator can read; this edge is the third.
-            props.tokens.insert("border".into(), t(SUPPORT_WARNING));
+            // The warning hue, not the error and not the accent: Carbon's
+            // warn field is the invalid outline in `$support-warning`. The
+            // word and the bang glyph are the channels the operator can
+            // read; this edge is the third.
+            bind_validation_chrome(&mut props, SUPPORT_WARNING);
         }
     }
     let intents: &[Interaction] = match chrome {
@@ -963,9 +1035,14 @@ mod tests {
         assert_eq!(token(input, "background"), Some(SURFACE_RAISED));
         assert!(input.interactions.contains(&Interaction::TextEdit));
         let helper = child(&node, "helper");
-        assert_eq!(helper.kind, NodeKind::Text);
+        assert_eq!(
+            helper.kind,
+            NodeKind::Stack,
+            "the helper is a mark + message row"
+        );
+        let message = child(helper, "message");
         assert!(
-            helper
+            message
                 .props
                 .text
                 .as_deref()
@@ -973,8 +1050,17 @@ mod tests {
             "the error must be carried by a word as well as a hue: the \
              operator is red-green colour blind and cannot rely on the edge"
         );
-        assert_eq!(helper.props.text.as_deref(), Some("Invalid: required"));
-        assert_eq!(token(helper, "foreground"), Some(TEXT_PRIMARY));
+        assert_eq!(message.props.text.as_deref(), Some("Invalid: required"));
+        assert_eq!(token(message, "foreground"), Some(TEXT_PRIMARY));
+        let mark = child(helper, "mark");
+        let expected = icon_toned("mark", IconMark::ErrorFilled, IconTone::Primary);
+        assert_eq!(
+            mark.props.canvas, expected.props.canvas,
+            "the helper's glyph is ErrorFilled — the paired error mark, \
+             whose silhouette (circle-with-slash) is what a greyscale \
+             reader distinguishes from warning's triangle-with-bang \
+             (spec 008 T039)"
+        );
     }
 
     /// A required field declares the flag and shows a marker that is not
@@ -1067,12 +1153,20 @@ mod tests {
         );
         assert_eq!(token(message, "foreground"), Some(TEXT_PRIMARY));
         let mark = child(helper, "mark");
-        let expected = icon_toned("mark", IconMark::WarningFilled, IconTone::Primary);
+        let expected = icon_toned("mark", IconMark::WarningAltFilled, IconTone::Primary);
         assert_eq!(mark.kind, NodeKind::Canvas);
         assert_eq!(
             mark.props.canvas, expected.props.canvas,
-            "the helper's glyph is WarningFilled, not ErrorFilled and not a \
-             swatch"
+            "the helper's glyph is WarningAltFilled — the paired form-family \
+             warning mark, whose silhouette (triangle-with-bang) is what a \
+             greyscale reader distinguishes from the invalid helper's \
+             circle-with-slash (spec 008 T039) — not a swatch"
+        );
+        let invalid_mark = icon_toned("mark", IconMark::ErrorFilled, IconTone::Primary);
+        assert_ne!(
+            mark.props.canvas, invalid_mark.props.canvas,
+            "warning and invalid must draw different glyphs: hue is not a \
+             channel the operator has"
         );
     }
 

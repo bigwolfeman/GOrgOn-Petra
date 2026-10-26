@@ -18,7 +18,6 @@
 --           labeled("read-only", "Read only",
 --               valued(field_readonly("field-ro", "Read-only value"), "9p://kernel/0")),
 --           field_required("field-req", "Fiber id"),
---           field_warning("field-warn", "Owner", "looks old"),
 --       ],
 --   )])
 return ui.section({
@@ -74,7 +73,6 @@ return ui.section({
         }),
       }),
       ui.field_required({ key = "field-req", label = "Fiber id" }),
-      ui.field_warning({ key = "field-warn", label = "Owner", message = "looks old" }),
     }),
   },
 })

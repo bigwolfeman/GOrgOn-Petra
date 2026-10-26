@@ -25,11 +25,14 @@
 //! change when the list opens and keyboard focus stays on it, which is
 //! Carbon's behaviour and was not this component's.
 
+use super::field::{invalid_helper, validated_column, warning_helper};
 use super::icon::IconMark;
 use super::list_box::{Dividers, list_box, list_box_field};
 use super::stack;
 use super::text::text;
-use super::tokens::{SIZE_MD, SPACING_03, TEXT_MUTED, TYPOGRAPHY_LABEL, t};
+use super::tokens::{
+    SIZE_MD, SPACING_03, SUPPORT_ERROR, SUPPORT_WARNING, TEXT_MUTED, TYPOGRAPHY_LABEL, t,
+};
 use crate::geom::{Align, Axis};
 use crate::tree::{Key, ViewNode};
 
@@ -82,6 +85,45 @@ pub fn select_open(
     labelled(key, label, value, SIZE_MD, Some(options))
 }
 
+/// Invalid select: the md field wearing [`SUPPORT_ERROR`] on all four
+/// sides plus the shared [`invalid_helper`] row (FR-019).
+///
+/// The field keeps the key and depth [`select`] gives it (`{key}/field`),
+/// so a value that turns legal does not re-key the node under the cursor,
+/// and the outline replaces the field's resting rule rather than stacking
+/// on it. The dressing is [`super::field::bind_validation_chrome`] — the
+/// one every form-family well shares — not a second copy of its three
+/// lines.
+pub fn select_invalid(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    value: impl Into<String>,
+    message: impl Into<String>,
+) -> ViewNode {
+    validated_column(
+        labelled(key, label, value, SIZE_MD, None),
+        SUPPORT_ERROR,
+        invalid_helper(message),
+    )
+}
+
+/// Warning select: the md field wearing [`SUPPORT_WARNING`] plus the
+/// shared [`warning_helper`] row — the triangle-with-bang and the word,
+/// which are the channels the operator reads (FR-018/FR-020); the hue is
+/// the third.
+pub fn select_warning(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    value: impl Into<String>,
+    message: impl Into<String>,
+) -> ViewNode {
+    validated_column(
+        labelled(key, label, value, SIZE_MD, None),
+        SUPPORT_WARNING,
+        warning_helper(message),
+    )
+}
+
 /// The column: label above field, plus the list box when `options` is
 /// `Some`. One builder for both forms so their ids cannot drift apart.
 fn labelled(
@@ -117,7 +159,10 @@ fn labelled(
 
 #[cfg(test)]
 mod tests {
-    use super::{SIZE_LG, SIZE_MD, SIZE_SM, select, select_lg, select_open, select_sm};
+    use super::{
+        SIZE_LG, SIZE_MD, SIZE_SM, select, select_invalid, select_lg, select_open, select_sm,
+        select_warning,
+    };
     use crate::component::dropdown::{dropdown_option, open_field_of as field_of};
     use crate::component::tests::{assert_fits_parent, petrify_lone};
     use crate::component::tokens::{BORDER_STRONG, SURFACE_RAISED, TEXT_MUTED, TYPOGRAPHY_LABEL};
@@ -149,6 +194,77 @@ mod tests {
             roles.extend(descendant_roles(child));
         }
         roles
+    }
+
+    use crate::component::icon::{IconMark, IconTone, icon_toned};
+    use crate::component::tokens::{ACCENT_PRIMARY, SUPPORT_ERROR, SUPPORT_WARNING, TEXT_PRIMARY};
+
+    /// The invalid state dresses the field in the shared form-family
+    /// chrome and says so in words and a glyph (spec 008 T039).
+    #[test]
+    fn select_invalid_pairs_an_error_outline_with_helper_text() {
+        let node = select_invalid("theme", "Theme", "Dark", "required");
+        let field = child(&node, "field");
+        assert_eq!(token(field, "border"), Some(SUPPORT_ERROR));
+        assert_ne!(
+            token(field, "border"),
+            Some(ACCENT_PRIMARY),
+            "an invalid field must not wear the accent: a focused field wears \
+             it too"
+        );
+        assert_eq!(
+            token(field, "border-bottom"),
+            None,
+            "the outline replaces the resting rule rather than stacking on it"
+        );
+        let helper = child(&node, "helper");
+        let message = child(helper, "message");
+        assert_eq!(message.props.text.as_deref(), Some("Invalid: required"));
+        assert_eq!(token(message, "foreground"), Some(TEXT_PRIMARY));
+        let expected = icon_toned("mark", IconMark::ErrorFilled, IconTone::Primary);
+        assert_eq!(
+            child(helper, "mark").props.canvas,
+            expected.props.canvas,
+            "the helper's glyph is the paired error mark (spec 008 T039)"
+        );
+    }
+
+    /// The warning state: the warning hue, and the word and the
+    /// triangle-with-bang beside it — the channels a greyscale reader has.
+    #[test]
+    fn select_warning_draws_the_warning_hue_and_says_so_in_words_and_a_glyph() {
+        let node = select_warning("theme", "Theme", "Dark", "check the value");
+        let field = child(&node, "field");
+        assert_eq!(token(field, "border"), Some(SUPPORT_WARNING));
+        assert_ne!(
+            token(field, "border"),
+            Some(SUPPORT_ERROR),
+            "a warning field must not wear the error outline"
+        );
+        assert_ne!(
+            token(field, "border"),
+            Some(ACCENT_PRIMARY),
+            "a warning field must not wear the accent: a focused field wears it too"
+        );
+        assert_eq!(
+            token(field, "border-bottom"),
+            None,
+            "the outline replaces the resting rule rather than stacking on it"
+        );
+        let helper = child(&node, "helper");
+        let message = child(helper, "message");
+        assert_eq!(
+            message.props.text.as_deref(),
+            Some("Warning: check the value")
+        );
+        assert_eq!(token(message, "foreground"), Some(TEXT_PRIMARY));
+        let expected = icon_toned("mark", IconMark::WarningAltFilled, IconTone::Primary);
+        assert_eq!(
+            child(helper, "mark").props.canvas,
+            expected.props.canvas,
+            "the helper's glyph is the triangle-with-bang, whose silhouette is \
+             what a greyscale reader distinguishes from error's circle-with-slash"
+        );
     }
 
     /// The closed form is a label over a bottom-ruled field, and the field

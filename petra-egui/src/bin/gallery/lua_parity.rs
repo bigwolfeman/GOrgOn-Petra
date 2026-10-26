@@ -363,16 +363,18 @@ fn press_theme_segment(catalog: &mut Catalog, mode: ThemeMode) {
 /// doc): the open row by name, the theme, and the body as
 /// `pages/<slug>.lua` itself builds it (already proven equal to `body()` by
 /// the test above), so this comparison is whole-`view()` against whole-`view()`
-/// with nothing stubbed on either side. Three seeded values are NOT
+/// with nothing stubbed on either side. Four seeded values are NOT
 /// transcribed from Lua source: `state.skeleton`, the page's own skeleton
-/// cell, `state.disabled`, the page's own disabled cell(s), and
-/// `state.sizes`, the page's own size-step cell(s) — all three come
+/// cell, `state.disabled`, the page's own disabled cell(s),
+/// `state.warning`, the page's own warning cell(s), and
+/// `state.sizes`, the page's own size-step cell(s) — all four come
 /// from the Rust page's own `Page::skeleton` / `Page::disabled` /
-/// `Page::sizes` because no
+/// `Page::warning` / `Page::sizes` because no
 /// Lua page source builds one yet (spec 008 T020 landed the cells twenty
-/// pages deep and only the bodies were ported; T034's size cells land the
+/// pages deep and only the bodies were ported; T034's size cells and
+/// T041's warning cells land the
 /// same way). What that leaves this test
-/// proving about the disabled, skeleton and size cells is
+/// proving about the disabled, warning, skeleton and size cells is
 /// the scaffolding `catalog.rs` wraps each in — the
 /// `page-with-sections` column and each section card's key, title,
 /// order and spacing — which is exactly the code that drifted when T020
@@ -447,6 +449,14 @@ fn lua_catalog_chrome_builds_the_same_tree_as_the_rust_one() {
             state
                 .set("disabled", lua_cells)
                 .expect("set state.disabled");
+        }
+        let warning_cells = catalog.warning_cells();
+        if !warning_cells.is_empty() {
+            let wire = serde_json::to_value(&warning_cells)
+                .unwrap_or_else(|e| panic!("warning cells do not serialize: {e}"));
+            let lua_cells = json_to_lua(&lua, &wire)
+                .unwrap_or_else(|e| panic!("warning cells do not cross into Lua: {e}"));
+            state.set("warning", lua_cells).expect("set state.warning");
         }
         let size_cells = catalog.size_cells();
         if !size_cells.is_empty() {

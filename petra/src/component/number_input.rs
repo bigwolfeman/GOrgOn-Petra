@@ -39,13 +39,12 @@
 //! leaf, so the right bar stood in the middle of the well beside the
 //! Subtract glyph.
 
-use super::field::{SUPPORT_WARNING, bind_field_chrome, warning_helper};
+use super::field::{bind_field_chrome, invalid_helper, warning_helper};
 use super::icon::{IconMark, IconTone, icon_toned};
 use super::stack;
 use super::swatch;
-use super::text::text;
 use super::tokens::{
-    BORDER_SUBTLE, LAYER_HOVER, SIZE_MD, SUPPORT_ERROR, SURFACE_RAISED, TEXT_PRIMARY,
+    BORDER_SUBTLE, LAYER_HOVER, SIZE_MD, SUPPORT_ERROR, SUPPORT_WARNING, TEXT_PRIMARY,
     TYPOGRAPHY_BODY, t,
 };
 use crate::geom::{Align, Axis};
@@ -106,27 +105,23 @@ pub fn number_input_lg(
     number_sized(key, label, value, SIZE_LG, Chrome::Enabled)
 }
 
-/// Invalid md well: a [`SUPPORT_ERROR`] outline plus helper text, the same
-/// two channels as [`super::field::field_invalid`].
+/// Invalid md well: a [`SUPPORT_ERROR`] outline plus the shared
+/// [`invalid_helper`] — `Invalid: {message}` beside an
+/// [`IconMark::ErrorFilled`] glyph, the same channels as
+/// [`super::field::field_invalid`] because both reach the one FR-018 hook.
 pub fn number_input_invalid(
     key: impl Into<Key>,
     label: impl Into<String>,
     value: impl Into<String>,
     message: impl Into<String>,
 ) -> ViewNode {
-    let message = message.into();
-    let mut helper = text("helper", format!("Invalid: {message}"));
-    helper
-        .props
-        .tokens
-        .insert("foreground".into(), t(TEXT_PRIMARY));
     stack(
         key,
         Axis::Vertical,
         Some(super::tokens::SPACING_02),
         vec![
             number_sized("input", label, value, SIZE_MD, Chrome::Invalid),
-            helper,
+            invalid_helper(message),
         ],
     )
 }
@@ -135,9 +130,9 @@ pub fn number_input_invalid(
 ///
 /// Colour is not the only channel. The well outline is `$support-warning`
 /// on all four sides, and [`warning_helper`] carries `Warning: {message}`
-/// plus a [`IconMark::WarningFilled`] glyph. The well sits at `{key}/input`,
-/// the same depth as [`number_input_invalid`], so a value that moves from
-/// warn to legal does not re-key the node under the cursor.
+/// plus an [`IconMark::WarningAltFilled`] glyph. The well sits at
+/// `{key}/input`, the same depth as [`number_input_invalid`], so a value
+/// that moves from warn to legal does not re-key the node under the cursor.
 #[must_use]
 pub fn number_input_warning(
     key: impl Into<Key>,
@@ -188,25 +183,17 @@ fn number_sized(
     match chrome {
         Chrome::Enabled => bind_field_chrome(&mut well.props),
         Chrome::Invalid => {
-            well.props
-                .tokens
-                .insert("background".into(), t(SURFACE_RAISED));
             // The error hue on all four sides, as `field_invalid` does, and
             // never the accent: the accent is the focus ring, and an invalid
             // well in the accent was indistinguishable from a focused one.
-            well.props.tokens.insert("border".into(), t(SUPPORT_ERROR));
+            super::field::bind_validation_chrome(&mut well.props, SUPPORT_ERROR);
         }
         Chrome::Warning => {
-            well.props
-                .tokens
-                .insert("background".into(), t(SURFACE_RAISED));
             // The warning hue, not the error and not the accent. Carbon's
             // warn well is the invalid outline in `$support-warning`. The
             // word and the bang glyph are the channels the operator can
             // read; this edge is the third.
-            well.props
-                .tokens
-                .insert("border".into(), t(SUPPORT_WARNING));
+            super::field::bind_validation_chrome(&mut well.props, SUPPORT_WARNING);
         }
     }
     well.constraints.vertical.min = Some(height);
@@ -532,12 +519,24 @@ mod tests {
         let input = child(well, "value");
         assert_eq!(input.semantics.role, Some(Role::TextInput));
         let helper = child(&node, "helper");
-        assert_eq!(helper.kind, NodeKind::Text);
         assert_eq!(
-            helper.props.text.as_deref(),
+            helper.kind,
+            NodeKind::Stack,
+            "the helper is a mark + message row"
+        );
+        let message = child(helper, "message");
+        assert_eq!(
+            message.props.text.as_deref(),
             Some("Invalid: must be a number")
         );
-        assert_eq!(token(helper, "foreground"), Some(TEXT_PRIMARY));
+        assert_eq!(token(message, "foreground"), Some(TEXT_PRIMARY));
+        let mark = child(helper, "mark");
+        let expected = icon_toned("mark", IconMark::ErrorFilled, IconTone::Primary);
+        assert_eq!(
+            mark.props.canvas, expected.props.canvas,
+            "the helper's glyph is ErrorFilled, the paired error mark \
+             (spec 008 T039)"
+        );
         let _ = child(well, "increment");
         let _ = child(well, "decrement");
     }
@@ -587,12 +586,12 @@ mod tests {
         );
         assert_eq!(token(message, "foreground"), Some(TEXT_PRIMARY));
         let mark = child(helper, "mark");
-        let expected = icon_toned("mark", IconMark::WarningFilled, IconTone::Primary);
+        let expected = icon_toned("mark", IconMark::WarningAltFilled, IconTone::Primary);
         assert_eq!(mark.kind, NodeKind::Canvas);
         assert_eq!(
             mark.props.canvas, expected.props.canvas,
-            "the helper's glyph is WarningFilled, not ErrorFilled and not a \
-             swatch"
+            "the helper's glyph is WarningAltFilled, the paired form-family \
+             warning mark (spec 008 T039) — not ErrorFilled and not a swatch"
         );
         let _ = child(well, "increment");
         let _ = child(well, "decrement");

@@ -203,9 +203,9 @@ local function page_body(state, row)
   local card = ui.seat_card("page-body", { node = raw })
   -- `Catalog::page_body`, verbatim: the page's own state cells stand BESIDE
   -- the re-seated card, each its own top-level section at the same depth,
-  -- never inside the card (spec 008 T025 disabled, T020 skeleton, T034
-  -- sizes). Disabled leads, Skeleton follows, Sizes last, the order
-  -- `page_body` composes.
+  -- never inside the card (spec 008 T025 disabled, US4 warning, T020
+  -- skeleton, T034 sizes). Disabled leads, Warning follows, Skeleton and
+  -- Sizes last, the order `page_body` composes.
   local sections = { card }
   if state.disabled ~= nil and #state.disabled > 0 then
     -- The cells themselves are seeded through `state.disabled` from the Rust
@@ -219,6 +219,20 @@ local function page_body(state, row)
       label = "Disabled",
       children = {
         common.body("disabled-body", "spacing.md", state.disabled),
+      },
+    }))
+  end
+  if state.warning ~= nil and #state.warning > 0 then
+    -- The same seeding contract for `state.warning`, the page's own
+    -- warning cell(s) (spec 008 US4, FR-019) -- one per form-family
+    -- component whose slice documents a warning state -- seeded from
+    -- `Page::warning` through `catalog.rs::warning_cells` (the one home
+    -- the Rust side answers the warning question in).
+    table.insert(sections, ui.section({
+      key = "warning",
+      label = "Warning",
+      children = {
+        common.body("warning-body", "spacing.md", state.warning),
       },
     }))
   end

@@ -308,6 +308,39 @@ pub enum IconMark {
     /// Carbon's own quad, not re-derived or extended to the rim: its
     /// corners already sit about 5 units short of the ring on each end.
     ErrorFilled,
+    /// Carbon `WarningAltFilled`, the form-family **warning** glyph,
+    /// paired with [`IconMark::ErrorFilled`] the way Carbon pairs
+    /// `WarningAltFilled` (warning) with `WarningFilled` (invalid) across
+    /// every form field through `useNormalizedInputProps` (FR-018,
+    /// spec 008 T036). The pairing is one shared convention here, not a
+    /// per-component choice: [`super::field::warning_helper`] and its
+    /// [`super::field::invalid_helper`] sibling draw the two marks, and
+    /// every form-family constructor reaches them.
+    ///
+    /// **The silhouette is the channel, not the hue.** The operator is
+    /// red-green colour blind and this mark's partner is a circle-with-
+    /// slash; triangle-with-bang against that is a distinction no colour
+    /// simulation has to survive (spec 008 T039). Carbon's own pair —
+    /// `WarningFilled` against `WarningAltFilled`, two rings' worth of
+    /// bang — differs by glyph detail alone, which is the bar and not the
+    /// pattern.
+    ///
+    /// `ignored/carbon-ref/` is not on this machine, so the 32-unit
+    /// outline is reconstructed in this file's own ring-and-mark
+    /// convention rather than re-read from the package — a triangle band
+    /// ([`STATUS_RING_BAND`] wide, the same band the `*Filled` status
+    /// glyphs stroke) with the `!` solid inside, the same workaround
+    /// [`IconMark::ErrorFilled`]'s doc gives for a punched fill. The
+    /// source names come from the in-repo inventory record
+    /// (`.agents/research/08-25-2026/Carbon-Component-Inventory/
+    /// slice-d.md:41`, `slice-e.md:42`: `WarningAltFilled` is the
+    /// warning-state glyph the shared hook pairs with `WarningFilled`),
+    /// the citation shape [`crate::component::tokens::BUTTON_DANGER_PRIMARY`]
+    /// takes when the package is absent. **Unverified**: the exact
+    /// `WarningAltFilled.js` outline; the triangle's corner radii are
+    /// dropped like [`IconMark::Calendar`]'s, and the band's corners are
+    /// the overlap of two 4-unit bands rather than Carbon's mitre.
+    WarningAltFilled,
     /// Carbon `WarningFilled`, `kind: 'warning'` (same source and the same
     /// reasoning as [`IconMark::ErrorFilled`]).
     ///
@@ -612,6 +645,7 @@ fn draw_list(mark: IconMark, boxed: IconBox, tone: IconTone) -> DrawList {
         IconMark::Incomplete => incomplete(size / 32.0, color),
         IconMark::Checkmark => checkmark(size / 32.0, color),
         IconMark::ErrorFilled => error_filled(size / 32.0, color),
+        IconMark::WarningAltFilled => warning_alt_filled(size / 32.0, color),
         IconMark::WarningFilled => warning_filled(size / 32.0, color),
         IconMark::InformationFilled => information_filled(size / 32.0, color),
         IconMark::CheckmarkFilled => checkmark_filled(size / 32.0, color),
@@ -1194,6 +1228,63 @@ fn error_filled(s: f32, color: ColorRef) -> Vec<Command> {
     vec![ring, slash]
 }
 
+/// [`IconMark::WarningAltFilled`]'s triangle, drawn the way the `*Filled`
+/// glyphs draw their outlines: a [`STATUS_RING_BAND`]-wide band down the
+/// centreline of Carbon's shape — three filled quads, one per edge, each
+/// extended past its two vertices so the corners are the overlap of two
+/// bands (a mitre the source rounds, dropped here the way
+/// [`IconMark::Calendar`]'s corner radii are) — with the `!` solid inside.
+/// The centreline triangle is apex `(16, 3)` to `(3, 27)` and `(29, 27)`;
+/// the `!` is [`warning_filled`]'s stem and dot, moved down and shortened
+/// until both clear the band's inner edge on every side.
+///
+/// The band corners are computed, not rounded literals: the width is the
+/// one thing about this shape that must be exact (the same
+/// [`STATUS_RING_BAND`] the `*Filled` rings stroke with, and what
+/// `warning_alt_filled_is_a_banded_triangle_with_a_solid_bang` measures),
+/// and 3-decimal corner literals made it 4.0011 wide.
+fn warning_alt_filled(s: f32, color: ColorRef) -> Vec<Command> {
+    /// A `STATUS_RING_BAND`-wide band down the centreline segment `a`→`b`,
+    /// extended `extend` past both ends, as four corners wound
+    /// end-a-side → end-a-side → end-b-side → end-b-side (convex either
+    /// winding; a bow-tie is what `filled_quad` rejects).
+    fn edge_band(a: Point, b: Point, half: f32, extend: f32) -> [Point; 4] {
+        let (dx, dy) = (b.x - a.x, b.y - a.y);
+        let len = (dx * dx + dy * dy).sqrt();
+        let (ux, uy) = (dx / len, dy / len);
+        let (nx, ny) = (-uy * half, ux * half);
+        let (a_x, a_y) = (a.x - extend * ux, a.y - extend * uy);
+        let (b_x, b_y) = (b.x + extend * ux, b.y + extend * uy);
+        [
+            pt(a_x + nx, a_y + ny),
+            pt(a_x - nx, a_y - ny),
+            pt(b_x - nx, b_y - ny),
+            pt(b_x + nx, b_y + ny),
+        ]
+    }
+
+    let paint = Paint::filled(color.clone());
+    let apex = pt(16.0, 3.0);
+    let left_band = filled_quad(
+        edge_band(pt(3.0, 27.0), apex, STATUS_RING_BAND / 2.0, 1.0),
+        s,
+        paint.clone(),
+    );
+    let right_band = filled_quad(
+        edge_band(pt(29.0, 27.0), apex, STATUS_RING_BAND / 2.0, 1.0),
+        s,
+        paint.clone(),
+    );
+    let bottom_band = snapped_bar(1.0, 25.0, 31.0, 29.0, s, paint.clone());
+    let stem = snapped_bar(14.9, 10.0, 17.1, 20.0, s, paint);
+    let dot = Command::Ellipse {
+        center: scaled(pt(16.0, 23.0), s),
+        radii: Size::new(1.5 * s, 1.5 * s),
+        paint: Paint::filled(color),
+    };
+    vec![left_band, right_band, bottom_band, stem, dot]
+}
+
 fn warning_filled(s: f32, color: ColorRef) -> Vec<Command> {
     let ring = status_ring(14.0, s, color.clone());
     let stem = snapped_bar(14.9, 8.0, 17.1, 19.0, s, Paint::filled(color.clone()));
@@ -1413,7 +1504,8 @@ fn snapped_bar(x0: f32, y0: f32, x1: f32, y1: f32, s: f32, paint: Paint) -> Comm
 #[cfg(test)]
 mod tests {
     use super::{
-        BULLET_BOX, CHECK_BOX, GLYPH_BOX, HEADER_BOX, IconBox, IconMark, IconTone, icon, icon_in,
+        BULLET_BOX, CHECK_BOX, GLYPH_BOX, HEADER_BOX, IconBox, IconMark, IconTone,
+        STATUS_RING_BAND, icon, icon_in,
     };
     use crate::component::tokens::{
         ACCENT_PRIMARY, ICON_DISABLED, ICON_PRIMARY, ICON_SECONDARY, TEXT_ON_ACCENT,
@@ -1421,7 +1513,7 @@ mod tests {
     use crate::draw::{ColorRef, Command, DrawList};
     use crate::tree::NodeKind;
 
-    const EVERY_MARK: [IconMark; 30] = [
+    const EVERY_MARK: [IconMark; 31] = [
         IconMark::CaretLeft,
         IconMark::CaretRight,
         IconMark::CaretDown,
@@ -1444,6 +1536,7 @@ mod tests {
         IconMark::Notification,
         IconMark::Switcher,
         IconMark::ErrorFilled,
+        IconMark::WarningAltFilled,
         IconMark::WarningFilled,
         IconMark::InformationFilled,
         IconMark::CheckmarkFilled,
@@ -1820,5 +1913,101 @@ mod tests {
         }
         assert_eq!(rects, 1, "edit's underline bar");
         assert_eq!(paths, 2, "edit's ferrule and shaft");
+    }
+
+    /// T036: `WarningAltFilled`'s silhouette, pinned by shape rather than
+    /// by "paints something": a triangle banded at `STATUS_RING_BAND` like
+    /// `ErrorFilled`'s ring — two closed filled side-band quads plus the
+    /// snapped bottom band — with a solid `!` inside (snapped stem rect +
+    /// dot ellipse). Falsify by pointing `warning_alt_filled` at
+    /// `warning_filled`'s helper (ring returns) or by dropping the dot.
+    #[test]
+    fn warning_alt_filled_is_a_banded_triangle_with_a_solid_bang() {
+        let node = icon_in(
+            "m",
+            IconMark::WarningAltFilled,
+            IconBox::Glyph,
+            IconTone::Primary,
+        );
+        let mut bands = Vec::new();
+        let mut rects = 0;
+        let mut ellipses = 0;
+        for command in list(&node).commands() {
+            match command {
+                Command::Path {
+                    verbs,
+                    closed,
+                    paint,
+                } => {
+                    assert!(*closed, "a band is a closed shape to fill");
+                    assert!(paint.fill.is_some(), "a band is filled, not stroked");
+                    let points: Vec<(f32, f32)> = verbs
+                        .iter()
+                        .flat_map(|verb| verb.points())
+                        .map(|p| (p.x, p.y))
+                        .collect();
+                    bands.push(points);
+                }
+                Command::Rect { snap, .. } => {
+                    assert!(*snap, "the `!`'s bars snap to the device grid");
+                    rects += 1;
+                }
+                Command::Ellipse { .. } => ellipses += 1,
+                other => panic!("a warning triangle draws no {other:?}"),
+            }
+        }
+        assert_eq!(bands.len(), 2, "the two sloped edges' bands");
+        assert_eq!(rects, 2, "the bottom band and the `!` stem");
+        assert_eq!(
+            ellipses, 1,
+            "the `!` dot (no ring: a triangle is not a ring)"
+        );
+        // Band width = the cross-band edge, the first two vertices, in the
+        // same units `status_ring` draws `STATUS_RING_BAND` at.
+        let s = GLYPH_BOX / 32.0;
+        for (index, points) in bands.iter().enumerate() {
+            assert_eq!(points.len(), 4, "band {index} is a quad");
+            let (ax, ay) = points[0];
+            let (bx, by) = points[1];
+            let width = ((ax - bx).powi(2) + (ay - by).powi(2)).sqrt();
+            assert!(
+                (width - STATUS_RING_BAND * s).abs() < 1e-4,
+                "band {index} is {width} wide, the ring band at this size is {}",
+                STATUS_RING_BAND * s
+            );
+        }
+    }
+
+    /// T039 at the glyph layer: warning and error must differ WITHOUT
+    /// colour, and the channel that carries that is shape. Carbon's own
+    /// pair differs by glyph alone in greyscale (its warning text stays
+    /// `$text-primary` while error text gets `$text-error`); this pins the
+    /// glyph part of that. Falsify by drawing `WarningAltFilled` with
+    /// `error_filled`'s helper.
+    #[test]
+    fn warning_alt_and_error_draw_different_shapes_for_the_colourblind_reader() {
+        fn silhouette(mark: IconMark) -> Vec<String> {
+            let node = icon_in("m", mark, IconBox::Glyph, IconTone::Primary);
+            list(&node)
+                .commands()
+                .iter()
+                .map(|command| format!("{command:?}"))
+                .collect()
+        }
+        let warning = silhouette(IconMark::WarningAltFilled);
+        let error = silhouette(IconMark::ErrorFilled);
+        assert_ne!(
+            warning, error,
+            "warning and error draw the same shapes -- hue is not a channel a \
+             colourblind reader has, so the glyph is the whole difference"
+        );
+        // The error glyph is a ring plus one slash quad: two draws. The
+        // warning triangle is five (two bands, the bottom band, stem, dot).
+        assert_eq!(error.len(), 2, "error: ring and slash");
+        assert_eq!(
+            warning.len(),
+            5,
+            "warning: two side bands, bottom band, stem, dot"
+        );
     }
 }

@@ -37,13 +37,16 @@
 //! step against the rail nobody can miss, which is the property a
 //! colour-blind reader needs and a blue-on-grey track has less of.
 
-use super::field::{EDITABLE_TEXT_INTENTS, bind_field_chrome};
+use super::field::{
+    EDITABLE_TEXT_INTENTS, bind_field_chrome, bind_validation_chrome, invalid_helper,
+    warning_helper,
+};
 use super::stack;
 use super::swatch;
 use super::text::text;
 use super::tokens::{
     BORDER_SUBTLE, ICON_DISABLED, LAYER_SELECTED_INVERSE, SIZE_MD, SPACING_03, SPACING_05,
-    TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_BODY, t,
+    SUPPORT_ERROR, SUPPORT_WARNING, TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_BODY, t,
 };
 use crate::frame::PetrifiedFrame;
 use crate::geom::{Align, Axis, Point};
@@ -213,7 +216,7 @@ fn handle_node(label: String, value: String, size: f32, live: bool) -> ViewNode 
 
 /// The paired number input: Carbon's field chrome, 64 × 40, showing the
 /// value as an integer. Editable unless the slider is read-only.
-fn input_node(label: &str, value: f32, read_only: bool) -> ViewNode {
+fn input_node(label: &str, value: f32, read_only: bool, validation: Option<&str>) -> ViewNode {
     let mut props = Props {
         text: Some(slider_input_text(value)),
         style: Some(t(TYPOGRAPHY_BODY)),
@@ -236,6 +239,12 @@ fn input_node(label: &str, value: f32, read_only: bool) -> ViewNode {
         // A well a person types into: `Sides`, the same as `component::field`.
         .with_focus_figure(FocusFigure::Sides);
     node.semantics.read_only = read_only;
+    if let Some(support) = validation {
+        // Carbon dresses the slider's *number input* when the value is
+        // invalid, not the rail: the hue lands on the well the bad value
+        // lives in, wearing the one shared form-family dressing (FR-019).
+        bind_validation_chrome(&mut node.props, support);
+    }
     node
 }
 
@@ -244,6 +253,7 @@ fn slider_built(
     label: impl Into<String>,
     value: f32,
     read_only: bool,
+    validation: Option<&str>,
 ) -> ViewNode {
     let label = label.into();
     let done = normalise(value);
@@ -298,7 +308,7 @@ fn slider_built(
             range_label("min", "0"),
             rail,
             range_label("max", "100"),
-            input_node(&label, done, read_only),
+            input_node(&label, done, read_only, validation),
         ],
     );
 
@@ -323,12 +333,55 @@ fn slider_built(
 
 /// Default slider. `value` is normalised into `[0, 1]`. `label` is required.
 pub fn slider(key: impl Into<Key>, label: impl Into<String>, value: f32) -> ViewNode {
-    slider_built(key, label, value, false)
+    slider_built(key, label, value, false, None)
 }
 
 /// Read-only slider: handle collapsed to zero size (Carbon), not a dim.
 pub fn slider_readonly(key: impl Into<Key>, label: impl Into<String>, value: f32) -> ViewNode {
-    slider_built(key, label, value, true)
+    slider_built(key, label, value, true, None)
+}
+
+/// Invalid slider: the value input wearing [`SUPPORT_ERROR`] on all four
+/// sides plus the shared [`invalid_helper`] row (FR-019).
+///
+/// Carbon dresses the slider's *number input* when the value is invalid,
+/// not the rail, so the hue lands on the well the bad value lives in. The
+/// input keeps its key and depth (`{key}/row/input`), so a value that turns
+/// legal does not re-key the node under the operator's cursor, and the
+/// helper sits under the whole control where [`super::field::field_invalid`]
+/// puts its own.
+pub fn slider_invalid(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    value: f32,
+    message: impl Into<String>,
+) -> ViewNode {
+    slider_state(key, label, value, SUPPORT_ERROR, invalid_helper(message))
+}
+
+/// Warning slider: the value input wearing [`SUPPORT_WARNING`] plus the
+/// shared [`warning_helper`] row (FR-018/FR-020).
+pub fn slider_warning(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    value: f32,
+    message: impl Into<String>,
+) -> ViewNode {
+    slider_state(key, label, value, SUPPORT_WARNING, warning_helper(message))
+}
+
+/// The shape both validation states share: the plain slider with its value
+/// input dressed in `support`, and the helper row appended to the column.
+fn slider_state(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    value: f32,
+    support: &str,
+    helper: ViewNode,
+) -> ViewNode {
+    let mut node = slider_built(key, label, value, false, Some(support));
+    node.children.push(std::sync::Arc::new(helper));
+    node
 }
 
 /// The value a pointer at `pos` names on the slider whose placement `node`
@@ -373,7 +426,7 @@ fn rail_of(node: &str) -> Option<&str> {
 mod tests {
     use super::{
         HANDLE, INPUT_WIDTH, MAX_TRACK, MIN_TRACK, TRACK_HEIGHT, slider, slider_input_text,
-        slider_readonly, slider_value_at, slider_value_of_input,
+        slider_invalid, slider_readonly, slider_value_at, slider_value_of_input, slider_warning,
     };
     use crate::component::tests::{assert_fits_parent, petrify_lone};
     use crate::component::tokens::{
@@ -399,6 +452,88 @@ mod tests {
 
     fn token<'a>(node: &'a ViewNode, slot: &str) -> Option<&'a str> {
         node.props.tokens.get(slot).map(|name| name.as_str())
+    }
+
+    use crate::component::icon::{IconMark, IconTone, icon_toned};
+    use crate::component::tokens::{SUPPORT_ERROR, SUPPORT_WARNING, TEXT_PRIMARY};
+
+    /// The invalid state dresses the value input — not the rail — in the
+    /// shared form-family chrome, and says so in words and a glyph
+    /// (spec 008 T039).
+    #[test]
+    fn slider_invalid_pairs_an_error_outline_with_helper_text() {
+        let node = slider_invalid("vol", "Volume", 0.4, "required");
+        let input = named(&node, "input");
+        assert_eq!(token(input, "border"), Some(SUPPORT_ERROR));
+        assert_ne!(
+            token(input, "border"),
+            Some(ACCENT_PRIMARY),
+            "an invalid input must not wear the accent: a focused one wears it too"
+        );
+        assert_eq!(
+            token(input, "border-bottom"),
+            None,
+            "the outline replaces the resting rule rather than stacking on it"
+        );
+        assert_eq!(
+            token(named(&node, "track"), "border"),
+            None,
+            "the hue belongs on the well the bad value lives in, never the rail"
+        );
+        assert_ne!(
+            token(named(&node, "track"), "background"),
+            Some(SUPPORT_ERROR),
+            "and never as the rail's fill either"
+        );
+        let helper = named(&node, "helper");
+        let message = named(&node, "message");
+        assert_eq!(message.props.text.as_deref(), Some("Invalid: required"));
+        assert_eq!(token(message, "foreground"), Some(TEXT_PRIMARY));
+        let expected = icon_toned("mark", IconMark::ErrorFilled, IconTone::Primary);
+        assert_eq!(
+            named(helper, "mark").props.canvas,
+            expected.props.canvas,
+            "the helper's glyph is the paired error mark (spec 008 T039)"
+        );
+    }
+
+    /// The warning state: the warning hue on the value input, and the word
+    /// and the triangle-with-bang beside it — the channels a greyscale
+    /// reader has.
+    #[test]
+    fn slider_warning_draws_the_warning_hue_and_says_so_in_words_and_a_glyph() {
+        let node = slider_warning("vol", "Volume", 0.4, "check the value");
+        let input = named(&node, "input");
+        assert_eq!(token(input, "border"), Some(SUPPORT_WARNING));
+        assert_ne!(
+            token(input, "border"),
+            Some(SUPPORT_ERROR),
+            "a warning input must not wear the error outline"
+        );
+        assert_ne!(
+            token(input, "border"),
+            Some(ACCENT_PRIMARY),
+            "a warning input must not wear the accent: a focused one wears it too"
+        );
+        assert_eq!(
+            token(input, "border-bottom"),
+            None,
+            "the outline replaces the resting rule rather than stacking on it"
+        );
+        let helper = named(&node, "helper");
+        let message = named(&node, "message");
+        assert_eq!(
+            message.props.text.as_deref(),
+            Some("Warning: check the value")
+        );
+        assert_eq!(token(message, "foreground"), Some(TEXT_PRIMARY));
+        let expected = icon_toned("mark", IconMark::WarningAltFilled, IconTone::Primary);
+        assert_eq!(
+            named(helper, "mark").props.canvas,
+            expected.props.canvas,
+            "the helper's glyph is the triangle-with-bang, whose silhouette is \
+             what a greyscale reader distinguishes from error's circle-with-slash"
+        );
     }
 
     #[test]

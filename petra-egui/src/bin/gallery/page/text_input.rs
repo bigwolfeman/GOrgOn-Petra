@@ -227,10 +227,17 @@ impl Page for TextInput {
                         valued(field_readonly(RO, "Read-only value"), "9p://kernel/0"),
                     ),
                     field_required("field-req", "Fiber id"),
-                    field_warning("field-warn", "Owner", "looks old"),
                 ],
             )],
         )
+    }
+
+    /// The warning cell (spec 008 US4, FR-019) — the field's own warning
+    /// state, its own section beside the body since
+    /// [`crate::catalog::Catalog::warning_cells`] became the one home for
+    /// the question. It sat in the body until then.
+    fn warning(&self) -> Vec<ViewNode> {
+        vec![field_warning("field-warn", "Owner", "looks old")]
     }
 
     fn handle(&mut self, event: &InputEvent, node: &str) -> bool {

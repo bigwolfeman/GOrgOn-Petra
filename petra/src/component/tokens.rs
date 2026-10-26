@@ -211,10 +211,29 @@ pub(crate) const LAYER_ACCENT_HOVER: &str = "layer-accent-hover";
 ///
 /// **It is never the only channel.** The operator is red-green colour blind,
 /// so a red edge alone is not a signal he can rely on; `field_invalid` pairs
-/// it with the word "Invalid" in the helper text, and Carbon additionally puts
-/// an error glyph in the field. `IconMark` has no warning glyph yet, so that
-/// third channel is still owed.
+/// it with the word "Invalid" in the helper text and with
+/// [`IconMark::ErrorFilled`](super::IconMark) in the shared
+/// [`super::field::invalid_helper`] — the glyph half of the pair
+/// [`SUPPORT_WARNING`] completes.
 pub(crate) const SUPPORT_ERROR: &str = "support-error";
+
+/// The warning hue. Carbon's `$support-warning`, which `token::shipped`
+/// maps onto `status.degraded` (spec 008 T037/FR-021).
+///
+/// **Bound here, not invented.** The token has shipped since
+/// `token/shipped.rs:1048`; only this re-export was missing, the same gap
+/// [`SUPPORT_ERROR`] documents. FR-021 forbids introducing a second warning
+/// colour, so this is a name, not a decision.
+///
+/// **Never the only channel**, for the same reason [`SUPPORT_ERROR`] is
+/// not: the shared [`super::field::warning_helper`] pairs the outline with
+/// the word "Warning" and with [`IconMark::WarningAltFilled`](super::IconMark),
+/// the triangle-with-bang that stands against error's circle-with-slash.
+/// The pair was measured against the shipped ΔE\*ab floor under every
+/// simulation model before any state was built on it
+/// (`token::measure`, spec 008 T038) and the dark-theme deuteranopia case
+/// is the one that decides it: 30.57 against a floor of 30.0.
+pub(crate) const SUPPORT_WARNING: &str = "support-warning";
 pub(crate) const TEXT_PRIMARY: &str = "text.primary";
 pub(crate) const TEXT_MUTED: &str = "text.muted";
 
@@ -388,6 +407,7 @@ pub(crate) const ALL: &[&str] = &[
     SPACING_03,
     SPACING_04,
     SPACING_05,
+    SPACING_06,
     SPACING_07,
     SPACING_09,
     SHAPE_NONE,
@@ -402,17 +422,20 @@ pub(crate) const ALL: &[&str] = &[
     TYPOGRAPHY_BODY,
     TYPOGRAPHY_HEADING,
     TYPOGRAPHY_HEADING_SM,
-    SHADOW_OVERLAY,
     TYPOGRAPHY_BODY_COMPACT,
     TYPOGRAPHY_LABEL,
+    TYPOGRAPHY_CODE,
     SHADOW_RAISED,
     SHADOW_OVERLAY,
     OVERLAY_SCRIM,
     SURFACE_BASE,
     SURFACE_RAISED,
     SURFACE_LAYER_TWO,
+    SURFACE_LAYER_THREE,
     LAYER_ACCENT,
+    LAYER_ACCENT_HOVER,
     SUPPORT_ERROR,
+    SUPPORT_WARNING,
     TEXT_PRIMARY,
     TEXT_MUTED,
     LAYER_SELECTED_INVERSE,
@@ -431,7 +454,6 @@ pub(crate) const ALL: &[&str] = &[
     LAYER_SELECTED_HOVER,
     ICON_DISABLED,
     ICON_ON_COLOR_DISABLED,
-    BORDER_STRONG,
     BUTTON_DISABLED,
     LINK_PRIMARY,
 ];

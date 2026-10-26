@@ -346,13 +346,15 @@ pub fn file_uploader_item_invalid(
     item_row(key, name, mark, "invalid", Some(requirement))
 }
 
-/// The warning form: a [`IconMark::WarningFilled`] mark plus a warning
+/// The warning form: an [`IconMark::WarningAltFilled`] mark plus a warning
 /// helper line under the name.
 ///
 /// Colour is not the only channel. The kind travels on the glyph's
-/// silhouette (a ring around a bang, which no other state in this
-/// component draws) and on [`warning_helper`]'s `Warning: {message}` line.
-/// The row itself takes no four-sided container border.
+/// silhouette (a triangle around a bang — against the invalid row's
+/// [`IconMark::ErrorFilled`] circle-with-slash, the pair survives
+/// greyscale; FR-018's shared pairing, spec 008 T039) and on
+/// [`warning_helper`]'s `Warning: {message}` line. The row itself takes no
+/// four-sided container border.
 #[must_use]
 pub fn file_uploader_item_warning(
     key: impl Into<Key>,
@@ -361,7 +363,7 @@ pub fn file_uploader_item_warning(
 ) -> ViewNode {
     let mark = icon_in(
         "mark",
-        IconMark::WarningFilled,
+        IconMark::WarningAltFilled,
         IconBox::Glyph,
         IconTone::Primary,
     );
@@ -705,8 +707,10 @@ mod tests {
     }
 
     /// Colour is not the only channel: the helper says `Warning: {message}`
-    /// and sits a WarningFilled mark beside it. The state mark is
-    /// WarningFilled too. The row itself is not a four-sided box.
+    /// and sits a WarningAltFilled mark beside it. The state mark is
+    /// WarningAltFilled too — the FR-018 form-family warning glyph, paired
+    /// with the invalid row's ErrorFilled. The row itself is not a
+    /// four-sided box.
     #[test]
     fn file_uploader_item_warning_says_so_in_words_and_a_glyph() {
         let row = file_uploader_item_warning("f4", "notes.txt", "check the value");
@@ -734,19 +738,20 @@ mod tests {
             message.props.text.as_deref(),
             Some("Warning: check the value")
         );
-        let expected = icon_toned("mark", IconMark::WarningFilled, IconTone::Primary);
+        let expected = icon_toned("mark", IconMark::WarningAltFilled, IconTone::Primary);
         let helper_mark = named(helper, "mark");
         assert_eq!(helper_mark.kind, NodeKind::Canvas);
         assert_eq!(
             helper_mark.props.canvas, expected.props.canvas,
-            "the helper's glyph is WarningFilled, not ErrorFilled and not a \
-             swatch"
+            "the helper's glyph is WarningAltFilled, the paired form-family \
+             warning mark — not ErrorFilled and not a swatch"
         );
         let state_mark = named(named(&row, "line"), "mark");
         assert_eq!(state_mark.kind, NodeKind::Canvas);
         assert_eq!(
             state_mark.props.canvas, expected.props.canvas,
-            "the state mark is WarningFilled, matching Carbon's warn row"
+            "the state mark is WarningAltFilled, matching the helper and the \
+             form-family pairing (FR-018)"
         );
         no_drag(&row);
     }
