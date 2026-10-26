@@ -46,11 +46,38 @@ pub fn path_is_column_chrome(node: &str) -> bool {
 /// Whether any of the dismissed surface ids `ids` is the surface keyed
 /// `key` — the test a page runs in [`super::Page::dismissed`].
 ///
-/// By segment, as [`path_has`] matches, because the ids are canonical
-/// placement paths under the chrome's mount point and the page knows only
-/// the key it gave its own surface.
+/// By the id's **last** segment. A placement id ends at the node it
+/// names, so the last segment *is* the surface and everything before it
+/// is where the surface lives — and "where it lives" must not be matched:
+/// the Menu page mounts its surface inside a section keyed `menu`, so any
+/// segment match read every dismissal on the page (a press that shut one
+/// of the variant menus mounted open at rest) as a dismissal of the live
+/// menu and closed it the same event that opened it.
 pub fn dismisses(ids: &[String], key: &str) -> bool {
-    ids.iter().any(|id| path_has(id, key))
+    ids.iter().any(|id| id.rsplit('/').next() == Some(key))
+}
+
+/// Whether any dismissed id names the surface keyed `key` inside the
+/// control keyed `owner` — [`dismisses`] plus the owning path segment.
+///
+/// The owner, because a page can mount more than one surface keyed
+/// `key` and `key` alone cannot say which one a press shut: two date
+/// pickers whose insides carry identical keys, three menus on the Menu
+/// buttons page (live, combo, overflow), a column menu beside every open
+/// row's menu on the data table. `owner` is a segment of the canonical id
+/// that only the owning control's subtree carries (`"compact"`, `"full"`,
+/// `"mb-live"`, `"mn-pair"`).
+///
+/// The **last** segment for `key`, by [`dismisses`]'s rule — which this
+/// one needs for a second, subtler reason: a surface may be nested inside
+/// another. The month chooser's canonical id is
+/// `.../full/calendar/content/chooser`, which carries `calendar` as a
+/// segment, so any-segment matching read a dismissed chooser as a
+/// dismissed calendar and shut the whole picker every second press of the
+/// month button.
+pub fn dismissed_under(ids: &[String], owner: &str, key: &str) -> bool {
+    ids.iter()
+        .any(|id| path_has(id, owner) && id.rsplit('/').next() == Some(key))
 }
 
 /// A vertical run of blocks, each as tall as it needs to be.
@@ -125,4 +152,55 @@ pub fn find<'a>(node: &'a ViewNode, key: &str) -> Option<&'a ViewNode> {
         return Some(node);
     }
     node.children.iter().find_map(|child| find(child, key))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::dismissed_under;
+    use super::dismisses;
+
+    /// Every id below has the shape the placement actually reports: a
+    /// placement id ends at the surface's own key (`host.rs` asserts
+    /// `dismissed[0].ends_with("/menu")`) and carries every key the
+    /// surface hangs under before it. The prefixes are the gallery pages'
+    /// real trees: the Menu page (`section("menu")` > `body("mn")` > …)
+    /// mounts its live surface under the `mn-pair` control and its
+    /// variant surfaces under `mn-variants`; the Menu buttons page
+    /// (`section("mb")` > `body("mb-body")` > …) mounts its live surface
+    /// under `mb-live` and its combo under `mb-variants`.
+    const SECTION_HOST: &str = "/page/menu/mn/mn-variants/v-border/v-menu-border";
+    const PAIR_SURFACE: &str = "/page/menu/mn/mn-pair/menu";
+    const LIVE_SURFACE: &str = "/page/mb/mb-body/mb-live/mb/menu";
+    const COMBO_SURFACE: &str = "/page/mb/mb-body/mb-variants/v-combo/v-combo-button/menu";
+
+    /// The claim `dismisses` makes: the surface keyed `key` is the
+    /// **last** segment of its id, never a middle one. Every id on the
+    /// Menu page traverses its section, which is itself keyed `menu`:
+    /// matching by any segment read every press that shut a variant menu
+    /// mounted open at rest as a dismissal of the live menu and closed it
+    /// the same event that opened it.
+    #[test]
+    fn a_surface_is_its_last_segment_and_a_host_section_is_never_a_surface() {
+        let ids = [SECTION_HOST.to_string()];
+        assert!(
+            !dismisses(&ids, "menu"),
+            "an id that merely traverses the `menu` section is not the `menu` surface: {SECTION_HOST}"
+        );
+        let ids = [PAIR_SURFACE.to_string()];
+        assert!(dismisses(&ids, "menu"), "the surface id ends in `menu`");
+    }
+
+    /// The claim `dismissed_under` makes: two surfaces may share the key
+    /// `menu` and only the owner segment tells them apart. The Menu
+    /// buttons page mounts three (live, combo, overflow); a press that
+    /// shut the combo must not read as a press that shut the live one.
+    #[test]
+    fn a_press_that_shut_another_controls_surface_is_not_this_controls() {
+        let ids = [COMBO_SURFACE.to_string()];
+        assert!(!dismissed_under(&ids, "mb-live", "menu"));
+        // ... while the key alone cannot tell them apart:
+        assert!(dismisses(&ids, "menu"), "key alone matches the combo id");
+        let ids = [LIVE_SURFACE.to_string()];
+        assert!(dismissed_under(&ids, "mb-live", "menu"));
+    }
 }

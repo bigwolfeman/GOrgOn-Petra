@@ -18,7 +18,7 @@ use gorgon_petra_compound::data_table::{
 };
 
 use super::Page;
-use super::common::{body, path_has, path_is_column_chrome, sp, wrapped};
+use super::common::{body, dismissed_under, path_has, path_is_column_chrome, sp, wrapped};
 
 /// The column-visibility trigger's own key, and every checkbox inside its
 /// menu is prefixed `col-`.
@@ -305,15 +305,4 @@ impl Page for DataTableCompoundPage {
 fn segment_suffix(node: &str, prefix: &str) -> Option<String> {
     node.split('/')
         .find_map(|part| part.strip_prefix(prefix).map(str::to_owned))
-}
-
-/// Whether any dismissed id names the surface keyed `key` inside the
-/// control keyed `owner` — the same two-part match `page/date_picker.rs`'s
-/// own `dismissed_under` uses, for the same reason: this page mounts more
-/// than one overlay keyed `menu` (the column-visibility menu and every
-/// open row's own menu), so `key` alone is ambiguous and `owner` picks
-/// which one.
-fn dismissed_under(ids: &[String], owner: &str, key: &str) -> bool {
-    ids.iter()
-        .any(|id| path_has(id, owner) && id.rsplit('/').next() == Some(key))
 }

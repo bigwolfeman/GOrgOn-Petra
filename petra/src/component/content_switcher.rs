@@ -19,7 +19,26 @@
 //!    it beside a *focused* tab; focus is a frame-time fact this
 //!    constructor cannot see, so that half is not expressed.
 //!
-//! Icon-only tabs are omitted: the icon vocabulary has no glyph for them.
+//! # Variants (T053) — the same anatomy on two grounds and two item shapes
+//!
+//! - **Low contrast** (`content_switcher_low_contrast` /
+//!   `content_switcher_item_low_contrast`): the `.cds--content-switcher--low-contrast`
+//!   ground. The group sits on [`SURFACE_LAYER_TWO`] (Carbon
+//!   `$content-switcher-background`, which defaults to `$layer-01`) under a
+//!   [`BORDER_STRONG`] outline (slice-b Anatomy: `$border-inverse` high
+//!   contrast, `$border-strong` low), and the selected tab is one surface
+//!   step — [`LAYER_SELECTED`] (Carbon `$background-selected`, the
+//!   `tab--border--selected` knob's ground) — plus [`BORDER_STRONG`],
+//!   `Semantics.selected`, and the same weight bump. No inverse polarity
+//!   appears anywhere in this ground: `layer-selected-inverse` and
+//!   `text-inverse` belong to the high-contrast tab fill alone.
+//! - **Icon only** (`content_switcher_icon_only` /
+//!   `content_switcher_item_icon[_with_size]`): square tabs, "each tab's
+//!   width equals its height" (slice-b, Formatting) — 32 / 40 / 48 per
+//!   T032's step — carrying a centred glyph and no label text (the label
+//!   is the button's accessible name in `Semantics`). The glyph is
+//!   Carbon's "sm/md icon 16px, lg icon 20px": [`IconBox::Glyph`] at
+//!   sm/md, [`IconBox::Header`] at lg.
 //!
 //! # Why the group carries two units of padding
 //!
@@ -37,17 +56,19 @@
 //! box plus a 1px CSS `outline` drawn outside it). Both are the cost of an
 //! engine that cannot paint a parent's edge over its children.
 
+use super::icon::{IconBox, IconMark, IconTone, icon_in};
 use super::tokens::{
-    BORDER_SUBTLE, BUTTON_DISABLED, LAYER_HOVER, LAYER_SELECTED_INVERSE, SIZE_LG, SIZE_MD, SIZE_SM,
-    SPACING_01, SPACING_03, SPACING_05, SURFACE_BASE, TEXT_INVERSE, TEXT_MUTED, TYPOGRAPHY_BODY,
-    TYPOGRAPHY_HEADING_SM, t,
+    BORDER_STRONG, BORDER_SUBTLE, BUTTON_DISABLED, LAYER_HOVER, LAYER_SELECTED,
+    LAYER_SELECTED_INVERSE, SIZE_LG, SIZE_MD, SIZE_SM, SPACING_01, SPACING_03, SPACING_04,
+    SPACING_05, SURFACE_BASE, SURFACE_LAYER_TWO, TEXT_INVERSE, TEXT_MUTED, TEXT_PRIMARY,
+    TYPOGRAPHY_BODY, TYPOGRAPHY_HEADING_SM, t,
 };
 use super::{pad, pin_block, stack, swatch};
 use crate::geom::{Align, Axis};
 use crate::token::{CornerRole, corner_for};
 use crate::tree::{
-    Behaviour, Intent, Interaction, Justify, Key, NodeKind, Phase, Props, Role, Semantics,
-    TrackSize, ViewNode,
+    AxisConstraint, Behaviour, Constraints, InsetRefs, Intent, Interaction, Justify, Key, NodeKind,
+    Phase, Props, Role, Semantics, TrackSize, ViewNode,
 };
 
 /// Carbon's content-switcher height ramp — slice-b "Sizes": sm 32, md 40,
@@ -56,11 +77,34 @@ use crate::tree::{
 /// here turns a step nobody wired into a compile error rather than a
 /// silently missing row — the trade [`super::list_box::ListBoxSize`]'s doc
 /// records.
+///
+/// Public because the icon-only item sizes its glyph from the step
+/// (`content_switcher_item_icon_with_size`): slice-b's Size table makes the
+/// icon 16 at sm/md and 20 at lg, so an item that did not know its step
+/// would put a 16px glyph in the lg square.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SwitcherSize {
+pub enum SwitcherSize {
+    /// sm: the 32-tall step of the ramp above.
     Sm,
+    /// md: 40 tall, the ramp's default step.
     Md,
+    /// lg: the 48-tall step, where the icon glyph grows to 20.
     Lg,
+}
+
+/// Which documented container ground the group sits on. Slice-b
+/// "Variants": **High contrast** (default — dark/inverse container) and
+/// **Low contrast** (`.cds--content-switcher--low-contrast`, "lighter/less
+/// visually disruptive, for use in cards/modals near primary buttons").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ground {
+    /// The default: the selected tab is the opposite polarity's surface
+    /// ([`LAYER_SELECTED_INVERSE`] on [`SURFACE_BASE`]).
+    Inverse,
+    /// The low-contrast ground: standard surface tokens throughout, the
+    /// selection one step up the surface ladder ([`LAYER_SELECTED`]) — no
+    /// inverse polarity anywhere.
+    LowContrast,
 }
 
 impl SwitcherSize {
@@ -99,33 +143,137 @@ const DIVIDER_HEIGHT: f32 = 16.0;
 /// sized box and every tab inherits it (`_content-switcher.scss:23` is one
 /// `layout.use('size')` on the container).
 pub fn content_switcher(key: impl Into<Key>, items: Vec<ViewNode>) -> ViewNode {
-    at(key, items, SwitcherSize::Md)
+    at(
+        key,
+        items,
+        SwitcherSize::Md,
+        Ground::Inverse,
+        TrackSize::Weight { weight: 1.0 },
+    )
 }
 
 /// The switcher group at Carbon sm (32).
 pub fn content_switcher_sm(key: impl Into<Key>, items: Vec<ViewNode>) -> ViewNode {
-    at(key, items, SwitcherSize::Sm)
+    at(
+        key,
+        items,
+        SwitcherSize::Sm,
+        Ground::Inverse,
+        TrackSize::Weight { weight: 1.0 },
+    )
 }
 
 /// The switcher group at Carbon lg (48).
 pub fn content_switcher_lg(key: impl Into<Key>, items: Vec<ViewNode>) -> ViewNode {
-    at(key, items, SwitcherSize::Lg)
+    at(
+        key,
+        items,
+        SwitcherSize::Lg,
+        Ground::Inverse,
+        TrackSize::Weight { weight: 1.0 },
+    )
 }
 
-fn at(key: impl Into<Key>, items: Vec<ViewNode>, size: SwitcherSize) -> ViewNode {
+/// The low-contrast switcher group at Carbon md (40) — `.cds--content-
+/// switcher--low-contrast`, text tabs (slice-b "Variants").
+pub fn content_switcher_low_contrast(key: impl Into<Key>, items: Vec<ViewNode>) -> ViewNode {
+    at(
+        key,
+        items,
+        SwitcherSize::Md,
+        Ground::LowContrast,
+        TrackSize::Weight { weight: 1.0 },
+    )
+}
+
+/// The low-contrast switcher group at Carbon sm (32).
+pub fn content_switcher_low_contrast_sm(key: impl Into<Key>, items: Vec<ViewNode>) -> ViewNode {
+    at(
+        key,
+        items,
+        SwitcherSize::Sm,
+        Ground::LowContrast,
+        TrackSize::Weight { weight: 1.0 },
+    )
+}
+
+/// The low-contrast switcher group at Carbon lg (48).
+pub fn content_switcher_low_contrast_lg(key: impl Into<Key>, items: Vec<ViewNode>) -> ViewNode {
+    at(
+        key,
+        items,
+        SwitcherSize::Lg,
+        Ground::LowContrast,
+        TrackSize::Weight { weight: 1.0 },
+    )
+}
+
+/// The icon-only switcher group at Carbon md (40) — `.cds--content-
+/// switcher--icon-only`, square tabs (slice-b "Formatting"). Tabs sit in
+/// `FitContent` columns rather than sharing the row: "each tab's width
+/// equals its height", so a shared row would stretch the squares into
+/// rectangles.
+pub fn content_switcher_icon_only(key: impl Into<Key>, items: Vec<ViewNode>) -> ViewNode {
+    at(
+        key,
+        items,
+        SwitcherSize::Md,
+        Ground::Inverse,
+        TrackSize::FitContent,
+    )
+}
+
+/// The icon-only switcher group at Carbon sm (32).
+pub fn content_switcher_icon_only_sm(key: impl Into<Key>, items: Vec<ViewNode>) -> ViewNode {
+    at(
+        key,
+        items,
+        SwitcherSize::Sm,
+        Ground::Inverse,
+        TrackSize::FitContent,
+    )
+}
+
+/// The icon-only switcher group at Carbon lg (48).
+pub fn content_switcher_icon_only_lg(key: impl Into<Key>, items: Vec<ViewNode>) -> ViewNode {
+    at(
+        key,
+        items,
+        SwitcherSize::Lg,
+        Ground::Inverse,
+        TrackSize::FitContent,
+    )
+}
+
+fn at(
+    key: impl Into<Key>,
+    items: Vec<ViewNode>,
+    size: SwitcherSize,
+    ground: Ground,
+    tab_column: TrackSize,
+) -> ViewNode {
     let height = size.height();
+    let square = tab_column == TrackSize::FitContent;
     let mut columns = Vec::with_capacity(items.len() * 2);
     let mut children = Vec::with_capacity(items.len() * 2);
     let mut previous_selected = false;
     for (i, mut item) in items.into_iter().enumerate() {
-        item.constraints = pin_block(height);
+        // The group owns the size step: whatever height a tab arrives
+        // with, the group re-pins it to its own step (module doc). A
+        // square tab keeps its width pinned too, so a `FitContent` column
+        // reads its square and not its label.
+        item.constraints = if square {
+            pin_square(height)
+        } else {
+            pin_block(height)
+        };
         if i > 0 {
             let hidden = previous_selected || item.semantics.selected;
             columns.push(TrackSize::FitContent);
             children.push(divider(i, hidden));
         }
         previous_selected = item.semantics.selected;
-        columns.push(TrackSize::Weight { weight: 1.0 });
+        columns.push(tab_column);
         children.push(item);
     }
     let mut node = ViewNode::new(NodeKind::Grid, key)
@@ -146,12 +294,46 @@ fn at(key: impl Into<Key>, items: Vec<ViewNode>, size: SwitcherSize) -> ViewNode
     node.props
         .tokens
         .insert("radius".into(), t(corner_for(CornerRole::Grouping, height)));
-    node.props.tokens.insert("border".into(), t(BORDER_SUBTLE));
+    // Ground: the high-contrast group is a bordered box on the page, the
+    // low-contrast one a `$layer-01` box under a `$border-strong` outline
+    // (slice-b Anatomy: "outline: 1px solid $border-inverse (high-contrast)
+    // or $border-strong (low-contrast)"). The low ground also paints its
+    // own fill — `$content-switcher-background`, Carbon's `$layer-01`.
+    node.props.tokens.insert(
+        "border".into(),
+        t(match ground {
+            Ground::Inverse => BORDER_SUBTLE,
+            Ground::LowContrast => BORDER_STRONG,
+        }),
+    );
+    if ground == Ground::LowContrast {
+        node.props
+            .tokens
+            .insert("background".into(), t(SURFACE_LAYER_TWO));
+    }
     node.semantics = Semantics {
         role: Some(Role::TabList),
         ..Semantics::default()
     };
     node
+}
+
+/// Pin `h` as both the minimum and the maximum on both axes: a square.
+/// Same four lines as `date_picker`'s private helper — `kit::pin_block`'s
+/// doc records why those copies are not yet unified.
+fn pin_square(h: f32) -> Constraints {
+    Constraints {
+        horizontal: AxisConstraint {
+            min: Some(h),
+            max: Some(h),
+            priority: 0,
+        },
+        vertical: AxisConstraint {
+            min: Some(h),
+            max: Some(h),
+            priority: 0,
+        },
+    }
 }
 
 /// The 1×16 line between two tabs, centred on the row. `hidden` keeps the
@@ -184,43 +366,142 @@ pub fn content_switcher_item(
     selected: bool,
 ) -> ViewNode {
     let label = label.into();
-    let mut label_node = super::text::text("label", label.clone());
-    label_node.props.style = Some(t(if selected {
+    let ink = if selected { TEXT_INVERSE } else { TEXT_MUTED };
+    tab(
+        key,
+        label.clone(),
+        vec![label_node(label, selected, ink)],
+        selected,
+        Ground::Inverse,
+        pad(SPACING_05, SPACING_03),
+    )
+}
+
+/// One tab on the low-contrast ground (`.cds--content-switcher--low-contrast`).
+/// The selection never inverts: [`LAYER_SELECTED`] fill, [`TEXT_PRIMARY`]
+/// ink, the same weight bump and `Semantics.selected`.
+pub fn content_switcher_item_low_contrast(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    selected: bool,
+) -> ViewNode {
+    let label = label.into();
+    let ink = if selected { TEXT_PRIMARY } else { TEXT_MUTED };
+    tab(
+        key,
+        label.clone(),
+        vec![label_node(label, selected, ink)],
+        selected,
+        Ground::LowContrast,
+        pad(SPACING_05, SPACING_03),
+    )
+}
+
+/// One icon-only tab at Carbon md: a 40×40 square with a 16px glyph
+/// ([`IconBox::Glyph`], slice-b "sm/md icon 16px") centred in it. `label`
+/// is the button's accessible name — the picture carries no text.
+pub fn content_switcher_item_icon(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    mark: IconMark,
+    selected: bool,
+) -> ViewNode {
+    content_switcher_item_icon_with_size(key, label, mark, selected, SwitcherSize::Md)
+}
+
+/// One icon-only tab at `size`: a square the step's height wide with that
+/// step's glyph (16 at sm/md, 20 at lg — [`IconBox::Glyph`] /
+/// [`IconBox::Header`]). Carbon's per-step icon-only inline padding is
+/// exactly `(height − icon) / 2` (sm 8 / md 12 / lg 14, slice-b "Key
+/// numbers"); lg's 14 is `convert.to-rem(14px)`, not a spacing token, and
+/// [`InsetRefs`] is token-only by FR-053, so the lg square pads
+/// `spacing-04` and lets the square pin do the centring — every step's
+/// padding is inert here anyway (the fixed glyph is centred, and the
+/// measured pad is precisely the centre offset it replaces).
+pub fn content_switcher_item_icon_with_size(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    mark: IconMark,
+    selected: bool,
+    size: SwitcherSize,
+) -> ViewNode {
+    let (boxed, pad_in) = match size {
+        SwitcherSize::Sm => (IconBox::Glyph, SPACING_03),
+        SwitcherSize::Md => (IconBox::Glyph, SPACING_04),
+        SwitcherSize::Lg => (IconBox::Header, SPACING_04),
+    };
+    let glyph = icon_in(
+        "glyph",
+        mark,
+        boxed,
+        if selected {
+            IconTone::Inverse
+        } else {
+            IconTone::Secondary
+        },
+    );
+    let mut node = tab(
+        key,
+        label.into(),
+        vec![glyph],
+        selected,
+        Ground::Inverse,
+        pad(pad_in, pad_in),
+    );
+    // The tab is its own square — "each tab's width equals its height"
+    // (slice-b, Formatting) — whichever group (or none) it lands in.
+    node.constraints = pin_square(size.height());
+    node
+}
+
+/// The tab's label node: text, weight bumped on selection.
+fn label_node(label: String, selected: bool, ink: &str) -> ViewNode {
+    let mut node = super::text::text("label", label);
+    node.props.style = Some(t(if selected {
         TYPOGRAPHY_HEADING_SM
     } else {
         TYPOGRAPHY_BODY
     }));
-    label_node.props.tokens.insert(
-        "foreground".into(),
-        t(if selected { TEXT_INVERSE } else { TEXT_MUTED }),
-    );
+    node.props.tokens.insert("foreground".into(), t(ink));
+    node
+}
 
-    let mut node = stack(key, Axis::Horizontal, None, vec![label_node]);
+/// The shell every tab shares: a centred row, the ground's fill family,
+/// the selected pair's disabled partner, and the select behaviour.
+fn tab(
+    key: impl Into<Key>,
+    label: String,
+    content: Vec<ViewNode>,
+    selected: bool,
+    ground: Ground,
+    padding: InsetRefs,
+) -> ViewNode {
+    let (rest, on_selected) = match ground {
+        Ground::Inverse => (SURFACE_BASE, LAYER_SELECTED_INVERSE),
+        Ground::LowContrast => (SURFACE_LAYER_TWO, LAYER_SELECTED),
+    };
+    let mut node = stack(key, Axis::Horizontal, None, content);
     node.props.align = Some(Align::Center);
-    node.props.padding = Some(pad(SPACING_05, SPACING_03));
+    node.props.justify = Some(Justify::Center);
+    node.props.padding = Some(padding);
     node.props.tokens.insert(
         "background".into(),
-        t(if selected {
-            LAYER_SELECTED_INVERSE
-        } else {
-            SURFACE_BASE
-        }),
+        t(if selected { on_selected } else { rest }),
     );
     node.props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
-    // Carbon keeps the selected tab's inverse fill under the pointer.
+    // Carbon keeps the selected tab's fill under the pointer.
     node.props
         .tokens
-        .insert("background@selected".into(), t(LAYER_SELECTED_INVERSE));
-    node.props.tokens.insert(
-        "background@selected-hover".into(),
-        t(LAYER_SELECTED_INVERSE),
-    );
-    // The disabled pair for the selected segment's inverse fill. The
+        .insert("background@selected".into(), t(on_selected));
+    node.props
+        .tokens
+        .insert("background@selected-hover".into(), t(on_selected));
+    // The disabled pair for the selected segment's fill. The
     // precedence chain is `slot@selected-R → slot@selected → slot@R → slot`,
     // so `background@disabled` alone loses to `background@selected` here and
-    // the muted label stays on the inverse ground at 1.92:1 light / 1.48:1
+    // the muted label stays on the selected ground at 1.92:1 light / 1.48:1
     // dark — the one label T027's probe caught under the floor. The ground
     // swaps to Carbon's `$button-disabled`, which `text.muted` clears 4.5:1
     // on (5.70:1 light / 5.26:1 dark, `contracts/disabled.md`).
@@ -231,12 +512,13 @@ pub fn content_switcher_item(
     let mut node = node
         .with_constraints(pin_block(SIZE_MD))
         .interactive(Role::Button, label, ITEM_INTENTS)
+        // No selection anchors inside a tab, label or glyph alike.
+        .owning_its_text()
         // Spec 010: exclusive among siblings in the switcher.
         .with_behaviour(Behaviour {
             intent: Intent::Select,
             phase: Phase::OnRelease,
-        })
-        .owning_its_text();
+        });
     node.semantics.selected = selected;
     node
 }
@@ -244,8 +526,13 @@ pub fn content_switcher_item(
 #[cfg(test)]
 mod tests {
     use super::{
-        BORDER_SUBTLE, DIVIDER_HEIGHT, DIVIDER_WIDTH, LAYER_SELECTED_INVERSE, SIZE_LG, SIZE_MD,
-        SIZE_SM, content_switcher, content_switcher_item, content_switcher_lg, content_switcher_sm,
+        BORDER_STRONG, BORDER_SUBTLE, DIVIDER_HEIGHT, DIVIDER_WIDTH, LAYER_SELECTED,
+        LAYER_SELECTED_INVERSE, SIZE_LG, SIZE_MD, SIZE_SM, SURFACE_LAYER_TWO, TEXT_INVERSE,
+        TEXT_MUTED, TEXT_PRIMARY, content_switcher, content_switcher_icon_only,
+        content_switcher_icon_only_lg, content_switcher_icon_only_sm, content_switcher_item,
+        content_switcher_item_icon, content_switcher_item_icon_with_size,
+        content_switcher_item_low_contrast, content_switcher_lg, content_switcher_low_contrast,
+        content_switcher_low_contrast_lg, content_switcher_low_contrast_sm, content_switcher_sm,
     };
     use crate::component::tests::{assert_fits_parent, petrify_lone};
     use crate::frame::PetrifiedFrame;
@@ -275,6 +562,30 @@ mod tests {
                 content_switcher_item("a", "List", true),
                 content_switcher_item("b", "Grid", false),
                 content_switcher_item("c", "Table", false),
+            ],
+        )
+    }
+
+    /// The same three tabs on the low-contrast ground.
+    fn low_three() -> ViewNode {
+        content_switcher_low_contrast(
+            "sw",
+            vec![
+                content_switcher_item_low_contrast("a", "List", true),
+                content_switcher_item_low_contrast("b", "Grid", false),
+                content_switcher_item_low_contrast("c", "Table", false),
+            ],
+        )
+    }
+
+    /// Three icon-only tabs — the same selection geometry, squares.
+    fn icon_three() -> ViewNode {
+        content_switcher_icon_only(
+            "sw",
+            vec![
+                content_switcher_item_icon("a", "List", super::IconMark::Menu, true),
+                content_switcher_item_icon("b", "Grid", super::IconMark::Search, false),
+                content_switcher_item_icon("c", "Table", super::IconMark::Close, false),
             ],
         )
     }
@@ -404,10 +715,16 @@ mod tests {
     }
 
     /// Check C/D: the switcher row and every item place with a real rect,
-    /// none of them outside the row, whichever item is selected.
+    /// none of them outside the row, whichever item is selected — on both
+    /// T053 grounds and both tab shapes as well as the original.
     #[test]
     fn frame_geometry_has_no_degenerate_or_overflowing_placements() {
-        let frame = petrify_lone(three());
+        for shape in [three(), low_three(), icon_three()] {
+            assert_sound_geometry(&petrify_lone(shape));
+        }
+    }
+
+    fn assert_sound_geometry(frame: &PetrifiedFrame) {
         assert!(!frame.placements.is_empty(), "nothing placed");
         for p in &frame.placements {
             assert!(
@@ -518,34 +835,44 @@ mod tests {
     }
 
     /// Check E: label ink against the item's own resting fill, in both
-    /// themes, at both selection states — selected swaps to the inverse
-    /// ground and the inverse ink together.
+    /// themes, at both selection states and on both grounds — selected
+    /// swaps fill and ink together, so the pair always clears.
     #[test]
     fn item_label_clears_aa_contrast_against_its_own_fill() {
         const MIN_TEXT_CONTRAST: f32 = 4.5;
+        type ItemBuild = (fn(&str, &str, bool) -> ViewNode, &'static str);
+        let builds: [ItemBuild; 2] = [
+            (|k, l, s| content_switcher_item(k, l, s), "high-contrast"),
+            (
+                |k, l, s| content_switcher_item_low_contrast(k, l, s),
+                "low-contrast",
+            ),
+        ];
         for theme in [crate::token::light(), crate::token::dark()] {
             for selected in [true, false] {
-                let item = content_switcher_item("a", "List", selected);
-                let bg_name = item
-                    .props
-                    .tokens
-                    .get("background")
-                    .expect("item binds a resting background");
-                let bg = color(&theme, bg_name.as_str());
-                let label = named(&item, "label");
-                let fg_name = label
-                    .props
-                    .tokens
-                    .get("foreground")
-                    .expect("label binds a foreground");
-                let opacity = label.props.opacity.unwrap_or(1.0);
-                let fg = color(&theme, fg_name.as_str()).faded(opacity).over(bg);
-                let ratio = fg.contrast_ratio(bg);
-                assert!(
-                    ratio >= MIN_TEXT_CONTRAST,
-                    "selected={selected} at {ratio:.2}:1 against {} fails AA {MIN_TEXT_CONTRAST}:1",
-                    bg_name.as_str()
-                );
+                for (build, ground) in builds {
+                    let item = build("a", "List", selected);
+                    let bg_name = item
+                        .props
+                        .tokens
+                        .get("background")
+                        .expect("item binds a resting background");
+                    let bg = color(&theme, bg_name.as_str());
+                    let label = named(&item, "label");
+                    let fg_name = label
+                        .props
+                        .tokens
+                        .get("foreground")
+                        .expect("label binds a foreground");
+                    let opacity = label.props.opacity.unwrap_or(1.0);
+                    let fg = color(&theme, fg_name.as_str()).faded(opacity).over(bg);
+                    let ratio = fg.contrast_ratio(bg);
+                    assert!(
+                        ratio >= MIN_TEXT_CONTRAST,
+                        "{ground} selected={selected} at {ratio:.2}:1 against {} fails AA {MIN_TEXT_CONTRAST}:1",
+                        bg_name.as_str()
+                    );
+                }
             }
         }
     }
@@ -589,6 +916,218 @@ mod tests {
                 step + 4.0,
                 "/sw is not at the padded step height {step} + 4"
             );
+        }
+    }
+
+    /// T053's low-contrast ground (slice-b "Variants" and "Anatomy"): the
+    /// group sits on `$layer-01` under a `$border-strong` outline, and the
+    /// selection is one surface step — the inverse polarity the
+    /// high-contrast tab fills with never appears in this ground. Walking
+    /// every token of every node is the claim with teeth: re-point one
+    /// binding at `layer-selected-inverse` or `text-inverse` and this goes
+    /// red.
+    #[test]
+    fn the_low_contrast_ground_keeps_the_surface_ramp_and_never_inverts() {
+        let node = content_switcher_low_contrast(
+            "sw",
+            vec![
+                content_switcher_item_low_contrast("a", "List", true),
+                content_switcher_item_low_contrast("b", "Grid", false),
+            ],
+        );
+        assert_eq!(token(&node, "background"), Some(SURFACE_LAYER_TWO));
+        assert_eq!(token(&node, "border"), Some(BORDER_STRONG));
+
+        fn walk(node: &ViewNode) {
+            for (slot, name) in &node.props.tokens {
+                assert_ne!(
+                    name.as_str(),
+                    LAYER_SELECTED_INVERSE,
+                    "{slot} on `{}` flips the polarity in the low-contrast ground",
+                    node.key
+                );
+                assert_ne!(
+                    name.as_str(),
+                    TEXT_INVERSE,
+                    "{slot} on `{}` flips the ink in the low-contrast ground",
+                    node.key
+                );
+            }
+            for child in &node.children {
+                walk(child);
+            }
+        }
+        walk(&node);
+        assert_eq!(
+            token(named(&node, "a"), "background"),
+            Some(LAYER_SELECTED),
+            "the selected tab is the one-step-up surface"
+        );
+    }
+
+    /// The low-contrast selection carries three channels and none of them
+    /// is hue: a surface step against the unselected fill,
+    /// `Semantics.selected`, and the same weight bump the high-contrast tab
+    /// uses. Delete any one and the state is colour alone.
+    #[test]
+    fn the_low_contrast_selection_is_a_step_a_word_and_a_weight_not_hue() {
+        let on = content_switcher_item_low_contrast("a", "List", true);
+        let off = content_switcher_item_low_contrast("b", "Grid", false);
+        assert!(on.semantics.selected);
+        assert!(!off.semantics.selected);
+        assert_eq!(token(&on, "background"), Some(LAYER_SELECTED));
+        assert_eq!(token(&off, "background"), Some(SURFACE_LAYER_TWO));
+        assert_eq!(
+            named(&on, "label").props.style.as_ref().map(|n| n.as_str()),
+            Some(super::TYPOGRAPHY_HEADING_SM)
+        );
+        assert_eq!(
+            named(&off, "label")
+                .props
+                .style
+                .as_ref()
+                .map(|n| n.as_str()),
+            Some(super::TYPOGRAPHY_BODY)
+        );
+        // The ink stays dark-side in both states: the ground never inverts.
+        assert_eq!(token(named(&on, "label"), "foreground"), Some(TEXT_PRIMARY));
+        assert_eq!(token(named(&off, "label"), "foreground"), Some(TEXT_MUTED));
+    }
+
+    /// Slice-b "Formatting": the icon-only tab is a square — "each tab's
+    /// width equals its height" — carrying a glyph where the label goes.
+    /// The picture is not the name: the accessible name is in
+    /// `Semantics`, and no text node exists in the tab.
+    #[test]
+    fn icon_only_tabs_are_squares_carrying_a_glyph_and_no_text() {
+        let node = content_switcher_item_icon("a", "List", super::IconMark::Search, true);
+        for axis in [&node.constraints.horizontal, &node.constraints.vertical] {
+            assert_eq!(axis.min, Some(SIZE_MD));
+            assert_eq!(axis.max, Some(SIZE_MD));
+        }
+        assert_eq!(node.semantics.label.as_deref(), Some("List"));
+        assert!(node.semantics.selected);
+        assert_eq!(named(&node, "glyph").kind, NodeKind::Canvas);
+
+        fn any_text(node: &ViewNode) -> bool {
+            node.kind == NodeKind::Text || node.children.iter().any(|child| any_text(child))
+        }
+        assert!(!any_text(&node), "an icon tab draws no label text");
+    }
+
+    /// Slice-b's Size table: "sm/md icon 16px, lg icon 20px" — the glyph
+    /// box steps with the tab (16 is `IconBox::Glyph`, 20
+    /// `IconBox::Header`).
+    #[test]
+    fn the_icon_glyph_scales_with_the_step() {
+        for (size, extent) in [
+            (super::SwitcherSize::Sm, 16.0),
+            (super::SwitcherSize::Md, 16.0),
+            (super::SwitcherSize::Lg, 20.0),
+        ] {
+            let node = content_switcher_item_icon_with_size(
+                "a",
+                "List",
+                super::IconMark::Search,
+                true,
+                size,
+            );
+            let glyph = named(&node, "glyph");
+            assert_eq!(
+                glyph.constraints.horizontal.min,
+                Some(extent),
+                "glyph width at {size:?}"
+            );
+            assert_eq!(
+                glyph.constraints.vertical.min,
+                Some(extent),
+                "glyph height at {size:?}"
+            );
+        }
+    }
+
+    /// T032's ramp carries both new shapes: sm 32 / md 40 / lg 48, the
+    /// group re-pinning every tab to its own step — and an icon row of
+    /// squares stays a row of squares at every step.
+    #[test]
+    fn the_new_shapes_place_at_three_steps_and_squares_stay_square() {
+        /// One case: the step's builder and the height it must land on.
+        type Group = (fn(&str, Vec<ViewNode>) -> ViewNode, f32);
+        // The low-contrast ground, text tabs: height only.
+        let text_groups: [Group; 3] = [
+            (
+                |k, items| content_switcher_low_contrast_sm(k, items),
+                SIZE_SM,
+            ),
+            (|k, items| content_switcher_low_contrast(k, items), SIZE_MD),
+            (
+                |k, items| content_switcher_low_contrast_lg(k, items),
+                SIZE_LG,
+            ),
+        ];
+        for (build, step) in text_groups {
+            let node = build(
+                "sw",
+                vec![
+                    content_switcher_item_low_contrast("a", "List", true),
+                    content_switcher_item_low_contrast("b", "Grid", false),
+                ],
+            );
+            let frame = petrify_lone(node);
+            for key in ["/sw/a", "/sw/b"] {
+                assert_eq!(rect_of(&frame, key).h, step, "{key} misses step {step}");
+            }
+        }
+        // The icon ground, square tabs: height *and* width.
+        /// The builder, the item step, and the height both must land on.
+        type IconGroup = (
+            fn(&str, Vec<ViewNode>) -> ViewNode,
+            super::SwitcherSize,
+            f32,
+        );
+        let icon_groups: [IconGroup; 3] = [
+            (
+                |k, items| content_switcher_icon_only_sm(k, items),
+                super::SwitcherSize::Sm,
+                SIZE_SM,
+            ),
+            (
+                |k, items| content_switcher_icon_only(k, items),
+                super::SwitcherSize::Md,
+                SIZE_MD,
+            ),
+            (
+                |k, items| content_switcher_icon_only_lg(k, items),
+                super::SwitcherSize::Lg,
+                SIZE_LG,
+            ),
+        ];
+        for (build, size, step) in icon_groups {
+            let node = build(
+                "sw",
+                vec![
+                    content_switcher_item_icon_with_size(
+                        "a",
+                        "List",
+                        super::IconMark::Menu,
+                        true,
+                        size,
+                    ),
+                    content_switcher_item_icon_with_size(
+                        "b",
+                        "Grid",
+                        super::IconMark::Search,
+                        false,
+                        size,
+                    ),
+                ],
+            );
+            let frame = petrify_lone(node);
+            for key in ["/sw/a", "/sw/b"] {
+                let rect = rect_of(&frame, key);
+                assert_eq!(rect.h, step, "{key} misses step {step}");
+                assert_eq!(rect.w, rect.h, "{key} is not square at step {step}");
+            }
         }
     }
 }

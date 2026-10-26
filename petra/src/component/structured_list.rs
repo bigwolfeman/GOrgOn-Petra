@@ -8,14 +8,19 @@
 //!    fill, **no rule of its own**; text `$text-primary` in
 //!    `heading-compact-01` (`TYPOGRAPHY_HEADING_SM`). Cell padding is the
 //!    `padding-th` mixin: 16 top, 8 bottom.
-//! 3. Data rows — [`structured_list_row`]: [`Role::Row`], selectable,
-//!    `Semantics.selected` never colour alone — Carbon's own anatomy draws
-//!    `RadioButtonChecked` / `RadioButton` beside the row (slice-e, Icons:
-//!    "the only two icons this component ever renders"); see
-//!    [`selection_cell`]. Cell padding is the `padding-td` mixin: 16
-//!    top, 24 bottom, so a one-line row comes out at Carbon's 60 without a
-//!    pinned height, and the text sits in the upper part of the row the
-//!    way the reference shows it, not centred.
+//! 3. Data rows — two constructors, because Carbon documents two variants
+//!    (slice-e "Variants"): [`structured_list_row`] is the **Selectable**
+//!    row ([`Role::Row`], `Semantics.selected` never colour alone —
+//!    Carbon's own anatomy draws `RadioButtonChecked` / `RadioButton`
+//!    beside the row (slice-e, Icons: "the only two icons this component
+//!    ever renders"); see [`selection_cell`]), and
+//!    [`structured_list_row_static`] is the **Default** row — slice-e:
+//!    *"no interactive states because it is not operable by a mouse or
+//!    keyboard"*, so it declares no interaction, takes no focus figure and
+//!    carries no selection chrome at all. Cell padding is the `padding-td`
+//!    mixin: 16 top, 24 bottom, so a one-line row comes out at Carbon's 60
+//!    without a pinned height, and the text sits in the upper part of the
+//!    row the way the reference shows it, not centred.
 //! 4. Rules — every data row binds `border-top` ([`BORDER_SUBTLE`]):
 //!    slice-e:98, "`.cds--structured-list-row` gets a `1px solid
 //!    $border-subtle` top divider". The tbody's **last** row also binds
@@ -256,6 +261,27 @@ pub fn structured_list_row(key: impl Into<Key>, cells: Vec<ViewNode>, selected: 
         .with_focus_figure(FocusFigure::Sides)
         .with_behaviour(SELECTS_ON_RELEASE);
     node.semantics.selected = selected;
+    node
+}
+
+/// One **Default** data row: the read-only variant slice-e documents
+/// ("no interactive states because it is not operable by a mouse or
+/// keyboard").
+///
+/// Where [`structured_list_row`] calls `.interactive(...)` unconditionally,
+/// this constructor builds the same row chrome and stops before it: no
+/// [`Role::Row`] interaction set, no focus figure, no behaviour, no
+/// selection cell, and none of the hover/selected fills — the Default
+/// variant has exactly two states (enabled and skeleton) and this is the
+/// enabled one. `Role::Row` is still declared (it is a row of the
+/// [`Role::Table`] either way), and `border-top` stays: slice-e:98's
+/// divider rule is row anatomy, not interaction state.
+pub fn structured_list_row_static(key: impl Into<Key>, cells: Vec<ViewNode>) -> ViewNode {
+    let mut node = row_shell(key, cells, CellKind::Data, None);
+    node.props
+        .tokens
+        .insert("border-top".into(), t(BORDER_SUBTLE));
+    node.semantics.role = Some(Role::Row);
     node
 }
 
@@ -617,7 +643,7 @@ mod tests {
     use super::{
         DIVIDER, DIVIDER_INTENTS, DIVIDER_KEY, MARK, MIN_COLUMN, ROW_HEIGHT, SELECT_CELL,
         SPACING_03, SPACING_05, SPACING_06, structured_list, structured_list_row,
-        structured_list_sized, structured_list_weights_at,
+        structured_list_row_static, structured_list_sized, structured_list_weights_at,
     };
     use crate::component::icon::{IconMark, IconTone, icon_toned};
     use crate::component::tests::{assert_fits_parent, petrify_lone};
@@ -752,6 +778,30 @@ mod tests {
         let off = structured_list_row("r0", vec![text("p", "Alpha")], false);
         assert!(!off.semantics.selected);
         assert!(off.is_interactive());
+    }
+
+    /// Carbon's **Default** structured-list row is not a control: it gets
+    /// no interactions, no selection state, no selection/hover tokens, and
+    /// no selection mark cell. The row rule and column grid stay, because
+    /// those belong to the list, not to interaction.
+    #[test]
+    fn default_structured_list_row_is_static() {
+        let row = structured_list_row_static("r0", vec![text("p", "Alpha"), text("c", "12")]);
+        assert_eq!(row.semantics.role, Some(Role::Row));
+        assert!(!row.semantics.selected);
+        assert!(
+            row.interactions.is_empty(),
+            "the Default row is not interactive"
+        );
+        assert!(!row.is_interactive());
+        assert_eq!(token(&row, "background@selected"), None);
+        assert_eq!(token(&row, "background@hover"), None);
+        assert_eq!(token(&row, "border-top"), Some(BORDER_SUBTLE));
+        assert_eq!(row.kind, NodeKind::Grid, "shared columns need a Grid");
+        assert!(
+            child(&row, "c0").semantics.role == Some(Role::Cell)
+                && child(&row, "c1").semantics.role == Some(Role::Cell)
+        );
     }
 
     /// Selected rows carry a canvas mark in the primary icon tone;

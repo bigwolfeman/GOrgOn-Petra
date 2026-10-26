@@ -5,8 +5,16 @@
 --
 --   section("slide", "Slider", vec![body(
 --       "slid", sp("spacing.md"),
---       vec![valued(slider(VOLUME, "Volume", self.volume), self.draft.clone())],
+--       vec![
+--           valued(slider(VOLUME, "Volume", self.volume), self.draft.clone()),
+--           heading("range-title", "Two-handle range"),
+--           slider_range("range", "Temperature", 20.0, 80.0),
+--       ],
 --   )])
+--
+-- The range cell is spec 008 T054's variant cell: the two-handle Range
+-- anatomy, whose drag is FR-030 (`component/slider.rs` names the spec 005
+-- dependency).
 --
 -- Chosen as the first page on purpose: it never calls bare `text(`, bare
 -- `button(`, or `common::wrapped`, so it proves the harness's two real load-
@@ -32,6 +40,8 @@ return ui.section({
         node = ui.slider({ key = "vol", label = "Volume", value = 0.4 }),
         value = "40",
       }),
+      ui.heading({ key = "range-title", label = "Two-handle range" }),
+      ui.slider_range({ key = "range", label = "Temperature", low = 20.0, high = 80.0 }),
     }),
   },
 })

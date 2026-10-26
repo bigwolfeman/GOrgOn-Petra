@@ -39,16 +39,28 @@
 //! Default/multi-line max-inline is 288 (SCSS). Single-line 208 is
 //! style-page only and is not bound.
 
-use super::popover::popover_with;
-use super::tokens::{SURFACE_LAYER_THREE, TEXT_PRIMARY, t};
+use super::pad;
+use super::popover::{bubble_text, popover_with};
+use super::rule;
+use super::stack;
+use super::text::text;
+use super::tokens::{
+    BORDER_STRONG, SPACING_01, SPACING_03, SPACING_05, SURFACE_LAYER_THREE, TEXT_PRIMARY,
+    TYPOGRAPHY_BODY_COMPACT, t,
+};
+use crate::geom::Axis;
 use crate::tree::{Key, Role, ViewNode};
 
 /// Carbon default tooltip `max-inline-size`.
 const MAX_INLINE: f32 = 288.0;
+/// Carbon definition tooltip `max-inline-size` (`definition-tooltip`
+/// mixin, slice-f:88).
+const DEFINITION_MAX_INLINE: f32 = 176.0;
 /// Style-page single-line max-width (design intent, not the SCSS target).
 const SINGLE_LINE_INTENT: f32 = 208.0;
 
 const _: () = assert!(MAX_INLINE == 288.0);
+const _: () = assert!(DEFINITION_MAX_INLINE == 176.0);
 const _: () = assert!(SINGLE_LINE_INTENT == 208.0);
 
 /// The tooltip bubble. `label` is accepted so a caller names the overlay;
@@ -80,12 +92,20 @@ pub fn tooltip_anchored(
         .tokens
         .insert("foreground".into(), t(TEXT_PRIMARY));
     let mut node = popover_with(key, body.clone(), anchor, vec![run]);
+    node.constraints.horizontal.max = Some(MAX_INLINE);
+    finish_bubble(node, &body)
+}
+
+/// The half of a bubble every constructor here shares: the top-of-ramp
+/// surface, the overlay role, the body as the AT name, and the refusal to
+/// be a control. The variants own only what the mixins change —
+/// typography, padding, and the container's max-inline.
+fn finish_bubble(mut node: ViewNode, body: &str) -> ViewNode {
     node.props
         .tokens
         .insert("background".into(), t(SURFACE_LAYER_THREE));
-    node.constraints.horizontal.max = Some(MAX_INLINE);
     node.semantics.role = Some(Role::Overlay);
-    node.semantics.label = Some(body);
+    node.semantics.label = Some(body.to_owned());
     debug_assert!(
         node.interactions.is_empty(),
         "a tooltip bubble is not a control"
@@ -93,12 +113,112 @@ pub fn tooltip_anchored(
     node
 }
 
+/// Carbon's icon tooltip (`icon-tooltip` mixin, slice-f:78, :89) — the
+/// compact bubble that annotates a bare icon trigger.
+///
+/// What the mixin changes and this constructor carries: the body drops to
+/// `body-compact-01` ([`TYPOGRAPHY_BODY_COMPACT`]) and the block padding
+/// drops to 2 ([`SPACING_01`], `tooltip-padding-block`) against the
+/// default's 16; inline padding stays [`SPACING_05`]. The container's
+/// max-inline stays [`MAX_INLINE`]: the mixin overrides no width (slice-f's
+/// key numbers name none for this variant), so the SCSS default's 288
+/// governs.
+///
+/// The mixin's `popover-caret-width: 8px` / `popover-caret-height: 4px` and
+/// `popover-offset: 8px` are the engine caret's geometry, which this file
+/// cannot speak for — the engine draws a caret as deep as the gap
+/// (`overlay_surface::caret_of`), and the gap here is the same
+/// [`SPACING_03`] every popover places at. The 8x4-vs-6 caret step is
+/// therefore **not expressed**; it is the one number of the mixin this
+/// constructor does not realize.
+pub fn tooltip_icon(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    body: impl Into<String>,
+) -> ViewNode {
+    let _label = label.into();
+    let body = body.into();
+    let mut run = bubble_text(body.clone());
+    run.props.style = Some(t(TYPOGRAPHY_BODY_COMPACT));
+    run.props
+        .tokens
+        .insert("foreground".into(), t(TEXT_PRIMARY));
+    let mut node = popover_with(key, body.clone(), "trigger", vec![run]);
+    node.props.padding = Some(pad(SPACING_05, SPACING_01));
+    node.constraints.horizontal.max = Some(MAX_INLINE);
+    finish_bubble(node, &body)
+}
+
+/// Carbon's definition tooltip (`definition-tooltip` mixin, slice-f:78,
+/// :88, :92) — the standalone shape: an underlined inline term and its
+/// bubble, one component.
+///
+/// The trigger is part of this constructor (unlike [`tooltip`], whose
+/// trigger lives on the host): the term is text under [`BORDER_STRONG`],
+/// the `.cds--definition-term` `border-block-end`. That border is `1px
+/// dotted` in Carbon and the draw list has no dash pattern — a rule is one
+/// straight stroke — so the underline is the library's flat 1-unit rule in
+/// the same material, and the *dots* are the one part of the border this
+/// cannot draw. The rule's stack is a sibling the bubble anchors to, so the
+/// pair keeps the module's shape (bubble + named anchor) while shipping as
+/// one node.
+///
+/// The bubble is the definition mixin's: block [`SPACING_03`] (8) and
+/// inline [`SPACING_05`] (16) padding, [`DEFINITION_MAX_INLINE`] (176)
+/// max-inline. Text stays `body-01` — the mixin switches no type step;
+/// only [`tooltip_icon`]'s does.
+///
+/// The States bullet's "hover and focus as independently styled open
+/// sub-states (different border treatment each)" (slice-f:80) records that
+/// the two open routes differ but not what they differ *in* — the slice
+/// captures no token for either border treatment — so the term carries its
+/// one resting underline and no per-state pair. That half is a research
+/// gap, not a design choice; it is the exclusion rows T057 writes
+/// (`VARIANTS.md` 561/562).
+pub fn tooltip_definition(
+    key: impl Into<Key>,
+    term: impl Into<String>,
+    body: impl Into<String>,
+) -> ViewNode {
+    let key = key.into();
+    let term = term.into();
+    let body = body.into();
+    let mut term_text = text("term-text", term);
+    term_text
+        .props
+        .tokens
+        .insert("foreground".into(), t(TEXT_PRIMARY));
+    let term_group = stack(
+        "term",
+        Axis::Vertical,
+        None,
+        vec![
+            term_text,
+            rule("term-underline", Axis::Horizontal, BORDER_STRONG),
+        ],
+    );
+    let mut run = bubble_text(body.clone());
+    run.props
+        .tokens
+        .insert("foreground".into(), t(TEXT_PRIMARY));
+    let mut bubble = popover_with(format!("{key}-bubble"), body.clone(), "term", vec![run]);
+    bubble.props.padding = Some(pad(SPACING_05, SPACING_03));
+    bubble.constraints.horizontal.max = Some(DEFINITION_MAX_INLINE);
+    let bubble = finish_bubble(bubble, &body);
+    stack(key, Axis::Vertical, None, vec![term_group, bubble])
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{MAX_INLINE, SINGLE_LINE_INTENT, tooltip};
+    use super::{
+        DEFINITION_MAX_INLINE, MAX_INLINE, SINGLE_LINE_INTENT, tooltip, tooltip_definition,
+        tooltip_icon,
+    };
+    use crate::component::pad;
     use crate::component::tests::{assert_fits_parent, petrify_lone};
     use crate::component::tokens::{
-        SHADOW_OVERLAY, SURFACE_LAYER_THREE, SURFACE_RAISED, TEXT_PRIMARY,
+        BORDER_STRONG, SHADOW_OVERLAY, SPACING_01, SPACING_03, SPACING_05, SURFACE_LAYER_THREE,
+        SURFACE_RAISED, TEXT_PRIMARY, TYPOGRAPHY_BODY, TYPOGRAPHY_BODY_COMPACT,
     };
 
     use crate::token::{ColorValue, Theme, TokenName, TokenValue};
@@ -281,5 +401,90 @@ mod tests {
                 surface_bg_name.as_str()
             );
         }
+    }
+
+    /// The `icon-tooltip` mixin's content-box difference (slice-f:89):
+    /// `body-compact-01` type and `tooltip-padding-block: 2px` against the
+    /// default's 16, on the *same* bubble — same surface, role, AT name and
+    /// 288 max-inline (the mixin overrides no width, slice-f names none).
+    #[test]
+    fn icon_tooltip_is_the_compact_mixin_on_the_same_bubble() {
+        let node = tooltip_icon("tip", "Info", "Copied");
+        assert_eq!(node.kind, NodeKind::Surface);
+        assert_eq!(node.semantics.role, Some(Role::Overlay));
+        assert_eq!(
+            node.semantics.label.as_deref(),
+            Some("Copied"),
+            "AT name is the body"
+        );
+        assert!(
+            node.interactions.is_empty(),
+            "a tooltip bubble is not a control"
+        );
+        assert_eq!(node.constraints.horizontal.max, Some(MAX_INLINE));
+        match &node.props.anchor {
+            Some(Anchor::Sibling { key, .. }) => assert_eq!(key.as_str(), "trigger"),
+            other => panic!("expected Anchor::Sibling, got {other:?}"),
+        }
+        assert_eq!(
+            node.props.padding,
+            Some(pad(SPACING_05, SPACING_01)),
+            "`tooltip-padding-block: 2px`, inline padding unchanged at 16"
+        );
+        assert_eq!(token(&node, "background"), Some(SURFACE_LAYER_THREE));
+        let body = child(child(&node, "content"), "body");
+        assert_eq!(
+            body.props.style.as_ref().map(|s| s.as_str()),
+            Some(TYPOGRAPHY_BODY_COMPACT),
+            "the mixin switches the body to `body-compact-01`"
+        );
+    }
+
+    /// The definition tooltip is one component — term, its
+    /// `.cds--definition-term` underline, and the `definition-tooltip`
+    /// mixin's bubble anchored to that term (slice-f:78, :88, :92).
+    #[test]
+    fn definition_tooltip_ships_its_term_and_its_own_mixin_bubble() {
+        let node = tooltip_definition("defn", "M-Carbon", "The token layer.");
+        assert_eq!(node.kind, NodeKind::Stack);
+        assert!(!node.is_interactive(), "a tooltip is not a control");
+
+        let term = child(&node, "term");
+        assert_eq!(
+            child(term, "term-text").props.text.as_deref(),
+            Some("M-Carbon")
+        );
+        let underline = child(term, "term-underline");
+        assert_eq!(underline.kind, NodeKind::Separator);
+        assert_eq!(
+            token(underline, "background"),
+            Some(BORDER_STRONG),
+            "the term's `border-block-end` is `border-strong`"
+        );
+
+        let bubble = child(&node, "defn-bubble");
+        assert_eq!(bubble.kind, NodeKind::Surface);
+        assert_eq!(bubble.semantics.label.as_deref(), Some("The token layer."));
+        assert!(bubble.interactions.is_empty());
+        assert_eq!(
+            bubble.constraints.horizontal.max,
+            Some(DEFINITION_MAX_INLINE),
+            "`max-inline-size: 176px` is the definition mixin's own width"
+        );
+        assert_eq!(
+            bubble.props.padding,
+            Some(pad(SPACING_05, SPACING_03)),
+            "`padding: 8px 16px` is the definition mixin's own padding"
+        );
+        match &bubble.props.anchor {
+            Some(Anchor::Sibling { key, .. }) => assert_eq!(key.as_str(), "term"),
+            other => panic!("expected the bubble anchored to `term`, got {other:?}"),
+        }
+        let body = child(child(bubble, "content"), "body");
+        assert_eq!(
+            body.props.style.as_ref().map(|s| s.as_str()),
+            Some(TYPOGRAPHY_BODY),
+            "the definition mixin switches no type step; the body keeps `body-01`"
+        );
     }
 }

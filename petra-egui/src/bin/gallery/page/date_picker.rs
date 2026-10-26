@@ -15,10 +15,10 @@
 
 use gorgon_petra::component::{Calendar, date_picker, date_picker_showing, heading, section};
 use gorgon_petra::input::InputEvent;
-use gorgon_petra::tree::ViewNode;
+use gorgon_petra::tree::{NodeKind, ViewNode};
 
 use super::Page;
-use super::common::{body, column, path_has, row, sp};
+use super::common::{body, column, dismissed_under, path_has, row, sp};
 
 /// The compact picker's key: Carbon's calendar, month name as a caption.
 const COMPACT: &str = "compact";
@@ -250,34 +250,157 @@ impl Page for DatePicker {
     }
 
     fn body(&self) -> ViewNode {
+        use gorgon_petra::component::{
+            date_picker_fluid, date_picker_input, date_picker_invalid, date_picker_range,
+            date_picker_range_showing, text, time_picker,
+        };
+
         section(
             "date",
             "Date picker",
             vec![body(
                 "dp",
-                sp("spacing.md"),
-                vec![row(
-                    "dp-forms",
-                    sp("spacing.lg"),
-                    vec![
-                        column(
-                            "compact-form",
-                            sp("spacing.sm"),
-                            vec![
-                                heading("compact-title", "Compact"),
-                                self.compact.view(COMPACT, "Date", false),
-                            ],
-                        ),
-                        column(
-                            "full-form",
-                            sp("spacing.sm"),
-                            vec![
-                                heading("full-title", "Full"),
-                                self.full.view(FULL, "Date", true),
-                            ],
-                        ),
-                    ],
-                )],
+                // `spacing.sm`, not `spacing.md`: the raised range
+                // calendar drops 336 units flush below its fields, so they
+                // must end by y=564 to fit the 900-unit viewport. The row
+                // gaps give up 4 each and land them at 518; at `spacing.md`
+                // they sat at 530, the placement flipped the calendar up
+                // over `full/field`, and the month-button drive test
+                // pressed the calendar instead of the field.
+                sp("spacing.sm"),
+                vec![
+                    row(
+                        "dp-forms",
+                        sp("spacing.lg"),
+                        vec![
+                            column(
+                                "compact-form",
+                                sp("spacing.sm"),
+                                vec![
+                                    heading("compact-title", "Compact"),
+                                    self.compact.view(COMPACT, "Date", false),
+                                ],
+                            ),
+                            // `forms-gap`: a spacer, not a third form. A
+                            // `Stack` divides its width in equal shares,
+                            // so this buys the middle third of the row for
+                            // open calendars to drop through. Without it
+                            // `full/calendar` (x=734..1022 when open)
+                            // shares that x-range with
+                            // `v-range-open/calendar` (x=586..874) below,
+                            // and `clear_run` — which measures each open
+                            // calendar's tallest leftmost bar against the
+                            // next lower pixel — fails the page however the
+                            // drives layer the two.
+                            ViewNode::new(NodeKind::Spacer, "forms-gap"),
+                            column(
+                                "full-form",
+                                sp("spacing.sm"),
+                                vec![
+                                    heading("full-title", "Full"),
+                                    self.full.view(FULL, "Date", true),
+                                ],
+                            ),
+                        ],
+                    ),
+                    heading("variants-title", "The documented forms"),
+                    row(
+                        "dp-variants",
+                        sp("spacing.lg"),
+                        vec![
+                            // T049's simple input: the text field and
+                            // nothing else — no calendar, no mark.
+                            column(
+                                "v-input",
+                                sp("spacing.sm"),
+                                vec![
+                                    text("v-input-title", "Simple input"),
+                                    date_picker_input("var-input", "Date", "1989-04-12"),
+                                ],
+                            ),
+                            // T049's fluid form: the 64-unit well with the
+                            // label stacked inside it.
+                            column(
+                                "v-fluid",
+                                sp("spacing.sm"),
+                                vec![
+                                    text("v-fluid-title", "Fluid"),
+                                    date_picker_fluid("var-fluid", "Date", "2026-08-30"),
+                                ],
+                            ),
+                            // T049's time picker: the hh:mm field and its
+                            // AM/PM select, flush beside a hairline rule.
+                            column(
+                                "v-time",
+                                sp("spacing.sm"),
+                                vec![
+                                    text("v-time-title", "Time picker"),
+                                    time_picker("var-time", "Time", "3:45 PM", Some("PM"), None),
+                                ],
+                            ),
+                        ],
+                    ),
+                    row(
+                        "dp-variants-2",
+                        sp("spacing.lg"),
+                        vec![
+                            // T049's calendar range, closed: the pair of
+                            // dated wells sharing one calendar menu.
+                            column(
+                                "v-range",
+                                sp("spacing.sm"),
+                                vec![
+                                    text("v-range-title", "Calendar range"),
+                                    date_picker_range(
+                                        "var-range",
+                                        "Start date",
+                                        "2026-10-01",
+                                        "End date",
+                                        "2026-10-25",
+                                    ),
+                                ],
+                            ),
+                            // The same range with its shared calendar
+                            // raised, the marked run's interior one tone
+                            // step up between its accented ends.
+                            column(
+                                "v-range-open",
+                                sp("spacing.sm"),
+                                vec![
+                                    text("v-range-open-title", "Calendar range, raised"),
+                                    date_picker_range_showing(
+                                        "var-range-open",
+                                        "Start date",
+                                        "2026-10-01",
+                                        "End date",
+                                        "2026-10-25",
+                                        ["2026-10-05", "2026-10-06", "2026-10-07"],
+                                        Calendar::Compact {
+                                            year: 2026,
+                                            month: 10,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            // T049's validation states: the invalid form
+                            // here, the warning form in the page's own
+                            // Warning cell below.
+                            column(
+                                "v-invalid",
+                                sp("spacing.sm"),
+                                vec![
+                                    text("v-invalid-title", "Invalid"),
+                                    date_picker_invalid(
+                                        "var-invalid",
+                                        "Date",
+                                        "2026-13-45",
+                                        "date does not exist",
+                                    ),
+                                ],
+                            ),
+                        ],
+                    ),
+                ],
             )],
         )
     }
@@ -308,28 +431,6 @@ impl Page for DatePicker {
             self.full.choosing = false;
         }
     }
-}
-
-/// Whether any dismissed id names the surface keyed `key` inside the picker
-/// keyed `owner`.
-///
-/// Two departures from [`super::common::dismisses`], each paid for by a
-/// test above.
-///
-/// The owner, because this page shows two pickers whose surfaces carry the
-/// same keys, and a press outside the compact calendar would otherwise shut
-/// the full one.
-///
-/// The **last** segment and not any segment, because the chooser lives
-/// inside the calendar: its canonical id is `.../full/calendar/content/
-/// chooser`, which carries `calendar` as a segment. Matching anywhere in
-/// the path read a dismissed chooser as a dismissed calendar and shut the
-/// whole picker every time the month button was pressed a second time. A
-/// placement id ends at the node it names, so the last segment is the
-/// surface and everything before it is where the surface lives.
-fn dismissed_under(ids: &[String], owner: &str, key: &str) -> bool {
-    ids.iter()
-        .any(|id| path_has(id, owner) && id.rsplit('/').next() == Some(key))
 }
 
 #[cfg(test)]
@@ -548,5 +649,86 @@ mod tests {
         page.dismissed(&["/page/dp/compact/calendar".to_owned()]);
         assert!(!has(&page, COMPACT, "calendar"));
         assert!(has(&page, FULL, "calendar"), "the wrong calendar shut");
+    }
+
+    /// T049's simple-input cell: the text field and nothing else — no
+    /// calendar behind it, the whole of `datePickerType="simple"`.
+    #[test]
+    fn the_page_carries_the_simple_input_form() {
+        let tree = DatePicker::default().body();
+        let cell = find(&tree, "var-input").expect("the simple input is on the page");
+        assert!(find(cell, "input").is_some(), "its well is there");
+        assert!(
+            find(cell, "calendar").is_none(),
+            "a simple input has no calendar"
+        );
+    }
+
+    /// T049's fluid cell: the 64-unit well with the label stacked inside.
+    #[test]
+    fn the_page_carries_the_fluid_form() {
+        let tree = DatePicker::default().body();
+        let cell = find(&tree, "var-fluid").expect("the fluid picker is on the page");
+        assert!(find(cell, "field").is_some(), "its fluid well is there");
+    }
+
+    /// T049's time-picker cell: the hh:mm field and its AM/PM select in
+    /// one group.
+    #[test]
+    fn the_page_carries_the_time_picker_form() {
+        let tree = DatePicker::default().body();
+        let cell = find(&tree, "var-time").expect("the time picker is on the page");
+        assert!(find(cell, "field").is_some(), "the hh:mm well is there");
+        assert!(
+            find(cell, "meridiem").is_some(),
+            "the AM/PM select is beside it"
+        );
+    }
+
+    /// T049's calendar-range cell: the closed pair — two dated wells under
+    /// one key — and the raised form beside it carrying the shared
+    /// calendar with the marked run.
+    #[test]
+    fn the_page_carries_both_calendar_range_forms() {
+        let tree = DatePicker::default().body();
+        let closed = find(&tree, "var-range").expect("the closed range is on the page");
+        assert!(
+            find(closed, "fields").is_some(),
+            "the pair of wells is there"
+        );
+        assert!(
+            find(closed, "calendar").is_none(),
+            "the closed range shows no calendar"
+        );
+        let open = find(&tree, "var-range-open").expect("the raised range is on the page");
+        assert!(
+            find(open, "calendar").is_some(),
+            "the raised range carries the shared calendar"
+        );
+    }
+
+    /// T049's validation states: the invalid form in the body, the
+    /// warning form in the page's own Warning cell — each wearing its
+    /// helper line, the word beside the glyph (FR-018/FR-019).
+    #[test]
+    fn the_page_carries_both_validation_forms_with_their_helpers() {
+        let tree = DatePicker::default().body();
+        let invalid = find(&tree, "var-invalid").expect("the invalid form is on the page");
+        let helper = find(invalid, "helper").expect("the invalid form wears its helper");
+        assert!(
+            find(helper, "message").is_some_and(|m| {
+                m.props
+                    .text
+                    .as_deref()
+                    .is_some_and(|t| t.starts_with("Invalid:"))
+            }),
+            "the helper names the word Invalid beside its glyph"
+        );
+        let warning = DatePicker::default().warning();
+        assert_eq!(warning.len(), 1, "one warning cell");
+        assert!(
+            find(&warning[0], "helper").is_some(),
+            "the warning form wears its helper"
+        );
     }
 }

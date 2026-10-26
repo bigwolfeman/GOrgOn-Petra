@@ -1,4 +1,5 @@
-//! Carbon Slider (slice-e). Track 2px T070. Two-handle omitted.
+//! Carbon Slider (slice-e). Track 2px T070. The two-handle Range variant's
+//! anatomy ships; its drag is FR-030 (see below).
 //!
 //! Anatomy of the default (single-handle) slider, style page +
 //! `_slider.scss`, checked against `30-slider.png` on 2026-09-04:
@@ -23,8 +24,23 @@
 //!    40px tall × 64px wide"). Editable: the page that owns the slider hears
 //!    its keystrokes the way it hears a text field's.
 //!
-//! Range (two-handle) is omitted. Read-only collapses the handle to zero
-//! size, not a dim, and drops the number input's editing intents.
+//! Range (two-handle, manifest row 436 `Slider variant range-slider`) is
+//! [`slider_range`]: two 14-unit handles on the one rail, the span between
+//! them filled, and a number input per handle — the delta slice-e's own
+//! mining names ("a second handle, a second number input, and min/max
+//! clamp logic"). What does **not** ship is the gesture, and that is
+//! FR-030's lane entry, not an omission: a drag that moves one thumb of
+//! two is exactly spec 005's US3 case ("two overlapping drag targets ...
+//! exactly one captures the pointer for the whole gesture"), and that
+//! engine work has not landed. Both handles declare
+//! [`Interaction::Drag`] — the intent is true and the driver can
+//! synthesise it — but manifest row 436 stays UNCOVERED (the FR-030 lane
+//! entry, not an exclusion) until spec 005 lands. The value mapping a
+//! finished drag needs is [`slider_value_at`], shared with the
+//! single-handle slider: same rail, same handle-centre travel.
+//!
+//! Read-only collapses the handle to zero size, not a dim, and drops the
+//! number input's editing intents.
 //!
 //! # Why the fill is not the accent
 //!
@@ -173,9 +189,9 @@ fn rail_cell(key: &'static str, background: &str) -> ViewNode {
     cell
 }
 
-fn handle_node(label: String, value: String, size: f32, live: bool) -> ViewNode {
+fn handle_node(key: &'static str, label: String, value: String, size: f32, live: bool) -> ViewNode {
     let mut handle = swatch(
-        "handle",
+        key,
         size,
         size,
         if size > 0.0 {
@@ -215,8 +231,15 @@ fn handle_node(label: String, value: String, size: f32, live: bool) -> ViewNode 
 }
 
 /// The paired number input: Carbon's field chrome, 64 × 40, showing the
-/// value as an integer. Editable unless the slider is read-only.
-fn input_node(label: &str, value: f32, read_only: bool, validation: Option<&str>) -> ViewNode {
+/// value as an integer. Editable unless the slider is read-only. `name` is
+/// its accessible name — one per handle on a range.
+fn input_node(
+    key: &'static str,
+    name: String,
+    value: f32,
+    read_only: bool,
+    validation: Option<&str>,
+) -> ViewNode {
     let mut props = Props {
         text: Some(slider_input_text(value)),
         style: Some(t(TYPOGRAPHY_BODY)),
@@ -232,10 +255,10 @@ fn input_node(label: &str, value: f32, read_only: bool, validation: Option<&str>
     } else {
         EDITABLE_TEXT_INTENTS
     };
-    let mut node = ViewNode::new(NodeKind::Input, "input")
+    let mut node = ViewNode::new(NodeKind::Input, key)
         .with_props(props)
         .with_constraints(pin_extent(INPUT_WIDTH, SIZE_MD))
-        .interactive(Role::TextInput, format!("{label} value"), intents)
+        .interactive(Role::TextInput, name, intents)
         // A well a person types into: `Sides`, the same as `component::field`.
         .with_focus_figure(FocusFigure::Sides);
     node.semantics.read_only = read_only;
@@ -245,6 +268,34 @@ fn input_node(label: &str, value: f32, read_only: bool, validation: Option<&str>
         // lives in, wearing the one shared form-family dressing (FR-019).
         bind_validation_chrome(&mut node.props, support);
     }
+    node
+}
+
+/// The rail's grid: fixed handle columns between weighted track columns,
+/// centred, at the fluid 200–640 bounds. Both slider variants build their
+/// rail here so the geometry rule has one home.
+fn rail_grid(columns: Vec<TrackSize>, children: Vec<ViewNode>) -> ViewNode {
+    let mut rail = ViewNode::new(NodeKind::Grid, "rail").with_props(Props {
+        columns,
+        align: Some(Align::Center),
+        ..Props::default()
+    });
+    rail = rail.with_children(children);
+    rail.constraints.horizontal = AxisConstraint {
+        min: Some(MIN_TRACK),
+        max: Some(MAX_TRACK),
+        priority: 0,
+    };
+    rail
+}
+
+/// The caption above the rail, in the label ink the disabled label rule
+/// owns (spec 008 FR-023).
+fn caption_node(key: &'static str, caption: &str) -> ViewNode {
+    let mut node = text(key, caption.to_owned());
+    node.props
+        .tokens
+        .insert("foreground".into(), t(TEXT_PRIMARY));
     node
 }
 
@@ -262,31 +313,26 @@ fn slider_built(
     let reported = percent(done);
     let handle_size = if read_only { 0.0 } else { HANDLE };
 
-    let mut caption = text("label", label.clone());
-    caption
-        .props
-        .tokens
-        .insert("foreground".into(), t(TEXT_PRIMARY));
+    let caption = caption_node("label", &label);
 
     let fill = rail_cell("fill", LAYER_SELECTED_INVERSE);
     let track = rail_cell("track", BORDER_SUBTLE);
-    let handle = handle_node(label.clone(), reported.clone(), handle_size, !read_only);
+    let handle = handle_node(
+        "handle",
+        label.clone(),
+        reported.clone(),
+        handle_size,
+        !read_only,
+    );
 
-    let mut rail = ViewNode::new(NodeKind::Grid, "rail").with_props(Props {
-        columns: vec![
+    let mut rail = rail_grid(
+        vec![
             TrackSize::Weight { weight: fill_w },
             TrackSize::Fixed { value: handle_size },
             TrackSize::Weight { weight: rest },
         ],
-        align: Some(Align::Center),
-        ..Props::default()
-    });
-    rail = rail.with_children(vec![fill, handle, track]);
-    rail.constraints.horizontal = AxisConstraint {
-        min: Some(MIN_TRACK),
-        max: Some(MAX_TRACK),
-        priority: 0,
-    };
+        vec![fill, handle, track],
+    );
     if !read_only {
         // A press on the track, not only on the 14-unit handle, starts the
         // gesture. The handle is painted after the rail, so a press on the
@@ -308,7 +354,13 @@ fn slider_built(
             range_label("min", "0"),
             rail,
             range_label("max", "100"),
-            input_node(&label, done, read_only, validation),
+            input_node(
+                "input",
+                format!("{label} value"),
+                done,
+                read_only,
+                validation,
+            ),
         ],
     );
 
@@ -339,6 +391,112 @@ pub fn slider(key: impl Into<Key>, label: impl Into<String>, value: f32) -> View
 /// Read-only slider: handle collapsed to zero size (Carbon), not a dim.
 pub fn slider_readonly(key: impl Into<Key>, label: impl Into<String>, value: f32) -> ViewNode {
     slider_built(key, label, value, true, None)
+}
+
+/// The min/max clamp the range variant needs (slice-e's mining: "min/max
+/// clamp logic"): both values normalised into `[0, 1]` and returned
+/// ordered, so a caller who passes them backwards gets the range they
+/// named rather than a negative span.
+#[must_use]
+pub fn slider_range_values(low: f32, high: f32) -> (f32, f32) {
+    let (a, b) = (normalise(low), normalise(high));
+    if a <= b { (a, b) } else { (b, a) }
+}
+
+/// The two-handle range slider (Carbon's Range variant, the other of the
+/// two the style page documents): two 14-unit handles on the one rail, the
+/// span between them filled — on a range the selection IS the span, under
+/// the single's `.cds--slider__filled-track { background:
+/// $layer-selected-inverse }` rule — and a number input per handle
+/// (`slider_input_text` shows each value as an integer on the labels'
+/// 0–100 range). `low`/`high` are normalised and ordered by
+/// [`slider_range_values`].
+///
+/// # What ships, and what is FR-030 (spec 005)
+///
+/// The anatomy ships. The gesture does not, and that is the FR-030 lane
+/// entry, not a faked behaviour: a drag that moves one thumb of two is
+/// exactly spec 005's US3 case — "Given two overlapping drag targets,
+/// When a drag begins, Then exactly one captures the pointer for the whole
+/// gesture" — and a press between the handles must pick the nearest, which
+/// is the same gesture's opening move. `Interaction::Drag` is routed
+/// nowhere in the engine today (spec 005's own inventory: "a dead enum
+/// variant"), so both handles and the rail declare the intents that are
+/// true — a press on either starts a gesture — while the capture that
+/// decides which thumb of two a press owns waits for spec 005. Manifest
+/// row 436 (`Slider variant range-slider`) stays UNCOVERED until then: the
+/// FR-030 lane entry, not an exclusion (FR-030). The value mapping a
+/// finished drag needs is [`slider_value_at`], shared with the
+/// single-handle slider — same rail, same handle-centre travel.
+pub fn slider_range(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    low: f32,
+    high: f32,
+) -> ViewNode {
+    let label = label.into();
+    let (low, high) = slider_range_values(low, high);
+    let (low_s, high_s) = (percent(low), percent(high));
+    let caption = caption_node("label", &label);
+
+    let rail_children = vec![
+        rail_cell("track-start", BORDER_SUBTLE),
+        handle_node(
+            "handle-low",
+            format!("{label} minimum"),
+            low_s.clone(),
+            HANDLE,
+            true,
+        ),
+        rail_cell("fill", LAYER_SELECTED_INVERSE),
+        handle_node(
+            "handle-high",
+            format!("{label} maximum"),
+            high_s.clone(),
+            HANDLE,
+            true,
+        ),
+        rail_cell("track-end", BORDER_SUBTLE),
+    ];
+    let mut rail = rail_grid(
+        vec![
+            TrackSize::Weight {
+                weight: low.max(MIN_WEIGHT),
+            },
+            TrackSize::Fixed { value: HANDLE },
+            TrackSize::Weight {
+                weight: (high - low).max(MIN_WEIGHT),
+            },
+            TrackSize::Fixed { value: HANDLE },
+            TrackSize::Weight {
+                weight: (1.0 - high).max(MIN_WEIGHT),
+            },
+        ],
+        rail_children,
+    );
+    // The rail starts a gesture wherever the gesture lands; which thumb of
+    // two it owns is the FR-030 question named above.
+    rail = rail
+        .interactive(Role::Pane, format!("{label} track"), RAIL_INTENTS)
+        .with_behaviour(ADJUSTS_ON_PRESS);
+
+    let row = stack(
+        "row",
+        Axis::Horizontal,
+        Some(SPACING_05),
+        vec![
+            range_label("min", "0"),
+            rail,
+            range_label("max", "100"),
+            input_node("input-low", format!("{label} minimum"), low, false, None),
+            input_node("input-high", format!("{label} maximum"), high, false, None),
+        ],
+    );
+
+    let mut node = stack(key, Axis::Vertical, Some(SPACING_03), vec![caption, row]);
+    node.semantics.label = Some(label);
+    node.semantics.value = Some(format!("{low_s}–{high_s}"));
+    node
 }
 
 /// Invalid slider: the value input wearing [`SUPPORT_ERROR`] on all four
@@ -426,7 +584,8 @@ fn rail_of(node: &str) -> Option<&str> {
 mod tests {
     use super::{
         HANDLE, INPUT_WIDTH, MAX_TRACK, MIN_TRACK, TRACK_HEIGHT, slider, slider_input_text,
-        slider_invalid, slider_readonly, slider_value_at, slider_value_of_input, slider_warning,
+        slider_invalid, slider_range, slider_range_values, slider_readonly, slider_value_at,
+        slider_value_of_input, slider_warning,
     };
     use crate::component::tests::{assert_fits_parent, petrify_lone};
     use crate::component::tokens::{
@@ -900,22 +1059,253 @@ mod tests {
         use super::super::tokens::SURFACE_BASE;
         for theme in [crate::token::light(), crate::token::dark()] {
             let bg = color(&theme, SURFACE_BASE);
-            let node = slider("vol", "Volume", 0.5);
-            for key in ["label", "min", "max"] {
-                let text_node = named(&node, key);
-                let fg_name = text_node
-                    .props
-                    .tokens
-                    .get("foreground")
-                    .unwrap_or_else(|| panic!("{key} binds a foreground"));
-                let opacity = text_node.props.opacity.unwrap_or(1.0);
-                let fg = color(&theme, fg_name.as_str()).faded(opacity).over(bg);
-                let ratio = fg.contrast_ratio(bg);
+            for node in [
+                slider("vol", "Volume", 0.5),
+                slider_range("vol", "Volume", 0.3, 0.7),
+            ] {
+                for key in ["label", "min", "max"] {
+                    let text_node = named(&node, key);
+                    let fg_name = text_node
+                        .props
+                        .tokens
+                        .get("foreground")
+                        .unwrap_or_else(|| panic!("{key} binds a foreground"));
+                    let opacity = text_node.props.opacity.unwrap_or(1.0);
+                    let fg = color(&theme, fg_name.as_str()).faded(opacity).over(bg);
+                    let ratio = fg.contrast_ratio(bg);
+                    assert!(
+                        ratio >= MIN_TEXT_CONTRAST,
+                        "{key} at {ratio:.2}:1 against page ground fails AA {MIN_TEXT_CONTRAST}:1"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Spec 008 T054: the Range variant is the two-handle delta slice-e's
+    /// mining names — "a second handle, a second number input, and min/max
+    /// clamp logic" — with the span between the handles filled, because on
+    /// a range the selection IS the span.
+    #[test]
+    fn the_range_is_two_handles_two_inputs_and_the_filled_span_between() {
+        let node = slider_range("vol", "Volume", 0.3, 0.7);
+        let rail = named(&node, "rail");
+        let keys: Vec<&str> = rail.children.iter().map(|c| c.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            [
+                "track-start",
+                "handle-low",
+                "fill",
+                "handle-high",
+                "track-end"
+            ],
+            "the filled span sits BETWEEN the handles; the rests are the rail's"
+        );
+        for key in ["handle-low", "handle-high"] {
+            let handle = named(&node, key);
+            assert_eq!(
+                handle.semantics.role,
+                Some(Role::Button),
+                "{key} is a handle button"
+            );
+            assert_eq!(
+                handle.constraints.horizontal.min,
+                Some(HANDLE),
+                "{key} is the 14-unit disc"
+            );
+            assert_eq!(
+                token(handle, "background"),
+                Some(LAYER_SELECTED_INVERSE),
+                "{key} wears the thumb tone"
+            );
+        }
+        let low = named(&node, "handle-low");
+        assert_eq!(low.semantics.label.as_deref(), Some("Volume minimum"));
+        assert_eq!(low.semantics.value.as_deref(), Some("30%"));
+        let high = named(&node, "handle-high");
+        assert_eq!(high.semantics.label.as_deref(), Some("Volume maximum"));
+        assert_eq!(high.semantics.value.as_deref(), Some("70%"));
+        let row = named(&node, "row");
+        let row_keys: Vec<&str> = row.children.iter().map(|c| c.key.as_str()).collect();
+        assert_eq!(
+            row_keys,
+            ["min", "rail", "max", "input-low", "input-high"],
+            "the second number input (slice-e) takes its place beside the first"
+        );
+        assert_eq!(named(&node, "input-low").props.text.as_deref(), Some("30"));
+        assert_eq!(named(&node, "input-high").props.text.as_deref(), Some("70"));
+        assert_eq!(
+            named(&node, "input-low").semantics.label.as_deref(),
+            Some("Volume minimum")
+        );
+        assert_eq!(
+            named(&node, "input-high").semantics.label.as_deref(),
+            Some("Volume maximum")
+        );
+        assert_eq!(node.semantics.value.as_deref(), Some("30%–70%"));
+    }
+
+    /// The min/max clamp (slice-e's "min/max clamp logic"): both values are
+    /// normalised into `[0, 1]` and returned ordered, so a caller who names
+    /// them backwards gets the range they named rather than a negative span.
+    #[test]
+    fn the_range_clamps_and_orders_its_two_values() {
+        assert_eq!(slider_range_values(0.7, 0.3), (0.3, 0.7), "ordered");
+        assert_eq!(slider_range_values(-1.0, 2.0), (0.0, 1.0), "clamped");
+        assert_eq!(
+            slider_range_values(f32::NAN, 0.5),
+            (0.0, 0.5),
+            "NaN is zero"
+        );
+        assert_eq!(slider_range_values(0.4, 0.4), (0.4, 0.4), "equal is a span");
+        let node = slider_range("vol", "Volume", 0.7, 0.3);
+        match &named(&node, "rail").props.columns[..] {
+            [
+                TrackSize::Weight { weight: a },
+                TrackSize::Fixed { value: h1 },
+                TrackSize::Weight { weight: b },
+                TrackSize::Fixed { value: h2 },
+                TrackSize::Weight { weight: c },
+            ] => {
+                assert!((*a - 0.3).abs() < 1e-6, "ordered low first, got {a}");
+                assert_eq!(*h1, HANDLE);
+                assert!((*b - 0.4).abs() < 1e-6, "the span is high - low, got {b}");
+                assert_eq!(*h2, HANDLE);
+                assert!((*c - 0.3).abs() < 1e-6, "the tail is 1 - high, got {c}");
+            }
+            other => panic!("unexpected range rail columns: {other:?}"),
+        }
+        assert_eq!(
+            node.semantics.value.as_deref(),
+            Some("30%–70%"),
+            "the readout names the ordered range either way round"
+        );
+        let rail = named(&node, "rail");
+        assert_eq!(rail.constraints.horizontal.min, Some(MIN_TRACK));
+        assert_eq!(rail.constraints.horizontal.max, Some(MAX_TRACK));
+    }
+
+    /// The span takes the single's filled-track tone and the rests the
+    /// rail's — `.cds--slider__filled-track { background:
+    /// $layer-selected-inverse }`, applied to the part of the rail the
+    /// range owns.
+    #[test]
+    fn the_span_takes_the_filled_track_tone_and_the_rests_the_rail() {
+        let node = slider_range("vol", "Volume", 0.3, 0.7);
+        assert_eq!(
+            token(named(&node, "fill"), "background"),
+            Some(LAYER_SELECTED_INVERSE)
+        );
+        assert_ne!(
+            token(named(&node, "fill"), "background"),
+            Some(ACCENT_PRIMARY),
+            "the accent is the focused fill, never the resting one"
+        );
+        assert_eq!(
+            token(named(&node, "track-start"), "background"),
+            Some(BORDER_SUBTLE)
+        );
+        assert_eq!(
+            token(named(&node, "track-end"), "background"),
+            Some(BORDER_SUBTLE)
+        );
+    }
+
+    /// FR-030's visible half: both handles and the rail declare the drag
+    /// intents that are true today, while the capture that decides which
+    /// thumb of two a press owns stays spec 005 US3's work — manifest row
+    /// 436 stays failing, not faked here.
+    #[test]
+    fn both_handles_declare_drag_while_the_capture_stays_spec_005s() {
+        let node = slider_range("vol", "Volume", 0.3, 0.7);
+        for key in ["handle-low", "handle-high"] {
+            let handle = named(&node, key);
+            assert!(
+                handle.interactions.contains(&Interaction::Drag),
+                "{key} must declare Drag: the intent is true whatever routes it"
+            );
+            assert!(
+                handle.interactions.contains(&Interaction::Focus),
+                "{key} is keyboard-reachable before any drag exists"
+            );
+        }
+        let rail = named(&node, "rail");
+        assert!(
+            rail.interactions.contains(&Interaction::Drag),
+            "the rail starts a gesture too"
+        );
+        assert!(
+            rail.interactions.contains(&Interaction::Click),
+            "and takes the press"
+        );
+    }
+
+    /// Frame-level: every range part places with a real rect at a narrow,
+    /// mid and full span, nothing overflowed, every placement inside its
+    /// parent.
+    #[test]
+    fn the_range_frame_geometry_is_clean_at_narrow_mid_and_full_spans() {
+        for (label, low, high) in [
+            ("narrow", 0.45_f32, 0.55),
+            ("mid", 0.3, 0.7),
+            ("full", 0.0, 1.0),
+        ] {
+            let frame = petrify_lone(slider_range("vol", "Volume", low, high));
+            assert!(!frame.placements.is_empty(), "{label}: nothing placed");
+            for p in &frame.placements {
                 assert!(
-                    ratio >= MIN_TEXT_CONTRAST,
-                    "{key} at {ratio:.2}:1 against page ground fails AA {MIN_TEXT_CONTRAST}:1"
+                    p.rect.w > 0.0 && p.rect.h > 0.0,
+                    "{label}: {} placed with a degenerate rect {:?}",
+                    p.id,
+                    p.rect
+                );
+                assert!(
+                    !p.paint.overflowed,
+                    "{label}: {} drew content larger than its own rect",
+                    p.id
+                );
+                if let Some(parent_idx) = p.parent {
+                    assert_fits_parent(label, p, &frame.placements[parent_idx]);
+                }
+            }
+            for suffix in [
+                "/fill",
+                "/track-start",
+                "/track-end",
+                "/handle-low",
+                "/handle-high",
+            ] {
+                assert!(
+                    frame.placements.iter().any(|p| p.id.ends_with(suffix)),
+                    "{label}: no placement ending {suffix}"
                 );
             }
+        }
+    }
+
+    /// Every part a person operates is in the focus order: both handles
+    /// and both number inputs — the keyboard path is a peer of the pointer
+    /// path, which is what makes a drag-dependent variant honest to leave
+    /// unfinished (spec 005 US3's own acceptance).
+    #[test]
+    fn both_handles_and_both_inputs_are_in_the_focus_order() {
+        let frame = petrify_lone(slider_range("vol", "Volume", 0.3, 0.7));
+        let focus = crate::focus::FocusTree::from_placements(
+            &frame.placements,
+            &std::collections::BTreeMap::new(),
+        );
+        let order = focus.order();
+        for suffix in ["/handle-low", "/handle-high", "/input-low", "/input-high"] {
+            let p = frame
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with(suffix))
+                .unwrap_or_else(|| panic!("no placement ending {suffix}"));
+            assert!(
+                order.iter().any(|o| o == &p.id),
+                "{suffix} is not in the focus order"
+            );
         }
     }
 }

@@ -24,8 +24,9 @@ use crate::component::{
     contained_list_disclosed, contained_list_lg, contained_list_sm, contained_list_xl,
     context_menu, expandable_tile, list_item, list_item_with, modal, modal_passive, ordered_list,
     popover, popover_with, popover_with_placement, selectable_tile, structured_list,
-    structured_list_row, structured_list_sized, tile, toggletip, toggletip_with, tooltip,
-    tooltip_anchored, tree_item, tree_item_xs, tree_view, unordered_list, unordered_list_with,
+    structured_list_row, structured_list_row_static, structured_list_sized, tile, toggletip,
+    toggletip_with, tooltip, tooltip_anchored, tooltip_definition, tooltip_icon, tree_item,
+    tree_item_xs, tree_view, unordered_list, unordered_list_with,
 };
 use crate::tree::{Align, Edge, Key, ViewNode};
 
@@ -294,6 +295,19 @@ impl ParamShape for KeyAnchorBody {
     const LUAU: &'static str = "{ key: string, anchor: string, body: string }";
 }
 
+/// `tooltip_definition(key, term, body)` — the definition tooltip's two
+/// text parts, which no shared shape carries under these names.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TooltipDefParams {
+    key: Key,
+    term: String,
+    body: String,
+}
+impl ParamShape for TooltipDefParams {
+    const LUAU: &'static str = "{ key: string, term: string, body: string }";
+}
+
 /// `tree_item`, `tree_item_xs` — 2 constructors.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -421,6 +435,9 @@ pub const ENTRIES: &[Entry] = &[
     row!("structured_list_row", KeyChildrenSelected, |p| {
         structured_list_row(p.key, p.children, p.selected)
     }),
+    row!("structured_list_row_static", KeyChildren, |p| {
+        structured_list_row_static(p.key, p.children)
+    }),
     row!("tile", KeyLabel, |p| tile(p.key, p.label)),
     row!("clickable_tile", KeyLabelValue, |p| clickable_tile(
         p.key, p.label, p.value
@@ -443,6 +460,12 @@ pub const ENTRIES: &[Entry] = &[
     row!("tooltip_anchored", KeyAnchorBody, |p| tooltip_anchored(
         p.key, p.anchor, p.body
     )),
+    row!("tooltip_icon", KeyLabelValue, |p| tooltip_icon(
+        p.key, p.label, p.value
+    )),
+    row!("tooltip_definition", TooltipDefParams, |p| {
+        tooltip_definition(p.key, p.term, p.body)
+    }),
     row!("tree_view", KeyChildren, |p| tree_view(p.key, p.children)),
     row!("tree_item", TreeItemParams, |p| tree_item(
         p.key, p.label, p.expanded, p.selected, p.children
@@ -670,6 +693,9 @@ mod tests {
                 "dividers": false
             }),
             "structured_list_row" => json!({ "key": "k", "children": [], "selected": true }),
+            "structured_list_row_static" => {
+                json!({ "key": "k-sl-row-static", "children": [] })
+            }
             "tile" => json!({ "key": "k", "label": "body-text" }),
             "clickable_tile" => json!({ "key": "k", "label": "l", "value": "b" }),
             "selectable_tile" => json!({ "key": "k", "label": "l", "selected": true }),
@@ -678,6 +704,8 @@ mod tests {
             "toggletip_with" => json!({ "key": "k", "label": "l", "open": true, "children": [] }),
             "tooltip" => json!({ "key": "k", "label": "l", "value": "b" }),
             "tooltip_anchored" => json!({ "key": "k", "anchor": "a", "body": "b" }),
+            "tooltip_icon" => json!({ "key": "k-tip-icon", "label": "l", "value": "b" }),
+            "tooltip_definition" => json!({ "key": "k-tip-def", "term": "t", "body": "b" }),
             "tree_view" => json!({ "key": "k", "children": [] }),
             "tree_item" => {
                 json!({ "key": "k", "label": "l", "expanded": true, "selected": true, "children": [] })

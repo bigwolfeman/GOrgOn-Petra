@@ -45,8 +45,8 @@
 use std::sync::Arc;
 
 use super::tokens::{
-    ACCENT_PRIMARY, ICON_DISABLED, ICON_ON_COLOR_DISABLED, ICON_PRIMARY, ICON_SECONDARY,
-    SUPPORT_ERROR, TEXT_ON_ACCENT, t,
+    ACCENT_PRIMARY, ICON_DISABLED, ICON_INVERSE, ICON_ON_COLOR_DISABLED, ICON_PRIMARY,
+    ICON_SECONDARY, SUPPORT_ERROR, TEXT_ON_ACCENT, t,
 };
 use crate::draw::{
     ColorRef, Command, Corners, DrawList, Paint, PathVerb, Stroke, Width, arc_verbs,
@@ -462,7 +462,7 @@ pub enum IconBox {
 
 /// The fill a mark is drawn in.
 ///
-/// Three names and not a free token string, so a caller cannot invent a tone
+/// Named arms and not a free token string, so a caller cannot invent a tone
 /// (gate C1-8) and so the choice reads as what it is: which ground the mark
 /// sits on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -487,14 +487,25 @@ pub enum IconTone {
     /// Carbon's `fill: $interactive` on a complete or current progress step
     /// (`_progress-indicator.scss`, `.cds--progress-step svg`).
     Accent,
+    /// `icon-inverse`: the mark sits on the **inverse ground** —
+    /// `layer-selected-inverse`, the content switcher's selected tab, whose
+    /// label takes `text-inverse` beside it (slice-b content-switcher
+    /// anatomy 5: `fill: $icon-secondary` unselected, `$icon-inverse` when
+    /// selected). Carbon's `$icon-inverse` is `token::shipped`'s inverse
+    /// family (`focus-inverse`, `icon-inverse`, `layer-selected-inverse`),
+    /// and the name sat there unre-exported until the icon-only tab needed
+    /// it — the [`SUPPORT_ERROR`] story one file over.
+    ///
+    /// [`SUPPORT_ERROR`]: super::tokens::SUPPORT_ERROR
+    Inverse,
     /// `support-error`: the mark sits on a layer and says the control it
     /// leads is destructive. The danger button's own tone —
     /// [`super::button`]'s doc carries the measurements (3.75:1 on the
     /// grey button fill, ΔE\*ab 47.2 protanope / 76.3 deuteranope apart
-    /// from it), and this is the fifth name rather than a free token
-    /// string for the reason the other four are names: gate C1-8 refuses a
-    /// component that invents a hue, and `support-error` is a shipped
-    /// token this enum is merely pointing at.
+    /// from it), and this is a name rather than a free token string for the
+    /// reason every other arm is a name: gate C1-8 refuses a component that
+    /// invents a hue, and `support-error` is a shipped token this enum is
+    /// merely pointing at.
     ///
     /// It has no place on an accent or a red *fill*: `support-error` on
     /// `button-danger-primary` measures 1.18:1. Only on a layer.
@@ -509,6 +520,7 @@ impl IconTone {
             Self::Secondary => ICON_SECONDARY,
             Self::Disabled => ICON_DISABLED,
             Self::Accent => ACCENT_PRIMARY,
+            Self::Inverse => ICON_INVERSE,
             Self::Danger => SUPPORT_ERROR,
         }
     }
@@ -533,9 +545,12 @@ impl IconTone {
     fn disabled_tone(self) -> &'static str {
         match self {
             Self::OnAccent => ICON_ON_COLOR_DISABLED,
-            Self::Primary | Self::Secondary | Self::Disabled | Self::Accent | Self::Danger => {
-                ICON_DISABLED
-            }
+            Self::Primary
+            | Self::Secondary
+            | Self::Disabled
+            | Self::Accent
+            | Self::Inverse
+            | Self::Danger => ICON_DISABLED,
         }
     }
 }

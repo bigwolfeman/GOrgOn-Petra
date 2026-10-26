@@ -184,7 +184,11 @@ pub use contained_list::{
     contained_list_xl,
 };
 pub use content_switcher::{
-    content_switcher, content_switcher_item, content_switcher_lg, content_switcher_sm,
+    SwitcherSize, content_switcher, content_switcher_icon_only, content_switcher_icon_only_lg,
+    content_switcher_icon_only_sm, content_switcher_item, content_switcher_item_icon,
+    content_switcher_item_icon_with_size, content_switcher_item_low_contrast, content_switcher_lg,
+    content_switcher_low_contrast, content_switcher_low_contrast_lg,
+    content_switcher_low_contrast_sm, content_switcher_sm,
 };
 pub use context_menu::context_menu;
 pub use controls::{
@@ -202,8 +206,9 @@ pub use data_table::{
     data_table_toolbar_menu, data_table_weights_at, data_table_zebra, data_table_zebra_sized,
 };
 pub use date_picker::{
-    Calendar, date_picker, date_picker_invalid, date_picker_open, date_picker_showing,
-    date_picker_showing_selection, date_picker_warning,
+    Calendar, date_picker, date_picker_fluid, date_picker_input, date_picker_invalid,
+    date_picker_open, date_picker_range, date_picker_range_showing, date_picker_showing,
+    date_picker_showing_selection, date_picker_warning, time_picker,
 };
 pub use disabled::disabled;
 pub use drawer::{docked, drawer, sheet};
@@ -219,7 +224,7 @@ pub use file_uploader::{
     file_uploader, file_uploader_item, file_uploader_item_edit, file_uploader_item_invalid,
     file_uploader_item_warning, file_uploader_with,
 };
-pub use form::form;
+pub use form::{form, form_fluid, form_two_column};
 pub use icon::{IconBox, IconMark, IconTone, icon, icon_in, icon_toned};
 pub use inline_loading::{inline_loading, inline_loading_finished};
 pub use input_group::{
@@ -232,8 +237,14 @@ pub use list::{
 };
 pub use list_row::{LIST_ROW_EXTENT, list_row, list_row_with};
 pub use loading::{advance_ambient_spinners, loading, loading_sm, spinner_phase};
-pub use menu::{menu, menu_flyout, menu_item, menu_item_with, menu_lg, menu_sm, menu_xs};
-pub use menu_button::{menu_button, menu_button_lg, menu_button_sm, menu_button_xs};
+pub use menu::{
+    menu, menu_border, menu_flyout, menu_item, menu_item_group, menu_item_radio_group,
+    menu_item_selectable, menu_item_with, menu_lg, menu_sm, menu_with_icons, menu_xs,
+};
+pub use menu_button::{
+    combo_button, combo_button_lg, combo_button_sm, menu_button, menu_button_lg, menu_button_sm,
+    menu_button_xs, overflow_menu, overflow_menu_lg, overflow_menu_sm, overflow_menu_xs,
+};
 pub use menubar::{menubar, menubar_top};
 pub use modal::{modal, modal_passive};
 pub use notification::{
@@ -266,13 +277,13 @@ pub use skeleton::{
     SizeStep, SkeletonAnatomy, advance_ambient_skeletons, skeleton, skeleton_pulse_phase,
 };
 pub use slider::{
-    slider, slider_input_text, slider_invalid, slider_readonly, slider_value_at,
-    slider_value_of_input, slider_warning,
+    slider, slider_input_text, slider_invalid, slider_range, slider_range_values, slider_readonly,
+    slider_value_at, slider_value_of_input, slider_warning,
 };
 pub use status::status;
 pub use structured_list::{
-    structured_list, structured_list_placed_weights, structured_list_row, structured_list_sized,
-    structured_list_weights_at,
+    structured_list, structured_list_placed_weights, structured_list_row,
+    structured_list_row_static, structured_list_sized, structured_list_weights_at,
 };
 pub use tabs::{contained_tab, contained_tab_bar, tab, tab_bar, vertical_tab, vertical_tab_bar};
 pub use tag::{dismissible_tag, selectable_tag, tag, tag_lg, tag_sm, tag_status, tag_with_avatar};
@@ -283,7 +294,7 @@ pub use textarea::{
 pub use tile::{clickable_tile, expandable_tile, selectable_tile, tile};
 pub use toggle_button::{toggle_button, toggle_button_group, toggle_button_icon};
 pub use toggletip::{toggletip, toggletip_with};
-pub use tooltip::{tooltip, tooltip_anchored};
+pub use tooltip::{tooltip, tooltip_anchored, tooltip_definition, tooltip_icon};
 pub use tree_view::{tree_item, tree_item_xs, tree_view};
 pub use ui_shell::{
     LeftPanelMode, ui_shell_header, ui_shell_header_action, ui_shell_header_action_icon,

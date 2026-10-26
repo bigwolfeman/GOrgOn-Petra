@@ -9,7 +9,7 @@ use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::{NodeKind, Props, ViewNode};
 
 use super::Page;
-use super::common::{body, path_has, sp, wrapped};
+use super::common::{body, dismisses, path_has, sp, wrapped};
 
 const FILE: &str = "mb-file";
 const EDIT: &str = "mb-edit";
@@ -187,14 +187,6 @@ fn view_items() -> Vec<ViewNode> {
         .collect()
 }
 
-/// Whether any dismissed id *is* the surface keyed `key`, not merely
-/// contains it. The Open Recent flyout lives inside the File menu, so its
-/// path carries `mb-file-menu` as an ancestor; matching any segment would
-/// close File when only the flyout was dismissed.
-fn dismissed_surface(ids: &[String], key: &str) -> bool {
-    ids.iter().any(|id| id.rsplit('/').next() == Some(key))
-}
-
 impl Page for Menubar {
     fn row(&self) -> &'static str {
         "Menubar"
@@ -290,13 +282,13 @@ impl Page for Menubar {
     }
 
     fn dismissed(&mut self, ids: &[String]) {
-        if dismissed_surface(ids, RECENT_FLYOUT) {
+        // The Open Recent flyout lives inside the File menu, so its id
+        // carries the menu's key on its way to `RECENT_FLYOUT`; `dismisses`
+        // matches the last segment and keeps the two apart.
+        if dismisses(ids, RECENT_FLYOUT) {
             self.flyout = false;
         }
-        if dismissed_surface(ids, FILE_MENU)
-            || dismissed_surface(ids, EDIT_MENU)
-            || dismissed_surface(ids, VIEW_MENU)
-        {
+        if dismisses(ids, FILE_MENU) || dismisses(ids, EDIT_MENU) || dismisses(ids, VIEW_MENU) {
             self.open = None;
             self.flyout = false;
         }

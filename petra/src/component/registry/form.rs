@@ -262,6 +262,80 @@ impl ParamShape for NodeAndValue {
 // ---------------------------------------------------------------------
 // This group's constructors.
 // ---------------------------------------------------------------------
+/// `time_picker(key, label, value, clock, zone)` — the time picker's two
+/// optional select parts (`AM/PM` and the timezone); `null` drops that
+/// part and widens what is left, per the constructor's measured shares.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TimePickerParams {
+    key: Key,
+    label: String,
+    value: String,
+    #[serde(default)]
+    clock: Option<String>,
+    #[serde(default)]
+    zone: Option<String>,
+}
+impl ParamShape for TimePickerParams {
+    const LUAU: &'static str = "{ key: string, label: string, value: string, clock: \
+         string?, zone: string? }";
+}
+
+/// `date_picker_range(key, start_label, start, end_label, end)` — the
+/// calendar-range pair's five strings: one label and one value per field.
+/// The two value fields are `start_date`/`end_date` ON THE WIRE rather
+/// than `start`/`end`: `end` is a Luau keyword and cannot name a
+/// table-type field, so `plugin.d.luau` could not type the plain spelling.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DatePickerRangeParams {
+    key: Key,
+    start_label: String,
+    start_date: String,
+    end_label: String,
+    end_date: String,
+}
+impl ParamShape for DatePickerRangeParams {
+    const LUAU: &'static str = "{ key: string, start_label: string, start_date: string, \
+         end_label: string, end_date: string }";
+}
+
+/// `date_picker_range_showing(key, start_label, start, end_label, end,
+/// selected, calendar)` — [`DatePickerRangeParams`] plus the days the
+/// grid marks (`YYYY-MM-DD` each) and the browsing calendar.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DatePickerRangeShowingParams {
+    key: Key,
+    start_label: String,
+    start_date: String,
+    end_label: String,
+    end_date: String,
+    selected: Vec<String>,
+    calendar: CalendarWire,
+}
+impl ParamShape for DatePickerRangeShowingParams {
+    const LUAU: &'static str = "{ key: string, start_label: string, start_date: string, \
+         end_label: string, end_date: string, selected: {string}, calendar: \
+         { type: \"compact\", year: number, month: number } | \
+         { type: \"full\", year: number, month: number } | \
+         { type: \"choosing\", year: number, month: number } }";
+}
+
+/// `slider_range(key, label, low, high)` — the two-handle range's
+/// normalized endpoints; [`lib::slider_range`] orders and clamps them.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SliderRangeParams {
+    key: Key,
+    label: String,
+    low: f32,
+    high: f32,
+}
+impl ParamShape for SliderRangeParams {
+    const LUAU: &'static str = "{ key: string, label: string, low: number, high: number }";
+}
+
 pub const ENTRIES: &[Entry] = &[
     // controls.rs — Checkbox, Radio button, Toggle.
     row!("checkbox", KeyLabelSelected, |p| lib::checkbox(
@@ -338,6 +412,39 @@ pub const ENTRIES: &[Entry] = &[
     row!("date_picker_warning", KeyLabelValueMessage, |p| {
         lib::date_picker_warning(p.key, p.label, p.value, p.message)
     }),
+    row!("date_picker_input", KeyLabelValue, |p| {
+        lib::date_picker_input(p.key, p.label, p.value)
+    }),
+    row!("date_picker_fluid", KeyLabelValue, |p| {
+        lib::date_picker_fluid(p.key, p.label, p.value)
+    }),
+    row!("time_picker", TimePickerParams, |p| {
+        lib::time_picker(
+            p.key,
+            p.label,
+            p.value,
+            p.clock.as_deref(),
+            p.zone.as_deref(),
+        )
+    }),
+    row!("date_picker_range", DatePickerRangeParams, |p| {
+        lib::date_picker_range(p.key, p.start_label, p.start_date, p.end_label, p.end_date)
+    }),
+    row!(
+        "date_picker_range_showing",
+        DatePickerRangeShowingParams,
+        |p| {
+            lib::date_picker_range_showing(
+                p.key,
+                p.start_label,
+                p.start_date,
+                p.end_label,
+                p.end_date,
+                p.selected,
+                p.calendar.into(),
+            )
+        }
+    ),
     // dropdown.rs — Dropdown.
     row!("dropdown", KeyLabelValue, |p| lib::dropdown(
         p.key, p.label, p.value
@@ -419,6 +526,12 @@ pub const ENTRIES: &[Entry] = &[
     row!("form", KeyLabelChildren, |p| lib::form(
         p.key, p.label, p.children
     )),
+    row!("form_fluid", KeyLabelChildren, |p| lib::form_fluid(
+        p.key, p.label, p.children
+    )),
+    row!("form_two_column", KeyLabelChildren, |p| {
+        lib::form_two_column(p.key, p.label, p.children)
+    }),
     // number_input.rs — Number input.
     row!("number_input", KeyLabelValue, |p| lib::number_input(
         p.key, p.label, p.value
@@ -470,6 +583,9 @@ pub const ENTRIES: &[Entry] = &[
     }),
     row!("slider_warning", KeyLabelNumberMessage, |p| {
         lib::slider_warning(p.key, p.label, p.value, p.message)
+    }),
+    row!("slider_range", SliderRangeParams, |p| {
+        lib::slider_range(p.key, p.label, p.low, p.high)
     }),
 ];
 

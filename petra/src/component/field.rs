@@ -50,8 +50,10 @@ pub(super) const EDITABLE_TEXT_INTENTS: &[Interaction] = &[
 const SIZE_SM: f32 = 32.0;
 /// Carbon Default lg.
 const SIZE_LG: f32 = 48.0;
-/// Carbon Fluid `min-block-size`.
-const SIZE_FLUID: f32 = 64.0;
+/// Carbon Fluid `min-block-size`. `pub(super)` so
+/// [`super::date_picker::date_picker_fluid`] pins the one fluid height
+/// against this constant rather than re-spelling `64.0` (one home per fact).
+pub(super) const SIZE_FLUID: f32 = 64.0;
 
 /// How one input well is finished.
 #[derive(Clone, Copy)]
@@ -584,7 +586,12 @@ pub fn valued(mut node: ViewNode, value: impl Into<String>) -> ViewNode {
     node
 }
 
-fn muted_label(key: impl Into<Key>, content: impl Into<String>) -> ViewNode {
+/// The muted label rule every form control shares (`$text-secondary`).
+///
+/// `pub(super)` because the fluid dressing of a control that is not a plain
+/// text input — [`super::date_picker::date_picker_fluid`] — stacks the same
+/// label inside its well and must not restate the ink rule to do it.
+pub(super) fn muted_label(key: impl Into<Key>, content: impl Into<String>) -> ViewNode {
     let mut node = text(key, content);
     node.props.tokens.insert("foreground".into(), t(TEXT_MUTED));
     node

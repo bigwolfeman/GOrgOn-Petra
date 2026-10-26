@@ -1,6 +1,8 @@
 //! Inventory row 13, Form.
 
-use gorgon_petra::component::{checkbox, field, form, hinted, labeled, section, valued};
+use gorgon_petra::component::{
+    checkbox, field, form, form_fluid, form_two_column, heading, hinted, labeled, section, valued,
+};
 use gorgon_petra::input::{InputEvent, KeyCode};
 use gorgon_petra::tree::ViewNode;
 
@@ -95,18 +97,45 @@ impl Page for Form {
             vec![filled_body(
                 "form-body",
                 sp("spacing.md"),
-                vec![form(
-                    "demo-form",
-                    "Fiber",
-                    vec![
-                        labeled(
-                            "name-item",
-                            "Name",
-                            valued(hinted(field(NAME, "Name"), PLACEHOLDER), self.name.clone()),
-                        ),
-                        checkbox(ENABLED, "Enabled", self.enabled),
-                    ],
-                )],
+                vec![
+                    form(
+                        "demo-form",
+                        "Fiber",
+                        vec![
+                            labeled(
+                                "name-item",
+                                "Name",
+                                valued(hinted(field(NAME, "Name"), PLACEHOLDER), self.name.clone()),
+                            ),
+                            checkbox(ENABLED, "Enabled", self.enabled),
+                        ],
+                    ),
+                    heading("fluid-title", "Fluid"),
+                    // T056's fluid variant: items flush against each other,
+                    // hairline rules between them, one legend above.
+                    form_fluid(
+                        "fluid-form",
+                        "Fiber",
+                        vec![
+                            field("fluid-name", "Name"),
+                            checkbox("fluid-ok", "Enabled", true),
+                            field("fluid-port", "Port"),
+                        ],
+                    ),
+                    heading("grid-title", "Two columns"),
+                    // T056's two-column variant: items flowing row-major
+                    // over two equal columns at Carbon's form margins.
+                    form_two_column(
+                        "grid-form",
+                        "Fiber",
+                        vec![
+                            field("grid-name", "Name"),
+                            field("grid-port", "Port"),
+                            field("grid-host", "Host"),
+                            field("grid-role", "Role"),
+                        ],
+                    ),
+                ],
             )],
         )
     }
@@ -134,5 +163,41 @@ impl Page for Form {
             }
             _ => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Form;
+    use crate::page::Page;
+    use crate::page::common::find;
+    use gorgon_petra::tree::{NodeKind, TrackSize};
+
+    /// T056's fluid variant cell: the fluid form is on the page with its
+    /// three flush items under one legend.
+    #[test]
+    fn the_page_carries_the_fluid_form_with_its_items() {
+        let tree = Form::default().body();
+        let fluid = find(&tree, "fluid-form").expect("the fluid form is on the page");
+        for key in ["fluid-name", "fluid-ok", "fluid-port"] {
+            assert!(find(fluid, key).is_some(), "the fluid form carries {key}");
+        }
+    }
+
+    /// T056's two-column variant cell: the item grid is a two-track grid,
+    /// both tracks weighted — the layout the variant's whole name is about.
+    #[test]
+    fn the_page_carries_the_two_column_form_as_a_two_track_grid() {
+        let tree = Form::default().body();
+        let grid = find(&tree, "grid-form-items").expect("the two-column grid is on the page");
+        assert_eq!(grid.kind, NodeKind::Grid);
+        assert!(
+            matches!(
+                grid.props.columns.as_slice(),
+                [TrackSize::Weight { .. }, TrackSize::Weight { .. }]
+            ),
+            "two weighted columns, got {:?}",
+            grid.props.columns
+        );
     }
 }

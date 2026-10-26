@@ -50,16 +50,21 @@
 
 use std::collections::BTreeSet;
 
-use super::field::{invalid_helper, validated_column, warning_helper};
+use super::field::{
+    SIZE_FLUID, field, field_labeled, hinted, invalid_helper, labeled, muted_label,
+    validated_column, valued, warning_helper,
+};
 use super::icon::{IconMark, IconTone, icon_toned};
+use super::list_box::list_box_field;
 use super::pad;
 use super::pin_block;
+use super::rule;
 use super::stack;
 use super::text::text;
 use super::tokens::{
-    ACCENT_PRIMARY, LAYER_HOVER, SHADOW_OVERLAY, SIZE_MD, SPACING_03, SPACING_05, SUPPORT_ERROR,
-    SUPPORT_WARNING, SURFACE_LAYER_TWO, SURFACE_RAISED, TEXT_MUTED, TEXT_ON_ACCENT, TEXT_PRIMARY,
-    TYPOGRAPHY_HEADING_SM, t,
+    ACCENT_PRIMARY, BORDER_STRONG, LAYER_HOVER, SHADOW_OVERLAY, SIZE_MD, SPACING_02, SPACING_03,
+    SPACING_04, SPACING_05, SUPPORT_ERROR, SUPPORT_WARNING, SURFACE_LAYER_TWO, SURFACE_RAISED,
+    TEXT_MUTED, TEXT_ON_ACCENT, TEXT_PRIMARY, TYPOGRAPHY_HEADING_SM, t,
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
@@ -145,7 +150,7 @@ pub fn date_picker(
     value: impl Into<String>,
 ) -> ViewNode {
     let label = label.into();
-    let field = closed_field("field", label, value, false);
+    let field = closed_field("field", label, value, false, FieldForm::Default);
     column(key, field, None)
 }
 
@@ -183,6 +188,109 @@ pub fn date_picker_warning(
         SUPPORT_WARNING,
         warning_helper(message),
     )
+}
+
+/// Simple date input: the text field and nothing else — no calendar, and
+/// no calendar mark (slice-b: the mark is "present only on calendar-backed
+/// variants").
+///
+/// Carbon's `datePickerType="simple"` is the plain text input
+/// (`.cds--date-picker__input` **is** `.cds--text-input`), for memorable or
+/// approximate dates — a date of birth typed `1989-04-12` rather than
+/// picked off a grid. So this is the library's filled, visible-labelled
+/// field under the date picker's own name: [`field_labeled`] for the
+/// outside label + well anatomy (also what "Default vs Fluid" calls the
+/// default style), [`valued`] for the date text and its content ink. The
+/// constructor exists so the wire surface and the manifest row have one
+/// name for the unit, not because the well differs from a text input's —
+/// it does not, and Carbon's does not either.
+pub fn date_picker_input(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    value: impl Into<String>,
+) -> ViewNode {
+    valued(field_labeled(key, label), value)
+}
+
+/// Fluid date picker: the closed, calendar-backed field wearing Carbon
+/// Fluid's dressing — 64 tall, the muted label stacked inside the well
+/// over the value and the calendar mark.
+///
+/// One date picker, two dressings (slice-b "Default vs Fluid"): the
+/// difference is the label's place and the well's step, not the control,
+/// so this shares [`closed_field`] with [`date_picker`] and takes only the
+/// [`FieldForm::Fluid`] arm — same mark, same toggle, same focus figure.
+pub fn date_picker_fluid(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    value: impl Into<String>,
+) -> ViewNode {
+    column(
+        key,
+        closed_field("field", label, value, false, FieldForm::Fluid),
+        None,
+    )
+}
+
+/// Carbon's time picker (slice-b): the hour:minute field in a group with
+/// the two optional selects the format calls for — `clock` carries the
+/// AM/PM value, `zone` the timezone; `None` drops that part and widens
+/// what is left, per the slice's measured width shares (`time-input` 25%
+/// or 50%, `clock-select` 25% or 50%, `timezone-select` 50%).
+///
+/// The one label above the group is the group's and the field's accessible
+/// name (Carbon's `TimePickerSelect` hides its own labels); the two
+/// selects are bare wells ([`list_box_field`], the same one `select` wraps
+/// in a caption) carrying their words as accessible names — `AM/PM` and
+/// `timezone` — so the parts are never named by position alone. Parts sit
+/// flush against a hairline [`rule`] apiece ("divider width 1px"), the
+/// widths being grid weights rather than px, because the shares are
+/// fractions of the group and the group is whatever width the page gives
+/// it.
+pub fn time_picker(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    value: impl Into<String>,
+    clock: Option<&str>,
+    zone: Option<&str>,
+) -> ViewNode {
+    let label = label.into();
+    let field = hinted(field("field", label.clone()), "hh:mm");
+    let mut columns = vec![TrackSize::Weight {
+        weight: if clock.is_some() { 1.0 } else { 2.0 },
+    }];
+    let mut children = vec![valued(field, value)];
+    if let Some(clock) = clock {
+        columns.push(TrackSize::FitContent);
+        children.push(rule("div-meridiem", Axis::Vertical, BORDER_STRONG));
+        columns.push(TrackSize::Weight { weight: 1.0 });
+        children.push(list_box_field(
+            "meridiem",
+            "AM/PM",
+            clock,
+            SIZE_MD,
+            IconMark::ChevronDown,
+            false,
+        ));
+    }
+    if let Some(zone) = zone {
+        columns.push(TrackSize::FitContent);
+        children.push(rule("div-timezone", Axis::Vertical, BORDER_STRONG));
+        columns.push(TrackSize::Weight { weight: 2.0 });
+        children.push(list_box_field(
+            "timezone",
+            "timezone",
+            zone,
+            SIZE_MD,
+            IconMark::ChevronDown,
+            false,
+        ));
+    }
+    let group = ViewNode::new(NodeKind::Grid, "group").with_props(Props {
+        columns,
+        ..Props::default()
+    });
+    labeled(key, label, group.with_children(children))
 }
 
 /// What an open calendar is showing: which month the grid is browsing, and
@@ -325,12 +433,99 @@ pub fn date_picker_showing_selection(
         .filter_map(|s| parse_date(s.as_ref()))
         .collect();
     let days = SelectedDays::in_month(&all, year, month);
-    let field = closed_field("field", label.clone(), value, true);
+    let field = closed_field("field", label.clone(), value, true, FieldForm::Default);
     column(
         key,
         field,
-        Some(calendar_surface(label, year, month, &days, calendar)),
+        Some(calendar_surface(
+            label, year, month, &days, calendar, "field",
+        )),
     )
+}
+
+/// Closed range picker: two dated wells side by side, `start` and `end`,
+/// sharing one calendar menu between them (slice-b "Calendar picker — Date
+/// range": "two text fields (start/end) + calendar menu").
+///
+/// Each field keeps its own accessible name and its own calendar mark
+/// (the mark is part of the documented date-input anatomy, and both
+/// inputs here are calendar-backed); the pair sits 50/50, keyed `"fields"`
+/// with the wells under it at `"start"` and `"end"`, so a caller routes to
+/// the field it means and [`date_picker_range_showing`]'s calendar hangs
+/// under the pair's leading edge — Carbon's flush-under-the-input rule
+/// applied to the start of the group.
+pub fn date_picker_range(
+    key: impl Into<Key>,
+    start_label: impl Into<String>,
+    start: impl Into<String>,
+    end_label: impl Into<String>,
+    end: impl Into<String>,
+) -> ViewNode {
+    column(
+        key,
+        range_fields(start_label, start, end_label, end, false),
+        None,
+    )
+}
+
+/// [`date_picker_range`] with its shared calendar raised, marking every
+/// day in `selected` the way [`date_picker_showing_selection`] marks them:
+/// a run's ends accented, its interior one tone step up. `start` and `end`
+/// drive the two fields' visible text and are not required to be the run's
+/// ends — the marks come from `selected` alone, so the fields may show
+/// what is typed while the grid shows what a drag or a two-click pick has
+/// marked. The calendar's accessible name is `start_label`, the name of
+/// the field the group is anchored under.
+pub fn date_picker_range_showing(
+    key: impl Into<Key>,
+    start_label: impl Into<String>,
+    start: impl Into<String>,
+    end_label: impl Into<String>,
+    end: impl Into<String>,
+    selected: impl IntoIterator<Item = impl AsRef<str>>,
+    calendar: Calendar,
+) -> ViewNode {
+    let start_label = start_label.into();
+    let (year, month) = calendar.view();
+    let all: BTreeSet<(i32, u32, u32)> = selected
+        .into_iter()
+        .filter_map(|s| parse_date(s.as_ref()))
+        .collect();
+    let days = SelectedDays::in_month(&all, year, month);
+    column(
+        key,
+        range_fields(start_label.clone(), start, end_label, end, true),
+        Some(calendar_surface(
+            start_label,
+            year,
+            month,
+            &days,
+            calendar,
+            "fields",
+        )),
+    )
+}
+
+/// The `"fields"` grid the two range forms share: 50/50, wells keyed
+/// `"start"`/`"end"`, both wearing [`FieldForm::Default`].
+fn range_fields(
+    start_label: impl Into<String>,
+    start: impl Into<String>,
+    end_label: impl Into<String>,
+    end: impl Into<String>,
+    expanded: bool,
+) -> ViewNode {
+    let grid = ViewNode::new(NodeKind::Grid, "fields").with_props(Props {
+        columns: vec![
+            TrackSize::Weight { weight: 1.0 },
+            TrackSize::Weight { weight: 1.0 },
+        ],
+        ..Props::default()
+    });
+    grid.with_children(vec![
+        closed_field("start", start_label, start, expanded, FieldForm::Default),
+        closed_field("end", end_label, end, expanded, FieldForm::Default),
+    ])
 }
 
 /// Which days of the month [`calendar_surface`] is browsing carry a mark,
@@ -448,11 +643,48 @@ fn column(key: impl Into<Key>, field: ViewNode, calendar: Option<ViewNode>) -> V
     node
 }
 
+/// Which Carbon dressing the dated well wears (slice-b "Default vs Fluid").
+#[derive(Clone, Copy)]
+enum FieldForm {
+    /// Default: 40 tall, `padding` 16/8, and the label is the accessible
+    /// name only — the outside/above label is a caller's wrapper business
+    /// ([`labeled`]), as on [`date_picker`].
+    Default,
+    /// Fluid: 64 tall ([`SIZE_FLUID`, the same pin [`super::field::field_fluid`]
+    /// takes), `padding` 16/12, and the muted label stacked *inside* the
+    /// well at a 4-unit gap ([`SPACING_02`]) — Carbon Fluid's `label
+    /// padding-bottom: 4px`. The 13px vertical inset the slice measures is
+    /// not a step on the token ramp, so this takes the nearest one (12) and
+    /// says so rather than inventing a token.
+    Fluid,
+}
+
+impl FieldForm {
+    fn height(self) -> f32 {
+        match self {
+            Self::Default => SIZE_MD,
+            Self::Fluid => SIZE_FLUID,
+        }
+    }
+
+    /// Vertical inset token: the default well's 8, the fluid well's 12.
+    fn inset_v(self) -> &'static str {
+        match self {
+            Self::Default => SPACING_03,
+            Self::Fluid => SPACING_04,
+        }
+    }
+}
+
+/// The dated well both dressings share: the value text and the calendar
+/// mark, wearing the field chrome, the toggle behaviour and the pick-into
+/// focus figure. `form` decides height, inset and where the label goes.
 fn closed_field(
     key: impl Into<Key>,
     label: impl Into<String>,
     value: impl Into<String>,
     expanded: bool,
+    form: FieldForm,
 ) -> ViewNode {
     let label = label.into();
     let mut value_node = text("value", value.into());
@@ -463,14 +695,26 @@ fn closed_field(
     let mut mark = icon_toned("calendar-mark", IconMark::Calendar, IconTone::Primary);
     mark.semantics.label = Some("calendar".to_owned());
 
-    let mut node = stack(
-        key,
-        Axis::Horizontal,
-        Some(SPACING_03),
-        vec![value_node, mark],
-    );
-    node.props.align = Some(Align::Center);
-    node.props.padding = Some(pad(SPACING_05, SPACING_03));
+    let row_children = vec![value_node, mark];
+
+    let mut node = match form {
+        FieldForm::Default => {
+            let mut node = stack(key, Axis::Horizontal, Some(SPACING_03), row_children);
+            node.props.align = Some(Align::Center);
+            node
+        }
+        FieldForm::Fluid => {
+            let mut row = stack("row", Axis::Horizontal, Some(SPACING_03), row_children);
+            row.props.align = Some(Align::Center);
+            stack(
+                key,
+                Axis::Vertical,
+                Some(SPACING_02),
+                vec![muted_label("label", label.clone()), row],
+            )
+        }
+    };
+    node.props.padding = Some(pad(SPACING_05, form.inset_v()));
     // The same well every text-shaped control in this library wears: a fill
     // and a bottom rule, and nothing on the other three sides.
     //
@@ -486,7 +730,7 @@ fn closed_field(
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
     let mut node = node
-        .with_constraints(pin_block(SIZE_MD))
+        .with_constraints(pin_block(form.height()))
         .interactive(Role::Button, label, FIELD_INTENTS)
         .with_behaviour(TOGGLES_ON_RELEASE)
         .owning_its_text();
@@ -551,12 +795,16 @@ fn first_weekday(year: i32, month: u32) -> usize {
 /// `.cds--date-picker__calendar` is flush under the field's leading edge
 /// and has no beak, because it is a panel belonging to the field rather
 /// than a bubble pointing at it.
+/// `anchor` names the sibling the calendar hangs under — `"field"` for the
+/// single forms, `"fields"` for the range pair, whose leading edge is the
+/// start field's.
 fn calendar_surface(
     label: String,
     year: i32,
     month: u32,
     selected: &SelectedDays,
     calendar: Calendar,
+    anchor: &str,
 ) -> ViewNode {
     let mut children = vec![
         month_header(year, month, calendar),
@@ -572,7 +820,7 @@ fn calendar_surface(
         .with_props(Props {
             layer: Some(Layer::Popup),
             anchor: Some(Anchor::Sibling {
-                key: Key::new("field"),
+                key: Key::new(anchor),
                 edge: Edge::Bottom,
                 align: PropAlign::Start,
                 offset: None,
@@ -1091,9 +1339,10 @@ fn centred(key: String, child: ViewNode) -> ViewNode {
 mod tests {
     use super::{
         CALENDAR_H, CALENDAR_W, CHOOSER_H, Calendar, MONTH_CELL_H, MONTH_COLS, MONTH_ROWS,
-        PropAlign, SIZE_MD, WEEK_ROWS, WEEKDAYS, date_picker, date_picker_invalid,
-        date_picker_open, date_picker_showing, date_picker_showing_selection, date_picker_warning,
-        days_in_month, first_weekday, parse_date,
+        PropAlign, SIZE_FLUID, SIZE_MD, WEEK_ROWS, WEEKDAYS, date_picker, date_picker_fluid,
+        date_picker_input, date_picker_invalid, date_picker_open, date_picker_range,
+        date_picker_range_showing, date_picker_showing, date_picker_showing_selection,
+        date_picker_warning, days_in_month, first_weekday, parse_date, time_picker,
     };
     use crate::component::tests::{assert_fits_parent, petrify_lone};
     use crate::component::tokens::{
@@ -1102,8 +1351,8 @@ mod tests {
 
     use crate::token::{ColorValue, Theme, TokenName, TokenValue};
     use crate::tree::{
-        Anchor, Behaviour, ClampRule, FocusFigure, FocusShownOn, Intent, Interaction, NodeKind,
-        Phase, Role, Tip, ViewNode,
+        Anchor, Behaviour, ClampRule, Edge, FocusFigure, FocusShownOn, Intent, Interaction,
+        NodeKind, Phase, Role, Tip, TrackSize, ViewNode,
     };
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
@@ -1119,7 +1368,7 @@ mod tests {
     }
 
     use crate::component::icon::{IconMark, IconTone, icon_toned};
-    use crate::component::tokens::{SUPPORT_ERROR, SUPPORT_WARNING, TEXT_PRIMARY};
+    use crate::component::tokens::{SUPPORT_ERROR, SUPPORT_WARNING, TEXT_MUTED, TEXT_PRIMARY};
 
     /// The invalid state dresses the field in the shared form-family
     /// chrome and says so in words and a glyph (spec 008 T039).
@@ -1937,5 +2186,213 @@ mod tests {
             "date_picker field declared behaviour {:?}",
             field.behaviour
         );
+    }
+
+    /// The simple date input is the filled text field and nothing else: no
+    /// calendar surface, and no calendar mark, because the slice documents
+    /// the mark as "present only on calendar-backed variants". Its value is
+    /// content ink ([`TEXT_PRIMARY`]), not placeholder ink.
+    #[test]
+    fn the_simple_date_input_is_a_filled_field_and_carries_no_calendar() {
+        let node = date_picker_input("born", "Date of birth", "1989-04-12");
+        let label = child(&node, "label");
+        assert_eq!(token(label, "foreground"), Some(TEXT_MUTED));
+        let input = child(&node, "input");
+        assert_eq!(input.kind, NodeKind::Input);
+        assert_eq!(input.props.text.as_deref(), Some("1989-04-12"));
+        assert_eq!(token(input, "foreground"), Some(TEXT_PRIMARY));
+        assert!(
+            input.children.is_empty(),
+            "the simple input is a bare text field — no mark hangs off it"
+        );
+        assert!(
+            node.children.iter().all(|c| c.key.as_str() != "calendar"),
+            "the simple input raises no calendar"
+        );
+    }
+
+    /// Carbon Fluid's date field: 64 tall, the muted label stacked inside
+    /// the well at the 4-unit gap over the value and the mark — and still
+    /// the same toggle the default dressing wears.
+    #[test]
+    fn the_fluid_field_stacks_its_label_inside_the_64_unit_well() {
+        let node = date_picker_fluid("born", "Date of birth", "1989-04-12");
+        let field = child(&node, "field");
+        assert_eq!(
+            field.constraints.vertical.min,
+            Some(SIZE_FLUID),
+            "the fluid well takes the one fluid height"
+        );
+        assert_eq!(SIZE_FLUID, 64.0);
+        assert_eq!(
+            token(child(field, "label"), "foreground"),
+            Some(TEXT_MUTED),
+            "the label is inside the well and muted"
+        );
+        let row = child(field, "row");
+        assert_eq!(
+            child(row, "value").props.text.as_deref(),
+            Some("1989-04-12")
+        );
+        assert_eq!(
+            child(row, "calendar-mark").semantics.label.as_deref(),
+            Some("calendar"),
+            "the mark carries its word, never the glyph alone"
+        );
+        assert_eq!(
+            field.behaviour,
+            Some(Behaviour {
+                intent: Intent::Toggle,
+                phase: Phase::OnRelease,
+            }),
+            "fluid is a dressing, not a different control"
+        );
+    }
+
+    /// The range form is two dated wells sharing one calendar, the
+    /// calendar hanging under the pair's leading edge, and the marks the
+    /// shared grid draws are the run the two fields stand for.
+    #[test]
+    fn the_range_pair_is_two_fields_sharing_one_calendar_under_the_pair() {
+        let node = date_picker_range_showing(
+            "trip",
+            "Start date",
+            "2026-08-03",
+            "End date",
+            "2026-08-06",
+            ["2026-08-03", "2026-08-04", "2026-08-05", "2026-08-06"],
+            Calendar::Compact {
+                year: 2026,
+                month: 8,
+            },
+        );
+        let fields = child(&node, "fields");
+        assert_eq!(fields.kind, NodeKind::Grid);
+        for key in ["start", "end"] {
+            let field = child(fields, key);
+            assert_eq!(
+                field.behaviour,
+                Some(Behaviour {
+                    intent: Intent::Toggle,
+                    phase: Phase::OnRelease,
+                }),
+                "{key} is a dated well like the single form's"
+            );
+            assert_eq!(field.semantics.expanded, Some(true));
+        }
+        let calendar = child(&node, "calendar");
+        match &calendar.props.anchor {
+            Some(Anchor::Sibling { key, edge, .. }) => {
+                assert_eq!(key.as_str(), "fields");
+                assert_eq!(*edge, Edge::Bottom);
+            }
+            other => panic!("the calendar hangs off a sibling, got {other:?}"),
+        }
+        let days = child(child(child(&node, "calendar"), "content"), "days");
+        assert_eq!(
+            token(child(days, "day-3"), "background"),
+            Some(ACCENT_PRIMARY),
+            "the run's near end is an edge"
+        );
+        assert_eq!(
+            token(child(days, "day-4"), "background"),
+            Some(SURFACE_LAYER_TWO),
+            "the run's interior is the lighter step"
+        );
+    }
+
+    /// The time picker is one labelled group: the hour:minute field beside
+    /// the selects the format calls for, each part carrying its own word
+    /// as its accessible name, and the widths the slice measures (25/25/50
+    /// with both selects) as grid weights.
+    #[test]
+    fn the_time_picker_groups_the_field_with_the_selects_the_format_calls_for() {
+        let node = time_picker("t", "Time", "10:30", Some("AM"), Some("GMT-5"));
+        assert_eq!(
+            child(&node, "label").props.text.as_deref(),
+            Some("Time"),
+            "the one label names the group and the field"
+        );
+        let group = child(&node, "group");
+        assert_eq!(group.kind, NodeKind::Grid);
+        assert_eq!(
+            group.props.columns.len(),
+            5,
+            "field, divider, clock, divider, zone"
+        );
+        assert_eq!(
+            group.props.columns,
+            vec![
+                TrackSize::Weight { weight: 1.0 },
+                TrackSize::FitContent,
+                TrackSize::Weight { weight: 1.0 },
+                TrackSize::FitContent,
+                TrackSize::Weight { weight: 2.0 },
+            ],
+            "the slice's 25%/25%/50% are weights over the group"
+        );
+        assert_eq!(child(group, "field").props.text.as_deref(), Some("10:30"));
+        let meridiem = child(group, "meridiem");
+        assert_eq!(meridiem.semantics.label.as_deref(), Some("AM/PM"));
+        assert_eq!(
+            child(child(meridiem, "row"), "value").props.text.as_deref(),
+            Some("AM"),
+            "the bare well displays the chosen meridiem on its value text, \
+             the way a select's field does"
+        );
+        let timezone = child(group, "timezone");
+        assert_eq!(timezone.semantics.label.as_deref(), Some("timezone"));
+        assert_eq!(
+            child(child(timezone, "row"), "value").props.text.as_deref(),
+            Some("GMT-5")
+        );
+        for divider in ["div-meridiem", "div-timezone"] {
+            assert_eq!(
+                child(group, divider).kind,
+                NodeKind::Separator,
+                "{divider} is the 1px divider, not a padded gap"
+            );
+        }
+    }
+
+    /// A dropped part widens what is left, per the same shares: 50/50
+    /// with one select, and the field alone when the format needs neither.
+    #[test]
+    fn dropping_a_time_picker_part_widens_what_is_left() {
+        let one = time_picker("t", "Time", "10:30", Some("AM"), None);
+        let group = child(&one, "group");
+        assert_eq!(
+            group.props.columns,
+            vec![
+                TrackSize::Weight { weight: 1.0 },
+                TrackSize::FitContent,
+                TrackSize::Weight { weight: 1.0 },
+            ],
+            "field and clock split the group 50/50"
+        );
+        assert!(
+            group.children.iter().all(|c| c.key.as_str() != "timezone"),
+            "a None part is dropped, not left empty"
+        );
+        let bare = time_picker("t", "Time", "10:30", None, None);
+        let group = child(&bare, "group");
+        assert_eq!(
+            group.props.columns,
+            vec![TrackSize::Weight { weight: 2.0 }],
+            "the field takes the whole group when there is nothing beside it"
+        );
+    }
+
+    /// The closed range form is the pair alone: both wells resting, no
+    /// calendar, 50/50 across the group.
+    #[test]
+    fn the_closed_range_form_is_the_pair_alone() {
+        let node = date_picker_range("trip", "Start date", "2026-08-03", "End date", "2026-08-06");
+        assert_eq!(node.children.len(), 1, "closed is the pair alone");
+        let fields = child(&node, "fields");
+        assert_eq!(fields.props.columns.len(), 2, "start and end, 50/50");
+        for key in ["start", "end"] {
+            assert_eq!(child(fields, key).semantics.expanded, Some(false));
+        }
     }
 }

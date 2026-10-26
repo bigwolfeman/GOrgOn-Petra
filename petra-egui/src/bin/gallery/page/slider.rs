@@ -125,16 +125,24 @@ impl Page for Slider {
     }
 
     fn body(&self) -> ViewNode {
+        use gorgon_petra::component::{heading, slider_range};
+
         section(
             "slide",
             "Slider",
             vec![body(
                 "slid",
                 sp("spacing.md"),
-                vec![valued(
-                    slider(VOLUME, "Volume", self.volume),
-                    self.draft.clone(),
-                )],
+                vec![
+                    valued(slider(VOLUME, "Volume", self.volume), self.draft.clone()),
+                    heading("range-title", "Two-handle range"),
+                    // T054's variant cell: the Range variant's anatomy, both
+                    // handles and the filled span. Its drag is FR-030
+                    // (`component/slider.rs` names the spec 005 dependency);
+                    // the cell shows the shape, and moving a thumb of two
+                    // waits for that engine work.
+                    slider_range("range", "Temperature", 20.0, 80.0),
+                ],
             )],
         )
     }
@@ -430,6 +438,24 @@ mod tests {
                 "/page/x/slid/vol/row/rail"
             ),
             "text aimed at the rail is not the input's"
+        );
+    }
+
+    /// T054's variant cell (manifest row 436, `Slider variant range-slider`):
+    /// the two-handle range is on the page — both handles and the span the
+    /// selection fills. The anatomy ships; its drag is FR-030 and is
+    /// recorded as such in `component/slider.rs`, not faked here.
+    #[test]
+    fn the_page_carries_the_two_handle_range_with_both_handles() {
+        let tree = Slider::default().body();
+        let range = find(&tree, "range").expect("the range cell is on the page");
+        assert!(
+            find(range, "handle-low").is_some(),
+            "the low handle is in the cell"
+        );
+        assert!(
+            find(range, "handle-high").is_some(),
+            "the high handle is in the cell"
         );
     }
 }

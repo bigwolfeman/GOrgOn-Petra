@@ -50,15 +50,16 @@ with zero spacing beside another rect is a legal frame record.
     delivers it **after** `handle` has seen the press, so a press on an open
     trigger toggles it shut and the dismissal finds it closed rather than
     closing it and letting the toggle reopen it. Match your surface with
-    `common::dismisses` — **unless** your page shows two of a component, or
-    a surface inside another surface. `dismisses` matches a key anywhere in
-    the id, so two pickers both keyed `calendar` are one key, and a chooser
-    at `.../calendar/content/chooser` carries `calendar` too. Row 10 has
-    both and matches the owner plus the id's **last** segment
-    (`page/date_picker.rs`'s `dismissed_under`).
+    `common::dismisses`, which matches the id's **last** segment — the key
+    the surface itself carries, never the sections or controls it hangs
+    under. If your page shows two of a component or a surface inside
+    another surface (row 10's chooser at `.../calendar/content/chooser`
+    carries `calendar` too), match the owning control plus the key with
+    `common::dismissed_under`.
   - `page/common.rs` — what several pages share: `sp`, `tok`, `column`,
-    `row`, `body`, `wrapped`, `path_has`, `dismisses`, and the test-only
-    `find`. Import from here; do not copy.
+    `row`, `body`, `filled_body`, `wrapped`, `path_has`,
+    `path_is_column_chrome`, `dismisses`, `dismissed_under`, and the
+    test-only `find`. Import from here; do not copy.
 - `cell.rs` — one `Cell` per inventory row, and `Content` saying what that row
   can hand back. `BUILT` is a test-only hand-written cross-check against
   `xtask`'s `BUILT_COMPONENTS`; keep the two in lockstep.

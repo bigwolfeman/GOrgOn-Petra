@@ -249,6 +249,16 @@ pub(crate) const TEXT_MUTED: &str = "text.muted";
 pub(crate) const LAYER_SELECTED_INVERSE: &str = "layer-selected-inverse";
 /// See [`LAYER_SELECTED_INVERSE`].
 pub(crate) const TEXT_INVERSE: &str = "text-inverse";
+/// The inverse family's icon ink: Carbon's `$icon-inverse`, the tone a
+/// non-text glyph takes **on** the inverse ground — the content switcher's
+/// selected tab, whose label goes [`TEXT_INVERSE`] (slice-b's content
+/// switcher anatomy 5: `fill: $icon-secondary` unselected,
+/// `$icon-inverse` when selected). Spent through [`super::IconTone::Inverse`].
+///
+/// Same story as [`LAYER_SELECTED_INVERSE`] and [`SUPPORT_ERROR`]: the name
+/// has been in `token::shipped`'s inverse family all along, and only this
+/// re-export was missing.
+pub(crate) const ICON_INVERSE: &str = "icon-inverse";
 /// The tone a non-text glyph is drawn in when it is the control's own mark
 /// on a layer ground: Carbon's `$icon-primary`, the fill SCSS names for the
 /// accordion arrow, the list-box chevron, the snippet's copy, the number
@@ -440,6 +450,7 @@ pub(crate) const ALL: &[&str] = &[
     TEXT_MUTED,
     LAYER_SELECTED_INVERSE,
     TEXT_INVERSE,
+    ICON_INVERSE,
     ICON_PRIMARY,
     ICON_SECONDARY,
     BORDER_SUBTLE,

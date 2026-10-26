@@ -50,6 +50,8 @@ impl Page for Tooltip {
     }
 
     fn body(&self) -> ViewNode {
+        use gorgon_petra::component::{heading, tooltip_definition, tooltip_icon};
+
         // A ghost button, not `link`: the trigger has to declare `Hover`
         // to be a hit-test candidate for a pointer move, and `link` does
         // not. Carbon's own tooltip demo hangs off a ghost button too.
@@ -63,7 +65,34 @@ impl Page for Tooltip {
             vec![body(
                 "tip-body",
                 sp("spacing.md"),
-                vec![column("tip-pair", None, pair)],
+                vec![
+                    column("tip-pair", None, pair),
+                    heading("icon-title", "Icon tooltip"),
+                    // T052's icon tooltip (`tooltip_icon`): the trigger
+                    // lives on the host beside the bubble, keyed
+                    // `trigger` because that is the key the constructor
+                    // anchors to. Shown open — the bubble is the variant.
+                    column(
+                        "tip-icon",
+                        None,
+                        vec![
+                            ghost_button("trigger", "Information"),
+                            tooltip_icon(
+                                "icon-bubble",
+                                "Information",
+                                "Built from the tree, not a window.",
+                            ),
+                        ],
+                    ),
+                    heading("definition-title", "Definition tooltip"),
+                    // T052's definition tooltip (`tooltip_definition`):
+                    // the underlined term and its bubble ship as one node.
+                    tooltip_definition(
+                        "term-cell",
+                        "Fiber",
+                        "A unit of concurrent work in the kernel.",
+                    ),
+                ],
             )],
         )
     }
@@ -76,9 +105,15 @@ impl Page for Tooltip {
     /// routed anywhere else, or nowhere (`node` empty), or a pointer-exit,
     /// drops the hover reason for it. Nothing is consumed: a move is not an
     /// activation, and a press on the trigger is still the button's to take.
+    ///
+    /// Scoped to `tip-pair`, the live row: the T052 variant cells below it
+    /// each carry their own `trigger` key (the key `tooltip_icon` anchors
+    /// to), and a hover on one of those is not a hover on the live pair.
     fn gesture(&mut self, event: &InputEvent, node: &str, _frame: &PetrifiedFrame) -> bool {
         match event {
-            InputEvent::PointerMoved { .. } => self.hovered = path_has(node, TRIGGER),
+            InputEvent::PointerMoved { .. } => {
+                self.hovered = path_has(node, "tip-pair") && path_has(node, TRIGGER)
+            }
             InputEvent::PointerLeft => self.hovered = false,
             _ => {}
         }
@@ -86,8 +121,43 @@ impl Page for Tooltip {
     }
 
     /// Focus landing on the trigger shows the bubble; focus landing
-    /// anywhere else, or nowhere, drops the focus reason for it.
+    /// anywhere else, or nowhere, drops the focus reason for it. Same
+    /// `tip-pair` scoping as [`Tooltip::gesture`].
     fn focused(&mut self, node: Option<&str>) {
-        self.focused = node.is_some_and(|node| path_has(node, TRIGGER));
+        self.focused =
+            node.is_some_and(|node| path_has(node, "tip-pair") && path_has(node, TRIGGER));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TRIGGER, Tooltip};
+    use crate::page::Page;
+    use crate::page::common::find;
+
+    /// T052's icon tooltip cell: the host trigger and `tooltip_icon`'s
+    /// bubble, siblinged so the constructor's `trigger` anchor resolves.
+    #[test]
+    fn the_page_carries_the_icon_tooltip_with_its_trigger_and_bubble() {
+        let tree = Tooltip::default().body();
+        let cell = find(&tree, "tip-icon").expect("the icon tooltip cell is on the page");
+        assert!(find(cell, TRIGGER).is_some(), "its trigger is beside it");
+        assert!(
+            find(cell, "icon-bubble").is_some(),
+            "the icon tooltip's bubble is in the cell"
+        );
+    }
+
+    /// T052's definition tooltip cell: the underlined term and its bubble,
+    /// one node — the term's own underline rule is part of the shape.
+    #[test]
+    fn the_page_carries_the_definition_tooltip_with_its_term_and_underline() {
+        let tree = Tooltip::default().body();
+        let cell = find(&tree, "term-cell").expect("the definition tooltip is on the page");
+        assert!(find(cell, "term-text").is_some(), "the term is there");
+        assert!(
+            find(cell, "term-underline").is_some(),
+            "the term's underline is the definition tooltip's signature"
+        );
     }
 }

@@ -1,7 +1,8 @@
 //! Inventory row 31, Structured list.
 
 use gorgon_petra::component::{
-    section, structured_list_row, structured_list_sized, structured_list_weights_at, text,
+    heading, section, structured_list_row, structured_list_row_static, structured_list_sized,
+    structured_list_weights_at, text,
 };
 use gorgon_petra::frame::PetrifiedFrame;
 use gorgon_petra::input::InputEvent;
@@ -137,6 +138,32 @@ impl Page for StructuredList {
                         // code" half; this page is the on case.
                         true,
                     ),
+                    heading("static-title", "Default rows, non-interactive"),
+                    // T055's variant cell: the Default variant's rows,
+                    // `structured_list_row_static` — the row shell with no
+                    // `interactive` dressing, so a press selects nothing.
+                    structured_list_sized(
+                        "static-list",
+                        vec![text("static-h0", "Name"), text("static-h1", "Role")],
+                        vec![
+                            structured_list_row_static(
+                                "static-row-0",
+                                vec![
+                                    text("static-name-0", "alpha"),
+                                    text("static-role-0", "runtime"),
+                                ],
+                            ),
+                            structured_list_row_static(
+                                "static-row-1",
+                                vec![
+                                    text("static-name-1", "petra"),
+                                    text("static-role-1", "layout"),
+                                ],
+                            ),
+                        ],
+                        &[1.0, 2.0],
+                        true,
+                    ),
                 ],
             )],
         )
@@ -190,5 +217,34 @@ impl Page for StructuredList {
             }
             _ => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::StructuredList;
+    use crate::page::Page;
+    use crate::page::common::find;
+
+    /// T055's variant cell (manifest row 463): the Default row is the row
+    /// shell with no interactive dressing. The claim is negative and this
+    /// is where it is made: the static rows declare no interaction at all,
+    /// while the selectable row beside them still does.
+    #[test]
+    fn the_default_row_cell_is_non_interactive_and_the_selectable_one_is_not() {
+        let tree = StructuredList::default().body();
+        for key in ["static-row-0", "static-row-1"] {
+            let row = find(&tree, key).unwrap_or_else(|| panic!("the cell carries {key}"));
+            assert!(
+                row.interactions.is_empty(),
+                "{key} is a Default row and must declare no interaction"
+            );
+        }
+        let live = find(&tree, "sl-0").expect("the selectable row is on the page");
+        assert!(
+            !live.interactions.is_empty(),
+            "the selectable row beside them stays interactive, or the \
+             difference the cell exists to show is gone"
+        );
     }
 }

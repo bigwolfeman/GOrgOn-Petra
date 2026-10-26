@@ -270,19 +270,7 @@ pub fn menu_item_with(
     if let Some(mark) = icon {
         leading.push(icon_toned("icon", mark, IconTone::Primary));
     }
-    let mut caption = text("label", label.clone());
-    caption.props.style = Some(t(TYPOGRAPHY_BODY_COMPACT));
-    caption.props.wrap = Some(TextWrap::Ellipsis);
-    caption
-        .props
-        .tokens
-        .insert("foreground".into(), t(TEXT_PRIMARY));
-    caption.constraints.horizontal = AxisConstraint {
-        min: None,
-        max: None,
-        priority: 1,
-    };
-    leading.push(caption);
+    leading.push(row_caption(&label));
     let mut trailing = Vec::new();
     if let Some(keys) = shortcut {
         let mut hint = text("shortcut", keys);
@@ -318,23 +306,103 @@ pub fn menu_item_with(
         right: Some(t(SPACING_05)),
         ..InsetRefs::default()
     });
-    // `$layer`, the same fill as the container: a row is a region of the
-    // panel, not a card on it. `SURFACE_BASE` here painted every item as a
-    // dark pill on the lighter panel.
+    menu_row_chrome(node, label).with_behaviour(ACTIVATES_ON_RELEASE)
+}
+
+/// Spec 010: a selectable row marks the choice, no state beyond it.
+const SELECTS_ON_RELEASE: Behaviour = Behaviour {
+    intent: Intent::Select,
+    phase: Phase::OnRelease,
+};
+
+/// Carbon's leading icon/selection-icon column (`slice-c`'s Menu anatomy:
+/// "optional leading icon/selection-icon column 1rem"), laid out in layout
+/// units at the token layer's 16-per-rem.
+const COLUMN_ICON: f32 = 16.0;
+
+/// [`menu_item_with`]'s row wearing Carbon's `--with-selectable-items`
+/// column: a `Checkmark` glyph when `selected`, the same column **reserved
+///** when not, so the label starts at the same offset either way.
+///
+/// The column is leading — the anatomy's "leading icon/selection-icon
+/// column" — and `icon` beside it is the `--with-icons` column, so one row
+/// with `icon: Some(..)` and `selected: true` is the combined
+/// `--with-icons --with-selectable-items` shape ("both columns"). The
+/// reserve is a pinned 16-unit slot at the row's [`SPACING_03`] gap, which
+/// lands the label at the measured 40 (16 padding + 16 column + 8 gap);
+/// Carbon gets there with asymmetric padding on unselected rows (style
+/// page: 16px/`$spacing-05` and 40px/`$spacing-08`) and the pixels agree.
+///
+/// Selection is a declared fact ([`crate::tree::Semantics::selected`]) plus
+/// the glyph — never the fill: Carbon's selected menu item shows only the
+/// checkmark ("`Selected` is a modifier (checkmark shown via
+/// `--with-selectable-items`)"), so the row keeps the container's own
+/// `$layer` fill in both states.
+pub fn menu_item_selectable(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    icon: Option<IconMark>,
+    selected: bool,
+) -> ViewNode {
+    let label = label.into();
+    let mut leading = Vec::new();
+    leading.push(if selected {
+        icon_toned("selection", IconMark::Checkmark, IconTone::Primary)
+    } else {
+        ViewNode::new(NodeKind::Stack, "selection").with_constraints(Constraints {
+            horizontal: pinned(COLUMN_ICON),
+            vertical: pinned(COLUMN_ICON),
+        })
+    });
+    if let Some(mark) = icon {
+        leading.push(icon_toned("icon", mark, IconTone::Primary));
+    }
+    leading.push(row_caption(&label));
+    let mut node = stack(key, Axis::Horizontal, Some(SPACING_03), leading);
+    node.props.align = Some(CrossAlign::Center);
+    node.props.padding = Some(InsetRefs {
+        left: Some(t(SPACING_05)),
+        right: Some(t(SPACING_05)),
+        ..InsetRefs::default()
+    });
+    let mut node = menu_row_chrome(node, label).with_behaviour(SELECTS_ON_RELEASE);
+    node.semantics.selected = selected;
+    node
+}
+
+/// The label every menu row shows: body-compact, one line, ellipsised, the
+/// row's width (`priority: 1` on the main axis), [`TEXT_PRIMARY`] ink.
+fn row_caption(label: &str) -> ViewNode {
+    let mut caption = text("label", label.to_owned());
+    caption.props.style = Some(t(TYPOGRAPHY_BODY_COMPACT));
+    caption.props.wrap = Some(TextWrap::Ellipsis);
+    caption
+        .props
+        .tokens
+        .insert("foreground".into(), t(TEXT_PRIMARY));
+    caption.constraints.horizontal = AxisConstraint {
+        min: None,
+        max: None,
+        priority: 1,
+    };
+    caption
+}
+
+/// The chrome every menu action row shares: `$layer` fill, [`LAYER_HOVER`]
+/// on hover, md 40 block pin, [`Role::Button`] with the row's three
+/// intents, and [`FocusFigure::BarInside`] — the stripe stays on the row's
+/// own bottom edge because rows stack flush with no gap between them, so
+/// the default bar would paint on the next row.
+fn menu_row_chrome(mut node: ViewNode, label: String) -> ViewNode {
     node.props
         .tokens
         .insert("background".into(), t(SURFACE_RAISED));
     node.props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
-    // `BarInside`. Menu items stack flush at `SIZE_MD` with no gap between
-    // them, so the default bar — five units below the bottom edge — would
-    // paint on the next item rather than in empty space. The same stripe on
-    // the item's own bottom edge is contained and cannot.
     node.with_constraints(pin_block(SIZE_MD))
         // Same three intents as the field: a row is also a button.
         .interactive(Role::Button, label, FIELD_INTENTS)
-        .with_behaviour(ACTIVATES_ON_RELEASE)
         .owning_its_text()
         .with_focus_figure(FocusFigure::BarInside)
 }

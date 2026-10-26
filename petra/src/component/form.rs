@@ -42,12 +42,18 @@
 //! declared and with it absent, because a `stack` measures an `Input` leaf
 //! at the cross extent it was offered. The line was written, falsified, and
 //! taken out again rather than left in as a claim nothing tests.
+//!
+//! # The two variants
+//!
+//! [`form_fluid`] and [`form_two_column`] keep this shell's legend slot and
+//! change only the item rhythm (flush against one shared rule; row-major in
+//! two 32-guttered columns). Their measurements live in their own tests,
+//! not in the summary above, which describes [`form`].
 
-use super::stack;
-use super::text::text;
-use super::tokens::{SPACING_03, TEXT_MUTED, t};
+use super::tokens::{BORDER_SUBTLE, SPACING_03, SPACING_07, TEXT_MUTED, t};
+use super::{rule, stack, text::text};
 use crate::geom::Axis;
-use crate::tree::{AxisConstraint, Constraints, Key, NodeKind, ViewNode};
+use crate::tree::{AxisConstraint, Constraints, Key, NodeKind, Props, TrackSize, ViewNode};
 
 /// What stands between two consecutive form items, so that the `Stack`'s
 /// own `$spacing-03` on each side of it adds up to Carbon's `$spacing-07`
@@ -62,13 +68,8 @@ const _: () = assert!(ITEM_FILLER == 32.0 - 2.0 * 8.0);
 /// `children` are the fields. The legend is a `text` child keyed `"legend"`.
 /// Not interactive: Form does not submit, focus, or click.
 pub fn form(key: impl Into<Key>, legend: impl Into<String>, children: Vec<ViewNode>) -> ViewNode {
-    let mut legend_node = text("legend", legend);
-    legend_node
-        .props
-        .tokens
-        .insert("foreground".into(), t(TEXT_MUTED));
     let mut rows = Vec::with_capacity(children.len() * 2 + 1);
-    rows.push(legend_node);
+    rows.push(legend_text(legend));
     for (i, child) in children.into_iter().enumerate() {
         if i > 0 {
             rows.push(item_filler(i - 1));
@@ -88,6 +89,101 @@ fn item_filler(index: usize) -> ViewNode {
         },
         ..Constraints::default()
     })
+}
+
+/// Carbon's fluid form (`Form / fluid`) — the item rhythm of
+/// `.cds--form--fluid`, whose `.cds--form-item { margin-bottom: 0 }`
+/// (`_form.scss:142`) stacks items flush so their shared 1px borders are the
+/// gutter: consecutive items meet at one hairline rule, not 32px of air.
+///
+/// This shell therefore owns exactly the two things that difference asks
+/// for: the flush stack (gap 0, spelled as no spacing token, which
+/// [`crate::tree::props::DEFAULT_SPACING`] resolves to) and the one
+/// [`BORDER_SUBTLE`] rule
+/// between consecutive items — a drawn separator, because two siblings in a
+/// view tree cannot literally share a CSS border edge, and folding one rule
+/// in keeps the gutter visible in the frame record instead of implicit in
+/// two boxes happening to touch. That rule is the border material's groove
+/// (2 shadow + 2 highlight device pixels — [`crate::token::rule`]'s
+/// rendering of Carbon's 1px shared border), so the gutter it makes is
+/// exactly one rule thick and nothing more, measured in
+/// `fluid_form_items_meet_at_one_shared_rule`.
+///
+/// The 64px input height is a fluid *field's* business (`field_fluid`,
+/// `date_picker_fluid`); this shell deliberately does not re-pin child
+/// extents the way `menu_at` re-pins its rows, because form items
+/// carry their own validated stacks (`field_with`, `date_picker_with`) that
+/// a blanket extent would flatten.
+///
+/// The fieldset legend keeps its `spacing-03` (8px) above the first item,
+/// as in [`form`]: the fluid step is in the items' rhythm, not the title's.
+pub fn form_fluid(
+    key: impl Into<Key>,
+    legend: impl Into<String>,
+    items: Vec<ViewNode>,
+) -> ViewNode {
+    let key = key.into();
+    let n = items.len();
+    let mut flush = Vec::with_capacity(n * 2);
+    for (i, item) in items.into_iter().enumerate() {
+        flush.push(item);
+        if i + 1 < n {
+            flush.push(rule(format!("gap{i}"), Axis::Horizontal, BORDER_SUBTLE));
+        }
+    }
+    let rows = vec![
+        legend_text(legend),
+        stack(format!("{}-items", key), Axis::Vertical, None, flush),
+    ];
+    stack(key, Axis::Vertical, Some(SPACING_03), rows)
+}
+
+/// Carbon's two-column form (`Form / two-column`) — fields flowing row-major
+/// over two equal-weight columns with Carbon's form margins on both axes:
+/// `$spacing-07` (32px) down the rows (`margin-block-end` on `.cds--form-item`,
+/// `_form.scss:85`) and the same 32px as the column gutter (a form item's
+/// trailing half-gutter pattern, `_form.scss:89`).
+///
+/// Children land row-major, exactly as `pagination_nav`'s `page_grid` seats
+/// the pagination nav: item 0 top-left, item 1 top-right, item 2 on the
+/// second row's left. An odd item count leaves the last row's right cell
+/// empty — a grid hole is honest; stretching the last item across both
+/// columns would make its 50% field width a claim the author never typed.
+///
+/// The fieldset legend sits above the grid, whole-width, at `spacing-03`;
+/// the 32s live between the items, not under the title.
+pub fn form_two_column(
+    key: impl Into<Key>,
+    legend: impl Into<String>,
+    items: Vec<ViewNode>,
+) -> ViewNode {
+    let key = key.into();
+    let grid = ViewNode::new(NodeKind::Grid, format!("{}-items", key)).with_props(Props {
+        columns: vec![
+            TrackSize::Weight { weight: 1.0 },
+            TrackSize::Weight { weight: 1.0 },
+        ],
+        column_spacing: Some(t(SPACING_07)),
+        row_spacing: Some(t(SPACING_07)),
+        ..Props::default()
+    });
+    let grid = grid.with_children(items);
+    stack(
+        key,
+        Axis::Vertical,
+        Some(SPACING_03),
+        vec![legend_text(legend), grid],
+    )
+}
+
+/// The muted fieldset legend both variants share with [`form`].
+fn legend_text(legend: impl Into<String>) -> ViewNode {
+    let mut legend_node = text("legend", legend);
+    legend_node
+        .props
+        .tokens
+        .insert("foreground".into(), t(TEXT_MUTED));
+    legend_node
 }
 
 #[cfg(test)]
@@ -297,5 +393,118 @@ mod tests {
                 "legend at {ratio:.2}:1 against {SURFACE_BASE} fails AA {MIN_TEXT_CONTRAST}:1"
             );
         }
+    }
+
+    /// The fluid variant's whole difference from [`form`], measured in the
+    /// frame: `.cds--form-item { margin-bottom: 0 }` (`_form.scss:142`)
+    /// makes consecutive items meet at their shared border, so what sits
+    /// between two items is exactly one rule — the `border.subtle` groove,
+    /// 2 shadow + 2 highlight device pixels — and no slack either side of
+    /// it, against the 32 of the standard rhythm. The legend keeps its
+    /// `spacing-03` above the first item.
+    #[test]
+    fn fluid_form_items_meet_at_one_shared_rule() {
+        use super::form_fluid;
+        let node = form_fluid(
+            "fluid",
+            "Fluid",
+            vec![
+                field("name", "Name"),
+                field("email", "Email"),
+                field("org", "Org"),
+            ],
+        );
+        assert_eq!(node.kind, NodeKind::Stack);
+        // Structural half of the claim: the rules between items are drawn
+        // separators bound to `border.subtle`, and the flush stack carries no
+        // spacing token at all (absence = 0 gap).
+        let items = node.children[1].as_ref();
+        assert_eq!(items.children.len(), 5, "three items and two hairlines");
+        for i in [1, 3] {
+            let rule = items.children[i].as_ref();
+            assert_eq!(rule.kind, NodeKind::Separator, "the gutter is a drawn rule");
+            assert_eq!(
+                token(rule, "background"),
+                Some(crate::component::tokens::BORDER_SUBTLE),
+                "the divider is the `border.subtle` material"
+            );
+        }
+        assert!(
+            items.props.spacing.is_none(),
+            "the flush stack asks for no gap; absence resolves to 0"
+        );
+
+        let frame = petrify_lone(node);
+        let rect = |suffix: &str| {
+            frame
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with(suffix))
+                .unwrap_or_else(|| panic!("{suffix} is missing from the frame"))
+                .rect
+        };
+        let legend = rect("/legend");
+        let first = rect("/name");
+        let second = rect("/email");
+        let third = rect("/org");
+        let rule0 = rect("/gap0");
+        assert_eq!(
+            first.y - legend.bottom(),
+            8.0,
+            "the legend's gap is `$spacing-03`, as in `form`"
+        );
+        assert_eq!(
+            rule0.h,
+            crate::token::rule::total_units(),
+            "the divider is one groove (2 shadow + 2 highlight device px), \
+             this library's border.subtle rendering of Carbon's 1px shared border"
+        );
+        assert_eq!(
+            second.y - first.bottom(),
+            rule0.h,
+            "flush items are separated by exactly the rule and nothing else"
+        );
+        assert_eq!(
+            third.y - second.bottom(),
+            rect("/gap1").h,
+            "every consecutive pair is flush, not just the first"
+        );
+    }
+
+    /// The two-column variant's layout, measured in the frame: items flow
+    /// row-major over two equal columns with `$spacing-07` on both axes —
+    /// 32 across the gutter and 32 down the rows (`_form.scss:85,89`) — and
+    /// the third item wraps back under the first instead of flowing on to a
+    /// third column.
+    #[test]
+    fn two_column_form_flows_row_major_with_32_on_both_axes() {
+        use super::form_two_column;
+        let node = form_two_column(
+            "two",
+            "Two",
+            vec![
+                field("a", "A"),
+                field("b", "B"),
+                field("c", "C"),
+                field("d", "D"),
+            ],
+        );
+        let frame = petrify_lone(node);
+        let rect = |suffix: &str| {
+            frame
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with(suffix))
+                .unwrap_or_else(|| panic!("{suffix} is missing from the frame"))
+                .rect
+        };
+        let (a, b, c, d) = (rect("/a"), rect("/b"), rect("/c"), rect("/d"));
+        assert_eq!(a.w, b.w, "the columns are equal-weight");
+        assert_eq!(a.y, b.y, "the first two items share a row");
+        assert_eq!(b.x - a.right(), 32.0, "the column gutter is `$spacing-07`");
+        assert_eq!(c.y - a.bottom(), 32.0, "the row gap is `$spacing-07`");
+        assert_eq!(c.x, a.x, "the third item wraps back under the first");
+        assert_eq!(d.y, c.y, "the second row is also a pair");
+        assert_eq!(d.x, b.x, "and its right item sits in the right column");
     }
 }

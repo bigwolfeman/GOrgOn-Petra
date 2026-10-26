@@ -6,7 +6,7 @@
 //!
 //! Components: Breadcrumb, Content switcher, Link, Menu, Menu buttons,
 //! Menubar, Pagination, Tabs, UI shell header, UI shell left panel, UI
-//! shell right panel. 67 constructors (see the `coverage` test at the
+//! shell right panel. 88 constructors (see the `coverage` test at the
 //! bottom, which counts the source rather than trusting this comment).
 
 use serde::Deserialize;
@@ -18,22 +18,28 @@ use crate::component::params::{
 };
 use crate::component::registry::IconMarkParam;
 use crate::component::{
-    LeftPanelMode, PaginationNavOverflow, PaginationPicker, breadcrumb, breadcrumb_item,
-    breadcrumb_item_current, breadcrumb_item_icon, breadcrumb_overflow, breadcrumb_with_separator,
-    contained_tab, contained_tab_bar, content_switcher, content_switcher_item, content_switcher_lg,
-    content_switcher_sm, link, link_inline, menu, menu_button, menu_button_lg, menu_button_sm,
-    menu_button_xs, menu_flyout, menu_item, menu_item_with, menu_lg, menu_sm, menu_xs, menubar,
-    menubar_top, pagination, pagination_items, pagination_items_lg, pagination_items_open,
-    pagination_items_sm, pagination_lg, pagination_nav, pagination_nav_lg, pagination_nav_open,
-    pagination_nav_sm, pagination_numbers, pagination_numbers_lg, pagination_numbers_sm,
-    pagination_page_size, pagination_prev_next, pagination_prev_next_lg, pagination_prev_next_sm,
-    pagination_range, pagination_sm, tab, tab_bar, ui_shell_header, ui_shell_header_action,
-    ui_shell_header_action_icon, ui_shell_header_menu_trigger, ui_shell_header_nav_item,
-    ui_shell_left_panel, ui_shell_left_panel_divider, ui_shell_left_panel_icon_item,
-    ui_shell_left_panel_icon_subitem, ui_shell_left_panel_in, ui_shell_left_panel_item,
-    ui_shell_left_panel_rail, ui_shell_left_panel_subitem, ui_shell_right_panel,
-    ui_shell_right_panel_divider, ui_shell_switcher, ui_shell_switcher_item, vertical_tab,
-    vertical_tab_bar,
+    LeftPanelMode, PaginationNavOverflow, PaginationPicker, SwitcherSize, breadcrumb,
+    breadcrumb_item, breadcrumb_item_current, breadcrumb_item_icon, breadcrumb_overflow,
+    breadcrumb_with_separator, combo_button, combo_button_lg, combo_button_sm, contained_tab,
+    contained_tab_bar, content_switcher, content_switcher_icon_only, content_switcher_icon_only_lg,
+    content_switcher_icon_only_sm, content_switcher_item, content_switcher_item_icon,
+    content_switcher_item_icon_with_size, content_switcher_item_low_contrast, content_switcher_lg,
+    content_switcher_low_contrast, content_switcher_low_contrast_lg,
+    content_switcher_low_contrast_sm, content_switcher_sm, link, link_inline, menu, menu_border,
+    menu_button, menu_button_lg, menu_button_sm, menu_button_xs, menu_flyout, menu_item,
+    menu_item_group, menu_item_radio_group, menu_item_selectable, menu_item_with, menu_lg, menu_sm,
+    menu_with_icons, menu_xs, menubar, menubar_top, overflow_menu, overflow_menu_lg,
+    overflow_menu_sm, overflow_menu_xs, pagination, pagination_items, pagination_items_lg,
+    pagination_items_open, pagination_items_sm, pagination_lg, pagination_nav, pagination_nav_lg,
+    pagination_nav_open, pagination_nav_sm, pagination_numbers, pagination_numbers_lg,
+    pagination_numbers_sm, pagination_page_size, pagination_prev_next, pagination_prev_next_lg,
+    pagination_prev_next_sm, pagination_range, pagination_sm, tab, tab_bar, ui_shell_header,
+    ui_shell_header_action, ui_shell_header_action_icon, ui_shell_header_menu_trigger,
+    ui_shell_header_nav_item, ui_shell_left_panel, ui_shell_left_panel_divider,
+    ui_shell_left_panel_icon_item, ui_shell_left_panel_icon_subitem, ui_shell_left_panel_in,
+    ui_shell_left_panel_item, ui_shell_left_panel_rail, ui_shell_left_panel_subitem,
+    ui_shell_right_panel, ui_shell_right_panel_divider, ui_shell_switcher, ui_shell_switcher_item,
+    vertical_tab, vertical_tab_bar,
 };
 use crate::tree::{Edge, Key, ViewNode};
 
@@ -170,6 +176,96 @@ impl ParamShape for MenuItemWithParams {
         crate::icon_mark_luau!(),
         "?, shortcut: string?, submenu: boolean }"
     );
+}
+
+/// `menu_item_selectable(key, label, icon, selected)`: [`MenuItemWithParams`]
+/// minus the shortcut/submenu pair, plus the selection column's flag.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MenuItemSelectableParams {
+    key: Key,
+    label: String,
+    #[serde(default)]
+    icon: Option<IconMarkParam>,
+    selected: bool,
+}
+impl ParamShape for MenuItemSelectableParams {
+    const LUAU: &'static str = concat!(
+        "{ key: string, label: string, icon: ",
+        crate::icon_mark_luau!(),
+        "?, selected: boolean }"
+    );
+}
+
+/// `content_switcher.rs`'s [`SwitcherSize`], as an agent writes it — the
+/// size step `content_switcher_item_icon_with_size` threads to its tab.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum SwitcherSizeParam {
+    Sm,
+    Md,
+    Lg,
+}
+
+impl From<SwitcherSizeParam> for SwitcherSize {
+    fn from(size: SwitcherSizeParam) -> Self {
+        match size {
+            SwitcherSizeParam::Sm => SwitcherSize::Sm,
+            SwitcherSizeParam::Md => SwitcherSize::Md,
+            SwitcherSizeParam::Lg => SwitcherSize::Lg,
+        }
+    }
+}
+
+/// `content_switcher_item_icon(key, label, mark, selected)`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ContentSwitcherItemIconParams {
+    key: Key,
+    label: String,
+    mark: IconMarkParam,
+    selected: bool,
+}
+impl ParamShape for ContentSwitcherItemIconParams {
+    const LUAU: &'static str = concat!(
+        "{ key: string, label: string, mark: ",
+        crate::icon_mark_luau!(),
+        ", selected: boolean }"
+    );
+}
+
+/// `content_switcher_item_icon_with_size(key, label, mark, selected, size)`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ContentSwitcherItemIconSizeParams {
+    key: Key,
+    label: String,
+    mark: IconMarkParam,
+    selected: bool,
+    size: SwitcherSizeParam,
+}
+impl ParamShape for ContentSwitcherItemIconSizeParams {
+    const LUAU: &'static str = concat!(
+        "{ key: string, label: string, mark: ",
+        crate::icon_mark_luau!(),
+        ", selected: boolean, size: \"sm\" | \"md\" | \"lg\" }"
+    );
+}
+
+/// `combo_button(key, action, open, items)`: the split trigger's action
+/// half carries its own label, so the wire name is `action`, mirroring the
+/// Rust parameter list one for one.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComboButtonParams {
+    key: Key,
+    action: String,
+    open: bool,
+    children: Vec<ViewNode>,
+}
+impl ParamShape for ComboButtonParams {
+    const LUAU: &'static str =
+        "{ key: string, action: string, open: boolean, children: { ViewNode } }";
 }
 
 /// `menubar(key, label, edge, items)`. `Edge` already derives `Deserialize`
@@ -413,6 +509,45 @@ pub const ENTRIES: &[Entry] = &[
     row!("content_switcher_item", KeyLabelSelected, |p| {
         content_switcher_item(p.key, p.label, p.selected)
     }),
+    row!("content_switcher_low_contrast", KeyChildren, |p| {
+        content_switcher_low_contrast(p.key, p.children)
+    }),
+    row!("content_switcher_low_contrast_sm", KeyChildren, |p| {
+        content_switcher_low_contrast_sm(p.key, p.children)
+    }),
+    row!("content_switcher_low_contrast_lg", KeyChildren, |p| {
+        content_switcher_low_contrast_lg(p.key, p.children)
+    }),
+    row!("content_switcher_icon_only", KeyChildren, |p| {
+        content_switcher_icon_only(p.key, p.children)
+    }),
+    row!("content_switcher_icon_only_sm", KeyChildren, |p| {
+        content_switcher_icon_only_sm(p.key, p.children)
+    }),
+    row!("content_switcher_icon_only_lg", KeyChildren, |p| {
+        content_switcher_icon_only_lg(p.key, p.children)
+    }),
+    row!(
+        "content_switcher_item_low_contrast",
+        KeyLabelSelected,
+        |p| content_switcher_item_low_contrast(p.key, p.label, p.selected)
+    ),
+    row!(
+        "content_switcher_item_icon",
+        ContentSwitcherItemIconParams,
+        |p| content_switcher_item_icon(p.key, p.label, p.mark.into(), p.selected)
+    ),
+    row!(
+        "content_switcher_item_icon_with_size",
+        ContentSwitcherItemIconSizeParams,
+        |p| content_switcher_item_icon_with_size(
+            p.key,
+            p.label,
+            p.mark.into(),
+            p.selected,
+            p.size.into()
+        )
+    ),
     row!("link", KeyLabel, |p| link(p.key, p.label)),
     row!("link_inline", KeyLabel, |p| link_inline(p.key, p.label)),
     row!("menu", KeyLabelChildren, |p| menu(
@@ -438,6 +573,21 @@ pub const ENTRIES: &[Entry] = &[
     row!("menu_flyout", KeyLabelChildren, |p| menu_flyout(
         p.key, p.label, p.children
     )),
+    row!("menu_item_selectable", MenuItemSelectableParams, |p| {
+        menu_item_selectable(p.key, p.label, p.icon.map(Into::into), p.selected)
+    }),
+    row!("menu_item_group", KeyLabelChildren, |p| menu_item_group(
+        p.key, p.label, p.children
+    )),
+    row!("menu_item_radio_group", KeyLabelChildren, |p| {
+        menu_item_radio_group(p.key, p.label, p.children)
+    }),
+    row!("menu_border", KeyLabelChildren, |p| menu_border(
+        p.key, p.label, p.children
+    )),
+    row!("menu_with_icons", KeyLabelChildren, |p| menu_with_icons(
+        p.key, p.label, p.children
+    )),
     row!("menu_button", KeyLabelOpenChildren, |p| menu_button(
         p.key, p.label, p.open, p.children
     )),
@@ -450,6 +600,27 @@ pub const ENTRIES: &[Entry] = &[
     row!("menu_button_lg", KeyLabelOpenChildren, |p| menu_button_lg(
         p.key, p.label, p.open, p.children
     )),
+    row!("combo_button", ComboButtonParams, |p| combo_button(
+        p.key, p.action, p.open, p.children
+    )),
+    row!("combo_button_sm", ComboButtonParams, |p| {
+        combo_button_sm(p.key, p.action, p.open, p.children)
+    }),
+    row!("combo_button_lg", ComboButtonParams, |p| {
+        combo_button_lg(p.key, p.action, p.open, p.children)
+    }),
+    row!("overflow_menu", KeyLabelOpenChildren, |p| overflow_menu(
+        p.key, p.label, p.open, p.children
+    )),
+    row!("overflow_menu_xs", KeyLabelOpenChildren, |p| {
+        overflow_menu_xs(p.key, p.label, p.open, p.children)
+    }),
+    row!("overflow_menu_sm", KeyLabelOpenChildren, |p| {
+        overflow_menu_sm(p.key, p.label, p.open, p.children)
+    }),
+    row!("overflow_menu_lg", KeyLabelOpenChildren, |p| {
+        overflow_menu_lg(p.key, p.label, p.open, p.children)
+    }),
     row!("menubar", MenubarParams, |p| menubar(
         p.key, p.label, p.edge, p.children
     )),
@@ -697,15 +868,19 @@ mod tests {
             missing.is_empty(),
             "constructors present in source but missing a registry row: {missing:?}"
         );
-        // `menu_item` and `menu_item_with` are `pub use`d from
-        // `list_box.rs` (`menu.rs`); the scanner only sees `pub fn` text,
-        // so a re-export is invisible. Lua still names them. `menu_flyout`
-        // is the same filter for the same reason. Same rule as a
-        // constructor whose first param is not `key: impl Into<Key>`.
+        // `menu_item`, `menu_item_with` and `menu_item_selectable` are
+        // `pub fn` in `list_box.rs` (the first two `pub use`d through
+        // `menu.rs`); the scanner only reads this file set's own text, so
+        // the neighbour is invisible here. Lua still names them.
+        // `menu_flyout` is the same filter for the same reason. Same rule
+        // as a constructor whose first param is not `key: impl Into<Key>`.
         let extra: Vec<_> = registered
             .difference(&source)
             .filter(|name| {
-                *name != "menu_item" && *name != "menu_item_with" && *name != "menu_flyout"
+                *name != "menu_item"
+                    && *name != "menu_item_with"
+                    && *name != "menu_flyout"
+                    && *name != "menu_item_selectable"
             })
             .collect();
         assert!(
@@ -772,6 +947,34 @@ mod tests {
             "content_switcher_sm" => json!({ "key": "k-cs-sm", "children": [] }),
             "content_switcher_lg" => json!({ "key": "k-cs-lg", "children": [] }),
             "content_switcher_item" => json!({ "key": "k", "label": "l", "selected": true }),
+            "content_switcher_low_contrast" => {
+                json!({ "key": "k-cs-low", "children": [] })
+            }
+            "content_switcher_low_contrast_sm" => {
+                json!({ "key": "k-cs-low-sm", "children": [] })
+            }
+            "content_switcher_low_contrast_lg" => {
+                json!({ "key": "k-cs-low-lg", "children": [] })
+            }
+            "content_switcher_icon_only" => {
+                json!({ "key": "k-cs-icon", "children": [] })
+            }
+            "content_switcher_icon_only_sm" => {
+                json!({ "key": "k-cs-icon-sm", "children": [] })
+            }
+            "content_switcher_icon_only_lg" => {
+                json!({ "key": "k-cs-icon-lg", "children": [] })
+            }
+            "content_switcher_item_low_contrast" => {
+                json!({ "key": "k-cs-item-low", "label": "l", "selected": true })
+            }
+            "content_switcher_item_icon" => json!({
+                "key": "k-cs-item-icon", "label": "l", "mark": "copy", "selected": true
+            }),
+            "content_switcher_item_icon_with_size" => json!({
+                "key": "k-cs-item-icon-sm", "label": "l", "mark": "copy",
+                "selected": true, "size": "sm"
+            }),
             "link" => json!({ "key": "k", "label": "l" }),
             "link_inline" => json!({ "key": "k", "label": "l-inline" }),
             "menu" => json!({ "key": "k", "label": "l", "children": [] }),
@@ -784,6 +987,19 @@ mod tests {
                 "shortcut": "⌘S", "submenu": true
             }),
             "menu_flyout" => json!({ "key": "k-flyout", "label": "l-flyout", "children": [] }),
+            "menu_item_selectable" => json!({
+                "key": "k-mi-sel", "label": "l", "icon": "copy", "selected": true
+            }),
+            "menu_item_group" => {
+                json!({ "key": "k-mi-group", "label": "l", "children": [] })
+            }
+            "menu_item_radio_group" => {
+                json!({ "key": "k-mi-radio", "label": "l", "children": [] })
+            }
+            "menu_border" => json!({ "key": "k-menu-border", "label": "l", "children": [] }),
+            "menu_with_icons" => {
+                json!({ "key": "k-menu-icons", "label": "l", "children": [] })
+            }
             "menu_button" => {
                 json!({ "key": "k", "label": "l", "open": true, "children": [] })
             }
@@ -795,6 +1011,27 @@ mod tests {
             }
             "menu_button_lg" => {
                 json!({ "key": "k-mb-lg", "label": "l", "open": true, "children": [] })
+            }
+            "combo_button" => {
+                json!({ "key": "k-cb", "action": "save", "open": true, "children": [] })
+            }
+            "combo_button_sm" => {
+                json!({ "key": "k-cb-sm", "action": "save", "open": true, "children": [] })
+            }
+            "combo_button_lg" => {
+                json!({ "key": "k-cb-lg", "action": "save", "open": true, "children": [] })
+            }
+            "overflow_menu" => {
+                json!({ "key": "k-of", "label": "l", "open": true, "children": [] })
+            }
+            "overflow_menu_xs" => {
+                json!({ "key": "k-of-xs", "label": "l", "open": true, "children": [] })
+            }
+            "overflow_menu_sm" => {
+                json!({ "key": "k-of-sm", "label": "l", "open": true, "children": [] })
+            }
+            "overflow_menu_lg" => {
+                json!({ "key": "k-of-lg", "label": "l", "open": true, "children": [] })
             }
             "menubar" => json!({
                 "key": "k", "label": "l", "edge": "bottom", "children": []

@@ -1,11 +1,11 @@
 //! Inventory row 18, Menu.
 
-use gorgon_petra::component::{button, menu, menu_item, section};
+use gorgon_petra::component::{button, menu, menu_item, section, text};
 use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::ViewNode;
 
 use super::Page;
-use super::common::{body, column, dismisses, path_has, sp};
+use super::common::{body, column, dismissed_under, path_has, row, sp};
 
 /// The key `menu` anchors to: its trigger must be a sibling with this key.
 const TRIGGER: &str = "trigger";
@@ -129,6 +129,11 @@ impl Page for Menu {
     }
 
     fn body(&self) -> ViewNode {
+        use gorgon_petra::component::{
+            IconMark, heading, menu_border, menu_item_group, menu_item_radio_group,
+            menu_item_selectable, menu_item_with, menu_with_icons,
+        };
+
         let mut pair = vec![button(TRIGGER, "Actions")];
         if self.open {
             pair.push(menu(
@@ -149,7 +154,144 @@ impl Page for Menu {
                 // The trigger and the menu share one child list with no
                 // spacing, so the sibling anchor resolves and nothing
                 // below the trigger moves when the menu opens.
-                vec![column("mn-pair", None, pair)],
+                vec![
+                    column("mn-pair", None, pair),
+                    heading("variants-title", "The documented modifiers and sub-parts"),
+                    row(
+                        "mn-variants",
+                        sp("spacing.lg"),
+                        vec![
+                            // T050 `--border`: the 1px $border-subtle
+                            // outline the style page names as optional.
+                            column(
+                                "v-border",
+                                sp("spacing.sm"),
+                                vec![
+                                    text("v-border-title", "--border"),
+                                    button(TRIGGER, "Actions"),
+                                    menu_border(
+                                        "v-menu-border",
+                                        "Actions",
+                                        vec![
+                                            menu_item("v-border-0", "Rename"),
+                                            menu_item("v-border-1", "Delete"),
+                                        ],
+                                    ),
+                                ],
+                            ),
+                            // T050 `--with-icons`: the widened 12rem
+                            // minimum and the rows' leading icon column.
+                            column(
+                                "v-icons",
+                                sp("spacing.sm"),
+                                vec![
+                                    text("v-icons-title", "--with-icons"),
+                                    button(TRIGGER, "Actions"),
+                                    menu_with_icons(
+                                        "v-menu-icons",
+                                        "Actions",
+                                        vec![
+                                            menu_item_with(
+                                                "v-icons-0",
+                                                "Rename",
+                                                Some(IconMark::Edit),
+                                                None,
+                                                false,
+                                            ),
+                                            menu_item_with(
+                                                "v-icons-1",
+                                                "Delete",
+                                                Some(IconMark::Close),
+                                                None,
+                                                false,
+                                            ),
+                                        ],
+                                    ),
+                                ],
+                            ),
+                            // T050 selectable items: the selection column,
+                            // a checkmark plus the semantic flag, never a fill.
+                            column(
+                                "v-selectable",
+                                sp("spacing.sm"),
+                                vec![
+                                    text("v-selectable-title", "--with-selectable-items"),
+                                    button(TRIGGER, "View"),
+                                    menu(
+                                        "v-menu-selectable",
+                                        "View",
+                                        vec![
+                                            menu_item_selectable("v-sel-0", "Keep", None, false),
+                                            menu_item_selectable(
+                                                "v-sel-1",
+                                                "Share",
+                                                Some(IconMark::Check),
+                                                true,
+                                            ),
+                                        ],
+                                    ),
+                                ],
+                            ),
+                            // T050 `menu-item-group`: a labelled column
+                            // of rows inside the menu.
+                            column(
+                                "v-group",
+                                sp("spacing.sm"),
+                                vec![
+                                    text("v-group-title", "menu-item-group"),
+                                    button(TRIGGER, "Actions"),
+                                    menu(
+                                        "v-menu-group",
+                                        "Actions",
+                                        vec![
+                                            menu_item("v-group-before", "Rename"),
+                                            menu_item_group(
+                                                "v-group-inner",
+                                                "View",
+                                                vec![
+                                                    menu_item("v-group-0", "Zoom in"),
+                                                    menu_item("v-group-1", "Zoom out"),
+                                                ],
+                                            ),
+                                        ],
+                                    ),
+                                ],
+                            ),
+                            // T050 `menu-item-radio-group`: the same
+                            // shape declaring `radiogroup` — one choice.
+                            column(
+                                "v-radio",
+                                sp("spacing.sm"),
+                                vec![
+                                    text("v-radio-title", "menu-item-radio-group"),
+                                    button(TRIGGER, "Size"),
+                                    menu(
+                                        "v-menu-radio",
+                                        "Size",
+                                        vec![menu_item_radio_group(
+                                            "v-radio-inner",
+                                            "Size",
+                                            vec![
+                                                menu_item_selectable(
+                                                    "v-radio-0",
+                                                    "Small",
+                                                    None,
+                                                    false,
+                                                ),
+                                                menu_item_selectable(
+                                                    "v-radio-1",
+                                                    "Large",
+                                                    None,
+                                                    true,
+                                                ),
+                                            ],
+                                        )],
+                                    ),
+                                ],
+                            ),
+                        ],
+                    ),
+                ],
             )],
         )
     }
@@ -172,8 +314,93 @@ impl Page for Menu {
     }
 
     fn dismissed(&mut self, ids: &[String]) {
-        if dismisses(ids, MENU) {
+        // Under `mn-pair`, not bare `menu`: the section, the page root and
+        // the live surface all carry the key `menu`, and the variant cells
+        // mount their own surfaces open at rest — a bare segment match
+        // read every press that shut one of those as a press that shut the
+        // live menu, closing it the same event that opened it.
+        if dismissed_under(ids, "mn-pair", MENU) {
             self.open = false;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MENU, Menu};
+    use crate::page::Page;
+    use crate::page::common::find;
+    use gorgon_petra::tree::{NodeKind, Role};
+
+    /// T050 `--border` cell: the menu wears the one-token outline and the
+    /// plain menu beside the page does not.
+    #[test]
+    fn the_border_menu_cell_wears_the_outline() {
+        let page = Menu { open: true };
+        let tree = page.body();
+        let bordered = find(&tree, "v-menu-border").expect("the --border menu is on the page");
+        assert!(
+            bordered.props.tokens.contains_key("border"),
+            "the --border menu binds an outline token"
+        );
+        let plain = find(&tree, MENU).expect("the live menu cell is on the page");
+        assert!(
+            !plain.props.tokens.contains_key("border"),
+            "the plain menu wears no outline"
+        );
+    }
+
+    /// T050 `--with-icons` cell: the widened 12rem/192px minimum, the
+    /// rows carrying their own leading icon column.
+    #[test]
+    fn the_with_icons_menu_cell_widens_its_minimum() {
+        let tree = Menu::default().body();
+        let cell = find(&tree, "v-menu-icons").expect("the --with-icons menu is on the page");
+        assert_eq!(
+            cell.constraints.horizontal.min,
+            Some(192.0),
+            "12rem at 16 units per rem"
+        );
+        assert!(find(cell, "v-icons-0").is_some(), "its rows are in it");
+    }
+
+    /// T050 selectable-items cell: the selection column is a checkmark
+    /// when selected and an empty slot when not — never a recoloured row.
+    #[test]
+    fn the_selectable_items_cell_marks_selection_in_its_column() {
+        let tree = Menu::default().body();
+        let menu = find(&tree, "v-menu-selectable").expect("the selectable menu is on the page");
+        let unselected = find(menu, "v-sel-0").expect("the unselected row is there");
+        let selected = find(menu, "v-sel-1").expect("the selected row is there");
+        let empty = find(unselected, "selection").expect("the unselected row reserves its column");
+        assert_eq!(empty.kind, NodeKind::Stack, "an unselected column is empty");
+        let mark = find(selected, "selection").expect("the selected row reserves its column");
+        assert_eq!(
+            mark.kind,
+            NodeKind::Canvas,
+            "a selected column is the checkmark glyph"
+        );
+    }
+
+    /// T050 `menu-item-group` cell: the sub-part declares ARIA's own
+    /// `group`, the label above its button rows.
+    #[test]
+    fn the_group_cell_declares_the_group_role() {
+        let tree = Menu::default().body();
+        let group = find(&tree, "v-group-inner").expect("the item group is on the page");
+        assert_eq!(group.semantics.role, Some(Role::Custom("group".to_owned())));
+        assert!(find(group, "v-group-0").is_some(), "its rows are in it");
+    }
+
+    /// T050 `menu-item-radio-group` cell: the same shape declaring
+    /// `radiogroup` — the role is what says the collection picks one.
+    #[test]
+    fn the_radio_group_cell_declares_the_radiogroup_role() {
+        let tree = Menu::default().body();
+        let group = find(&tree, "v-radio-inner").expect("the radio group is on the page");
+        assert_eq!(
+            group.semantics.role,
+            Some(Role::Custom("radiogroup".to_owned()))
+        );
     }
 }
