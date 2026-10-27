@@ -98,7 +98,7 @@
 //! the off knob reads correctly in both polarities where a fixed white
 //! would vanish in light.
 
-use super::field::warning_helper;
+use super::field::{invalid_helper, warning_helper};
 use super::icon::{IconMark, icon};
 use super::kit;
 use super::text::text;
@@ -468,6 +468,17 @@ pub fn checkbox_readonly(key: impl Into<Key>, label: impl Into<String>, checked:
     node
 }
 
+/// A read-only radio: [`radio`] under [`super::readonly::readonly`].
+///
+/// The twin of [`checkbox_readonly`] — same fact (`Semantics.read_only`),
+/// same verb drop (the Click flip), same refusal of the disabled flag —
+/// routed through the shared marker so the two controls cannot drift. The
+/// marker also drops the intent, which is the flag day
+/// [`checkbox`]'s own doc records.
+pub fn radio_readonly(key: impl Into<Key>, label: impl Into<String>, selected: bool) -> ViewNode {
+    super::readonly::readonly(radio(key, label, selected))
+}
+
 /// A non-interactive checkbox group: a legend plus the caller's items.
 ///
 /// No `Role` — the enum has no Group, and a container with no actions is
@@ -506,6 +517,24 @@ fn with_warning(key: impl Into<Key>, control: ViewNode, message: impl Into<Strin
     node
 }
 
+/// The error twin of [`with_warning`]: a control with
+/// [`super::field::invalid_helper`] stacked below it.
+///
+/// Same channels as the warning half of the pair — the helper's word
+/// (`Invalid: {message}`) and its ErrorFilled mark — and the same refusal
+/// of a four-sided container border (FR-018 pairs word and glyph
+/// silhouette, never the hue alone).
+fn with_invalid(key: impl Into<Key>, control: ViewNode, message: impl Into<String>) -> ViewNode {
+    let mut node = stack(
+        key,
+        Axis::Vertical,
+        Some(SPACING_02),
+        vec![control, invalid_helper(message)],
+    );
+    node.props.align = Some(Align::Stretch);
+    node
+}
+
 /// A checkbox plus a warning helper stacked below it.
 ///
 /// Colour is not the only channel: the helper already carries
@@ -518,6 +547,24 @@ pub fn checkbox_warning(
     message: impl Into<String>,
 ) -> ViewNode {
     with_warning(key, checkbox("checkbox", label, checked), message)
+}
+
+/// A checkbox plus an invalid helper stacked below it.
+///
+/// The error twin of [`checkbox_warning`] (slice-a's States bullet names
+/// `error`/`invalid` and `warning` as two separate states, and the form
+/// family's `background@invalid` is the token `super::field::field_invalid`
+/// already routes). Colour is not the only channel: the helper carries
+/// `Invalid: {message}` and an ErrorFilled mark, against the warning pair's
+/// word and triangle (FR-018). This constructor does not wrap the control
+/// in a four-sided container border.
+pub fn checkbox_invalid(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    checked: bool,
+    message: impl Into<String>,
+) -> ViewNode {
+    with_invalid(key, checkbox("checkbox", label, checked), message)
 }
 
 /// Stack a binary control over [`kit::description`] (T036). Same shape as
@@ -668,6 +715,19 @@ pub fn radio_warning(
     with_warning(key, radio("radio", label, selected), message)
 }
 
+/// A radio plus an invalid helper stacked below it.
+///
+/// Same channels as [`checkbox_invalid`]: the helper's word and glyph, and
+/// no four-sided container border around the row.
+pub fn radio_invalid(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    selected: bool,
+    message: impl Into<String>,
+) -> ViewNode {
+    with_invalid(key, radio("radio", label, selected), message)
+}
+
 /// A radio plus a muted description line stacked below it (T036).
 pub fn radio_described(
     key: impl Into<Key>,
@@ -712,6 +772,18 @@ pub fn toggle(key: impl Into<Key>, label: impl Into<String>, on: bool) -> ViewNo
 /// FR-058 still requires a label argument.
 pub fn toggle_sm(key: impl Into<Key>, label: impl Into<String>, on: bool) -> ViewNode {
     toggle_sized(key, label, on, ToggleSize::Small)
+}
+
+/// A read-only toggle: [`toggle`] under [`super::readonly::readonly`].
+///
+/// Slice-f lists `read-only` among the switch's documented states, and this
+/// is that state as a declared fact: `Semantics.read_only` set, the flip
+/// verb and the toggle's intent dropped, `Focus` kept. The switch itself
+/// binds no `@state` token at all (this file's own audit comment), so — as
+/// with [`checkbox_readonly`] — there is no state-decorated binding left
+/// silent here; the marker is the channel.
+pub fn toggle_readonly(key: impl Into<Key>, label: impl Into<String>, on: bool) -> ViewNode {
+    super::readonly::readonly(toggle(key, label, on))
 }
 
 fn toggle_sized(
@@ -884,8 +956,9 @@ mod tests {
     use super::{
         CHECKBOX_BOX, RADIO_BOX, TOGGLE_SM_TRACK_H, TOGGLE_SM_TRACK_W, TOGGLE_TRACK_H,
         TOGGLE_TRACK_W, checkbox, checkbox_described, checkbox_group, checkbox_indeterminate,
-        checkbox_readonly, checkbox_required, checkbox_warning, radio, radio_described,
-        radio_group, radio_required, radio_warning, toggle, toggle_sm,
+        checkbox_invalid, checkbox_readonly, checkbox_required, checkbox_warning, radio,
+        radio_described, radio_group, radio_invalid, radio_required, radio_warning, toggle,
+        toggle_sm,
     };
     use crate::component::tests::{assert_fits_parent, petrify_lone};
     use crate::component::tokens::{TEXT_MUTED, TYPOGRAPHY_BODY_COMPACT};
@@ -1098,6 +1171,49 @@ mod tests {
         assert_warning_helper(&on, "looks old");
     }
 
+    /// Colour is not the only channel: the helper says `Invalid: {message}`
+    /// and sits an ErrorFilled mark beside it — the FR-018 pair against
+    /// [`assert_warning_helper`]'s triangle. The wrapper is not a
+    /// four-sided box either.
+    fn assert_invalid_helper(node: &ViewNode, message: &str) {
+        assert_eq!(node.kind, NodeKind::Stack);
+        assert_eq!(node.props.axis, Some(Axis::Vertical));
+        assert!(
+            node.semantics.role.is_none(),
+            "wrapper must not steal Button"
+        );
+        assert!(
+            !node.props.tokens.contains_key("border"),
+            "an invalid control is not a four-sided box; the helper is the channel"
+        );
+        let message_node = named(node, "message");
+        let expected_text = format!("Invalid: {message}");
+        assert_eq!(
+            message_node.props.text.as_deref(),
+            Some(expected_text.as_str())
+        );
+        let mark = named(node, "mark");
+        let expected = icon_toned("mark", IconMark::ErrorFilled, IconTone::Primary);
+        assert_eq!(mark.kind, NodeKind::Canvas);
+        assert_eq!(
+            mark.props.canvas, expected.props.canvas,
+            "the helper's glyph is ErrorFilled — the circle-with-slash half \
+             of the FR-018 pair against warning's triangle, not the hue"
+        );
+    }
+
+    #[test]
+    fn checkbox_invalid_says_so_in_words_and_a_glyph() {
+        let node = checkbox_invalid("c", "Agree", false, "required");
+        assert_invalid_helper(&node, "required");
+        assert!(!named(&node, "checkbox").semantics.selected);
+        named(&node, "box");
+        named(&node, "label");
+        let on = checkbox_invalid("c", "Agree", true, "looks old");
+        assert!(named(&on, "checkbox").semantics.selected);
+        assert_invalid_helper(&on, "looks old");
+    }
+
     #[test]
     fn radio_warning_says_so_in_words_and_a_glyph() {
         let node = radio_warning("r", "Other", false, "pick one");
@@ -1108,6 +1224,18 @@ mod tests {
         let on = radio_warning("r", "Other", true, "unusual choice");
         assert!(named(&on, "radio").semantics.selected);
         assert_warning_helper(&on, "unusual choice");
+    }
+
+    #[test]
+    fn radio_invalid_says_so_in_words_and_a_glyph() {
+        let node = radio_invalid("r", "Other", false, "pick one");
+        assert_invalid_helper(&node, "pick one");
+        assert!(!named(&node, "radio").semantics.selected);
+        named(&node, "box");
+        named(&node, "label");
+        let on = radio_invalid("r", "Other", true, "unusual choice");
+        assert!(named(&on, "radio").semantics.selected);
+        assert_invalid_helper(&on, "unusual choice");
     }
 
     /// T037: [`checkbox_required`] carries the same two channels

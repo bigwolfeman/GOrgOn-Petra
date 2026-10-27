@@ -3,8 +3,8 @@
 use super::icon::{IconMark, IconTone, icon_toned};
 use super::text::text;
 use super::tokens::{
-    LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SPACING_03, SPACING_04, SPACING_05,
-    SURFACE_BASE, TEXT_MUTED, TYPOGRAPHY_BODY_COMPACT, t,
+    LAYER_ACTIVE, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SPACING_03, SPACING_04,
+    SPACING_05, SURFACE_BASE, TEXT_MUTED, TYPOGRAPHY_BODY_COMPACT, t,
 };
 use super::{pad, stack};
 use crate::geom::{Align, Axis};
@@ -45,13 +45,14 @@ pub const LIST_ROW_EXTENT: f32 = 44.0;
 /// state that is never the only way a reader can tell a row is selected —
 /// the row's fill changes too.
 ///
-/// # Four fills, declared once, chosen by the engine
+/// # Five fills, declared once, chosen by the engine
 ///
 /// This function used to pick the fill itself, with an `if selected` around
-/// two token names. It now binds all four surfaces a row can have —
-/// `background`, `background@hover`, `background@selected`,
-/// `background@selected-hover` — and lets `crate::token::state`'s precedence
-/// chain decide which is in force (`contracts/interaction-state.md` §4, §6).
+/// two token names. It now binds all five surfaces a row can have —
+/// `background`, `background@hover`, `background@active`,
+/// `background@selected`, `background@selected-hover` — and lets
+/// `crate::token::state`'s precedence chain decide which is in force
+/// (`contracts/interaction-state.md` §4, §6).
 ///
 /// That is not a tidying. A row is the component where the difference between
 /// *naming a combination* and *composing states* is visible: hovering a
@@ -61,13 +62,20 @@ pub const LIST_ROW_EXTENT: f32 = 44.0;
 /// fourth branch, and a component that branches on hover needs to be told
 /// when the pointer moves — which is exactly the second hit test by a second
 /// owner that FR-009 forbids.
+///
+/// `background@active` is the clickable row's pressed treatment: slice-a's
+/// Contained list bullet measures `.cds--contained-list-item--clickable` as
+/// "a row-level opt-in that adds the hover/active/disabled visual treatment
+/// only when the row itself is a button/link", and the row *is* the button
+/// here. The fill was missing while hover and selected were declared, so the
+/// pressed moment drew the resting surface.
 pub fn list_row(key: impl Into<Key>, label: impl Into<String>, selected: bool) -> ViewNode {
     list_row_with(key, label, selected, None, None)
 }
 
 /// [`list_row`] with an optional leading icon and a muted trailing shortcut.
 ///
-/// Chrome is the same as [`list_row`]: four fills, `CornerRole::Tiled`,
+/// Chrome is the same as [`list_row`]: five fills, `CornerRole::Tiled`,
 /// [`FocusFigure::BarInside`], [`LIST_ROW_EXTENT`] padding, Hover/Focus/Click.
 /// Children sit on [`Axis::Horizontal`]. A shortcut is a trailing group
 /// under [`Justify::SpaceBetween`] — a text node cannot grow, so priority
@@ -124,6 +132,7 @@ pub fn list_row_with(
     for (slot, token) in [
         ("background", SURFACE_BASE),
         ("background@hover", LAYER_HOVER),
+        ("background@active", LAYER_ACTIVE),
         ("background@selected", LAYER_SELECTED),
         ("background@selected-hover", LAYER_SELECTED_HOVER),
     ] {
@@ -143,9 +152,9 @@ pub fn list_row_with(
         .interactive(
             Role::ListItem,
             label,
-            // `Hover` is what makes the four fills above reachable: without it
-            // the engine never hit-tests this row for hover, and two of the four
-            // bindings are tokens nothing reads.
+            // `Hover` is what makes the fills above reachable: without it
+            // the engine never hit-tests this row for hover, and two of the
+            // five bindings are tokens nothing reads.
             &[Interaction::Focus, Interaction::Click, Interaction::Hover],
         )
         // Spec 010: exclusive among siblings; a second Select on another row
@@ -200,6 +209,35 @@ mod tests {
             }),
             "list_row declared behaviour {:?}",
             node.behaviour
+        );
+    }
+
+    /// The clickable row's pressed treatment is a declared fill, not a
+    /// silent state (slice-a's Contained list bullet measures the
+    /// `--clickable` row's "hover/active/disabled visual treatment").
+    ///
+    /// Falsified by dropping `("background@active", LAYER_ACTIVE)` from the
+    /// fill table: the pressed moment draws the resting surface.
+    #[test]
+    fn list_row_binds_the_clickable_rows_pressed_fill() {
+        let node = list_row("row", "a fiber", false);
+        let binds = |slot: &str, token: &str| {
+            assert_eq!(
+                node.props.tokens.get(slot).map(|t| t.as_str()),
+                Some(token),
+                "{slot} is not bound to {token}"
+            )
+        };
+        binds("background", crate::component::tokens::SURFACE_BASE);
+        binds("background@hover", crate::component::tokens::LAYER_HOVER);
+        binds("background@active", crate::component::tokens::LAYER_ACTIVE);
+        binds(
+            "background@selected",
+            crate::component::tokens::LAYER_SELECTED,
+        );
+        binds(
+            "background@selected-hover",
+            crate::component::tokens::LAYER_SELECTED_HOVER,
         );
     }
 

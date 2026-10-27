@@ -76,6 +76,22 @@ pub fn dropdown(
     labelled(key, label, value, ListBoxSize::Md, None)
 }
 
+/// Read-only dropdown: [`dropdown`] under [`super::readonly::readonly`].
+///
+/// The fact and verb drop are the family's shared marker (`Semantics.read_only`
+/// set, the menu-open `Click` and the edit verbs dropped, `Focus` kept — so
+/// the field stays reachable by keyboard but cannot open). The well keeps
+/// its resting fill: [`super::field::FieldChrome::ReadOnly`]'s no-fill chrome
+/// is Text input's, and routing it through [`super::list_box`]'s private
+/// field builder is follow-up recorded here rather than silently skipped.
+pub fn dropdown_readonly(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    value: impl Into<String>,
+) -> ViewNode {
+    super::readonly::readonly(dropdown(key, label, value))
+}
+
 /// Carbon xs (24). See [`dropdown`].
 pub fn dropdown_xs(
     key: impl Into<Key>,

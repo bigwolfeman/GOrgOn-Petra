@@ -154,6 +154,22 @@ pub fn date_picker(
     column(key, field, None)
 }
 
+/// Read-only date picker: [`date_picker`] under [`super::readonly::readonly`].
+///
+/// The state's fact and verb drop are shared with the family's other
+/// read-only markers (`Semantics.read_only` set, edit verbs and intent
+/// dropped, `Focus` kept). The well itself keeps its resting fill here: the
+/// no-fill read-only chrome [`super::field::FieldChrome::ReadOnly`] gives
+/// Text input is not yet routed through this file's private well builder,
+/// and this doc is where that boundary is recorded rather than left silent.
+pub fn date_picker_readonly(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    value: impl Into<String>,
+) -> ViewNode {
+    super::readonly::readonly(date_picker(key, label, value))
+}
+
 /// Invalid date picker: the field wearing [`SUPPORT_ERROR`] on all four
 /// sides plus the shared [`invalid_helper`] row (FR-019).
 ///

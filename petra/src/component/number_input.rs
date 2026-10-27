@@ -87,6 +87,22 @@ pub fn number_input(
     number_sized(key, label, value, SIZE_MD, Chrome::Enabled)
 }
 
+/// Read-only number input: [`number_input`] under [`super::readonly::readonly`].
+///
+/// The fact and verb drop are the family's shared marker: `Semantics.read_only`
+/// set, the stepper `Click`s and the value's edit verbs dropped (so the
+/// steppers cannot fire), `Focus` kept. The well keeps its resting fill —
+/// [`super::field::FieldChrome::ReadOnly`]'s no-fill chrome is Text input's,
+/// and this file's `Chrome` enum carries no read-only arm yet; that boundary
+/// is recorded here rather than left silent.
+pub fn number_input_readonly(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    value: impl Into<String>,
+) -> ViewNode {
+    super::readonly::readonly(number_input(key, label, value))
+}
+
 /// Carbon sm (32).
 pub fn number_input_sm(
     key: impl Into<Key>,
@@ -103,6 +119,16 @@ pub fn number_input_lg(
     value: impl Into<String>,
 ) -> ViewNode {
     number_sized(key, label, value, SIZE_LG, Chrome::Enabled)
+}
+
+/// Carbon `--nosteppers` (slice-d:17): the md well without the +/- controls,
+/// their reserved padding collapsed with them.
+pub fn number_input_nosteppers(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    value: impl Into<String>,
+) -> ViewNode {
+    number_built(key, label, value, SIZE_MD, Chrome::Enabled, false)
 }
 
 /// Invalid md well: a [`SUPPORT_ERROR`] outline plus the shared
@@ -158,6 +184,23 @@ fn number_sized(
     height: f32,
     chrome: Chrome,
 ) -> ViewNode {
+    number_built(key, label, value, height, chrome, true)
+}
+
+/// [`number_sized`] with the stepper pair as a parameter, not a constant.
+///
+/// `steppers: false` is Carbon's `--nosteppers` (slice-d:17: "hide the +/-
+/// controls, collapses their reserved padding"): the well keeps only the
+/// value cell, and the reserved padding disappears with the steppers because
+/// the stack's budget is spent on children that exist.
+fn number_built(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    value: impl Into<String>,
+    height: f32,
+    chrome: Chrome,
+    steppers: bool,
+) -> ViewNode {
     let label = label.into();
     let value = value.into();
     // No spacing: the steppers are glyph squares that butt against each
@@ -166,17 +209,18 @@ fn number_sized(
     // budget least-flexible first, so the two pinned squares and the
     // one-unit divider land before the flexible value cell is offered the
     // remainder (`layout::stack`).
-    let mut well = stack(
-        key,
-        Axis::Horizontal,
-        None,
-        vec![
-            value_field("value", label.clone(), value, height),
-            stepper("decrement", "Decrement", IconMark::Subtract, height),
-            divider(),
-            stepper("increment", "Increment", IconMark::Add, height),
-        ],
-    );
+    let mut children = vec![value_field("value", label.clone(), value, height)];
+    if steppers {
+        children.push(stepper(
+            "decrement",
+            "Decrement",
+            IconMark::Subtract,
+            height,
+        ));
+        children.push(divider());
+        children.push(stepper("increment", "Increment", IconMark::Add, height));
+    }
+    let mut well = stack(key, Axis::Horizontal, None, children);
     well.props.align = Some(Align::Center);
     well.semantics.focus_figure = FocusFigure::Sides;
     well.semantics.focus_shown_on = FocusShownOn::Well;
@@ -291,7 +335,8 @@ fn stepper(key: &'static str, label: &'static str, mark: IconMark, height: f32) 
 mod tests {
     use super::{
         IconMark, IconTone, SIZE_LG, SIZE_MD, SIZE_SM, SUPPORT_WARNING, icon_toned, number_input,
-        number_input_invalid, number_input_lg, number_input_sm, number_input_warning,
+        number_input_invalid, number_input_lg, number_input_nosteppers, number_input_sm,
+        number_input_warning,
     };
     use crate::component::tests::{assert_fits_parent, petrify_lone};
     use crate::component::tokens::{
@@ -481,6 +526,31 @@ mod tests {
             assert_eq!(token(divider, "background"), Some(BORDER_SUBTLE));
             assert!(!divider.is_interactive());
         }
+    }
+
+    /// Carbon `--nosteppers` (slice-d:17): the +/- controls are absent and
+    /// their reserved padding collapses with them — the well holds the value
+    /// cell alone.
+    ///
+    /// Falsified by `number_built` ignoring its `steppers` flag: the well
+    /// grows the decrement/divider/increment children back.
+    #[test]
+    fn nosteppers_drops_the_controls_and_their_reserved_padding() {
+        let node = number_input_nosteppers("n", "Replicas", "3");
+        let keys: Vec<&str> = node.children.iter().map(|c| c.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            ["value"],
+            "no steppers, no divider, no reserved cells"
+        );
+        for absent in ["decrement", "divider", "increment"] {
+            assert!(
+                node.children.iter().all(|c| c.key.as_str() != absent),
+                "{absent} must not exist in the --nosteppers well"
+            );
+        }
+        assert_eq!(node.constraints.vertical.min, Some(SIZE_MD));
+        assert_eq!(child(&node, "value").semantics.role, Some(Role::TextInput));
     }
 
     #[test]

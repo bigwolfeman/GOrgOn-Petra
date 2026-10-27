@@ -52,6 +52,21 @@ pub fn select(key: impl Into<Key>, label: impl Into<String>, value: impl Into<St
     labelled(key, label, value, SIZE_MD, None)
 }
 
+/// Read-only select: [`select`] under [`super::readonly::readonly`].
+///
+/// The fact and verb drop are the family's shared marker: `Semantics.read_only`
+/// set, the list-open `Click` and the edit verbs dropped, `Focus` kept. The
+/// well keeps its resting fill — [`super::field::FieldChrome::ReadOnly`]'s
+/// no-fill chrome is Text input's and this file's private well builder takes
+/// no chrome arm yet; that boundary is recorded here rather than left silent.
+pub fn select_readonly(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    value: impl Into<String>,
+) -> ViewNode {
+    super::readonly::readonly(select(key, label, value))
+}
+
 /// Carbon sm (32).
 pub fn select_sm(
     key: impl Into<Key>,

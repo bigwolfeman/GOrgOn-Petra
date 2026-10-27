@@ -356,6 +356,9 @@ pub const ENTRIES: &[Entry] = &[
     row!("checkbox_warning", KeyLabelSelectedMessage, |p| {
         lib::checkbox_warning(p.key, p.label, p.selected, p.message)
     }),
+    row!("checkbox_invalid", KeyLabelSelectedMessage, |p| {
+        lib::checkbox_invalid(p.key, p.label, p.selected, p.message)
+    }),
     row!("checkbox_required", KeyLabelSelected, |p| {
         lib::checkbox_required(p.key, p.label, p.selected)
     }),
@@ -365,8 +368,14 @@ pub const ENTRIES: &[Entry] = &[
     row!("radio", KeyLabelSelected, |p| lib::radio(
         p.key, p.label, p.selected
     )),
+    row!("radio_readonly", KeyLabelSelected, |p| {
+        lib::radio_readonly(p.key, p.label, p.selected)
+    }),
     row!("radio_warning", KeyLabelSelectedMessage, |p| {
         lib::radio_warning(p.key, p.label, p.selected, p.message)
+    }),
+    row!("radio_invalid", KeyLabelSelectedMessage, |p| {
+        lib::radio_invalid(p.key, p.label, p.selected, p.message)
     }),
     row!("radio_required", KeyLabelSelected, |p| {
         lib::radio_required(p.key, p.label, p.selected)
@@ -383,10 +392,16 @@ pub const ENTRIES: &[Entry] = &[
     row!("toggle_sm", KeyLabelSelected, |p| lib::toggle_sm(
         p.key, p.label, p.selected
     )),
+    row!("toggle_readonly", KeyLabelSelected, |p| {
+        lib::toggle_readonly(p.key, p.label, p.selected)
+    }),
     // date_picker.rs — Date picker.
     row!("date_picker", KeyLabelValue, |p| lib::date_picker(
         p.key, p.label, p.value
     )),
+    row!("date_picker_readonly", KeyLabelValue, |p| {
+        lib::date_picker_readonly(p.key, p.label, p.value)
+    }),
     row!(
         "date_picker_open",
         KeyLabelValue,
@@ -449,6 +464,9 @@ pub const ENTRIES: &[Entry] = &[
     row!("dropdown", KeyLabelValue, |p| lib::dropdown(
         p.key, p.label, p.value
     )),
+    row!("dropdown_readonly", KeyLabelValue, |p| {
+        lib::dropdown_readonly(p.key, p.label, p.value)
+    }),
     row!("dropdown_xs", KeyLabelValue, |p| lib::dropdown_xs(
         p.key, p.label, p.value
     )),
@@ -536,6 +554,12 @@ pub const ENTRIES: &[Entry] = &[
     row!("number_input", KeyLabelValue, |p| lib::number_input(
         p.key, p.label, p.value
     )),
+    row!("number_input_readonly", KeyLabelValue, |p| {
+        lib::number_input_readonly(p.key, p.label, p.value)
+    }),
+    row!("number_input_nosteppers", KeyLabelValue, |p| {
+        lib::number_input_nosteppers(p.key, p.label, p.value)
+    }),
     row!("number_input_sm", KeyLabelValue, |p| lib::number_input_sm(
         p.key, p.label, p.value
     )),
@@ -554,6 +578,9 @@ pub const ENTRIES: &[Entry] = &[
     row!("search_lg", KeyLabel, |p| lib::search_lg(p.key, p.label)),
     // select.rs — Select.
     row!("select", KeyLabelValue, |p| lib::select(
+        p.key, p.label, p.value
+    )),
+    row!("select_readonly", KeyLabelValue, |p| lib::select_readonly(
         p.key, p.label, p.value
     )),
     row!("select_sm", KeyLabelValue, |p| lib::select_sm(
@@ -720,6 +747,13 @@ mod tests {
             "select_warning",
             "dropdown_warning",
             "both dress list_box_field at ListBoxSize::Md through field::validated_column with SUPPORT_WARNING; measured byte-identical, same intentional tie as select/dropdown",
+        ),
+        (
+            "select_readonly",
+            "dropdown_readonly",
+            "both mark list_box_field at ListBoxSize::Md read-only through the shared \
+             readonly() marker; the walker erases the last trace of the two files' \
+             identical private labelled() builders, same intentional tie as select/dropdown",
         ),
     ];
 

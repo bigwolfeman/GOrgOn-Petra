@@ -132,6 +132,7 @@ mod popover;
 mod progress;
 mod progress_indicator;
 mod rating;
+mod readonly;
 mod search;
 mod section;
 mod select;
@@ -193,8 +194,9 @@ pub use content_switcher::{
 pub use context_menu::context_menu;
 pub use controls::{
     CheckState, checkbox, checkbox_described, checkbox_group, checkbox_indeterminate,
-    checkbox_readonly, checkbox_required, checkbox_tristate, checkbox_warning, radio,
-    radio_described, radio_group, radio_required, radio_warning, toggle, toggle_sm,
+    checkbox_invalid, checkbox_readonly, checkbox_required, checkbox_tristate, checkbox_warning,
+    radio, radio_described, radio_group, radio_invalid, radio_readonly, radio_required,
+    radio_warning, toggle, toggle_readonly, toggle_sm,
 };
 pub use data_table::{
     SortDirection, data_table, data_table_batch_action, data_table_batch_bar,
@@ -207,14 +209,14 @@ pub use data_table::{
 };
 pub use date_picker::{
     Calendar, date_picker, date_picker_fluid, date_picker_input, date_picker_invalid,
-    date_picker_open, date_picker_range, date_picker_range_showing, date_picker_showing,
-    date_picker_showing_selection, date_picker_warning, time_picker,
+    date_picker_open, date_picker_range, date_picker_range_showing, date_picker_readonly,
+    date_picker_showing, date_picker_showing_selection, date_picker_warning, time_picker,
 };
 pub use disabled::disabled;
 pub use drawer::{docked, drawer, sheet};
 pub use dropdown::{
-    dropdown, dropdown_invalid, dropdown_lg, dropdown_open, dropdown_option, dropdown_sm,
-    dropdown_warning, dropdown_xs,
+    dropdown, dropdown_invalid, dropdown_lg, dropdown_open, dropdown_option, dropdown_readonly,
+    dropdown_sm, dropdown_warning, dropdown_xs,
 };
 pub use field::{
     field, field_described, field_fluid, field_invalid, field_labeled, field_lg, field_readonly,
@@ -253,7 +255,8 @@ pub use notification::{
     notification_inline_kind, notification_toast, notification_toast_kind,
 };
 pub use number_input::{
-    number_input, number_input_invalid, number_input_lg, number_input_sm, number_input_warning,
+    number_input, number_input_invalid, number_input_lg, number_input_nosteppers,
+    number_input_readonly, number_input_sm, number_input_warning,
 };
 pub use otp::otp;
 pub use pagination::{
@@ -270,9 +273,12 @@ pub use popover::{popover, popover_with, popover_with_placement};
 pub use progress::{progress, progress_sm, progress_with_helper};
 pub use progress_indicator::{progress_indicator, progress_step};
 pub use rating::rating;
+pub use readonly::readonly;
 pub use search::{search, search_lg, search_sm};
 pub use section::section;
-pub use select::{select, select_invalid, select_lg, select_open, select_sm, select_warning};
+pub use select::{
+    select, select_invalid, select_lg, select_open, select_readonly, select_sm, select_warning,
+};
 pub use skeleton::{
     SizeStep, SkeletonAnatomy, advance_ambient_skeletons, skeleton, skeleton_pulse_phase,
 };

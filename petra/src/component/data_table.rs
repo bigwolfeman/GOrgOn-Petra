@@ -110,8 +110,8 @@ use super::stack;
 use super::swatch;
 use super::text::{as_compact_heading, ellipsis_text, text};
 use super::tokens::{
-    ACCENT_PRIMARY, BORDER_SUBTLE, BUTTON_DISABLED, LAYER_ACCENT, LAYER_ACCENT_HOVER, LAYER_HOVER,
-    LAYER_SELECTED, LAYER_SELECTED_HOVER, SIZE_MD, SPACING_03, SPACING_04, SPACING_05,
+    ACCENT_PRIMARY, BORDER_SUBTLE, BUTTON_DISABLED, LAYER_ACCENT, LAYER_ACCENT_HOVER, LAYER_ACTIVE,
+    LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SIZE_MD, SPACING_03, SPACING_04, SPACING_05,
     SURFACE_BASE, TEXT_ON_ACCENT, TEXT_PRIMARY, TYPOGRAPHY_BODY_COMPACT, t,
 };
 use crate::frame::PetrifiedFrame;
@@ -1302,11 +1302,18 @@ fn data_table_row_sized(
     node
 }
 
-/// The four fills a selectable row can show, and its one rule.
+/// The five fills a selectable row can show, and its one rule.
+///
+/// `background@active` is the pressed treatment on a row that declares
+/// `Interaction::Click` (`ROW_INTENTS`): without the binding the pressed
+/// moment draws the resting surface — the same gap `list_row` closed on the
+/// same day (slice-a's Contained list bullet measures the row-level
+/// "hover/active/disabled visual treatment").
 fn bind_row_fills(node: &mut ViewNode) {
     for (slot, token) in [
         ("background", SURFACE_BASE),
         ("background@hover", LAYER_HOVER),
+        ("background@active", LAYER_ACTIVE),
         ("background@selected", LAYER_SELECTED),
         ("background@selected-hover", LAYER_SELECTED_HOVER),
     ] {
@@ -1909,6 +1916,34 @@ mod tests {
         let off = data_table_row("r0", vec![text("n", "alpha")], false);
         assert!(!off.semantics.selected);
         assert!(off.is_interactive());
+    }
+
+    /// The five fills a selectable row can show are declared, not four and a
+    /// silent pressed state: `background@active` is reachable because
+    /// `ROW_INTENTS` declares `Interaction::Click`, so the pressed moment has
+    /// a token of its own (slice-a's Contained list "hover/active/disabled
+    /// visual treatment", and the exact gap `list_row` closed).
+    ///
+    /// Falsified by dropping `("background@active", LAYER_ACTIVE)` from
+    /// `bind_row_fills`: the pressed moment draws the resting surface.
+    #[test]
+    fn row_binds_all_five_fills_including_the_pressed_one() {
+        let node = data_table_row("r0", vec![text("n", "alpha")], false);
+        let binds = |slot: &str, token: &str| {
+            assert_eq!(
+                node.props.tokens.get(slot).map(|t| t.as_str()),
+                Some(token),
+                "{slot} is not bound to {token}"
+            )
+        };
+        binds("background", crate::component::tokens::SURFACE_BASE);
+        binds("background@hover", crate::component::tokens::LAYER_HOVER);
+        binds("background@active", crate::component::tokens::LAYER_ACTIVE);
+        binds("background@selected", LAYER_SELECTED);
+        binds(
+            "background@selected-hover",
+            crate::component::tokens::LAYER_SELECTED_HOVER,
+        );
     }
 
     #[test]
