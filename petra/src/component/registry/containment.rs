@@ -6,7 +6,7 @@
 //!
 //! Components: Accordion, Contained list, Context menu, List, Modal,
 //! Popover, Structured list, Tile, Toggletip, Tooltip, Tree view, Code
-//! snippet. 44 constructors (see the `coverage` test at the bottom, which
+//! snippet. 51 constructors (see the `coverage` test at the bottom, which
 //! counts the source rather than trusting this comment).
 
 use serde::Deserialize;
@@ -22,11 +22,12 @@ use crate::component::{
     accordion_item_with_spaced, accordion_spaced, clickable_tile, code_snippet,
     code_snippet_inline, code_snippet_multi, code_snippet_multi_capped, contained_list,
     contained_list_disclosed, contained_list_lg, contained_list_sm, contained_list_xl,
-    context_menu, expandable_tile, list_item, list_item_with, modal, modal_passive, ordered_list,
-    popover, popover_with, popover_with_placement, selectable_tile, structured_list,
-    structured_list_row, structured_list_row_static, structured_list_sized, tile, toggletip,
-    toggletip_with, tooltip, tooltip_anchored, tooltip_definition, tooltip_icon, tree_item,
-    tree_item_xs, tree_view, unordered_list, unordered_list_with,
+    context_menu, expandable_tile, list_item, list_item_with, modal, modal_lg, modal_passive,
+    modal_sm, modal_xs, ordered_list, popover, popover_with, popover_with_placement,
+    selectable_tile, structured_list, structured_list_condensed, structured_list_row,
+    structured_list_row_static, structured_list_sized, tile, toggletip, toggletip_with, tooltip,
+    tooltip_anchored, tooltip_definition, tooltip_icon, tree_item, tree_item_xs, tree_view,
+    unordered_list, unordered_list_with,
 };
 use crate::tree::{Align, Edge, Key, ViewNode};
 
@@ -411,6 +412,15 @@ pub const ENTRIES: &[Entry] = &[
     row!("modal", ModalParams, |p| modal(
         p.key, p.title, p.body, p.primary
     )),
+    row!("modal_xs", ModalParams, |p| modal_xs(
+        p.key, p.title, p.body, p.primary
+    )),
+    row!("modal_sm", ModalParams, |p| modal_sm(
+        p.key, p.title, p.body, p.primary
+    )),
+    row!("modal_lg", ModalParams, |p| modal_lg(
+        p.key, p.title, p.body, p.primary
+    )),
     row!("modal_passive", KeyLabelValue, |p| modal_passive(
         p.key, p.label, p.value
     )),
@@ -428,6 +438,9 @@ pub const ENTRIES: &[Entry] = &[
     )),
     row!("structured_list", StructuredListParams, |p| {
         structured_list(p.key, p.header, p.rows)
+    }),
+    row!("structured_list_condensed", StructuredListParams, |p| {
+        structured_list_condensed(p.key, p.header, p.rows)
     }),
     row!("structured_list_sized", StructuredListSizedParams, |p| {
         structured_list_sized(p.key, p.header, p.rows, &p.weights, p.dividers)
@@ -656,6 +669,15 @@ mod tests {
                 json!({ "key": "k", "label": "l", "nested": { "kind": "stack", "key": "n1" } })
             }
             "modal" => json!({ "key": "k", "title": "t", "body": "b", "primary": "p" }),
+            "modal_xs" => {
+                json!({ "key": "k-modal-xs", "title": "t-xs", "body": "b", "primary": "p" })
+            }
+            "modal_sm" => {
+                json!({ "key": "k-modal-sm", "title": "t-sm", "body": "b", "primary": "p" })
+            }
+            "modal_lg" => {
+                json!({ "key": "k-modal-lg", "title": "t-lg", "body": "b", "primary": "p" })
+            }
             "modal_passive" => json!({ "key": "k", "label": "t", "value": "b" }),
             "popover" => json!({ "key": "k", "label": "l", "anchor": "a", "body": "b" }),
             "popover_with" => json!({ "key": "k", "label": "l", "anchor": "a", "children": [] }),
@@ -691,6 +713,17 @@ mod tests {
                 "rows": [],
                 "weights": [2.0, 1.0],
                 "dividers": false
+            }),
+            // The condensed step re-pads its rows, so the sample carries
+            // one: with `rows: []` the repad is invisible and this row
+            // would collide with `structured_list`'s own output.
+            "structured_list_condensed" => json!({
+                "key": "k-sl-condensed",
+                "header": [
+                    { "kind": "stack", "key": "h1" },
+                    { "kind": "stack", "key": "h2" }
+                ],
+                "rows": [{ "kind": "stack", "key": "r1" }]
             }),
             "structured_list_row" => json!({ "key": "k", "children": [], "selected": true }),
             "structured_list_row_static" => {

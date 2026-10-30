@@ -22,6 +22,14 @@
 //!    `CheckmarkFilled` when complete, an `ErrorFilled` when invalid, and a
 //!    `Close` button when the row is editable.
 //!
+//! # Sizes: the button ramp's steps, not its own
+//!
+//! Carbon's uploader Sizes row rides the button — "file row and button
+//! height always match" (slice-b). The family documents no height of its
+//! own: its steps are `button_sm` / `button` / `button_lg`, built and
+//! celld on the Button page (contracts/size.md SC-007, File uploader
+//! row — the row VARIANTS 201–203 cite those steps against).
+//!
 //! # Three divergences, all recorded rather than faked
 //!
 //! **The dashed border.** Carbon draws `border: 1px dashed $border-strong`

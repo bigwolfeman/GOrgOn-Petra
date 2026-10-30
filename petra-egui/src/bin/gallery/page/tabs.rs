@@ -102,6 +102,48 @@ impl Page for Tabs {
         ))]
     }
 
+    /// Carbon's tab-item ladder (register rows #471–473): md 40 / lg 48 /
+    /// xl 64 — the three built steps of the contained strip, the one
+    /// variant whose Sizes entry names the `lg`–`xl` range (slice-e;
+    /// line tabs are documented at 40 alone and the vertical strip pins
+    /// 64 in its own right, both on the body above). Each labelled with
+    /// its step and the item height it lands on (FR-025).
+    fn sizes(&self) -> Vec<ViewNode> {
+        use gorgon_petra::component::{contained_tab, contained_tab_lg, contained_tab_xl, text};
+
+        use super::common::{column, row, sp};
+        vec![column(
+            "size-steps",
+            sp("spacing-05"),
+            vec![
+                row(
+                    "size-md",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-md-label", "md · 40"),
+                        contained_tab("size-ct-md", "Tab", true),
+                    ],
+                ),
+                row(
+                    "size-lg",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-lg-label", "lg · 48"),
+                        contained_tab_lg("size-ct-lg", "Tab", true),
+                    ],
+                ),
+                row(
+                    "size-xl",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-xl-label", "xl · 64"),
+                        contained_tab_xl("size-ct-xl", "Tab", true),
+                    ],
+                ),
+            ],
+        )]
+    }
+
     fn body(&self) -> ViewNode {
         let vertical = vertical_tab_bar(
             "vert-strip",

@@ -188,11 +188,17 @@ impl Page for DataTable {
     /// Carbon's table-row sizing (`_data-table.scss`, 24/32/40/48/64):
     /// all five built steps side by side, each labeled with its step and the
     /// row height it lands on (FR-025). Static cells — the ramp is geometry,
-    /// the live rows above own the editing.
+    /// the live rows above own the editing. The toolbar and batch-action
+    /// bar carry their own two-step ladder (register rows #604–607: large
+    /// 48 pairs with lg/xl rows, small 32 with xs/sm), so their steps are
+    /// cells here too, with the trailing settings trigger at the bar's own
+    /// step.
     fn sizes(&self) -> Vec<ViewNode> {
         use gorgon_petra::component::{
-            data_table_row, data_table_row_lg, data_table_row_sm, data_table_row_xl,
-            data_table_row_xs, text,
+            data_table_batch_action, data_table_batch_bar, data_table_batch_bar_sm,
+            data_table_batch_cancel, data_table_row, data_table_row_lg, data_table_row_sm,
+            data_table_row_xl, data_table_row_xs, data_table_toolbar, data_table_toolbar_menu,
+            data_table_toolbar_menu_sm, data_table_toolbar_sm, search, search_sm, text,
         };
 
         use super::common::{column, row, sp};
@@ -239,6 +245,66 @@ impl Page for DataTable {
                     vec![
                         text("size-xl-label", "xl · 64"),
                         data_table_row_xl("size-dt-xl", cells(), false),
+                    ],
+                ),
+                row(
+                    "size-toolbar-lg",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-toolbar-lg-label", "toolbar-large · 48"),
+                        data_table_toolbar(
+                            "size-toolbar-large",
+                            search("size-search-lg", "Filter"),
+                            vec![data_table_toolbar_menu(
+                                "size-menu-lg",
+                                "Columns",
+                                false,
+                                vec![],
+                            )],
+                        ),
+                    ],
+                ),
+                row(
+                    "size-toolbar-sm",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-toolbar-sm-label", "toolbar-small · 32"),
+                        data_table_toolbar_sm(
+                            "size-toolbar-small",
+                            search_sm("size-search-sm", "Filter"),
+                            vec![data_table_toolbar_menu_sm(
+                                "size-menu-sm",
+                                "Columns",
+                                false,
+                                vec![],
+                            )],
+                        ),
+                    ],
+                ),
+                row(
+                    "size-batch-lg",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-batch-lg-label", "batch-action-bar-large · 48"),
+                        data_table_batch_bar(
+                            "size-batch-large",
+                            2,
+                            data_table_batch_cancel("size-cancel-lg"),
+                            vec![data_table_batch_action("size-action-lg", "Delete")],
+                        ),
+                    ],
+                ),
+                row(
+                    "size-batch-sm",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-batch-sm-label", "batch-action-bar-small · 32"),
+                        data_table_batch_bar_sm(
+                            "size-batch-small",
+                            2,
+                            data_table_batch_cancel("size-cancel-sm"),
+                            vec![data_table_batch_action("size-action-sm", "Delete")],
+                        ),
                     ],
                 ),
             ],

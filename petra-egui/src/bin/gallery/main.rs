@@ -39,6 +39,8 @@ mod pagination_nav_states;
 #[cfg(test)]
 mod shots;
 #[cfg(test)]
+mod size_ladder_states;
+#[cfg(test)]
 mod warning_states;
 
 use std::process::ExitCode;

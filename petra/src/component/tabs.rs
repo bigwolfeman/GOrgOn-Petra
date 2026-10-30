@@ -17,9 +17,9 @@
 
 use super::text::text;
 use super::tokens::{
-    ACCENT_PRIMARY, BORDER_SUBTLE, BUTTON_DISABLED, ICON_DISABLED, LAYER_HOVER, SIZE_MD,
-    SPACING_01, SPACING_03, SPACING_05, SURFACE_BASE, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY,
-    TYPOGRAPHY_BODY, TYPOGRAPHY_HEADING_SM, t,
+    ACCENT_PRIMARY, BORDER_SUBTLE, BUTTON_DISABLED, ICON_DISABLED, LAYER_HOVER, SIZE_LG, SIZE_MD,
+    SIZE_XL, SPACING_01, SPACING_03, SPACING_05, SURFACE_BASE, SURFACE_RAISED, TEXT_MUTED,
+    TEXT_PRIMARY, TYPOGRAPHY_BODY, TYPOGRAPHY_HEADING_SM, t,
 };
 use super::{pad, stack};
 use crate::geom::{Align, Axis};
@@ -30,8 +30,6 @@ use crate::tree::{
 
 /// Carbon line/contained tab height (`2.5rem`). [`SIZE_MD`] is that number.
 const LINE_INDICATOR: f32 = 2.0;
-/// Carbon vertical tab height (`4rem`). No size token for 64; local const.
-const VERTICAL_HEIGHT: f32 = 64.0;
 /// Carbon selected vertical indicator (`border-left: 3px`).
 const VERTICAL_INDICATOR: f32 = 3.0;
 /// A selected tab's label style: Carbon's `$heading-compact-01` — 14px
@@ -61,7 +59,9 @@ enum Variant {
 /// One Line tab. `selected` is declared in `Semantics` and shown as a 2px
 /// underline keyed `"indicator"` — never colour alone.
 ///
-/// Height is [`SIZE_MD`] (40). Padding is `$spacing-05` inline / `$spacing-03`
+/// Height is [`SIZE_MD`] (40) — the ladder's md step, and the only one
+/// Carbon documents for a line tab (slice-e "Sizes": "Line/Contained tabs
+/// are 40px"). Padding is `$spacing-05` inline / `$spacing-03`
 /// block. Unselected label is [`TEXT_MUTED`]; selected is [`TEXT_PRIMARY`]
 /// plus [`TYPOGRAPHY_HEADING_SM`]. Fill stays [`SURFACE_BASE`] so
 /// [`super::on_layer`] can seat an unselected tab flush with its ground.
@@ -69,20 +69,40 @@ enum Variant {
 /// Wrap with [`super::disabled`] for the unavailable state. The label already
 /// binds `foreground@disabled`.
 pub fn tab(key: impl Into<Key>, label: impl Into<String>, selected: bool) -> ViewNode {
-    tab_variant(key, label, selected, Variant::Line)
+    tab_variant(key, label, selected, Variant::Line, SIZE_MD)
 }
 
-/// One Contained tab: filled strip, 2px *top* indicator, same 40px height.
+/// One Contained tab: filled strip, 2px *top* indicator, md (40) tall.
 ///
 /// Unselected fill is [`SURFACE_RAISED`]; selected is [`SURFACE_BASE`] (the
 /// panel the tab sits on). Hover is [`LAYER_HOVER`].
 pub fn contained_tab(key: impl Into<Key>, label: impl Into<String>, selected: bool) -> ViewNode {
-    tab_variant(key, label, selected, Variant::Contained)
+    tab_variant(key, label, selected, Variant::Contained, SIZE_MD)
 }
 
-/// One Vertical tab: 64px tall, 3px *left* indicator.
+/// [`contained_tab`] at the ladder's lg step (48).
+///
+/// Carbon's "tall" contained strip is `layout.use('size', $min:'lg',
+/// $max:'xl', $default:'xl')` (slice-e "Sizes") — a clamp over the lg–xl
+/// range, so 48 is its floor and [`contained_tab_xl`] its default. This
+/// file carries the clamp's two endpoints as the two named steps rather
+/// than a fluid height the engine has no layout-size axis for.
+#[must_use]
+pub fn contained_tab_lg(key: impl Into<Key>, label: impl Into<String>, selected: bool) -> ViewNode {
+    tab_variant(key, label, selected, Variant::Contained, SIZE_LG)
+}
+
+/// [`contained_tab`] at the ladder's xl step (64) — Carbon's tall
+/// contained default, and the same `4rem` the vertical strip pins.
+#[must_use]
+pub fn contained_tab_xl(key: impl Into<Key>, label: impl Into<String>, selected: bool) -> ViewNode {
+    tab_variant(key, label, selected, Variant::Contained, SIZE_XL)
+}
+
+/// One Vertical tab: 64px tall (Carbon `4rem` — the same number as
+/// [`SIZE_XL`], the ladder's xl step), 3px *left* indicator.
 pub fn vertical_tab(key: impl Into<Key>, label: impl Into<String>, selected: bool) -> ViewNode {
-    tab_variant(key, label, selected, Variant::Vertical)
+    tab_variant(key, label, selected, Variant::Vertical, SIZE_XL)
 }
 
 /// The Line strip: already-built [`tab`] children under `Role::TabList`.
@@ -111,6 +131,7 @@ fn tab_variant(
     label: impl Into<String>,
     selected: bool,
     variant: Variant,
+    height: f32,
 ) -> ViewNode {
     let key = key.into();
     let label = label.into();
@@ -160,7 +181,9 @@ fn tab_variant(
             .insert("background@disabled".into(), t(ICON_DISABLED));
     }
 
-    let (columns, rows, children, height) = match variant {
+    // The item height is the ladder step the constructor took (slice-e
+    // "Sizes"); the variant only decides which edge the indicator pins to.
+    let (columns, rows, children) = match variant {
         Variant::Line => (
             vec![TrackSize::FitContent],
             vec![
@@ -170,7 +193,6 @@ fn tab_variant(
                 },
             ],
             vec![body, mark],
-            SIZE_MD,
         ),
         Variant::Contained => (
             vec![TrackSize::FitContent],
@@ -181,7 +203,6 @@ fn tab_variant(
                 TrackSize::Weight { weight: 1.0 },
             ],
             vec![mark, body],
-            SIZE_MD,
         ),
         Variant::Vertical => (
             vec![
@@ -192,7 +213,6 @@ fn tab_variant(
             ],
             vec![TrackSize::Weight { weight: 1.0 }],
             vec![mark, body],
-            VERTICAL_HEIGHT,
         ),
     };
 
@@ -496,6 +516,26 @@ mod tests {
         assert_eq!(placed.rect.h, SIZE_MD);
     }
 
+    /// Spec 008 register rows #471–473: the tab-item height carries
+    /// Carbon's md/lg/xl ladder — 40 / 48 / 64 — on the contained strip,
+    /// the one variant whose Sizes entry names the `lg`–`xl` range (a line
+    /// tab is documented at 40 alone, and the vertical strip pins 64 in
+    /// its own right). Probing the tab node, not the strip around it.
+    #[test]
+    fn the_contained_strip_carries_the_documented_md_lg_and_xl_steps() {
+        for (node, step) in [
+            (contained_tab("t", "A", true), SIZE_MD),
+            (contained_tab_lg("t", "A", true), SIZE_LG),
+            (contained_tab_xl("t", "A", true), SIZE_XL),
+        ] {
+            assert_eq!(
+                (node.constraints.vertical.min, node.constraints.vertical.max),
+                (Some(step), Some(step)),
+                "the tab is not pinned to {step}"
+            );
+        }
+    }
+
     /// Why each variant's focus figure keeps off the edge its own selection
     /// indicator already owns, when the two are the same accent.
     ///
@@ -693,8 +733,8 @@ mod tests {
     #[test]
     fn vertical_tab_bar_is_a_vertical_tablist() {
         let node = vertical_tab("t", "A", true);
-        assert_eq!(node.constraints.vertical.min, Some(VERTICAL_HEIGHT));
-        assert_eq!(node.constraints.vertical.max, Some(VERTICAL_HEIGHT));
+        assert_eq!(node.constraints.vertical.min, Some(SIZE_XL));
+        assert_eq!(node.constraints.vertical.max, Some(SIZE_XL));
         assert_eq!(child_keys(&node), ["indicator", "body"]);
         assert_eq!(
             named(&node, "indicator").constraints.horizontal.min,

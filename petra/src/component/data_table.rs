@@ -934,8 +934,10 @@ pub fn data_table_sort_header(
 ///
 /// So: [`SURFACE_BASE`], the toolbar's own fill, which is Carbon's ghost
 /// treatment; [`TEXT_PRIMARY`] label and an [`IconTone::Primary`] chevron;
-/// and [`HEIGHT_LG`] pinned both ways so it can only ever be the toolbar's
-/// own height.
+/// and the toolbar's own height step pinned both ways so it can only ever
+/// be that height — [`HEIGHT_LG`] here, [`HEIGHT_SM`] in
+/// [`data_table_toolbar_menu_sm`], the two steps of the style page's
+/// "Toolbar" table.
 ///
 /// [`FocusFigure::Border`], not `Sides`. A `Sides` figure draws its two
 /// bars seven units *outside* the control, which is right for a control
@@ -953,6 +955,29 @@ pub fn data_table_toolbar_menu(
     label: impl Into<String>,
     open: bool,
     items: Vec<ViewNode>,
+) -> ViewNode {
+    toolbar_menu(key, label, open, items, HEIGHT_LG)
+}
+
+/// [`data_table_toolbar_menu`] for a small toolbar: the trigger pinned to
+/// [`HEIGHT_SM`]. See [`data_table_toolbar_sm`] for which step pairs with
+/// which rows.
+#[must_use]
+pub fn data_table_toolbar_menu_sm(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    open: bool,
+    items: Vec<ViewNode>,
+) -> ViewNode {
+    toolbar_menu(key, label, open, items, HEIGHT_SM)
+}
+
+fn toolbar_menu(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    open: bool,
+    items: Vec<ViewNode>,
+    height: f32,
 ) -> ViewNode {
     let label = label.into();
     let mut caption = text("label", label.clone());
@@ -983,8 +1008,8 @@ pub fn data_table_toolbar_menu(
         .with_constraints(crate::tree::Constraints {
             horizontal: AxisConstraint::default(),
             vertical: AxisConstraint {
-                min: Some(HEIGHT_LG),
-                max: Some(HEIGHT_LG),
+                min: Some(height),
+                max: Some(height),
                 priority: 0,
             },
         })
@@ -1039,14 +1064,40 @@ const TOOLBAR_MENU_INTENTS: &[Interaction] =
 ///
 /// A `Grid` with one [`TrackSize::Weight`] column and one
 /// [`TrackSize::FitContent`] column — see the module doc's "T034" section
-/// for why this is not [`edge_row`]. Height pairs with the table's own row
-/// size (style page "Toolbar": large 48 with lg/xl rows, small 32 with
-/// xs/sm); this file's tables are always lg, so the toolbar is always
-/// [`HEIGHT_LG`].
+/// for why this is not [`edge_row`]. Height is the large step (style page
+/// "Toolbar": large 48 pairs with lg/xl rows, small 32 with xs/sm);
+/// [`data_table_toolbar_sm`] is the small one, for xs/sm rows.
+///
+/// The bar pins its step both ways and does not re-pin its children:
+/// build `search` and the trailing controls at the same step (`search` /
+/// `search_sm`, [`data_table_toolbar_menu`] /
+/// [`data_table_toolbar_menu_sm`]), the same "build its items with X" rule
+/// [`super::ui_shell::ui_shell_left_panel_rail`] states for its rows. A
+/// taller child does not grow the bar — it is clipped at the step.
 pub fn data_table_toolbar(
     key: impl Into<Key>,
     search: ViewNode,
     trailing: Vec<ViewNode>,
+) -> ViewNode {
+    toolbar(key, search, trailing, HEIGHT_LG)
+}
+
+/// [`data_table_toolbar`] at the small step (32) — Carbon's small
+/// toolbar, pairing with xs/sm rows (style page "Toolbar").
+#[must_use]
+pub fn data_table_toolbar_sm(
+    key: impl Into<Key>,
+    search: ViewNode,
+    trailing: Vec<ViewNode>,
+) -> ViewNode {
+    toolbar(key, search, trailing, HEIGHT_SM)
+}
+
+fn toolbar(
+    key: impl Into<Key>,
+    search: ViewNode,
+    trailing: Vec<ViewNode>,
+    height: f32,
 ) -> ViewNode {
     let actions = stack(
         "toolbar-actions",
@@ -1065,7 +1116,8 @@ pub fn data_table_toolbar(
     node.props
         .tokens
         .insert("background".into(), t(SURFACE_BASE));
-    node.constraints.vertical.min = Some(HEIGHT_LG);
+    node.constraints.vertical.min = Some(height);
+    node.constraints.vertical.max = Some(height);
     node
 }
 
@@ -1101,7 +1153,10 @@ fn reseat_flush_focus(mut node: ViewNode) -> ViewNode {
 /// Carbon Batch action bar (T034, anatomy 2a): replaces
 /// [`data_table_toolbar`] while any row is selected ("slides in over the
 /// toolbar", slice-b). `cancel` is [`data_table_batch_cancel`]; `actions`
-/// are the author's own batch buttons.
+/// are the author's own batch buttons. Height is the large step (style
+/// page "Batch action bar": 48 pairs with lg/xl rows);
+/// [`data_table_batch_bar_sm`] is the small one, for xs/sm rows. The
+/// controls are content-height and the bar centres them at either step.
 ///
 /// `ACCENT_PRIMARY`/[`TEXT_ON_ACCENT`] stand in for Carbon's
 /// `$background-brand`: that name is not in this vocabulary, and this is
@@ -1113,6 +1168,29 @@ pub fn data_table_batch_bar(
     count: usize,
     cancel: ViewNode,
     actions: Vec<ViewNode>,
+) -> ViewNode {
+    batch_bar(key, count, cancel, actions, HEIGHT_LG)
+}
+
+/// [`data_table_batch_bar`] at the small step (32) — Carbon's small
+/// batch-action bar, pairing with xs/sm rows (style page "Batch action
+/// bar").
+#[must_use]
+pub fn data_table_batch_bar_sm(
+    key: impl Into<Key>,
+    count: usize,
+    cancel: ViewNode,
+    actions: Vec<ViewNode>,
+) -> ViewNode {
+    batch_bar(key, count, cancel, actions, HEIGHT_SM)
+}
+
+fn batch_bar(
+    key: impl Into<Key>,
+    count: usize,
+    cancel: ViewNode,
+    actions: Vec<ViewNode>,
+    height: f32,
 ) -> ViewNode {
     let mut count_text = text(
         "count",
@@ -1136,7 +1214,8 @@ pub fn data_table_batch_bar(
     node.props
         .tokens
         .insert("background".into(), t(ACCENT_PRIMARY));
-    node.constraints.vertical.min = Some(HEIGHT_LG);
+    node.constraints.vertical.min = Some(height);
+    node.constraints.vertical.max = Some(height);
     node
 }
 
@@ -1640,11 +1719,12 @@ fn collect_text(node: &ViewNode) -> String {
 mod tests {
     use super::{
         HEIGHT_LG, HEIGHT_SM, HEIGHT_XL, HEIGHT_XS, IconMark, IconTone, SIZE_MD, SortDirection,
-        data_table, data_table_batch_bar, data_table_batch_cancel, data_table_menu, data_table_row,
-        data_table_row_actions, data_table_row_expandable, data_table_row_expandable_actions,
-        data_table_row_lg, data_table_row_md, data_table_row_menu_trigger, data_table_row_sm,
-        data_table_row_xl, data_table_row_xs, data_table_skeleton, data_table_sort_header,
-        data_table_toolbar, data_table_toolbar_menu, data_table_weights_at, data_table_zebra,
+        data_table, data_table_batch_bar, data_table_batch_bar_sm, data_table_batch_cancel,
+        data_table_menu, data_table_row, data_table_row_actions, data_table_row_expandable,
+        data_table_row_expandable_actions, data_table_row_lg, data_table_row_md,
+        data_table_row_menu_trigger, data_table_row_sm, data_table_row_xl, data_table_row_xs,
+        data_table_skeleton, data_table_sort_header, data_table_toolbar, data_table_toolbar_menu,
+        data_table_toolbar_menu_sm, data_table_toolbar_sm, data_table_weights_at, data_table_zebra,
         icon_toned,
     };
     use crate::component::checkbox;
@@ -2395,6 +2475,68 @@ mod tests {
             named(&node, "columns-trigger").props.text.as_deref(),
             Some("Columns")
         );
+    }
+
+    /// Spec 008 register rows #604–607: the toolbar and the batch action
+    /// bar carry Carbon's two documented heights — large 48 (pairs with
+    /// lg/xl rows), small 32 (xs/sm) — pinned both ways, and the toolbar's
+    /// settings trigger follows its bar's step instead of floating 16
+    /// units taller than a small bar.
+    #[test]
+    fn the_toolbar_and_batch_bar_pin_both_steps_both_ways() {
+        let search = search("search", "Filter");
+        for (node, step) in [
+            (
+                data_table_toolbar("toolbar", search.clone(), vec![]),
+                HEIGHT_LG,
+            ),
+            (
+                data_table_toolbar_sm("toolbar", search.clone(), vec![]),
+                HEIGHT_SM,
+            ),
+        ] {
+            assert_eq!(
+                (node.constraints.vertical.min, node.constraints.vertical.max),
+                (Some(step), Some(step)),
+                "the toolbar is not pinned to {step} both ways"
+            );
+        }
+        for (node, step) in [
+            (
+                data_table_batch_bar("batch", 2, data_table_batch_cancel("cancel"), vec![]),
+                HEIGHT_LG,
+            ),
+            (
+                data_table_batch_bar_sm("batch", 2, data_table_batch_cancel("cancel"), vec![]),
+                HEIGHT_SM,
+            ),
+        ] {
+            assert_eq!(
+                (node.constraints.vertical.min, node.constraints.vertical.max),
+                (Some(step), Some(step)),
+                "the batch action bar is not pinned to {step} both ways"
+            );
+        }
+        for (node, step) in [
+            (
+                data_table_toolbar_menu("menu", "Columns", false, vec![]),
+                HEIGHT_LG,
+            ),
+            (
+                data_table_toolbar_menu_sm("menu", "Columns", false, vec![]),
+                HEIGHT_SM,
+            ),
+        ] {
+            let trigger = named(&node, "trigger");
+            assert_eq!(
+                (
+                    trigger.constraints.vertical.min,
+                    trigger.constraints.vertical.max
+                ),
+                (Some(step), Some(step)),
+                "the settings trigger is not pinned to its bar's step {step}"
+            );
+        }
     }
 
     /// Falsify by swapping the two `TrackSize`s: the search column would

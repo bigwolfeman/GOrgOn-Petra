@@ -11,8 +11,9 @@
 //!    window gets the window"). It paints [`OVERLAY_SCRIM`] through
 //!    `background` like any other fill, and it carries [`Role::Dialog`] and
 //!    the accessible name.
-//! 2. Container — the dialog. 60% of the window wide (Carbon `md` at the
-//!    `lg` breakpoint, the reference app's own size), centred both ways,
+//! 2. Container — the dialog. A share of the window wide — 60% at the md
+//!    step (Carbon `md` at the `lg` breakpoint, the reference app's own
+//!    size; the other steps in [`ModalSize`]) — centred both ways,
 //!    [`SURFACE_RAISED`] with [`SHADOW_RAISED`]. **No border**: Carbon's 1px
 //!    `$border-subtle` container edge is the outline the operator refused on
 //!    2026-09-04 ("borders are a no no"). **Radius
@@ -48,8 +49,13 @@
 //!
 //! Carbon autofocuses the primary button on open; the host's
 //! `enter_open_modal` seats focus on the first focusable node in the trap,
-//! which is Close. Carbon's `md` width is 84% below the `lg` breakpoint and
-//! 48% above `xlg`; the 60% here is not bucketed by window size. Carbon's
+//! which is Close. Carbon gives every size step a width-by-breakpoint
+//! curve (`md` is 84% below the `lg` breakpoint, 60% at `lg`, 48% above
+//! `xlg`); this file is not bucketed by window size and each step carries
+//! one share, the `lg`-breakpoint column — see [`ModalSize`]. Carbon also
+//! caps each step's height at a share of the viewport (xs 48%, sm 72%, md
+//! 84%, lg 96%); constraints here are absolute and the dialog is
+//! content-driven (SC-007), so that channel is not encoded. Carbon's
 //! body copy is held to 80% of the container by an extra inline-end pad;
 //! this body wraps at the full padded width.
 //!
@@ -83,11 +89,66 @@ const CLOSE_ICON: f32 = 20.0;
 /// MEASURED `_modal.scss` footer: `block-size: 4rem`.
 const FOOTER_HEIGHT: f32 = 64.0;
 
+/// Carbon's modal size ladder (slice-c "Sizes"): xs / sm / md / lg — "four
+/// responsive sizes ... each has a different width-by-breakpoint curve and
+/// a different max-height".
+///
+/// The width curve (slice-c's own table, `md`/`lg`/`xlg` breakpoints):
+///
+/// | Step | md | lg | xlg | max-height |
+/// |---|---|---|---|---|
+/// | xs | 48% | 32% | 24% | 48% |
+/// | sm | 60% | 42% | 36% | 72% |
+/// | md | 84% | 60% | 48% | 84% |
+/// | lg | 96% | 84% | 72% | 96% |
+///
+/// This tree seats the dialog with column weights against one window, with
+/// no breakpoint buckets (the module doc's "What this does not match"), so
+/// a step carries **one** share: the `lg`-breakpoint column — the column
+/// the md dialog was already pinned to (`1 : 3 : 1` is 60%, Carbon `md` at
+/// the `lg` breakpoint). The max-height column is Carbon's viewport-% cap;
+/// constraints here are absolute and the dialog is content-driven
+/// (SC-007's Modal row), so it is recorded, not encoded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModalSize {
+    /// 32% of the window wide.
+    Xs,
+    /// 42%.
+    Sm,
+    /// 60% — the unlabeled default, Carbon `md`.
+    Md,
+    /// 84%.
+    Lg,
+}
+
+impl ModalSize {
+    /// The dialog's share of the window width at the `lg` breakpoint.
+    #[must_use]
+    pub const fn dialog_share(self) -> f32 {
+        match self {
+            Self::Xs => 0.32,
+            Self::Sm => 0.42,
+            Self::Md => 0.6,
+            Self::Lg => 0.84,
+        }
+    }
+
+    /// Column weights of the frame that seats the dialog: side, dialog,
+    /// side — each side half the window the dialog does not take. md is
+    /// `0.2 : 0.6 : 0.2`, the `1 : 3 : 1` this file always shipped.
+    #[must_use]
+    pub const fn seat_weights(self) -> [f32; 3] {
+        let share = self.dialog_share();
+        let side = (1.0 - share) / 2.0;
+        [side, share, side]
+    }
+}
+
 /// A floor on the dialog's shorter edge, read by [`corner_for`] and by
 /// nothing else.
 ///
-/// The dialog has no fixed size: it is 60% of the window wide
-/// ([`DIALOG_SHARE`]) and as tall as its rows. `corner_for` promotes a
+/// The dialog has no fixed size: it is [`ModalSize`]'s share of the window
+/// wide and as tall as its rows. `corner_for` promotes a
 /// role's fixed radius to half the shorter edge when the node is smaller
 /// than twice that radius, and [`CornerRole::Floating`] is 8, so the
 /// promotion only fires under 16 units. A dialog carries a header and often
@@ -100,17 +161,15 @@ const DIALOG_FLOOR: f32 = FOOTER_HEIGHT;
 /// infinite extent is not "sane" to `geom::Size::sane` and collapses to
 /// zero, which is the opposite of covering the window.
 const COVER_WINDOW: f32 = f32::MAX;
-/// Column weights of the frame that seats the dialog: side, dialog, side.
-/// `1 : 3 : 1` is 20% / 60% / 20% — Carbon `md` at the `lg` breakpoint.
-const SIDE_SHARE: f32 = 1.0;
-/// See [`SIDE_SHARE`].
-const DIALOG_SHARE: f32 = 3.0;
 
 const _: () = assert!(CLOSE_HIT == 48.0);
 const _: () = assert!(CLOSE_ICON == 20.0);
 const _: () = assert!(FOOTER_HEIGHT == 64.0);
 const _: () = assert!(COVER_WINDOW.is_finite());
-const _: () = assert!(DIALOG_SHARE / (SIDE_SHARE + DIALOG_SHARE + SIDE_SHARE) == 0.6);
+const _: () = assert!(ModalSize::Xs.dialog_share() == 0.32);
+const _: () = assert!(ModalSize::Sm.dialog_share() == 0.42);
+const _: () = assert!(ModalSize::Md.seat_weights()[1] == 0.6);
+const _: () = assert!(ModalSize::Lg.dialog_share() == 0.84);
 
 const CLOSE_INTENTS: &[Interaction] = &[Interaction::Focus, Interaction::Click, Interaction::Hover];
 
@@ -128,23 +187,91 @@ pub fn modal(
     body: impl Into<String>,
     primary: impl Into<String>,
 ) -> ViewNode {
-    build(key.into(), title.into(), body.into(), Some(primary.into()))
+    build(
+        key.into(),
+        title.into(),
+        body.into(),
+        Some(primary.into()),
+        ModalSize::Md,
+    )
+}
+
+/// The dialog at Carbon xs (32% of the window wide).
+#[must_use]
+pub fn modal_xs(
+    key: impl Into<Key>,
+    title: impl Into<String>,
+    body: impl Into<String>,
+    primary: impl Into<String>,
+) -> ViewNode {
+    build(
+        key.into(),
+        title.into(),
+        body.into(),
+        Some(primary.into()),
+        ModalSize::Xs,
+    )
+}
+
+/// The dialog at Carbon sm (42%).
+#[must_use]
+pub fn modal_sm(
+    key: impl Into<Key>,
+    title: impl Into<String>,
+    body: impl Into<String>,
+    primary: impl Into<String>,
+) -> ViewNode {
+    build(
+        key.into(),
+        title.into(),
+        body.into(),
+        Some(primary.into()),
+        ModalSize::Sm,
+    )
+}
+
+/// The dialog at Carbon lg (84%).
+#[must_use]
+pub fn modal_lg(
+    key: impl Into<Key>,
+    title: impl Into<String>,
+    body: impl Into<String>,
+    primary: impl Into<String>,
+) -> ViewNode {
+    build(
+        key.into(),
+        title.into(),
+        body.into(),
+        Some(primary.into()),
+        ModalSize::Lg,
+    )
 }
 
 /// A passive dialog (Carbon `passiveModal`): title, body and Close, with no
 /// footer. The reader dismisses it; there is nothing to confirm.
+///
+/// The md step, the same precedent [`super::pagination_nav`]'s open form
+/// sets: one primary constructor carries the size ladder, secondary forms
+/// ride its default step. A passive dialog at another share is one
+/// `ModalSize` away from existing and no register unit asks for it.
 pub fn modal_passive(
     key: impl Into<Key>,
     title: impl Into<String>,
     body: impl Into<String>,
 ) -> ViewNode {
-    build(key.into(), title.into(), body.into(), None)
+    build(key.into(), title.into(), body.into(), None, ModalSize::Md)
 }
 
-fn build(key: Key, title: String, body: String, primary: Option<String>) -> ViewNode {
+fn build(
+    key: Key,
+    title: String,
+    body: String,
+    primary: Option<String>,
+    size: ModalSize,
+) -> ViewNode {
     // The dialog, centred on the cross axis of a stack that fills the middle
     // column: `justify` centres it vertically in the whole window height,
-    // `Stretch` gives it the column's full 60%.
+    // `Stretch` gives it the column's full share.
     let mut seat = stack(
         "seat",
         Axis::Vertical,
@@ -156,15 +283,16 @@ fn build(key: Key, title: String, body: String, primary: Option<String>) -> View
 
     // One row the height of the window, three columns: the dialog's width
     // is a share of the window rather than a number, which is the only way
-    // to say "60%" in a tree whose constraints are absolute.
+    // to say "60%" in a tree whose constraints are absolute. The share is
+    // the size step's ([`ModalSize::seat_weights`]); the keys are fixed so
+    // every step probes the same ids.
+    let [left, mid, right] = size.seat_weights();
     let frame = ViewNode::new(NodeKind::Grid, "frame")
         .with_props(Props {
             columns: vec![
-                TrackSize::Weight { weight: SIDE_SHARE },
-                TrackSize::Weight {
-                    weight: DIALOG_SHARE,
-                },
-                TrackSize::Weight { weight: SIDE_SHARE },
+                TrackSize::Weight { weight: left },
+                TrackSize::Weight { weight: mid },
+                TrackSize::Weight { weight: right },
             ],
             rows: vec![TrackSize::Weight { weight: 1.0 }],
             align: Some(Align::Stretch),
@@ -463,7 +591,8 @@ fn close_button() -> ViewNode {
 #[cfg(test)]
 mod tests {
     use super::{
-        CLOSE_HIT, CLOSE_ICON, COVER_WINDOW, DIALOG_FLOOR, FOOTER_HEIGHT, modal, modal_passive,
+        CLOSE_HIT, CLOSE_ICON, COVER_WINDOW, DIALOG_FLOOR, FOOTER_HEIGHT, modal, modal_lg,
+        modal_passive, modal_sm, modal_xs,
     };
     use crate::component::tests::{assert_fits_parent, petrify_root};
     use crate::component::tokens::{LAYER_HOVER, OVERLAY_SCRIM, SURFACE_RAISED};
@@ -845,6 +974,36 @@ mod tests {
             "Close is flush with the container's right edge"
         );
         assert_eq!(close.rect.y, dialog.rect.y, "and its top");
+    }
+
+    /// Spec 008 register rows #299–302: the four documented size steps are
+    /// width-share steps ([`ModalSize`]) — each dialog takes its share of
+    /// the window and stays centred in it. Probing the dialog, not the
+    /// root: the root is the window-covering scrim at every step.
+    #[test]
+    fn the_four_documented_size_steps_take_their_width_share_of_the_window() {
+        let copy = "Its children are retired with it.";
+        for (node, share) in [
+            (modal_xs("retire", "Retire fiber", copy, "Retire"), 0.32),
+            (modal_sm("retire", "Retire fiber", copy, "Retire"), 0.42),
+            (modal("retire", "Retire fiber", copy, "Retire"), 0.6),
+            (modal_lg("retire", "Retire fiber", copy, "Retire"), 0.84),
+        ] {
+            let frame = petrify_lone(node);
+            let dialog = placed(&frame, "/retire/frame/seat/dialog");
+            assert!(
+                (dialog.rect.w - VIEWPORT.w * share).abs() < 0.5,
+                "a dialog at share {share} is {} wide, not {}",
+                dialog.rect.w,
+                VIEWPORT.w * share
+            );
+            let centre_x = dialog.rect.x + dialog.rect.w / 2.0;
+            assert!(
+                (centre_x - VIEWPORT.w / 2.0).abs() < 0.5,
+                "the {share} dialog is not centred in the window: x={}",
+                dialog.rect.x
+            );
+        }
     }
 
     /// The card that declares the modal is not made taller by it: the

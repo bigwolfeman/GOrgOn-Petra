@@ -249,6 +249,57 @@ impl Page for DatePicker {
         ))]
     }
 
+    /// Carbon's date-picker input ramp (slice-b "Sizes": the same
+    /// 32/40/48 as every field-shaped control) plus Fluid's one 64-unit
+    /// well — the four built steps side by side, each labeled with its
+    /// step and the well height it lands on (FR-025). Static pickers: the
+    /// live forms above own the interaction.
+    fn sizes(&self) -> Vec<ViewNode> {
+        use gorgon_petra::component::{
+            date_picker, date_picker_fluid, date_picker_lg, date_picker_sm, text,
+        };
+
+        use super::common::{column, row, sp};
+        vec![column(
+            "size-steps",
+            sp("spacing-05"),
+            vec![
+                row(
+                    "size-sm",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-sm-label", "sm · 32"),
+                        date_picker_sm("size-dp-sm", "Date", "2026-08-30"),
+                    ],
+                ),
+                row(
+                    "size-md",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-md-label", "md · 40"),
+                        date_picker("size-dp-md", "Date", "2026-08-30"),
+                    ],
+                ),
+                row(
+                    "size-lg",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-lg-label", "lg · 48"),
+                        date_picker_lg("size-dp-lg", "Date", "2026-08-30"),
+                    ],
+                ),
+                row(
+                    "size-fluid",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-fluid-label", "fluid · 64"),
+                        date_picker_fluid("size-dp-fluid", "Date", "2026-08-30"),
+                    ],
+                ),
+            ],
+        )]
+    }
+
     fn body(&self) -> ViewNode {
         use gorgon_petra::component::{
             date_picker_fluid, date_picker_input, date_picker_invalid, date_picker_range,

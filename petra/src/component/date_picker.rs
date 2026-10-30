@@ -3,7 +3,8 @@
 //!
 //! Anatomy (`_date-picker.scss` + `_flatpickr.scss`):
 //! 1. Field — the shared field well ([`super::field::bind_field_chrome`]:
-//!    a fill and a bottom rule, no box, no radius), height md 40.
+//!    a fill and a bottom rule, no box, no radius), height md 40 on the
+//!    field ramp ([`date_picker_sm`] / [`date_picker_lg`] take 32 / 48).
 //! 2. Current value (visible text).
 //! 3. Calendar mark — [`IconMark::Calendar`] in [`IconTone::Primary`]
 //!    (`.cds--date-picker__icon`, `fill: $icon-primary`, 16×16, slice-b),
@@ -62,9 +63,10 @@ use super::rule;
 use super::stack;
 use super::text::text;
 use super::tokens::{
-    ACCENT_PRIMARY, BORDER_STRONG, LAYER_HOVER, SHADOW_OVERLAY, SIZE_MD, SPACING_02, SPACING_03,
-    SPACING_04, SPACING_05, SUPPORT_ERROR, SUPPORT_WARNING, SURFACE_LAYER_TWO, SURFACE_RAISED,
-    TEXT_MUTED, TEXT_ON_ACCENT, TEXT_PRIMARY, TYPOGRAPHY_HEADING_SM, t,
+    ACCENT_PRIMARY, BORDER_STRONG, LAYER_HOVER, SHADOW_OVERLAY, SIZE_LG, SIZE_MD, SIZE_SM,
+    SPACING_02, SPACING_03, SPACING_04, SPACING_05, SUPPORT_ERROR, SUPPORT_WARNING,
+    SURFACE_LAYER_TWO, SURFACE_RAISED, TEXT_MUTED, TEXT_ON_ACCENT, TEXT_PRIMARY,
+    TYPOGRAPHY_HEADING_SM, t,
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
@@ -151,6 +153,35 @@ pub fn date_picker(
 ) -> ViewNode {
     let label = label.into();
     let field = closed_field("field", label, value, false, FieldForm::Default);
+    column(key, field, None)
+}
+
+/// [`date_picker`] at Carbon sm: the well on the field ramp's `field_sm`
+/// step (32). Slice-b "Sizes" gives the date-picker input the same three
+/// heights as every field-shaped control — sm 32 / md 40 / lg 48 — and the
+/// calendar is fixed at every one of them ("the calendar menu itself is a
+/// fixed height and width regardless of input size"), so the step is the
+/// well's alone.
+#[must_use]
+pub fn date_picker_sm(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    value: impl Into<String>,
+) -> ViewNode {
+    let label = label.into();
+    let field = closed_field_sized("field", label, value, false, FieldForm::Default, SIZE_SM);
+    column(key, field, None)
+}
+
+/// [`date_picker`] at Carbon lg (48). See [`date_picker_sm`].
+#[must_use]
+pub fn date_picker_lg(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    value: impl Into<String>,
+) -> ViewNode {
+    let label = label.into();
+    let field = closed_field_sized("field", label, value, false, FieldForm::Default, SIZE_LG);
     column(key, field, None)
 }
 
@@ -694,13 +725,27 @@ impl FieldForm {
 
 /// The dated well both dressings share: the value text and the calendar
 /// mark, wearing the field chrome, the toggle behaviour and the pick-into
-/// focus figure. `form` decides height, inset and where the label goes.
+/// focus figure. `form` decides the dressing's inset and where the label
+/// goes; the height is the form's own step ([`FieldForm::height`]).
 fn closed_field(
     key: impl Into<Key>,
     label: impl Into<String>,
     value: impl Into<String>,
     expanded: bool,
     form: FieldForm,
+) -> ViewNode {
+    closed_field_sized(key, label, value, expanded, form, form.height())
+}
+
+/// [`closed_field`] with the well pinned to a step of the field ramp
+/// ([`date_picker_sm`] / [`date_picker_lg`]) rather than the form's default.
+fn closed_field_sized(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    value: impl Into<String>,
+    expanded: bool,
+    form: FieldForm,
+    height: f32,
 ) -> ViewNode {
     let label = label.into();
     let mut value_node = text("value", value.into());
@@ -746,7 +791,7 @@ fn closed_field(
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
     let mut node = node
-        .with_constraints(pin_block(form.height()))
+        .with_constraints(pin_block(height))
         .interactive(Role::Button, label, FIELD_INTENTS)
         .with_behaviour(TOGGLES_ON_RELEASE)
         .owning_its_text();
@@ -1355,10 +1400,11 @@ fn centred(key: String, child: ViewNode) -> ViewNode {
 mod tests {
     use super::{
         CALENDAR_H, CALENDAR_W, CHOOSER_H, Calendar, MONTH_CELL_H, MONTH_COLS, MONTH_ROWS,
-        PropAlign, SIZE_FLUID, SIZE_MD, WEEK_ROWS, WEEKDAYS, date_picker, date_picker_fluid,
-        date_picker_input, date_picker_invalid, date_picker_open, date_picker_range,
-        date_picker_range_showing, date_picker_showing, date_picker_showing_selection,
-        date_picker_warning, days_in_month, first_weekday, parse_date, time_picker,
+        PropAlign, SIZE_FLUID, SIZE_LG, SIZE_MD, SIZE_SM, WEEK_ROWS, WEEKDAYS, date_picker,
+        date_picker_fluid, date_picker_input, date_picker_invalid, date_picker_lg,
+        date_picker_open, date_picker_range, date_picker_range_showing, date_picker_showing,
+        date_picker_showing_selection, date_picker_sm, date_picker_warning, days_in_month,
+        first_weekday, parse_date, time_picker,
     };
     use crate::component::tests::{assert_fits_parent, petrify_lone};
     use crate::component::tokens::{
@@ -1385,6 +1431,39 @@ mod tests {
 
     use crate::component::icon::{IconMark, IconTone, icon_toned};
     use crate::component::tokens::{SUPPORT_ERROR, SUPPORT_WARNING, TEXT_MUTED, TEXT_PRIMARY};
+
+    /// Spec 008 register rows #157/#159: the dated well carries the field
+    /// ramp's three heights (sm 32 / md 40 / lg 48 — slice-b "Sizes", the
+    /// same table as every field-shaped control). The probe is the well
+    /// (`{key}/field`), not the column around it, and the calendar is not
+    /// probed because it is fixed at every step (slice-b: "the calendar
+    /// menu itself is a fixed height and width regardless of input size").
+    #[test]
+    fn the_well_builds_at_three_steps_on_the_field_ramp() {
+        for (node, step) in [
+            (date_picker_sm("due", "Due date", "2026-08-30"), SIZE_SM),
+            (date_picker("due", "Due date", "2026-08-30"), SIZE_MD),
+            (date_picker_lg("due", "Due date", "2026-08-30"), SIZE_LG),
+        ] {
+            let well = child(&node, "field");
+            assert_eq!(
+                (well.constraints.vertical.min, well.constraints.vertical.max),
+                (Some(step), Some(step)),
+                "the well is not pinned to {step}"
+            );
+            let frame = petrify_lone(node);
+            let placed = frame
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with("/field"))
+                .expect("the well is not placed");
+            assert!(
+                (placed.rect.h - step).abs() < 1.0,
+                "the well is {} tall at step {step}",
+                placed.rect.h
+            );
+        }
+    }
 
     /// The invalid state dresses the field in the shared form-family
     /// chrome and says so in words and a glyph (spec 008 T039).

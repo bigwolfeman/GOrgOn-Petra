@@ -200,17 +200,19 @@ pub use controls::{
 };
 pub use data_table::{
     SortDirection, data_table, data_table_batch_action, data_table_batch_bar,
-    data_table_batch_cancel, data_table_grip_row, data_table_menu, data_table_placed_weights,
-    data_table_row, data_table_row_actions, data_table_row_expandable,
+    data_table_batch_bar_sm, data_table_batch_cancel, data_table_grip_row, data_table_menu,
+    data_table_placed_weights, data_table_row, data_table_row_actions, data_table_row_expandable,
     data_table_row_expandable_actions, data_table_row_lg, data_table_row_md,
     data_table_row_menu_trigger, data_table_row_sm, data_table_row_xl, data_table_row_xs,
     data_table_sized, data_table_skeleton, data_table_sort_header, data_table_toolbar,
-    data_table_toolbar_menu, data_table_weights_at, data_table_zebra, data_table_zebra_sized,
+    data_table_toolbar_menu, data_table_toolbar_menu_sm, data_table_toolbar_sm,
+    data_table_weights_at, data_table_zebra, data_table_zebra_sized,
 };
 pub use date_picker::{
     Calendar, date_picker, date_picker_fluid, date_picker_input, date_picker_invalid,
-    date_picker_open, date_picker_range, date_picker_range_showing, date_picker_readonly,
-    date_picker_showing, date_picker_showing_selection, date_picker_warning, time_picker,
+    date_picker_lg, date_picker_open, date_picker_range, date_picker_range_showing,
+    date_picker_readonly, date_picker_showing, date_picker_showing_selection, date_picker_sm,
+    date_picker_warning, time_picker,
 };
 pub use disabled::disabled;
 pub use drawer::{docked, drawer, sheet};
@@ -248,7 +250,7 @@ pub use menu_button::{
     menu_button_xs, overflow_menu, overflow_menu_lg, overflow_menu_sm, overflow_menu_xs,
 };
 pub use menubar::{menubar, menubar_top};
-pub use modal::{modal, modal_passive};
+pub use modal::{ModalSize, modal, modal_lg, modal_passive, modal_sm, modal_xs};
 pub use notification::{
     NotificationKind, notification, notification_actionable, notification_actionable_kind,
     notification_inline, notification_inline_actionable, notification_inline_actionable_kind,
@@ -288,10 +290,14 @@ pub use slider::{
 };
 pub use status::status;
 pub use structured_list::{
-    structured_list, structured_list_placed_weights, structured_list_row,
-    structured_list_row_static, structured_list_sized, structured_list_weights_at,
+    structured_list, structured_list_condensed, structured_list_placed_weights,
+    structured_list_row, structured_list_row_static, structured_list_sized,
+    structured_list_weights_at,
 };
-pub use tabs::{contained_tab, contained_tab_bar, tab, tab_bar, vertical_tab, vertical_tab_bar};
+pub use tabs::{
+    contained_tab, contained_tab_bar, contained_tab_lg, contained_tab_xl, tab, tab_bar,
+    vertical_tab, vertical_tab_bar,
+};
 pub use tag::{dismissible_tag, selectable_tag, tag, tag_lg, tag_sm, tag_status, tag_with_avatar};
 pub use text::{heading, text};
 pub use textarea::{
@@ -305,9 +311,11 @@ pub use tree_view::{tree_item, tree_item_xs, tree_view};
 pub use ui_shell::{
     LeftPanelMode, ui_shell_header, ui_shell_header_action, ui_shell_header_action_icon,
     ui_shell_header_menu_trigger, ui_shell_header_nav_item, ui_shell_left_panel,
-    ui_shell_left_panel_divider, ui_shell_left_panel_icon_item, ui_shell_left_panel_icon_subitem,
-    ui_shell_left_panel_in, ui_shell_left_panel_item, ui_shell_left_panel_rail,
-    ui_shell_left_panel_subitem, ui_shell_right_panel, ui_shell_right_panel_divider,
+    ui_shell_left_panel_divider, ui_shell_left_panel_icon_item,
+    ui_shell_left_panel_icon_item_large, ui_shell_left_panel_icon_subitem,
+    ui_shell_left_panel_icon_subitem_large, ui_shell_left_panel_in, ui_shell_left_panel_item,
+    ui_shell_left_panel_item_large, ui_shell_left_panel_rail, ui_shell_left_panel_subitem,
+    ui_shell_left_panel_subitem_large, ui_shell_right_panel, ui_shell_right_panel_divider,
     ui_shell_switcher, ui_shell_switcher_item,
 };
 

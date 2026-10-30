@@ -5,11 +5,11 @@
 //! [`crate::component::params`], and calls the shipped constructor. A row
 //! must never re-derive what the constructor does.
 //!
-//! File covered: `data_table.rs` (Data table) — seventeen public
-//! constructors (ten pre-T034, plus T034's toolbar tier: search/filter,
-//! column visibility, the batch bar, the row menu, and the skeleton), all
-//! registered below. The `every_view_node_constructor_has_exactly_one_row`
-//! test proves it by scanning that file's own source text, not by trusting
+//! File covered: `data_table.rs` (Data table) — every
+//! `pub fn ... -> ViewNode` constructor in it (24 rows after spec 008's
+//! row ramp and the toolbar/batch-bar size steps), registered below. The
+//! `every_view_node_constructor_has_exactly_one_row` test proves it by
+//! scanning that file's own source text, not by trusting
 //! this list.
 
 use serde::Deserialize;
@@ -257,11 +257,22 @@ pub const ENTRIES: &[Entry] = &[
     row!("data_table_toolbar", DataTableToolbarParams, |p| {
         lib::data_table_toolbar(p.key, p.search, p.trailing)
     }),
+    row!("data_table_toolbar_sm", DataTableToolbarParams, |p| {
+        lib::data_table_toolbar_sm(p.key, p.search, p.trailing)
+    }),
     row!("data_table_toolbar_menu", DataTableToolbarMenuParams, |p| {
         lib::data_table_toolbar_menu(p.key, p.label, p.open, p.items)
     }),
+    row!(
+        "data_table_toolbar_menu_sm",
+        DataTableToolbarMenuParams,
+        |p| lib::data_table_toolbar_menu_sm(p.key, p.label, p.open, p.items)
+    ),
     row!("data_table_batch_bar", DataTableBatchBarParams, |p| {
         lib::data_table_batch_bar(p.key, p.count, p.cancel, p.actions)
+    }),
+    row!("data_table_batch_bar_sm", DataTableBatchBarParams, |p| {
+        lib::data_table_batch_bar_sm(p.key, p.count, p.cancel, p.actions)
     }),
     row!("data_table_batch_cancel", KeyOnly, |p| {
         lib::data_table_batch_cancel(p.key)

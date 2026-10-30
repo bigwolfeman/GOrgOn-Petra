@@ -106,6 +106,98 @@ impl Page for UiShellLeftPanel {
         "UI shell left panel"
     }
 
+    /// Carbon's row-height ladder (register row #612; slice-f "Sizes > Row
+    /// height"): default 32 (`mini-units(4)`) and `--item--large` 48
+    /// (`mini-units(6)`) — both steps of both row forms, each branch
+    /// mounting its sub-menu row at its own step (FR-025). Static rows:
+    /// the live panel above owns the interaction.
+    fn sizes(&self) -> Vec<ViewNode> {
+        use gorgon_petra::component::{
+            text, ui_shell_left_panel_icon_item, ui_shell_left_panel_icon_item_large,
+            ui_shell_left_panel_icon_subitem, ui_shell_left_panel_icon_subitem_large,
+            ui_shell_left_panel_item, ui_shell_left_panel_item_large, ui_shell_left_panel_subitem,
+            ui_shell_left_panel_subitem_large,
+        };
+
+        use super::common::{column, row, sp};
+        vec![column(
+            "size-steps",
+            sp("spacing-05"),
+            vec![
+                row(
+                    "size-item-default",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-item-default-label", "default · 32"),
+                        ui_shell_left_panel_item(
+                            "size-item-d",
+                            "Kernel",
+                            true,
+                            false,
+                            vec![ui_shell_left_panel_subitem("size-sub-d", "Fibers", false)],
+                        ),
+                    ],
+                ),
+                row(
+                    "size-icon-item-default",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-icon-item-default-label", "default · 32 · icon"),
+                        ui_shell_left_panel_icon_item(
+                            "size-icon-item-d",
+                            "Kernel",
+                            IconMark::Switcher,
+                            true,
+                            false,
+                            vec![ui_shell_left_panel_icon_subitem(
+                                "size-icon-sub-d",
+                                "Fibers",
+                                false,
+                            )],
+                        ),
+                    ],
+                ),
+                row(
+                    "size-item-large",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-item-large-label", "item-large · 48"),
+                        ui_shell_left_panel_item_large(
+                            "size-item-lg",
+                            "Kernel",
+                            true,
+                            false,
+                            vec![ui_shell_left_panel_subitem_large(
+                                "size-sub-lg",
+                                "Fibers",
+                                false,
+                            )],
+                        ),
+                    ],
+                ),
+                row(
+                    "size-icon-item-large",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-icon-item-large-label", "item-large · 48 · icon"),
+                        ui_shell_left_panel_icon_item_large(
+                            "size-icon-item-lg",
+                            "Kernel",
+                            IconMark::Switcher,
+                            true,
+                            false,
+                            vec![ui_shell_left_panel_icon_subitem_large(
+                                "size-icon-sub-lg",
+                                "Fibers",
+                                false,
+                            )],
+                        ),
+                    ],
+                ),
+            ],
+        )]
+    }
+
     fn body(&self) -> ViewNode {
         let mode = self.mode();
         // A rail has nowhere to put a sub-menu's children: 48px hides every

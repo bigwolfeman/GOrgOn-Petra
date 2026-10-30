@@ -130,11 +130,11 @@ impl Page for TreeView {
                     ],
                 ),
                 row(
-                    "size-md",
+                    "size-sm",
                     sp("spacing-03"),
                     vec![
-                        text("size-md-label", "md · 32"),
-                        tree_item("size-tree-md", "Node", true, true, vec![]),
+                        text("size-sm-label", "sm · 32"),
+                        tree_item("size-tree-sm", "Node", true, true, vec![]),
                     ],
                 ),
             ],

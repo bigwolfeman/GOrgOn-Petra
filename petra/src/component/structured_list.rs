@@ -107,8 +107,13 @@ use crate::tree::{
 /// pinned on the row: it is what `padding-td` (16 + 24) plus one 20-unit
 /// line of `body-01` adds up to, and the row grows with a second line.
 const ROW_HEIGHT: f32 = 60.0;
+/// Carbon condensed row height (style page Size table, against the
+/// default's 60): `padding-td--condensed` (flat 8, slice-e:105) plus the
+/// same one 20-unit line. Also emergent, and also not pinned.
+const ROW_HEIGHT_CONDENSED: f32 = 36.0;
 
 const _: () = assert!(ROW_HEIGHT == 60.0);
+const _: () = assert!(ROW_HEIGHT_CONDENSED == 36.0);
 
 /// The width of a column divider's grid track, and so of its drag target.
 ///
@@ -174,7 +179,8 @@ enum CellKind {
 ///
 /// The last data row gets the tbody's closing rule. For a list whose
 /// columns a caller sizes — which is what a drag needs, since the weights
-/// are the caller's state — see [`structured_list_sized`].
+/// are the caller's state — see [`structured_list_sized`]; for Carbon's
+/// condensed step, [`structured_list_condensed`].
 pub fn structured_list(
     key: impl Into<Key>,
     header: Vec<ViewNode>,
@@ -182,6 +188,27 @@ pub fn structured_list(
 ) -> ViewNode {
     let ncols = header.len().max(1);
     structured_list_sized(key, header, rows, &vec![1.0; ncols], true)
+}
+
+/// [`structured_list`] at Carbon's condensed step (slice-e's Size table:
+/// row height 36 against the default's 60).
+///
+/// The list owns its size step, the same rule [`super::contained_list`]
+/// applies to its rows: whatever cell padding a row arrives with, this
+/// constructor re-pads it to `padding-td--condensed` (flat
+/// [`SPACING_03`] on all four sides, slice-e:105) — 8 + a 20-unit line + 8
+/// is the 36 the Size table documents, the same emergence the 60-unit
+/// default row has. Slice-e measures the mixin on data cells; the header
+/// cell takes the same flat pad here so the table is one rhythm.
+#[must_use]
+pub fn structured_list_condensed(
+    key: impl Into<Key>,
+    header: Vec<ViewNode>,
+    rows: Vec<ViewNode>,
+) -> ViewNode {
+    let mut node = structured_list(key, header, rows);
+    repad_rows_condensed(&mut node);
+    node
 }
 
 /// [`structured_list`] with the column weights and the divider policy the
@@ -568,6 +595,36 @@ fn cell_padding(kind: CellKind) -> InsetRefs {
     }
 }
 
+/// The condensed step's cell padding: `padding-td--condensed` is "flat
+/// `$padding * 0.25` = 8px on all sides" (slice-e:105, the one mixin that
+/// slice measures for the step), so every edge takes [`SPACING_03`].
+fn condensed_padding() -> InsetRefs {
+    InsetRefs {
+        left: Some(t(SPACING_03)),
+        right: Some(t(SPACING_03)),
+        top: Some(t(SPACING_03)),
+        bottom: Some(t(SPACING_03)),
+    }
+}
+
+/// Re-pad every cell of every row this module built to the condensed
+/// step's padding. Cells keep their keys, roles and contents — the step is
+/// padding alone. A caller-composed cell (one that already declared
+/// [`Role::Cell`] before [`as_cell`] saw it) is re-padded too: in a
+/// condensed list every row is on the condensed rhythm, the same
+/// "no mixed set inside one bar" rule the sized constructors of
+/// [`super::content_switcher`] and [`super::contained_list`] enforce.
+fn repad_rows_condensed(node: &mut ViewNode) {
+    for row in &mut node.children {
+        let row = Arc::make_mut(row);
+        for cell in &mut row.children {
+            if cell.semantics.role == Some(Role::Cell) {
+                Arc::make_mut(cell).props.padding = Some(condensed_padding());
+            }
+        }
+    }
+}
+
 fn as_cell(index: usize, node: ViewNode, kind: CellKind) -> ViewNode {
     if node.semantics.role == Some(Role::Cell) {
         let mut node = node;
@@ -641,9 +698,10 @@ fn collect_text(node: &ViewNode) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        DIVIDER, DIVIDER_INTENTS, DIVIDER_KEY, MARK, MIN_COLUMN, ROW_HEIGHT, SELECT_CELL,
-        SPACING_03, SPACING_05, SPACING_06, structured_list, structured_list_row,
-        structured_list_row_static, structured_list_sized, structured_list_weights_at,
+        DIVIDER, DIVIDER_INTENTS, DIVIDER_KEY, MARK, MIN_COLUMN, ROW_HEIGHT, ROW_HEIGHT_CONDENSED,
+        SELECT_CELL, SPACING_03, SPACING_05, SPACING_06, structured_list,
+        structured_list_condensed, structured_list_row, structured_list_row_static,
+        structured_list_sized, structured_list_weights_at,
     };
     use crate::component::icon::{IconMark, IconTone, icon_toned};
     use crate::component::tests::{assert_fits_parent, petrify_lone};
@@ -903,6 +961,43 @@ mod tests {
             row.h - header.h,
             16.0,
             "the header takes padding-th (16 + 8) and is 16 shorter than a data row"
+        );
+    }
+
+    /// The condensed step (register row #455) is the same emergence with
+    /// `padding-td--condensed`: flat 8 on all four sides plus one line,
+    /// which is 36 with a 20-unit `body-01` line — and the text sits 8
+    /// under the row's top, not the default's 16. The header is re-padded
+    /// with the rows, so no cell is left on the default rhythm.
+    #[test]
+    fn a_one_line_condensed_row_measures_carbons_thirty_six_from_its_padding() {
+        let node = structured_list_condensed(
+            "plans",
+            vec![text("h0", "Plan"), text("h1", "Price")],
+            vec![
+                structured_list_row("r0", vec![text("p0", "Basic"), text("c0", "$12")], false),
+                structured_list_row("r1", vec![text("p1", "Pro"), text("c1", "$24")], true),
+            ],
+        );
+        let frame = petrify_lone(node);
+        let row = rect_of(&frame, "/plans/r0");
+        let label = rect_of(&frame, "/r0/c0/p0");
+        assert_eq!(
+            row.h,
+            8.0 + label.h + 8.0,
+            "padding-td--condensed (8 + 8) plus one line; with a 20 line box \
+             that is {ROW_HEIGHT_CONDENSED}"
+        );
+        assert_eq!(
+            label.y - row.y,
+            8.0,
+            "the text sits 8 under the condensed row's top"
+        );
+        let header = rect_of(&frame, "/plans/header");
+        assert!(
+            header.h < ROW_HEIGHT,
+            "the header cell was left on the default padding: {} tall",
+            header.h
         );
     }
 

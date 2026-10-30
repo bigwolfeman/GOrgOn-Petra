@@ -105,6 +105,8 @@
 //! the header or left panel shells themselves; undocumented for right
 //! panel items), so none is built here.
 
+use std::sync::Arc;
+
 use super::icon::{IconBox, IconMark, IconTone, icon_in, icon_toned};
 use super::text::text;
 use super::tokens::{
@@ -152,6 +154,10 @@ const HEADER_ACCENT: f32 = 3.0;
 const LEFT_PANEL_WIDTH: f32 = 256.0;
 /// Left panel default link/sub-menu row height (`mini-units(4)` = 32px).
 const LEFT_PANEL_ROW: f32 = 32.0;
+/// Left panel `--item--large` row height (`mini-units(6)` = 48px — slice-f
+/// "Sizes > Row height"). The family's second documented step; the sized
+/// row constructors (`ui_shell_left_panel_*_large`) take it.
+const LEFT_PANEL_ROW_LARGE: f32 = MINI_UNIT_6;
 /// Left panel selected accent bar thickness (`3px`, full item block-size).
 const LEFT_PANEL_ACCENT: f32 = 3.0;
 /// A left-panel row's own inline padding (`padding: 0 mini-units(2)`,
@@ -695,6 +701,8 @@ fn left_panel(key: impl Into<Key>, items: Vec<ViewNode>, width: f32) -> ViewNode
 /// `selected` shows
 /// [`LEFT_PANEL_ACCENT`] at the inline-start edge plus `Semantics.selected`.
 /// Title type is [`TYPOGRAPHY_HEADING_SM`] (Carbon `$heading-compact-01`).
+/// Row height is [`LEFT_PANEL_ROW`] (32), the default of slice-f's "Row
+/// height" sub-bullet.
 ///
 /// No icon: see [`ui_shell_left_panel_icon_item`], which is the same row
 /// with Carbon's `__icon` slot filled.
@@ -705,7 +713,42 @@ pub fn ui_shell_left_panel_item(
     selected: bool,
     children: Vec<ViewNode>,
 ) -> ViewNode {
-    left_panel_item(key, label, None, expanded, selected, children)
+    left_panel_item(
+        key,
+        label,
+        None,
+        expanded,
+        selected,
+        children,
+        LEFT_PANEL_ROW,
+    )
+}
+
+/// [`ui_shell_left_panel_item`] at Carbon's `--item--large` row height
+/// ([`LEFT_PANEL_ROW_LARGE`], 48 — slice-f "Sizes > Row height").
+///
+/// The row height is the step, whatever else the row carries: this
+/// constructor re-pins its mounted sub-menu rows to the same step (the
+/// sized-constructor rule, "a mixed set of child constraints cannot
+/// produce ragged geometry inside one bar"), so a large branch is large
+/// all the way down.
+#[must_use]
+pub fn ui_shell_left_panel_item_large(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    expanded: bool,
+    selected: bool,
+    children: Vec<ViewNode>,
+) -> ViewNode {
+    left_panel_item(
+        key,
+        label,
+        None,
+        expanded,
+        selected,
+        children,
+        LEFT_PANEL_ROW_LARGE,
+    )
 }
 
 /// [`ui_shell_left_panel_item`] with Carbon's `__icon` slot filled: `mark`
@@ -725,7 +768,36 @@ pub fn ui_shell_left_panel_icon_item(
     selected: bool,
     children: Vec<ViewNode>,
 ) -> ViewNode {
-    left_panel_item(key, label, Some(mark), expanded, selected, children)
+    left_panel_item(
+        key,
+        label,
+        Some(mark),
+        expanded,
+        selected,
+        children,
+        LEFT_PANEL_ROW,
+    )
+}
+
+/// [`ui_shell_left_panel_icon_item`] at [`LEFT_PANEL_ROW_LARGE`] (48).
+#[must_use]
+pub fn ui_shell_left_panel_icon_item_large(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    mark: IconMark,
+    expanded: bool,
+    selected: bool,
+    children: Vec<ViewNode>,
+) -> ViewNode {
+    left_panel_item(
+        key,
+        label,
+        Some(mark),
+        expanded,
+        selected,
+        children,
+        LEFT_PANEL_ROW_LARGE,
+    )
 }
 
 fn left_panel_item(
@@ -734,10 +806,19 @@ fn left_panel_item(
     icon: Option<IconMark>,
     expanded: bool,
     selected: bool,
-    children: Vec<ViewNode>,
+    mut children: Vec<ViewNode>,
+    height: f32,
 ) -> ViewNode {
     let label = label.into();
     let is_branch = !children.is_empty();
+    // The branch owns its row step: whatever height a sub-item arrived
+    // with, it is re-pinned here (the sized-constructor rule — "a mixed
+    // set of child constraints cannot produce ragged geometry inside one
+    // bar"). Only rows this module built are re-pinned; a caller-composed
+    // child is left as it came.
+    for child in &mut children {
+        repin_row(child, height);
+    }
     // `.cds--side-nav__item--active`: React sets it on the item whose
     // *descendant* is the current page, and Carbon reads it twice.
     // `_side-nav.scss:283-298` fills the title and draws its accent only
@@ -755,6 +836,7 @@ fn left_panel_item(
         branch: is_branch.then_some(expanded),
         marked,
         emphasised: selected || child_current,
+        height,
     });
     // The item below holds focus and its rect spans its whole expanded
     // sub-menu, so a figure on that rect marks the *group* rather than the
@@ -817,7 +899,23 @@ pub fn ui_shell_left_panel_subitem(
     label: impl Into<String>,
     selected: bool,
 ) -> ViewNode {
-    left_panel_subitem(key, label, selected, LEFT_PANEL_NEST_INSET)
+    left_panel_subitem(key, label, selected, LEFT_PANEL_NEST_INSET, LEFT_PANEL_ROW)
+}
+
+/// [`ui_shell_left_panel_subitem`] at [`LEFT_PANEL_ROW_LARGE`] (48).
+#[must_use]
+pub fn ui_shell_left_panel_subitem_large(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    selected: bool,
+) -> ViewNode {
+    left_panel_subitem(
+        key,
+        label,
+        selected,
+        LEFT_PANEL_NEST_INSET,
+        LEFT_PANEL_ROW_LARGE,
+    )
 }
 
 /// [`ui_shell_left_panel_subitem`] nested under an
@@ -835,7 +933,29 @@ pub fn ui_shell_left_panel_icon_subitem(
     label: impl Into<String>,
     selected: bool,
 ) -> ViewNode {
-    left_panel_subitem(key, label, selected, LEFT_PANEL_ICON_NEST_INSET)
+    left_panel_subitem(
+        key,
+        label,
+        selected,
+        LEFT_PANEL_ICON_NEST_INSET,
+        LEFT_PANEL_ROW,
+    )
+}
+
+/// [`ui_shell_left_panel_icon_subitem`] at [`LEFT_PANEL_ROW_LARGE`] (48).
+#[must_use]
+pub fn ui_shell_left_panel_icon_subitem_large(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    selected: bool,
+) -> ViewNode {
+    left_panel_subitem(
+        key,
+        label,
+        selected,
+        LEFT_PANEL_ICON_NEST_INSET,
+        LEFT_PANEL_ROW_LARGE,
+    )
 }
 
 fn left_panel_subitem(
@@ -843,6 +963,7 @@ fn left_panel_subitem(
     label: impl Into<String>,
     selected: bool,
     inset: f32,
+    height: f32,
 ) -> ViewNode {
     let label = label.into();
     let row = left_panel_row(&RowShape {
@@ -853,6 +974,7 @@ fn left_panel_subitem(
         branch: None,
         marked: selected,
         emphasised: selected,
+        height,
     });
     let mut node = stack(key, Axis::Vertical, None, vec![row]);
     node.props.align = Some(Align::Stretch);
@@ -883,6 +1005,9 @@ struct RowShape<'a> {
     marked: bool,
     /// Step the label and the icon to their primary tones.
     emphasised: bool,
+    /// The row's height step ([`LEFT_PANEL_ROW`] or
+    /// [`LEFT_PANEL_ROW_LARGE`]).
+    height: f32,
 }
 
 /// One row: the body, with the current-page accent laid **over** it.
@@ -984,7 +1109,20 @@ fn left_panel_row(shape: &RowShape<'_>) -> ViewNode {
             ..Props::default()
         })
         .with_children(vec![body, accent])
-        .with_constraints(pin_block(LEFT_PANEL_ROW))
+        .with_constraints(pin_block(shape.height))
+}
+
+/// Re-pin the one row this module built inside a branch's sub-menu child
+/// to `height`. The row is the child's `"row"` overlay
+/// ([`left_panel_row`]); a caller-composed child that carries no such row
+/// is left as it came.
+fn repin_row(child: &mut ViewNode, height: f32) {
+    for node in &mut child.children {
+        if node.key.as_str() == "row" {
+            Arc::make_mut(node).constraints = pin_block(height);
+            return;
+        }
+    }
 }
 
 /// The four interaction-state fills a left-panel item's outer node binds:
@@ -1362,13 +1500,16 @@ mod tests {
     use super::{
         HEADER_ACCENT, IconBox, IconMark, IconTone, LEFT_PANEL_ACCENT, LEFT_PANEL_ICON_GAP,
         LEFT_PANEL_ICON_NEST_INSET, LEFT_PANEL_INSET, LEFT_PANEL_NEST_INSET, LEFT_PANEL_ROW,
-        LEFT_PANEL_WIDTH, LeftPanelMode, MINI_UNIT_6, RIGHT_PANEL_WIDTH, SWITCHER_DIVIDER_WIDTH,
-        SWITCHER_ROW, icon_in, icon_toned, ui_shell_header, ui_shell_header_action,
-        ui_shell_header_action_icon, ui_shell_header_menu_trigger, ui_shell_header_nav_item,
-        ui_shell_left_panel, ui_shell_left_panel_divider, ui_shell_left_panel_icon_item,
-        ui_shell_left_panel_icon_subitem, ui_shell_left_panel_in, ui_shell_left_panel_item,
-        ui_shell_left_panel_rail, ui_shell_left_panel_subitem, ui_shell_right_panel,
-        ui_shell_right_panel_divider, ui_shell_switcher, ui_shell_switcher_item,
+        LEFT_PANEL_ROW_LARGE, LEFT_PANEL_WIDTH, LeftPanelMode, MINI_UNIT_6, RIGHT_PANEL_WIDTH,
+        SWITCHER_DIVIDER_WIDTH, SWITCHER_ROW, icon_in, icon_toned, ui_shell_header,
+        ui_shell_header_action, ui_shell_header_action_icon, ui_shell_header_menu_trigger,
+        ui_shell_header_nav_item, ui_shell_left_panel, ui_shell_left_panel_divider,
+        ui_shell_left_panel_icon_item, ui_shell_left_panel_icon_item_large,
+        ui_shell_left_panel_icon_subitem, ui_shell_left_panel_icon_subitem_large,
+        ui_shell_left_panel_in, ui_shell_left_panel_item, ui_shell_left_panel_item_large,
+        ui_shell_left_panel_rail, ui_shell_left_panel_subitem, ui_shell_left_panel_subitem_large,
+        ui_shell_right_panel, ui_shell_right_panel_divider, ui_shell_switcher,
+        ui_shell_switcher_item,
     };
     use crate::component::tests::{assert_fits_parent, petrify_lone};
     use crate::component::text::text;
@@ -1732,6 +1873,61 @@ mod tests {
             Some(LEFT_PANEL_ROW)
         );
         assert_eq!(LEFT_PANEL_ROW, 32.0);
+    }
+
+    /// Spec 008 register row #612: the panel's rows carry slice-f's two
+    /// documented heights — default 32 (`mini-units(4)`) and
+    /// `--item--large` 48 (`mini-units(6)`) — on every row kind, and a
+    /// large branch re-pins its mounted sub-menu rows so one panel is
+    /// never half a step.
+    #[test]
+    fn the_row_height_carries_the_default_and_item_large_steps() {
+        let row_of = |node: &ViewNode| named(node, "row").constraints.vertical.min;
+        let default_sub = ui_shell_left_panel_subitem("sub", "Fibers", false);
+        let large_sub = ui_shell_left_panel_subitem_large("sub", "Fibers", false);
+        for (node, step) in [
+            (
+                ui_shell_left_panel_item("home", "Home", false, false, vec![]),
+                LEFT_PANEL_ROW,
+            ),
+            (
+                ui_shell_left_panel_item_large("home", "Home", false, false, vec![]),
+                LEFT_PANEL_ROW_LARGE,
+            ),
+            (
+                ui_shell_left_panel_icon_item_large(
+                    "home",
+                    "Home",
+                    IconMark::Menu,
+                    false,
+                    false,
+                    vec![],
+                ),
+                LEFT_PANEL_ROW_LARGE,
+            ),
+            (default_sub.clone(), LEFT_PANEL_ROW),
+            (large_sub.clone(), LEFT_PANEL_ROW_LARGE),
+            (
+                ui_shell_left_panel_icon_subitem_large("sub", "Fibers", false),
+                LEFT_PANEL_ROW_LARGE,
+            ),
+        ] {
+            assert_eq!(row_of(&node), Some(step), "the row is not pinned to {step}");
+        }
+        // The branch's re-pin: a default sub-item under a large branch is
+        // large, the ragged half-step the sized-constructor rule refuses.
+        let branch = ui_shell_left_panel_item_large(
+            "kernel",
+            "Kernel",
+            true,
+            false,
+            vec![default_sub.clone()],
+        );
+        assert_eq!(
+            row_of(named(&branch, "sub")),
+            Some(LEFT_PANEL_ROW_LARGE),
+            "the branch did not re-pin its mounted sub-item to its own step"
+        );
     }
 
     #[test]

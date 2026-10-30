@@ -104,6 +104,56 @@ impl Page for StructuredList {
         ))]
     }
 
+    /// Carbon's two row heights (register row #455; slice-e "Sizes"):
+    /// Default 60 and Condensed 36 — one labelled cell per built step
+    /// (FR-025), each a one-row list so the row height is the thing on
+    /// show. Static rows: the live table above owns the selection.
+    fn sizes(&self) -> Vec<ViewNode> {
+        use gorgon_petra::component::{
+            structured_list, structured_list_condensed, structured_list_row, text,
+        };
+
+        use super::common::{column, row, sp};
+        vec![column(
+            "size-steps",
+            sp("spacing-05"),
+            vec![
+                row(
+                    "size-default",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-default-label", "default · 60"),
+                        structured_list(
+                            "size-sl-default",
+                            vec![text("size-h0", "Name"), text("size-h1", "Role")],
+                            vec![structured_list_row(
+                                "size-row-default",
+                                vec![text("size-name", "alpha"), text("size-role", "runtime")],
+                                false,
+                            )],
+                        ),
+                    ],
+                ),
+                row(
+                    "size-condensed",
+                    sp("spacing-03"),
+                    vec![
+                        text("size-condensed-label", "condensed · 36"),
+                        structured_list_condensed(
+                            "size-sl-condensed",
+                            vec![text("size-ch0", "Name"), text("size-ch1", "Role")],
+                            vec![structured_list_row(
+                                "size-row-condensed",
+                                vec![text("size-cname", "alpha"), text("size-crole", "runtime")],
+                                false,
+                            )],
+                        ),
+                    ],
+                ),
+            ],
+        )]
+    }
+
     fn body(&self) -> ViewNode {
         let rows = ROWS
             .iter()

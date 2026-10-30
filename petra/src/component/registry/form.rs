@@ -399,6 +399,12 @@ pub const ENTRIES: &[Entry] = &[
     row!("date_picker", KeyLabelValue, |p| lib::date_picker(
         p.key, p.label, p.value
     )),
+    row!("date_picker_sm", KeyLabelValue, |p| lib::date_picker_sm(
+        p.key, p.label, p.value
+    )),
+    row!("date_picker_lg", KeyLabelValue, |p| lib::date_picker_lg(
+        p.key, p.label, p.value
+    )),
     row!("date_picker_readonly", KeyLabelValue, |p| {
         lib::date_picker_readonly(p.key, p.label, p.value)
     }),

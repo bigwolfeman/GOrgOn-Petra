@@ -6,7 +6,7 @@
 //!
 //! Components: Breadcrumb, Content switcher, Link, Menu, Menu buttons,
 //! Menubar, Pagination, Tabs, UI shell header, UI shell left panel, UI
-//! shell right panel. 88 constructors (see the `coverage` test at the
+//! shell right panel. 94 constructors (see the `coverage` test at the
 //! bottom, which counts the source rather than trusting this comment).
 
 use serde::Deserialize;
@@ -21,25 +21,27 @@ use crate::component::{
     LeftPanelMode, PaginationNavOverflow, PaginationPicker, SwitcherSize, breadcrumb,
     breadcrumb_item, breadcrumb_item_current, breadcrumb_item_icon, breadcrumb_overflow,
     breadcrumb_with_separator, combo_button, combo_button_lg, combo_button_sm, contained_tab,
-    contained_tab_bar, content_switcher, content_switcher_icon_only, content_switcher_icon_only_lg,
-    content_switcher_icon_only_sm, content_switcher_item, content_switcher_item_icon,
-    content_switcher_item_icon_with_size, content_switcher_item_low_contrast, content_switcher_lg,
-    content_switcher_low_contrast, content_switcher_low_contrast_lg,
-    content_switcher_low_contrast_sm, content_switcher_sm, link, link_inline, menu, menu_border,
-    menu_button, menu_button_lg, menu_button_sm, menu_button_xs, menu_flyout, menu_item,
-    menu_item_group, menu_item_radio_group, menu_item_selectable, menu_item_with, menu_lg, menu_sm,
-    menu_with_icons, menu_xs, menubar, menubar_top, overflow_menu, overflow_menu_lg,
-    overflow_menu_sm, overflow_menu_xs, pagination, pagination_items, pagination_items_lg,
-    pagination_items_open, pagination_items_sm, pagination_lg, pagination_nav, pagination_nav_lg,
-    pagination_nav_open, pagination_nav_sm, pagination_numbers, pagination_numbers_lg,
-    pagination_numbers_sm, pagination_page_size, pagination_prev_next, pagination_prev_next_lg,
-    pagination_prev_next_sm, pagination_range, pagination_sm, tab, tab_bar, ui_shell_header,
-    ui_shell_header_action, ui_shell_header_action_icon, ui_shell_header_menu_trigger,
-    ui_shell_header_nav_item, ui_shell_left_panel, ui_shell_left_panel_divider,
-    ui_shell_left_panel_icon_item, ui_shell_left_panel_icon_subitem, ui_shell_left_panel_in,
-    ui_shell_left_panel_item, ui_shell_left_panel_rail, ui_shell_left_panel_subitem,
-    ui_shell_right_panel, ui_shell_right_panel_divider, ui_shell_switcher, ui_shell_switcher_item,
-    vertical_tab, vertical_tab_bar,
+    contained_tab_bar, contained_tab_lg, contained_tab_xl, content_switcher,
+    content_switcher_icon_only, content_switcher_icon_only_lg, content_switcher_icon_only_sm,
+    content_switcher_item, content_switcher_item_icon, content_switcher_item_icon_with_size,
+    content_switcher_item_low_contrast, content_switcher_lg, content_switcher_low_contrast,
+    content_switcher_low_contrast_lg, content_switcher_low_contrast_sm, content_switcher_sm, link,
+    link_inline, menu, menu_border, menu_button, menu_button_lg, menu_button_sm, menu_button_xs,
+    menu_flyout, menu_item, menu_item_group, menu_item_radio_group, menu_item_selectable,
+    menu_item_with, menu_lg, menu_sm, menu_with_icons, menu_xs, menubar, menubar_top,
+    overflow_menu, overflow_menu_lg, overflow_menu_sm, overflow_menu_xs, pagination,
+    pagination_items, pagination_items_lg, pagination_items_open, pagination_items_sm,
+    pagination_lg, pagination_nav, pagination_nav_lg, pagination_nav_open, pagination_nav_sm,
+    pagination_numbers, pagination_numbers_lg, pagination_numbers_sm, pagination_page_size,
+    pagination_prev_next, pagination_prev_next_lg, pagination_prev_next_sm, pagination_range,
+    pagination_sm, tab, tab_bar, ui_shell_header, ui_shell_header_action,
+    ui_shell_header_action_icon, ui_shell_header_menu_trigger, ui_shell_header_nav_item,
+    ui_shell_left_panel, ui_shell_left_panel_divider, ui_shell_left_panel_icon_item,
+    ui_shell_left_panel_icon_item_large, ui_shell_left_panel_icon_subitem,
+    ui_shell_left_panel_icon_subitem_large, ui_shell_left_panel_in, ui_shell_left_panel_item,
+    ui_shell_left_panel_item_large, ui_shell_left_panel_rail, ui_shell_left_panel_subitem,
+    ui_shell_left_panel_subitem_large, ui_shell_right_panel, ui_shell_right_panel_divider,
+    ui_shell_switcher, ui_shell_switcher_item, vertical_tab, vertical_tab_bar,
 };
 use crate::tree::{Edge, Key, ViewNode};
 
@@ -711,6 +713,12 @@ pub const ENTRIES: &[Entry] = &[
     row!("contained_tab", KeyLabelSelected, |p| contained_tab(
         p.key, p.label, p.selected
     )),
+    row!("contained_tab_lg", KeyLabelSelected, |p| contained_tab_lg(
+        p.key, p.label, p.selected
+    )),
+    row!("contained_tab_xl", KeyLabelSelected, |p| contained_tab_xl(
+        p.key, p.label, p.selected
+    )),
     row!("vertical_tab", KeyLabelSelected, |p| vertical_tab(
         p.key, p.label, p.selected
     )),
@@ -748,6 +756,9 @@ pub const ENTRIES: &[Entry] = &[
     row!("ui_shell_left_panel_item", LeftPanelItemParams, |p| {
         ui_shell_left_panel_item(p.key, p.label, p.expanded, p.selected, p.children)
     }),
+    row!("ui_shell_left_panel_item_large", LeftPanelItemParams, |p| {
+        ui_shell_left_panel_item_large(p.key, p.label, p.expanded, p.selected, p.children)
+    }),
     row!(
         "ui_shell_left_panel_icon_item",
         LeftPanelIconItemParams,
@@ -760,12 +771,32 @@ pub const ENTRIES: &[Entry] = &[
             p.children
         )
     ),
+    row!(
+        "ui_shell_left_panel_icon_item_large",
+        LeftPanelIconItemParams,
+        |p| ui_shell_left_panel_icon_item_large(
+            p.key,
+            p.label,
+            p.mark.into(),
+            p.expanded,
+            p.selected,
+            p.children
+        )
+    ),
     row!("ui_shell_left_panel_subitem", KeyLabelSelected, |p| {
         ui_shell_left_panel_subitem(p.key, p.label, p.selected)
+    }),
+    row!("ui_shell_left_panel_subitem_large", KeyLabelSelected, |p| {
+        ui_shell_left_panel_subitem_large(p.key, p.label, p.selected)
     }),
     row!("ui_shell_left_panel_icon_subitem", KeyLabelSelected, |p| {
         ui_shell_left_panel_icon_subitem(p.key, p.label, p.selected)
     }),
+    row!(
+        "ui_shell_left_panel_icon_subitem_large",
+        KeyLabelSelected,
+        |p| ui_shell_left_panel_icon_subitem_large(p.key, p.label, p.selected)
+    ),
     row!("ui_shell_left_panel_divider", KeyOnly, |p| {
         ui_shell_left_panel_divider(p.key)
     }),
@@ -1086,6 +1117,8 @@ mod tests {
             }
             "tab" => json!({ "key": "k", "label": "l", "selected": true }),
             "contained_tab" => json!({ "key": "k", "label": "l-contained", "selected": true }),
+            "contained_tab_lg" => json!({ "key": "k-ct-lg", "label": "l-ct-lg", "selected": true }),
+            "contained_tab_xl" => json!({ "key": "k-ct-xl", "label": "l-ct-xl", "selected": true }),
             "vertical_tab" => json!({ "key": "k", "label": "l-vertical", "selected": true }),
             "tab_bar" => json!({ "key": "k", "children": [] }),
             "contained_tab_bar" => json!({ "key": "k-contained-bar", "children": [] }),
@@ -1116,6 +1149,20 @@ mod tests {
             "ui_shell_left_panel_subitem" => json!({ "key": "k", "label": "l", "selected": true }),
             "ui_shell_left_panel_icon_subitem" => {
                 json!({ "key": "k", "label": "l-icon-sub", "selected": true })
+            }
+            "ui_shell_left_panel_item_large" => json!({
+                "key": "k-item-lg", "label": "l-item-lg",
+                "expanded": true, "selected": true, "children": []
+            }),
+            "ui_shell_left_panel_icon_item_large" => json!({
+                "key": "k-icon-item-lg", "label": "l-icon-item-lg", "mark": "close",
+                "expanded": true, "selected": true, "children": []
+            }),
+            "ui_shell_left_panel_subitem_large" => {
+                json!({ "key": "k-sub-lg", "label": "l-sub-lg", "selected": true })
+            }
+            "ui_shell_left_panel_icon_subitem_large" => {
+                json!({ "key": "k-icon-sub-lg", "label": "l-icon-sub-lg", "selected": true })
             }
             "ui_shell_left_panel_divider" => json!({ "key": "k-left-divider" }),
             "ui_shell_right_panel" => {
