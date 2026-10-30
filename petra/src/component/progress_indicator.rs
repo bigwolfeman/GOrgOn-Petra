@@ -45,9 +45,12 @@ use super::icon::{IconMark, IconTone, icon_toned};
 use super::stack;
 use super::swatch;
 use super::text::text;
-use super::tokens::{ACCENT_PRIMARY, LAYER_ACCENT, SPACING_03, TEXT_PRIMARY, t};
+use super::tokens::{ACCENT_PRIMARY, LAYER_ACCENT, LINK_PRIMARY, SPACING_03, TEXT_PRIMARY, t};
 use crate::geom::{Align, Axis};
-use crate::tree::{AxisConstraint, Key, Role, Semantics, ViewNode};
+use crate::tree::{
+    AxisConstraint, Behaviour, FocusFigure, Intent, Interaction, Key, Phase, Role, Semantics,
+    ViewNode,
+};
 
 /// Carbon step `inline-size` (`convert.to-rem(128px)`, `:43-44`). Fixed,
 /// not a floor: the default indicator does not grow its steps
@@ -89,6 +92,61 @@ pub fn progress_step(
     complete: bool,
     current: bool,
 ) -> ViewNode {
+    progress_step_built(key, label, complete, current, false)
+}
+
+/// Register rows 385/386 (`Progress indicator state hover` / `state
+/// focus`) ride on this: the interactive step button
+/// (`.cds--progress-step-button`, slice-d — *"clickable to jump to that
+/// step"*). Carbon styles hover and focus on the **label** (slice-d:152
+/// *"hover triggers a link-style underline"* on `.cds--progress-label`;
+/// :127 *"focus outline on interactive step label"*), so the label leaf
+/// carries the whole control — one node one intent, the shape
+/// [`super::link`] documents ("the words and the control are the same
+/// node"), and the one that keeps the focus ring on the label, where
+/// Carbon draws it, because a ring rides the focused placement.
+///
+/// Two residuals, named rather than papered over:
+///
+/// * Carbon's hover also shifts the ink to `$link-primary-hover`; that name
+///   does not exist in this vocabulary (only `link-primary` ships), so the
+///   underline is the whole of the hover state here, as it is on
+///   [`super::link`] itself. It is the channel a red-green reader has.
+/// * Carbon's outline is 1px (`:127`, explicitly thinner than this slice's
+///   2px norm); [`FocusFigure::Border`] draws [`crate::token::FocusRing::stroke`]
+///   (2), and the ring's width is theme-level with no per-node name.
+///   Carbon also focuses the step *button* and outlines the label inside
+///   it; here the label is the button, for the ring's sake above.
+pub fn progress_step_interactive(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    complete: bool,
+    current: bool,
+) -> ViewNode {
+    progress_step_built(key, label, complete, current, true)
+}
+
+/// Spec 010: one shot on release — a step jump is Activate's definition
+/// beside a link or a button.
+const ACTIVATES_ON_RELEASE: Behaviour = Behaviour {
+    intent: Intent::Activate,
+    phase: Phase::OnRelease,
+};
+
+/// What the interactive label answers to (rows 385/386): Hover lights the
+/// underline, Focus seats the outline, Click jumps to the step.
+const STEP_INTENTS: &[Interaction] = &[Interaction::Focus, Interaction::Click, Interaction::Hover];
+
+/// The step anatomy both forms share. `interactive` puts the control on
+/// the label leaf (see [`progress_step_interactive`] for why the label and
+/// not the step) and binds the hover underline there.
+fn progress_step_built(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    complete: bool,
+    current: bool,
+    interactive: bool,
+) -> ViewNode {
     let label = label.into();
     let line_fill = if complete || current {
         ACCENT_PRIMARY
@@ -113,6 +171,19 @@ pub fn progress_step(
         .props
         .tokens
         .insert("foreground".into(), t(TEXT_PRIMARY));
+    if interactive {
+        // The binding is on the leaf because the painter underlines text
+        // rows and `resolve_slot` reads the hovered placement's own flags —
+        // `component::link` documents both halves of that trap.
+        caption
+            .props
+            .tokens
+            .insert("underline@hover".into(), t(LINK_PRIMARY));
+        caption = caption
+            .interactive(Role::Button, label.clone(), STEP_INTENTS)
+            .with_behaviour(ACTIVATES_ON_RELEASE)
+            .with_focus_figure(FocusFigure::Border);
+    }
 
     let mut row = stack(
         "row",
@@ -161,15 +232,16 @@ fn status_icon(complete: bool, current: bool) -> ViewNode {
 #[cfg(test)]
 mod tests {
     use super::{
-        ACCENT_PRIMARY, ICON_TOP, LAYER_ACCENT, LINE, STEP_WIDTH, progress_indicator, progress_step,
+        ACCENT_PRIMARY, ACTIVATES_ON_RELEASE, ICON_TOP, LAYER_ACCENT, LINE, STEP_WIDTH,
+        progress_indicator, progress_step, progress_step_interactive,
     };
     use crate::component::tests::{assert_fits_parent, petrify_lone};
-    use crate::component::tokens::ICON_PRIMARY;
+    use crate::component::tokens::{ICON_PRIMARY, LINK_PRIMARY};
     use crate::frame::PetrifiedFrame;
     use crate::geom::{Axis, Rect};
 
     use crate::token::{ColorValue, Theme, TokenName, TokenValue};
-    use crate::tree::{NodeKind, Role, ViewNode};
+    use crate::tree::{FocusFigure, Interaction, NodeKind, Role, ViewNode};
 
     fn named<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         fn walk<'a>(node: &'a ViewNode, key: &str) -> Option<&'a ViewNode> {
@@ -318,6 +390,81 @@ mod tests {
     /// steps abut at a 128 pitch, the rail ends where the last step does,
     /// and the glyph's top is 10 below the step's top (T070), which in the
     /// Carbon shot is 20 device pixels under the rule's top edge at 2x.
+    #[test]
+    fn the_interactive_step_is_the_label_as_a_button_underlined_on_hover() {
+        let hover = progress_step_interactive("c", "Verify", false, false);
+        let plain = progress_step("p", "Verify", false, false);
+        // Step anatomy: line, gap, row; the row holds icon then label.
+        let hover_label = &hover.children[2].children[1];
+        let plain_label = &plain.children[2].children[1];
+        assert_eq!(
+            hover_label.semantics.role,
+            Some(Role::Button),
+            "the label is the button Carbon styles: {:?}",
+            hover_label.semantics.role
+        );
+        assert!(
+            hover_label.interactions.contains(&Interaction::Hover),
+            "row 385: the label declares Hover so the underline can ever resolve: {:?}",
+            hover_label.interactions
+        );
+        assert!(
+            hover_label.interactions.contains(&Interaction::Click),
+            "the label answers a click — Carbon enables the whole step-button here: {:?}",
+            hover_label.interactions
+        );
+        assert_eq!(
+            hover_label.behaviour,
+            Some(ACTIVATES_ON_RELEASE),
+            "a step jump fires once, on release: {:?}",
+            hover_label.behaviour
+        );
+        assert_eq!(
+            hover_label.semantics.focus_figure,
+            FocusFigure::Border,
+            "row 386: the focused label rings with the border figure, same as the icon: {:?}",
+            hover_label.semantics.focus_figure
+        );
+        assert_eq!(
+            token(hover_label, "underline@hover"),
+            Some(LINK_PRIMARY),
+            "row 385: the label picks up Carbon's hover underline over the step-button text: {:?}",
+            hover_label.props.tokens
+        );
+        assert!(
+            token(hover_label, "background@hover").is_none(),
+            "Carbon's .cds--progress-step-button hover changes no background: {:?}",
+            hover_label.props.tokens
+        );
+        assert!(
+            !plain_label.interactions.contains(&Interaction::Hover),
+            "a plain step's label is inert — hover only lands where the step is interactive: {:?}",
+            plain_label.interactions
+        );
+    }
+
+    #[test]
+    fn the_state_costs_the_step_no_geometry() {
+        // The state is a token and role application on the one step anatomy
+        // (`contracts/interaction-state.md` §5): the interactive form
+        // places every rect exactly where the plain one does. Only the
+        // semantics and the paint slots differ — that is the state.
+        let interactive = petrify_lone(progress_step_interactive("a", "Create", true, false));
+        let plain = petrify_lone(progress_step("a", "Create", true, false));
+        let geometry = |frame: &PetrifiedFrame| -> Vec<(String, Rect)> {
+            frame
+                .placements
+                .iter()
+                .map(|p| (p.id.clone(), p.rect))
+                .collect()
+        };
+        assert_eq!(
+            geometry(&interactive),
+            geometry(&plain),
+            "the interactive step must not move a single rect"
+        );
+    }
+
     #[test]
     fn the_line_is_each_steps_own_top_rule_and_the_glyph_sits_ten_below_it() {
         let frame = petrify_lone(three());

@@ -6,7 +6,7 @@
 //!
 //! Components: Accordion, Contained list, Context menu, List, Modal,
 //! Popover, Structured list, Tile, Toggletip, Tooltip, Tree view, Code
-//! snippet. 51 constructors (see the `coverage` test at the bottom, which
+//! snippet. 53 constructors (see the `coverage` test at the bottom, which
 //! counts the source rather than trusting this comment).
 
 use serde::Deserialize;
@@ -22,12 +22,12 @@ use crate::component::{
     accordion_item_with_spaced, accordion_spaced, clickable_tile, code_snippet,
     code_snippet_inline, code_snippet_multi, code_snippet_multi_capped, contained_list,
     contained_list_disclosed, contained_list_lg, contained_list_sm, contained_list_xl,
-    context_menu, expandable_tile, list_item, list_item_with, modal, modal_lg, modal_passive,
-    modal_sm, modal_xs, ordered_list, popover, popover_with, popover_with_placement,
-    selectable_tile, structured_list, structured_list_condensed, structured_list_row,
-    structured_list_row_static, structured_list_sized, tile, toggletip, toggletip_with, tooltip,
-    tooltip_anchored, tooltip_definition, tooltip_icon, tree_item, tree_item_xs, tree_view,
-    unordered_list, unordered_list_with,
+    context_menu, expandable_tile, list_item, list_item_with, modal, modal_lg, modal_loading,
+    modal_passive, modal_sm, modal_xs, ordered_list, popover, popover_border, popover_with,
+    popover_with_placement, selectable_tile, structured_list, structured_list_condensed,
+    structured_list_row, structured_list_row_static, structured_list_sized, tile, toggletip,
+    toggletip_with, tooltip, tooltip_anchored, tooltip_definition, tooltip_icon, tree_item,
+    tree_item_xs, tree_view, unordered_list, unordered_list_with,
 };
 use crate::tree::{Align, Edge, Key, ViewNode};
 
@@ -160,7 +160,24 @@ impl ParamShape for ModalParams {
     const LUAU: &'static str = "{ key: string, title: string, body: string, primary: string }";
 }
 
-/// `popover` — 1 constructor.
+/// `modal_loading` — [`ModalParams`] plus the host clock the spinner turns
+/// on (register row #305).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ModalLoadingParams {
+    key: Key,
+    title: String,
+    body: String,
+    primary: String,
+    now: f64,
+}
+impl ParamShape for ModalLoadingParams {
+    const LUAU: &'static str =
+        "{ key: string, title: string, body: string, primary: string, now: number }";
+}
+
+/// `popover` / `popover_border` — 2 constructors, one shape (the border is
+/// a modifier on the same anatomy, `--border`).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PopoverParams {
@@ -421,10 +438,16 @@ pub const ENTRIES: &[Entry] = &[
     row!("modal_lg", ModalParams, |p| modal_lg(
         p.key, p.title, p.body, p.primary
     )),
+    row!("modal_loading", ModalLoadingParams, |p| modal_loading(
+        p.key, p.title, p.body, p.primary, p.now
+    )),
     row!("modal_passive", KeyLabelValue, |p| modal_passive(
         p.key, p.label, p.value
     )),
     row!("popover", PopoverParams, |p| popover(
+        p.key, p.label, p.anchor, p.body
+    )),
+    row!("popover_border", PopoverParams, |p| popover_border(
         p.key, p.label, p.anchor, p.body
     )),
     row!("popover_with", PopoverWithParams, |p| popover_with(
@@ -679,6 +702,17 @@ mod tests {
                 json!({ "key": "k-modal-lg", "title": "t-lg", "body": "b", "primary": "p" })
             }
             "modal_passive" => json!({ "key": "k", "label": "t", "value": "b" }),
+            // Row 305's loading state: the same modal body as `modal`'s
+            // sample plus the host clock, so the spinner is the only
+            // difference the census has to see (a differing key would hide
+            // a loading state that failed to draw).
+            "modal_loading" => {
+                json!({ "key": "k", "title": "t", "body": "b", "primary": "p", "now": 0.5 })
+            }
+            // Row 358's `--border`: byte-identical params to `popover`'s
+            // sample — the border binding is the whole difference, and it
+            // must show without a key to carry it.
+            "popover_border" => json!({ "key": "k", "label": "l", "anchor": "a", "body": "b" }),
             "popover" => json!({ "key": "k", "label": "l", "anchor": "a", "body": "b" }),
             "popover_with" => json!({ "key": "k", "label": "l", "anchor": "a", "children": [] }),
             "popover_with_placement" => json!({

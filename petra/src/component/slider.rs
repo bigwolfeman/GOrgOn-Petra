@@ -39,6 +39,14 @@
 //! finished drag needs is [`slider_value_at`], shared with the
 //! single-handle slider: same rail, same handle-centre travel.
 //!
+//! The two modifiers (manifest rows 437/438) act on anatomy item 6, the
+//! number input:
+//! [`slider_without_number_input`] removes the well and carries the value
+//! in a tooltip over the handle — Carbon's own composition is the popover
+//! container inside the thumb wrapper (slice-e:70) — and
+//! [`slider_with_custom_value`] is that tooltip reading a bucket label
+//! ("low/medium/high") instead of the raw number (slice-e:53).
+//!
 //! Read-only collapses the handle to zero size, not a dim, and drops the
 //! number input's editing intents.
 //!
@@ -64,6 +72,7 @@ use super::tokens::{
     BORDER_SUBTLE, ICON_DISABLED, LAYER_SELECTED_INVERSE, SIZE_MD, SPACING_03, SPACING_05,
     SUPPORT_ERROR, SUPPORT_WARNING, TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_BODY, t,
 };
+use super::tooltip::tooltip_anchored;
 use crate::frame::PetrifiedFrame;
 use crate::geom::{Align, Axis, Point};
 use crate::token::{CornerRole, corner_for};
@@ -151,6 +160,34 @@ pub fn slider_value_of_input(text: &str) -> Option<f32> {
     let n: u32 = trimmed.parse().ok()?;
     #[allow(clippy::cast_precision_loss)]
     Some(normalise(n as f32 / 100.0))
+}
+
+/// The label a `with custom value` tooltip shows for `value`: one of
+/// `labels`, read as equal buckets across the normalised range —
+/// register row 438 (slice-e: *"the tooltip shows a non-numeric label like
+/// low/medium/high instead of the raw number"*). Carbon leaves the mapping
+/// to a `formatLabel` callback; even buckets are the honest reading of the
+/// three-word example the docs give. Panics on an empty `labels`: a
+/// custom-value slider with nothing to show is a caller error, and a
+/// silent fallback to the raw number would render the one thing the
+/// modifier exists to replace.
+#[must_use]
+pub fn slider_custom_label(value: f32, labels: &[impl AsRef<str>]) -> String {
+    assert!(
+        !labels.is_empty(),
+        "slider_custom_label: a custom-value slider needs at least one label"
+    );
+    let done = normalise(value);
+    #[expect(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a normalised value times the label count is a small \
+                  positive number; flooring and clamping to the last index \
+                  is the bucket rule itself"
+    )]
+    let index = ((done * labels.len() as f32).floor() as usize).min(labels.len() - 1);
+    labels[index].as_ref().to_owned()
 }
 
 fn pin_extent(w: f32, h: f32) -> Constraints {
@@ -305,7 +342,13 @@ fn slider_built(
     value: f32,
     read_only: bool,
     validation: Option<&str>,
+    tip: Option<String>,
 ) -> ViewNode {
+    debug_assert!(
+        tip.is_none() || validation.is_none(),
+        "the value-tip forms carry no paired well to dress in validation \
+         chrome (register rows 437/438 remove it)"
+    );
     let label = label.into();
     let done = normalise(value);
     let rest = (1.0 - done).max(MIN_WEIGHT);
@@ -325,13 +368,31 @@ fn slider_built(
         !read_only,
     );
 
+    // Carbon composes the no-input slider's tooltip inside the thumb
+    // wrapper (`.cds--popover-container.cds--slider__thumb-wrapper`,
+    // slice-e:70). The bubble is the handle's sibling so the pair shares
+    // one flow slot: a `Surface` measures zero and floats against the
+    // handle its anchor names, so the wrap hugs the handle alone.
+    let handle_cell = match &tip {
+        Some(body) => stack(
+            "handle-cell",
+            Axis::Vertical,
+            None,
+            vec![
+                handle,
+                tooltip_anchored("value-tip", "handle", body.clone()),
+            ],
+        ),
+        None => handle,
+    };
+
     let mut rail = rail_grid(
         vec![
             TrackSize::Weight { weight: fill_w },
             TrackSize::Fixed { value: handle_size },
             TrackSize::Weight { weight: rest },
         ],
-        vec![fill, handle, track],
+        vec![fill, handle_cell, track],
     );
     if !read_only {
         // A press on the track, not only on the 14-unit handle, starts the
@@ -345,24 +406,20 @@ fn slider_built(
 
     // SOURCED style page: range labels carry `margin-right: 16px`, and the
     // Carbon shot has 16 between "0" and the rail and between "100" and the
-    // number input.
-    let row = stack(
-        "row",
-        Axis::Horizontal,
-        Some(SPACING_05),
-        vec![
-            range_label("min", "0"),
-            rail,
-            range_label("max", "100"),
-            input_node(
-                "input",
-                format!("{label} value"),
-                done,
-                read_only,
-                validation,
-            ),
-        ],
-    );
+    // number input. The without-number-input modifier (rows 437/438) ends
+    // the row at the max label: the well is what it removes, its value
+    // carried by the tip above the handle instead.
+    let mut row_children = vec![range_label("min", "0"), rail, range_label("max", "100")];
+    if tip.is_none() {
+        row_children.push(input_node(
+            "input",
+            format!("{label} value"),
+            done,
+            read_only,
+            validation,
+        ));
+    }
+    let row = stack("row", Axis::Horizontal, Some(SPACING_05), row_children);
 
     let mut node = stack(key, Axis::Vertical, Some(SPACING_03), vec![caption, row]);
     node.semantics.label = Some(label.clone());
@@ -385,12 +442,57 @@ fn slider_built(
 
 /// Default slider. `value` is normalised into `[0, 1]`. `label` is required.
 pub fn slider(key: impl Into<Key>, label: impl Into<String>, value: f32) -> ViewNode {
-    slider_built(key, label, value, false, None)
+    slider_built(key, label, value, false, None, None)
 }
 
 /// Read-only slider: handle collapsed to zero size (Carbon), not a dim.
 pub fn slider_readonly(key: impl Into<Key>, label: impl Into<String>, value: f32) -> ViewNode {
-    slider_built(key, label, value, true, None)
+    slider_built(key, label, value, true, None, None)
+}
+
+/// Register row 437 (`Slider modifier without-number-input`): the slider
+/// whose paired well is gone, its value carried by a tooltip over the
+/// handle instead (slice-e:53 — *"replaces the input with a Tooltip shown
+/// on hover, focus, and active"* — and :70's
+/// `.cds--popover-container.cds--slider__thumb-wrapper` composition).
+///
+/// The bubble is the library's one anchored tooltip
+/// ([`super::tooltip::tooltip_anchored`]), mounted statically — the
+/// variant cell's *shown* state, the same convention
+/// [`super::tooltip::tooltip_definition`] ships its bubble in. The
+/// reveal-on-hover/focus/active timing the slice names is row 38's
+/// disclosure mechanism (the host mounts the bubble while the trigger
+/// holds hover or focus), which the Tooltip page drives and its camera
+/// tests photograph; the tip body here is the number the removed well
+/// would have shown.
+pub fn slider_without_number_input(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    value: f32,
+) -> ViewNode {
+    slider_built(
+        key,
+        label,
+        value,
+        false,
+        None,
+        Some(slider_input_text(value)),
+    )
+}
+
+/// Register row 438 (`Slider modifier with-custom-value`): the
+/// without-number-input slider whose tooltip reads one of `labels` instead
+/// of the raw number (slice-e:53 — *"the tooltip shows a non-numeric label
+/// like low/medium/high instead of the raw number"*). The bucket rule is
+/// [`slider_custom_label`].
+pub fn slider_with_custom_value(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    value: f32,
+    labels: &[impl AsRef<str>],
+) -> ViewNode {
+    let body = slider_custom_label(value, labels);
+    slider_built(key, label, value, false, None, Some(body))
 }
 
 /// The min/max clamp the range variant needs (slice-e's mining: "min/max
@@ -537,7 +639,7 @@ fn slider_state(
     support: &str,
     helper: ViewNode,
 ) -> ViewNode {
-    let mut node = slider_built(key, label, value, false, Some(support));
+    let mut node = slider_built(key, label, value, false, Some(support), None);
     node.children.push(std::sync::Arc::new(helper));
     node
 }
@@ -583,9 +685,10 @@ fn rail_of(node: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::{
-        HANDLE, INPUT_WIDTH, MAX_TRACK, MIN_TRACK, TRACK_HEIGHT, slider, slider_input_text,
-        slider_invalid, slider_range, slider_range_values, slider_readonly, slider_value_at,
-        slider_value_of_input, slider_warning,
+        HANDLE, INPUT_WIDTH, MAX_TRACK, MIN_TRACK, TRACK_HEIGHT, slider, slider_custom_label,
+        slider_input_text, slider_invalid, slider_range, slider_range_values, slider_readonly,
+        slider_value_at, slider_value_of_input, slider_warning, slider_with_custom_value,
+        slider_without_number_input,
     };
     use crate::component::tests::{assert_fits_parent, petrify_lone};
     use crate::component::tokens::{
@@ -597,7 +700,7 @@ mod tests {
 
     use crate::token::{ColorValue, Theme, TokenName, TokenValue};
     use crate::token::{CornerRole, corner_for};
-    use crate::tree::{Interaction, NodeKind, Role, TrackSize, ViewNode};
+    use crate::tree::{Anchor, Edge, Interaction, NodeKind, Role, TrackSize, ViewNode};
 
     fn named<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         fn walk<'a>(node: &'a ViewNode, key: &str) -> Option<&'a ViewNode> {
@@ -1305,6 +1408,176 @@ mod tests {
             assert!(
                 order.iter().any(|o| o == &p.id),
                 "{suffix} is not in the focus order"
+            );
+        }
+    }
+
+    /// Register row 437 (`Slider modifier without-number-input`): the well
+    /// is gone — the row ends at the max label — and the value rides a
+    /// tooltip anchored over the handle, composed inside the handle's own
+    /// cell the way Carbon's `.cds--slider__thumb-wrapper` composes its
+    /// popover container (slice-e:70).
+    #[test]
+    fn the_without_number_input_slider_trades_the_well_for_a_value_tip() {
+        let node = slider_without_number_input("vol", "Volume", 0.4);
+        let row = named(&node, "row");
+        let keys: Vec<&str> = row.children.iter().map(|c| c.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            ["min", "rail", "max"],
+            "the number input is the one part the modifier removes"
+        );
+        let cell = named(&node, "handle-cell");
+        let cell_keys: Vec<&str> = cell.children.iter().map(|c| c.key.as_str()).collect();
+        assert_eq!(
+            cell_keys,
+            ["handle", "value-tip"],
+            "the bubble is the handle's sibling inside the thumb-wrapper"
+        );
+        let handle = named(&node, "handle");
+        assert!(
+            handle.interactions.contains(&Interaction::Drag),
+            "the handle is still the control the gesture moves"
+        );
+        assert_eq!(
+            handle.constraints.horizontal.min,
+            Some(HANDLE),
+            "the handle keeps its 14-unit disc"
+        );
+        let tip = named(&node, "value-tip");
+        assert_eq!(tip.kind, NodeKind::Surface);
+        assert_eq!(tip.semantics.role, Some(Role::Overlay));
+        assert_eq!(
+            tip.semantics.label.as_deref(),
+            Some("40"),
+            "the AT name is the body: the number the removed well would show"
+        );
+        match &tip.props.anchor {
+            Some(Anchor::Sibling { key, edge, .. }) => {
+                assert_eq!(key.as_str(), "handle", "the tip names its handle");
+                assert_eq!(*edge, Edge::Bottom, "and hangs over it");
+            }
+            other => panic!("expected the tip anchored to its handle, got {other:?}"),
+        }
+        assert_eq!(
+            named(&node, "body").props.text.as_deref(),
+            Some("40"),
+            "the body shows the value the well carried"
+        );
+        assert_eq!(
+            node.semantics.value.as_deref(),
+            Some("40%"),
+            "the readout the tree carries is unchanged by the modifier"
+        );
+    }
+
+    /// Register row 438 (`Slider modifier with-custom-value`): the tip
+    /// reads the bucket label — *"low/medium/high instead of the raw
+    /// number"* (slice-e:53) — and never the number itself.
+    #[test]
+    fn the_custom_value_tip_names_the_bucket_not_the_number() {
+        let labels = ["Low", "Medium", "High"];
+        assert_eq!(slider_custom_label(0.0, &labels), "Low");
+        assert_eq!(slider_custom_label(0.32, &labels), "Low");
+        assert_eq!(
+            slider_custom_label(1.0 / 3.0, &labels),
+            "Medium",
+            "a boundary value joins the upper bucket"
+        );
+        assert_eq!(slider_custom_label(0.4, &labels), "Medium");
+        assert_eq!(slider_custom_label(0.65, &labels), "Medium");
+        assert_eq!(slider_custom_label(2.0 / 3.0, &labels), "High");
+        assert_eq!(slider_custom_label(1.0, &labels), "High");
+        assert_eq!(
+            slider_custom_label(f32::NAN, &labels),
+            "Low",
+            "a value that names nothing names the first bucket, never a panic"
+        );
+
+        let node = slider_with_custom_value("vol", "Volume", 0.4, &labels);
+        let row = named(&node, "row");
+        let keys: Vec<&str> = row.children.iter().map(|c| c.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            ["min", "rail", "max"],
+            "this modifier removes the well too: the tooltip carries the value"
+        );
+        assert_eq!(
+            named(&node, "body").props.text.as_deref(),
+            Some("Medium"),
+            "0.4 sits in the middle of three buckets"
+        );
+    }
+
+    /// A custom-value slider with no labels has nothing to show. That is a
+    /// caller error, refused loudly: a silent fallback to the raw number
+    /// would render the one thing the modifier exists to replace.
+    #[test]
+    #[should_panic(expected = "at least one label")]
+    fn a_custom_value_slider_refuses_an_empty_label_set() {
+        let _ = slider_custom_label(0.5, &[] as &[&str]);
+    }
+
+    /// Check C/D for the two tip forms: every content-bearing placement
+    /// gets a real rect and fits its parent — except the tip itself, a
+    /// `Surface` placed against its anchor rather than inside its parent
+    /// (modal.rs's scrim exemption is the same shape). The wrap hugs the
+    /// handle alone, because a floating `Surface` measures zero in flow.
+    #[test]
+    fn the_value_tip_floats_off_a_handle_cell_that_hugs_the_handle() {
+        for (label, node) in [
+            (
+                "no-input",
+                slider_without_number_input("vol", "Volume", 0.4),
+            ),
+            (
+                "custom",
+                slider_with_custom_value("vol", "Volume", 0.4, &["Low", "Medium", "High"]),
+            ),
+        ] {
+            let frame = petrify_lone(node);
+            assert!(!frame.placements.is_empty(), "{label}: nothing placed");
+            for p in &frame.placements {
+                if p.paint.paint_hash != 0 {
+                    assert!(
+                        p.rect.w > 0.0 && p.rect.h > 0.0,
+                        "{label}: {} placed with a degenerate rect {:?}",
+                        p.id,
+                        p.rect
+                    );
+                }
+                assert!(
+                    !p.paint.overflowed,
+                    "{label}: {} drew content larger than its own rect",
+                    p.id
+                );
+                if let Some(parent_idx) = p.parent {
+                    if p.kind == NodeKind::Surface {
+                        continue;
+                    }
+                    assert_fits_parent(label, p, &frame.placements[parent_idx]);
+                }
+            }
+            let placed = |tail: &str| {
+                frame
+                    .placements
+                    .iter()
+                    .find(|p| p.id.ends_with(tail))
+                    .unwrap_or_else(|| panic!("{label}: no placement ending {tail}"))
+            };
+            let cell = placed("/rail/handle-cell");
+            let handle = placed("/handle-cell/handle");
+            let tip = placed("/handle-cell/value-tip");
+            assert!(
+                (cell.rect.h - HANDLE).abs() < 0.5 && (cell.rect.w - HANDLE).abs() < 0.5,
+                "{label}: the wrap hugs the handle alone, not the floating \
+                 bubble: {:?}",
+                cell.rect
+            );
+            assert!(
+                tip.rect.y >= handle.rect.y + handle.rect.h - 1.0 && tip.rect.h > 16.0,
+                "{label}: the tip hangs under the handle as a real bubble: \
+                 {tip:?} under {handle:?}"
             );
         }
     }

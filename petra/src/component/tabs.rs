@@ -15,11 +15,12 @@
 //! layout runs). Dismissible chrome (a close affordance per tab) is also
 //! still omitted.
 
+use super::icon::{IconMark, IconTone, icon_toned};
 use super::text::text;
 use super::tokens::{
     ACCENT_PRIMARY, BORDER_SUBTLE, BUTTON_DISABLED, ICON_DISABLED, LAYER_HOVER, SIZE_LG, SIZE_MD,
     SIZE_XL, SPACING_01, SPACING_03, SPACING_05, SURFACE_BASE, SURFACE_RAISED, TEXT_MUTED,
-    TEXT_PRIMARY, TYPOGRAPHY_BODY, TYPOGRAPHY_HEADING_SM, t,
+    TEXT_PRIMARY, TYPOGRAPHY_BODY, TYPOGRAPHY_HEADING_SM, TYPOGRAPHY_LABEL, t,
 };
 use super::{pad, stack};
 use crate::geom::{Align, Axis};
@@ -105,6 +106,72 @@ pub fn vertical_tab(key: impl Into<Key>, label: impl Into<String>, selected: boo
     tab_variant(key, label, selected, Variant::Vertical, SIZE_XL)
 }
 
+/// Carbon's `--icon` modifier (register row #466): a Line tab whose label
+/// is followed by a caller-supplied 16×16 glyph — Carbon pins no glyph of
+/// its own to a tab label (slice-e, `Icons`), so the mark is the caller's,
+/// and its ink is the label's own at the same state.
+///
+/// The padding is Carbon's exactly (slice-e "Key numbers"): the body's
+/// `$spacing-05` inline padding is the label's 16, the 8 between label and
+/// mark is the icon's `padding-left`, and the same body padding is its
+/// `padding-right` 16.
+#[must_use]
+pub fn tab_with_icon(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    selected: bool,
+    mark: IconMark,
+) -> ViewNode {
+    tab_variant_full(
+        key,
+        label,
+        None,
+        Some(mark),
+        selected,
+        Variant::Line,
+        SIZE_MD,
+    )
+}
+
+/// Carbon's `--secondary-label` (register row #467): a Contained tab
+/// carrying the optional second, smaller line under its label — 12px
+/// Regular at every state (slice-e, MEASURED: "secondary label 12px
+/// Regular always").
+///
+/// The item is a *floor* at the md step, not a pin: two lines plus the
+/// body's `$spacing-03` block padding do not fit a 40-unit item, and
+/// Carbon's two-line tab item grows to its content (`min-height`, not
+/// `height`). Pinned at md the crush falls on the second line — it
+/// renders as a 4-unit sliver — so this form hugs and keeps 40 as its
+/// minimum.
+///
+/// Carbon pairs this modifier with the grid-aware width alignment (row
+/// #470, not built): the two are documented together, but the label
+/// itself is an anatomy part (Contained item B), not a width behaviour,
+/// and is complete at auto-width. The residual is the equal-column
+/// alignment, not the label.
+#[must_use]
+pub fn contained_tab_with_secondary(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    secondary: impl Into<String>,
+    selected: bool,
+) -> ViewNode {
+    let mut node = tab_variant_full(
+        key,
+        label,
+        Some(secondary.into()),
+        None,
+        selected,
+        Variant::Contained,
+        SIZE_MD,
+    );
+    // min stays the md step (Carbon's `min-height: 40px`); max opens so
+    // the item can grow to its two lines. See the doc comment.
+    node.constraints.vertical.max = None;
+    node
+}
+
 /// The Line strip: already-built [`tab`] children under `Role::TabList`.
 ///
 /// Carries no label and no interactions of its own. FR-058's role-and-label
@@ -133,6 +200,28 @@ fn tab_variant(
     variant: Variant,
     height: f32,
 ) -> ViewNode {
+    tab_variant_full(key, label, None, None, selected, variant, height)
+}
+
+/// The whole of one tab. `secondary` is [`contained_tab_with_secondary`]'s
+/// second line; `mark` is [`tab_with_icon`]'s trailing glyph — at most one
+/// of the two, since Carbon documents the icon as trailing the *label*
+/// and the secondary as sitting under it, and a tab carrying both would be
+/// two modifiers' worth of claim with one modifier's evidence.
+fn tab_variant_full(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    secondary: Option<String>,
+    mark: Option<IconMark>,
+    selected: bool,
+    variant: Variant,
+    height: f32,
+) -> ViewNode {
+    assert!(
+        secondary.is_none() || mark.is_none(),
+        "a tab carries either the secondary-label modifier or the icon \
+         modifier, not both"
+    );
     let key = key.into();
     let label = label.into();
 
@@ -155,8 +244,68 @@ fn tab_variant(
         .tokens
         .insert("foreground@disabled".into(), t(TEXT_MUTED));
 
-    let mut body = stack("body", Axis::Horizontal, None, vec![label_node]);
+    // Carbon's own padding maths (slice-e, "Key numbers"): the body's
+    // `$spacing-05` inline padding *is* the label's 16px inset; the 8
+    // between label and icon is the icon's own `padding-left`; the body
+    // padding again is its `padding-right`. At most one of the two
+    // modifiers exists (asserted above).
+    let mut children: Vec<ViewNode> = Vec::new();
+    let mut vertical_labels = false;
+    if let Some(secondary) = secondary {
+        children.push(label_node);
+        // Carbon `label-01` — 12px Regular *always* (slice-e, MEASURED:
+        // "secondary label 12px Regular always") — under the label's own
+        // 14px step, in the label's ink.
+        let mut sec = text("secondary", secondary);
+        sec.props.style = Some(t(TYPOGRAPHY_LABEL));
+        sec.props.tokens.insert(
+            "foreground".into(),
+            t(if selected { TEXT_PRIMARY } else { TEXT_MUTED }),
+        );
+        sec.props
+            .tokens
+            .insert("foreground@disabled".into(), t(TEXT_MUTED));
+        children.push(sec);
+        vertical_labels = true;
+    } else {
+        children.push(label_node);
+    }
+    if let Some(icon) = mark {
+        // Carbon's `--icon`: the glyph trails the label in the label's own
+        // ink — `icon-primary` on the selected tab's `$text-primary`, the
+        // furniture tone under the unselected `$text-muted` label.
+        let mut glyph = icon_toned(
+            "icon",
+            icon,
+            if selected {
+                IconTone::Primary
+            } else {
+                IconTone::Secondary
+            },
+        );
+        glyph
+            .props
+            .tokens
+            .insert("foreground@disabled".into(), t(ICON_DISABLED));
+        children.push(glyph);
+    }
+    let two_children = children.len() == 2;
+    let mut body = stack(
+        "body",
+        if vertical_labels {
+            Axis::Vertical
+        } else {
+            Axis::Horizontal
+        },
+        None,
+        children,
+    );
     body.props.align = Some(Align::Center);
+    body.props.spacing = match (vertical_labels, two_children) {
+        (true, _) => Some(t(SPACING_01)),
+        (false, true) => Some(t(SPACING_03)),
+        (false, false) => None,
+    };
     body.props.padding = Some(pad(SPACING_05, SPACING_03));
 
     let (along, thickness) = match variant {
@@ -714,6 +863,108 @@ mod tests {
                 .get("background")
                 .map(|t| t.as_str()),
             Some(SURFACE_BASE)
+        );
+    }
+
+    /// Register row #466 (Carbon `--icon`): the glyph trails the label
+    /// with Carbon's own 8px (`$spacing-03`) between them, and the tab
+    /// keeps one control's semantics and interactions.
+    #[test]
+    fn tab_with_icon_trails_the_label_at_the_carbon_gap() {
+        let node = tab_with_icon("t", "Overview", true, IconMark::ChevronDown);
+        let body = named(&node, "body");
+        assert_eq!(child_keys(body), ["label", "icon"]);
+        assert_eq!(
+            body.props.spacing.as_ref().map(|n| n.as_str()),
+            Some(SPACING_03)
+        );
+        assert!(
+            named(&node, "icon").props.canvas.is_some(),
+            "the glyph draws"
+        );
+        assert_eq!(node.semantics.role, Some(Role::Tab));
+        assert_eq!(node.semantics.label.as_deref(), Some("Overview"));
+        assert!(node.interactions.contains(&Interaction::Focus));
+        assert!(node.interactions.contains(&Interaction::Click));
+        assert!(node.is_interactive(), "one control, not two");
+    }
+
+    /// Register row #467 (Carbon `--secondary-label`): the second line
+    /// goes *under* the label at `label-01` — 12px Regular always
+    /// (slice-e, MEASURED) — while the label keeps its 14px step.
+    #[test]
+    fn contained_tab_secondary_sits_under_the_label_at_label_01() {
+        let node = contained_tab_with_secondary("t", "Importer", "In progress", true);
+        let body = named(&node, "body");
+        assert_eq!(body.props.axis, Some(Axis::Vertical));
+        assert_eq!(child_keys(body), ["label", "secondary"]);
+        assert_eq!(
+            body.props.spacing.as_ref().map(|n| n.as_str()),
+            Some(SPACING_01)
+        );
+        let sec = named(&node, "secondary");
+        assert_eq!(sec.props.style, Some(t(TYPOGRAPHY_LABEL)));
+        assert_eq!(
+            sec.props.tokens.get("foreground").map(|v| v.as_str()),
+            Some(TEXT_PRIMARY),
+            "the secondary wears the label's ink"
+        );
+        assert_eq!(
+            named(&node, "label").props.style,
+            Some(t(TYPOGRAPHY_HEADING_SM)),
+            "the selected label keeps its own 14px step"
+        );
+        assert_eq!(node.semantics.label.as_deref(), Some("Importer"));
+    }
+
+    /// The secondary label goes under the label as two full text lines —
+    /// not two 2px slivers. Layout-level companion to the camera test:
+    /// the frame record shows the crush before any pixels are involved.
+    #[test]
+    fn the_secondary_tab_places_two_full_height_text_lines() {
+        let frame = petrify_lone_at(
+            contained_tab_with_secondary("t", "Importer", "In progress", true),
+            Size { w: 400.0, h: 200.0 },
+        );
+        let heights: Vec<(String, f32)> = frame
+            .placements
+            .iter()
+            .filter(|p| p.id.ends_with("/body/label") || p.id.ends_with("/body/secondary"))
+            .map(|p| (p.id.clone(), p.rect.h))
+            .collect();
+        assert!(
+            heights.iter().all(|(_, h)| *h >= 12.0),
+            "the text lines are crushed: {heights:?}"
+        );
+        // The item grew to its two lines instead of crushing them: 40 is
+        // the floor, not the pin.
+        let root = frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/root/t"))
+            .expect("the tab");
+        assert!(
+            root.rect.h > SIZE_MD,
+            "the two-line item must grow past the md floor: {:?}",
+            root.rect
+        );
+    }
+
+    /// One modifier per tab, asserted — a tab claiming both would be two
+    /// modifiers' worth of claim with one modifier's evidence (slice-e
+    /// records `--icon` trailing the label and `--secondary-label` under
+    /// it separately).
+    #[test]
+    #[should_panic(expected = "not both")]
+    fn a_tab_carries_one_modifier_at_a_time() {
+        tab_variant_full(
+            "t",
+            "A",
+            Some("B".to_owned()),
+            Some(IconMark::ChevronDown),
+            false,
+            Variant::Line,
+            SIZE_MD,
         );
     }
 

@@ -201,13 +201,14 @@
 //! outline *is* the control, the same reason a checkbox does.
 
 use super::icon::{IconMark, IconTone, icon_toned};
+use super::inline_loading::inline_loading_in_button;
 use super::text::text;
 use super::tokens::{
     ACCENT_PRIMARY, BORDER_STRONG, BUTTON_DANGER_PRIMARY, BUTTON_DISABLED, ICON_DISABLED,
     LAYER_ACTIVE, LAYER_HOVER, LINK_PRIMARY, SHADOW_RAISED, SIZE_MD, SPACING_03, SPACING_05,
     SURFACE_BASE, SURFACE_RAISED, TEXT_MUTED, TEXT_ON_ACCENT, TEXT_ON_COLOR, TEXT_PRIMARY, t,
 };
-use super::{pin_block, stack};
+use super::{disabled, pin_block, stack};
 use crate::geom::{Align, Axis};
 use crate::token::{CornerRole, corner_for};
 use crate::tree::{
@@ -616,6 +617,24 @@ fn labelled(
     } else {
         (vec![inner], None)
     };
+    armed(key, children, spacing, label, variant, chrome, size)
+}
+
+/// The armed half of a button: everything from the stack outward — the
+/// chrome bindings, the disabled declaration, the interaction, the press
+/// behaviour. Shared by [`labelled`] (whose child is the label text) and
+/// [`loading_button`] (whose child is the in-button loader), because a
+/// loading button is the same button wearing a different child, not a
+/// second paint (register row #66).
+fn armed(
+    key: Key,
+    children: Vec<ViewNode>,
+    spacing: Option<&str>,
+    label: String,
+    variant: Variant,
+    chrome: Chrome,
+    size: Size,
+) -> ViewNode {
     let mut node = stack(key, Axis::Horizontal, spacing, children);
     node.props.align = Some(Align::Center);
     node.props.padding = Some(pad_inline());
@@ -725,14 +744,43 @@ fn labelled(
     node
 }
 
+/// Carbon's `.cds--btn--loading` (register row #66): a button whose action
+/// is in flight. Carbon's pairing rule is *"The button would be disabled
+/// when inline loading is in progress"* (usage page, quoted in the
+/// register slice) — the loading button is the plain secondary button at
+/// md with [`super::inline_loading::inline_loading_in_button`] standing in
+/// for its label and [`super::disabled`] declared over the whole thing, so
+/// the flag carries the same two channels here as everywhere else: the
+/// `background@disabled` fill armed above and the painter's dropped
+/// elevation.
+///
+/// [`Semantics.value`] is `"loading"` — the state is the row's whole
+/// claim, and the value channel is where the tree says it.
+pub fn loading_button(key: impl Into<Key>, label: impl Into<String>, now: f64) -> ViewNode {
+    let key = key.into();
+    let label = label.into();
+    let loader = inline_loading_in_button("loading", label.clone(), now);
+    let mut node = disabled(armed(
+        key,
+        vec![loader],
+        None,
+        label,
+        Variant::Secondary,
+        chrome(Variant::Secondary),
+        Size::Md,
+    ));
+    node.semantics.value = Some("loading".into());
+    node
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        ACCENT_PRIMARY, BORDER_STRONG, BUTTON_DANGER_PRIMARY, HEIGHT_2XL, HEIGHT_LG, HEIGHT_SM,
-        HEIGHT_XL, HEIGHT_XS, LINK_PRIMARY, PAD_END_NO_ICON, SHADOW_RAISED, SIZE_MD, SPACING_05,
-        SURFACE_BASE, TEXT_ON_ACCENT, TEXT_ON_COLOR, TEXT_PRIMARY, button, button_2xl, button_lg,
-        button_sm, button_xl, button_xs, danger_button, danger_ghost_button,
-        danger_tertiary_button, ghost_button, primary_button, tertiary_button,
+        ACCENT_PRIMARY, BORDER_STRONG, BUTTON_DANGER_PRIMARY, BUTTON_DISABLED, HEIGHT_2XL,
+        HEIGHT_LG, HEIGHT_SM, HEIGHT_XL, HEIGHT_XS, LINK_PRIMARY, PAD_END_NO_ICON, SHADOW_RAISED,
+        SIZE_MD, SPACING_05, SURFACE_BASE, TEXT_ON_ACCENT, TEXT_ON_COLOR, TEXT_PRIMARY, button,
+        button_2xl, button_lg, button_sm, button_xl, button_xs, danger_button, danger_ghost_button,
+        danger_tertiary_button, ghost_button, loading_button, primary_button, tertiary_button,
     };
     use crate::component::tests::{assert_fits_parent, petrify_lone};
     // The glyph's tone. `button.rs` itself no longer names it — the mark is
@@ -886,6 +934,33 @@ mod tests {
             assert_eq!(token(&node, "shadow"), Some(SHADOW_RAISED));
             assert!(token(&node, "border").is_none());
         }
+    }
+
+    /// Row 066: `Button state loading` — the button stands aside for the
+    /// in-button loader, is disabled as a whole (the same flag
+    /// [`super::disabled`] sets anywhere else, carrying the
+    /// `background@disabled` fill armed above), and names the state in the
+    /// value channel. Carbon's rule: *"The button would be disabled when
+    /// inline loading is in progress"*.
+    #[test]
+    fn loading_button_is_disabled_and_carries_the_in_button_loader() {
+        let node = loading_button("b", "Saving", 0.0);
+        assert!(node.semantics.disabled);
+        assert_eq!(node.semantics.value.as_deref(), Some("loading"));
+        assert_eq!(node.semantics.role, Some(Role::Button));
+        assert_eq!(node.semantics.label.as_deref(), Some("Saving"));
+        assert!(!node.is_interactive(), "a loading button is not pressable");
+        assert_eq!(token(&node, "background@disabled"), Some(BUTTON_DISABLED));
+        let loader = node
+            .children
+            .iter()
+            .find(|c| c.key.as_str() == "loading")
+            .expect("the in-button loader child");
+        assert_eq!(loader.semantics.role, Some(Role::Status));
+        assert_eq!(
+            loader.constraints.vertical.min, None,
+            "the button governs the height, not the loader's 32"
+        );
     }
 
     #[test]

@@ -1,7 +1,8 @@
 //! Inventory row 11, Dropdown.
 
 use gorgon_petra::component::{
-    dropdown, dropdown_lg, dropdown_open, dropdown_option, dropdown_sm, dropdown_xs, section,
+    dropdown, dropdown_lg, dropdown_open, dropdown_option, dropdown_option_multiselected,
+    dropdown_sm, dropdown_xs, section,
 };
 use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::ViewNode;
@@ -101,6 +102,19 @@ impl Page for Dropdown {
                         dropdown_sm("dd-sm", "Sm 32", "Dark"),
                         dropdown("dd-md", "Md 40", "Dark"),
                         dropdown_lg("dd-lg", "Lg 48", "Dark"),
+                    ],
+                ),
+                // Register rows #194 (`active`) and #196 (`multiselected`),
+                // menu-option sub-states: one plain row the camera holds
+                // down, and the multiselect pair — leading checkbox box,
+                // checked and unchecked.
+                body(
+                    "dd-options",
+                    sp("spacing.md"),
+                    vec![
+                        dropdown_option("opt-plain", "Plain", false),
+                        dropdown_option_multiselected("opt-multi", "Multi", false),
+                        dropdown_option_multiselected("opt-multi-on", "Multi on", true),
                     ],
                 ),
             ],

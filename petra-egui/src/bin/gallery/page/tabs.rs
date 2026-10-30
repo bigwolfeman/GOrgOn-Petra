@@ -1,7 +1,8 @@
 //! Inventory row 32, Tabs.
 
 use gorgon_petra::component::{
-    contained_tab, contained_tab_bar, section, tab, tab_bar, vertical_tab, vertical_tab_bar,
+    IconMark, contained_tab, contained_tab_bar, contained_tab_with_secondary, section, tab,
+    tab_bar, tab_with_icon, vertical_tab, vertical_tab_bar,
 };
 use gorgon_petra::geom::Align;
 use gorgon_petra::input::InputEvent;
@@ -184,6 +185,30 @@ impl Page for Tabs {
                         ],
                     ),
                     vertical_with_panel,
+                    // Register row #466, Carbon's `--icon` modifier: a
+                    // glyph trails the label with Carbon's own 8px
+                    // (`spacing-03`) between them, in the label's ink.
+                    tab_bar(
+                        "icon-strip",
+                        vec![
+                            tab_with_icon("tab-icon-0", "Fibers", true, IconMark::Checkmark),
+                            tab_with_icon("tab-icon-1", "Trace", false, IconMark::ChevronDown),
+                        ],
+                    ),
+                    // Register row #467, Carbon's `--secondary-label`:
+                    // a second 12px line under the Contained label.
+                    contained_tab_bar(
+                        "secondary-strip",
+                        vec![
+                            contained_tab_with_secondary(
+                                "tab-sec-0",
+                                "Importer",
+                                "In progress",
+                                true,
+                            ),
+                            contained_tab_with_secondary("tab-sec-1", "Exporter", "Queued", false),
+                        ],
+                    ),
                 ],
             )],
         )

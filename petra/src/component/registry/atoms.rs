@@ -35,7 +35,7 @@ use serde::Deserialize;
 use super::Entry;
 use crate::component as lib;
 use crate::component::params::{
-    KeyChildren, KeyLabel, KeyLabelChildren, KeyLabelSelected, ParamShape,
+    KeyChildren, KeyLabel, KeyLabelChildren, KeyLabelNumber, KeyLabelSelected, ParamShape,
 };
 use crate::component::registry::IconMarkParam;
 use crate::component::{IconBox, IconTone};
@@ -350,6 +350,11 @@ pub const ENTRIES: &[Entry] = &[
     row!("button_lg", KeyLabel, |p| lib::button_lg(p.key, p.label)),
     row!("button_xl", KeyLabel, |p| lib::button_xl(p.key, p.label)),
     row!("button_2xl", KeyLabel, |p| lib::button_2xl(p.key, p.label)),
+    row!("loading_button", KeyLabelNumber, |p| lib::loading_button(
+        p.key,
+        p.label,
+        f64::from(p.value)
+    )),
     row!("primary_button", KeyLabel, |p| lib::primary_button(
         p.key, p.label
     )),

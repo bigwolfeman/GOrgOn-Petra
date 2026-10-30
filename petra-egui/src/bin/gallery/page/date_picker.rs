@@ -13,7 +13,7 @@
 //! whole of the other defect this file answers — see
 //! `.agents/notes/implemented/bug-fix/2026-09-05-a-month-arrow-is-not-a-press-on-the-field.md`.
 
-use gorgon_petra::component::{Calendar, date_picker, date_picker_showing, heading, section};
+use gorgon_petra::component::{Calendar, date_picker, date_picker_showing_today, heading, section};
 use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::{NodeKind, ViewNode};
 
@@ -42,6 +42,10 @@ const NEXT_YEAR: &str = "next-year";
 const DAY: &str = "day-";
 /// A month cell's key prefix inside the chooser (`mon-9`).
 const MON: &str = "mon-";
+/// The day wearing Carbon's "Today" dot (register row #170) — in the
+/// pickers' browsed month, so the state is on screen whenever either
+/// calendar is up.
+const TODAY: &str = "2026-08-24";
 
 /// One picker's live state.
 ///
@@ -105,6 +109,12 @@ impl Pane {
     }
 
     /// The tree for this picker, closed or open.
+    ///
+    /// Open, the calendar carries Carbon's "Today" dot (register row #170)
+    /// on [`TODAY`]: the day grid is where that state lives, so the open
+    /// picker is its gallery cell and
+    /// `the_open_calendar_marks_today_with_carbons_four_unit_dot` reads the
+    /// pixels.
     fn view(&self, key: &'static str, label: &str, full: bool) -> ViewNode {
         if !self.open {
             return date_picker(key, label, self.value());
@@ -115,7 +125,7 @@ impl Pane {
             (true, false) => Calendar::Full { year, month },
             (true, true) => Calendar::Choosing { year, month },
         };
-        date_picker_showing(key, label, self.value(), calendar)
+        date_picker_showing_today(key, label, self.value(), calendar, TODAY)
     }
 
     /// React to an activation inside this picker's subtree. Always consumes:

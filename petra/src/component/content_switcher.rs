@@ -454,6 +454,59 @@ pub fn content_switcher_item_icon_with_size(
     node
 }
 
+/// Register row 113, Content switcher modifier `popover-wrapped` —
+/// `.cds--content-switcher-popover__wrapper` (slice-b:17, *"Icon variant
+/// can use a popover-wrapped tab (`.cds--content-switcher-popover__wrapper`)
+/// for a tooltip-style label."*).
+///
+/// This is Carbon's `IconSwitch` pair verbatim: `packages/react/src/components/
+/// Switch/IconSwitch.tsx` renders an `IconButton` whose `label` is the
+/// tooltip text inside exactly that wrapper class — the tab plus the
+/// tooltip-style label, both under one node. The wrapper here is a stack of
+/// the untouched icon tab (same square, same chrome, same select behaviour)
+/// and the label bubble [`super::tooltip::tooltip_anchored`] points back at
+/// it — the same picture [`super::slider`]'s handle cell and
+/// [`super::tooltip_definition`] draw: a control with its bubble.
+///
+/// The bubble is shown mounted, like [`super::tooltip_icon`]'s cell: *"the
+/// bubble is the variant; a hover reveal is the library's behaviour, not a
+/// second drawing."* A host that wants Carbon's hover reveal holds the
+/// mount (`page/tooltip.rs`'s two live pairs do); this modifier's row is
+/// the wrapper, not the reveal.
+///
+/// The wrapper carries `Semantics.selected` — the group's divider logic
+/// reads the item's flag through [`Self::at`], and the wrapper is the item
+/// the group sees. The tab inside keeps its own role and flag too, so the
+/// semantic tree still names the control. The bubble is an anchored
+/// overlay: its geometry comes out of the layout pass and it may extend
+/// past the switcher's bounds, like [`super::tooltip_icon`]'s — not a view
+/// that grows the group.
+pub fn content_switcher_item_icon_popover(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    mark: IconMark,
+    selected: bool,
+) -> ViewNode {
+    content_switcher_item_icon_popover_with_size(key, label, mark, selected, SwitcherSize::Md)
+}
+
+/// [`content_switcher_item_icon_popover`] at one step of the switcher ramp
+/// (32 / 40 / 48), for a group pinned to that step.
+pub fn content_switcher_item_icon_popover_with_size(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    mark: IconMark,
+    selected: bool,
+    size: SwitcherSize,
+) -> ViewNode {
+    let label = label.into();
+    let tab = content_switcher_item_icon_with_size("tab", label.clone(), mark, selected, size);
+    let bubble = super::tooltip::tooltip_anchored("label-tip", "tab", label);
+    let mut wrapped = stack(key, Axis::Vertical, None, vec![tab, bubble]);
+    wrapped.semantics.selected = selected;
+    wrapped
+}
+
 /// The tab's label node: text, weight bumped on selection.
 fn label_node(label: String, selected: bool, ink: &str) -> ViewNode {
     let mut node = super::text::text("label", label);

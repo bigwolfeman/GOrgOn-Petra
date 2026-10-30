@@ -38,6 +38,7 @@
 //! shipping it as public `_xs`/`_sm`/`_lg` siblings is deferred to whichever
 //! caller first needs an open dropdown at a size other than md.
 
+use super::controls::{CheckState, checkbox_box};
 use super::field::{invalid_helper, validated_column, warning_helper};
 use super::icon::{IconMark, IconTone, icon_toned};
 use super::list_box::{Dividers, ListBoxSize, edge_row, list_box, list_box_field};
@@ -45,9 +46,9 @@ use super::pin_block;
 use super::stack;
 use super::text::text;
 use super::tokens::{
-    LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SIZE_MD, SPACING_03, SUPPORT_ERROR,
-    SUPPORT_WARNING, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_BODY_COMPACT,
-    TYPOGRAPHY_LABEL, t,
+    LAYER_ACTIVE, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SIZE_MD, SPACING_03,
+    SUPPORT_ERROR, SUPPORT_WARNING, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY,
+    TYPOGRAPHY_BODY_COMPACT, TYPOGRAPHY_LABEL, t,
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
@@ -62,6 +63,15 @@ const OPTION_INTENTS: &[Interaction] =
 /// Spec 010: exclusive among siblings — selecting one option clears the others.
 const SELECTS_ON_RELEASE: Behaviour = Behaviour {
     intent: Intent::Select,
+    phase: Phase::OnRelease,
+};
+
+/// Spec 010: a multiselect option flips its own flag and leaves the other
+/// options standing — the counterpart to [`SELECTS_ON_RELEASE`] for
+/// [`dropdown_option_multiselected`], which is why that constructor swaps
+/// the behaviour instead of inheriting it.
+const TOGGLES_ON_RELEASE: Behaviour = Behaviour {
+    intent: Intent::Toggle,
     phase: Phase::OnRelease,
 };
 
@@ -233,8 +243,50 @@ pub(crate) fn open_field_of(node: &ViewNode) -> &ViewNode {
 /// until a caller needs an open dropdown at a size other than md (proved
 /// by `dropdown_open_and_its_options_resolve_to_carbon_height_at_every_size`
 /// below, which drives it directly rather than through a public wrapper).
+///
+/// Register row #194 (`active`) is covered by the `background@active`
+/// binding [`sized_dropdown_option_with_leading`] puts on every option —
+/// see the test `the_menu_option_binds_its_pressed_ground`. A separate
+/// static constructor would build the same node as
+/// [`dropdown_option(key, label, false)`](dropdown_option) and show one
+/// frozen moment that no pointer can produce; the pressed ground is lit by
+/// the host while the row is held, and the camera test presses it.
 pub fn dropdown_option(key: impl Into<Key>, label: impl Into<String>, selected: bool) -> ViewNode {
     sized_dropdown_option(key, label, selected, ListBoxSize::Md)
+}
+
+/// Register row #196 (`multiselected`): the menu option under a multiselect
+/// dropdown, slice-b "Option — selected option shows a **Checkmark** icon;
+/// **multiselect options additionally show a leading checkbox icon**".
+///
+/// The row is still the control: it carries `Semantics.selected` and the
+/// 16-unit [`super::controls::checkbox_box`] beside the label is its visible
+/// second channel — the same split [`super::data_table`]'s selection column
+/// makes. `checked` decides both the box state and the selected fill /
+/// trailing Checkmark, as [`dropdown_option`]'s `selected` does.
+///
+/// The behaviour toggles rather than selects: [`SELECTS_ON_RELEASE`] is
+/// exclusive among siblings ("selecting one option clears the others"), and
+/// a multiselect option that cleared its siblings on every tick would not be
+/// one.
+pub fn dropdown_option_multiselected(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    checked: bool,
+) -> ViewNode {
+    let box_state = if checked {
+        CheckState::Checked
+    } else {
+        CheckState::Unchecked
+    };
+    sized_dropdown_option_with_leading(
+        key,
+        label,
+        checked,
+        ListBoxSize::Md,
+        Some(checkbox_box(box_state)),
+    )
+    .with_behaviour(TOGGLES_ON_RELEASE)
 }
 
 fn sized_dropdown_option(
@@ -242,6 +294,19 @@ fn sized_dropdown_option(
     label: impl Into<String>,
     selected: bool,
     size: ListBoxSize,
+) -> ViewNode {
+    sized_dropdown_option_with_leading(key, label, selected, size, None)
+}
+
+/// [`dropdown_option`]'s engine, with an optional leading mark. The one row
+/// serves the plain option and the multiselect one; two constructors and one
+/// anatomy, per the capstone note.
+fn sized_dropdown_option_with_leading(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    selected: bool,
+    size: ListBoxSize,
+    leading_mark: Option<ViewNode>,
 ) -> ViewNode {
     let label = label.into();
     let mut caption = text("label", label.clone());
@@ -251,8 +316,17 @@ fn sized_dropdown_option(
         .props
         .tokens
         .insert("foreground".into(), t(TEXT_PRIMARY));
+    let content = match leading_mark {
+        Some(mark) => stack(
+            "content",
+            Axis::Horizontal,
+            Some(SPACING_03),
+            vec![mark, caption],
+        ),
+        None => caption,
+    };
     let mark = selected.then(|| icon_toned("mark", IconMark::Checkmark, IconTone::Primary));
-    let mut node = edge_row(key, caption, mark);
+    let mut node = edge_row(key, content, mark);
     node.props.tokens.insert(
         "background".into(),
         t(if selected {
@@ -264,6 +338,12 @@ fn sized_dropdown_option(
     node.props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
+    // Register row #194 (`active`): the pressed sub-state's ground. Declared
+    // on every option so the host can light it while any row is held — the
+    // same five-slot set `list_row` and `data_table` bind on their rows.
+    node.props
+        .tokens
+        .insert("background@active".into(), t(LAYER_ACTIVE));
     node.props
         .tokens
         .insert("background@selected".into(), t(LAYER_SELECTED));
@@ -287,12 +367,12 @@ fn sized_dropdown_option(
 mod tests {
     use super::{
         IconMark, IconTone, ListBoxSize, SIZE_MD, dropdown, dropdown_invalid, dropdown_lg,
-        dropdown_open, dropdown_option, dropdown_sm, dropdown_warning, dropdown_xs, icon_toned,
-        labelled, open_field_of, sized_dropdown_option,
+        dropdown_open, dropdown_option, dropdown_option_multiselected, dropdown_sm,
+        dropdown_warning, dropdown_xs, icon_toned, labelled, open_field_of, sized_dropdown_option,
     };
     use crate::component::tests::{assert_fits_parent, petrify_lone};
     use crate::component::tokens::{
-        BORDER_STRONG, LAYER_SELECTED, SURFACE_RAISED, TEXT_MUTED, TYPOGRAPHY_LABEL,
+        BORDER_STRONG, LAYER_ACTIVE, LAYER_SELECTED, SURFACE_RAISED, TEXT_MUTED, TYPOGRAPHY_LABEL,
     };
 
     use crate::testing::inks;
@@ -532,6 +612,74 @@ mod tests {
         let off = dropdown_option("light", "Light", false);
         assert!(!off.semantics.selected);
         assert_eq!(off.semantics.label.as_deref(), Some("Light"));
+    }
+
+    /// Register row #194 (`active`): the option's pressed sub-state is the
+    /// `background@active` binding every option declares, resolved to
+    /// [`LAYER_ACTIVE`].
+    ///
+    /// Falsified by dropping the binding from the option row: the host has
+    /// nothing to light while the row is held and the pressed moment is
+    /// simply unstyled.
+    #[test]
+    fn the_menu_option_binds_its_pressed_ground() {
+        for selected in [false, true] {
+            let option = dropdown_option("opt", "Option", selected);
+            assert_eq!(
+                token(&option, "background@active"),
+                Some(LAYER_ACTIVE),
+                "the pressed sub-state owes the row a ground"
+            );
+        }
+    }
+
+    /// Register row #196 (`multiselected`): a leading checkbox box beside
+    /// the label (slice-b's "multiselect options additionally show a
+    /// leading checkbox icon"), the row still carrying `selected`, and a
+    /// toggle behaviour instead of [`SELECTS_ON_RELEASE`]'s exclusive one —
+    /// a multiselect option that cleared its siblings on every tick would
+    /// not be one.
+    #[test]
+    fn the_multiselected_option_carries_a_leading_box_and_keeps_its_siblings() {
+        let on = dropdown_option_multiselected("opt", "Option", true);
+        assert_eq!(on.semantics.label.as_deref(), Some("Option"));
+        assert!(on.semantics.selected, "checked is selected");
+        assert_eq!(
+            on.behaviour,
+            Some(Behaviour {
+                intent: Intent::Toggle,
+                phase: Phase::OnRelease,
+            }),
+            "toggles its own flag; SELECTS_ON_RELEASE would clear the \
+             sibling options"
+        );
+        let content = child(&on, "content");
+        let box_mark = child(content, "box");
+        assert!(
+            !box_mark.children.is_empty(),
+            "the checked box carries its tick: {box_mark:?}"
+        );
+        assert!(
+            child(&on, "mark")
+                .props
+                .canvas
+                .as_ref()
+                .is_some_and(|list| list.color_tokens().any(|name| name == "icon-primary")),
+            "and the selected checkmark still trails in $icon-primary"
+        );
+        assert_eq!(token(&on, "background"), Some(LAYER_SELECTED));
+
+        let off = dropdown_option_multiselected("opt", "Option", false);
+        assert!(!off.semantics.selected);
+        let empty = child(child(&off, "content"), "box");
+        assert!(
+            empty.children.is_empty(),
+            "the unchecked box is the outline alone"
+        );
+        assert!(
+            off.children.iter().all(|c| c.key.as_str() != "mark"),
+            "and no trailing checkmark rides an unchecked row"
+        );
     }
 
     /// `dropdown_open`'s `menu` names its `field` sibling by bare key

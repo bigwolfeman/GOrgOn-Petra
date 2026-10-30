@@ -54,6 +54,32 @@ return ui.section({
         },
       }),
       vertical_with_panel,
+      -- Register row #466, Carbon's `--icon` modifier.
+      ui.tab_bar({
+        key = "icon-strip",
+        children = {
+          ui.tab_with_icon({ key = "tab-icon-0", label = "Fibers", selected = true, mark = "checkmark" }),
+          ui.tab_with_icon({ key = "tab-icon-1", label = "Trace", selected = false, mark = "chevron-down" }),
+        },
+      }),
+      -- Register row #467, Carbon's `--secondary-label` modifier.
+      ui.contained_tab_bar({
+        key = "secondary-strip",
+        children = {
+          ui.contained_tab_with_secondary({
+            key = "tab-sec-0",
+            label = "Importer",
+            secondary = "In progress",
+            selected = true,
+          }),
+          ui.contained_tab_with_secondary({
+            key = "tab-sec-1",
+            label = "Exporter",
+            secondary = "Queued",
+            selected = false,
+          }),
+        },
+      }),
     }),
   },
 })

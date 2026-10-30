@@ -1,6 +1,8 @@
 //! Inventory row 26, Progress indicator.
 
-use gorgon_petra::component::{progress_indicator, progress_step, section};
+use gorgon_petra::component::{
+    progress_indicator, progress_step, progress_step_interactive, section,
+};
 use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::ViewNode;
 
@@ -54,18 +56,32 @@ impl Page for ProgressIndicator {
         section(
             "steps",
             "Steps",
-            vec![body(
-                "pi",
-                sp("spacing.md"),
-                vec![progress_indicator(
+            vec![
+                body(
                     "pi",
-                    vec![
-                        progress_step("st-0", "Clone", true, false),
-                        progress_step("st-1", "Build", false, true),
-                        progress_step("st-2", "Run", false, false),
-                    ],
-                )],
-            )],
+                    sp("spacing.md"),
+                    vec![progress_indicator(
+                        "pi",
+                        vec![
+                            progress_step("st-0", "Clone", true, false),
+                            progress_step("st-1", "Build", false, true),
+                            progress_step("st-2", "Run", false, false),
+                        ],
+                    )],
+                ),
+                body(
+                    "pi-interactive",
+                    sp("spacing.md"),
+                    vec![progress_indicator(
+                        "pi-interactive",
+                        vec![
+                            progress_step_interactive("st-i-0", "Clone", true, false),
+                            progress_step_interactive("st-i-1", "Build", false, true),
+                            progress_step("st-i-2", "Run", false, false),
+                        ],
+                    )],
+                ),
+            ],
         )
     }
 

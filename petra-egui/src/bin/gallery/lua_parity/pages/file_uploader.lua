@@ -11,6 +11,8 @@
 --   rows.push(file_uploader_item("fu-done", "notes.txt", true));
 --   rows.push(file_uploader_item_invalid("fu-bad", "core.dump", "File is over 5 MB"));
 --   rows.push(file_uploader_item_warning("fu-warn", "stale.ndjson", "older than the session"));
+--   rows.push(file_uploader_drag_over("fu-drag-over", "Drop target, drag-over",
+--       "the zone's edge while a file is held over it"));
 --   rows.push(wrapped("note", "Pressing a row's remove control drops that row. Pressing the \
 --       zone opens the system file dialog, and a file dropped on the \
 --       window arrives the same way — both reach the page as paths."));
@@ -38,6 +40,12 @@ return ui.section({
         key = "fu-warn",
         label = "stale.ndjson",
         message = "older than the session",
+      }),
+      -- Register row #211, Carbon's `--drag-over` modifier.
+      ui.file_uploader_drag_over({
+        key = "fu-drag-over",
+        label = "Drop target, drag-over",
+        description = "the zone's edge while a file is held over it",
       }),
       common.wrapped(
         "note",

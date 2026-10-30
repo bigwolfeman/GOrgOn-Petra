@@ -1,7 +1,8 @@
 -- Lua source for inventory row "Button" (spec 013 T009).
 --
--- Ported by hand from `page/button.rs`'s `Button::body()`. The page holds
--- no state, so there is only one state to port:
+-- Ported by hand from `page/button.rs`'s `Button::body()`, at the page's
+-- default state (`now = 0.0`, `#[derive(Default)]` on an f64 field; the
+-- loading row's `value` is that clock):
 --
 --   section("variants", "Variants and sizes", vec![body(
 --       "buttons", sp("spacing.md"),
@@ -14,6 +15,9 @@
 --               danger_button("btn-danger", "Delete"),
 --               danger_tertiary_button("btn-danger-tertiary", "Delete"),
 --               danger_ghost_button("btn-danger-ghost", "Delete"),
+--           ]),
+--           row("loading", sp("spacing.md"), vec![
+--               loading_button("btn-loading", "Saving", self.now),
 --           ]),
 --           row("sizes", sp("spacing.md"), vec![
 --               button_xs("btn-xs", "X-small 24"), button_sm("btn-sm", "Small 32"),
@@ -37,6 +41,9 @@ return ui.section({
         ui.danger_button({ key = "btn-danger", label = "Delete" }),
         ui.danger_tertiary_button({ key = "btn-danger-tertiary", label = "Delete" }),
         ui.danger_ghost_button({ key = "btn-danger-ghost", label = "Delete" }),
+      }),
+      common.row("loading", "spacing.md", {
+        ui.loading_button({ key = "btn-loading", label = "Saving", value = 0 }),
       }),
       common.row("sizes", "spacing.md", {
         ui.button_xs({ key = "btn-xs", label = "X-small 24" }),

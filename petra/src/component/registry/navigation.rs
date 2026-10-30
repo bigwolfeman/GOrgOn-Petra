@@ -6,7 +6,7 @@
 //!
 //! Components: Breadcrumb, Content switcher, Link, Menu, Menu buttons,
 //! Menubar, Pagination, Tabs, UI shell header, UI shell left panel, UI
-//! shell right panel. 94 constructors (see the `coverage` test at the
+//! shell right panel. 99 constructors (see the `coverage` test at the
 //! bottom, which counts the source rather than trusting this comment).
 
 use serde::Deserialize;
@@ -21,22 +21,24 @@ use crate::component::{
     LeftPanelMode, PaginationNavOverflow, PaginationPicker, SwitcherSize, breadcrumb,
     breadcrumb_item, breadcrumb_item_current, breadcrumb_item_icon, breadcrumb_overflow,
     breadcrumb_with_separator, combo_button, combo_button_lg, combo_button_sm, contained_tab,
-    contained_tab_bar, contained_tab_lg, contained_tab_xl, content_switcher,
-    content_switcher_icon_only, content_switcher_icon_only_lg, content_switcher_icon_only_sm,
-    content_switcher_item, content_switcher_item_icon, content_switcher_item_icon_with_size,
-    content_switcher_item_low_contrast, content_switcher_lg, content_switcher_low_contrast,
-    content_switcher_low_contrast_lg, content_switcher_low_contrast_sm, content_switcher_sm, link,
-    link_inline, menu, menu_border, menu_button, menu_button_lg, menu_button_sm, menu_button_xs,
-    menu_flyout, menu_item, menu_item_group, menu_item_radio_group, menu_item_selectable,
-    menu_item_with, menu_lg, menu_sm, menu_with_icons, menu_xs, menubar, menubar_top,
-    overflow_menu, overflow_menu_lg, overflow_menu_sm, overflow_menu_xs, pagination,
-    pagination_items, pagination_items_lg, pagination_items_open, pagination_items_sm,
-    pagination_lg, pagination_nav, pagination_nav_lg, pagination_nav_open, pagination_nav_sm,
-    pagination_numbers, pagination_numbers_lg, pagination_numbers_sm, pagination_page_size,
-    pagination_prev_next, pagination_prev_next_lg, pagination_prev_next_sm, pagination_range,
-    pagination_sm, tab, tab_bar, ui_shell_header, ui_shell_header_action,
-    ui_shell_header_action_icon, ui_shell_header_menu_trigger, ui_shell_header_nav_item,
-    ui_shell_left_panel, ui_shell_left_panel_divider, ui_shell_left_panel_icon_item,
+    contained_tab_bar, contained_tab_lg, contained_tab_with_secondary, contained_tab_xl,
+    content_switcher, content_switcher_icon_only, content_switcher_icon_only_lg,
+    content_switcher_icon_only_sm, content_switcher_item, content_switcher_item_icon,
+    content_switcher_item_icon_popover, content_switcher_item_icon_popover_with_size,
+    content_switcher_item_icon_with_size, content_switcher_item_low_contrast, content_switcher_lg,
+    content_switcher_low_contrast, content_switcher_low_contrast_lg,
+    content_switcher_low_contrast_sm, content_switcher_sm, link, link_inline, link_with_icon, menu,
+    menu_border, menu_button, menu_button_lg, menu_button_sm, menu_button_xs, menu_flyout,
+    menu_item, menu_item_group, menu_item_radio_group, menu_item_selectable, menu_item_with,
+    menu_lg, menu_sm, menu_with_icons, menu_xs, menubar, menubar_top, overflow_menu,
+    overflow_menu_lg, overflow_menu_sm, overflow_menu_xs, pagination, pagination_items,
+    pagination_items_lg, pagination_items_open, pagination_items_sm, pagination_lg, pagination_nav,
+    pagination_nav_lg, pagination_nav_open, pagination_nav_sm, pagination_numbers,
+    pagination_numbers_lg, pagination_numbers_sm, pagination_page_size, pagination_prev_next,
+    pagination_prev_next_lg, pagination_prev_next_sm, pagination_range, pagination_sm, tab,
+    tab_bar, tab_with_icon, ui_shell_header, ui_shell_header_action, ui_shell_header_action_icon,
+    ui_shell_header_menu_trigger, ui_shell_header_nav_item, ui_shell_left_panel,
+    ui_shell_left_panel_divider, ui_shell_left_panel_icon_item,
     ui_shell_left_panel_icon_item_large, ui_shell_left_panel_icon_subitem,
     ui_shell_left_panel_icon_subitem_large, ui_shell_left_panel_in, ui_shell_left_panel_item,
     ui_shell_left_panel_item_large, ui_shell_left_panel_rail, ui_shell_left_panel_subitem,
@@ -252,6 +254,57 @@ impl ParamShape for ContentSwitcherItemIconSizeParams {
         crate::icon_mark_luau!(),
         ", selected: boolean, size: \"sm\" | \"md\" | \"lg\" }"
     );
+}
+
+/// `link_with_icon(key, label, mark)` — register row #231, Carbon's
+/// `--icon` modifier on the standalone link.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LinkWithIconParams {
+    key: Key,
+    label: String,
+    mark: IconMarkParam,
+}
+impl ParamShape for LinkWithIconParams {
+    const LUAU: &'static str = concat!(
+        "{ key: string, label: string, mark: ",
+        crate::icon_mark_luau!(),
+        " }"
+    );
+}
+
+/// `tab_with_icon(key, label, selected, mark)` — register row #466,
+/// Carbon's `--icon` modifier on a Line tab: the glyph trails the label.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TabWithIconParams {
+    key: Key,
+    label: String,
+    selected: bool,
+    mark: IconMarkParam,
+}
+impl ParamShape for TabWithIconParams {
+    const LUAU: &'static str = concat!(
+        "{ key: string, label: string, selected: boolean, mark: ",
+        crate::icon_mark_luau!(),
+        " }"
+    );
+}
+
+/// `contained_tab_with_secondary(key, label, secondary, selected)` —
+/// register row #467, Carbon's `--secondary-label`: a second 12px line
+/// under the label.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TabSecondaryParams {
+    key: Key,
+    label: String,
+    secondary: String,
+    selected: bool,
+}
+impl ParamShape for TabSecondaryParams {
+    const LUAU: &'static str =
+        "{ key: string, label: string, secondary: string, selected: boolean }";
 }
 
 /// `combo_button(key, action, open, items)`: the split trigger's action
@@ -540,6 +593,22 @@ pub const ENTRIES: &[Entry] = &[
         |p| content_switcher_item_icon(p.key, p.label, p.mark.into(), p.selected)
     ),
     row!(
+        "content_switcher_item_icon_popover",
+        ContentSwitcherItemIconParams,
+        |p| content_switcher_item_icon_popover(p.key, p.label, p.mark.into(), p.selected)
+    ),
+    row!(
+        "content_switcher_item_icon_popover_with_size",
+        ContentSwitcherItemIconSizeParams,
+        |p| content_switcher_item_icon_popover_with_size(
+            p.key,
+            p.label,
+            p.mark.into(),
+            p.selected,
+            p.size.into()
+        )
+    ),
+    row!(
         "content_switcher_item_icon_with_size",
         ContentSwitcherItemIconSizeParams,
         |p| content_switcher_item_icon_with_size(
@@ -552,6 +621,11 @@ pub const ENTRIES: &[Entry] = &[
     ),
     row!("link", KeyLabel, |p| link(p.key, p.label)),
     row!("link_inline", KeyLabel, |p| link_inline(p.key, p.label)),
+    row!("link_with_icon", LinkWithIconParams, |p| link_with_icon(
+        p.key,
+        p.label,
+        p.mark.into()
+    )),
     row!("menu", KeyLabelChildren, |p| menu(
         p.key, p.label, p.children
     )),
@@ -722,6 +796,15 @@ pub const ENTRIES: &[Entry] = &[
     row!("vertical_tab", KeyLabelSelected, |p| vertical_tab(
         p.key, p.label, p.selected
     )),
+    row!("tab_with_icon", TabWithIconParams, |p| tab_with_icon(
+        p.key,
+        p.label,
+        p.selected,
+        p.mark.into()
+    )),
+    row!("contained_tab_with_secondary", TabSecondaryParams, |p| {
+        contained_tab_with_secondary(p.key, p.label, p.secondary, p.selected)
+    }),
     row!("tab_bar", KeyChildren, |p| tab_bar(p.key, p.children)),
     row!("contained_tab_bar", KeyChildren, |p| contained_tab_bar(
         p.key, p.children
@@ -1002,12 +1085,22 @@ mod tests {
             "content_switcher_item_icon" => json!({
                 "key": "k-cs-item-icon", "label": "l", "mark": "copy", "selected": true
             }),
+            "content_switcher_item_icon_popover" => json!({
+                "key": "k-cs-item-wrap", "label": "l", "mark": "copy", "selected": true
+            }),
+            "content_switcher_item_icon_popover_with_size" => json!({
+                "key": "k-cs-item-wrap-sm", "label": "l", "mark": "copy",
+                "selected": true, "size": "sm"
+            }),
             "content_switcher_item_icon_with_size" => json!({
                 "key": "k-cs-item-icon-sm", "label": "l", "mark": "copy",
                 "selected": true, "size": "sm"
             }),
             "link" => json!({ "key": "k", "label": "l" }),
             "link_inline" => json!({ "key": "k", "label": "l-inline" }),
+            "link_with_icon" => {
+                json!({ "key": "k", "label": "l-icon", "mark": "check" })
+            }
             "menu" => json!({ "key": "k", "label": "l", "children": [] }),
             "menu_xs" => json!({ "key": "k-menu-xs", "label": "l", "children": [] }),
             "menu_sm" => json!({ "key": "k-menu-sm", "label": "l", "children": [] }),
@@ -1120,6 +1213,12 @@ mod tests {
             "contained_tab_lg" => json!({ "key": "k-ct-lg", "label": "l-ct-lg", "selected": true }),
             "contained_tab_xl" => json!({ "key": "k-ct-xl", "label": "l-ct-xl", "selected": true }),
             "vertical_tab" => json!({ "key": "k", "label": "l-vertical", "selected": true }),
+            "tab_with_icon" => json!({
+                "key": "k-twi", "label": "l-twi", "selected": true, "mark": "check"
+            }),
+            "contained_tab_with_secondary" => json!({
+                "key": "k-cts", "label": "l-cts", "secondary": "s-cts", "selected": true
+            }),
             "tab_bar" => json!({ "key": "k", "children": [] }),
             "contained_tab_bar" => json!({ "key": "k-contained-bar", "children": [] }),
             "vertical_tab_bar" => json!({ "key": "k-vertical-bar", "children": [] }),

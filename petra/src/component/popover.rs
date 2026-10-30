@@ -37,7 +37,7 @@
 use super::pad;
 use super::stack;
 use super::text::text;
-use super::tokens::{SHADOW_OVERLAY, SPACING_03, SPACING_05, SURFACE_RAISED, t};
+use super::tokens::{BORDER_SUBTLE, SHADOW_OVERLAY, SPACING_03, SPACING_05, SURFACE_RAISED, t};
 use crate::geom::Axis;
 use crate::token::{CornerRole, corner_for};
 use crate::tree::{
@@ -73,6 +73,24 @@ pub fn popover(
     body: impl Into<String>,
 ) -> ViewNode {
     popover_with(key, label, anchor, vec![bubble_text(body.into())])
+}
+
+/// `--border` (register row #358): [`popover`] wearing the 1px
+/// `$border-subtle` outline Carbon's modifier classes list as *"adds a 1px
+/// outline"* (slice-d, `Variants > Modifier classes`). The border is one
+/// token binding on the overlay — the same channel
+/// [`super::menu::menu_border`] and [`super::tag::tag`]'s outline use — so
+/// it is in the digest and the frame record like every other chrome
+/// decision, and the plain [`popover`] still draws none.
+pub fn popover_border(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    anchor: impl Into<Key>,
+    body: impl Into<String>,
+) -> ViewNode {
+    let mut node = popover(key, label, anchor, body);
+    node.props.tokens.insert("border".into(), t(BORDER_SUBTLE));
+    node
 }
 
 /// The one body run all four anchored bubbles in this library share.
@@ -193,11 +211,11 @@ pub fn popover_with_placement(
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_INLINE, popover, popover_with, popover_with_placement};
+    use super::{MAX_INLINE, popover, popover_border, popover_with, popover_with_placement};
     use crate::component::tests::{assert_fits_parent, petrify_lone};
     use crate::component::text::text;
     use crate::component::tokens::{
-        SHADOW_OVERLAY, SHAPE_MD, SPACING_03, SPACING_05, SURFACE_RAISED,
+        BORDER_SUBTLE, SHADOW_OVERLAY, SHAPE_MD, SPACING_03, SPACING_05, SURFACE_RAISED,
     };
 
     use crate::geom::Size;
@@ -222,6 +240,24 @@ mod tests {
     fn padding_token(node: &ViewNode) -> Option<(&str, &str)> {
         let pad = node.props.padding.as_ref()?;
         Some((pad.left.as_ref()?.as_str(), pad.top.as_ref()?.as_str()))
+    }
+
+    /// `--border` is the modifier classes list's *"adds a 1px outline"*
+    /// (slice-d): one `border` binding to `$border-subtle`, and the plain
+    /// popover draws none. Mirrors [`super::menu::menu_border`]'s claim.
+    #[test]
+    fn popover_border_wears_the_one_pixel_outline_the_modifier_names() {
+        let bordered = popover_border("help", "Filter help", "filter-btn", "Narrow the list.");
+        assert_eq!(
+            token(&bordered, "border"),
+            Some(BORDER_SUBTLE),
+            "the --border popover binds $border-subtle"
+        );
+        let plain = popover("help", "Filter help", "filter-btn", "Narrow the list.");
+        assert!(
+            !plain.props.tokens.contains_key("border"),
+            "the plain popover wears no outline"
+        );
     }
 
     #[test]

@@ -9,6 +9,10 @@
 --           valued(slider(VOLUME, "Volume", self.volume), self.draft.clone()),
 --           heading("range-title", "Two-handle range"),
 --           slider_range("range", "Temperature", 20.0, 80.0),
+--           heading("no-num-title", "Without a number input"),
+--           slider_without_number_input("no-num", "Volume", 0.4),
+--           heading("custom-title", "With custom value"),
+--           slider_with_custom_value("custom", "Volume", 0.4, &["Low", "Medium", "High"]),
 --       ],
 --   )])
 --
@@ -42,6 +46,17 @@ return ui.section({
       }),
       ui.heading({ key = "range-title", label = "Two-handle range" }),
       ui.slider_range({ key = "range", label = "Temperature", low = 20.0, high = 80.0 }),
+      -- Register row 437: no number input, the value rides a tooltip.
+      ui.heading({ key = "no-num-title", label = "Without a number input" }),
+      ui.slider_without_number_input({ key = "no-num", label = "Volume", value = 0.4 }),
+      -- Register row 438: the tip reads bucket labels.
+      ui.heading({ key = "custom-title", label = "With custom value" }),
+      ui.slider_with_custom_value({
+        key = "custom",
+        label = "Volume",
+        value = 0.4,
+        labels = { "Low", "Medium", "High" },
+      }),
     }),
   },
 })

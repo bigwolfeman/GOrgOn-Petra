@@ -301,7 +301,7 @@ pub fn all() -> Vec<Box<dyn Page>> {
         Box::new(accordion::Accordion::default()),
         Box::new(ai_label::AiLabel::default()),
         Box::new(breadcrumb::Breadcrumb::default()),
-        Box::new(button::Button),
+        Box::new(button::Button::default()),
         Box::new(checkbox::Checkbox::default()),
         Box::new(code_snippet::CodeSnippet::default()),
         Box::new(contained_list::ContainedList::default()),

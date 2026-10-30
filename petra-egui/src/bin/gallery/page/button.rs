@@ -2,8 +2,8 @@
 
 use gorgon_petra::component::{
     button, button_2xl, button_lg, button_sm, button_xl, button_xs, danger_button,
-    danger_ghost_button, danger_tertiary_button, ghost_button, primary_button, section,
-    tertiary_button,
+    danger_ghost_button, danger_tertiary_button, ghost_button, loading_button, primary_button,
+    section, tertiary_button,
 };
 use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::ViewNode;
@@ -11,12 +11,20 @@ use gorgon_petra::tree::ViewNode;
 use super::Page;
 use super::common::{body, row, sp};
 
-/// The Button page. It holds no live state.
-pub struct Button;
+/// The Button page. Its only live state is the host's clock, which the
+/// loading button's spinner turns on (register row 066).
+#[derive(Default)]
+pub struct Button {
+    now: f64,
+}
 
 impl Page for Button {
     fn row(&self) -> &'static str {
         "Button"
+    }
+
+    fn tick(&mut self, now: f64) {
+        self.now = now;
     }
 
     /// Carbon's button skeleton (`_button.scss`): a 150-wide block at the
@@ -179,6 +187,14 @@ impl Page for Button {
                             danger_tertiary_button("btn-danger-tertiary", "Delete"),
                             danger_ghost_button("btn-danger-ghost", "Delete"),
                         ],
+                    ),
+                    // Register row 066, the loading state: the button
+                    // stands aside for the in-button loader and is
+                    // disabled for as long as the action flies.
+                    row(
+                        "loading",
+                        sp("spacing.md"),
+                        vec![loading_button("btn-loading", "Saving", self.now)],
                     ),
                     // All six of Carbon's size steps, in order, so the
                     // xs-to-2xl progression is one row to look at rather

@@ -171,7 +171,8 @@ pub use breadcrumb::{
 };
 pub use button::{
     button, button_2xl, button_lg, button_sm, button_xl, button_xs, danger_button,
-    danger_ghost_button, danger_tertiary_button, ghost_button, primary_button, tertiary_button,
+    danger_ghost_button, danger_tertiary_button, ghost_button, loading_button, primary_button,
+    tertiary_button,
 };
 pub use button_group::{button_group, button_group_flush};
 pub use chrome_strip::{DIVIDER_EXTENT, chrome_strip};
@@ -187,6 +188,7 @@ pub use contained_list::{
 pub use content_switcher::{
     SwitcherSize, content_switcher, content_switcher_icon_only, content_switcher_icon_only_lg,
     content_switcher_icon_only_sm, content_switcher_item, content_switcher_item_icon,
+    content_switcher_item_icon_popover, content_switcher_item_icon_popover_with_size,
     content_switcher_item_icon_with_size, content_switcher_item_low_contrast, content_switcher_lg,
     content_switcher_low_contrast, content_switcher_low_contrast_lg,
     content_switcher_low_contrast_sm, content_switcher_sm,
@@ -211,30 +213,32 @@ pub use data_table::{
 pub use date_picker::{
     Calendar, date_picker, date_picker_fluid, date_picker_input, date_picker_invalid,
     date_picker_lg, date_picker_open, date_picker_range, date_picker_range_showing,
-    date_picker_readonly, date_picker_showing, date_picker_showing_selection, date_picker_sm,
-    date_picker_warning, time_picker,
+    date_picker_readonly, date_picker_showing, date_picker_showing_selection,
+    date_picker_showing_today, date_picker_sm, date_picker_warning, time_picker,
 };
 pub use disabled::disabled;
 pub use drawer::{docked, drawer, sheet};
 pub use dropdown::{
-    dropdown, dropdown_invalid, dropdown_lg, dropdown_open, dropdown_option, dropdown_readonly,
-    dropdown_sm, dropdown_warning, dropdown_xs,
+    dropdown, dropdown_invalid, dropdown_lg, dropdown_open, dropdown_option,
+    dropdown_option_multiselected, dropdown_readonly, dropdown_sm, dropdown_warning, dropdown_xs,
 };
 pub use field::{
     field, field_described, field_fluid, field_invalid, field_labeled, field_lg, field_readonly,
     field_required, field_sm, field_validated, field_warning, hinted, labeled, valued,
 };
 pub use file_uploader::{
-    file_uploader, file_uploader_item, file_uploader_item_edit, file_uploader_item_invalid,
-    file_uploader_item_warning, file_uploader_with,
+    file_uploader, file_uploader_drag_over, file_uploader_item, file_uploader_item_edit,
+    file_uploader_item_invalid, file_uploader_item_warning, file_uploader_with,
 };
 pub use form::{form, form_fluid, form_two_column};
 pub use icon::{IconBox, IconMark, IconTone, icon, icon_in, icon_toned};
-pub use inline_loading::{inline_loading, inline_loading_finished};
+pub use inline_loading::{
+    inline_loading, inline_loading_error, inline_loading_finished, inline_loading_in_button,
+};
 pub use input_group::{
     input_group, input_group_seamless, input_group_with_addon, input_group_with_addon_seamless,
 };
-pub use link::{link, link_inline};
+pub use link::{link, link_inline, link_with_icon};
 pub use list::{
     Bullet, BulletScheme, list_item, list_item_with, ordered_list, unordered_list,
     unordered_list_with,
@@ -250,7 +254,7 @@ pub use menu_button::{
     menu_button_xs, overflow_menu, overflow_menu_lg, overflow_menu_sm, overflow_menu_xs,
 };
 pub use menubar::{menubar, menubar_top};
-pub use modal::{ModalSize, modal, modal_lg, modal_passive, modal_sm, modal_xs};
+pub use modal::{ModalSize, modal, modal_lg, modal_loading, modal_passive, modal_sm, modal_xs};
 pub use notification::{
     NotificationKind, notification, notification_actionable, notification_actionable_kind,
     notification_inline, notification_inline_actionable, notification_inline_actionable_kind,
@@ -271,9 +275,9 @@ pub use pagination_nav::{
     PaginationNavOverflow, pagination_nav, pagination_nav_lg, pagination_nav_open,
     pagination_nav_sm,
 };
-pub use popover::{popover, popover_with, popover_with_placement};
+pub use popover::{popover, popover_border, popover_with, popover_with_placement};
 pub use progress::{progress, progress_sm, progress_with_helper};
-pub use progress_indicator::{progress_indicator, progress_step};
+pub use progress_indicator::{progress_indicator, progress_step, progress_step_interactive};
 pub use rating::rating;
 pub use readonly::readonly;
 pub use search::{search, search_lg, search_sm};
@@ -285,8 +289,9 @@ pub use skeleton::{
     SizeStep, SkeletonAnatomy, advance_ambient_skeletons, skeleton, skeleton_pulse_phase,
 };
 pub use slider::{
-    slider, slider_input_text, slider_invalid, slider_range, slider_range_values, slider_readonly,
-    slider_value_at, slider_value_of_input, slider_warning,
+    slider, slider_custom_label, slider_input_text, slider_invalid, slider_range,
+    slider_range_values, slider_readonly, slider_value_at, slider_value_of_input, slider_warning,
+    slider_with_custom_value, slider_without_number_input,
 };
 pub use status::status;
 pub use structured_list::{
@@ -295,8 +300,8 @@ pub use structured_list::{
     structured_list_weights_at,
 };
 pub use tabs::{
-    contained_tab, contained_tab_bar, contained_tab_lg, contained_tab_xl, tab, tab_bar,
-    vertical_tab, vertical_tab_bar,
+    contained_tab, contained_tab_bar, contained_tab_lg, contained_tab_with_secondary,
+    contained_tab_xl, tab, tab_bar, tab_with_icon, vertical_tab, vertical_tab_bar,
 };
 pub use tag::{dismissible_tag, selectable_tag, tag, tag_lg, tag_sm, tag_status, tag_with_avatar};
 pub use text::{heading, text};

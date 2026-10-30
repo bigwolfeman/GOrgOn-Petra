@@ -61,6 +61,7 @@ use super::pad;
 use super::pin_block;
 use super::rule;
 use super::stack;
+use super::swatch;
 use super::text::text;
 use super::tokens::{
     ACCENT_PRIMARY, BORDER_STRONG, LAYER_HOVER, SHADOW_OVERLAY, SIZE_LG, SIZE_MD, SIZE_SM,
@@ -69,6 +70,7 @@ use super::tokens::{
     TYPOGRAPHY_HEADING_SM, t,
 };
 use crate::geom::{Align, Axis};
+use crate::token::{CornerRole, corner_for};
 use crate::tree::{
     Align as PropAlign, Anchor, AxisConstraint, Behaviour, ClampRule, Constraints, Edge,
     FocusFigure, FocusShownOn, InputPolicy, Intent, Interaction, Justify, Key, Layer, NodeKind,
@@ -472,6 +474,59 @@ pub fn date_picker_showing_selection(
     selected: impl IntoIterator<Item = impl AsRef<str>>,
     calendar: Calendar,
 ) -> ViewNode {
+    showing_selection_with(key, label, value, selected, calendar, None)
+}
+
+/// Register row #170 (`today`): [`date_picker_showing`] with Carbon's
+/// "Today" indicator dot on the day `today` names (`YYYY-MM-DD`) — the
+/// calendar-day `today` state, slice-b "States > Calendar day".
+///
+/// The mark is drawn only when `today` falls in the month `calendar` is
+/// browsing; a `today` outside it marks nothing, because the day is not on
+/// screen (the same "wrong value marks nothing" rule
+/// [`date_picker_showing`] keeps). A `today` that does not parse panics:
+/// unlike `value`, it has no field to be visibly wrong in, and a silently
+/// unmarked today is exactly the quiet failure this library does not ship.
+///
+/// Residual, named rather than papered over: the range forms
+/// ([`date_picker_range_showing`]) do not carry a `today` yet — the day
+/// engine below does, so a `date_picker_range_showing_today` is one wrapper
+/// away when a caller needs it.
+pub fn date_picker_showing_today(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    value: impl Into<String>,
+    calendar: Calendar,
+    today: impl AsRef<str>,
+) -> ViewNode {
+    let today = today.as_ref();
+    let (ty, tm, td) = parse_date(today).unwrap_or_else(|| {
+        panic!("date_picker_showing_today: `today` must be YYYY-MM-DD, got {today:?}")
+    });
+    let (year, month) = calendar.view();
+    let today = (ty == year && tm == month).then_some(td);
+    let value = value.into();
+    showing_selection_with(
+        key,
+        label,
+        value.clone(),
+        std::iter::once(value),
+        calendar,
+        today,
+    )
+}
+
+/// The one engine both single-day forms build through: `selected` is the
+/// full set the grid marks and `today` is the day-of-month wearing the
+/// "Today" dot, if it is in the browsed month at all.
+fn showing_selection_with(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    value: impl Into<String>,
+    selected: impl IntoIterator<Item = impl AsRef<str>>,
+    calendar: Calendar,
+    today: Option<u32>,
+) -> ViewNode {
     let label = label.into();
     let value = value.into();
     let (year, month) = calendar.view();
@@ -485,7 +540,7 @@ pub fn date_picker_showing_selection(
         key,
         field,
         Some(calendar_surface(
-            label, year, month, &days, calendar, "field",
+            label, year, month, &days, calendar, "field", today,
         )),
     )
 }
@@ -549,6 +604,7 @@ pub fn date_picker_range_showing(
             &days,
             calendar,
             "fields",
+            None,
         )),
     )
 }
@@ -866,10 +922,11 @@ fn calendar_surface(
     selected: &SelectedDays,
     calendar: Calendar,
     anchor: &str,
+    today: Option<u32>,
 ) -> ViewNode {
     let mut children = vec![
         month_header(year, month, calendar),
-        month_grid(year, month, selected),
+        month_grid(year, month, selected, today),
     ];
     if calendar.choosing() {
         children.push(chooser_surface(year, month));
@@ -1229,7 +1286,7 @@ fn month_cell(month: u32, selected: bool) -> ViewNode {
 }
 
 /// The weekday row plus six week rows of the real month.
-fn month_grid(year: i32, month: u32, selected: &SelectedDays) -> ViewNode {
+fn month_grid(year: i32, month: u32, selected: &SelectedDays, today: Option<u32>) -> ViewNode {
     let lead = first_weekday(year, month);
     let count = days_in_month(year, month);
     let (prev_year, prev_month) = if month == 1 {
@@ -1262,7 +1319,7 @@ fn month_grid(year: i32, month: u32, selected: &SelectedDays) -> ViewNode {
                 reason = "bounded by the branch: 1 <= day <= 31"
             )]
             let day = day as u32;
-            children.push(day_button(day, selected.fill(day)));
+            children.push(day_button(day, selected.fill(day), today == Some(day)));
         } else {
             children.push(adjacent_cell(slot, lead, count, prev_count));
         }
@@ -1293,7 +1350,12 @@ fn month_grid(year: i32, month: u32, selected: &SelectedDays) -> ViewNode {
 /// A day of the month on show. `fill` says whether, and how, it carries the
 /// selection: see [`date_picker_showing_selection`] for what
 /// [`DayFill::Edge`] and [`DayFill::Interior`] each draw as, and why.
-fn day_button(day: u32, fill: DayFill) -> ViewNode {
+///
+/// `today` (register row #170, slice-b's calendar-day `today` state) adds
+/// Carbon's **"Today" indicator dot, 4×4px** (slice-b "Key numbers") under
+/// the number — a second channel beside the digits themselves, never a
+/// recoloured number alone.
+fn day_button(day: u32, fill: DayFill, today: bool) -> ViewNode {
     let label = day.to_string();
     let mut caption = text("label", label.clone());
     caption.props.tokens.insert(
@@ -1305,7 +1367,19 @@ fn day_button(day: u32, fill: DayFill) -> ViewNode {
             DayFill::Interior | DayFill::None => TEXT_PRIMARY,
         }),
     );
-    let mut node = stack(format!("day-{day}"), Axis::Horizontal, None, vec![caption]);
+    let parts = if today {
+        vec![caption, today_dot(fill)]
+    } else {
+        vec![caption]
+    };
+    // The dot sits under the number, so today's cell stacks and the rest
+    // stay one row; both centre the same way.
+    let axis = if today {
+        Axis::Vertical
+    } else {
+        Axis::Horizontal
+    };
+    let mut node = stack(format!("day-{day}"), axis, None, parts);
     node.props.align = Some(Align::Center);
     node.props.justify = Some(Justify::Center);
     // Resting background: the calendar's own content fill, the ground every
@@ -1358,6 +1432,27 @@ fn day_button(day: u32, fill: DayFill) -> ViewNode {
     node
 }
 
+/// Carbon's "Today" indicator: a 4×4 dot under the number (slice-b "Key
+/// numbers", MEASURED). The ink follows the number's own rule — on-accent
+/// over the selected fill, primary elsewhere — because a dot that vanished
+/// on a selected today would leave the state with one channel instead of
+/// two.
+fn today_dot(fill: DayFill) -> ViewNode {
+    swatch(
+        "today-dot",
+        4.0,
+        4.0,
+        Some(match fill {
+            DayFill::Edge => TEXT_ON_ACCENT,
+            DayFill::Interior | DayFill::None => TEXT_PRIMARY,
+        }),
+        None,
+        // `Pill` at 4 resolves to the half-edge: the dot is a circle, not
+        // a rounded square.
+        Some(corner_for(CornerRole::Pill, 4.0)),
+    )
+}
+
 /// A cell belonging to the month either side of the one on show.
 ///
 /// Carries its real number, in [`TEXT_MUTED`], because Carbon draws them
@@ -1403,8 +1498,8 @@ mod tests {
         PropAlign, SIZE_FLUID, SIZE_LG, SIZE_MD, SIZE_SM, WEEK_ROWS, WEEKDAYS, date_picker,
         date_picker_fluid, date_picker_input, date_picker_invalid, date_picker_lg,
         date_picker_open, date_picker_range, date_picker_range_showing, date_picker_showing,
-        date_picker_showing_selection, date_picker_sm, date_picker_warning, days_in_month,
-        first_weekday, parse_date, time_picker,
+        date_picker_showing_selection, date_picker_showing_today, date_picker_sm,
+        date_picker_warning, days_in_month, first_weekday, parse_date, time_picker,
     };
     use crate::component::tests::{assert_fits_parent, petrify_lone};
     use crate::component::tokens::{
@@ -1430,7 +1525,10 @@ mod tests {
     }
 
     use crate::component::icon::{IconMark, IconTone, icon_toned};
-    use crate::component::tokens::{SUPPORT_ERROR, SUPPORT_WARNING, TEXT_MUTED, TEXT_PRIMARY};
+    use crate::component::tokens::{
+        SUPPORT_ERROR, SUPPORT_WARNING, TEXT_MUTED, TEXT_ON_ACCENT, TEXT_PRIMARY,
+    };
+    use crate::token::{CornerRole, corner_for};
 
     /// Spec 008 register rows #157/#159: the dated well carries the field
     /// ramp's three heights (sm 32 / md 40 / lg 48 — slice-b "Sizes", the
@@ -2036,6 +2134,63 @@ mod tests {
             token(child(days, "day-2"), "background"),
             Some(ACCENT_PRIMARY),
             "August 2nd is the range's far end"
+        );
+    }
+
+    /// Register row #170 (`today`): Carbon's "Today" indicator — a 4×4 dot
+    /// under the number of the day `today` names (slice-b "Key numbers"),
+    /// and on no other day. The dot's ink follows the number's own rule, so
+    /// the state survives the selected fill as well as the resting one.
+    #[test]
+    fn the_today_day_carries_the_four_unit_dot_and_no_other_day_does() {
+        let view = Calendar::Compact {
+            year: 2026,
+            month: 8,
+        };
+        let node = date_picker_showing_today("due", "Due date", "2026-08-20", view, "2026-08-24");
+        let days = child(child(child(&node, "calendar"), "content"), "days");
+        let dot = child(child(days, "day-24"), "today-dot");
+        assert_eq!(dot.constraints.horizontal.min, Some(4.0));
+        assert_eq!(dot.constraints.horizontal.max, Some(4.0));
+        assert_eq!(dot.constraints.vertical.min, Some(4.0));
+        assert_eq!(
+            dot.constraints.vertical.max,
+            Some(4.0),
+            "4×4, slice-b's figure"
+        );
+        assert_eq!(token(dot, "background"), Some(TEXT_PRIMARY));
+        assert_eq!(
+            token(dot, "radius"),
+            Some(corner_for(CornerRole::Pill, 4.0)),
+            "a dot, not a rounded square"
+        );
+        for other in ["day-23", "day-25"] {
+            assert!(
+                child(days, other)
+                    .children
+                    .iter()
+                    .all(|c| c.key.as_str() != "today-dot"),
+                "{other} wore the today dot"
+            );
+        }
+
+        // On a selected today the dot swaps to the on-accent ink rather
+        // than disappearing into the fill.
+        let selected =
+            date_picker_showing_today("due", "Due date", "2026-08-24", view, "2026-08-24");
+        let days = child(child(child(&selected, "calendar"), "content"), "days");
+        let dot = child(child(days, "day-24"), "today-dot");
+        assert_eq!(token(dot, "background"), Some(TEXT_ON_ACCENT));
+
+        // A today outside the browsed month is not on screen, so it marks
+        // nothing — the same rule the selected day keeps.
+        let away = date_picker_showing_today("due", "Due date", "2026-08-20", view, "2026-09-24");
+        let days = child(child(child(&away, "calendar"), "content"), "days");
+        assert!(
+            days.children
+                .iter()
+                .all(|row| row.children.iter().all(|c| c.key.as_str() != "today-dot")),
+            "a September today dotted an August grid"
         );
     }
 

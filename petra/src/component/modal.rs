@@ -63,8 +63,10 @@
 //! [`super::popover`].
 
 use super::button::{button, primary_button};
+use super::disabled::disabled;
 use super::icon::{IconBox, IconMark, IconTone, icon_in};
 use super::kit::bind_corners;
+use super::loading::loading;
 use super::on_layer;
 use super::stack;
 use super::text::{heading, text};
@@ -193,6 +195,33 @@ pub fn modal(
         body.into(),
         Some(primary.into()),
         ModalSize::Md,
+        None,
+    )
+}
+
+/// Register row #305 (`loading`): the dialog in Carbon's loading state,
+/// slice-c:154 — "loading (spinner + overlay over the body, primary button
+/// disabled)". The body sits under a scrim with Carbon's large spinner
+/// centred over both, the footer keeps its Cancel, and the primary action
+/// is [`disabled`]. `now` is the host clock the spinner turns on.
+///
+/// The state is also declared, not only drawn: the dialog carries
+/// `Semantics.value = "loading"`, the same second channel
+/// [`super::file_uploader`]'s row statuses use.
+pub fn modal_loading(
+    key: impl Into<Key>,
+    title: impl Into<String>,
+    body: impl Into<String>,
+    primary: impl Into<String>,
+    now: f64,
+) -> ViewNode {
+    build(
+        key.into(),
+        title.into(),
+        body.into(),
+        Some(primary.into()),
+        ModalSize::Md,
+        Some(now),
     )
 }
 
@@ -210,6 +239,7 @@ pub fn modal_xs(
         body.into(),
         Some(primary.into()),
         ModalSize::Xs,
+        None,
     )
 }
 
@@ -227,6 +257,7 @@ pub fn modal_sm(
         body.into(),
         Some(primary.into()),
         ModalSize::Sm,
+        None,
     )
 }
 
@@ -244,6 +275,7 @@ pub fn modal_lg(
         body.into(),
         Some(primary.into()),
         ModalSize::Lg,
+        None,
     )
 }
 
@@ -259,15 +291,25 @@ pub fn modal_passive(
     title: impl Into<String>,
     body: impl Into<String>,
 ) -> ViewNode {
-    build(key.into(), title.into(), body.into(), None, ModalSize::Md)
+    build(
+        key.into(),
+        title.into(),
+        body.into(),
+        None,
+        ModalSize::Md,
+        None,
+    )
 }
 
+/// `loading` is [`modal_loading`]'s `Some(now)`; every other caller passes
+/// `None` and the dialog is the resting one.
 fn build(
     key: Key,
     title: String,
     body: String,
     primary: Option<String>,
     size: ModalSize,
+    loading: Option<f64>,
 ) -> ViewNode {
     // The dialog, centred on the cross axis of a stack that fills the middle
     // column: `justify` centres it vertically in the whole window height,
@@ -276,7 +318,7 @@ fn build(
         "seat",
         Axis::Vertical,
         None,
-        vec![dialog(&title, body, primary)],
+        vec![dialog(&title, body, primary, loading)],
     );
     seat.props.justify = Some(Justify::Center);
     seat.props.align = Some(Align::Stretch);
@@ -337,10 +379,17 @@ fn build(
 }
 
 /// The container: header, body, and the footer when there is one.
-fn dialog(title: &str, body: String, primary: Option<String>) -> ViewNode {
-    let mut rows = vec![header(title), content(body)];
+///
+/// `loading` dresses the body ([`content_loading`]) and disables the footer's
+/// primary action — [`modal_loading`]'s state, on the one dialog anatomy.
+fn dialog(title: &str, body: String, primary: Option<String>, loading: Option<f64>) -> ViewNode {
+    let body = match loading {
+        Some(now) => content_loading(body, now),
+        None => content(body),
+    };
+    let mut rows = vec![header(title), body];
     if let Some(primary) = primary {
-        rows.push(footer(primary));
+        rows.push(footer(primary, loading.is_some()));
     }
     let mut node = stack("dialog", Axis::Vertical, None, rows);
     node.props.align = Some(Align::Stretch);
@@ -352,6 +401,11 @@ fn dialog(title: &str, body: String, primary: Option<String>) -> ViewNode {
         "radius".into(),
         t(corner_for(CornerRole::Floating, DIALOG_FLOOR)),
     );
+    // The state as a fact, not only as pixels (FR-010's rule generalised):
+    // a reader of the tree can tell a busy dialog from an idle one.
+    if loading.is_some() {
+        node.semantics.value = Some("loading".to_owned());
+    }
     node
 }
 
@@ -387,7 +441,14 @@ fn header(title: &str) -> ViewNode {
 fn content(body: String) -> ViewNode {
     let mut copy = text("body", body);
     copy.props.wrap = Some(TextWrap::Wrap);
-    let mut seat = stack("content", Axis::Vertical, None, vec![copy]);
+    body_seat("content", copy)
+}
+
+/// [`content`]'s padding seat under its own key, so the loading state can
+/// put it under a scrim without losing the padding or the `"body"` text
+/// node every test reads.
+fn body_seat(key: &'static str, copy: ViewNode) -> ViewNode {
+    let mut seat = stack(key, Axis::Vertical, None, vec![copy]);
     seat.props.align = Some(Align::Stretch);
     seat.props.padding = Some(InsetRefs {
         top: Some(t(SPACING_03)),
@@ -398,9 +459,46 @@ fn content(body: String) -> ViewNode {
     seat
 }
 
+/// The loading state's body (register row #305): the copy seat under a
+/// scrim, with Carbon's large spinner centred over both (slice-c:154's
+/// "spinner + overlay over the body").
+///
+/// A [`NodeKind::Overlay`] because that is what lays three children over
+/// one rect — `layout/overlay.rs`: "every child gets the container's own
+/// proposal". Z-order is child order: copy, scrim, spinner.
+fn content_loading(body: String, now: f64) -> ViewNode {
+    let mut copy = text("body", body);
+    copy.props.wrap = Some(TextWrap::Wrap);
+    let copy = body_seat("copy", copy);
+    let mut scrim = stack("scrim", Axis::Vertical, None, Vec::new());
+    scrim
+        .props
+        .tokens
+        .insert("background".into(), t(OVERLAY_SCRIM));
+    let mut seat = stack(
+        "loading",
+        Axis::Vertical,
+        None,
+        vec![loading("spinner", "Loading", now)],
+    );
+    seat.props.align = Some(Align::Center);
+    seat.props.justify = Some(Justify::Center);
+    ViewNode::new(NodeKind::Overlay, "content").with_children(vec![copy, scrim, seat])
+}
+
 /// Carbon's two-button footer: 64 tall, full-bleed, each button half the
 /// width, Cancel on the left and the primary action on the right.
-fn footer(primary: String) -> ViewNode {
+///
+/// `primary_disabled` is [`modal_loading`]'s "primary button disabled"
+/// (slice-c:154): the cell stays where it is and the button under it goes
+/// through [`disabled`].
+fn footer(primary: String, primary_disabled: bool) -> ViewNode {
+    let primary = primary_button("primary", primary);
+    let primary = if primary_disabled {
+        disabled(primary)
+    } else {
+        primary
+    };
     ViewNode::new(NodeKind::Grid, "footer")
         .with_props(Props {
             columns: vec![
@@ -427,7 +525,7 @@ fn footer(primary: String) -> ViewNode {
                 },
             ),
             footer_button(
-                primary_button("primary", primary),
+                primary,
                 Joined {
                     top: true,
                     left: true,
@@ -592,7 +690,7 @@ fn close_button() -> ViewNode {
 mod tests {
     use super::{
         CLOSE_HIT, CLOSE_ICON, COVER_WINDOW, DIALOG_FLOOR, FOOTER_HEIGHT, modal, modal_lg,
-        modal_passive, modal_sm, modal_xs,
+        modal_loading, modal_passive, modal_sm, modal_xs,
     };
     use crate::component::tests::{assert_fits_parent, petrify_root};
     use crate::component::tokens::{LAYER_HOVER, OVERLAY_SCRIM, SURFACE_RAISED};
@@ -757,6 +855,54 @@ mod tests {
              unique to the modal. This asserted `None` until then."
         );
         assert_eq!(token(&node, "border"), None);
+    }
+
+    /// Register row #305 (`loading`): slice-c:154's three channels — the
+    /// spinner and its overlay over the body, the primary button disabled —
+    /// and the declared `Semantics.value = "loading"` beside them, so the
+    /// state is readable in the tree as well as in the pixels.
+    #[test]
+    fn the_loading_modal_wears_a_spinner_a_scrim_and_a_dead_primary() {
+        let node = modal_loading("m", "Title", "Working…", "Save", 0.5);
+        let dialog = descendant(&node, "dialog");
+        assert_eq!(
+            dialog.semantics.value.as_deref(),
+            Some("loading"),
+            "the state is declared, not only drawn"
+        );
+        let content = descendant(dialog, "content");
+        assert_eq!(
+            content.kind,
+            NodeKind::Overlay,
+            "copy, scrim, spinner over one rect"
+        );
+        assert!(has_descendant(content, "spinner"));
+        assert!(
+            has_descendant(content, "body"),
+            "the copy stays on screen under the scrim"
+        );
+        let footer = descendant(dialog, "footer");
+        let primary = descendant(footer, "primary");
+        assert!(
+            primary.semantics.disabled,
+            "the primary action is not disabled"
+        );
+        assert!(primary.interactions.is_empty(), "and takes no input");
+        assert!(
+            !descendant(footer, "cancel").semantics.disabled,
+            "Cancel stays live — slice-c disables the *primary* button"
+        );
+
+        // The resting modal is untouched: no value, live primary, no scrim.
+        let idle = modal("m", "Title", "Body", "Save");
+        let dialog = descendant(&idle, "dialog");
+        assert_eq!(dialog.semantics.value, None);
+        assert!(!descendant(dialog, "primary").semantics.disabled);
+        assert_eq!(
+            descendant(dialog, "content").kind,
+            NodeKind::Stack,
+            "no overlay over an idle body"
+        );
     }
 
     #[test]

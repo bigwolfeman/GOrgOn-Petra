@@ -385,8 +385,19 @@ mod tests {
             // `{ name: T, ... }`. The colon is the only thing separating
             // them, and sending an array where a record is wanted produces a
             // deserialize error that reads exactly like the name mismatch
-            // this test exists to catch.
-            _ if ty.starts_with('{') && !ty.contains(':') => json!([]),
+            // this test exists to catch. A *scalar* array probes with one
+            // element: an empty list is a documented caller error for some
+            // rows (`slider_custom_label` refuses zero labels by design), and
+            // its assertion would bury the field-name verdict under a
+            // constructor panic. Node arrays stay empty — `children: {}` is
+            // a shape every constructor accepts.
+            _ if ty.starts_with('{') && !ty.contains(':') => {
+                if ty.trim_start_matches('{').trim_end_matches('}').trim() == "string" {
+                    json!(["probe"])
+                } else {
+                    json!([])
+                }
+            }
             _ => return None,
         })
     }

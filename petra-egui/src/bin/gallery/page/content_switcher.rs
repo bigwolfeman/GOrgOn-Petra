@@ -160,7 +160,8 @@ impl Page for ContentSwitcher {
     fn body(&self) -> ViewNode {
         use gorgon_petra::component::{
             IconMark, content_switcher_icon_only, content_switcher_item_icon,
-            content_switcher_item_low_contrast, content_switcher_low_contrast, heading,
+            content_switcher_item_icon_popover, content_switcher_item_low_contrast,
+            content_switcher_low_contrast, heading,
         };
 
         use super::common::column;
@@ -205,6 +206,32 @@ impl Page for ContentSwitcher {
                                 content_switcher_item_icon("icon-0", "List", IconMark::Menu, true),
                                 content_switcher_item_icon(
                                     "icon-1",
+                                    "Grid",
+                                    IconMark::Switcher,
+                                    false,
+                                ),
+                            ],
+                        )],
+                    ),
+                    heading("popover-title", "Popover-wrapped"),
+                    // Register row 113's `--popover-wrapped` modifier:
+                    // the icon tab wearing its tooltip-style label — the
+                    // bubble shown mounted (the bubble is the variant),
+                    // the plain tab beside it for the contrast.
+                    column(
+                        "popover-column",
+                        None,
+                        vec![content_switcher_icon_only(
+                            "popover-wrapped",
+                            vec![
+                                content_switcher_item_icon_popover(
+                                    "wrap-0",
+                                    "List",
+                                    IconMark::Menu,
+                                    true,
+                                ),
+                                content_switcher_item_icon(
+                                    "wrap-1",
                                     "Grid",
                                     IconMark::Switcher,
                                     false,

@@ -1,8 +1,8 @@
 //! Inventory row 12, File uploader.
 
 use gorgon_petra::component::{
-    file_uploader_item, file_uploader_item_edit, file_uploader_item_invalid,
-    file_uploader_item_warning, file_uploader_with, section,
+    file_uploader_drag_over, file_uploader_item, file_uploader_item_edit,
+    file_uploader_item_invalid, file_uploader_item_warning, file_uploader_with, section,
 };
 use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::ViewNode;
@@ -88,6 +88,17 @@ impl Page for FileUploader {
             "fu-warn",
             "stale.ndjson",
             "older than the session",
+        ));
+        // Register row #211, Carbon's `--drag-over` modifier: the zone's
+        // edge switches to the measured `outline: 2px solid $focus,
+        // outline-offset: -2px` while a file is held over it. The state is
+        // caller-held (no file-hover event reaches this engine yet — see
+        // the constructor's doc), so the cell stands in the state rather
+        // than waiting for a drag that cannot arrive.
+        rows.push(file_uploader_drag_over(
+            "fu-drag-over",
+            "Drop target, drag-over",
+            "the zone's edge while a file is held over it",
         ));
         rows.push(wrapped(
             "note",

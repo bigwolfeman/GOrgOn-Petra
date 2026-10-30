@@ -98,6 +98,12 @@ pub struct Camera<A: App = Catalog> {
     /// running is invisible to a driver with no clock, which is how row 30's
     /// nine-frame freeze survived a green suite.
     clock: f64,
+    /// The logical window this camera lays its pages out in. Every pass
+    /// re-stamps it (`timed`), because egui re-lays out against the
+    /// `screen_rect` of the newest input and a pass stamped at the wrong
+    /// size would move the page mid-test. [`Camera::on`] shoots at
+    /// [`WINDOW`]; [`Camera::at_window`] is for whole-page censuses.
+    window: [f32; 2],
     /// Where the pointer was left, so [`Camera::release`] can let go there
     /// rather than inventing a move a device never sent.
     pointer: Option<Point>,
@@ -119,10 +125,21 @@ impl Camera<Catalog> {
     /// because the usual cause is a name that differs from Carbon's by a
     /// capital letter.
     pub fn on(component: &str) -> Self {
-        Self::at_scale(component, CAPTURE_SCALE)
+        Self::at_window_scale(component, WINDOW, CAPTURE_SCALE)
     }
 
-    /// [`Camera::on`], at a chosen device pixel ratio.
+    /// [`Camera::on`] at a window of the caller's own size.
+    ///
+    /// For censuses that must judge **every** placement of a page at once:
+    /// the catalog's window is 900 tall and some pages run past it, so rows
+    /// land in overscan or straddle the fold and their geometry is measured
+    /// half-clipped (see
+    /// `every_bar_figure_finds_its_content`'s `CENSUS_WINDOW`).
+    pub fn at_window(component: &str, window: [f32; 2]) -> Self {
+        Self::at_window_scale(component, window, CAPTURE_SCALE)
+    }
+
+    /// [`Camera::on`] at a chosen device pixel ratio.
     ///
     /// Use it to photograph the same page at 1 and at 2 when a defect is
     /// suspected to be a rounding artifact rather than a layout one. A mark
@@ -132,11 +149,17 @@ impl Camera<Catalog> {
     /// # Panics
     /// If no inventory row is named `component`.
     pub fn at_scale(component: &str, scale: f32) -> Self {
+        Self::at_window_scale(component, WINDOW, scale)
+    }
+
+    /// The engine under [`Camera::on`], [`Camera::at_window`] and
+    /// [`Camera::at_scale`]: one page at one window and one device scale.
+    fn at_window_scale(component: &str, window: [f32; 2], scale: f32) -> Self {
         let app = Catalog::on_page(component);
         let ctx = headless();
         ctx.set_pixels_per_point(scale);
         let mut host = Host::new(&ctx, app, default_presenter());
-        ctx.run_ui(sized(RawInput::default()), |_| host.pass(&ctx))
+        ctx.run_ui(sized(RawInput::default(), window), |_| host.pass(&ctx))
             .drop_without_applying_deltas();
         crate::catalog::seat_index_focus(&mut host);
         host.set_reduced_motion(true);
@@ -151,6 +174,7 @@ impl Camera<Catalog> {
             page: component.to_owned(),
             clipboard: Vec::new(),
             clock,
+            window,
             pointer: None,
         };
         cam.settle();
@@ -204,7 +228,7 @@ impl<A: App> Camera<A> {
     fn timed(&mut self, mut raw: RawInput) -> RawInput {
         self.clock += FRAME;
         raw.time = Some(self.clock);
-        sized(raw)
+        sized(raw, self.window)
     }
 
     /// Stop reducing motion, so transitions and the focus caret run at their
@@ -939,7 +963,7 @@ impl Camera<Fixture> {
         let ctx = headless();
         ctx.set_pixels_per_point(CAPTURE_SCALE);
         let mut host = Host::new(&ctx, app, default_presenter());
-        ctx.run_ui(sized(RawInput::default()), |_| host.pass(&ctx))
+        ctx.run_ui(sized(RawInput::default(), WINDOW), |_| host.pass(&ctx))
             .drop_without_applying_deltas();
         host.set_reduced_motion(true);
         let clock = ctx.input(|input| input.time);
@@ -950,6 +974,7 @@ impl Camera<Fixture> {
             page: format!("fixture({theme})"),
             clipboard: Vec::new(),
             clock,
+            window: WINDOW,
             pointer: None,
         };
         // Two passes: the first delivers the theme request, the second lays
@@ -1080,7 +1105,7 @@ impl Camera<RadiusGrooveFixture> {
         let ctx = headless();
         ctx.set_pixels_per_point(CAPTURE_SCALE);
         let mut host = Host::new(&ctx, app, default_presenter());
-        ctx.run_ui(sized(RawInput::default()), |_| host.pass(&ctx))
+        ctx.run_ui(sized(RawInput::default(), WINDOW), |_| host.pass(&ctx))
             .drop_without_applying_deltas();
         host.set_reduced_motion(true);
         let clock = ctx.input(|input| input.time);
@@ -1091,6 +1116,7 @@ impl Camera<RadiusGrooveFixture> {
             page: "fixture(radius-groove)".to_owned(),
             clipboard: Vec::new(),
             clock,
+            window: WINDOW,
             pointer: None,
         };
         // Two passes: the first delivers the theme request, the second lays
@@ -1187,17 +1213,17 @@ fn tail_matches(id: &str, tail: &str) -> bool {
     id[at..].starts_with(tail) && (tail.starts_with('/') || id[..at].ends_with('/'))
 }
 
-fn sized(mut input: RawInput) -> RawInput {
+fn sized(mut input: RawInput, window: [f32; 2]) -> RawInput {
     input.screen_rect = Some(egui::Rect::from_min_size(
         Pos2::ZERO,
-        egui::vec2(WINDOW[0], WINDOW[1]),
+        egui::vec2(window[0], window[1]),
     ));
     input
 }
 
 fn headless() -> Context {
     let ctx = Context::default();
-    ctx.run_ui(sized(RawInput::default()), |_| {})
+    ctx.run_ui(sized(RawInput::default(), WINDOW), |_| {})
         .drop_without_applying_deltas();
     ctx
 }
@@ -1693,6 +1719,84 @@ mod tests {
         light.light();
         light.click("pop-anchor");
         light.shoot("24-popover-placements-light");
+    }
+
+    /// Register row #361, Popover modifier `auto-align`.
+    ///
+    /// Carbon scopes it to *"lets the library reposition the popover to
+    /// stay on-screen instead of using a fixed placement"* (slice-d:84,
+    /// Variants > Modifier classes). The demo bubble is declared `--left`
+    /// on a trigger parked at the page's left edge, where a full-width
+    /// bubble has no room, so the engine's `ClampRule::Flip` ladder — which
+    /// `popover.rs`'s module doc names as *"the `--auto-align` ladder"*
+    /// itself — moves it onto the trigger's other side. The declared edge
+    /// is read back off the tree, so the picture is provably a
+    /// repositioning and not a different declaration.
+    ///
+    /// The residual, named here and in the register row: Carbon's
+    /// `--auto-align` *opts in* to repositioning over a fixed placement
+    /// default; this library has no fixed-placement form to opt out of —
+    /// FR-022 has clamped every anchored surface into the viewport since
+    /// the overlay landed (`layout/overlay_surface.rs`: "so it never paints
+    /// outside the viewport"). The reactive half ("recomputes placement
+    /// reactively on scroll/resize", slice-d:104) is the engine's
+    /// every-frame overlay placement, and the two caret DOM shapes the
+    /// modifier switches between are a CSS stacking workaround slice-d:106
+    /// itself invites a scene-graph to skip "consciously" — skipped here,
+    /// consciously, and named.
+    ///
+    /// Falsified by moving the trigger away from the left edge (the setup
+    /// assert fires: the flip was not forced), or by binding a fixed clamp
+    /// (`ClampRule::Shrink`): the bubble then slides back into view from the
+    /// left edge and the side assert fails.
+    #[test]
+    fn the_auto_align_bubble_repositions_off_the_viewport_edge_onto_its_other_side() {
+        let mut cam = Camera::on("Popover");
+        assert!(
+            cam.has("pop-auto-bubble"),
+            "the auto-align bubble is not open at rest"
+        );
+        let trigger = cam.rect("pop-auto-anchor");
+        let bubble = cam.rect("pop-auto-bubble");
+        let tree = cam.tree();
+        let node = crate::page::common::find(&tree, "pop-auto-bubble")
+            .unwrap_or_else(|| panic!("no node keyed pop-auto-bubble in the page tree"));
+        let Some(gorgon_petra::tree::Anchor::Sibling { edge, .. }) = node.props.anchor.as_ref()
+        else {
+            panic!(
+                "the bubble is not a sibling-anchored overlay: {:?}",
+                node.props.anchor
+            );
+        };
+        assert_eq!(
+            *edge,
+            Edge::Left,
+            "the demo must declare --left for the repositioning to mean anything"
+        );
+        // The setup fact: the anchor gap is 8 (`SPACING_03`), so a left
+        // bubble needs trigger.x >= bubble.w + 8 and this one does not have
+        // it. Without this the side assert below could pass on a page where
+        // nothing was ever forced to move.
+        assert!(
+            trigger.x < bubble.w + 8.0,
+            "the setup lies: the trigger sits where a left bubble fits, so no \
+             repositioning was forced: trigger {trigger:?}, bubble {bubble:?}"
+        );
+        assert!(
+            bubble.x >= trigger.x + trigger.w,
+            "row #361: the --left bubble did not reposition to stay on-screen: \
+             bubble {bubble:?} beside trigger {trigger:?}"
+        );
+        let vp = cam.frame().viewport.size;
+        assert!(
+            bubble.x >= 0.0 && bubble.y >= 0.0,
+            "the repositioned bubble leaves the viewport's near edges: {bubble:?}"
+        );
+        assert!(
+            bubble.x + bubble.w <= vp.w && bubble.y + bubble.h <= vp.h,
+            "the repositioned bubble still leaves the viewport {vp:?}: {bubble:?}"
+        );
+        cam.shoot("361-popover-auto-align");
     }
 
     // ===== Wave 7: catalog state and routing =====
@@ -2244,6 +2348,38 @@ mod tests {
         cam.shoot("10-date-picker-compact-open");
     }
 
+    /// Register row #170 — the calendar day's `today` state: Carbon's
+    /// "Today" indicator dot, **4×4px** (slice-b "Key numbers"), under the
+    /// number of the day the page names as today. The open calendar is the
+    /// state's gallery cell (the dot lives on the day grid, and a floating
+    /// calendar raised beside the live pickers would share their x-range —
+    /// see the `forms-gap` note in `page/date_picker.rs`), so this drives
+    /// the picker open the way a hand does and reads the pixels.
+    #[test]
+    fn the_open_calendar_marks_today_with_carbons_four_unit_dot() {
+        let mut cam = Camera::on("Date picker");
+        cam.click("compact/field");
+        let day = cam.rect("compact/calendar/content/days/day-24");
+        let dot = cam.rect("today-dot");
+        assert_eq!((dot.w, dot.h), (4.0, 4.0), "4×4, slice-b's figure");
+        assert!(
+            (dot.x + dot.w / 2.0 - (day.x + day.w / 2.0)).abs() < 0.5,
+            "the dot is centred on the cell: {dot:?} in {day:?}"
+        );
+        assert!(
+            dot.y > day.y + day.h / 2.0,
+            "and under the number, not over it: {dot:?} in {day:?}"
+        );
+        let shot = raster(&mut cam, "10-date-picker-today");
+        let ink = px(&shot, dot.x + dot.w / 2.0, dot.y + dot.h / 2.0);
+        let ground = px(&shot, day.x + 2.0, day.y + 2.0);
+        assert_ne!(ink, ground, "the dot draws nothing: {ink:?} on {ground:?}");
+        assert!(
+            !cam.has("compact/calendar/content/days/day-23/today-dot"),
+            "the 23rd wore the today dot too"
+        );
+    }
+
     /// Row 10, round 4, the full form. The operator: *"we need 2 date
     /// pickers 'compact' and 'full' ... and in the full view the month is a
     /// button, not just a label."*
@@ -2349,6 +2485,77 @@ mod tests {
             !cam.has("dd/menu"),
             "a press on the open field must close the list, not dismiss it \
              and toggle it straight back open"
+        );
+    }
+
+    /// Register row #194 — the menu option's `active` (pressed) sub-state,
+    /// slice-b "States > Menu option". The pressed ground is the
+    /// `background@active` binding every option declares ($layer-active), a
+    /// third ground beside rest and hover. [`Camera::click`] would
+    /// photograph only the comeback (see [`Camera::press`]); this holds the
+    /// row down and reads the pixels.
+    #[test]
+    fn the_held_menu_option_wears_the_pressed_ground_not_the_hover_one() {
+        let mut cam = Camera::on("Dropdown");
+        let row = cam.rect("opt-plain");
+        // Clear of the label at the leading edge and of the trailing rule.
+        let at = (row.x + row.w * 0.75, row.y + row.h / 2.0);
+        let resting = raster(&mut cam, "11-dropdown-option-resting");
+        let rest = px(&resting, at.0, at.1);
+        cam.hover("opt-plain");
+        let hovered = raster(&mut cam, "11-dropdown-option-hover");
+        let hover = px(&hovered, at.0, at.1);
+        cam.press("opt-plain");
+        let held = raster(&mut cam, "11-dropdown-option-held");
+        let active = px(&held, at.0, at.1);
+        cam.release();
+        assert_ne!(hover, rest, "the hover ground never lit ({rest:?})");
+        assert_ne!(
+            active, hover,
+            "the held row wears the hover ground — `background@active` is \
+             not resolving to a ground of its own ({active:?})"
+        );
+        assert_ne!(
+            active, rest,
+            "the held row wore no pressed ground at all ({active:?})"
+        );
+    }
+
+    /// Register row #196 — the `multiselected` menu option: the leading
+    /// checkbox box slice-b names ("multiselect options additionally show a
+    /// leading checkbox icon"), with the selected row keeping its fill and
+    /// trailing Checkmark and the unchecked one showing the empty box alone.
+    #[test]
+    fn the_multiselected_option_shows_its_leading_box_beside_the_label() {
+        let mut cam = Camera::on("Dropdown");
+        let shot = raster(&mut cam, "11-dropdown-option-multiselected");
+        assert!(
+            cam.has("opt-multi-on/mark"),
+            "the checked row keeps the trailing Checkmark"
+        );
+        assert!(
+            !cam.has("opt-multi/mark"),
+            "an unchecked row carries no checkmark"
+        );
+        let checked = cam.rect("opt-multi-on");
+        let unchecked = cam.rect("opt-multi");
+        let plain = cam.rect("opt-plain");
+        // `edge_row` insets its content 16, and the 16-unit box leads the
+        // content stack: the box is x+16..x+32, and its outline's first
+        // unit sits at x+16.
+        let centre = |rect: Rect| px(&shot, rect.x + 24.0, rect.y + rect.h / 2.0);
+        let edge = |rect: Rect| px(&shot, rect.x + 16.5, rect.y + rect.h / 2.0);
+        let on = centre(checked);
+        assert!(
+            i32::from(on[2]) - i32::from(on[0]) > 40,
+            "the checked box wears no accent fill: {on:?}"
+        );
+        assert_ne!(
+            edge(unchecked),
+            edge(plain),
+            "the unchecked box draws no outline beside its label: {:?} vs {:?}",
+            edge(unchecked),
+            edge(plain)
         );
     }
 
@@ -2720,6 +2927,38 @@ mod tests {
         );
     }
 
+    /// Register row 358. `--border` is the modifier classes list's
+    /// *"adds a 1px outline"*: the bordered bubble's edge column reads the
+    /// `$border-subtle` stroke against its own fill, where the plain
+    /// bubble's edge reads only its fill and the ground. The claim is on
+    /// the edge pixels rather than on the frame record because the record
+    /// carries the token binding, not the picture of the line.
+    #[test]
+    fn the_border_popover_wears_the_outline_the_modifier_names() {
+        let mut cam = Camera::on("Popover");
+        let bordered = cam.rect("po-border/pop-border-note");
+        let plain = cam.rect("po-pair/pop-note");
+        let shot = raster(&mut cam, "24-popover-border");
+        // The signed sum of the left edge column against the interior
+        // column, on the middle row: clear of the caret (top and bottom
+        // edges) and of the shadow (outside the rect).
+        let edge_step = |rect: Rect| -> i32 {
+            let y = rect.y + rect.h / 2.0;
+            let edge = px(&shot, rect.x + 0.5, y);
+            let inner = px(&shot, rect.x + 3.0, y);
+            (0..3)
+                .map(|c| i32::from(edge[c]) - i32::from(inner[c]))
+                .sum::<i32>()
+        };
+        let (bordered_step, plain_step) = (edge_step(bordered), edge_step(plain));
+        assert!(
+            bordered_step.abs() > plain_step.abs() + 20,
+            "the bordered bubble steps {bordered_step:+} at its left edge \
+             against {plain_step:+} for the plain one; the outline is not \
+             drawn"
+        );
+    }
+
     /// Row 29. The field opens a list over the page and an option becomes
     /// the value.
     ///
@@ -2944,6 +3183,70 @@ mod tests {
         );
     }
 
+    /// Register rows 613/614 — the right panel's two expansion states,
+    /// driven through the header action that owns them.
+    ///
+    /// Carbon's `--expanded` is the whole state (slice-f:221):
+    /// `.cds--header-panel` is `inline-size: 0`, `.cds--header-panel
+    /// --expanded` is `mini-units(32)` = 256, and the panel is *shut* at
+    /// width 0 with its content clipped — a mounted empty slot, never an
+    /// unmounted one. The same state is expressed on the header action
+    /// (slice-f:150): while its panel is open the button's ground steps
+    /// to `$layer`.
+    ///
+    /// **Residual**: slice-f:150 also has the active action wearing a
+    /// 3-sided border (`border-inline-start/end + border-block-end:
+    /// transparent`) that "opens into" its panel. A `border` binding draws
+    /// a four-sided box, and the three-transparent-edges treatment needs
+    /// per-edge marks; the ground step is built, the edge treatment is
+    /// named in the parity-gaps row instead of half-built here.
+    ///
+    /// The claims are on the glass: the widths are geometry, but "the
+    /// content is gone when shut" and "the trigger's ground follows the
+    /// panel" are pixel facts.
+    #[test]
+    fn the_right_panel_expands_to_256_and_collapses_to_a_clipped_zero() {
+        let mut cam = Camera::on("UI shell right panel");
+        let expanded = cam.rect("shell-content/shell-switcher");
+        assert!(
+            (expanded.w - 256.0).abs() < 0.5,
+            "expanded is Carbon's mini-units(32) = 256: {expanded:?}"
+        );
+        let trigger = cam.rect("shell-switcher-trigger");
+        // A point inside the open panel's content: the first switcher
+        // row's ground, which is $layer and not the page's $background.
+        let inside = (expanded.x + 128.0, expanded.y + 24.0);
+        // A point on the trigger's own ground, clear of its centred glyph.
+        let trigger_ground = (trigger.x + 3.0, trigger.y + 3.0);
+        let open_shot = raster(&mut cam, "42-right-panel-expanded");
+        let open_inside = px(&open_shot, inside.0, inside.1);
+        let open_ground = px(&open_shot, trigger_ground.0, trigger_ground.1);
+
+        cam.click("shell-switcher-trigger");
+        let collapsed = cam.rect("shell-content/shell-switcher");
+        assert!(
+            collapsed.w < 0.5,
+            "collapsed is `inline-size: 0`, not a narrow panel: {collapsed:?}"
+        );
+        assert!(
+            cam.has("shell-content/shell-switcher"),
+            "shut is a mounted zero-width slot; the panel must not unmount"
+        );
+        let shut_shot = raster(&mut cam, "42-right-panel-collapsed");
+        let shut_inside = px(&shut_shot, inside.0, inside.1);
+        let shut_ground = px(&shut_shot, trigger_ground.0, trigger_ground.1);
+        assert_ne!(
+            open_inside, shut_inside,
+            "the shut panel's content is clipped away: the point {inside:?} \
+             reads {open_inside:?} open and {shut_inside:?} shut"
+        );
+        assert_ne!(
+            open_ground, shut_ground,
+            "the trigger's ground follows its panel: it reads \
+             {open_ground:?} open ($layer) and {shut_ground:?} shut"
+        );
+    }
+
     /// Typing into a text field puts the characters on screen.
     ///
     /// Row 34, and the reason the operator called four separate pages broken.
@@ -3067,6 +3370,10 @@ mod tests {
 
         let mut cam = Camera::on("Inline loading");
         let mark = cam.rect("il-on/mark");
+        // Register row 224's button-context loader turns its own ring too:
+        // the page carries two spinners now, and the host's ambient count
+        // is the census, not a constant.
+        let button_mark = cam.rect("il-btn/mark");
         let first = cam.shoot("14-inline-loading");
         for _ in 0..4 {
             cam.shoot("_scratch");
@@ -3077,7 +3384,17 @@ mod tests {
             pixels_in(&later, mark),
             "the inline spinner has not moved a pixel"
         );
-        assert_eq!(cam.frame().transitions.ambient, 1);
+        assert_ne!(
+            pixels_in(&first, button_mark),
+            pixels_in(&later, button_mark),
+            "the button-context spinner has not moved a pixel"
+        );
+        assert_eq!(
+            cam.frame().transitions.ambient,
+            2,
+            "both inline spinners must declare ambient, or the host stops \
+             scheduling frames"
+        );
 
         // The control: a still page's control is byte-identical across the
         // same interval, so the difference above is the spinner and not
@@ -3113,6 +3430,102 @@ mod tests {
         assert_eq!(
             frame.transitions.ambient, skeletons,
             "every ambient request on this page must be a declared skeleton pulse"
+        );
+    }
+
+    /// Register rows #385/#386, Progress indicator state `hover` / state
+    /// `focus`. Carbon styles both on the interactive step button's label
+    /// (slice-d:152 *"hover triggers a link-style underline"* on
+    /// `.cds--progress-label`; :127 *"focus outline on interactive step
+    /// label"*), so `progress_step_interactive` puts the control on the
+    /// label leaf and the state lands where the words are. The plain step
+    /// beside it is the control: its label is inert and must draw neither
+    /// state.
+    ///
+    /// Falsified by leaving `Hover` off the label leaf (the hit test then
+    /// lights nothing and the rule assert fails), by binding the underline
+    /// anywhere but the text leaf (it hashes into the digest and never
+    /// paints), or by giving the interactive label a bar figure (row 386
+    /// names the outline).
+    #[test]
+    fn the_hovered_step_label_underlines_and_the_focused_one_rings() {
+        let mut cam = Camera::on("Progress indicator");
+        let label = cam.rect("st-i-1/row/label");
+        let resting = raster(&mut cam, "385-progress-resting");
+        let ground = px(&resting, label.x + label.w / 2.0, label.y + label.h + 2.0);
+        let width = (label.w * super::CAPTURE_SCALE) as usize;
+        let rest_rule = widest_mark_under(&resting, label, ground, 3);
+        assert!(
+            rest_rule * 2 < width,
+            "at rest the interactive label's bottom rows hold only glyph \
+             descenders, got {rest_rule} of {width} marked"
+        );
+        cam.hover("st-i-1/row/label");
+        assert!(
+            cam.hovered()
+                .as_deref()
+                .is_some_and(|id| id.ends_with("st-i-1/row/label")),
+            "the host did not register the pointer over the label"
+        );
+        let hovering = raster(&mut cam, "385-progress-hovered");
+        let hover_rule = widest_mark_under(&hovering, label, ground, 3);
+        assert!(
+            hover_rule * 10 >= width * 9,
+            "row #385: under the pointer the label is underlined end to end: \
+             {hover_rule} of {width} marked"
+        );
+        // The plain step's label is inert: the same probe on it must come
+        // back at descender width, or hover is leaking to non-interactive
+        // steps.
+        cam.hover("st-i-2/row/label");
+        let plain = cam.rect("st-i-2/row/label");
+        let plain_ground = px(&resting, plain.x + plain.w / 2.0, plain.y + plain.h + 2.0);
+        let plain_img = raster(&mut cam, "385-progress-plain-hovered");
+        let plain_rule = widest_mark_under(&plain_img, plain, plain_ground, 3);
+        assert!(
+            plain_rule * 2 < (plain.w * super::CAPTURE_SCALE) as usize,
+            "a plain step's label underlined on hover; it declares no Hover: \
+             {plain_rule} marked"
+        );
+
+        // Row #386: the same label, keyboard-focused. `FocusFigure::Border`
+        // draws the accent stroke on the node's own edge band —
+        // `FocusRing::border_edges`, `y..y+2` at the top — inside the rect
+        // (`FocusRing::bands`: "contained by construction").
+        cam.focus("st-i-1/row/label");
+        assert!(
+            cam.focused()
+                .as_deref()
+                .is_some_and(|id| id.ends_with("st-i-1/row/label")),
+            "the label never took focus; focus rests on {:?}",
+            cam.focused()
+        );
+        let focused = raster(&mut cam, "386-progress-focused");
+        let dy = ((label.y + 1.0) * super::CAPTURE_SCALE) as u32;
+        let band_row = |img: &image::RgbaImage| device_row(img, label.x, label.x + label.w, dy);
+        let rest_row = band_row(&resting);
+        assert!(
+            rest_row.iter().all(|p| *p == ground),
+            "the ring probe row is not clear ground at rest — the probe has \
+             to sit above the glyphs to mean anything: {:?}",
+            rest_row
+        );
+        let focus_row = band_row(&focused);
+        let inked = focus_row.iter().filter(|p| **p != ground).count();
+        let blue = focus_row
+            .iter()
+            .filter(|p| i32::from(p[2]) - i32::from(p[0]) > 40)
+            .count();
+        assert!(
+            inked * 10 >= focus_row.len() * 9,
+            "row #386: focusing the label drew nothing on its inset band: \
+             {inked} of {} marked",
+            focus_row.len()
+        );
+        assert!(
+            blue * 10 >= focus_row.len() * 8,
+            "the focus figure wears no $focus ink: {blue} of {} blue",
+            focus_row.len()
         );
     }
 
@@ -3331,6 +3744,98 @@ mod tests {
             step >= 8,
             "the dialog reads {a} and its Cancel button reads {b}: a step of \
              {step} of 255. Carbon's own pair is 38 and 111"
+        );
+    }
+
+    /// Register row #305 — the modal's `loading` state (slice-c:154):
+    /// "spinner + overlay over the body, primary button disabled". Driven,
+    /// because the state exists only while the dialog is mounted.
+    #[test]
+    fn the_loading_modal_spins_over_a_scrimmed_body_with_a_dead_primary() {
+        let mut cam = Camera::on("Modal");
+        cam.click("open-loading");
+        let png = cam.shoot("20-modal-loading");
+        let spinner = cam.rect("spinner");
+        assert!(
+            (spinner.w - 88.0).abs() < 1.0 && (spinner.h - 88.0).abs() < 1.0,
+            "Carbon's large spinner is 5.5rem = 88: {spinner:?}"
+        );
+        // Tails carry the dialog's own key: the page's section is keyed
+        // `"dialog"` too, so a bare `"dialog"` tail is ambiguous.
+        let content = cam.rect("loading-dlg/frame/seat/dialog/content");
+        let dialog = cam.rect("loading-dlg/frame/seat/dialog");
+        let image = image_at(&png);
+        // The dialog's body IS the overlay's box: the dialog stacks title,
+        // content and footer and sizes to them, so a scrim filling the
+        // overlay covers every pixel of the body.
+        assert!(
+            content.w > dialog.w / 2.0 && content.h > 40.0,
+            "the scrim's overlay is {:.0}x{:.0} inside a {:.0}-tall dialog: \
+             the dialog sizes to its content, so the overlay must be a real \
+             body (content={content:?} dialog={dialog:?})",
+            content.w,
+            content.h,
+            dialog.h
+        );
+        // The scrim lies over the body and not over the chrome: the same
+        // LAYER ground reads dark under the scrim and bare under the header.
+        // Both points sit on empty ground — the trailing half of the body is
+        // clear of the centred spinner and the copy hugs its own text.
+        let scrim = sample(
+            &image,
+            content.x + content.w - 32.0,
+            content.y + content.h / 2.0,
+        );
+        let header = sample(&image, dialog.x + dialog.w / 2.0, dialog.y + 2.0);
+        assert!(
+            i32::from(scrim) + 8 <= i32::from(header),
+            "the body wears no scrim: its ground reads {scrim} under a header \
+             at {header} (content={content:?} dialog={dialog:?} \
+             image={}x{})",
+            image.width(),
+            image.height()
+        );
+        // The ring draws: pixels inside the spinner's box that the scrim
+        // ground alone cannot account for.
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "logical rects scaled to the capture are small positives"
+        )]
+        let (sx0, sy0) = (
+            (spinner.x * super::CAPTURE_SCALE) as u32,
+            (spinner.y * super::CAPTURE_SCALE) as u32,
+        );
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "logical rects scaled to the capture are small positives"
+        )]
+        let (sx1, sy1) = (
+            ((spinner.x + spinner.w) * super::CAPTURE_SCALE) as u32,
+            ((spinner.y + spinner.h) * super::CAPTURE_SCALE) as u32,
+        );
+        let mut inked = 0;
+        for y in sy0..sy1 {
+            for x in sx0..sx1 {
+                let p = image.get_pixel(x, y);
+                if i32::from(p[0]).abs_diff(i32::from(scrim)) > 6 {
+                    inked += 1;
+                }
+            }
+        }
+        assert!(inked > 30, "the spinner drew nothing: {inked} inked pixels");
+        // And the primary action is the disabled fill, not the accent —
+        // slice-c's "primary button disabled".
+        let primary = cam.rect("footer/primary");
+        let p = px(
+            &image,
+            primary.x + primary.w / 2.0,
+            primary.y + primary.h / 2.0,
+        );
+        assert!(
+            i32::from(p[2]) - i32::from(p[0]) <= 40,
+            "the primary action still wears the accent fill: {p:?}"
         );
     }
 
@@ -3948,6 +4453,68 @@ mod tests {
         cam.shoot("30-slider-dragged-off-rail");
     }
 
+    /// Register row #437, Slider modifier `without-number-input`: the
+    /// paired well is gone and the value rides the anchored tooltip over
+    /// the handle (slice-e:53 — *"replaces the input with a Tooltip shown on
+    /// hover, focus, and active"* — and :70's `thumb-wrapper` composition).
+    /// The bubble is mounted open, the variant cell's *shown* state; the
+    /// reveal timing is row 38's disclosure mechanism, which the Tooltip
+    /// page drives and its own tests photograph.
+    #[test]
+    fn the_no_number_input_slider_shows_the_value_over_the_handle() {
+        let mut cam = Camera::on("Slider");
+        cam.shoot("30-slider-no-number");
+        assert!(
+            !cam.has("no-num/row/input"),
+            "the well is the one part the modifier removes"
+        );
+        let handle = cam.rect("no-num/row/rail/handle-cell/handle");
+        let tip = cam.rect("no-num/row/rail/handle-cell/value-tip");
+        assert!(
+            tip.y >= handle.y + handle.h - 1.0 && tip.h > 16.0,
+            "the tip hangs under the handle as a real bubble: {tip:?} under {handle:?}"
+        );
+        assert_eq!(
+            cam.caret("no-num/row/rail/handle-cell/value-tip")
+                .map(|c| c.side),
+            Some(Edge::Bottom),
+            "the tip points back at its handle"
+        );
+        assert_eq!(
+            leaf_text_in(&cam, "no-num", "body"),
+            "40",
+            "the body carries the number the removed well showed"
+        );
+    }
+
+    /// Register row #438, Slider modifier `with-custom-value`: the same tip
+    /// reading the bucket label — *"low/medium/high instead of the raw
+    /// number"* (slice-e:53) — never the number.
+    #[test]
+    fn the_custom_value_tip_names_the_bucket_not_the_number() {
+        let mut cam = Camera::on("Slider");
+        cam.shoot("30-slider-custom-value");
+        assert!(!cam.has("custom/row/input"), "the well is gone here too");
+        let body = leaf_text_in(&cam, "custom", "body");
+        assert_eq!(
+            body, "Medium",
+            "0.4 sits in the middle bucket of Low/Medium/High"
+        );
+        assert_ne!(body, "40", "the custom value replaces the raw number");
+        let handle = cam.rect("custom/row/rail/handle-cell/handle");
+        let tip = cam.rect("custom/row/rail/handle-cell/value-tip");
+        assert!(
+            tip.y >= handle.y + handle.h - 1.0,
+            "the tip hangs under its handle: {tip:?} under {handle:?}"
+        );
+        assert_eq!(
+            cam.token("custom/row/rail/handle-cell/value-tip", "background")
+                .as_deref(),
+            Some("surface.layer-three"),
+            "the bubble takes the ramp's last rung like every tooltip here"
+        );
+    }
+
     /// The most device pixels that are not `ground` on any one of the
     /// `rows` device rows up from the bottom of `rect`.
     fn widest_mark_under(img: &image::RgbaImage, rect: Rect, ground: [u8; 4], rows: u32) -> usize {
@@ -4004,6 +4571,73 @@ mod tests {
             underline * 10 >= width * 9,
             "under the pointer the link is underlined end to end: {underline} \
              of {width} marked"
+        );
+    }
+
+    /// Register row #238, Link state `active`: the held link keeps its
+    /// underline. Carbon's standalone link decorates on `:hover` and
+    /// `:active` both (`_link.scss`; slice-c "no underline except on
+    /// hover/focus/active"), and the pressed moment is its own rank
+    /// (`interaction-state.md` §4), so `underline@hover` alone draws the
+    /// rule and then *removes* it the instant the button goes down — the
+    /// exact flicker `underline@active` is bound to stop.
+    ///
+    /// Falsified by dropping `("underline@active", LINK_PRIMARY)` from
+    /// `link_built`: the held raster loses its rule and `held_rule` comes
+    /// back at descender width.
+    #[test]
+    fn the_held_link_keeps_its_underline() {
+        let mut cam = Camera::on("Link");
+        let link = cam.rect("/docs");
+        cam.hover("/docs");
+        let hovering = raster(&mut cam, "238-link-hovering");
+        cam.press("/docs");
+        let holding = raster(&mut cam, "238-link-holding");
+        let ground = px(&hovering, link.x + link.w / 2.0, link.y + link.h + 2.0);
+        let width = (link.w * CAPTURE_SCALE) as usize;
+        let held_rule = widest_mark_under(&holding, link, ground, 3);
+        assert!(
+            held_rule * 10 >= width * 9,
+            "held down, the link must still be underlined end to end: \
+             {held_rule} of {width} marked"
+        );
+    }
+
+    /// Register row #231, Link modifier `icon` (Carbon `--icon`): a
+    /// trailing glyph in the link's own ink — slice-c's anatomy says
+    /// "same color as text" — and the words take the underline the plain
+    /// form does. The glyph is a canvas child of one wrapper, so the
+    /// words' rule is probed on the label's own rect.
+    ///
+    /// Falsified by binding the glyph to `$icon-primary` (the ink assert),
+    /// or by leaving `Hover` off the label leaf (hovering the words then
+    /// lights nothing and the rule assert fails).
+    #[test]
+    fn the_icon_link_carries_a_glyph_in_link_ink_and_underlines_its_words() {
+        let mut cam = Camera::on("Link");
+        assert!(cam.has("docs-icon/icon"), "the --icon link places no glyph");
+        assert!(cam.has("docs-icon/label"), "and no words beside it");
+        assert_eq!(
+            cam.token("docs-icon/icon", "foreground").as_deref(),
+            Some("link-primary"),
+            "Carbon's --icon anatomy: the glyph is the text's colour, not \
+             `$icon-primary`"
+        );
+        let words = cam.rect("docs-icon/label");
+        cam.hover("docs-icon/label");
+        assert!(
+            cam.hovered()
+                .as_deref()
+                .is_some_and(|id| id.ends_with("docs-icon/label")),
+            "the label leaf must own Hover for `underline@hover` on it to resolve"
+        );
+        let hovering = raster(&mut cam, "231-icon-link-hovered");
+        let ground = px(&hovering, words.x + words.w / 2.0, words.y + words.h + 2.0);
+        let width = (words.w * CAPTURE_SCALE) as usize;
+        let underline = widest_mark_under(&hovering, words, ground, 3);
+        assert!(
+            underline * 10 >= width * 9,
+            "hovering the words underlines them: {underline} of {width} marked"
         );
     }
 
@@ -4554,16 +5188,30 @@ mod tests {
     /// the only shape the fallback can go wrong on.
     ///
     /// Falsify by putting `BarUnder` on a wide iconless container.
+    ///
+    /// **Judged on a window that shows whole pages.** The catalog's window
+    /// is 900 tall and some pages run past it: on 2026-10-30 this gate read
+    /// two content-switcher tabs as "found no content" because the tabs
+    /// straddled the fold and their labels lay past it — the content was
+    /// clipped, not absent, and the fallback it reported was the fold's
+    /// doing. A census that measures half-clipped geometry is not a census,
+    /// so the population is judged at [`CENSUS_WINDOW`] and anything still
+    /// clipped there panics naming itself, rather than being measured or
+    /// silently skipped.
     #[test]
     fn every_bar_figure_finds_its_content() {
         // 240 units: the widest a control can be and still read as hugging
         // its own text. The gallery's own left rail is 240 and holds a
         // number and a word; nothing wider than this is a label.
         const SNUG: f32 = 240.0;
+        // Tall enough for the tallest catalog page. A page that grows past
+        // it fails the clip check below by name — grow this when that
+        // happens, and do not let the check lapse.
+        const CENSUS_WINDOW: [f32; 2] = [WINDOW[0], 6000.0];
 
         let mut blind = Vec::new();
         for cell in crate::inventory::ROWS {
-            let cam = Camera::on(cell.component);
+            let cam = Camera::at_window(cell.component, CENSUS_WINDOW);
             let frame = cam.frame();
             let places = &frame.placements;
             for (i, node) in places.iter().enumerate() {
@@ -4576,8 +5224,7 @@ mod tests {
                     node.semantics.focus_figure,
                     gorgon_petra::tree::FocusFigure::BarUnder
                         | gorgon_petra::tree::FocusFigure::BarInside
-                ) || !node.is_visible()
-                {
+                ) {
                     continue;
                 }
                 if !node
@@ -4589,6 +5236,14 @@ mod tests {
                 }
                 let i = shown_on(places, i);
                 let seat = &places[i];
+                if !contains(seat.clip, seat.rect) {
+                    panic!(
+                        "{}: {} is clipped (rect {:?} against clip {:?}). The census \
+                         judges whole controls only — raise CENSUS_WINDOW so this \
+                         page fits, or find what cut the clip.",
+                        cell.component, seat.id, seat.rect, seat.clip
+                    );
+                }
                 let run = gorgon_petra::focus::marked_rect(places, i, seat.semantics.focus_figure);
                 if run.w >= seat.rect.w && seat.rect.w > SNUG {
                     blind.push(format!(
@@ -6821,6 +7476,119 @@ mod tests {
         );
     }
 
+    /// Register row 228. The error state's mark is the filled warning in
+    /// the support-error ink — red-dominant in both themes, which is the
+    /// channel the shape alone cannot carry — and, like the finished mark
+    /// beside it, it is still.
+    #[test]
+    fn the_error_loader_draws_its_warning_in_support_error_ink() {
+        let mut cam = Camera::on("Inline loading");
+        let mark = cam.rect("il-err/mark");
+        let shot = raster(&mut cam, "14-inline-loading-error");
+        let scale = super::CAPTURE_SCALE;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let (x0, y0, x1, y1) = (
+            (mark.x * scale).round() as u32,
+            (mark.y * scale).round() as u32,
+            ((mark.x + mark.w) * scale).round() as u32,
+            ((mark.y + mark.h) * scale).round() as u32,
+        );
+        let mut red = 0usize;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let p = shot.get_pixel(x, y).0;
+                // `support-error` is `#f21c0d` dark and `#da1e28` light:
+                // red leads both other channels by a wide margin.
+                if p[0] > p[1] + 60 && p[0] > p[2] + 60 {
+                    red += 1;
+                }
+            }
+        }
+        assert!(
+            red > 10,
+            "the error mark holds {red} red-dominant pixels; it is not \
+             drawn in support-error"
+        );
+        // Still, like the finished mark: two frames of an error mark that
+        // moves are a spinner in the wrong state.
+        let first = cam.shoot("14-inline-loading-error");
+        for _ in 0..4 {
+            cam.shoot("_scratch");
+        }
+        let later = cam.shoot("_scratch");
+        assert_eq!(
+            pixels_in(&first, mark),
+            pixels_in(&later, mark),
+            "the error mark changed between two frames"
+        );
+    }
+
+    /// Register row 224. The button-context loader is the same loader with
+    /// the 32-unit floor taken off (Carbon's override: `min-block-size:
+    /// 0`, the host button's height governs) — and it is still the
+    /// turning spinner, not a still one.
+    #[test]
+    fn the_button_context_loader_drops_the_floor_and_keeps_turning() {
+        let mut cam = Camera::on("Inline loading");
+        let floorless = cam.rect("il-btn");
+        let floored = cam.rect("il-on");
+        let mark = cam.rect("il-btn/mark");
+        let first = cam.shoot("14-inline-loading-btn");
+        for _ in 0..4 {
+            cam.shoot("_scratch");
+        }
+        let later = cam.shoot("14-inline-loading-btn-later");
+        assert!(
+            floorless.h < floored.h,
+            "the button-context loader is {} tall and the floored one {}; \
+             the floor was not taken off",
+            floorless.h,
+            floored.h
+        );
+        assert_ne!(
+            pixels_in(&first, mark),
+            pixels_in(&later, mark),
+            "the button-context spinner has not turned"
+        );
+    }
+
+    /// Register row 066. `Button state loading`: the fill is the point
+    /// here. The tree record already says `disabled`; only the picture
+    /// says the fill followed — the loading button draws the
+    /// `button-disabled` ground the documented disabled cell's own
+    /// default button draws — and that the loader standing in for the
+    /// label is the turning spinner.
+    #[test]
+    fn the_loading_button_sits_on_the_disabled_ground_and_keeps_turning() {
+        let mut cam = Camera::on("Button");
+        let loading = cam.rect("btn-loading");
+        let disabled = cam.rect("disabled-default");
+        let mark = cam.rect("btn-loading/loading/mark");
+        let first = cam.shoot("4-button-loading");
+        for _ in 0..4 {
+            cam.shoot("_scratch");
+        }
+        let later = cam.shoot("4-button-loading-later");
+        assert_ne!(
+            pixels_in(&first, mark),
+            pixels_in(&later, mark),
+            "the loading button's spinner has not turned"
+        );
+        // Sampled a quarter in from the left edge on the middle row:
+        // inside the fill, clear of the centred loader.
+        let shot = raster(&mut cam, "4-button-loading-fill");
+        let fill =
+            |rect: Rect| -> [u8; 4] { px(&shot, rect.x + rect.w / 4.0, rect.y + rect.h / 2.0) };
+        let (got, want) = (fill(loading), fill(disabled));
+        for (i, channel) in ["r", "g", "b"].into_iter().enumerate() {
+            assert!(
+                got[i].abs_diff(want[i]) <= 6,
+                "the loading button's {channel} fill is {got:?}, the known \
+                 disabled ground is {want:?}"
+            );
+        }
+    }
+
     /// Row 36. **Departure from Carbon, operator decision 2026-09-05:** the
     /// small on-toggle's knob is bare.
     ///
@@ -7407,6 +8175,46 @@ mod tests {
             before.into_raw(),
             after.into_raw(),
             "the removal changed nothing on screen"
+        );
+    }
+
+    /// Register row 211 — the drop zone's `--drag-over` state. Carbon
+    /// switches the zone's edge to `outline: 2px solid $focus,
+    /// outline-offset: -2px` while a file is held over it (MEASURED
+    /// `_file-uploader.scss:434-438`); the resting rule is *replaced*, not
+    /// doubled. The claim is on the glass: the armed zone's inset band
+    /// wears $focus ink where the resting zone's same point is bare fill.
+    ///
+    /// The state is caller-held — this engine has no file-hover event
+    /// (slice-b "Browser assumptions") — so the page stands in the state,
+    /// which is also how the register's other state rows photograph.
+    #[test]
+    fn the_drag_over_zone_wears_the_focus_outline_the_modifier_names() {
+        let mut cam = Camera::on("File uploader");
+        let shot = raster(&mut cam, "12-file-uploader-drag-over");
+        // The armed zone sits under the `zone-frame` overlay its outline
+        // leaf is drawn on (component `outlined`), so its tail is the
+        // frame's path; the resting one is still a bare `zone`.
+        let armed = cam.rect("fu-drag-over/zone-frame/zone");
+        let rest = cam.rect("fu/zone");
+        // The outline is inset 2 and 2 thick: its band is y+2..y+4.
+        let band = |rect: Rect| px(&shot, rect.x + rect.w / 2.0, rect.y + 3.0);
+        let inside = |rect: Rect| px(&shot, rect.x + rect.w / 2.0, rect.y + 20.0);
+        let (armed_band, armed_inside) = (band(armed), inside(armed));
+        assert_ne!(
+            armed_band, armed_inside,
+            "the drag-over zone's inset band reads {armed_band:?} against its \
+             own interior {armed_inside:?}; the outline is not drawn"
+        );
+        assert!(
+            i32::from(armed_band[2]) - i32::from(armed_band[0]) > 40,
+            "the outline wears no $focus ink: {armed_band:?}"
+        );
+        assert_eq!(
+            band(rest),
+            inside(rest),
+            "the resting zone drew the ring the modifier is supposed to \
+             switch on; at rest its 1-unit edge is clear of this band"
         );
     }
 
@@ -8879,6 +9687,78 @@ mod tests {
         }
     }
 
+    /// Register row 466. Carbon's `--icon` modifier: a glyph trails the
+    /// tab label with Carbon's own 8px (`$spacing-03`) between them, in
+    /// the label's ink.
+    ///
+    /// The claim is on the picture: the glyph's 16px box stands to the
+    /// right of the label's run at the documented gap, and it draws — a
+    /// frame record carries the token binding, not the fact that a mark
+    /// landed on the glass.
+    #[test]
+    fn the_tab_icon_trails_the_label_at_carbons_gap() {
+        let mut cam = Camera::on("Tabs");
+        let shot = raster(&mut cam, "32-tabs-icon");
+        let label = cam.rect("tab-icon-0/body/label");
+        let icon = cam.rect("tab-icon-0/body/icon");
+        assert!(
+            (icon.w - 16.0).abs() < 0.5 && (icon.h - 16.0).abs() < 0.5,
+            "the glyph is Carbon's 16px box: {icon:?}"
+        );
+        assert!(
+            icon.x >= label.right() - 0.5 && (icon.x - label.right() - 8.0).abs() < 1.0,
+            "the glyph trails the label at Carbon's 8: {icon:?} after {label:?}"
+        );
+        // The glyph draws: its box carries ink the ground does not.
+        let ground = px(&shot, icon.x - 2.0, icon.y + icon.h / 2.0);
+        let mut inked = false;
+        'scan: for dy in 0..icon.h as i32 {
+            for dx in 0..icon.w as i32 {
+                if px(&shot, icon.x + dx as f32 + 0.5, icon.y + dy as f32 + 0.5) != ground {
+                    inked = true;
+                    break 'scan;
+                }
+            }
+        }
+        assert!(
+            inked,
+            "the icon box {icon:?} carries no ink the ground lacks"
+        );
+    }
+
+    /// Register row 467. Carbon's `--secondary-label`: a second line under
+    /// the Contained tab's label — 12px Regular *always* (slice-e,
+    /// MEASURED) — and it draws as its own line, not beside the label.
+    #[test]
+    fn the_secondary_label_sits_under_the_label_and_draws() {
+        let mut cam = Camera::on("Tabs");
+        let shot = raster(&mut cam, "32-tabs-secondary-label");
+        let label = cam.rect("tab-sec-0/body/label");
+        let sec = cam.rect("tab-sec-0/body/secondary");
+        assert!(
+            sec.y >= label.bottom() - 0.5,
+            "the secondary goes under the label: {sec:?} under {label:?}"
+        );
+        assert!(
+            sec.h < label.h + 0.5,
+            "the secondary is the smaller line: {sec:?} vs {label:?}"
+        );
+        let ground = px(&shot, sec.x - 2.0, sec.y + sec.h / 2.0);
+        let mut inked = false;
+        'scan: for dy in 0..sec.h as i32 {
+            for dx in 0..sec.w as i32 {
+                if px(&shot, sec.x + dx as f32 + 0.5, sec.y + dy as f32 + 0.5) != ground {
+                    inked = true;
+                    break 'scan;
+                }
+            }
+        }
+        assert!(
+            inked,
+            "the secondary line {sec:?} carries no ink the ground lacks"
+        );
+    }
+
     /// The morph, photographed: a mid-flight frame of every figure pair,
     /// both ways.
     ///
@@ -10045,5 +10925,45 @@ mod tests {
         assert!(cam.selected("bold"), "toggling italic must not clear bold");
         let after = cam.shoot("57-selection-palette-compound-moved");
         assert_ne!(before, after, "the interaction never reached the picture");
+    }
+
+    /// Register row #113 — Content switcher modifier `popover-wrapped`
+    /// (`.cds--content-switcher-popover__wrapper`): the icon tab wearing
+    /// its tooltip-style label. Carbon's `IconSwitch` builds exactly this
+    /// pair (an `IconButton` whose `label` is the tooltip text inside the
+    /// wrapper class), so the picture is the untouched square tab plus the
+    /// label bubble anchored to it — wider than the square it names, off
+    /// the tab's edge (below at md, flipped above at the fold), centred on
+    /// the tab, and costing the tab's geometry nothing: the wrapped tab is
+    /// the same square as the plain one beside it.
+    ///
+    /// Falsified by dropping the bubble (no `label-tip` placement), by
+    /// growing the tab to fit the label (the squares differ), or by
+    /// laying the bubble across the tab instead of off its edge.
+    #[test]
+    fn the_popover_wrapped_tab_carries_its_tooltip_label_off_its_edge() {
+        let mut cam = Camera::on("Content switcher");
+        cam.shoot("113-content-switcher-popover-wrapped");
+        let tab = cam.rect("wrap-0/tab");
+        let bubble = cam.rect("wrap-0/label-tip");
+        let plain = cam.rect("wrap-1");
+        assert!(
+            bubble.w > tab.w,
+            "the label bubble is wider than the square tab: bubble={bubble:?} tab={tab:?}"
+        );
+        assert!(
+            bubble.y >= tab.y + tab.h - 0.5 || bubble.y + bubble.h <= tab.y + 0.5,
+            "the bubble hangs off the tab's edge — below, or flipped above at the fold — \
+             not across it: bubble={bubble:?} tab={tab:?}"
+        );
+        assert!(
+            ((bubble.x + bubble.w / 2.0) - (tab.x + tab.w / 2.0)).abs() <= 4.0,
+            "the bubble is centred on the tab it labels: bubble={bubble:?} tab={tab:?}"
+        );
+        assert!(
+            (tab.w - plain.w).abs() < 0.5 && (tab.h - plain.h).abs() < 0.5,
+            "the wrapper costs the tab nothing: the wrapped tab is the same square, \
+             {tab:?} beside {plain:?}"
+        );
     }
 }

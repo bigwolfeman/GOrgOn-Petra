@@ -1,7 +1,7 @@
 //! Inventory row 24, Popover.
 
 use gorgon_petra::component::{
-    button, heading, popover_with, popover_with_placement, primary_button, section,
+    button, heading, popover_border, popover_with, popover_with_placement, primary_button, section,
 };
 use gorgon_petra::geom::{Align as CrossAlign, Axis};
 use gorgon_petra::input::InputEvent;
@@ -13,6 +13,10 @@ use super::common::{body, column, dismisses, path_has, row, sp, wrapped};
 const ANCHOR: &str = "pop-anchor";
 const NOTE: &str = "pop-note";
 const SHUT: &str = "pop-shut";
+const BORDER_ANCHOR: &str = "pop-border-anchor";
+const BORDER_NOTE: &str = "pop-border-note";
+const AUTO_ANCHOR: &str = "pop-auto-anchor";
+const AUTO_BUBBLE: &str = "pop-auto-bubble";
 
 /// All twelve of Carbon's named placements: `_popover.scss`'s
 /// `--<edge>`, `--<edge>-start` and `--<edge>-end`, for each of four edges.
@@ -231,18 +235,26 @@ fn placement_grid() -> ViewNode {
         ])
 }
 
-/// Live state of the Popover page: whether the panel is showing.
+/// Live state of the Popover page: which of its bubbles is showing.
 ///
-/// It starts **open**. A closed disclosure is one button and no
+/// Both start **open**. A closed disclosure is one button and no
 /// disclosure, which is what the operator walked past on rows 24 and 37;
-/// the resting capture has to photograph the thing itself.
+/// the resting capture has to photograph the thing itself. The bordered
+/// pair is register row 358 (`--border`) and closes on its own, exactly
+/// like the panel.
 pub struct Popover {
     open: bool,
+    border_open: bool,
+    auto_open: bool,
 }
 
 impl Default for Popover {
     fn default() -> Self {
-        Self { open: true }
+        Self {
+            open: true,
+            border_open: true,
+            auto_open: true,
+        }
     }
 }
 
@@ -320,6 +332,66 @@ impl Page for Popover {
                              last rung.",
                     ),
                 ]);
+                // Register row 358, `--border`: the same bubble wearing
+                // the 1px `$border-subtle` outline the modifier names. It
+                // goes at the foot, where its bubble hangs into empty page
+                // instead of over the note — and it is the third overlay
+                // the page holds, which is safe for the same reason the
+                // panel and the grid never share a frame is *not*: all
+                // three of these bubbles are small and none of them sits
+                // at the fold, and `ClampRule::Flip` only fires against
+                // the viewport edge.
+                let mut border_pair = vec![button(BORDER_ANCHOR, "Filters")];
+                if self.border_open {
+                    border_pair.push(popover_border(
+                        BORDER_NOTE,
+                        "Filter fibers",
+                        BORDER_ANCHOR,
+                        "Narrow the list. The border is one token binding, \
+                         the same channel the --border menu's outline uses.",
+                    ));
+                }
+                cells.push(column("po-border", None, border_pair));
+                // Register row 361, `--auto-align`. The bubble is declared
+                // `--left` on a trigger parked at the page's own left edge,
+                // where a 368-wide bubble has nowhere to go — so the
+                // engine's `ClampRule::Flip` ladder (popover.rs's module doc:
+                // "the `--auto-align` ladder") repositions it onto the
+                // trigger's other side instead of letting it paint
+                // off-screen, and the camera test reads the declared edge
+                // back off the tree to prove the picture is a
+                // repositioning, not a different declaration.
+                //
+                // It mounts only in the panel's open state. The shut state's
+                // grid ends at y 848 inside a 900-unit viewport (cell_box's
+                // note) and has no room for another cell above it: a
+                // `ClampRule::Flip` at the fold flips the grid's own
+                // `bottom-*` bubbles and the twelve-placement test fails on
+                // the side it is named for. One overlay demo at a time is
+                // this page's rule, and this one shares the open state with
+                // the panel and the border bubble — all three clear of the
+                // fold and of each other.
+                if self.open {
+                    let mut auto_pair = vec![button(AUTO_ANCHOR, "Auto-align")];
+                    if self.auto_open {
+                        auto_pair.push(popover_with_placement(
+                            AUTO_BUBBLE,
+                            "Auto-align",
+                            AUTO_ANCHOR,
+                            Edge::Left,
+                            Align::Start,
+                            vec![wrapped(
+                                "pop-auto-body",
+                                "Declared --left. There is no room left of a \
+                                 trigger at the page's left edge, so the \
+                                 engine's flip ladder — the --auto-align \
+                                 ladder — moves the bubble to the trigger's \
+                                 right rather than let it paint off-screen.",
+                            )],
+                        ));
+                    }
+                    cells.push(column("po-auto", None, auto_pair));
+                }
                 if !self.open {
                     // T0.3: all twelve of Carbon's named placements are
                     // reachable through `popover_with_placement`, not only
@@ -347,12 +419,26 @@ impl Page for Popover {
             self.open = !self.open;
             return true;
         }
+        if path_has(node, BORDER_ANCHOR) {
+            self.border_open = !self.border_open;
+            return true;
+        }
+        if path_has(node, AUTO_ANCHOR) {
+            self.auto_open = !self.auto_open;
+            return true;
+        }
         false
     }
 
     fn dismissed(&mut self, ids: &[String]) {
         if dismisses(ids, NOTE) {
             self.open = false;
+        }
+        if dismisses(ids, BORDER_NOTE) {
+            self.border_open = false;
+        }
+        if dismisses(ids, AUTO_BUBBLE) {
+            self.auto_open = false;
         }
     }
 }

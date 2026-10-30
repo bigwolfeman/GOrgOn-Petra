@@ -16,7 +16,9 @@
 //! both in the link's own colour. The underline is not decoration here: the
 //! operator is red-green colour blind, and a rule under the words is the
 //! channel that carries "this is a link" whether or not the hue does. So
-//! [`link`] shows it on hover as Carbon does, and [`link_inline`] shows it
+//! [`link`] shows it on hover and while held as Carbon does (focus carries
+//! it through [`FocusFigure`], the one focus channel this library draws on
+//! every control), and [`link_inline`] shows it
 //! at rest, which is the form to reach for when a link sits in prose and
 //! must be found without a pointer.
 //!
@@ -45,8 +47,11 @@
 //! Moving the catalog from press to release is the fix and it is not this
 //! change (`.agents/notes/implemented/architecture/2026-09-06-selection-is-opt-out-not-opt-in.md`).
 
+use super::icon::{IconMark, IconTone, icon_toned};
+use super::stack;
 use super::text::text;
-use super::tokens::{LINK_PRIMARY, t};
+use super::tokens::{LINK_PRIMARY, SPACING_03, t};
+use crate::geom::{Align, Axis};
 use crate::tree::{Behaviour, FocusFigure, Intent, Interaction, Key, Phase, Role, ViewNode};
 
 /// Spec 010: one shot on release — a link is Activate's definition beside button.
@@ -61,15 +66,75 @@ const ACTIVATES_ON_RELEASE: Behaviour = Behaviour {
 const LINK_INTENTS: &[Interaction] = &[Interaction::Focus, Interaction::Click, Interaction::Hover];
 
 /// Carbon's standalone link: [`LINK_PRIMARY`] ink, underlined under the
-/// pointer. `label` is required (FR-058).
+/// pointer and while it is held. `label` is required (FR-058).
 pub fn link(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
-    link_built(key, label, "underline@hover")
+    link_built(key, label, &["underline@hover", "underline@active"])
 }
 
 /// Carbon's inline link: the same ink, underlined at rest as well as under
 /// the pointer, for a link set in running text.
 pub fn link_inline(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
-    link_built(key, label, "underline")
+    link_built(key, label, &["underline"])
+}
+
+/// Carbon's `--icon` modifier (register row #231): the standalone link with
+/// a trailing icon in the link's own ink — `margin-inline-start:
+/// $spacing-03` (`_link.scss:125`), 16px glyph.
+///
+/// # Where the interactions sit, and what the icon costs the underline
+///
+/// The wrapper is the control: `Role::Button`, the label, Hover/Click/
+/// Focus, [`ACTIVATES_ON_RELEASE`] — one node one intent, so a press
+/// anywhere on the link activates it exactly once (`fired_behaviour` reads
+/// the behaviour off the routed node and walks no ancestors).
+///
+/// The underline stays on the label's `Text` leaf, because the painter
+/// underlines text rows and nothing else (`petra-egui/src/paint/text.rs`):
+/// a `underline@hover` binding on the wrapper would hash into the digest
+/// and never paint — the silent-placement trap
+/// `contracts/interaction-state.md` §6 exists for. The label leaf declares
+/// `Hover` of its own so the binding resolves when the pointer rests on the
+/// words; the icon is a plain canvas child and carries no state.
+///
+/// The residual, named rather than papered over: Carbon's
+/// `text-decoration` runs under the icon too, and this library's underline
+/// is a strip under text rows only — so the icon form underlines its words
+/// and not its glyph, and `underline@active` is left off the leaf because
+/// the press routes to the wrapper and the leaf can never be the pressed
+/// node. [`link`] (the plain form) carries the active underline in full.
+pub fn link_with_icon(key: impl Into<Key>, label: impl Into<String>, mark: IconMark) -> ViewNode {
+    let key = key.into();
+    let label = label.into();
+    let mut words = text("label", label.clone());
+    words
+        .props
+        .tokens
+        .insert("foreground".into(), t(LINK_PRIMARY));
+    words
+        .props
+        .tokens
+        .insert("underline@hover".into(), t(LINK_PRIMARY));
+    // The leaf must own Hover for `underline@hover` to ever resolve: the
+    // hit test lights the topmost node declaring the interaction, and the
+    // wrapper under it being hovered does not reach this placement's flags
+    // (`layout::semantics_of`, one id, no propagation). A node that
+    // declares any interaction owes the validator a role and a label
+    // (`tree::validate::check_semantics`), and the honest pair for the
+    // link's words is "static text, labelled by their own content" — not a
+    // second `Role::Button` nested inside the wrapper's.
+    words = words.interactive(Role::Label, label.clone(), &[Interaction::Hover]);
+    // The icon takes the link's ink, not `$icon-primary`: Carbon's `--icon`
+    // anatomy says "same color as text" (slice-c).
+    let mut glyph = icon_toned("icon", mark, IconTone::Primary);
+    glyph
+        .props
+        .tokens
+        .insert("foreground".into(), t(LINK_PRIMARY));
+    let mut node = stack(key, Axis::Horizontal, Some(SPACING_03), vec![words, glyph]);
+    node.props.align = Some(Align::Center);
+    node.interactive(Role::Button, label, LINK_INTENTS)
+        .with_behaviour(ACTIVATES_ON_RELEASE)
+        .with_focus_figure(FocusFigure::Sides)
 }
 
 /// One `Text` leaf, not a stack with a caption inside it.
@@ -80,15 +145,18 @@ pub fn link_inline(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
 /// interactions on the wrapper and the `underline@hover` binding on the
 /// child, and the child would never be the hovered one. The words and the
 /// control are the same node, which is also what a link is.
-fn link_built(key: impl Into<Key>, label: impl Into<String>, underline_slot: &str) -> ViewNode {
+///
+/// [`link_with_icon`] is the one form that cannot be one leaf, and its doc
+/// records what the split costs.
+fn link_built(key: impl Into<Key>, label: impl Into<String>, underline_slots: &[&str]) -> ViewNode {
     let label = label.into();
     let mut node = text(key, label.clone());
     node.props
         .tokens
         .insert("foreground".into(), t(LINK_PRIMARY));
-    node.props
-        .tokens
-        .insert(underline_slot.into(), t(LINK_PRIMARY));
+    for slot in underline_slots {
+        node.props.tokens.insert((*slot).into(), t(LINK_PRIMARY));
+    }
     // `Sides`, not the default `BarUnder`. `link_inline` paints its own
     // underline at rest and `link` grows one under the pointer, both in the
     // `underline` slot bound just above, so a focus bar two units below the
@@ -103,8 +171,9 @@ fn link_built(key: impl Into<Key>, label: impl Into<String>, underline_slot: &st
 
 #[cfg(test)]
 mod tests {
-    use super::{link, link_inline};
+    use super::{link, link_inline, link_with_icon};
     use crate::component::disabled;
+    use crate::component::icon::IconMark;
     use crate::component::tests::{assert_fits_parent, petrify_lone};
     use crate::component::tokens::{LINK_PRIMARY, SURFACE_BASE, SURFACE_RAISED, TEXT_PRIMARY};
 
@@ -147,13 +216,21 @@ mod tests {
     /// the inline one underlines at rest. Both rules are in link ink.
     ///
     /// Carbon `_link.scss`: `text-decoration: none` at rest, `underline` on
-    /// `:hover`, and `.cds--link--inline { text-decoration: underline }`.
+    /// `:hover` **and** `:active` (slice-c: "no underline except on
+    /// hover/focus/active"), and `.cds--link--inline { text-decoration:
+    /// underline }`.
     /// The rule is the channel a red-green colour-blind reader has, so
     /// which form shows it when is a contract and not a style.
     #[test]
-    fn a_link_underlines_on_hover_and_an_inline_link_underlines_at_rest() {
+    fn a_link_underlines_on_hover_and_active_and_an_inline_link_underlines_at_rest() {
         let standalone = link("docs", "Open docs");
         assert_eq!(token(&standalone, "underline@hover"), Some(LINK_PRIMARY));
+        assert_eq!(
+            token(&standalone, "underline@active"),
+            Some(LINK_PRIMARY),
+            "Carbon's standalone link underlines while it is held — the \
+             pressed moment is a register row (#238), not a nicety"
+        );
         assert_eq!(
             token(&standalone, "underline"),
             None,
@@ -164,6 +241,66 @@ mod tests {
         assert_eq!(token(&inline, "foreground"), Some(LINK_PRIMARY));
         assert_eq!(inline.semantics.role, Some(Role::Button));
         assert!(inline.interactions.contains(&Interaction::Click));
+    }
+
+    /// `link_with_icon` (register row #231): one control on the wrapper —
+    /// role, label, the three intents, one shot on release — with the
+    /// words' underline on the label leaf and the glyph in the link's ink.
+    ///
+    /// Falsified by moving the underline binding to the wrapper (the
+    /// painter underlines text rows only, so it would hash and never
+    /// paint), or by leaving `Hover` off the label leaf (nothing would
+    /// ever resolve `underline@hover` there).
+    #[test]
+    fn link_with_icon_puts_the_control_on_the_wrapper_and_the_underline_on_the_words() {
+        let node = link_with_icon("docs", "Open docs", IconMark::ChevronRight);
+        assert_eq!(node.semantics.role, Some(Role::Button));
+        assert_eq!(node.semantics.label.as_deref(), Some("Open docs"));
+        assert_eq!(
+            node.behaviour,
+            Some(Behaviour {
+                intent: Intent::Activate,
+                phase: Phase::OnRelease,
+            })
+        );
+        for intent in [Interaction::Focus, Interaction::Click, Interaction::Hover] {
+            assert!(
+                node.interactions.contains(&intent),
+                "wrapper misses {intent:?}"
+            );
+        }
+        fn named<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
+            node.children
+                .iter()
+                .find(|c| c.key.as_str() == key)
+                .unwrap_or_else(|| panic!("missing child {key}"))
+        }
+        let words = named(&node, "label");
+        assert_eq!(words.props.text.as_deref(), Some("Open docs"));
+        assert_eq!(token(words, "foreground"), Some(LINK_PRIMARY));
+        assert_eq!(token(words, "underline@hover"), Some(LINK_PRIMARY));
+        assert_eq!(
+            words.semantics.role,
+            Some(Role::Label),
+            "the words are static text that accepts hover, not a second \
+             button nested in the wrapper's"
+        );
+        assert!(
+            words.interactions.contains(&Interaction::Hover),
+            "without Hover on the leaf, `underline@hover` there can never \
+             resolve — the wrapper's hover is a different placement"
+        );
+        assert!(
+            !words.interactions.contains(&Interaction::Click),
+            "the wrapper is the one press target; a second Click on the leaf \
+             would split one control's activation across two nodes"
+        );
+        let glyph = named(&node, "icon");
+        assert_eq!(
+            glyph.props.tokens.get("foreground").map(|t| t.as_str()),
+            Some(LINK_PRIMARY),
+            "Carbon's --icon anatomy: the glyph is the text's colour"
+        );
     }
 
     fn color(theme: &Theme, name: &str) -> ColorValue {

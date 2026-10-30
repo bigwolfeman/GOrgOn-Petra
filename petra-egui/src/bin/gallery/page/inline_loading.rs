@@ -1,6 +1,9 @@
 //! Inventory row 14, Inline loading.
 
-use gorgon_petra::component::{inline_loading, inline_loading_finished, section};
+use gorgon_petra::component::{
+    inline_loading, inline_loading_error, inline_loading_finished, inline_loading_in_button,
+    section,
+};
 use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::ViewNode;
 
@@ -33,6 +36,13 @@ impl Page for InlineLoading {
                 vec![
                     inline_loading("il-on", "Saving", self.now),
                     inline_loading_finished("il-off", "Saved"),
+                    // Register row 228, the error state: the filled
+                    // warning in support-error, still as a finished mark.
+                    inline_loading_error("il-err", "Save failed"),
+                    // Register row 224, the button-context modifier: the
+                    // same loader with the 32-unit floor taken off, the
+                    // height its host button governs instead.
+                    inline_loading_in_button("il-btn", "Saving", self.now),
                 ],
             )],
         )

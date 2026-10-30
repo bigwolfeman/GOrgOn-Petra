@@ -133,6 +133,25 @@ impl ParamShape for DatePickerShowingSelectionParams {
          { type: \"choosing\", year: number, month: number } }";
 }
 
+/// `date_picker_showing_today(key, label, value, calendar, today)` —
+/// [`DatePickerShowingParams`] plus the `YYYY-MM-DD` day wearing Carbon's
+/// "Today" dot (register row #170).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DatePickerShowingTodayParams {
+    key: Key,
+    label: String,
+    value: String,
+    calendar: CalendarWire,
+    today: String,
+}
+impl ParamShape for DatePickerShowingTodayParams {
+    const LUAU: &'static str = "{ key: string, label: string, value: string, calendar: \
+         { type: \"compact\", year: number, month: number } | \
+         { type: \"full\", year: number, month: number } | \
+         { type: \"choosing\", year: number, month: number }, today: string }";
+}
+
 /// `dropdown_open`/`select_open`(key, label, value, options).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -336,6 +355,23 @@ impl ParamShape for SliderRangeParams {
     const LUAU: &'static str = "{ key: string, label: string, low: number, high: number }";
 }
 
+/// `slider_with_custom_value(key, label, value, labels)` — the
+/// without-number-input tooltip carrying a bucket label instead of the raw
+/// number (register row 438; `lib::slider_custom_label` is the bucket
+/// rule). `labels` must be non-empty: an empty set is refused loudly by
+/// the constructor.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SliderCustomValueParams {
+    key: Key,
+    label: String,
+    value: f32,
+    labels: Vec<String>,
+}
+impl ParamShape for SliderCustomValueParams {
+    const LUAU: &'static str = "{ key: string, label: string, value: number, labels: {string} }";
+}
+
 pub const ENTRIES: &[Entry] = &[
     // controls.rs — Checkbox, Radio button, Toggle.
     row!("checkbox", KeyLabelSelected, |p| lib::checkbox(
@@ -427,6 +463,11 @@ pub const ENTRIES: &[Entry] = &[
             p.calendar.into()
         )
     ),
+    row!(
+        "date_picker_showing_today",
+        DatePickerShowingTodayParams,
+        |p| lib::date_picker_showing_today(p.key, p.label, p.value, p.calendar.into(), p.today)
+    ),
     row!("date_picker_invalid", KeyLabelValueMessage, |p| {
         lib::date_picker_invalid(p.key, p.label, p.value, p.message)
     }),
@@ -488,6 +529,9 @@ pub const ENTRIES: &[Entry] = &[
     row!("dropdown_option", KeyLabelSelected, |p| {
         lib::dropdown_option(p.key, p.label, p.selected)
     }),
+    row!("dropdown_option_multiselected", KeyLabelSelected, |p| {
+        lib::dropdown_option_multiselected(p.key, p.label, p.selected)
+    }),
     row!("dropdown_invalid", KeyLabelValueMessage, |p| {
         lib::dropdown_invalid(p.key, p.label, p.value, p.message)
     }),
@@ -533,6 +577,9 @@ pub const ENTRIES: &[Entry] = &[
     )),
     row!("file_uploader_with", KeyLabelDescription, |p| {
         lib::file_uploader_with(p.key, p.label, p.description)
+    }),
+    row!("file_uploader_drag_over", KeyLabelDescription, |p| {
+        lib::file_uploader_drag_over(p.key, p.label, p.description)
     }),
     row!("file_uploader_item", KeyLabelSelected, |p| {
         lib::file_uploader_item(p.key, p.label, p.selected)
@@ -619,6 +666,12 @@ pub const ENTRIES: &[Entry] = &[
     }),
     row!("slider_range", SliderRangeParams, |p| {
         lib::slider_range(p.key, p.label, p.low, p.high)
+    }),
+    row!("slider_without_number_input", KeyLabelNumber, |p| {
+        lib::slider_without_number_input(p.key, p.label, p.value)
+    }),
+    row!("slider_with_custom_value", SliderCustomValueParams, |p| {
+        lib::slider_with_custom_value(p.key, p.label, p.value, &p.labels)
     }),
 ];
 

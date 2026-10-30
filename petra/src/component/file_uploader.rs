@@ -148,7 +148,7 @@ const REMOVE_INTENTS: &[Interaction] =
 ///
 /// See [`file_uploader_with`] for the described form.
 pub fn file_uploader(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
-    build_uploader(key, label, None)
+    build_uploader(key, label, None, false)
 }
 
 /// [`file_uploader`] with Carbon's `.cds--label-description` line under the
@@ -158,13 +158,41 @@ pub fn file_uploader_with(
     label: impl Into<String>,
     description: impl Into<String>,
 ) -> ViewNode {
-    build_uploader(key, label, Some(description.into()))
+    build_uploader(key, label, Some(description.into()), false)
+}
+
+/// Carbon's `--drag-over` modifier (register row #211): the drop zone in
+/// the state it takes while a file is held over it. Its edge switches from
+/// the resting rule to `outline: 2px solid $focus, outline-offset: -2px`
+/// (MEASURED `_file-uploader.scss:434-438`, slice-b "Key numbers").
+///
+/// The outline is a canvas stroke, not the `border` slot: that slot paints
+/// a one-unit outline and carries no width (`paint.rs`, `BORDER_SLOT`), so
+/// a two-unit edge inset two units is not expressible through it. The
+/// resting border binding is *replaced*, not doubled — Carbon's modifier
+/// switches the edge, it does not add one.
+///
+/// **The state is caller-held, like every state in this layer.** The
+/// component constructors are pure functions of the state they are given;
+/// what is missing is the *input* that would let an app learn a file is
+/// being dragged over the window (slice-b "Browser assumptions": the
+/// native HTML5 `dragenter`/`dragover` pair "has no equivalent primitive
+/// in a non-browser GUI toolkit", and this engine's `InputEvent` has no
+/// file-hover variant). The form is built and photographed; the event is
+/// the residual named in the parity-gaps row.
+pub fn file_uploader_drag_over(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    description: impl Into<String>,
+) -> ViewNode {
+    build_uploader(key, label, Some(description.into()), true)
 }
 
 fn build_uploader(
     key: impl Into<Key>,
     label: impl Into<String>,
     description: Option<String>,
+    drag_over: bool,
 ) -> ViewNode {
     let label = label.into();
     let mut heading = text("heading", label.clone());
@@ -206,15 +234,25 @@ fn build_uploader(
     zone.props
         .tokens
         .insert("background".into(), t(SURFACE_BASE));
-    zone.props.tokens.insert("border".into(), t(BORDER_STRONG));
-    // The disabled drop zone's edge: Carbon's `$border-disabled` (slice-b
-    // "File uploader" States), expressed with the crate's disabled-edge tone
-    // `icon-disabled` — the vocabulary has no `border-disabled` name, and
-    // this is the substitution `controls::empty_mark` records for the same
-    // Carbon family.
-    zone.props
-        .tokens
-        .insert("border@disabled".into(), t(ICON_DISABLED));
+    if drag_over {
+        // Carbon's `--drag-over` edge (MEASURED `_file-uploader.scss:434-438`):
+        // `outline: 2px solid $focus, outline-offset: -2px`, replacing the
+        // resting rule. It is drawn as a canvas leaf *over* the zone in the
+        // wrapper below rather than through the `border` slot: that slot
+        // paints a one-unit outline and carries no width (`paint.rs`,
+        // `BORDER_SLOT`), and `focus.ring` is the `$focus` ink
+        // (`token::focus::RING_TOKEN`).
+    } else {
+        zone.props.tokens.insert("border".into(), t(BORDER_STRONG));
+        // The disabled drop zone's edge: Carbon's `$border-disabled` (slice-b
+        // "File uploader" States), expressed with the crate's disabled-edge tone
+        // `icon-disabled` — the vocabulary has no `border-disabled` name, and
+        // this is the substitution `controls::empty_mark` records for the same
+        // Carbon family.
+        zone.props
+            .tokens
+            .insert("border@disabled".into(), t(ICON_DISABLED));
+    }
     zone.props
         .tokens
         .insert("background@hover".into(), t(LAYER_HOVER));
@@ -228,11 +266,45 @@ fn build_uploader(
     if let Some(description) = description {
         children.push(kit::description("description", &description));
     }
-    children.push(zone);
+    children.push(if drag_over { outlined(zone) } else { zone });
 
     let mut node = stack(key, Axis::Vertical, Some(SPACING_03), children);
     node.semantics.label = Some(label);
     node
+}
+
+/// The `--drag-over` wrapper: `zone` under a canvas leaf drawing Carbon's
+/// `outline: 2px solid $focus, outline-offset: -2px`
+/// (MEASURED `_file-uploader.scss:434-438`).
+///
+/// The ring is a [`NodeKind::Canvas`] leaf *over* the zone in an
+/// [`NodeKind::Overlay`] — z-order is child order — because a
+/// `props.canvas` is honoured only on a canvas leaf
+/// (`frame/placement.rs`), while the `border` slot paints a one-unit
+/// outline with no width to set (`paint.rs`, `BORDER_SLOT`). The leaf
+/// declares no interactions, so the pointer still reaches the zone under
+/// it, and every state token stays on the zone, which is the node whose
+/// placement carries the derived state.
+fn outlined(zone: ViewNode) -> ViewNode {
+    let outline = crate::draw::Command::Rect {
+        rect: crate::geom::Rect::new(2.0, 2.0, ZONE_WIDTH - 4.0, DROP_HEIGHT - 4.0),
+        radius: crate::draw::Corners::SQUARE,
+        snap: false,
+        paint: crate::draw::Paint::stroked(crate::draw::Stroke {
+            width: crate::draw::Width::Logical(2.0),
+            color: crate::draw::ColorRef::Token(crate::token::focus::RING_TOKEN.to_owned()),
+        }),
+    };
+    let list =
+        crate::draw::DrawList::new(vec![outline]).expect("one rect cannot exceed the draw budget");
+    let mut ring = ViewNode::new(NodeKind::Canvas, "outline").with_props(crate::tree::Props {
+        canvas: Some(std::sync::Arc::new(list)),
+        ..crate::tree::Props::default()
+    });
+    ring.constraints = pin(ZONE_WIDTH, DROP_HEIGHT);
+    let mut frame = ViewNode::new(NodeKind::Overlay, "zone-frame").with_children(vec![zone, ring]);
+    frame.constraints = pin(ZONE_WIDTH, DROP_HEIGHT);
+    frame
 }
 
 /// One selected-file row. `complete` chooses the check vs the loading ring.
@@ -469,8 +541,8 @@ fn pin(w: f32, h: f32) -> Constraints {
 mod tests {
     use super::{
         DROP_HEIGHT, ITEM_HEIGHT, ITEM_WIDTH, MARK, PROMPT, STATE_BOX, ZONE_WIDTH, file_uploader,
-        file_uploader_item, file_uploader_item_edit, file_uploader_item_invalid,
-        file_uploader_item_warning, file_uploader_with,
+        file_uploader_drag_over, file_uploader_item, file_uploader_item_edit,
+        file_uploader_item_invalid, file_uploader_item_warning, file_uploader_with,
     };
     use crate::component::tests::{assert_fits_parent, petrify_lone};
     use crate::component::tokens::{
@@ -930,5 +1002,64 @@ mod tests {
             "file_uploader zone declared behaviour {:?}",
             named(&node, "zone").behaviour
         );
+    }
+
+    /// Register row #211 (Carbon `--drag-over`): the resting edge is
+    /// *replaced* by the measured `outline: 2px solid $focus,
+    /// outline-offset: -2px` (`_file-uploader.scss:434-438`) — a 2-unit
+    /// stroke in `focus.ring` ink on a rect inset 2 on every side, drawn
+    /// by a canvas leaf over the zone.
+    #[test]
+    fn drag_over_replaces_the_resting_edge_with_the_focus_outline() {
+        let node = file_uploader_drag_over("up", "Upload", "CSV only");
+        let zone = named(&node, "zone");
+        assert_eq!(
+            token(zone, "border"),
+            None,
+            "the modifier switches the edge, it does not add one"
+        );
+        let ring = named(&node, "outline");
+        assert_eq!(
+            ring.kind,
+            NodeKind::Canvas,
+            "only a canvas leaf paints a draw list"
+        );
+        let list = ring.props.canvas.as_ref().expect("the outline is drawn");
+        assert!(
+            list.color_tokens().any(|name| name == "focus.ring"),
+            "the outline wears the $focus ink: {:?}",
+            list.token_colours()
+        );
+        let commands = list.commands();
+        assert_eq!(commands.len(), 1, "one outline, one rect: {commands:?}");
+        let crate::draw::Command::Rect {
+            rect,
+            radius,
+            paint,
+            ..
+        } = &commands[0]
+        else {
+            panic!("the outline is a rect: {commands:?}");
+        };
+        assert_eq!(
+            (rect.x, rect.y, rect.w, rect.h),
+            (2.0, 2.0, ZONE_WIDTH - 4.0, DROP_HEIGHT - 4.0),
+            "outline-offset: -2px is a rect inset 2 on every side"
+        );
+        assert_eq!(*radius, crate::draw::Corners::SQUARE);
+        let stroke = paint.stroke.as_ref().expect("an outline, not a fill");
+        assert_eq!(stroke.width, crate::draw::Width::Logical(2.0), "2px");
+        assert!(paint.fill.is_none(), "an outline, not a fill");
+    }
+
+    /// The resting zone keeps its edge and draws no outline — the modifier
+    /// is the only form that paints one.
+    #[test]
+    fn the_resting_zone_keeps_its_border_and_no_outline() {
+        let node = file_uploader_with("up", "Upload", "CSV only");
+        let zone = named(&node, "zone");
+        assert_eq!(token(zone, "border"), Some(BORDER_STRONG));
+        assert!(zone.props.canvas.is_none(), "no outline at rest");
+        no_drag(&node);
     }
 }

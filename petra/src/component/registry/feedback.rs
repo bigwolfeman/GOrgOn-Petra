@@ -225,6 +225,12 @@ pub const ENTRIES: &[Entry] = &[
     row!("inline_loading_finished", KeyLabel, |p| {
         lib::inline_loading_finished(p.key, p.label)
     }),
+    row!("inline_loading_error", KeyLabel, |p| {
+        lib::inline_loading_error(p.key, p.label)
+    }),
+    row!("inline_loading_in_button", KeyLabelNumber, |p| {
+        lib::inline_loading_in_button(p.key, p.label, f64::from(p.value))
+    }),
     // loading.rs — Loading.
     row!("loading", KeyLabelNumber, |p| lib::loading(
         p.key,
@@ -297,6 +303,9 @@ pub const ENTRIES: &[Entry] = &[
     row!("progress_step", ProgressStepParams, |p| lib::progress_step(
         p.key, p.label, p.complete, p.current
     )),
+    row!("progress_step_interactive", ProgressStepParams, |p| {
+        lib::progress_step_interactive(p.key, p.label, p.complete, p.current)
+    }),
     // tag.rs — Tag.
     row!("tag", KeyLabel, |p| lib::tag(p.key, p.label)),
     row!("tag_sm", KeyLabel, |p| lib::tag_sm(p.key, p.label)),

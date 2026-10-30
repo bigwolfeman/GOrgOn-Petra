@@ -120,12 +120,16 @@ impl Page for Slider {
         vec![disabled(row(
             "disabled",
             sp("spacing.md"),
-            vec![slider("disabled-slider", "Volume", 40.0)],
+            // `slider` takes a normalised value: 0.4 is the "40" the
+            // 0–100 labels name, not 40.0 (which clamps to 100).
+            vec![slider("disabled-slider", "Volume", 0.4)],
         ))]
     }
 
     fn body(&self) -> ViewNode {
-        use gorgon_petra::component::{heading, slider_range};
+        use gorgon_petra::component::{
+            heading, slider_range, slider_with_custom_value, slider_without_number_input,
+        };
 
         section(
             "slide",
@@ -142,6 +146,17 @@ impl Page for Slider {
                     // the cell shows the shape, and moving a thumb of two
                     // waits for that engine work.
                     slider_range("range", "Temperature", 20.0, 80.0),
+                    heading("no-num-title", "Without a number input"),
+                    // Register row 437: the well is gone and the value rides
+                    // a tooltip over the handle (slice-e: "replaces the input
+                    // with a Tooltip shown on hover, focus, and active").
+                    // The bubble is mounted open — the variant cell's shown
+                    // state — as tooltip_definition's cell mounts its own.
+                    slider_without_number_input("no-num", "Volume", 0.4),
+                    heading("custom-title", "With custom value"),
+                    // Register row 438: the same tip reading bucket labels
+                    // instead of the raw number.
+                    slider_with_custom_value("custom", "Volume", 0.4, &["Low", "Medium", "High"]),
                 ],
             )],
         )

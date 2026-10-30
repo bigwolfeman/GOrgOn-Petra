@@ -1,6 +1,8 @@
 //! Inventory row 20, Modal.
 
-use gorgon_petra::component::{button, modal, modal_lg, modal_sm, modal_xs, section, text};
+use gorgon_petra::component::{
+    button, modal, modal_lg, modal_loading, modal_sm, modal_xs, section, text,
+};
 use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::ViewNode;
 
@@ -12,6 +14,9 @@ const DIALOG: &str = "md";
 const CLOSE: &str = "close";
 const CANCEL: &str = "cancel";
 const PRIMARY: &str = "primary";
+/// Register row #305's loading dialog and its trigger.
+const LOADING_TRIGGER: &str = "open-loading";
+const LOADING_DIALOG: &str = "loading-dlg";
 
 /// The width ladder's step (register rows #299–302): Carbon's four modal
 /// sizes as [`ModalSize`]'s width shares. Each step gets a trigger and a
@@ -96,6 +101,10 @@ impl Step {
 pub struct Modal {
     open: bool,
     size_open: Option<Step>,
+    /// Register row #305: the loading dialog is up.
+    loading_open: bool,
+    /// The host clock the loading dialog's spinner turns on.
+    now: f64,
 }
 
 impl Page for Modal {
@@ -103,10 +112,26 @@ impl Page for Modal {
         "Modal"
     }
 
+    fn tick(&mut self, now: f64) {
+        self.now = now;
+    }
+
     fn body(&self) -> ViewNode {
-        let mut children = vec![button(TRIGGER, "Rebuild fiber")];
+        let mut children = vec![
+            button(TRIGGER, "Rebuild fiber"),
+            button(LOADING_TRIGGER, "Load state"),
+        ];
         if self.open {
             children.push(Step::Md.dialog(DIALOG));
+        }
+        if self.loading_open {
+            children.push(modal_loading(
+                LOADING_DIALOG,
+                "Fetching fiber state",
+                "Retrying against the store.",
+                "Apply",
+                self.now,
+            ));
         }
         section(
             "dialog",
@@ -154,9 +179,13 @@ impl Page for Modal {
         {
             self.open = false;
             self.size_open = None;
+            self.loading_open = false;
             true
         } else if path_has(node, TRIGGER) {
             self.open = true;
+            true
+        } else if path_has(node, LOADING_TRIGGER) {
+            self.loading_open = true;
             true
         } else if let Some(step) = Step::ALL
             .into_iter()

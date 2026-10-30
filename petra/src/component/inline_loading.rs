@@ -20,7 +20,7 @@
 //! and a word, not through a glyph. So the disc spends the accent, and the
 //! check is the channel: a disc with a tick against a ring with an arc.
 
-use super::icon::{IconMark, icon};
+use super::icon::{IconMark, IconTone, icon, icon_toned};
 use super::loading::spinner_small;
 use super::stack;
 use super::text::text;
@@ -40,7 +40,31 @@ const MIN_BLOCK: f32 = 32.0;
 /// `label` is required ([`Role::Status`] needs a label).
 /// [`Semantics.value`] is `"loading"`.
 pub fn inline_loading(key: impl Into<Key>, label: impl Into<String>, now: f64) -> ViewNode {
-    row(key, label, spinner_small("mark", now), "loading")
+    row(key, label, spinner_small("mark", now), "loading", true)
+}
+
+/// Carbon's `.cds--inline-loading--error` (register row #228): the failed
+/// action. The mark is [`IconMark::WarningFilled`] at [`IconTone::Danger`]
+/// — the tone that binds `support-error`, Carbon's `$support-error` ink for
+/// the error icon — then `label`. [`Semantics.value`] is `"error"`.
+pub fn inline_loading_error(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
+    let badge = icon_toned("mark", IconMark::WarningFilled, IconTone::Danger);
+    row(key, label, badge, "error", true)
+}
+
+/// Carbon's `.cds--inline-loading--btn` (register row #224): the same
+/// loader at button context — the one place the anatomy changes. Carbon's
+/// override sets `min-block-size: 0` (MEASURED `inline-loading-overrides`
+/// in the register: the button's own height governs, so the loader must
+/// not force 32px on it). The row here drops the floor;
+/// [`crate::component::button::loading_button`] is the button that
+/// carries one.
+pub fn inline_loading_in_button(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    now: f64,
+) -> ViewNode {
+    row(key, label, spinner_small("mark", now), "loading", false)
 }
 
 /// An action that finished: a check on an accent disc, then `label`.
@@ -85,10 +109,16 @@ pub fn inline_loading_finished(key: impl Into<Key>, label: impl Into<String>) ->
             priority: 0,
         },
     });
-    row(key, label, badge, "finished")
+    row(key, label, badge, "finished", true)
 }
 
-fn row(key: impl Into<Key>, label: impl Into<String>, mark: ViewNode, value: &str) -> ViewNode {
+fn row(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    mark: ViewNode,
+    value: &str,
+    floored: bool,
+) -> ViewNode {
     let label = label.into();
     let mut caption = text("label", label.clone());
     caption
@@ -98,7 +128,9 @@ fn row(key: impl Into<Key>, label: impl Into<String>, mark: ViewNode, value: &st
 
     let mut node = stack(key, Axis::Horizontal, Some(SPACING_03), vec![mark, caption]);
     node.props.align = Some(Align::Center);
-    node.constraints.vertical.min = Some(MIN_BLOCK);
+    if floored {
+        node.constraints.vertical.min = Some(MIN_BLOCK);
+    }
     node.semantics = Semantics {
         role: Some(Role::Status),
         label: Some(label),
@@ -110,13 +142,21 @@ fn row(key: impl Into<Key>, label: impl Into<String>, mark: ViewNode, value: &st
 
 #[cfg(test)]
 mod tests {
-    use super::{MIN_BLOCK, SPINNER, inline_loading, inline_loading_finished};
+    use super::{
+        MIN_BLOCK, SPINNER, inline_loading, inline_loading_error, inline_loading_finished,
+        inline_loading_in_button,
+    };
     use crate::component::icon::IconMark;
     use crate::component::tests::{assert_fits_parent, petrify_lone};
+    use crate::component::tokens::SUPPORT_ERROR;
     use crate::draw::Command;
 
     use crate::token::{ColorValue, Theme, TokenName, TokenValue};
     use crate::tree::{NodeKind, Role, ViewNode};
+
+    fn token<'a>(node: &'a ViewNode, slot: &str) -> Option<&'a str> {
+        node.props.tokens.get(slot).map(TokenName::as_str)
+    }
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         node.children
@@ -181,6 +221,52 @@ mod tests {
         let _ = IconMark::Check;
     }
 
+    /// Row 228: the failed action. The mark is the filled warning drawn in
+    /// the support-error ink (`IconTone::Danger`, the tone that names
+    /// `support-error` in the canvas and binds it as a slot), the state is
+    /// the row's whole claim, and the standalone floor stays 32.
+    #[test]
+    fn error_is_status_error_with_the_warning_in_support_error() {
+        let node = inline_loading_error("save", "Save failed");
+        assert_eq!(node.semantics.role, Some(Role::Status));
+        assert_eq!(node.semantics.label.as_deref(), Some("Save failed"));
+        assert_eq!(node.semantics.value.as_deref(), Some("error"));
+        assert!(!node.is_interactive());
+        assert_eq!(node.constraints.vertical.min, Some(MIN_BLOCK));
+        let mark = child(&node, "mark");
+        assert!(!mark.ambient, "a failed mark is still");
+        assert_eq!(token(mark, SUPPORT_ERROR), Some(SUPPORT_ERROR));
+        let list = mark
+            .props
+            .canvas
+            .as_ref()
+            .expect("the warning draws a path");
+        assert!(
+            list.color_tokens().any(|name| name == SUPPORT_ERROR),
+            "the warning draws in support-error, not icon ink: {:?}",
+            list.commands()
+        );
+        let _ = IconMark::WarningFilled;
+    }
+
+    /// Row 224: the button-context loader drops the 32-unit floor —
+    /// Carbon's override is `min-block-size: 0`, the button's own height
+    /// governs — and nothing else about the row changes.
+    #[test]
+    fn button_context_loader_drops_the_floor_and_keeps_the_rest() {
+        let node = inline_loading_in_button("save", "Saving", 0.0);
+        assert_eq!(node.semantics.role, Some(Role::Status));
+        assert_eq!(node.semantics.value.as_deref(), Some("loading"));
+        assert_eq!(
+            node.constraints.vertical.min, None,
+            "the button governs the height"
+        );
+        let mark = child(&node, "mark");
+        assert!(mark.ambient, "still the turning spinner");
+        assert_eq!(mark.constraints.horizontal.min, Some(SPINNER));
+        assert_eq!(child(&node, "label").props.text.as_deref(), Some("Saving"));
+    }
+
     fn color(theme: &Theme, name: &str) -> ColorValue {
         match theme.value(&TokenName::new(name).unwrap()).unwrap() {
             TokenValue::Color(c) => *c,
@@ -195,6 +281,8 @@ mod tests {
         for (label, node) in [
             ("active", inline_loading("save", "Saving", 0.0)),
             ("finished", inline_loading_finished("save", "Saved")),
+            ("error", inline_loading_error("save", "Save failed")),
+            ("in-button", inline_loading_in_button("save", "Saving", 0.0)),
         ] {
             let frame = petrify_lone(node);
             assert!(!frame.placements.is_empty(), "{label}: nothing placed");

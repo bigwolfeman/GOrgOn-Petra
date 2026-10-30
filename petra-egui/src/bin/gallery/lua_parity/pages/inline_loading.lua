@@ -9,6 +9,8 @@
 --       vec![
 --           inline_loading("il-on", "Saving", self.now),
 --           inline_loading_finished("il-off", "Saved"),
+--           inline_loading_error("il-err", "Save failed"),
+--           inline_loading_in_button("il-btn", "Saving", self.now),
 --       ],
 --   )])
 return ui.section({
@@ -18,6 +20,10 @@ return ui.section({
     common.body("il", "spacing.md", {
       ui.inline_loading({ key = "il-on", label = "Saving", value = 0 }),
       ui.inline_loading_finished({ key = "il-off", label = "Saved" }),
+      -- Register row 228, the error state.
+      ui.inline_loading_error({ key = "il-err", label = "Save failed" }),
+      -- Register row 224, the button-context modifier.
+      ui.inline_loading_in_button({ key = "il-btn", label = "Saving", value = 0 }),
     }),
   },
 })

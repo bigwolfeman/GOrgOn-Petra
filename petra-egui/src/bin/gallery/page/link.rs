@@ -1,6 +1,6 @@
 //! Inventory row 15, Link.
 
-use gorgon_petra::component::{link, link_inline, section, text};
+use gorgon_petra::component::{IconMark, link, link_inline, link_with_icon, section, text};
 use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::ViewNode;
 
@@ -42,7 +42,19 @@ impl Page for Link {
                 "link-row",
                 sp("spacing.md"),
                 vec![
-                    link("docs", "Open the spec"),
+                    row(
+                        "forms",
+                        sp("spacing.md"),
+                        vec![
+                            link("docs", "Open the spec"),
+                            // Register row #231, Carbon's `--icon`
+                            // modifier: a trailing glyph in the link's own
+                            // ink. The docs' own guidance is "launch" for
+                            // external and "arrow right" for internal
+                            // links (slice-c, guidance not binding).
+                            link_with_icon("docs-icon", "Open the spec", IconMark::ChevronRight),
+                        ],
+                    ),
                     row(
                         "prose",
                         None,

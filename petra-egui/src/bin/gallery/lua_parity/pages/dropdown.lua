@@ -17,5 +17,12 @@ return ui.section({
       ui.dropdown({ key = "dd-md", label = "Md 40", value = "Dark" }),
       ui.dropdown_lg({ key = "dd-lg", label = "Lg 48", value = "Dark" }),
     }),
+    -- Register rows #194 (`active`) and #196 (`multiselected`), the
+    -- menu-option sub-states.
+    common.body("dd-options", "spacing.md", {
+      ui.dropdown_option({ key = "opt-plain", label = "Plain", selected = false }),
+      ui.dropdown_option_multiselected({ key = "opt-multi", label = "Multi", selected = false }),
+      ui.dropdown_option_multiselected({ key = "opt-multi-on", label = "Multi on", selected = true }),
+    }),
   },
 })

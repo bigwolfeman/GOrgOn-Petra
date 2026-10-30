@@ -71,6 +71,27 @@ return ui.section({
           },
         }),
       }),
+      -- Register row 113's `--popover-wrapped` modifier.
+      ui.heading({ key = "popover-title", label = "Popover-wrapped" }),
+      common.column("popover-column", nil, {
+        ui.content_switcher_icon_only({
+          key = "popover-wrapped",
+          children = {
+            ui.content_switcher_item_icon_popover({
+              key = "wrap-0",
+              label = "List",
+              mark = "menu",
+              selected = true,
+            }),
+            ui.content_switcher_item_icon({
+              key = "wrap-1",
+              label = "Grid",
+              mark = "switcher",
+              selected = false,
+            }),
+          },
+        }),
+      }),
     }),
   },
 })
