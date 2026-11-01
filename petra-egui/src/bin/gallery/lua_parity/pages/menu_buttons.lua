@@ -67,6 +67,22 @@ return ui.section({
             },
           }),
         }),
+        common.column("v-tertiary", "spacing.sm", {
+          ui.text({ key = "v-tertiary-title", label = "Tertiary" }),
+          ui.menu_button_tertiary({
+            key = "v-tertiary-button",
+            label = "Actions",
+            open = false,
+          }),
+        }),
+        common.column("v-ghost", "spacing.sm", {
+          ui.text({ key = "v-ghost-title", label = "Ghost" }),
+          ui.menu_button_ghost({
+            key = "v-ghost-button",
+            label = "Actions",
+            open = false,
+          }),
+        }),
       }),
     }),
   },

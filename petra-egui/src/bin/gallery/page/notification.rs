@@ -1,8 +1,8 @@
 //! Inventory row 21, Notification.
 
 use gorgon_petra::component::{
-    NotificationKind, notification_actionable_kind, notification_inline_actionable_kind,
-    notification_inline_kind, section,
+    NotificationKind, notification_actionable_kind, notification_callout,
+    notification_inline_actionable_kind, notification_inline_kind, section,
 };
 use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::ViewNode;
@@ -131,6 +131,12 @@ impl Page for Notification {
                     // The toast, keyed as it has been since round 2 so its
                     // `nt/panel` path stays the one `shots.rs` photographs.
                     notification_actionable_kind("nt", kind, title, message, "Next kind"),
+                    // Register row #311. A leading rail, not a status hue.
+                    notification_callout(
+                        "nt-callout",
+                        "Store is read-only",
+                        "Writes wait until the lease renews.",
+                    ),
                 ],
             )],
         )

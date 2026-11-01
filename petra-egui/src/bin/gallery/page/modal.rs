@@ -1,7 +1,8 @@
 //! Inventory row 20, Modal.
 
 use gorgon_petra::component::{
-    button, modal, modal_lg, modal_loading, modal_sm, modal_xs, section, text,
+    button, modal, modal_acknowledgment, modal_danger, modal_lg, modal_loading, modal_sm, modal_xs,
+    section, text,
 };
 use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::ViewNode;
@@ -17,6 +18,10 @@ const PRIMARY: &str = "primary";
 /// Register row #305's loading dialog and its trigger.
 const LOADING_TRIGGER: &str = "open-loading";
 const LOADING_DIALOG: &str = "loading-dlg";
+const DANGER_TRIGGER: &str = "open-danger";
+const DANGER_DIALOG: &str = "danger-dlg";
+const ACK_TRIGGER: &str = "open-ack";
+const ACK_DIALOG: &str = "ack-dlg";
 
 /// The width ladder's step (register rows #299–302): Carbon's four modal
 /// sizes as [`ModalSize`]'s width shares. Each step gets a trigger and a
@@ -103,6 +108,10 @@ pub struct Modal {
     size_open: Option<Step>,
     /// Register row #305: the loading dialog is up.
     loading_open: bool,
+    /// Register row #292.
+    danger_open: bool,
+    /// Register row #293.
+    ack_open: bool,
     /// The host clock the loading dialog's spinner turns on.
     now: f64,
 }
@@ -120,6 +129,8 @@ impl Page for Modal {
         let mut children = vec![
             button(TRIGGER, "Rebuild fiber"),
             button(LOADING_TRIGGER, "Load state"),
+            button(DANGER_TRIGGER, "Delete fiber"),
+            button(ACK_TRIGGER, "Got it"),
         ];
         if self.open {
             children.push(Step::Md.dialog(DIALOG));
@@ -131,6 +142,22 @@ impl Page for Modal {
                 "Retrying against the store.",
                 "Apply",
                 self.now,
+            ));
+        }
+        if self.danger_open {
+            children.push(modal_danger(
+                DANGER_DIALOG,
+                "Delete fiber",
+                "This removes the fiber and its trace.",
+                "Delete",
+            ));
+        }
+        if self.ack_open {
+            children.push(modal_acknowledgment(
+                ACK_DIALOG,
+                "Fiber deleted",
+                "The trace is gone.",
+                "Done",
             ));
         }
         section(
@@ -180,12 +207,20 @@ impl Page for Modal {
             self.open = false;
             self.size_open = None;
             self.loading_open = false;
+            self.danger_open = false;
+            self.ack_open = false;
             true
         } else if path_has(node, TRIGGER) {
             self.open = true;
             true
         } else if path_has(node, LOADING_TRIGGER) {
             self.loading_open = true;
+            true
+        } else if path_has(node, DANGER_TRIGGER) {
+            self.danger_open = true;
+            true
+        } else if path_has(node, ACK_TRIGGER) {
+            self.ack_open = true;
             true
         } else if let Some(step) = Step::ALL
             .into_iter()

@@ -1,8 +1,8 @@
 //! Inventory row 11, Dropdown.
 
 use gorgon_petra::component::{
-    dropdown, dropdown_lg, dropdown_open, dropdown_option, dropdown_option_multiselected,
-    dropdown_sm, dropdown_xs, section,
+    dropdown, dropdown_combo, dropdown_lg, dropdown_multiselect, dropdown_open, dropdown_option,
+    dropdown_option_multiselected, dropdown_sm, dropdown_xs, section,
 };
 use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::ViewNode;
@@ -115,6 +115,16 @@ impl Page for Dropdown {
                         dropdown_option("opt-plain", "Plain", false),
                         dropdown_option_multiselected("opt-multi", "Multi", false),
                         dropdown_option_multiselected("opt-multi-on", "Multi on", true),
+                    ],
+                ),
+                // Register rows #176 and #177. The count is a worded tag.
+                // Combo shows Clear because the value is not empty.
+                body(
+                    "dd-variants",
+                    sp("spacing.md"),
+                    vec![
+                        dropdown_multiselect("dd-multi", "Themes", 2),
+                        dropdown_combo("dd-combo", "Theme", "Dark"),
                     ],
                 ),
             ],

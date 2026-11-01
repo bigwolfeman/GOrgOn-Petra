@@ -21,6 +21,7 @@ return ui.section({
       common.row("sizes", "spacing-05", {
         ui.loading({ key = "load-lg", label = "Working", value = 0 }),
         ui.loading_sm({ key = "load-sm", label = "Working", value = 0 }),
+        ui.loading_stop({ key = "load-stop", label = "Stopped" }),
       }),
     }),
   },

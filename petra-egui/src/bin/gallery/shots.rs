@@ -2097,7 +2097,9 @@ mod tests {
         );
         assert_ne!(resting, one_more, "the selection never reached the picture");
 
-        cam.click("select-all");
+        // The batch-expansion table has its own header box. `select-all`
+        // alone names both.
+        cam.click("dt/header/select/select-all");
         let every = cam.shoot("09-data-table-all-selected");
         for key in ["dt-0", "dt-1", "dt-2", "dt-3"] {
             assert!(selected(&cam, key), "select-all left {key} unselected");
@@ -2112,7 +2114,9 @@ mod tests {
         );
         assert_ne!(one_more, every);
 
-        cam.click("select-all");
+        // The batch-expansion table has its own header box. `select-all`
+        // alone names both.
+        cam.click("dt/header/select/select-all");
         let none = cam.shoot("09-data-table-none-selected");
         for key in ["dt-0", "dt-1", "dt-2", "dt-3"] {
             assert!(
@@ -10965,5 +10969,169 @@ mod tests {
             "the wrapper costs the tab nothing: the wrapped tab is the same square, \
              {tab:?} beside {plain:?}"
         );
+    }
+
+    fn find_key<'a>(
+        node: &'a gorgon_petra::tree::ViewNode,
+        key: &str,
+    ) -> Option<&'a gorgon_petra::tree::ViewNode> {
+        if node.key.as_str() == key {
+            return Some(node);
+        }
+        for child in &node.children {
+            if let Some(found) = find_key(child.as_ref(), key) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// Wave 3 anatomy cells. Each one is on its page, and the fact that
+    /// separates it from the neighbour is a word, a role, or a measure.
+    ///
+    /// `painted_text` reads a text or input node. A stack paints nothing,
+    /// so every word below names the leaf that holds it.
+    #[test]
+    fn wave3_anatomy_cells_are_on_their_pages() {
+        let mut cam = Camera::on("List");
+        let tree = cam.tree();
+        let native = find_key(&tree, "ol-native").expect("ordered native list");
+        assert_eq!(native.semantics.value.as_deref(), Some("native"));
+        cam.shoot("16-list-ordered-native");
+
+        let mut cam = Camera::on("Loading");
+        let tree = cam.tree();
+        let stopped = find_key(&tree, "load-stop").expect("stopped spinner");
+        assert_eq!(stopped.semantics.value.as_deref(), Some("stopped"));
+        assert!(!stopped.ambient, "a stopped spinner must not keep turning");
+        cam.shoot("17-loading-stop");
+
+        let mut cam = Camera::on("Tag");
+        assert!(
+            cam.painted_text("tag-op/label").contains("Filters"),
+            "the operational tag names itself"
+        );
+        assert!(cam.has("tag-op/caret"), "the chevron is the second channel");
+        cam.shoot("33-tag-operational");
+
+        let mut cam = Camera::on("Tile");
+        let tree = cam.tree();
+        let tile = find_key(&tree, "tile-exp-ix").expect("interactive tile");
+        assert_ne!(
+            tile.semantics.role,
+            Some(gorgon_petra::tree::Role::Button),
+            "the interactive tile shell is not the button"
+        );
+        let caret = find_key(tile, "glyph").expect("caret button");
+        assert_eq!(caret.semantics.role, Some(gorgon_petra::tree::Role::Button));
+        cam.shoot("35-tile-interactive");
+
+        let mut cam = Camera::on("Menu buttons");
+        assert!(cam.token("v-tertiary-button/trigger", "border").is_some());
+        assert!(cam.token("v-ghost-button/trigger", "border").is_none());
+        assert_eq!(cam.painted_text("v-ghost-button/trigger/label"), "Actions");
+        cam.shoot("19-menu-buttons-tertiary-ghost");
+
+        let mut cam = Camera::on("Dropdown");
+        assert!(
+            cam.painted_text("dd-multi/field/row/value")
+                .contains("2 selected"),
+            "the multiselect count is a word"
+        );
+        assert_eq!(
+            cam.painted_text("dd-combo/field/row/value/clear/label"),
+            "Clear"
+        );
+        cam.shoot("11-dropdown-multiselect-combo");
+
+        let mut cam = Camera::on("File uploader");
+        assert_eq!(cam.painted_text("fu-single/file/name"), "trace.ndjson");
+        cam.shoot("12-file-uploader-single");
+
+        let mut cam = Camera::on("Notification");
+        let tree = cam.tree();
+        let callout = find_key(&tree, "nt-callout").expect("callout");
+        assert_eq!(callout.semantics.value.as_deref(), Some("callout"));
+        assert!(cam.token("nt-callout", "border-left").is_some());
+        cam.shoot("21-notification-callout");
+
+        let mut cam = Camera::on("Progress indicator");
+        let tree = cam.tree();
+        let steps = find_key(&tree, "pi-ix").expect("interactive indicator");
+        assert_eq!(steps.semantics.value.as_deref(), Some("interactive"));
+        cam.shoot("26-progress-indicator-interactive");
+
+        let mut cam = Camera::on("Search");
+        assert_eq!(cam.painted_text("q-collapsed/label"), "Search fibers");
+        assert!(cam.has("q-expanded"));
+        cam.shoot("28-search-expandable");
+
+        let mut cam = Camera::on("Text input");
+        // The secret stays in the tree. The painter is what masks it.
+        assert_eq!(cam.painted_text("field-secret/input"), "••••••");
+        assert_eq!(cam.painted_text("field-secret-shown/input"), "harbor");
+        assert_eq!(cam.painted_text("field-secret/toggle/label"), "Show");
+        assert_eq!(cam.painted_text("field-secret-shown/toggle/label"), "Hide");
+        cam.shoot("34-text-input-password");
+
+        let mut cam = Camera::on("Data table");
+        let tree = cam.tree();
+        let radio = find_key(&tree, "dt-radio").expect("radio table");
+        assert_eq!(radio.semantics.value.as_deref(), Some("radio"));
+        assert!(
+            find_key(radio, "radio-header").is_some(),
+            "a radio table has no select-all"
+        );
+        let mark = cam.rect("dt-radio-0/select/box");
+        assert!(
+            (mark.w - 18.0).abs() < 0.5 && (mark.h - 18.0).abs() < 0.5,
+            "the radio disc is 18, not the 16 checkbox: {mark:?}"
+        );
+        assert_eq!(
+            cam.painted_text("dt-batch/header/select/expand/label"),
+            "Expand all"
+        );
+        cam.shoot("09-data-table-radio-batch");
+
+        let mut cam = Camera::on("UI shell left panel");
+        let tree = cam.tree();
+        let ux = find_key(&tree, "shell-left-ux").expect("ux panel");
+        assert_eq!(ux.semantics.value.as_deref(), Some("ux"));
+        cam.shoot("41-ui-shell-left-panel-ux");
+
+        let mut cam = Camera::on("Popover");
+        let caret = cam
+            .caret("pop-caret-note")
+            .expect("the caret-tip popover draws a beak");
+        assert!((caret.w - 12.0).abs() < 0.5, "caret base is 12: {caret:?}");
+        let note = cam.rect("pop-caret-note");
+        let anchor = cam.rect("pop-caret-anchor");
+        let gap = if note.y >= anchor.y {
+            note.y - (anchor.y + anchor.h)
+        } else {
+            anchor.y - (note.y + note.h)
+        };
+        assert!(
+            (gap - 12.0).abs() < 1.0,
+            "caret-tip stands off by spacing-04 (12), not the default 8: gap={gap} note={note:?} anchor={anchor:?}"
+        );
+        assert!(
+            cam.caret("pop-tab-note").is_none(),
+            "the tab tip is flush, so the engine draws no beak"
+        );
+        cam.shoot("24-popover-caret-and-tab");
+
+        let mut cam = Camera::on("Modal");
+        cam.click("open-danger");
+        assert!(cam.has("danger-dlg"));
+        assert_eq!(cam.painted_text("footer/primary/primary-label"), "Delete");
+        cam.shoot("20-modal-danger");
+        cam.click("footer/primary");
+        assert!(!cam.has("danger-dlg"));
+        cam.click("open-ack");
+        assert!(cam.has("ack-dlg"));
+        assert!(!cam.has("cancel"), "an acknowledgment has no Cancel");
+        assert_eq!(cam.painted_text("footer/primary/primary-label"), "Done");
+        cam.shoot("20-modal-acknowledgment");
     }
 }

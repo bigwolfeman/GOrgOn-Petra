@@ -89,6 +89,13 @@ return ui.section({
           ui.list_item({ key = "ol-2", label = "Run" }),
         },
       }),
+      ui.ordered_list_native({
+        key = "ol-native",
+        children = {
+          ui.list_item({ key = "ol-native-0", label = "First" }),
+          ui.list_item({ key = "ol-native-1", label = "Second" }),
+        },
+      }),
     }),
   },
 })

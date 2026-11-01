@@ -61,8 +61,9 @@ use super::stack;
 use super::swatch;
 use super::text::text;
 use super::tokens::{
-    ACCENT_PRIMARY, BUTTON_DISABLED, LAYER_ACTIVE, LAYER_HOVER, SIZE_MD, SURFACE_BASE,
-    SURFACE_RAISED, TEXT_MUTED, TEXT_ON_ACCENT, TYPOGRAPHY_BODY_COMPACT, t,
+    ACCENT_PRIMARY, BORDER_STRONG, BUTTON_DISABLED, LAYER_ACTIVE, LAYER_HOVER, LINK_PRIMARY,
+    SIZE_MD, SURFACE_BASE, SURFACE_RAISED, TEXT_MUTED, TEXT_ON_ACCENT, TEXT_PRIMARY,
+    TYPOGRAPHY_BODY_COMPACT, t,
 };
 use crate::geom::{Align as CrossAlign, Axis};
 use crate::tree::{
@@ -169,8 +170,55 @@ fn menu_button_at(
     items: Vec<ViewNode>,
     size: ListBoxSize,
 ) -> ViewNode {
+    menu_button_kind(key, label, open, items, size, TriggerKind::Primary)
+}
+
+/// Register row #278. The menu trigger in tertiary chrome: resting
+/// surface, primary text, a strong border, no shadow.
+pub fn menu_button_tertiary(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    open: bool,
+    items: Vec<ViewNode>,
+) -> ViewNode {
+    menu_button_kind(
+        key,
+        label,
+        open,
+        items,
+        ListBoxSize::Md,
+        TriggerKind::Tertiary,
+    )
+}
+
+/// Register row #279. The menu trigger in ghost chrome: resting surface,
+/// link text, no border, no shadow.
+pub fn menu_button_ghost(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    open: bool,
+    items: Vec<ViewNode>,
+) -> ViewNode {
+    menu_button_kind(key, label, open, items, ListBoxSize::Md, TriggerKind::Ghost)
+}
+
+#[derive(Clone, Copy)]
+enum TriggerKind {
+    Primary,
+    Tertiary,
+    Ghost,
+}
+
+fn menu_button_kind(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    open: bool,
+    items: Vec<ViewNode>,
+    size: ListBoxSize,
+    kind: TriggerKind,
+) -> ViewNode {
     let label = label.into();
-    let trigger = trigger("trigger", label.clone(), open, size);
+    let trigger = trigger("trigger", label.clone(), open, size, kind);
     let mut children = vec![trigger];
     if open {
         children.push(menu_at("menu", label, items, size));
@@ -180,12 +228,40 @@ fn menu_button_at(
     node
 }
 
-fn trigger(key: impl Into<Key>, label: String, open: bool, size: ListBoxSize) -> ViewNode {
-    let chevron = chevron_glyph(open);
+fn trigger(
+    key: impl Into<Key>,
+    label: String,
+    open: bool,
+    size: ListBoxSize,
+    kind: TriggerKind,
+) -> ViewNode {
+    let tone = match kind {
+        TriggerKind::Primary => IconTone::OnAccent,
+        TriggerKind::Tertiary | TriggerKind::Ghost => IconTone::Primary,
+    };
+    let chevron = chevron_glyph_toned(open, tone);
+    let caption = match kind {
+        TriggerKind::Primary => on_accent_caption(&label),
+        TriggerKind::Tertiary => ink_caption(&label, TEXT_PRIMARY),
+        TriggerKind::Ghost => ink_caption(&label, LINK_PRIMARY),
+    };
     // Label at the leading edge, chevron at the trailing one, whatever the
     // trigger's width (`edge_row`).
-    let mut node = edge_row(key, on_accent_caption(&label), Some(chevron));
-    primary_ground(&mut node);
+    let mut node = edge_row(key, caption, Some(chevron));
+    match kind {
+        TriggerKind::Primary => primary_ground(&mut node),
+        TriggerKind::Tertiary => {
+            node.props
+                .tokens
+                .insert("background".into(), t(SURFACE_BASE));
+            node.props.tokens.insert("border".into(), t(BORDER_STRONG));
+        }
+        TriggerKind::Ghost => {
+            node.props
+                .tokens
+                .insert("background".into(), t(SURFACE_BASE));
+        }
+    }
     let mut node = node
         .with_constraints(Constraints {
             horizontal: AxisConstraint {
@@ -213,6 +289,10 @@ fn trigger(key: impl Into<Key>, label: String, open: bool, size: ListBoxSize) ->
 /// on the primary fill. Never the only channel: `Semantics.expanded` is
 /// declared beside it.
 fn chevron_glyph(open: bool) -> ViewNode {
+    chevron_glyph_toned(open, IconTone::OnAccent)
+}
+
+fn chevron_glyph_toned(open: bool, tone: IconTone) -> ViewNode {
     icon_toned(
         "caret",
         if open {
@@ -220,8 +300,20 @@ fn chevron_glyph(open: bool) -> ViewNode {
         } else {
             IconMark::ChevronDown
         },
-        IconTone::OnAccent,
+        tone,
     )
+}
+
+fn ink_caption(label: &str, ink: &str) -> ViewNode {
+    let mut caption = text("label", label.to_owned());
+    caption.props.style = Some(t(TYPOGRAPHY_BODY_COMPACT));
+    caption.props.wrap = Some(TextWrap::Clip);
+    caption.props.tokens.insert("foreground".into(), t(ink));
+    caption
+        .props
+        .tokens
+        .insert("foreground@disabled".into(), t(TEXT_MUTED));
+    caption
 }
 
 /// The on-accent caption a filled half shows: `typography.body-compact`

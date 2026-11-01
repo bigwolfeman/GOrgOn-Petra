@@ -1,6 +1,8 @@
 //! Inventory row 19, Menu buttons.
 
-use gorgon_petra::component::{menu_button, menu_item, section, text};
+use gorgon_petra::component::{
+    menu_button, menu_button_ghost, menu_button_tertiary, menu_item, section, text,
+};
 use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::ViewNode;
 
@@ -185,6 +187,30 @@ impl Page for MenuButtons {
                                             menu_item("v-overflow-1", "Archive"),
                                         ],
                                     ),
+                                ],
+                            ),
+                            // Register rows #278 and #279. Closed, so the
+                            // menus do not cover the page. The words name
+                            // the chrome.
+                            column(
+                                "v-tertiary",
+                                sp("spacing.sm"),
+                                vec![
+                                    text("v-tertiary-title", "Tertiary"),
+                                    menu_button_tertiary(
+                                        "v-tertiary-button",
+                                        "Actions",
+                                        false,
+                                        vec![],
+                                    ),
+                                ],
+                            ),
+                            column(
+                                "v-ghost",
+                                sp("spacing.sm"),
+                                vec![
+                                    text("v-ghost-title", "Ghost"),
+                                    menu_button_ghost("v-ghost-button", "Actions", false, vec![]),
                                 ],
                             ),
                         ],

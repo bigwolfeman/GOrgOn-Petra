@@ -2,7 +2,8 @@
 
 use gorgon_petra::component::{
     file_uploader_drag_over, file_uploader_item, file_uploader_item_edit,
-    file_uploader_item_invalid, file_uploader_item_warning, file_uploader_with, section,
+    file_uploader_item_invalid, file_uploader_item_warning, file_uploader_single,
+    file_uploader_with, section,
 };
 use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::ViewNode;
@@ -95,10 +96,19 @@ impl Page for FileUploader {
         // caller-held (no file-hover event reaches this engine yet — see
         // the constructor's doc), so the cell stands in the state rather
         // than waiting for a drag that cannot arrive.
+        // This cell stays above the single-file row. A row above it pushes
+        // the zone past the 900-unit viewport, and the outline pixel test
+        // then samples the clipped bottom of the window.
         rows.push(file_uploader_drag_over(
             "fu-drag-over",
             "Drop target, drag-over",
             "the zone's edge while a file is held over it",
+        ));
+        // Register row #199. No drop zone. One named file.
+        rows.push(file_uploader_single(
+            "fu-single",
+            "Upload one trace",
+            "trace.ndjson",
         ));
         rows.push(wrapped(
             "note",

@@ -278,6 +278,48 @@ impl ParamShape for NodeAndValue {
     const LUAU: &'static str = "{ node: ViewNode, value: string }";
 }
 
+/// `dropdown_multiselect(key, label, count)`. `count` is not `value`: a
+/// shared [`crate::component::params::KeyLabelNumber`] probe would build
+/// this row beside number inputs and hide the count tag.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DropdownMultiselectParams {
+    key: Key,
+    label: String,
+    count: u32,
+}
+impl ParamShape for DropdownMultiselectParams {
+    const LUAU: &'static str = "{ key: string, label: string, count: number }";
+}
+
+/// `field_password(key, label, visible, value)`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FieldPasswordParams {
+    key: Key,
+    label: String,
+    visible: bool,
+    /// Omitted on the wire means an empty well. The painter does not mask
+    /// an empty value.
+    #[serde(default)]
+    value: String,
+}
+impl ParamShape for FieldPasswordParams {
+    const LUAU: &'static str = "{ key: string, label: string, visible: boolean, value: string }";
+}
+
+/// `search_expandable(key, label, expanded)`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SearchExpandableParams {
+    key: Key,
+    label: String,
+    expanded: bool,
+}
+impl ParamShape for SearchExpandableParams {
+    const LUAU: &'static str = "{ key: string, label: string, expanded: boolean }";
+}
+
 // ---------------------------------------------------------------------
 // This group's constructors.
 // ---------------------------------------------------------------------
@@ -538,8 +580,17 @@ pub const ENTRIES: &[Entry] = &[
     row!("dropdown_warning", KeyLabelValueMessage, |p| {
         lib::dropdown_warning(p.key, p.label, p.value, p.message)
     }),
+    row!("dropdown_multiselect", DropdownMultiselectParams, |p| {
+        lib::dropdown_multiselect(p.key, p.label, p.count)
+    }),
+    row!("dropdown_combo", KeyLabelValue, |p| lib::dropdown_combo(
+        p.key, p.label, p.value
+    )),
     // field.rs — Text input.
     row!("field", KeyLabel, |p| lib::field(p.key, p.label)),
+    row!("field_password", FieldPasswordParams, |p| {
+        lib::field_password(p.key, p.label, p.visible, p.value)
+    }),
     row!("field_sm", KeyLabel, |p| lib::field_sm(p.key, p.label)),
     row!("field_lg", KeyLabel, |p| lib::field_lg(p.key, p.label)),
     row!("field_fluid", KeyLabel, |p| lib::field_fluid(
@@ -575,6 +626,9 @@ pub const ENTRIES: &[Entry] = &[
     row!("file_uploader", KeyLabel, |p| lib::file_uploader(
         p.key, p.label
     )),
+    row!("file_uploader_single", KeyLabelValue, |p| {
+        lib::file_uploader_single(p.key, p.label, p.value)
+    }),
     row!("file_uploader_with", KeyLabelDescription, |p| {
         lib::file_uploader_with(p.key, p.label, p.description)
     }),
@@ -627,6 +681,9 @@ pub const ENTRIES: &[Entry] = &[
     }),
     // search.rs — Search.
     row!("search", KeyLabel, |p| lib::search(p.key, p.label)),
+    row!("search_expandable", SearchExpandableParams, |p| {
+        lib::search_expandable(p.key, p.label, p.expanded)
+    }),
     row!("search_sm", KeyLabel, |p| lib::search_sm(p.key, p.label)),
     row!("search_lg", KeyLabel, |p| lib::search_lg(p.key, p.label)),
     // select.rs — Select.

@@ -6,7 +6,7 @@
 //!
 //! Components: Accordion, Contained list, Context menu, List, Modal,
 //! Popover, Structured list, Tile, Toggletip, Tooltip, Tree view, Code
-//! snippet. 53 constructors (see the `coverage` test at the bottom, which
+//! snippet. 59 constructors (see the `coverage` test at the bottom, which
 //! counts the source rather than trusting this comment).
 
 use serde::Deserialize;
@@ -22,12 +22,14 @@ use crate::component::{
     accordion_item_with_spaced, accordion_spaced, clickable_tile, code_snippet,
     code_snippet_inline, code_snippet_multi, code_snippet_multi_capped, contained_list,
     contained_list_disclosed, contained_list_lg, contained_list_sm, contained_list_xl,
-    context_menu, expandable_tile, list_item, list_item_with, modal, modal_lg, modal_loading,
-    modal_passive, modal_sm, modal_xs, ordered_list, popover, popover_border, popover_with,
-    popover_with_placement, selectable_tile, structured_list, structured_list_condensed,
-    structured_list_row, structured_list_row_static, structured_list_sized, tile, toggletip,
-    toggletip_with, tooltip, tooltip_anchored, tooltip_definition, tooltip_icon, tree_item,
-    tree_item_xs, tree_view, unordered_list, unordered_list_with,
+    context_menu, expandable_tile, expandable_tile_interactive, list_item, list_item_with, modal,
+    modal_acknowledgment, modal_danger, modal_lg, modal_loading, modal_passive, modal_sm, modal_xs,
+    ordered_list, ordered_list_native, popover, popover_border, popover_caret, popover_tab,
+    popover_with, popover_with_placement, selectable_tile, structured_list,
+    structured_list_condensed, structured_list_row, structured_list_row_static,
+    structured_list_sized, tile, toggletip, toggletip_with, tooltip, tooltip_anchored,
+    tooltip_definition, tooltip_icon, tree_item, tree_item_xs, tree_view, unordered_list,
+    unordered_list_with,
 };
 use crate::tree::{Align, Edge, Key, ViewNode};
 
@@ -176,8 +178,9 @@ impl ParamShape for ModalLoadingParams {
         "{ key: string, title: string, body: string, primary: string, now: number }";
 }
 
-/// `popover` / `popover_border` — 2 constructors, one shape (the border is
-/// a modifier on the same anatomy, `--border`).
+/// `popover`, `popover_border`, `popover_caret`, `popover_tab` — 4
+/// constructors, one shape. The border, the caret gap, and the tab tip are
+/// modifiers on the same anatomy.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PopoverParams {
@@ -422,6 +425,9 @@ pub const ENTRIES: &[Entry] = &[
     row!("ordered_list", KeyChildren, |p| ordered_list(
         p.key, p.children
     )),
+    row!("ordered_list_native", KeyChildren, |p| ordered_list_native(
+        p.key, p.children
+    )),
     row!("list_item", KeyLabel, |p| list_item(p.key, p.label)),
     row!("list_item_with", KeyLabelNested, |p| list_item_with(
         p.key, p.label, p.nested
@@ -444,10 +450,22 @@ pub const ENTRIES: &[Entry] = &[
     row!("modal_passive", KeyLabelValue, |p| modal_passive(
         p.key, p.label, p.value
     )),
+    row!("modal_danger", ModalParams, |p| modal_danger(
+        p.key, p.title, p.body, p.primary
+    )),
+    row!("modal_acknowledgment", ModalParams, |p| {
+        modal_acknowledgment(p.key, p.title, p.body, p.primary)
+    }),
     row!("popover", PopoverParams, |p| popover(
         p.key, p.label, p.anchor, p.body
     )),
     row!("popover_border", PopoverParams, |p| popover_border(
+        p.key, p.label, p.anchor, p.body
+    )),
+    row!("popover_caret", PopoverParams, |p| popover_caret(
+        p.key, p.label, p.anchor, p.body
+    )),
+    row!("popover_tab", PopoverParams, |p| popover_tab(
         p.key, p.label, p.anchor, p.body
     )),
     row!("popover_with", PopoverWithParams, |p| popover_with(
@@ -483,6 +501,9 @@ pub const ENTRIES: &[Entry] = &[
     )),
     row!("expandable_tile", KeyLabelExpandedBody, |p| {
         expandable_tile(p.key, p.label, p.expanded, p.body)
+    }),
+    row!("expandable_tile_interactive", KeyLabelExpandedBody, |p| {
+        expandable_tile_interactive(p.key, p.label, p.expanded, p.body)
     }),
     row!("toggletip", KeyLabelOpenBody, |p| toggletip(
         p.key, p.label, p.open, p.body
@@ -684,6 +705,9 @@ mod tests {
                 })
             }
             "ordered_list" => json!({ "key": "k-ordered", "children": [] }),
+            // Same key as `ordered_list`. The native marker column and
+            // `semantics.value = "native"` are the difference.
+            "ordered_list_native" => json!({ "key": "k-ordered", "children": [] }),
             "list_item" => json!({ "key": "k", "label": "l" }),
             // `nested: null` collapses to the same tree `list_item` builds
             // (`list.rs`), so a real nested node is needed to tell the two
@@ -692,6 +716,11 @@ mod tests {
                 json!({ "key": "k", "label": "l", "nested": { "kind": "stack", "key": "n1" } })
             }
             "modal" => json!({ "key": "k", "title": "t", "body": "b", "primary": "p" }),
+            // Same key as `modal`. The footer kind is the difference.
+            "modal_danger" => json!({ "key": "k", "title": "t", "body": "b", "primary": "p" }),
+            "modal_acknowledgment" => {
+                json!({ "key": "k", "title": "t", "body": "b", "primary": "p" })
+            }
             "modal_xs" => {
                 json!({ "key": "k-modal-xs", "title": "t-xs", "body": "b", "primary": "p" })
             }
@@ -714,6 +743,10 @@ mod tests {
             // must show without a key to carry it.
             "popover_border" => json!({ "key": "k", "label": "l", "anchor": "a", "body": "b" }),
             "popover" => json!({ "key": "k", "label": "l", "anchor": "a", "body": "b" }),
+            // Same key as `popover`. The caret gap and the tab tip are the
+            // difference. A renamed key would hide a clone.
+            "popover_caret" => json!({ "key": "k", "label": "l", "anchor": "a", "body": "b" }),
+            "popover_tab" => json!({ "key": "k", "label": "l", "anchor": "a", "body": "b" }),
             "popover_with" => json!({ "key": "k", "label": "l", "anchor": "a", "children": [] }),
             "popover_with_placement" => json!({
                 "key": "k", "label": "l", "anchor": "a",
@@ -767,6 +800,11 @@ mod tests {
             "clickable_tile" => json!({ "key": "k", "label": "l", "value": "b" }),
             "selectable_tile" => json!({ "key": "k", "label": "l", "selected": true }),
             "expandable_tile" => json!({ "key": "k", "label": "l", "expanded": true, "body": "b" }),
+            // Same key as `expandable_tile`. Which node is the button is
+            // the difference.
+            "expandable_tile_interactive" => {
+                json!({ "key": "k", "label": "l", "expanded": true, "body": "b" })
+            }
             "toggletip" => json!({ "key": "k", "label": "l", "open": true, "body": "b" }),
             "toggletip_with" => json!({ "key": "k", "label": "l", "open": true, "children": [] }),
             "tooltip" => json!({ "key": "k", "label": "l", "value": "b" }),

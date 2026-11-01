@@ -6,7 +6,9 @@
 //! `tests.rs` (`a_field_is_as_tall_as_size_md`) places `/root/name` and
 //! asserts that rect is 40 tall. A label+input wrapper would be taller.
 //!
-//! Password is skipped (needs View/ViewOff marks and host text secrecy).
+//! [`field_password`] is the visibility-toggle well. Hidden text paints as
+//! bullets (`layout::paint_content_of` reads `semantics.value == "password"`)
+//! while `props.text` keeps the secret. The toggle is the word Show or Hide.
 //! Focus geometry is host-owned; this file does not paint a ring.
 
 use std::sync::Arc;
@@ -16,13 +18,13 @@ use super::kit;
 use super::stack;
 use super::text::text;
 use super::tokens::{
-    BORDER_STRONG, BORDER_SUBTLE, ICON_DISABLED, SIZE_MD, SPACING_02, SPACING_03, SUPPORT_ERROR,
-    SUPPORT_WARNING, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_BODY, t,
+    BORDER_STRONG, BORDER_SUBTLE, ICON_DISABLED, LINK_PRIMARY, SIZE_MD, SPACING_02, SPACING_03,
+    SUPPORT_ERROR, SUPPORT_WARNING, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_BODY, t,
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
-    AxisConstraint, Constraints, FocusFigure, FocusShownOn, Interaction, Key, NodeKind, Props,
-    Role, ViewNode,
+    AxisConstraint, Behaviour, Constraints, FocusFigure, FocusShownOn, InsetRefs, Intent,
+    Interaction, Key, NodeKind, Phase, Props, Role, ViewNode,
 };
 
 /// What an editable text input declares.
@@ -225,6 +227,71 @@ pub fn labeled(key: impl Into<Key>, label: impl Into<String>, control: ViewNode)
 /// has a chrome rect and a content origin as two different things.
 pub fn field(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
     input_field(key, label, SIZE_MD, FieldChrome::Enabled)
+}
+
+/// Register row #510. A text well with a Show / Hide toggle inside the
+/// trailing edge.
+///
+/// `visible` false sets the input's `semantics.value` to `"password"`,
+/// which is what the painter masks. `visible` true sets `"password-shown"`
+/// and the painter draws `props.text`. The secret stays in `props.text`
+/// either way. `value` is the current contents. An empty value paints the
+/// placeholder, which is not masked.
+pub fn field_password(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    visible: bool,
+    value: impl Into<String>,
+) -> ViewNode {
+    let label = label.into();
+    let value = value.into();
+    let mut input = input_field("input", label.clone(), SIZE_MD, FieldChrome::Nested);
+    if !value.is_empty() {
+        input = valued(input, value);
+    }
+    input.semantics.value = Some(
+        if visible {
+            "password-shown"
+        } else {
+            "password"
+        }
+        .into(),
+    );
+    input.semantics.focus_figure = FocusFigure::Sides;
+    input.semantics.focus_shown_on = FocusShownOn::OnWell;
+
+    let word = if visible { "Hide" } else { "Show" };
+    let mut caption = text("label", word);
+    caption
+        .props
+        .tokens
+        .insert("foreground".into(), t(LINK_PRIMARY));
+    let mut toggle = stack("toggle", Axis::Horizontal, None, vec![caption]);
+    toggle.props.align = Some(Align::Center);
+    toggle.props.padding = Some(InsetRefs {
+        left: Some(t(SPACING_03)),
+        right: Some(t(SPACING_03)),
+        ..InsetRefs::default()
+    });
+    let toggle = toggle
+        .interactive(
+            Role::Button,
+            word,
+            &[Interaction::Focus, Interaction::Click, Interaction::Hover],
+        )
+        .with_behaviour(Behaviour {
+            intent: Intent::Toggle,
+            phase: Phase::OnRelease,
+        });
+
+    let mut well = stack(key, Axis::Horizontal, None, vec![input, toggle]);
+    well.props.align = Some(Align::Center);
+    bind_field_chrome(&mut well.props);
+    well.semantics.focus_figure = FocusFigure::Sides;
+    well.semantics.focus_shown_on = FocusShownOn::Well;
+    well.semantics.label = Some(label);
+    well.constraints.vertical.min = Some(SIZE_MD);
+    well
 }
 
 /// Carbon Default, size sm (32).

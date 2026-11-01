@@ -1,6 +1,6 @@
 //! Inventory row 33, Tag.
 
-use gorgon_petra::component::{dismissible_tag, section, selectable_tag, tag};
+use gorgon_petra::component::{dismissible_tag, section, selectable_tag, tag, tag_operational};
 use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::ViewNode;
 
@@ -127,6 +127,8 @@ impl Page for Tag {
                     selectable_tag("tag-sel-off", "Unselected", false),
                     selectable_tag("tag-sel-on", "Selected", true),
                     selectable_tag(TAG_SEL, "Selectable", self.tag_sel),
+                    // Register row #484. Chevron plus the words "Show more".
+                    tag_operational("tag-op", "Filters"),
                 ],
             )],
         )

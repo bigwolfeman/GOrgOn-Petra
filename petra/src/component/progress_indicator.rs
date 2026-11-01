@@ -79,6 +79,18 @@ pub fn progress_indicator(key: impl Into<Key>, steps: Vec<ViewNode>) -> ViewNode
     node
 }
 
+/// Register row #378. The same row of steps, declared interactive.
+///
+/// The clickable step is [`progress_step_interactive`]. This constructor
+/// is the indicator those steps sit in: `semantics.value = "interactive"`
+/// so an empty list still differs from [`progress_indicator`]. It does
+/// not restyle the steps. Pass [`progress_step_interactive`] children.
+pub fn progress_indicator_interactive(key: impl Into<Key>, steps: Vec<ViewNode>) -> ViewNode {
+    let mut node = progress_indicator(key, steps);
+    node.semantics.value = Some("interactive".into());
+    node
+}
+
 /// One step: its own top rule, then glyph + label inline. Exactly 128 wide.
 ///
 /// `complete` writes [`Semantics.value`] `"complete"` and draws

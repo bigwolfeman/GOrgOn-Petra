@@ -43,6 +43,9 @@
 --               content_switcher_item(key, label, i == 1)
 --           })),
 --           frame,
+--           ui_shell_left_panel_ux("shell-left-ux", vec![
+--               ui_shell_left_panel_item("shell-left-ux-item", "Overview", false, true, vec![]),
+--           ]),
 --       ],
 --   )])
 --
@@ -132,6 +135,17 @@ return ui.section({
                 tokens = { background = "surface.base" },
               }),
             },
+          }),
+        },
+      }),
+      ui.ui_shell_left_panel_ux({
+        key = "shell-left-ux",
+        children = {
+          ui.ui_shell_left_panel_item({
+            key = "shell-left-ux-item",
+            label = "Overview",
+            expanded = false,
+            selected = true,
           }),
         },
       }),

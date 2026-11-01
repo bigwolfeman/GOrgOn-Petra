@@ -1,6 +1,6 @@
 //! Inventory row 28, Search.
 
-use gorgon_petra::component::{search, section, valued};
+use gorgon_petra::component::{search, search_expandable, section, valued};
 use gorgon_petra::input::{InputEvent, KeyCode};
 use gorgon_petra::tree::ViewNode;
 
@@ -116,11 +116,23 @@ impl Page for Search {
         section(
             "search",
             "Search",
-            vec![filled_body(
-                "q",
-                sp("spacing.md"),
-                vec![valued(search(Q, "Filter fibers"), self.query.clone())],
-            )],
+            vec![
+                filled_body(
+                    "q",
+                    sp("spacing.md"),
+                    vec![valued(search(Q, "Filter fibers"), self.query.clone())],
+                ),
+                // Register row #404. Collapsed shows the word beside the
+                // magnifier. Expanded is the search well.
+                filled_body(
+                    "q-expand",
+                    sp("spacing.md"),
+                    vec![
+                        search_expandable("q-collapsed", "Search fibers", false),
+                        search_expandable("q-expanded", "Search fibers", true),
+                    ],
+                ),
+            ],
         )
     }
 

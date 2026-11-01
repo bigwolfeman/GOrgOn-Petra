@@ -655,7 +655,7 @@ pub fn radio(key: impl Into<Key>, label: impl Into<String>, selected: bool) -> V
 /// The disc [`radio`] and [`radio_required`] share: solid accent-filled
 /// when selected, [`empty_mark`]'s outline when not. Pulled out of
 /// [`radio`] so the required form (T037) does not fork this construction.
-fn radio_box_node(selected: bool) -> ViewNode {
+pub(crate) fn radio_box_node(selected: bool) -> ViewNode {
     if selected {
         let mut node = swatch(
             "box",

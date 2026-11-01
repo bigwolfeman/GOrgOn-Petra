@@ -28,5 +28,14 @@ return ui.section({
         },
       }),
     }),
+    common.body("pi-ix-row", "spacing.md", {
+      ui.progress_indicator_interactive({
+        key = "pi-ix",
+        children = {
+          ui.progress_step_interactive({ key = "st-x-0", label = "Clone", complete = true, current = false }),
+          ui.progress_step_interactive({ key = "st-x-1", label = "Build", complete = false, current = true }),
+        },
+      }),
+    }),
   },
 })

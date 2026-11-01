@@ -24,5 +24,9 @@ return ui.section({
       ui.dropdown_option_multiselected({ key = "opt-multi", label = "Multi", selected = false }),
       ui.dropdown_option_multiselected({ key = "opt-multi-on", label = "Multi on", selected = true }),
     }),
+    common.body("dd-variants", "spacing.md", {
+      ui.dropdown_multiselect({ key = "dd-multi", label = "Themes", count = 2 }),
+      ui.dropdown_combo({ key = "dd-combo", label = "Theme", value = "Dark" }),
+    }),
   },
 })

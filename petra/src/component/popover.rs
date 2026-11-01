@@ -37,12 +37,15 @@
 use super::pad;
 use super::stack;
 use super::text::text;
-use super::tokens::{BORDER_SUBTLE, SHADOW_OVERLAY, SPACING_03, SPACING_05, SURFACE_RAISED, t};
+use super::tokens::{
+    BORDER_SUBTLE, SHADOW_OVERLAY, SHAPE_NONE, SPACING_01, SPACING_03, SPACING_04, SPACING_05,
+    SURFACE_RAISED, t,
+};
 use crate::geom::Axis;
 use crate::token::{CornerRole, corner_for};
 use crate::tree::{
     Align, Anchor, AxisConstraint, ClampRule, Constraints, Edge, InputPolicy, Key, Layer, NodeKind,
-    Props, Role, Semantics, TextWrap, ViewNode,
+    Props, Role, Semantics, TextWrap, Tip, ViewNode,
 };
 
 /// Carbon `.cds--popover-content` `max-inline-size`. T070 prefers SCSS
@@ -91,6 +94,54 @@ pub fn popover_border(
     let mut node = popover(key, label, anchor, body);
     node.props.tokens.insert("border".into(), t(BORDER_SUBTLE));
     node
+}
+
+/// Register row #356 (`caret-tip`). The same bubble as [`popover`], with
+/// the caret named and the gap set to [`SPACING_04`] (12).
+///
+/// The default [`popover`] already paints a caret (an absent `tip` is
+/// [`Tip::Caret`]) at [`SPACING_03`] (8). Carbon's caret modifier is 10px
+/// and this ramp has no 10. 12 is the next token. The default constructor
+/// is left alone: a gallery test measures its 8px gap.
+pub fn popover_caret(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    anchor: impl Into<Key>,
+    body: impl Into<String>,
+) -> ViewNode {
+    let mut node = popover(key, label, anchor, body);
+    set_sibling_offset(&mut node, SPACING_04);
+    node.props.tip = Some(Tip::Caret);
+    node.semantics.value = Some("caret".into());
+    node
+}
+
+/// Register row #357 (`tab-tip`). No caret, square corners, a 2px gap
+/// ([`SPACING_01`]) and a top seam.
+///
+/// The seam is `border-top`. The border slot is one unit wide, so the 2px
+/// Carbon seam is the gap, not a 2px stroke.
+pub fn popover_tab(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    anchor: impl Into<Key>,
+    body: impl Into<String>,
+) -> ViewNode {
+    let mut node = popover(key, label, anchor, body);
+    set_sibling_offset(&mut node, SPACING_01);
+    node.props.tip = Some(Tip::Flush);
+    node.props.tokens.insert("radius".into(), t(SHAPE_NONE));
+    node.props
+        .tokens
+        .insert("border-top".into(), t(BORDER_SUBTLE));
+    node.semantics.value = Some("tab".into());
+    node
+}
+
+fn set_sibling_offset(node: &mut ViewNode, token: &str) {
+    if let Some(Anchor::Sibling { offset, .. }) = &mut node.props.anchor {
+        *offset = Some(t(token));
+    }
 }
 
 /// The one body run all four anchored bubbles in this library share.

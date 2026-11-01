@@ -34,10 +34,10 @@
 //!
 //! Rail's hover-to-expand (`SideNav.js:34-102`, a 100 ms `enterDelayMs`) is
 //! not built: nothing in the interaction layer expresses a delayed state
-//! transition yet. **UX** is not built either — its defining behaviour is
-//! collapsing to zero width below the `lg` breakpoint, and a fixed-size
-//! pane has no viewport breakpoint to collapse at. Both are spec 004's
-//! layout call, not this row's anatomy.
+//! transition yet. [`ui_shell_left_panel_ux`] is the `--ux` inset: width
+//! 256 and a `$spacing-09` (32) top pad. Collapsing to width 0 below the
+//! `lg` breakpoint is a viewport fact this pane does not own, and it is
+//! named as a residual rather than faked.
 //!
 //! [`ui_shell_left_panel_item`] is a branch (sub-menu, children non-empty)
 //! or a leaf (flat link), and [`ui_shell_left_panel_icon_item`] is the same
@@ -111,8 +111,8 @@ use super::icon::{IconBox, IconMark, IconTone, icon_in, icon_toned};
 use super::text::text;
 use super::tokens::{
     ACCENT_PRIMARY, BORDER_SUBTLE, LAYER_ACTIVE, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER,
-    SPACING_03, SPACING_05, SPACING_07, SURFACE_BASE, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY,
-    TYPOGRAPHY_BODY, TYPOGRAPHY_HEADING_SM, t,
+    SPACING_03, SPACING_05, SPACING_07, SPACING_09, SURFACE_BASE, SURFACE_RAISED, TEXT_MUTED,
+    TEXT_PRIMARY, TYPOGRAPHY_BODY, TYPOGRAPHY_HEADING_SM, t,
 };
 use super::{pin_block, stack};
 use crate::geom::{Align, Axis};
@@ -653,6 +653,22 @@ pub fn ui_shell_left_panel(key: impl Into<Key>, items: Vec<ViewNode>) -> ViewNod
 /// clipped label is all there is to see.
 pub fn ui_shell_left_panel_rail(key: impl Into<Key>, items: Vec<ViewNode>) -> ViewNode {
     ui_shell_left_panel_in(key, LeftPanelMode::Rail, items)
+}
+
+/// Register row #585 (`--ux`). Fixed 256 width, top inset [`SPACING_09`]
+/// (32) instead of the default 16.
+///
+/// Collapse-to-0 below the `lg` breakpoint is not expressed. A component
+/// pane has no viewport breakpoint. The width and the inset are the part
+/// this tree can say.
+pub fn ui_shell_left_panel_ux(key: impl Into<Key>, items: Vec<ViewNode>) -> ViewNode {
+    let mut node = left_panel(key, items, LEFT_PANEL_WIDTH);
+    node.props.padding = Some(InsetRefs {
+        top: Some(t(SPACING_09)),
+        ..InsetRefs::default()
+    });
+    node.semantics.value = Some("ux".into());
+    node
 }
 
 /// A `Grid`, not a `Stack`, for two reasons that are really one.

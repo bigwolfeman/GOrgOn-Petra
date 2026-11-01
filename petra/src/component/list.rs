@@ -77,6 +77,10 @@ const MARKER_COLUMN_UNORDERED: f32 = 16.0;
 /// The ordered marker column: the counter's `$spacing-06` hang, room for
 /// two digits and the full stop.
 const MARKER_COLUMN_ORDERED: f32 = 24.0;
+/// `--ordered--native` (register row #243): the browser's own indent,
+/// wider than the generated `$spacing-06` hang. A text leaf has no
+/// end-align of its own, so the wider column is the visible delta.
+const MARKER_COLUMN_ORDERED_NATIVE: f32 = 40.0;
 /// The ordered marker column from item 100 on: three digits need the next
 /// step of the ramp (`$spacing-07`).
 const MARKER_COLUMN_ORDERED_WIDE: f32 = 32.0;
@@ -181,6 +185,9 @@ enum Marker {
 enum Kind {
     Unordered,
     Ordered,
+    /// CSS `list-style: decimal` stand-in. The list node carries
+    /// `semantics.value = "native"` and a 40-wide marker column.
+    OrderedNative,
 }
 
 /// An unordered list under [`BulletScheme::Carbon`]. `Role::List`, no
@@ -219,6 +226,24 @@ pub fn ordered_list(key: impl Into<Key>, items: Vec<ViewNode>) -> ViewNode {
         ..Semantics::default()
     };
     restamp(&mut node, Kind::Ordered, 1, BulletScheme::default());
+    node
+}
+
+/// Register row #243 (`--ordered--native`). The same generated counters as
+/// [`ordered_list`], in a 40-wide column, with `semantics.value = "native"`.
+///
+/// Petra has no CSS `list-style`, so this is not the browser's own marker.
+/// The column width and the declared value are the difference a reader of
+/// the tree can check. Nesting keeps the native kind when this list is the
+/// one being restamped (`restamp_sniffed` reads the value).
+pub fn ordered_list_native(key: impl Into<Key>, items: Vec<ViewNode>) -> ViewNode {
+    let mut node = stack(key, Axis::Vertical, None, items);
+    node.semantics = Semantics {
+        role: Some(Role::List),
+        value: Some("native".into()),
+        ..Semantics::default()
+    };
+    restamp(&mut node, Kind::OrderedNative, 1, BulletScheme::default());
     node
 }
 
@@ -326,6 +351,7 @@ fn marker_column(kind: Kind, index: usize) -> f32 {
         Kind::Unordered => MARKER_COLUMN_UNORDERED,
         Kind::Ordered if index >= THREE_DIGITS_FROM => MARKER_COLUMN_ORDERED_WIDE,
         Kind::Ordered => MARKER_COLUMN_ORDERED,
+        Kind::OrderedNative => MARKER_COLUMN_ORDERED_NATIVE,
     }
 }
 
@@ -364,7 +390,9 @@ fn restamp(list: &mut ViewNode, kind: Kind, depth: usize, scheme: BulletScheme) 
 /// already stamped at level 1 by its own `ordered_list` / `unordered_list`
 /// call, which is what makes that look reliable.
 fn restamp_sniffed(list: &mut ViewNode, depth: usize, scheme: BulletScheme) {
-    let kind = if list
+    let kind = if list.semantics.value.as_deref() == Some("native") {
+        Kind::OrderedNative
+    } else if list
         .children
         .first()
         .is_some_and(|item| marker_is_ordered(item))
@@ -391,7 +419,7 @@ fn restamp_nested(item: &mut ViewNode, depth: usize, scheme: BulletScheme) {
 fn marker_for(kind: Kind, scheme: BulletScheme, depth: usize, index: usize) -> Marker {
     match kind {
         Kind::Unordered => Marker::Glyph(scheme.bullet(depth)),
-        Kind::Ordered => Marker::Counter(counter(depth, index)),
+        Kind::Ordered | Kind::OrderedNative => Marker::Counter(counter(depth, index)),
     }
 }
 

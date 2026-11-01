@@ -6,7 +6,7 @@
 //!
 //! Components: Breadcrumb, Content switcher, Link, Menu, Menu buttons,
 //! Menubar, Pagination, Tabs, UI shell header, UI shell left panel, UI
-//! shell right panel. 99 constructors (see the `coverage` test at the
+//! shell right panel. 102 constructors (see the `coverage` test at the
 //! bottom, which counts the source rather than trusting this comment).
 
 use serde::Deserialize;
@@ -28,22 +28,23 @@ use crate::component::{
     content_switcher_item_icon_with_size, content_switcher_item_low_contrast, content_switcher_lg,
     content_switcher_low_contrast, content_switcher_low_contrast_lg,
     content_switcher_low_contrast_sm, content_switcher_sm, link, link_inline, link_with_icon, menu,
-    menu_border, menu_button, menu_button_lg, menu_button_sm, menu_button_xs, menu_flyout,
-    menu_item, menu_item_group, menu_item_radio_group, menu_item_selectable, menu_item_with,
-    menu_lg, menu_sm, menu_with_icons, menu_xs, menubar, menubar_top, overflow_menu,
-    overflow_menu_lg, overflow_menu_sm, overflow_menu_xs, pagination, pagination_items,
-    pagination_items_lg, pagination_items_open, pagination_items_sm, pagination_lg, pagination_nav,
-    pagination_nav_lg, pagination_nav_open, pagination_nav_sm, pagination_numbers,
-    pagination_numbers_lg, pagination_numbers_sm, pagination_page_size, pagination_prev_next,
-    pagination_prev_next_lg, pagination_prev_next_sm, pagination_range, pagination_sm, tab,
-    tab_bar, tab_with_icon, ui_shell_header, ui_shell_header_action, ui_shell_header_action_icon,
-    ui_shell_header_menu_trigger, ui_shell_header_nav_item, ui_shell_left_panel,
-    ui_shell_left_panel_divider, ui_shell_left_panel_icon_item,
-    ui_shell_left_panel_icon_item_large, ui_shell_left_panel_icon_subitem,
-    ui_shell_left_panel_icon_subitem_large, ui_shell_left_panel_in, ui_shell_left_panel_item,
-    ui_shell_left_panel_item_large, ui_shell_left_panel_rail, ui_shell_left_panel_subitem,
-    ui_shell_left_panel_subitem_large, ui_shell_right_panel, ui_shell_right_panel_divider,
-    ui_shell_switcher, ui_shell_switcher_item, vertical_tab, vertical_tab_bar,
+    menu_border, menu_button, menu_button_ghost, menu_button_lg, menu_button_sm,
+    menu_button_tertiary, menu_button_xs, menu_flyout, menu_item, menu_item_group,
+    menu_item_radio_group, menu_item_selectable, menu_item_with, menu_lg, menu_sm, menu_with_icons,
+    menu_xs, menubar, menubar_top, overflow_menu, overflow_menu_lg, overflow_menu_sm,
+    overflow_menu_xs, pagination, pagination_items, pagination_items_lg, pagination_items_open,
+    pagination_items_sm, pagination_lg, pagination_nav, pagination_nav_lg, pagination_nav_open,
+    pagination_nav_sm, pagination_numbers, pagination_numbers_lg, pagination_numbers_sm,
+    pagination_page_size, pagination_prev_next, pagination_prev_next_lg, pagination_prev_next_sm,
+    pagination_range, pagination_sm, tab, tab_bar, tab_with_icon, ui_shell_header,
+    ui_shell_header_action, ui_shell_header_action_icon, ui_shell_header_menu_trigger,
+    ui_shell_header_nav_item, ui_shell_left_panel, ui_shell_left_panel_divider,
+    ui_shell_left_panel_icon_item, ui_shell_left_panel_icon_item_large,
+    ui_shell_left_panel_icon_subitem, ui_shell_left_panel_icon_subitem_large,
+    ui_shell_left_panel_in, ui_shell_left_panel_item, ui_shell_left_panel_item_large,
+    ui_shell_left_panel_rail, ui_shell_left_panel_subitem, ui_shell_left_panel_subitem_large,
+    ui_shell_left_panel_ux, ui_shell_right_panel, ui_shell_right_panel_divider, ui_shell_switcher,
+    ui_shell_switcher_item, vertical_tab, vertical_tab_bar,
 };
 use crate::tree::{Edge, Key, ViewNode};
 
@@ -676,6 +677,12 @@ pub const ENTRIES: &[Entry] = &[
     row!("menu_button_lg", KeyLabelOpenChildren, |p| menu_button_lg(
         p.key, p.label, p.open, p.children
     )),
+    row!("menu_button_tertiary", KeyLabelOpenChildren, |p| {
+        menu_button_tertiary(p.key, p.label, p.open, p.children)
+    }),
+    row!("menu_button_ghost", KeyLabelOpenChildren, |p| {
+        menu_button_ghost(p.key, p.label, p.open, p.children)
+    }),
     row!("combo_button", ComboButtonParams, |p| combo_button(
         p.key, p.action, p.open, p.children
     )),
@@ -835,6 +842,9 @@ pub const ENTRIES: &[Entry] = &[
     )),
     row!("ui_shell_left_panel_rail", KeyChildren, |p| {
         ui_shell_left_panel_rail(p.key, p.children)
+    }),
+    row!("ui_shell_left_panel_ux", KeyChildren, |p| {
+        ui_shell_left_panel_ux(p.key, p.children)
     }),
     row!("ui_shell_left_panel_item", LeftPanelItemParams, |p| {
         ui_shell_left_panel_item(p.key, p.label, p.expanded, p.selected, p.children)
@@ -1136,6 +1146,13 @@ mod tests {
             "menu_button_lg" => {
                 json!({ "key": "k-mb-lg", "label": "l", "open": true, "children": [] })
             }
+            // Same key as `menu_button`. The trigger chrome is the difference.
+            "menu_button_tertiary" => {
+                json!({ "key": "k", "label": "l", "open": true, "children": [] })
+            }
+            "menu_button_ghost" => {
+                json!({ "key": "k", "label": "l", "open": true, "children": [] })
+            }
             "combo_button" => {
                 json!({ "key": "k-cb", "action": "save", "open": true, "children": [] })
             }
@@ -1237,6 +1254,9 @@ mod tests {
                 "key": "k", "mode": { "type": "rail" }, "items": []
             }),
             "ui_shell_left_panel" => json!({ "key": "k", "children": [] }),
+            // Same key as `ui_shell_left_panel`. The 32px top inset and
+            // `semantics.value = "ux"` are the difference.
+            "ui_shell_left_panel_ux" => json!({ "key": "k", "children": [] }),
             "ui_shell_left_panel_rail" => json!({ "key": "k-rail", "children": [] }),
             "ui_shell_left_panel_item" => json!({
                 "key": "k", "label": "l", "expanded": true, "selected": true, "children": []

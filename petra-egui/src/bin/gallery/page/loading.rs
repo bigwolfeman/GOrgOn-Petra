@@ -1,6 +1,6 @@
 //! Inventory row 17, Loading.
 
-use gorgon_petra::component::{loading, loading_sm, section};
+use gorgon_petra::component::{loading, loading_sm, loading_stop, section};
 use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::ViewNode;
 
@@ -38,6 +38,8 @@ impl Page for Loading {
                     vec![
                         loading("load-lg", "Working", self.now),
                         loading_sm("load-sm", "Working", self.now),
+                        // Register row #249. Frozen at half a turn. Not ambient.
+                        loading_stop("load-stop", "Stopped"),
                     ],
                 )],
             )],

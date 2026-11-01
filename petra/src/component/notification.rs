@@ -104,8 +104,8 @@ use super::pad;
 use super::stack;
 use super::text::text;
 use super::tokens::{
-    LAYER_HOVER, SHADOW_RAISED, SPACING_03, SPACING_05, SURFACE_RAISED, TEXT_PRIMARY,
-    TYPOGRAPHY_HEADING_SM, t,
+    BORDER_STRONG, LAYER_HOVER, SHADOW_RAISED, SPACING_03, SPACING_05, SURFACE_RAISED,
+    TEXT_PRIMARY, TYPOGRAPHY_HEADING_SM, t,
 };
 use crate::geom::{Align, Axis};
 use crate::token::{CornerRole, corner_for};
@@ -254,6 +254,25 @@ pub fn notification_inline(
     body: impl Into<String>,
 ) -> ViewNode {
     notification_inline_kind(key, NotificationKind::default(), title, body)
+}
+
+/// Register row #311. A persistent in-flow callout.
+///
+/// Same card as [`notification_inline`], with two differences the tree
+/// records: `semantics.value = "callout"` (the inline card's value is the
+/// kind word) and a leading `border-left` rail. No close control. The
+/// shell is not a button.
+pub fn notification_callout(
+    key: impl Into<Key>,
+    title: impl Into<String>,
+    body: impl Into<String>,
+) -> ViewNode {
+    let mut node = notification_inline(key, title, body);
+    node.semantics.value = Some("callout".into());
+    node.props
+        .tokens
+        .insert("border-left".into(), t(BORDER_STRONG));
+    node
 }
 
 /// [`notification_inline`] with the status field named.

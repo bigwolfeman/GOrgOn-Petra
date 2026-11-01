@@ -1,8 +1,8 @@
 //! Inventory row 34, Text input.
 
 use gorgon_petra::component::{
-    field, field_lg, field_readonly, field_required, field_sm, field_validated, field_warning,
-    hinted, labeled, section, valued,
+    field, field_lg, field_password, field_readonly, field_required, field_sm, field_validated,
+    field_warning, hinted, labeled, section, valued,
 };
 use gorgon_petra::input::{InputEvent, KeyCode};
 use gorgon_petra::tree::ViewNode;
@@ -227,6 +227,10 @@ impl Page for TextInput {
                         valued(field_readonly(RO, "Read-only value"), "9p://kernel/0"),
                     ),
                     field_required("field-req", "Fiber id"),
+                    // Register row #510. Hidden paints bullets. Shown paints
+                    // the secret. The toggle is the word Show or Hide.
+                    field_password("field-secret", "Password", false, "harbor"),
+                    field_password("field-secret-shown", "Password shown", true, "harbor"),
                 ],
             )],
         )

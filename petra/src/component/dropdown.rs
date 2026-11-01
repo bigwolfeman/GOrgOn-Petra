@@ -24,8 +24,9 @@
 //!
 //! [`dropdown`] is the closed column, [`dropdown_open`] the same column with
 //! the list. The field is keyed `"field"` in both, so keyboard focus seated
-//! on it survives the open. Combo box and Multiselect are omitted (clear
-//! icon + tags).
+//! on it survives the open. [`dropdown_multiselect`] puts a count tag in
+//! the field. [`dropdown_combo`] replaces the closed button-field with an
+//! input and a worded Clear control.
 //!
 //! **Sizes.** Carbon's list box runs xs/sm/md/lg
 //! ([`super::list_box::ListBoxSize`]); md is the unsuffixed default and
@@ -38,6 +39,8 @@
 //! shipping it as public `_xs`/`_sm`/`_lg` siblings is deferred to whichever
 //! caller first needs an open dropdown at a size other than md.
 
+use std::sync::Arc;
+
 use super::controls::{CheckState, checkbox_box};
 use super::field::{invalid_helper, validated_column, warning_helper};
 use super::icon::{IconMark, IconTone, icon_toned};
@@ -46,13 +49,14 @@ use super::pin_block;
 use super::stack;
 use super::text::text;
 use super::tokens::{
-    LAYER_ACTIVE, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SIZE_MD, SPACING_03,
-    SUPPORT_ERROR, SUPPORT_WARNING, SURFACE_RAISED, TEXT_MUTED, TEXT_PRIMARY,
-    TYPOGRAPHY_BODY_COMPACT, TYPOGRAPHY_LABEL, t,
+    LAYER_ACTIVE, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, LAYER_SELECTED_INVERSE,
+    SIZE_MD, SPACING_02, SPACING_03, SUPPORT_ERROR, SUPPORT_WARNING, SURFACE_RAISED, TEXT_INVERSE,
+    TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_BODY_COMPACT, TYPOGRAPHY_LABEL, t,
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
-    Behaviour, FocusFigure, Intent, Interaction, Key, Phase, Role, TextWrap, ViewNode,
+    AxisConstraint, Behaviour, FocusFigure, Intent, Interaction, Key, NodeKind, Phase, Props, Role,
+    TextWrap, ViewNode,
 };
 
 const _: () = assert!(SIZE_MD == 40.0);
@@ -211,6 +215,148 @@ fn labelled(
     let mut node = stack(key, Axis::Vertical, Some(SPACING_03), children);
     node.props.align = Some(Align::Stretch);
     node.semantics.expanded = Some(open);
+    node
+}
+
+/// Register row #176. Closed field that names how many options are selected.
+///
+/// `count` is the selection size. Zero draws the prompt "Choose options"
+/// and no tag. A positive count draws "{count} selected" plus an inverse
+/// count tag in the field. The tag uses [`LAYER_SELECTED_INVERSE`] and
+/// [`TEXT_INVERSE`], which the vocabulary already ships.
+pub fn dropdown_multiselect(key: impl Into<Key>, label: impl Into<String>, count: u32) -> ViewNode {
+    let label = label.into();
+    let value = if count == 0 {
+        "Choose options".to_owned()
+    } else {
+        format!("{count} selected")
+    };
+    let mut node = labelled(key, label, value, ListBoxSize::Md, None);
+    node.semantics.value = Some("multiselect".into());
+    if count > 0 {
+        stamp_count_tag(&mut node, count);
+    }
+    node
+}
+
+fn stamp_count_tag(column: &mut ViewNode, count: u32) {
+    let Some(field) = column
+        .children
+        .iter_mut()
+        .find(|c| c.key.as_str() == "field")
+    else {
+        return;
+    };
+    let field = Arc::make_mut(field);
+    let Some(row) = field.children.iter_mut().find(|c| c.key.as_str() == "row") else {
+        return;
+    };
+    let row = Arc::make_mut(row);
+    row.children.insert(0, Arc::new(count_tag(count)));
+}
+
+fn count_tag(count: u32) -> ViewNode {
+    let mut caption = text("count", count.to_string());
+    caption
+        .props
+        .tokens
+        .insert("foreground".into(), t(TEXT_INVERSE));
+    let mut node = stack("count-tag", Axis::Horizontal, None, vec![caption]);
+    node.props.align = Some(Align::Center);
+    node.props.padding = Some(crate::tree::InsetRefs {
+        left: Some(t(SPACING_02)),
+        right: Some(t(SPACING_02)),
+        ..crate::tree::InsetRefs::default()
+    });
+    node.props
+        .tokens
+        .insert("background".into(), t(LAYER_SELECTED_INVERSE));
+    node
+}
+
+/// Register row #177. An editable field with a chevron, and a worded
+/// Clear control when `value` is non-empty.
+///
+/// The field is an [`NodeKind::Input`], not the closed button
+/// [`dropdown`] uses. Clear is a button labelled "Clear". The chevron is
+/// not a second control: the label above the field names the column.
+pub fn dropdown_combo(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    value: impl Into<String>,
+) -> ViewNode {
+    let label = label.into();
+    let value = value.into();
+    let mut caption = text("label", label.clone());
+    caption.props.style = Some(t(TYPOGRAPHY_LABEL));
+    caption
+        .props
+        .tokens
+        .insert("foreground".into(), t(TEXT_MUTED));
+
+    let mut props = Props {
+        placeholder: Some(label.clone()),
+        style: Some(t(TYPOGRAPHY_BODY_COMPACT)),
+        ..Props::default()
+    };
+    if !value.is_empty() {
+        props.text = Some(value.clone());
+    }
+    props.tokens.insert("foreground".into(), t(TEXT_PRIMARY));
+    // An `Input` leaf has no text child. `BarUnder` (the default) then
+    // spans the whole field, and this field is wider than 240
+    // (`every_bar_figure_finds_its_content`). Sides is the field figure.
+    let input = ViewNode::new(NodeKind::Input, "input")
+        .with_props(props)
+        .interactive(
+            Role::TextInput,
+            label.clone(),
+            super::field::EDITABLE_TEXT_INTENTS,
+        )
+        .with_focus_figure(FocusFigure::Sides);
+
+    let mut leading_parts = vec![input];
+    if !value.is_empty() {
+        let mut clear_label = text("label", "Clear");
+        clear_label
+            .props
+            .tokens
+            .insert("foreground".into(), t(TEXT_PRIMARY));
+        let clear = stack("clear", Axis::Horizontal, None, vec![clear_label])
+            .interactive(Role::Button, "Clear", OPTION_INTENTS)
+            .with_behaviour(crate::tree::Behaviour {
+                intent: Intent::Activate,
+                phase: Phase::OnRelease,
+            });
+        leading_parts.push(clear);
+    }
+    let mut leading = stack("value", Axis::Horizontal, Some(SPACING_03), leading_parts);
+    leading.props.align = Some(Align::Center);
+
+    let chevron = icon_toned("chevron", IconMark::ChevronDown, IconTone::Primary);
+    let mut row = edge_row("row", leading, Some(chevron));
+    row.constraints.vertical = AxisConstraint {
+        min: Some(SIZE_MD),
+        max: Some(SIZE_MD),
+        priority: 0,
+    };
+    let rule = super::rule("rule", Axis::Horizontal, super::tokens::BORDER_STRONG);
+    let mut field = stack("field", Axis::Vertical, None, vec![row, rule]);
+    field.props.align = Some(Align::Stretch);
+    field
+        .props
+        .tokens
+        .insert("background".into(), t(SURFACE_RAISED));
+    field.constraints.vertical = AxisConstraint {
+        min: Some(SIZE_MD),
+        max: Some(SIZE_MD),
+        priority: 0,
+    };
+
+    let mut node = stack(key, Axis::Vertical, Some(SPACING_03), vec![caption, field]);
+    node.props.align = Some(Align::Stretch);
+    node.semantics.value = Some("combo".into());
+    node.semantics.expanded = Some(false);
     node
 }
 

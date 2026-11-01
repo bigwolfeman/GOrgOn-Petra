@@ -1,10 +1,10 @@
 //! Inventory row 9, Data table.
 
 use gorgon_petra::component::{
-    SortDirection, data_table_grip_row, data_table_row_expandable, data_table_row_lg,
-    data_table_row_md, data_table_row_sm, data_table_row_xl, data_table_row_xs,
-    data_table_sort_header, data_table_weights_at, data_table_zebra_sized, disabled, field_sm,
-    section, text, valued,
+    SortDirection, data_table_batch_expansion, data_table_grip_row, data_table_radio,
+    data_table_row, data_table_row_expandable, data_table_row_lg, data_table_row_md,
+    data_table_row_sm, data_table_row_xl, data_table_row_xs, data_table_sort_header,
+    data_table_weights_at, data_table_zebra_sized, disabled, field_sm, section, text, valued,
 };
 use gorgon_petra::frame::PetrifiedFrame;
 use gorgon_petra::geom::Point;
@@ -360,6 +360,29 @@ impl Page for DataTable {
                         &self.weights,
                         true,
                         true,
+                    ),
+                    // Register row #125. Radio marks. No select-all.
+                    data_table_radio(
+                        "dt-radio",
+                        vec![text("dt-radio-h", "Name")],
+                        vec![data_table_row(
+                            "dt-radio-0",
+                            vec![text("dt-radio-name", "kernel")],
+                            true,
+                        )],
+                    ),
+                    // Register row #128. The header says Expand all.
+                    data_table_batch_expansion(
+                        "dt-batch",
+                        vec![text("dt-batch-h", "Name")],
+                        vec![data_table_row_expandable(
+                            "dt-batch-0",
+                            vec![text("dt-batch-name", "kernel")],
+                            false,
+                            false,
+                            "Mounted while the row is open.",
+                        )],
+                        false,
                     ),
                 ],
             )],

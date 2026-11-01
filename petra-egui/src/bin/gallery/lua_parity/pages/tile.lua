@@ -30,6 +30,12 @@ return ui.section({
         expanded = false,
         body = "Below-the-fold body.",
       }),
+      ui.expandable_tile_interactive({
+        key = "tile-exp-ix",
+        label = "Interactive detail",
+        expanded = false,
+        body = "The body can hold its own controls.",
+      }),
     }),
   },
 })

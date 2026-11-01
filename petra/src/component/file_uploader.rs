@@ -273,6 +273,38 @@ fn build_uploader(
     node
 }
 
+/// Register row #199. Single-file mode: the drop zone is gone and one
+/// file row stands in its place.
+///
+/// # Panics
+/// If `filename` is empty or only whitespace. An empty name is the drop
+/// zone, which is [`file_uploader`], and a silent fallback would hide the
+/// mode.
+pub fn file_uploader_single(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    filename: impl Into<String>,
+) -> ViewNode {
+    let filename = filename.into();
+    if filename.trim().is_empty() {
+        panic!(
+            "file_uploader_single requires a filename; an empty name is the drop zone (file_uploader)"
+        );
+    }
+    let label = label.into();
+    let mut heading = text("heading", label.clone());
+    heading.props.style = Some(t(TYPOGRAPHY_HEADING_SM));
+    heading
+        .props
+        .tokens
+        .insert("foreground".into(), t(TEXT_PRIMARY));
+    let item = file_uploader_item("file", filename, true);
+    let mut node = stack(key, Axis::Vertical, Some(SPACING_03), vec![heading, item]);
+    node.semantics.label = Some(label);
+    node.semantics.value = Some("single".into());
+    node
+}
+
 /// The `--drag-over` wrapper: `zone` under a canvas leaf drawing Carbon's
 /// `outline: 2px solid $focus, outline-offset: -2px`
 /// (MEASURED `_file-uploader.scss:434-438`).

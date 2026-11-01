@@ -1,7 +1,8 @@
 //! Inventory row 24, Popover.
 
 use gorgon_petra::component::{
-    button, heading, popover_border, popover_with, popover_with_placement, primary_button, section,
+    button, heading, popover_border, popover_caret, popover_tab, popover_with,
+    popover_with_placement, primary_button, section,
 };
 use gorgon_petra::geom::{Align as CrossAlign, Axis};
 use gorgon_petra::input::InputEvent;
@@ -372,6 +373,37 @@ impl Page for Popover {
                 // the panel and the border bubble — all three clear of the
                 // fold and of each other.
                 if self.open {
+                    // Register rows #356 and #357. They share the open
+                    // state with the border cell. The shut state is the
+                    // twelve-placement grid, and this page's own note says
+                    // a cell above that grid flips `bottom-*` onto
+                    // `left-*`. The default popover above keeps its 8px gap.
+                    cells.push(column(
+                        "po-caret",
+                        None,
+                        vec![
+                            button("pop-caret-anchor", "Caret"),
+                            popover_caret(
+                                "pop-caret-note",
+                                "Caret tip",
+                                "pop-caret-anchor",
+                                "The gap is spacing-04, 12.",
+                            ),
+                        ],
+                    ));
+                    cells.push(column(
+                        "po-tab",
+                        None,
+                        vec![
+                            button("pop-tab-anchor", "Tab"),
+                            popover_tab(
+                                "pop-tab-note",
+                                "Tab tip",
+                                "pop-tab-anchor",
+                                "Flush tip, square corners, a top seam.",
+                            ),
+                        ],
+                    ));
                     let mut auto_pair = vec![button(AUTO_ANCHOR, "Auto-align")];
                     if self.auto_open {
                         auto_pair.push(popover_with_placement(

@@ -1,8 +1,8 @@
 //! Inventory row 16, List.
 
 use gorgon_petra::component::{
-    Bullet, BulletScheme, list_item, list_item_with, ordered_list, section, unordered_list,
-    unordered_list_with,
+    Bullet, BulletScheme, list_item, list_item_with, ordered_list, ordered_list_native, section,
+    unordered_list, unordered_list_with,
 };
 use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::ViewNode;
@@ -112,6 +112,15 @@ impl Page for List {
                                 )),
                             ),
                             list_item("ol-2", "Run"),
+                        ],
+                    ),
+                    // Register row #243. A wider marker column and
+                    // `semantics.value = "native"`.
+                    ordered_list_native(
+                        "ol-native",
+                        vec![
+                            list_item("ol-native-0", "First"),
+                            list_item("ol-native-1", "Second"),
                         ],
                     ),
                 ],

@@ -3,7 +3,7 @@
 use gorgon_petra::component::{
     IconMark, LeftPanelMode, content_switcher, content_switcher_item, disabled, section,
     ui_shell_header_menu_trigger, ui_shell_left_panel_icon_item, ui_shell_left_panel_icon_subitem,
-    ui_shell_left_panel_in,
+    ui_shell_left_panel_in, ui_shell_left_panel_item, ui_shell_left_panel_ux,
 };
 use gorgon_petra::geom::Align;
 use gorgon_petra::input::InputEvent;
@@ -315,6 +315,18 @@ impl Page for UiShellLeftPanel {
                             .collect(),
                     ),
                     frame,
+                    // Register row #585. 256 wide, 32px top inset. Collapse
+                    // below lg is not in this tree.
+                    ui_shell_left_panel_ux(
+                        "shell-left-ux",
+                        vec![ui_shell_left_panel_item(
+                            "shell-left-ux-item",
+                            "Overview",
+                            false,
+                            true,
+                            vec![],
+                        )],
+                    ),
                 ],
             )],
         )

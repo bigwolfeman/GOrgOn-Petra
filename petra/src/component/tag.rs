@@ -8,8 +8,10 @@
 //! together. A colour-only badge cannot be constructed: `StatusToken::new`
 //! refuses empty text, and this function never takes a bare hue.
 //!
-//! Four Carbon forms; this file ships three. Operational needs Popover
-//! (Wave 3) and is omitted. Colour variants (`$tag-background-red` …) and
+//! Four Carbon forms. [`tag_operational`] is the fourth: a button pill
+//! with a disclosure chevron and a worded name. It does not open a
+//! popover. Nested anchored placement is spec 005, and this row is the
+//! control that would open one. Colour variants (`$tag-background-red` …) and
 //! the eight-hue badge set are **skipped**: those names are not in
 //! [`super::tokens`], and inventing hues here would put a colour decision
 //! in a component. High-contrast / outline on the *selectable* form uses
@@ -165,6 +167,28 @@ pub fn selectable_tag(key: impl Into<Key>, label: impl Into<String>, selected: b
         })
         .owning_its_text();
     node.semantics.selected = selected;
+    node
+}
+
+/// Register row #484. A button pill that discloses more tags.
+///
+/// The chevron is not the only channel: the accessible name is
+/// `"Show more {label}"` and `Semantics.expanded` is set. The outline is
+/// the same border selectable tags draw. This constructor does not mount
+/// the disclosed tags. The caller does, when expanded content exists.
+pub fn tag_operational(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
+    let label = label.into();
+    let accessible = format!("Show more {label}");
+    let title = title_text("label", label);
+    let caret = icon_toned("caret", IconMark::ChevronDown, IconTone::Primary);
+    let mut node = shell(key, HEIGHT_MD, SPACING_03, vec![title, caret], true, true)
+        .interactive(Role::Button, accessible, INTERACTIVE)
+        .with_behaviour(Behaviour {
+            intent: Intent::Toggle,
+            phase: Phase::OnRelease,
+        })
+        .owning_its_text();
+    node.semantics.expanded = Some(false);
     node
 }
 

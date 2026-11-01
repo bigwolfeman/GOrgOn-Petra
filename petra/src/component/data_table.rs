@@ -101,7 +101,7 @@
 
 use std::sync::Arc;
 
-use super::controls::{CheckState, checkbox_box};
+use super::controls::{CheckState, checkbox_box, radio_box_node};
 use super::icon::{IconMark, IconTone, icon_toned};
 use super::list_box::edge_row;
 use super::menu::menu;
@@ -111,8 +111,8 @@ use super::swatch;
 use super::text::{as_compact_heading, ellipsis_text, text};
 use super::tokens::{
     ACCENT_PRIMARY, BORDER_SUBTLE, BUTTON_DISABLED, LAYER_ACCENT, LAYER_ACCENT_HOVER, LAYER_ACTIVE,
-    LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SIZE_MD, SPACING_03, SPACING_04, SPACING_05,
-    SURFACE_BASE, TEXT_ON_ACCENT, TEXT_PRIMARY, TYPOGRAPHY_BODY_COMPACT, t,
+    LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SIZE_MD, SPACING_02, SPACING_03, SPACING_04,
+    SPACING_05, SURFACE_BASE, TEXT_ON_ACCENT, TEXT_PRIMARY, TYPOGRAPHY_BODY_COMPACT, t,
 };
 use crate::frame::PetrifiedFrame;
 use crate::geom::{Align, Axis, Point};
@@ -362,6 +362,209 @@ pub fn data_table_zebra_sized(
         })
         .collect();
     data_table_sized(key, header, rows, weights, dividers, reorderable)
+}
+
+/// The radio disc is 18 (`controls::RADIO_BOX`). The header blank matches
+/// that extent so the column does not collapse when select-all is removed.
+const RADIO_HEADER: f32 = 18.0;
+/// Select column for a radio table. The checkbox column is 40
+/// (padding 16, box 16, padding 8). The disc is 2 wider, so the
+/// track is 42. A track of 40 squeezes the disc to 16 wide.
+const RADIO_SELECT_W: f32 = 42.0;
+/// The batch-expand control is a word plus a chevron. 112 fits "Collapse
+/// all" at body size; the select track is that plus the checkbox column.
+const BATCH_EXPAND_W: f32 = 112.0;
+const BATCH_SELECT_W: f32 = 160.0;
+
+/// Register row #125 (`select-radio`). Body marks are radio discs. The
+/// header has no select-all: a radio column is single-select, and slice-b
+/// refuses a header that would check every row.
+pub fn data_table_radio(
+    key: impl Into<Key>,
+    header: Vec<ViewNode>,
+    rows: Vec<ViewNode>,
+) -> ViewNode {
+    let mut node = data_table(key, header, rows);
+    node.semantics.value = Some("radio".into());
+    for child in &mut node.children {
+        let row = Arc::make_mut(child);
+        let header_row = row.key.as_str() == "header";
+        let selected = row.semantics.selected;
+        radioize_row(row, header_row, selected);
+        widen_radio_track(row);
+    }
+    node
+}
+
+fn widen_radio_track(row: &mut ViewNode) {
+    visit_row_grid_mut(row, &mut |grid| {
+        for (i, child) in grid.children.iter().enumerate() {
+            if child.key.as_str() == SELECT_CELL
+                && let Some(col) = grid.props.columns.get_mut(i)
+            {
+                *col = TrackSize::Fixed {
+                    value: RADIO_SELECT_W,
+                };
+            }
+        }
+    });
+}
+
+fn radioize_row(row: &mut ViewNode, header_row: bool, selected: bool) {
+    fn visit(node: &mut ViewNode, header_row: bool, selected: bool) -> bool {
+        if node.key.as_str() == SELECT_CELL {
+            if header_row {
+                node.children.retain(|c| c.key.as_str() != SELECT_ALL);
+                node.children.push(Arc::new(radio_header_blank()));
+            } else if let Some(mark) = node.children.iter_mut().find(|c| c.key.as_str() == "box") {
+                *mark = Arc::new(radio_box_node(selected));
+            }
+            return true;
+        }
+        for child in &mut node.children {
+            let child = Arc::make_mut(child);
+            if child.key.as_str() == SELECT_CELL || child.key.as_str() == "cells" {
+                return visit(child, header_row, selected);
+            }
+        }
+        false
+    }
+    visit(row, header_row, selected);
+}
+
+fn radio_header_blank() -> ViewNode {
+    let mut node = stack("radio-header", Axis::Horizontal, None, Vec::new());
+    node.constraints.horizontal = AxisConstraint {
+        min: Some(RADIO_HEADER),
+        max: Some(RADIO_HEADER),
+        priority: 0,
+    };
+    node.constraints.vertical = AxisConstraint {
+        min: Some(RADIO_HEADER),
+        max: Some(RADIO_HEADER),
+        priority: 0,
+    };
+    node
+}
+
+/// Register row #128 (`batch-expansion`). A worded "Expand all" /
+/// "Collapse all" control in the header's expand slot, with a matching
+/// blank on every body row so the checkbox column stays one x.
+///
+/// `all_expanded` is the caller's fact. This constructor does not walk
+/// the rows and decide it.
+pub fn data_table_batch_expansion(
+    key: impl Into<Key>,
+    header: Vec<ViewNode>,
+    rows: Vec<ViewNode>,
+    all_expanded: bool,
+) -> ViewNode {
+    let mut node = data_table(key, header, rows);
+    node.semantics.value = Some(
+        if all_expanded {
+            "collapse-all"
+        } else {
+            "expand-all"
+        }
+        .into(),
+    );
+    let label = if all_expanded {
+        "Collapse all"
+    } else {
+        "Expand all"
+    };
+    let control = batch_expand_control(label, all_expanded);
+    for child in &mut node.children {
+        let row = Arc::make_mut(child);
+        let is_header = row.key.as_str() == "header";
+        install_expand_slot(row, if is_header { Some(&control) } else { None });
+        widen_select_track(row);
+    }
+    node
+}
+
+fn batch_expand_control(label: &str, all_expanded: bool) -> ViewNode {
+    let mark = if all_expanded {
+        IconMark::ChevronUp
+    } else {
+        IconMark::ChevronDown
+    };
+    let chevron = icon_toned("chevron", mark, IconTone::Primary);
+    let mut caption = text("label", label);
+    caption
+        .props
+        .tokens
+        .insert("foreground".into(), t(TEXT_PRIMARY));
+    let mut node = stack(
+        EXPAND,
+        Axis::Horizontal,
+        Some(SPACING_02),
+        vec![chevron, caption],
+    );
+    node.props.align = Some(Align::Center);
+    node.constraints.horizontal = AxisConstraint {
+        min: Some(BATCH_EXPAND_W),
+        max: Some(BATCH_EXPAND_W),
+        priority: 0,
+    };
+    let mut node = node
+        .interactive(Role::Button, label, ROW_INTENTS)
+        .with_behaviour(TOGGLES_ON_RELEASE)
+        .owning_its_text()
+        // The header sits on the first body row. A bar hung under this
+        // control lands on that row (`every_bar_under_has_five_units_of_clear_run_below_it`).
+        .with_focus_figure(FocusFigure::BarInside);
+    node.semantics.expanded = Some(all_expanded);
+    node
+}
+
+fn batch_expand_blank() -> ViewNode {
+    let mut node = stack(EXPAND, Axis::Horizontal, None, Vec::new());
+    node.constraints.horizontal = AxisConstraint {
+        min: Some(BATCH_EXPAND_W),
+        max: Some(BATCH_EXPAND_W),
+        priority: 0,
+    };
+    node
+}
+
+fn install_expand_slot(row: &mut ViewNode, control: Option<&ViewNode>) {
+    fn visit(node: &mut ViewNode, control: Option<&ViewNode>) -> bool {
+        if node.key.as_str() == SELECT_CELL {
+            let slot = match control {
+                Some(control) => control.clone(),
+                None => batch_expand_blank(),
+            };
+            if let Some(existing) = node.children.iter_mut().find(|c| c.key.as_str() == EXPAND) {
+                *existing = Arc::new(slot);
+            } else {
+                node.children.insert(0, Arc::new(slot));
+            }
+            return true;
+        }
+        for child in &mut node.children {
+            let child = Arc::make_mut(child);
+            if child.key.as_str() == SELECT_CELL || child.key.as_str() == "cells" {
+                return visit(child, control);
+            }
+        }
+        false
+    }
+    visit(row, control);
+}
+
+fn widen_select_track(row: &mut ViewNode) {
+    visit_row_grid_mut(row, &mut |grid| {
+        for (i, child) in grid.children.iter().enumerate() {
+            if child.key.as_str() == SELECT_CELL
+                && let Some(col) = grid.props.columns.get_mut(i)
+            {
+                *col = TrackSize::Fixed {
+                    value: BATCH_SELECT_W,
+                };
+            }
+        }
+    });
 }
 
 /// The column weights a drag on the divider `node` to `pos` asks for.

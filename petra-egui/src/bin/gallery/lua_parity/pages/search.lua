@@ -22,5 +22,9 @@ return ui.section({
         value = "",
       }),
     }),
+    common.filled_body("q-expand", "spacing.md", {
+      ui.search_expandable({ key = "q-collapsed", label = "Search fibers", expanded = false }),
+      ui.search_expandable({ key = "q-expanded", label = "Search fibers", expanded = true }),
+    }),
   },
 })

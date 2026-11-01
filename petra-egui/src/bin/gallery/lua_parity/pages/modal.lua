@@ -21,6 +21,8 @@ return ui.section({
       common.column("md-col", "spacing.md", {
         ui.button({ key = "open-modal", label = "Rebuild fiber" }),
         ui.button({ key = "open-loading", label = "Load state" }),
+        ui.button({ key = "open-danger", label = "Delete fiber" }),
+        ui.button({ key = "open-ack", label = "Got it" }),
       }),
     }),
   },

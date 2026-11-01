@@ -242,6 +242,9 @@ pub const ENTRIES: &[Entry] = &[
         p.label,
         f64::from(p.value)
     )),
+    row!("loading_stop", KeyLabel, |p| lib::loading_stop(
+        p.key, p.label
+    )),
     // notification.rs — Notification.
     row!("notification", KeyLabelValue, |p| lib::notification(
         p.key, p.label, p.value
@@ -254,6 +257,9 @@ pub const ENTRIES: &[Entry] = &[
     }),
     row!("notification_inline", KeyLabelValue, |p| {
         lib::notification_inline(p.key, p.label, p.value)
+    }),
+    row!("notification_callout", KeyLabelValue, |p| {
+        lib::notification_callout(p.key, p.label, p.value)
     }),
     row!("notification_inline_kind", NotificationKindParams, |p| {
         lib::notification_inline_kind(p.key, p.kind.into(), p.title, p.body)
@@ -300,6 +306,9 @@ pub const ENTRIES: &[Entry] = &[
     row!("progress_indicator", KeyChildren, |p| {
         lib::progress_indicator(p.key, p.children)
     }),
+    row!("progress_indicator_interactive", KeyChildren, |p| {
+        lib::progress_indicator_interactive(p.key, p.children)
+    }),
     row!("progress_step", ProgressStepParams, |p| lib::progress_step(
         p.key, p.label, p.complete, p.current
     )),
@@ -308,6 +317,9 @@ pub const ENTRIES: &[Entry] = &[
     }),
     // tag.rs — Tag.
     row!("tag", KeyLabel, |p| lib::tag(p.key, p.label)),
+    row!("tag_operational", KeyLabel, |p| lib::tag_operational(
+        p.key, p.label
+    )),
     row!("tag_sm", KeyLabel, |p| lib::tag_sm(p.key, p.label)),
     row!("tag_lg", KeyLabel, |p| lib::tag_lg(p.key, p.label)),
     row!("dismissible_tag", KeyLabel, |p| lib::dismissible_tag(

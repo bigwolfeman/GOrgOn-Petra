@@ -2,8 +2,8 @@
 //!
 //! Anatomy (`_search.scss`): field + decorative magnifier + typed value.
 //! The close ("x") button is a filled-state affordance and is omitted
-//! until a Clear control is wired; expandable is omitted (width animation
-//! plus a collapsed icon-button).
+//! until a Clear control is wired. [`search_expandable`] is the collapsed
+//! worded button and the open well. The collapsed form is never icon-only.
 //!
 //! The magnifier is [`IconMark::Search`] in [`IconTone::Secondary`]
 //! (`.cds--search-magnifier-icon`, `fill: $icon-secondary`, 16×16,
@@ -26,13 +26,14 @@
 use super::field::bind_field_chrome;
 use super::icon::{IconMark, IconTone, icon_toned};
 use super::stack;
+use super::text::text;
 use super::tokens::{
     SIZE_MD, SPACING_03, SPACING_04, SPACING_05, TEXT_PRIMARY, TYPOGRAPHY_BODY, t,
 };
 use crate::geom::{Align, Axis};
 use crate::tree::{
-    AxisConstraint, Constraints, FocusFigure, FocusShownOn, InsetRefs, Key, NodeKind, Props, Role,
-    ViewNode,
+    AxisConstraint, Behaviour, Constraints, FocusFigure, FocusShownOn, InsetRefs, Intent,
+    Interaction, Key, NodeKind, Phase, Props, Role, ViewNode,
 };
 
 /// Carbon Search sm. `tokens` only ships [`SIZE_MD`] (md / 40).
@@ -102,6 +103,56 @@ fn search_sized(key: impl Into<Key>, label: impl Into<String>, height: f32) -> V
     well.semantics.focus_figure = FocusFigure::Sides;
     well.semantics.focus_shown_on = FocusShownOn::Well;
     well.constraints.vertical.min = Some(height);
+    well
+}
+
+/// Register row #404. Collapsed, a button whose visible name is `label`
+/// beside the magnifier. Expanded, the md search well.
+///
+/// The collapsed control is not icon-only (FR-026). Width animation is
+/// not in this tree: the two states are two trees.
+pub fn search_expandable(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    expanded: bool,
+) -> ViewNode {
+    let label = label.into();
+    if !expanded {
+        let mut magnifier = icon_toned("magnifier", IconMark::Search, IconTone::Secondary);
+        magnifier.semantics.label = Some("Search".to_owned());
+        let mut caption = text("label", label.clone());
+        caption
+            .props
+            .tokens
+            .insert("foreground".into(), t(TEXT_PRIMARY));
+        let mut node = stack(
+            key,
+            Axis::Horizontal,
+            Some(SPACING_03),
+            vec![magnifier, caption],
+        );
+        node.props.align = Some(Align::Center);
+        node.props.padding = Some(InsetRefs {
+            left: Some(t(SPACING_03)),
+            right: Some(t(SPACING_03)),
+            ..InsetRefs::default()
+        });
+        let mut node = node
+            .interactive(
+                Role::Button,
+                label,
+                &[Interaction::Focus, Interaction::Click, Interaction::Hover],
+            )
+            .with_behaviour(Behaviour {
+                intent: Intent::Toggle,
+                phase: Phase::OnRelease,
+            });
+        node.semantics.expanded = Some(false);
+        return node;
+    }
+    let mut well = search(key, label);
+    well.semantics.expanded = Some(true);
+    well.semantics.value = Some("expandable".into());
     well
 }
 

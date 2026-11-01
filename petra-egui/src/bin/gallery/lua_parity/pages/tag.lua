@@ -25,6 +25,7 @@ return ui.section({
       ui.selectable_tag({ key = "tag-sel-off", label = "Unselected", selected = false }),
       ui.selectable_tag({ key = "tag-sel-on", label = "Selected", selected = true }),
       ui.selectable_tag({ key = "tag-sel", label = "Selectable", selected = false }),
+      ui.tag_operational({ key = "tag-op", label = "Filters" }),
     }),
   },
 })

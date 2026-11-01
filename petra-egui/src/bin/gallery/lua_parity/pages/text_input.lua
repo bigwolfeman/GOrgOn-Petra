@@ -73,6 +73,18 @@ return ui.section({
         }),
       }),
       ui.field_required({ key = "field-req", label = "Fiber id" }),
+      ui.field_password({
+        key = "field-secret",
+        label = "Password",
+        visible = false,
+        value = "harbor",
+      }),
+      ui.field_password({
+        key = "field-secret-shown",
+        label = "Password shown",
+        visible = true,
+        value = "harbor",
+      }),
     }),
   },
 })

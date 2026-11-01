@@ -296,9 +296,9 @@ fn selection_mark(selected: bool) -> ViewNode {
 
 /// An expandable tile: a labelled header that reveals `body` below the fold.
 ///
-/// Clicking anywhere on the tile toggles it — this constructor has no
-/// inner controls, so it does not need Carbon's "only the chevron
-/// button toggles" sub-form. The caret at the header's right end points
+/// Clicking anywhere on the tile toggles it. Register row #528
+/// (expandable, no inner control) is this constructor: the whole tile is
+/// the button, and the chevron is not its own control. The caret at the header's right end points
 /// down when open and right when shut; `Semantics.expanded` and the
 /// revealed body are the fact a reader who cannot see it still gets.
 /// Carbon seats its chevron at the tile's bottom-right corner; this one
@@ -332,6 +332,45 @@ pub fn expandable_tile(
             phase: Phase::OnRelease,
         });
     node.semantics.expanded = Some(expanded);
+    node
+}
+
+/// Register row #529. Only the caret button toggles. The tile shell is
+/// not a button, so a caller can put controls in the body without the
+/// shell stealing the click.
+///
+/// `body` is still one text run. The difference from [`expandable_tile`]
+/// is which node carries [`Role::Button`].
+pub fn expandable_tile_interactive(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    expanded: bool,
+    body: impl Into<String>,
+) -> ViewNode {
+    let label = label.into();
+    let disclosure = caret(
+        "glyph",
+        if expanded {
+            CaretDirection::Down
+        } else {
+            CaretDirection::Right
+        },
+    );
+    let mut caret_btn = disclosure
+        .interactive(Role::Button, format!("Toggle {label}"), INTERACTIVE)
+        .with_behaviour(Behaviour {
+            intent: Intent::Toggle,
+            phase: Phase::OnRelease,
+        });
+    caret_btn.semantics.expanded = Some(expanded);
+    let mut children = vec![header("header", text("label", label.clone()), caret_btn)];
+    if expanded {
+        children.push(text("body", body.into()));
+    }
+    let mut node = shell(key, children);
+    node.semantics.expanded = Some(expanded);
+    node.semantics.label = Some(label);
+    node.semantics.value = Some("interactive".into());
     node
 }
 

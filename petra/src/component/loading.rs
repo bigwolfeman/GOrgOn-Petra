@@ -276,6 +276,24 @@ pub fn loading_sm(key: impl Into<Key>, label: impl Into<String>, now: f64) -> Vi
     loading_sized(key, label, LoadingSize::Small, now)
 }
 
+/// Register row #249 (`--stop`). The large spinner frozen at half a turn.
+///
+/// Not ambient, and `semantics.value` is `"stopped"`, so
+/// [`advance_ambient_spinners`] does not retick it. The phase is half a
+/// turn, which is not [`spinner_phase`]`(0)`, so one frame differs from a
+/// spinner published at time zero.
+pub fn loading_stop(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
+    let mut node = spinner(key, LoadingSize::Large, TURN_SECONDS * 0.5);
+    node.ambient = false;
+    node.semantics = Semantics {
+        role: Some(Role::Progress),
+        label: Some(label.into()),
+        value: Some("stopped".into()),
+        ..Semantics::default()
+    };
+    node
+}
+
 fn loading_sized(
     key: impl Into<Key>,
     label: impl Into<String>,

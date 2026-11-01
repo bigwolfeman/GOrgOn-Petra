@@ -1,6 +1,8 @@
 //! Inventory row 35, Tile.
 
-use gorgon_petra::component::{clickable_tile, expandable_tile, section, selectable_tile, tile};
+use gorgon_petra::component::{
+    clickable_tile, expandable_tile, expandable_tile_interactive, section, selectable_tile, tile,
+};
 use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::ViewNode;
 
@@ -59,6 +61,13 @@ impl Page for Tile {
                         "More detail",
                         self.tile_exp,
                         "Below-the-fold body.",
+                    ),
+                    // Register row #529. The caret is the button. The shell is not.
+                    expandable_tile_interactive(
+                        "tile-exp-ix",
+                        "Interactive detail",
+                        false,
+                        "The body can hold its own controls.",
                     ),
                 ],
             )],

@@ -6,8 +6,9 @@
 //! must never re-derive what the constructor does.
 //!
 //! File covered: `data_table.rs` (Data table) — every
-//! `pub fn ... -> ViewNode` constructor in it (24 rows after spec 008's
-//! row ramp and the toolbar/batch-bar size steps), registered below. The
+//! `pub fn ... -> ViewNode` constructor in it (26 rows after spec 008's
+//! row ramp, the toolbar/batch-bar size steps, and the wave-3 radio and
+//! batch-expansion tables), registered below. The
 //! `every_view_node_constructor_has_exactly_one_row` test proves it by
 //! scanning that file's own source text, not by trusting
 //! this list.
@@ -43,6 +44,25 @@ struct DataTableParams {
 }
 impl ParamShape for DataTableParams {
     const LUAU: &'static str = "{ key: string, header: { ViewNode }, rows: { ViewNode } }";
+}
+
+/// `data_table_batch_expansion(key, header, rows, all_expanded)`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DataTableBatchExpansionParams {
+    key: Key,
+    /// See [`DataTableParams`]'s `header`.
+    #[serde(default)]
+    header: Vec<ViewNode>,
+    /// See [`DataTableParams`]'s `rows`.
+    #[serde(default)]
+    rows: Vec<ViewNode>,
+    /// Whether every expandable row is open. The header word follows this.
+    all_expanded: bool,
+}
+impl ParamShape for DataTableBatchExpansionParams {
+    const LUAU: &'static str =
+        "{ key: string, header: { ViewNode }, rows: { ViewNode }, all_expanded: boolean }";
 }
 
 /// `data_table_row_expandable(key, cells, selected, expanded, body)`.
@@ -202,6 +222,14 @@ pub const ENTRIES: &[Entry] = &[
     row!("data_table_zebra", DataTableParams, |p| {
         lib::data_table_zebra(p.key, p.header, p.rows)
     }),
+    row!("data_table_radio", DataTableParams, |p| {
+        lib::data_table_radio(p.key, p.header, p.rows)
+    }),
+    row!(
+        "data_table_batch_expansion",
+        DataTableBatchExpansionParams,
+        |p| lib::data_table_batch_expansion(p.key, p.header, p.rows, p.all_expanded)
+    ),
     row!("data_table_row", KeyChildrenSelected, |p| {
         lib::data_table_row(p.key, p.children, p.selected)
     }),

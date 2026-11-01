@@ -1,7 +1,8 @@
 //! Inventory row 26, Progress indicator.
 
 use gorgon_petra::component::{
-    progress_indicator, progress_step, progress_step_interactive, section,
+    progress_indicator, progress_indicator_interactive, progress_step, progress_step_interactive,
+    section,
 };
 use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::ViewNode;
@@ -78,6 +79,19 @@ impl Page for ProgressIndicator {
                             progress_step_interactive("st-i-0", "Clone", true, false),
                             progress_step_interactive("st-i-1", "Build", false, true),
                             progress_step("st-i-2", "Run", false, false),
+                        ],
+                    )],
+                ),
+                // Register row #378. The list itself is interactive. The
+                // steps above stay the step variant.
+                body(
+                    "pi-ix-row",
+                    sp("spacing.md"),
+                    vec![progress_indicator_interactive(
+                        "pi-ix",
+                        vec![
+                            progress_step_interactive("st-x-0", "Clone", true, false),
+                            progress_step_interactive("st-x-1", "Build", false, true),
                         ],
                     )],
                 ),

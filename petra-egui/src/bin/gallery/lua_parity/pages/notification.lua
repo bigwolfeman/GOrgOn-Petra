@@ -58,6 +58,11 @@ return ui.section({
         body = "12 fibers reloaded.",
         action = "Next kind",
       }),
+      ui.notification_callout({
+        key = "nt-callout",
+        label = "Store is read-only",
+        value = "Writes wait until the lease renews.",
+      }),
     }),
   },
 })

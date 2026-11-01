@@ -835,7 +835,18 @@ pub fn paint_content_of(node: &ViewNode) -> PaintContent {
         // An empty field draws its placeholder, which is why the placeholder
         // is what gets painted rather than the empty string.
         NodeKind::Input => match props.text.as_deref() {
-            Some(t) if !t.is_empty() => (Some(t.to_owned()), true),
+            Some(t) if !t.is_empty() => {
+                // A password field keeps the secret in `props.text` and
+                // paints bullets. `semantics.value == "password"` is the
+                // hidden state; `"password-shown"` paints the secret.
+                // Runs are dropped: a bullet string is not the bytes the
+                // runs were measured against.
+                if node.semantics.value.as_deref() == Some("password") {
+                    (Some("•".repeat(t.chars().count())), false)
+                } else {
+                    (Some(t.to_owned()), true)
+                }
+            }
             _ => (Some(props.placeholder.clone().unwrap_or_default()), false),
         },
         _ => (None, false),

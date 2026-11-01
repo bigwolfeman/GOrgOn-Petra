@@ -202,8 +202,9 @@ pub use controls::{
 };
 pub use data_table::{
     SortDirection, data_table, data_table_batch_action, data_table_batch_bar,
-    data_table_batch_bar_sm, data_table_batch_cancel, data_table_grip_row, data_table_menu,
-    data_table_placed_weights, data_table_row, data_table_row_actions, data_table_row_expandable,
+    data_table_batch_bar_sm, data_table_batch_cancel, data_table_batch_expansion,
+    data_table_grip_row, data_table_menu, data_table_placed_weights, data_table_radio,
+    data_table_row, data_table_row_actions, data_table_row_expandable,
     data_table_row_expandable_actions, data_table_row_lg, data_table_row_md,
     data_table_row_menu_trigger, data_table_row_sm, data_table_row_xl, data_table_row_xs,
     data_table_sized, data_table_skeleton, data_table_sort_header, data_table_toolbar,
@@ -219,16 +220,19 @@ pub use date_picker::{
 pub use disabled::disabled;
 pub use drawer::{docked, drawer, sheet};
 pub use dropdown::{
-    dropdown, dropdown_invalid, dropdown_lg, dropdown_open, dropdown_option,
-    dropdown_option_multiselected, dropdown_readonly, dropdown_sm, dropdown_warning, dropdown_xs,
+    dropdown, dropdown_combo, dropdown_invalid, dropdown_lg, dropdown_multiselect, dropdown_open,
+    dropdown_option, dropdown_option_multiselected, dropdown_readonly, dropdown_sm,
+    dropdown_warning, dropdown_xs,
 };
 pub use field::{
-    field, field_described, field_fluid, field_invalid, field_labeled, field_lg, field_readonly,
-    field_required, field_sm, field_validated, field_warning, hinted, labeled, valued,
+    field, field_described, field_fluid, field_invalid, field_labeled, field_lg, field_password,
+    field_readonly, field_required, field_sm, field_validated, field_warning, hinted, labeled,
+    valued,
 };
 pub use file_uploader::{
     file_uploader, file_uploader_drag_over, file_uploader_item, file_uploader_item_edit,
-    file_uploader_item_invalid, file_uploader_item_warning, file_uploader_with,
+    file_uploader_item_invalid, file_uploader_item_warning, file_uploader_single,
+    file_uploader_with,
 };
 pub use form::{form, form_fluid, form_two_column};
 pub use icon::{IconBox, IconMark, IconTone, icon, icon_in, icon_toned};
@@ -240,25 +244,30 @@ pub use input_group::{
 };
 pub use link::{link, link_inline, link_with_icon};
 pub use list::{
-    Bullet, BulletScheme, list_item, list_item_with, ordered_list, unordered_list,
-    unordered_list_with,
+    Bullet, BulletScheme, list_item, list_item_with, ordered_list, ordered_list_native,
+    unordered_list, unordered_list_with,
 };
 pub use list_row::{LIST_ROW_EXTENT, list_row, list_row_with};
-pub use loading::{advance_ambient_spinners, loading, loading_sm, spinner_phase};
+pub use loading::{advance_ambient_spinners, loading, loading_sm, loading_stop, spinner_phase};
 pub use menu::{
     menu, menu_border, menu_flyout, menu_item, menu_item_group, menu_item_radio_group,
     menu_item_selectable, menu_item_with, menu_lg, menu_sm, menu_with_icons, menu_xs,
 };
 pub use menu_button::{
-    combo_button, combo_button_lg, combo_button_sm, menu_button, menu_button_lg, menu_button_sm,
-    menu_button_xs, overflow_menu, overflow_menu_lg, overflow_menu_sm, overflow_menu_xs,
+    combo_button, combo_button_lg, combo_button_sm, menu_button, menu_button_ghost, menu_button_lg,
+    menu_button_sm, menu_button_tertiary, menu_button_xs, overflow_menu, overflow_menu_lg,
+    overflow_menu_sm, overflow_menu_xs,
 };
 pub use menubar::{menubar, menubar_top};
-pub use modal::{ModalSize, modal, modal_lg, modal_loading, modal_passive, modal_sm, modal_xs};
+pub use modal::{
+    ModalSize, modal, modal_acknowledgment, modal_danger, modal_lg, modal_loading, modal_passive,
+    modal_sm, modal_xs,
+};
 pub use notification::{
     NotificationKind, notification, notification_actionable, notification_actionable_kind,
-    notification_inline, notification_inline_actionable, notification_inline_actionable_kind,
-    notification_inline_kind, notification_toast, notification_toast_kind,
+    notification_callout, notification_inline, notification_inline_actionable,
+    notification_inline_actionable_kind, notification_inline_kind, notification_toast,
+    notification_toast_kind,
 };
 pub use number_input::{
     number_input, number_input_invalid, number_input_lg, number_input_nosteppers,
@@ -275,12 +284,16 @@ pub use pagination_nav::{
     PaginationNavOverflow, pagination_nav, pagination_nav_lg, pagination_nav_open,
     pagination_nav_sm,
 };
-pub use popover::{popover, popover_border, popover_with, popover_with_placement};
+pub use popover::{
+    popover, popover_border, popover_caret, popover_tab, popover_with, popover_with_placement,
+};
 pub use progress::{progress, progress_sm, progress_with_helper};
-pub use progress_indicator::{progress_indicator, progress_step, progress_step_interactive};
+pub use progress_indicator::{
+    progress_indicator, progress_indicator_interactive, progress_step, progress_step_interactive,
+};
 pub use rating::rating;
 pub use readonly::readonly;
-pub use search::{search, search_lg, search_sm};
+pub use search::{search, search_expandable, search_lg, search_sm};
 pub use section::section;
 pub use select::{
     select, select_invalid, select_lg, select_open, select_readonly, select_sm, select_warning,
@@ -303,12 +316,17 @@ pub use tabs::{
     contained_tab, contained_tab_bar, contained_tab_lg, contained_tab_with_secondary,
     contained_tab_xl, tab, tab_bar, tab_with_icon, vertical_tab, vertical_tab_bar,
 };
-pub use tag::{dismissible_tag, selectable_tag, tag, tag_lg, tag_sm, tag_status, tag_with_avatar};
+pub use tag::{
+    dismissible_tag, selectable_tag, tag, tag_lg, tag_operational, tag_sm, tag_status,
+    tag_with_avatar,
+};
 pub use text::{heading, text};
 pub use textarea::{
     TEXTAREA_MAX_HEIGHT, textarea, textarea_invalid, textarea_validated, textarea_warning,
 };
-pub use tile::{clickable_tile, expandable_tile, selectable_tile, tile};
+pub use tile::{
+    clickable_tile, expandable_tile, expandable_tile_interactive, selectable_tile, tile,
+};
 pub use toggle_button::{toggle_button, toggle_button_group, toggle_button_icon};
 pub use toggletip::{toggletip, toggletip_with};
 pub use tooltip::{tooltip, tooltip_anchored, tooltip_definition, tooltip_icon};
@@ -320,8 +338,8 @@ pub use ui_shell::{
     ui_shell_left_panel_icon_item_large, ui_shell_left_panel_icon_subitem,
     ui_shell_left_panel_icon_subitem_large, ui_shell_left_panel_in, ui_shell_left_panel_item,
     ui_shell_left_panel_item_large, ui_shell_left_panel_rail, ui_shell_left_panel_subitem,
-    ui_shell_left_panel_subitem_large, ui_shell_right_panel, ui_shell_right_panel_divider,
-    ui_shell_switcher, ui_shell_switcher_item,
+    ui_shell_left_panel_subitem_large, ui_shell_left_panel_ux, ui_shell_right_panel,
+    ui_shell_right_panel_divider, ui_shell_switcher, ui_shell_switcher_item,
 };
 
 use std::sync::Arc;

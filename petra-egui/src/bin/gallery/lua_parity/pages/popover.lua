@@ -84,6 +84,24 @@ return ui.section({
           body = "Narrow the list. The border is one token binding, the same channel the --border menu's outline uses.",
         }),
       }),
+      common.column("po-caret", nil, {
+        ui.button({ key = "pop-caret-anchor", label = "Caret" }),
+        ui.popover_caret({
+          key = "pop-caret-note",
+          label = "Caret tip",
+          anchor = "pop-caret-anchor",
+          body = "The gap is spacing-04, 12.",
+        }),
+      }),
+      common.column("po-tab", nil, {
+        ui.button({ key = "pop-tab-anchor", label = "Tab" }),
+        ui.popover_tab({
+          key = "pop-tab-note",
+          label = "Tab tip",
+          anchor = "pop-tab-anchor",
+          body = "Flush tip, square corners, a top seam.",
+        }),
+      }),
       -- Register row 361, `--auto-align`: declared `--left` at the page's
       -- left edge, so the flip ladder repositions it.
       common.column("po-auto", nil, {

@@ -62,7 +62,7 @@
 //! A viewport-centred surface is not a popover; this module does not call
 //! [`super::popover`].
 
-use super::button::{button, primary_button};
+use super::button::{button, danger_button, primary_button};
 use super::disabled::disabled;
 use super::icon::{IconBox, IconMark, IconTone, icon_in};
 use super::kit::bind_corners;
@@ -175,6 +175,18 @@ const _: () = assert!(ModalSize::Lg.dialog_share() == 0.84);
 
 const CLOSE_INTENTS: &[Interaction] = &[Interaction::Focus, Interaction::Click, Interaction::Hover];
 
+/// Which footer the one dialog anatomy draws.
+#[derive(Clone, Copy)]
+enum FooterKind {
+    /// Cancel and a primary button.
+    Transactional,
+    /// Cancel and a danger primary. The word on the button is the second
+    /// channel. The fill is the danger button's own, with no invented hover.
+    Danger,
+    /// One button. No Cancel.
+    Acknowledgment,
+}
+
 /// A transactional dialog: title, body, Close, and a Cancel / `primary`
 /// footer. `title` is the accessible name and the visible heading.
 ///
@@ -196,6 +208,44 @@ pub fn modal(
         Some(primary.into()),
         ModalSize::Md,
         None,
+        FooterKind::Transactional,
+    )
+}
+
+/// Register row #292. Transactional footer whose primary action is a
+/// [`danger_button`].
+pub fn modal_danger(
+    key: impl Into<Key>,
+    title: impl Into<String>,
+    body: impl Into<String>,
+    primary: impl Into<String>,
+) -> ViewNode {
+    build(
+        key.into(),
+        title.into(),
+        body.into(),
+        Some(primary.into()),
+        ModalSize::Md,
+        None,
+        FooterKind::Danger,
+    )
+}
+
+/// Register row #293. One footer button, no Cancel. The header Close stays.
+pub fn modal_acknowledgment(
+    key: impl Into<Key>,
+    title: impl Into<String>,
+    body: impl Into<String>,
+    primary: impl Into<String>,
+) -> ViewNode {
+    build(
+        key.into(),
+        title.into(),
+        body.into(),
+        Some(primary.into()),
+        ModalSize::Md,
+        None,
+        FooterKind::Acknowledgment,
     )
 }
 
@@ -222,6 +272,7 @@ pub fn modal_loading(
         Some(primary.into()),
         ModalSize::Md,
         Some(now),
+        FooterKind::Transactional,
     )
 }
 
@@ -240,6 +291,7 @@ pub fn modal_xs(
         Some(primary.into()),
         ModalSize::Xs,
         None,
+        FooterKind::Transactional,
     )
 }
 
@@ -258,6 +310,7 @@ pub fn modal_sm(
         Some(primary.into()),
         ModalSize::Sm,
         None,
+        FooterKind::Transactional,
     )
 }
 
@@ -276,6 +329,7 @@ pub fn modal_lg(
         Some(primary.into()),
         ModalSize::Lg,
         None,
+        FooterKind::Transactional,
     )
 }
 
@@ -298,6 +352,7 @@ pub fn modal_passive(
         None,
         ModalSize::Md,
         None,
+        FooterKind::Transactional,
     )
 }
 
@@ -310,6 +365,7 @@ fn build(
     primary: Option<String>,
     size: ModalSize,
     loading: Option<f64>,
+    kind: FooterKind,
 ) -> ViewNode {
     // The dialog, centred on the cross axis of a stack that fills the middle
     // column: `justify` centres it vertically in the whole window height,
@@ -318,7 +374,7 @@ fn build(
         "seat",
         Axis::Vertical,
         None,
-        vec![dialog(&title, body, primary, loading)],
+        vec![dialog(&title, body, primary, loading, kind)],
     );
     seat.props.justify = Some(Justify::Center);
     seat.props.align = Some(Align::Stretch);
@@ -382,14 +438,20 @@ fn build(
 ///
 /// `loading` dresses the body ([`content_loading`]) and disables the footer's
 /// primary action — [`modal_loading`]'s state, on the one dialog anatomy.
-fn dialog(title: &str, body: String, primary: Option<String>, loading: Option<f64>) -> ViewNode {
+fn dialog(
+    title: &str,
+    body: String,
+    primary: Option<String>,
+    loading: Option<f64>,
+    kind: FooterKind,
+) -> ViewNode {
     let body = match loading {
         Some(now) => content_loading(body, now),
         None => content(body),
     };
     let mut rows = vec![header(title), body];
     if let Some(primary) = primary {
-        rows.push(footer(primary, loading.is_some()));
+        rows.push(footer(primary, loading.is_some(), kind));
     }
     let mut node = stack("dialog", Axis::Vertical, None, rows);
     node.props.align = Some(Align::Stretch);
@@ -403,9 +465,12 @@ fn dialog(title: &str, body: String, primary: Option<String>, loading: Option<f6
     );
     // The state as a fact, not only as pixels (FR-010's rule generalised):
     // a reader of the tree can tell a busy dialog from an idle one.
-    if loading.is_some() {
-        node.semantics.value = Some("loading".to_owned());
-    }
+    node.semantics.value = match (loading.is_some(), kind) {
+        (true, _) => Some("loading".to_owned()),
+        (false, FooterKind::Danger) => Some("danger".to_owned()),
+        (false, FooterKind::Acknowledgment) => Some("acknowledgment".to_owned()),
+        (false, FooterKind::Transactional) => None,
+    };
     node
 }
 
@@ -492,47 +557,64 @@ fn content_loading(body: String, now: f64) -> ViewNode {
 /// `primary_disabled` is [`modal_loading`]'s "primary button disabled"
 /// (slice-c:154): the cell stays where it is and the button under it goes
 /// through [`disabled`].
-fn footer(primary: String, primary_disabled: bool) -> ViewNode {
-    let primary = primary_button("primary", primary);
+fn footer(primary: String, primary_disabled: bool, kind: FooterKind) -> ViewNode {
+    let primary = match kind {
+        FooterKind::Danger => danger_button("primary", primary),
+        FooterKind::Transactional | FooterKind::Acknowledgment => {
+            primary_button("primary", primary)
+        }
+    };
     let primary = if primary_disabled {
         disabled(primary)
     } else {
         primary
     };
-    ViewNode::new(NodeKind::Grid, "footer")
-        .with_props(Props {
-            columns: vec![
+    let (columns, children) = match kind {
+        FooterKind::Acknowledgment => (
+            vec![TrackSize::Weight { weight: 1.0 }],
+            vec![footer_button(
+                primary,
+                Joined {
+                    top: true,
+                    ..Joined::NONE
+                },
+            )],
+        ),
+        FooterKind::Transactional | FooterKind::Danger => (
+            vec![
                 TrackSize::Weight { weight: 1.0 },
                 TrackSize::Weight { weight: 1.0 },
             ],
+            vec![
+                footer_button(
+                    on_layer(button("cancel", "Cancel"), 1),
+                    Joined {
+                        top: true,
+                        right: true,
+                        ..Joined::NONE
+                    },
+                ),
+                footer_button(
+                    primary,
+                    Joined {
+                        top: true,
+                        left: true,
+                        ..Joined::NONE
+                    },
+                ),
+            ],
+        ),
+    };
+    ViewNode::new(NodeKind::Grid, "footer")
+        .with_props(Props {
+            columns,
             rows: vec![TrackSize::Fixed {
                 value: FOOTER_HEIGHT,
             }],
             align: Some(Align::Stretch),
             ..Props::default()
         })
-        .with_children(vec![
-            // One tone ahead of the container it sits on (`on_layer`):
-            // Carbon's `$button-secondary` is a visibly lighter grey than
-            // the dialog, and a Cancel in the dialog's own fill reads as a
-            // label, not a control.
-            footer_button(
-                on_layer(button("cancel", "Cancel"), 1),
-                Joined {
-                    top: true,
-                    right: true,
-                    ..Joined::NONE
-                },
-            ),
-            footer_button(
-                primary,
-                Joined {
-                    top: true,
-                    left: true,
-                    ..Joined::NONE
-                },
-            ),
-        ])
+        .with_children(children)
 }
 
 /// A library button re-seated as a footer cell: Carbon's `.cds--modal-footer

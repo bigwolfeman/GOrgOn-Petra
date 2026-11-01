@@ -111,6 +111,31 @@ return ui.section({
         dividers = true,
         reorderable = true,
       }),
+      ui.data_table_radio({
+        key = "dt-radio",
+        header = { ui.text({ key = "dt-radio-h", label = "Name" }) },
+        rows = {
+          ui.data_table_row({
+            key = "dt-radio-0",
+            selected = true,
+            children = { ui.text({ key = "dt-radio-name", label = "kernel" }) },
+          }),
+        },
+      }),
+      ui.data_table_batch_expansion({
+        key = "dt-batch",
+        all_expanded = false,
+        header = { ui.text({ key = "dt-batch-h", label = "Name" }) },
+        rows = {
+          ui.data_table_row_expandable({
+            key = "dt-batch-0",
+            selected = false,
+            expanded = false,
+            body = "Mounted while the row is open.",
+            children = { ui.text({ key = "dt-batch-name", label = "kernel" }) },
+          }),
+        },
+      }),
     }),
   },
 })

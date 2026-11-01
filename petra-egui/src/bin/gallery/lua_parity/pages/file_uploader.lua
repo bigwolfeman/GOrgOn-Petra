@@ -42,10 +42,16 @@ return ui.section({
         message = "older than the session",
       }),
       -- Register row #211, Carbon's `--drag-over` modifier.
+      -- Above the single-file row so the zone stays inside the 900-unit window.
       ui.file_uploader_drag_over({
         key = "fu-drag-over",
         label = "Drop target, drag-over",
         description = "the zone's edge while a file is held over it",
+      }),
+      ui.file_uploader_single({
+        key = "fu-single",
+        label = "Upload one trace",
+        value = "trace.ndjson",
       }),
       common.wrapped(
         "note",
