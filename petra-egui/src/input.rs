@@ -173,12 +173,12 @@ impl EventTranslator {
             }
             Event::Key {
                 key,
+                physical_key,
                 pressed,
                 repeat,
                 modifiers,
-                ..
             } => Some(InputEvent::Key {
-                key: key_code(*key)?,
+                key: key_code(chord_key(*key, *physical_key))?,
                 pressed: *pressed,
                 repeat: *repeat,
                 modifiers: translate_modifiers(*modifiers),
@@ -246,6 +246,35 @@ pub fn pointer_button(button: EguiButton) -> Option<PointerButton> {
         EguiButton::Secondary => Some(PointerButton::Secondary),
         EguiButton::Middle => Some(PointerButton::Middle),
         EguiButton::Extra1 | EguiButton::Extra2 => None,
+    }
+}
+
+/// The key a chord names: the digit at a digit position, else the logical key.
+///
+/// egui reports the logical key, which is what the press types. Shift+1 on a
+/// US layout types `!`, Shift+7 on a German layout types `/`, and the
+/// unshifted 6 key on AZERTY types `-`. A chord such as `shift-alt-1` names
+/// the key position, as window managers bind workspace digits, so a digit
+/// position wins over what it types. Typed text is unaffected: it arrives as
+/// [`Event::Text`]. Every other key stays logical, so `ctrl-z` follows the
+/// letter on a non-QWERTY layout.
+#[must_use]
+pub fn chord_key(logical: Key, physical: Option<Key>) -> Key {
+    use Key as K;
+    match physical {
+        Some(
+            digit @ (K::Num0
+            | K::Num1
+            | K::Num2
+            | K::Num3
+            | K::Num4
+            | K::Num5
+            | K::Num6
+            | K::Num7
+            | K::Num8
+            | K::Num9),
+        ) => digit,
+        _ => logical,
     }
 }
 
@@ -354,7 +383,7 @@ fn variant_name(event: &Event) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{EventTranslator, LINE_EXTENT_DESKTOP, key_code, translate_modifiers};
+    use super::{EventTranslator, LINE_EXTENT_DESKTOP, chord_key, key_code, translate_modifiers};
     use egui::{Event, Key, MouseWheelUnit, Pos2, TouchPhase, Vec2};
     use gorgon_petra::geom::{Point, Size};
     use gorgon_petra::input::{InputEvent, KeyCode, Modifiers, PointerButton};
@@ -376,6 +405,52 @@ mod tests {
             assert!(out.len() <= 1, "expected at most one event, got {out:?}");
             out.pop()
         }
+    }
+
+    fn key(key: Key, physical: Option<Key>, modifiers: egui::Modifiers) -> Event {
+        Event::Key {
+            key,
+            physical_key: physical,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        }
+    }
+
+    #[test]
+    fn a_digit_position_names_the_digit_whatever_it_types() {
+        let shift_alt = egui::Modifiers::SHIFT | egui::Modifiers::ALT;
+        let mut t = translator();
+        // US Shift+1 types `!`; German Shift+7 types `/`; AZERTY's 6 key types `-`.
+        for (logical, physical, digit) in [
+            (Key::Exclamationmark, Key::Num1, '1'),
+            (Key::Slash, Key::Num7, '7'),
+            (Key::Minus, Key::Num6, '6'),
+            (Key::Num2, Key::Num2, '2'),
+        ] {
+            let Some(InputEvent::Key { key, modifiers, .. }) =
+                t.translate(&key(logical, Some(physical), shift_alt))
+            else {
+                panic!("{logical:?} at {physical:?} makes no key event");
+            };
+            assert_eq!(key, KeyCode::Char(digit), "{logical:?} at {physical:?}");
+            assert!(modifiers.shift && modifiers.alt);
+        }
+    }
+
+    #[test]
+    fn a_key_off_the_digit_row_stays_logical() {
+        // Dvorak: the QWERTY `x` position types `q`. The chord follows the letter.
+        assert_eq!(chord_key(Key::Q, Some(Key::X)), Key::Q);
+        assert_eq!(chord_key(Key::Slash, None), Key::Slash);
+        assert_eq!(chord_key(Key::Exclamationmark, None), Key::Exclamationmark);
+        let mut t = translator();
+        let Some(InputEvent::Key { key, .. }) =
+            t.translate(&key(Key::Minus, Some(Key::Minus), egui::Modifiers::CTRL))
+        else {
+            panic!("minus makes a key event");
+        };
+        assert_eq!(key, KeyCode::Char('-'));
     }
 
     #[test]
