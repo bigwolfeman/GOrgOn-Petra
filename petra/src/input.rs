@@ -335,6 +335,35 @@ pub enum InputEvent {
     WindowFocused,
     /// The window lost keyboard focus.
     WindowBlurred,
+    /// The set of held modifiers changed.
+    ///
+    /// # Why an event and not an `App` callback
+    ///
+    /// A bare Alt, Ctrl, Shift, or Meta press is a keystroke no node asks
+    /// for, and it has no [`KeyCode`], so before this variant an application
+    /// could not learn that one went down. The shell needs that to open its
+    /// discoverability overlay while the operator holds a key (spec 004
+    /// FR-038). A dedicated `App::modifiers_changed` would have been a second
+    /// delivery path next to [`crate::input::route`]: it would skip the
+    /// dispatch record, skip the picture rebuild that an `InputEvent` already
+    /// triggers, and need its own test fixture in every host. One event
+    /// vocabulary means the driver, the testkit, and the audit all see the
+    /// change through the one `App::handle` path.
+    ///
+    /// It carries the whole held set, not a delta, so a listener never has to
+    /// track state to stay correct. A host emits it only when the set
+    /// differs from the last one it reported, so an idle window sends none
+    /// (SC-002). A window blur reports the empty set first, so a modifier
+    /// held when focus left cannot stay "down" in the application.
+    ///
+    /// Like [`InputEvent::Copy`] it is window-level: [`required_interaction`]
+    /// is `None`, the route is [`Route::Unrouted`], and no node declares
+    /// anything to hear it. That also means a raw claim does not swallow it.
+    /// A raw claim (FR-019, FR-020) takes [`InputEvent::Key`] and
+    /// [`InputEvent::Text`] verbatim; the held set is state about the
+    /// keyboard, not a keystroke aimed at the claimant, and the application
+    /// hears it in every focus context.
+    Modifiers(Modifiers),
     /// A pointer gesture that held capture is over, and this is how it ended
     /// (`contracts/interaction-state.md` §7 "Ending").
     ///
@@ -515,7 +544,10 @@ pub fn required_interaction_during(
         // Neither is aimed at a node, so neither asks a node to declare
         // anything. A copy reads a selection that may span twenty runs and
         // belongs to none of them.
-        InputEvent::WindowFocused | InputEvent::WindowBlurred | InputEvent::Copy => None,
+        InputEvent::WindowFocused
+        | InputEvent::WindowBlurred
+        | InputEvent::Modifiers(_)
+        | InputEvent::Copy => None,
     }
 }
 
@@ -3969,6 +4001,33 @@ mod tests {
             "a raw claim on the focused node must not steal a pointer \
              press aimed elsewhere: {got:?}"
         );
+    }
+
+    /// The held-modifier set is window state, not a keystroke for the
+    /// claimant. Under a raw claim it still routes as a window-level event,
+    /// so the application hears it through `App::handle` (spec 004 FR-038)
+    /// and the claimant is not handed a bare Alt as if it were typed.
+    #[test]
+    fn a_modifier_change_is_window_level_even_under_a_raw_claim() {
+        let f = frame(vec![raw_claim_node(
+            "/term",
+            Rect::new(0.0, 0.0, 200.0, 200.0),
+            None,
+        )]);
+        let alt = InputEvent::Modifiers(Modifiers {
+            alt: true,
+            ..Modifiers::NONE
+        });
+        assert_eq!(required_interaction(&alt), None);
+        for got in [
+            route_with_reserved(&f, Some("/term"), &alt, &ReservedChords::default()),
+            route(&f, Some("/term"), &alt),
+        ] {
+            assert!(
+                matches!(got, Route::Unrouted { .. }),
+                "a modifier change must be window-level and never Raw: {got:?}"
+            );
+        }
     }
 
     /// With no raw claim anywhere on the focus path and no reserved chord

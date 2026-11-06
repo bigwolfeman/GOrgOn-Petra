@@ -37,6 +37,8 @@ pub const LINES_PER_PAGE: f32 = 20.0;
 #[derive(Clone, Debug)]
 pub struct EventTranslator {
     last_pointer: Option<Point>,
+    /// The held set last reported as [`InputEvent::Modifiers`].
+    held: Modifiers,
     line_extent: f32,
     untranslated: BTreeMap<&'static str, u64>,
 }
@@ -53,6 +55,7 @@ impl EventTranslator {
     pub fn new() -> Self {
         Self {
             last_pointer: None,
+            held: Modifiers::NONE,
             line_extent: if cfg!(target_arch = "wasm32") {
                 LINE_EXTENT_WEB
             } else {
@@ -85,8 +88,40 @@ impl EventTranslator {
         self.untranslated.iter().map(|(k, v)| (*k, *v)).collect()
     }
 
-    /// Translate one egui event, or record it as untranslated.
-    pub fn translate(&mut self, event: &Event) -> Option<InputEvent> {
+    /// The modifier set last reported to the application.
+    #[must_use]
+    pub fn held(&self) -> Modifiers {
+        self.held
+    }
+
+    /// Translate one egui event onto `out`, or record it as untranslated.
+    ///
+    /// Zero, one, or two events come out. Two happens on a window blur while
+    /// a modifier is held: the release is reported first and the blur after
+    /// it, so nothing downstream ever sees a blurred window with a key still
+    /// down. egui reports a blur as `WindowFocused(false)` alone and does not
+    /// follow it with `ModifiersChanged`, and the key-up goes to the window
+    /// that now has focus, so without this a held Alt would stay down in the
+    /// application for good.
+    pub fn translate_into(&mut self, event: &Event, out: &mut Vec<InputEvent>) {
+        match event {
+            Event::ModifiersChanged(m) => {
+                let now = translate_modifiers(*m);
+                if now != self.held {
+                    self.held = now;
+                    out.push(InputEvent::Modifiers(now));
+                }
+            }
+            Event::WindowFocused(false) if self.held.any() => {
+                self.held = Modifiers::NONE;
+                out.push(InputEvent::Modifiers(Modifiers::NONE));
+                out.push(InputEvent::WindowBlurred);
+            }
+            other => out.extend(self.translate_one(other)),
+        }
+    }
+
+    fn translate_one(&mut self, event: &Event) -> Option<InputEvent> {
         match event {
             Event::PointerMoved(pos) => {
                 let p = Point::new(pos.x, pos.y);
@@ -179,7 +214,11 @@ impl EventTranslator {
 
     /// Translate a whole pass's events, in order.
     pub fn translate_all(&mut self, events: &[Event]) -> Vec<InputEvent> {
-        events.iter().filter_map(|e| self.translate(e)).collect()
+        let mut out = Vec::with_capacity(events.len());
+        for event in events {
+            self.translate_into(event, &mut out);
+        }
+        out
     }
 
     fn drop_event(&mut self, name: &'static str) {
@@ -318,10 +357,25 @@ mod tests {
     use super::{EventTranslator, LINE_EXTENT_DESKTOP, key_code, translate_modifiers};
     use egui::{Event, Key, MouseWheelUnit, Pos2, TouchPhase, Vec2};
     use gorgon_petra::geom::{Point, Size};
-    use gorgon_petra::input::{InputEvent, KeyCode, PointerButton};
+    use gorgon_petra::input::{InputEvent, KeyCode, Modifiers, PointerButton};
 
     fn translator() -> EventTranslator {
         EventTranslator::new().with_line_extent(LINE_EXTENT_DESKTOP)
+    }
+
+    /// The one event `event` translates to. Panics when it makes two, so a
+    /// test that means one event cannot silently drop the other.
+    trait One {
+        fn translate(&mut self, event: &Event) -> Option<InputEvent>;
+    }
+
+    impl One for EventTranslator {
+        fn translate(&mut self, event: &Event) -> Option<InputEvent> {
+            let mut out = Vec::new();
+            self.translate_into(event, &mut out);
+            assert!(out.len() <= 1, "expected at most one event, got {out:?}");
+            out.pop()
+        }
     }
 
     #[test]
@@ -557,5 +611,83 @@ mod tests {
         assert!(matches!(out[0], InputEvent::PointerMoved { .. }));
         assert_eq!(out[1], InputEvent::Text("a".into()));
         assert_eq!(out[2], InputEvent::WindowBlurred);
+    }
+
+    fn mods(alt: bool) -> egui::Modifiers {
+        egui::Modifiers {
+            alt,
+            ..egui::Modifiers::NONE
+        }
+    }
+
+    fn held(alt: bool) -> InputEvent {
+        InputEvent::Modifiers(Modifiers {
+            alt,
+            ..Modifiers::NONE
+        })
+    }
+
+    /// One event per change of the held set, none for a repeat of it, and
+    /// none for the idle state. The repeat is what egui does on every
+    /// platform that re-reports modifiers with each key.
+    #[test]
+    fn a_modifier_change_is_one_event_and_a_repeat_is_none() {
+        let mut t = translator();
+        assert_eq!(t.translate(&Event::ModifiersChanged(mods(false))), None);
+        assert_eq!(
+            t.translate(&Event::ModifiersChanged(mods(true))),
+            Some(held(true))
+        );
+        assert_eq!(t.translate(&Event::ModifiersChanged(mods(true))), None);
+        assert!(t.held().alt);
+        assert_eq!(
+            t.translate(&Event::ModifiersChanged(mods(false))),
+            Some(held(false))
+        );
+        assert_eq!(t.translate(&Event::ModifiersChanged(mods(false))), None);
+        assert!(
+            t.untranslated().is_empty(),
+            "a modifier change is not a gap, got {:?}",
+            t.untranslated()
+        );
+    }
+
+    /// A blur with Alt down reports the release before the blur.
+    #[test]
+    fn a_blur_releases_every_held_modifier_first() {
+        let mut t = translator();
+        let out = t.translate_all(&[
+            Event::ModifiersChanged(mods(true)),
+            Event::WindowFocused(false),
+            Event::WindowFocused(false),
+        ]);
+        assert_eq!(
+            out,
+            [
+                held(true),
+                held(false),
+                InputEvent::WindowBlurred,
+                InputEvent::WindowBlurred,
+            ]
+        );
+        assert_eq!(t.held(), Modifiers::NONE);
+        // Back in focus with Alt still down: egui reports it and it is a change.
+        assert_eq!(
+            t.translate_all(&[
+                Event::WindowFocused(true),
+                Event::ModifiersChanged(mods(true))
+            ]),
+            [InputEvent::WindowFocused, held(true)]
+        );
+    }
+
+    /// A blur with nothing held adds no release event.
+    #[test]
+    fn a_blur_with_nothing_held_is_only_a_blur() {
+        let mut t = translator();
+        assert_eq!(
+            t.translate_all(&[Event::WindowFocused(false)]),
+            [InputEvent::WindowBlurred]
+        );
     }
 }
