@@ -570,6 +570,17 @@ pub struct PaintReport {
     /// failed pass and not a note in a set: it is the one way a frame can be
     /// fully drawn and still leave the operator blind.
     pub blind_focus: usize,
+    /// Focused placements that are off screen **because a Tab is still
+    /// travelling to its target**: `Host::step_focus` scrolled toward a node
+    /// that was not on screen, the scroll is a running transition, and until
+    /// it lands the node that still holds focus may leave the viewport first.
+    /// That is a transient the operator sees as the page moving, and the ring
+    /// arrives with the target. It is counted here and not in
+    /// [`PaintReport::blind_focus`], so `is_complete` stays a real predicate:
+    /// a pass with no Tab in flight that leaves focus off screen still fails.
+    /// The host moves a count here only while `pending_focus` is set, and
+    /// drops `pending_focus` after a fixed number of passes.
+    pub focus_in_transit: usize,
     /// Token names this pass asked for and could not resolve, sorted: a
     /// colour, a corner radius, or a typography style. Not only colours —
     /// the typography half was added because a style name that resolved to
@@ -592,6 +603,16 @@ pub struct PaintReport {
 }
 
 impl PaintReport {
+    /// Reclassify this pass's blind focus as a Tab in transit.
+    ///
+    /// Called by the host only when a deferred Tab move is in flight and the
+    /// focused placement is off screen. Moves the counts, so
+    /// [`PaintReport::is_complete`] reads the pass as it is: not blind.
+    pub(crate) fn mark_focus_in_transit(&mut self) {
+        self.focus_in_transit += self.blind_focus;
+        self.blind_focus = 0;
+    }
+
     /// Whether the pass accounted for every placement and left none silent.
     ///
     /// Note what this deliberately is *not*: a count of placements the loop

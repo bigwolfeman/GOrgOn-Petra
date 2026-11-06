@@ -727,6 +727,16 @@ impl Prepared {
     }
 }
 
+/// Most passes a deferred Tab target is retried before it is dropped.
+///
+/// A Tab to a node that is not on screen scrolls toward it, and the scroll
+/// moves as a transition over several passes, so the landing has to retry.
+/// The longest shipped transition is 140 ms (`toggle-knob`), about 9 passes
+/// at 60 Hz. 90 passes (1.5 s at 60 Hz) is ten times that: it never cuts a
+/// real scroll short, and a target that never arrives (a layout that keeps it
+/// off screen) still ends in bounded time instead of a repaint loop.
+pub(crate) const PENDING_FOCUS_PASSES: u32 = 90;
+
 /// Drives one Petra application inside an `eframe` window.
 pub struct Host<A: App> {
     app: A,
@@ -811,6 +821,9 @@ pub struct Host<A: App> {
     /// nothing before petrify can promise the target will really be visible
     /// (`focus/mod.rs`'s `reachable` doc).
     pending_focus: Option<String>,
+    /// Passes `pending_focus` has been retried without landing. Reset when a
+    /// new target is set, and checked against [`PENDING_FOCUS_PASSES`].
+    pending_focus_passes: u32,
     /// A system file dialog this host opened and has not yet heard back
     /// from.
     ///
@@ -1234,6 +1247,7 @@ impl<A: App> Host<A> {
             last_motion: None,
             focus: FocusTree::default(),
             pending_focus: None,
+            pending_focus_passes: 0,
             #[cfg(not(target_arch = "wasm32"))]
             picking: None,
             focus_taking: BTreeMap::new(),
@@ -1521,6 +1535,8 @@ impl<A: App> Host<A> {
     /// leave an open modal). The move reaches `LayoutState::focused` at the
     /// start of the next [`Host::pass`].
     pub fn focus_mut(&mut self) -> &mut FocusTree {
+        // A programmatic move wins over a Tab still travelling.
+        self.drop_pending_focus();
         &mut self.focus
     }
 
@@ -1836,7 +1852,19 @@ impl<A: App> Host<A> {
         // already names the new node and the bar can leave on the same frame.
         let now = ctx.input(|input| input.time);
         self.tick_caret(&frame, now);
-        let report = self.paint_and_bake_scene(ctx, &frame, snapshot.as_ref());
+        let mut report = self.paint_and_bake_scene(ctx, &frame, snapshot.as_ref());
+        // A Tab scrolling toward an off-screen target leaves the old focus
+        // off screen for the passes the scroll takes. Say so in the report
+        // instead of failing the pass, and only while that Tab is in flight.
+        if self.pending_focus.is_some()
+            && report.blind_focus > 0
+            && frame
+                .placements
+                .iter()
+                .any(|p| p.semantics.focused && !p.is_visible())
+        {
+            report.mark_focus_in_transit();
+        }
         // Every field `PaintReport::is_complete` reads, including the two
         // this message used to omit. A failure that printed "0 silent" and
         // counts that summed correctly could not explain itself: the reader
@@ -1873,7 +1901,7 @@ impl<A: App> Host<A> {
         // `seat_pointer_focus` makes for a press that names no focusable
         // ancestor.
         if let Some(target) = self.pending_focus.take() {
-            let _ = self.focus.focus(&target);
+            self.land_pending_focus(ctx, &frame, target, decision.activity.running > 0);
         }
         self.enter_open_modal(&frame, &scopes);
         self.reseat_focus_taking_surfaces(&frame, &taking, focus_before.as_deref());
@@ -2176,6 +2204,7 @@ impl<A: App> Host<A> {
         });
         report.focus_rings = 0;
         report.blind_focus = 0;
+        report.focus_in_transit = 0;
         if let Some(overlay) = self.caret_overlay(frame)
             && paint_caret_overlay(painter, &overlay, colors, frame.viewport.scale, &mut report)
         {
@@ -2569,11 +2598,13 @@ impl<A: App> Host<A> {
     /// shell chrome in every application that has any. A focus-history seam
     /// is what improves this later.
     fn return_focus_to_shell(&mut self) -> bool {
+        self.drop_pending_focus();
         self.focus.first();
         self.publish_focus()
     }
 
     fn seat_pointer_focus(&mut self, id: &str) {
+        self.drop_pending_focus();
         let mut cur = id;
         loop {
             if self.focus.focus(cur).is_ok() {
@@ -2934,8 +2965,14 @@ impl<A: App> Host<A> {
             KeyCode::Tab if modifiers.shift => self.step_focus(-1),
             KeyCode::Tab => self.step_focus(1),
             KeyCode::Home | KeyCode::End if modifiers.shift => return false,
-            KeyCode::Home if !self.focus_accepts(Interaction::Key) => self.focus.first(),
-            KeyCode::End if !self.focus_accepts(Interaction::Key) => self.focus.last(),
+            KeyCode::Home if !self.focus_accepts(Interaction::Key) => {
+                self.drop_pending_focus();
+                self.focus.first();
+            }
+            KeyCode::End if !self.focus_accepts(Interaction::Key) => {
+                self.drop_pending_focus();
+                self.focus.last();
+            }
             _ => return false,
         }
         // Later events in this same batch must aim at the node focus just
@@ -2987,6 +3024,43 @@ impl<A: App> Host<A> {
             self.place_frame(frame);
         }
         self.pending_focus = Some(target);
+        self.pending_focus_passes = 0;
+    }
+
+    /// Retry a deferred Tab target against the frame this pass placed.
+    ///
+    /// Lands it when it is on screen. Keeps it, and asks for one more pass,
+    /// only while the scroll toward it is still moving (`moving`), the target
+    /// still exists in `frame`, and fewer than [`PENDING_FOCUS_PASSES`] passes
+    /// have gone by. Any other outcome drops it, so an idle host asks for no
+    /// repaint (SC-002): `focus()` failing on a settled frame is final.
+    fn land_pending_focus(
+        &mut self,
+        ctx: &Context,
+        frame: &PetrifiedFrame,
+        target: String,
+        moving: bool,
+    ) {
+        if self.focus.focus(&target).is_ok() {
+            self.pending_focus_passes = 0;
+            return;
+        }
+        self.pending_focus_passes += 1;
+        if moving
+            && self.pending_focus_passes < PENDING_FOCUS_PASSES
+            && frame.placement(&target).is_some()
+        {
+            self.pending_focus = Some(target);
+            ctx.request_repaint();
+        } else {
+            self.pending_focus_passes = 0;
+        }
+    }
+
+    /// Forget a deferred Tab target: focus moved by some other means.
+    fn drop_pending_focus(&mut self) {
+        self.pending_focus = None;
+        self.pending_focus_passes = 0;
     }
 
     /// The `Placement` nearest `id`, walking upward, that is itself a
@@ -3447,12 +3521,20 @@ impl<A: App> Host<A> {
         let target_trail = target_lead + rect.size().along(axis);
         let view_lead = Self::leading(clip, axis);
         let view_trail = view_lead + clip.size().along(axis);
+        let max_offset = Self::scroll_overflow(frame, &scroll, axis);
+        // The offset the frame was placed with, not the one in state:
+        // `layout::scroll::place` re-clamps a stale entry against the real
+        // content extent and never writes it back, so after content shrank
+        // the state can hold 280 while the frame shows 40. Adding a delta to
+        // the stale value and clamping again lands back on 40, and the
+        // target never moves.
         let current = self
             .state
             .scroll_offsets
             .get(&scroll)
             .copied()
-            .unwrap_or(0.0);
+            .unwrap_or(0.0)
+            .clamp(0.0, max_offset);
         let desired = if target_trail <= view_lead {
             // Entirely above/left of the viewport: bring its leading edge
             // to the viewport's leading edge, the least scroll that shows
@@ -3469,7 +3551,6 @@ impl<A: App> Host<A> {
             // offset can fix.
             return false;
         };
-        let max_offset = Self::scroll_overflow(frame, &scroll, axis);
         self.write_scroll_offset(&scroll, desired, max_offset)
     }
 
@@ -5747,6 +5828,43 @@ mod tests {
             Some("/root/filter"),
             "Shift+Tab moves back"
         );
+    }
+
+    /// A deferred Tab target that exists but never becomes visible is retried
+    /// while a transition runs, and dropped at [`super::PENDING_FOCUS_PASSES`]
+    /// so a target that never arrives cannot hold the host in a repaint loop.
+    #[test]
+    fn a_deferred_target_that_never_lands_is_dropped_at_the_bound() {
+        let (ctx, mut host) = boot(Demo::default());
+        let frame = host.frame().expect("a frame").clone();
+        let target = frame
+            .placements
+            .iter()
+            .find(|p| p.kind == NodeKind::Stack && !host.focus().order().contains(&p.id))
+            .expect("a placed node that is not focusable")
+            .id
+            .clone();
+        host.pending_focus = Some(target.clone());
+        for pass in 1..super::PENDING_FOCUS_PASSES {
+            let target = host.pending_focus.take().expect("still pending");
+            host.land_pending_focus(&ctx, &frame, target, true);
+            assert!(
+                host.pending_focus.is_some(),
+                "dropped early, on retry {pass}"
+            );
+        }
+        let last = host.pending_focus.take().expect("still pending");
+        host.land_pending_focus(&ctx, &frame, last, true);
+        assert!(
+            host.pending_focus.is_none(),
+            "kept past {} passes",
+            super::PENDING_FOCUS_PASSES
+        );
+        assert_eq!(host.pending_focus_passes, 0);
+
+        // A settled frame drops it at once: nothing is moving.
+        host.land_pending_focus(&ctx, &frame, target, false);
+        assert!(host.pending_focus.is_none());
     }
 
     /// FR-025's other half. Tab *reaches* the button; Enter has to *work* it.
