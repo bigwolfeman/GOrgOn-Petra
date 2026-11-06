@@ -31,7 +31,7 @@
 //! other three (T054). A reserved chord is classified `bound`: it is the
 //! shell's own binding — the one chord no raw claim can receive — and it has
 //! no [`Binding`] value because [`gorgon_petra::keymap::ReservedChords`] is
-//! not a binding table (see [`InputDecision::Bound`]).
+//! not a binding table (see [`InputDecision::Reserved`]).
 //!
 //! An event that reached a node's own handling without a binding and without
 //! a declared behaviour is `unrouted` with a reason that says so — the
@@ -78,16 +78,24 @@ pub enum InputDecision {
         /// Why this class.
         reason: String,
     },
-    /// `bound`: the chord matched a binding, or the reserved set.
-    ///
-    /// `binding: None` is the reserved chord (FR-021): the shell's own
-    /// handling, checked before everything else. It has no [`Binding`]
-    /// because [`gorgon_petra::keymap::ReservedChords`] is not a binding
-    /// table and inventing a synthetic binding for it would be mock data in
-    /// a production type.
+    /// `bound`: the chord matched a binding in the binding table.
     Bound {
-        /// The binding whose trigger matched, or `None` for the reserved set.
-        binding: Option<Binding>,
+        /// The binding whose trigger matched.
+        binding: Binding,
+        /// Why this class.
+        reason: String,
+    },
+    /// `bound`, step 1 (FR-021): the chord is in the reserved set, the
+    /// shell's own handling, checked before everything else.
+    ///
+    /// It has no [`Binding`] because [`gorgon_petra::keymap::ReservedChords`]
+    /// is not a binding table, and a synthetic binding would be mock data in
+    /// a production type. The chord rides the record as data so the app
+    /// never parses it back out of `reason`. [`InputDecision::class`] still
+    /// answers `bound`: the spec has four classes, not five.
+    Reserved {
+        /// The reserved chord the router matched.
+        chord: Chord,
         /// Why this class.
         reason: String,
     },
@@ -120,7 +128,7 @@ impl InputDecision {
     pub fn class(&self) -> &'static str {
         match self {
             Self::Raw { .. } => "raw",
-            Self::Bound { .. } => "bound",
+            Self::Bound { .. } | Self::Reserved { .. } => "bound",
             Self::Intent { .. } => "intent",
             Self::Unrouted { .. } => "unrouted",
         }
@@ -132,6 +140,7 @@ impl InputDecision {
         match self {
             Self::Raw { reason, .. }
             | Self::Bound { reason, .. }
+            | Self::Reserved { reason, .. }
             | Self::Intent { reason, .. }
             | Self::Unrouted { reason, .. } => reason,
         }
@@ -405,8 +414,8 @@ impl Dispatcher {
             // Step 1. The shell handles it — including the focus return
             // (US-6), which is the host's to perform, not this module's.
             Route::Reserved { chord } => {
-                return Some(Claim::Verbatim(InputDecision::Bound {
-                    binding: None,
+                return Some(Claim::Verbatim(InputDecision::Reserved {
+                    chord: *chord,
                     reason: format!(
                         "reserved chord {chord} matched the reserved set (FR-021); the shell \
                          handles it and no raw claim or binding table sees it"
@@ -455,7 +464,7 @@ impl Dispatcher {
                     binding.scope.describe(),
                     binding.owner
                 ),
-                binding: Some(binding),
+                binding,
             })),
             // A chord that extends a trigger dispatches nothing yet — but
             // it is consumed all the same: it must not fall through to the
@@ -514,8 +523,8 @@ impl Dispatcher {
                      delivered verbatim and the binding table is not consulted (FR-020)"
                 ),
             },
-            Route::Reserved { chord } => InputDecision::Bound {
-                binding: None,
+            Route::Reserved { chord } => InputDecision::Reserved {
+                chord: *chord,
                 reason: format!(
                     "reserved chord {chord} matched the reserved set (FR-021); the shell \
                      handles it and no raw claim or binding table sees it"
@@ -769,10 +778,10 @@ mod tests {
             .expect("the reserved chord answers before everything");
 
         assert_eq!(claim.decision().class(), "bound");
-        let InputDecision::Bound { binding, .. } = claim.decision() else {
-            panic!("class said bound: {:?}", claim.decision());
+        let InputDecision::Reserved { chord, .. } = claim.decision() else {
+            panic!("a reserved route yields Reserved: {:?}", claim.decision());
         };
-        assert!(binding.is_none(), "the reserved chord has no Binding value");
+        assert_eq!(chord, &Chord::reserved_escape());
     }
 
     #[test]
