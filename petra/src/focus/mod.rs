@@ -43,6 +43,8 @@
 //!
 //! # The vanished-focus rule
 //!
+//! (The provisional-focus rule, further down, runs on top of this one.)
+//!
 //! [`FocusTree::update`] is what a host calls between frames. When the
 //! previously-focused node is no longer focusable in the new frame, focus
 //! moves to **the next focusable in the previous frame's order that still
@@ -63,6 +65,34 @@
 //! would drop every keystroke, so the unrestricted rule applies there and
 //! the never-silently-empty promise above holds unchanged.
 
+//! # The provisional-focus rule (2026-11-07)
+//!
+//! A focus move **caused by a node vanishing is provisional.** When
+//! [`FocusTree::update`] moves focus off a node that disappeared, it also
+//! remembers that node's id and the blocking scopes it sat in. If a later
+//! frame has a focusable node with that same id, focus returns to it. This
+//! applies to every focusable node; there is no opt-in.
+//!
+//! The memory ends, and the move becomes permanent, on any of these:
+//!
+//! - **Operator input.** Every method here that moves focus
+//!   ([`FocusTree::focus`], `next`, `previous`, `first`, `last`) clears it, and
+//!   a host calls [`FocusTree::operator_input`] for input that moves nothing
+//!   (a click on a non-focusable spot, a key with no focus effect, a scroll).
+//! - **The node returns.** Focus goes back and the memory is spent.
+//! - **A blocking scope opens that does not hold the node.** If focus now sits
+//!   inside a blocking surface that is not one of the surfaces the vanished node
+//!   was in, a dismissed or unrelated dialog must not drag focus back out of
+//!   it, so the memory clears. The same test refuses a restore that would leave
+//!   the scope trapping focus at the moment the node returns.
+//!
+//! A node that returns under a *different* id is a different node and takes
+//! nothing. Which fiber an id names across a daemon restart is the
+//! application's call: the same id is the same thing here.
+//!
+//! The first vanished node wins. If the successor also vanishes before the
+//! first returns, the memory still names the node the operator chose.
+
 use std::collections::BTreeMap;
 
 use crate::frame::placement::Placement;
@@ -81,6 +111,16 @@ pub struct FocusTree {
     scope_chain: BTreeMap<String, Vec<String>>,
     /// The one focused node, or `None`.
     current: Option<String>,
+    /// The node focus left because it vanished, while it may still come back.
+    provisional: Option<Provisional>,
+}
+
+/// A focused node that vanished: its id and the blocking surfaces it sat in,
+/// nearest first, as the frame it vanished from placed it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Provisional {
+    id: String,
+    scope_chain: Vec<String>,
 }
 
 /// Why a programmatic focus move was refused.
@@ -131,6 +171,7 @@ impl FocusTree {
             order,
             scope_chain,
             current,
+            provisional: None,
         }
     }
 
@@ -144,13 +185,20 @@ impl FocusTree {
         surface_scopes: &BTreeMap<String, InputPolicy>,
     ) -> Self {
         let (order, scope_chain) = index(placements, surface_scopes);
-        let current = if self
+        let mut provisional = self.provisional.clone();
+        let mut current = if self
             .current
             .as_deref()
             .is_some_and(|id| order.iter().any(|o| o == id))
         {
             self.current.clone()
         } else {
+            if let (Some(gone), None) = (self.current.as_deref(), &provisional) {
+                provisional = Some(Provisional {
+                    id: gone.to_owned(),
+                    scope_chain: self.scope_chain.get(gone).cloned().unwrap_or_default(),
+                });
+            }
             scoped_successor(
                 &self.order,
                 &self.scope_chain,
@@ -160,11 +208,39 @@ impl FocusTree {
                 &scope_chain,
             )
         };
+        if let Some(memory) = &provisional {
+            // The scope focus is trapped in, in the new frame.
+            let trapped_in = current
+                .as_deref()
+                .and_then(|id| scope_chain.get(id))
+                .and_then(|chain| chain.first());
+            let holds = |chain: &[String]| trapped_in.is_none_or(|scope| chain.contains(scope));
+            if let Some(chain) = scope_chain.get(&memory.id) {
+                // The node is back. Restore unless that would leave the trap.
+                if holds(chain) {
+                    current = Some(memory.id.clone());
+                }
+                provisional = None;
+            } else if !holds(&memory.scope_chain) {
+                // A scope that never held the node now holds focus.
+                provisional = None;
+            }
+        }
         Self {
             order,
             scope_chain,
             current,
+            provisional,
         }
+    }
+
+    /// Operator input reached the window: a key, a click, a scroll. Focus
+    /// stays where it is and the provisional memory ends, so a node that
+    /// returns afterwards does not take focus back from a choice the operator
+    /// has since made. A host calls this for input that moves nothing itself;
+    /// the methods that do move focus clear the memory on their own.
+    pub fn operator_input(&mut self) {
+        self.provisional = None;
     }
 
     /// The focused node's placement id, or `None` in the none-state.
@@ -265,6 +341,7 @@ impl FocusTree {
             }
         }
         self.current = Some(id.to_owned());
+        self.provisional = None;
         Ok(())
     }
 
@@ -283,6 +360,7 @@ impl FocusTree {
     /// Move to the first focusable in the active scope. A no-op in the
     /// none-state.
     pub fn first(&mut self) {
+        self.provisional = None;
         if let Some(id) = self.candidates().first() {
             self.current = Some((*id).to_owned());
         }
@@ -291,6 +369,7 @@ impl FocusTree {
     /// Move to the last focusable in the active scope. A no-op in the
     /// none-state.
     pub fn last(&mut self) {
+        self.provisional = None;
         if let Some(id) = self.candidates().last() {
             self.current = Some((*id).to_owned());
         }
@@ -320,6 +399,7 @@ impl FocusTree {
     fn step(&mut self, dir: isize) {
         let candidates = self.candidates();
         self.current = step_over(&candidates, self.current.as_deref(), dir);
+        self.provisional = None;
     }
 }
 
@@ -1202,6 +1282,164 @@ mod tests {
             Some("/x"),
             "falls back to the new frame's first focusable"
         );
+    }
+
+    // -- The provisional-focus rule. ---------------------------------------
+
+    /// Three rows, focus on the middle one; the frame without it; the frame
+    /// with it back. Returns the tree after the gap frame.
+    fn row_gone() -> (FocusTree, Vec<Placement>) {
+        let full = vec![
+            placement("/a", None, true, false),
+            placement("/row-12", None, true, false),
+            placement("/c", None, true, false),
+        ];
+        let mut tree = FocusTree::from_placements(&full, &no_scopes());
+        tree.focus("/row-12").unwrap();
+        let gap = vec![
+            placement("/a", None, true, false),
+            placement("/c", None, true, false),
+        ];
+        let tree = tree.update(&gap, &no_scopes());
+        assert_eq!(tree.current(), Some("/c"), "the vanished rule still runs");
+        (tree, full)
+    }
+
+    #[test]
+    fn a_focused_node_that_vanishes_for_a_frame_gets_focus_back_when_it_returns_and_nothing_moved_focus()
+     {
+        let (tree, full) = row_gone();
+        let tree = tree.update(&full, &no_scopes());
+        assert_eq!(tree.current(), Some("/row-12"));
+    }
+
+    #[test]
+    fn the_memory_survives_several_gap_frames() {
+        let (tree, full) = row_gone();
+        let gap = vec![
+            placement("/a", None, true, false),
+            placement("/c", None, true, false),
+        ];
+        let tree = tree.update(&gap, &no_scopes()).update(&gap, &no_scopes());
+        assert_eq!(tree.update(&full, &no_scopes()).current(), Some("/row-12"));
+    }
+
+    #[test]
+    fn tab_in_the_gap_frame_keeps_the_operators_choice() {
+        let (mut tree, full) = row_gone();
+        tree.next();
+        assert_eq!(tree.current(), Some("/a"));
+        let tree = tree.update(&full, &no_scopes());
+        assert_eq!(
+            tree.current(),
+            Some("/a"),
+            "the operator moved focus, so the returning node takes nothing"
+        );
+    }
+
+    #[test]
+    fn a_click_in_the_gap_clears_the_memory_even_when_it_moves_nothing() {
+        let (mut tree, full) = row_gone();
+        tree.operator_input();
+        assert_eq!(tree.current(), Some("/c"), "input leaves focus where it is");
+        let tree = tree.update(&full, &no_scopes());
+        assert_eq!(tree.current(), Some("/c"));
+    }
+
+    #[test]
+    fn a_node_that_returns_under_a_different_id_takes_nothing() {
+        let (tree, _) = row_gone();
+        let other = vec![
+            placement("/a", None, true, false),
+            placement("/row-13", None, true, false),
+            placement("/c", None, true, false),
+        ];
+        let tree = tree.update(&other, &no_scopes());
+        assert_eq!(tree.current(), Some("/c"));
+    }
+
+    #[test]
+    fn the_first_vanished_node_is_the_one_remembered() {
+        let full = vec![
+            placement("/a", None, true, false),
+            placement("/b", None, true, false),
+            placement("/c", None, true, false),
+        ];
+        let mut tree = FocusTree::from_placements(&full, &no_scopes());
+        tree.focus("/b").unwrap();
+        let tree = tree.update(
+            &[
+                placement("/a", None, true, false),
+                placement("/c", None, true, false),
+            ],
+            &no_scopes(),
+        );
+        assert_eq!(tree.current(), Some("/c"));
+        // The successor goes too, then both are back.
+        let tree = tree.update(&[placement("/a", None, true, false)], &no_scopes());
+        assert_eq!(tree.current(), Some("/a"));
+        assert_eq!(tree.update(&full, &no_scopes()).current(), Some("/b"));
+    }
+
+    /// A dialog that opens while the node is gone holds focus. The node
+    /// returning behind it must not pull focus out of the trap, and the memory
+    /// does not outlive the dialog.
+    #[test]
+    fn a_modal_that_opens_without_the_node_clears_the_memory() {
+        let (tree, full) = row_gone();
+        let with_modal = vec![
+            placement("/a", None, true, false),
+            placement("/c", None, true, false),
+            placement("/dialog", None, false, false),
+            placement("/dialog/ok", Some(2), true, false),
+        ];
+        let mut scopes = BTreeMap::new();
+        scopes.insert("/dialog".to_owned(), InputPolicy::Block);
+        let mut tree = tree.update(&with_modal, &scopes);
+        tree.focus("/dialog/ok").unwrap();
+        let mut back = full.clone();
+        back.extend(with_modal[2..].iter().cloned());
+        let tree = tree.update(&back, &scopes);
+        assert_eq!(tree.current(), Some("/dialog/ok"));
+        // The dialog closes. The node is not dragged back.
+        let tree = tree.update(&full, &no_scopes());
+        assert_ne!(tree.current(), Some("/row-12"));
+    }
+
+    /// The modal is opened by the frame itself (no `focus` call): focus is
+    /// already inside it, and the scope test alone must refuse the restore.
+    #[test]
+    fn a_modal_holding_focus_when_the_node_returns_refuses_the_restore() {
+        let (tree, full) = row_gone();
+        let mut dialog_only = vec![
+            placement("/dialog", None, false, false),
+            placement("/dialog/ok", Some(0), true, false),
+        ];
+        let mut scopes = BTreeMap::new();
+        scopes.insert("/dialog".to_owned(), InputPolicy::Block);
+        // Everything outside the dialog vanishes with it open, focus lands in it.
+        let tree = tree.update(&dialog_only, &scopes);
+        assert_eq!(tree.current(), Some("/dialog/ok"));
+        dialog_only.extend(full.iter().cloned());
+        let tree = tree.update(&dialog_only, &scopes);
+        assert_eq!(tree.current(), Some("/dialog/ok"));
+    }
+
+    #[test]
+    fn a_node_that_vanished_inside_a_modal_returns_into_it() {
+        let (placements, scopes) = modal_scenario();
+        let mut tree = FocusTree::from_placements(&placements, &scopes);
+        tree.focus("/modal/second").unwrap();
+        // The modal's second button flickers out; focus moves within the modal.
+        let gap = vec![
+            placement("/outside", None, true, false),
+            placement("/modal", None, false, false),
+            placement("/modal/first", Some(1), true, false),
+        ];
+        let tree = tree.update(&gap, &scopes);
+        assert_eq!(tree.current(), Some("/modal/first"));
+        let tree = tree.update(&placements, &scopes);
+        assert_eq!(tree.current(), Some("/modal/second"));
     }
 
     #[test]

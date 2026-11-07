@@ -2665,6 +2665,22 @@ impl<A: App> Host<A> {
         if translated.is_empty() {
             return false;
         }
+        // A key, a click, text or a wheel turn is the operator choosing. It ends
+        // the focus tree's provisional memory (`gorgon_petra::focus` module doc),
+        // even when it moves focus nowhere, so a node that returns later does
+        // not take focus back from them. Pointer motion and window focus are
+        // not choices.
+        if translated.iter().any(|event| {
+            matches!(
+                event,
+                InputEvent::Key { pressed: true, .. }
+                    | InputEvent::Text(_)
+                    | InputEvent::PointerPressed { .. }
+                    | InputEvent::Scroll { .. }
+            )
+        }) {
+            self.focus.operator_input();
+        }
         let mut invalidate = false;
         // Routing needs a frame to hit-test against. The first pass has none,
         // so its events are dropped rather than delivered to nothing — and the
