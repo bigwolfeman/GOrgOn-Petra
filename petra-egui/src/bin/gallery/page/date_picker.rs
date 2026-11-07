@@ -18,7 +18,7 @@ use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::{NodeKind, ViewNode};
 
 use super::Page;
-use super::common::{body, column, dismissed_under, path_has, row, sp};
+use super::common::{body, column, dismissed_under, path_has, row, sp, thirds};
 
 /// The compact picker's key: Carbon's calendar, month name as a caption.
 const COMPACT: &str = "compact";
@@ -330,7 +330,17 @@ impl Page for DatePicker {
                 // pressed the calendar instead of the field.
                 sp("spacing.sm"),
                 vec![
-                    row(
+                    // Three equal columns, the forms in the first and the
+                    // third. The middle column is empty on purpose: it is the
+                    // room open calendars drop through. Without it
+                    // `full/calendar` (x=734..1022 when open) shares that
+                    // x-range with `v-range-open/calendar` (x=586..874)
+                    // below, and `clear_run` — which measures each open
+                    // calendar's tallest leftmost bar against the next lower
+                    // pixel — fails the page however the drives layer the
+                    // two. A stack spacer cannot buy that column: it takes
+                    // only the room the other children leave.
+                    thirds(
                         "dp-forms",
                         sp("spacing.lg"),
                         vec![
@@ -342,17 +352,6 @@ impl Page for DatePicker {
                                     self.compact.view(COMPACT, "Date", false),
                                 ],
                             ),
-                            // `forms-gap`: a spacer, not a third form. A
-                            // `Stack` divides its width in equal shares,
-                            // so this buys the middle third of the row for
-                            // open calendars to drop through. Without it
-                            // `full/calendar` (x=734..1022 when open)
-                            // shares that x-range with
-                            // `v-range-open/calendar` (x=586..874) below,
-                            // and `clear_run` — which measures each open
-                            // calendar's tallest leftmost bar against the
-                            // next lower pixel — fails the page however the
-                            // drives layer the two.
                             ViewNode::new(NodeKind::Spacer, "forms-gap"),
                             column(
                                 "full-form",

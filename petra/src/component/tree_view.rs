@@ -342,27 +342,15 @@ impl TreeItem {
             parts.push(icon);
             parts.push(swatch("icon-gap", SLOT_GAP, height, None, None, None));
         }
+        parts.push(label_node);
         if let Some(mut mark) = mark {
             mark.key = Key::new("mark");
-            // Priority orders who is satisfied first (`contracts/view-tree.md`
-            // steps 3.a and 3.b): the mark, then the label, then the rest. The mark
-            // keeps its whole width and a long name gives way to it.
-            //
-            // The label needs a priority of its own because of the spacer.
-            // In an equal-share walk the label and the spacer split the room
-            // the mark leaves, and a spacer takes any share it is offered, so
-            // a label that fit with room to spare stopped at half the row.
-            // As the only member of its group the label is offered every
-            // unit the mark and the fixed parts leave, takes what it needs,
-            // and the spacer gets the rest.
-            label_node.constraints.horizontal.priority = 1;
-            mark.constraints.horizontal.priority = 2;
-            parts.push(label_node);
+            // The spacer takes only what the label and the mark leave
+            // (`contracts/view-tree.md` step 3.c), so the label keeps every
+            // unit up to the mark and the mark keeps its whole width.
             parts.push(ViewNode::new(NodeKind::Spacer, "spacer"));
             parts.push(swatch("mark-gap", SLOT_GAP, height, None, None, None));
             parts.push(mark);
-        } else {
-            parts.push(label_node);
         }
 
         let mut row = stack("row", Axis::Horizontal, None, parts);

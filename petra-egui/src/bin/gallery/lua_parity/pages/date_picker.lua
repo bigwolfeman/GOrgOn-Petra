@@ -47,14 +47,14 @@ return ui.section({
     -- units only drop below its fields inside the 900-unit viewport at
     -- this gap (page/date_picker.rs's `body` call, which says why).
     common.body("dp", "spacing.sm", {
-      common.row("dp-forms", "spacing.lg", {
+      common.thirds("dp-forms", "spacing.lg", {
         common.column("compact-form", "spacing.sm", {
           ui.heading({ key = "compact-title", label = "Compact" }),
           ui.date_picker({ key = "compact", label = "Date", value = "2026-08-30" }),
         }),
-        -- `forms-gap`: the spacer the Rust body places between the two
-        -- live panes so open calendars have a column to drop through
-        -- (page/date_picker.rs's `body`, which says why).
+        -- `forms-gap`: the empty middle column of the three the Rust body
+        -- places the live panes in, so open calendars have a column to drop
+        -- through (page/date_picker.rs's `body`, which says why).
         ui.node.spacer({ key = "forms-gap" }),
         common.column("full-form", "spacing.sm", {
           ui.heading({ key = "full-title", label = "Full" }),

@@ -50,6 +50,16 @@ return function(ui)
     })
   end
 
+  -- `page/common.rs::thirds`: a `Grid` of three weight-1 columns.
+  function M.thirds(key, spacing, children)
+    return ui.node.grid({
+      key = key,
+      columns = { ui.track.weight(1.0), ui.track.weight(1.0), ui.track.weight(1.0) },
+      column_gap = spacing,
+      children = children,
+    })
+  end
+
   -- `page/common.rs::row`: a horizontal `Stack`, centred on the cross axis.
   function M.row(key, spacing, children)
     return ui.node.stack({

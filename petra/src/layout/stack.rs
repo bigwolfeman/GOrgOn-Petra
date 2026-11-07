@@ -357,7 +357,10 @@ fn distribute(
             &mut offers,
             group,
             (pot - reserved[end]).max(0.0),
-            &highs,
+            Bounds {
+                floors: &floors,
+                highs: &highs,
+            },
             &mut taken,
         );
         pot = (pot - spent).max(0.0);
@@ -369,6 +372,29 @@ fn distribute(
         floors,
         flexibility,
     }
+}
+
+/// Each child's `Zero` and `Unbounded` main-axis responses, indexed by
+/// declaration order. Bundled so [`settle_group`] keeps a short signature.
+#[derive(Clone, Copy)]
+struct Bounds<'a> {
+    floors: &'a [f32],
+    highs: &'a [f32],
+}
+
+/// Whether `child` is a spacer with no maximum on `main`.
+///
+/// Such a spacer has no natural size. It answers its minimum (zero when it
+/// declares none) when asked what it wants and takes whatever it is offered,
+/// so in an equal-share walk it is the one child that never gives anything
+/// back. SwiftUI sorts stack children by flexibility and offers the room to
+/// the least flexible first, which makes a spacer the last child offered
+/// anything. This is that rule: the walk gives a spacer its minimum, and the
+/// roll-back in [`settle_group`] hands it what every other child left,
+/// shared equally with the other spacers. A spacer that declares a maximum
+/// is a sized box and stays in the walk.
+fn is_elastic(child: &ViewNode, main: Axis) -> bool {
+    child.kind == NodeKind::Spacer && child.constraints.axis(main).max.is_none()
 }
 
 /// Everything one child offer needs except the child and the number.
@@ -430,6 +456,9 @@ impl Offers<'_, '_> {
 /// in a 400-unit `SpaceBetween` row are all at their ceiling after the walk,
 /// so the 208 units they left stay in the gaps.
 ///
+/// A **spacer with no maximum** is not in the pass-one walk: it holds its
+/// minimum, and only the roll-back below offers it room. See [`is_elastic`].
+///
 /// # The shrink policy, stated
 ///
 /// When the group's children want more than `avail`, they shrink to an **equal
@@ -450,20 +479,41 @@ fn settle_group(
     o: &mut Offers<'_, '_>,
     group: &[usize],
     avail: f32,
-    highs: &[f32],
+    bounds: Bounds<'_>,
     taken: &mut [Size],
 ) -> f32 {
+    let Bounds { floors, highs } = bounds;
     let mut extents = vec![0.0f32; group.len()];
-    let mut remaining = avail;
-    let mut left = group.len();
+    let elastic: Vec<bool> = group
+        .iter()
+        .map(|&i| is_elastic(&o.node.children[i], o.main))
+        .collect();
+    // Spacers are the most flexible children, so they are offered room last
+    // and keep only what is left (`contracts/view-tree.md` step 3.c). Their
+    // minimum lengths come out of the budget first, so a stack with no spare
+    // room still gives each spacer its minimum and the others shrink.
+    let held: f32 = group
+        .iter()
+        .zip(&elastic)
+        .filter(|&(_, &e)| e)
+        .map(|(&i, _)| floors[i])
+        .sum();
+    let mut remaining = (avail - held).max(0.0);
+    let mut left = elastic.iter().filter(|&&e| !e).count();
     for (g, &i) in group.iter().enumerate() {
-        let share = remaining / left as f32;
-        left -= 1;
-        let got = o.measure(i, share);
+        let got = if elastic[g] {
+            o.measure(i, floors[i])
+        } else {
+            let share = remaining / left as f32;
+            left -= 1;
+            o.measure(i, share)
+        };
         taken[i] = got;
         extents[g] = got.along(o.main);
-        // Surplus roll-forward.
-        remaining = (remaining - extents[g]).max(0.0);
+        if !elastic[g] {
+            // Surplus roll-forward.
+            remaining = (remaining - extents[g]).max(0.0);
+        }
     }
 
     // The roll-back. A child is out of the queue once it has said no: either
@@ -733,6 +783,171 @@ mod tests {
              a stack that over-allocates and then concedes back to the same \
              rects still lies about truncation, and the flag is a digest input"
         );
+    }
+
+    /// A spacer with no maximum, and `min` as its minimum length.
+    fn spring(key: &str, axis: Axis, min: Option<f32>) -> ViewNode {
+        ViewNode::new(NodeKind::Spacer, Key::new(key)).with_constraints(on(
+            axis,
+            AxisConstraint {
+                min,
+                max: None,
+                priority: 0,
+            },
+        ))
+    }
+
+    /// A spacer takes only the room the other children leave.
+    ///
+    /// Row of 300: a label that wants up to 200, a spacer, and a 64-unit
+    /// box. In an equal-share walk the spacer, which accepts any offer, took
+    /// half of the 236 left and the label stopped at 118 with 118 units of
+    /// free space between it and the box.
+    #[test]
+    fn a_spacer_leaves_a_label_the_room_it_wants() {
+        let axis = Axis::Horizontal;
+        let tree = stack(
+            axis,
+            0.0,
+            Align::Start,
+            vec![
+                flexible("label", axis, 0.0, 200.0, 0),
+                spring("spacer", axis, None),
+                rigid("box"),
+            ],
+        );
+        let out = placements(&tree, Rect::new(0.0, 0.0, 300.0, 64.0));
+        assert_eq!(out[1].rect.w, 200.0, "the label takes everything it wants");
+        assert_eq!(out[2].rect.w, 36.0, "the spacer takes the leftover");
+        assert_eq!(out[3].rect.x, 236.0, "the box stays at the trailing edge");
+    }
+
+    /// A label that wants more than the row has takes every unit the box does
+    /// not need, and the spacer is zero.
+    #[test]
+    fn a_label_that_overflows_takes_all_the_room_and_the_spacer_is_zero() {
+        let axis = Axis::Horizontal;
+        let tree = stack(
+            axis,
+            0.0,
+            Align::Start,
+            vec![
+                flexible("label", axis, 0.0, 400.0, 0),
+                spring("spacer", axis, None),
+                rigid("box"),
+            ],
+        );
+        let out = placements(&tree, Rect::new(0.0, 0.0, 300.0, 64.0));
+        assert_eq!(out[1].rect.w, 236.0, "the label stops where the box starts");
+        assert_eq!(out[2].rect.w, 0.0, "no room is left for the spacer");
+        assert_eq!(out[3].rect.x, 236.0);
+    }
+
+    /// The order a spacer is declared in does not change when it is sized: a
+    /// leading spacer pushes its siblings to the trailing edge.
+    #[test]
+    fn a_leading_spacer_pushes_the_rest_to_the_trailing_edge() {
+        let axis = Axis::Horizontal;
+        let tree = stack(
+            axis,
+            0.0,
+            Align::Start,
+            vec![
+                spring("spacer", axis, None),
+                flexible("label", axis, 0.0, 100.0, 0),
+                rigid("box"),
+            ],
+        );
+        let out = placements(&tree, Rect::new(0.0, 0.0, 300.0, 64.0));
+        assert_eq!(out[1].rect.w, 136.0, "the spacer takes 300 - 100 - 64");
+        assert_eq!(out[2].rect.x, 136.0);
+        assert_eq!(out[2].rect.w, 100.0);
+        assert_eq!(out[3].rect.x, 236.0);
+    }
+
+    /// Spacers share the leftover equally among themselves.
+    #[test]
+    fn spacers_share_the_leftover_equally() {
+        let axis = Axis::Horizontal;
+        let tree = stack(
+            axis,
+            0.0,
+            Align::Start,
+            vec![
+                rigid("a"),
+                spring("s1", axis, None),
+                rigid("b"),
+                spring("s2", axis, None),
+            ],
+        );
+        let out = placements(&tree, Rect::new(0.0, 0.0, 300.0, 64.0));
+        assert_eq!(out[2].rect.w, 86.0);
+        assert_eq!(out[4].rect.w, 86.0);
+    }
+
+    /// A spacer's minimum length holds. With room to spare it takes its share
+    /// of the leftover at least as big as the minimum, and two spacers with
+    /// different minimums share what is left after both minimums.
+    #[test]
+    fn a_spacer_with_a_minimum_length_gets_at_least_that_much() {
+        let axis = Axis::Horizontal;
+        let tree = stack(
+            axis,
+            0.0,
+            Align::Start,
+            vec![
+                rigid("a"),
+                spring("s1", axis, Some(20.0)),
+                rigid("b"),
+                spring("s2", axis, Some(60.0)),
+            ],
+        );
+        // 300 - 128 = 172 for the spacers. Minimums are 20 and 60; the
+        // other 92 splits equally: 46 each.
+        let out = placements(&tree, Rect::new(0.0, 0.0, 300.0, 64.0));
+        assert_eq!(out[2].rect.w, 66.0, "20 + 46");
+        assert_eq!(out[4].rect.w, 106.0, "60 + 46");
+    }
+
+    /// With no spare room a spacer still keeps its minimum, and the other
+    /// children shrink to make it.
+    #[test]
+    fn a_stack_with_no_spare_room_gives_spacers_their_minimum() {
+        let axis = Axis::Horizontal;
+        let tree = stack(
+            axis,
+            0.0,
+            Align::Start,
+            vec![
+                flexible("label", axis, 0.0, 400.0, 0),
+                spring("spacer", axis, Some(40.0)),
+                rigid("box"),
+            ],
+        );
+        // 300 - 64 - 40 = 196 for the label.
+        let out = placements(&tree, Rect::new(0.0, 0.0, 300.0, 64.0));
+        assert_eq!(out[1].rect.w, 196.0, "the label gives way to the minimum");
+        assert_eq!(out[2].rect.w, 40.0, "the spacer keeps its minimum");
+        assert_eq!(out[3].rect.x, 236.0);
+    }
+
+    /// A spacer that declares a maximum is a sized box, not a spring: it
+    /// stays in the equal-share walk.
+    #[test]
+    fn a_spacer_with_a_maximum_still_shares_equally() {
+        let axis = Axis::Horizontal;
+        let tree = stack(
+            axis,
+            0.0,
+            Align::Start,
+            vec![
+                flexible("a", axis, 0.0, 500.0, 0),
+                flexible("b", axis, 0.0, 500.0, 0),
+            ],
+        );
+        let out = placements(&tree, Rect::new(0.0, 0.0, 300.0, 64.0));
+        assert_eq!(out[1].rect.w, 150.0);
+        assert_eq!(out[2].rect.w, 150.0);
     }
 
     /// Least flexible first is what makes roll-forward reach anything: reverse

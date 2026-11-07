@@ -96,6 +96,22 @@ pub fn column(key: &str, spacing: Option<TokenName>, children: Vec<ViewNode>) ->
         .with_children(children)
 }
 
+/// Three equal columns, one child in each. A child in the middle cell holds
+/// the room between its neighbours.
+///
+/// A `Grid` with three weight-1 tracks. A stack spacer cannot do this job: it
+/// takes only the room the other children leave, so it cannot hold a third of
+/// the row.
+pub fn thirds(key: &str, spacing: Option<TokenName>, children: Vec<ViewNode>) -> ViewNode {
+    ViewNode::new(NodeKind::Grid, key)
+        .with_props(Props {
+            columns: vec![TrackSize::Weight { weight: 1.0 }; 3],
+            column_spacing: spacing,
+            ..Props::default()
+        })
+        .with_children(children)
+}
+
 /// A horizontal run of blocks, centred on the cross axis.
 pub fn row(key: &str, spacing: Option<TokenName>, children: Vec<ViewNode>) -> ViewNode {
     ViewNode::new(NodeKind::Stack, key)
