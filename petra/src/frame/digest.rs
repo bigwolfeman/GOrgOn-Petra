@@ -617,6 +617,15 @@ fn leaf_bytes(scale: Scale, p: &Placement) -> Vec<u8> {
                 selected: _,
                 expanded: _,
                 stale: _,
+                // Where a row sits in its hierarchy is accessibility
+                // payload, the same class as `expanded`: no painter reads
+                // it. A flat `tree_rows` row paints its depth through its
+                // own `lead` spacer, which the rects and the hash already
+                // see, so two frames with one picture and different
+                // `level` numbers are the same frame.
+                level: _,
+                pos_in_set: _,
+                set_size: _,
                 ambient: _,
                 actions: _,
                 total_count: _,
@@ -1263,6 +1272,11 @@ mod tests {
                 owns_its_text: true,
                 expanded: Some(true),
                 stale: false,
+                // Non-default, held out of the stream like `expanded`: the
+                // pinned vectors below stay unchanged with these set.
+                level: Some(2),
+                pos_in_set: Some(3),
+                set_size: Some(9),
                 ambient: false,
                 actions: vec![Interaction::Click],
                 total_count: Some(9),
@@ -1553,6 +1567,12 @@ mod tests {
         resemanticked.semantics.selected = true;
         resemanticked.semantics.expanded = Some(false);
         resemanticked.semantics.stale = true;
+        // The three set-position members (spec 016, T039) are accessibility
+        // payload the way `expanded` is: a flat row paints its depth through
+        // its own `lead` spacer, which the rects already hash.
+        resemanticked.semantics.level = Some(7);
+        resemanticked.semantics.pos_in_set = Some(2);
+        resemanticked.semantics.set_size = Some(5);
         resemanticked.semantics.ambient = true;
         resemanticked.semantics.value = Some("41".into());
         resemanticked.semantics.actions = vec![Interaction::Scroll];

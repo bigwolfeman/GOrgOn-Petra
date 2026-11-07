@@ -117,6 +117,16 @@ pub struct NodeState {
     /// The projection behind this node is past its freshness bound.
     #[serde(skip_serializing_if = "is_false")]
     pub stale: bool,
+    /// Depth in a hierarchy, 1 at the top (`aria-level`). Absent on nodes
+    /// that declare none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub level: Option<u32>,
+    /// 1-based position among siblings (`aria-posinset`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pos_in_set: Option<u32>,
+    /// Sibling count, including this node (`aria-setsize`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub set_size: Option<u32>,
     /// Hosts a declared-endless animation, so it never blocks settle.
     #[serde(skip_serializing_if = "is_false")]
     pub ambient: bool,

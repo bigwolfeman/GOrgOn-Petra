@@ -140,6 +140,9 @@ fn the_wire_shape_is_the_contract_shape() {
             selected: true,
             expanded: Some(true),
             stale: true,
+            level: Some(2),
+            pos_in_set: Some(3),
+            set_size: Some(9),
             // Held out of the projection on purpose: what the focus figure
             // is and where it is drawn are paint facts. Non-default here so
             // the assertion below proves the hold-out rather than the default.
@@ -165,7 +168,7 @@ fn the_wire_shape_is_the_contract_shape() {
     let projected = project(&frame).expect("root");
     assert_eq!(
         json(&projected),
-        r#"{"id":"/field","role":"textinput","label":"Filter","value":"fib","state":{"selected":true,"expanded":true,"stale":true,"ambient":true},"bounds":{"x":0,"y":0,"w":120,"h":40},"frame_seq":3,"actions":["click","focus","text-edit"],"children":[]}"#
+        r#"{"id":"/field","role":"textinput","label":"Filter","value":"fib","state":{"selected":true,"expanded":true,"stale":true,"level":2,"pos_in_set":3,"set_size":9,"ambient":true},"bounds":{"x":0,"y":0,"w":120,"h":40},"frame_seq":3,"actions":["click","focus","text-edit"],"children":[]}"#
     );
 }
 
@@ -1412,4 +1415,65 @@ fn a_contribution_is_mounted_after_its_components_are_expanded() {
         "panel",
         "expanding a component-rooted tree drops the key it was mounted under"
     );
+}
+
+/// Set position reaches the semantic tree: an eager tree declares depth and
+/// place for the items it nests, and a flat row declares the numbers it was
+/// given. A node that declares none carries none, and the wire form omits
+/// the keys.
+#[test]
+fn level_position_and_set_size_reach_the_semantic_tree() {
+    use crate::component::{TreeBranch, TreeItem, TreePlace, tree_item, tree_view};
+
+    let eager = tree_view(
+        "fs",
+        vec![
+            tree_item(
+                "src",
+                "src",
+                true,
+                false,
+                vec![
+                    tree_item("main", "main.rs", false, false, vec![]),
+                    tree_item("lib", "lib.rs", false, false, vec![]),
+                ],
+            ),
+            tree_item("docs", "docs", false, false, vec![]),
+        ],
+    );
+    let frame = frame_of(1, &eager);
+    let projected = project(&frame).expect("root");
+    let at = |id: &str| {
+        let state = &projected.find(id).expect("node in the tree").state;
+        (state.level, state.pos_in_set, state.set_size)
+    };
+    assert_eq!(at("/fs/src"), (Some(1), Some(1), Some(2)));
+    assert_eq!(at("/fs/docs"), (Some(1), Some(2), Some(2)));
+    assert_eq!(at("/fs/src/children/lib"), (Some(2), Some(2), Some(2)));
+
+    let flat = ViewNode::new(NodeKind::Stack, "root").child(
+        TreeItem::new("deep", "deep")
+            .branch(TreeBranch::Closed)
+            .at(TreePlace {
+                level: 4,
+                pos_in_set: 3,
+                set_size: 9,
+            })
+            .build(vec![]),
+    );
+    let frame = frame_of(2, &flat);
+    let projected = project(&frame).expect("root");
+    let state = &projected.find("/root/deep").expect("flat row").state;
+    assert_eq!(
+        (state.level, state.pos_in_set, state.set_size),
+        (Some(4), Some(3), Some(9))
+    );
+    let wire = json(&projected);
+    assert!(
+        wire.contains(r#""level":4,"pos_in_set":3,"set_size":9"#),
+        "{wire}"
+    );
+    // A node that declares nothing writes nothing.
+    let plain = frame_of(3, &app(&["a"]));
+    assert!(!json(&project(&plain).expect("root")).contains("level"));
 }

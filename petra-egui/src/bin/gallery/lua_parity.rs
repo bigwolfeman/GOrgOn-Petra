@@ -628,3 +628,87 @@ mod tests {
         }
     }
 }
+
+/// A Lua plugin builds every row `TreeItem` builds.
+///
+/// `ui.tree_row` is the registered form of the Rust builder, so a plugin can
+/// make a dimmed row with a mark, a closed branch with nothing mounted, and
+/// one flat row of a virtualized tree. Without it those rows could only be
+/// made from Rust, and a plugin file tree would have no way to say "ignored"
+/// or "submodule". Each case below compares the Lua row to the row the Rust
+/// builder makes from the same fields.
+#[test]
+fn a_lua_plugin_builds_the_rows_the_rust_tree_item_builds() {
+    use gorgon_petra::component::{
+        IconMark, TreeBranch, TreeItem, TreePlace, icon, text, tree_item,
+    };
+
+    register_compound_rows();
+    let lua = vm();
+    let path = Path::new("tree_row.lua");
+
+    // A closed branch, dimmed, with an icon, a mark and a place.
+    let lua_row = build_expanded(
+        &lua,
+        r#"return ui.tree_row({
+            key = "t", label = "target", branch = "closed", selected = false,
+            icon = ui.icon({ key = "t-i", mark = "copy" }),
+            mark = ui.text({ key = "t-m", label = "ignored" }),
+            dimmed = "ignored",
+            place = { level = 2, pos_in_set = 1, set_size = 3 },
+        })"#,
+        path,
+    );
+    let rust_row = TreeItem::new("t", "target")
+        .branch(TreeBranch::Closed)
+        .icon(icon("t-i", IconMark::Copy))
+        .mark(text("t-m", "ignored"))
+        .dimmed("ignored")
+        .at(TreePlace {
+            level: 2,
+            pos_in_set: 1,
+            set_size: 3,
+        })
+        .build(vec![]);
+    assert_eq!(
+        lua_row,
+        rust_row,
+        "dimmed marked row\n{}",
+        difference(&lua_row, &rust_row)
+    );
+
+    // An open extra-small branch that mounts a child, selected.
+    let lua_row = build_expanded(
+        &lua,
+        r#"return ui.tree_row({
+            key = "o", label = "open", branch = "open", selected = true, extra_small = true,
+            children = { ui.tree_row({ key = "c", label = "child", branch = "leaf", selected = false }) },
+        })"#,
+        path,
+    );
+    let rust_row = TreeItem::new("o", "open")
+        .branch(TreeBranch::Open)
+        .selected(true)
+        .extra_small()
+        .build(vec![TreeItem::new("c", "child").build(vec![])]);
+    assert_eq!(
+        lua_row,
+        rust_row,
+        "open xs branch\n{}",
+        difference(&lua_row, &rust_row)
+    );
+
+    // The long form with only the old fields is the old constructor.
+    let lua_row = build_expanded(
+        &lua,
+        r#"return ui.tree_row({ key = "x", label = "x", branch = "leaf", selected = false })"#,
+        path,
+    );
+    let rust_row = tree_item("x", "x", false, false, vec![]);
+    assert_eq!(
+        lua_row,
+        rust_row,
+        "a leaf\n{}",
+        difference(&lua_row, &rust_row)
+    );
+}

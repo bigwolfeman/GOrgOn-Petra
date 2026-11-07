@@ -183,6 +183,35 @@ impl Camera<Catalog> {
 }
 
 impl<A: App> Camera<A> {
+    /// Host any [`App`] the way [`Camera::on`] hosts the catalog, at a
+    /// window of the caller's size, so every driving primitive on `Camera`
+    /// works on it. The app picks its own theme through
+    /// [`App::theme_request`]; two passes settle it.
+    ///
+    /// `label` names the app in a failure message.
+    pub fn hosting(app: A, label: &str, window: [f32; 2]) -> Self {
+        let ctx = headless();
+        ctx.set_pixels_per_point(CAPTURE_SCALE);
+        let mut host = Host::new(&ctx, app, default_presenter());
+        ctx.run_ui(sized(RawInput::default(), window), |_| host.pass(&ctx))
+            .drop_without_applying_deltas();
+        host.set_reduced_motion(true);
+        let clock = ctx.input(|input| input.time);
+        let mut cam = Self {
+            ctx,
+            host,
+            shooter: Snapshotter::new(),
+            page: label.to_owned(),
+            clipboard: Vec::new(),
+            clock,
+            window,
+            pointer: None,
+        };
+        cam.settle();
+        cam.settle();
+        cam
+    }
+
     /// Run one pass with no input, so the frame matches the current state.
     fn settle(&mut self) {
         self.step(RawInput::default());

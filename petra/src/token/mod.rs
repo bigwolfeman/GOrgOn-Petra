@@ -22,6 +22,7 @@ pub mod slot;
 pub mod snapshot;
 pub mod state;
 pub mod status;
+pub mod syntax;
 pub mod theme;
 pub mod value;
 pub mod vocabulary;
@@ -41,6 +42,7 @@ pub use state::{
     DerivedState, InteractionRank, STATE_SEPARATOR, base_slot, resolve_slot, resolve_state,
 };
 pub use status::{StatusShape, StatusToken, StatusTokenError};
+pub use syntax::{SYNTAX_CLASSES, syntax_token};
 pub use theme::{Theme, ThemeError, ThemeMismatch, ThemeUnusable};
 pub use value::{
     ColorValue, MotionEasing, MotionValue, ShapeValue, Silhouette, SpringValue, TokenKind,

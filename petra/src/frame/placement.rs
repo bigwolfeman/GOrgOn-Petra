@@ -148,6 +148,14 @@ pub struct PlacementSemantics {
     pub expanded: Option<bool>,
     /// Declared staleness of the projection behind this node.
     pub stale: bool,
+    /// Declared depth in the hierarchy ([`crate::tree::Semantics::level`]).
+    /// Accessibility payload: projected, not hashed.
+    pub level: Option<u32>,
+    /// Declared 1-based position among siblings
+    /// ([`crate::tree::Semantics::pos_in_set`]).
+    pub pos_in_set: Option<u32>,
+    /// Declared sibling count ([`crate::tree::Semantics::set_size`]).
+    pub set_size: Option<u32>,
     /// The shape keyboard focus takes on this node
     /// ([`crate::tree::FocusFigure`]). App-declared, projected straight off
     /// the node the way `disabled` is. The painter reads it to draw the

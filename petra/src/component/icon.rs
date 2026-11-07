@@ -449,6 +449,33 @@ pub enum IconMark {
     /// [`BULLET_BAND`]×2 tall, which is the proportion an en dash renders at
     /// in `$body-01`.
     BulletDash,
+    /// Carbon `Folder` (a closed directory in a file tree).
+    ///
+    /// Source path, viewBox `0 0 32 32`:
+    /// `M11.17,6l3.42,3.41.58.59H28V26H4V6h7.17m0-2H4A2,2,0,0,0,2,6V26a2,2,0,0,0,2,2H28a2,2,0,0,0,2-2V10a2,2,0,0,0-2-2H16L12.59,4.59A2,2,0,0,0,11.17,4Z`.
+    /// An outline band 2 wide: the left, top, right and bottom as snapped
+    /// bars, and the tab's 45 degree slope as one convex quad. The 2-unit
+    /// corner radii are a pixel at 16 and are dropped.
+    Folder,
+    /// Carbon `FolderOpen` (an open directory in a file tree).
+    ///
+    /// Source path, viewBox `0 0 32 32`:
+    /// `M28,8H20.8284L17.4143,4.5859A2,2,0,0,0,16,4H4A2,2,0,0,0,2,6V26a2,2,0,0,0,2,2H28a2,2,0,0,0,2-2V10A2,2,0,0,0,28,8ZM8,26V14h8v6.17l-2.59-2.58L12,19l5,5,5-5-1.41-1.41L18,20.17V14a2.0025,2.0025,0,0,0-2-2H8a2.0025,2.0025,0,0,0-2,2V26H4V6H16l4,4h8v2H22v2h6V26Z`.
+    /// The folder's outline as snapped bars and one slope quad, the inner
+    /// frame's left and top bars and stem as snapped bars, and the arrow's
+    /// two wings and the notch between them as three convex pieces. The
+    /// 2-unit corner radii are dropped.
+    FolderOpen,
+    /// Carbon `Document` (a file in a file tree).
+    ///
+    /// Source paths, viewBox `0 0 32 32`:
+    /// `M25.7,9.3l-7-7C18.5,2.1,18.3,2,18,2H8C6.9,2,6,2.9,6,4v24c0,1.1,0.9,2,2,2h16c1.1,0,2-0.9,2-2V10C26,9.7,25.9,9.5,25.7,9.3z
+    /// M18,4.4l5.6,5.6H18V4.4z M24,28H8V4h8v6c0,1.1,0.9,2,2,2h6V28z`,
+    /// `M10 22H22V24H10z` and `M10 16H22V18H10z`. The sheet's frame is
+    /// snapped bars, the folded corner is its bars plus one trapezoid for
+    /// the diagonal, and the two text lines are snapped bars. The 2-unit
+    /// corner radii are dropped.
+    Document,
 }
 
 /// The box a mark is drawn in: which of Carbon's two glyph sizes.
@@ -670,6 +697,9 @@ fn draw_list(mark: IconMark, boxed: IconBox, tone: IconTone) -> DrawList {
         IconMark::BulletCircle => bullet_circle(color),
         IconMark::BulletSquare => bullet_square(color),
         IconMark::BulletDash => bullet_dash(color),
+        IconMark::Folder => folder(size / 32.0, color),
+        IconMark::FolderOpen => folder_open(size / 32.0, color),
+        IconMark::Document => document(size / 32.0, color),
     };
     DrawList::new(commands).unwrap_or_else(|err| panic!("{mark:?} draw list refused: {err}"))
 }
@@ -1516,6 +1546,121 @@ fn snapped_bar(x0: f32, y0: f32, x1: f32, y1: f32, s: f32, paint: Paint) -> Comm
     }
 }
 
+/// [`IconMark::Folder`]'s pieces, in the 32 box.
+fn folder(s: f32, color: ColorRef) -> Vec<Command> {
+    let paint = Paint::filled(color);
+    let mut out: Vec<Command> = [
+        // Left, top-left, top-right, right and bottom of the outline.
+        (2.0, 4.0, 4.0, 28.0),
+        (4.0, 4.0, 11.17, 6.0),
+        (15.17, 8.0, 30.0, 10.0),
+        (28.0, 10.0, 30.0, 28.0),
+        (4.0, 26.0, 28.0, 28.0),
+    ]
+    .into_iter()
+    .map(|(x0, y0, x1, y1)| snapped_bar(x0, y0, x1, y1, s, paint.clone()))
+    .collect();
+    // The tab's slope.
+    out.push(filled_quad(
+        [
+            pt(11.17, 4.0),
+            pt(16.0, 8.0),
+            pt(15.17, 10.0),
+            pt(11.17, 6.0),
+        ],
+        s,
+        paint,
+    ));
+    out
+}
+
+/// [`IconMark::FolderOpen`]'s pieces, in the 32 box.
+fn folder_open(s: f32, color: ColorRef) -> Vec<Command> {
+    let paint = Paint::filled(color);
+    let mut out: Vec<Command> = [
+        // The folder: left, top-left, top-right, right, bottom.
+        (2.0, 4.0, 4.0, 28.0),
+        (4.0, 4.0, 16.0, 6.0),
+        (20.0, 8.0, 30.0, 10.0),
+        (28.0, 10.0, 30.0, 28.0),
+        (4.0, 26.0, 28.0, 28.0),
+        // The short bar on the right at y 12..14.
+        (22.0, 12.0, 28.0, 14.0),
+        // The inner frame: left, top and the arrow's stem.
+        (6.0, 12.0, 8.0, 26.0),
+        (6.0, 12.0, 18.0, 14.0),
+        (16.0, 14.0, 18.0, 20.17),
+    ]
+    .into_iter()
+    .map(|(x0, y0, x1, y1)| snapped_bar(x0, y0, x1, y1, s, paint.clone()))
+    .collect();
+    // The tab's slope.
+    out.push(filled_quad(
+        [pt(16.0, 4.0), pt(20.83, 8.0), pt(20.0, 10.0), pt(16.0, 6.0)],
+        s,
+        paint.clone(),
+    ));
+    // The arrow head: two wings, and the notch where they meet the stem.
+    out.push(filled_quad(
+        [
+            pt(13.41, 17.59),
+            pt(12.0, 19.0),
+            pt(17.0, 24.0),
+            pt(17.0, 21.17),
+        ],
+        s,
+        paint.clone(),
+    ));
+    out.push(filled_quad(
+        [
+            pt(20.59, 17.59),
+            pt(17.0, 21.17),
+            pt(17.0, 24.0),
+            pt(22.0, 19.0),
+        ],
+        s,
+        paint.clone(),
+    ));
+    out.push(Command::Path {
+        verbs: vec![
+            PathVerb::MoveTo(scaled(pt(16.0, 20.17), s)),
+            PathVerb::LineTo(scaled(pt(18.0, 20.17), s)),
+            PathVerb::LineTo(scaled(pt(17.0, 21.17), s)),
+        ],
+        closed: true,
+        paint,
+    });
+    out
+}
+
+/// [`IconMark::Document`]'s pieces, in the 32 box.
+fn document(s: f32, color: ColorRef) -> Vec<Command> {
+    let paint = Paint::filled(color);
+    let mut out: Vec<Command> = [
+        // Left, top, right and bottom of the sheet.
+        (6.0, 2.0, 8.0, 30.0),
+        (8.0, 2.0, 18.0, 4.0),
+        (24.0, 10.0, 26.0, 30.0),
+        (8.0, 28.0, 24.0, 30.0),
+        // The fold: its left side and its lower edge.
+        (16.0, 4.0, 18.0, 12.0),
+        (18.0, 10.0, 24.0, 12.0),
+        // The two text lines.
+        (10.0, 22.0, 22.0, 24.0),
+        (10.0, 16.0, 22.0, 18.0),
+    ]
+    .into_iter()
+    .map(|(x0, y0, x1, y1)| snapped_bar(x0, y0, x1, y1, s, paint.clone()))
+    .collect();
+    // The folded corner's diagonal.
+    out.push(filled_quad(
+        [pt(18.0, 2.0), pt(26.0, 10.0), pt(23.6, 10.0), pt(18.0, 4.4)],
+        s,
+        paint,
+    ));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1528,7 +1673,7 @@ mod tests {
     use crate::draw::{ColorRef, Command, DrawList};
     use crate::tree::NodeKind;
 
-    const EVERY_MARK: [IconMark; 31] = [
+    const EVERY_MARK: [IconMark; 34] = [
         IconMark::CaretLeft,
         IconMark::CaretRight,
         IconMark::CaretDown,
@@ -1560,6 +1705,9 @@ mod tests {
         IconMark::BulletCircle,
         IconMark::BulletSquare,
         IconMark::BulletDash,
+        IconMark::Folder,
+        IconMark::FolderOpen,
+        IconMark::Document,
     ];
 
     fn list(node: &crate::tree::ViewNode) -> &DrawList {

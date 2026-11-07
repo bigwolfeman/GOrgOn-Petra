@@ -6,7 +6,7 @@
 //!
 //! Components: Accordion, Contained list, Context menu, List, Modal,
 //! Popover, Structured list, Tile, Toggletip, Tooltip, Tree view, Code
-//! snippet. 59 constructors (see the `coverage` test at the bottom, which
+//! snippet. 62 constructors (see the `coverage` test at the bottom, which
 //! counts the source rather than trusting this comment).
 
 use serde::Deserialize;
@@ -28,9 +28,10 @@ use crate::component::{
     popover_with, popover_with_placement, selectable_tile, structured_list,
     structured_list_condensed, structured_list_row, structured_list_row_static,
     structured_list_sized, tile, toggletip, toggletip_with, tooltip, tooltip_anchored,
-    tooltip_definition, tooltip_icon, tree_item, tree_item_xs, tree_view, unordered_list,
-    unordered_list_with,
+    tooltip_definition, tooltip_icon, tree_item, tree_item_xs, tree_row, tree_rows, tree_rows_xs,
+    tree_view, unordered_list, unordered_list_with,
 };
+use crate::component::{TreeAdornments, TreeBranch, TreePlace};
 use crate::tree::{Align, Edge, Key, ViewNode};
 
 // --- one-off shapes, used only by this group -------------------------------
@@ -329,6 +330,80 @@ impl ParamShape for TooltipDefParams {
     const LUAU: &'static str = "{ key: string, term: string, body: string }";
 }
 
+/// `tree_rows`, `tree_rows_xs` — 2 constructors. The virtualized tree: a
+/// scroll over a collection whose rows the host's row source answers.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TreeRowsParams {
+    key: Key,
+    label: String,
+    source: String,
+    total_count: usize,
+}
+impl ParamShape for TreeRowsParams {
+    const LUAU: &'static str =
+        "{ key: string, label: string, source: string, total_count: number }";
+}
+
+/// Wire form of [`TreeBranch`]: the real enum has no serde support.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum TreeBranchParam {
+    Leaf,
+    Closed,
+    Open,
+}
+impl From<TreeBranchParam> for TreeBranch {
+    fn from(p: TreeBranchParam) -> Self {
+        match p {
+            TreeBranchParam::Leaf => Self::Leaf,
+            TreeBranchParam::Closed => Self::Closed,
+            TreeBranchParam::Open => Self::Open,
+        }
+    }
+}
+
+/// Wire form of [`TreePlace`].
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TreePlaceParam {
+    level: u32,
+    pos_in_set: u32,
+    set_size: u32,
+}
+
+/// `tree_row` — 1 constructor. [`TreeItem`](crate::component::TreeItem) in
+/// full: the branch state, the icon and mark slots, the dimmed state, and
+/// the place of a flat row.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TreeRowParams {
+    key: Key,
+    label: String,
+    branch: TreeBranchParam,
+    selected: bool,
+    #[serde(default)]
+    extra_small: bool,
+    #[serde(default)]
+    icon: Option<ViewNode>,
+    #[serde(default)]
+    mark: Option<ViewNode>,
+    #[serde(default)]
+    dimmed: Option<String>,
+    #[serde(default)]
+    place: Option<TreePlaceParam>,
+    // See `KeyLabelExpandedChildren`'s `children` for why.
+    #[serde(default)]
+    children: Vec<ViewNode>,
+}
+impl ParamShape for TreeRowParams {
+    const LUAU: &'static str = "{ key: string, label: string, \
+         branch: \"leaf\" | \"closed\" | \"open\", selected: boolean, extra_small: boolean?, \
+         icon: ViewNode?, mark: ViewNode?, dimmed: string?, \
+         place: { level: number, pos_in_set: number, set_size: number }?, \
+         children: { ViewNode }? }";
+}
+
 /// `tree_item`, `tree_item_xs` — 2 constructors.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -524,6 +599,36 @@ pub const ENTRIES: &[Entry] = &[
         tooltip_definition(p.key, p.term, p.body)
     }),
     row!("tree_view", KeyChildren, |p| tree_view(p.key, p.children)),
+    row!("tree_rows", TreeRowsParams, |p| tree_rows(
+        p.key,
+        p.label,
+        p.source,
+        p.total_count
+    )),
+    row!("tree_rows_xs", TreeRowsParams, |p| tree_rows_xs(
+        p.key,
+        p.label,
+        p.source,
+        p.total_count
+    )),
+    row!("tree_row", TreeRowParams, |p| tree_row(
+        p.key,
+        p.label,
+        p.branch.into(),
+        p.selected,
+        p.extra_small,
+        TreeAdornments {
+            icon: p.icon,
+            mark: p.mark,
+            dimmed: p.dimmed,
+            place: p.place.map(|q| TreePlace {
+                level: q.level,
+                pos_in_set: q.pos_in_set,
+                set_size: q.set_size,
+            }),
+        },
+        p.children
+    )),
     row!("tree_item", TreeItemParams, |p| tree_item(
         p.key, p.label, p.expanded, p.selected, p.children
     )),
@@ -812,6 +917,17 @@ mod tests {
             "tooltip_icon" => json!({ "key": "k-tip-icon", "label": "l", "value": "b" }),
             "tooltip_definition" => json!({ "key": "k-tip-def", "term": "t", "body": "b" }),
             "tree_view" => json!({ "key": "k", "children": [] }),
+            "tree_rows" => {
+                json!({ "key": "k", "label": "Files", "source": "files", "total_count": 7 })
+            }
+            "tree_rows_xs" => {
+                json!({ "key": "k", "label": "Files", "source": "files-xs", "total_count": 7 })
+            }
+            "tree_row" => json!({
+                "key": "k", "label": "l-row", "branch": "closed", "selected": false,
+                "dimmed": "ignored",
+                "place": { "level": 2, "pos_in_set": 1, "set_size": 3 }
+            }),
             "tree_item" => {
                 json!({ "key": "k", "label": "l", "expanded": true, "selected": true, "children": [] })
             }

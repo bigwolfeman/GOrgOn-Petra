@@ -1125,6 +1125,8 @@ fn check_semantics(node: &ViewNode, push: &mut impl FnMut(Violation)) {
         }
     }
 
+    check_set_position(node, push);
+
     // A status-bearing role must carry its text channel, whether or not the
     // node is interactive. The interactive check above deliberately does not
     // cover this: a health dot or a progress bar is usually not clickable, so
@@ -1138,6 +1140,44 @@ fn check_semantics(node: &ViewNode, push: &mut impl FnMut(Violation)) {
         push(Violation::StatusRoleWithoutLabel {
             role: role.as_wire(),
         });
+    }
+}
+
+/// `level`, `pos_in_set` and `set_size` are 1-based numbers a reader speaks
+/// aloud ("level 2, 3 of 7"), so zero is refused, and a position past its own
+/// set is refused. A position without a size, or a size without a position,
+/// says half of "3 of 7", so the pair travels together.
+fn check_set_position(node: &ViewNode, push: &mut impl FnMut(Violation)) {
+    let semantics = &node.semantics;
+    let mut zero = |prop: &'static str, value: Option<u32>| {
+        if value == Some(0) {
+            push(Violation::ValueOutOfRange {
+                prop,
+                value: "0".into(),
+                expected: "a 1-based count (at least 1)",
+            });
+        }
+    };
+    zero("semantics.level", semantics.level);
+    zero("semantics.pos_in_set", semantics.pos_in_set);
+    zero("semantics.set_size", semantics.set_size);
+    match (semantics.pos_in_set, semantics.set_size) {
+        (Some(pos), Some(size)) if pos > size => push(Violation::ValueOutOfRange {
+            prop: "semantics.pos_in_set",
+            value: format!("{pos} in a set of {size}"),
+            expected: "a position no greater than semantics.set_size",
+        }),
+        (Some(pos), None) => push(Violation::ValueOutOfRange {
+            prop: "semantics.pos_in_set",
+            value: pos.to_string(),
+            expected: "a declaration paired with semantics.set_size",
+        }),
+        (None, Some(size)) => push(Violation::ValueOutOfRange {
+            prop: "semantics.set_size",
+            value: size.to_string(),
+            expected: "a declaration paired with semantics.pos_in_set",
+        }),
+        _ => {}
     }
 }
 
@@ -2781,6 +2821,61 @@ mod tests {
                 .contains("colour is the only channel left"),
             "the message must say why, not just what: {errors}"
         );
+    }
+
+    /// `level`, `pos_in_set` and `set_size` are the numbers a reader speaks,
+    /// so they are 1-based: zero is refused, a position past its own set is
+    /// refused, and half of "3 of 7" is refused. A whole, in-range
+    /// declaration is accepted.
+    #[test]
+    fn set_position_is_one_based_in_range_and_declared_whole() {
+        let at = |level, pos, size| {
+            ViewNode::new(NodeKind::Text, "row").with_semantics(Semantics {
+                level,
+                pos_in_set: pos,
+                set_size: size,
+                ..Semantics::default()
+            })
+        };
+        let refused = |node: ViewNode| -> Vec<(&'static str, String)> {
+            match validate(&node, &Registry::default()) {
+                Ok(_) => Vec::new(),
+                Err(errors) => errors
+                    .as_slice()
+                    .iter()
+                    .map(|e| match &e.violation {
+                        Violation::ValueOutOfRange { prop, value, .. } => (*prop, value.clone()),
+                        other => panic!("unexpected violation {other:?}"),
+                    })
+                    .collect(),
+            }
+        };
+        assert!(refused(at(Some(2), Some(3), Some(7))).is_empty());
+        assert!(refused(at(None, None, None)).is_empty());
+        assert!(
+            refused(at(Some(1), None, None)).is_empty(),
+            "level alone is whole"
+        );
+        assert!(
+            refused(at(Some(3), Some(7), Some(7))).is_empty(),
+            "the last of the set"
+        );
+
+        assert_eq!(refused(at(Some(0), None, None))[0].0, "semantics.level");
+        let zero = refused(at(None, Some(0), Some(3)));
+        assert_eq!(zero[0].0, "semantics.pos_in_set");
+        assert_eq!(
+            refused(at(None, Some(1), Some(0)))[0].0,
+            "semantics.set_size"
+        );
+        let past = refused(at(None, Some(8), Some(7)));
+        assert_eq!(past[0].0, "semantics.pos_in_set");
+        assert!(past[0].1.contains("8 in a set of 7"), "{past:?}");
+        assert_eq!(
+            refused(at(None, Some(2), None))[0].0,
+            "semantics.pos_in_set"
+        );
+        assert_eq!(refused(at(None, None, Some(2)))[0].0, "semantics.set_size");
     }
 
     /// Whitespace is not a text channel, the same way it is not a label for an

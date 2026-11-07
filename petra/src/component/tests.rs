@@ -2658,3 +2658,170 @@ fn dropdown_open_validates_when_mounted_at_catalog_depth() {
         )],
     );
 }
+
+// -----------------------------------------------------------------------
+// Tree view: a caret says "branch", whatever is mounted (spec 016, T037)
+// -----------------------------------------------------------------------
+
+/// The keys of the parts placed directly in the head row of the tree item
+/// `who`, in placement order.
+fn head_part_keys(frame: &crate::frame::PetrifiedFrame, who: &str) -> Vec<String> {
+    let prefix = format!("/{who}/row/");
+    frame
+        .placements
+        .iter()
+        .filter_map(|p| {
+            let tail = p.id.split_once(prefix.as_str())?.1;
+            (!tail.contains('/')).then(|| tail.to_owned())
+        })
+        .collect()
+}
+
+/// `tree_item` read "branch" off the children it was handed. A directory
+/// that has not been listed has none, so it drew as a file. `TreeBranch`
+/// says it outright: `Closed` draws a right caret with nothing mounted.
+///
+/// Falsified by building the row with `TreeBranch::Leaf`: the head row then
+/// holds `caret-slot`, not `caret`.
+#[test]
+fn a_closed_branch_with_nothing_mounted_still_draws_a_caret_pointing_right() {
+    use super::{TreeBranch, TreeItem};
+    let closed = TreeItem::new("dir", "dir")
+        .branch(TreeBranch::Closed)
+        .build(vec![]);
+    let frame = petrify_lone(tree_view("fs", vec![closed.clone()]));
+    let parts = head_part_keys(&frame, "dir");
+    assert!(
+        parts.iter().any(|k| k == "caret"),
+        "no caret among {parts:?}"
+    );
+    assert!(!parts.iter().any(|k| k == "caret-slot"));
+    assert_eq!(closed.semantics.expanded, Some(false), "it says collapsed");
+
+    // The caret is the same drawing a closed branch with children has.
+    let with_children = tree_item(
+        "dir",
+        "dir",
+        false,
+        false,
+        vec![tree_item("f", "f.rs", false, false, vec![])],
+    );
+    let shut = |node: &ViewNode| {
+        node.children
+            .iter()
+            .find(|c| c.key.as_str() == "row")
+            .and_then(|row| row.children.iter().find(|c| c.key.as_str() == "caret"))
+            .map(|caret| caret.props.canvas.clone())
+    };
+    assert_eq!(
+        shut(&closed),
+        shut(&with_children),
+        "an unloaded directory draws the closed caret a loaded one does"
+    );
+}
+
+/// A directory that was read and holds nothing is open to nothing: it draws
+/// the down caret and mounts no `children` node.
+#[test]
+fn an_open_empty_folder_draws_a_down_caret_and_mounts_nothing() {
+    use super::{TreeBranch, TreeItem};
+    let open_empty = TreeItem::new("dir", "dir")
+        .branch(TreeBranch::Open)
+        .build(vec![]);
+    assert_eq!(open_empty.semantics.expanded, Some(true));
+    let frame = petrify_lone(tree_view("fs", vec![open_empty.clone()]));
+    assert!(head_part_keys(&frame, "dir").iter().any(|k| k == "caret"));
+    assert!(
+        !frame
+            .placements
+            .iter()
+            .any(|p| p.id.ends_with("/dir/children")),
+        "an empty folder mounted a children container"
+    );
+    let open_caret = open_empty
+        .children
+        .iter()
+        .find(|c| c.key.as_str() == "row")
+        .and_then(|row| row.children.iter().find(|c| c.key.as_str() == "caret"))
+        .expect("a caret")
+        .props
+        .canvas
+        .clone();
+    let closed = TreeItem::new("dir", "dir")
+        .branch(TreeBranch::Closed)
+        .build(vec![]);
+    let closed_caret = closed
+        .children
+        .iter()
+        .find(|c| c.key.as_str() == "row")
+        .and_then(|row| row.children.iter().find(|c| c.key.as_str() == "caret"))
+        .expect("a caret")
+        .props
+        .canvas
+        .clone();
+    assert_ne!(
+        open_caret, closed_caret,
+        "open and closed point different ways"
+    );
+}
+
+/// A leaf draws no caret, keeps the caret's slot so its label lines up,
+/// and declares no `expanded`: it has nothing to open (WAI-ARIA).
+#[test]
+fn a_leaf_has_no_caret_and_no_expanded_state() {
+    use super::{TreeBranch, TreeItem};
+    let leaf = TreeItem::new("f", "f.rs").build(vec![]);
+    assert_eq!(leaf.semantics.expanded, None);
+    let frame = petrify_lone(tree_view("fs", vec![leaf]));
+    let parts = head_part_keys(&frame, "f");
+    assert!(parts.iter().any(|k| k == "caret-slot"));
+    assert!(!parts.iter().any(|k| k == "caret"));
+    // A branch's label starts where a leaf's does.
+    let dir = TreeItem::new("d", "d")
+        .branch(TreeBranch::Closed)
+        .build(vec![]);
+    let frame = petrify_lone(tree_view(
+        "fs",
+        vec![dir, TreeItem::new("f", "f.rs").build(vec![])],
+    ));
+    let x = |suffix: &str| {
+        frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with(suffix))
+            .expect("placed")
+            .rect
+            .x
+    };
+    assert_eq!(x("/d/row/label"), x("/f/row/label"));
+}
+
+/// `Closed` hides the children it is handed, as a collapsed `tree_item`
+/// always has, and `Open` shows them.
+#[test]
+fn closed_never_mounts_children_and_open_does() {
+    use super::{TreeBranch, TreeItem};
+    let kids = || vec![tree_item("k", "k.rs", false, false, vec![])];
+    let closed = TreeItem::new("d", "d")
+        .branch(TreeBranch::Closed)
+        .build(kids());
+    let open = TreeItem::new("d", "d")
+        .branch(TreeBranch::Open)
+        .build(kids());
+    let mounted = |n: &ViewNode| n.children.iter().any(|c| c.key.as_str() == "children");
+    assert!(!mounted(&closed));
+    assert!(mounted(&open));
+}
+
+/// The old derivation is one function now, and it gives the answers
+/// `tree_item` gave: no children is a leaf, hidden children are closed,
+/// shown children are open.
+#[test]
+fn the_implied_branch_is_what_tree_item_always_derived() {
+    use super::TreeBranch;
+    assert_eq!(TreeBranch::implied(false, false), TreeBranch::Leaf);
+    assert_eq!(TreeBranch::implied(false, true), TreeBranch::Leaf);
+    assert_eq!(TreeBranch::implied(true, false), TreeBranch::Closed);
+    assert_eq!(TreeBranch::implied(true, true), TreeBranch::Open);
+    assert_eq!(TreeBranch::default(), TreeBranch::Leaf);
+}

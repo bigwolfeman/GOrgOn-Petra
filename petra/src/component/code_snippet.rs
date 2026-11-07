@@ -14,7 +14,10 @@
 //!   16.0)` = `shape.corner-sm` (SCSS 4px; style-page 2px is stale). The
 //!   **whole chip is the copy control**; see the constructor.
 //!
-//! Ink is [`super::tokens::TEXT_PRIMARY`]. Do not invent syntax colours.
+//! Ink is [`super::tokens::TEXT_PRIMARY`]. Syntax colour comes from the
+//! `syntax.*` token family ([`crate::token::syntax_token`], one name per
+//! highlight class), laid over the code with [`code_runs`]. This file
+//! invents no colour of its own.
 //! Copy is a labelled [`Role::Button`] (`"Copy"`) drawing
 //! [`IconMark::Copy`] in [`IconTone::Primary`] (`.cds--snippet__icon`,
 //! `fill: $icon-primary`, 16×16); the label is its name, so the glyph is
@@ -401,14 +404,14 @@ impl CodeInk {
 /// button's label or the expand control's `"Show more"`. Returns the node
 /// unchanged if there is none.
 ///
-/// # This library ships no syntax palette, and this function does not invent
-/// one
+/// # The palette is the theme's, and this function does not choose from it
 ///
 /// Carbon has no syntax colours: `.cds--snippet` sets every variant in one
-/// ink, and the inventory records none. So the runs come from the **caller**
-/// and name tokens the caller's theme declares. That is not a gap left open
-/// by accident — it is the seam the operator asked for, *"support
-/// colorization for later LSP integration"*. An LSP's
+/// ink, and the inventory records none. Spec 016 adds the `syntax.*` family
+/// to the vocabulary (`token-vocabulary.md` section 12), and
+/// [`crate::token::syntax_token`] names the token for each highlight class.
+/// The runs still come from the **caller**, which is the seam the operator
+/// asked for, *"support colorization for later LSP integration"*. An LSP's
 /// `textDocument/semanticTokens` response is a token type per stretch; a
 /// consumer maps those types to theme token names and hands the result here.
 /// Nothing in this file has to know what a keyword is.

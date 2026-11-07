@@ -770,6 +770,24 @@ pub struct Semantics {
     /// freshness bound.
     #[serde(skip_serializing_if = "is_false")]
     pub stale: bool,
+    /// Depth of this node in its hierarchy, counted from 1 at the top, as
+    /// WAI-ARIA `aria-level`.
+    ///
+    /// A flattened list of rows (a virtualized tree) has no nesting for a
+    /// reader to walk, so the depth has to be said as a number. Eager
+    /// trees declare it too, so the two forms read the same.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub level: Option<u32>,
+    /// 1-based position of this node among its siblings, as `aria-posinset`.
+    /// Declared with [`Self::set_size`] or not at all; acceptance refuses a
+    /// half-declared pair.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pos_in_set: Option<u32>,
+    /// Number of siblings in this node's set, itself included, as
+    /// `aria-setsize`. A set that is only partly built (a collection that
+    /// mounts a window of rows) still declares its full size.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub set_size: Option<u32>,
     /// The shape keyboard focus takes on this node. Declared by the
     /// component, never inferred from [`Self::role`]; see [`FocusFigure`].
     #[serde(skip_serializing_if = "FocusFigure::is_default")]

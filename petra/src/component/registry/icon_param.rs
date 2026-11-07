@@ -88,6 +88,12 @@ pub enum IconMarkParam {
     BulletSquare,
     /// `"bullet-dash"` on the wire, [`IconMark::BulletDash`] in the tree.
     BulletDash,
+    /// `"folder"` on the wire, [`IconMark::Folder`] in the tree.
+    Folder,
+    /// `"folder-open"` on the wire, [`IconMark::FolderOpen`] in the tree.
+    FolderOpen,
+    /// `"document"` on the wire, [`IconMark::Document`] in the tree.
+    Document,
 }
 
 impl From<IconMarkParam> for IconMark {
@@ -123,6 +129,9 @@ impl From<IconMarkParam> for IconMark {
             IconMarkParam::BulletCircle => IconMark::BulletCircle,
             IconMarkParam::BulletSquare => IconMark::BulletSquare,
             IconMarkParam::BulletDash => IconMark::BulletDash,
+            IconMarkParam::Folder => IconMark::Folder,
+            IconMarkParam::FolderOpen => IconMark::FolderOpen,
+            IconMarkParam::Document => IconMark::Document,
         }
     }
 }
@@ -142,6 +151,6 @@ macro_rules! icon_mark_luau {
          \"checkmark-outline\" | \"circle-dash\" | \"incomplete\" | \"checkmark\" | \
          \"error-filled\" | \"warning-filled\" | \"information-filled\" | \"checkmark-filled\" | \
          \"caret-down\" | \"edit\" | \"bullet-disc\" | \"bullet-circle\" | \"bullet-square\" | \
-         \"bullet-dash\""
+         \"bullet-dash\" | \"folder\" | \"folder-open\" | \"document\""
     };
 }

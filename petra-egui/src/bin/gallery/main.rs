@@ -23,6 +23,8 @@
 //!   opens a window. Wave 1 rows are built. The rest name their slice
 //!   file and refuse to draw a stand-in.
 
+#[cfg(test)]
+mod amendment_states;
 mod cat;
 mod catalog;
 mod cell;

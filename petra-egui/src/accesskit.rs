@@ -211,6 +211,15 @@ fn build_node(node: &SemanticNode, children: Vec<AkNodeId>) -> (AkNodeId, AkNode
     if let Some(expanded) = node.state.expanded {
         ak.set_expanded(expanded);
     }
+    if let Some(level) = node.state.level {
+        ak.set_level(level as usize);
+    }
+    if let Some(pos) = node.state.pos_in_set {
+        ak.set_position_in_set(pos as usize);
+    }
+    if let Some(size) = node.state.set_size {
+        ak.set_size_of_set(size as usize);
+    }
     if !children.is_empty() {
         ak.set_children(children);
     }
@@ -453,6 +462,27 @@ mod tests {
         assert!(off_ak.is_disabled());
 
         assert_eq!(update.focus, node_id("root/on"));
+    }
+
+    /// Set position carries through as AccessKit's `level`, `position_in_set`
+    /// and `size_of_set`, so a reader says "level 2, 3 of 7" for a row in a
+    /// flat tree. A node that declares none sets none.
+    #[test]
+    fn set_position_carries_through_as_level_position_and_size() {
+        let mut row = leaf("root/row", Some(Role::TreeItem), "src");
+        row.state.level = Some(2);
+        row.state.pos_in_set = Some(3);
+        row.state.set_size = Some(7);
+        let (_, node) = build_node(&row, Vec::new());
+        assert_eq!(node.level(), Some(2));
+        assert_eq!(node.position_in_set(), Some(3));
+        assert_eq!(node.size_of_set(), Some(7));
+
+        let plain = leaf("root/plain", Some(Role::TreeItem), "docs");
+        let (_, node) = build_node(&plain, Vec::new());
+        assert_eq!(node.level(), None);
+        assert_eq!(node.position_in_set(), None);
+        assert_eq!(node.size_of_set(), None);
     }
 
     /// With no node focused, `focus` names the root — the same default

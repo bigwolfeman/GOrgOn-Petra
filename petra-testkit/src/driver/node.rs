@@ -55,6 +55,12 @@ pub struct DriverState {
     pub overflowed: bool,
     /// Rendered from a projection past its freshness bound.
     pub stale: bool,
+    /// Depth in a hierarchy, 1 at the top. Absent when none is declared.
+    pub level: Option<u32>,
+    /// 1-based position among siblings.
+    pub pos_in_set: Option<u32>,
+    /// Sibling count, including this node.
+    pub set_size: Option<u32>,
     /// Hosts a declared-endless animation, settle-exempt.
     pub ambient: bool,
 }

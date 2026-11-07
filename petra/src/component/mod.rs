@@ -330,7 +330,10 @@ pub use tile::{
 pub use toggle_button::{toggle_button, toggle_button_group, toggle_button_icon};
 pub use toggletip::{toggletip, toggletip_with};
 pub use tooltip::{tooltip, tooltip_anchored, tooltip_definition, tooltip_icon};
-pub use tree_view::{tree_item, tree_item_xs, tree_view};
+pub use tree_view::{
+    TreeAdornments, TreeBranch, TreeItem, TreePlace, tree_item, tree_item_xs, tree_row, tree_rows,
+    tree_rows_xs, tree_view,
+};
 pub use ui_shell::{
     LeftPanelMode, ui_shell_header, ui_shell_header_action, ui_shell_header_action_icon,
     ui_shell_header_menu_trigger, ui_shell_header_nav_item, ui_shell_left_panel,

@@ -2255,6 +2255,9 @@ pub fn standard_vocabulary() -> Vocabulary {
     for token in ICON_TOKENS {
         vocab.declare(DesignToken::new(name(token), TokenKind::Color));
     }
+
+    // The syntax family (spec 016 FR-059): one name per highlight class.
+    crate::token::syntax::declare(&mut vocab);
     for token in FIELD_TOKENS {
         vocab.declare(DesignToken::new(name(token), TokenKind::Color));
     }
@@ -2336,6 +2339,7 @@ pub fn light() -> Theme {
     insert_shadow_set(&mut values, &LIGHT_SHADOW_ALPHAS);
     values.insert(name("text.primary"), opaque(LIGHT_TEXT[0]));
     values.insert(name("text.muted"), opaque(LIGHT_TEXT[1]));
+    crate::token::syntax::insert(&mut values, ThemeMode::Light);
     insert_icon_family(&mut values, &LIGHT_TEXT, LIGHT_LAYERS[0], DARK_TEXT[0]);
     insert_on_colour_pair(&mut values);
     // See `BUTTON_DISABLED_TOKEN`: Carbon's own value, not a fade.
@@ -2437,6 +2441,7 @@ pub fn dark() -> Theme {
     insert_shadow_set(&mut values, &DARK_SHADOW_ALPHAS);
     values.insert(name("text.primary"), opaque(DARK_TEXT[0]));
     values.insert(name("text.muted"), opaque(DARK_TEXT[1]));
+    crate::token::syntax::insert(&mut values, ThemeMode::Dark);
     insert_icon_family(&mut values, &DARK_TEXT, DARK_LAYERS[0], LIGHT_TEXT[0]);
     insert_on_colour_pair(&mut values);
     // See `BUTTON_DISABLED_TOKEN`: Carbon's own value, not a fade.
@@ -5180,6 +5185,14 @@ mod tests {
     ///   component pairs it with an underline, so hue is not its only
     ///   channel either.
     ///
+    /// * `syntax.*` — the highlight-class family (spec 016 FR-059). Adjacent
+    ///   classes are held apart under both simulations and both model
+    ///   families by `syntax::tests::adjacent_classes_stay_apart_under_red_green_colour_blindness`,
+    ///   the diff pair differs by lightness (`syntax::tests::the_diff_pair_differs_by_lightness_not_hue_alone`),
+    ///   and every ink clears the text floor on the grounds a code well uses.
+    ///   Code is also text with position and shape, so hue is not its only
+    ///   channel.
+    ///
     /// Anything else with chroma fails here, naming itself. Adding a hue is
     /// then a deliberate act that has to come with a gate, which is the whole
     /// point.
@@ -5211,7 +5224,8 @@ mod tests {
                     || name == RING_TOKEN
                     || name == "focus-inverse"
                     || name.starts_with("status.")
-                    || name.starts_with("support-");
+                    || name.starts_with("support-")
+                    || name.starts_with("syntax.");
                 if gated {
                     continue;
                 }
