@@ -352,7 +352,7 @@ mod tests {
                 // `route_with_reserved`, so `Reserved` cannot arrive here
                 // today. Recorded rather than folded into `Unrouted` so a
                 // future wiring change is forced to decide this on purpose.
-                Route::Reserved { chord } => format!("reserved: {chord}"),
+                Route::Reserved { chord, .. } => format!("reserved: {chord}"),
                 Route::Unrouted { reason } => format!("unrouted: {reason}"),
             };
             self.routed.push((format!("{event:?}"), where_to));

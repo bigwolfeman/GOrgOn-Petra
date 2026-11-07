@@ -957,7 +957,7 @@ impl App for Parity {
             // `route_with_surfaces`, not `route_with_reserved`), so this arm
             // does not fire today. Named rather than folded into `Unrouted`
             // so it cannot start silently doing the wrong thing later.
-            Route::Reserved { chord } => {
+            Route::Reserved { chord, .. } => {
                 self.last_event = format!("reserved ({chord})");
                 return;
             }

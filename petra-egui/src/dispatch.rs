@@ -413,7 +413,7 @@ impl Dispatcher {
         match route {
             // Step 1. The shell handles it — including the focus return
             // (US-6), which is the host's to perform, not this module's.
-            Route::Reserved { chord } => {
+            Route::Reserved { chord, .. } => {
                 return Some(Claim::Verbatim(InputDecision::Reserved {
                     chord: *chord,
                     reason: format!(
@@ -523,7 +523,7 @@ impl Dispatcher {
                      delivered verbatim and the binding table is not consulted (FR-020)"
                 ),
             },
-            Route::Reserved { chord } => InputDecision::Reserved {
+            Route::Reserved { chord, .. } => InputDecision::Reserved {
                 chord: *chord,
                 reason: format!(
                     "reserved chord {chord} matched the reserved set (FR-021); the shell \
@@ -770,6 +770,7 @@ mod tests {
                 &event,
                 &Route::Reserved {
                     chord: Chord::reserved_escape(),
+                    claimant: None,
                 },
                 false,
                 &[Scope::Global],

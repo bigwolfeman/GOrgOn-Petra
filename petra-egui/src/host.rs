@@ -2783,12 +2783,14 @@ impl<A: App> Host<A> {
                         self.app
                             .handle(&ended.event(), &ended.route(), self.last_frame.as_ref());
                     }
-                    if matches!(routing.outcome.route, Route::Reserved { .. }) {
+                    if let Route::Reserved { claimant, .. } = &routing.outcome.route {
                         // US-6, the shell's to perform: dismiss what a press
                         // outside would have dismissed, hand focus back to
-                        // the shell, and leave the chord itself undelivered —
-                        // "the reserved chord never reaches the raw receiver"
-                        // is this arm existing (SC-004, second half).
+                        // the shell when the chord escaped a raw claim, and
+                        // leave the chord itself undelivered — "the reserved
+                        // chord never reaches the raw receiver" is this arm
+                        // existing (SC-004, second half).
+                        let escaped = claimant.is_some();
                         let dismiss: Vec<String> = self
                             .last_scopes
                             .iter()
@@ -2803,7 +2805,12 @@ impl<A: App> Host<A> {
                         if !dismiss.is_empty() {
                             self.app.dismissed(&dismiss);
                         }
-                        if self.return_focus_to_shell() {
+                        // Focus outside a raw claim is already the
+                        // shell's, so it stays where the operator put it. A
+                        // shell that reserves its own chords (so a text field
+                        // cannot swallow them) would otherwise lose focus to
+                        // the first control on every chord.
+                        if escaped && self.return_focus_to_shell() {
                             invalidate = true;
                         }
                     } else {
@@ -4832,7 +4839,7 @@ mod tests {
                 // Recorded rather than silently folded into `Unrouted` so a
                 // future caller that does start producing it is forced to
                 // decide what this fixture should say.
-                Route::Reserved { chord } => format!("reserved: {chord}"),
+                Route::Reserved { chord, .. } => format!("reserved: {chord}"),
                 Route::Unrouted { reason } => format!("unrouted: {reason}"),
             };
             self.seen.push((kind, where_));

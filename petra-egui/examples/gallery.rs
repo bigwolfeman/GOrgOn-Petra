@@ -1092,7 +1092,7 @@ impl App for Gallery {
             // event. Named explicitly rather than folded into `Unrouted` so
             // a future wiring change cannot start matching this arm
             // silently.
-            Route::Reserved { chord } => {
+            Route::Reserved { chord, .. } => {
                 self.last_event = format!("reserved ({chord})");
                 return;
             }

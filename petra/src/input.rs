@@ -466,6 +466,12 @@ pub enum Route {
     Reserved {
         /// The chord that matched the reserved set.
         chord: Chord,
+        /// The raw claim the chord escaped: the claiming node focus sat
+        /// inside, found by the same walk that yields [`Route::Raw`]. `None`
+        /// when focus was in no raw claim. Only an escape from a claim hands
+        /// focus back to the shell (US-6); a reserved chord pressed anywhere
+        /// else leaves focus where it is.
+        claimant: Option<String>,
     },
     /// Nothing accepted it: no node under the pointer accepts this event kind,
     /// or nothing has focus. The event is dropped, and the caller can say so —
@@ -742,13 +748,14 @@ fn reserved_or_raw(
             modifiers: *modifiers,
         };
         if reserved.contains(chord) {
-            return Some(Route::Reserved { chord });
+            return Some(Route::Reserved {
+                chord,
+                claimant: raw_claimant(frame, focused).map(|p| p.id.clone()),
+            });
         }
     }
     if matches!(event, InputEvent::Key { .. } | InputEvent::Text(_))
-        && let Some(id) = focused
-        && let Some(start) = frame.placements.iter().position(|p| p.id == id)
-        && let Some(claimant) = ancestors_from(frame, start).find(|p| p.semantics.raw_claim)
+        && let Some(claimant) = raw_claimant(frame, focused)
     {
         // The claiming node, not necessarily `id` itself: focus may sit on a
         // descendant of the node that actually declared the raw claim (the
@@ -760,6 +767,15 @@ fn reserved_or_raw(
         });
     }
     None
+}
+
+/// The node holding the raw claim that focus sits inside: `focused` itself
+/// or its nearest ancestor that declared one. Private to
+/// [`reserved_or_raw`], which is the one place that asks (FR-005).
+fn raw_claimant<'f>(frame: &'f PetrifiedFrame, focused: Option<&str>) -> Option<&'f Placement> {
+    let id = focused?;
+    let start = frame.placements.iter().position(|p| p.id == id)?;
+    ancestors_from(frame, start).find(|p| p.semantics.raw_claim)
 }
 
 /// [`route`], with the positional branch hit-testing above `floor`
@@ -3888,7 +3904,8 @@ mod tests {
         assert_eq!(
             got,
             Route::Reserved {
-                chord: Chord::reserved_escape()
+                chord: Chord::reserved_escape(),
+                claimant: Some("/term".into()),
             },
             "the reserved chord must escape a raw claim even when the \
              claiming node is exactly what is focused: {got:?}"
@@ -3934,7 +3951,8 @@ mod tests {
         assert_eq!(
             escaped,
             Route::Reserved {
-                chord: Chord::reserved_escape()
+                chord: Chord::reserved_escape(),
+                claimant: Some("/term".into()),
             },
             "the reserved chord must still escape the same claim: {escaped:?}"
         );
@@ -3961,7 +3979,8 @@ mod tests {
         assert_eq!(
             got,
             Route::Reserved {
-                chord: Chord::reserved_escape()
+                chord: Chord::reserved_escape(),
+                claimant: None,
             }
         );
     }
@@ -4190,7 +4209,8 @@ mod tests {
         assert_eq!(
             escaped,
             Route::Reserved {
-                chord: Chord::reserved_escape()
+                chord: Chord::reserved_escape(),
+                claimant: None,
             },
             "the reserved chord must escape even a Block surface that would \
              otherwise swallow the same keystroke: {escaped:?}"
@@ -4211,7 +4231,8 @@ mod tests {
         assert_eq!(
             composed,
             Route::Reserved {
-                chord: Chord::reserved_escape()
+                chord: Chord::reserved_escape(),
+                claimant: None,
             },
             "route_with_surfaces given the escape hatch must reach the same \
              answer as route_with_reserved: {composed:?}"
@@ -4276,7 +4297,8 @@ mod tests {
         assert_eq!(
             out,
             Route::Reserved {
-                chord: Chord::reserved_escape()
+                chord: Chord::reserved_escape(),
+                claimant: Some("/modal/term".into()),
             },
             "reserved must outrank a raw claim inside a Block surface: {out:?}"
         );
@@ -4320,7 +4342,8 @@ mod tests {
         assert_eq!(
             routing.outcome.route,
             Route::Reserved {
-                chord: Chord::reserved_escape()
+                chord: Chord::reserved_escape(),
+                claimant: Some("/term".into()),
             },
             "and the reserved chord must still escape the same claim through \
              the same entry: {:?}",

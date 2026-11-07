@@ -73,6 +73,15 @@ impl App for ShellApp {
                     &[Interaction::Focus, Interaction::Key, Interaction::TextEdit],
                 ),
         )
+        .child(
+            // A plain control after the claimant, so a focus that falls back
+            // to the first control is told apart from one that stays.
+            ViewNode::new(NodeKind::Input, "notes").interactive(
+                Role::TextInput,
+                "Notes",
+                &[Interaction::Focus, Interaction::Key, Interaction::TextEdit],
+            ),
+        )
     }
 
     fn handle(
@@ -209,6 +218,40 @@ fn a_raw_claim_gets_the_bound_chord_and_the_reserved_chord_escapes_it() {
         host.state().focused.as_deref(),
         Some("/root/shell"),
         "the reserved chord returns focus to the shell (US-6)"
+    );
+}
+
+/// The other side of US-6: focus that sits in no raw claim is already the
+/// shell's, so a reserved chord leaves it where it is. A shell reserves its
+/// own chords so a text field cannot swallow them, and before this rule each
+/// such chord threw focus to the first control.
+#[test]
+fn a_reserved_chord_outside_a_raw_claim_leaves_focus_in_place() {
+    let (ctx, mut host) = boot(ShellApp::default());
+    step(&ctx, &mut host, key_press(Key::Tab, Modifiers::NONE));
+    step(&ctx, &mut host, key_press(Key::Tab, Modifiers::NONE));
+    assert_eq!(host.state().focused.as_deref(), Some("/root/notes"));
+
+    let handled_before = host.app().handled.len();
+    step(&ctx, &mut host, key_press(Key::Escape, Modifiers::SHIFT));
+    assert_eq!(
+        host.app().handled.len(),
+        handled_before,
+        "the reserved chord still reaches nobody: {:?}",
+        host.app().handled
+    );
+    assert!(
+        host.app()
+            .decided
+            .iter()
+            .any(|l| l.starts_with("bound:") && l.contains("reserved")),
+        "the chord is still reserved and recorded: {:?}",
+        host.app().decided
+    );
+    assert_eq!(
+        host.state().focused.as_deref(),
+        Some("/root/notes"),
+        "no raw claim held focus, so focus stays on the control the operator chose"
     );
 }
 
