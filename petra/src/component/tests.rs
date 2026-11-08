@@ -1080,11 +1080,12 @@ fn marker_and_label_share_a_midline() {
         "Down",
     )
     .unwrap();
-    assert_eq!(status("s", &down).props.align, Some(Align::Center));
+    assert_eq!(status("s", &down).props.align, Some(Align::FirstLine));
 
     // Props.align is the declaration. Checkbox/radio/status are 12-vs-20
     // (10-vs-20 for status); Start would place the marker ~4 units above
-    // the words. A toggle's label sits *above* the switch (Carbon anatomy);
+    // the words. Status lines its marker up with the first line of its
+    // words, which for one line is the same midline `Center` gives. A toggle's label sits *above* the switch (Carbon anatomy);
     // the midline that must match is track vs state text, 24-vs-20.
     // Petrify and compare the placed midlines so a layout that ignores
     // align cannot stay green.

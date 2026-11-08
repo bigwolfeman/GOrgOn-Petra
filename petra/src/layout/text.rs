@@ -74,6 +74,16 @@ pub fn measure(node: &ViewNode, ctx: &mut LayoutCtx<'_>, proposal: SizeProposal)
     ctx.content.text(&req).size
 }
 
+/// The height of the first line `node` shapes to at `width`: the run's height
+/// over its line count. Every line of one run shares one typography style, so
+/// they share one height.
+pub(crate) fn first_line_height(node: &ViewNode, ctx: &mut LayoutCtx<'_>, width: f32) -> f32 {
+    let props = node.props.text();
+    let measured = ctx.content.text(&text_request(&props, Some(width)));
+    let lines = u16::try_from(measured.lines.max(1)).unwrap_or(u16::MAX);
+    measured.size.h / f32::from(lines)
+}
+
 /// Place a text run, recording truncation in the placement's paint state so
 /// the semantic tree's `truncated` flag is real.
 ///

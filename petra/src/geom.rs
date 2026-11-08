@@ -348,6 +348,13 @@ pub enum Align {
     End,
     /// Filled to the available extent.
     Stretch,
+    /// On a shared line through the centre of each child's first line of
+    /// text, the way SwiftUI's `.firstTextBaseline` lines up a row. A child
+    /// with no text centres on that line itself. A horizontal stack is the
+    /// one container where a line of text runs across the cross axis; every
+    /// other container places this as [`Align::Start`].
+    #[serde(rename = "first-line")]
+    FirstLine,
 }
 
 impl Align {
@@ -364,7 +371,7 @@ impl Align {
     #[must_use]
     pub fn offset(self, available: f32, child: f32) -> f32 {
         match self {
-            Self::Start | Self::Stretch => 0.0,
+            Self::Start | Self::Stretch | Self::FirstLine => 0.0,
             Self::Center => sane_extent((available - child) / 2.0),
             Self::End => sane_extent(available - child),
         }

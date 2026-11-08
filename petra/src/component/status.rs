@@ -98,9 +98,11 @@ pub fn status(key: impl Into<Key>, status: &StatusToken) -> ViewNode {
         Some(SPACING_03),
         vec![dot, label_node],
     );
-    // The marker is 10 units; body line-height is 20. Start-align hangs the
-    // disc/triangle/square off the top of the words.
-    node.props.align = Some(Align::Center);
+    // The marker centres on the first line of the words, wrapped or not.
+    // `Center` centred it on the whole label, so beside three lines it
+    // floated at the second; `Start` hung the 10-unit marker off the top of
+    // a 20-unit line.
+    node.props.align = Some(Align::FirstLine);
     node.semantics.role = Some(Role::Status);
     node.semantics.label = Some(status.text().to_owned());
     node

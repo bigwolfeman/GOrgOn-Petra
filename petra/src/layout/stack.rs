@@ -62,12 +62,13 @@ pub fn measure(
         // and lets the parent decide.
         let probe = main_proposal;
         let mut total = spacing;
-        let mut widest = 0.0f32;
+        let mut sizes = Vec::with_capacity(node.children.len());
         for child in &node.children {
             let got = crate::layout::measure(child, ctx, path, offer(main, probe, cross));
             total += got.along(main);
-            widest = widest.max(got.across(main));
+            sizes.push(got);
         }
+        let widest = widest_across(node, ctx, path, main, &sizes);
         return Size::from_axes(
             main,
             total + padding.along(main),
@@ -80,7 +81,7 @@ pub fn measure(
     // can place is the parent's problem to concede at placement, and clamping
     // it here would hide the overflow from the flag the contract requires.
     let total = spacing + taken.iter().map(|s| s.along(main)).sum::<f32>();
-    let widest = taken.iter().fold(0.0f32, |acc, s| acc.max(s.across(main)));
+    let widest = widest_across(node, ctx, path, main, &taken);
     Size::from_axes(
         main,
         total + padding.along(main),
@@ -230,6 +231,13 @@ pub fn place(
         Axis::Horizontal => content.x + leading,
         Axis::Vertical => content.y + leading,
     };
+    let settled: Vec<Size> = plan
+        .taken
+        .iter()
+        .zip(&extents)
+        .map(|(taken, &extent)| Size::from_axes(main, extent, taken.across(main).min(cross_extent)))
+        .collect();
+    let lines = FirstLines::of(node, ctx, path, main, align, &settled);
     for (i, child) in node.children.iter().enumerate() {
         let extent = extents[i];
         // `align_self` overrides the container's own `align` for this one
@@ -260,7 +268,12 @@ pub fn place(
                 .min(cross_extent),
             _ => plan.taken[i].across(main).min(cross_extent),
         };
-        let offset = child_align.offset(cross_extent, across);
+        // On the shared line, but never pushed past the far edge: a row
+        // too short for its tallest line keeps every child inside it.
+        let offset = match lines.shift(i) {
+            Some(shift) => shift.min((cross_extent - across).max(0.0)),
+            None => child_align.offset(cross_extent, across),
+        };
         let rect = match main {
             Axis::Horizontal => Rect::new(cursor, content.y + offset, extent, across),
             Axis::Vertical => Rect::new(content.x + offset, cursor, across, extent),
@@ -270,6 +283,106 @@ pub fn place(
     }
 
     sink.leave();
+}
+
+/// Where each [`Align::FirstLine`] child sits so that every one of them
+/// centres its first line of text on one shared line.
+///
+/// The line runs through the lowest first-line centre among those children,
+/// so none is pushed above the stack's top edge: each child's shift is that
+/// line less its own centre. Only a horizontal stack lines children up; a
+/// vertical stack's cross axis is horizontal, where a line of text has no
+/// position, and it places `FirstLine` as `Start`.
+struct FirstLines {
+    shifts: Vec<Option<f32>>,
+}
+
+impl FirstLines {
+    fn of(
+        node: &ViewNode,
+        ctx: &mut LayoutCtx<'_>,
+        path: &mut KeyPath,
+        main: Axis,
+        align: Align,
+        sizes: &[Size],
+    ) -> Self {
+        let mut centres = vec![None; node.children.len()];
+        if main == Axis::Horizontal {
+            for (i, child) in node.children.iter().enumerate() {
+                if child.props.align_self.unwrap_or(align) == Align::FirstLine
+                    && let Some(&size) = sizes.get(i)
+                {
+                    centres[i] = Some(first_line_centre(child, ctx, path, size));
+                }
+            }
+        }
+        let line = centres.iter().flatten().fold(0.0f32, |acc, &c| acc.max(c));
+        Self {
+            shifts: centres
+                .into_iter()
+                .map(|centre| centre.map(|c| line - c))
+                .collect(),
+        }
+    }
+
+    /// How far child `i` sits below the stack's top edge, if it lines up.
+    fn shift(&self, i: usize) -> Option<f32> {
+        self.shifts.get(i).copied().flatten()
+    }
+}
+
+/// The cross extent a stack's children need once the first-line children
+/// have moved onto their shared line: the farthest any child's far edge
+/// reaches.
+fn widest_across(
+    node: &ViewNode,
+    ctx: &mut LayoutCtx<'_>,
+    path: &mut KeyPath,
+    main: Axis,
+    sizes: &[Size],
+) -> f32 {
+    let align = node.props.align.unwrap_or_default();
+    let lines = FirstLines::of(node, ctx, path, main, align, sizes);
+    sizes.iter().enumerate().fold(0.0f32, |acc, (i, size)| {
+        acc.max(lines.shift(i).unwrap_or(0.0) + size.across(main))
+    })
+}
+
+/// How far below its own top edge `child`'s first line of text centres, when
+/// it is `size`. A text run answers from its shaped line height. A stack
+/// answers from its first child, below its own top padding. Anything else
+/// has no line of its own and centres on itself.
+///
+/// `path` names the stack that holds `child`; the child's key is pushed
+/// around any measurement of its own children, the way
+/// [`crate::layout::measure`] pushes it.
+fn first_line_centre(
+    child: &ViewNode,
+    ctx: &mut LayoutCtx<'_>,
+    path: &mut KeyPath,
+    size: Size,
+) -> f32 {
+    match (child.kind, child.children.first()) {
+        (NodeKind::Text, _) => crate::layout::text::first_line_height(child, ctx, size.w) / 2.0,
+        (NodeKind::Stack, Some(first)) => {
+            let padding = ctx.padding(&child.props.padding);
+            let width = (size.w - padding.left - padding.right).max(0.0);
+            path.push(child.key.clone());
+            let first_size = crate::layout::measure(
+                first,
+                ctx,
+                path,
+                SizeProposal {
+                    horizontal: Proposal::Exact(width),
+                    vertical: Proposal::Unbounded,
+                },
+            );
+            let centre = first_line_centre(first, ctx, path, first_size);
+            path.pop();
+            padding.top + centre
+        }
+        _ => size.h / 2.0,
+    }
 }
 
 /// What one distribution pass settled on, indexed by declaration order.
@@ -700,6 +813,97 @@ mod tests {
         let mut ctx = h.ctx();
         let mut path = KeyPath::root();
         crate::layout::measure(tree, &mut ctx, &mut path, proposal)
+    }
+
+    /// A fixed `w` by `h` box with no text of its own.
+    fn marker(key: &str, w: f32, h: f32) -> ViewNode {
+        ViewNode::new(NodeKind::Spacer, Key::new(key)).with_constraints(Constraints {
+            horizontal: AxisConstraint {
+                min: Some(w),
+                max: Some(w),
+                priority: 0,
+            },
+            vertical: AxisConstraint {
+                min: Some(h),
+                max: Some(h),
+                priority: 0,
+            },
+        })
+    }
+
+    /// A wrapping run held to `width`.
+    fn paragraph(key: &str, body: &str, width: f32) -> ViewNode {
+        ViewNode::new(NodeKind::Text, Key::new(key))
+            .with_props(Props {
+                text: Some(body.to_owned()),
+                wrap: Some(crate::tree::TextWrap::Wrap),
+                ..Props::default()
+            })
+            .with_constraints(on(
+                Axis::Horizontal,
+                AxisConstraint {
+                    min: Some(width),
+                    max: Some(width),
+                    priority: 0,
+                },
+            ))
+    }
+
+    /// The harness shapes 8-unit characters on 16-unit lines, so 24
+    /// characters at 80 units wrap to three lines, 48 units tall, whose first
+    /// line centres 8 units down. The 10-unit marker centres 5 down, so the
+    /// shared line is at 8 and the marker sits 3 below the top, beside the
+    /// first line rather than the second. The row is as tall as the run.
+    #[test]
+    fn first_line_centres_a_marker_on_the_first_line_of_a_wrapped_run() {
+        let tree = stack(
+            Axis::Horizontal,
+            0.0,
+            Align::FirstLine,
+            vec![
+                marker("dot", 10.0, 10.0),
+                paragraph("label", "twenty-four characters!!", 80.0),
+            ],
+        );
+        // 90 wide: the marker's 10 and the run's 80, so the run is offered
+        // the 80 it is held to and shapes three lines.
+        let placed = placements(&tree, Rect::new(0.0, 0.0, 90.0, 100.0));
+        let rect = |id: &str| {
+            placed
+                .iter()
+                .find(|p| p.id.ends_with(id))
+                .unwrap_or_else(|| panic!("{id} is placed"))
+                .rect
+        };
+        assert_eq!(rect("/dot").y, 3.0);
+        assert_eq!(rect("/label").y, 0.0);
+        assert_eq!(rect("/label").h, 48.0);
+        let size = measured(
+            &tree,
+            SizeProposal {
+                horizontal: crate::layout::Proposal::Exact(90.0),
+                vertical: crate::layout::Proposal::Unbounded,
+            },
+        );
+        assert_eq!(size.h, 48.0);
+    }
+
+    /// A vertical stack's cross axis is horizontal, where a line of text has
+    /// no position: `FirstLine` places as `Start` there.
+    #[test]
+    fn a_vertical_stack_places_first_line_as_start() {
+        let tree = stack(
+            Axis::Vertical,
+            0.0,
+            Align::FirstLine,
+            vec![marker("dot", 10.0, 10.0), paragraph("label", "hi", 80.0)],
+        );
+        let placed = placements(&tree, Rect::new(0.0, 0.0, 200.0, 100.0));
+        assert!(
+            placed.iter().skip(1).all(|p| p.rect.x == 0.0),
+            "{:?}",
+            placed.iter().map(|p| (&p.id, p.rect)).collect::<Vec<_>>()
+        );
     }
 
     /// The hand-computed case, pinned so the algorithm is checked against
