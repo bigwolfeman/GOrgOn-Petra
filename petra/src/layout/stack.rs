@@ -90,6 +90,9 @@ pub fn measure(
 }
 
 /// Place this container and everything under it into `slot`.
+///
+/// Where every child goes is [`arrange`]'s. This pushes the stack's own
+/// placement, then places each child into the rect `arrange` gave it.
 pub fn place(
     node: &ViewNode,
     ctx: &mut LayoutCtx<'_>,
@@ -97,20 +100,74 @@ pub fn place(
     slot: Slot,
     sink: &mut dyn PlacementSink,
 ) {
+    let arranged = arrange(node, ctx, path, slot.rect);
+    let id = path.id();
+    let semantics = semantics_of(node, &id, ctx.state);
+    let me = sink.push(Placement {
+        id,
+        kind: node.kind,
+        rect: slot.rect,
+        z: slot.z,
+        clip: slot.clip,
+        opacity: slot.opacity,
+        paint: PaintState {
+            content_hash: 0,
+            // Set here rather than on the child: the stack is what ran out of
+            // room, and the child's own placement records only what its own
+            // content lost.
+            truncated: arranged.lost,
+            // Never the stack: `overflowed` is "the content is bigger than
+            // the rect it was given", and only the leaf that owns the content
+            // can measure that. A stack that ran out of room says so with
+            // `truncated` above, which is the FR-005 concession it actually
+            // performed.
+            overflowed: false,
+            token_revision: ctx.theme_rev,
+            // Filled by `PlacementSink::attach` once the dispatcher
+            // has the payload; no container owns this.
+            paint_hash: 0,
+        },
+        semantics,
+        parent: None,
+    });
+    sink.enter(me);
+    for (child, rect) in node.children.iter().zip(arranged.rects) {
+        crate::layout::place(child, ctx, path, slot.with_rect(rect), sink);
+    }
+    sink.leave();
+}
+
+/// Where a stack put each of its children, in declaration order, and
+/// whether it ran out of room doing so.
+struct Arranged {
+    rects: Vec<Rect>,
+    lost: bool,
+}
+
+/// Lay this container's children out in `rect`: distribution, concession,
+/// justification and cross-axis alignment. Nothing is pushed to a sink.
+///
+/// [`place`] places each child into the rect this returns, and
+/// [`first_line_centre`] reads the same rects to find where a stack's first
+/// line of text lands. One function, so the line a row lines up on is
+/// always the line the row draws.
+///
+/// `path` already names this node, as it does for [`place`].
+fn arrange(node: &ViewNode, ctx: &mut LayoutCtx<'_>, path: &mut KeyPath, rect: Rect) -> Arranged {
     let main = node.props.axis.unwrap_or(Axis::Vertical);
     let align = node.props.align.unwrap_or_default();
     let justify = node.props.justify.unwrap_or_default();
     // Padding is inside the box: the stack's own placed rect (pushed below,
-    // `rect: slot.rect`) never moves or shrinks because of its own padding —
+    // `rect: rect`) never moves or shrinks because of its own padding —
     // only what it offers its children does. `content` floors at zero rather
     // than going negative (`Rect::inset_edges`), the same floor `spacing`
     // already applies to itself a few lines down, and a genuine collapse
     // (the box smaller than its own declared insets) is flagged exactly the
     // way a spacing collapse already is, via `padding_collapsed` below.
     let padding = ctx.padding(&node.props.padding);
-    let padding_collapsed = (slot.rect.w - padding.left - padding.right) < -FIT_EPSILON
-        || (slot.rect.h - padding.top - padding.bottom) < -FIT_EPSILON;
-    let content = slot.rect.inset_edges(padding);
+    let padding_collapsed = (rect.w - padding.left - padding.right) < -FIT_EPSILON
+        || (rect.h - padding.top - padding.bottom) < -FIT_EPSILON;
+    let content = rect.inset_edges(padding);
     let main_extent = content.size().along(main).max(0.0);
     let cross_extent = content.size().across(main).max(0.0);
     let gaps = node.children.len().saturating_sub(1) as f32;
@@ -167,36 +224,6 @@ pub fn place(
         lost |= outcome.truncated();
     }
 
-    let id = path.id();
-    let semantics = semantics_of(node, &id, ctx.state);
-    let me = sink.push(Placement {
-        id,
-        kind: node.kind,
-        rect: slot.rect,
-        z: slot.z,
-        clip: slot.clip,
-        opacity: slot.opacity,
-        paint: PaintState {
-            content_hash: 0,
-            // Set here rather than on the child: the stack is what ran out of
-            // room, and the child's own placement records only what its own
-            // content lost.
-            truncated: lost,
-            // Never the stack: `overflowed` is "the content is bigger than
-            // the rect it was given", and only the leaf that owns the content
-            // can measure that. A stack that ran out of room says so with
-            // `truncated` above, which is the FR-005 concession it actually
-            // performed.
-            overflowed: false,
-            token_revision: ctx.theme_rev,
-            // Filled by `PlacementSink::attach` once the dispatcher
-            // has the payload; no container owns this.
-            paint_hash: 0,
-        },
-        semantics,
-        parent: None,
-    });
-    sink.enter(me);
 
     // Declaration order, always. `plan` was negotiated in another order
     // entirely and indexes back into this one.
@@ -238,6 +265,7 @@ pub fn place(
         .map(|(taken, &extent)| Size::from_axes(main, extent, taken.across(main).min(cross_extent)))
         .collect();
     let lines = FirstLines::of(node, ctx, path, main, align, &settled);
+    let mut rects = Vec::with_capacity(node.children.len());
     for (i, child) in node.children.iter().enumerate() {
         let extent = extents[i];
         // `align_self` overrides the container's own `align` for this one
@@ -274,15 +302,13 @@ pub fn place(
             Some(shift) => shift.min((cross_extent - across).max(0.0)),
             None => child_align.offset(cross_extent, across),
         };
-        let rect = match main {
+        rects.push(match main {
             Axis::Horizontal => Rect::new(cursor, content.y + offset, extent, across),
             Axis::Vertical => Rect::new(content.x + offset, cursor, across, extent),
-        };
-        crate::layout::place(child, ctx, path, slot.with_rect(rect), sink);
+        });
         cursor += extent + gap + spread;
     }
-
-    sink.leave();
+    Arranged { rects, lost }
 }
 
 /// Where each [`Align::FirstLine`] child sits so that every one of them
@@ -312,7 +338,12 @@ impl FirstLines {
                 if child.props.align_self.unwrap_or(align) == Align::FirstLine
                     && let Some(&size) = sizes.get(i)
                 {
-                    centres[i] = Some(first_line_centre(child, ctx, path, size));
+                    // No text, no line: the child centres itself on the
+                    // shared line, the way a lone glyph sits beside a word.
+                    centres[i] = Some(
+                        first_line_centre(child, ctx, path, size)
+                            .unwrap_or(size.across(main) / 2.0),
+                    );
                 }
             }
         }
@@ -349,39 +380,41 @@ fn widest_across(
 }
 
 /// How far below its own top edge `child`'s first line of text centres, when
-/// it is `size`. A text run answers from its shaped line height. A stack
-/// answers from its first child, below its own top padding. Anything else
-/// has no line of its own and centres on itself.
+/// it is `size`; [`None`] when it holds no text.
+///
+/// * A text run answers from its shaped line height.
+/// * A stack answers with the topmost first line among its children, where
+///   [`arrange`] puts them. A button's label is centred in its 32 units, so
+///   its line is at 16, not at its top padding. A status mark leads with a
+///   10-unit glyph that holds no text, so its line is its words', not the
+///   glyph's middle.
+/// * Anything else holds no line of its own.
 ///
 /// `path` names the stack that holds `child`; the child's key is pushed
-/// around any measurement of its own children, the way
+/// around any layout of its own children, the way
 /// [`crate::layout::measure`] pushes it.
 fn first_line_centre(
     child: &ViewNode,
     ctx: &mut LayoutCtx<'_>,
     path: &mut KeyPath,
     size: Size,
-) -> f32 {
-    match (child.kind, child.children.first()) {
-        (NodeKind::Text, _) => crate::layout::text::first_line_height(child, ctx, size.w) / 2.0,
-        (NodeKind::Stack, Some(first)) => {
-            let padding = ctx.padding(&child.props.padding);
-            let width = (size.w - padding.left - padding.right).max(0.0);
+) -> Option<f32> {
+    match child.kind {
+        NodeKind::Text => Some(crate::layout::text::first_line_height(child, ctx, size.w) / 2.0),
+        NodeKind::Stack if !child.children.is_empty() => {
             path.push(child.key.clone());
-            let first_size = crate::layout::measure(
-                first,
-                ctx,
-                path,
-                SizeProposal {
-                    horizontal: Proposal::Exact(width),
-                    vertical: Proposal::Unbounded,
-                },
-            );
-            let centre = first_line_centre(first, ctx, path, first_size);
+            let arranged = arrange(child, ctx, path, Rect::new(0.0, 0.0, size.w, size.h));
+            let mut line: Option<f32> = None;
+            for (grandchild, rect) in child.children.iter().zip(&arranged.rects) {
+                if let Some(centre) = first_line_centre(grandchild, ctx, path, rect.size()) {
+                    let at = rect.y + centre;
+                    line = Some(line.map_or(at, |best| best.min(at)));
+                }
+            }
             path.pop();
-            padding.top + centre
+            line
         }
-        _ => size.h / 2.0,
+        _ => None,
     }
 }
 
@@ -886,6 +919,77 @@ mod tests {
             },
         );
         assert_eq!(size.h, 48.0);
+    }
+
+    /// A button centres its label in its own height. The line beside it
+    /// lines up with the label, 8 down in a 32-unit button, not with the
+    /// button's top edge.
+    #[test]
+    fn a_line_lines_up_with_the_label_a_button_centres() {
+        let button = ViewNode::new(NodeKind::Stack, Key::new("button"))
+            .with_props(Props {
+                axis: Some(Axis::Horizontal),
+                align: Some(Align::Center),
+                ..Props::default()
+            })
+            .with_constraints(on(
+                Axis::Vertical,
+                AxisConstraint {
+                    min: Some(32.0),
+                    max: Some(32.0),
+                    priority: 0,
+                },
+            ))
+            .with_children(vec![paragraph("label", "ok", 40.0)]);
+        let tree = stack(
+            Axis::Horizontal,
+            0.0,
+            Align::FirstLine,
+            vec![paragraph("line", "hi", 80.0), button],
+        );
+        let placed = placements(&tree, Rect::new(0.0, 0.0, 200.0, 100.0));
+        let rect = |id: &str| {
+            placed
+                .iter()
+                .find(|p| p.id.ends_with(id))
+                .unwrap_or_else(|| panic!("{id} is placed"))
+                .rect
+        };
+        assert_eq!(rect("/button").y, 0.0);
+        assert_eq!(rect("/label").y, 8.0);
+        assert_eq!(rect("/line").y, 8.0);
+    }
+
+    /// A status mark leads with a glyph that holds no text. Its line is its
+    /// words', so the words sit level with the line beside them and the
+    /// glyph centres on that line, 3 down.
+    #[test]
+    fn a_stack_whose_first_child_holds_no_text_lines_up_on_its_words() {
+        let status = ViewNode::new(NodeKind::Stack, Key::new("status"))
+            .with_props(Props {
+                axis: Some(Axis::Horizontal),
+                align: Some(Align::FirstLine),
+                ..Props::default()
+            })
+            .with_children(vec![marker("dot", 10.0, 10.0), paragraph("words", "ok", 40.0)]);
+        let tree = stack(
+            Axis::Horizontal,
+            0.0,
+            Align::FirstLine,
+            vec![paragraph("line", "hi", 80.0), status],
+        );
+        let placed = placements(&tree, Rect::new(0.0, 0.0, 200.0, 100.0));
+        let rect = |id: &str| {
+            placed
+                .iter()
+                .find(|p| p.id.ends_with(id))
+                .unwrap_or_else(|| panic!("{id} is placed"))
+                .rect
+        };
+        assert_eq!(rect("/line").y, 0.0);
+        assert_eq!(rect("/status").y, 0.0);
+        assert_eq!(rect("/words").y, 0.0);
+        assert_eq!(rect("/dot").y, 3.0);
     }
 
     /// A vertical stack's cross axis is horizontal, where a line of text has
