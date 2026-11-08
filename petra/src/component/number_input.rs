@@ -288,10 +288,10 @@ fn value_field(key: &'static str, label: String, value: String, height: f32) -> 
 /// in the well's own tone so it is flush with the well, and lifting to
 /// [`LAYER_HOVER`] under the pointer.
 ///
-/// The resting fill is [`SURFACE_RAISED`] and not absent: a state-decorated
-/// binding needs a resting one under it
-/// (`tests::a_state_decorated_token_always_has_a_resting_binding`), and the
-/// well's tone is the one that draws nothing a reader can see.
+/// The resting fill is [`SURFACE_RAISED`], the well's own tone. A resting
+/// fill is not required (`PaintContent::paints_nothing_in` counts a
+/// state-only payload as empty at rest); this one names the well because the
+/// stepper only ever sits in its own well.
 ///
 /// Pinned on both axes. Carbon's stepper width (md 40,
 /// `_number-input.scss:153` controls-width / 2; lg 48 `:403`; sm 32 `:416`)

@@ -4,7 +4,7 @@ use super::icon::{IconMark, IconTone, icon_toned};
 use super::text::text;
 use super::tokens::{
     LAYER_ACTIVE, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SPACING_03, SPACING_04,
-    SPACING_05, SURFACE_BASE, TEXT_MUTED, TYPOGRAPHY_BODY_COMPACT, t,
+    SPACING_05, TEXT_MUTED, TYPOGRAPHY_BODY_COMPACT, t,
 };
 use super::{pad, stack};
 use crate::geom::{Align, Axis};
@@ -130,7 +130,6 @@ pub fn list_row_with(
     // reads as two things rather than one.
     node.props.padding = Some(pad(SPACING_05, SPACING_04));
     for (slot, token) in [
-        ("background", SURFACE_BASE),
         ("background@hover", LAYER_HOVER),
         ("background@active", LAYER_ACTIVE),
         ("background@selected", LAYER_SELECTED),
@@ -228,7 +227,10 @@ mod tests {
                 "{slot} is not bound to {token}"
             )
         };
-        binds("background", crate::component::tokens::SURFACE_BASE);
+        assert!(
+            !node.props.tokens.contains_key("background"),
+            "a flush row rests on whatever ground it sits on"
+        );
         binds("background@hover", crate::component::tokens::LAYER_HOVER);
         binds("background@active", crate::component::tokens::LAYER_ACTIVE);
         binds(

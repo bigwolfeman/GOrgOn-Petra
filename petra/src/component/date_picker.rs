@@ -1382,11 +1382,9 @@ fn day_button(day: u32, fill: DayFill, today: bool) -> ViewNode {
     let mut node = stack(format!("day-{day}"), axis, None, parts);
     node.props.align = Some(Align::Center);
     node.props.justify = Some(Justify::Center);
-    // Resting background: the calendar's own content fill, the ground every
-    // day cell sits on. Without this, `background@hover` has no resting
-    // `background` beneath it and resolves to nothing at rest — the
-    // Accordion/Modal/AI-label defect, generalised (see
-    // `a_state_decorated_token_always_has_a_resting_binding`).
+    // Resting background: the range fill for an edge or interior day, and
+    // the calendar's own content fill for the rest. A day cell only ever sits
+    // in its own calendar, so naming that ground is exact.
     node.props.tokens.insert(
         "background".into(),
         t(match fill {

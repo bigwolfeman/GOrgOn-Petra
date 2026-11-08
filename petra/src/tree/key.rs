@@ -205,6 +205,43 @@ impl KeyPath {
     }
 }
 
+impl KeyPath {
+    /// The path whose [`KeyPath::id`] is `id`: the inverse of `id`, escapes
+    /// undone. `None` for a string `id` never produces (empty, no leading
+    /// `/`, an empty segment, or a lone trailing `\`).
+    ///
+    /// For a reader of a routed id that needs a segment's key back, such as
+    /// the row a focused tree item stands for. A segment's key may contain
+    /// `/` or `\`, which is why a plain `split('/')` is wrong.
+    #[must_use]
+    pub fn parse(id: &str) -> Option<Self> {
+        let rest = id.strip_prefix('/')?;
+        if rest.is_empty() {
+            return Some(Self::root());
+        }
+        let mut keys = Vec::new();
+        let mut key = String::new();
+        let mut chars = rest.chars();
+        while let Some(ch) = chars.next() {
+            match ch {
+                '\\' => key.push(chars.next()?),
+                '/' => {
+                    if key.is_empty() {
+                        return None;
+                    }
+                    keys.push(Key::new(std::mem::take(&mut key)));
+                }
+                other => key.push(other),
+            }
+        }
+        if key.is_empty() {
+            return None;
+        }
+        keys.push(Key::new(key));
+        Some(Self(keys))
+    }
+}
+
 impl fmt::Display for KeyPath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.id())
@@ -214,6 +251,21 @@ impl fmt::Display for KeyPath {
 #[cfg(test)]
 mod tests {
     use super::{Key, KeyPath};
+
+    /// `parse` undoes `id` for keys holding `/` and `\`, and refuses what
+    /// `id` never writes.
+    #[test]
+    fn parse_is_the_inverse_of_id() {
+        let path = KeyPath::root()
+            .child(&Key::new("files-tree"))
+            .child(&Key::new("rows"))
+            .child(&Key::new("/home/w/a\\b.rs"));
+        assert_eq!(KeyPath::parse(&path.id()), Some(path.clone()));
+        assert_eq!(KeyPath::parse("/"), Some(KeyPath::root()));
+        for bad in ["", "root", "/a//b", "/a/", "/a\\"] {
+            assert_eq!(KeyPath::parse(bad), None, "{bad:?}");
+        }
+    }
 
     #[test]
     fn root_id_is_a_single_slash() {

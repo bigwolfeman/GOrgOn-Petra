@@ -92,7 +92,7 @@ use super::stack;
 use super::text::{as_compact_heading, ellipsis_text};
 use super::tokens::{
     BORDER_SUBTLE, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SPACING_03, SPACING_05,
-    SPACING_06, SURFACE_BASE, t,
+    SPACING_06, t,
 };
 use std::sync::Arc;
 
@@ -269,7 +269,6 @@ pub fn structured_list_row(key: impl Into<Key>, cells: Vec<ViewNode>, selected: 
         Some(selection_cell(selected, CellKind::Data)),
     );
     for (slot, token) in [
-        ("background", SURFACE_BASE),
         ("background@hover", LAYER_HOVER),
         ("background@selected", LAYER_SELECTED),
         ("background@selected-hover", LAYER_SELECTED_HOVER),
@@ -1141,28 +1140,23 @@ mod tests {
                     .iter()
                     .find(|c| c.key.as_str() == row_key)
                     .unwrap_or_else(|| panic!("missing row {row_key}"));
-                let row_bg_name = row
-                    .props
-                    .tokens
-                    .get("background")
-                    .expect("data row binds a resting background");
-                let row_bg = color(&theme, row_bg_name.as_str());
-                for cell_key in ["c0", "c1"] {
-                    let text_node = cell_text(row, cell_key);
-                    let fg_name = text_node
-                        .props
-                        .tokens
-                        .get("foreground")
-                        .unwrap_or_else(|| panic!("{row_key} {cell_key} binds a foreground"));
-                    let opacity = text_node.props.opacity.unwrap_or(1.0);
-                    let fg = color(&theme, fg_name.as_str()).faded(opacity).over(row_bg);
-                    let ratio = fg.contrast_ratio(row_bg);
-                    assert!(
-                        ratio >= MIN_TEXT_CONTRAST,
-                        "{row_key} {cell_key} at {ratio:.2}:1 against {} fails AA \
-                         {MIN_TEXT_CONTRAST}:1",
-                        row_bg_name.as_str()
-                    );
+                for ground in crate::component::tests::shown_grounds(row, false) {
+                    let row_bg = color(&theme, &ground);
+                    for cell_key in ["c0", "c1"] {
+                        let text_node = cell_text(row, cell_key);
+                        let fg_name =
+                            text_node.props.tokens.get("foreground").unwrap_or_else(|| {
+                                panic!("{row_key} {cell_key} binds a foreground")
+                            });
+                        let opacity = text_node.props.opacity.unwrap_or(1.0);
+                        let fg = color(&theme, fg_name.as_str()).faded(opacity).over(row_bg);
+                        let ratio = fg.contrast_ratio(row_bg);
+                        assert!(
+                            ratio >= MIN_TEXT_CONTRAST,
+                            "{row_key} {cell_key} at {ratio:.2}:1 against {ground} fails AA \
+                         {MIN_TEXT_CONTRAST}:1"
+                        );
+                    }
                 }
             }
         }

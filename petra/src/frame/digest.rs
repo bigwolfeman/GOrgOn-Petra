@@ -629,6 +629,7 @@ fn leaf_bytes(scale: Scale, p: &Placement) -> Vec<u8> {
                 ambient: _,
                 actions: _,
                 total_count: _,
+                row_source: _,
                 // These two decide what the focus indicator looks like
                 // and which rect it is drawn on. Both are held out the way
                 // `role` is: `role` decided the same figure before either
@@ -1280,6 +1281,7 @@ mod tests {
                 ambient: false,
                 actions: vec![Interaction::Click],
                 total_count: Some(9),
+                row_source: Some("fibers".into()),
                 // Non-default on purpose, like the flags above: the pinned
                 // vectors below prove these two are held out of the leaf
                 // stream by staying unchanged with these set to something

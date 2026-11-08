@@ -1148,7 +1148,6 @@ fn repin_row(child: &mut ViewNode, height: f32) {
 /// mirrors.
 fn bind_row_states(node: &mut ViewNode) {
     for (slot, token) in [
-        ("background", SURFACE_BASE),
         ("background@hover", LAYER_HOVER),
         ("background@active", LAYER_ACTIVE),
         ("background@selected", LAYER_SELECTED),
@@ -2583,13 +2582,14 @@ mod tests {
     /// an unselected subitem, and a plain leaf — every label against its
     /// own item's resting fill, in both themes.
     #[test]
-    fn left_panel_labels_clear_aa_contrast_against_their_own_fill() {
+    fn left_panel_labels_clear_aa_contrast_on_every_ground_they_show() {
         const MIN_TEXT_CONTRAST: f32 = 4.5;
         for theme in [crate::token::light(), crate::token::dark()] {
-            for (label, node) in [
+            for (label, node, selected) in [
                 (
                     "selected-leaf",
                     ui_shell_left_panel_item("home", "Home", false, true, vec![]),
+                    true,
                 ),
                 (
                     "branch",
@@ -2600,22 +2600,19 @@ mod tests {
                         false,
                         vec![ui_shell_left_panel_subitem("child", "Fibers", false)],
                     ),
+                    false,
                 ),
                 (
                     "selected-subitem",
                     ui_shell_left_panel_subitem("child", "Fibers", true),
+                    true,
                 ),
                 (
                     "resting-subitem",
                     ui_shell_left_panel_subitem("child", "Trace", false),
+                    false,
                 ),
             ] {
-                let bg_name = node
-                    .props
-                    .tokens
-                    .get("background")
-                    .unwrap_or_else(|| panic!("{label}: item binds a resting background"));
-                let bg = color(&theme, bg_name.as_str());
                 let row = named(&node, "row");
                 let text_label = named(row, "label");
                 let fg_name = text_label
@@ -2624,13 +2621,15 @@ mod tests {
                     .get("foreground")
                     .unwrap_or_else(|| panic!("{label}: label binds a foreground"));
                 let opacity = text_label.props.opacity.unwrap_or(1.0);
-                let fg = color(&theme, fg_name.as_str()).faded(opacity).over(bg);
-                let ratio = fg.contrast_ratio(bg);
-                assert!(
-                    ratio >= MIN_TEXT_CONTRAST,
-                    "{label} at {ratio:.2}:1 against {} fails AA {MIN_TEXT_CONTRAST}:1",
-                    bg_name.as_str()
-                );
+                for ground in crate::component::tests::shown_grounds(&node, selected) {
+                    let bg = color(&theme, &ground);
+                    let fg = color(&theme, fg_name.as_str()).faded(opacity).over(bg);
+                    let ratio = fg.contrast_ratio(bg);
+                    assert!(
+                        ratio >= MIN_TEXT_CONTRAST,
+                        "{label} at {ratio:.2}:1 against {ground} fails AA {MIN_TEXT_CONTRAST}:1"
+                    );
+                }
             }
         }
     }

@@ -76,6 +76,9 @@ fn node_at(frame: &PetrifiedFrame, index: usize, children: Vec<SemanticNode>) ->
         ambient,
         actions,
         total_count,
+        // Held out on purpose: a row source is the application's name for
+        // where rows come from, not a fact about what the node is.
+        row_source: _,
         // Held out on purpose: what the focus indicator looks like and
         // which rect it is drawn on are paint facts, not facts about what
         // the node is. The tree already says which node is `focused`.

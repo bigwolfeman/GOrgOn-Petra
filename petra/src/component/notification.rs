@@ -525,10 +525,8 @@ fn action_button(key: impl Into<Key>, label: String) -> ViewNode {
     node.props.align = Some(Align::Center);
     node.props.padding = Some(pad(SPACING_05, SPACING_03));
     // Resting background: the panel it sits on (`chrome` binds
-    // `SURFACE_RAISED`). Without this, `background@hover` has no resting
-    // `background` beneath it and resolves to nothing at rest — the
-    // Accordion/Modal/AI-label/data-table/date-picker defect, generalised
-    // (see `a_state_decorated_token_always_has_a_resting_binding`).
+    // `SURFACE_RAISED`). The action only ever sits in its own panel, so
+    // naming that ground is exact.
     node.props
         .tokens
         .insert("background".into(), t(SURFACE_RAISED));

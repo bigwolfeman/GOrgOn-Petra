@@ -704,10 +704,9 @@ pub fn icon_in(key: impl Into<Key>, mark: IconMark, boxed: IconBox, tone: IconTo
     // Carbon specifies them" — Carbon specifies `$icon-disabled` /
     // `$icon-on-color-disabled` for every disabled mark).
     //
-    // The resting half is the identity binding the crate's
-    // `a_state_decorated_token_always_has_a_resting_binding` invariant
-    // requires: a `@disabled` binding with no resting partner would be a
-    // state decoration decorating a slot nobody declared.
+    // The resting half is the identity binding: the mark's own ink names
+    // itself at rest, so the `@disabled` binding decorates a slot the node
+    // declares.
     let resting = tone.token();
     props.tokens.insert(resting.to_owned(), t(resting));
     props

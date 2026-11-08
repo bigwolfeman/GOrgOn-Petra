@@ -51,9 +51,7 @@ use gorgon_petra::anim::{FrameDecision, TransitionRegistry, wants_frame};
 use gorgon_petra::component::registry::bound::ExpandedTree;
 use gorgon_petra::component::{advance_ambient_skeletons, advance_ambient_spinners};
 use gorgon_petra::focus::FocusTree;
-use gorgon_petra::frame::{
-    FrameCounter, PetrifiedFrame, Placement, TransitionActivity, Viewport, petrify,
-};
+use gorgon_petra::frame::{FrameCounter, PetrifiedFrame, TransitionActivity, Viewport, petrify};
 use gorgon_petra::geom::{Axis, Point, Rect, Scale, Size};
 use gorgon_petra::input::{
     InputEvent, KeyCode, PointerButton, PointerRouting, PointerState, Route, RouteOutcome,
@@ -365,6 +363,39 @@ pub trait App: RowSource {
     /// browse for a minute, or cancel. `None` is the answer for "no dialog",
     /// and cancelling is the answer that never arrives.
     fn file_request(&mut self) -> Option<FilePick> {
+        None
+    }
+
+    /// A target the application wants a scroll to show, taken and cleared.
+    ///
+    /// Asked once per pass, right after input. The host resolves the request
+    /// against the frame on screen with [`PetrifiedFrame::reveal`] and writes
+    /// the scroll offset that answers it. A target the frame does not place
+    /// yet (a file whose lines have not arrived, a collection with no rows)
+    /// stays pending and is tried against every frame placed after it, until
+    /// it resolves or a newer request replaces it. So an application asks
+    /// once, when it decides, and never has to know when the rows land.
+    ///
+    /// The host asks because the offsets are the host's: the wheel, the
+    /// scrollbar and focus stepping write them, and an application that wrote
+    /// them too would race all three.
+    ///
+    /// The default asks for nothing.
+    fn scroll_request(&mut self) -> Option<gorgon_petra::frame::ScrollRequest> {
+        None
+    }
+
+    /// A node the application wants focused, taken and cleared.
+    ///
+    /// For a widget whose own model owns the focused row: a tree or a list
+    /// that moves its focus on arrow keys the application handles. Asked once
+    /// per pass beside [`App::scroll_request`]. A target the frame does not
+    /// place yet stays pending and lands on the first frame that places it,
+    /// so a row off screen takes focus once a scroll request has brought it
+    /// on. A newer request replaces an older one.
+    ///
+    /// The default asks for nothing.
+    fn focus_request(&mut self) -> Option<gorgon_petra::frame::FocusTarget> {
         None
     }
 }
@@ -871,6 +902,12 @@ pub struct Host<A: App> {
     /// is the *application* asking, and this is the host answering a chord
     /// over state the application does not own. See [`App::copy_selection`].
     pending_copy: Option<String>,
+    /// The application's last [`App::scroll_request`] that no frame has
+    /// answered yet. See [`Host::reveal_pending`].
+    pending_reveal: Option<gorgon_petra::frame::ScrollRequest>,
+    /// The application's last [`App::focus_request`] that no frame has
+    /// placed yet. See [`Host::land_app_focus`].
+    pending_app_focus: Option<gorgon_petra::frame::FocusTarget>,
     /// Whether the primary button is down on a run a selection anchored in.
     ///
     /// The half of a selection gesture no capture can hold: a paragraph
@@ -1260,6 +1297,8 @@ impl<A: App> Host<A> {
             pointer: PointerState::with_reserved(gorgon_petra::keymap::ReservedChords::default()),
             pressed_on_node: None,
             pending_copy: None,
+            pending_reveal: None,
+            pending_app_focus: None,
             selection_drag: false,
             caret: FocusCaret::new(),
             scene: Vec::new(),
@@ -1679,6 +1718,20 @@ impl<A: App> Host<A> {
         };
 
         let had_input = self.deliver_input(ctx);
+        // After the input, like the clipboard: a key handled this pass may be
+        // the one that asked for the scroll. Resolved against the frame on
+        // screen now, so a target already placed moves on this pass; one that
+        // is not placed yet is tried again once this pass has placed its own.
+        if let Some(request) = self.app.scroll_request() {
+            self.pending_reveal = Some(request);
+        }
+        let had_input = self.reveal_pending() || had_input;
+        if let Some(target) = self.app.focus_request() {
+            self.pending_app_focus = Some(target);
+        }
+        // Before `publish_focus` below, so a target already on screen is
+        // focused in the frame this pass places.
+        let had_input = self.land_app_focus() || had_input;
         // After the input, not before: a press handled by this pass has to be
         // able to copy on this pass, or the operator's second press is what
         // copies what his first one selected.
@@ -1903,6 +1956,11 @@ impl<A: App> Host<A> {
         if let Some(target) = self.pending_focus.take() {
             self.land_pending_focus(ctx, &frame, target, decision.activity.running > 0);
         }
+        // An application focus request this frame placed the target for.
+        // The frame just painted shows the old ring, so one more pass.
+        if self.land_app_focus_on(&frame) && self.publish_focus() {
+            ctx.request_repaint();
+        }
         self.enter_open_modal(&frame, &scopes);
         self.reseat_focus_taking_surfaces(&frame, &taking, focus_before.as_deref());
         // The pointer's half of the same reconciliation, and it needs the new
@@ -1964,6 +2022,11 @@ impl<A: App> Host<A> {
             ctx.request_repaint();
         }
         self.place_frame(frame);
+        // A request this frame placed the target for: write the offset and
+        // ask for exactly one more frame to show it.
+        if self.reveal_pending() {
+            ctx.request_repaint();
+        }
         // Input for the *next* pass is routed against this frame, so the
         // policies it was placed with have to survive with it. Recomputing
         // `surface_scopes` at input time would read the tree the application
@@ -3086,78 +3149,68 @@ impl<A: App> Host<A> {
         self.pending_focus_passes = 0;
     }
 
-    /// The `Placement` nearest `id`, walking upward, that is itself a
-    /// `Scroll` container — including `id`'s own placement, if it happens
-    /// to be one. `None` when `id` names no placement in `frame`, or no
-    /// `Scroll` encloses it.
+    /// Land the pending [`App::focus_request`] on the frame on screen.
+    fn land_app_focus(&mut self) -> bool {
+        let id = match (&self.pending_app_focus, &self.last_frame) {
+            (Some(target), Some(frame)) => frame.focus_id(target),
+            _ => None,
+        };
+        self.focus_app_target(id)
+    }
+
+    /// Land the pending [`App::focus_request`] on `frame`, the one this pass
+    /// placed.
+    fn land_app_focus_on(&mut self, frame: &PetrifiedFrame) -> bool {
+        let id = self
+            .pending_app_focus
+            .as_ref()
+            .and_then(|target| frame.focus_id(target));
+        self.focus_app_target(id)
+    }
+
+    /// Focus `id`, the pending request's target as a frame placed it, and
+    /// report whether focus moved. The request is cleared once its target
+    /// holds focus; kept while no frame places it (`id` is `None`) or it
+    /// cannot take focus yet.
+    fn focus_app_target(&mut self, id: Option<String>) -> bool {
+        let Some(id) = id else {
+            return false;
+        };
+        if self.focus.current() == Some(id.as_str()) {
+            self.pending_app_focus = None;
+            return false;
+        }
+        if self.focus.focus(&id).is_ok() {
+            self.pending_app_focus = None;
+            return true;
+        }
+        false
+    }
+
+    /// Answer the pending [`App::scroll_request`] against the frame on
+    /// screen, and report whether a scroll offset changed.
     ///
-    /// Walks `Placement::parent` the way `gorgon_petra::focus`'s
-    /// `blocking_scopes` walks it for a blocking surface's scope: `Placement`
-    /// is public with no sealed constructor, so a malformed `parent` chain
-    /// (past the slice's end, or cyclic) is refused rather than trusted —
-    /// bounded by the placement count, the same defence.
-    fn scroll_ancestor<'a>(frame: &'a PetrifiedFrame, id: &str) -> Option<&'a Placement> {
-        let start = frame.placements.iter().position(|p| p.id == id)?;
-        let mut cursor = Some(start);
-        let mut steps = 0usize;
-        while let Some(i) = cursor {
-            let placement = frame.placements.get(i)?;
-            if placement.kind == NodeKind::Scroll {
-                return Some(placement);
+    /// Cleared once answered, whether that wrote an offset or found the
+    /// target already in view. Kept when the frame does not place the target.
+    fn reveal_pending(&mut self) -> bool {
+        let (Some(request), Some(frame)) = (&self.pending_reveal, &self.last_frame) else {
+            return false;
+        };
+        match frame.reveal(request, &self.state.scroll_offsets) {
+            gorgon_petra::frame::Reveal::Unplaced => false,
+            gorgon_petra::frame::Reveal::InView => {
+                self.pending_reveal = None;
+                false
             }
-            cursor = placement.parent;
-            steps += 1;
-            if steps > frame.placements.len() {
-                return None;
+            gorgon_petra::frame::Reveal::Scroll {
+                scroll,
+                offset,
+                max_offset,
+            } => {
+                self.pending_reveal = None;
+                self.write_scroll_offset(&scroll, offset, max_offset)
             }
         }
-        None
-    }
-
-    /// `scroll`'s own placed child, i.e. what its `scroll_offsets` entry
-    /// actually moves. A `Scroll` node has at most one child by construction
-    /// (`gorgon_petra::layout::scroll::place` only ever looks at
-    /// `node.children.first()`), so the first placement whose `parent` is
-    /// `scroll`'s own index is the whole answer.
-    fn scroll_content<'a>(frame: &'a PetrifiedFrame, scroll: &str) -> Option<&'a Placement> {
-        let idx = frame.placements.iter().position(|p| p.id == scroll)?;
-        frame.placements.iter().find(|p| p.parent == Some(idx))
-    }
-
-    /// The axis `scroll`'s content actually overflows on, inferred from
-    /// geometry rather than looked up: [`PetrifiedFrame`] carries placements,
-    /// not the `ViewNode` tree that named the axis, and `Placement` records
-    /// no `ScrollProps`.
-    ///
-    /// `gorgon_petra::layout::scroll::place`'s own doc is the invariant this
-    /// leans on: a `Scroll`'s child is placed at its full, unclipped content
-    /// size, and clipped only by the paint clip narrowed to the viewport —
-    /// so the axis whose content extent exceeds its clip is the scrolling
-    /// axis. Content that overflows on neither (nothing to scroll) defaults
-    /// to `Vertical`, which is inert either way: every caller here clamps
-    /// against that axis's own overflow, and an axis with none clamps to
-    /// `0.0`.
-    fn scroll_axis(frame: &PetrifiedFrame, scroll: &str) -> Axis {
-        let Some(content) = Self::scroll_content(frame, scroll) else {
-            return Axis::Vertical;
-        };
-        let overflow_h = content.rect.h - content.clip.h;
-        let overflow_w = content.rect.w - content.clip.w;
-        if overflow_h >= overflow_w {
-            Axis::Vertical
-        } else {
-            Axis::Horizontal
-        }
-    }
-
-    /// How far `scroll`'s content can move along `axis` past its own
-    /// viewport, from the last placed frame — `0.0` when `scroll` names no
-    /// placement, has no content, or does not overflow that axis.
-    fn scroll_overflow(frame: &PetrifiedFrame, scroll: &str, axis: Axis) -> f32 {
-        let Some(content) = Self::scroll_content(frame, scroll) else {
-            return 0.0;
-        };
-        (content.rect.size().along(axis) - content.clip.size().along(axis)).max(0.0)
     }
 
     /// A rect's origin along `axis`: `x` for horizontal, `y` for vertical.
@@ -3182,7 +3235,7 @@ impl<A: App> Host<A> {
     /// than silently read a stale or absent one. Both callers that still
     /// mean "the frame on screen" (`apply_scroll`, and
     /// `scroll_into_view`'s `step_focus` caller) pass
-    /// `Self::scroll_overflow(self.last_frame.., ..)` themselves, so this
+    /// `PetrifiedFrame::scroll_overflow` themselves, so this
     /// changes what is computed by nobody — only where.
     ///
     /// One frame stale by construction there, same as before: input is
@@ -3502,8 +3555,8 @@ impl<A: App> Host<A> {
         if placement.kind != NodeKind::Scroll {
             return false;
         }
-        let axis = Self::scroll_axis(frame, node);
-        let max_offset = Self::scroll_overflow(frame, node, axis);
+        let axis = frame.scroll_axis(node);
+        let max_offset = frame.scroll_overflow(node, axis);
         let current = self.state.scroll_offsets.get(node).copied().unwrap_or(0.0);
         // `egui::Event::MouseWheel`'s own doc: "a positive Y-value indicates
         // the content is being moved down" — the opposite sense from this
@@ -3536,15 +3589,15 @@ impl<A: App> Host<A> {
             return false;
         };
         let (rect, clip) = (placement.rect, placement.clip);
-        let Some(scroll) = Self::scroll_ancestor(frame, target).map(|p| p.id.clone()) else {
+        let Some(scroll) = frame.scroll_ancestor(target).map(|p| p.id.clone()) else {
             return false;
         };
-        let axis = Self::scroll_axis(frame, &scroll);
+        let axis = frame.scroll_axis(&scroll);
         let target_lead = Self::leading(rect, axis);
         let target_trail = target_lead + rect.size().along(axis);
         let view_lead = Self::leading(clip, axis);
         let view_trail = view_lead + clip.size().along(axis);
-        let max_offset = Self::scroll_overflow(frame, &scroll, axis);
+        let max_offset = frame.scroll_overflow(&scroll, axis);
         // The offset the frame was placed with, not the one in state:
         // `layout::scroll::place` re-clamps a stale entry against the real
         // content extent and never writes it back, so after content shrank
@@ -4646,6 +4699,127 @@ mod tests {
         PropVal, Props, Role, SlotChange, SlotKey, SlotValue, ViewNode,
     };
     use std::ops::Range;
+
+    /// A 1000-line scroll whose lines arrive late, asking to show line 700.
+    /// The headless window is 10000 tall, so line 700 (at 14000) is past the
+    /// bottom edge and needs a scroll, and short of the clamp at the end.
+    struct Lines {
+        total: usize,
+        request: Option<gorgon_petra::frame::ScrollRequest>,
+        focus: Option<gorgon_petra::frame::FocusTarget>,
+    }
+
+    impl RowSource for Lines {
+        fn rows(&mut self, _source: &str, range: Range<usize>) -> Vec<std::sync::Arc<ViewNode>> {
+            range
+                .map(|i| {
+                    std::sync::Arc::new(
+                        ViewNode::new(NodeKind::Text, format!("line-{i}"))
+                            .with_props(Props {
+                                text: Some(format!("line {i}")),
+                                ..Props::default()
+                            })
+                            .interactive(
+                                Role::ListItem,
+                                format!("line {i}"),
+                                &[Interaction::Focus],
+                            ),
+                    )
+                })
+                .collect()
+        }
+    }
+
+    impl App for Lines {
+        fn view(&mut self) -> ViewNode {
+            let rows = ViewNode::new(NodeKind::Collection, "rows").with_props(Props {
+                total_count: Some(self.total),
+                source: Some("lines".into()),
+                estimated_extent: Some(20.0),
+                ..Props::default()
+            });
+            ViewNode::new(NodeKind::Scroll, "code").child(rows)
+        }
+
+        fn handle(&mut self, _: &InputEvent, _: &Route, _: Option<&PetrifiedFrame>) {}
+
+        fn take_changes(&mut self) -> ChangeSet {
+            ChangeSet::All
+        }
+
+        fn scroll_request(&mut self) -> Option<gorgon_petra::frame::ScrollRequest> {
+            self.request.take()
+        }
+
+        fn focus_request(&mut self) -> Option<gorgon_petra::frame::FocusTarget> {
+            self.focus.take()
+        }
+    }
+
+    /// A focus request for a row off screen waits; paired with a scroll
+    /// request that brings the row on, it lands on the frame that places it.
+    ///
+    /// Falsify by dropping the `land_app_focus_on` call after the frame is
+    /// placed: the row is placed only by this pass's own frame, so the focus
+    /// never lands.
+    #[test]
+    fn a_focus_request_lands_once_its_row_is_placed() {
+        use gorgon_petra::frame::{FocusTarget, RevealAlign, ScrollRequest};
+        let (ctx, mut host) = boot(Lines {
+            total: 1000,
+            request: None,
+            focus: None,
+        });
+        step(&ctx, &mut host, RawInput::default());
+        host.app_mut().focus = Some(FocusTarget::Row {
+            source: "lines".into(),
+            key: "line-700".into(),
+        });
+        host.app_mut().request = Some(ScrollRequest::row("lines", 700, RevealAlign::Center));
+        for _ in 0..3 {
+            step(&ctx, &mut host, RawInput::default());
+        }
+        assert_eq!(host.focus().current(), Some("/code/rows/line-700"));
+    }
+
+    /// An application asks once, before its lines exist. The request waits
+    /// through frames that place no rows, and the first frame that places
+    /// them writes the offset that centres line 700.
+    ///
+    /// Falsify by dropping the `reveal_pending` call after `place_frame`: the
+    /// request asked before the rows existed is never answered.
+    #[test]
+    fn a_scroll_request_waits_for_its_rows_and_then_centres_them() {
+        use gorgon_petra::frame::{RevealAlign, ScrollRequest};
+        let (ctx, mut host) = boot(Lines {
+            total: 0,
+            request: None,
+            focus: None,
+        });
+        host.app_mut().request = Some(ScrollRequest::row("lines", 700, RevealAlign::Center));
+        step(&ctx, &mut host, RawInput::default());
+        assert!(
+            !host.state().scroll_offsets.contains_key("/code"),
+            "no rows yet, so nothing to scroll to"
+        );
+        host.app_mut().total = 1000;
+        step(&ctx, &mut host, RawInput::default());
+        let offset = *host
+            .state()
+            .scroll_offsets
+            .get("/code")
+            .expect("the frame that placed the rows answers the request");
+        let view = host
+            .frame()
+            .and_then(|f| f.scroll_content("/code"))
+            .map(|c| c.clip.h)
+            .expect("the scroll is placed");
+        assert_eq!(offset, 700.0 * 20.0 + 10.0 - view / 2.0);
+        // Answered once: another pass leaves a wheel-written offset alone.
+        host.state_mut().scroll_offsets.insert("/code".into(), 0.0);
+        step(&ctx, &mut host, RawInput::default());
+        assert_eq!(host.state().scroll_offsets.get("/code"), Some(&0.0));
+    }
 
     #[derive(Default)]
     struct Demo {

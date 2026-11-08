@@ -511,11 +511,8 @@ fn inline_trigger(key: impl Into<Key>, label: String, height: f32, bullet: f32) 
         right: Some(t(SPACING_02)),
         ..InsetRefs::default()
     });
-    // Resting fill matches the page it sits on ([`SURFACE_BASE`]), the same
-    // fix `accordion.rs`'s header and this file's own `trigger_button`
-    // already carry: an unbound `background` beside `background@hover` is
-    // exactly the "declares content, resolves to nothing" shape the paint
-    // accounting counts as silent, not empty (Accordion/Modal's crash cause).
+    // Resting fill matches the page it sits on ([`SURFACE_BASE`]), as
+    // `accordion.rs`'s header and this file's own `trigger_button` do.
     node.props
         .tokens
         .insert("background".into(), t(SURFACE_BASE));

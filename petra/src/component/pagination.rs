@@ -903,10 +903,8 @@ pub(super) fn nav_button(
     );
     node.props.align = Some(Align::Center);
     node.props.justify = Some(Justify::Center);
-    // Resting background: the bar it sits on. Without this,
-    // `background@hover` has no resting `background` beneath it and
-    // resolves to nothing at rest (see
-    // `a_state_decorated_token_always_has_a_resting_binding`).
+    // Resting background: the bar it sits on. The button only ever sits in
+    // its own bar, so naming that ground is exact.
     node.props
         .tokens
         .insert("background".into(), t(SURFACE_RAISED));

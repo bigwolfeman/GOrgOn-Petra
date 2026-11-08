@@ -50,8 +50,7 @@
 use std::sync::Arc;
 
 use super::tokens::{
-    ACCENT_PRIMARY, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SPACING_05, SURFACE_BASE,
-    TEXT_MUTED, t,
+    ACCENT_PRIMARY, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SPACING_05, TEXT_MUTED, t,
 };
 use super::{CARET_SIZE, CaretDirection, IconMark, caret, stack, swatch};
 use crate::geom::{Align, Axis};
@@ -95,7 +94,18 @@ const _: () = assert!(HEIGHT_XS == 24.0);
 const _: () = assert!(ACCENT_BAR + LEAD == 16.0);
 const _: () = assert!(LABEL_START == 40.0);
 
-const ITEM_INTENTS: &[Interaction] = &[Interaction::Focus, Interaction::Click, Interaction::Hover];
+/// A tree item takes the pointer and focus, and **keys**: in a tree the
+/// arrows, Home, End, paging and type-ahead belong to the tree (WAI-ARIA's
+/// tree view pattern), not to the host's focus traversal. Petra routes a key
+/// to the nearest focused ancestor that declares [`Interaction::Key`]; without
+/// it a row's arrow keys arrive unrouted and Home jumps to the first control
+/// on the page. The application that owns the tree's model answers them.
+const ITEM_INTENTS: &[Interaction] = &[
+    Interaction::Focus,
+    Interaction::Click,
+    Interaction::Hover,
+    Interaction::Key,
+];
 
 /// What a tree item is to its children, as one value.
 ///
@@ -432,7 +442,6 @@ impl TreeItem {
             })
             .with_children(parts);
         for (slot, token) in [
-            ("background", SURFACE_BASE),
             ("background@hover", LAYER_HOVER),
             ("background@selected", LAYER_SELECTED),
             ("background@selected-hover", LAYER_SELECTED_HOVER),
@@ -1168,18 +1177,19 @@ mod tests {
         );
     }
 
-    /// Check E: every item's label against its own resting fill
-    /// ([`SURFACE_BASE`]), in both themes — selected and unselected alike,
-    /// since `LAYER_SELECTED` still needs to clear AA for the label sitting
-    /// on it.
+    /// Check E: every item's label against every ground it can show, in both
+    /// themes. A resting row binds no fill, so its ground is whichever layer
+    /// it sits on (each of [`crate::token::LAYER_TOKENS`]); a selected row
+    /// paints `LAYER_SELECTED`, which still needs to clear AA for its label.
     #[test]
-    fn tree_item_labels_clear_aa_contrast_against_their_own_fill() {
+    fn tree_item_labels_clear_aa_contrast_on_every_ground_they_show() {
         const MIN_TEXT_CONTRAST: f32 = 4.5;
         for theme in [crate::token::light(), crate::token::dark()] {
-            for (label, node) in [
+            for (label, node, selected) in [
                 (
                     "collapsed-branch",
                     tree_item("b", "src", false, false, vec![]),
+                    false,
                 ),
                 (
                     "expanded-branch",
@@ -1190,19 +1200,25 @@ mod tests {
                         false,
                         vec![tree_item("c", "child", false, false, vec![])],
                     ),
+                    false,
                 ),
                 (
                     "selected-leaf",
                     tree_item("l", "main.rs", false, true, vec![]),
+                    true,
                 ),
-                ("plain-leaf", tree_item("l", "lib.rs", false, false, vec![])),
+                (
+                    "plain-leaf",
+                    tree_item("l", "lib.rs", false, false, vec![]),
+                    false,
+                ),
             ] {
-                let bg_name = node
-                    .props
-                    .tokens
-                    .get("background")
-                    .unwrap_or_else(|| panic!("{label}: item binds a resting background"));
-                let bg = color(&theme, bg_name.as_str());
+                let grounds = crate::component::tests::shown_grounds(&node, selected);
+                assert_eq!(
+                    grounds.len() == 1,
+                    selected,
+                    "{label}: only a selected row paints a fill of its own"
+                );
                 let row = named(&node, "row");
                 let text_label = named(row, "label");
                 let fg_name = text_label
@@ -1211,13 +1227,15 @@ mod tests {
                     .get("foreground")
                     .unwrap_or_else(|| panic!("{label}: label binds a foreground"));
                 let opacity = text_label.props.opacity.unwrap_or(1.0);
-                let fg = color(&theme, fg_name.as_str()).faded(opacity).over(bg);
-                let ratio = fg.contrast_ratio(bg);
-                assert!(
-                    ratio >= MIN_TEXT_CONTRAST,
-                    "{label} at {ratio:.2}:1 against {} fails AA {MIN_TEXT_CONTRAST}:1",
-                    bg_name.as_str()
-                );
+                for ground in &grounds {
+                    let bg = color(&theme, ground);
+                    let fg = color(&theme, fg_name.as_str()).faded(opacity).over(bg);
+                    let ratio = fg.contrast_ratio(bg);
+                    assert!(
+                        ratio >= MIN_TEXT_CONTRAST,
+                        "{label} at {ratio:.2}:1 against {ground} fails AA {MIN_TEXT_CONTRAST}:1"
+                    );
+                }
             }
         }
     }

@@ -901,7 +901,7 @@ fn paint_frame_inner(
                     continue;
                 };
                 let shapes = shapes + paint_over(&p, content, &chrome, &mut env, &mut report);
-                match outcome(content, shapes) {
+                match outcome(content, shapes, chrome.state) {
                     Outcome::Drawn => report.drawn += 1,
                     Outcome::Empty => report.empty += 1,
                     Outcome::Silent => report.silent += 1,
@@ -2052,10 +2052,11 @@ fn paint_over(
 }
 
 /// What one placement's two steps came to, once both have run.
-fn outcome(content: &PaintContent, shapes: usize) -> Outcome {
-    if content.is_empty() {
-        // Nothing was declared, so nothing missing. A `Stack` is a position
-        // for its children; it is not supposed to paint.
+fn outcome(content: &PaintContent, shapes: usize, state: DerivedState) -> Outcome {
+    if content.paints_nothing_in(state) {
+        // Nothing was declared for this state, so nothing missing. A `Stack`
+        // is a position for its children, and a flush row at rest shows the
+        // ground it sits on; neither is supposed to paint.
         Outcome::Empty
     } else if shapes > 0 {
         Outcome::Drawn

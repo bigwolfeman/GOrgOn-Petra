@@ -187,6 +187,14 @@ pub struct PlacementSemantics {
     pub actions: Vec<Interaction>,
     /// Total rows behind a virtualized collection, materialized or not.
     pub total_count: Option<usize>,
+    /// The [`crate::layout::RowSource`] name a collection reads its rows
+    /// from, projected off [`crate::tree::Props::source`].
+    ///
+    /// The name an application already owns for the list, so a scroll
+    /// request can name a row of it ([`crate::frame::RevealTarget::Row`])
+    /// without knowing the key path the list was mounted at. Not a digest
+    /// input: it decides no pixel, and the rows it names are hashed as rows.
+    pub row_source: Option<String>,
     /// The interaction this node declared, projected straight off
     /// [`crate::tree::ViewNode::behaviour`] the way [`Self::disabled`] is
     /// projected off its node.
@@ -432,6 +440,13 @@ pub struct PaintContent {
     pub markdown: Option<String>,
 }
 
+/// Whether `slot` only shapes a mark another slot paints: the corner radii
+/// and the silhouette ([`crate::token::standard_slots`] declares them as
+/// `Shape` and `Silhouette` kinds).
+fn shapes_a_mark_only(slot: &str) -> bool {
+    slot == "silhouette" || slot == "radius" || slot.starts_with("radius-")
+}
+
 impl PaintContent {
     /// Whether this node draws nothing of its own — a bare container.
     #[must_use]
@@ -456,6 +471,55 @@ impl PaintContent {
             // carried only a selection would hash to zero without this line
             // and the highlight would be invisible to the digest.
             && self.selection.is_none()
+    }
+
+    /// Whether this node draws nothing of its own **in `state`**.
+    ///
+    /// [`PaintContent::is_empty`] plus one case: a payload whose every token
+    /// is state-decorated (`background@hover`, `background@selected`) and none
+    /// of whose slots resolves in `state`. That is a flush control at rest: it
+    /// shows whatever ground it sits on, and paints only once the pointer or
+    /// the selection reaches it.
+    ///
+    /// A flush control cannot name its resting ground when it is built. A
+    /// tree row in a page sits on `surface.base`, the same row in a raised
+    /// sidebar sits on `surface.raised`, and a resting `background` bound to
+    /// either one paints a band on the other. Binding no resting slot is the
+    /// one answer that is right on every ground, so the painter counts it as
+    /// empty, not silent.
+    ///
+    /// This replaces the gallery rule that every state binding needs a resting
+    /// one under it. That rule existed because the painter counted a resting
+    /// flush row as silent and the paint-accounting assertion took the window
+    /// down (the Accordion and Modal crash). The fix belongs here, in the
+    /// accounting, and not in a resting fill that is wrong on every ground but
+    /// one.
+    ///
+    /// A shape slot (`radius`, `silhouette`) rides along: it shapes the fill
+    /// the row paints when hovered and draws nothing on its own. A payload of
+    /// shape slots and nothing else is still silent, because nothing it binds
+    /// can ever paint.
+    ///
+    /// Not a digest input: [`PaintContent::is_empty`] still answers for the
+    /// digest, because a hovered row is a different picture from a resting
+    /// one and its `@hover` binding must reach the hash.
+    #[must_use]
+    pub fn paints_nothing_in(&self, state: crate::token::DerivedState) -> bool {
+        use crate::token::{STATE_SEPARATOR, base_slot, resolve_slot};
+        self.is_empty()
+            || (self.text.is_none()
+                && self.image.is_none()
+                && self.custom.is_none()
+                && self.caret.is_none()
+                && self.canvas.is_none()
+                && self.selection.is_none()
+                && self.tokens.keys().any(|key| key.contains(STATE_SEPARATOR))
+                && self.tokens.keys().all(|key| {
+                    let slot = base_slot(key);
+                    shapes_a_mark_only(slot)
+                        || (key.contains(STATE_SEPARATOR)
+                            && resolve_slot(&self.tokens, slot, state).is_none())
+                }))
     }
 
     /// Whether the host, not Petra, produces this node's pixels.
@@ -917,6 +981,68 @@ mod tests {
     use crate::geom::Rect;
     use crate::layout::Slot;
     use crate::tree::{NodeKind, TextWrap};
+
+    /// A flush row binds only state fills. At rest it paints nothing and is
+    /// empty, not silent; hovered or selected, its fill resolves and it is not.
+    /// A resting binding beside the state ones makes it paint at rest again.
+    ///
+    /// Falsify by dropping the `key.contains(STATE_SEPARATOR)` arm: the
+    /// resting-bound payload answers "paints nothing" at rest.
+    #[test]
+    fn a_state_only_payload_paints_nothing_at_rest_and_paints_in_its_state() {
+        use crate::token::DerivedState;
+        let mut flush = PaintContent::default();
+        for (slot, token) in [
+            ("background@hover", "layer.hover"),
+            ("background@selected", "layer.selected"),
+        ] {
+            flush.tokens.insert(slot.into(), token.into());
+        }
+        let rest = DerivedState::default();
+        let hovered = DerivedState {
+            hovered: true,
+            ..DerivedState::default()
+        };
+        let selected = DerivedState {
+            selected: true,
+            ..DerivedState::default()
+        };
+        assert!(!flush.is_empty(), "the digest still sees the state fills");
+        assert!(flush.paints_nothing_in(rest));
+        assert!(!flush.paints_nothing_in(hovered));
+        assert!(!flush.paints_nothing_in(selected));
+
+        let mut resting = flush.clone();
+        resting
+            .tokens
+            .insert("background".into(), "surface.base".into());
+        assert!(!resting.paints_nothing_in(rest));
+
+        let mut shaped = flush.clone();
+        shaped
+            .tokens
+            .insert("radius".into(), "shape.corner-none".into());
+        assert!(
+            shaped.paints_nothing_in(rest),
+            "a radius only shapes the fill"
+        );
+        assert!(!shaped.paints_nothing_in(hovered));
+        let mut radius_only = PaintContent::default();
+        radius_only
+            .tokens
+            .insert("radius".into(), "shape.corner-none".into());
+        assert!(
+            !radius_only.paints_nothing_in(rest),
+            "a payload that can never paint stays silent"
+        );
+
+        let mut highlighted = flush;
+        highlighted.selection = Some(0..1);
+        assert!(
+            !highlighted.paints_nothing_in(rest),
+            "a selection paints at rest"
+        );
+    }
 
     fn placement(id: &str) -> Placement {
         Placement {

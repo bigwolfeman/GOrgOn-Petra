@@ -1088,9 +1088,8 @@ pub fn data_table_sort_header(
     );
     button.props.align = Some(Align::Center);
     // Resting background: the same ground the header row paints
-    // (`header_row` binds `LAYER_ACCENT`). Without this, `background@hover`
-    // has no resting `background` beneath it and resolves to nothing at
-    // rest (see `a_state_decorated_token_always_has_a_resting_binding`).
+    // (`header_row` binds `LAYER_ACCENT`). The button only ever sits in its
+    // own header row, so naming that ground is exact.
     // Hover is Carbon's `$layer-accent-hover` (slice-b, "Column header").
     button
         .props

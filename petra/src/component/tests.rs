@@ -1753,7 +1753,7 @@ fn carbon_fields_are_a_fill_with_a_bottom_rule() {
         ("root/carbon2/dt-jobs/dt-r2", BORDER_SUBTLE, true),
         ("root/carbon2/dt-jobs/dt-r3", BORDER_SUBTLE, true),
         ("root/carbon2/dt-jobs/header", BORDER_SUBTLE, true),
-        ("root/carbon5/stl-plans/stl-r1", BORDER_SUBTLE, true),
+        ("root/carbon5/stl-plans/stl-r1", BORDER_SUBTLE, false),
         // A contained list's row separators used to appear here. They do
         // not any more: `super::rule` builds a `NodeKind::Separator` whose
         // own fill names the material, so it binds no edge slot at all and
@@ -2533,65 +2533,30 @@ fn every_layering_operator_name_is_in_the_standard_vocabulary() {
     }
 }
 
-/// **A state-decorated binding needs a resting one underneath it.**
-///
-/// This is the rule the Accordion and Modal crash taught, generalised. A node
-/// that binds `background@hover` and no plain `background` resolves to nothing
-/// at rest: `resolve_slot` walks `slot@state -> slot`, and if neither exists it
-/// returns `None`. The painter then counts the placement **silent** rather than
-/// empty, because `PaintContent::is_empty()` only asks whether `tokens` is
-/// empty — and it is not, the `@hover` entry is sitting right there. A silent
-/// placement trips the paint-accounting assertion and takes the window down.
-///
-/// The catalog's `every_built_page_paints_with_nothing_silent` catches this too,
-/// but only for what a catalog page happens to mount. This one is structural:
-/// it needs no paint pass, no window, and no page, so it also covers a
-/// component reachable only inside another component.
-///
-/// The fix is never to delete the `@hover` binding. It is to bind the resting
-/// slot to whatever surface the control sits on, the way `button.rs`'s Ghost
-/// variant already does.
-///
-/// # The one slot that has no resting surface to bind
-///
-/// `underline` draws a rule **on a text run**, and the run is the resting
-/// picture: a node binding `underline@hover` and `text` paints its words at
-/// rest and adds the rule under the pointer, which is Carbon's standalone
-/// link (`_link.scss`: `text-decoration: none`, `:hover { text-decoration:
-/// underline }`). There is no tone a resting `underline` could take that
-/// draws nothing — every colour token is a visible rule — so the per-slot
-/// rule above would force either a rule Carbon does not draw or no hover
-/// rule at all. The invariant this test exists for is silence, and a node
-/// with a text run is never silent, so a state-only `underline` on a node
-/// that carries text is not an offence. On a node with no text it still is:
-/// the rule would have nothing to sit under and the node nothing to paint.
-#[test]
-fn a_state_decorated_token_always_has_a_resting_binding() {
-    use crate::token::state::STATE_SEPARATOR;
-
-    let tree = full_gallery();
-    let mut offences: Vec<String> = Vec::new();
-    walk(&tree, "", &mut |path, props| {
-        for key in props.tokens.keys() {
-            let Some((slot, state)) = key.split_once(STATE_SEPARATOR) else {
-                continue;
-            };
-            if slot == "underline" && props.text.is_some() {
-                continue;
-            }
-            if !props.tokens.contains_key(slot) {
-                offences.push(format!(
-                    "{path}: binds {slot}{STATE_SEPARATOR}{state} with no resting {slot}, \
-                     so it resolves to nothing and paints silent"
-                ));
-            }
-        }
-    });
-    assert!(
-        offences.is_empty(),
-        "every state-decorated binding needs a resting one underneath it:\n{}",
-        offences.join("\n")
-    );
+/// The grounds a node's label can be read against: its own `background` as
+/// resolved for `selected`, or, when it binds none in that state, every layer
+/// it could rest on ([`crate::token::LAYER_TOKENS`]). A flush row binds only
+/// state fills, so at rest it shows whichever layer it was mounted on, and a
+/// contrast check has to clear all of them.
+pub(super) fn shown_grounds(node: &ViewNode, selected: bool) -> Vec<String> {
+    use crate::token::{DerivedState, resolve_slot};
+    let tokens: std::collections::BTreeMap<String, String> = node
+        .props
+        .tokens
+        .iter()
+        .map(|(k, v)| (k.clone(), v.as_str().to_owned()))
+        .collect();
+    let state = DerivedState {
+        selected,
+        ..DerivedState::default()
+    };
+    match resolve_slot(&tokens, "background", state) {
+        Some(own) => vec![own.to_owned()],
+        None => crate::token::LAYER_TOKENS
+            .iter()
+            .map(|t| (*t).to_owned())
+            .collect(),
+    }
 }
 
 // -- Anchored overlays mount at depth. ---------------------------------------
