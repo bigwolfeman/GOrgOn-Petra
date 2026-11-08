@@ -70,6 +70,8 @@ pub enum IconMarkParam {
     Checkmark,
     /// `"error-filled"` on the wire, [`IconMark::ErrorFilled`] in the tree.
     ErrorFilled,
+    /// `"warning-alt-filled"` on the wire, [`IconMark::WarningAltFilled`] in the tree.
+    WarningAltFilled,
     /// `"warning-filled"` on the wire, [`IconMark::WarningFilled`] in the tree.
     WarningFilled,
     /// `"information-filled"` on the wire, [`IconMark::InformationFilled`] in the tree.
@@ -94,6 +96,28 @@ pub enum IconMarkParam {
     FolderOpen,
     /// `"document"` on the wire, [`IconMark::Document`] in the tree.
     Document,
+    /// `"launch"` on the wire, [`IconMark::Launch`] in the tree.
+    Launch,
+    /// `"launch-outside"` on the wire, [`IconMark::LaunchOutside`] in the tree.
+    LaunchOutside,
+    /// `"unlink"` on the wire, [`IconMark::Unlink`] in the tree.
+    Unlink,
+    /// `"locked"` on the wire, [`IconMark::Locked`] in the tree.
+    Locked,
+    /// `"view-off"` on the wire, [`IconMark::ViewOff`] in the tree.
+    ViewOff,
+    /// `"folder-dashed"` on the wire, [`IconMark::FolderDashed`] in the tree.
+    FolderDashed,
+    /// `"branch"` on the wire, [`IconMark::Branch`] in the tree.
+    Branch,
+    /// `"branch-worktree"` on the wire, [`IconMark::BranchWorktree`] in the tree.
+    BranchWorktree,
+    /// `"branch-boxed"` on the wire, [`IconMark::BranchBoxed`] in the tree.
+    BranchBoxed,
+    /// `"unknown"` on the wire, [`IconMark::Unknown`] in the tree.
+    Unknown,
+    /// `"document-invalid"` on the wire, [`IconMark::DocumentInvalid`] in the tree.
+    DocumentInvalid,
 }
 
 impl From<IconMarkParam> for IconMark {
@@ -120,6 +144,7 @@ impl From<IconMarkParam> for IconMark {
             IconMarkParam::Incomplete => IconMark::Incomplete,
             IconMarkParam::Checkmark => IconMark::Checkmark,
             IconMarkParam::ErrorFilled => IconMark::ErrorFilled,
+            IconMarkParam::WarningAltFilled => IconMark::WarningAltFilled,
             IconMarkParam::WarningFilled => IconMark::WarningFilled,
             IconMarkParam::InformationFilled => IconMark::InformationFilled,
             IconMarkParam::CheckmarkFilled => IconMark::CheckmarkFilled,
@@ -132,6 +157,17 @@ impl From<IconMarkParam> for IconMark {
             IconMarkParam::Folder => IconMark::Folder,
             IconMarkParam::FolderOpen => IconMark::FolderOpen,
             IconMarkParam::Document => IconMark::Document,
+            IconMarkParam::Launch => IconMark::Launch,
+            IconMarkParam::LaunchOutside => IconMark::LaunchOutside,
+            IconMarkParam::Unlink => IconMark::Unlink,
+            IconMarkParam::Locked => IconMark::Locked,
+            IconMarkParam::ViewOff => IconMark::ViewOff,
+            IconMarkParam::FolderDashed => IconMark::FolderDashed,
+            IconMarkParam::Branch => IconMark::Branch,
+            IconMarkParam::BranchWorktree => IconMark::BranchWorktree,
+            IconMarkParam::BranchBoxed => IconMark::BranchBoxed,
+            IconMarkParam::Unknown => IconMark::Unknown,
+            IconMarkParam::DocumentInvalid => IconMark::DocumentInvalid,
         }
     }
 }
@@ -149,8 +185,11 @@ macro_rules! icon_mark_luau {
          \"chevron-right\" | \"close\" | \"copy\" | \"add\" | \"subtract\" | \"search\" | \
          \"menu\" | \"notification\" | \"switcher\" | \"caret-left\" | \"caret-right\" | \
          \"checkmark-outline\" | \"circle-dash\" | \"incomplete\" | \"checkmark\" | \
-         \"error-filled\" | \"warning-filled\" | \"information-filled\" | \"checkmark-filled\" | \
+         \"error-filled\" | \"warning-alt-filled\" | \"warning-filled\" | \"information-filled\" | \"checkmark-filled\" | \
          \"caret-down\" | \"edit\" | \"bullet-disc\" | \"bullet-circle\" | \"bullet-square\" | \
-         \"bullet-dash\" | \"folder\" | \"folder-open\" | \"document\""
+         \"bullet-dash\" | \"folder\" | \"folder-open\" | \"document\" | \"launch\" | \
+         \"launch-outside\" | \"unlink\" | \"locked\" | \"view-off\" | \"folder-dashed\" | \
+         \"branch\" | \"branch-worktree\" | \"branch-boxed\" | \"unknown\" | \
+         \"document-invalid\""
     };
 }

@@ -44,6 +44,8 @@
 
 use std::sync::Arc;
 
+mod files;
+
 use super::tokens::{
     ACCENT_PRIMARY, ICON_DISABLED, ICON_INVERSE, ICON_ON_COLOR_DISABLED, ICON_PRIMARY,
     ICON_SECONDARY, SUPPORT_ERROR, TEXT_ON_ACCENT, t,
@@ -476,6 +478,78 @@ pub enum IconMark {
     /// the diagonal, and the two text lines are snapped bars. The 2-unit
     /// corner radii are dropped.
     Document,
+    /// Carbon `launch` (a link that points elsewhere: a symlink inside the
+    /// project).
+    ///
+    /// Source paths, viewBox `0 0 32 32`:
+    /// `M26,28H6a2.0027,2.0027,0,0,1-2-2V6A2.0027,2.0027,0,0,1,6,4H16V6H6V26H26V16h2V26A2.0027,2.0027,0,0,1,26,28Z`
+    /// and `M20 2 20 4 26.586 4 18 12.586 19.414 14 28 5.414 28 12 30 12 30 2 20 2z`.
+    /// The open box and the arrowhead's arms are snapped bars and the shaft
+    /// is one convex quad.
+    Launch,
+    /// [`IconMark::Launch`] with a boundary bar down its left edge, from
+    /// (0, 2) to (2, 30): a link that leaves the project. Petra's own; Carbon
+    /// has no boundary form.
+    LaunchOutside,
+    /// Carbon `unlink` (a broken link).
+    ///
+    /// Source paths, viewBox `0 0 32 32`: four 2 by 4 tick bars at (11, 2),
+    /// (2, 11), (26, 19) and (19, 26); two 2 by 4.83 ticks turned by 45
+    /// degrees about (6, 6) and (26, 26); and the two link halves, each a
+    /// straight side, a half turn between radius 4 and radius 6 about
+    /// (10.04, 21.96) or (21.96, 10.04), and a straight side. The ticks are
+    /// bars and quads; each half is one stroke down its band's centreline.
+    Unlink,
+    /// Carbon `locked` (a path the daemon cannot read).
+    ///
+    /// Source path, viewBox `0 0 32 32`:
+    /// `M24,14H22V8A6,6,0,0,0,10,8v6H8a2,2,0,0,0-2,2V28a2,2,0,0,0,2,2H24a2,2,0,0,0,2-2V16A2,2,0,0,0,24,14ZM12,8a4,4,0,0,1,8,0v6H12ZM24,28H8V16H24Z`.
+    /// The body and the shackle's legs are snapped bars; the arch is one
+    /// stroke at radius 5, the centreline of Carbon's 4-to-6 band.
+    Locked,
+    /// Carbon `view--off` (a directory nothing watches).
+    ///
+    /// Source: the eye's two arcs, its radius-4-to-6 pupil, and the slash
+    /// from (2, 28.59) to (30, 3.41), viewBox `0 0 32 32`. The lens is a
+    /// stroked ellipse with radii (14, 10), the pupil a stroked ring at
+    /// radius 5, the slash one quad. Carbon breaks the lens and the pupil
+    /// where the slash crosses; one ink cannot cut a gap, so they meet.
+    ViewOff,
+    /// [`IconMark::Folder`]'s outline cut into dashes, about 4 on and 2.5
+    /// off, with a dash at both ends of every side so the corners stay
+    /// closed: a folder that is missing. Petra's own; Carbon's
+    /// `folder--off` slashes the folder instead, which reads as "off", not
+    /// "absent".
+    FolderDashed,
+    /// Carbon `branch` (a repository boundary).
+    ///
+    /// Source: rings between radius 2 and 4 about (8, 6), (8, 26) and
+    /// (24, 6); the trunk down x 7 to 9; the side branch down x 23 to 25,
+    /// turning about (20, 14) into the cross bar y 17 to 19, turning about
+    /// (12, 22) onto the trunk. viewBox `0 0 32 32`. Rings and turns are
+    /// strokes at the band's centreline; straight runs are bars.
+    Branch,
+    /// [`IconMark::Branch`] with a second leaf, a ring about (24, 26) hung
+    /// from the cross bar: a linked worktree. Petra's own.
+    BranchWorktree,
+    /// A branch in a box: a submodule. Petra's own. The box is snapped bars
+    /// on the 32 box's edge; inside it, three radius-2.5 rings, a trunk and
+    /// one diagonal, because Carbon's curved branch does not read at 16
+    /// inside a frame.
+    BranchBoxed,
+    /// Carbon `unknown`: a diamond holding a question mark, the shape of
+    /// U+FFFD, the replacement character (a name that is not UTF-8).
+    ///
+    /// Source paths, viewBox `0 0 32 32`: the diamond from (16, 2) to
+    /// (30, 16), the hook
+    /// `M17,19h-2v-4h2c1.103,0,2-0.897,2-2s-0.897-2-2-2h-2c-1.103,0-2,0.897-2,2v0.5h-2V13c0-2.206,1.794-4,4-4h2c2.206,0,4,1.794,4,4s-1.794,4-4,4V19z`
+    /// and the dot at (16, 22.5) radius 1.5. The diamond is a closed stroke
+    /// at Petra's 2-unit band, inset so its outer edge sits where Carbon's
+    /// does; the hook is two strokes and a bar.
+    Unknown,
+    /// [`IconMark::Document`]'s sheet with a cross where its text lines
+    /// were: a definition file that does not parse. Petra's own.
+    DocumentInvalid,
 }
 
 /// The box a mark is drawn in: which of Carbon's two glyph sizes.
@@ -700,6 +774,17 @@ fn draw_list(mark: IconMark, boxed: IconBox, tone: IconTone) -> DrawList {
         IconMark::Folder => folder(size / 32.0, color),
         IconMark::FolderOpen => folder_open(size / 32.0, color),
         IconMark::Document => document(size / 32.0, color),
+        IconMark::Launch => files::launch(size / 32.0, color),
+        IconMark::LaunchOutside => files::launch_outside(size / 32.0, color),
+        IconMark::Unlink => files::unlink(size / 32.0, color),
+        IconMark::Locked => files::locked(size / 32.0, color),
+        IconMark::ViewOff => files::view_off(size / 32.0, color),
+        IconMark::FolderDashed => files::folder_dashed(size / 32.0, color),
+        IconMark::Branch => files::branch(size / 32.0, color),
+        IconMark::BranchWorktree => files::branch_worktree(size / 32.0, color),
+        IconMark::BranchBoxed => files::branch_boxed(size / 32.0, color),
+        IconMark::Unknown => files::unknown(size / 32.0, color),
+        IconMark::DocumentInvalid => files::document_invalid(size / 32.0, color),
     };
     DrawList::new(commands).unwrap_or_else(|err| panic!("{mark:?} draw list refused: {err}"))
 }
@@ -1673,7 +1758,7 @@ mod tests {
     use crate::draw::{ColorRef, Command, DrawList};
     use crate::tree::NodeKind;
 
-    const EVERY_MARK: [IconMark; 34] = [
+    const EVERY_MARK: [IconMark; 45] = [
         IconMark::CaretLeft,
         IconMark::CaretRight,
         IconMark::CaretDown,
@@ -1708,6 +1793,17 @@ mod tests {
         IconMark::Folder,
         IconMark::FolderOpen,
         IconMark::Document,
+        IconMark::Launch,
+        IconMark::LaunchOutside,
+        IconMark::Unlink,
+        IconMark::Locked,
+        IconMark::ViewOff,
+        IconMark::FolderDashed,
+        IconMark::Branch,
+        IconMark::BranchWorktree,
+        IconMark::BranchBoxed,
+        IconMark::Unknown,
+        IconMark::DocumentInvalid,
     ];
 
     fn list(node: &crate::tree::ViewNode) -> &DrawList {
@@ -2173,4 +2269,62 @@ mod tests {
             "warning: two side bands, bottom band, stem, dot"
         );
     }
+
+    /// The file marks a tree hangs on a row: a reader without hue tells
+    /// them apart by shape alone, so no two may draw the same picture.
+    const FILE_MARKS: [IconMark; 12] = [
+        IconMark::Incomplete,
+        IconMark::Launch,
+        IconMark::LaunchOutside,
+        IconMark::Unlink,
+        IconMark::Locked,
+        IconMark::ViewOff,
+        IconMark::FolderDashed,
+        IconMark::Branch,
+        IconMark::BranchWorktree,
+        IconMark::BranchBoxed,
+        IconMark::Unknown,
+        IconMark::DocumentInvalid,
+    ];
+
+    #[test]
+    fn every_file_mark_draws_a_different_picture() {
+        let picture = |mark: IconMark| {
+            let node = icon_in("m", mark, IconBox::Glyph, IconTone::Primary);
+            format!("{:?}", list(&node).commands())
+        };
+        for (i, a) in FILE_MARKS.iter().enumerate() {
+            for b in &FILE_MARKS[i + 1..] {
+                assert_ne!(picture(*a), picture(*b), "{a:?} and {b:?} draw the same");
+            }
+        }
+    }
+
+    #[test]
+    fn a_derived_file_mark_is_its_base_plus_its_own_parts() {
+        let commands = |mark: IconMark| {
+            let node = icon_in("m", mark, IconBox::Glyph, IconTone::Primary);
+            list(&node).commands().to_vec()
+        };
+        for (base, derived, extra) in [
+            (IconMark::Launch, IconMark::LaunchOutside, 1),
+            (IconMark::Branch, IconMark::BranchWorktree, 2),
+        ] {
+            let (base, derived) = (commands(base), commands(derived));
+            assert_eq!(derived.len(), base.len() + extra);
+            assert_eq!(derived[..base.len()], base[..], "the base is drawn unchanged");
+        }
+    }
+
+    #[test]
+    fn a_dashed_folder_has_more_pieces_than_a_folder_and_the_same_tab() {
+        let commands = |mark: IconMark| {
+            let node = icon_in("m", mark, IconBox::Glyph, IconTone::Primary);
+            list(&node).commands().to_vec()
+        };
+        let (solid, dashed) = (commands(IconMark::Folder), commands(IconMark::FolderDashed));
+        assert!(dashed.len() > solid.len() + 5, "each side is several dashes");
+        assert_eq!(solid.last(), dashed.last(), "the tab's slope is the folder's");
+    }
+
 }
