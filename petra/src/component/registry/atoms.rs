@@ -387,6 +387,9 @@ pub const ENTRIES: &[Entry] = &[
     row!("section", KeyLabelChildren, |p| lib::section(
         p.key, p.label, p.children
     )),
+    row!("section_plain", KeyLabelChildren, |p| lib::section_plain(
+        p.key, p.label, p.children
+    )),
     // -- icon.rs --------------------------------------------------------------
     row!("icon", IconParams, |p| lib::icon(p.key, p.mark.into())),
     row!("icon_toned", IconTonedParams, |p| lib::icon_toned(

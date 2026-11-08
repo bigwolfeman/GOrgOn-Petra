@@ -310,6 +310,72 @@ impl PetrifiedFrame {
         out.sort_by_key(|p| p.z);
         out
     }
+
+    /// The paint pass as steps over placement indices: each node's body,
+    /// and its overlay once every descendant in its own layer has painted.
+    ///
+    /// A border is an overlay on the node's own content, the way SwiftUI's
+    /// `.border` and `.overlay` are. Petra's border sits inside the node's
+    /// rect and takes no space, so a child laid flush with its parent lands
+    /// on the parent's border. Painted in plain tree order, that child's
+    /// fill erases the border. With these steps the border lands after the
+    /// child, and a container's edge reads the same whatever its content
+    /// fills.
+    ///
+    /// Bodies come in [`PetrifiedFrame::paint_order`]: ascending `z`, then
+    /// tree order. A node's overlay closes when the walk leaves its subtree
+    /// or reaches a higher layer, so a raised descendant (a menu, a toast)
+    /// still paints above the border of the tile that hosts it. Overlays
+    /// close innermost first, so an outer border lies over an inner one.
+    ///
+    /// Every node gets both steps, in the same order for the same frame. A
+    /// painter that has nothing for one of them skips it.
+    #[must_use]
+    pub fn paint_steps(&self) -> Vec<PaintStep> {
+        let count = self.placements.len();
+        // Placements are tree pre-order, so a subtree is one contiguous run:
+        // node `j` owns `j + 1 ..= last[j]`. One reverse pass computes it,
+        // because every child comes after its parent.
+        let mut last: Vec<usize> = (0..count).collect();
+        for index in (0..count).rev() {
+            if let Some(parent) = self.placements[index].parent
+                && parent < index
+            {
+                last[parent] = last[parent].max(last[index]);
+            }
+        }
+        let mut order: Vec<usize> = (0..count).collect();
+        order.sort_by_key(|&index| self.placements[index].z);
+
+        let mut steps = Vec::with_capacity(count * 2);
+        let mut open: Vec<usize> = Vec::new();
+        for index in order {
+            let z = self.placements[index].z;
+            while let Some(&top) = open.last() {
+                let inside = top < index && index <= last[top];
+                if inside && self.placements[top].z == z {
+                    break;
+                }
+                open.pop();
+                steps.push(PaintStep::Over(top));
+            }
+            steps.push(PaintStep::Body(index));
+            open.push(index);
+        }
+        while let Some(top) = open.pop() {
+            steps.push(PaintStep::Over(top));
+        }
+        steps
+    }
+}
+
+/// One step of [`PetrifiedFrame::paint_steps`], naming a placement index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaintStep {
+    /// The node's own picture: shadow, fill, and hosted content.
+    Body(usize),
+    /// What lies over the node's subtree: its four-sided border.
+    Over(usize),
 }
 
 /// Allocates frame sequence numbers for one application run.
@@ -569,6 +635,76 @@ mod tests {
             text: Some(body.to_string()),
             ..Props::default()
         })
+    }
+
+    /// The ids of `frame`'s steps, `+` for a body and `-` for an overlay.
+    fn spelled(frame: &super::PetrifiedFrame) -> Vec<String> {
+        frame
+            .paint_steps()
+            .into_iter()
+            .map(|step| match step {
+                super::PaintStep::Body(i) => format!("+{}", frame.placements[i].id),
+                super::PaintStep::Over(i) => format!("-{}", frame.placements[i].id),
+            })
+            .collect()
+    }
+
+    /// A node's overlay lands after its whole subtree and before the next
+    /// sibling, innermost first.
+    #[test]
+    fn a_border_lands_after_the_subtree_it_frames() {
+        let tree = ViewNode::new(NodeKind::Stack, "root")
+            .child(ViewNode::new(NodeKind::Stack, "tile").child(text("hero", "hi")))
+            .child(text("next", "there"));
+        let frame = frame_of(&tree, 200.0, 100.0);
+        assert_eq!(
+            spelled(&frame),
+            [
+                "+/root",
+                "+/root/tile",
+                "+/root/tile/hero",
+                "-/root/tile/hero",
+                "-/root/tile",
+                "+/root/next",
+                "-/root/next",
+                "-/root",
+            ]
+        );
+    }
+
+    /// A raised descendant paints over the border of the node that hosts it:
+    /// the host's overlay closes when the walk reaches the higher layer.
+    #[test]
+    fn a_raised_descendant_paints_over_its_hosts_border() {
+        let tree = ViewNode::new(NodeKind::Stack, "root")
+            .child(
+                ViewNode::new(NodeKind::Stack, "tile")
+                    .child(text("menu", "m"))
+                    .child(text("body", "b")),
+            )
+            .child(text("next", "n"));
+        let mut frame = frame_of(&tree, 200.0, 100.0);
+        let menu = frame
+            .placements
+            .iter()
+            .position(|p| p.id == "/root/tile/menu")
+            .expect("the menu is placed");
+        frame.placements[menu].z = 1;
+        assert_eq!(
+            spelled(&frame),
+            [
+                "+/root",
+                "+/root/tile",
+                "+/root/tile/body",
+                "-/root/tile/body",
+                "-/root/tile",
+                "+/root/next",
+                "-/root/next",
+                "-/root",
+                "+/root/tile/menu",
+                "-/root/tile/menu",
+            ]
+        );
     }
 
     /// A root that wants less than the window still gets the window.

@@ -178,7 +178,7 @@ impl ImageSources {
     ///
     /// `None` when nothing is registered under this name, or when the
     /// registered pixels fail to decode — the caller
-    /// ([`crate::paint::paint_one`]) is what turns that into an `undrawn`
+    /// ([`crate::paint::paint_body`]) is what turns that into an `undrawn`
     /// entry naming the source; this method only ever answers "is there a
     /// texture," never why there is not one.
     pub fn resolve(&mut self, ctx: &Context, source: &str) -> Option<&TextureHandle> {

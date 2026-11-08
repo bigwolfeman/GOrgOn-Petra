@@ -30,12 +30,7 @@ const HEIGHT_FLOOR: f32 = 40.0;
 /// `section` is the one of the three assembled from more than a single
 /// token.
 pub fn section(key: impl Into<Key>, title: impl Into<String>, children: Vec<ViewNode>) -> ViewNode {
-    let key = key.into();
-    let mut rows = vec![heading("title", title)];
-    rows.extend(children);
-
-    let mut node = stack(key, Axis::Vertical, Some(SPACING_03), rows);
-    node.props.padding = Some(pad(SPACING_05, SPACING_04));
+    let mut node = section_plain(key, title, children);
     node.props
         .tokens
         .insert("background".into(), t(SURFACE_RAISED));
@@ -54,5 +49,26 @@ pub fn section(key: impl Into<Key>, title: impl Into<String>, children: Vec<View
         "radius".into(),
         t(corner_for(CornerRole::Grouping, HEIGHT_FLOOR)),
     );
+    node
+}
+
+/// A titled block with no surface of its own: [`section`]'s heading,
+/// spacing and padding, and no fill, shadow or corner.
+///
+/// For content whose host already draws the surface. A panel seated in a
+/// shell tile sits on the tile's fill and inside its border; a [`section`]
+/// there is a card inside a card, a second fill and a shadow that end where
+/// the content ends, part way down the tile. The content and its spacing
+/// are the same in both, so one panel reads the same in either host.
+#[must_use]
+pub fn section_plain(
+    key: impl Into<Key>,
+    title: impl Into<String>,
+    children: Vec<ViewNode>,
+) -> ViewNode {
+    let mut rows = vec![heading("title", title)];
+    rows.extend(children);
+    let mut node = stack(key.into(), Axis::Vertical, Some(SPACING_03), rows);
+    node.props.padding = Some(pad(SPACING_05, SPACING_04));
     node
 }

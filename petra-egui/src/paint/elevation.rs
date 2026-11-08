@@ -1,7 +1,7 @@
 //! The elevation one placement casts: the `background`-adjacent `shadow`
 //! slot's shadow, when the node binds one.
 //!
-//! Painted first of the kinds `super::paint_one` dispatches to, because a
+//! Painted first of the kinds `super::paint_body` dispatches to, because a
 //! shadow lies behind the thing that casts it.
 
 use egui::Painter;

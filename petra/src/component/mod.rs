@@ -23,7 +23,7 @@
 //! | [`tab`] | `Role::Tab` + selected | yes |
 //! | [`progress`] | `Role::Progress` | no |
 //! | [`status`] | `Role::Status` | no |
-//! | [`section`] | none | no |
+//! | [`section`] / [`section_plain`] | none | no |
 //! | [`list_row`] | `Role::ListItem` + selected | yes |
 //!
 //! [`icon`] is not a fourteenth C13 component. It is a visual part a labeled
@@ -294,7 +294,7 @@ pub use progress_indicator::{
 pub use rating::rating;
 pub use readonly::readonly;
 pub use search::{search, search_expandable, search_lg, search_sm};
-pub use section::section;
+pub use section::{section, section_plain};
 pub use select::{
     select, select_invalid, select_lg, select_open, select_readonly, select_sm, select_warning,
 };

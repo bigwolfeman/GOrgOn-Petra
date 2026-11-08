@@ -24,7 +24,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use egui::{Color32, CornerRadius, Painter, Rgba, Stroke};
-use gorgon_petra::frame::{PaintContent, PetrifiedFrame, Placement, round_rect};
+use gorgon_petra::frame::{PaintContent, PaintStep, PetrifiedFrame, Placement, round_rect};
 use gorgon_petra::geom::{Rect as PetraRect, Scale};
 use gorgon_petra::token::value::CoverageValue;
 use gorgon_petra::token::{
@@ -680,7 +680,7 @@ pub struct CustomPaintCtx<'a> {
 /// still lands in [`PaintReport::undrawn`] rather than the frame reading as
 /// complete over a placement nothing actually painted. This is FR-059's
 /// "registered-but-unpainted stays undrawn" made structural: the return
-/// value is the only signal [`paint_one`] has, so a painter that lies about
+/// value is the only signal [`paint_body`] has, so a painter that lies about
 /// it is the one way this contract can still be broken, and it is a
 /// one-line honesty obligation on whoever writes the painter rather than
 /// something this crate can enforce further.
@@ -692,7 +692,7 @@ pub type CustomPainterFn = dyn Fn(&Painter, &CustomPaintCtx<'_>) -> bool;
 /// what this crate shipped before T080 existed: every custom name lands in
 /// `undrawn`. Registration is opt-in per name — an unregistered name and a
 /// registered painter that chose not to draw are the same outcome from the
-/// frame's point of view, and [`paint_one`] treats them identically.
+/// frame's point of view, and [`paint_body`] treats them identically.
 #[derive(Default)]
 pub struct CustomPainters {
     painters: BTreeMap<String, Box<CustomPainterFn>>,
@@ -837,7 +837,7 @@ fn paint_frame_inner(
 ) -> PaintReport {
     let mut report = PaintReport {
         placements: frame.placements.len(),
-        // `paint_pairs` zips, and a zip truncates rather than complaining, so
+        // the paint steps read contents by index and skip a missing one, so
         // the mismatch has to be caught here or it is never caught at all.
         desynced: frame.placements.len() != frame.content.len(),
         ..PaintReport::default()
@@ -863,23 +863,50 @@ fn paint_frame_inner(
         painters,
         images,
     };
-    for (placement, content) in frame.paint_pairs() {
-        let clip = to_egui_snapped(placement.clip, scale);
-        if !clip.is_positive() {
-            // Clipped to nothing: the node is scrolled out or behind a closed
-            // surface. Skipping the draw is the correct outcome here, not a
-            // lost placement — but it is counted in its own bucket rather than
-            // folded in with the drawn ones, so "nothing was painted this
-            // frame because everything was clipped" stays visible.
-            report.skipped_clipped += 1;
-            continue;
-        }
-        let mut p = painter.with_clip_rect(clip);
-        p.set_opacity(placement.opacity.clamp(0.0, 1.0));
-        match paint_one(&p, placement, content, &mut env, &mut report) {
-            Outcome::Drawn => report.drawn += 1,
-            Outcome::Empty => report.empty += 1,
-            Outcome::Silent => report.silent += 1,
+    // A body leaves its painter, chrome and shape count here for the
+    // overlay that closes it. `get` rather than indexing: a desynced frame
+    // has fewer contents than placements, and the extra placements are
+    // counted above, not painted.
+    let mut open: Vec<Option<(Painter, NodeChrome, usize)>> = std::iter::repeat_with(|| None)
+        .take(frame.placements.len())
+        .collect();
+    for step in frame.paint_steps() {
+        match step {
+            PaintStep::Body(index) => {
+                let (Some(placement), Some(content)) =
+                    (frame.placements.get(index), frame.content.get(index))
+                else {
+                    continue;
+                };
+                let clip = to_egui_snapped(placement.clip, scale);
+                if !clip.is_positive() {
+                    // Clipped to nothing: the node is scrolled out or behind
+                    // a closed surface. Skipping the draw is the correct
+                    // outcome here, not a lost placement — but it is counted
+                    // in its own bucket rather than folded in with the drawn
+                    // ones, so "nothing was painted this frame because
+                    // everything was clipped" stays visible.
+                    report.skipped_clipped += 1;
+                    continue;
+                }
+                let mut p = painter.with_clip_rect(clip);
+                p.set_opacity(placement.opacity.clamp(0.0, 1.0));
+                let (chrome, shapes) = paint_body(&p, placement, content, &mut env, &mut report);
+                open[index] = Some((p, chrome, shapes));
+            }
+            PaintStep::Over(index) => {
+                let (Some((p, chrome, shapes)), Some(content)) =
+                    (open[index].take(), frame.content.get(index))
+                else {
+                    continue;
+                };
+                let shapes = shapes + paint_over(&p, content, &chrome, &mut env, &mut report);
+                match outcome(content, shapes) {
+                    Outcome::Drawn => report.drawn += 1,
+                    Outcome::Empty => report.empty += 1,
+                    Outcome::Silent => report.silent += 1,
+                }
+            }
         }
     }
     // The indicator is drawn after the loop rather than inside it because
@@ -1770,7 +1797,7 @@ fn groove_bands(
 /// the placement and content that change per call.
 ///
 /// Grouped into one struct rather than threading five parameters through
-/// [`paint_one`] individually — `shaper` and `images` need `&mut` and the
+/// [`paint_body`] and [`paint_over`] individually — `shaper` and `images` need `&mut` and the
 /// other three do not, which is exactly the split a hand-written struct
 /// keeps honest that a long parameter list would not.
 struct PaintEnv<'a> {
@@ -1812,11 +1839,11 @@ struct PaintEnv<'a> {
 /// whose radius is positive. This was the photographed 2026-09-07 defect:
 /// two flat rects with a hardcoded `0.0` corner radius, full width
 /// regardless of what the fill and the four-sided border beside them curved
-/// away to. `corner_radius` is the same value [`paint_one`] already resolved
+/// away to. `corner_radius` is the same value [`NodeChrome::resolve`] already resolved
 /// for this node's fill and border, so a groove edge never disagrees with
 /// the rect it grooves.
 ///
-/// Returns the number of shapes painted, for [`paint_one`]'s own shape count
+/// Returns the number of shapes painted, for [`paint_over`]'s own shape count
 /// — 0 rather than a partial groove if either stroke's token fails to
 /// resolve, because one stroke alone is not the material this document
 /// specifies and `resolve_or_record` has already recorded the miss.
@@ -1892,7 +1919,8 @@ fn paint_rule_groove(
 }
 
 // One paint fn per content kind, one module per fn. They reach the shared
-// plumbing through `super`; the call order in [`paint_one`] below is
+// plumbing through `super`; the call order in [`paint_body`] and
+// [`paint_over`] below, with [`PetrifiedFrame::paint_steps`] between them, is
 // Petra's paint order and is load-bearing.
 mod border;
 mod canvas;
@@ -1905,7 +1933,7 @@ mod surface_caret;
 mod text;
 
 /// Everything one placement's paint kinds share, resolved exactly once
-/// before [`paint_one`] dispatches to them.
+/// before [`paint_body`] and [`paint_over`] dispatch to them.
 struct NodeChrome {
     /// `placement.rect` snapped to the same device-pixel grid the digest
     /// hashes — every rect the kinds draw comes from here.
@@ -1952,13 +1980,16 @@ impl NodeChrome {
     }
 }
 
-fn paint_one(
+/// One placement's body, painted at its [`PaintStep::Body`]: everything the
+/// node draws under its children. Returns the chrome its overlay reuses and
+/// the shapes emitted so far.
+fn paint_body(
     painter: &Painter,
     placement: &Placement,
     content: &PaintContent,
     env: &mut PaintEnv<'_>,
     report: &mut PaintReport,
-) -> Outcome {
+) -> (NodeChrome, usize) {
     // Every slot this painter does not understand is recorded by name,
     // matched on the *base* slot: `background@hover` is the `background`
     // slot bound for one state (`gorgon_petra::token::state`), not a seventh
@@ -1985,22 +2016,43 @@ fn paint_one(
     }
     let chrome = NodeChrome::resolve(placement, content, env, report);
 
-    // The dispatch, in Petra's paint order and no other: a shadow lies
-    // behind the fill that casts it, the caret continues the fill, the
-    // chrome lies over both, and hosted content (text, image, canvas,
-    // custom) lands last. Each kind returns the shapes it emitted and every
-    // kind records into the same `PaintReport`.
+    // The body, in Petra's paint order and no other: a shadow lies behind
+    // the fill that casts it, the caret continues the fill, the edge rules
+    // lie on the fill, and hosted content (text, image, canvas, custom)
+    // lands last. An edge rule stays in the body: it divides this node from
+    // a neighbour, and a child that reaches that edge (a field's underline,
+    // a selected tab's indicator) is drawn to stand in its place. Each kind
+    // returns the shapes it emitted and every kind records into the same
+    // `PaintReport`.
     let mut shapes = 0_usize;
     shapes += elevation::paint_elevation(painter, content, &chrome, env, report);
     shapes += fill::paint_fill(painter, placement, content, &chrome, env, report);
     shapes += surface_caret::paint_surface_caret(painter, content, &chrome, env, report);
-    shapes += border::paint_border(painter, content, &chrome, env, report);
     shapes += edges::paint_edge_rules(painter, content, &chrome, env, report);
     shapes += text::paint_text(painter, placement, content, &chrome, env, report);
     shapes += image::paint_image(painter, content, &chrome, env, report);
     shapes += canvas::paint_canvas_node(painter, placement, content, env, report);
     shapes += custom::paint_custom(painter, content, &chrome, env, report);
+    (chrome, shapes)
+}
 
+/// One placement's overlay, painted at its [`PaintStep::Over`], after every
+/// descendant in its layer: the four-sided border. It outlines the node's
+/// box, the way SwiftUI's `.border` does, and it sits inside the node's rect
+/// and takes no space, so a child laid flush with the node would erase it
+/// if it painted under that child.
+fn paint_over(
+    painter: &Painter,
+    content: &PaintContent,
+    chrome: &NodeChrome,
+    env: &mut PaintEnv<'_>,
+    report: &mut PaintReport,
+) -> usize {
+    border::paint_border(painter, content, chrome, env, report)
+}
+
+/// What one placement's two steps came to, once both have run.
+fn outcome(content: &PaintContent, shapes: usize) -> Outcome {
     if content.is_empty() {
         // Nothing was declared, so nothing missing. A `Stack` is a position
         // for its children; it is not supposed to paint.
@@ -3009,7 +3061,7 @@ mod tests {
     /// The drawn half is what makes the other two matter: hovering the node
     /// has to change the fill. Asserted through `report.fills` plus the
     /// resolved token name rather than through pixels — this crate has no
-    /// pixel readback — but the token name is what `paint_one` hands to
+    /// pixel readback — but the token name is what `paint_body` hands to
     /// `resolve_or_record`, so a chain that resolved the wrong name would
     /// report the wrong colour as unresolved.
     #[test]
