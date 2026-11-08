@@ -870,6 +870,10 @@ pub struct Props {
     /// scroll it, so nothing else can own the value.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overscan: Option<f32>,
+    /// Whether a `scroll` draws its indicator. Absent is
+    /// [`ScrollIndicators::Automatic`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub indicators: Option<ScrollIndicators>,
     /// Total row count of a `collection`, including unmaterialized rows.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total_count: Option<usize>,
@@ -1086,6 +1090,25 @@ pub struct ScrollProps {
     /// Extra logical extent a virtualized child materializes past each end
     /// of the viewport.
     pub overscan: f32,
+    /// Whether the scroll draws its indicator.
+    pub indicators: ScrollIndicators,
+}
+
+/// Whether a `scroll` draws an indicator: SwiftUI's `scrollIndicators`.
+///
+/// The indicator is a thin thumb along the edge across from the scrolling
+/// axis, its length the visible share of the content and its position the
+/// offset. It is drawn only while the content is longer than the viewport,
+/// so a port whose content fits draws nothing either way.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ScrollIndicators {
+    /// Draw the thumb while there is more content than viewport.
+    #[default]
+    Automatic,
+    /// Never draw it. For a port whose position is shown some other way,
+    /// such as a list with its own position readout.
+    Hidden,
 }
 
 /// Resolved `collection` parameters.
@@ -1230,6 +1253,7 @@ impl Props {
                 .filter(|v| v.is_finite() && *v >= 0.0)
                 .unwrap_or(DEFAULT_OVERSCAN),
             axis: self.axis.unwrap_or(Axis::Vertical),
+            indicators: self.indicators.unwrap_or_default(),
         }
     }
 

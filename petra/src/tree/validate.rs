@@ -956,6 +956,13 @@ fn walk(
         check_grid_spans(node, path, errors);
     }
     let mut seen: HashSet<&Key> = HashSet::with_capacity(node.children.len());
+    // A `scroll` places its indicator as a child of its own, keyed
+    // `layout::scroll::INDICATOR_KEY`; an authored child with that key
+    // would share the id.
+    let indicator = Key::new(crate::layout::scroll::INDICATOR_KEY);
+    if node.kind == NodeKind::Scroll {
+        seen.insert(&indicator);
+    }
     for child in &node.children {
         if !seen.insert(&child.key) {
             errors.push(TreeError {
@@ -2498,6 +2505,28 @@ mod tests {
         let tree = stack("root")
             .child(ViewNode::new(NodeKind::Text, "a"))
             .child(ViewNode::new(NodeKind::Text, "b"));
+        assert!(validate(&tree, &Registry::new()).is_ok());
+    }
+
+    /// A scroll's indicator is a child of its own; an authored child with
+    /// its key would share the indicator's id.
+    #[test]
+    fn a_scroll_child_keyed_like_the_indicator_refuses_the_tree() {
+        let tree = ViewNode::new(NodeKind::Scroll, "list").child(ViewNode::new(
+            NodeKind::Text,
+            crate::layout::scroll::INDICATOR_KEY,
+        ));
+        let err = validate(&tree, &Registry::new()).unwrap_err();
+        assert_eq!(err.as_slice()[0].path, "/list/scroll-indicator");
+        assert!(matches!(
+            err.as_slice()[0].violation,
+            Violation::DuplicateSiblingKey { .. }
+        ));
+        // Anywhere else the name is an ordinary key.
+        let tree = stack("root").child(ViewNode::new(
+            NodeKind::Text,
+            crate::layout::scroll::INDICATOR_KEY,
+        ));
         assert!(validate(&tree, &Registry::new()).is_ok());
     }
 

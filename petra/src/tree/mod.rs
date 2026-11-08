@@ -34,8 +34,8 @@ pub use node::{
 // reached through; `props::Align`'s own doc comment says which is which.
 pub use props::{
     Align, Anchor, ClampRule, CollectionProps, Edge, Fit, GridProps, GridSpan, InputPolicy,
-    InsetRefs, Justify, Layer, NodeAnchor, Props, ScrollProps, StackProps, SurfaceProps, TextProps,
-    TextRun, TextWrap, Tip, TrackSize, resolve_insets, resolve_spacing,
+    InsetRefs, Justify, Layer, NodeAnchor, Props, ScrollIndicators, ScrollProps, StackProps,
+    SurfaceProps, TextProps, TextRun, TextWrap, Tip, TrackSize, resolve_insets, resolve_spacing,
 };
 // `ANCHOR_PROP_KINDS` / `PADDING_PROP_KINDS` / `TOKEN_PROP_KINDS` and their
 // reader `token_prop_refs` are re-exported here because they are read from

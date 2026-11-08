@@ -1276,6 +1276,7 @@ mod tests {
             props: ScrollProps {
                 axis: Axis::Vertical,
                 overscan,
+                indicators: crate::tree::ScrollIndicators::Automatic,
             },
         };
 

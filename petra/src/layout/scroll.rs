@@ -65,7 +65,8 @@
 use crate::frame::placement::{PaintState, Placement, PlacementSink};
 use crate::geom::{Axis, Rect, Size};
 use crate::layout::{LayoutCtx, Proposal, ScrollFrame, SizeProposal, Slot, semantics_of};
-use crate::tree::props::{DEFAULT_ROW_EXTENT, ScrollProps};
+use crate::token::TokenName;
+use crate::tree::props::{DEFAULT_ROW_EXTENT, ScrollIndicators, ScrollProps};
 use crate::tree::{KeyPath, ViewNode};
 
 /// Measure this container under `proposal`.
@@ -253,9 +254,103 @@ pub fn place(
         ctx.within_scroll(frame, |ctx| {
             crate::layout::place(child, ctx, path, child_slot, sink);
         });
+
+        // After the content, so it paints over it. Placed outside the
+        // scroll context: the thumb sits on the port, it does not scroll.
+        if scroll.indicators == ScrollIndicators::Automatic
+            && let Some(rect) = thumb_rect(
+                ctx,
+                slot.rect,
+                axis,
+                viewport_extent,
+                content_extent,
+                offset,
+            )
+        {
+            let thumb_slot = Slot {
+                rect,
+                z: slot.z,
+                clip: slot.clip,
+                opacity: slot.opacity,
+                window: slot.window,
+            }
+            .clipped_to(slot.rect);
+            crate::layout::place(&INDICATOR, ctx, path, thumb_slot, sink);
+        }
     }
 
     sink.leave();
+}
+
+/// The key of a `scroll`'s indicator: the second child every `scroll` has
+/// and no author writes. Tree acceptance refuses a `scroll` child with this
+/// key ([`crate::tree::Violation::DuplicateSiblingKey`]), so the thumb's id
+/// can never be an author's node.
+pub const INDICATOR_KEY: &str = "scroll-indicator";
+
+/// The thumb's thickness across the axis.
+const THUMB_THICKNESS: &str = "spacing-02";
+/// The gap between the thumb and the port's edges. A host's border lies
+/// over the port's edge (a border takes no space), so this is also the gap
+/// to that line: at 2 the thumb sat one pixel off a tile border and read as
+/// a doubled line.
+const THUMB_INSET: &str = "spacing-02";
+/// The shortest thumb, so a very long list still shows a target.
+const THUMB_MIN_LENGTH: &str = "spacing-05";
+
+/// The indicator node: a fill and a full corner, nothing else. One node for
+/// every scroll in every frame, built once. `border-strong` is the theme's
+/// tone for a non-text mark that must stand at 3:1 against its layer.
+static INDICATOR: std::sync::LazyLock<ViewNode> = std::sync::LazyLock::new(|| {
+    let mut node = ViewNode::new(crate::tree::NodeKind::Stack, INDICATOR_KEY);
+    for (role, token) in [
+        ("background", "border-strong"),
+        ("radius", "shape.corner-full"),
+    ] {
+        node.props.tokens.insert(
+            role.into(),
+            TokenName::new(token).expect("a well-formed token name"),
+        );
+    }
+    node
+});
+
+/// Where a scroll's thumb sits, or [`None`] when the content fits.
+///
+/// The track is the port's own rect less the inset at each end, along the
+/// far edge across from `axis`: the right edge of a vertical scroll, the
+/// bottom of a horizontal one. The thumb's length is the visible share of
+/// the content (never shorter than the minimum, never longer than the
+/// track); its position is the offset's share of the scroll range.
+fn thumb_rect(
+    ctx: &LayoutCtx<'_>,
+    port: Rect,
+    axis: Axis,
+    viewport: f32,
+    content: f32,
+    offset: f32,
+) -> Option<Rect> {
+    let range = content - viewport;
+    if range <= 0.5 || !range.is_finite() {
+        return None;
+    }
+    let spacing = |name: &str| ctx.spacing(&Some(TokenName::new(name).expect("token name")));
+    let (thick, inset, min) = (
+        spacing(THUMB_THICKNESS),
+        spacing(THUMB_INSET),
+        spacing(THUMB_MIN_LENGTH),
+    );
+    let track = port.size().along(axis) - 2.0 * inset;
+    if track <= 0.0 || port.size().across(axis) < thick + inset {
+        return None;
+    }
+    let length = (track * viewport / content).max(min).min(track);
+    let along =
+        origin_along(port, axis) + inset + (track - length) * (offset / range).clamp(0.0, 1.0);
+    Some(match axis {
+        Axis::Vertical => Rect::new(port.x + port.w - inset - thick, along, thick, length),
+        Axis::Horizontal => Rect::new(along, port.y + port.h - inset - thick, length, thick),
+    })
 }
 
 /// The scroll context this `scroll` node imposes on everything under it.
@@ -513,6 +608,19 @@ mod tests {
             .child(collection)
     }
 
+    /// How many collection rows a pass materialized: placements keyed
+    /// `row-{index}`, whatever containers and indicators sit around them.
+    fn rows_placed(placements: &[Placement]) -> usize {
+        placements
+            .iter()
+            .filter(|p| {
+                p.id.rsplit('/')
+                    .next()
+                    .is_some_and(|key| key.starts_with("row-"))
+            })
+            .count()
+    }
+
     /// The `scroll`/`collection` pair every virtualization test drives.
     ///
     /// `overscan` is declared on the **`scroll`**, which owns it; tree
@@ -576,6 +684,84 @@ mod tests {
         );
     }
 
+    /// Place `tree` into a `w` x `h` port at `offset` and return the
+    /// indicator's placement, if the scroll drew one.
+    fn indicator_of(tree: &ViewNode, w: f32, h: f32, offset: f32) -> Option<Placement> {
+        let mut harness = Harness::new();
+        harness.set_scroll(&format!("/{}", tree.key.as_str()), offset);
+        let mut sink = PlacementList::new();
+        crate::layout::place(
+            tree,
+            &mut harness.ctx(),
+            &mut KeyPath::root(),
+            Slot::new(Rect::new(0.0, 0.0, w, h)),
+            &mut sink,
+        );
+        let placed = sink.as_slice();
+        let found = placed
+            .iter()
+            .position(|p| p.id.ends_with(super::INDICATOR_KEY))?;
+        assert_eq!(
+            found,
+            placed.len() - 1,
+            "the indicator is placed after the content"
+        );
+        Some(placed[found].clone())
+    }
+
+    /// The thumb's length is the visible share of the track and its
+    /// position the offset's share of the range: 400 of content in a 100
+    /// port is a quarter of the 92-unit track (100 less a 4-unit inset at
+    /// each end), at the top at offset 0 and at the bottom at the end.
+    #[test]
+    fn the_indicator_is_the_visible_share_at_the_offsets_share() {
+        let tree = ViewNode::new(NodeKind::Scroll, "list").child(fixed_extent_child(400.0));
+        let top = indicator_of(&tree, 120.0, 100.0, 0.0).expect("400 in 100 scrolls");
+        assert_eq!(top.rect, Rect::new(112.0, 4.0, 4.0, 23.0));
+        let end = indicator_of(&tree, 120.0, 100.0, 300.0).expect("still scrolls");
+        assert_eq!(end.rect, Rect::new(112.0, 73.0, 4.0, 23.0));
+        assert!(
+            end.semantics.actions.is_empty(),
+            "the thumb takes no input, so no hit test lands on it: wheel and keys scroll the port"
+        );
+    }
+
+    /// Along a horizontal axis the thumb runs on the bottom edge.
+    #[test]
+    fn a_horizontal_scrolls_indicator_runs_along_its_bottom_edge() {
+        let wide = ViewNode::new(NodeKind::Spacer, "content").with_constraints(Constraints {
+            horizontal: AxisConstraint {
+                min: Some(500.0),
+                max: Some(500.0),
+                priority: 0,
+            },
+            vertical: AxisConstraint::default(),
+        });
+        let tree = ViewNode::new(NodeKind::Scroll, "strip")
+            .with_props(Props {
+                axis: Some(Axis::Horizontal),
+                ..Props::default()
+            })
+            .child(wide);
+        let thumb = indicator_of(&tree, 200.0, 50.0, 0.0).expect("500 in 200 scrolls");
+        assert_eq!(thumb.rect, Rect::new(4.0, 42.0, 192.0 * 200.0 / 500.0, 4.0));
+    }
+
+    /// Content that fits draws no thumb, and neither does a scroll that
+    /// hides its indicators.
+    #[test]
+    fn a_port_that_fits_or_hides_its_indicator_draws_none() {
+        let fits = ViewNode::new(NodeKind::Scroll, "list").child(fixed_extent_child(80.0));
+        assert!(indicator_of(&fits, 120.0, 100.0, 0.0).is_none());
+        let hidden = ViewNode::new(NodeKind::Scroll, "list")
+            .with_props(Props {
+                indicators: Some(crate::tree::ScrollIndicators::Hidden),
+                ..Props::default()
+            })
+            .child(fixed_extent_child(400.0));
+        assert!(indicator_of(&hidden, 120.0, 100.0, 0.0).is_none());
+    }
+
     #[test]
     fn placing_moves_the_child_by_exactly_the_negative_offset_and_clips_to_the_viewport() {
         let mut h = Harness::new();
@@ -592,7 +778,10 @@ mod tests {
         );
 
         let placements = sink.as_slice();
-        assert_eq!(placements.len(), 2);
+        // The scroll, its content, and the indicator the 400-unit content
+        // in a 100-unit port earns.
+        assert_eq!(placements.len(), 3);
+        assert_eq!(placements[2].id, "/list/scroll-indicator");
         let child = &placements[1];
         assert_eq!(
             child.rect,
@@ -633,7 +822,7 @@ mod tests {
         );
 
         let placements = sink.as_slice();
-        assert_eq!(placements.len(), 2);
+        assert_eq!(placements.len(), 3, "scroll, content, indicator");
         let scroll = &placements[0];
         let child = &placements[1];
 
@@ -933,12 +1122,12 @@ mod tests {
             .expect("the collection itself is placed");
         assert_eq!(collection.semantics.total_count, Some(100_000));
 
-        // scroll (1) + collection (1) + materialized rows. At offset 0 with a
+        // Materialized rows, counted by key. At offset 0 with a
         // 400-unit viewport, the declared 120-unit overscan, and 24-unit rows
         // the window is ceil((400 + 120) / 24) = 22 rows. With the default
         // 64-unit overscan it would be 20, which is what makes this assertion
         // able to tell the two apart.
-        let row_count = placements.len() - 2;
+        let row_count = rows_placed(placements);
         assert_eq!(row_count, 22);
         assert!(row_count < 100_000);
     }
@@ -992,9 +1181,9 @@ mod tests {
             &mut sink,
         );
 
-        // scroll (1) + collection (1) + rows. ceil((400 + 120) / 24) = 22
+        // Rows, counted by key. ceil((400 + 120) / 24) = 22
         // with the declared overscan; 20 with the 64-unit default.
-        let row_count = sink.as_slice().len() - 2;
+        let row_count = rows_placed(sink.as_slice());
         assert_eq!(
             row_count, 22,
             "the window is the viewport plus the scroll's declared overscan, not the default"
@@ -1108,11 +1297,11 @@ mod tests {
             &mut sink,
         );
 
-        // outer (1) + inner (1) + collection (1) + rows. The inner scroll
+        // Rows, counted by key. The inner scroll
         // declares no overscan at all, so the window is exactly the 400-unit
         // visible region: ceil(400 / 24) = 17 rows. The outer scroll's
         // 200-unit overscan would make it 25.
-        let row_count = sink.as_slice().len() - 3;
+        let row_count = rows_placed(sink.as_slice());
         assert_eq!(
             row_count, 17,
             "the inner scroll's overscan is the one in force"
@@ -1198,11 +1387,11 @@ mod tests {
             ids.contains(&"/list/popup/rows/row-0"),
             "the popup is anchored, not scrolled by /list; placed: {ids:?}"
         );
-        // scroll (1) + surface (1) + collection (1) + rows. The popup is
+        // Rows, counted by key. The popup is
         // clamped to the 400-unit window, and the collection keeps its own
         // 96-unit overscan: ceil((400 + 96) / 24) = 21 rows. The enclosing
         // scroll's 200-unit overscan would give 25.
-        let row_count = sink.as_slice().len() - 3;
+        let row_count = rows_placed(sink.as_slice());
         assert_eq!(
             row_count, 21,
             "the enclosing scroll's overscan does not reach inside a surface"
