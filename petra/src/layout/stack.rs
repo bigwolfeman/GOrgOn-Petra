@@ -224,7 +224,6 @@ fn arrange(node: &ViewNode, ctx: &mut LayoutCtx<'_>, path: &mut KeyPath, rect: R
         lost |= outcome.truncated();
     }
 
-
     // Declaration order, always. `plan` was negotiated in another order
     // entirely and indexes back into this one.
     //
@@ -971,7 +970,10 @@ mod tests {
                 align: Some(Align::FirstLine),
                 ..Props::default()
             })
-            .with_children(vec![marker("dot", 10.0, 10.0), paragraph("words", "ok", 40.0)]);
+            .with_children(vec![
+                marker("dot", 10.0, 10.0),
+                paragraph("words", "ok", 40.0),
+            ]);
         let tree = stack(
             Axis::Horizontal,
             0.0,

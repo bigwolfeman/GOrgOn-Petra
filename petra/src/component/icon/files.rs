@@ -236,7 +236,16 @@ pub(super) fn locked(s: f32, color: ColorRef) -> Vec<Command> {
     .map(|(x0, y0, x1, y1)| snapped_bar(x0, y0, x1, y1, s, paint.clone()))
     .collect();
     // The shackle's arch, between Carbon's radius-4 and radius-6 edges.
-    out.push(arc_run(None, pt(16.0, 8.0), 5.0, 180.0, 180.0, None, s, color));
+    out.push(arc_run(
+        None,
+        pt(16.0, 8.0),
+        5.0,
+        180.0,
+        180.0,
+        None,
+        s,
+        color,
+    ));
     out
 }
 
@@ -301,7 +310,16 @@ fn branch_parts(s: f32, color: &ColorRef) -> Vec<Command> {
             s,
             color.clone(),
         ),
-        arc_run(None, pt(12.0, 22.0), 4.0, 270.0, -90.0, None, s, color.clone()),
+        arc_run(
+            None,
+            pt(12.0, 22.0),
+            4.0,
+            270.0,
+            -90.0,
+            None,
+            s,
+            color.clone(),
+        ),
     ]
 }
 
@@ -314,7 +332,14 @@ pub(super) fn branch(s: f32, color: ColorRef) -> Vec<Command> {
 /// cross bar.
 pub(super) fn branch_worktree(s: f32, color: ColorRef) -> Vec<Command> {
     let mut out = branch_parts(s, &color);
-    out.push(snapped_bar(23.0, 18.0, 25.0, 23.0, s, Paint::filled(color.clone())));
+    out.push(snapped_bar(
+        23.0,
+        18.0,
+        25.0,
+        23.0,
+        s,
+        Paint::filled(color.clone()),
+    ));
     out.push(ring(pt(24.0, 26.0), 3.0, s, color));
     out
 }

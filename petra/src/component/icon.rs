@@ -2312,7 +2312,11 @@ mod tests {
         ] {
             let (base, derived) = (commands(base), commands(derived));
             assert_eq!(derived.len(), base.len() + extra);
-            assert_eq!(derived[..base.len()], base[..], "the base is drawn unchanged");
+            assert_eq!(
+                derived[..base.len()],
+                base[..],
+                "the base is drawn unchanged"
+            );
         }
     }
 
@@ -2323,8 +2327,14 @@ mod tests {
             list(&node).commands().to_vec()
         };
         let (solid, dashed) = (commands(IconMark::Folder), commands(IconMark::FolderDashed));
-        assert!(dashed.len() > solid.len() + 5, "each side is several dashes");
-        assert_eq!(solid.last(), dashed.last(), "the tab's slope is the folder's");
+        assert!(
+            dashed.len() > solid.len() + 5,
+            "each side is several dashes"
+        );
+        assert_eq!(
+            solid.last(),
+            dashed.last(),
+            "the tab's slope is the folder's"
+        );
     }
-
 }
