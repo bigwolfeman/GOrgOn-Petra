@@ -341,7 +341,32 @@ struct GalleyKey {
     /// exactly the key they landed on before this field existed. A coloured
     /// run gets its own entry: two inks over one string are two pictures and
     /// must not share a galley.
-    runs: Vec<(usize, Option<u32>)>,
+    runs: Vec<(usize, Option<u32>, bool)>,
+}
+
+/// One painted run of a text: its byte length, its ink (`None` for the
+/// painter's fallback), and whether it is underlined
+/// ([`gorgon_petra::tree::TextRun::underline`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InkRun {
+    /// Byte length.
+    pub len: usize,
+    /// Ink, or `None` for the fallback.
+    pub color: Option<Color32>,
+    /// Underlined.
+    pub underline: bool,
+}
+
+impl InkRun {
+    /// A run of `len` bytes in `color`, not underlined.
+    #[must_use]
+    pub fn plain(len: usize, color: Option<Color32>) -> Self {
+        Self {
+            len,
+            color,
+            underline: false,
+        }
+    }
 }
 
 /// Content measurement backed by egui galleys.
@@ -485,11 +510,7 @@ impl GalleyShaper {
     /// acceptance long before here (`Violation::TextRunsDoNotCoverTheText`);
     /// this function clamps rather than panics, because a shaper is not the
     /// place to discover a malformed tree.
-    pub fn galley_runs(
-        &mut self,
-        req: &TextRequest<'_>,
-        runs: &[(usize, Option<Color32>)],
-    ) -> Arc<Galley> {
+    pub fn galley_runs(&mut self, req: &TextRequest<'_>, runs: &[InkRun]) -> Arc<Galley> {
         // Cloned rather than borrowed: the shaping below needs `&mut self`
         // for the cache and the counters, and a `TextStyle` is a size, a
         // family handle and an optional float.
@@ -518,7 +539,13 @@ impl GalleyShaper {
             overflow,
             runs: runs
                 .iter()
-                .map(|(len, color)| (*len, color.map(|c| u32::from_le_bytes(c.to_array()))))
+                .map(|run| {
+                    (
+                        run.len,
+                        run.color.map(|c| u32::from_le_bytes(c.to_array())),
+                        run.underline,
+                    )
+                })
                 .collect(),
         };
         if let Some(hit) = self.galleys.get(&key) {
@@ -530,31 +557,38 @@ impl GalleyShaper {
         // which takes a `FontId` and has nowhere to put a line height.
         // `single_section` leaves `wrap` at its default, so the wrap width
         // `simple` would have set is set here.
-        let format = |color: Color32| TextFormat {
+        let format = |color: Color32, underline: bool| TextFormat {
             font_id: style.font.clone(),
             color,
             line_height: style.line_height,
             extra_letter_spacing: style.extra_letter_spacing,
+            // One unit in the run's own ink, which egui draws under the
+            // baseline and which moves no glyph.
+            underline: if underline {
+                egui::Stroke::new(1.0, color)
+            } else {
+                egui::Stroke::NONE
+            },
             ..TextFormat::default()
         };
         let mut job = if runs.is_empty() {
-            LayoutJob::single_section(req.text.to_owned(), format(Color32::PLACEHOLDER))
+            LayoutJob::single_section(req.text.to_owned(), format(Color32::PLACEHOLDER, false))
         } else {
             let mut job = LayoutJob {
                 text: req.text.to_owned(),
                 ..LayoutJob::default()
             };
             let mut at = 0usize;
-            for (len, color) in runs {
+            for run in runs {
                 // Clamped, not trusted: acceptance guarantees the tiling for
                 // an accepted tree, and a shaper handed a bad one draws a
                 // short line rather than panicking inside a paint pass.
-                let end = at.saturating_add(*len).min(req.text.len());
+                let end = at.saturating_add(run.len).min(req.text.len());
                 if end > at {
                     job.sections.push(egui::text::LayoutSection {
                         leading_space: 0.0,
                         byte_range: egui::text::ByteIndex(at)..egui::text::ByteIndex(end),
-                        format: format(color.unwrap_or(Color32::PLACEHOLDER)),
+                        format: format(run.color.unwrap_or(Color32::PLACEHOLDER), run.underline),
                     });
                 }
                 at = end;
@@ -563,7 +597,7 @@ impl GalleyShaper {
                 job.sections.push(egui::text::LayoutSection {
                     leading_space: 0.0,
                     byte_range: egui::text::ByteIndex(at)..egui::text::ByteIndex(req.text.len()),
-                    format: format(Color32::PLACEHOLDER),
+                    format: format(Color32::PLACEHOLDER, false),
                 });
             }
             job
@@ -673,34 +707,41 @@ pub fn selection_rects(galley: &Galley, range: &std::ops::Range<usize>) -> Vec<e
 /// from one be painted under the other.
 #[must_use]
 pub fn runs_with_selection(
-    runs: &[(usize, Option<Color32>)],
+    runs: &[InkRun],
     text_len: usize,
     range: &std::ops::Range<usize>,
     ink: Color32,
-) -> Vec<(usize, Option<Color32>)> {
+) -> Vec<InkRun> {
     // A node with no runs of its own still needs one, or there is nothing to
     // split and the whole string keeps the node's `foreground`.
-    let base: Vec<(usize, Option<Color32>)> = if runs.is_empty() {
-        vec![(text_len, None)]
+    let base: Vec<InkRun> = if runs.is_empty() {
+        vec![InkRun::plain(text_len, None)]
     } else {
         runs.to_vec()
     };
-    let mut out: Vec<(usize, Option<Color32>)> = Vec::with_capacity(base.len() + 2);
+    let mut out: Vec<InkRun> = Vec::with_capacity(base.len() + 2);
     let mut at = 0usize;
-    for (len, colour) in base {
-        let (start, end) = (at, at + len);
+    for run in base {
+        let (start, end) = (at, at + run.len);
         at = end;
         // Three pieces, any of which may be empty: before the selection,
-        // inside it, after it.
+        // inside it, after it. The underline survives the selection: it is
+        // a shape, and the selection changes only the ink.
         for (from, to, colour) in [
-            (start, end.min(range.start), colour),
+            (start, end.min(range.start), run.color),
             (start.max(range.start), end.min(range.end), Some(ink)),
-            (start.max(range.end), end, colour),
+            (start.max(range.end), end, run.color),
         ] {
             if to > from {
                 match out.last_mut() {
-                    Some((last_len, last_ink)) if *last_ink == colour => *last_len += to - from,
-                    _ => out.push((to - from, colour)),
+                    Some(last) if last.color == colour && last.underline == run.underline => {
+                        last.len += to - from;
+                    }
+                    _ => out.push(InkRun {
+                        len: to - from,
+                        color: colour,
+                        underline: run.underline,
+                    }),
                 }
             }
         }
@@ -873,7 +914,8 @@ impl ContentMeasure for HostedContent<'_> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CustomMeasurers, ELLIPSIS, FontFaces, GalleyShaper, HostedContent, TextStyle, Typography,
+        CustomMeasurers, ELLIPSIS, FontFaces, GalleyShaper, HostedContent, InkRun, TextStyle,
+        Typography,
     };
     use egui::{Color32, Context, FontFamily, FontId, Galley, RawInput};
     use gorgon_petra::layout::{ContentMeasure, SizeProposal, TextRequest};
@@ -1032,13 +1074,17 @@ mod tests {
     fn splitting_a_run_list_for_a_selection_keeps_it_tiling() {
         let ink = Color32::from_rgb(1, 2, 3);
         let blue = Color32::from_rgb(0, 0, 255);
-        let runs = vec![(4, Some(blue)), (6, None)];
+        let runs = vec![InkRun::plain(4, Some(blue)), InkRun::plain(6, None)];
 
         let split = super::runs_with_selection(&runs, 10, &(2..7), ink);
-        assert_eq!(split.iter().map(|(len, _)| *len).sum::<usize>(), 10);
+        assert_eq!(split.iter().map(|run| run.len).sum::<usize>(), 10);
         assert_eq!(
             split,
-            vec![(2, Some(blue)), (5, Some(ink)), (3, None)],
+            vec![
+                InkRun::plain(2, Some(blue)),
+                InkRun::plain(5, Some(ink)),
+                InkRun::plain(3, None)
+            ],
             "the selected stretch takes the selection's ink and the rest keeps its own"
         );
 
@@ -1047,13 +1093,45 @@ mod tests {
         // would sit under unchanged ink.
         assert_eq!(
             super::runs_with_selection(&[], 10, &(2..7), ink),
-            vec![(2, None), (5, Some(ink)), (3, None)]
+            vec![
+                InkRun::plain(2, None),
+                InkRun::plain(5, Some(ink)),
+                InkRun::plain(3, None)
+            ]
         );
 
         // Neighbours with the same ink merge, so a selection covering two
         // runs of one colour does not lengthen the list for nothing.
-        let merged = super::runs_with_selection(&[(4, None), (6, None)], 10, &(0..10), ink);
-        assert_eq!(merged, vec![(10, Some(ink))]);
+        let merged = super::runs_with_selection(
+            &[InkRun::plain(4, None), InkRun::plain(6, None)],
+            10,
+            &(0..10),
+            ink,
+        );
+        assert_eq!(merged, vec![InkRun::plain(10, Some(ink))]);
+
+        // An underline is a shape and outlives the selection's ink, and two
+        // neighbours that differ only in it do not merge.
+        let marked = InkRun {
+            underline: true,
+            ..InkRun::plain(4, None)
+        };
+        let split = super::runs_with_selection(&[marked, InkRun::plain(6, None)], 10, &(2..7), ink);
+        assert_eq!(
+            split,
+            vec![
+                InkRun {
+                    underline: true,
+                    ..InkRun::plain(2, None)
+                },
+                InkRun {
+                    underline: true,
+                    ..InkRun::plain(2, Some(ink))
+                },
+                InkRun::plain(3, Some(ink)),
+                InkRun::plain(3, None),
+            ]
+        );
     }
 
     /// The claim the whole colour-run design rests on: **colour is not a
@@ -1078,10 +1156,10 @@ mod tests {
         let coloured = s.galley_runs(
             &request,
             &[
-                (3, Some(Color32::from_rgb(0x78, 0xa9, 0xff))),
-                (8, None),
-                (1, Some(Color32::from_rgb(0xff, 0x83, 0x89))),
-                (text.len() - 12, None),
+                InkRun::plain(3, Some(Color32::from_rgb(0x78, 0xa9, 0xff))),
+                InkRun::plain(8, None),
+                InkRun::plain(1, Some(Color32::from_rgb(0xff, 0x83, 0x89))),
+                InkRun::plain(text.len() - 12, None),
             ],
         );
 
@@ -1126,9 +1204,18 @@ mod tests {
         let red = Color32::from_rgb(0xff, 0x83, 0x89);
 
         let plain = s.galley(&request);
-        let a = s.galley_runs(&request, &[(7, Some(blue)), (5, None)]);
-        let b = s.galley_runs(&request, &[(7, Some(red)), (5, None)]);
-        let again = s.galley_runs(&request, &[(7, Some(blue)), (5, None)]);
+        let a = s.galley_runs(
+            &request,
+            &[InkRun::plain(7, Some(blue)), InkRun::plain(5, None)],
+        );
+        let b = s.galley_runs(
+            &request,
+            &[InkRun::plain(7, Some(red)), InkRun::plain(5, None)],
+        );
+        let again = s.galley_runs(
+            &request,
+            &[InkRun::plain(7, Some(blue)), InkRun::plain(5, None)],
+        );
 
         let ink = |g: &Arc<Galley>| {
             g.job
@@ -1160,7 +1247,7 @@ mod tests {
         let mut s = h.shaper();
         let g = s.galley_runs(
             &req("abcdef", None, TextWrap::Wrap),
-            &[(3, None), (3, None)],
+            &[InkRun::plain(3, None), InkRun::plain(3, None)],
         );
         assert_eq!(
             g.job
@@ -1590,6 +1677,29 @@ mod tests {
     /// productive roles, so the test that matters is the *negative* half: a
     /// `family` that silently applied to every step would be invisible in a
     /// screenshot of a code snippet and obvious in one of a heading.
+    /// A label set in `heading-sm` (Medium) and one in `body-compact`
+    /// (Regular) share a baseline in a box of one height: the two faces
+    /// have identical vertical metrics, so a selected tab's bolder label
+    /// must not drop below its resting neighbours.
+    #[test]
+    fn the_medium_and_regular_steps_share_a_baseline() {
+        let h = Headless::new();
+        let t = Typography::from_theme(&dark(), &FontFaces::default());
+        let mut s = h.shaper_with(t);
+        let baseline = |s: &mut GalleyShaper, style: &str| {
+            let request = TextRequest {
+                style: Some(style),
+                ..req("find", None, TextWrap::Wrap)
+            };
+            let g = s.galley(&request);
+            let row = &g.rows[0];
+            (row.pos.y, row.row.glyphs[0].pos.y, g.rect.height())
+        };
+        let regular = baseline(&mut s, "typography.body-compact");
+        let medium = baseline(&mut s, "typography.heading-sm");
+        assert_eq!(regular, medium, "regular {regular:?} medium {medium:?}");
+    }
+
     #[test]
     fn only_the_code_step_draws_through_the_mono_face() {
         let t = Typography::from_theme(&dark(), &FontFaces::default());

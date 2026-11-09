@@ -302,6 +302,8 @@ pub struct TextRunPaint {
     pub len: usize,
     /// Ink token for this run, or `None` to take the node's `foreground`.
     pub foreground: Option<String>,
+    /// [`crate::tree::TextRun::underline`].
+    pub underline: bool,
 }
 
 /// The pointer a surface draws back at the node it is anchored to.

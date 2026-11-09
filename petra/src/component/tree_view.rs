@@ -50,7 +50,7 @@
 use std::sync::Arc;
 
 use super::tokens::{
-    ACCENT_PRIMARY, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SPACING_05, TEXT_MUTED, t,
+    ACCENT_PRIMARY, LAYER_HOVER, LAYER_SELECTED, LAYER_SELECTED_HOVER, SPACING_05, TEXT_FAINT, t,
 };
 use super::{CARET_SIZE, CaretDirection, IconMark, caret, stack, swatch};
 use crate::geom::{Align, Axis};
@@ -85,8 +85,10 @@ const LEVEL_INDENT: f32 = 16.0;
 const SLOT_GAP: f32 = 8.0;
 /// The ink opacity of a dimmed row's icon. A lightness cue, not a hue cue,
 /// so it holds for a red-green colour-blind reader. The label is not
-/// faded: it takes the `text.muted` token instead, which has a measured
-/// contrast floor, where a faded label would drop below it.
+/// faded: it takes the `text.faint` token instead, which has a measured
+/// contrast floor, where a faded label would drop below it. `text.muted`
+/// was one step too close to the plain label: a tree's dotfiles read as the
+/// same weight as its names (shell audit, 2026-11-08).
 const DIMMED_ICON_OPACITY: f32 = 0.5;
 
 const _: () = assert!(HEIGHT == 32.0);
@@ -268,7 +270,7 @@ impl TreeItem {
     }
 
     /// The dimmed state: a quiet row that is still there. The icon draws at
-    /// half opacity, the label takes `text.muted`, and `state` joins the
+    /// half opacity, the label takes `text.faint`, and `state` joins the
     /// semantic label, so a reader who cannot see the lightness still
     /// hears it (`"target, ignored"`).
     #[must_use]
@@ -329,7 +331,7 @@ impl TreeItem {
             label_node
                 .props
                 .tokens
-                .insert("foreground".into(), t(TEXT_MUTED));
+                .insert("foreground".into(), t(TEXT_FAINT));
         }
 
         let level_lead = place.map_or(0.0, |p| p.level.saturating_sub(1) as f32 * LEVEL_INDENT);
@@ -1293,7 +1295,7 @@ mod tests {
     /// A dimmed row is a lightness cue in three channels, and the word.
     ///
     /// The icon fades through `Props.opacity`. The label takes the
-    /// `text.muted` token (not an opacity, because a faded label has no
+    /// `text.faint` token (not an opacity, because a faded label has no
     /// measured floor). The semantic label carries the state text. An
     /// undimmed row has none of the three, so the test also holds the
     /// default.
@@ -1321,8 +1323,8 @@ mod tests {
         const { assert!(DIMMED_ICON_OPACITY < 1.0) };
         assert_eq!(
             token(named(&quiet, "label"), "foreground"),
-            Some(crate::component::tokens::TEXT_MUTED),
-            "the dimmed label takes text.muted"
+            Some(crate::component::tokens::TEXT_FAINT),
+            "the dimmed label takes text.faint"
         );
         assert_eq!(
             named(&quiet, "label").props.opacity,

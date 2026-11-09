@@ -63,7 +63,7 @@ pub(super) fn paint_text(
         // cannot resolve is reported and then also falls back, for
         // `Color32::PLACEHOLDER`'s reason above — visibly wrong beats
         // invisible, and the name is in the report either way.
-        let runs: Vec<(usize, Option<Color32>)> = text
+        let runs: Vec<crate::text::InkRun> = text
             .runs
             .iter()
             .map(|run| {
@@ -74,7 +74,11 @@ pub(super) fn paint_text(
                     }
                     found
                 });
-                (run.len, ink)
+                crate::text::InkRun {
+                    len: run.len,
+                    color: ink,
+                    underline: run.underline,
+                }
             })
             .collect();
         let request = TextRequest {

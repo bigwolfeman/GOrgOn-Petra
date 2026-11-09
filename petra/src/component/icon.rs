@@ -2307,7 +2307,7 @@ mod tests {
         };
         for (base, derived, extra) in [
             (IconMark::Launch, IconMark::LaunchOutside, 1),
-            (IconMark::Branch, IconMark::BranchWorktree, 2),
+            (IconMark::Branch, IconMark::BranchWorktree, 1),
         ] {
             let (base, derived) = (commands(base), commands(derived));
             assert_eq!(derived.len(), base.len() + extra);

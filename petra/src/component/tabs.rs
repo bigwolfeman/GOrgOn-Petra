@@ -20,7 +20,7 @@ use super::text::text;
 use super::tokens::{
     ACCENT_PRIMARY, BORDER_SUBTLE, BUTTON_DISABLED, ICON_DISABLED, LAYER_HOVER, SIZE_LG, SIZE_MD,
     SIZE_XL, SPACING_01, SPACING_03, SPACING_05, SURFACE_BASE, SURFACE_RAISED, TEXT_MUTED,
-    TEXT_PRIMARY, TYPOGRAPHY_BODY, TYPOGRAPHY_HEADING_SM, TYPOGRAPHY_LABEL, t,
+    TEXT_PRIMARY, TYPOGRAPHY_BODY_COMPACT, TYPOGRAPHY_HEADING_SM, TYPOGRAPHY_LABEL, t,
 };
 use super::{pad, stack};
 use crate::geom::{Align, Axis};
@@ -229,7 +229,10 @@ fn tab_variant_full(
     label_node.props.style = Some(t(if selected {
         TYPOGRAPHY_HEADING_SM
     } else {
-        TYPOGRAPHY_BODY
+        // `body-compact` (14/18), the line height `heading-sm` has. `body`
+        // (14/20) centred the resting label one unit above the selected one
+        // in every tab strip (shell audit, 2026-11-08).
+        TYPOGRAPHY_BODY_COMPACT
     }));
     label_node.props.tokens.insert(
         "foreground".into(),
@@ -824,6 +827,35 @@ mod tests {
         );
     }
 
+    /// A selected and a resting contained tab set their labels on one
+    /// line: the label rect starts at the same y in both. Selection changes
+    /// the label's weight and the fill, never where the words sit.
+    #[test]
+    fn a_selected_contained_tab_label_shares_the_resting_label_line() {
+        let label_y = |selected: bool| {
+            let frame = petrify_lone(contained_tab("t", "Fibers", selected));
+            let placed = frame
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with("/label"))
+                .expect("a label");
+            (placed.rect.y, placed.rect.h)
+        };
+        assert_eq!(label_y(true), label_y(false));
+        // The test measurer ignores line height, so the real guard is the
+        // two styles' own line heights, read off the theme: equal, or the
+        // real shaper centres the two labels a unit apart.
+        let line_height = |selected: bool| {
+            let tab = contained_tab("t", "Fibers", selected);
+            let style = named(&tab, "label").props.style.clone().expect("a style");
+            match crate::token::dark().value(&style) {
+                Some(crate::token::TokenValue::Typography(value)) => value.line_height,
+                other => panic!("{style:?} is not typography: {other:?}"),
+            }
+        };
+        assert_eq!(line_height(true), line_height(false));
+    }
+
     #[test]
     fn selected_tab_has_an_indicator_child() {
         let selected = tab("t", "Fibers", true);
@@ -854,7 +886,7 @@ mod tests {
                 .style
                 .as_ref()
                 .map(|t| t.as_str()),
-            Some(TYPOGRAPHY_BODY)
+            Some(TYPOGRAPHY_BODY_COMPACT)
         );
         assert_eq!(
             tab("t", "A", false)

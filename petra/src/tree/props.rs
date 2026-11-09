@@ -75,6 +75,15 @@ pub struct TextRun {
     /// Ink for this run, or `None` to take the node's own `foreground`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub foreground: Option<TokenName>,
+    /// Underline this run: an emphasis that is a shape, not a hue, for marks
+    /// that must not rest on colour alone (matched characters in a fuzzy
+    /// finder). Paint only: an underline changes no glyph's advance, so a
+    /// run list that differs only here measures the same.
+    ///
+    /// Defaulted and skipped when false, so every tree written before the
+    /// field existed parses and serializes unchanged.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub underline: bool,
 }
 
 /// How a text node handles content it cannot fit.

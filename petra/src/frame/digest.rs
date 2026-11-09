@@ -296,6 +296,17 @@ pub fn hash_paint_content(content: &PaintContent) -> u64 {
                 w.u64(run.len as u64);
                 w.opt_text(run.foreground.as_deref());
             }
+            // An underline is a picture change, so it hashes. Written only
+            // for a list that has one, after the runs, so every frame drawn
+            // before the field existed keeps its digest; the run count above
+            // already fixes where this list ends, and a frame with no
+            // underline writes nothing here.
+            if runs.iter().any(|run| run.underline) {
+                w.text("underline");
+                for run in runs {
+                    w.bool(run.underline);
+                }
+            }
         }
         None => w.bool(false),
     }
@@ -1370,6 +1381,7 @@ mod tests {
             hash_paint_content(&content)
         };
         let run = |len: usize, fg: Option<&str>| TextRunPaint {
+            underline: false,
             len,
             foreground: fg.map(ToOwned::to_owned),
         };
@@ -1379,12 +1391,24 @@ mod tests {
         let string = with(vec![run(3, Some("support.error")), run(3, None)]);
         let split = with(vec![run(2, Some("accent.primary")), run(4, None)]);
         let empty_run = with(vec![run(0, None), run(6, None)]);
+        let underlined = with(vec![
+            TextRunPaint {
+                underline: true,
+                ..run(3, Some("accent.primary"))
+            },
+            run(3, None),
+        ]);
 
         for (a, b, what) in [
             (plain, keyword, "an uncoloured line and a coloured one"),
             (keyword, string, "two different inks over the same stretch"),
             (keyword, split, "the same ink over two different stretches"),
             (plain, empty_run, "no runs and one zero-length run"),
+            (
+                keyword,
+                underlined,
+                "the same ink with and without an underline",
+            ),
         ] {
             assert_ne!(a, b, "{what} hash alike");
         }

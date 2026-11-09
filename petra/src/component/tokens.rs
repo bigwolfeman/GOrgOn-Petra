@@ -236,6 +236,8 @@ pub(crate) const SUPPORT_ERROR: &str = "support-error";
 pub(crate) const SUPPORT_WARNING: &str = "support-warning";
 pub(crate) const TEXT_PRIMARY: &str = "text.primary";
 pub(crate) const TEXT_MUTED: &str = "text.muted";
+/// Furniture text: a gutter, a dimmed tree entry. See the shipped theme.
+pub(crate) const TEXT_FAINT: &str = "text.faint";
 
 /// The inverted polarity's ground and the ink that reads on it: Carbon's
 /// `$layer-selected-inverse` and `$text-inverse`. Spent by
@@ -448,6 +450,7 @@ pub(crate) const ALL: &[&str] = &[
     SUPPORT_WARNING,
     TEXT_PRIMARY,
     TEXT_MUTED,
+    TEXT_FAINT,
     LAYER_SELECTED_INVERSE,
     TEXT_INVERSE,
     ICON_INVERSE,

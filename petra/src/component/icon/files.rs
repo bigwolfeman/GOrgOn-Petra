@@ -289,77 +289,80 @@ pub(super) fn folder_dashed(s: f32, color: ColorRef) -> Vec<Command> {
     out
 }
 
-/// Carbon `branch`'s strokes in the 32 box: three rings, the trunk, and the
-/// side branch that turns into it.
-fn branch_parts(s: f32, color: &ColorRef) -> Vec<Command> {
-    let paint = Paint::filled(color.clone());
+/// How a branch glyph draws its three nodes.
+#[derive(Clone, Copy, PartialEq)]
+enum Node {
+    /// A hollow ring.
+    Ring,
+    /// Hollow squares.
+    Square,
+}
+
+/// One cell of the 16 pixel grid the branch glyphs are drawn on, or a run of
+/// them, as a snapped bar in the 32 box: pixel `p` is units `2p..2p + 2`.
+///
+/// Carbon's 32 box scaled to 16 put 1 pixel strokes on pixel edges and
+/// 1.5 pixel rings into 4 pixel blots (operator review 2026-11-08: "the git
+/// icon in the box looks bad"). These glyphs are drawn for 16 pixels, every
+/// stroke on whole pixels, so at the tree's size they are crisp; at 32 they
+/// are the same drawing at 2 pixel strokes.
+fn cells(x0: u8, y0: u8, x1: u8, y1: u8, s: f32, paint: &Paint) -> Command {
+    snapped_bar(
+        f32::from(x0) * 2.0,
+        f32::from(y0) * 2.0,
+        f32::from(x1) * 2.0 + 2.0,
+        f32::from(y1) * 2.0 + 2.0,
+        s,
+        paint.clone(),
+    )
+}
+
+/// A node centred on pixel `(cx, cy)`, 5 pixels across: a ring has its
+/// corners cut, so at 5 pixels it reads round and keeps a 3 by 3 hole.
+fn node(cx: u8, cy: u8, shape: Node, s: f32, paint: &Paint) -> Vec<Command> {
+    let cut = u8::from(shape == Node::Ring);
     vec![
-        ring(pt(8.0, 6.0), 3.0, s, color.clone()),
-        ring(pt(8.0, 26.0), 3.0, s, color.clone()),
-        ring(pt(24.0, 6.0), 3.0, s, color.clone()),
-        snapped_bar(7.0, 9.0, 9.0, 23.0, s, paint.clone()),
-        // The side branch: down from the right ring, a quarter turn into
-        // the cross bar, a quarter turn down onto the trunk.
-        arc_run(
-            Some(pt(24.0, 9.0)),
-            pt(20.0, 14.0),
-            4.0,
-            0.0,
-            90.0,
-            Some(pt(12.0, 18.0)),
-            s,
-            color.clone(),
-        ),
-        arc_run(
-            None,
-            pt(12.0, 22.0),
-            4.0,
-            270.0,
-            -90.0,
-            None,
-            s,
-            color.clone(),
-        ),
+        cells(cx - 2 + cut, cy - 2, cx + 2 - cut, cy - 2, s, paint),
+        cells(cx - 2 + cut, cy + 2, cx + 2 - cut, cy + 2, s, paint),
+        cells(cx - 2, cy - 1, cx - 2, cy + 1, s, paint),
+        cells(cx + 2, cy - 1, cx + 2, cy + 1, s, paint),
     ]
 }
 
-/// `IconMark::Branch`: Carbon `branch`.
-pub(super) fn branch(s: f32, color: ColorRef) -> Vec<Command> {
-    branch_parts(s, &color)
-}
-
-/// `IconMark::BranchWorktree`: [`branch`] with a second leaf hanging off the
-/// cross bar.
-pub(super) fn branch_worktree(s: f32, color: ColorRef) -> Vec<Command> {
-    let mut out = branch_parts(s, &color);
-    out.push(snapped_bar(
-        23.0,
-        18.0,
-        25.0,
-        23.0,
-        s,
-        Paint::filled(color.clone()),
-    ));
-    out.push(ring(pt(24.0, 26.0), 3.0, s, color));
+/// A branch on the 16 grid: nodes at top left, bottom left and top right,
+/// the trunk between the left two, and the side branch down from the right
+/// node and across onto the trunk at a square corner, the way a commit graph
+/// draws it.
+fn branch_parts(shape: Node, s: f32, color: &ColorRef) -> Vec<Command> {
+    let paint = Paint::filled(color.clone());
+    let mut out = node(4, 3, shape, s, &paint);
+    out.extend(node(4, 12, shape, s, &paint));
+    out.extend(node(11, 3, shape, s, &paint));
+    // The trunk, the drop from the leaf, and the bar across onto the trunk.
+    out.push(cells(4, 6, 4, 9, s, &paint));
+    out.push(cells(11, 6, 11, 8, s, &paint));
+    out.push(cells(5, 8, 10, 8, s, &paint));
     out
 }
 
-/// `IconMark::BranchBoxed`: a branch inside a box. At 16 units Carbon's
-/// curved branch is too small to read inside a frame, so the inner branch
-/// is three rings, a trunk, and one straight diagonal.
+/// `IconMark::Branch`: a branch with three hollow nodes.
+pub(super) fn branch(s: f32, color: ColorRef) -> Vec<Command> {
+    branch_parts(Node::Ring, s, &color)
+}
+
+/// `IconMark::BranchWorktree`: [`branch`] with its leaf solid, the
+/// checkout that hangs off another repository.
+pub(super) fn branch_worktree(s: f32, color: ColorRef) -> Vec<Command> {
+    let mut out = branch_parts(Node::Ring, s, &color);
+    out.push(cells(10, 2, 12, 4, s, &Paint::filled(color)));
+    out
+}
+
+/// `IconMark::BranchBoxed`: [`branch`] with square nodes. A frame round a
+/// 16 pixel branch left a pixel between frame and branch, and the frame was
+/// the heaviest line in the tree; the box moves into the nodes.
 pub(super) fn branch_boxed(s: f32, color: ColorRef) -> Vec<Command> {
-    let paint = Paint::filled(color.clone());
-    vec![
-        snapped_bar(2.0, 2.0, 4.0, 30.0, s, paint.clone()),
-        snapped_bar(28.0, 2.0, 30.0, 30.0, s, paint.clone()),
-        snapped_bar(4.0, 2.0, 28.0, 4.0, s, paint.clone()),
-        snapped_bar(4.0, 28.0, 28.0, 30.0, s, paint.clone()),
-        ring(pt(11.0, 10.0), 2.5, s, color.clone()),
-        ring(pt(11.0, 22.0), 2.5, s, color.clone()),
-        ring(pt(21.0, 10.0), 2.5, s, color),
-        snapped_bar(10.0, 12.5, 12.0, 19.5, s, paint.clone()),
-        band(pt(21.0, 12.5), pt(11.8, 18.6), BAND, s, paint),
-    ]
+    branch_parts(Node::Square, s, &color)
 }
 
 /// `IconMark::Unknown`: Carbon `unknown`, a diamond holding a question

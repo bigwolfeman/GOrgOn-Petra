@@ -579,7 +579,21 @@ pub fn desktop_fallback_definitions() -> (FontDefinitions, FontStackReport) {
         .iter()
         .map(|(name, _)| (*name).to_owned())
         .collect();
-    for family in [FontFamily::Proportional, FontFamily::Monospace] {
+    // The weight families too, where they exist: each was built as its
+    // face plus a copy of the proportional chain taken before these
+    // fallbacks existed, so a Medium or Bold label in Arabic drew tofu
+    // while the same words at Regular through `Proportional` drew glyphs.
+    // A definition set without them (egui's default) gains none.
+    let weights = [SANS_REGULAR_FAMILY, SANS_MEDIUM_FAMILY, SANS_BOLD_FAMILY]
+        .map(|name| FontFamily::Name(name.into()));
+    for family in [FontFamily::Proportional, FontFamily::Monospace]
+        .into_iter()
+        .chain(weights)
+    {
+        let named = matches!(family, FontFamily::Name(_));
+        if named && !definitions.families.contains_key(&family) {
+            continue;
+        }
         let chain = definitions.families.entry(family).or_default();
         let at = chain
             .iter()

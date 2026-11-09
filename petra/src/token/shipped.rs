@@ -652,6 +652,22 @@ const LIGHT_TEXT: [[u8; 3]; 2] = [[0x1a, 0x1a, 0x1a], [0x44, 0x44, 0x44]];
 /// See [`LIGHT_TEXT`].
 const DARK_TEXT: [[u8; 3]; 2] = [[0xf2, 0xf2, 0xf2], [0xd4, 0xd4, 0xd4]];
 
+/// `text.faint`, light then dark: furniture text, a clear step under
+/// `text.muted`. A gutter's line numbers, an ignored or hidden entry in a
+/// file tree, a path set beside the name it qualifies.
+///
+/// Added 2026-11-08 after an audit of the shell measured dark `text.muted`
+/// at 1.32:1 to `text.primary`: a tree's dotfiles and its plain names read
+/// as one weight, and the gutter outranked the code's comments. Moving
+/// `text.muted` itself was not the fix: dark muted at `#b7b7b7` was already
+/// reported hard to read as body text (see the AA test's `DARK_STEP`). This
+/// is a third tone for text nobody reads as prose. It clears AA on
+/// `surface.base` and `surface.raised` and on a row's hover and selected
+/// fills over them (a dimmed tree row can be selected), and is not for the
+/// deeper layers. That floor, not taste, sets the value: `#909090` was
+/// tried first and failed on the selected-hover row.
+const FAINT_TEXT: [[u8; 3]; 2] = [[0x59, 0x59, 0x59], [0xa4, 0xa4, 0xa4]];
+
 /// The focus underline's fill and the unused paper halo, in that order.
 /// The fill is the accent: one hue, the same blue as the primary button.
 /// `focus-inverse` still reads the fill, so an inverted tooltip's underline
@@ -1968,7 +1984,8 @@ fn insert_silhouette_family(values: &mut BTreeMap<TokenName, TokenValue>) {
 }
 
 /// The shipped typography ramp: ten steps covering the twelve Carbon
-/// productive roles the 42 audited components use (FR-023).
+/// productive roles the 42 audited components use (FR-023), and `code-lg`
+/// for an editor's text.
 ///
 /// **The four-step ramp this replaces had no step below 14 units**, and the
 /// inventory finds twenty-one references to the 12-unit label and helper-text
@@ -2032,11 +2049,16 @@ fn insert_silhouette_family(values: &mut BTreeMap<TokenName, TokenValue>) {
 /// reference is affected, and it gets two units less leading than Carbon
 /// would give it.
 ///
+/// **`code-lg` is Carbon's `code-02` (14/20, no tracking).** An editor's
+/// text is the content of the window and is set at body size; `code` at 12
+/// put the code smaller than the file names in the tree beside it (shell
+/// audit, 2026-11-08). `code` stays for code inside running text.
+///
 /// Declared once and shared by both shipped themes, because typography is
 /// type, not colour: a heading's size does not change when the operator
 /// turns the lights off, the same reasoning [`SPACING_RAMP`] and
 /// [`SHAPE_RAMP`] use for their own families.
-const TYPOGRAPHY_RAMP: [(&str, TypographyValue); 10] = [
+const TYPOGRAPHY_RAMP: [(&str, TypographyValue); 11] = [
     ("typography.caption", type_step(12.0, 16.0, R, 0.32, SANS)),
     ("typography.label", type_step(12.0, 16.0, R, 0.32, SANS)),
     ("typography.label-lg", type_step(14.0, 18.0, R, 0.16, SANS)),
@@ -2053,6 +2075,7 @@ const TYPOGRAPHY_RAMP: [(&str, TypographyValue); 10] = [
     ("typography.heading", type_step(20.0, 28.0, M, 0.0, SANS)),
     ("typography.heading-lg", type_step(28.0, 36.0, M, 0.0, SANS)),
     ("typography.code", type_step(12.0, 16.0, R, 0.32, MONO)),
+    ("typography.code-lg", type_step(14.0, 20.0, R, 0.0, MONO)),
 ];
 
 /// Shorthands, so a row of [`TYPOGRAPHY_RAMP`] fits on one line and the
@@ -2130,6 +2153,7 @@ pub fn standard_vocabulary() -> Vocabulary {
         .declare(DesignToken::new(name(RAISED_ALIAS), TokenKind::Color))
         .declare(DesignToken::new(name("text.primary"), TokenKind::Color))
         .declare(DesignToken::new(name("text.muted"), TokenKind::Color))
+        .declare(DesignToken::new(name("text.faint"), TokenKind::Color))
         // The accent, and the ink that goes on it. One hue, spent on four
         // sanctioned things (primary button fill, focus ring, selected tab,
         // progress fill); see `LIGHT_ACCENT` for why it is blue and
@@ -2339,6 +2363,7 @@ pub fn light() -> Theme {
     insert_shadow_set(&mut values, &LIGHT_SHADOW_ALPHAS);
     values.insert(name("text.primary"), opaque(LIGHT_TEXT[0]));
     values.insert(name("text.muted"), opaque(LIGHT_TEXT[1]));
+    values.insert(name("text.faint"), opaque(FAINT_TEXT[0]));
     crate::token::syntax::insert(&mut values, ThemeMode::Light);
     insert_icon_family(&mut values, &LIGHT_TEXT, LIGHT_LAYERS[0], DARK_TEXT[0]);
     insert_on_colour_pair(&mut values);
@@ -2441,6 +2466,7 @@ pub fn dark() -> Theme {
     insert_shadow_set(&mut values, &DARK_SHADOW_ALPHAS);
     values.insert(name("text.primary"), opaque(DARK_TEXT[0]));
     values.insert(name("text.muted"), opaque(DARK_TEXT[1]));
+    values.insert(name("text.faint"), opaque(FAINT_TEXT[1]));
     crate::token::syntax::insert(&mut values, ThemeMode::Dark);
     insert_icon_family(&mut values, &DARK_TEXT, DARK_LAYERS[0], LIGHT_TEXT[0]);
     insert_on_colour_pair(&mut values);
@@ -3328,8 +3354,8 @@ mod tests {
     /// [`TYPOGRAPHY_RAMP`] and asserted here, so a reader who disagrees with
     /// the argument can see exactly which three cells to change.
     #[test]
-    fn the_typography_ramp_is_the_ten_carbon_productive_steps() {
-        let expected: [(&str, f32, f32, TypographyWeight, f32, TypographyFamily); 10] = [
+    fn the_typography_ramp_is_the_eleven_carbon_productive_steps() {
+        let expected: [(&str, f32, f32, TypographyWeight, f32, TypographyFamily); 11] = [
             ("typography.caption", 12.0, 16.0, R, 0.32, SANS),
             ("typography.label", 12.0, 16.0, R, 0.32, SANS),
             ("typography.label-lg", 14.0, 18.0, R, 0.16, SANS),
@@ -3340,6 +3366,7 @@ mod tests {
             ("typography.heading", 20.0, 28.0, M, 0.0, SANS),
             ("typography.heading-lg", 28.0, 36.0, M, 0.0, SANS),
             ("typography.code", 12.0, 16.0, R, 0.32, MONO),
+            ("typography.code-lg", 14.0, 20.0, R, 0.0, MONO),
         ];
         let theme = light();
         for (step, size, line_height, weight, letter_spacing, family) in expected {
@@ -3574,6 +3601,33 @@ mod tests {
                 (link.b - link.r) > 0.5 * (accent.b - accent.r),
                 "{label}: {LINK_TOKEN} kept under half the accent's blue lead"
             );
+        }
+    }
+
+    /// `text.faint` clears AA on the two grounds furniture text sits on and
+    /// is quieter than `text.muted` on every layer, so it is a third step
+    /// and not a second name for muted.
+    #[test]
+    fn faint_text_clears_aa_on_base_and_raised_and_sits_under_muted() {
+        const MIN_TEXT_CONTRAST: f32 = 4.5;
+        for (label, theme) in [("light", light()), ("dark", dark())] {
+            let faint = theme_color(&theme, "text.faint");
+            let muted = theme_color(&theme, "text.muted");
+            for surface in [LAYER_TOKENS[0], RAISED_ALIAS] {
+                let ratio = contrast(faint, theme_color(&theme, surface));
+                assert!(
+                    ratio >= MIN_TEXT_CONTRAST,
+                    "{label}: text.faint on {surface} is {ratio:.2}:1"
+                );
+            }
+            for surface in LAYER_TOKENS {
+                let ground = theme_color(&theme, surface);
+                let step = contrast(muted, ground) / contrast(faint, ground);
+                assert!(
+                    step >= 1.3,
+                    "{label}: on {surface} text.faint is only {step:.2}x under text.muted"
+                );
+            }
         }
     }
 

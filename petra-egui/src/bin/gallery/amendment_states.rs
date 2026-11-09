@@ -346,6 +346,7 @@ fn syntax_sample() -> (String, Vec<TextRun>) {
     for (piece, class) in SAMPLE {
         code.push_str(piece);
         runs.push(TextRun {
+            underline: false,
             len: piece.len(),
             foreground: class.map(|c| {
                 syntax_token(c).unwrap_or_else(|| panic!("{c:?} is not a highlight class"))

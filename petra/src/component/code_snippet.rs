@@ -391,6 +391,7 @@ impl CodeInk {
     #[must_use]
     pub fn over(self, len: usize) -> TextRun {
         TextRun {
+            underline: false,
             len,
             foreground: self.token(),
         }

@@ -1624,6 +1624,7 @@ mod tests {
         use crate::tree::TextRun;
         let mut node = text_node(Some(PropVal::Bind("k".into())));
         node.props.runs = vec![TextRun {
+            underline: false,
             len: 3,
             foreground: None,
         }];
