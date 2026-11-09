@@ -391,6 +391,8 @@ struct TreeRowParams {
     #[serde(default)]
     dimmed: Option<String>,
     #[serde(default)]
+    state: Option<String>,
+    #[serde(default)]
     place: Option<TreePlaceParam>,
     // See `KeyLabelExpandedChildren`'s `children` for why.
     #[serde(default)]
@@ -399,7 +401,7 @@ struct TreeRowParams {
 impl ParamShape for TreeRowParams {
     const LUAU: &'static str = "{ key: string, label: string, \
          branch: \"leaf\" | \"closed\" | \"open\", selected: boolean, extra_small: boolean?, \
-         icon: ViewNode?, mark: ViewNode?, dimmed: string?, \
+         icon: ViewNode?, mark: ViewNode?, dimmed: string?, state: string?, \
          place: { level: number, pos_in_set: number, set_size: number }?, \
          children: { ViewNode }? }";
 }
@@ -621,6 +623,7 @@ pub const ENTRIES: &[Entry] = &[
             icon: p.icon,
             mark: p.mark,
             dimmed: p.dimmed,
+            state: p.state,
             place: p.place.map(|q| TreePlace {
                 level: q.level,
                 pos_in_set: q.pos_in_set,

@@ -209,6 +209,7 @@ pub struct TreeItem {
     icon: Option<ViewNode>,
     mark: Option<ViewNode>,
     dimmed: Option<String>,
+    state: Option<String>,
     place: Option<TreePlace>,
 }
 
@@ -225,6 +226,7 @@ impl TreeItem {
             icon: None,
             mark: None,
             dimmed: None,
+            state: None,
             place: None,
         }
     }
@@ -284,6 +286,17 @@ impl TreeItem {
         self
     }
 
+    /// State words the row carries for a reader without painting them: they
+    /// join the semantic label (`"petra, submodule"`), and nothing on the
+    /// row changes. For a fact an editor's tree leaves off the picture,
+    /// such as a folder that is a linked worktree. Takes precedence over
+    /// [`Self::dimmed`]'s words, so a caller passes every state once.
+    #[must_use]
+    pub fn state(mut self, words: impl Into<String>) -> Self {
+        self.state = Some(words.into());
+        self
+    }
+
     /// Place this row in a flattened hierarchy: indent it to `level`, and
     /// declare `level`, `pos_in_set`, and `set_size` in its semantics.
     ///
@@ -309,6 +322,7 @@ impl TreeItem {
             icon,
             mark,
             dimmed,
+            state,
             place,
         } = self;
 
@@ -456,8 +470,8 @@ impl TreeItem {
         ] {
             node.props.tokens.insert(slot.into(), t(token));
         }
-        let semantic_label = match &dimmed {
-            Some(state) => format!("{label}, {state}"),
+        let semantic_label = match state.as_ref().or(dimmed.as_ref()) {
+            Some(words) => format!("{label}, {words}"),
             None => label,
         };
         let mut node = node
@@ -564,6 +578,8 @@ pub struct TreeAdornments {
     pub mark: Option<ViewNode>,
     /// The state text of a dimmed row.
     pub dimmed: Option<String>,
+    /// State words read and not painted ([`TreeItem::state`]).
+    pub state: Option<String>,
     /// Where a flat row sits in its hierarchy.
     pub place: Option<TreePlace>,
 }
@@ -590,6 +606,7 @@ pub fn tree_row(
         icon,
         mark,
         dimmed,
+        state,
         place,
     } = adornments;
     let mut item = TreeItem::new(key, label).branch(branch).selected(selected);
@@ -602,8 +619,11 @@ pub fn tree_row(
     if let Some(mark) = mark {
         item = item.mark(mark);
     }
-    if let Some(state) = dimmed {
-        item = item.dimmed(state);
+    if let Some(words) = dimmed {
+        item = item.dimmed(words);
+    }
+    if let Some(words) = state {
+        item = item.state(words);
     }
     if let Some(place) = place {
         item = item.at(place);
@@ -1382,6 +1402,32 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// State words join the semantic label and change nothing drawn: the
+    /// row's parts and tokens are those of a row without them.
+    #[test]
+    fn state_words_are_read_and_not_painted() {
+        let plain = TreeItem::new("p", "petra").build(vec![]);
+        let said = TreeItem::new("p", "petra").state("worktree").build(vec![]);
+        assert_eq!(said.semantics.label.as_deref(), Some("petra, worktree"));
+        let keys = |node: &ViewNode| -> Vec<String> {
+            named(node, "row")
+                .children
+                .iter()
+                .map(|c| c.key.as_str().to_owned())
+                .collect()
+        };
+        assert_eq!(keys(&said), keys(&plain));
+        assert_eq!(named(&said, "label").props, named(&plain, "label").props);
+        let both = TreeItem::new("t", "target")
+            .dimmed("ignored")
+            .state("ignored, repo")
+            .build(vec![]);
+        assert_eq!(
+            both.semantics.label.as_deref(),
+            Some("target, ignored, repo")
+        );
     }
 
     /// The slots take any element and give it a stable key, so a row's
