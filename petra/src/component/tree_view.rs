@@ -33,8 +33,8 @@
 //! lead (`$spacing-04`), the 16-unit caret box, 8 (`$spacing-03`), an
 //! optional icon and 8, then the label — so a level-1 label starts at 40
 //! and a level-2 label at 56, Carbon's own numbers for a text-only tree.
-//! An optional mark follows the label, pushed to the trailing edge by a
-//! spacer. Right padding is 16.
+//! An optional mark follows the label one gap after it, and a spacer takes
+//! the rest of the row. Right padding is 16.
 //!
 //! # Long form, slots, and the virtualized form
 //!
@@ -258,8 +258,13 @@ impl TreeItem {
         self
     }
 
-    /// A node at the row's trailing edge, right-aligned. It never shrinks:
-    /// a long label gives way to it.
+    /// A node one gap after the label. It never shrinks: a long label gives
+    /// way to it, so at worst it meets the row's trailing padding.
+    ///
+    /// Beside the name and not at the row's far edge: across a wide sidebar
+    /// the eye lost which row a far-right mark belonged to (operator
+    /// review, 2026-11-08). Proximity ties a mark to its name with no rule
+    /// or zebra fill to follow.
     ///
     /// A mark must carry a glyph shape or text of its own. A colour alone
     /// is not a channel the operator can read.
@@ -359,10 +364,11 @@ impl TreeItem {
             mark.key = Key::new("mark");
             // The spacer takes only what the label and the mark leave
             // (`contracts/view-tree.md` step 3.c), so the label keeps every
-            // unit up to the mark and the mark keeps its whole width.
-            parts.push(ViewNode::new(NodeKind::Spacer, "spacer"));
+            // unit up to the mark and the mark keeps its whole width; after
+            // the mark, it holds the rest of the row empty.
             parts.push(swatch("mark-gap", SLOT_GAP, height, None, None, None));
             parts.push(mark);
+            parts.push(ViewNode::new(NodeKind::Spacer, "spacer"));
         }
 
         let mut row = stack("row", Axis::Horizontal, None, parts);
@@ -554,7 +560,7 @@ pub fn tree_rows(
 pub struct TreeAdornments {
     /// The node between the caret and the label.
     pub icon: Option<ViewNode>,
-    /// The node at the trailing edge.
+    /// The node one gap after the label.
     pub mark: Option<ViewNode>,
     /// The state text of a dimmed row.
     pub dimmed: Option<String>,
@@ -1401,9 +1407,9 @@ mod tests {
                 "icon",
                 "icon-gap",
                 "label",
-                "spacer",
                 "mark-gap",
-                "mark"
+                "mark",
+                "spacer"
             ]
         );
         let bare = TreeItem::new("n", "name").build(vec![]);
@@ -1419,11 +1425,11 @@ mod tests {
         );
     }
 
-    /// A mark sits at the row's trailing edge, right-aligned, whole, and a
-    /// long label gives way to it with an ellipsis instead of pushing it
-    /// out of the row.
+    /// A mark sits one gap after its label, whole, and a long label gives
+    /// way to it with an ellipsis instead of pushing it out of the row: the
+    /// mark then meets the row's 16 right padding.
     #[test]
-    fn a_mark_is_right_aligned_and_never_clipped_by_a_long_label() {
+    fn a_mark_follows_its_label_and_is_never_clipped_by_a_long_label() {
         use crate::geom::Size;
         let long = "a-very-long-directory-name-that-cannot-possibly-fit-in-this-narrow-row-at-all";
         let tree = tree_view(
@@ -1441,17 +1447,27 @@ mod tests {
         for who in ["short", "long"] {
             let row = rect_of(&frame, &format!("/{who}/row"));
             let mark = rect_of(&frame, &format!("/{who}/row/mark"));
-            assert_eq!(
-                mark.right(),
-                row.right() - 16.0,
-                "{who}: the mark stops at the row's 16 right padding"
-            );
-            assert!(mark.w > 0.0, "{who}: the mark has a width");
             let label = rect_of(&frame, &format!("/{who}/row/label"));
+            assert!(mark.w > 0.0, "{who}: the mark has a width");
             assert!(
-                label.right() <= mark.x,
-                "{who}: the label ({label:?}) overlaps the mark ({mark:?})"
+                (label.right() + super::SLOT_GAP - mark.x).abs() < 0.01,
+                "{who}: the mark ({mark:?}) is one gap after the label ({label:?})"
             );
+            assert!(
+                mark.right() <= row.right() - 16.0 + 0.01,
+                "{who}: the mark stays inside the row's 16 right padding"
+            );
+            if who == "long" {
+                assert!(
+                    (mark.right() - (row.right() - 16.0)).abs() < 0.01,
+                    "a long label gives way until the mark meets the padding"
+                );
+            } else {
+                assert!(
+                    mark.right() < row.right() - 16.0 - 1.0,
+                    "a short label keeps its mark beside it, not at the far edge"
+                );
+            }
         }
         let long_label = frame
             .placements
@@ -1471,7 +1487,7 @@ mod tests {
 
     /// The label takes every unit the mark does not need, and no more.
     ///
-    /// The row is `... label, spacer, mark-gap, mark`. An equal-share walk
+    /// The row is `... label, mark-gap, mark, spacer`. An equal-share walk
     /// offered the label and the bare spacer half of the room each, so a name
     /// that fit with room to spare still ended in an ellipsis in the middle
     /// of the row, with a wide gap before its mark. Three widths pin it: a
