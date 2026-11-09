@@ -1034,6 +1034,10 @@ pub struct Props {
     /// [`Props::spacing`] is one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub padding: Option<InsetRefs>,
+    /// A size along one axis as a fraction of the container, SwiftUI's
+    /// `containerRelativeFrame`. See [`ContainerRelative`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub container_relative: Option<ContainerRelative>,
     /// Token references by paint slot (`background`, `foreground`, `border`,
     /// `radius`, …).
     ///
@@ -1048,6 +1052,32 @@ pub struct Props {
     /// value type or on the wire deserializing into it.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub tokens: BTreeMap<String, TokenName>,
+}
+
+/// A node's size along `axis` as `fraction` of its container's length on
+/// that axis: the viewport of the nearest `scroll` ancestor, or, outside
+/// every scroll, the exact offer its parent makes on that axis.
+///
+/// It is SwiftUI's `containerRelativeFrame(axis)`. The case it exists for is
+/// a strip of pages in a scroll: a page is one third of the viewport wide,
+/// so three show at once and the rest pan in, and no page shrinks to its
+/// content. A stack inside a scroll is offered an unbounded length on the
+/// scrolling axis, so nothing else in the tree can say "a third of what
+/// shows".
+///
+/// The size is exact: the node is measured under an exact offer of that
+/// length and answers it, then its own `constraints` clamp the answer as
+/// they clamp any other. With no container length known (an open offer and
+/// no scroll above), the modifier does nothing. `fraction` must be finite
+/// and greater than 0; 1 is the whole viewport, and above 1 is wider than
+/// it.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContainerRelative {
+    /// The axis the size applies to.
+    pub axis: Axis,
+    /// The share of the container's length.
+    pub fraction: f32,
 }
 
 /// Resolved `stack` parameters.

@@ -1133,6 +1133,7 @@ fn check_semantics(node: &ViewNode, push: &mut impl FnMut(Violation)) {
     }
 
     check_set_position(node, push);
+    check_container_relative(node, push);
 
     // A status-bearing role must carry its text channel, whether or not the
     // node is interactive. The interactive check above deliberately does not
@@ -1241,6 +1242,19 @@ fn check_bound_props(node: &ViewNode, push: &mut impl FnMut(Violation)) {
         if let Err(reason) = crate::tree::binding::shape_for(source, prop) {
             push(Violation::IllTypedBinding { prop, reason });
         }
+    }
+}
+
+/// A declared `container_relative` share is finite and above 0.
+fn check_container_relative(node: &ViewNode, push: &mut impl FnMut(Violation)) {
+    if let Some(relative) = node.props.container_relative
+        && !(relative.fraction.is_finite() && relative.fraction > 0.0)
+    {
+        push(Violation::ValueOutOfRange {
+            prop: "container_relative",
+            value: format!("{}", relative.fraction),
+            expected: "a finite share greater than 0",
+        });
     }
 }
 
@@ -2700,6 +2714,22 @@ mod tests {
         });
         let err = validate(&node, &Registry::new()).unwrap_err();
         assert_eq!(err.len(), 1, "{err}");
+
+        // A container-relative share must be finite and above 0.
+        for fraction in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            let page = ViewNode::new(NodeKind::Spacer, "p").with_props(Props {
+                container_relative: Some(crate::tree::ContainerRelative {
+                    axis: crate::geom::Axis::Horizontal,
+                    fraction,
+                }),
+                ..Props::default()
+            });
+            let err = validate(&page, &Registry::new()).unwrap_err();
+            assert!(
+                err.to_string().contains("container_relative"),
+                "{fraction}: {err}"
+            );
+        }
 
         // Both axes are checked, and each names its own list. Asserting the
         // prop rather than the variant is what makes a row weight reported as

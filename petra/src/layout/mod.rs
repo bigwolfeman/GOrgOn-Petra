@@ -185,6 +185,10 @@ pub struct ScrollFrame {
     pub id: String,
     /// That node's resolved scrolling parameters.
     pub props: ScrollProps,
+    /// The viewport as far as it is known: `Exact` on an axis whose length
+    /// is settled (always, at place time), the open offer otherwise. A
+    /// [`ContainerRelative`](crate::tree::ContainerRelative) size reads it.
+    pub viewport: SizeProposal,
 }
 
 /// The chain of `scroll` ancestors in force at one point in the walk,
@@ -553,11 +557,15 @@ pub fn measure(
         return Size::ZERO;
     }
     path.push(node.key.clone());
+    let (proposal, relative) = container_relative(node, ctx, proposal);
     let key = ctx.key(path, proposal);
     let answer = if let Some(hit) = ctx.cache.peek(&key) {
         hit
     } else {
-        let raw = measure_kind(node, ctx, path, proposal);
+        let mut raw = measure_kind(node, ctx, path, proposal);
+        if let Some((axis, length)) = relative {
+            raw = Size::from_axes(axis, length, raw.along(axis.cross()));
+        }
         let clamped = node.constraints.clamp_size(raw).sane();
         ctx.cache.insert(key, clamped);
         clamped
@@ -910,6 +918,36 @@ pub fn paint_content_of(node: &ViewNode) -> PaintContent {
         // authored: see `crate::layout::place`.
         caret: None,
     }
+}
+
+/// The offer a [`ContainerRelative`](crate::tree::ContainerRelative) node
+/// measures under, and the exact length it answers on its axis.
+///
+/// The container's length is the nearest scroll's viewport on that axis, or,
+/// with no scroll above, the parent's offer. An open length leaves the offer
+/// as it was. The resolved length rides in the offer, so the measure cache
+/// keys on it and a viewport resize measures again.
+fn container_relative(
+    node: &ViewNode,
+    ctx: &LayoutCtx<'_>,
+    proposal: SizeProposal,
+) -> (SizeProposal, Option<(crate::geom::Axis, f32)>) {
+    let Some(relative) = node.props.container_relative else {
+        return (proposal, None);
+    };
+    let axis = relative.axis;
+    let container = match ctx.enclosing_scroll() {
+        Some(frame) => frame.viewport.axis(axis).exact(),
+        None => proposal.axis(axis).exact(),
+    };
+    let Some(container) = container else {
+        return (proposal, None);
+    };
+    let length = (container * relative.fraction).max(0.0);
+    (
+        proposal.with_axis(axis, Proposal::Exact(length)),
+        Some((axis, length)),
+    )
 }
 
 fn measure_kind(
@@ -1279,6 +1317,7 @@ mod tests {
                 overscan,
                 indicators: crate::tree::ScrollIndicators::Automatic,
             },
+            viewport: super::SizeProposal::unspecified(),
         };
 
         let mut h = Harness::new();

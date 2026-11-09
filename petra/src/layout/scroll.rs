@@ -123,7 +123,7 @@ pub fn measure(
     // Measured inside this container's own scroll frame: a `collection`
     // below answers a different size depending on which axis scrolls, and
     // that axis is this node's.
-    let child_size = ctx.within_scroll(frame_for(node, path), |ctx| {
+    let child_size = ctx.within_scroll(frame_for(node, path, padded_proposal), |ctx| {
         crate::layout::measure(child, ctx, path, child_proposal)
     });
 
@@ -195,7 +195,7 @@ pub fn place(
         // fact, not one of several offers being probed.
         let child_proposal =
             SizeProposal::exact(viewport_size).with_axis(axis, Proposal::Unbounded);
-        let frame = frame_for(node, path);
+        let frame = frame_for(node, path, SizeProposal::exact(viewport_size));
         let content_size = ctx.within_scroll(frame.clone(), |ctx| {
             crate::layout::measure(child, ctx, path, child_proposal)
         });
@@ -354,10 +354,11 @@ fn thumb_rect(
 }
 
 /// The scroll context this `scroll` node imposes on everything under it.
-fn frame_for(node: &ViewNode, path: &KeyPath) -> ScrollFrame {
+fn frame_for(node: &ViewNode, path: &KeyPath, viewport: SizeProposal) -> ScrollFrame {
     ScrollFrame {
         id: path.id(),
         props: node.props.scroll(),
+        viewport,
     }
 }
 
@@ -724,6 +725,61 @@ mod tests {
             end.semantics.actions.is_empty(),
             "the thumb takes no input, so no hit test lands on it: wheel and keys scroll the port"
         );
+    }
+
+    /// Three pages at half a 300-wide viewport each are 150 wide, whatever
+    /// their content measures, so two show and the third pans in. Without
+    /// the modifier a page in a horizontal scroll measures its content.
+    #[test]
+    fn a_container_relative_page_is_a_share_of_the_scroll_viewport() {
+        use crate::tree::ContainerRelative;
+        let page = |key: &str| {
+            ViewNode::new(NodeKind::Spacer, key).with_props(Props {
+                container_relative: Some(ContainerRelative {
+                    axis: Axis::Horizontal,
+                    fraction: 0.5,
+                }),
+                ..Props::default()
+            })
+        };
+        let row = ViewNode::new(NodeKind::Stack, "pages")
+            .with_props(Props {
+                axis: Some(Axis::Horizontal),
+                ..Props::default()
+            })
+            .child(page("a"))
+            .child(page("b"))
+            .child(page("c"));
+        let tree = ViewNode::new(NodeKind::Scroll, "strip")
+            .with_props(Props {
+                axis: Some(Axis::Horizontal),
+                ..Props::default()
+            })
+            .child(row);
+        let mut harness = Harness::new();
+        let mut sink = PlacementList::new();
+        crate::layout::place(
+            &tree,
+            &mut harness.ctx(),
+            &mut KeyPath::root(),
+            Slot::new(Rect::new(0.0, 0.0, 300.0, 80.0)),
+            &mut sink,
+        );
+        let rect = |tail: &str| {
+            sink.as_slice()
+                .iter()
+                .find(|p| p.id.ends_with(tail))
+                .map(|p| p.rect)
+                .unwrap_or_else(|| panic!("{tail} placed"))
+        };
+        assert_eq!(rect("/pages/a").w, 150.0);
+        assert_eq!(rect("/pages/b").x, 150.0);
+        assert_eq!(
+            rect("/pages/c").x,
+            300.0,
+            "the third page starts past the viewport"
+        );
+        assert_eq!(rect("/pages").w, 450.0);
     }
 
     /// Along a horizontal axis the thumb runs on the bottom edge.

@@ -46,6 +46,10 @@ use super::{PetrifiedFrame, Placement};
 pub enum RevealTarget {
     /// The placement with this id.
     Node(String),
+    /// The first placement, in paint order, whose own key (the last segment
+    /// of its id, unescaped) is this. For an app that knows the key it gave
+    /// a node but not the path the node was mounted at.
+    Key(String),
     /// Row `index` of the collection that reads `source`. An index past the
     /// end shows the last row.
     Row {
@@ -56,8 +60,9 @@ pub enum RevealTarget {
     },
 }
 
-/// Where a revealed target lands in the viewport. Both leave a target that is
-/// already wholly in view where it is.
+/// Where a revealed target lands in the viewport. `Nearest` and `Center`
+/// leave a target that is already wholly in view where it is; `Start` always
+/// lands it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RevealAlign {
     /// The least scroll that shows the whole target.
@@ -65,6 +70,10 @@ pub enum RevealAlign {
     Nearest,
     /// The target's middle on the viewport's middle: a jump the eye can find.
     Center,
+    /// The target's leading edge on the viewport's leading edge, even when
+    /// the target is already in view: a strip of pages that must start at a
+    /// given page (SwiftUI's `scrollTo(id, anchor: .leading)`).
+    Start,
 }
 
 /// An application's request that a scroll show a target.
@@ -255,7 +264,7 @@ impl PetrifiedFrame {
         };
         let view_lead = leading(viewport, axis);
         let view_trail = view_lead + viewport.size().along(axis);
-        if lead >= view_lead && trail <= view_trail {
+        if request.align != RevealAlign::Start && lead >= view_lead && trail <= view_trail {
             return Reveal::InView;
         }
         let max_offset = self.scroll_overflow(&scroll, axis);
@@ -272,10 +281,17 @@ impl PetrifiedFrame {
             }
             RevealAlign::Nearest => trail - view_trail,
             RevealAlign::Center => (lead + trail) / 2.0 - (view_lead + view_trail) / 2.0,
+            RevealAlign::Start => lead - view_lead,
         };
+        let offset = (current + shift).clamp(0.0, max_offset);
+        // `Start` skips the in-view test above, so an aligned target is in
+        // view here, not a write of the offset it already has.
+        if request.align == RevealAlign::Start && (offset - current).abs() < 0.5 {
+            return Reveal::InView;
+        }
         Reveal::Scroll {
             scroll,
-            offset: (current + shift).clamp(0.0, max_offset),
+            offset,
             max_offset,
         }
     }
@@ -285,9 +301,11 @@ impl PetrifiedFrame {
     /// when the frame cannot place the target.
     fn target_span(&self, target: &RevealTarget) -> Option<(Option<String>, f32, f32)> {
         match target {
-            RevealTarget::Node(id) => {
-                let index = self.placements.iter().position(|p| &p.id == id)?;
-                let placement = &self.placements[index];
+            RevealTarget::Node(_) | RevealTarget::Key(_) => {
+                let placement = match target {
+                    RevealTarget::Node(id) => self.placements.iter().find(|p| &p.id == id)?,
+                    _ => self.keyed(target)?,
+                };
                 // A scroll does not reveal itself inside itself.
                 let scroll = self
                     .scroll_at_or_above(placement.parent)
@@ -310,6 +328,25 @@ impl PetrifiedFrame {
                 Some((scroll, lead, lead + pitch))
             }
         }
+    }
+}
+
+impl PetrifiedFrame {
+    /// The first placement whose own key is the one `target` names.
+    fn keyed(&self, target: &RevealTarget) -> Option<&crate::frame::Placement> {
+        let RevealTarget::Key(key) = target else {
+            return None;
+        };
+        let escaped = crate::tree::Key::from(key.as_str()).escaped();
+        let tail = format!("/{escaped}");
+        // The suffix test is cheap; the parse rules out a `/` that was an
+        // escaped part of a longer key.
+        self.placements.iter().find(|p| {
+            p.id.ends_with(&tail)
+                && crate::tree::KeyPath::parse(&p.id)
+                    .and_then(|path| path.segments().last().map(|k| k.as_str() == key))
+                    .unwrap_or(false)
+        })
     }
 }
 
@@ -394,6 +431,35 @@ mod tests {
             nearest,
             Reveal::Scroll { offset, .. } if offset == 501.0 * PITCH - VIEW
         ));
+    }
+
+    /// `Start` lands a row in view at the top, and a row already at the top
+    /// is in view. A `Key` target finds row 5 by its own key.
+    #[test]
+    fn start_lands_the_target_at_the_leading_edge_even_in_view() {
+        use super::RevealTarget;
+        let frame = frame(0.0);
+        let start = |target: RevealTarget, at: f32| {
+            frame.reveal(
+                &ScrollRequest {
+                    target,
+                    align: RevealAlign::Start,
+                },
+                &offsets(at),
+            )
+        };
+        assert!(matches!(
+            start(RevealTarget::Key("row-5".into()), 0.0),
+            Reveal::Scroll { offset, .. } if offset == 5.0 * PITCH
+        ));
+        assert_eq!(
+            start(RevealTarget::Key("row-0".into()), 0.0),
+            Reveal::InView
+        );
+        assert_eq!(
+            start(RevealTarget::Key("row-none".into()), 0.0),
+            Reveal::Unplaced
+        );
     }
 
     /// A row above the window aligns its top edge with the viewport's top.
