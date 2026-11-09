@@ -545,6 +545,11 @@ pub fn ghost_button(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
     labelled(key, label, Variant::Ghost, Size::Md)
 }
 
+/// Carbon ghost at xs 24: a quiet control for a one-line bar.
+pub fn ghost_button_xs(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
+    labelled(key, label, Variant::Ghost, Size::Xs)
+}
+
 /// Carbon danger (filled). Same structure as [`button`]; the kind lives in
 /// `Semantics.value`, not a painted red — see the module comment.
 pub fn danger_button(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {

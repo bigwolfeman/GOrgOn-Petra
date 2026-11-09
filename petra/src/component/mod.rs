@@ -171,8 +171,8 @@ pub use breadcrumb::{
 };
 pub use button::{
     button, button_2xl, button_lg, button_sm, button_xl, button_xs, danger_button,
-    danger_ghost_button, danger_tertiary_button, ghost_button, loading_button, primary_button,
-    tertiary_button,
+    danger_ghost_button, danger_tertiary_button, ghost_button, ghost_button_xs, loading_button,
+    primary_button, tertiary_button,
 };
 pub use button_group::{button_group, button_group_flush};
 pub use chrome_strip::{DIVIDER_EXTENT, chrome_strip};

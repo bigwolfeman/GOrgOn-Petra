@@ -364,6 +364,9 @@ pub const ENTRIES: &[Entry] = &[
     row!("ghost_button", KeyLabel, |p| lib::ghost_button(
         p.key, p.label
     )),
+    row!("ghost_button_xs", KeyLabel, |p| lib::ghost_button_xs(
+        p.key, p.label
+    )),
     row!("danger_button", KeyLabel, |p| lib::danger_button(
         p.key, p.label
     )),
