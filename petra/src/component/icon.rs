@@ -45,6 +45,9 @@
 use std::sync::Arc;
 
 mod files;
+mod letter;
+
+pub use letter::{BADGE_BOX, letter_badge};
 
 use super::tokens::{
     ACCENT_PRIMARY, ICON_DISABLED, ICON_INVERSE, ICON_ON_COLOR_DISABLED, ICON_PRIMARY,
@@ -691,8 +694,13 @@ pub fn icon_toned(key: impl Into<Key>, mark: IconMark, tone: IconTone) -> ViewNo
 /// [`icon`] with both the box and the tone chosen.
 #[must_use]
 pub fn icon_in(key: impl Into<Key>, mark: IconMark, boxed: IconBox, tone: IconTone) -> ViewNode {
-    let size = mark.extent(boxed);
-    let list = draw_list(mark, boxed, tone);
+    mark_canvas(key, draw_list(mark, boxed, tone), mark.extent(boxed), tone)
+}
+
+/// A mark's canvas node: `list` in a `size` square, its ink bound to
+/// `tone` at rest and to the tone's `@disabled` ink on a disabled node.
+/// Every mark, named or lettered ([`letter_badge`]), is this node.
+fn mark_canvas(key: impl Into<Key>, list: DrawList, size: f32, tone: IconTone) -> ViewNode {
     let mut props = Props {
         canvas: Some(Arc::new(list)),
         ..Props::default()

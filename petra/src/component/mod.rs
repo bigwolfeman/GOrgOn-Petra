@@ -235,7 +235,7 @@ pub use file_uploader::{
     file_uploader_with,
 };
 pub use form::{form, form_fluid, form_two_column};
-pub use icon::{IconBox, IconMark, IconTone, icon, icon_in, icon_toned};
+pub use icon::{BADGE_BOX, IconBox, IconMark, IconTone, icon, icon_in, icon_toned, letter_badge};
 pub use inline_loading::{
     inline_loading, inline_loading_error, inline_loading_finished, inline_loading_in_button,
 };
