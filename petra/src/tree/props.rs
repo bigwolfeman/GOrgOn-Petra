@@ -883,6 +883,24 @@ pub struct Props {
     /// [`ScrollIndicators::Automatic`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub indicators: Option<ScrollIndicators>,
+    /// Whether a `scroll` also scrolls across its `axis`: SwiftUI's
+    /// `ScrollView([.vertical, .horizontal])`. Content is offered
+    /// `Unbounded` on both axes, the cross offset lives in
+    /// [`crate::layout::LayoutState::cross_offsets`], and a second indicator
+    /// runs along the far edge of the cross axis. A `collection` inside
+    /// still virtualizes along `axis` only. Absent is one axis.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cross_scroll: Option<bool>,
+    /// Keep this node at the leading edge of its enclosing two-axis
+    /// `scroll`'s viewport on the cross axis while the content scrolls
+    /// under it: CSS `position: sticky` on one edge. A code view's gutter
+    /// stays put while long lines move left. The node is moved only when
+    /// scrolling would carry it past the edge, it keeps its own size, and
+    /// the shift is real geometry, so hit testing and focus see it where it
+    /// is drawn. Give it a background and a `z` above its siblings so the
+    /// content passes under it. Inert outside a two-axis `scroll`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pinned: Option<bool>,
     /// Total row count of a `collection`, including unmaterialized rows.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total_count: Option<usize>,
@@ -1131,6 +1149,9 @@ pub struct ScrollProps {
     pub overscan: f32,
     /// Whether the scroll draws its indicator.
     pub indicators: ScrollIndicators,
+    /// Whether the scroll also scrolls across `axis`
+    /// ([`Props::cross_scroll`]).
+    pub cross_scroll: bool,
 }
 
 /// Whether a `scroll` draws an indicator: SwiftUI's `scrollIndicators`.
@@ -1293,6 +1314,7 @@ impl Props {
                 .unwrap_or(DEFAULT_OVERSCAN),
             axis: self.axis.unwrap_or(Axis::Vertical),
             indicators: self.indicators.unwrap_or_default(),
+            cross_scroll: self.cross_scroll.unwrap_or(false),
         }
     }
 

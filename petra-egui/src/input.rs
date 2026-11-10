@@ -156,7 +156,12 @@ impl EventTranslator {
                 self.last_pointer = None;
                 Some(InputEvent::PointerLeft)
             }
-            Event::MouseWheel { unit, delta, .. } => {
+            Event::MouseWheel {
+                unit,
+                delta,
+                modifiers,
+                ..
+            } => {
                 // A wheel event with no pointer position has nowhere to go.
                 // Dropping it is right: routing it to the origin would scroll
                 // whatever happens to be in the top-left corner.
@@ -165,6 +170,16 @@ impl EventTranslator {
                     MouseWheelUnit::Point => 1.0,
                     MouseWheelUnit::Line => self.line_extent,
                     MouseWheelUnit::Page => self.line_extent * LINES_PER_PAGE,
+                };
+                // Shift turns a wheel sideways, as egui's own `WheelState`
+                // does with its default `horizontal_scroll_modifier`: a mouse
+                // has no horizontal wheel, and every desktop toolkit answers
+                // Shift+wheel this way. A delta that is already sideways (a
+                // trackpad, a Mac under Shift) folds into the same sum.
+                let delta = if modifiers.shift && !modifiers.command {
+                    egui::vec2(delta.x + delta.y, 0.0)
+                } else {
+                    *delta
                 };
                 Some(InputEvent::Scroll {
                     pos,

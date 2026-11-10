@@ -61,8 +61,8 @@ pub enum RevealTarget {
 }
 
 /// Where a revealed target lands in the viewport. `Nearest` and `Center`
-/// leave a target that is already wholly in view where it is; `Start` always
-/// lands it.
+/// leave a target that is already wholly in view where it is; `Start` and
+/// `Upper` always land it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RevealAlign {
     /// The least scroll that shows the whole target.
@@ -74,7 +74,16 @@ pub enum RevealAlign {
     /// the target is already in view: a strip of pages that must start at a
     /// given page (SwiftUI's `scrollTo(id, anchor: .leading)`).
     Start,
+    /// The target's leading edge a quarter of the way into the viewport,
+    /// even when the target is already in view: a jump that keeps context
+    /// before the target and room after it (a go-to-line, a search hit).
+    /// A quarter rather than a third, so the target's whole extent sits in
+    /// the first third at any viewport length.
+    Upper,
 }
+
+/// The share of the viewport [`RevealAlign::Upper`] puts before its target.
+const UPPER_SHARE: f32 = 0.25;
 
 /// An application's request that a scroll show a target.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -226,6 +235,14 @@ impl PetrifiedFrame {
     /// which is inert: its overflow is 0, so every write clamps to 0.
     #[must_use]
     pub fn scroll_axis(&self, scroll: &str) -> Axis {
+        // A two-axis scroll overflows both ways, so geometry cannot name its
+        // main axis; the placement says it.
+        if let Some(cross) = self
+            .placement(scroll)
+            .and_then(|placement| placement.semantics.cross_axis)
+        {
+            return cross.cross();
+        }
         let Some(content) = self.scroll_content(scroll) else {
             return Axis::Vertical;
         };
@@ -264,7 +281,8 @@ impl PetrifiedFrame {
         };
         let view_lead = leading(viewport, axis);
         let view_trail = view_lead + viewport.size().along(axis);
-        if request.align != RevealAlign::Start && lead >= view_lead && trail <= view_trail {
+        let always_lands = matches!(request.align, RevealAlign::Start | RevealAlign::Upper);
+        if !always_lands && lead >= view_lead && trail <= view_trail {
             return Reveal::InView;
         }
         let max_offset = self.scroll_overflow(&scroll, axis);
@@ -282,11 +300,12 @@ impl PetrifiedFrame {
             RevealAlign::Nearest => trail - view_trail,
             RevealAlign::Center => (lead + trail) / 2.0 - (view_lead + view_trail) / 2.0,
             RevealAlign::Start => lead - view_lead,
+            RevealAlign::Upper => lead - view_lead - (view_trail - view_lead) * UPPER_SHARE,
         };
         let offset = (current + shift).clamp(0.0, max_offset);
-        // `Start` skips the in-view test above, so an aligned target is in
-        // view here, not a write of the offset it already has.
-        if request.align == RevealAlign::Start && (offset - current).abs() < 0.5 {
+        // `Start` and `Upper` skip the in-view test above, so an aligned
+        // target is in view here, not a write of the offset it already has.
+        if always_lands && (offset - current).abs() < 0.5 {
             return Reveal::InView;
         }
         Reveal::Scroll {
@@ -460,6 +479,35 @@ mod tests {
             start(RevealTarget::Key("row-none".into()), 0.0),
             Reveal::Unplaced
         );
+    }
+
+    /// `Upper` puts the row a quarter of the way down the viewport, from
+    /// far below the window and from inside it alike; a row too near the top
+    /// to have a quarter above it clamps to offset 0 and is in view.
+    #[test]
+    fn upper_lands_the_row_a_quarter_of_the_way_down() {
+        let frame = frame(0.0);
+        let upper = |index: usize| {
+            frame.reveal(
+                &ScrollRequest::row(SOURCE, index, RevealAlign::Upper),
+                &offsets(0.0),
+            )
+        };
+        let quarter = VIEW * 0.25;
+        assert_eq!(
+            upper(500),
+            Reveal::Scroll {
+                scroll: "/list".to_owned(),
+                offset: 500.0 * PITCH - quarter,
+                max_offset: 1000.0 * PITCH - VIEW,
+            }
+        );
+        // Row 8 is in view at the bottom; it still moves up.
+        assert!(matches!(
+            upper(8),
+            Reveal::Scroll { offset, .. } if offset == 8.0 * PITCH - quarter
+        ));
+        assert_eq!(upper(1), Reveal::InView);
     }
 
     /// A row above the window aligns its top edge with the viewport's top.
