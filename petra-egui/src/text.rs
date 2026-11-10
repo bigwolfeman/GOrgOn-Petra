@@ -341,7 +341,7 @@ struct GalleyKey {
     /// exactly the key they landed on before this field existed. A coloured
     /// run gets its own entry: two inks over one string are two pictures and
     /// must not share a galley.
-    runs: Vec<(usize, Option<u32>, bool)>,
+    runs: Vec<(usize, Option<u32>, bool, Option<u32>)>,
 }
 
 /// One painted run of a text: its byte length, its ink (`None` for the
@@ -355,6 +355,8 @@ pub struct InkRun {
     pub color: Option<Color32>,
     /// Underlined.
     pub underline: bool,
+    /// The band behind the run, or `None`.
+    pub background: Option<Color32>,
 }
 
 impl InkRun {
@@ -365,6 +367,7 @@ impl InkRun {
             len,
             color,
             underline: false,
+            background: None,
         }
     }
 }
@@ -544,6 +547,7 @@ impl GalleyShaper {
                         run.len,
                         run.color.map(|c| u32::from_le_bytes(c.to_array())),
                         run.underline,
+                        run.background.map(|c| u32::from_le_bytes(c.to_array())),
                     )
                 })
                 .collect(),
@@ -557,9 +561,10 @@ impl GalleyShaper {
         // which takes a `FontId` and has nowhere to put a line height.
         // `single_section` leaves `wrap` at its default, so the wrap width
         // `simple` would have set is set here.
-        let format = |color: Color32, underline: bool| TextFormat {
+        let format = |color: Color32, underline: bool, background: Option<Color32>| TextFormat {
             font_id: style.font.clone(),
             color,
+            background: background.unwrap_or(Color32::TRANSPARENT),
             line_height: style.line_height,
             extra_letter_spacing: style.extra_letter_spacing,
             // One unit in the run's own ink, which egui draws under the
@@ -572,7 +577,10 @@ impl GalleyShaper {
             ..TextFormat::default()
         };
         let mut job = if runs.is_empty() {
-            LayoutJob::single_section(req.text.to_owned(), format(Color32::PLACEHOLDER, false))
+            LayoutJob::single_section(
+                req.text.to_owned(),
+                format(Color32::PLACEHOLDER, false, None),
+            )
         } else {
             let mut job = LayoutJob {
                 text: req.text.to_owned(),
@@ -588,7 +596,11 @@ impl GalleyShaper {
                     job.sections.push(egui::text::LayoutSection {
                         leading_space: 0.0,
                         byte_range: egui::text::ByteIndex(at)..egui::text::ByteIndex(end),
-                        format: format(run.color.unwrap_or(Color32::PLACEHOLDER), run.underline),
+                        format: format(
+                            run.color.unwrap_or(Color32::PLACEHOLDER),
+                            run.underline,
+                            run.background,
+                        ),
                     });
                 }
                 at = end;
@@ -597,7 +609,7 @@ impl GalleyShaper {
                 job.sections.push(egui::text::LayoutSection {
                     leading_space: 0.0,
                     byte_range: egui::text::ByteIndex(at)..egui::text::ByteIndex(req.text.len()),
-                    format: format(Color32::PLACEHOLDER, false),
+                    format: format(Color32::PLACEHOLDER, false, None),
                 });
             }
             job
@@ -734,13 +746,18 @@ pub fn runs_with_selection(
         ] {
             if to > from {
                 match out.last_mut() {
-                    Some(last) if last.color == colour && last.underline == run.underline => {
+                    Some(last)
+                        if last.color == colour
+                            && last.underline == run.underline
+                            && last.background == run.background =>
+                    {
                         last.len += to - from;
                     }
                     _ => out.push(InkRun {
                         len: to - from,
                         color: colour,
                         underline: run.underline,
+                        background: run.background,
                     }),
                 }
             }

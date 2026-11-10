@@ -84,6 +84,14 @@ pub struct TextRun {
     /// field existed parses and serializes unchanged.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub underline: bool,
+    /// A band behind this run, or `None` for no band: a range the
+    /// application marks itself, such as the selection of a virtualized
+    /// document it owns (the host's own selection is
+    /// [`crate::frame::PaintContent::selection`]) or a search hit. Paint
+    /// only; it moves no glyph. Name a token one lightness step off the
+    /// surface, so the mark is not a hue alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<TokenName>,
 }
 
 /// How a text node handles content it cannot fit.

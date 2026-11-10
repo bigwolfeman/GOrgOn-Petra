@@ -1384,6 +1384,7 @@ mod tests {
         };
         let run = |len: usize, fg: Option<&str>| TextRunPaint {
             underline: false,
+            background: None,
             len,
             foreground: fg.map(ToOwned::to_owned),
         };
@@ -1396,6 +1397,7 @@ mod tests {
         let underlined = with(vec![
             TextRunPaint {
                 underline: true,
+                background: None,
                 ..run(3, Some("accent.primary"))
             },
             run(3, None),
