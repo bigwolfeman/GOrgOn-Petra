@@ -11,7 +11,7 @@ use std::fmt;
 use crate::geom::Axis;
 use crate::token::{SlotSchema, TokenKind, TokenName, Vocabulary, standard_slots};
 use crate::tree::key::{Key, KeyPath};
-use crate::tree::node::{NodeKind, Role, ViewNode};
+use crate::tree::node::{Interaction, NodeKind, Reveal, Role, ViewNode};
 use crate::tree::props::{Anchor, ScrollProps, TrackSize, max_row_tracks};
 
 /// Names the host has registered: custom node kinds, transition
@@ -457,6 +457,14 @@ pub enum Violation {
         /// What does not fit, and why.
         reason: crate::tree::binding::ShapeFault,
     },
+    /// A node declares [`crate::tree::Reveal::WithGroup`] with no
+    /// [`crate::tree::Reveal::Group`] above it, so nothing could ever
+    /// reveal it and it would stay concealed for good.
+    RevealWithoutGroup,
+    /// A node declares [`crate::tree::Reveal::Group`] without
+    /// [`crate::tree::Interaction::Hover`], so the pointer over its own
+    /// background hovers nothing inside it and cannot engage it.
+    RevealGroupWithoutHover,
 }
 
 /// What a validator must hold, beyond the subtree in front of it, before a
@@ -578,7 +586,15 @@ impl Violation {
             | Self::ComponentRefOnWrongKind { .. }
             | Self::MalformedBinding { .. }
             | Self::PropertyWithTwoSources { .. }
-            | Self::IllTypedBinding { .. } => Prerequisites::NONE,
+            | Self::IllTypedBinding { .. }
+            | Self::RevealGroupWithoutHover => Prerequisites::NONE,
+            // Read the node's ancestors. A contributed subtree may lean on a
+            // group the shell's slot puts around it, so the answer can change
+            // with the splice.
+            Self::RevealWithoutGroup => Prerequisites {
+                placement: true,
+                ..Prerequisites::NONE
+            },
         }
     }
 
@@ -641,6 +657,16 @@ fn legal_set(legal: &[TokenName]) -> String {
 impl fmt::Display for Violation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::RevealWithoutGroup => write!(
+                f,
+                "declares `reveal = with-group` but no ancestor declares `reveal = group`, \
+                 so nothing can ever reveal it; mark the container it belongs to as the group"
+            ),
+            Self::RevealGroupWithoutHover => write!(
+                f,
+                "declares `reveal = group` without the `hover` interaction, so the pointer \
+                 over the group cannot reveal anything in it; `ViewNode::reveal_group` adds it"
+            ),
             Self::UnexpandedComponent { name } => match name {
                 Some(name) => write!(
                     f,
@@ -924,7 +950,7 @@ pub fn validate<'a>(
 ) -> Result<ValidatedTree<'a>, TreeErrors> {
     let mut errors = Vec::new();
     let mut path = KeyPath::root();
-    walk(root, registry, &mut path, None, None, &mut errors);
+    walk(root, registry, &mut path, None, None, false, &mut errors);
     check_anchors(root, &mut errors);
     if errors.is_empty() {
         Ok(ValidatedTree(root))
@@ -945,10 +971,12 @@ fn walk(
     path: &mut KeyPath,
     parent: Option<NodeKind>,
     scroll: ScrollAncestor<'_>,
+    in_group: bool,
     errors: &mut Vec<TreeError>,
 ) {
     path.push(node.key.clone());
     check_node(node, registry, path, parent, scroll, errors);
+    check_reveal(node, path, in_group, errors);
     if node.kind == NodeKind::Grid {
         // A parent-level check: a span is declared on the child but only means
         // anything against this grid's tracks and this grid's flow order, so
@@ -984,10 +1012,37 @@ fn walk(
         (None, NodeKind::Surface) => None,
         (None, _) => scroll,
     };
+    let child_in_group = in_group || node.reveal == Reveal::Group;
     for child in &node.children {
-        walk(child, registry, path, Some(node.kind), child_scroll, errors);
+        walk(
+            child,
+            registry,
+            path,
+            Some(node.kind),
+            child_scroll,
+            child_in_group,
+            errors,
+        );
     }
     path.pop();
+}
+
+/// The two engagement-reveal rules ([`Reveal`]): a revealed node has a
+/// group above it, and a group accepts hover. `in_group` says whether any
+/// ancestor declares [`Reveal::Group`]; layout reads the same ancestry off
+/// [`crate::layout::Slot::group_engaged`].
+fn check_reveal(node: &ViewNode, path: &KeyPath, in_group: bool, errors: &mut Vec<TreeError>) {
+    let violation = match node.reveal {
+        Reveal::Always => return,
+        Reveal::WithGroup if in_group => return,
+        Reveal::WithGroup => Violation::RevealWithoutGroup,
+        Reveal::Group if node.interactions.contains(&Interaction::Hover) => return,
+        Reveal::Group => Violation::RevealGroupWithoutHover,
+    };
+    errors.push(TreeError {
+        path: path.id(),
+        violation,
+    });
 }
 
 /// Every grid child's span, against the tracks this grid actually has.

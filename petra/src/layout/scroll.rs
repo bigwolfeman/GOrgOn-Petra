@@ -264,14 +264,7 @@ pub fn place(
         // overflow reachable-but-hidden rather than painted outside — and
         // keeps content from ever drawing over the padding gutter, at either
         // scroll extreme.
-        let child_slot = Slot {
-            rect: child_rect,
-            z: slot.z,
-            clip: slot.clip,
-            opacity: slot.opacity,
-            window: slot.window,
-        }
-        .clipped_to(content);
+        let child_slot = slot.with_rect(child_rect).clipped_to(content);
 
         ctx.within_scroll(frame, |ctx| {
             crate::layout::place(child, ctx, path, child_slot, sink);
@@ -289,14 +282,7 @@ pub fn place(
                 offset,
             )
         {
-            let thumb_slot = Slot {
-                rect,
-                z: slot.z,
-                clip: slot.clip,
-                opacity: slot.opacity,
-                window: slot.window,
-            }
-            .clipped_to(slot.rect);
+            let thumb_slot = slot.with_rect(rect).clipped_to(slot.rect);
             crate::layout::place(&INDICATOR, ctx, path, thumb_slot, sink);
         }
         // The cross thumb: the same drawing, along the other edge.
@@ -311,14 +297,7 @@ pub fn place(
                 cross_offset,
             )
         {
-            let thumb_slot = Slot {
-                rect,
-                z: slot.z,
-                clip: slot.clip,
-                opacity: slot.opacity,
-                window: slot.window,
-            }
-            .clipped_to(slot.rect);
+            let thumb_slot = slot.with_rect(rect).clipped_to(slot.rect);
             crate::layout::place(&CROSS_INDICATOR, ctx, path, thumb_slot, sink);
         }
     }
@@ -556,13 +535,7 @@ pub fn place_collection(
                     // outside it on purpose: they are placed so a later
                     // frame can scroll without a hole, and they are not
                     // visible, hittable, or Tab-reachable until they are.
-                    let row_slot = Slot {
-                        rect: row_rect,
-                        z: slot.z,
-                        clip: slot.clip,
-                        opacity: slot.opacity,
-                        window: slot.window,
-                    };
+                    let row_slot = slot.with_rect(row_rect);
                     crate::layout::place(row_node, ctx, path, row_slot, sink);
                     // The cursor advances by what this row actually
                     // measured, never by the estimate. That is what makes

@@ -103,6 +103,10 @@ fn node_at(frame: &PetrifiedFrame, index: usize, children: Vec<SemanticNode>) ->
         // `PlacementSemantics` on the placement itself, never through this
         // projection.
         bindings: _,
+        // Held out on purpose, and the reason is accessibility itself: a
+        // control concealed because the pointer is elsewhere is still there
+        // for a screen reader, which must list it the same either way.
+        concealed: _,
     } = &placement.semantics;
 
     let mut actions: Vec<Interaction> = actions.clone();

@@ -219,6 +219,59 @@ pub enum Interaction {
     Key,
 }
 
+/// How a node takes part in engagement reveal: controls that show only while
+/// the container around them is engaged.
+///
+/// The web spells this `.group:hover .child` plus `:focus-within`. A
+/// container declares [`Reveal::Group`]; a descendant declares
+/// [`Reveal::WithGroup`] and shows only while its nearest enclosing group is
+/// **engaged**, which is any of three facts the frame already carries:
+///
+/// - the pointer is over the group or over anything inside it
+///   ([`crate::layout::LayoutState::hovered`] names the group or a
+///   descendant of it);
+/// - keyboard focus is on the group or inside it
+///   ([`crate::layout::LayoutState::focused`], the same ancestry test);
+/// - the group itself declares [`Semantics::selected`].
+///
+/// Pointer and focus engage only the **nearest** group at or above the node
+/// they name. A row nested in another row shows its own actions when the
+/// pointer is on it, not its parent's.
+///
+/// A revealed node that is not shown is **concealed**: it keeps its whole
+/// layout box, so nothing reflows when the pointer arrives; it paints at
+/// opacity zero; and [`crate::input::hit_test`] passes through it. It stays
+/// in the focus order and in the semantic tree, so a keyboard user can Tab
+/// to it (focus inside the group then reveals it) and a screen reader lists
+/// it. See [`crate::frame::PlacementSemantics::concealed`].
+///
+/// Engagement is derived during placement from the host's interaction
+/// snapshot, never declared by an application, the way `hovered` is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Reveal {
+    /// Neither a group nor revealed by one. The default.
+    #[default]
+    Always,
+    /// An engagement group. Tree acceptance requires it to declare
+    /// [`Interaction::Hover`]: without it the pointer over the group's own
+    /// background hovers nothing inside it, and only focus or selection could
+    /// ever reveal what it holds. [`ViewNode::reveal_group`] adds it.
+    Group,
+    /// Shown only while the nearest enclosing [`Reveal::Group`] is engaged,
+    /// and concealed with the whole subtree under it otherwise. Tree
+    /// acceptance refuses one with no group above it.
+    WithGroup,
+}
+
+impl Reveal {
+    /// Whether this is the default, for `skip_serializing_if`.
+    #[must_use]
+    pub fn is_always(&self) -> bool {
+        *self == Self::Always
+    }
+}
+
 /// What a node's declared [`Behaviour`] *means*: which of four shapes the
 /// interpreted gesture takes.
 ///
@@ -1014,6 +1067,11 @@ pub struct ViewNode {
     /// property *holds* and where the value comes from.
     #[serde(default, skip_serializing_if = "BoundProps::is_empty")]
     pub bound: BoundProps,
+    /// Whether this node is an engagement group, is revealed by one, or
+    /// neither. See [`Reveal`]. Absent from the wire at the default, so a
+    /// tree that reveals nothing serializes exactly as it did before.
+    #[serde(default, skip_serializing_if = "Reveal::is_always")]
+    pub reveal: Reveal,
 }
 
 /// A component named on the wire, with the parameter table it was given.
@@ -1085,6 +1143,7 @@ impl ViewNode {
             raw_claim: false,
             bindings: Vec::new(),
             bound: BoundProps::default(),
+            reveal: Reveal::Always,
         }
     }
 
@@ -1247,6 +1306,29 @@ impl ViewNode {
     #[must_use]
     pub fn with_binding(mut self, binding: Binding) -> Self {
         self.bindings.push(binding);
+        self
+    }
+
+    /// Declare this node an engagement group ([`Reveal::Group`]) and add
+    /// [`Interaction::Hover`] if it is missing, which a group needs so the
+    /// pointer over its own background engages it.
+    ///
+    /// A node that declares an interaction needs a role and a label
+    /// (`tree::validate`), so give the group both.
+    #[must_use]
+    pub fn reveal_group(mut self) -> Self {
+        self.reveal = Reveal::Group;
+        if !self.interactions.contains(&Interaction::Hover) {
+            self.interactions.push(Interaction::Hover);
+        }
+        self
+    }
+
+    /// Show this node, and everything under it, only while its nearest
+    /// enclosing engagement group is engaged ([`Reveal::WithGroup`]).
+    #[must_use]
+    pub fn revealed_with_group(mut self) -> Self {
+        self.reveal = Reveal::WithGroup;
         self
     }
 

@@ -589,7 +589,10 @@ pub fn activates(event: &InputEvent) -> bool {
 /// "Topmost" is the frame's own paint order read backwards, so what the user
 /// clicks is what the user sees. A placement is only a candidate when `pos` is
 /// inside both its rect and the clip in force: a row scrolled out of its
-/// viewport is still placed, and must not be clickable.
+/// viewport is still placed, and must not be clickable. A
+/// [`PlacementSemantics::concealed`](crate::frame::PlacementSemantics::concealed)
+/// placement is never a candidate either: what the user cannot see, the
+/// pointer cannot hit.
 ///
 /// This is [`hit_test_above`] with no floor: every placement in the frame
 /// is a candidate. A host routing through [`route_with_surfaces`] or
@@ -628,6 +631,10 @@ pub fn hit_test_above<'a>(
             && p.clip.contains(pos)
             && p.semantics.actions.contains(&interaction)
             && !p.semantics.disabled
+            // A concealed control is not there for the pointer: the hit
+            // falls through to whatever is behind it, which is how the
+            // group around it becomes hovered and reveals it.
+            && !p.semantics.concealed
         {
             return Some(p);
         }

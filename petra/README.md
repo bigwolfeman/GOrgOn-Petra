@@ -35,14 +35,15 @@ crate and a contract disagree, the contract wins.
   interaction, and Enter or Space works a focused node that declares `Click`.
   What is **not** done: a node that declares `Click` without `Focus` is still
   unreachable by keyboard, and nothing in tree acceptance requires the pair.
-- Hover, pressed and pointer capture are declared but not derived. The five
-  interaction-state flags reach `PlacementSemantics`, the semantic tree, the
-  wire and the digest, and `read_only` and `skeleton` are settable on
-  `Semantics` - but no host writes hover or pressed yet, so they read `false` on
-  every placement. `InputEvent::PointerLeft` is dropped rather than delivered,
-  because nothing tracks which node the pointer is over. The audit rule that
-  would refuse a node declaring both `read_only` and `disabled` does not exist
-  yet either.
+- Hover, pressed and pointer capture are derived, never declared.
+  `input::PointerState` writes them from the same hit test that routes a click,
+  the host publishes them on `LayoutState`, and they reach
+  `PlacementSemantics`, the semantic tree and the digest. A container can let
+  its descendants follow it: `tree::Reveal::Group` on the container and
+  `Reveal::WithGroup` on, say, a row's action strip shows the strip only while
+  the row is hovered, holds focus, or is selected. A concealed strip keeps its
+  box, paints at opacity zero, takes no hit, and stays in the focus order and
+  the semantic tree.
 - `Anchor::Node` resolves the same way `Anchor::Viewport` does. The surface is
   anchored to the viewport rather than to the named node, and
   `overlay_surface::resolve_anchor_kind` says so rather than pretending

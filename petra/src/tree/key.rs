@@ -154,6 +154,19 @@ impl KeyPath {
         out
     }
 
+    /// Whether the canonical id `id` names `ancestor` itself or a node
+    /// anywhere under it.
+    ///
+    /// A prefix test with a boundary check: `/ab` is not under `/a`, so the
+    /// byte after the prefix must be the separator. Sound for the same reason
+    /// [`KeyPath::ancestor_ids`] is: an escaped key never puts a bare `/`
+    /// right after an ancestor's last byte.
+    #[must_use]
+    pub fn is_at_or_under(id: &str, ancestor: &str) -> bool {
+        id.strip_prefix(ancestor)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+    }
+
     /// The ids of every ancestor of the canonical id `id`, nearest parent
     /// first and the tree's top-level node last, not including `id` itself.
     ///
