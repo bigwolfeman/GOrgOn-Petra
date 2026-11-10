@@ -74,10 +74,18 @@ pub(super) fn paint_text(
                     }
                     found
                 });
+                let resolve = |name: &str| {
+                    let found = env.colors.color(name);
+                    if found.is_none() {
+                        report.unresolved_tokens.insert(name.to_owned());
+                    }
+                    found
+                };
                 crate::text::InkRun {
                     len: run.len,
                     color: ink,
                     underline: run.underline,
+                    background: run.background.as_deref().and_then(resolve),
                 }
             })
             .collect();

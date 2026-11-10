@@ -2516,6 +2516,7 @@ mod tests {
                     .iter()
                     .map(|len| TextRun {
                         underline: false,
+                        background: None,
                         len: *len,
                         foreground: None,
                     })

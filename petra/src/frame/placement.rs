@@ -328,6 +328,8 @@ pub struct TextRunPaint {
     pub foreground: Option<String>,
     /// [`crate::tree::TextRun::underline`].
     pub underline: bool,
+    /// Band token for this run ([`crate::tree::TextRun::background`]).
+    pub background: Option<String>,
 }
 
 /// The pointer a surface draws back at the node it is anchored to.
