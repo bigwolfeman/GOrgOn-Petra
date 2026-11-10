@@ -326,3 +326,68 @@ fn the_emoji_gaps_are_exactly_the_recorded_ones() {
         gaps.len(),
     );
 }
+
+/// The shaper measures glyph ink past the line box, and measures nothing
+/// where there is none.
+///
+/// The line height comes from Plex. Noto Sans Arabic draws the dots of a
+/// final yeh (ي) and the marks of a kasra below Plex's descent, and a tab
+/// label clipped to its line box cut them off. `TextMeasurement::ink` is the
+/// distance layout grows that label's clip by, so it must be positive for
+/// Arabic at the compact steps, and zero for Latin at every step: a
+/// Latin run that reported ink would move the clip, and the digest, of
+/// every frame with text in it.
+#[test]
+fn the_shaper_reports_ink_past_the_line_box_only_where_glyphs_draw_it() {
+    let (ctx, _report) = desktop_context();
+    let theme = gorgon_petra::token::dark();
+    let mut shaper = GalleyShaper::with_typography(
+        ctx.clone(),
+        Typography::from_theme(&theme, &fonts::design_system_faces()),
+    );
+    const STEPS: [&str; 6] = [
+        "typography.label",
+        "typography.label-lg",
+        "typography.body-compact",
+        "typography.body",
+        "typography.heading-sm",
+        "typography.heading",
+    ];
+    // The compact steps labels, tabs and tree rows use. Their line height is
+    // close to the em, so Noto's marks below the baseline leave the box.
+    // `typography.body` has the leading to hold them and reports zero.
+    const TIGHT: [&str; 3] = [
+        "typography.label",
+        "typography.label-lg",
+        "typography.body-compact",
+    ];
+    let mut report = String::new();
+    for style in STEPS {
+        let measure = |shaper: &mut GalleyShaper, text: &str| {
+            shaper
+                .text(&TextRequest {
+                    text,
+                    style: Some(style),
+                    available_width: None,
+                    wrap: TextWrap::Clip,
+                    max_lines: None,
+                })
+                .ink
+        };
+        let latin = measure(&mut shaper, "Hamburgefonstiv Cargo.toml (0-9) gjpqy");
+        let arabic = measure(&mut shaper, "ملف-رئيسي");
+        report.push_str(&format!("{style}: latin {latin:?}, arabic {arabic:?}\n"));
+        assert_eq!(
+            latin,
+            gorgon_petra::layout::InkOverflow::default(),
+            "{style}: Latin in the shipped face must sit inside its line box"
+        );
+        if TIGHT.contains(&style) {
+            assert!(
+                arabic.below > 0.0,
+                "{style}: the dots under ي draw below this step's line box and must be measured"
+            );
+        }
+    }
+    println!("{report}");
+}

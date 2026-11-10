@@ -17,8 +17,8 @@ use std::sync::{Arc, OnceLock};
 
 use crate::geom::{Insets, Scale, Size};
 use crate::layout::{
-    AnchorRects, ContentMeasure, LayoutCtx, LayoutState, MeasureCache, RowSource, ScrollStack,
-    SizeProposal, TextMeasurement, TextRequest,
+    AnchorRects, ContentMeasure, InkOverflow, LayoutCtx, LayoutState, MeasureCache, RowSource,
+    ScrollStack, SizeProposal, TextMeasurement, TextRequest,
 };
 use crate::token::{
     DesignToken, Theme, ThemeSnapshot, TokenKind, TokenName, TokenValue, Vocabulary, light,
@@ -314,6 +314,9 @@ pub struct MonoContent {
     /// How many measurement calls have been served. Tests that assert the
     /// measurement cache is doing its job read this.
     pub calls: usize,
+    /// The glyph ink every run reports past its box. Zero by default, as for
+    /// a face whose glyphs fit its line height.
+    pub ink: InkOverflow,
 }
 
 impl Default for MonoContent {
@@ -324,6 +327,7 @@ impl Default for MonoContent {
             image_size: Size::new(64.0, 64.0),
             custom_size: Size::new(32.0, 32.0),
             calls: 0,
+            ink: InkOverflow::default(),
         }
     }
 }
@@ -352,6 +356,7 @@ impl ContentMeasure for MonoContent {
                 size: Size::new(full, self.line_h),
                 truncated: false,
                 lines: 1,
+                ink: self.ink,
             };
         };
         let per_line = (available / self.char_w).floor().max(0.0) as usize;
@@ -360,6 +365,7 @@ impl ContentMeasure for MonoContent {
                 size: Size::new(0.0, self.line_h),
                 truncated: !req.text.is_empty(),
                 lines: 1,
+                ink: self.ink,
             };
         }
         let chars = req.text.chars().count();
@@ -382,6 +388,7 @@ impl ContentMeasure for MonoContent {
             size: Size::new(widest, lines as f32 * self.line_h),
             truncated,
             lines,
+            ink: self.ink,
         }
     }
 

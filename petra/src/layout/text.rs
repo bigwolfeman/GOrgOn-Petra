@@ -16,7 +16,7 @@
 //! painted over another.
 
 use crate::frame::placement::{PaintState, Placement, PlacementSink};
-use crate::geom::Size;
+use crate::geom::{Rect, Size};
 use crate::layout::{LayoutCtx, SizeProposal, Slot, TextRequest, semantics_of};
 use crate::tree::{KeyPath, TextProps, ViewNode};
 
@@ -103,9 +103,10 @@ pub(crate) fn first_line_height(node: &ViewNode, ctx: &mut LayoutCtx<'_>, width:
 /// intersection of the inherited clip with this node's own rect. Two
 /// consequences worth stating rather than discovering:
 ///
-/// * The invariant becomes structural. `clip ⊆ rect` for every text
-///   placement, so "a text run never paints outside the box it was given" is
-///   a property of the frame, checkable without a renderer, and
+/// * The invariant becomes structural. `clip ⊆ rect`, grown vertically by
+///   the run's measured [`super::InkOverflow`] and nothing else, for every
+///   text placement, so "a text run never paints outside the box it was
+///   given" is a property of the frame, checkable without a renderer, and
 ///   `gorgon/inspector/tests/layout_overlap.rs` checks it — in the private
 ///   GOrgOn monorepo, where `gorgon-inspector` lives; not in this repository.
 /// * `clip` is a digest input, so this moves the digest of every frame that
@@ -148,7 +149,7 @@ pub fn place(
         kind: node.kind,
         rect: slot.rect,
         z: slot.z,
-        clip: slot.clip.intersect(slot.rect),
+        clip: slot.clip.intersect(inked(slot.rect, measurement.ink)),
         opacity: slot.opacity,
         paint: PaintState {
             content_hash: crate::frame::digest::hash_text(props.text),
@@ -164,13 +165,26 @@ pub fn place(
     });
 }
 
+/// `rect` grown by the ink a shaped run draws above and below its box (see
+/// [`super::InkOverflow`]). With no overflow it is `rect` exactly, so a run
+/// whose glyphs fit keeps the clip, and the digest, it had before.
+fn inked(rect: Rect, ink: super::InkOverflow) -> Rect {
+    let above = ink.above.max(0.0);
+    let below = ink.below.max(0.0);
+    Rect {
+        y: rect.y - above,
+        h: rect.h + above + below,
+        ..rect
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{measure, place};
     use crate::frame::placement::PlacementList;
     use crate::geom::{Rect, Size};
-    use crate::layout::{Proposal, SizeProposal, Slot};
-    use crate::testing::Harness;
+    use crate::layout::{InkOverflow, Proposal, SizeProposal, Slot};
+    use crate::testing::{Harness, MonoContent, NoRows};
     use crate::tree::{KeyPath, NodeKind, Props, TextWrap, ViewNode};
 
     fn text_node(text: &str, wrap: TextWrap, max_lines: Option<usize>) -> ViewNode {
@@ -468,6 +482,41 @@ mod tests {
             Rect::new(10.0, 380.0, 32.0, 20.0),
             "the intersection, not either rect alone"
         );
+    }
+
+    /// Ink a fallback face draws past the line box (Arabic dots below the
+    /// baseline) is inside the clip, by the measured distance and no more.
+    /// The inherited clip still wins, and the horizontal edges stay the box.
+    #[test]
+    fn a_text_clip_grows_by_the_ink_its_run_reports_and_no_further() {
+        let mut h = Harness::with(
+            MonoContent {
+                ink: InkOverflow {
+                    above: 1.0,
+                    below: 3.0,
+                },
+                ..MonoContent::default()
+            },
+            NoRows,
+        );
+        let node = text_node("abcd", TextWrap::Clip, None);
+        let row = Rect::new(10.0, 100.0, 32.0, 16.0);
+        let mut slot = Slot::new(row);
+        slot.clip = Rect::new(0.0, 0.0, 200.0, 400.0);
+        let mut path = path_at(&node);
+        let mut sink = PlacementList::new();
+        place(&node, &mut h.ctx(), &mut path, slot, &mut sink);
+        let placed = &sink.as_slice()[0];
+        assert_eq!(placed.clip, Rect::new(10.0, 99.0, 32.0, 20.0));
+        assert_eq!(placed.rect, row, "the rect itself does not move");
+
+        // A panel edge one unit below the row cuts the marks there.
+        let mut slot = Slot::new(row);
+        slot.clip = Rect::new(0.0, 0.0, 200.0, 117.0);
+        let mut path = path_at(&node);
+        let mut sink = PlacementList::new();
+        place(&node, &mut h.ctx(), &mut path, slot, &mut sink);
+        assert_eq!(sink.as_slice()[0].clip, Rect::new(10.0, 99.0, 32.0, 18.0));
     }
 
     /// The two flags mean opposite things and must not be readable as one.

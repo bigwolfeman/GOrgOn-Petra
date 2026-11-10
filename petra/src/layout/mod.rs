@@ -60,6 +60,28 @@ pub struct TextMeasurement {
     pub truncated: bool,
     /// Rendered line count.
     pub lines: usize,
+    /// Glyph ink that reaches past the run's box vertically.
+    pub ink: InkOverflow,
+}
+
+/// How far a shaped run's glyph ink reaches above the top and below the
+/// bottom of its box, in logical units. Zero when every glyph sits inside.
+///
+/// A run's box is its line boxes, and the line height comes from the
+/// primary face. A fallback face can draw past it: Arabic dots below the
+/// baseline, stacked Vietnamese or Thai marks above the cap height. Type
+/// lets that ink paint, as CSS does with `overflow: visible`. The text clip
+/// grows by these two distances and no further, so the marks draw and an
+/// overflowing second line is still cut at the box.
+///
+/// Only the vertical axis. A horizontal overhang is where an elided or
+/// clipped run ends, and that edge stays the box.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct InkOverflow {
+    /// Ink above the top of the box.
+    pub above: f32,
+    /// Ink below the bottom of the box.
+    pub below: f32,
 }
 
 /// Measurement of content the engine cannot size on its own.

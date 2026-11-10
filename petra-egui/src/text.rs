@@ -14,7 +14,9 @@ use egui::text::{LayoutJob, TextFormat};
 use egui::{Color32, Context, FontFamily, FontId, Galley};
 use gorgon_petra::cache::LruCache;
 use gorgon_petra::geom::Size;
-use gorgon_petra::layout::{ContentMeasure, SizeProposal, TextMeasurement, TextRequest};
+use gorgon_petra::layout::{
+    ContentMeasure, InkOverflow, SizeProposal, TextMeasurement, TextRequest,
+};
 use gorgon_petra::token::{Theme, TokenValue, TypographyFamily, TypographyValue, TypographyWeight};
 use gorgon_petra::tree::TextWrap;
 
@@ -781,6 +783,22 @@ fn wrapping(req: &TextRequest<'_>) -> (usize, bool, Option<char>) {
     }
 }
 
+/// How far `galley`'s glyph meshes reach past its box, above and below.
+///
+/// `mesh_bounds` is the tight box around every glyph quad epaint will draw;
+/// `rect` is the line boxes layout sized the node from. An empty run has no
+/// mesh (`Rect::NOTHING`) and no overflow.
+fn ink_overflow(galley: &Galley) -> InkOverflow {
+    let ink = galley.mesh_bounds;
+    if !ink.is_positive() {
+        return InkOverflow::default();
+    }
+    InkOverflow {
+        above: (galley.rect.top() - ink.top()).max(0.0),
+        below: (ink.bottom() - galley.rect.bottom()).max(0.0),
+    }
+}
+
 impl ContentMeasure for GalleyShaper {
     fn text(&mut self, req: &TextRequest<'_>) -> TextMeasurement {
         let galley = self.galley(req);
@@ -789,6 +807,7 @@ impl ContentMeasure for GalleyShaper {
             size: Size::new(size.x, size.y),
             truncated: galley.elided,
             lines: galley.rows.len(),
+            ink: ink_overflow(&galley),
         }
     }
 
