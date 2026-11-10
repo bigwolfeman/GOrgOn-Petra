@@ -960,8 +960,10 @@ fn walk(
     // `layout::scroll::INDICATOR_KEY`; an authored child with that key
     // would share the id.
     let indicator = Key::new(crate::layout::scroll::INDICATOR_KEY);
+    let cross_indicator = Key::new(crate::layout::scroll::CROSS_INDICATOR_KEY);
     if node.kind == NodeKind::Scroll {
         seen.insert(&indicator);
+        seen.insert(&cross_indicator);
     }
     for child in &node.children {
         if !seen.insert(&child.key) {

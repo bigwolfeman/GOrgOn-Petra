@@ -195,6 +195,14 @@ pub struct PlacementSemantics {
     /// without knowing the key path the list was mounted at. Not a digest
     /// input: it decides no pixel, and the rows it names are hashed as rows.
     pub row_source: Option<String>,
+    /// The axis a two-axis `scroll` also scrolls across
+    /// ([`crate::tree::Props::cross_scroll`]); `None` on every other node.
+    ///
+    /// The frame reads axes from geometry, and a port whose content
+    /// overflows both ways cannot say from geometry which axis its rows run
+    /// along. Not a digest input: the content rect and the indicators the
+    /// two offsets produce are hashed as geometry.
+    pub cross_axis: Option<crate::geom::Axis>,
     /// The interaction this node declared, projected straight off
     /// [`crate::tree::ViewNode::behaviour`] the way [`Self::disabled`] is
     /// projected off its node.

@@ -28,7 +28,7 @@ use crate::frame::placement::{
     CaretPaint, PaintContent, PlacementList, PlacementSemantics, PlacementSink, TextPaint,
     TextRunPaint,
 };
-use crate::geom::{Insets, Rect, Scale, Size};
+use crate::geom::{Axis, Insets, Rect, Scale, Size};
 use crate::input::{Capture, TextSelection};
 use crate::token::{ThemeSnapshot, TokenName};
 use crate::tree::props::ScrollProps;
@@ -140,6 +140,11 @@ pub trait RowSource {
 pub struct LayoutState {
     /// Scroll offset per scroll-container id, in logical units along its axis.
     pub scroll_offsets: BTreeMap<String, f32>,
+    /// Offset across the axis, per two-axis scroll-container id
+    /// ([`crate::tree::Props::cross_scroll`]). A separate map rather than a
+    /// pair in `scroll_offsets`, so every one-axis reader keeps its one
+    /// number.
+    pub cross_offsets: BTreeMap<String, f32>,
     /// The focused node id, if any.
     pub focused: Option<String>,
     /// The one node the pointer is over, if any. Derived by the host from
@@ -175,13 +180,25 @@ impl LayoutState {
     /// The scroll offset for `id`, clamped to zero or more.
     #[must_use]
     pub fn scroll_offset(&self, id: &str) -> f32 {
-        self.scroll_offsets
-            .get(id)
-            .copied()
-            .filter(|v| v.is_finite())
-            .unwrap_or(0.0)
-            .max(0.0)
+        sane_offset(self.scroll_offsets.get(id))
     }
+
+    /// The cross-axis offset for the two-axis scroll `id`, clamped to zero
+    /// or more.
+    #[must_use]
+    pub fn cross_offset(&self, id: &str) -> f32 {
+        sane_offset(self.cross_offsets.get(id))
+    }
+}
+
+/// A stored offset as layout reads it: a missing, non-finite or negative
+/// entry is 0.
+fn sane_offset(stored: Option<&f32>) -> f32 {
+    stored
+        .copied()
+        .filter(|v| v.is_finite())
+        .unwrap_or(0.0)
+        .max(0.0)
 }
 
 /// One enclosing `scroll` container, as the subtree inside it sees it.
@@ -751,6 +768,30 @@ fn harvest_anchor_rects(root: &ViewNode, ctx: &mut LayoutCtx<'_>, slot: Slot) {
 }
 
 /// [`place`] below the root: no harvest, and the harvest walk's own pruning.
+/// A pinned node's slot ([`crate::tree::Props::pinned`]): moved along the
+/// enclosing two-axis scroll's cross axis just far enough that its leading
+/// edge is not carried past the clip's. Derived from geometry, like every
+/// other offset under a scroll: the distance from the clip to the rect is
+/// the offset that reached it.
+fn pin(slot: Slot, scroll: Option<&ScrollFrame>) -> Slot {
+    let Some(frame) = scroll.filter(|frame| frame.props.cross_scroll) else {
+        return slot;
+    };
+    let shift = match frame.props.axis.cross() {
+        Axis::Horizontal => (slot.clip.x - slot.rect.x).max(0.0),
+        Axis::Vertical => (slot.clip.y - slot.rect.y).max(0.0),
+    };
+    if shift <= 0.0 {
+        return slot;
+    }
+    let mut rect = slot.rect;
+    match frame.props.axis.cross() {
+        Axis::Horizontal => rect.x += shift,
+        Axis::Vertical => rect.y += shift,
+    }
+    Slot { rect, ..slot }
+}
+
 fn place_node(
     node: &ViewNode,
     ctx: &mut LayoutCtx<'_>,
@@ -770,6 +811,11 @@ fn place_node(
     let slot = match node.props.z {
         Some(z) => slot.above(z),
         None => slot,
+    };
+    let slot = if node.props.pinned == Some(true) {
+        pin(slot, ctx.enclosing_scroll())
+    } else {
+        slot
     };
 
     // Can this whole subtree be carried over from the previous frame? The
@@ -1114,6 +1160,13 @@ pub fn semantics_of(node: &ViewNode, id: &str, state: &LayoutState) -> Placement
         actions: node.interactions.clone(),
         total_count: node.props.total_count,
         row_source: node.props.source.clone(),
+        cross_axis: match node.kind {
+            NodeKind::Scroll => {
+                let scroll = node.props.scroll();
+                scroll.cross_scroll.then(|| scroll.axis.cross())
+            }
+            _ => None,
+        },
         // App-declared, projected straight off the node the way `ambient`
         // is one line up — spec 010's router reads these off the placement.
         behaviour: node.behaviour,
@@ -1339,6 +1392,7 @@ mod tests {
                 axis: Axis::Vertical,
                 overscan,
                 indicators: crate::tree::ScrollIndicators::Automatic,
+                cross_scroll: false,
             },
             viewport: super::SizeProposal::unspecified(),
         };

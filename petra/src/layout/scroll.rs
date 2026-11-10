@@ -119,7 +119,10 @@ pub fn measure(
     // below, and it is also how `place` later learns the content extent for
     // offset clamping. The cross axis passes the incoming (padded) offer
     // straight through, unchanged.
-    let child_proposal = padded_proposal.with_axis(axis, Proposal::Unbounded);
+    let mut child_proposal = padded_proposal.with_axis(axis, Proposal::Unbounded);
+    if scroll.cross_scroll {
+        child_proposal = child_proposal.with_axis(axis.cross(), Proposal::Unbounded);
+    }
     // Measured inside this container's own scroll frame: a `collection`
     // below answers a different size depending on which axis scrolls, and
     // that axis is this node's.
@@ -131,15 +134,22 @@ pub fn measure(
     // takes, not what its content takes: an `Exact` offer is honoured
     // exactly, `Zero` is the minimum, and only the two open probes reach for
     // the content extent just measured.
-    let viewport_extent = match padded_proposal.axis(axis) {
+    let viewport_along = |at: Axis| match padded_proposal.axis(at) {
         Proposal::Exact(v) => v.max(0.0),
         Proposal::Zero => 0.0,
-        Proposal::Unbounded | Proposal::Unspecified => child_size.along(axis),
+        Proposal::Unbounded | Proposal::Unspecified => child_size.along(at),
+    };
+    // A two-axis scroll answers its viewport on the cross axis the same
+    // way; a one-axis scroll passes its content's cross extent through.
+    let cross_extent = if scroll.cross_scroll {
+        viewport_along(axis.cross())
+    } else {
+        child_size.across(axis)
     };
     Size::from_axes(
         axis,
-        viewport_extent + padding.along(axis),
-        child_size.across(axis) + padding.along(axis.cross()),
+        viewport_along(axis) + padding.along(axis),
+        cross_extent + padding.along(axis.cross()),
     )
 }
 
@@ -193,8 +203,11 @@ pub fn place(
         // than whatever this container's own incoming proposal happened to
         // be: by `place` time negotiation is over and the viewport size is a
         // fact, not one of several offers being probed.
-        let child_proposal =
+        let mut child_proposal =
             SizeProposal::exact(viewport_size).with_axis(axis, Proposal::Unbounded);
+        if scroll.cross_scroll {
+            child_proposal = child_proposal.with_axis(axis.cross(), Proposal::Unbounded);
+        }
         let frame = frame_for(node, path, SizeProposal::exact(viewport_size));
         let content_size = ctx.within_scroll(frame.clone(), |ctx| {
             crate::layout::measure(child, ctx, path, child_proposal)
@@ -229,12 +242,21 @@ pub fn place(
         // The same sentence, for the same reason, is already three hundred
         // lines below on a collection's rows (`place_collection`). Two places
         // is one too many; both are in this file and both now say it.
-        let child_rect = axis_rect(
-            content,
+        let cross_viewport = viewport_size.across(axis);
+        let cross_content = content_size.across(axis).max(cross_viewport);
+        // The cross offset, clamped the same way as the main one. Zero for a
+        // one-axis scroll, whose content is never wider than offered.
+        let cross_offset = if scroll.cross_scroll {
+            ctx.state
+                .cross_offset(&path.id())
+                .clamp(0.0, (cross_content - cross_viewport).max(0.0))
+        } else {
+            0.0
+        };
+        let child_rect = shifted_across(
+            axis_rect(content, axis, main_origin, content_extent, cross_content),
             axis,
-            main_origin,
-            content_extent,
-            content_size.across(axis).max(viewport_size.across(axis)),
+            cross_offset,
         );
         // The child is placed at its full content size so ordinary children
         // (a stack of rows, say) lay out naturally; only the *paint* clip is
@@ -277,6 +299,28 @@ pub fn place(
             .clipped_to(slot.rect);
             crate::layout::place(&INDICATOR, ctx, path, thumb_slot, sink);
         }
+        // The cross thumb: the same drawing, along the other edge.
+        if scroll.cross_scroll
+            && scroll.indicators == ScrollIndicators::Automatic
+            && let Some(rect) = thumb_rect(
+                ctx,
+                slot.rect,
+                axis.cross(),
+                cross_viewport,
+                cross_content,
+                cross_offset,
+            )
+        {
+            let thumb_slot = Slot {
+                rect,
+                z: slot.z,
+                clip: slot.clip,
+                opacity: slot.opacity,
+                window: slot.window,
+            }
+            .clipped_to(slot.rect);
+            crate::layout::place(&CROSS_INDICATOR, ctx, path, thumb_slot, sink);
+        }
     }
 
     sink.leave();
@@ -287,6 +331,10 @@ pub fn place(
 /// key ([`crate::tree::Violation::DuplicateSiblingKey`]), so the thumb's id
 /// can never be an author's node.
 pub const INDICATOR_KEY: &str = "scroll-indicator";
+
+/// The key of a two-axis `scroll`'s cross indicator. Refused as an authored
+/// child key for the reason [`INDICATOR_KEY`] is.
+pub const CROSS_INDICATOR_KEY: &str = "scroll-indicator-cross";
 
 /// The thumb's thickness across the axis.
 const THUMB_THICKNESS: &str = "spacing-02";
@@ -301,8 +349,15 @@ const THUMB_MIN_LENGTH: &str = "spacing-05";
 /// The indicator node: a fill and a full corner, nothing else. One node for
 /// every scroll in every frame, built once. `border-strong` is the theme's
 /// tone for a non-text mark that must stand at 3:1 against its layer.
-static INDICATOR: std::sync::LazyLock<ViewNode> = std::sync::LazyLock::new(|| {
-    let mut node = ViewNode::new(crate::tree::NodeKind::Stack, INDICATOR_KEY);
+static INDICATOR: std::sync::LazyLock<ViewNode> =
+    std::sync::LazyLock::new(|| indicator(INDICATOR_KEY));
+
+/// The cross indicator: [`INDICATOR`]'s drawing under its own key.
+static CROSS_INDICATOR: std::sync::LazyLock<ViewNode> =
+    std::sync::LazyLock::new(|| indicator(CROSS_INDICATOR_KEY));
+
+fn indicator(key: &str) -> ViewNode {
+    let mut node = ViewNode::new(crate::tree::NodeKind::Stack, key);
     for (role, token) in [
         ("background", "border-strong"),
         ("radius", "shape.corner-full"),
@@ -313,7 +368,7 @@ static INDICATOR: std::sync::LazyLock<ViewNode> = std::sync::LazyLock::new(|| {
         );
     }
     node
-});
+}
 
 /// Where a scroll's thumb sits, or [`None`] when the content fits.
 ///
@@ -563,6 +618,15 @@ fn axis_rect(
     match axis {
         Axis::Horizontal => Rect::new(main_origin, base.y, main_extent, cross_extent),
         Axis::Vertical => Rect::new(base.x, main_origin, cross_extent, main_extent),
+    }
+}
+
+/// `rect` moved back by `offset` across `axis`: where a two-axis scroll's
+/// content sits for its cross offset.
+fn shifted_across(rect: Rect, axis: Axis, offset: f32) -> Rect {
+    match axis.cross() {
+        Axis::Horizontal => Rect::new(rect.x - offset, rect.y, rect.w, rect.h),
+        Axis::Vertical => Rect::new(rect.x, rect.y - offset, rect.w, rect.h),
     }
 }
 
@@ -1736,5 +1800,170 @@ mod tests {
         assert_eq!(horizontal, Rect::new(100.0, 7.0, 20.0, 9.0));
         let vertical = super::axis_rect(base, Axis::Vertical, 100.0, 20.0, 9.0);
         assert_eq!(vertical, Rect::new(5.0, 100.0, 9.0, 20.0));
+    }
+
+    /// A spacer pinned at `w` by `h`.
+    fn sized(key: &str, w: f32, h: f32) -> ViewNode {
+        ViewNode::new(NodeKind::Spacer, key).with_constraints(Constraints {
+            horizontal: AxisConstraint {
+                min: Some(w),
+                max: Some(w),
+                priority: 0,
+            },
+            vertical: AxisConstraint {
+                min: Some(h),
+                max: Some(h),
+                priority: 0,
+            },
+        })
+    }
+
+    /// A two-axis scroll `code` over a row of a 30-wide pinned `gutter` and
+    /// a 500-wide `text`, both 400 tall: 530 by 400 of content.
+    fn two_axis() -> ViewNode {
+        let mut gutter = sized("gutter", 30.0, 400.0).interactive(
+            crate::tree::Role::Button,
+            "gutter",
+            &[crate::tree::Interaction::Click],
+        );
+        gutter.props.pinned = Some(true);
+        gutter.props.z = Some(1);
+        let row = ViewNode::new(NodeKind::Stack, "row")
+            .with_props(Props {
+                axis: Some(Axis::Horizontal),
+                ..Props::default()
+            })
+            .child(gutter)
+            .child(sized("text", 500.0, 400.0));
+        ViewNode::new(NodeKind::Scroll, "code")
+            .with_props(Props {
+                cross_scroll: Some(true),
+                ..Props::default()
+            })
+            .child(row)
+    }
+
+    /// Place [`two_axis`] in a 200 by 100 port at the two offsets.
+    fn place_two_axis(main: f32, cross: f32) -> Vec<Placement> {
+        let mut h = Harness::new();
+        h.set_scroll("/code", main);
+        h.state.cross_offsets.insert("/code".to_owned(), cross);
+        let mut sink = PlacementList::new();
+        crate::layout::place(
+            &two_axis(),
+            &mut h.ctx(),
+            &mut KeyPath::root(),
+            Slot::new(Rect::new(0.0, 0.0, 200.0, 100.0)),
+            &mut sink,
+        );
+        sink.as_slice().to_vec()
+    }
+
+    fn rect_of(placed: &[Placement], id: &str) -> Rect {
+        placed
+            .iter()
+            .find(|p| p.id == id)
+            .unwrap_or_else(|| panic!("{id} is placed"))
+            .rect
+    }
+
+    /// The content moves by both offsets, each clamped to its own overflow
+    /// (530 - 200 across, 400 - 100 along), and the scroll's placement names
+    /// the cross axis so the frame does not have to guess it from geometry.
+    #[test]
+    fn a_two_axis_scroll_offsets_and_clamps_both_axes() {
+        let placed = place_two_axis(40.0, 150.0);
+        assert_eq!(
+            rect_of(&placed, "/code/row"),
+            Rect::new(-150.0, -40.0, 530.0, 400.0)
+        );
+        let clamped = place_two_axis(9_000.0, 9_000.0);
+        assert_eq!(
+            rect_of(&clamped, "/code/row"),
+            Rect::new(-330.0, -300.0, 530.0, 400.0)
+        );
+        let scroll = placed.iter().find(|p| p.id == "/code").expect("scroll");
+        assert_eq!(scroll.semantics.cross_axis, Some(Axis::Horizontal));
+    }
+
+    /// Both thumbs, with the same drawing: the main one on the right edge,
+    /// the cross one on the bottom, its length the visible share 200 / 530.
+    /// A one-axis scroll draws no cross thumb however wide its content.
+    #[test]
+    fn a_two_axis_scroll_draws_a_thumb_on_each_axis() {
+        let placed = place_two_axis(0.0, 0.0);
+        let thumb = |key: &str| {
+            placed
+                .iter()
+                .find(|p| p.id == format!("/code/{key}"))
+                .cloned()
+        };
+        let main = thumb(super::INDICATOR_KEY).expect("the main thumb");
+        let cross = thumb(super::CROSS_INDICATOR_KEY).expect("the cross thumb");
+        assert!(main.rect.x > 190.0 && main.rect.h < 100.0);
+        assert!(cross.rect.y > 90.0, "along the bottom: {:?}", cross.rect);
+        assert!(
+            (cross.rect.w - 192.0 * 200.0 / 530.0).abs() < 0.01,
+            "{:?}",
+            cross.rect
+        );
+        let mut one_axis = two_axis();
+        one_axis.props.cross_scroll = None;
+        let mut h = Harness::new();
+        let mut sink = PlacementList::new();
+        crate::layout::place(
+            &one_axis,
+            &mut h.ctx(),
+            &mut KeyPath::root(),
+            Slot::new(Rect::new(0.0, 0.0, 200.0, 100.0)),
+            &mut sink,
+        );
+        assert!(
+            !sink
+                .as_slice()
+                .iter()
+                .any(|p| p.id.ends_with(super::CROSS_INDICATOR_KEY))
+        );
+    }
+
+    /// A pinned child stays at the port's leading edge while its siblings
+    /// move under it, and only once scrolling would carry it past the edge.
+    #[test]
+    fn a_pinned_child_stays_at_the_leading_edge() {
+        let at_rest = place_two_axis(0.0, 0.0);
+        assert_eq!(rect_of(&at_rest, "/code/row/gutter").x, 0.0);
+        let scrolled = place_two_axis(0.0, 150.0);
+        assert_eq!(
+            rect_of(&scrolled, "/code/row/gutter"),
+            Rect::new(0.0, 0.0, 30.0, 400.0)
+        );
+        assert_eq!(rect_of(&scrolled, "/code/row/text").x, 30.0 - 150.0);
+    }
+
+    /// The pin is real geometry: a press over the gutter at a cross offset
+    /// hits the gutter, not the text that scrolled under it.
+    #[test]
+    fn a_press_at_an_offset_hits_the_pinned_child() {
+        use crate::frame::{TransitionActivity, Viewport, petrify};
+        use crate::geom::Point;
+        use crate::input::hit_test;
+        use crate::testing::validated;
+        use crate::token::ThemeMode;
+        use crate::tree::Interaction;
+
+        let mut h = Harness::new();
+        h.state.cross_offsets.insert("/code".to_owned(), 150.0);
+        let tree = two_axis();
+        let frame = petrify(
+            1,
+            validated(&tree),
+            &mut h.ctx(),
+            Viewport::new(Size::new(200.0, 100.0), ThemeMode::Dark),
+            TransitionActivity::default(),
+        );
+        let hit = hit_test(&frame, Point::new(10.0, 50.0), Interaction::Click);
+        assert_eq!(hit.map(|p| p.id.as_str()), Some("/code/row/gutter"));
+        assert_eq!(frame.scroll_axis("/code"), Axis::Vertical);
+        assert_eq!(frame.scroll_overflow("/code", Axis::Horizontal), 330.0);
     }
 }

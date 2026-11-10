@@ -3565,7 +3565,23 @@ impl<A: App> Host<A> {
         // axis) - offset`, so a larger offset moves the content the other
         // way).
         let desired = current - delta.along(axis);
-        self.write_scroll_offset(node, desired, max_offset)
+        // A two-axis scroll takes the other component too: a trackpad's
+        // sideways swipe, or a wheel under Shift (`crate::input` turns it).
+        let cross = placement
+            .semantics
+            .cross_axis
+            .map(|cross| (cross, frame.scroll_overflow(node, cross)));
+        let moved = self.write_scroll_offset(node, desired, max_offset);
+        let Some((cross, max_cross)) = cross else {
+            return moved;
+        };
+        let current = self.state.cross_offset(node).min(max_cross);
+        let next = (current - delta.along(cross)).clamp(0.0, max_cross);
+        if next == current {
+            return moved;
+        }
+        self.state.cross_offsets.insert(node.to_owned(), next);
+        true
     }
 
     /// Scroll `target`'s nearest enclosing `Scroll` just far enough that

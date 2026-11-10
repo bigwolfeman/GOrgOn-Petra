@@ -169,6 +169,16 @@ impl FrameMemo {
                 dirty.insert(id.clone());
             }
         }
+        let crossed = self
+            .state
+            .cross_offsets
+            .keys()
+            .chain(now.cross_offsets.keys());
+        for id in crossed {
+            if self.state.cross_offset(id) != now.cross_offset(id) {
+                dirty.insert(id.clone());
+            }
+        }
 
         // Both ends of every interaction-state move. Written as a table
         // rather than as four copies of the same `if`, so a sixth flag is one
