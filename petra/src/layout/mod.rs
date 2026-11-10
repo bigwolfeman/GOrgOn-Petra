@@ -32,7 +32,7 @@ use crate::geom::{Insets, Rect, Scale, Size};
 use crate::input::{Capture, TextSelection};
 use crate::token::{ThemeSnapshot, TokenName};
 use crate::tree::props::ScrollProps;
-use crate::tree::{InsetRefs, KeyPath, NodeKind, Role, TextWrap, ViewNode};
+use crate::tree::{InsetRefs, KeyPath, NodeKind, Reveal, Role, TextWrap, ViewNode};
 
 pub use proposal::{ChangeSet, MeasureCache, MeasureKey, Proposal, SizeProposal};
 
@@ -468,6 +468,20 @@ pub struct Slot {
     /// resized window changes every slot, and a surface centred in the old
     /// window is never carried over into the new one.
     pub window: Rect,
+    /// Whether the nearest enclosing [`Reveal::Group`] is engaged, or `None`
+    /// outside every group. Written by the dispatcher at a group; read by it
+    /// at a [`Reveal::WithGroup`] node. See [`Reveal`].
+    ///
+    /// On the slot rather than on [`LayoutCtx`] for the reason
+    /// [`Slot::window`] is: slot equality is the reuse test, so a group whose
+    /// engagement moved offers every child a different slot and no
+    /// carried-over descendant keeps the reveal it was placed with.
+    pub group_engaged: Option<bool>,
+    /// Whether this slot sits inside a concealed [`Reveal::WithGroup`]
+    /// subtree. Cumulative like [`Slot::opacity`]: once set, every
+    /// descendant's slot carries it. The sink projects it onto
+    /// [`crate::frame::PlacementSemantics::concealed`].
+    pub concealed: bool,
 }
 
 impl Slot {
@@ -480,6 +494,31 @@ impl Slot {
             clip: rect,
             opacity: 1.0,
             window: rect,
+            group_engaged: None,
+            concealed: false,
+        }
+    }
+
+    /// This slot as one engagement group offers it to its children: the
+    /// group's own engagement replaces whatever an outer group carried.
+    #[must_use]
+    pub fn engaged(self, engaged: bool) -> Self {
+        Self {
+            group_engaged: Some(engaged),
+            ..self
+        }
+    }
+
+    /// This slot concealed: opacity zero, so the subtree paints nothing
+    /// through the path every fade already takes, and
+    /// [`Slot::concealed`] set, so hit testing passes through it. Layout is
+    /// untouched; the subtree keeps its box.
+    #[must_use]
+    pub fn concealed(self) -> Self {
+        Self {
+            opacity: 0.0,
+            concealed: true,
+            ..self
         }
     }
 
@@ -728,6 +767,73 @@ fn harvest_anchor_rects(root: &ViewNode, ctx: &mut LayoutCtx<'_>, slot: Slot) {
     ctx.reuse = held;
 }
 
+/// `slot` after this node's own part in engagement reveal ([`Reveal`]).
+///
+/// A group writes its engagement onto the slot its children inherit; a
+/// revealed node conceals itself and its subtree while the group above it is
+/// not engaged. Run by the dispatcher, once per node, so the twelve kinds
+/// cannot disagree on it. `path` is this node's own path.
+///
+/// A [`Reveal::WithGroup`] node with no group above it is concealed, but
+/// `tree::validate` refuses that tree, so layout never sees one.
+fn reveal_slot(node: &ViewNode, state: &LayoutState, path: &KeyPath, slot: Slot) -> Slot {
+    match node.reveal {
+        Reveal::Always => slot,
+        Reveal::Group => slot.engaged(group_engaged(node, &path.id(), state)),
+        Reveal::WithGroup if slot.group_engaged == Some(true) => slot,
+        Reveal::WithGroup => slot.concealed(),
+    }
+}
+
+/// Whether the engagement group `node`, placed at `id`, is engaged under
+/// `state`: the pointer or focus is on a node whose **nearest** group is this
+/// one, or the group declares itself selected. See [`Reveal`].
+///
+/// Read from the same snapshot [`semantics_of`] reads `hovered` and
+/// `focused` from, so the reveal and the hover look of one frame cannot
+/// disagree.
+#[must_use]
+pub fn group_engaged(node: &ViewNode, id: &str, state: &LayoutState) -> bool {
+    let engages = |named: &Option<String>| {
+        named
+            .as_deref()
+            .is_some_and(|named| nearest_group_of(node, id, named))
+    };
+    node.semantics.selected || engages(&state.hovered) || engages(&state.focused)
+}
+
+/// Whether the group `group`, placed at `id`, is the nearest
+/// [`Reveal::Group`] at or above the node `named`.
+///
+/// Nearest wins, as a nested list row expects: the pointer on a child row
+/// shows the child's actions and not its parent's. The walk follows
+/// `named`'s key path down `group`'s own children and answers `false` at the
+/// first group it meets on the way, `named` itself included.
+///
+/// A collection's rows are not children in the tree; its
+/// [`RowSource`] makes them during placement. A path that goes into one
+/// leaves the walk there, so an inner group inside a collection row does not
+/// take engagement from a group above the collection. Both engage.
+fn nearest_group_of(group: &ViewNode, id: &str, named: &str) -> bool {
+    if !KeyPath::is_at_or_under(named, id) {
+        return false;
+    }
+    let (Some(target), Some(here)) = (KeyPath::parse(named), KeyPath::parse(id)) else {
+        return false;
+    };
+    let mut node = group;
+    for key in &target.segments()[here.len()..] {
+        let Some(child) = node.children.iter().find(|child| child.key == *key) else {
+            return true;
+        };
+        if child.reveal == Reveal::Group {
+            return false;
+        }
+        node = child;
+    }
+    true
+}
+
 /// [`place`] below the root: no harvest, and the harvest walk's own pruning.
 fn place_node(
     node: &ViewNode,
@@ -749,6 +855,7 @@ fn place_node(
         Some(z) => slot.above(z),
         None => slot,
     };
+    let slot = reveal_slot(node, ctx.state, path, slot);
 
     // Can this whole subtree be carried over from the previous frame? The
     // tests run cheapest-first, and the dirty scan runs last because it is
@@ -1073,6 +1180,10 @@ pub fn semantics_of(node: &ViewNode, id: &str, state: &LayoutState) -> Placement
                 .capture
                 .as_ref()
                 .is_some_and(|capture| capture.node == id),
+        // Decided by the dispatcher on the slot, not here, because it is a
+        // fact about the subtree this node sits in; the sink projects it
+        // (`PlacementSink::note_slot`).
+        concealed: false,
         // App-declared, so these two project straight off the node the way
         // `disabled` does, and are complete as of this change.
         read_only: node.semantics.read_only,

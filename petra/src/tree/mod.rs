@@ -26,7 +26,7 @@ pub use binding_eval::{
 pub use key::{Key, KeyPath};
 pub use node::{
     AxisConstraint, Behaviour, ComponentRef, Constraints, FocusFigure, FocusShownOn, Intent,
-    Interaction, NodeKind, Phase, ROLE_NAMES, Role, Semantics, TransitionRef, ViewNode,
+    Interaction, NodeKind, Phase, ROLE_NAMES, Reveal, Role, Semantics, TransitionRef, ViewNode,
 };
 // `Align` here is the anchor alignment `props` declares, not
 // `crate::geom::Align`, which is a child's cross-axis placement inside its

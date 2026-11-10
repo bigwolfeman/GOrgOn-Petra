@@ -123,6 +123,22 @@ pub struct PlacementSemantics {
     /// and is what makes a gesture survive crossing a modal's edge
     /// (`contracts/interaction-state.md` §7).
     pub captured: bool,
+    /// Whether this node sits in a [`crate::tree::Reveal::WithGroup`] subtree
+    /// whose group is not engaged this frame. Engine-derived, like
+    /// [`Self::hovered`], and projected by the sink off
+    /// [`crate::layout::Slot::concealed`].
+    ///
+    /// A concealed node keeps its rect and paints at opacity zero, and
+    /// [`crate::input::hit_test`] passes through it. It stays a focus
+    /// target and stays in the semantic projection: hiding a control from
+    /// the keyboard or from a screen reader because the pointer is elsewhere
+    /// would make access depend on a mouse.
+    ///
+    /// **Not** a digest input. The picture is already in the digest through
+    /// [`Placement::opacity`], which concealment drives to zero; what this
+    /// flag adds is a routing fact, the same argument
+    /// [`Self::behaviour`] makes.
+    pub concealed: bool,
     /// Declared read-only state.
     ///
     /// **Not** a weaker `disabled`. A read-only node stays Tab-reachable, stays
@@ -644,6 +660,11 @@ pub trait PlacementSink {
     /// (`.agents/notes/proposed/architecture/2026-08-22-petra-incremental-frames.md`,
     /// condition 2). Storing the taken rect instead would silently accept a
     /// subtree whose parent moved the box around it.
+    ///
+    /// An implementation MUST also copy [`Slot::concealed`] onto the
+    /// placement's [`PlacementSemantics::concealed`]. The slot is where the
+    /// dispatcher decides concealment, and this is the one call that holds
+    /// both the slot and the placement, so no container has to carry it.
     fn note_slot(&mut self, index: usize, slot: Slot);
 
     /// Attach the paint payload for the placement at `index`.
@@ -913,6 +934,7 @@ impl PlacementSink for PlacementList {
     }
 
     fn note_slot(&mut self, index: usize, slot: Slot) {
+        self.placements[index].semantics.concealed = slot.concealed;
         self.slots[index] = Some(slot);
     }
 

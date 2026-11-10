@@ -685,6 +685,11 @@ fn leaf_bytes(scale: Scale, p: &Placement) -> Vec<u8> {
                 // somehow painted from it would make this a defect, and the
                 // fix is the shape of this one — hash it and bump `DOMAIN`.
                 bindings: _,
+                // Engagement reveal's routing half. Concealment reaches the
+                // picture through `opacity`, which it drives to zero and
+                // which is hashed above; this flag only says hit testing
+                // passes through the node. Same argument as `behaviour`.
+                concealed: _,
             },
         // Rewritable, not merely redundant: a subtree a reuse pass copies
         // from the previous frame is rebased onto its new position, and
@@ -1271,6 +1276,9 @@ mod tests {
                 hovered: true,
                 active: false,
                 captured: true,
+                // Non-default, held out of the stream: the pinned vectors
+                // below stay unchanged with it set.
+                concealed: true,
                 read_only: false,
                 skeleton: true,
                 disabled: false,
