@@ -122,6 +122,10 @@ impl ScrollRequest {
 pub enum FocusTarget {
     /// The placement with this id.
     Node(String),
+    /// The first placement, in paint order, whose own key is this. For a
+    /// node whose full path the application does not build, the same rule
+    /// as [`RevealTarget::Key`].
+    Key(String),
     /// The row keyed `key` of the collection that reads `source`.
     Row {
         /// The collection's [`crate::layout::RowSource`] name.
@@ -158,6 +162,7 @@ impl PetrifiedFrame {
     pub fn focus_id(&self, target: &FocusTarget) -> Option<String> {
         match target {
             FocusTarget::Node(id) => self.placement(id).map(|p| p.id.clone()),
+            FocusTarget::Key(key) => self.placement_keyed(key).map(|p| p.id.clone()),
             FocusTarget::Row { source, key } => {
                 let collection = self.collection_of(source)?;
                 let id = format!(
@@ -323,7 +328,8 @@ impl PetrifiedFrame {
             RevealTarget::Node(_) | RevealTarget::Key(_) => {
                 let placement = match target {
                     RevealTarget::Node(id) => self.placements.iter().find(|p| &p.id == id)?,
-                    _ => self.keyed(target)?,
+                    RevealTarget::Key(key) => self.placement_keyed(key)?,
+                    RevealTarget::Row { .. } => return None,
                 };
                 // A scroll does not reveal itself inside itself.
                 let scroll = self
@@ -352,11 +358,8 @@ impl PetrifiedFrame {
 
 impl PetrifiedFrame {
     /// The first placement whose own key is the one `target` names.
-    fn keyed(&self, target: &RevealTarget) -> Option<&crate::frame::Placement> {
-        let RevealTarget::Key(key) = target else {
-            return None;
-        };
-        let escaped = crate::tree::Key::from(key.as_str()).escaped();
+    fn placement_keyed(&self, key: &str) -> Option<&crate::frame::Placement> {
+        let escaped = crate::tree::Key::from(key).escaped();
         let tail = format!("/{escaped}");
         // The suffix test is cheap; the parse rules out a `/` that was an
         // escaped part of a longer key.
@@ -592,6 +595,12 @@ mod tests {
                 .as_deref(),
             Some("/list")
         );
+        assert_eq!(
+            frame.focus_id(&FocusTarget::Key("list".into())).as_deref(),
+            Some("/list"),
+            "a key names the placement without its path"
+        );
+        assert_eq!(frame.focus_id(&FocusTarget::Key("nope".into())), None);
     }
 
     /// A 200-tall scroll over 20-tall rows shows ten.
