@@ -385,6 +385,19 @@ pub trait App: RowSource {
         None
     }
 
+    /// A scroll the application wants moved by a distance, taken and cleared.
+    ///
+    /// For a key the application handles that scrolls, such as an arrow on a
+    /// focused code view. Asked once per pass beside [`App::scroll_request`]
+    /// and resolved against the frame on screen: a target that frame does not
+    /// place is dropped, since a step has no meaning later. The offsets stay
+    /// the host's: the step goes through the same clamp the wheel does.
+    ///
+    /// The default asks for nothing.
+    fn scroll_by_request(&mut self) -> Option<gorgon_petra::frame::ScrollBy> {
+        None
+    }
+
     /// A node the application wants focused, taken and cleared.
     ///
     /// For a widget whose own model owns the focused row: a tree or a list
@@ -1726,6 +1739,7 @@ impl<A: App> Host<A> {
             self.pending_reveal = Some(request);
         }
         let had_input = self.reveal_pending() || had_input;
+        let had_input = self.scroll_by_pending() || had_input;
         if let Some(target) = self.app.focus_request() {
             self.pending_app_focus = Some(target);
         }
@@ -3211,6 +3225,24 @@ impl<A: App> Host<A> {
                 self.write_scroll_offset(&scroll, offset, max_offset)
             }
         }
+    }
+
+    /// Answer the application's [`App::scroll_by_request`] against the frame
+    /// on screen, and report whether a scroll offset changed.
+    fn scroll_by_pending(&mut self) -> bool {
+        let Some(by) = self.app.scroll_by_request() else {
+            return false;
+        };
+        let Some(scroll) = self
+            .last_frame
+            .as_ref()
+            .and_then(|frame| frame.scroll_id(&by.target))
+        else {
+            return false;
+        };
+        // `apply_scroll` takes a wheel's delta, whose sign is the opposite of
+        // an offset's.
+        self.apply_scroll(&scroll, Size::new(-by.dx, -by.dy))
     }
 
     /// A rect's origin along `axis`: `x` for horizontal, `y` for vertical.
@@ -4770,6 +4802,79 @@ mod tests {
         fn focus_request(&mut self) -> Option<gorgon_petra::frame::FocusTarget> {
             self.focus.take()
         }
+    }
+
+    /// A long scroll whose rows take no focus, so nothing pulls the offset
+    /// back to a focused row, and a step the app asks for.
+    struct Steps {
+        by: Option<gorgon_petra::frame::ScrollBy>,
+    }
+
+    impl RowSource for Steps {
+        fn rows(&mut self, _source: &str, range: Range<usize>) -> Vec<std::sync::Arc<ViewNode>> {
+            range
+                .map(|i| {
+                    std::sync::Arc::new(
+                        ViewNode::new(NodeKind::Text, format!("line-{i}")).with_props(Props {
+                            text: Some(format!("line {i}")),
+                            ..Props::default()
+                        }),
+                    )
+                })
+                .collect()
+        }
+    }
+
+    impl App for Steps {
+        fn view(&mut self) -> ViewNode {
+            let rows = ViewNode::new(NodeKind::Collection, "rows").with_props(Props {
+                total_count: Some(1000),
+                source: Some("lines".into()),
+                estimated_extent: Some(20.0),
+                ..Props::default()
+            });
+            ViewNode::new(NodeKind::Scroll, "code").child(rows)
+        }
+
+        fn handle(&mut self, _: &InputEvent, _: &Route, _: Option<&PetrifiedFrame>) {}
+
+        fn take_changes(&mut self) -> ChangeSet {
+            ChangeSet::All
+        }
+
+        fn scroll_by_request(&mut self) -> Option<gorgon_petra::frame::ScrollBy> {
+            self.by.take()
+        }
+    }
+
+    /// A step moves the scroll through the wheel's clamp: down moves the
+    /// offset by the step, up past the top stays at 0, and a step aimed at a
+    /// node the frame does not place moves nothing.
+    ///
+    /// Falsify by dropping the `scroll_by_pending` call in `Host::pass`: the
+    /// offset never moves.
+    #[test]
+    fn a_scroll_by_request_steps_the_scroll_and_clamps_like_the_wheel() {
+        use gorgon_petra::frame::ScrollBy;
+        let (ctx, mut host) = boot(Steps { by: None });
+        let offset = |host: &Host<Steps>| {
+            host.state()
+                .scroll_offsets
+                .get("/code")
+                .copied()
+                .unwrap_or(0.0)
+        };
+        host.app_mut().by = Some(ScrollBy::node("/code", 0.0, 60.0));
+        step(&ctx, &mut host, RawInput::default());
+        assert_eq!(offset(&host), 60.0);
+        host.app_mut().by = Some(ScrollBy::node("/code/rows", 0.0, -100.0));
+        step(&ctx, &mut host, RawInput::default());
+        assert_eq!(offset(&host), 0.0, "clamped at the top");
+        host.app_mut().by = Some(ScrollBy::node("/code", 0.0, 40.0));
+        step(&ctx, &mut host, RawInput::default());
+        host.app_mut().by = Some(ScrollBy::node("/nowhere", 0.0, 60.0));
+        step(&ctx, &mut host, RawInput::default());
+        assert_eq!(offset(&host), 40.0, "no scroll there, nothing moves");
     }
 
     /// A focus request for a row off screen waits; paired with a scroll

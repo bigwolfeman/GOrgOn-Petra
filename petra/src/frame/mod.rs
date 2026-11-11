@@ -24,7 +24,7 @@ pub use placement::{
     CaretPaint, PaintContent, PaintState, Placement, PlacementList, PlacementSemantics,
     PlacementSink, TextPaint, TextRunPaint,
 };
-pub use reveal::{FocusTarget, Reveal, RevealAlign, RevealTarget, ScrollRequest};
+pub use reveal::{FocusTarget, Reveal, RevealAlign, RevealTarget, ScrollBy, ScrollRequest};
 pub use rounding::{DeviceRect, round_coord, round_rect};
 pub use viewport::Viewport;
 

@@ -117,6 +117,37 @@ impl ScrollRequest {
     }
 }
 
+/// An application's request that a scroll move by a distance, as a key press
+/// on a focused scroll does. The host owns the offsets, so the application
+/// names the scroll and the step, never the offset.
+///
+/// Unlike a [`ScrollRequest`] it names no content to show: a code view that
+/// scrolls sideways on the arrow keys has no node at a column to reveal.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScrollBy {
+    /// The scroll to move: the nearest `Scroll` at or above this target.
+    pub target: RevealTarget,
+    /// The step along the horizontal axis, in layout units. Positive shows
+    /// content further right.
+    pub dx: f32,
+    /// The step along the vertical axis, in layout units. Positive shows
+    /// content further down.
+    pub dy: f32,
+}
+
+impl ScrollBy {
+    /// Move the scroll at or above the node `id` by `dx` across and `dy`
+    /// down.
+    #[must_use]
+    pub fn node(id: impl Into<String>, dx: f32, dy: f32) -> Self {
+        Self {
+            target: RevealTarget::Node(id.into()),
+            dx,
+            dy,
+        }
+    }
+}
+
 /// A node an application wants focused.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FocusTarget {
@@ -357,6 +388,19 @@ impl PetrifiedFrame {
 }
 
 impl PetrifiedFrame {
+    /// The id of the `Scroll` a [`ScrollBy`] to `target` moves: the target
+    /// itself when it is one, else its nearest enclosing one. `None` when the
+    /// frame does not place the target or no scroll encloses it.
+    #[must_use]
+    pub fn scroll_id(&self, target: &RevealTarget) -> Option<String> {
+        let placement = match target {
+            RevealTarget::Node(id) => self.placement(id)?,
+            RevealTarget::Key(key) => self.placement_keyed(key)?,
+            RevealTarget::Row { source, .. } => self.collection_of(source)?,
+        };
+        self.scroll_ancestor(&placement.id).map(|p| p.id.clone())
+    }
+
     /// The first placement whose own key is the one `target` names.
     fn placement_keyed(&self, key: &str) -> Option<&crate::frame::Placement> {
         let escaped = crate::tree::Key::from(key).escaped();
@@ -384,7 +428,7 @@ fn leading(rect: Rect, axis: Axis) -> f32 {
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::{Reveal, RevealAlign, ScrollRequest};
+    use super::{Reveal, RevealAlign, RevealTarget, ScrollRequest};
     use crate::frame::{PetrifiedFrame, TransitionActivity, Viewport, petrify};
     use crate::geom::Size;
     use crate::testing::{GeneratedRows, Harness, MonoContent, validated};
@@ -624,5 +668,34 @@ mod tests {
             frame.reveal(&ScrollRequest::node(id, RevealAlign::Nearest), &offsets(0.0)),
             Reveal::Scroll { offset, .. } if offset == 13.0 * PITCH - VIEW
         ));
+    }
+
+    /// A scroll is found from itself, from a node inside it, from a key and
+    /// from a row source, and a node outside every scroll finds none.
+    #[test]
+    fn a_scroll_is_found_from_any_target_inside_it() {
+        let frame = frame(0.0);
+        let found = |target: RevealTarget| frame.scroll_id(&target);
+        assert_eq!(
+            found(RevealTarget::Node("/list".into())).as_deref(),
+            Some("/list")
+        );
+        assert_eq!(
+            found(RevealTarget::Node("/list/rows".into())).as_deref(),
+            Some("/list")
+        );
+        assert_eq!(
+            found(RevealTarget::Key("list".into())).as_deref(),
+            Some("/list")
+        );
+        assert_eq!(
+            found(RevealTarget::Row {
+                source: SOURCE.into(),
+                index: 3
+            })
+            .as_deref(),
+            Some("/list")
+        );
+        assert_eq!(found(RevealTarget::Node("/nowhere".into())), None);
     }
 }
