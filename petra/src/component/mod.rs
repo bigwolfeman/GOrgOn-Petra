@@ -179,7 +179,7 @@ pub use chrome_strip::{DIVIDER_EXTENT, chrome_strip};
 pub use code_snippet::{
     COPY_FEEDBACK, COPY_FEEDBACK_KEY, COPY_FEEDBACK_SECONDS, CodeInk, MULTI_CAP, MULTI_CAP_LINES,
     SHOW_LESS, SHOW_MORE, code_runs, code_snippet, code_snippet_copied, code_snippet_inline,
-    code_snippet_multi, code_snippet_multi_capped,
+    code_snippet_multi, code_snippet_multi_capped, code_well,
 };
 pub use contained_list::{
     contained_list, contained_list_disclosed, contained_list_lg, contained_list_sm,
@@ -308,9 +308,9 @@ pub use slider::{
 };
 pub use status::status;
 pub use structured_list::{
-    structured_list, structured_list_condensed, structured_list_placed_weights,
-    structured_list_row, structured_list_row_static, structured_list_sized,
-    structured_list_weights_at,
+    structured_list, structured_list_condensed, structured_list_condensed_sized,
+    structured_list_placed_weights, structured_list_row, structured_list_row_static,
+    structured_list_sized, structured_list_weights_at,
 };
 pub use tabs::{
     contained_tab, contained_tab_bar, contained_tab_lg, contained_tab_with_secondary,

@@ -178,6 +178,24 @@ pub fn code_snippet_multi(key: impl Into<Key>, code: impl Into<String>) -> ViewN
     })
 }
 
+/// A read-only code block: the well of [`code_snippet_multi`] with no copy
+/// control and no minimum height, so a three-line block is three lines tall.
+///
+/// For code that sits in running content, where a control per block would
+/// be noise and 288 units would be a hole. The run is selectable, so a drag
+/// takes the code. [`code_runs`] reaches the run for syntax ink.
+pub fn code_well(key: impl Into<Key>, code: impl Into<String>) -> ViewNode {
+    let mut node = stack(
+        key,
+        Axis::Vertical,
+        None,
+        vec![code_text(code.into(), true)],
+    );
+    node.props.align = Some(Align::Stretch);
+    node.props.padding = Some(pad(SPACING_05, SPACING_03));
+    paint_well(node)
+}
+
 /// Multi-line snippet with a metadata row and a DSH-style line cap.
 ///
 /// [`code_snippet_multi`] is Carbon's well: min-height 288, grows with
@@ -781,7 +799,7 @@ mod tests {
         COPY_FEEDBACK, COPY_FEEDBACK_KEY, COPY_FEEDBACK_SECONDS, CodeInk, INLINE_HEIGHT,
         LAYER_ACTIVE, LAYER_HOVER, MULTI_CAP, MULTI_CAP_LINES, MULTI_MIN, SHOW_LESS, SHOW_MORE,
         SIZE_MD, SURFACE_LAYER_THREE, SURFACE_RAISED, code_runs, code_snippet, code_snippet_copied,
-        code_snippet_inline, code_snippet_multi, code_snippet_multi_capped,
+        code_snippet_inline, code_snippet_multi, code_snippet_multi_capped, code_well,
     };
     use crate::component::tests::{assert_fits_parent, petrify_lone};
 
@@ -850,6 +868,26 @@ mod tests {
         assert!(copy.interactions.contains(&Interaction::Focus));
         assert!(copy.interactions.contains(&Interaction::Click));
         assert!(copy.is_interactive());
+    }
+
+    #[test]
+    fn code_well_is_a_selectable_well_with_no_copy_and_no_minimum() {
+        let node = code_well("w", "a\nb");
+        assert_eq!(node.constraints.vertical.min, None);
+        assert_eq!(token(&node, "background"), Some(SURFACE_RAISED));
+        assert!(
+            descendant(&node, "copy").is_none(),
+            "a well in prose has no control"
+        );
+        let run = named(&node, "code");
+        assert_eq!(run.props.text.as_deref(), Some("a\nb"));
+        assert!(run.semantics.read_only);
+        let coloured = code_runs(node, vec![CodeInk::Comment.over(3)]);
+        assert_eq!(
+            named(&coloured, "code").props.runs.len(),
+            1,
+            "runs reach the run"
+        );
     }
 
     #[test]
