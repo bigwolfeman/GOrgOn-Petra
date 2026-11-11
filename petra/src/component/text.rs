@@ -3,7 +3,8 @@
 use std::sync::Arc;
 
 use super::tokens::{
-    TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_BODY, TYPOGRAPHY_HEADING, TYPOGRAPHY_HEADING_SM, t,
+    TEXT_MUTED, TEXT_PRIMARY, TYPOGRAPHY_BODY, TYPOGRAPHY_HEADING, TYPOGRAPHY_HEADING_SM,
+    TYPOGRAPHY_LABEL, t,
 };
 use crate::tree::{Key, NodeKind, Props, TextWrap, ViewNode};
 
@@ -56,6 +57,15 @@ pub fn text(key: impl Into<Key>, content: impl Into<String>) -> ViewNode {
     props.tokens.insert("foreground".into(), t(TEXT_PRIMARY));
     disabled_label_ink(&mut props);
     ViewNode::new(NodeKind::Text, key).with_props(props)
+}
+
+/// [`text`] in label type, one line of a one-line bar. This is what
+/// [`text`] becomes under
+/// [`ControlSize::Compact`](crate::tree::ControlSize::Compact).
+pub fn text_xs(key: impl Into<Key>, content: impl Into<String>) -> ViewNode {
+    let mut node = text(key, content);
+    node.props.style = Some(t(TYPOGRAPHY_LABEL));
+    node
 }
 
 /// A section or page title.

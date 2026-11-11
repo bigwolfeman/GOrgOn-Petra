@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use super::MAX_DEPTH;
 use super::expand::{ExpandError, Fold, expand_node, too_deep};
-use crate::tree::{Key, KeyPath, NodeKind, ResolveInputs, ViewNode};
+use crate::tree::{ControlSize, Key, KeyPath, NodeKind, ResolveInputs, ViewNode};
 
 /// One outermost component reference whose parameters read slots.
 #[derive(Clone, Debug, PartialEq)]
@@ -33,6 +33,9 @@ pub struct Unit {
     reference: ViewNode,
     /// Every slot a bound parameter anywhere in its parameter tree reads.
     slots: BTreeSet<String>,
+    /// The control size the reference expanded under, so a regrowth builds
+    /// the same variants.
+    size: ControlSize,
 }
 
 impl Unit {
@@ -92,8 +95,23 @@ pub fn expand_with(
     declared: &ViewNode,
     inputs: &ResolveInputs,
 ) -> Result<ExpandedTree, ExpandError> {
+    expand_with_sized(declared, inputs, ControlSize::Regular)
+}
+
+/// [`expand_with`] for a tree mounted where `size` is in force: each
+/// component with a compact variant builds it when `size` is
+/// [`ControlSize::Compact`]. A node's own `control_size` replaces `size` for
+/// its subtree.
+///
+/// # Errors
+/// As [`expand_with`].
+pub fn expand_with_sized(
+    declared: &ViewNode,
+    inputs: &ResolveInputs,
+    size: ControlSize,
+) -> Result<ExpandedTree, ExpandError> {
     let mut units = Vec::new();
-    let tree = walk(declared, &mut Vec::new(), inputs, &mut units, 0)?;
+    let tree = walk(declared, &mut Vec::new(), inputs, &mut units, 0, size)?;
     Ok(ExpandedTree { tree, units })
 }
 
@@ -103,13 +121,15 @@ fn walk(
     inputs: &ResolveInputs,
     units: &mut Vec<Unit>,
     depth: usize,
+    size: ControlSize,
 ) -> Result<ViewNode, ExpandError> {
     if depth >= MAX_DEPTH {
         return Err(too_deep(node.key.as_str()).into());
     }
     if node.kind == NodeKind::Component {
-        return unit(node, at, inputs, units, depth);
+        return unit(node, at, inputs, units, depth, size);
     }
+    let size = node.props.control_size.unwrap_or(size);
     // Recursion stays in this small frame and the closure's: a `ViewNode`
     // temporary held across the recursive call multiplies a debug frame by
     // the depth, and a tree just under `MAX_DEPTH` then overflows the stack
@@ -120,7 +140,7 @@ fn walk(
         .enumerate()
         .map(|(ix, child)| {
             at.push(ix);
-            let grown = walk(child, at, inputs, units, depth + 1).map(Arc::new);
+            let grown = walk(child, at, inputs, units, depth + 1, size).map(Arc::new);
             at.pop();
             grown
         })
@@ -137,14 +157,17 @@ fn unit(
     inputs: &ResolveInputs,
     units: &mut Vec<Unit>,
     depth: usize,
+    size: ControlSize,
 ) -> Result<ViewNode, ExpandError> {
     let mut fold = Fold::with(inputs);
+    fold.size = size;
     let built = expand_node(node, depth, &mut fold)?;
     if !fold.read.is_empty() {
         units.push(Unit {
             at: at.to_vec(),
             reference: node.clone(),
             slots: fold.read,
+            size,
         });
     }
     Ok(built)
@@ -210,6 +233,7 @@ impl ExpandedTree {
                 continue;
             }
             let mut fold = Fold::with(inputs);
+            fold.size = unit.size;
             let mut node = expand_node(&unit.reference, unit.at.len(), &mut fold)
                 .map_err(|err| (self.unit_id(unit), err))?;
             if unit.at.is_empty() {

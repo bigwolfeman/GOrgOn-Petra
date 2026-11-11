@@ -84,10 +84,10 @@
 //! this library's other components (a status bar, a toolbar) would
 //! otherwise each have had to rebuild.
 
-use super::tokens::{SIZE_LG, SIZE_XS, SPACING_02, SPACING_03, SPACING_05};
+use super::tokens::{SIZE_LG, SIZE_XS, SPACING_02, SPACING_03, SPACING_05, t};
 use super::{pad, pin_block, stack};
 use crate::geom::{Align, Axis};
-use crate::tree::{Key, NodeKind, ViewNode};
+use crate::tree::{InsetRefs, Key, NodeKind, ViewNode};
 
 /// How far an undeclared divider runs inside a strip: [`SIZE_XS`] (24).
 ///
@@ -130,6 +130,35 @@ pub fn chrome_strip(key: impl Into<Key>, children: Vec<ViewNode>) -> ViewNode {
     node.with_constraints(pin_block(SIZE_LG))
 }
 
+/// How far an undeclared divider runs inside a compact strip. Numeric for
+/// the reason [`DIVIDER_EXTENT`] is: a constraint is an extent. Sixteen is
+/// the height of a label line, so the divider sits beside the type it
+/// separates and under a one-line bar's 23-unit row.
+pub const DIVIDER_EXTENT_XS: f32 = 16.0;
+
+/// [`chrome_strip`] for a one-line bar: no height of its own, no vertical
+/// padding, [`SPACING_03`] on each side, and dividers of
+/// [`DIVIDER_EXTENT_XS`]. The strip takes the height of the row it sits in
+/// and centres its children on it.
+///
+/// This is what [`chrome_strip`] becomes under
+/// [`ControlSize::Compact`](crate::tree::ControlSize::Compact).
+#[must_use]
+pub fn chrome_strip_xs(key: impl Into<Key>, children: Vec<ViewNode>) -> ViewNode {
+    let children = children
+        .into_iter()
+        .map(|child| size_a_divider(child, DIVIDER_EXTENT_XS))
+        .collect();
+    let mut node = stack(key, Axis::Horizontal, Some(SPACING_03), children);
+    node.props.align = Some(Align::Center);
+    node.props.padding = Some(InsetRefs {
+        left: Some(t(SPACING_03)),
+        right: Some(t(SPACING_03)),
+        ..InsetRefs::default()
+    });
+    node
+}
+
 /// Give a divider that declared no extent of its own [`DIVIDER_EXTENT`].
 ///
 /// Three conditions, all necessary. It has to be a
@@ -141,6 +170,11 @@ pub fn chrome_strip(key: impl Into<Key>, children: Vec<ViewNode>) -> ViewNode {
 /// has to be untouched, so an author who pinned a divider keeps what they
 /// asked for.
 fn size_a_bare_divider(child: ViewNode) -> ViewNode {
+    size_a_divider(child, DIVIDER_EXTENT)
+}
+
+/// [`size_a_bare_divider`] at a chosen extent.
+fn size_a_divider(child: ViewNode, extent: f32) -> ViewNode {
     let is_cross_divider =
         child.kind == NodeKind::Separator && child.props.axis == Some(Axis::Vertical);
     let undeclared =
@@ -151,7 +185,7 @@ fn size_a_bare_divider(child: ViewNode) -> ViewNode {
         // it — the one axis an author of a vertical rule is most likely to
         // have set.
         let mut child = child;
-        child.constraints.vertical = pin_block(DIVIDER_EXTENT).vertical;
+        child.constraints.vertical = pin_block(extent).vertical;
         return child;
     }
     child

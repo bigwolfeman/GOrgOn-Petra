@@ -364,6 +364,21 @@ pub const ENTRIES: &[Entry] = &[
     row!("ghost_button", KeyLabel, |p| lib::ghost_button(
         p.key, p.label
     )),
+    row!("primary_button_xs", KeyLabel, |p| lib::primary_button_xs(
+        p.key, p.label
+    )),
+    row!("tertiary_button_xs", KeyLabel, |p| lib::tertiary_button_xs(
+        p.key, p.label
+    )),
+    row!("danger_button_xs", KeyLabel, |p| lib::danger_button_xs(
+        p.key, p.label
+    )),
+    row!("danger_tertiary_button_xs", KeyLabel, |p| {
+        lib::danger_tertiary_button_xs(p.key, p.label)
+    }),
+    row!("danger_ghost_button_xs", KeyLabel, |p| {
+        lib::danger_ghost_button_xs(p.key, p.label)
+    }),
     row!("ghost_button_xs", KeyLabel, |p| lib::ghost_button_xs(
         p.key, p.label
     )),
@@ -385,6 +400,7 @@ pub const ENTRIES: &[Entry] = &[
     }),
     // -- text.rs (2 of 2) --------------------------------------------------
     row!("text", KeyLabel, |p| lib::text(p.key, p.label)),
+    row!("text_xs", KeyLabel, |p| lib::text_xs(p.key, p.label)),
     row!("heading", KeyLabel, |p| lib::heading(p.key, p.label)),
     // -- section.rs ---------------------------------------------------------
     row!("section", KeyLabelChildren, |p| lib::section(
@@ -430,6 +446,9 @@ pub const ENTRIES: &[Entry] = &[
         )
     }),
     // -- T001c: the last two hand-ports, `chrome_strip.rs` and `mod.rs`'s `rule` --
+    row!("chrome_strip_xs", KeyChildren, |p| lib::chrome_strip_xs(
+        p.key, p.children
+    )),
     row!("chrome_strip", KeyChildren, |p| lib::chrome_strip(
         p.key, p.children
     )),

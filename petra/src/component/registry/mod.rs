@@ -29,7 +29,7 @@ use std::sync::{Mutex, Once, OnceLock};
 use serde::Deserialize;
 
 use crate::component::params::ParamError;
-use crate::tree::ViewNode;
+use crate::tree::{ControlSize, ViewNode};
 
 /// Deserialize `params` into `T`, naming the constructor being built.
 ///
@@ -80,6 +80,7 @@ macro_rules! row {
 
 mod atoms;
 pub mod bound;
+mod compact;
 mod containment;
 mod data;
 mod expand;
@@ -252,7 +253,24 @@ pub fn lookup(name: &str) -> Option<Entry> {
 /// When no such constructor is registered, or the parameter table does not
 /// deserialize into that constructor's shape.
 pub fn build(name: &str, params: &serde_json::Value) -> Result<ViewNode, ParamError> {
-    let entry = lookup(name).ok_or_else(|| ParamError {
+    build_sized(name, params, ControlSize::Regular)
+}
+
+/// [`build`] at a control size: under [`ControlSize::Compact`] a name with a
+/// compact variant builds that variant, and every other name builds as in
+/// [`build`].
+///
+/// # Errors
+/// As [`build`].
+pub fn build_sized(
+    name: &str,
+    params: &serde_json::Value,
+    size: ControlSize,
+) -> Result<ViewNode, ParamError> {
+    let compact = (size == ControlSize::Compact)
+        .then(|| compact::lookup(name))
+        .flatten();
+    let entry = compact.or_else(|| lookup(name)).ok_or_else(|| ParamError {
         component: name.to_owned(),
         reason: format!("no component named `{name}`; see docs/catalogs/components.md"),
     })?;

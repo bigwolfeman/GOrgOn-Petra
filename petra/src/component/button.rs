@@ -550,6 +550,31 @@ pub fn ghost_button_xs(key: impl Into<Key>, label: impl Into<String>) -> ViewNod
     labelled(key, label, Variant::Ghost, Size::Xs)
 }
 
+/// The page's one loudest action at xs 24. See [`primary_button`].
+pub fn primary_button_xs(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
+    labelled(key, label, Variant::Primary, Size::Xs)
+}
+
+/// Carbon tertiary at xs 24.
+pub fn tertiary_button_xs(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
+    labelled(key, label, Variant::Tertiary, Size::Xs)
+}
+
+/// Carbon danger (filled) at xs 24.
+pub fn danger_button_xs(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
+    labelled(key, label, Variant::Danger, Size::Xs)
+}
+
+/// Carbon danger-tertiary at xs 24.
+pub fn danger_tertiary_button_xs(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
+    labelled(key, label, Variant::DangerTertiary, Size::Xs)
+}
+
+/// Carbon danger-ghost at xs 24.
+pub fn danger_ghost_button_xs(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {
+    labelled(key, label, Variant::DangerGhost, Size::Xs)
+}
+
 /// Carbon danger (filled). Same structure as [`button`]; the kind lives in
 /// `Semantics.value`, not a painted red — see the module comment.
 pub fn danger_button(key: impl Into<Key>, label: impl Into<String>) -> ViewNode {

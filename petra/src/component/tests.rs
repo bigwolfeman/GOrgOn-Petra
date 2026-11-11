@@ -2929,3 +2929,144 @@ mod overflow_drop {
         assert_eq!(w, ITEM);
     }
 }
+
+/// A container's `control_size` reaches every component under it when the
+/// tree is expanded, and a component with a compact variant builds it.
+mod compact_size {
+    use super::petrify_lone_at;
+    use crate::component::registry::expand;
+    use crate::geom::{Axis, Size};
+    use crate::tree::node::ComponentRef;
+    use crate::tree::{ControlSize, NodeKind, Props, ViewNode};
+    use serde_json::json;
+
+    fn reference(key: &str, name: &str, params: serde_json::Value) -> ViewNode {
+        let mut node = ViewNode::new(NodeKind::Component, key);
+        node.component = Some(ComponentRef::literal(name, params));
+        node
+    }
+
+    /// A row holding a button, a checkbox and a strip, under `size`.
+    fn row(size: Option<ControlSize>) -> ViewNode {
+        let mut row = ViewNode::new(NodeKind::Stack, "row").with_props(Props {
+            axis: Some(Axis::Horizontal),
+            control_size: size,
+            ..Props::default()
+        });
+        row = row.child(reference(
+            "go",
+            "button",
+            json!({"key": "go", "label": "Go"}),
+        ));
+        row = row.child(reference(
+            "auto",
+            "checkbox",
+            json!({"key": "auto", "label": "Auto", "selected": false}),
+        ));
+        row = row.child(reference(
+            "strip",
+            "chrome_strip",
+            json!({"key": "strip", "children": []}),
+        ));
+        row
+    }
+
+    fn heights(size: Option<ControlSize>) -> (f32, f32, f32) {
+        let tree = expand(&row(size)).expect("expands");
+        let frame = petrify_lone_at(tree, Size::new(600.0, 200.0));
+        let h = |key: &str| {
+            frame
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with(&format!("/{key}")))
+                .unwrap_or_else(|| panic!("{key} is not placed"))
+                .rect
+                .h
+        };
+        (h("go"), h("auto"), h("strip"))
+    }
+
+    /// Regular is what it always was: a 40-unit button and a 48-unit strip.
+    #[test]
+    fn without_a_size_components_are_regular() {
+        let (button, checkbox, strip) = heights(None);
+        assert_eq!(button, 40.0);
+        assert!(checkbox > 16.0);
+        assert_eq!(strip, 48.0);
+    }
+
+    /// Compact: a 24-unit button, a checkbox as tall as its 16-unit box, and
+    /// a strip with no height of its own.
+    #[test]
+    fn a_compact_container_gives_every_descendant_its_compact_variant() {
+        let (button, checkbox, strip) = heights(Some(ControlSize::Compact));
+        assert_eq!(button, 24.0, "the button is its xs form");
+        assert_eq!(checkbox, 16.0, "the checkbox is as tall as its box");
+        assert!(strip < 48.0, "the strip lost its 48-unit height: {strip}");
+    }
+
+    /// Text under a compact container is label type; regular is body.
+    #[test]
+    fn text_is_label_type_under_a_compact_container() {
+        let word = reference("w", "text", json!({"key": "w", "label": "hi"}));
+        let style = |size: Option<ControlSize>| {
+            let mut under = ViewNode::new(NodeKind::Stack, "c").with_props(Props {
+                control_size: size,
+                ..Props::default()
+            });
+            under = under.child(word.clone());
+            let tree = expand(&under).expect("expands");
+            tree.children[0]
+                .props
+                .style
+                .as_ref()
+                .map(|s| s.as_str().to_owned())
+        };
+        assert_eq!(style(None).as_deref(), Some("typography.body"));
+        assert_eq!(
+            style(Some(ControlSize::Compact)).as_deref(),
+            Some("typography.label")
+        );
+    }
+
+    /// An inner container may set the size back.
+    #[test]
+    fn an_inner_container_can_restore_regular() {
+        let mut outer = ViewNode::new(NodeKind::Stack, "outer").with_props(Props {
+            axis: Some(Axis::Vertical),
+            control_size: Some(ControlSize::Compact),
+            ..Props::default()
+        });
+        let mut inner = row(Some(ControlSize::Regular));
+        inner.key = crate::tree::Key::new("inner");
+        outer = outer.child(inner);
+        let tree = expand(&outer).expect("expands");
+        let frame = petrify_lone_at(tree, Size::new(600.0, 200.0));
+        let go = frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/go"))
+            .expect("go")
+            .rect
+            .h;
+        assert_eq!(go, 40.0);
+    }
+
+    /// A name with no compact variant is unchanged under a compact container.
+    #[test]
+    fn a_component_without_a_compact_variant_is_unchanged() {
+        let plain = reference(
+            "tg",
+            "toggle",
+            json!({"key": "tg", "label": "T", "selected": false}),
+        );
+        let regular = expand(&plain).expect("expands");
+        let mut under = ViewNode::new(NodeKind::Stack, "c").with_props(Props {
+            control_size: Some(ControlSize::Compact),
+            ..Props::default()
+        });
+        under = under.child(plain);
+        let under = expand(&under).expect("expands");
+        assert_eq!(under.children[0].as_ref(), &regular);
+    }
+}
