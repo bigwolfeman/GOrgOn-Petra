@@ -133,6 +133,21 @@ pub trait App: RowSource {
     }
     /// The view tree for this frame.
     fn view(&mut self) -> ViewNode;
+    /// Whether the next [`App::view`] would answer differently from the last
+    /// one for a reason the host cannot see: state that moved outside input.
+    ///
+    /// A pass that only flies the focus caret paints the last picture and
+    /// never asks for a view. An application whose tree reads what a pass
+    /// just learned (where focus landed, a measured size) would show the old
+    /// answer until the flight ended. Returning `true` makes the next pass
+    /// build a view, and the application clears the condition in
+    /// [`App::view`].
+    ///
+    /// The default is `false`, for an application whose tree changes only
+    /// with input, its [`App::take_changes`] set, or its clock.
+    fn view_is_stale(&self) -> bool {
+        false
+    }
     /// Handle one routed input event.
     ///
     /// `frame` is the frame `route` was computed against — the placements
@@ -2063,6 +2078,9 @@ impl<A: App> Host<A> {
         // outdated; the hop must not paint it again. The next pass folds the
         // new slot values.
         if self.slots_stale {
+            return false;
+        }
+        if self.app.view_is_stale() {
             return false;
         }
         let Some(frame) = self.last_frame.as_ref() else {
@@ -4881,6 +4899,8 @@ mod tests {
         bound_pair: bool,
         /// Every behaviour the host has reported firing, in order.
         intents: Vec<FiredIntent>,
+        /// What [`App::view_is_stale`] answers until the next view clears it.
+        stale: bool,
     }
 
     /// A focusable, clickable, hoverable text button — a `Role::Button` node
@@ -4928,8 +4948,13 @@ mod tests {
             self.dropped.extend_from_slice(paths);
         }
 
+        fn view_is_stale(&self) -> bool {
+            self.stale
+        }
+
         fn view(&mut self) -> ViewNode {
             self.view_calls += 1;
+            self.stale = false;
             if self.bad_tree {
                 // Two children with one key: a tree-acceptance violation.
                 return ViewNode::new(NodeKind::Stack, "root")
@@ -6317,6 +6342,31 @@ mod tests {
         assert!(!host.caret().is_moving());
         let dest = settled_caret_bar(&host);
         assert_eq!(host.caret().rect(), Some(dest));
+    }
+
+    /// An application that says its view is stale gets one view in the middle
+    /// of a hop, and the hop goes back to reusing the picture after it.
+    #[test]
+    fn a_stale_view_is_rebuilt_during_a_flight_once() {
+        let (ctx, mut host) = construct(Demo::default());
+        settle(&ctx, &mut host, 4);
+        step(&ctx, &mut host, key_press(Key::Tab, Modifiers::NONE));
+        assert!(host.caret().is_moving(), "Tab must start a hop");
+        let before = host.app().view_calls;
+        host.app_mut().stale = true;
+        step(&ctx, &mut host, RawInput::default());
+        assert_eq!(
+            host.app().view_calls - before,
+            1,
+            "a stale view must be asked for on the next pass"
+        );
+        assert!(host.caret().is_moving(), "the hop must still be flying");
+        step(&ctx, &mut host, RawInput::default());
+        assert_eq!(
+            host.app().view_calls - before,
+            1,
+            "a view that cleared its staleness must not be asked for again"
+        );
     }
 
     /// A 160 ms hop on a full page showed three frames because every vsync

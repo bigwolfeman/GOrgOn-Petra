@@ -735,6 +735,42 @@ impl Justify {
     }
 }
 
+/// What a `stack` does with children that do not fit along its main axis.
+///
+/// [`Overflow::Squeeze`] is what a stack always did: every child is offered
+/// less than it wants, down to its minimum, and the rest is cut off.
+///
+/// [`Overflow::Drop`] keeps whole children instead. Children are kept in
+/// declaration order while they fit at their natural extent. The first one
+/// that does not fit, and every one after it, is dropped: it is not laid out,
+/// placed or painted. The author orders children by what matters most, so
+/// the end goes first.
+///
+/// A `Drop` stack has one **marker**: the child that declares
+/// [`Overflow::Marker`]. It is a `text` node, and it may stand anywhere among
+/// the children (a host that appends children after the author's keeps
+/// working). When nothing is dropped the marker is not placed. When `n`
+/// children are dropped the marker is placed after the kept ones and every
+/// `{}` in its `text` is replaced by `n`. The marker is itself reserved
+/// room: the kept children are the most that leave space for it. If not even
+/// the marker fits beside the first child, the marker stands alone.
+///
+/// Petra rows do not mirror, so there is no reading-direction case: the end
+/// is the trailing edge of the main axis.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Overflow {
+    /// Children shrink to their minimums and the rest is cut off.
+    #[default]
+    Squeeze,
+    /// Whole children are kept and the rest dropped. The child declaring
+    /// [`Overflow::Marker`] counts them.
+    Drop,
+    /// On a child of a [`Overflow::Drop`] stack: this child is the marker.
+    /// Elsewhere it reads as [`Overflow::Squeeze`].
+    Marker,
+}
+
 /// Whether an anchored `surface` draws a caret back at its anchor.
 ///
 /// Carbon's popover comes in a **caret tip** form and a **no tip** form
@@ -835,6 +871,12 @@ pub struct Props {
     /// move.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub justify: Option<Justify>,
+    /// What a `stack` does with children that do not fit along its main
+    /// axis. See [`Overflow`]. Absence is [`Overflow::Squeeze`], the
+    /// behaviour a `stack` had before this field existed. Only `stack`
+    /// honours it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overflow: Option<Overflow>,
     /// This node's own cross-axis alignment inside the space its `stack`
     /// parent gives it, overriding the parent's [`Props::align`] for this
     /// child alone — the same relationship CSS's `align-self` has to
