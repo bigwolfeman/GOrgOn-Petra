@@ -20,16 +20,16 @@ use crate::component::{
     Bullet, BulletScheme, accordion, accordion_item, accordion_item_lg, accordion_item_sm,
     accordion_item_spaced, accordion_item_spaced_lg, accordion_item_spaced_sm, accordion_item_with,
     accordion_item_with_spaced, accordion_spaced, clickable_tile, code_snippet,
-    code_snippet_inline, code_snippet_multi, code_snippet_multi_capped, contained_list,
+    code_snippet_inline, code_snippet_multi, code_snippet_multi_capped, code_well, contained_list,
     contained_list_disclosed, contained_list_lg, contained_list_sm, contained_list_xl,
     context_menu, expandable_tile, expandable_tile_interactive, list_item, list_item_with, modal,
     modal_acknowledgment, modal_danger, modal_lg, modal_loading, modal_passive, modal_sm, modal_xs,
     ordered_list, ordered_list_native, popover, popover_border, popover_caret, popover_tab,
     popover_with, popover_with_placement, selectable_tile, structured_list,
-    structured_list_condensed, structured_list_row, structured_list_row_static,
-    structured_list_sized, tile, toggletip, toggletip_with, tooltip, tooltip_anchored,
-    tooltip_definition, tooltip_icon, tree_item, tree_item_xs, tree_row, tree_rows, tree_rows_xs,
-    tree_view, unordered_list, unordered_list_with,
+    structured_list_condensed, structured_list_condensed_sized, structured_list_row,
+    structured_list_row_static, structured_list_sized, tile, toggletip, toggletip_with, tooltip,
+    tooltip_anchored, tooltip_definition, tooltip_icon, tree_item, tree_item_xs, tree_row,
+    tree_rows, tree_rows_xs, tree_view, unordered_list, unordered_list_with,
 };
 use crate::component::{TreeAdornments, TreeBranch, TreePlace};
 use crate::tree::{Align, Edge, Key, ViewNode};
@@ -560,6 +560,11 @@ pub const ENTRIES: &[Entry] = &[
     row!("structured_list_condensed", StructuredListParams, |p| {
         structured_list_condensed(p.key, p.header, p.rows)
     }),
+    row!(
+        "structured_list_condensed_sized",
+        StructuredListSizedParams,
+        |p| structured_list_condensed_sized(p.key, p.header, p.rows, &p.weights, p.dividers)
+    ),
     row!("structured_list_sized", StructuredListSizedParams, |p| {
         structured_list_sized(p.key, p.header, p.rows, &p.weights, p.dividers)
     }),
@@ -645,6 +650,7 @@ pub const ENTRIES: &[Entry] = &[
     row!("code_snippet_inline", KeyLabel, |p| code_snippet_inline(
         p.key, p.label
     )),
+    row!("code_well", KeyLabel, |p| code_well(p.key, p.label)),
     row!("code_snippet_multi_capped", CodeSnippetCappedParams, |p| {
         code_snippet_multi_capped(p.key, p.code, p.filename, p.language, p.expanded)
     }),
@@ -900,6 +906,18 @@ mod tests {
                 ],
                 "rows": [{ "kind": "stack", "key": "r1" }]
             }),
+            // The sized form of the condensed list: non-uniform weights and
+            // no dividers tell it apart from `structured_list_condensed`.
+            "structured_list_condensed_sized" => json!({
+                "key": "k-sl-condensed-sized",
+                "header": [
+                    { "kind": "stack", "key": "h1" },
+                    { "kind": "stack", "key": "h2" }
+                ],
+                "rows": [{ "kind": "stack", "key": "r1" }],
+                "weights": [2.0, 1.0],
+                "dividers": false
+            }),
             "structured_list_row" => json!({ "key": "k", "children": [], "selected": true }),
             "structured_list_row_static" => {
                 json!({ "key": "k-sl-row-static", "children": [] })
@@ -939,6 +957,7 @@ mod tests {
             }
             "code_snippet" => json!({ "key": "k", "label": "code" }),
             "code_snippet_multi" => json!({ "key": "k", "label": "code-multi" }),
+            "code_well" => json!({ "key": "k", "label": "code-well" }),
             "code_snippet_inline" => json!({ "key": "k", "label": "code-inline" }),
             "code_snippet_multi_capped" => json!({
                 "key": "k",
@@ -980,6 +999,12 @@ mod tests {
             "structured_list_sized",
             "structured_list.rs: structured_list(k, header, rows) = \
              structured_list_sized(k, header, rows, &vec![1.0; ncols], true)",
+        ),
+        (
+            "structured_list_condensed",
+            "structured_list_condensed_sized",
+            "structured_list.rs: structured_list_condensed(k, header, rows) = \
+             structured_list_condensed_sized(k, header, rows, &vec![1.0; ncols], true)",
         ),
     ];
 
@@ -1038,6 +1063,15 @@ mod tests {
                 "structured_list",
                 json!({ "key": "k", "header": [], "rows": [] }),
                 "structured_list_sized",
+                json!({
+                    "key": "k", "header": [], "rows": [],
+                    "weights": [1.0], "dividers": true
+                }),
+            ),
+            (
+                "structured_list_condensed",
+                json!({ "key": "k", "header": [], "rows": [] }),
+                "structured_list_condensed_sized",
                 json!({
                     "key": "k", "header": [], "rows": [],
                     "weights": [1.0], "dividers": true

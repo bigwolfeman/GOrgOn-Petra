@@ -206,7 +206,26 @@ pub fn structured_list_condensed(
     header: Vec<ViewNode>,
     rows: Vec<ViewNode>,
 ) -> ViewNode {
-    let mut node = structured_list(key, header, rows);
+    let ncols = header.len().max(1);
+    structured_list_condensed_sized(key, header, rows, &vec![1.0; ncols], true)
+}
+
+/// [`structured_list_condensed`] with the column weights and the divider
+/// policy the caller chooses, as [`structured_list_sized`] takes them.
+///
+/// `dividers: false` is also the form for a list inside a vertical scroll.
+/// A divider's rule answers an unbounded height probe with the engine's
+/// largest extent, so a scroll that probes its content for a height reads a
+/// list with dividers as tens of thousands of units tall.
+#[must_use]
+pub fn structured_list_condensed_sized(
+    key: impl Into<Key>,
+    header: Vec<ViewNode>,
+    rows: Vec<ViewNode>,
+    weights: &[f32],
+    dividers: bool,
+) -> ViewNode {
+    let mut node = structured_list_sized(key, header, rows, weights, dividers);
     repad_rows_condensed(&mut node);
     node
 }
@@ -236,7 +255,20 @@ pub fn structured_list_sized(
             .tokens
             .insert("border-bottom".into(), t(BORDER_SUBTLE));
     }
-    let mut children = vec![header_row("header", header)];
+    let mut head = header_row("header", header);
+    // The header reserves the selection column so its columns are the
+    // rows' columns. A list of read-only rows has no such column, and the
+    // header's reservation would shift every divider against theirs.
+    let selectable = rows.iter().any(|row| {
+        row.children
+            .last()
+            .is_some_and(|c| c.key.as_str() == SELECT_CELL)
+    });
+    if !selectable {
+        head.children.pop();
+        head.props.columns.pop();
+    }
+    let mut children = vec![head];
     children.extend(rows);
     for row in &mut children {
         lay_out_columns(row, &weights, dividers, &names);
@@ -858,6 +890,78 @@ mod tests {
         assert!(
             child(&row, "c0").semantics.role == Some(Role::Cell)
                 && child(&row, "c1").semantics.role == Some(Role::Cell)
+        );
+    }
+
+    /// The condensed list with its dividers off has no divider track and
+    /// keeps the condensed padding.
+    #[test]
+    fn condensed_sized_can_leave_the_dividers_off() {
+        let node = super::structured_list_condensed_sized(
+            "t",
+            vec![text("h0", "A"), text("h1", "B")],
+            vec![structured_list_row_static(
+                "r0",
+                vec![text("a", "1"), text("b", "2")],
+            )],
+            &[1.0, 1.0],
+            false,
+        );
+        let row = child(&node, "r0");
+        assert!(
+            row.children
+                .iter()
+                .all(|c| !c.key.as_str().starts_with(DIVIDER_KEY))
+        );
+        assert_eq!(row.props.columns.len(), 2);
+        assert_eq!(
+            cell_padding(child(row, "c0")),
+            Some([SPACING_03, SPACING_03, SPACING_03, SPACING_03]),
+            "condensed padding"
+        );
+    }
+
+    /// A list of read-only rows has no selection column, so the header
+    /// reserves none: its columns are the rows' columns, divider for
+    /// divider. With one selectable row the header keeps the reservation.
+    #[test]
+    fn a_header_reserves_the_selection_column_only_when_a_row_has_one() {
+        let read_only = structured_list(
+            "t",
+            vec![text("h0", "A"), text("h1", "B")],
+            vec![structured_list_row_static(
+                "r0",
+                vec![text("a", "1"), text("b", "2")],
+            )],
+        );
+        let header = child(&read_only, "header");
+        let row = child(&read_only, "r0");
+        assert!(
+            header
+                .children
+                .iter()
+                .all(|c| c.key.as_str() != SELECT_CELL)
+        );
+        assert_eq!(header.props.columns, row.props.columns);
+        assert_eq!(header.children.len(), row.children.len());
+
+        let selectable = structured_list(
+            "t",
+            vec![text("h0", "A"), text("h1", "B")],
+            vec![structured_list_row(
+                "r0",
+                vec![text("a", "1"), text("b", "2")],
+                false,
+            )],
+        );
+        let header = child(&selectable, "header");
+        let row = child(&selectable, "r0");
+        assert_eq!(header.props.columns, row.props.columns);
+        assert!(
+            header
+                .children
+                .iter()
+                .any(|c| c.key.as_str() == SELECT_CELL)
         );
     }
 
