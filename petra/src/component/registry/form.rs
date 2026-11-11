@@ -419,6 +419,9 @@ pub const ENTRIES: &[Entry] = &[
     row!("checkbox", KeyLabelSelected, |p| lib::checkbox(
         p.key, p.label, p.selected
     )),
+    row!("checkbox_xs", KeyLabelSelected, |p| lib::checkbox_xs(
+        p.key, p.label, p.selected
+    )),
     row!("checkbox_tristate", CheckboxTristateParams, |p| {
         lib::checkbox_tristate(p.key, p.label, p.state.into())
     }),

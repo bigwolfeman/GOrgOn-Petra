@@ -105,14 +105,14 @@ use super::text::text;
 use super::tokens::{
     ACCENT_PRIMARY, BORDER_STRONG, BUTTON_DISABLED, ICON_DISABLED, ICON_ON_COLOR_DISABLED,
     SPACING_01, SPACING_02, SPACING_03, SPACING_05, SURFACE_RAISED, TEXT_MUTED, TEXT_ON_ACCENT,
-    TEXT_ON_COLOR, TEXT_PRIMARY, t,
+    TEXT_ON_COLOR, TEXT_PRIMARY, TYPOGRAPHY_LABEL, t,
 };
 use super::{pad, stack, swatch};
 use crate::geom::{Align, Axis};
 use crate::token::{CornerRole, corner_for};
 use crate::tree::{
-    AxisConstraint, Behaviour, Constraints, FocusFigure, Intent, Interaction, Key, Phase, Role,
-    ViewNode,
+    AxisConstraint, Behaviour, Constraints, FocusFigure, InsetRefs, Intent, Interaction, Key,
+    Phase, Role, ViewNode,
 };
 
 /// Carbon checkbox box (`_checkbox.scss` / style-page Structure): 16×16.
@@ -177,7 +177,15 @@ fn labelled_box(
     intents: &[Interaction],
     figure: FocusFigure,
 ) -> ViewNode {
-    labelled_box_inner(key, label, selected, box_node, intents, figure, false)
+    labelled_box_inner(
+        key,
+        label,
+        selected,
+        box_node,
+        intents,
+        figure,
+        BoxKind::default(),
+    )
 }
 
 /// Same row as [`labelled_box`], with Carbon's required marker added
@@ -196,7 +204,27 @@ fn labelled_box_required(
     intents: &[Interaction],
     figure: FocusFigure,
 ) -> ViewNode {
-    labelled_box_inner(key, label, selected, box_node, intents, figure, true)
+    labelled_box_inner(
+        key,
+        label,
+        selected,
+        box_node,
+        intents,
+        figure,
+        BoxKind {
+            required: true,
+            compact: false,
+        },
+    )
+}
+
+/// What a labelled box row is besides its box and label.
+#[derive(Clone, Copy, Default)]
+struct BoxKind {
+    /// Adds the required marker.
+    required: bool,
+    /// Label type and no vertical padding, for a one-line bar.
+    compact: bool,
 }
 
 fn labelled_box_inner(
@@ -206,11 +234,15 @@ fn labelled_box_inner(
     box_node: ViewNode,
     intents: &[Interaction],
     figure: FocusFigure,
-    required: bool,
+    kind: BoxKind,
 ) -> ViewNode {
+    let BoxKind { required, compact } = kind;
     let key = key.into();
     let label = label.into();
     let mut label_node = text("label", label.clone());
+    if compact {
+        label_node.props.style = Some(t(TYPOGRAPHY_LABEL));
+    }
     // Carbon: checkbox's `:disabled + label { color: $text-disabled }`
     // (`_checkbox.scss`) and radio's identical rule on
     // `.radio-button__label` (`_radio-button.scss`). `$text-disabled` is
@@ -240,7 +272,17 @@ fn labelled_box_inner(
     // Start-align sits the mark on the top of the line; Center puts it on
     // the optical midline.
     row.props.align = Some(Align::Center);
-    row.props.padding = Some(pad(SPACING_02, SPACING_01));
+    row.props.padding = Some(if compact {
+        // A compact row is as tall as its 16-unit box: no padding above or
+        // below, so it fits a one-line bar.
+        InsetRefs {
+            left: Some(t(SPACING_02)),
+            right: Some(t(SPACING_02)),
+            ..InsetRefs::default()
+        }
+    } else {
+        pad(SPACING_02, SPACING_01)
+    });
     // No `owning_its_text`: a checkbox's and a radio's caption is a `<label>`
     // in Carbon, and `user-select: none` is what a browser puts on the
     // control, never on the label beside it. The operator: *"check boxes need
@@ -363,6 +405,27 @@ pub(crate) fn checkbox_box(state: CheckState) -> ViewNode {
             ),
         ),
     }
+}
+
+/// A checkbox that fits a one-line bar: label type and no vertical padding,
+/// so the row is the height of its 16-unit box. This is what [`checkbox`]
+/// becomes under [`ControlSize::Compact`](crate::tree::ControlSize::Compact).
+pub fn checkbox_xs(key: impl Into<Key>, label: impl Into<String>, checked: bool) -> ViewNode {
+    let mut node = labelled_box_inner(
+        key,
+        label,
+        checked,
+        checkbox_mark(checked),
+        &[Interaction::Focus, Interaction::Click],
+        FocusFigure::BarInside,
+        BoxKind {
+            required: false,
+            compact: true,
+        },
+    )
+    .with_behaviour(TOGGLES_ON_RELEASE);
+    node.semantics.selected = checked;
+    node
 }
 
 /// A checkbox: an independent on/off choice, drawn as a sharp 16×16 square.

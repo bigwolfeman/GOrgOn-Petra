@@ -771,6 +771,29 @@ pub enum Overflow {
     Marker,
 }
 
+/// The size of the controls under a node, inherited the way an environment
+/// value is: a container sets it and every component below it uses it.
+///
+/// [`ControlSize::Regular`] is what a component is without any container
+/// saying so. [`ControlSize::Compact`] swaps each component that has a
+/// compact variant for it (a button for its extra-small form, a checkbox for
+/// one that fits a one-line bar, a chrome strip without its 48-unit height).
+/// A component with no compact variant is built as it always was.
+///
+/// The choice is made when a component reference is expanded into its
+/// primitives, so it reaches contributed trees, which are expanded far from
+/// where they mount. A node's own [`Props::control_size`] applies to the
+/// whole subtree under it, and an inner node may set it again.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ControlSize {
+    /// Each component at its own size.
+    #[default]
+    Regular,
+    /// Each component with a compact variant at that variant.
+    Compact,
+}
+
 /// Whether an anchored `surface` draws a caret back at its anchor.
 ///
 /// Carbon's popover comes in a **caret tip** form and a **no tip** form
@@ -877,6 +900,11 @@ pub struct Props {
     /// honours it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overflow: Option<Overflow>,
+    /// The size of the controls under this node. See [`ControlSize`].
+    /// Absence inherits from the node's parent, and the root inherits
+    /// [`ControlSize::Regular`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub control_size: Option<ControlSize>,
     /// This node's own cross-axis alignment inside the space its `stack`
     /// parent gives it, overriding the parent's [`Props::align`] for this
     /// child alone — the same relationship CSS's `align-self` has to

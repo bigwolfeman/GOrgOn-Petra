@@ -13,11 +13,12 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use super::openable::openable_param;
-use super::{MAX_DEPTH, build};
+use super::{MAX_DEPTH, build_sized};
 use crate::component::params::ParamError;
 use crate::tree::binding_eval::{eval_source, slots_read, type_mismatch};
 use crate::tree::{
-    BindTarget, NodeKind, PropType, PropVal, ResolveError, ResolveInputs, SlotValue, ViewNode,
+    BindTarget, ControlSize, NodeKind, PropType, PropVal, ResolveError, ResolveInputs, SlotValue,
+    ViewNode,
 };
 
 /// Why an expansion refused: a parameter table the constructor rejects (a
@@ -53,6 +54,9 @@ pub(crate) struct Fold<'a> {
     inputs: Option<&'a ResolveInputs>,
     /// Every slot a bound parameter under the walk's root reads.
     pub(crate) read: BTreeSet<String>,
+    /// The control size in force at the node being expanded. A node's own
+    /// `control_size` replaces it for the subtree under that node.
+    pub(crate) size: ControlSize,
 }
 
 impl<'a> Fold<'a> {
@@ -61,6 +65,7 @@ impl<'a> Fold<'a> {
         Self {
             inputs: None,
             read: BTreeSet::new(),
+            size: ControlSize::Regular,
         }
     }
 
@@ -69,6 +74,7 @@ impl<'a> Fold<'a> {
         Self {
             inputs: Some(inputs),
             read: BTreeSet::new(),
+            size: ControlSize::Regular,
         }
     }
 }
@@ -91,6 +97,11 @@ pub(crate) fn expand_node(
     if depth >= MAX_DEPTH {
         return Err(too_deep(node.key.as_str()).into());
     }
+    // The size in force below this node. Restored on success; a failed
+    // expansion discards the fold, so no early return needs to.
+    let outer = fold.size;
+    let size = node.props.control_size.unwrap_or(outer);
+    fold.size = size;
     if node.kind == NodeKind::Component {
         let reference = node.component.as_ref().ok_or_else(|| ParamError {
             component: node.key.as_str().to_owned(),
@@ -123,7 +134,9 @@ pub(crate) fn expand_node(
         // The built subtree is primitives: a constructor in `crate::component`
         // cannot name another component, so there is nothing left to expand
         // and no second walk to pay for.
-        return Ok(build(&reference.name, &params)?);
+        let built = build_sized(&reference.name, &params, size)?;
+        fold.size = outer;
+        return Ok(built);
     }
     let mut out = node.clone();
     out.children = node
@@ -131,6 +144,7 @@ pub(crate) fn expand_node(
         .iter()
         .map(|child| expand_node(child, depth + 1, fold).map(Arc::new))
         .collect::<Result<Vec<_>, _>>()?;
+    fold.size = outer;
     Ok(out)
 }
 

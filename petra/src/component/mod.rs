@@ -171,11 +171,12 @@ pub use breadcrumb::{
 };
 pub use button::{
     button, button_2xl, button_lg, button_sm, button_xl, button_xs, danger_button,
-    danger_ghost_button, danger_tertiary_button, ghost_button, ghost_button_xs, loading_button,
-    primary_button, tertiary_button,
+    danger_button_xs, danger_ghost_button, danger_ghost_button_xs, danger_tertiary_button,
+    danger_tertiary_button_xs, ghost_button, ghost_button_xs, loading_button, primary_button,
+    primary_button_xs, tertiary_button, tertiary_button_xs,
 };
 pub use button_group::{button_group, button_group_flush};
-pub use chrome_strip::{DIVIDER_EXTENT, chrome_strip};
+pub use chrome_strip::{DIVIDER_EXTENT, chrome_strip, chrome_strip_xs};
 pub use code_snippet::{
     COPY_FEEDBACK, COPY_FEEDBACK_KEY, COPY_FEEDBACK_SECONDS, CodeInk, MULTI_CAP, MULTI_CAP_LINES,
     SHOW_LESS, SHOW_MORE, code_runs, code_snippet, code_snippet_copied, code_snippet_inline,
@@ -197,8 +198,8 @@ pub use context_menu::context_menu;
 pub use controls::{
     CheckState, checkbox, checkbox_described, checkbox_group, checkbox_indeterminate,
     checkbox_invalid, checkbox_readonly, checkbox_required, checkbox_tristate, checkbox_warning,
-    radio, radio_described, radio_group, radio_invalid, radio_readonly, radio_required,
-    radio_warning, toggle, toggle_readonly, toggle_sm,
+    checkbox_xs, radio, radio_described, radio_group, radio_invalid, radio_readonly,
+    radio_required, radio_warning, toggle, toggle_readonly, toggle_sm,
 };
 pub use data_table::{
     SortDirection, data_table, data_table_batch_action, data_table_batch_bar,
@@ -320,7 +321,7 @@ pub use tag::{
     dismissible_tag, selectable_tag, tag, tag_lg, tag_operational, tag_sm, tag_status,
     tag_with_avatar,
 };
-pub use text::{heading, text};
+pub use text::{heading, text, text_xs};
 pub use textarea::{
     TEXTAREA_MAX_HEIGHT, textarea, textarea_invalid, textarea_validated, textarea_warning,
 };

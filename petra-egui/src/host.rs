@@ -1006,6 +1006,9 @@ pub struct Host<A: App> {
     /// What [`Host::regrown_components`] answers: the components the last
     /// landed batch re-expanded.
     last_regrown: Vec<String>,
+    /// The control size each slot's contributions are expanded under. See
+    /// [`Host::set_slot_control_size`].
+    slot_sizes: BTreeMap<String, gorgon_petra::tree::ControlSize>,
     /// The application's own tree, folded: the retained half of the design
     /// §5 pair for the tree the application owns. Empty index until the
     /// application's tree first declares a binding.
@@ -1348,6 +1351,7 @@ impl<A: App> Host<A> {
             pass_clock: 0.0,
             slots: HeldValues::default(),
             last_regrown: Vec::new(),
+            slot_sizes: BTreeMap::new(),
             retained_app: ResolvedTree::new(),
             app_fold_refused: false,
             slots_stale: false,
@@ -3721,6 +3725,24 @@ impl<A: App> Host<A> {
     /// the host and the engine cannot drift apart on what "moving" means.
     fn schedule(&self, ctx: &Context, frame: &PetrifiedFrame) {
         crate::schedule::request_if_moving(ctx, frame);
+    }
+
+    /// Expand the contributions mounted in `slot` at `size`: a component
+    /// with a compact variant builds it under
+    /// [`ControlSize::Compact`](gorgon_petra::tree::ControlSize::Compact).
+    ///
+    /// A status bar of one thin row asks for compact controls, so a plugin
+    /// that writes a `button` or a `checkbox` gets one that fits the row
+    /// without the plugin knowing the row's height. Contributions are
+    /// prepared again on the next pass.
+    pub fn set_slot_control_size(&mut self, slot: &str, size: gorgon_petra::tree::ControlSize) {
+        let changed = match size {
+            gorgon_petra::tree::ControlSize::Regular => self.slot_sizes.remove(slot).is_some(),
+            _ => self.slot_sizes.insert(slot.to_owned(), size) != Some(size),
+        };
+        if changed {
+            self.prepared_stale = true;
+        }
     }
 
     /// Replace the reserved chord set from operator configuration.

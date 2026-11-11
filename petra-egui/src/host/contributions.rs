@@ -7,7 +7,7 @@
 //! (`.agents/notes/implemented/architecture/2026-09-28-bound-component-parameters.md`).
 
 use gorgon_petra::component::registry::ExpandError;
-use gorgon_petra::component::registry::bound::expand_with;
+use gorgon_petra::component::registry::bound::expand_with_sized;
 use gorgon_petra::semantic::contribution_key;
 use gorgon_petra::tree::{Registry, ResolvedTree, carries_bindings, validate};
 
@@ -44,7 +44,12 @@ impl<A: App> Host<A> {
             expanded: None,
         };
         let inputs = self.slots.inputs();
-        let mut expanded = match expand_with(&contribution.tree, &inputs) {
+        let size = self
+            .slot_sizes
+            .get(&contribution.slot)
+            .copied()
+            .unwrap_or_default();
+        let mut expanded = match expand_with_sized(&contribution.tree, &inputs, size) {
             Ok(expanded) => expanded,
             Err(ExpandError::Param(err)) => {
                 return refused(format!("{}: {}", err.component, err.reason));
