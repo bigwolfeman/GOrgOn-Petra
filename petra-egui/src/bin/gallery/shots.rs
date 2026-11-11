@@ -3872,6 +3872,46 @@ mod tests {
         );
     }
 
+    /// The painted knob sits in the middle of the painted track at every
+    /// device scale. Measured on pixels: the layout rects centre the knob
+    /// exactly, so a knob low in its track is a snap, and only a rasterized
+    /// picture shows one.
+    #[test]
+    fn the_toggle_knob_is_painted_centred_in_its_track_at_every_scale() {
+        for scale in [1.0_f32, 1.25, 1.5, 2.0] {
+            let mut cam = Camera::at_scale("Toggle", scale);
+            for (name, knob_ink) in [("toggle-default-off", 200u8), ("toggle-sm-off", 200u8)] {
+                let track = cam.rect(&format!("{name}/appearance/track"));
+                let png = cam.shoot(&format!("_toggle-centre-{scale}"));
+                let image = image_at(&png);
+                let device = |v: f32| (v * scale).round() as i64;
+                let (x0, x1) = (device(track.x), device(track.x + track.w));
+                let (y0, y1) = (device(track.y), device(track.y + track.h));
+                let (mut top, mut bottom) = (i64::MAX, i64::MIN);
+                for y in y0..y1 {
+                    for x in x0..x1 {
+                        let p = image.get_pixel(x as u32, y as u32).0;
+                        if p[0] > knob_ink && p[1] > knob_ink && p[2] > knob_ink {
+                            top = top.min(y);
+                            bottom = bottom.max(y);
+                        }
+                    }
+                }
+                assert!(
+                    top <= bottom,
+                    "{name} at {scale}x: no knob pixels in the track"
+                );
+                let above = top - y0;
+                let below = (y1 - 1) - bottom;
+                assert!(
+                    (above - below).abs() <= 1,
+                    "{name} at {scale}x: the knob has {above} device px above it and {below} \
+                     below in a track {y0}..{y1}"
+                );
+            }
+        }
+    }
+
     /// Read `png` back as an image, for the two tests that measure a tone.
     fn image_at(png: &[u8]) -> image::RgbaImage {
         image::load_from_memory(png)

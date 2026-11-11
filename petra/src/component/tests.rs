@@ -2791,3 +2791,141 @@ fn the_implied_branch_is_what_tree_item_always_derived() {
     assert_eq!(TreeBranch::implied(true, true), TreeBranch::Open);
     assert_eq!(TreeBranch::default(), TreeBranch::Leaf);
 }
+
+/// `Overflow::Drop` on a row: whole children stay, the rest are dropped, and
+/// the marker counts them.
+mod overflow_drop {
+    use super::petrify_lone_at;
+    use crate::component::text;
+    use crate::geom::{Axis, Size};
+    use crate::tree::{AxisConstraint, Constraints, Key, NodeKind, Overflow, Props, ViewNode};
+
+    const ITEM: f32 = 50.0;
+
+    fn item(key: &str) -> ViewNode {
+        ViewNode::new(NodeKind::Spacer, Key::new(key)).with_constraints(Constraints {
+            horizontal: AxisConstraint {
+                min: Some(ITEM),
+                max: Some(ITEM),
+                priority: 0,
+            },
+            ..Constraints::default()
+        })
+    }
+
+    /// Four items and a marker, in a row `width` wide with no gap.
+    fn row(width: f32) -> crate::frame::PetrifiedFrame {
+        let mut children: Vec<ViewNode> = (0..4).map(|i| item(&format!("i{i}"))).collect();
+        let mut marker = text("more", "+{}");
+        marker.props.overflow = Some(Overflow::Marker);
+        children.push(marker);
+        let mut row = ViewNode::new(NodeKind::Stack, "row").with_props(Props {
+            axis: Some(Axis::Horizontal),
+            overflow: Some(Overflow::Drop),
+            ..Props::default()
+        });
+        row.props.spacing = None;
+        for child in children {
+            row = row.child(child);
+        }
+        petrify_lone_at(row, Size::new(width, 100.0))
+    }
+
+    fn placed(frame: &crate::frame::PetrifiedFrame, key: &str) -> bool {
+        frame
+            .placements
+            .iter()
+            .any(|p| p.id.ends_with(&format!("/{key}")))
+    }
+
+    fn painted(frame: &crate::frame::PetrifiedFrame) -> Vec<String> {
+        frame
+            .content
+            .iter()
+            .filter_map(|c| c.text.as_ref().map(|t| t.text.clone()))
+            .collect()
+    }
+
+    /// A marker declared ahead of the items still counts and still sits
+    /// last, as when a host appends children after the author's.
+    #[test]
+    fn the_marker_may_be_declared_first() {
+        let mut marker = text("more", "+{}");
+        marker.props.overflow = Some(Overflow::Marker);
+        let mut row = ViewNode::new(NodeKind::Stack, "row").with_props(Props {
+            axis: Some(Axis::Horizontal),
+            overflow: Some(Overflow::Drop),
+            ..Props::default()
+        });
+        row.props.spacing = None;
+        row = row.child(marker);
+        for i in 0..4 {
+            row = row.child(item(&format!("i{i}")));
+        }
+        let frame = petrify_lone_at(row, Size::new(120.0, 100.0));
+        assert_eq!(painted(&frame), ["+2"]);
+        let x = |key: &str| {
+            frame
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with(&format!("/{key}")))
+                .expect(key)
+                .rect
+                .x
+        };
+        assert!(x("more") > x("i1"), "the marker follows the kept items");
+    }
+
+    /// Everything fits: all four items, and no marker.
+    #[test]
+    fn a_row_that_fits_keeps_every_item_and_hides_the_marker() {
+        let frame = row(400.0);
+        assert!((0..4).all(|i| placed(&frame, &format!("i{i}"))));
+        assert!(!placed(&frame, "more"));
+        assert!(painted(&frame).is_empty(), "{:?}", painted(&frame));
+    }
+
+    /// 180 wide: four items (200) do not fit, three items
+    /// (150) and "+1" do.
+    #[test]
+    fn one_dropped_item_shows_a_count_of_one() {
+        let frame = row(180.0);
+        assert!((0..3).all(|i| placed(&frame, &format!("i{i}"))));
+        assert!(!placed(&frame, "i3"), "the last item is dropped first");
+        assert!(placed(&frame, "more"));
+        assert_eq!(painted(&frame), ["+1"]);
+    }
+
+    /// 120 wide: two items and the count of two.
+    #[test]
+    fn the_count_follows_the_dropped_items() {
+        let frame = row(120.0);
+        assert!(placed(&frame, "i0") && placed(&frame, "i1"));
+        assert!(!placed(&frame, "i2") && !placed(&frame, "i3"));
+        assert_eq!(painted(&frame), ["+2"]);
+    }
+
+    /// Too narrow for even one item beside the marker: the marker stands
+    /// alone and counts all four.
+    #[test]
+    fn a_row_too_narrow_for_any_item_shows_only_the_marker() {
+        let frame = row(40.0);
+        assert!((0..4).all(|i| !placed(&frame, &format!("i{i}"))));
+        assert!(placed(&frame, "more"));
+        assert_eq!(painted(&frame), ["+4"]);
+    }
+
+    /// A kept item is placed at its natural width, never squeezed.
+    #[test]
+    fn kept_items_keep_their_natural_width() {
+        let frame = row(120.0);
+        let w = frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/i1"))
+            .expect("i1")
+            .rect
+            .w;
+        assert_eq!(w, ITEM);
+    }
+}

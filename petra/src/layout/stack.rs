@@ -25,7 +25,7 @@ use crate::frame::placement::{PaintState, Placement, PlacementSink};
 use crate::geom::{Align, Axis, Rect, Size};
 use crate::layout::constraints::{FIT_EPSILON, Give, concede};
 use crate::layout::{LayoutCtx, Proposal, SizeProposal, Slot, semantics_of};
-use crate::tree::{KeyPath, NodeKind, ViewNode};
+use crate::tree::{KeyPath, NodeKind, Overflow, ViewNode};
 
 /// Measure this container under `proposal`.
 ///
@@ -49,7 +49,6 @@ pub fn measure(
     // probe through unchanged, so `Zero`/`Unbounded` measurement still answers
     // truthfully about the padded budget, not the whole rect.
     let padding = ctx.padding(&node.props.padding);
-    let spacing = reserved_spacing(ctx.spacing(&node.props.spacing), node.children.len());
     let cross = proposal
         .axis(main.cross())
         .shrink(padding.along(main.cross()));
@@ -61,6 +60,17 @@ pub fn measure(
         // how much room there is, so the stack reports the sum of the answers
         // and lets the parent decide.
         let probe = main_proposal;
+        // The smallest a dropping stack can be is its marker alone. Asked
+        // for anything bigger, it has room to spare, drops nothing, and the
+        // marker is not part of the answer.
+        let room = if matches!(probe, Proposal::Zero) {
+            0.0
+        } else {
+            f32::INFINITY
+        };
+        let fitted = fit_overflow(node, ctx, path, room, cross);
+        let node = fitted.as_ref().map_or(node, |f| &f.node);
+        let spacing = reserved_spacing(ctx.spacing(&node.props.spacing), node.children.len());
         let mut total = spacing;
         let mut sizes = Vec::with_capacity(node.children.len());
         for child in &node.children {
@@ -76,6 +86,9 @@ pub fn measure(
         );
     };
 
+    let fitted = fit_overflow(node, ctx, path, budget.max(0.0), cross);
+    let node = fitted.as_ref().map_or(node, |f| &f.node);
+    let spacing = reserved_spacing(ctx.spacing(&node.props.spacing), node.children.len());
     let taken = distribute(node, ctx, path, main, (budget - spacing).max(0.0), cross).taken;
     // Deliberately not clamped to the offer: a response bigger than the parent
     // can place is the parent's problem to concede at placement, and clamping
@@ -131,8 +144,8 @@ pub fn place(
         parent: None,
     });
     sink.enter(me);
-    for (child, rect) in node.children.iter().zip(arranged.rects) {
-        crate::layout::place(child, ctx, path, slot.with_rect(rect), sink);
+    for (child, rect) in arranged.children(node).iter().zip(&arranged.rects) {
+        crate::layout::place(child, ctx, path, slot.with_rect(*rect), sink);
     }
     sink.leave();
 }
@@ -142,6 +155,16 @@ pub fn place(
 struct Arranged {
     rects: Vec<Rect>,
     lost: bool,
+    /// The children `rects` are for, when [`Overflow::Drop`] rewrote them.
+    /// `None` means the node's own children.
+    kept: Option<Vec<std::sync::Arc<ViewNode>>>,
+}
+
+impl Arranged {
+    /// The children `rects` belong to, in order.
+    fn children<'a>(&'a self, node: &'a ViewNode) -> &'a [std::sync::Arc<ViewNode>] {
+        self.kept.as_deref().unwrap_or(&node.children)
+    }
 }
 
 /// Lay this container's children out in `rect`: distribution, concession,
@@ -170,6 +193,8 @@ fn arrange(node: &ViewNode, ctx: &mut LayoutCtx<'_>, path: &mut KeyPath, rect: R
     let content = rect.inset_edges(padding);
     let main_extent = content.size().along(main).max(0.0);
     let cross_extent = content.size().across(main).max(0.0);
+    let fitted = fit_overflow(node, ctx, path, main_extent, Proposal::Exact(cross_extent));
+    let node = fitted.as_ref().map_or(node, |f| &f.node);
     let gaps = node.children.len().saturating_sub(1) as f32;
     let declared = ctx.spacing(&node.props.spacing).max(0.0);
     // Spacing is reserved before distribution, but it cannot reserve room the
@@ -307,7 +332,11 @@ fn arrange(node: &ViewNode, ctx: &mut LayoutCtx<'_>, path: &mut KeyPath, rect: R
         });
         cursor += extent + gap + spread;
     }
-    Arranged { rects, lost }
+    Arranged {
+        rects,
+        lost,
+        kept: fitted.map(|f| f.node.children),
+    }
 }
 
 /// Where each [`Align::FirstLine`] child sits so that every one of them
@@ -404,7 +433,7 @@ fn first_line_centre(
             path.push(child.key.clone());
             let arranged = arrange(child, ctx, path, Rect::new(0.0, 0.0, size.w, size.h));
             let mut line: Option<f32> = None;
-            for (grandchild, rect) in child.children.iter().zip(&arranged.rects) {
+            for (grandchild, rect) in arranged.children(child).iter().zip(&arranged.rects) {
                 if let Some(centre) = first_line_centre(grandchild, ctx, path, rect.size()) {
                     let at = rect.y + centre;
                     line = Some(line.map_or(at, |best| best.min(at)));
@@ -738,6 +767,78 @@ fn reserved_spacing(spacing: f32, children: usize) -> f32 {
 /// A per-axis offer built from a main-axis and a cross-axis proposal.
 fn offer(axis: Axis, main: Proposal, cross: Proposal) -> SizeProposal {
     SizeProposal::both(cross).with_axis(axis, main)
+}
+
+/// How far past the room a natural extent may reach and still count as
+/// fitting. The same child measured under two cross offers (the parent's open
+/// probe, then the exact row) can answer a fraction of a unit apart, and a
+/// row sized by the first must not drop a child because of the second.
+const DROP_SLACK: f32 = 1.0;
+
+/// A node rewritten by [`Overflow::Drop`].
+struct Fitted {
+    node: ViewNode,
+}
+
+/// Apply [`Overflow::Drop`] to `node` for a content box `main_extent` long
+/// on its main axis, or `None` when the node keeps every child as authored.
+///
+/// Natural extents come from the layout's own unbounded measure, so the
+/// answer is the one the stack would give with room to spare. The returned
+/// node holds the kept children and, if any were dropped, the marker with
+/// its count; otherwise it holds every child but the marker.
+fn fit_overflow(
+    node: &ViewNode,
+    ctx: &mut LayoutCtx<'_>,
+    path: &mut KeyPath,
+    main_extent: f32,
+    cross: Proposal,
+) -> Option<Fitted> {
+    if node.props.overflow != Some(Overflow::Drop) {
+        return None;
+    }
+    let main = node.props.axis.unwrap_or(Axis::Vertical);
+    let gap = ctx.spacing(&node.props.spacing).max(0.0);
+    let marker = node
+        .children
+        .iter()
+        .find(|c| c.props.overflow == Some(Overflow::Marker))?;
+    let items: Vec<std::sync::Arc<ViewNode>> = node
+        .children
+        .iter()
+        .filter(|c| c.props.overflow != Some(Overflow::Marker))
+        .cloned()
+        .collect();
+    let natural = |child: &ViewNode, ctx: &mut LayoutCtx<'_>, path: &mut KeyPath| {
+        crate::layout::measure(child, ctx, path, offer(main, Proposal::Unbounded, cross))
+            .along(main)
+    };
+    let widths: Vec<f32> = items.iter().map(|c| natural(c, ctx, path)).collect();
+    let all = widths.iter().sum::<f32>() + gap * items.len().saturating_sub(1) as f32;
+    let rewrite = |keep: usize, marker: Option<ViewNode>| {
+        let mut out = node.clone();
+        out.children = items[..keep].to_vec();
+        if let Some(marker) = marker {
+            out.children.push(std::sync::Arc::new(marker));
+        }
+        Fitted { node: out }
+    };
+    if all <= main_extent + DROP_SLACK {
+        return Some(rewrite(items.len(), None));
+    }
+    for keep in (0..items.len()).rev() {
+        let dropped = items.len() - keep;
+        let mut counted = (**marker).clone();
+        if let Some(text) = counted.props.text.as_mut() {
+            *text = text.replace("{}", &dropped.to_string());
+        }
+        let lead = widths[..keep].iter().sum::<f32>() + gap * keep.saturating_sub(1) as f32;
+        let used = lead + if keep > 0 { gap } else { 0.0 } + natural(&counted, ctx, path);
+        if used <= main_extent + DROP_SLACK || keep == 0 {
+            return Some(rewrite(keep, Some(counted)));
+        }
+    }
+    None
 }
 
 /// Whether this child is a scroll region along the axis being negotiated, and

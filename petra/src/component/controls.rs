@@ -1316,6 +1316,36 @@ mod tests {
         );
     }
 
+    /// The knob sits centred in the track at both sizes and in both states.
+    /// A track that insets its content for its border while the pads are as
+    /// tall as the whole track pushed the knob toward the bottom edge.
+    #[test]
+    fn toggle_knob_is_centred_in_its_track() {
+        for (name, node) in [
+            ("default off", toggle("t", "T", false)),
+            ("default on", toggle("t", "T", true)),
+            ("small off", toggle_sm("t", "T", false)),
+            ("small on", toggle_sm("t", "T", true)),
+        ] {
+            let frame = petrify_lone(node);
+            let rect_of = |key: &str| {
+                frame
+                    .placements
+                    .iter()
+                    .find(|p| p.id.rsplit('/').next() == Some(key))
+                    .unwrap_or_else(|| panic!("{name}: no placement for {key}"))
+                    .rect
+            };
+            let (track, knob) = (rect_of("track"), rect_of("knob"));
+            let above = knob.y - track.y;
+            let below = (track.y + track.h) - (knob.y + knob.h);
+            assert!(
+                (above - below).abs() <= 0.5,
+                "{name}: knob {knob:?} is not centred in track {track:?} (above {above}, below {below})"
+            );
+        }
+    }
+
     #[test]
     fn toggle_track_stays_carbon_geometry() {
         let default_node = toggle("t", "On", false);
