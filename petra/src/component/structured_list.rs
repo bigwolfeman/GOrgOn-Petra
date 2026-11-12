@@ -212,11 +212,6 @@ pub fn structured_list_condensed(
 
 /// [`structured_list_condensed`] with the column weights and the divider
 /// policy the caller chooses, as [`structured_list_sized`] takes them.
-///
-/// `dividers: false` is also the form for a list inside a vertical scroll.
-/// A divider's rule answers an unbounded height probe with the engine's
-/// largest extent, so a scroll that probes its content for a height reads a
-/// list with dividers as tens of thousands of units tall.
 #[must_use]
 pub fn structured_list_condensed_sized(
     key: impl Into<Key>,
@@ -919,6 +914,42 @@ mod tests {
             Some([SPACING_03, SPACING_03, SPACING_03, SPACING_03]),
             "condensed padding"
         );
+    }
+
+    /// A scroll reads a divided list as tall as its rows, the same height
+    /// the undivided list measures. A divider's rule has no length of its
+    /// own: it runs whatever height its row is given. Before 2026-11-11 the
+    /// rule answered the scroll's unbounded height probe with the engine's
+    /// largest extent, and every divided row read as 65 535 units tall.
+    #[test]
+    fn a_divided_list_in_a_scroll_is_as_tall_as_its_rows() {
+        let height = |dividers: bool| {
+            let list = structured_list_sized(
+                "plans",
+                vec![text("h0", "Plan"), text("h1", "Price")],
+                vec![
+                    structured_list_row_static("r0", vec![text("p0", "Basic"), text("c0", "$12")]),
+                    structured_list_row_static("r1", vec![text("p1", "Pro"), text("c1", "$40")]),
+                ],
+                &[1.0, 1.0],
+                dividers,
+            );
+            let scroll = ViewNode::new(NodeKind::Scroll, "port")
+                .with_props(crate::tree::Props {
+                    axis: Some(crate::geom::Axis::Vertical),
+                    ..crate::tree::Props::default()
+                })
+                .child(list);
+            petrify_lone(scroll)
+        };
+        let undivided = rect_of(&height(false), "/port/plans").h;
+        let frame = height(true);
+        let divided = rect_of(&frame, "/port/plans").h;
+        assert_eq!(divided, undivided, "the dividers changed the list's height");
+        assert!(divided < 4.0 * ROW_HEIGHT, "three rows read as {divided}");
+        let rule = rect_of(&frame, &format!("/header/{DIVIDER_KEY}0/rule"));
+        let row = rect_of(&frame, "/plans/header");
+        assert_eq!(rule.h, row.h, "the rule runs its row's whole height");
     }
 
     /// A list of read-only rows has no selection column, so the header
