@@ -20,10 +20,23 @@
 //! it with whatever crate it already depends on (the driver, an asset
 //! pipeline, `eframe`'s own icon loading) and registers the result once;
 //! this module owns the upload and the cache, not the codec.
+//!
+//! # Layout, removal and the texture limit
+//!
+//! A registered source takes room in layout: [`measure`] gives its pixel
+//! size, one pixel per logical unit, shrunk to the room it is offered, so a
+//! tile that holds a picture needs no size of its own. An unregistered source
+//! takes none. [`ImageSources::remove`] forgets a source, so a host that
+//! registers a picture for as long as something shows it can give the memory
+//! back. A side over the GPU's largest texture is averaged down at upload,
+//! because egui panics on a texture the GPU cannot hold; the layout size
+//! stays the pixel size.
 
 use std::collections::BTreeMap;
 
 use egui::{ColorImage, Context, Rect, TextureHandle, TextureOptions, Vec2};
+use gorgon_petra::geom::Size;
+use gorgon_petra::layout::SizeProposal;
 
 /// Raw RGBA8 pixels a host registers under a source name.
 ///
@@ -68,15 +81,50 @@ impl ImagePixels {
     /// registry past both — and when it does, the failure stays the same
     /// shape it has always been: no texture, so [`crate::paint`] names the
     /// source in `undrawn`.
-    fn decode(&self) -> Option<ColorImage> {
+    ///
+    /// A side over `max_side` (the GPU's largest texture) is averaged down
+    /// by a whole factor until it fits. egui panics on a texture the GPU
+    /// cannot hold, and a picture's layout size is its pixel size either
+    /// way, so only the texture loses detail.
+    fn decode(&self, max_side: usize) -> Option<ColorImage> {
         let expected = self.width.checked_mul(self.height)?.checked_mul(4)?;
         if self.rgba.len() != expected {
             return None;
         }
-        Some(ColorImage::from_rgba_unmultiplied(
-            [self.width, self.height],
-            &self.rgba,
-        ))
+        let factor = self.width.max(self.height).div_ceil(max_side.max(1)).max(1);
+        if factor == 1 {
+            return Some(ColorImage::from_rgba_unmultiplied(
+                [self.width, self.height],
+                &self.rgba,
+            ));
+        }
+        let (w, h) = (self.width.div_ceil(factor), self.height.div_ceil(factor));
+        let mut out = Vec::with_capacity(w * h * 4);
+        for oy in 0..h {
+            for ox in 0..w {
+                let mut sum = [0_u64; 3];
+                let mut alpha = 0_u64;
+                let mut count = 0_u64;
+                for y in oy * factor..((oy + 1) * factor).min(self.height) {
+                    for x in ox * factor..((ox + 1) * factor).min(self.width) {
+                        let at = (y * self.width + x) * 4;
+                        let a = u64::from(self.rgba[at + 3]);
+                        // Colour weighted by alpha, so a clear pixel's
+                        // hidden colour does not tint its neighbours.
+                        for (c, total) in sum.iter_mut().enumerate() {
+                            *total += u64::from(self.rgba[at + c]) * a;
+                        }
+                        alpha += a;
+                        count += 1;
+                    }
+                }
+                for total in sum {
+                    out.push(total.checked_div(alpha).map_or(0, |mean| mean as u8));
+                }
+                out.push((alpha / count.max(1)) as u8);
+            }
+        }
+        Some(ColorImage::from_rgba_unmultiplied([w, h], &out))
     }
 }
 
@@ -173,6 +221,30 @@ impl ImageSources {
         Ok(())
     }
 
+    /// Forget `source`: its pixels and its upload. `true` when something was
+    /// registered under the name.
+    ///
+    /// A host that registers a picture for as long as something shows it
+    /// calls this when nothing does, so the pixels and the texture do not
+    /// outlive their use.
+    pub fn remove(&mut self, source: &str) -> bool {
+        self.uploaded.remove(source);
+        self.pixels.remove(source).is_some()
+    }
+
+    /// The registered names, in order.
+    pub fn sources(&self) -> impl Iterator<Item = &str> {
+        self.pixels.keys().map(String::as_str)
+    }
+
+    /// The natural size of `source` in pixels, `(width, height)`, or `None`
+    /// when nothing is registered under the name. Layout reads this, so a
+    /// registered picture takes room and an unregistered one takes none.
+    #[must_use]
+    pub fn size(&self, source: &str) -> Option<(usize, usize)> {
+        self.pixels.get(source).map(|p| (p.width, p.height))
+    }
+
     /// The texture for `source`, uploading it to `ctx` on first use and
     /// returning the cached handle after.
     ///
@@ -183,12 +255,29 @@ impl ImageSources {
     /// texture," never why there is not one.
     pub fn resolve(&mut self, ctx: &Context, source: &str) -> Option<&TextureHandle> {
         if !self.uploaded.contains_key(source) {
-            let image = self.pixels.get(source)?.decode()?;
+            let max_side = ctx.input(|input| input.max_texture_side);
+            let image = self.pixels.get(source)?.decode(max_side)?;
             let handle = ctx.load_texture(source, image, TextureOptions::LINEAR);
             self.uploaded.insert(source.to_owned(), handle);
         }
         self.uploaded.get(source)
     }
+}
+
+/// The size a picture of `natural` pixels takes for `proposal`: one pixel
+/// per logical unit, shrunk, keeping its aspect ratio, until it fits every
+/// extent the offer fixes. It is never enlarged, and an open offer
+/// (`Unbounded`, `Unspecified`) fixes nothing, so it answers its natural
+/// size.
+#[must_use]
+pub fn measure(natural: (usize, usize), proposal: SizeProposal) -> Size {
+    let (w, h) = (natural.0 as f32, natural.1 as f32);
+    let fit = |offered: Option<f32>, extent: f32| match offered {
+        Some(room) if extent > 0.0 => (room / extent).min(1.0),
+        _ => 1.0,
+    };
+    let scale = fit(proposal.horizontal.available(), w).min(fit(proposal.vertical.available(), h));
+    Size::new(w * scale, h * scale)
 }
 
 /// Fit `natural`'s aspect ratio inside `offer`, centred, without stretching
@@ -224,8 +313,10 @@ pub fn contain(offer: Rect, natural: Vec2) -> Rect {
 
 #[cfg(test)]
 mod tests {
-    use super::{ImagePixels, ImageSources, PixelsError, contain};
+    use super::{ImagePixels, ImageSources, PixelsError, contain, measure};
     use egui::{Context, Rect, Vec2, pos2, vec2};
+    use gorgon_petra::geom::Size;
+    use gorgon_petra::layout::{Proposal, SizeProposal};
 
     fn headless() -> Context {
         let ctx = Context::default();
@@ -453,5 +544,84 @@ mod tests {
         assert_eq!(contain(zero_offer, vec2(10.0, 10.0)), zero_offer);
         assert_eq!(contain(offer, Vec2::ZERO), offer);
         assert_eq!(contain(offer, vec2(-5.0, 10.0)), offer);
+    }
+
+    #[test]
+    fn a_picture_measures_its_pixels_when_the_offer_is_open() {
+        assert_eq!(
+            measure((200, 100), SizeProposal::unspecified()),
+            Size::new(200.0, 100.0)
+        );
+        assert_eq!(
+            measure((200, 100), SizeProposal::unbounded()),
+            Size::new(200.0, 100.0)
+        );
+    }
+
+    #[test]
+    fn a_picture_shrinks_to_the_tighter_extent_and_keeps_its_aspect() {
+        let offer = SizeProposal {
+            horizontal: Proposal::Exact(100.0),
+            vertical: Proposal::Exact(400.0),
+        };
+        assert_eq!(measure((200, 100), offer), Size::new(100.0, 50.0));
+        let tall = SizeProposal {
+            horizontal: Proposal::Exact(400.0),
+            vertical: Proposal::Exact(25.0),
+        };
+        assert_eq!(measure((200, 100), tall), Size::new(50.0, 25.0));
+    }
+
+    #[test]
+    fn a_picture_is_never_enlarged_and_an_empty_one_takes_no_room() {
+        assert_eq!(
+            measure((20, 10), SizeProposal::exact(Size::new(500.0, 500.0))),
+            Size::new(20.0, 10.0)
+        );
+        assert_eq!(measure((0, 0), SizeProposal::zero()), Size::ZERO);
+    }
+
+    #[test]
+    fn a_removed_source_is_forgotten_with_its_size() {
+        let mut sources = ImageSources::new();
+        sources.register("logo", red_pixels(2, 1)).unwrap();
+        assert_eq!(sources.size("logo"), Some((2, 1)));
+        assert!(sources.remove("logo"));
+        assert_eq!(sources.size("logo"), None);
+        assert_eq!(sources.sources().count(), 0);
+        assert!(!sources.remove("logo"));
+    }
+
+    #[test]
+    fn a_side_over_the_texture_limit_is_averaged_down_not_refused() {
+        let ctx = headless();
+        let max = ctx.input(|input| input.max_texture_side);
+        let (w, h) = (max * 2 + 2, 4);
+        let mut sources = ImageSources::new();
+        sources
+            .register(
+                "wide",
+                ImagePixels::try_new(w, h, vec![200; w * h * 4]).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            sources.size("wide"),
+            Some((w, h)),
+            "layout keeps the pixels"
+        );
+        let handle = sources.resolve(&ctx, "wide").expect("a texture");
+        assert_eq!(handle.size(), [(w).div_ceil(3), h.div_ceil(3)]);
+    }
+
+    #[test]
+    fn averaging_down_weights_colour_by_alpha() {
+        let max = 1;
+        let pixels = ImagePixels::try_new(2, 1, vec![255, 0, 0, 255, 0, 255, 0, 0]).unwrap();
+        let image = pixels.decode(max).expect("decodes");
+        assert_eq!(image.size, [1, 1]);
+        // The clear green pixel adds no green: the result is red at half alpha.
+        let p = image.pixels[0];
+        assert_eq!((p.g(), p.b()), (0, 0));
+        assert!(p.r() > 100 && p.a() > 100 && p.a() < 150, "{p:?}");
     }
 }

@@ -1708,7 +1708,7 @@ impl<A: App> Host<A> {
         // mid-pass, and a stored trait object would either alias
         // `self.shaper` a second time or force `measurers` behind the same
         // indirection for no benefit.
-        let mut content = HostedContent::new(&mut self.shaper, &self.measurers);
+        let mut content = HostedContent::new(&mut self.shaper, &self.measurers, &self.images);
         let mut ctx_layout = LayoutCtx {
             content: &mut content,
             rows: &mut self.app,

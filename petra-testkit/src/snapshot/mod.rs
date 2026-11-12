@@ -458,6 +458,69 @@ impl Snapshotter {
     }
 }
 
+/// The pixels of every host texture a test has seen, kept across passes it
+/// did not capture.
+///
+/// `egui::Context::load_texture` hands a texture's pixels over once, in the
+/// `FullOutput` of the pass that loaded it, and [`Snapshotter::absorb`] does
+/// nothing until the first capture has brought the device up. A test that
+/// settles for many passes and then captures one has therefore dropped the
+/// pixels of a picture the shell registered earlier, and the capture fails
+/// with [`CaptureError::MissingTexture`]. A test records every pass here and
+/// replays the log into the pass it captures.
+///
+/// The font atlas is not kept: every capture re-uploads it whole.
+#[derive(Default)]
+pub struct TextureLog {
+    held: std::collections::HashMap<egui::TextureId, egui::epaint::ImageDelta>,
+}
+
+impl TextureLog {
+    /// An empty log.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Keep the whole-image uploads of one pass and forget what it frees.
+    pub fn record(&mut self, delta: &egui::TexturesDelta) {
+        for (id, images) in &delta.set {
+            if *id == egui::TextureId::default() {
+                continue;
+            }
+            if let Some(whole) = images.iter().rev().find(|image| image.is_whole()) {
+                self.held.insert(*id, whole.clone());
+            }
+        }
+        for id in &delta.free {
+            self.held.remove(id);
+        }
+    }
+
+    /// Add every kept upload that `delta` does not already carry, so the pass
+    /// that `delta` belongs to can be captured.
+    pub fn replay(&self, delta: &mut egui::TexturesDelta) {
+        for (id, image) in &self.held {
+            let images = delta.set.entry(*id).or_default();
+            if !images.iter().any(egui::epaint::ImageDelta::is_whole) {
+                images.insert(0, image.clone());
+            }
+        }
+    }
+
+    /// How many textures the log holds.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.held.len()
+    }
+
+    /// Whether the log holds none.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.held.is_empty()
+    }
+}
+
 /// The frame's whole drawable area in device pixels.
 ///
 /// Through [`round_rect`], so the PNG's dimensions are the same device
@@ -550,7 +613,7 @@ mod tests {
     use gorgon_petra_egui::paint::TokenSource;
     use image::RgbaImage;
 
-    use super::{CaptureError, Shot, Snapshotter};
+    use super::{CaptureError, Shot, Snapshotter, TextureLog};
     use crate::wire::{ErrorKind, WireRect};
 
     /// A panel that binds a background token and holds one line of text, so
@@ -994,5 +1057,53 @@ mod tests {
             ((WINDOW.w * 2.0) as u32, (WINDOW.h * 2.0) as u32),
             "at scale 2 the capture is twice the logical size in each axis"
         );
+    }
+
+    fn upload(id: u64) -> (egui::TextureId, egui::epaint::ImageDelta) {
+        let image = egui::ColorImage::filled([2, 2], egui::Color32::RED);
+        (
+            egui::TextureId::Managed(id),
+            egui::epaint::ImageDelta::full(image, egui::TextureOptions::LINEAR),
+        )
+    }
+
+    #[test]
+    fn a_log_replays_an_upload_into_a_later_pass_and_forgets_a_freed_one() {
+        let mut log = TextureLog::new();
+        let (id, image) = upload(7);
+        let mut first = egui::TexturesDelta::default();
+        first.set.insert(id, [image].into_iter().collect());
+        let (font, atlas) = upload(0);
+        first.set.insert(font, [atlas].into_iter().collect());
+        log.record(&first);
+        first.clear();
+        assert_eq!(log.len(), 1, "the font atlas is not kept");
+
+        let mut later = egui::TexturesDelta::default();
+        log.replay(&mut later);
+        assert!(later.set.contains_key(&id));
+        assert!(!later.set.contains_key(&font));
+        later.clear();
+
+        let mut freed = egui::TexturesDelta::default();
+        freed.free.insert(id);
+        log.record(&freed);
+        freed.clear();
+        assert!(log.is_empty());
+    }
+
+    #[test]
+    fn a_replay_leaves_a_pass_that_uploads_the_texture_itself_alone() {
+        let mut log = TextureLog::new();
+        let (id, image) = upload(9);
+        let mut once = egui::TexturesDelta::default();
+        once.set.insert(id, [image.clone()].into_iter().collect());
+        log.record(&once);
+        once.clear();
+        let mut same = egui::TexturesDelta::default();
+        same.set.insert(id, [image].into_iter().collect());
+        log.replay(&mut same);
+        assert_eq!(same.set[&id].len(), 1);
+        same.clear();
     }
 }
