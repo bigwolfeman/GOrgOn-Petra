@@ -3211,7 +3211,13 @@ impl<A: App> Host<A> {
             return;
         }
         self.pending_focus_passes += 1;
-        if moving
+        // The motion toward it is over and it is still hidden: a nested
+        // scroll may need its own turn now that an outer one brought it on
+        // screen (`Self::scroll_into_view` moves one scroll per call).
+        let next_leg = !moving
+            && self.pending_focus_passes < PENDING_FOCUS_PASSES
+            && self.scroll_into_view(frame, &target);
+        if (moving || next_leg)
             && self.pending_focus_passes < PENDING_FOCUS_PASSES
             && frame.placement(&target).is_some()
         {
@@ -3750,46 +3756,81 @@ impl<A: App> Host<A> {
         let Some(placement) = frame.placement(target) else {
             return false;
         };
-        let (rect, clip) = (placement.rect, placement.clip);
-        let Some(scroll) = frame.scroll_ancestor(target).map(|p| p.id.clone()) else {
-            return false;
-        };
-        let axis = frame.scroll_axis(&scroll);
-        let target_lead = Self::leading(rect, axis);
-        let target_trail = target_lead + rect.size().along(axis);
-        let view_lead = Self::leading(clip, axis);
-        let view_trail = view_lead + clip.size().along(axis);
-        let max_offset = frame.scroll_overflow(&scroll, axis);
-        // The offset the frame was placed with, not the one in state:
-        // `layout::scroll::place` re-clamps a stale entry against the real
-        // content extent and never writes it back, so after content shrank
-        // the state can hold 280 while the frame shows 40. Adding a delta to
-        // the stale value and clamping again lands back on 40, and the
-        // target never moves.
-        let current = self
-            .state
-            .scroll_offsets
-            .get(&scroll)
-            .copied()
-            .unwrap_or(0.0)
-            .clamp(0.0, max_offset);
-        let desired = if target_trail <= view_lead {
-            // Entirely above/left of the viewport: bring its leading edge
-            // to the viewport's leading edge, the least scroll that shows
-            // all of it.
-            current + (target_lead - view_lead)
-        } else if target_lead >= view_trail {
-            // Entirely below/right: align the trailing edges instead.
-            current + (target_trail - view_trail)
-        } else {
-            // Already within range on this axis: nothing to scroll for.
-            // `Host::pass`'s caller falls back to moving focus instead when
-            // this happens — a partial overlap along the *other* axis, or a
-            // clip that collapsed to zero height, is not something a scroll
-            // offset can fix.
-            return false;
-        };
-        self.write_scroll_offset(&scroll, desired, max_offset)
+        let rect = placement.rect;
+        // Every scroll above the target, nearest first. A vertical scroll
+        // that holds a horizontal one (a tab strip on a long page) must move
+        // the vertical scroll for a target above or below its viewport; the
+        // nearest scroll alone moves only along its own axis and cannot.
+        let mut chain: Vec<String> = Vec::new();
+        let mut from = Some(target.to_owned());
+        while let Some(id) = from.take() {
+            let Some(scroll) = frame.scroll_ancestor(&id) else {
+                break;
+            };
+            let scroll_id = scroll.id.clone();
+            from = scroll
+                .parent
+                .and_then(|i| frame.placements.get(i))
+                .map(|p| p.id.clone());
+            chain.push(scroll_id);
+        }
+        // Outermost first: an outer scroll brings an inner one on screen
+        // before the inner one can measure its own viewport. One scroll moves
+        // per call; the landing asks again once that motion is done.
+        for scroll in chain.iter().rev() {
+            let Some(own) = frame.placement(scroll) else {
+                continue;
+            };
+            let axis = frame.scroll_axis(scroll);
+            // The scroll's visible viewport: its rect cut by what clips it.
+            // The target's own clip is the wrong ruler here, because it is
+            // also cut by every scroll between the two.
+            let view = own.rect.intersect(own.clip);
+            if view.w <= 0.0 || view.h <= 0.0 {
+                // Hidden by something outside it: an outer scroll would have
+                // moved already, so no offset of this one can show the target.
+                continue;
+            }
+            let target_lead = Self::leading(rect, axis);
+            let target_trail = target_lead + rect.size().along(axis);
+            let view_lead = Self::leading(view, axis);
+            let view_trail = view_lead + view.size().along(axis);
+            let max_offset = frame.scroll_overflow(scroll, axis);
+            // The offset the frame was placed with, not the one in state:
+            // `layout::scroll::place` re-clamps a stale entry against the
+            // real content extent and never writes it back, so after content
+            // shrank the state can hold 280 while the frame shows 40. Adding
+            // a delta to the stale value and clamping again lands back on
+            // 40, and the target never moves.
+            let current = self
+                .state
+                .scroll_offsets
+                .get(scroll)
+                .copied()
+                .unwrap_or(0.0)
+                .clamp(0.0, max_offset);
+            let desired = if target_trail <= view_lead {
+                // Entirely above/left of the viewport: bring its leading
+                // edge to the viewport's leading edge, the least scroll that
+                // shows all of it.
+                current + (target_lead - view_lead)
+            } else if target_lead >= view_trail {
+                // Entirely below/right: align the trailing edges instead.
+                current + (target_trail - view_trail)
+            } else {
+                // Within range on this scroll's axis: an inner scroll, or
+                // the other axis, is what still hides it.
+                continue;
+            };
+            if self.write_scroll_offset(scroll, desired, max_offset) {
+                return true;
+            }
+        }
+        // Nothing to scroll: a partial overlap along an axis no scroll
+        // moves, or a clip that collapsed to zero height, is not something
+        // an offset can fix. `Host::pass`'s caller falls back to moving
+        // focus instead.
+        false
     }
 
     /// Whether the focused node in the last placed frame declares
