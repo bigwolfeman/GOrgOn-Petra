@@ -1107,10 +1107,7 @@ mod tests {
         /// a graphical object that conveys information, not body text.
         const MIN_MARK_CONTRAST: f32 = 3.0;
 
-        for (theme_name, theme) in [
-            ("light", crate::token::shipped::light()),
-            ("dark", crate::token::shipped::dark()),
-        ] {
+        for (theme_name, theme) in crate::token::colourblind::shipped_themes() {
             for (label, node) in [
                 ("danger-tertiary", danger_tertiary_button("b", "Delete")),
                 ("danger-ghost", danger_ghost_button("b", "Delete")),

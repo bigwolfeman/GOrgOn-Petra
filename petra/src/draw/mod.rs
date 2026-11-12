@@ -67,9 +67,10 @@ pub const VERSION: &str = "drawlist-v1";
 /// Kin to [`crate::component::MAX_LAYER_DEPTH`] — a bound on what an author
 /// may ask the engine to do in one node — and here rather than beside it
 /// because that constant belongs to the component vocabulary and this one
-/// belongs to the draw list. Unbenchmarked, and `contracts/draw-list.md`
-/// "Open" says so; what is not open is that the bound is enforced at
-/// construction.
+/// belongs to the draw list. Measured on 2026-11-11 (`benches/draw_list.rs`
+/// in `gorgon-petra-egui`, numbers in `contracts/draw-list.md` §5): 4096
+/// filled and stroked rects cost about a fifth of a 60 Hz frame to paint
+/// and tessellate, so the bound stays.
 pub const MAX_DRAW_COMMANDS: usize = 4096;
 
 /// How many path verbs one canvas may carry, summed over every
@@ -78,6 +79,12 @@ pub const MAX_DRAW_COMMANDS: usize = 4096;
 /// Separate from [`MAX_DRAW_COMMANDS`] because the two costs are different:
 /// a command is a dispatch, and a verb is tessellation work. One `Path` of
 /// twenty thousand verbs is one command and is refused here.
+///
+/// **This bounds straight segments, not curves** (measured 2026-11-11,
+/// `contracts/draw-list.md` §5). 16384 `LineTo`s paint and tessellate in
+/// about 6% of a frame, but a `CubicTo` counts as one verb whatever it
+/// flattens into, and 4096 long cubics cost five frames. How to weight curve
+/// verbs is open in that contract.
 pub const MAX_DRAW_PATH_VERBS: usize = 16_384;
 
 /// A colour a command paints with.

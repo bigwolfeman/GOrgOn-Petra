@@ -34,7 +34,8 @@ pub use presenter::Presenter;
 pub use selection::ThemeSelection;
 pub use shipped::{
     BORDER_SUBTLE_TOKENS, CornerRole, CornerTokens, FIELD_TOKENS, Joined, LAYER_TOKENS,
-    SHADOW_GEOMETRY, ShadowGeometry, corner_for, corners_for, dark, light, standard_vocabulary,
+    SHADOW_GEOMETRY, ShadowGeometry, corner_for, corners_for, dark, gray10, gray90, gray100, light,
+    shipped, standard_vocabulary, white,
 };
 pub use slot::{SlotSchema, SlotSpec, standard_slots};
 pub use snapshot::ThemeSnapshot;
@@ -43,7 +44,7 @@ pub use state::{
 };
 pub use status::{StatusShape, StatusToken, StatusTokenError};
 pub use syntax::{SYNTAX_CLASSES, syntax_token};
-pub use theme::{Theme, ThemeError, ThemeMismatch, ThemeUnusable};
+pub use theme::{Theme, ThemeError, ThemeId, ThemeMismatch, ThemeUnusable};
 pub use value::{
     ColorValue, MotionEasing, MotionValue, ShapeValue, Silhouette, SpringValue, TokenKind,
     TokenValue, TypographyFamily, TypographyValue, TypographyWeight,

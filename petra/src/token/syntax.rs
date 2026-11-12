@@ -178,24 +178,74 @@ pub(crate) fn declare(vocab: &mut Vocabulary) {
     }
 }
 
-/// Assign every `syntax.*` name in `mode`.
-pub(crate) fn insert(values: &mut BTreeMap<TokenName, TokenValue>, mode: ThemeMode) {
+/// The text floor every ink clears on every code ground: WCAG AA for body
+/// text.
+pub(crate) const MIN_INK_CONTRAST: f32 = 4.5;
+
+/// How far one step of [`legible_on`]'s walk moves an ink, in L\*.
+const INK_WALK_STEP: f32 = 0.5;
+
+/// Assign every `syntax.*` name in `mode`, each ink legible on every one of
+/// the theme's code `grounds` ([`GROUNDS`], resolved by the caller).
+///
+/// The table above is tuned for the grounds White and Gray 100 ship. A
+/// theme with a nearer ground (Gray 90's layer two is `#3a3a3a`, Gray 100's
+/// `#333333`) would leave the dimmest inks under the floor, so each ink is
+/// walked by [`legible_on`] until it clears. An ink that already clears is
+/// returned untouched, so the themes the table was tuned on carry it
+/// exactly, and no theme carries a second hand-picked table.
+pub(crate) fn insert(
+    values: &mut BTreeMap<TokenName, TokenValue>,
+    mode: ThemeMode,
+    grounds: &[ColorValue],
+) {
     for class in SYNTAX_CLASSES {
         let name = syntax_token(class).expect("every listed class has a token");
         let [r, g, b] = ink_of(class)
             .unwrap_or_else(|| panic!("syntax class {class:?} has no ink"))
             .rgb(mode);
-        values.insert(
-            name,
-            TokenValue::Color(ColorValue::from_srgb8(r, g, b, 0xff)),
-        );
+        let ink =
+            legible_on(ColorValue::from_srgb8(r, g, b, 0xff), mode, grounds).unwrap_or_else(|| {
+                panic!("syntax class {class:?} cannot be made legible on {grounds:?}")
+            });
+        values.insert(name, TokenValue::Color(ink));
     }
 }
 
-/// The grounds a code well paints on: the page (`surface.base`), the raised
-/// well (`surface.raised`, which is `surface.layer-one`), and the layer
-/// above it (`surface.layer-two`).
-#[cfg(test)]
+/// `ink`, moved away from the grounds in CIE L\* (lighter in a dark theme,
+/// darker in a light one) with its a\* and b\* kept, in [`INK_WALK_STEP`]
+/// steps until it clears [`MIN_INK_CONTRAST`] on every ground.
+///
+/// Lightness only, because hue and chroma are what keep adjacent classes
+/// apart for a red-green reader (`MIN_ADJACENT_SEPARATION`); a walk toward
+/// white would wash them out together and close the very gaps the table was
+/// tuned to hold. `None` when no lightness clears the floor, which the
+/// caller turns into a loud failure: a theme whose code ground no ink can
+/// be read on is a theme bug, not a value to clamp.
+fn legible_on(ink: ColorValue, mode: ThemeMode, grounds: &[ColorValue]) -> Option<ColorValue> {
+    let clears = |c: ColorValue| {
+        grounds
+            .iter()
+            .all(|g| c.contrast_ratio(*g) >= MIN_INK_CONTRAST)
+    };
+    if clears(ink) {
+        return Some(ink);
+    }
+    let lab = crate::token::measure::to_lab([ink.r, ink.g, ink.b]);
+    let direction = match mode {
+        ThemeMode::Light => -1.0,
+        ThemeMode::Dark => 1.0,
+    };
+    (1..=200u16)
+        .map(|step| lab[0] + direction * INK_WALK_STEP * f32::from(step))
+        .take_while(|l| (0.0..=100.0).contains(l))
+        .map(|l| {
+            let [r, g, b] = crate::token::measure::from_lab([l, lab[1], lab[2]]);
+            ColorValue { r, g, b, a: ink.a }
+        })
+        .find(|c| clears(*c))
+}
+
 pub(crate) const GROUNDS: [&str; 3] = ["surface.base", "surface.raised", "surface.layer-two"];
 
 /// The floor, in CIE delta E, between two adjacent classes after a
@@ -263,11 +313,11 @@ mod tests {
     use super::*;
     use crate::token::colourblind::{contrast, theme_color};
     use crate::token::measure::{SIMULATION_MODELS, separation, to_lab};
-    use crate::token::shipped::{dark, light, standard_vocabulary};
+    use crate::token::shipped::standard_vocabulary;
     use crate::token::{ColorValue, Theme};
 
-    fn themes() -> [(&'static str, Theme); 2] {
-        [("light", light()), ("dark", dark())]
+    fn themes() -> [(&'static str, Theme); 4] {
+        crate::token::colourblind::shipped_themes()
     }
 
     fn ink_colour(theme: &Theme, class: &str) -> ColorValue {
@@ -351,10 +401,41 @@ mod tests {
                     let bg = theme_color(&theme, ground);
                     let ratio = contrast(ink, bg);
                     assert!(
-                        ratio >= 4.5,
-                        "{mode}: syntax.{class} on {ground} is {ratio:.2}:1, under 4.5:1"
+                        ratio >= MIN_INK_CONTRAST,
+                        "{mode}: syntax.{class} on {ground} is {ratio:.2}:1, under {MIN_INK_CONTRAST}:1"
                     );
                 }
+            }
+        }
+    }
+
+    /// The derivation in [`super::insert`]: White and Gray 100, the grounds
+    /// the table was tuned on, carry the table exactly; where a theme's ground
+    /// moves an ink, only its L\* moved, so its hue and chroma (the channels
+    /// that keep neighbours apart for a red-green reader) are the table's.
+    #[test]
+    fn the_ink_walk_moves_lightness_only_and_only_where_a_ground_needs_it() {
+        for (mode, theme) in themes() {
+            let tuned = matches!(
+                theme.id(),
+                Some(crate::token::ThemeId::White | crate::token::ThemeId::Gray100)
+            );
+            for class in SYNTAX_CLASSES {
+                let [r, g, b] = ink_of(class).unwrap().rgb(theme.mode());
+                let table = ColorValue::from_srgb8(r, g, b, 0xff);
+                let ink = ink_colour(&theme, class);
+                if tuned {
+                    assert_eq!(ink, table, "{mode}: syntax.{class} moved off the table");
+                    continue;
+                }
+                let (was, now) = (
+                    to_lab([table.r, table.g, table.b]),
+                    to_lab([ink.r, ink.g, ink.b]),
+                );
+                assert!(
+                    (was[1] - now[1]).abs() < 0.5 && (was[2] - now[2]).abs() < 0.5,
+                    "{mode}: syntax.{class} changed hue or chroma: {was:?} -> {now:?}"
+                );
             }
         }
     }

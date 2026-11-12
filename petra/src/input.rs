@@ -1629,6 +1629,13 @@ fn block_floor<'a>(
 /// Every `DismissOutside` surface a `PointerPressed` in `event` lands outside
 /// the placed bounds of. Empty for any other event kind, and empty for a
 /// surface this frame did not place (nothing to be outside of).
+///
+/// "Outside" means outside the surface *and every surface nested in it*. A
+/// surface in a surface's subtree (a submenu anchored to a row of its menu)
+/// is placed against its anchor and usually lands beyond the outer
+/// surface's rect, yet it is part of that surface: a press on the submenu
+/// is a press inside the menu, and dismissing the menu for it would close
+/// the submenu along with it the moment it was used.
 fn dismiss_requests(
     frame: &PetrifiedFrame,
     event: &InputEvent,
@@ -1637,11 +1644,19 @@ fn dismiss_requests(
     let InputEvent::PointerPressed { pos, .. } = event else {
         return Vec::new();
     };
+    let inside = |id: &str| {
+        let nested = format!("{id}/");
+        surfaces
+            .keys()
+            .filter(|other| other.as_str() == id || other.starts_with(&nested))
+            .filter_map(|other| frame.placement(other))
+            .any(|placement| placement.rect.contains(*pos))
+    };
     surfaces
         .iter()
         .filter(|(_, policy)| **policy == InputPolicy::DismissOutside)
-        .filter_map(|(id, _)| frame.placement(id).map(|p| (id, p)))
-        .filter(|(_, placement)| !placement.rect.contains(*pos))
+        .filter(|(id, _)| frame.placement(id).is_some())
+        .filter(|(id, _)| !inside(id))
         .map(|(id, _)| id.clone())
         .collect()
 }
@@ -3618,6 +3633,55 @@ mod tests {
         let outcome =
             route_with_surfaces(&f, None, &press(Point::new(60.0, 60.0)), &surfaces, None);
         assert!(outcome.dismiss.is_empty());
+    }
+
+    /// A surface nested in a `DismissOutside` surface's subtree (a submenu
+    /// anchored to a row of its menu) is part of it. A press on the nested
+    /// surface, though it lands beyond the outer rect, dismisses neither;
+    /// a press outside both dismisses both.
+    #[test]
+    fn a_press_on_a_nested_surface_is_inside_the_surface_that_holds_it() {
+        let f = frame(vec![
+            node(
+                "/backdrop",
+                Rect::new(0.0, 0.0, 400.0, 400.0),
+                0,
+                &[Interaction::Click],
+            ),
+            node("/menu", Rect::new(10.0, 10.0, 100.0, 80.0), 5, &[]),
+            node(
+                "/menu/content/more/submenu",
+                Rect::new(110.0, 50.0, 100.0, 80.0),
+                6,
+                &[],
+            ),
+        ]);
+        let mut surfaces = BTreeMap::new();
+        surfaces.insert("/menu".to_owned(), InputPolicy::DismissOutside);
+        surfaces.insert(
+            "/menu/content/more/submenu".to_owned(),
+            InputPolicy::DismissOutside,
+        );
+
+        let on_submenu =
+            route_with_surfaces(&f, None, &press(Point::new(150.0, 100.0)), &surfaces, None);
+        assert!(
+            on_submenu.dismiss.is_empty(),
+            "got {:?}",
+            on_submenu.dismiss
+        );
+
+        let on_menu =
+            route_with_surfaces(&f, None, &press(Point::new(20.0, 20.0)), &surfaces, None);
+        assert_eq!(
+            on_menu.dismiss,
+            vec!["/menu/content/more/submenu".to_owned()],
+            "a press on the menu, outside the submenu, closes only the submenu"
+        );
+
+        let outside =
+            route_with_surfaces(&f, None, &press(Point::new(300.0, 300.0)), &surfaces, None);
+        assert_eq!(outside.dismiss.len(), 2, "got {:?}", outside.dismiss);
     }
 
     /// Only a press dismisses: a pointer move outside a `DismissOutside`

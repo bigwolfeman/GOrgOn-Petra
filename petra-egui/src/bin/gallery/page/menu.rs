@@ -1,6 +1,6 @@
 //! Inventory row 18, Menu.
 
-use gorgon_petra::component::{button, menu, menu_item, section, text};
+use gorgon_petra::component::{button, menu, menu_item, menu_submenu, section, text};
 use gorgon_petra::input::InputEvent;
 use gorgon_petra::tree::ViewNode;
 
@@ -11,6 +11,10 @@ use super::common::{body, column, dismissed_under, path_has, row, sp};
 const TRIGGER: &str = "trigger";
 const MENU: &str = "menu";
 const ITEMS: [(&str, &str); 2] = [("mn-0", "Rename"), ("mn-1", "Delete")];
+/// The live menu's submenu row (manifest row 257) and the rows it opens.
+const MORE: &str = "mn-more";
+const SUBMENU: &str = "submenu";
+const SUB_ITEMS: [(&str, &str); 2] = [("mn-sub-0", "Copy link"), ("mn-sub-1", "Copy path")];
 
 /// Live state of the Menu page: whether the menu is open.
 ///
@@ -20,6 +24,9 @@ const ITEMS: [(&str, &str); 2] = [("mn-0", "Rename"), ("mn-1", "Delete")];
 #[derive(Default)]
 pub struct Menu {
     open: bool,
+    /// Whether the live menu's submenu is open. Only meaningful while
+    /// `open` is: shutting the menu shuts its submenu with it.
+    sub_open: bool,
 }
 
 impl Page for Menu {
@@ -136,14 +143,20 @@ impl Page for Menu {
 
         let mut pair = vec![button(TRIGGER, "Actions")];
         if self.open {
-            pair.push(menu(
-                MENU,
-                "Actions",
-                ITEMS
+            let mut items: Vec<ViewNode> = ITEMS
+                .iter()
+                .map(|(key, label)| menu_item(*key, *label))
+                .collect();
+            items.push(menu_submenu(
+                MORE,
+                "Copy",
+                SUB_ITEMS
                     .iter()
                     .map(|(key, label)| menu_item(*key, *label))
                     .collect(),
+                self.sub_open,
             ));
+            pair.push(menu(MENU, "Actions", items));
         }
         section(
             "menu",
@@ -303,10 +316,21 @@ impl Page for Menu {
         if !path_has(node, "mn-pair") {
             return false;
         }
-        if ITEMS.iter().any(|(key, _)| path_has(node, key)) {
+        let picked = ITEMS
+            .iter()
+            .chain(&SUB_ITEMS)
+            .any(|(key, _)| path_has(node, key));
+        if picked {
             self.open = false;
+            self.sub_open = false;
+        } else if path_has(node, MORE) {
+            // Carbon opens a submenu from its row (press, Enter, Space or
+            // ArrowRight all arrive as a press on the row here) and a
+            // second press shuts it.
+            self.sub_open = !self.sub_open;
         } else if path_has(node, TRIGGER) {
             self.open = !self.open;
+            self.sub_open = false;
         } else {
             return false;
         }
@@ -321,22 +345,32 @@ impl Page for Menu {
         // live menu, closing it the same event that opened it.
         if dismissed_under(ids, "mn-pair", MENU) {
             self.open = false;
+            self.sub_open = false;
+        }
+        // A press on the menu but off the submenu shuts only the submenu;
+        // a press on the submenu is inside the menu and dismisses neither.
+        if dismissed_under(ids, MORE, SUBMENU) {
+            self.sub_open = false;
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{MENU, Menu};
+    use super::{MENU, Menu, SUBMENU};
     use crate::page::Page;
     use crate::page::common::find;
+    use gorgon_petra::input::InputEvent;
     use gorgon_petra::tree::{NodeKind, Role};
 
     /// T050 `--border` cell: the menu wears the one-token outline and the
     /// plain menu beside the page does not.
     #[test]
     fn the_border_menu_cell_wears_the_outline() {
-        let page = Menu { open: true };
+        let page = Menu {
+            open: true,
+            ..Menu::default()
+        };
         let tree = page.body();
         let bordered = find(&tree, "v-menu-border").expect("the --border menu is on the page");
         assert!(
@@ -401,6 +435,54 @@ mod tests {
         assert_eq!(
             group.semantics.role,
             Some(Role::Custom("radiogroup".to_owned()))
+        );
+    }
+
+    /// Manifest row 257 on the live menu: the row opens its submenu, a
+    /// pick in the submenu shuts both, and a dismissal of the submenu alone
+    /// leaves the menu open.
+    #[test]
+    fn the_live_menu_s_submenu_opens_from_its_row_and_a_pick_shuts_both() {
+        let mut page = Menu::default();
+        let base = "/page/menu/mn/mn-pair";
+        assert!(page.handle(&InputEvent::Text(String::new()), &format!("{base}/trigger")));
+        assert!(page.open && !page.sub_open);
+        assert!(
+            find(&page.body(), SUBMENU).is_none(),
+            "shut until its row is pressed"
+        );
+
+        assert!(page.handle(
+            &InputEvent::Text(String::new()),
+            &format!("{base}/menu/content/mn-more/row")
+        ));
+        assert!(page.sub_open);
+        let tree = page.body();
+        let more = find(&tree, "mn-more").expect("the submenu cell");
+        let row = find(more, "row").expect("the submenu row");
+        assert_eq!(row.semantics.expanded, Some(true));
+        assert!(
+            find(&tree, "mn-sub-0").is_some(),
+            "the submenu's rows are on the page"
+        );
+
+        page.dismissed(&[format!("{base}/menu/content/mn-more/submenu")]);
+        assert!(
+            page.open && !page.sub_open,
+            "the submenu shut, the menu stayed"
+        );
+
+        page.handle(
+            &InputEvent::Text(String::new()),
+            &format!("{base}/menu/content/mn-more/row"),
+        );
+        assert!(page.handle(
+            &InputEvent::Text(String::new()),
+            &format!("{base}/menu/content/mn-more/submenu/content/mn-sub-1"),
+        ));
+        assert!(
+            !page.open && !page.sub_open,
+            "a pick shuts the menu and its submenu"
         );
     }
 }

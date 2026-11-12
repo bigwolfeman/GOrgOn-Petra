@@ -1,7 +1,8 @@
 //! Inventory row 30, Slider.
 
 use gorgon_petra::component::{
-    section, slider, slider_input_text, slider_value_at, slider_value_of_input, valued,
+    RangeThumb, section, slider, slider_input_text, slider_range_moved, slider_range_thumb,
+    slider_range_value_at, slider_value_at, slider_value_of_input, valued,
 };
 use gorgon_petra::frame::PetrifiedFrame;
 use gorgon_petra::input::{InputEvent, KeyCode};
@@ -11,6 +12,8 @@ use super::Page;
 use super::common::{body, path_has, sp};
 
 const VOLUME: &str = "vol";
+/// The two-handle range cell's key.
+const RANGE: &str = "range";
 /// The paired number input's key inside `slider`.
 const INPUT: &str = "input";
 
@@ -42,6 +45,12 @@ pub struct Slider {
     /// vanishing). This bit mirrors exactly that: set by the press, cleared
     /// by the end, and no move is a drag without it.
     dragging: bool,
+    /// The range cell's two values, normalised and ordered.
+    range: (f32, f32),
+    /// The thumb the range's open gesture moves, set by the press and
+    /// cleared by the gesture's end: the range twin of `dragging`, holding
+    /// *which* of two thumbs the capture belongs to.
+    range_grab: Option<RangeThumb>,
 }
 
 impl Default for Slider {
@@ -50,11 +59,47 @@ impl Default for Slider {
             volume: 0.4,
             draft: slider_input_text(0.4),
             dragging: false,
+            range: (0.2, 0.8),
+            range_grab: None,
         }
     }
 }
 
 impl Slider {
+    /// The range cell's drag: the press asks which thumb it grabbed and puts
+    /// that thumb under the pointer, every move under the capture moves only
+    /// that thumb, and the end lets go. The same open/close discipline as
+    /// the single slider's `dragging`, with the thumb as the open state.
+    fn range_gesture(&mut self, event: &InputEvent, node: &str, frame: &PetrifiedFrame) -> bool {
+        match event {
+            InputEvent::GestureEnded { .. } => self.range_grab.take().is_some(),
+            InputEvent::PointerPressed { pos, .. } => {
+                let Some(thumb) = slider_range_thumb(frame, node, *pos) else {
+                    return false;
+                };
+                let Some(value) = slider_range_value_at(frame, node, *pos, thumb) else {
+                    return false;
+                };
+                self.range_grab = Some(thumb);
+                self.range = slider_range_moved(self.range.0, self.range.1, thumb, value);
+                true
+            }
+            InputEvent::PointerMoved { pos } | InputEvent::PointerReleased { pos, .. } => {
+                let Some(thumb) = self.range_grab else {
+                    return false;
+                };
+                match slider_range_value_at(frame, node, *pos, thumb) {
+                    Some(value) => {
+                        self.range = slider_range_moved(self.range.0, self.range.1, thumb, value);
+                        true
+                    }
+                    None => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
     fn set_from_pointer(&mut self, value: f32) {
         self.volume = value;
         self.draft = slider_input_text(value);
@@ -140,12 +185,10 @@ impl Page for Slider {
                 vec![
                     valued(slider(VOLUME, "Volume", self.volume), self.draft.clone()),
                     heading("range-title", "Two-handle range"),
-                    // T054's variant cell: the Range variant's anatomy, both
-                    // handles and the filled span. Its drag is FR-030
-                    // (`component/slider.rs` names the spec 005 dependency);
-                    // the cell shows the shape, and moving a thumb of two
-                    // waits for that engine work.
-                    slider_range("range", "Temperature", 20.0, 80.0),
+                    // Manifest row 436: both handles, the filled span, and
+                    // the drag (`gesture` below). Normalised values: 0.2 is
+                    // the "20" the 0–100 labels name.
+                    slider_range(RANGE, "Temperature", self.range.0, self.range.1),
                     heading("no-num-title", "Without a number input"),
                     // Register row 437: the well is gone and the value rides
                     // a tooltip over the handle (slice-e: "replaces the input
@@ -197,6 +240,9 @@ impl Page for Slider {
     /// gesture's end closes it. A move with no drag open — a hover — is
     /// news the page does not act on, whatever node it names.
     fn gesture(&mut self, event: &InputEvent, node: &str, frame: &PetrifiedFrame) -> bool {
+        if path_has(node, RANGE) {
+            return self.range_gesture(event, node, frame);
+        }
         if !path_has(node, VOLUME) || path_has(node, INPUT) {
             return false;
         }
@@ -456,10 +502,79 @@ mod tests {
         );
     }
 
+    /// Manifest row 436's drag, end to end through the page: a press on the
+    /// rail near the high thumb grabs the high thumb and moves only it, a
+    /// drag past the low thumb stops there instead of crossing, and after
+    /// the gesture ends a move is a hover again.
+    #[test]
+    fn a_range_drag_moves_one_thumb_and_stops_at_the_other() {
+        let mut page = Slider::default();
+        let root = page.body();
+        let registry = Registry::with_vocabulary(standard_vocabulary());
+        let mut harness = Harness::new();
+        let viewport = Viewport::new(Size::new(900.0, 700.0), ThemeMode::Dark);
+        harness.scale = viewport.scale;
+        let frame = petrify(
+            1,
+            validated_with(&root, &registry),
+            &mut harness.ctx(),
+            viewport,
+            TransitionActivity::default(),
+        );
+        let rail = frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/range/row/rail"))
+            .expect("the range rail is placed");
+        let (rail_id, r) = (rail.id.clone(), rail.rect);
+        let y = r.y + r.h / 2.0;
+
+        assert!(page.gesture(&pressed(Point::new(r.x + r.w * 0.9, y)), &rail_id, &frame));
+        let (low, high) = page.range;
+        assert_eq!(low, 0.2, "the low thumb did not move");
+        assert!(
+            high > 0.8,
+            "the press moved the high thumb under it: {high}"
+        );
+
+        assert!(page.gesture(
+            &InputEvent::PointerMoved {
+                pos: Point::new(r.x, y)
+            },
+            &rail_id,
+            &frame
+        ));
+        assert_eq!(
+            page.range,
+            (0.2, 0.2),
+            "the high thumb stopped at the low one"
+        );
+
+        assert!(page.gesture(
+            &InputEvent::GestureEnded {
+                node: rail_id.clone(),
+                outcome: GestureOutcome::Completed,
+            },
+            &rail_id,
+            &frame,
+        ));
+        assert!(
+            !page.gesture(
+                &InputEvent::PointerMoved {
+                    pos: Point::new(r.right(), y)
+                },
+                &rail_id,
+                &frame
+            ),
+            "with no gesture open a move is a hover"
+        );
+        assert_eq!(page.range, (0.2, 0.2));
+    }
+
     /// T054's variant cell (manifest row 436, `Slider variant range-slider`):
     /// the two-handle range is on the page — both handles and the span the
-    /// selection fills. The anatomy ships; its drag is FR-030 and is
-    /// recorded as such in `component/slider.rs`, not faked here.
+    /// selection fills. Its drag is
+    /// `a_range_drag_moves_one_thumb_and_stops_at_the_other` above.
     #[test]
     fn the_page_carries_the_two_handle_range_with_both_handles() {
         let tree = Slider::default().body();

@@ -38,10 +38,9 @@ use crate::component::{
     number_input_warning, radio_warning, status, tag_status, textarea_warning,
 };
 use crate::token::colourblind::{
-    MIN_STATUS_SEPARATION, MIN_SURFACE_CONTRAST, VISIONS, contrast, separation, status_family,
-    theme_color,
+    MIN_STATUS_SEPARATION, MIN_SURFACE_CONTRAST, VISIONS, contrast, separation, shipped_themes,
+    status_family, theme_color,
 };
-use crate::token::shipped::{dark, light};
 use crate::token::{StatusShape, StatusToken, TokenName};
 use crate::tree::{Role, ViewNode};
 
@@ -164,7 +163,7 @@ fn every_status_a_component_paints_is_a_colour_the_separation_gate_sweeps() {
 #[test]
 fn two_statuses_a_component_paints_stay_apart_to_a_dichromat() {
     let tokens = every_shipped_status();
-    for (label, theme) in [("light", light()), ("dark", dark())] {
+    for (label, theme) in shipped_themes() {
         for (i, a) in tokens.iter().enumerate() {
             for b in tokens.iter().skip(i + 1) {
                 let (rendered_a, rendered_b) = (tag_status("s", a), tag_status("s", b));
@@ -279,7 +278,7 @@ fn the_avatar_and_the_readout_agree_on_every_status_silhouette() {
 /// composes rather than what this file guesses it composes.
 #[test]
 fn a_status_mark_clears_the_contrast_floor_against_its_own_components_ground() {
-    for (label, theme) in [("light", light()), ("dark", dark())] {
+    for (label, theme) in shipped_themes() {
         for token in every_shipped_status() {
             for (who, node, ground_key) in [
                 ("tag_status", tag_status("s", &token), "s"),
@@ -302,7 +301,9 @@ fn a_status_mark_clears_the_contrast_floor_against_its_own_components_ground() {
                 // near-white raised surface; the token gate exempts the same
                 // pair for the same reason, and the circle and the word carry
                 // the mark there.
-                if label == "light" && (fill == "status.ok" || fill == "support-success") {
+                if theme.mode() == crate::token::ThemeMode::Light
+                    && (fill == "status.ok" || fill == "support-success")
+                {
                     continue;
                 }
                 assert!(

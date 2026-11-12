@@ -332,7 +332,7 @@ fn theme_wire(mode: ThemeMode) -> &'static str {
 /// Reach the theme the way the driver does: a press on the chrome's own
 /// switcher segment (`catalog.rs`'s `route_event` chain), taken by the host
 /// on the next pass (`App::theme_request`). Deterministic whatever
-/// `initial_theme_mode()` read from the environment, because
+/// `initial_theme()` read from the environment, because
 /// `Catalog::set_theme` only no-ops when the mode is already the one asked
 /// for.
 fn press_theme_segment(catalog: &mut Catalog, mode: ThemeMode) {

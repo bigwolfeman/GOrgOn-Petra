@@ -1,5 +1,5 @@
-//! Carbon Slider (slice-e). Track 2px T070. The two-handle Range variant's
-//! anatomy ships; its drag is FR-030 (see below).
+//! Carbon Slider (slice-e). Track 2px T070. The two-handle Range variant
+//! ships with its drag (see below).
 //!
 //! Anatomy of the default (single-handle) slider, style page +
 //! `_slider.scss`, checked against `30-slider.png` on 2026-09-04:
@@ -28,16 +28,17 @@
 //! [`slider_range`]: two 14-unit handles on the one rail, the span between
 //! them filled, and a number input per handle — the delta slice-e's own
 //! mining names ("a second handle, a second number input, and min/max
-//! clamp logic"). What does **not** ship is the gesture, and that is
-//! FR-030's lane entry, not an omission: a drag that moves one thumb of
-//! two is exactly spec 005's US3 case ("two overlapping drag targets ...
-//! exactly one captures the pointer for the whole gesture"), and that
-//! engine work has not landed. Both handles declare
-//! [`Interaction::Drag`] — the intent is true and the driver can
-//! synthesise it — but manifest row 436 stays UNCOVERED (the FR-030 lane
-//! entry, not an exclusion) until spec 005 lands. The value mapping a
-//! finished drag needs is [`slider_value_at`], shared with the
-//! single-handle slider: same rail, same handle-centre travel.
+//! clamp logic"). Its gesture is spec 005's US3 case ("two overlapping
+//! drag targets ... exactly one captures the pointer for the whole
+//! gesture"), which the engine's pointer capture now settles: a press on
+//! either handle captures that handle, and a press on the rail captures
+//! the rail. Which thumb a gesture moves is [`slider_range_thumb`] (the
+//! handle pressed, or the nearer one for a press on the rail), where the
+//! pointer puts it is [`slider_range_value_at`] (each thumb's own centre
+//! travel, which differs from the single slider's because two handles
+//! share the rail), and [`slider_range_moved`] is the clamp that keeps the
+//! thumbs from crossing. The application owns the two values, as it owns
+//! the single slider's.
 //!
 //! The two modifiers (manifest rows 437/438) act on anatomy item 6, the
 //! number input:
@@ -514,22 +515,16 @@ pub fn slider_range_values(low: f32, high: f32) -> (f32, f32) {
 /// 0–100 range). `low`/`high` are normalised and ordered by
 /// [`slider_range_values`].
 ///
-/// # What ships, and what is FR-030 (spec 005)
+/// # The gesture
 ///
-/// The anatomy ships. The gesture does not, and that is the FR-030 lane
-/// entry, not a faked behaviour: a drag that moves one thumb of two is
-/// exactly spec 005's US3 case — "Given two overlapping drag targets,
-/// When a drag begins, Then exactly one captures the pointer for the whole
-/// gesture" — and a press between the handles must pick the nearest, which
-/// is the same gesture's opening move. `Interaction::Drag` is routed
-/// nowhere in the engine today (spec 005's own inventory: "a dead enum
-/// variant"), so both handles and the rail declare the intents that are
-/// true — a press on either starts a gesture — while the capture that
-/// decides which thumb of two a press owns waits for spec 005. Manifest
-/// row 436 (`Slider variant range-slider`) stays UNCOVERED until then: the
-/// FR-030 lane entry, not an exclusion (FR-030). The value mapping a
-/// finished drag needs is [`slider_value_at`], shared with the
-/// single-handle slider — same rail, same handle-centre travel.
+/// Both handles and the rail declare [`Interaction::Drag`], so the engine's
+/// capture gives a press on any of them the whole gesture (spec 005 US3:
+/// "exactly one captures the pointer"). The application then asks
+/// [`slider_range_thumb`] which thumb the press grabbed,
+/// [`slider_range_value_at`] where each move puts it, and
+/// [`slider_range_moved`] for the clamped pair, and rebuilds this node with
+/// the result. Manifest row 436 (`Slider variant range-slider`) is covered
+/// by those four names.
 pub fn slider_range(
     key: impl Into<Key>,
     label: impl Into<String>,
@@ -577,7 +572,7 @@ pub fn slider_range(
         rail_children,
     );
     // The rail starts a gesture wherever the gesture lands; which thumb of
-    // two it owns is the FR-030 question named above.
+    // two it owns is `slider_range_thumb`'s answer.
     rail = rail
         .interactive(Role::Pane, format!("{label} track"), RAIL_INTENTS)
         .with_behaviour(ADJUSTS_ON_PRESS);
@@ -599,6 +594,95 @@ pub fn slider_range(
     node.semantics.label = Some(label);
     node.semantics.value = Some(format!("{low_s}–{high_s}"));
     node
+}
+
+/// Which thumb of a [`slider_range`] a gesture moves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RangeThumb {
+    /// The minimum handle, `handle-low`.
+    Low,
+    /// The maximum handle, `handle-high`.
+    High,
+}
+
+impl RangeThumb {
+    /// The handle's key inside [`slider_range`]'s rail.
+    #[must_use]
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Low => "handle-low",
+            Self::High => "handle-high",
+        }
+    }
+}
+
+/// The thumb a press at `pos` on `node` grabs, read off the petrified
+/// frame: the handle itself when `node` is one, otherwise the handle whose
+/// centre is nearer `pos` (Carbon: a press on the track moves the nearest
+/// thumb). Two thumbs parked on one value tie, and the tie goes to the side
+/// the pointer is on: right of their shared centre grabs the maximum, so a
+/// drag out of a collapsed range can always open it in either direction.
+/// `None` when `node` is not inside a range slider's rail.
+#[must_use]
+pub fn slider_range_thumb(frame: &PetrifiedFrame, node: &str, pos: Point) -> Option<RangeThumb> {
+    let rail = rail_of(node)?;
+    for thumb in [RangeThumb::Low, RangeThumb::High] {
+        let own = format!("{rail}/{}", thumb.key());
+        if node == own || node.starts_with(&format!("{own}/")) {
+            return Some(thumb);
+        }
+    }
+    let centre = |thumb: RangeThumb| {
+        let rect = frame.placement(&format!("{rail}/{}", thumb.key()))?.rect;
+        Some(rect.x + rect.w / 2.0)
+    };
+    let (low, high) = (centre(RangeThumb::Low)?, centre(RangeThumb::High)?);
+    let (to_low, to_high) = ((pos.x - low).abs(), (pos.x - high).abs());
+    Some(if to_low < to_high || (to_low == to_high && pos.x < low) {
+        RangeThumb::Low
+    } else {
+        RangeThumb::High
+    })
+}
+
+/// The normalised value that puts `thumb`'s centre under `pos`, for any
+/// node inside the range slider's rail.
+///
+/// Not [`slider_value_at`]: two handles share the rail, so each centre
+/// travels the rail less *two* handle widths, the low one starting half a
+/// handle in and the high one a handle and a half in (the rail grid's
+/// `[low, handle, span, handle, rest]` columns). Read with the single
+/// slider's mapping, the high thumb would jump a handle's width on press.
+#[must_use]
+pub fn slider_range_value_at(
+    frame: &PetrifiedFrame,
+    node: &str,
+    pos: Point,
+    thumb: RangeThumb,
+) -> Option<f32> {
+    let rail = frame.placement(rail_of(node)?)?.rect;
+    let travel = rail.w - 2.0 * HANDLE;
+    if travel <= 0.0 {
+        return None;
+    }
+    let start = match thumb {
+        RangeThumb::Low => HANDLE / 2.0,
+        RangeThumb::High => HANDLE * 1.5,
+    };
+    Some(normalise((pos.x - rail.x - start) / travel))
+}
+
+/// The `(low, high)` pair after `thumb` moves to `value`: normalised, and
+/// stopped at the other thumb rather than passing it, so the span never
+/// goes negative and the thumbs never swap roles mid-drag.
+#[must_use]
+pub fn slider_range_moved(low: f32, high: f32, thumb: RangeThumb, value: f32) -> (f32, f32) {
+    let (low, high) = slider_range_values(low, high);
+    let value = normalise(value);
+    match thumb {
+        RangeThumb::Low => (value.min(high), high),
+        RangeThumb::High => (low, value.max(low)),
+    }
 }
 
 /// Invalid slider: the value input wearing [`SUPPORT_ERROR`] on all four
@@ -685,8 +769,9 @@ fn rail_of(node: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::{
-        HANDLE, INPUT_WIDTH, MAX_TRACK, MIN_TRACK, TRACK_HEIGHT, slider, slider_custom_label,
-        slider_input_text, slider_invalid, slider_range, slider_range_values, slider_readonly,
+        HANDLE, INPUT_WIDTH, MAX_TRACK, MIN_TRACK, RangeThumb, TRACK_HEIGHT, slider,
+        slider_custom_label, slider_input_text, slider_invalid, slider_range, slider_range_moved,
+        slider_range_thumb, slider_range_value_at, slider_range_values, slider_readonly,
         slider_value_at, slider_value_of_input, slider_warning, slider_with_custom_value,
         slider_without_number_input,
     };
@@ -1152,6 +1237,115 @@ mod tests {
         );
     }
 
+    /// Manifest row 436, the range drag: a press on a handle grabs that
+    /// handle, a press on the rail grabs the nearer one, each thumb's value
+    /// is read off its own centre travel (so pressing a thumb's centre reads
+    /// back the value it already shows), and the pair never crosses.
+    #[test]
+    fn a_range_press_grabs_one_thumb_and_its_drag_reads_its_own_travel() {
+        let frame = petrify_lone(slider_range("temp", "Temperature", 0.2, 0.8));
+        let id = |suffix: &str| {
+            frame
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with(suffix))
+                .unwrap_or_else(|| panic!("{suffix} is placed"))
+                .clone()
+        };
+        let (rail, low, high) = (
+            id("/temp/row/rail"),
+            id("/rail/handle-low"),
+            id("/rail/handle-high"),
+        );
+        let centre = |r: crate::geom::Rect| Point::new(r.x + r.w / 2.0, r.y + r.h / 2.0);
+
+        for (thumb, placement, value) in
+            [(RangeThumb::Low, &low, 0.2), (RangeThumb::High, &high, 0.8)]
+        {
+            assert_eq!(
+                slider_range_thumb(&frame, &placement.id, centre(placement.rect)),
+                Some(thumb),
+                "a press on {} grabs it",
+                thumb.key()
+            );
+            let read = slider_range_value_at(&frame, &placement.id, centre(placement.rect), thumb)
+                .expect("inside the rail");
+            assert!(
+                (read - value).abs() < 0.01,
+                "{}'s own centre reads {read}, not the {value} it shows",
+                thumb.key()
+            );
+        }
+
+        // On the rail: nearer the high thumb grabs the high thumb, and the
+        // other way round, whatever node the press landed on.
+        let r = rail.rect;
+        let y = r.y + r.h / 2.0;
+        assert_eq!(
+            slider_range_thumb(&frame, &rail.id, Point::new(r.x + r.w * 0.95, y)),
+            Some(RangeThumb::High)
+        );
+        assert_eq!(
+            slider_range_thumb(&frame, &rail.id, Point::new(r.x + r.w * 0.3, y)),
+            Some(RangeThumb::Low)
+        );
+        assert_eq!(
+            slider_range_thumb(&frame, "/root/temp/label", Point::ZERO),
+            None
+        );
+
+        // The clamp: a thumb stops at the other rather than passing it.
+        assert_eq!(
+            slider_range_moved(0.2, 0.8, RangeThumb::Low, 0.95),
+            (0.8, 0.8)
+        );
+        assert_eq!(
+            slider_range_moved(0.2, 0.8, RangeThumb::High, 0.05),
+            (0.2, 0.2)
+        );
+        assert_eq!(
+            slider_range_moved(0.2, 0.8, RangeThumb::High, 0.6),
+            (0.2, 0.6)
+        );
+        assert_eq!(
+            slider_range_moved(0.8, 0.2, RangeThumb::Low, 0.1),
+            (0.1, 0.8)
+        );
+    }
+
+    /// Two thumbs parked on one value tie, and the tie goes to the side the
+    /// pointer is on, so a collapsed range opens in either direction.
+    #[test]
+    fn a_collapsed_range_opens_toward_the_side_the_press_is_on() {
+        let frame = petrify_lone(slider_range("temp", "Temperature", 0.5, 0.5));
+        let rail = frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/temp/row/rail"))
+            .unwrap();
+        let low = frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/rail/handle-low"))
+            .unwrap()
+            .rect;
+        let high = frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/rail/handle-high"))
+            .unwrap()
+            .rect;
+        let y = rail.rect.y + rail.rect.h / 2.0;
+        assert_eq!(
+            slider_range_thumb(&frame, &rail.id, Point::new(low.x - 20.0, y)),
+            Some(RangeThumb::Low)
+        );
+        assert_eq!(
+            slider_range_thumb(&frame, &rail.id, Point::new(high.right() + 20.0, y)),
+            Some(RangeThumb::High)
+        );
+    }
+
     /// Check E: the caption label and the min/max range labels against the
     /// page ground the slider sits on (it binds no fill of its own — see
     /// `checkbox_text_clears_aa_contrast_on_the_page_ground` in
@@ -1315,12 +1509,11 @@ mod tests {
         );
     }
 
-    /// FR-030's visible half: both handles and the rail declare the drag
-    /// intents that are true today, while the capture that decides which
-    /// thumb of two a press owns stays spec 005 US3's work — manifest row
-    /// 436 stays failing, not faked here.
+    /// Both handles and the rail declare the drag, so the engine's capture
+    /// gives a press on any of them the whole gesture. Which thumb moves is
+    /// `slider_range_thumb`'s answer, tested below.
     #[test]
-    fn both_handles_declare_drag_while_the_capture_stays_spec_005s() {
+    fn both_handles_and_the_rail_declare_drag() {
         let node = slider_range("vol", "Volume", 0.3, 0.7);
         for key in ["handle-low", "handle-high"] {
             let handle = named(&node, key);

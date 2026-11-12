@@ -48,6 +48,13 @@ impl ThemeSnapshot {
         self.theme.mode()
     }
 
+    /// Which of the four named themes is in force, if the theme is one of
+    /// them. See [`crate::token::ThemeId`].
+    #[must_use]
+    pub fn id(&self) -> Option<crate::token::ThemeId> {
+        self.theme.id()
+    }
+
     /// The value assigned to `name` in this snapshot, if defined.
     #[must_use]
     pub fn value(&self, name: &TokenName) -> Option<&TokenValue> {

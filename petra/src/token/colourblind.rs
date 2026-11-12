@@ -34,6 +34,13 @@ pub(crate) use crate::token::measure::{
 /// When `token` is not a well-formed name, is absent from the theme, or
 /// names something that is not a colour. All three are test-authoring
 /// mistakes rather than states a gate should tolerate.
+/// Every shipped theme, labelled by its id's short name: the four themes
+/// every colour gate sweeps (FR-049, SC-012). One list, so a gate cannot
+/// quietly keep sweeping two.
+pub(crate) fn shipped_themes() -> [(&'static str, crate::token::Theme); 4] {
+    crate::token::ThemeId::ALL.map(|id| (id.as_str(), crate::token::shipped::shipped(id)))
+}
+
 pub(crate) fn theme_color(theme: &crate::token::Theme, token: &str) -> ColorValue {
     match theme.value(&TokenName::new(token).unwrap()).unwrap() {
         TokenValue::Color(c) => *c,
