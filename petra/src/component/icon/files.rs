@@ -12,10 +12,10 @@ use crate::draw::{ColorRef, Command, Paint, PathVerb, Stroke, Width, arc_verbs};
 use crate::geom::{Point, Size};
 
 /// Carbon's outline band.
-const BAND: f32 = 2.0;
+pub(super) const BAND: f32 = 2.0;
 
 /// A `width`-wide band down the centreline `a` to `b`, as one convex quad.
-fn band(a: Point, b: Point, width: f32, s: f32, paint: Paint) -> Command {
+pub(super) fn band(a: Point, b: Point, width: f32, s: f32, paint: Paint) -> Command {
     let (dx, dy) = (b.x - a.x, b.y - a.y);
     let len = (dx * dx + dy * dy).sqrt();
     let (nx, ny) = (-dy / len * width / 2.0, dx / len * width / 2.0);
@@ -31,7 +31,7 @@ fn band(a: Point, b: Point, width: f32, s: f32, paint: Paint) -> Command {
     )
 }
 
-fn stroke(color: ColorRef, s: f32) -> Paint {
+pub(super) fn stroke(color: ColorRef, s: f32) -> Paint {
     Paint::stroked(Stroke {
         width: Width::Logical(BAND * s),
         color,
@@ -39,7 +39,7 @@ fn stroke(color: ColorRef, s: f32) -> Paint {
 }
 
 /// A ring: the band's centreline circle at `radius`, stroked.
-fn ring(center: Point, radius: f32, s: f32, color: ColorRef) -> Command {
+pub(super) fn ring(center: Point, radius: f32, s: f32, color: ColorRef) -> Command {
     Command::Ellipse {
         center: scaled(center, s),
         radii: Size::new(radius * s, radius * s),
@@ -90,7 +90,7 @@ fn arc_run(
 }
 
 /// A closed stroked polygon down the band's centreline.
-fn outline(corners: &[Point], s: f32, color: ColorRef) -> Command {
+pub(super) fn outline(corners: &[Point], s: f32, color: ColorRef) -> Command {
     let verbs = corners
         .iter()
         .enumerate()
@@ -113,7 +113,7 @@ fn outline(corners: &[Point], s: f32, color: ColorRef) -> Command {
 /// its long axis. Both ends are dashes, so a corner where two dashed sides
 /// meet stays closed; the dashes are spread evenly, each about `dash` long
 /// with gaps about `gap`.
-fn dashed_bar(
+pub(super) fn dashed_bar(
     (x0, y0, x1, y1): (f32, f32, f32, f32),
     dash: f32,
     gap: f32,

@@ -626,7 +626,7 @@ mod tests {
         }
     }
 
-    fn one_pass(ctx: &Context, host: &mut Host<Panel>) -> Pass {
+    fn one_pass<A: App>(ctx: &Context, host: &mut Host<A>) -> Pass {
         let output = ctx.run_ui(sized(RawInput::default()), |_| host.pass(ctx));
         let frame = host.frame().expect("a pass leaves a frame").clone();
         Pass { output, frame }
@@ -994,5 +994,144 @@ mod tests {
             ((WINDOW.w * 2.0) as u32, (WINDOW.h * 2.0) as u32),
             "at scale 2 the capture is twice the logical size in each axis"
         );
+    }
+
+    /// The marks [`Sheet`] lays out: the version-control glyphs and the
+    /// marks they sit beside in a row, so a reader compares them at 1x.
+    const SHEET_MARKS: [gorgon_petra::component::IconMark; 40] = {
+        use gorgon_petra::component::IconMark as M;
+        [
+            M::Circle,
+            M::CircleHalf,
+            M::CircleFilled,
+            M::Incomplete,
+            M::SquareBar,
+            M::SquareBarHalf,
+            M::SquareBarFilled,
+            M::BulletDisc,
+            M::TriangleAlert,
+            M::TriangleAlertHalf,
+            M::TriangleAlertFilled,
+            M::WarningAltFilled,
+            M::SquaresArrow,
+            M::SquaresArrowHalf,
+            M::SquaresArrowFilled,
+            M::SquareInSquare,
+            M::SquarePlus,
+            M::SquarePlusDashed,
+            M::ArrowUp,
+            M::ArrowDown,
+            M::ArrowQuestion,
+            M::ArrowCross,
+            M::ArrowDashed,
+            M::ArrowsLoop,
+            M::SquareEllipsis,
+            M::Sieve,
+            M::Hourglass,
+            M::OctagonCross,
+            M::OctagonBar,
+            M::ErrorFilled,
+            M::CircleExclamation,
+            M::Cloud,
+            M::Folder,
+            M::FolderDashed,
+            M::FolderCracked,
+            M::FolderPerson,
+            M::Locked,
+            M::Unlink,
+            M::DiamondFilled,
+            M::DiscOnBar,
+        ]
+    };
+
+    /// Eight marks to a row, 16 units each with an 8-unit gap, on
+    /// `surface.base`.
+    struct Sheet;
+
+    impl RowSource for Sheet {
+        fn rows(&mut self, _source: &str, _range: Range<usize>) -> Vec<Arc<ViewNode>> {
+            Vec::new()
+        }
+    }
+
+    impl App for Sheet {
+        fn view(&mut self) -> ViewNode {
+            use gorgon_petra::Axis;
+            use gorgon_petra::component::{IconTone, icon_toned};
+            let gap = Some(TokenName::new("spacing.xs").expect("a shipped token name"));
+            let mut root = Props::default();
+            root.tokens.insert(
+                "background".into(),
+                TokenName::new("surface.base").expect("a shipped token name"),
+            );
+            root.spacing.clone_from(&gap);
+            let rows = SHEET_MARKS.chunks(8).enumerate().map(|(r, marks)| {
+                let row = ViewNode::new(NodeKind::Stack, format!("row{r}")).with_props(Props {
+                    axis: Some(Axis::Horizontal),
+                    spacing: gap.clone(),
+                    ..Props::default()
+                });
+                marks.iter().enumerate().fold(row, |row, (c, mark)| {
+                    row.child(icon_toned(
+                        format!("m{}", r * 8 + c),
+                        *mark,
+                        IconTone::Primary,
+                    ))
+                })
+            });
+            rows.fold(
+                ViewNode::new(NodeKind::Stack, "root").with_props(root),
+                ViewNode::child,
+            )
+        }
+
+        fn handle(&mut self, _event: &InputEvent, _route: &Route, _frame: Option<&PetrifiedFrame>) {
+        }
+
+        fn take_changes(&mut self) -> ChangeSet {
+            ChangeSet::All
+        }
+    }
+
+    /// Every mark on the sheet paints ink inside its own box, at 1x and at
+    /// 4x. Set `PETRA_SHOT_DIR` to write both PNGs there for reading.
+    #[test]
+    fn every_mark_on_the_sheet_paints_ink_in_its_own_box() {
+        let dir = std::env::var_os("PETRA_SHOT_DIR").map(std::path::PathBuf::from);
+        let background = token_rgb(dark, "surface.base");
+        for scale in [1.0_f32, 4.0] {
+            let ctx = headless();
+            ctx.set_pixels_per_point(scale);
+            let mut host = Host::new(&ctx, Sheet, Presenter::new(dark()));
+            drop(one_pass(&ctx, &mut host));
+            let pass = one_pass(&ctx, &mut host);
+            let mut snapshotter = shared();
+            let shot = shoot(&mut snapshotter, &ctx, &pass.output, &pass.frame, None);
+            drop(snapshotter);
+            if let Some(dir) = &dir {
+                std::fs::create_dir_all(dir).expect("shot dir");
+                std::fs::write(dir.join(format!("mark-sheet-{scale}x.png")), &shot.png)
+                    .expect("write shot");
+            }
+            let image = decode(&shot.png);
+            for (i, mark) in SHEET_MARKS.iter().enumerate() {
+                let suffix = format!("/m{i}");
+                let placement = pass
+                    .frame
+                    .placements
+                    .iter()
+                    .find(|p| p.id.ends_with(&suffix))
+                    .unwrap_or_else(|| panic!("{mark:?} is placed"));
+                let rect = round_rect(placement.rect, pass.frame.viewport.scale);
+                let ink = (rect.y..rect.y + rect.h)
+                    .flat_map(|y| (rect.x..rect.x + rect.w).map(move |x| (x, y)))
+                    .filter(|&(x, y)| {
+                        let p = pixel(&image, x as u32, y as u32);
+                        !near([p[0], p[1], p[2]], background, 24)
+                    })
+                    .count();
+                assert!(ink > 0, "{mark:?} at {scale}x paints nothing in {rect:?}");
+            }
+        }
     }
 }

@@ -332,7 +332,7 @@ fn draw_one(
             closed,
             paint,
         } => {
-            let points = flatten(verbs, transform);
+            let points = flatten(verbs, transform, scale);
             if points.len() < 2 {
                 report.silent += 1;
                 return;
@@ -505,14 +505,27 @@ fn snap_edges(rect: PetraRect, scale: Scale) -> PetraRect {
     PetraRect::new(x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0))
 }
 
+/// The largest distance, in device pixels, a flattened bézier may sit off
+/// the true curve. The same tenth of a pixel as [`ELLIPSE_SAGITTA_PX`].
+///
+/// Passed to `epaint` explicitly. Its default tolerance is a thousandth of
+/// the distance between the curve's end points *along x*
+/// (`epaint-0.36.1/src/shapes/bezier_shape.rs:301`), so a curve whose ends
+/// share an x (the quarter arc from 45 to 135 degrees, or any vertical
+/// S-curve) gets a tolerance of zero and fails `epaint`'s debug assertion, and
+/// a tall, narrow curve is cut into far more pieces than a wide one of the
+/// same length.
+const BEZIER_TOLERANCE_PX: f32 = 0.1;
+
 /// Every point of `verbs` under `transform`, béziers flattened by `epaint`'s
-/// own subdivision.
+/// own subdivision to [`BEZIER_TOLERANCE_PX`] at `scale`.
 ///
 /// `epaint`'s flattener rather than one written here: the tessellator is going
 /// to subdivide these curves anyway, and two subdivision rules in one pipeline
 /// is how a stroke and the fill under it end up with different silhouettes.
 /// Control points are transformed and never rounded.
-fn flatten(verbs: &[PathVerb], transform: Affine) -> Vec<Pos2> {
+fn flatten(verbs: &[PathVerb], transform: Affine, scale: Scale) -> Vec<Pos2> {
+    let tolerance = Some(BEZIER_TOLERANCE_PX / scale.factor());
     let at = |p: Point| {
         let moved = transform.apply(p);
         Pos2::new(moved.x, moved.y)
@@ -531,7 +544,7 @@ fn flatten(verbs: &[PathVerb], transform: Affine) -> Vec<Pos2> {
                 );
                 // `flatten` repeats the start point, which is already in
                 // `out`.
-                out.extend(curve.flatten(None).into_iter().skip(1));
+                out.extend(curve.flatten(tolerance).into_iter().skip(1));
             }
             PathVerb::CubicTo { c1, c2, to } => {
                 let from = out.last().copied().unwrap_or_else(|| at(*c1));
@@ -541,7 +554,7 @@ fn flatten(verbs: &[PathVerb], transform: Affine) -> Vec<Pos2> {
                     Color32::TRANSPARENT,
                     EguiStroke::NONE,
                 );
-                out.extend(curve.flatten(None).into_iter().skip(1));
+                out.extend(curve.flatten(tolerance).into_iter().skip(1));
             }
             // The `closed` flag on the command is what closes the shape;
             // repeating the first point here would put a zero-length segment
@@ -661,7 +674,10 @@ fn resolve_stroke(
 
 #[cfg(test)]
 mod tests {
-    use super::{CanvasAssets, CanvasReport, HostImages, Ink, NoAssets, paint_canvas, snapped};
+    use super::{
+        BEZIER_TOLERANCE_PX, CanvasAssets, CanvasReport, HostImages, Ink, NoAssets, flatten,
+        paint_canvas, snapped,
+    };
     use egui::{Color32, Shape};
     use gorgon_petra::draw::{
         Affine, AssetRef, ColorRef, Command, Corners, DrawList, Fit, Paint, PathVerb, Stroke, Width,
@@ -1202,5 +1218,39 @@ mod tests {
         assert_eq!(report.shapes, 0);
         assert_eq!(report.silent, 1);
         assert!(!report.is_complete());
+    }
+
+    /// A cubic whose two ends share an x flattens at the device tolerance.
+    /// `epaint`'s default would be zero there and fail its own assertion.
+    #[test]
+    fn a_bezier_whose_ends_share_an_x_flattens_to_a_fine_polyline() {
+        // A quarter arc from 45 to 135 degrees about (16, 16), radius 10.
+        let (r, k) = (10.0_f32, 0.552_284_8_f32);
+        let c = std::f32::consts::FRAC_1_SQRT_2 * r;
+        let verbs = [
+            PathVerb::MoveTo(Point::new(16.0 + c, 16.0 + c)),
+            PathVerb::CubicTo {
+                c1: Point::new(16.0 + c - k * c, 16.0 + c + k * c),
+                c2: Point::new(16.0 - c + k * c, 16.0 + c + k * c),
+                to: Point::new(16.0 - c, 16.0 + c),
+            },
+        ];
+        for factor in [1.0_f32, 4.0] {
+            let points = flatten(
+                &verbs,
+                Affine::IDENTITY,
+                Scale::new(factor).expect("a positive scale"),
+            );
+            assert!(points.len() > 4, "{factor}x: {} points", points.len());
+            // Every point lies within the tolerance (plus float slack) of
+            // the circle.
+            for p in &points {
+                let off = ((p.x - 16.0).hypot(p.y - 16.0) - r).abs() * factor;
+                assert!(
+                    off < BEZIER_TOLERANCE_PX + 0.05,
+                    "{factor}x: {p:?} is {off} px off"
+                );
+            }
+        }
     }
 }
