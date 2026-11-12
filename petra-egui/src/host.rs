@@ -212,6 +212,18 @@ pub trait App: RowSource {
     fn decided(&mut self, decision: &InputDecision) {
         let _ = decision;
     }
+    /// Tab (`step` is 1) or Shift-Tab (`step` is -1) moved focus from
+    /// `from` to `to`, two node ids. The host consumes traversal keys, so
+    /// this is the only way an application learns that a move came from
+    /// the keyboard walk and not from a click.
+    ///
+    /// An application that builds only the visible part of a long
+    /// container hears here that the walk left it at an edge, and can
+    /// bring the next part into view and ask for focus there
+    /// ([`App::focus_request`]). The default ignores the move.
+    fn traversed(&mut self, from: Option<&str>, to: Option<&str>, step: isize) {
+        let _ = (from, to, step);
+    }
     /// A binding-table event the last [`Host::pass`] produced: a conflict
     /// refusal (FR-010) or an operator displacement (FR-011).
     ///
@@ -3103,8 +3115,16 @@ impl<A: App> Host<A> {
             return false;
         }
         match key {
-            KeyCode::Tab if modifiers.shift => self.step_focus(-1),
-            KeyCode::Tab => self.step_focus(1),
+            KeyCode::Tab => {
+                let step = if modifiers.shift { -1 } else { 1 };
+                let from = self.focus.current().map(str::to_owned);
+                self.step_focus(step);
+                let to = self
+                    .pending_focus
+                    .clone()
+                    .or_else(|| self.focus.current().map(str::to_owned));
+                self.app.traversed(from.as_deref(), to.as_deref(), step);
+            }
             KeyCode::Home | KeyCode::End if modifiers.shift => return false,
             KeyCode::Home if !self.focus_accepts(Interaction::Key) => {
                 self.drop_pending_focus();
