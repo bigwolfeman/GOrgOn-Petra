@@ -32,15 +32,20 @@
 //!   [`menu_item_radio_group`], the two structural sub-parts, and the only
 //!   rows a menu does not re-pin itself (see [`menu_at`]).
 //!
-//! ## The two things still missing, and why they differ (FR-030, FR-006)
+//! ## Submenu (manifest row 257)
 //!
-//! * **Submenu** (manifest row 257) is an engine dependency, not an
-//!   omission: a nested menu must place a second overlay against a row
-//!   *inside the first overlay* and clamp/flip it there, which is spec
-//!   005's anchored-placement work. `menu_flyout` covers only the
-//!   single-level case (its trigger is a sibling, not a row in an open
-//!   overlay). The row **stays failing** — the FR-030 lane entry, not an
-//!   exclusion — until that lands.
+//! [`menu_submenu`] is a row with a trailing chevron and, while open, a
+//! second menu anchored to that row's trailing edge *inside the first
+//! menu's surface*. That nesting is spec 005's anchored placement doing its
+//! documented job: the harvest runs one extra walk per level of surface
+//! nesting, so the inner menu resolves against where the outer one was
+//! actually placed, and the flip ladder moves it to the row's leading edge
+//! when the window has no room on the trailing one. A press inside the
+//! submenu is inside the menu that contains it, so opening the submenu
+//! does not dismiss its parent (`input::route_with_surfaces`).
+//!
+//! ## What is still refused (FR-006)
+//!
 //! * **Danger hover** (rows 262/263) is refused on the item's own terms:
 //!   there is no danger item kind in this family (`menu_item_with` has no
 //!   `kind` parameter), so the hover states of a kind that does not exist
@@ -68,6 +73,14 @@ pub use super::list_box::{menu_item, menu_item_selectable, menu_item_with};
 pub(crate) const GROUP_ROLE: &str = "group";
 /// The role a [`menu_item_radio_group`] declares: ARIA's own `radiogroup`.
 pub(crate) const RADIO_GROUP_ROLE: &str = "radiogroup";
+/// The role a [`menu_submenu`]'s wrapper declares. Not an ARIA role (ARIA
+/// puts `aria-haspopup` on the row itself, which [`Semantics::expanded`]
+/// carries here); it exists so the enclosing menu re-pins the row inside it
+/// and leaves the nested surface alone.
+pub(crate) const SUBMENU_ROLE: &str = "submenu";
+/// The key of the row inside a [`menu_submenu`], the one its flyout anchors
+/// to.
+const SUBMENU_ROW: &str = "row";
 
 /// Carbon menu min-inline (`10rem`). Also the menu button trigger's
 /// minimum, which is how Carbon's shot has the two the same width.
@@ -156,14 +169,63 @@ pub fn menu_flyout(
     label: impl Into<String>,
     items: Vec<ViewNode>,
 ) -> ViewNode {
+    flyout_on(key, label, items, "trigger")
+}
+
+/// [`menu`] opening on the trailing edge of the sibling keyed `anchor`,
+/// fitted to its own items: the one shape [`menu_flyout`] and
+/// [`menu_submenu`] share.
+fn flyout_on(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    items: Vec<ViewNode>,
+    anchor: &str,
+) -> ViewNode {
     let mut node = menu(key, label, items);
     node.props.anchor = Some(Anchor::Sibling {
-        key: "trigger".into(),
+        key: anchor.into(),
         edge: Edge::Right,
         align: Align::Start,
         offset: None,
     });
     node.props.fit = Some(Fit::Content);
+    node
+}
+
+/// A menu row that opens a submenu (Carbon `MenuItem` with children, manifest
+/// row 257): the row with its trailing chevron, and while `open` a nested
+/// [`menu`] of `items` hanging off the row's trailing edge, top-aligned to
+/// it, flipping to the leading edge when the window has no room.
+///
+/// The row says whether it is open through [`Semantics::expanded`], so a
+/// driver and a screen reader read the state the chevron and the flyout
+/// show. The application owns `open` the way it owns a menu's own: Carbon
+/// opens a submenu on hover, Enter, Space or ArrowRight and closes it on
+/// ArrowLeft or Escape, and every one of those arrives as an event naming
+/// the row.
+///
+/// Goes in a menu's `items` like any row; the menu re-pins the row to its
+/// step ([`SUBMENU_ROLE`]).
+pub fn menu_submenu(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    items: Vec<ViewNode>,
+    open: bool,
+) -> ViewNode {
+    let label = label.into();
+    let mut row = menu_item_with(SUBMENU_ROW, label.clone(), None, None, true);
+    row.semantics.expanded = Some(open);
+    let mut children = vec![row];
+    if open {
+        children.push(flyout_on("submenu", label.clone(), items, SUBMENU_ROW));
+    }
+    let mut node = stack(key, Axis::Vertical, None, children);
+    node.props.align = Some(CrossAlign::Stretch);
+    node.semantics = Semantics {
+        role: Some(Role::Custom(SUBMENU_ROLE.to_owned())),
+        label: Some(label),
+        ..Semantics::default()
+    };
     node
 }
 
@@ -174,7 +236,9 @@ pub fn menu_flyout(
 /// lg from pinning the group — label and rows together — to one row's 48.
 fn re_pin(node: &mut ViewNode, height: f32) {
     match node.semantics.role {
-        Some(Role::Custom(ref name)) if name == GROUP_ROLE || name == RADIO_GROUP_ROLE => {
+        Some(Role::Custom(ref name))
+            if name == GROUP_ROLE || name == RADIO_GROUP_ROLE || name == SUBMENU_ROLE =>
+        {
             for child in &mut node.children {
                 let child = Arc::make_mut(child);
                 if child.semantics.role == Some(Role::Button) {
@@ -288,17 +352,18 @@ fn menu_item_group_at(
 mod tests {
     use super::{
         BORDER_SUBTLE, GROUP_ROLE, MAX_INLINE, MIN_INLINE, MIN_INLINE_ICONS, RADIO_GROUP_ROLE,
-        TEXT_MUTED, TYPOGRAPHY_LABEL, menu, menu_border, menu_flyout, menu_item, menu_item_group,
-        menu_item_radio_group, menu_item_selectable, menu_lg, menu_with_icons, pin_block,
+        SUBMENU_ROLE, TEXT_MUTED, TYPOGRAPHY_LABEL, menu, menu_border, menu_flyout, menu_item,
+        menu_item_group, menu_item_radio_group, menu_item_selectable, menu_lg, menu_submenu,
+        menu_with_icons, pin_block,
     };
     use crate::component::disabled;
     use crate::component::icon::IconMark;
-    use crate::component::tests::{assert_fits_parent, petrify_lone};
+    use crate::component::tests::{assert_fits_parent, petrify_lone, petrify_lone_at};
 
     use crate::geom::Axis;
 
     use crate::token::{ColorValue, Theme, TokenName, TokenValue};
-    use crate::tree::{Anchor, Edge, Fit, NodeKind, Props, Role, Tip, ViewNode};
+    use crate::tree::{Anchor, Edge, Fit, NodeKind, Props, Role, Tip, TrackSize, ViewNode};
 
     fn child<'a>(node: &'a ViewNode, key: &str) -> &'a ViewNode {
         node.children
@@ -388,6 +453,150 @@ mod tests {
                     vec![menu_item("rename", "Rename"), menu_item("delete", "Delete")],
                 ),
             ],
+        );
+    }
+
+    /// Manifest row 257: an open submenu hangs off its row's trailing edge,
+    /// top-aligned to it, *where the outer menu was actually placed*. The
+    /// outer menu sits under its trigger, so the row is nowhere near the
+    /// viewport's origin; a submenu resolved against a rect the first walk
+    /// had not placed yet would land beside the wrong place. In a window too
+    /// narrow for the trailing side, the flip puts it on the leading side.
+    #[test]
+    fn an_open_submenu_hangs_off_its_row_inside_the_placed_menu() {
+        let pair = |open: bool| {
+            ViewNode::new(NodeKind::Stack, "pair")
+                .with_props(Props {
+                    axis: Some(Axis::Vertical),
+                    ..Props::default()
+                })
+                .child(crate::component::button("trigger", "Actions"))
+                .child(menu(
+                    "actions",
+                    "Actions",
+                    vec![
+                        menu_item("rename", "Rename"),
+                        menu_submenu(
+                            "more",
+                            "More",
+                            vec![menu_item("copy", "Copy"), menu_item("move", "Move")],
+                            open,
+                        ),
+                    ],
+                ))
+        };
+        let shut = petrify_lone(pair(false));
+        assert!(
+            !shut.placements.iter().any(|p| p.id.ends_with("/submenu")),
+            "a shut submenu places nothing"
+        );
+        let row_of = |frame: &crate::frame::PetrifiedFrame| {
+            let row = frame
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with("/more/row"))
+                .expect("the submenu row is placed");
+            assert_eq!(
+                row.semantics.expanded,
+                Some(
+                    frame
+                        .placements
+                        .iter()
+                        .any(|p| p.id.ends_with("/more/submenu"))
+                )
+            );
+            row.rect
+        };
+        assert!(row_of(&shut).h > 0.0);
+
+        let frame = petrify_lone_at(pair(true), crate::geom::Size::new(900.0, 600.0));
+        let row = row_of(&frame);
+        let sub = frame
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/more/submenu"))
+            .expect("the open submenu is placed")
+            .rect;
+        assert!(
+            row.y > 40.0,
+            "the row sits in the menu under the trigger: {row:?}"
+        );
+        assert!(
+            (sub.x - row.right()).abs() < 0.5,
+            "trailing edge: row {row:?}, submenu {sub:?}"
+        );
+        assert!(
+            (sub.y - row.y).abs() < 0.5,
+            "top-aligned: row {row:?}, submenu {sub:?}"
+        );
+        for key in ["/submenu/content/copy", "/submenu/content/move"] {
+            let item = frame
+                .placements
+                .iter()
+                .find(|p| p.id.ends_with(key))
+                .unwrap_or_else(|| panic!("{key} is placed"));
+            assert!(sub.contains(crate::geom::Point::new(
+                item.rect.x + 1.0,
+                item.rect.y + 1.0
+            )));
+        }
+
+        // Pushed to the window's right edge by a fixed 400 column, the
+        // trailing side has no room (400 + 160 + 160 > 600) and the leading
+        // side does, so the flip puts the submenu there.
+        let pushed = ViewNode::new(NodeKind::Grid, "pushed")
+            .with_props(Props {
+                columns: vec![TrackSize::Fixed { value: 400.0 }, TrackSize::FitContent],
+                ..Props::default()
+            })
+            .child(ViewNode::new(NodeKind::Stack, "spacer"))
+            .child(pair(true));
+        let flipped = petrify_lone_at(pushed, crate::geom::Size::new(600.0, 600.0));
+        let row = row_of(&flipped);
+        let sub = flipped
+            .placements
+            .iter()
+            .find(|p| p.id.ends_with("/more/submenu"))
+            .unwrap()
+            .rect;
+        assert!(row.x >= 399.5, "the column pushed the menu right: {row:?}");
+        assert!(
+            (sub.right() - row.x).abs() < 0.5,
+            "no room on the trailing side, so it flips leading: row {row:?}, submenu {sub:?}"
+        );
+        assert!(
+            (sub.y - row.y).abs() < 0.5,
+            "still top-aligned: row {row:?}, submenu {sub:?}"
+        );
+    }
+
+    /// The submenu's row is re-pinned to the trigger's step like any row,
+    /// and says whether it is open.
+    #[test]
+    fn a_submenu_row_takes_the_menu_step_and_reports_expanded() {
+        let built = menu_lg(
+            "actions",
+            "Actions",
+            vec![menu_submenu(
+                "more",
+                "More",
+                vec![menu_item("copy", "Copy")],
+                true,
+            )],
+        );
+        let wrapper = &built.children[0].children[0];
+        assert_eq!(
+            wrapper.semantics.role,
+            Some(Role::Custom(SUBMENU_ROLE.into()))
+        );
+        let row = &wrapper.children[0];
+        assert_eq!(row.semantics.expanded, Some(true));
+        assert_eq!(row.constraints.vertical.min, Some(48.0), "lg step");
+        let submenu = &wrapper.children[1];
+        assert_eq!(submenu.kind, NodeKind::Surface);
+        assert_eq!(
+            submenu.constraints.vertical.min, None,
+            "the nested surface is not a row"
         );
     }
 

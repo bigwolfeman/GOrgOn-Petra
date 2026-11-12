@@ -671,6 +671,18 @@ pub struct CustomPaintCtx<'a> {
     /// so a hosted painter spaces and sizes itself on the same design system
     /// as the frame around it instead of carrying literals of its own.
     pub tokens: &'a dyn TokenSource,
+    /// The frame's time, in seconds on the host's frame clock
+    /// (`egui::InputState::time`): the same `now` the host advances motion,
+    /// the caret and the ambient registry with (FR-034).
+    ///
+    /// Here so a painter that animates reads one clock with the rest of the
+    /// frame instead of keeping its own in an `Rc<RefCell<_>>` or reaching
+    /// for `Instant::now()`, which would drift from the host's and could not
+    /// be driven by a test. Reading it does not make a painter ambient: a
+    /// painter whose picture moves with this value must still declare
+    /// `ambient`, or the idle scheduler stops asking for frames and the
+    /// picture freezes (FR-062).
+    pub time: f64,
 }
 
 /// A host-registered painter for one `PaintContent.custom` name.
@@ -862,6 +874,7 @@ fn paint_frame_inner(
         ),
         painters,
         images,
+        time: painter.ctx().input(|input| input.time),
     };
     // A body leaves its painter, chrome and shape count here for the
     // overlay that closes it. `get` rather than indexing: a desynced frame
@@ -1816,6 +1829,10 @@ struct PaintEnv<'a> {
     page: egui::Rect,
     painters: &'a CustomPainters,
     images: &'a mut ImageSources,
+    /// The frame clock, read once per paint pass off the painter's own
+    /// context so every custom painter in one frame sees one time. See
+    /// [`CustomPaintCtx::time`].
+    time: f64,
 }
 
 /// Paints the rule material's two-stroke groove along `edge` of `rect`
@@ -4765,6 +4782,52 @@ mod tests {
             body.is_some_and(|b| b.size > 0.0),
             "the shipped theme defines typography.body: {body:?}"
         );
+    }
+
+    /// FR-034: the painter context carries the frame's time, read off the
+    /// host's own frame clock, so a hosted painter animates on the clock the
+    /// rest of the frame uses. Two passes at two input times must hand the
+    /// painter those two times, and nothing else may be the source: a
+    /// painter that kept its own `Instant` would see neither number.
+    #[test]
+    fn a_custom_painter_reads_the_frame_time_off_its_context() {
+        let host = Headless::new();
+        let registry = registry_with("sparkline");
+        let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
+        let frame = frame_of_registered(&custom_node("sparkline"), &mut h, &registry);
+        let mut shaper = host.shaper();
+
+        let seen: std::rc::Rc<std::cell::RefCell<Vec<f64>>> = std::rc::Rc::default();
+        let sink = std::rc::Rc::clone(&seen);
+        let mut painters = CustomPainters::new();
+        painters.register(
+            "sparkline",
+            move |painter: &egui::Painter, ctx: &CustomPaintCtx<'_>| {
+                sink.borrow_mut().push(ctx.time);
+                painter.rect_filled(ctx.rect, 0.0, Color32::WHITE);
+                true
+            },
+        );
+        let mut images = ImageSources::new();
+        for time in [12.5, 13.25] {
+            let input = RawInput {
+                time: Some(time),
+                ..RawInput::default()
+            };
+            host.0
+                .run_ui(input, |_| {
+                    paint_frame_with_hosts(
+                        &host.painter(),
+                        &frame,
+                        &mut shaper,
+                        &snapshot(),
+                        &painters,
+                        &mut images,
+                    );
+                })
+                .drop_without_applying_deltas();
+        }
+        assert_eq!(*seen.borrow(), vec![12.5, 13.25]);
     }
 
     /// FR-059: a custom kind the tree accepts (`register_custom_kind`) but

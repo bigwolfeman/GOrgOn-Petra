@@ -253,6 +253,33 @@ pub fn to_lab(v: [f32; 3]) -> [f32; 3] {
     ]
 }
 
+/// CIE L\*a\*b\* under D65 back to linear sRGB, each channel clamped to
+/// `[0, 1]`: the inverse of [`to_lab`], for a tone that moves one Lab axis
+/// and keeps the other two (a lightness walk that keeps hue and chroma).
+pub fn from_lab(lab: [f32; 3]) -> [f32; 3] {
+    const WHITE: [f32; 3] = [0.950_47, 1.0, 1.088_83];
+    const XYZ_TO_RGB: [[f32; 3]; 3] = [
+        [3.240_454_2, -1.537_138_5, -0.498_531_4],
+        [-0.969_266, 1.876_010_8, 0.041_556],
+        [0.055_643_4, -0.204_025_9, 1.057_225_2],
+    ];
+    let fy = (lab[0] + 16.0) / 116.0;
+    let f = [fy + lab[1] / 500.0, fy, fy - lab[2] / 200.0];
+    let xyz: [f32; 3] = std::array::from_fn(|i| {
+        let cube = f[i] * f[i] * f[i];
+        let t = if cube > 0.008_856 {
+            cube
+        } else {
+            (f[i] - 16.0 / 116.0) / 7.787
+        };
+        t * WHITE[i]
+    });
+    std::array::from_fn(|i| {
+        (XYZ_TO_RGB[i][0] * xyz[0] + XYZ_TO_RGB[i][1] * xyz[1] + XYZ_TO_RGB[i][2] * xyz[2])
+            .clamp(0.0, 1.0)
+    })
+}
+
 /// Euclidean distance in L\*a\*b\*, which is what ΔE\*ab is.
 pub fn delta_e(a: [f32; 3], b: [f32; 3]) -> f32 {
     let d: [f32; 3] = std::array::from_fn(|i| a[i] - b[i]);
@@ -279,7 +306,7 @@ pub fn contrast(a: ColorValue, b: ColorValue) -> f32 {
 mod tests {
     use super::{MIN_STATUS_SEPARATION, SIMULATION_MODELS, separation};
     use crate::token::colourblind::{status_family, theme_color};
-    use crate::token::shipped::{dark, light};
+
     use crate::token::value::ColorValue;
 
     /// T038 (spec 008 FR-020, spec 005 FR-005): the warning/error pair,
@@ -317,7 +344,7 @@ mod tests {
     /// by T039's non-colour bar alone.
     #[test]
     fn the_status_family_clears_the_floor_under_all_three_simulation_models() {
-        for (label, theme) in [("light", light()), ("dark", dark())] {
+        for (label, theme) in crate::token::colourblind::shipped_themes() {
             let names = status_family();
             let colors: Vec<ColorValue> = names.iter().map(|n| theme_color(&theme, n)).collect();
             for (model, matrix) in SIMULATION_MODELS {

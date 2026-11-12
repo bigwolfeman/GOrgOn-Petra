@@ -23,6 +23,7 @@ pub(super) fn paint_custom(
             opacity: painter.opacity(),
             scale: env.scale,
             tokens: env.colors,
+            time: env.time,
         };
         // `is_some_and` rather than an `if let` that ignores the bool: a
         // registered painter that draws nothing must be treated exactly

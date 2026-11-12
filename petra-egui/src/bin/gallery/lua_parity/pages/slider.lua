@@ -8,7 +8,7 @@
 --       vec![
 --           valued(slider(VOLUME, "Volume", self.volume), self.draft.clone()),
 --           heading("range-title", "Two-handle range"),
---           slider_range("range", "Temperature", 20.0, 80.0),
+--           slider_range(RANGE, "Temperature", self.range.0, self.range.1),
 --           heading("no-num-title", "Without a number input"),
 --           slider_without_number_input("no-num", "Volume", 0.4),
 --           heading("custom-title", "With custom value"),
@@ -16,9 +16,10 @@
 --       ],
 --   )])
 --
--- The range cell is spec 008 T054's variant cell: the two-handle Range
--- anatomy, whose drag is FR-030 (`component/slider.rs` names the spec 005
--- dependency).
+-- The range cell is manifest row 436, the two-handle Range variant, at the
+-- page's default (0.2, 0.8). `slider_range` takes normalised values: the
+-- 20.0 and 80.0 this page passed until 2026-11-11 both clamped to 1.0, so
+-- both handles sat at the right end of the rail.
 --
 -- Chosen as the first page on purpose: it never calls bare `text(`, bare
 -- `button(`, or `common::wrapped`, so it proves the harness's two real load-
@@ -45,7 +46,7 @@ return ui.section({
         value = "40",
       }),
       ui.heading({ key = "range-title", label = "Two-handle range" }),
-      ui.slider_range({ key = "range", label = "Temperature", low = 20.0, high = 80.0 }),
+      ui.slider_range({ key = "range", label = "Temperature", low = 0.2, high = 0.8 }),
       -- Register row 437: no number input, the value rides a tooltip.
       ui.heading({ key = "no-num-title", label = "Without a number input" }),
       ui.slider_without_number_input({ key = "no-num", label = "Volume", value = 0.4 }),

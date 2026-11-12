@@ -1,9 +1,11 @@
-//! The vocabulary and the two themes Petra ships: `standard_vocabulary`
-//! declares the names every theme must define, and `light`/`dark` assign
-//! them. Both themes are built through [`Theme::build`], so an author who
-//! adds a name here and forgets one theme's assignment gets a compile-time-
-//! adjacent test failure (see the tests module), not a silently incomplete
-//! theme shipped to a feature author.
+//! The vocabulary and the four themes Petra ships: `standard_vocabulary`
+//! declares the names every theme must define, and [`shipped`] assigns them
+//! for Carbon's White, Gray 10, Gray 90 and Gray 100 ([`ThemeId`]).
+//! `light`/`dark` are aliases of `white`/`gray100`. Every theme is built by
+//! one function through [`Theme::build_as`], so an author who adds a name
+//! here and forgets it gets a compile-time-adjacent test failure in all four
+//! themes (see the tests module), not a silently incomplete theme shipped to
+//! a feature author.
 
 use std::collections::BTreeMap;
 
@@ -11,7 +13,7 @@ use crate::token::ThemeMode;
 use crate::token::focus::{HALO_TOKEN, RING_TOKEN};
 use crate::token::name::TokenName;
 use crate::token::status::{StatusShape, StatusToken};
-use crate::token::theme::Theme;
+use crate::token::theme::{Theme, ThemeId};
 use crate::token::value::{
     ColorValue, CoverageValue, MotionEasing, MotionValue, ShapeValue, Silhouette, SpringValue,
     TokenKind, TokenValue, TypographyFamily, TypographyValue, TypographyWeight,
@@ -356,29 +358,6 @@ fn quietest_grey_clearing(layers: &[[u8; 3]; 4], ratio: f32, mode: ThemeMode) ->
     );
 }
 
-/// Light `border.subtle`, the decorative tone: `#c3c3c3`. Worst ground is
-/// `#f2f2f2` at 1.57:1, the first level that clears
-/// [`MIN_DIVIDER_CONTRAST`]; against `#ffffff` it is 1.76:1.
-fn light_border() -> [u8; 3] {
-    quietest_grey_clearing(&LIGHT_LAYERS, MIN_DIVIDER_CONTRAST, ThemeMode::Light)
-}
-
-/// Dark `border.subtle`, the decorative tone: `#616161`. Worst ground is
-/// `surface.layer-three` (`#444444`) at 1.57:1 — the quietest line Carbon
-/// draws anywhere, `border-subtle-00` on `background` — and against
-/// `surface.base` it is 3.02:1.
-///
-/// It is brighter than any single Carbon border because Petra's dark ramp
-/// *keeps going* to `#444444` where Carbon's layers stop at `#393939`, and
-/// one tone has to survive all four of ours. The right comparison is not a
-/// hex but a job: on our deepest layer this rule is exactly as quiet as
-/// Carbon's quietest, and on our shallowest it is as loud as Carbon's
-/// `border-strong-01` is on `layer-01`. That spread is the cost of one tone
-/// and it is what §11 step 7's per-layer names remove.
-fn dark_border() -> [u8; 3] {
-    quietest_grey_clearing(&DARK_LAYERS, MIN_DIVIDER_CONTRAST, ThemeMode::Dark)
-}
-
 /// The rule material's shadow stroke, in signed sRGB levels offset from the
 /// panel it sits on. Settled by operator sight-test 2026-09-07 and by the
 /// ratio measured in
@@ -454,20 +433,6 @@ fn insert_rule_material(values: &mut BTreeMap<TokenName, TokenValue>, layers: &[
         name(crate::token::rule::HIGHLIGHT_TOKEN),
         opaque(rule_stroke(panel, RULE_HIGHLIGHT_DELTA)),
     );
-}
-
-/// Light [`BORDER_STRONG_TOKEN`], the control-boundary tone: `#8c8c8c`, the
-/// first level clearing [`MIN_CONTROL_BOUNDARY`] on all four light layers
-/// (3.00:1 on `#f2f2f2`, 3.36:1 on `#ffffff`).
-fn light_border_strong() -> [u8; 3] {
-    quietest_grey_clearing(&LIGHT_LAYERS, MIN_CONTROL_BOUNDARY, ThemeMode::Light)
-}
-
-/// Dark [`BORDER_STRONG_TOKEN`], the control-boundary tone: `#8f8f8f`, the
-/// first level clearing [`MIN_CONTROL_BOUNDARY`] on all four dark layers
-/// (3.01:1 on `#444444`, 5.79:1 on `#121212`).
-fn dark_border_strong() -> [u8; 3] {
-    quietest_grey_clearing(&DARK_LAYERS, MIN_CONTROL_BOUNDARY, ThemeMode::Dark)
 }
 
 /// The one accent hue, and the ink that goes on top of it.
@@ -577,41 +542,38 @@ fn insert_border(values: &mut BTreeMap<TokenName, TokenValue>, border: &[u8; 3])
     );
 }
 
-/// Assign a mode's accent pair, and the link ink derived from it, into a
+/// Assign a theme's accent pair, and the link ink derived from it, into a
 /// theme's value map.
 ///
-/// `layers` is the same array [`insert_layer_set`] takes. `layers[0]` is
-/// read for [`ON_ACCENT_TOKEN`], which *is* `surface.base`, and taking it
-/// from the layer set rather than repeating the literal is what stops the
-/// two from drifting into two different whites. `layers[3]` is read for
-/// [`LINK_TOKEN`]: the deepest layer is the hardest ground a link can be
-/// written on, so an ink that clears the floor there clears it everywhere.
+/// The palette's layer set is the same array [`insert_layer_set`] takes, and both derived
+/// tones read it rather than repeating a literal, which is what stops them
+/// drifting into two different whites:
 ///
-/// `ink` is the theme's `text.primary`, the direction the link tone walks
+/// - [`ON_ACCENT_TOKEN`] is the layer the accent stands out from most: the
+///   page the accent is cut out of. That is `surface.base` in White, Gray 90
+///   and Gray 100, and Gray 10's white card, because Gray 10's ground is the
+///   grey (`#f2f2f2` under `#0f62fe` is 4.47:1, a hair under AA; white is
+///   4.90:1).
+/// - [`LINK_TOKEN`] is walked to clear the floor on the layer the accent
+///   stands out from *least*, the hardest ground a link can be written on,
+///   so an ink that clears it there clears it everywhere. That is the top
+///   layer in a dark theme and the grey in a light one, whichever ordinal
+///   the grey sits at.
+///
+/// The theme's `text.primary` is the direction the link tone walks
 /// in: toward the page's own text colour, which is the one direction that
 /// is guaranteed to end above the floor, because `text.primary` clears it
 /// itself (`every_text_tone_clears_aa_on_every_surface_it_can_be_painted_on`).
-fn insert_accent(
-    values: &mut BTreeMap<TokenName, TokenValue>,
-    accent: &[u8; 3],
-    layers: &[[u8; 3]; 4],
-    ink: [u8; 3],
-) {
-    let accent_value = ColorValue::from_srgb8(accent[0], accent[1], accent[2], 0xff);
+fn insert_accent(values: &mut BTreeMap<TokenName, TokenValue>, palette: &Palette) {
+    let accent_value = opaque_value(*palette.accent);
     values.insert(name(ACCENT_TOKEN), TokenValue::Color(accent_value));
-    let ground = layers[0];
-    values.insert(
-        name(ON_ACCENT_TOKEN),
-        TokenValue::Color(ColorValue::from_srgb8(
-            ground[0], ground[1], ground[2], 0xff,
-        )),
-    );
+    values.insert(name(ON_ACCENT_TOKEN), opaque(palette.on_accent()));
     values.insert(
         name(LINK_TOKEN),
         TokenValue::Color(link_ink(
             accent_value,
-            opaque_value(ink),
-            opaque_value(layers[3]),
+            opaque_value(palette.text[0]),
+            opaque_value(palette.link_ground()),
         )),
     );
 }
@@ -676,43 +638,265 @@ const LIGHT_RING: [[u8; 3]; 2] = [LIGHT_ACCENT, [0xff, 0xff, 0xff]];
 /// See [`LIGHT_RING`].
 const DARK_RING: [[u8; 3]; 2] = [DARK_ACCENT, [0x05, 0x05, 0x05]];
 
-/// One polarity's greys, gathered so the *other* polarity can reach them.
+/// Gray 10's layer set: the White alternation started from its other grey.
 ///
-/// The inverse family (`background-inverse`, `text-inverse`, `border-inverse`,
-/// `focus-inverse`, `icon-inverse`, `layer-selected-inverse`) exists because
-/// tooltips and toggletips paint on an inverted ground — 35 references across
-/// the 42 audited components, and Petra had no inverse anything. The honest
-/// way to build one is not to pick six new greys by eye: it is to reach into
-/// the theme that already ships for the opposite polarity, where every one of
-/// those tones has already been measured against the ground it sits on. A
-/// light theme's inverted tooltip *is* a small piece of the dark theme.
-struct Polarity {
+/// Carbon Gray 10 is White with the ground and layer one swapped
+/// (`#f4f4f4`, `#ffffff`, `#f4f4f4`, `#ffffff`): the page is the grey and a
+/// card is white. The grey is Petra's `#f2f2f2`, not Carbon's `#f4f4f4`, for
+/// the reason [`LIGHT_LAYERS`] gives: 2/255 per channel is inside the parity
+/// lane's own tolerance. Same two greys, so every light text, accent and
+/// border measurement made against [`LIGHT_LAYERS`] holds here unchanged;
+/// what moves is which grey a nested layer lands on.
+const GRAY10_LAYERS: [[u8; 3]; 4] = [
+    [0xf2, 0xf2, 0xf2],
+    [0xff, 0xff, 0xff],
+    [0xf2, 0xf2, 0xf2],
+    [0xff, 0xff, 0xff],
+];
+
+/// Gray 90's layer set: Carbon's `#262626` ground, climbing in three even
+/// CIE L\* steps to the top layer Gray 100 reaches.
+///
+/// `#262626 → #303030 → #3a3a3a → #444444`, L\* 15.16, 19.87, 24.43, 28.85:
+/// steps of 4.71, 4.56 and 4.43, a spread of 0.28 (Gray 100's is 0.41).
+/// Gray 90 is Gray 100's ramp with a lighter floor: the same `#444444` top,
+/// so the border tones walked out of it land where Gray 100's do, and three
+/// shorter steps under it.
+///
+/// Carbon Gray 90 steps `#262626`, `#393939`, `#525252`, `#6f6f6f` (L\* 15.2,
+/// 24.0, 34.9, 46.8), the widening ramp [`DARK_LAYERS`] already refused for
+/// Gray 100. On this ground it breaks measured floors, as the contract
+/// predicted (`token-vocabulary.md` §11: "expect the Gray 90 contrast ceiling
+/// to break"), and the contract says to fix the theme, never the floor. The
+/// step is boxed in from both sides, every bound a test in this module:
+///
+/// - **At least the hover step.** A layer step under [`HOVER_STEP`] (4 L\*)
+///   makes a hovered card read as a nested one, so layer one is at least
+///   `#2f2f2f`.
+/// - **Layer one carries the statuses.** The status set is one per polarity
+///   and byte-identical ([`LIGHT_STATUS`]), so the ground suits the statuses
+///   and not the other way round. `status.down` (`#f21c0d`) needs 3:1 on
+///   `surface.raised`, which caps layer one at `#323232`. Carbon's `#393939`
+///   measures 2.73:1.
+/// - **The top layer keeps the border quiet.** `border.subtle` has to clear
+///   1.56:1 on the top layer and stay four times quieter than `text.muted`
+///   on the ground; a top layer of `#4a4a4a` (a 5.5 L\* step) needs a border
+///   only 3.82 times quieter.
+///
+/// What the shorter steps cost is recorded where it lands: `text.muted`,
+/// statuses and the accent reach a layer shallower than in Gray 100 in
+/// places (the deepest-layer tables in the tests), the danger fill needed
+/// its own tone ([`GRAY90_DANGER_FILL`]), and three syntax inks are raised in
+/// L\* to clear layer two (`syntax::insert`).
+const GRAY90_LAYERS: [[u8; 3]; 4] = [
+    [0x26, 0x26, 0x26],
+    [0x30, 0x30, 0x30],
+    [0x3a, 0x3a, 0x3a],
+    [0x44, 0x44, 0x44],
+];
+
+/// The status colours, `ok`, `degraded`, `down`, for each polarity.
+///
+/// The values are chosen by measurement, not by taste:
+/// `status_colours_stay_apart_under_red_green_colour_blindness` simulates
+/// deuteranopia and protanopia in all four themes and asserts a floor on the
+/// perceptual distance between every pair. Read that test before changing
+/// any of these, because the constraint is not obvious: the pair that
+/// actually breaks is `degraded` vs `down`, not `ok` vs `down`, and an
+/// earlier palette scored ΔE\*ab 8.8 on it (indistinguishable) while a
+/// comment here claimed the colours were separated in lightness.
+///
+/// Light `status.ok` is near-white mint: a 3:1 green on `#f2f2f2` collapses
+/// onto `status.degraded` under deuteranopia (ΔE\*ab 5.5), so the lightness
+/// split the operator asked for is the one that keeps the pair above the
+/// floor. The disc is a tint; the circle and the word "OK" are the shape
+/// channel. Dark `status.ok` is near-white mint too: 16:1 against `#121212`.
+/// `degraded` and `down` stay in the darker half on light grounds so the
+/// three remain separable in L\* after hue collapse.
+///
+/// One set per polarity, never per theme: the statuses are GOrgOn's own and
+/// stay byte-identical (FR-005, FR-050), so Gray 10 wears White's and Gray 90
+/// wears Gray 100's. The four-theme sweep is what proves that holds on the
+/// two new grounds.
+const LIGHT_STATUS: [[u8; 3]; 3] = [[0x9a, 0xff, 0xb0], [0xb5, 0x54, 0x1a], [0x49, 0x12, 0x15]];
+/// See [`LIGHT_STATUS`].
+const DARK_STATUS: [[u8; 3]; 3] = [[0xe0, 0xff, 0xe6], [0xff, 0xc4, 0x7a], [0xf2, 0x1c, 0x0d]];
+
+/// Everything that differs between the four shipped themes, gathered in
+/// one record so [`build`] spells a theme once.
+///
+/// Two themes per polarity share every tone that is not a layer: text,
+/// accent, ring, shadow, scrim, the disabled button and the statuses. The
+/// borders, field and state fills, rule material and link ink are all
+/// *derived* from the layer set, so a new ground gets its own measured
+/// tones and not a copy of its sibling's.
+///
+/// It is also the other polarity's source for the inverse family
+/// (`background-inverse`, `text-inverse`, `border-inverse`, `focus-inverse`,
+/// `icon-inverse`, `layer-selected-inverse`). Tooltips and toggletips paint
+/// on an inverted ground (35 references across the 42 audited components),
+/// and the honest way to build one is not to pick six new greys by eye: it
+/// is to reach into the theme that already ships for the opposite polarity,
+/// where every one of those tones has been measured against the ground it
+/// sits on. A light theme's inverted tooltip *is* a small piece of Gray 100,
+/// and a dark theme's is a piece of White, as in Carbon.
+struct Palette {
+    /// Which theme this is; its polarity is `id.mode()`.
+    id: ThemeId,
     /// The four-entry layer set, ground first.
     layers: &'static [[u8; 3]; 4],
+    /// The accent.
+    accent: &'static [u8; 3],
     /// Primary then muted ink.
     text: &'static [[u8; 3]; 2],
-    /// The focus ring's ink core.
-    ring: &'static [u8; 3],
+    /// `text.faint`.
+    faint: [u8; 3],
+    /// The focus ring's ink core, then the paper halo.
+    ring: &'static [[u8; 3]; 2],
+    /// `shadow.raised`, `shadow.overlay` alphas.
+    shadow_alphas: &'static [u8; 2],
+    /// `overlay.scrim` alpha.
+    scrim_alpha: u8,
+    /// `button-disabled`, with its alpha.
+    button_disabled: ([u8; 3], u8),
+    /// `status.ok`, `status.degraded`, `status.down`.
+    status: &'static [[u8; 3]; 3],
+    /// `button-danger-primary`.
+    danger: [u8; 3],
 }
 
-/// The light polarity, as the dark theme's inverse source.
-///
-/// No `border` field: since 2026-09-05 both border tones are *walked out* of
-/// the layer set by [`quietest_grey_clearing`] rather than written as
-/// literals, so there is no constant left to gather here. The inverse
-/// border is [`light_border`] called from the dark theme, one call away.
-const LIGHT: Polarity = Polarity {
+impl Palette {
+    fn mode(&self) -> ThemeMode {
+        self.id.mode()
+    }
+
+    /// The polarity this theme's inverse family reaches into.
+    fn inverse(&self) -> &'static Palette {
+        match self.mode() {
+            ThemeMode::Light => &GRAY100,
+            ThemeMode::Dark => &WHITE,
+        }
+    }
+
+    /// The layer the accent stands out from most: [`ON_ACCENT_TOKEN`] and
+    /// `icon-on-color`. See [`insert_accent`].
+    fn on_accent(&self) -> [u8; 3] {
+        *self
+            .layers
+            .iter()
+            .max_by(|a, b| self.accent_contrast(a).total_cmp(&self.accent_contrast(b)))
+            .expect("a layer set has four layers")
+    }
+
+    /// The layer the accent stands out from least: the ground [`link_ink`]
+    /// walks to clear. See [`insert_accent`].
+    fn link_ground(&self) -> [u8; 3] {
+        *self
+            .layers
+            .iter()
+            .min_by(|a, b| self.accent_contrast(a).total_cmp(&self.accent_contrast(b)))
+            .expect("a layer set has four layers")
+    }
+
+    fn accent_contrast(&self, layer: &[u8; 3]) -> f32 {
+        opaque_value(*layer).contrast_ratio(opaque_value(*self.accent))
+    }
+
+    /// `border.subtle`, the decorative tone, walked out of this theme's own
+    /// layers: the quietest grey clearing [`MIN_DIVIDER_CONTRAST`] on all four.
+    ///
+    /// White and Gray 10: `#c3c3c3`. Worst ground is
+    /// `#f2f2f2` at 1.57:1, the first level that clears
+    /// [`MIN_DIVIDER_CONTRAST`]; against `#ffffff` it is 1.76:1.
+    ///
+    /// Gray 100: `#616161`. Worst ground is
+    /// `surface.layer-three` (`#444444`) at 1.57:1 — the quietest line Carbon
+    /// draws anywhere, `border-subtle-00` on `background` — and against
+    /// `surface.base` it is 3.02:1.
+    ///
+    /// It is brighter than any single Carbon border because Petra's dark ramp
+    /// *keeps going* to `#444444` where Carbon's layers stop at `#393939`, and
+    /// one tone has to survive all four of ours. The right comparison is not a
+    /// hex but a job: on our deepest layer this rule is exactly as quiet as
+    /// Carbon's quietest, and on our shallowest it is as loud as Carbon's
+    /// `border-strong-01` is on `layer-01`. That spread is the cost of one tone
+    /// and it is what §11 step 7's per-layer names remove.
+    fn border(&self) -> [u8; 3] {
+        quietest_grey_clearing(self.layers, MIN_DIVIDER_CONTRAST, self.mode())
+    }
+
+    /// [`BORDER_STRONG_TOKEN`], the control-boundary tone, walked out of this
+    /// theme's own layers: the quietest grey clearing [`MIN_CONTROL_BOUNDARY`]
+    /// on all four.
+    ///
+    /// White and Gray 10: `#8c8c8c`, the
+    /// first level clearing [`MIN_CONTROL_BOUNDARY`] on all four light layers
+    /// (3.00:1 on `#f2f2f2`, 3.36:1 on `#ffffff`).
+    ///
+    /// Gray 100: `#8f8f8f`, the
+    /// first level clearing [`MIN_CONTROL_BOUNDARY`] on all four dark layers
+    /// (3.01:1 on `#444444`, 5.79:1 on `#121212`).
+    fn border_strong(&self) -> [u8; 3] {
+        quietest_grey_clearing(self.layers, MIN_CONTROL_BOUNDARY, self.mode())
+    }
+}
+
+/// Carbon White: [`LIGHT_LAYERS`], the shipped light theme since 2026-08-24.
+const WHITE: Palette = Palette {
+    id: ThemeId::White,
     layers: &LIGHT_LAYERS,
+    accent: &LIGHT_ACCENT,
     text: &LIGHT_TEXT,
-    ring: &LIGHT_RING[0],
+    faint: FAINT_TEXT[0],
+    ring: &LIGHT_RING,
+    shadow_alphas: &LIGHT_SHADOW_ALPHAS,
+    scrim_alpha: LIGHT_SCRIM_ALPHA,
+    button_disabled: (BUTTON_DISABLED_LIGHT, 0xff),
+    status: &LIGHT_STATUS,
+    danger: DANGER_FILL,
 };
 
-/// The dark polarity, as the light theme's inverse source. See [`LIGHT`].
-const DARK: Polarity = Polarity {
-    layers: &DARK_LAYERS,
-    text: &DARK_TEXT,
-    ring: &DARK_RING[0],
+/// Carbon Gray 10: [`GRAY10_LAYERS`], every other tone White's.
+const GRAY10: Palette = Palette {
+    id: ThemeId::Gray10,
+    layers: &GRAY10_LAYERS,
+    ..WHITE
 };
+
+/// Carbon Gray 90: [`GRAY90_LAYERS`] and [`GRAY90_DANGER_FILL`], every
+/// other tone Gray 100's.
+const GRAY90: Palette = Palette {
+    id: ThemeId::Gray90,
+    layers: &GRAY90_LAYERS,
+    danger: GRAY90_DANGER_FILL,
+    ..GRAY100
+};
+
+/// Carbon Gray 100: [`DARK_LAYERS`], the shipped dark theme since
+/// 2026-08-24.
+const GRAY100: Palette = Palette {
+    id: ThemeId::Gray100,
+    layers: &DARK_LAYERS,
+    accent: &DARK_ACCENT,
+    text: &DARK_TEXT,
+    faint: FAINT_TEXT[1],
+    ring: &DARK_RING,
+    shadow_alphas: &DARK_SHADOW_ALPHAS,
+    scrim_alpha: DARK_SCRIM_ALPHA,
+    button_disabled: (BUTTON_DISABLED_DARK, BUTTON_DISABLED_DARK_ALPHA),
+    status: &DARK_STATUS,
+    danger: DANGER_FILL,
+};
+
+/// The palette a [`ThemeId`] names.
+fn palette(id: ThemeId) -> &'static Palette {
+    match id {
+        ThemeId::White => &WHITE,
+        ThemeId::Gray10 => &GRAY10,
+        ThemeId::Gray90 => &GRAY90,
+        ThemeId::Gray100 => &GRAY100,
+    }
+}
 
 /// The IEC 61966-2-1 sRGB transfer function, 8-bit encoded in, linear-light
 /// out. The same curve `ColorValue::from_srgb8` applies; spelled again here
@@ -1053,9 +1237,21 @@ const DARK_SCRIM_ALPHA: u8 = 166;
 /// [`tests::no_shipped_colour_carries_a_hue_that_is_not_already_gated`].
 const DANGER_FILL_TOKEN: &str = "button-danger-primary";
 
-/// See [`DANGER_FILL_TOKEN`]. One value, both themes, because Carbon
-/// publishes one.
+/// See [`DANGER_FILL_TOKEN`]. Carbon's one value, worn by White, Gray 10
+/// and Gray 100.
 const DANGER_FILL: [u8; 3] = [0xda, 0x1e, 0x28];
+
+/// Gray 90's danger fill: Carbon's red, two ΔE\*ab lighter (`#de2828`).
+///
+/// The one place a theme overrides Carbon's danger red, and for the reason
+/// FR-005 allows: a protanope must tell a destructive button from an
+/// ordinary one, and an ordinary button is filled with `surface.raised`.
+/// On Gray 90's raised grey (`#303030`) Carbon's `#da1e28` reads ΔE\*ab 29.5
+/// from it to a protanope, under the 30 floor; `#de2828` reads 32.6, keeps
+/// the white label at 4.73:1 and is the nearest red that clears both with
+/// a margin. Gray 100's darker raised grey leaves Carbon's red legal, so
+/// only Gray 90 pays.
+const GRAY90_DANGER_FILL: [u8; 3] = [0xde, 0x28, 0x28];
 
 /// Carbon's `$button-disabled`: the track colour `component::controls`'s
 /// `toggle` paints when disabled, on and off alike
@@ -1130,8 +1326,8 @@ const ON_COLOUR: [u8; 3] = [0xff, 0xff, 0xff];
 /// One function called by both themes, for the reason [`insert_layer_set`]
 /// is: a hand-copied pair is a pair that drifts, and "the same in every
 /// theme" is the entire content of both of these tokens.
-fn insert_on_colour_pair(values: &mut BTreeMap<TokenName, TokenValue>) {
-    values.insert(name(DANGER_FILL_TOKEN), opaque(DANGER_FILL));
+fn insert_on_colour_pair(values: &mut BTreeMap<TokenName, TokenValue>, danger: [u8; 3]) {
+    values.insert(name(DANGER_FILL_TOKEN), opaque(danger));
     values.insert(name(ON_COLOUR_TOKEN), opaque(ON_COLOUR));
 }
 
@@ -1142,9 +1338,10 @@ const SUPPORT_ALIASES: [(&str, &str); 3] = [
 ];
 
 /// Assign the icon family into a theme's value map, from tones the theme has
-/// already assigned. `text` is the polarity's own ink pair, `ground` its
-/// `surface.base` (which is [`ON_ACCENT_TOKEN`]'s value), `inverse_ink` the
-/// other polarity's primary ink.
+/// already assigned. `text` is the polarity's own ink pair, `ground` the
+/// theme's [`ON_ACCENT_TOKEN`] value (`surface.base` in three themes, Gray
+/// 10's white card in the fourth), `inverse_ink` the other polarity's
+/// primary ink.
 fn insert_icon_family(
     values: &mut BTreeMap<TokenName, TokenValue>,
     text: &[[u8; 3]; 2],
@@ -1236,17 +1433,14 @@ fn insert_state_set(
 }
 
 /// Assign the inverse family from `other`, the polarity this theme inverts
-/// into. See [`Polarity`] for why the values come from a shipped theme rather
+/// into. See [`Palette`] for why the values come from a shipped theme rather
 /// than from six fresh greys.
 ///
 /// `background-inverse-hover` steps in **`other`'s** direction, not this
 /// theme's: the surface being hovered belongs to the inverted ground, so
 /// "away from the ground" means away from *its* ground.
-fn insert_inverse_family(
-    values: &mut BTreeMap<TokenName, TokenValue>,
-    other: &Polarity,
-    other_mode: ThemeMode,
-) {
+fn insert_inverse_family(values: &mut BTreeMap<TokenName, TokenValue>, other: &Palette) {
+    let other_mode = other.mode();
     let ground = other.layers[1];
     values.insert(name("background-inverse"), opaque(ground));
     values.insert(
@@ -1254,7 +1448,7 @@ fn insert_inverse_family(
         opaque(step_away_from_ground(ground, HOVER_STEP, other_mode)),
     );
     values.insert(name("text-inverse"), opaque(other.text[0]));
-    values.insert(name("focus-inverse"), opaque(*other.ring));
+    values.insert(name("focus-inverse"), opaque(other.ring[0]));
     // The deepest tone the inverted polarity has, which is what a selected row
     // on an inverted ground wants: one more step of separation than
     // `background-inverse` has left to give.
@@ -1319,7 +1513,7 @@ fn insert_support_aliases(values: &mut BTreeMap<TokenName, TokenValue>) {
 /// a mistyped stiffness fails instead of animating slightly wrong.
 ///
 /// Shared verbatim by both themes: a spring is physics, and physics does not
-/// change when the lights go out. `the_two_shipped_themes_agree_on_every_spring`
+/// change when the lights go out. `every_shipped_theme_agrees_on_every_spring`
 /// holds them to it, the same way `..._agree_on_every_gap` holds the spacing
 /// ramp.
 const SPRING_SET: [(&str, f32, f32); 6] = [
@@ -1376,7 +1570,7 @@ fn insert_spring_set(values: &mut BTreeMap<TokenName, TokenValue>) {
 /// Declared once and shared by both shipped themes verbatim, because spacing
 /// is geometry: a gap does not change when the lights go out. Colour is the
 /// only channel [`light`] and [`dark`] disagree on, and
-/// `the_two_shipped_themes_agree_on_every_gap` holds them to that.
+/// `every_shipped_theme_agrees_on_every_gap` holds them to that.
 const SPACING_RAMP: [(&str, f32); 13] = [
     ("spacing-01", 2.0),
     ("spacing-02", 4.0),
@@ -2026,8 +2220,14 @@ fn insert_silhouette_family(values: &mut BTreeMap<TokenName, TokenValue>) {
 /// | `heading` | `heading-03` | 3 |
 /// | `heading-lg` | `heading-04` | 1 |
 /// | `code` | `code-01`, `code-02` | 2 |
+/// | `code-lg` | `code-02` | editor text |
 ///
-/// # The three divergences, each on purpose
+/// The test `the_ramp_resolves_against_carbon_type_v11_with_only_the_named_divergences`
+/// holds the twelve source records as published (scale step, unitless line
+/// height, weight, tracking) and fails on any cell that differs from them and
+/// is not one of the divergences below.
+///
+/// # The divergences, each on purpose
 ///
 /// **Weight: Carbon's `semibold` (600) maps to [`TypographyWeight::Medium`],
 /// and `light` (300) is refused.** Petra names three weight roles where
@@ -2049,10 +2249,19 @@ fn insert_silhouette_family(values: &mut BTreeMap<TokenName, TokenValue>) {
 /// reference is affected, and it gets two units less leading than Carbon
 /// would give it.
 ///
-/// **`code-lg` is Carbon's `code-02` (14/20, no tracking).** An editor's
-/// text is the content of the window and is set at body size; `code` at 12
-/// put the code smaller than the file names in the tree beside it (shell
-/// audit, 2026-11-08). `code` stays for code inside running text.
+/// **`code` covers `code-02` at `code-01`'s 12/16.** Code inside running text
+/// is one size in this library; the one `code-02` reference paints two units
+/// smaller than Carbon would set it.
+///
+/// **`code-lg` is Carbon's `code-02` size and leading (14/20) without its
+/// 0.32 tracking.** An editor's text is the content of the window and is set
+/// at body size; `code` at 12 put the code smaller than the file names in the
+/// tree beside it (shell audit, 2026-11-08). The step shipped that day on the
+/// belief that `code-02` publishes no tracking; `@carbon/type` 11.65.0 says
+/// 0.32px, which the 2026-11-11 resolution (task T168) found. Adopting it
+/// widens every editor column by 0.32 units, so it stays 0 until the
+/// operator decides; the test names the cell. `code` stays for code inside
+/// running text.
 ///
 /// Declared once and shared by both shipped themes, because typography is
 /// type, not colour: a heading's size does not change when the operator
@@ -2347,39 +2556,68 @@ pub fn standard_vocabulary() -> Vocabulary {
     vocab
 }
 
-/// The shipped light theme, checked complete against [`standard_vocabulary`]
-/// at call time (`Theme::build`'s `.expect` below is the completeness
-/// proof: it can only panic if this function's own assignments fall out of
-/// step with the vocabulary above, which the module's tests catch).
-#[must_use]
-pub fn light() -> Theme {
+/// Build one shipped theme from its [`Palette`], checked complete against
+/// [`standard_vocabulary`] at call time. `Theme::build_as`'s `.expect` below
+/// is the completeness proof: it can only panic if this function's own
+/// assignments fall out of step with the vocabulary above, which the
+/// module's tests catch for all four themes.
+///
+/// One function for four themes, so a token assigned here is assigned in
+/// every theme or in none. The two-function version this replaced (one body
+/// per polarity) is how a third and fourth theme would have drifted.
+fn build(palette: &Palette) -> Theme {
     let vocab = standard_vocabulary();
     let mut values = BTreeMap::new();
+    let mode = palette.mode();
+    let inverse = palette.inverse();
 
-    insert_layer_set(&mut values, &LIGHT_LAYERS);
-    insert_accent(&mut values, &LIGHT_ACCENT, &LIGHT_LAYERS, LIGHT_TEXT[0]);
-    insert_border(&mut values, &light_border());
-    insert_rule_material(&mut values, &LIGHT_LAYERS);
-    insert_shadow_set(&mut values, &LIGHT_SHADOW_ALPHAS);
-    values.insert(name("text.primary"), opaque(LIGHT_TEXT[0]));
-    values.insert(name("text.muted"), opaque(LIGHT_TEXT[1]));
-    values.insert(name("text.faint"), opaque(FAINT_TEXT[0]));
-    crate::token::syntax::insert(&mut values, ThemeMode::Light);
-    insert_icon_family(&mut values, &LIGHT_TEXT, LIGHT_LAYERS[0], DARK_TEXT[0]);
-    insert_on_colour_pair(&mut values);
+    insert_layer_set(&mut values, palette.layers);
+    insert_accent(&mut values, palette);
+    insert_border(&mut values, &palette.border());
+    insert_rule_material(&mut values, palette.layers);
+    insert_shadow_set(&mut values, palette.shadow_alphas);
+    values.insert(name("text.primary"), opaque(palette.text[0]));
+    values.insert(name("text.muted"), opaque(palette.text[1]));
+    values.insert(name("text.faint"), opaque(palette.faint));
+    let code_grounds: Vec<ColorValue> = crate::token::syntax::GROUNDS
+        .iter()
+        .map(|ground| match values.get(&name(ground)) {
+            Some(TokenValue::Color(c)) => *c,
+            other => panic!(
+                "code ground {ground:?} must be a colour assigned before the inks, found {other:?}"
+            ),
+        })
+        .collect();
+    crate::token::syntax::insert(&mut values, mode, &code_grounds);
+    insert_icon_family(
+        &mut values,
+        palette.text,
+        palette.on_accent(),
+        inverse.text[0],
+    );
+    insert_on_colour_pair(&mut values, palette.danger);
     // See `BUTTON_DISABLED_TOKEN`: Carbon's own value, not a fade.
-    values.insert(name(BUTTON_DISABLED_TOKEN), opaque(BUTTON_DISABLED_LIGHT));
+    let (disabled_rgb, disabled_alpha) = palette.button_disabled;
+    values.insert(
+        name(BUTTON_DISABLED_TOKEN),
+        TokenValue::Color(ColorValue::from_srgb8(
+            disabled_rgb[0],
+            disabled_rgb[1],
+            disabled_rgb[2],
+            disabled_alpha,
+        )),
+    );
     insert_border_family(
         &mut values,
-        &light_border(),
-        light_border_strong(),
-        &LIGHT_ACCENT,
-        dark_border(),
+        &palette.border(),
+        palette.border_strong(),
+        palette.accent,
+        inverse.border(),
     );
-    insert_field_set(&mut values, &LIGHT_LAYERS);
-    insert_state_set(&mut values, &LIGHT_LAYERS, ThemeMode::Light);
-    insert_inverse_family(&mut values, &DARK, ThemeMode::Dark);
-    insert_scrim(&mut values, LIGHT_SCRIM_ALPHA);
+    insert_field_set(&mut values, palette.layers);
+    insert_state_set(&mut values, palette.layers, mode);
+    insert_inverse_family(&mut values, inverse);
+    insert_scrim(&mut values, palette.scrim_alpha);
     insert_spacing_ramp(&mut values);
     insert_size_ramp(&mut values);
     insert_typography_ramp(&mut values);
@@ -2401,43 +2639,19 @@ pub fn light() -> Theme {
     insert_shape_ramp(&mut values);
     insert_silhouette_family(&mut values);
 
-    // Status colours. The values are chosen by measurement, not by taste:
-    // `status_colours_stay_apart_under_red_green_colour_blindness` simulates
-    // deuteranopia and protanopia and asserts a floor on the perceptual
-    // distance between every pair. Read that test before changing any of
-    // these three, because the constraint is not obvious — the pair that
-    // actually breaks is `degraded` vs `down`, not `ok` vs `down`, and the
-    // previous palette scored ΔE*ab 8.8 on it (indistinguishable) while a
-    // comment here claimed the colours were separated in lightness.
-    //
-    // Light `status.ok` is a traffic-light green. Near-white mint fails 3:1
-    // on `surface.raised`; `#00A000` is the brightest green that still
-    // clears it. Dark `status.ok` *is* near-white mint, because the dark
-    // ground has the headroom. `degraded` and `down` stay in the darker
-    // half so the three remain separable in L* after hue collapse.
     // The focus underline is the accent. Geometry (present vs absent) is
     // the FR-015 channel; hue is the same blue the primary button already
     // spends. See `the_focus_underline_is_legible_on_the_card`.
-    values.insert(name(RING_TOKEN), opaque(LIGHT_RING[0]));
-    values.insert(name(HALO_TOKEN), opaque(LIGHT_RING[1]));
+    values.insert(name(RING_TOKEN), opaque(palette.ring[0]));
+    values.insert(name(HALO_TOKEN), opaque(palette.ring[1]));
 
-    values.insert(
-        name("status.ok"),
-        // Traffic-light mint. A 3:1 green on `#f2f2f2` collapses onto
-        // `status.degraded` under deuteranopia (ΔE*ab 5.5). Near-white mint
-        // is the lightness split the operator asked for and the one that
-        // keeps the pair above `MIN_STATUS_SEPARATION`. The disc is a tint;
-        // the circle and the word "OK" are the shape channel.
-        TokenValue::Color(ColorValue::from_srgb8(0x9a, 0xff, 0xb0, 0xff)),
-    );
-    values.insert(
-        name("status.degraded"),
-        TokenValue::Color(ColorValue::from_srgb8(0xb5, 0x54, 0x1a, 0xff)),
-    );
-    values.insert(
-        name("status.down"),
-        TokenValue::Color(ColorValue::from_srgb8(0x49, 0x12, 0x15, 0xff)),
-    );
+    // Status colours: see `LIGHT_STATUS` for why these are measured values.
+    for (token, rgb) in ["status.ok", "status.degraded", "status.down"]
+        .into_iter()
+        .zip(palette.status)
+    {
+        values.insert(name(token), opaque(*rgb));
+    }
     // After the statuses, and reading them back out: see
     // `insert_support_aliases` for why an alias may not carry its own hex.
     insert_support_aliases(&mut values);
@@ -2450,99 +2664,56 @@ pub fn light() -> Theme {
         }),
     );
 
-    Theme::build(ThemeMode::Light, &vocab, values).expect("shipped light theme must be complete")
+    Theme::build_as(palette.id, &vocab, values).unwrap_or_else(|err| {
+        panic!(
+            "shipped {} theme must be complete: {err}",
+            palette.id.as_str()
+        )
+    })
 }
 
-/// The shipped dark theme. See [`light`] for the completeness note.
+/// The shipped theme a [`ThemeId`] names. The one dispatch a host that
+/// reads a theme setting needs.
+#[must_use]
+pub fn shipped(id: ThemeId) -> Theme {
+    build(palette(id))
+}
+
+/// Carbon White, the light theme with a white ground.
+#[must_use]
+pub fn white() -> Theme {
+    shipped(ThemeId::White)
+}
+
+/// Carbon Gray 10, the light theme with a grey ground and white cards.
+#[must_use]
+pub fn gray10() -> Theme {
+    shipped(ThemeId::Gray10)
+}
+
+/// Carbon Gray 90, the dark theme with the lighter ground.
+#[must_use]
+pub fn gray90() -> Theme {
+    shipped(ThemeId::Gray90)
+}
+
+/// Carbon Gray 100, the dark theme with the darkest ground.
+#[must_use]
+pub fn gray100() -> Theme {
+    shipped(ThemeId::Gray100)
+}
+
+/// The shipped light theme: an alias of [`white`], kept so every call site
+/// written before the four themes existed reads unchanged.
+#[must_use]
+pub fn light() -> Theme {
+    white()
+}
+
+/// The shipped dark theme: an alias of [`gray100`]. See [`light`].
 #[must_use]
 pub fn dark() -> Theme {
-    let vocab = standard_vocabulary();
-    let mut values = BTreeMap::new();
-
-    insert_layer_set(&mut values, &DARK_LAYERS);
-    insert_accent(&mut values, &DARK_ACCENT, &DARK_LAYERS, DARK_TEXT[0]);
-    insert_border(&mut values, &dark_border());
-    insert_rule_material(&mut values, &DARK_LAYERS);
-    insert_shadow_set(&mut values, &DARK_SHADOW_ALPHAS);
-    values.insert(name("text.primary"), opaque(DARK_TEXT[0]));
-    values.insert(name("text.muted"), opaque(DARK_TEXT[1]));
-    values.insert(name("text.faint"), opaque(FAINT_TEXT[1]));
-    crate::token::syntax::insert(&mut values, ThemeMode::Dark);
-    insert_icon_family(&mut values, &DARK_TEXT, DARK_LAYERS[0], LIGHT_TEXT[0]);
-    insert_on_colour_pair(&mut values);
-    // See `BUTTON_DISABLED_TOKEN`: Carbon's own value, not a fade.
-    values.insert(
-        name(BUTTON_DISABLED_TOKEN),
-        TokenValue::Color(ColorValue::from_srgb8(
-            BUTTON_DISABLED_DARK[0],
-            BUTTON_DISABLED_DARK[1],
-            BUTTON_DISABLED_DARK[2],
-            BUTTON_DISABLED_DARK_ALPHA,
-        )),
-    );
-    insert_border_family(
-        &mut values,
-        &dark_border(),
-        dark_border_strong(),
-        &DARK_ACCENT,
-        light_border(),
-    );
-    insert_field_set(&mut values, &DARK_LAYERS);
-    insert_state_set(&mut values, &DARK_LAYERS, ThemeMode::Dark);
-    insert_inverse_family(&mut values, &LIGHT, ThemeMode::Light);
-    insert_scrim(&mut values, DARK_SCRIM_ALPHA);
-    insert_spacing_ramp(&mut values);
-    insert_size_ramp(&mut values);
-    insert_typography_ramp(&mut values);
-    values.insert(
-        name("motion.fast"),
-        TokenValue::Motion(MotionValue {
-            duration_ms: 120.0,
-            easing: MotionEasing::EaseOut,
-        }),
-    );
-    values.insert(
-        name("motion.slow"),
-        TokenValue::Motion(MotionValue {
-            duration_ms: 320.0,
-            easing: MotionEasing::EaseInOut,
-        }),
-    );
-    insert_spring_set(&mut values);
-    insert_shape_ramp(&mut values);
-    insert_silhouette_family(&mut values);
-
-    // Dark underline: the dark accent, same reason as light.
-    values.insert(name(RING_TOKEN), opaque(DARK_RING[0]));
-    values.insert(name(HALO_TOKEN), opaque(DARK_RING[1]));
-
-    values.insert(
-        name("status.ok"),
-        // Near-white mint on dark: 16:1 against `#121212`, so the "very
-        // bright, near white, green" the operator asked for is legal here.
-        TokenValue::Color(ColorValue::from_srgb8(0xe0, 0xff, 0xe6, 0xff)),
-    );
-    values.insert(
-        name("status.degraded"),
-        TokenValue::Color(ColorValue::from_srgb8(0xff, 0xc4, 0x7a, 0xff)),
-    );
-    values.insert(
-        name("status.down"),
-        TokenValue::Color(ColorValue::from_srgb8(0xf2, 0x1c, 0x0d, 0xff)),
-    );
-    // See `light` for why this runs after the statuses rather than beside
-    // them.
-    insert_support_aliases(&mut values);
-
-    values.insert(
-        name("text.coverage-curve"),
-        TokenValue::Coverage(CoverageValue {
-            passes: 2.0,
-            snap: false,
-        }),
-    );
-
-    Theme::build(ThemeMode::Dark, &vocab, values).expect("shipped dark theme must be complete")
+    gray100()
 }
 
 #[cfg(test)]
@@ -2556,8 +2727,9 @@ mod tests {
         RULE_HIGHLIGHT_DELTA, RULE_SHADOW_DELTA, SANS, SCRIM_TOKEN, SELECTED_HOVER_STEP,
         SELECTED_STEP, SHADOW_GEOMETRY, SHADOW_TOKENS, SHAPE_RAMP, SIZE_RAMP, SPACING_ALIASES,
         SPACING_RAMP, SPRING_SET, SUPPORT_ALIASES, TYPOGRAPHY_RAMP, corner_for, corners_for, dark,
-        light, lightness_of, opaque_value, rule_stroke, standard_vocabulary,
+        light, lightness_of, opaque_value, rule_stroke, shipped, standard_vocabulary,
     };
+    use crate::token::ThemeId;
     use crate::token::ThemeMode;
     use crate::token::colourblind::{
         DEUTERANOPE, MIN_STATUS_SEPARATION, MIN_SURFACE_CONTRAST, PROTANOPE, contrast, delta_e,
@@ -2567,6 +2739,50 @@ mod tests {
     use crate::token::name::TokenName;
     use crate::token::value::{ColorValue, CoverageValue, TokenValue};
     use crate::token::value::{TypographyFamily, TypographyValue, TypographyWeight};
+
+    /// Every shipped theme, labelled by its id's short name, so a sweep
+    /// covers all four (FR-049) and a failure names the theme it failed in.
+    fn themes() -> [(&'static str, crate::token::Theme); 4] {
+        crate::token::colourblind::shipped_themes()
+    }
+
+    /// Compare every name of `kind` across all four themes against White,
+    /// and return how many names were compared. The kinds this is called for
+    /// (spacing, spring, shape, typography) are geometry, physics and type:
+    /// colour is the only channel the themes may disagree on.
+    fn assert_every_theme_agrees(kind: crate::token::value::TokenKind, why: &str) -> usize {
+        let reference = shipped(ThemeId::White);
+        let vocab = standard_vocabulary();
+        let names: Vec<&TokenName> = vocab
+            .names()
+            .filter(|n| vocab.kind_of(n) == Some(kind))
+            .collect();
+        for (label, theme) in themes() {
+            for name in &names {
+                assert_eq!(
+                    reference.value(name),
+                    theme.value(name),
+                    "{name} differs between white and {label}; {why}"
+                );
+            }
+        }
+        names.len()
+    }
+
+    /// The shipped theme a [`ThemeId::as_str`] label names, for the tables
+    /// below that key a measured boundary by theme.
+    fn theme_named(label: &str) -> crate::token::Theme {
+        shipped(ThemeId::from_name(label).unwrap_or_else(|| panic!("{label} is not a theme")))
+    }
+
+    /// Which way "away from the ground" runs in L\*: down for a light theme,
+    /// up for a dark one.
+    fn mode_sign(mode: ThemeMode) -> f32 {
+        match mode {
+            ThemeMode::Light => -1.0,
+            ThemeMode::Dark => 1.0,
+        }
+    }
 
     /// The two simulation matrices, recomputed from the paper rather than
     /// trusted as constants.
@@ -2731,7 +2947,7 @@ mod tests {
     /// actively misleading, which is a lower bar and a real one.
     #[test]
     fn status_colours_stay_apart_under_red_green_colour_blindness() {
-        for (label, theme) in [("light", light()), ("dark", dark())] {
+        for (label, theme) in themes() {
             let surface = theme_color(&theme, "surface.raised");
             let names = status_family();
             let colors: Vec<ColorValue> = names.iter().map(|s| theme_color(&theme, s)).collect();
@@ -2742,7 +2958,9 @@ mod tests {
                 // on `surface.raised` is the same colour as `status.degraded`
                 // to a deuteranope (ΔE*ab 5.5). The circle and the word
                 // carry the mark; pairwise ΔE below is the colour check.
-                if label == "light" && (*name == "status.ok" || *name == "support-success") {
+                if theme.mode() == ThemeMode::Light
+                    && (*name == "status.ok" || *name == "support-success")
+                {
                     continue;
                 }
                 assert!(
@@ -2793,7 +3011,7 @@ mod tests {
     /// refuses.
     #[test]
     fn every_support_alias_is_its_status_colour() {
-        for (label, theme) in [("light", light()), ("dark", dark())] {
+        for (label, theme) in themes() {
             for (alias, status) in SUPPORT_ALIASES {
                 assert_eq!(
                     theme_color(&theme, alias),
@@ -2831,35 +3049,67 @@ mod tests {
     /// so its deepest layers separate a third harder than its shallowest.
     #[test]
     fn the_dark_layer_set_steps_evenly_in_perceived_lightness() {
-        let theme = dark();
-        let ls: Vec<f32> = LAYER_TOKENS
-            .iter()
-            .map(|t| lightness(theme_color(&theme, t)))
-            .collect();
+        for (label, theme) in themes() {
+            if theme.mode() != ThemeMode::Dark {
+                continue;
+            }
+            let ls: Vec<f32> = LAYER_TOKENS
+                .iter()
+                .map(|t| lightness(theme_color(&theme, t)))
+                .collect();
 
-        let steps: Vec<f32> = ls.windows(2).map(|w| w[1] - w[0]).collect();
-        for (i, step) in steps.iter().enumerate() {
+            let steps: Vec<f32> = ls.windows(2).map(|w| w[1] - w[0]).collect();
+            for (i, step) in steps.iter().enumerate() {
+                assert!(
+                    *step > 0.0,
+                    "{label} {} -> {} falls by {step:.2} in L*; a dark layer set \
+                     steps lighter every time, and a set that reverses reads as \
+                     two unrelated pairs rather than one stack",
+                    LAYER_TOKENS[i],
+                    LAYER_TOKENS[i + 1],
+                );
+            }
+
+            let (lo, hi) = steps
+                .iter()
+                .fold((f32::MAX, f32::MIN), |(lo, hi), s| (lo.min(*s), hi.max(*s)));
             assert!(
-                *step > 0.0,
-                "dark {} -> {} falls by {step:.2} in L*; a dark layer set \
-                 steps lighter every time, and a set that reverses reads as \
-                 two unrelated pairs rather than one stack",
-                LAYER_TOKENS[i],
-                LAYER_TOKENS[i + 1],
+                hi - lo < 1.0,
+                "the {label} layer steps are {steps:?} in L*, a spread of {:.2}. \
+                 Even steps are what makes the set a depth cue: one layer of \
+                 nesting has to look like one layer of nesting wherever it \
+                 happens. For scale, Carbon Gray 100 spreads 2.99 and is the \
+                 ramp this set deliberately does not copy.",
+                hi - lo,
             );
         }
+    }
 
-        let (lo, hi) = steps
-            .iter()
-            .fold((f32::MAX, f32::MIN), |(lo, hi), s| (lo.min(*s), hi.max(*s)));
-        assert!(
-            hi - lo < 1.0,
-            "the dark layer steps are {steps:?} in L*, a spread of {:.2}. \
-             Even steps are what makes the set a depth cue: one layer of \
-             nesting has to look like one layer of nesting wherever it \
-             happens. For scale, Carbon Gray 100 spreads 2.99 and is the \
-             ramp this set deliberately does not copy.",
-            hi - lo,
+    /// Gray 90 is Carbon's `#262626` ground under Gray 100's `#444444` top,
+    /// stepped evenly (the evenness is the dark-layer test above). The
+    /// reasons the step sits where it does are each their own test: the
+    /// hover ladder (`the_interaction_ladder_is_ordered_and_visible`), the
+    /// statuses on layer one (`DEEPEST_STATUS_LAYER`) and the border's
+    /// quietness (`the_border_tone_is_visible_everywhere_and_quieter_than_every_text_tone`).
+    /// This one pins the two ends `GRAY90_LAYERS` documents, so a retune that
+    /// moves either is a decision someone writes down.
+    #[test]
+    fn gray90_is_carbon_s_ground_under_gray_100_s_top() {
+        let (g90, g100) = (shipped(ThemeId::Gray90), shipped(ThemeId::Gray100));
+        assert_eq!(
+            theme_color(&g90, LAYER_TOKENS[0]),
+            opaque_value([0x26, 0x26, 0x26]),
+            "g90's ground is Carbon's own #262626"
+        );
+        assert_eq!(
+            theme_color(&g90, LAYER_TOKENS[3]),
+            theme_color(&g100, LAYER_TOKENS[3]),
+            "g90 tops out where g100 does"
+        );
+        assert_eq!(
+            theme_color(&g90, BORDER_TOKEN),
+            theme_color(&g100, BORDER_TOKEN),
+            "one top layer, one walked border"
         );
     }
 
@@ -2873,29 +3123,45 @@ mod tests {
     /// near-white, has quietly stopped being the right ink.
     #[test]
     fn the_light_layer_set_alternates_rather_than_ramping() {
-        let theme = light();
-        let colors: Vec<ColorValue> = LAYER_TOKENS
-            .iter()
-            .map(|t| theme_color(&theme, t))
-            .collect();
+        for (label, theme) in themes() {
+            if theme.mode() != ThemeMode::Light {
+                continue;
+            }
+            let colors: Vec<ColorValue> = LAYER_TOKENS
+                .iter()
+                .map(|t| theme_color(&theme, t))
+                .collect();
 
+            assert_eq!(
+                colors[0], colors[2],
+                "{label} {} and {} must be the same colour: a light layer set \
+                 alternates between two greys, and depth is read from the change \
+                 at a boundary rather than from a direction",
+                LAYER_TOKENS[0], LAYER_TOKENS[2],
+            );
+            assert_eq!(
+                colors[1], colors[3],
+                "{label} {} and {} must be the same colour",
+                LAYER_TOKENS[1], LAYER_TOKENS[3],
+            );
+            assert!(
+                (lightness(colors[0]) - lightness(colors[1])).abs() > 1.0,
+                "the {label} set's two greys are only {:.2} apart in L*; an \
+                 alternation nobody can see is one surface with two names",
+                (lightness(colors[0]) - lightness(colors[1])).abs(),
+            );
+        }
+        // White and Gray 10 are the same two greys, started from opposite
+        // ends: the page is white and a card grey, or the page grey and a
+        // card white.
+        let (white, gray10) = (shipped(ThemeId::White), shipped(ThemeId::Gray10));
         assert_eq!(
-            colors[0], colors[2],
-            "light {} and {} must be the same colour: a light layer set \
-             alternates between two greys, and depth is read from the change \
-             at a boundary rather than from a direction",
-            LAYER_TOKENS[0], LAYER_TOKENS[2],
+            theme_color(&white, LAYER_TOKENS[0]),
+            theme_color(&gray10, LAYER_TOKENS[1])
         );
         assert_eq!(
-            colors[1], colors[3],
-            "light {} and {} must be the same colour",
-            LAYER_TOKENS[1], LAYER_TOKENS[3],
-        );
-        assert!(
-            (lightness(colors[0]) - lightness(colors[1])).abs() > 1.0,
-            "the light set's two greys are only {:.2} apart in L*; an \
-             alternation nobody can see is one surface with two names",
-            (lightness(colors[0]) - lightness(colors[1])).abs(),
+            theme_color(&white, LAYER_TOKENS[1]),
+            theme_color(&gray10, LAYER_TOKENS[0])
         );
     }
 
@@ -2909,7 +3175,7 @@ mod tests {
     /// deleted together.
     #[test]
     fn the_raised_alias_is_layer_one_in_both_themes() {
-        for (label, theme) in [("light", light()), ("dark", dark())] {
+        for (label, theme) in themes() {
             assert_eq!(
                 theme_color(&theme, RAISED_ALIAS),
                 theme_color(&theme, LAYER_TOKENS[1]),
@@ -2934,19 +3200,23 @@ mod tests {
     /// the ground and on layer one, and nowhere deeper.** `status.down`
     /// misses on `surface.layer-two` by 0.02 — 2.98:1 against a 3.0 floor —
     /// which is close enough that it will read as a rounding accident to
-    /// anyone who meets it without this test to point at.
+    /// anyone who meets it without this test to point at. Gray 90 stops at
+    /// the same depth: `status.down` is 3.11:1 on its layer one (`#303030`)
+    /// and 2.68:1 on layer two (`#3a3a3a`). The light themes reach the bottom
+    /// because their layers alternate rather than ramp.
     ///
     /// This is a legibility floor, not the colour channel. FR-015's meaning
     /// travels on `StatusShape`'s silhouette and its word, both of which
     /// survive any background. What fails past the boundary is *seeing the
     /// marker at all*, which is why it is a floor rather than a preference.
-    const DEEPEST_STATUS_LAYER: [(&str, usize); 2] = [("light", 3), ("dark", 1)];
+    const DEEPEST_STATUS_LAYER: [(&str, usize); 4] =
+        [("white", 3), ("g10", 3), ("g90", 1), ("g100", 1)];
 
     #[test]
     fn a_status_marker_is_legible_only_down_to_its_theme_s_deepest_layer() {
         const STATUSES: [&str; 3] = ["status.ok", "status.degraded", "status.down"];
         for (label, deepest) in DEEPEST_STATUS_LAYER {
-            let theme = if label == "light" { light() } else { dark() };
+            let theme = theme_named(label);
             let colors: Vec<ColorValue> = STATUSES.iter().map(|s| theme_color(&theme, s)).collect();
 
             for (depth, token) in LAYER_TOKENS.iter().enumerate() {
@@ -2954,7 +3224,7 @@ mod tests {
                 let worst = STATUSES
                     .iter()
                     .zip(&colors)
-                    .filter(|(n, _)| !(label == "light" && **n == "status.ok"))
+                    .filter(|(n, _)| !(theme.mode() == ThemeMode::Light && **n == "status.ok"))
                     .map(|(n, c)| (contrast(*c, layer), *n))
                     .fold((f32::MAX, ""), |acc, x| if x.0 < acc.0 { x } else { acc });
 
@@ -2993,7 +3263,7 @@ mod tests {
     #[test]
     fn the_focus_underline_is_legible_on_the_card() {
         for (label, deepest) in DEEPEST_ACCENT_LAYER {
-            let theme = if label == "light" { light() } else { dark() };
+            let theme = theme_named(label);
             let bar = theme_color(&theme, RING_TOKEN);
             let accent = theme_color(&theme, ACCENT_TOKEN);
             assert_eq!(
@@ -3162,21 +3432,11 @@ mod tests {
     /// the same number — the only channel they are allowed to disagree on is
     /// colour.
     #[test]
-    fn the_two_shipped_themes_agree_on_every_gap() {
-        let (l, d) = (light(), dark());
-        let vocab = standard_vocabulary();
-        let mut checked = 0usize;
-        for name in vocab.names() {
-            if vocab.kind_of(name) != Some(crate::token::value::TokenKind::Spacing) {
-                continue;
-            }
-            assert_eq!(
-                l.value(name),
-                d.value(name),
-                "{name} differs between light and dark; spacing is geometry, not colour"
-            );
-            checked += 1;
-        }
+    fn every_shipped_theme_agrees_on_every_gap() {
+        let checked = assert_every_theme_agrees(
+            crate::token::value::TokenKind::Spacing,
+            "spacing is geometry, not colour",
+        );
         let want = SPACING_RAMP.len() + SPACING_ALIASES.len() + SIZE_RAMP.len();
         assert_eq!(
             checked, want,
@@ -3186,27 +3446,17 @@ mod tests {
 
     /// A spring is physics, so both themes must name the same one.
     ///
-    /// The spacing sibling of `the_two_shipped_themes_agree_on_every_gap`,
+    /// The spacing sibling of `every_shipped_theme_agrees_on_every_gap`,
     /// and for the same reason: colour is the only channel `light` and
     /// `dark` are allowed to disagree on. A panel that slides in faster
     /// because the operator switched to dark mode is a bug that no capture
     /// would ever show, because a capture is a still.
     #[test]
-    fn the_two_shipped_themes_agree_on_every_spring() {
-        let (l, d) = (light(), dark());
-        let vocab = standard_vocabulary();
-        let mut checked = 0usize;
-        for name in vocab.names() {
-            if vocab.kind_of(name) != Some(crate::token::value::TokenKind::Spring) {
-                continue;
-            }
-            assert_eq!(
-                l.value(name),
-                d.value(name),
-                "{name} differs between light and dark; a spring is physics, not colour"
-            );
-            checked += 1;
-        }
+    fn every_shipped_theme_agrees_on_every_spring() {
+        let checked = assert_every_theme_agrees(
+            crate::token::value::TokenKind::Spring,
+            "a spring is physics, not colour",
+        );
         assert_eq!(
             checked,
             SPRING_SET.len(),
@@ -3263,14 +3513,14 @@ mod tests {
     }
 
     /// Corner radius is geometry, the same reasoning
-    /// [`the_two_shipped_themes_agree_on_every_gap`] applies to spacing: a
+    /// [`every_shipped_theme_agrees_on_every_gap`] applies to spacing: a
     /// rounded corner does not change shape when the operator turns the
     /// lights off, so light and dark must agree on every step.
     /// The outline family, pinned by value in both themes.
     ///
     /// A silhouette is geometry, not colour: a "degraded" marker is a
     /// triangle with the lights on and a triangle with them off, the same
-    /// reasoning [`the_two_shipped_themes_agree_on_every_corner`] applies
+    /// reasoning [`every_shipped_theme_agrees_on_every_corner`] applies
     /// to a corner radius. The membership assertion at the end is what
     /// stops a fourth figure appearing without this test naming it — and
     /// without `gorgon-petra-egui`'s painter, which matches on this enum
@@ -3284,20 +3534,17 @@ mod tests {
             ("shape.silhouette-diamond", Silhouette::Diamond),
             ("shape.silhouette-octagon", Silhouette::Octagon),
         ];
-        let (l, d) = (light(), dark());
-        for (token, figure) in expected {
-            let n = TokenName::new(token).unwrap();
-            assert_eq!(
-                l.value(&n),
-                Some(&TokenValue::Silhouette(figure)),
-                "{token} must be {figure:?} in the light theme, found {:?}",
-                l.value(&n)
-            );
-            assert_eq!(
-                d.value(&n),
-                l.value(&n),
-                "{token} differs between light and dark; a silhouette is geometry, not colour"
-            );
+        for (label, theme) in themes() {
+            for (token, figure) in expected {
+                let n = TokenName::new(token).unwrap();
+                assert_eq!(
+                    theme.value(&n),
+                    Some(&TokenValue::Silhouette(figure)),
+                    "{token} must be {figure:?} in {label}, found {:?}; a \
+                     silhouette is geometry, not colour",
+                    theme.value(&n)
+                );
+            }
         }
 
         let vocab = standard_vocabulary();
@@ -3315,21 +3562,11 @@ mod tests {
     }
 
     #[test]
-    fn the_two_shipped_themes_agree_on_every_corner() {
-        let (l, d) = (light(), dark());
-        let vocab = standard_vocabulary();
-        let mut checked = 0usize;
-        for name in vocab.names() {
-            if vocab.kind_of(name) != Some(crate::token::value::TokenKind::Shape) {
-                continue;
-            }
-            assert_eq!(
-                l.value(name),
-                d.value(name),
-                "{name} differs between light and dark; corner radius is geometry, not colour"
-            );
-            checked += 1;
-        }
+    fn every_shipped_theme_agrees_on_every_corner() {
+        let checked = assert_every_theme_agrees(
+            crate::token::value::TokenKind::Shape,
+            "corner radius is geometry, not colour",
+        );
         assert_eq!(
             checked,
             SHAPE_RAMP.len(),
@@ -3415,6 +3652,114 @@ mod tests {
         );
     }
 
+    /// T168: the ramp resolved against `@carbon/type` 11.65.0, not against
+    /// `carbon.md`'s v10 names.
+    ///
+    /// `ROLES` is `scss/_styles.scss` as published, with the v11 aliases
+    /// resolved (`$body-compact-01: $body-short-01`, `$body-01:
+    /// $body-long-01`, `$body-compact-02: $body-short-02`, `$body-02:
+    /// $body-long-02`, `$heading-compact-01: $productive-heading-01`,
+    /// `$heading-03: $productive-heading-03`, `$heading-04:
+    /// $productive-heading-04`): the type-scale step, the unitless line
+    /// height, the weight and the tracking in px. `helper-text-01` sets no
+    /// weight and inherits 400. The trap the aliasing sets is v10
+    /// `heading-01` (line height 1.42857): `heading-compact-01` aliases
+    /// `productive-heading-01` (1.28572), two units tighter.
+    ///
+    /// Every cell of every step is derived from the roles it covers. A cell
+    /// that differs must be in `DIVERGENCES`, and every entry there must
+    /// still differ, so the list can neither hide a new mismatch nor outlive
+    /// the one it excuses.
+    #[test]
+    fn the_ramp_resolves_against_carbon_type_v11_with_only_the_named_divergences() {
+        // `scss/_scale.scss`: 12, 14, 16, 18, 20, 24, 28 for steps 1 to 7.
+        const SCALE: [f32; 7] = [12.0, 14.0, 16.0, 18.0, 20.0, 24.0, 28.0];
+        const ROLES: [(&str, usize, f32, u16, f32, bool); 12] = [
+            ("helper-text-01", 1, 1.33333, 400, 0.32, false),
+            ("label-01", 1, 1.33333, 400, 0.32, false),
+            ("label-02", 2, 1.28572, 400, 0.16, false),
+            ("body-compact-01", 2, 1.28572, 400, 0.16, false),
+            ("body-01", 2, 1.42857, 400, 0.16, false),
+            ("body-compact-02", 3, 1.375, 400, 0.0, false),
+            ("body-02", 3, 1.5, 400, 0.0, false),
+            ("heading-compact-01", 2, 1.28572, 600, 0.16, false),
+            ("heading-03", 5, 1.4, 400, 0.0, false),
+            ("heading-04", 7, 1.28572, 400, 0.0, false),
+            ("code-01", 1, 1.33333, 400, 0.32, true),
+            ("code-02", 2, 1.42857, 400, 0.32, true),
+        ];
+        const STEPS: [(&str, &[&str]); 11] = [
+            ("caption", &["helper-text-01"]),
+            ("label", &["label-01"]),
+            ("label-lg", &["label-02"]),
+            ("body-compact", &["body-compact-01"]),
+            ("body", &["body-01"]),
+            ("body-lg", &["body-compact-02", "body-02"]),
+            ("heading-sm", &["heading-compact-01"]),
+            ("heading", &["heading-03"]),
+            ("heading-lg", &["heading-04"]),
+            ("code", &["code-01", "code-02"]),
+            ("code-lg", &["code-02"]),
+        ];
+        // (step, role, cell): argued at `TYPOGRAPHY_RAMP`.
+        const DIVERGENCES: [(&str, &str, &str); 6] = [
+            ("body-lg", "body-02", "line_height"),
+            ("heading", "heading-03", "weight"),
+            ("heading-lg", "heading-04", "weight"),
+            ("code", "code-02", "size"),
+            ("code", "code-02", "line_height"),
+            ("code-lg", "code-02", "letter_spacing"),
+        ];
+        let theme = shipped(ThemeId::White);
+        let mut found: Vec<(&str, &str, &str)> = Vec::new();
+        for (step, roles) in STEPS {
+            let Some(TokenValue::Typography(got)) =
+                theme.value(&TokenName::new(format!("typography.{step}")).unwrap())
+            else {
+                panic!("typography.{step} is not a typography token");
+            };
+            for role in roles {
+                let &(_, scale, ratio, weight, tracking, mono) = ROLES
+                    .iter()
+                    .find(|r| r.0 == *role)
+                    .unwrap_or_else(|| panic!("{role} is one of the twelve"));
+                let size = SCALE[scale - 1];
+                let want_weight = match weight {
+                    400 => TypographyWeight::Regular,
+                    600 => TypographyWeight::Medium,
+                    other => panic!("{role}: weight {other} has no Petra role"),
+                };
+                let cells = [
+                    ("size", got.size == size),
+                    ("line_height", got.line_height == (size * ratio).round()),
+                    ("weight", got.weight == want_weight),
+                    (
+                        "letter_spacing",
+                        (got.letter_spacing - tracking).abs() < 1e-6,
+                    ),
+                    ("family", (got.family == MONO) == mono),
+                ];
+                for (cell, agrees) in cells {
+                    if !agrees {
+                        found.push((step, role, cell));
+                    }
+                }
+            }
+        }
+        for mismatch in &found {
+            assert!(
+                DIVERGENCES.contains(mismatch),
+                "{mismatch:?} differs from @carbon/type 11.65.0 and is not a named divergence"
+            );
+        }
+        for divergence in &DIVERGENCES {
+            assert!(
+                found.contains(divergence),
+                "{divergence:?} is named as a divergence but the ramp now agrees with Carbon"
+            );
+        }
+    }
+
     /// The ramp has a step below 14 units, and it is the step FR-023 was
     /// filed about.
     ///
@@ -3448,25 +3793,15 @@ mod tests {
 
     /// Typography is type, not colour: a heading's size does not change
     /// when the operator turns the lights off, the same reasoning
-    /// [`the_two_shipped_themes_agree_on_every_gap`] and
-    /// [`the_two_shipped_themes_agree_on_every_corner`] apply to spacing
+    /// [`every_shipped_theme_agrees_on_every_gap`] and
+    /// [`every_shipped_theme_agrees_on_every_corner`] apply to spacing
     /// and shape.
     #[test]
-    fn the_two_shipped_themes_agree_on_every_typography_level() {
-        let (l, d) = (light(), dark());
-        let vocab = standard_vocabulary();
-        let mut checked = 0usize;
-        for name in vocab.names() {
-            if vocab.kind_of(name) != Some(crate::token::value::TokenKind::Typography) {
-                continue;
-            }
-            assert_eq!(
-                l.value(name),
-                d.value(name),
-                "{name} differs between light and dark; typography is type, not colour"
-            );
-            checked += 1;
-        }
+    fn every_shipped_theme_agrees_on_every_typography_level() {
+        let checked = assert_every_theme_agrees(
+            crate::token::value::TokenKind::Typography,
+            "typography is type, not colour",
+        );
         assert_eq!(
             checked,
             TYPOGRAPHY_RAMP.len(),
@@ -3475,21 +3810,73 @@ mod tests {
         );
     }
 
+    /// FR-049 and US7's first scenario: every declared token resolves in all
+    /// four themes, at its declared kind, and no theme assigns a name another
+    /// lacks. `Theme::build_as` already refuses a theme missing a declared
+    /// name; this adds the other direction (a name one theme assigns and
+    /// another does not) and pins each theme's identity and polarity.
     #[test]
-    fn the_shipped_light_theme_is_complete() {
-        let theme = light();
-        assert_eq!(theme.mode(), ThemeMode::Light);
-        for name in standard_vocabulary().names() {
-            assert!(theme.value(name).is_some(), "light theme is missing {name}");
+    fn every_token_resolves_in_all_four_themes_and_no_theme_has_one_another_lacks() {
+        let vocab = standard_vocabulary();
+        let themes = themes();
+        let reference: Vec<&TokenName> = themes[0].1.values().keys().collect();
+        for (id, (label, theme)) in ThemeId::ALL.into_iter().zip(&themes) {
+            assert_eq!(theme.id(), Some(id), "{label} carries the wrong id");
+            assert_eq!(theme.mode(), id.mode(), "{label} has the wrong polarity");
+            for name in vocab.names() {
+                let value = theme
+                    .value(name)
+                    .unwrap_or_else(|| panic!("{label} is missing {name}"));
+                assert_eq!(
+                    Some(value.kind()),
+                    vocab.kind_of(name),
+                    "{label} assigns {name} at the wrong kind"
+                );
+            }
+            let names: Vec<&TokenName> = theme.values().keys().collect();
+            assert_eq!(
+                names, reference,
+                "{label} assigns a different set of names than white"
+            );
         }
+        assert_eq!(
+            [
+                ThemeMode::Light,
+                ThemeMode::Light,
+                ThemeMode::Dark,
+                ThemeMode::Dark
+            ],
+            ThemeId::ALL.map(ThemeId::mode),
+            "White and Gray 10 are light, Gray 90 and Gray 100 are dark"
+        );
     }
 
+    /// `light()` and `dark()` are the aliases the contract keeps for the
+    /// call sites written before the four themes existed: White and Gray 100,
+    /// value for value.
     #[test]
-    fn the_shipped_dark_theme_is_complete() {
-        let theme = dark();
-        assert_eq!(theme.mode(), ThemeMode::Dark);
-        for name in standard_vocabulary().names() {
-            assert!(theme.value(name).is_some(), "dark theme is missing {name}");
+    fn light_and_dark_are_white_and_gray_100() {
+        assert_eq!(light(), shipped(ThemeId::White));
+        assert_eq!(dark(), shipped(ThemeId::Gray100));
+        assert_eq!(light().id(), Some(ThemeId::White));
+        assert_eq!(dark().id(), Some(ThemeId::Gray100));
+    }
+
+    /// The four themes are four themes: no two assign the same colours.
+    /// A copy-paste palette (Gray 10 built from White's layers) would pass
+    /// every completeness and contrast check in this file and still ship
+    /// one theme under two names.
+    #[test]
+    fn no_two_shipped_themes_are_the_same_theme() {
+        let themes = themes();
+        for (i, (a_label, a)) in themes.iter().enumerate() {
+            for (b_label, b) in &themes[i + 1..] {
+                assert_ne!(
+                    theme_color(a, "surface.base"),
+                    theme_color(b, "surface.base"),
+                    "{a_label} and {b_label} share a ground"
+                );
+            }
         }
     }
 
@@ -3519,12 +3906,12 @@ mod tests {
     /// than trusted: `light` and `dark` are two independent value maps, and
     /// nothing but this test stops one of them drifting to a different
     /// pass count or a different snap setting the way
-    /// [`the_two_shipped_themes_agree_on_every_gap`] guards the spacing
+    /// [`every_shipped_theme_agrees_on_every_gap`] guards the spacing
     /// ramp.
     #[test]
     fn both_shipped_themes_assign_the_coverage_curve_the_same_passes_and_snap() {
         let token = TokenName::new("text.coverage-curve").unwrap();
-        for (label, theme) in [("light", light()), ("dark", dark())] {
+        for (label, theme) in themes() {
             assert_eq!(
                 theme.value(&token),
                 Some(&TokenValue::Coverage(CoverageValue {
@@ -3580,7 +3967,7 @@ mod tests {
     #[test]
     fn the_link_ink_clears_aa_on_every_layer_and_is_still_blue() {
         const MIN_TEXT_CONTRAST: f32 = 4.5;
-        for (label, theme) in [("light", light()), ("dark", dark())] {
+        for (label, theme) in themes() {
             let link = theme_color(&theme, LINK_TOKEN);
             for surface in LAYER_TOKENS.iter().chain(std::iter::once(&RAISED_ALIAS)) {
                 let ground = theme_color(&theme, surface);
@@ -3610,7 +3997,7 @@ mod tests {
     #[test]
     fn faint_text_clears_aa_on_base_and_raised_and_sits_under_muted() {
         const MIN_TEXT_CONTRAST: f32 = 4.5;
-        for (label, theme) in [("light", light()), ("dark", dark())] {
+        for (label, theme) in themes() {
             let faint = theme_color(&theme, "text.faint");
             let muted = theme_color(&theme, "text.muted");
             for surface in [LAYER_TOKENS[0], RAISED_ALIAS] {
@@ -3663,9 +4050,11 @@ mod tests {
         /// See [`DARK_STEP`]. Light tolerates — and needs — the wider step.
         const LIGHT_STEP: std::ops::RangeInclusive<f32> = 1.55..=2.10;
 
-        for (label, theme, step_band) in
-            [("light", light(), LIGHT_STEP), ("dark", dark(), DARK_STEP)]
-        {
+        for (label, theme) in themes() {
+            let step_band = match theme.mode() {
+                ThemeMode::Light => LIGHT_STEP,
+                ThemeMode::Dark => DARK_STEP,
+            };
             let primary = theme_color(&theme, "text.primary");
             let muted = theme_color(&theme, "text.muted");
 
@@ -3704,8 +4093,10 @@ mod tests {
     /// `#f2f2f2`, so there is no deep end to lose. Dark stops at layer two:
     /// `#4589ff` is 3.78:1 on `#333333` and **2.91:1** on `#444444`, and the
     /// painter needs that number. A primary button dropped onto dark's
-    /// deepest layer is under the fill floor.
-    const DEEPEST_ACCENT_LAYER: [(&str, usize); 2] = [("light", 3), ("dark", 2)];
+    /// deepest layer is under the fill floor. Gray 90 stops at layer two for
+    /// the same reason: 3.40:1 on `#3a3a3a` and 2.91:1 on `#444444`.
+    const DEEPEST_ACCENT_LAYER: [(&str, usize); 4] =
+        [("white", 3), ("g10", 3), ("g90", 2), ("g100", 2)];
 
     /// The accent has to be visible wherever it is spent, on every layer it
     /// can be spent on, in both themes.
@@ -3744,7 +4135,7 @@ mod tests {
     #[test]
     fn the_accent_clears_aa_on_every_surface_it_can_be_painted_on() {
         for (label, deepest) in DEEPEST_ACCENT_LAYER {
-            let theme = if label == "light" { light() } else { dark() };
+            let theme = theme_named(label);
             let accent = theme_color(&theme, ACCENT_TOKEN);
 
             for (depth, token) in LAYER_TOKENS.iter().enumerate() {
@@ -3812,7 +4203,7 @@ mod tests {
     #[test]
     fn the_accent_survives_red_green_colour_blindness() {
         const STATUSES: [&str; 3] = ["status.ok", "status.degraded", "status.down"];
-        for (label, theme) in [("light", light()), ("dark", dark())] {
+        for (label, theme) in themes() {
             for blue in [ACCENT_TOKEN, LINK_TOKEN] {
                 let hue = theme_color(&theme, blue);
                 for (vision, matrix) in [("deuteranope", &DEUTERANOPE), ("protanope", &PROTANOPE)] {
@@ -3863,10 +4254,8 @@ mod tests {
         /// uses, restated here because this test sweeps a different ground.
         const MIN_TEXT_CONTRAST: f32 = 4.5;
 
-        for (label, theme, layers) in [
-            ("light", light(), &LIGHT_LAYERS),
-            ("dark", dark(), &DARK_LAYERS),
-        ] {
+        for (id, (label, theme)) in ThemeId::ALL.into_iter().zip(themes()) {
+            let layers = super::palette(id).layers;
             let accent = theme_color(&theme, ACCENT_TOKEN);
             let on_accent = theme_color(&theme, ON_ACCENT_TOKEN);
 
@@ -3879,16 +4268,20 @@ mod tests {
                  short."
             );
 
-            // The value is the theme's own ground, taken from the layer set
-            // by `insert_accent` rather than repeated as a literal. Held
-            // here so the two cannot drift into two different whites.
-            let ground = layers[0];
-            assert_eq!(
-                on_accent,
-                ColorValue::from_srgb8(ground[0], ground[1], ground[2], 0xff),
-                "{label}: {ON_ACCENT_TOKEN} must be this theme's \
-                 surface.base — ink on a filled accent is the page the \
-                 accent is cut out of"
+            // The value is one of the theme's own layers, the one the accent
+            // stands out from most, taken from the layer set by
+            // `insert_accent` rather than repeated as a literal. Held here so
+            // the two cannot drift into two different whites.
+            let best = layers
+                .iter()
+                .map(|l| contrast(opaque_value(*l), accent))
+                .fold(0.0f32, f32::max);
+            assert!(
+                layers.iter().any(|l| opaque_value(*l) == on_accent)
+                    && (contrast(on_accent, accent) - best).abs() < 1e-6,
+                "{label}: {ON_ACCENT_TOKEN} must be the layer the accent stands \
+                 out from most — ink on a filled accent is the page the accent \
+                 is cut out of"
             );
 
             for tone in ["text.primary", "text.muted"] {
@@ -3916,8 +4309,12 @@ mod tests {
     /// reaches, and it is the price of taking Carbon's hex instead of
     /// tuning one for Petra's deeper ramp — recorded rather than hidden,
     /// because a danger button dropped two layers down loses the fill floor
-    /// while every other check still passes.
-    const DEEPEST_DANGER_LAYER: [(&str, usize); 2] = [("light", 3), ("dark", 1)];
+    /// while every other check still passes. Gray 90 reaches only its
+    /// ground: its own fill `#de2828` is 3.20:1 on `#262626` and 2.79:1 on
+    /// `#303030`. The fill was set for the protanope ΔE floor against the
+    /// statuses (`GRAY90_DANGER_FILL`), not for depth.
+    const DEEPEST_DANGER_LAYER: [(&str, usize); 4] =
+        [("white", 3), ("g10", 3), ("g90", 0), ("g100", 1)];
 
     /// [`DANGER_FILL_TOKEN`] carries its label at the body-text floor, is
     /// findable on every layer it is declared paintable on, and is still a
@@ -3958,7 +4355,7 @@ mod tests {
         const MIN_TEXT_CONTRAST: f32 = 4.5;
 
         for (label, deepest) in DEEPEST_DANGER_LAYER {
-            let theme = if label == "light" { light() } else { dark() };
+            let theme = theme_named(label);
             let fill = theme_color(&theme, DANGER_FILL_TOKEN);
             let ink = theme_color(&theme, ON_COLOUR_TOKEN);
 
@@ -4038,7 +4435,7 @@ mod tests {
         const MIN_MARK_CONTRAST: f32 = MIN_SURFACE_CONTRAST;
 
         let white = ColorValue::from_srgb8(0xff, 0xff, 0xff, 0xff);
-        for (label, theme) in [("light", light()), ("dark", dark())] {
+        for (label, theme) in themes() {
             let ink = theme_color(&theme, ON_COLOUR_TOKEN);
             assert_eq!(
                 ink, white,
@@ -4121,7 +4518,7 @@ mod tests {
         /// anything.
         const MIN_QUIETER_THAN_TEXT: f32 = 4.0;
 
-        for (label, theme) in [("light", light()), ("dark", dark())] {
+        for (label, theme) in themes() {
             let border = theme_color(&theme, BORDER_TOKEN);
             let primary = theme_color(&theme, "text.primary");
             let muted = theme_color(&theme, "text.muted");
@@ -4225,6 +4622,22 @@ mod tests {
                 crate::token::rule::HIGHLIGHT_TOKEN
             );
         }
+
+        // Every theme derives its pair from its own layer one by the same two
+        // offsets: one construction, no per-theme table.
+        for (id, (label, theme)) in ThemeId::ALL.into_iter().zip(themes()) {
+            let panel = super::palette(id).layers[1];
+            for (token, delta) in [
+                (crate::token::rule::SHADOW_TOKEN, RULE_SHADOW_DELTA),
+                (crate::token::rule::HIGHLIGHT_TOKEN, RULE_HIGHLIGHT_DELTA),
+            ] {
+                assert_eq!(
+                    theme_color(&theme, token),
+                    opaque_value(rule_stroke(panel, delta)),
+                    "{label}: {token} is not layer one offset by {delta}"
+                );
+            }
+        }
     }
 
     /// The acceptance criterion this whole material exists to hold:
@@ -4245,19 +4658,34 @@ mod tests {
     /// catch) — a false failure this test must not produce.
     #[test]
     fn the_rule_highlight_resolves_lighter_than_the_panel_it_offsets() {
-        for (label, theme) in [("light", light()), ("dark", dark())] {
+        for (label, theme) in themes() {
             let panel = theme_color(&theme, "surface.layer-one");
             let highlight = theme_color(&theme, crate::token::rule::HIGHLIGHT_TOKEN);
-            assert!(
-                highlight.relative_luminance() > panel.relative_luminance(),
-                "{label}: {} (luminance {:.4}) is not lighter than its own \
+            // Gray 10's layer one is pure white, so the highlight has no
+            // headroom at all: it clamps onto the panel and the groove reads
+            // as its shadow stroke alone. That is the design language's own
+            // clamp rule taken to its end ("do not treat the clamp as a
+            // defect to engineer around"), not a regression, so it is
+            // asserted as exactly that: the highlight lands *on* the panel,
+            // never below it, and the shadow below still has to hold.
+            if panel == opaque_value([0xff, 0xff, 0xff]) {
+                assert_eq!(
+                    highlight, panel,
+                    "{label}: on a white panel the highlight must clamp onto \
+                     the panel, not darken past it"
+                );
+            } else {
+                assert!(
+                    highlight.relative_luminance() > panel.relative_luminance(),
+                    "{label}: {} (luminance {:.4}) is not lighter than its own \
                  panel, surface.layer-one (luminance {:.4}). A highlight \
                  that is not lighter than the panel it sits on paints a \
                  second shadow instead of a groove.",
-                crate::token::rule::HIGHLIGHT_TOKEN,
-                highlight.relative_luminance(),
-                panel.relative_luminance()
-            );
+                    crate::token::rule::HIGHLIGHT_TOKEN,
+                    highlight.relative_luminance(),
+                    panel.relative_luminance()
+                );
+            }
 
             let shadow = theme_color(&theme, crate::token::rule::SHADOW_TOKEN);
             assert!(
@@ -4326,7 +4754,7 @@ mod tests {
         /// WCAG 2.1 SC 1.4.11 *Non-text Contrast*, Level AA.
         const MIN_UI_CONTRAST: f32 = 3.0;
 
-        for (label, theme) in [("light", light()), ("dark", dark())] {
+        for (label, theme) in themes() {
             for depth in 0..LAYER_TOKENS.len() - 1 {
                 let ground = theme_color(&theme, LAYER_TOKENS[depth]);
                 let control = theme_color(&theme, LAYER_TOKENS[depth + 1]);
@@ -4410,10 +4838,8 @@ mod tests {
 
         let mut previous_light: Option<f32> = None;
 
-        for (label, theme, alphas) in [
-            ("light", light(), &super::LIGHT_SHADOW_ALPHAS),
-            ("dark", dark(), &super::DARK_SHADOW_ALPHAS),
-        ] {
+        for (id, (label, theme)) in ThemeId::ALL.into_iter().zip(themes()) {
+            let alphas = super::palette(id).shadow_alphas;
             let mut alpha_seen = Vec::new();
             for (token, declared) in SHADOW_TOKENS.iter().zip(alphas) {
                 let shadow = theme_color(&theme, token);
@@ -4471,15 +4897,21 @@ mod tests {
                 alpha_seen[0],
             );
 
-            match previous_light {
-                None => previous_light = Some(alpha_seen[0]),
-                Some(light_raised) => assert!(
-                    alpha_seen[0] > light_raised,
-                    "dark shadow.raised ({}) must be stronger than light's \
-                     ({light_raised}): black on a dark ground has less room \
-                     to darken it, which is optics and not a theme branch",
-                    alpha_seen[0],
-                ),
+            match theme.mode() {
+                ThemeMode::Light => {
+                    previous_light = Some(previous_light.unwrap_or(0.0).max(alpha_seen[0]));
+                }
+                ThemeMode::Dark => {
+                    let light_raised = previous_light
+                        .expect("ThemeId::ALL walks both light themes before either dark one");
+                    assert!(
+                        alpha_seen[0] > light_raised,
+                        "{label} shadow.raised ({}) must be stronger than the light \
+                         themes' ({light_raised}): black on a dark ground has less \
+                         room to darken it, which is optics and not a theme branch",
+                        alpha_seen[0],
+                    );
+                }
             }
         }
     }
@@ -4558,7 +4990,7 @@ mod tests {
 
         // The geometry is not reachable as a token in either theme: that is
         // the whole claim of the colour/geometry split. Only the colour is.
-        for (label, theme) in [("light", light()), ("dark", dark())] {
+        for (label, theme) in themes() {
             for (token, _) in SHADOW_GEOMETRY {
                 assert!(
                     matches!(
@@ -4622,16 +5054,21 @@ mod tests {
         // Measured against the shipped layer set rather than against a
         // remembered 7.76, so retuning the layers re-checks the hover step
         // instead of silently invalidating this claim.
-        let dark_theme = dark();
-        let layer_step = lightness_of_token(&dark_theme, LAYER_TOKENS[1])
-            - lightness_of_token(&dark_theme, LAYER_TOKENS[0]);
-        assert!(
-            HOVER_STEP < layer_step,
-            "hover steps {HOVER_STEP} L* and the dark layer set steps \
-             {layer_step:.2}; a hovered card must not read as a nested one"
-        );
+        for (label, theme) in themes() {
+            if theme.mode() != ThemeMode::Dark {
+                continue;
+            }
+            let layer_step = lightness_of_token(&theme, LAYER_TOKENS[1])
+                - lightness_of_token(&theme, LAYER_TOKENS[0]);
+            assert!(
+                HOVER_STEP < layer_step,
+                "hover steps {HOVER_STEP} L* and the {label} layer set steps \
+                 {layer_step:.2}; a hovered card must not read as a nested one"
+            );
+        }
 
-        for (label, theme, sign) in [("light", light(), -1.0f32), ("dark", dark(), 1.0)] {
+        for (label, theme) in themes() {
+            let sign = mode_sign(theme.mode());
             let base = lightness_of_token(&theme, LAYER_TOKENS[1]);
             for (token, step) in ladder {
                 let moved = lightness_of_token(&theme, token) - base;
@@ -4688,7 +5125,8 @@ mod tests {
     /// accent surface and nothing at all.
     #[test]
     fn the_layer_accent_states_step_off_the_accent_surface() {
-        for (label, theme, sign) in [("light", light(), -1.0f32), ("dark", dark(), 1.0)] {
+        for (label, theme) in themes() {
+            let sign = mode_sign(theme.mode());
             let accent = lightness_of_token(&theme, LAYER_ACCENT_TOKEN);
             for (token, step) in LAYER_ACCENT_STATE_TOKENS {
                 let moved = lightness_of_token(&theme, token) - accent;
@@ -4720,10 +5158,8 @@ mod tests {
     /// behind on a stale value.
     #[test]
     fn every_icon_tone_is_a_measured_tone_under_a_second_name() {
-        for (label, theme, inverse_ink) in [
-            ("light", light(), "text-inverse"),
-            ("dark", dark(), "text-inverse"),
-        ] {
+        let inverse_ink = "text-inverse";
+        for (label, theme) in themes() {
             for (icon, source) in [
                 (ICON_TOKENS[0], "text.primary"),
                 (ICON_TOKENS[1], "text.muted"),
@@ -4795,7 +5231,7 @@ mod tests {
         /// See [`MIN_CONTROL_BOUNDARY`], restated at the point of use.
         const MIN_UI_CONTRAST: f32 = MIN_CONTROL_BOUNDARY;
 
-        for (label, theme) in [("light", light()), ("dark", dark())] {
+        for (label, theme) in themes() {
             let subtle = theme_color(&theme, BORDER_TOKEN);
             let strong = theme_color(&theme, BORDER_STRONG_TOKEN);
 
@@ -4832,7 +5268,7 @@ mod tests {
     /// `border-interactive` is the accent rather than a fourth grey.
     #[test]
     fn the_numbered_border_names_carry_measured_tones() {
-        for (label, theme) in [("light", light()), ("dark", dark())] {
+        for (label, theme) in themes() {
             for token in BORDER_SUBTLE_TOKENS {
                 assert_eq!(
                     theme_color(&theme, token),
@@ -4862,7 +5298,7 @@ mod tests {
     /// one and forgetting the other.
     #[test]
     fn every_field_token_is_the_layer_one_ahead_of_its_background() {
-        for (label, theme) in [("light", light()), ("dark", dark())] {
+        for (label, theme) in themes() {
             for (n, field) in FIELD_TOKENS.iter().enumerate() {
                 assert_eq!(
                     theme_color(&theme, field),
@@ -4890,7 +5326,11 @@ mod tests {
         /// WCAG 2.1 SC 1.4.3 *Contrast (Minimum)*, Level AA, body text.
         const MIN_TEXT_CONTRAST: f32 = 4.5;
 
-        for (label, theme, other) in [("light", light(), dark()), ("dark", dark(), light())] {
+        for (label, theme) in themes() {
+            let other = match theme.mode() {
+                ThemeMode::Light => shipped(ThemeId::Gray100),
+                ThemeMode::Dark => shipped(ThemeId::White),
+            };
             for (ours, theirs) in [
                 ("background-inverse", "surface.layer-one"),
                 ("text-inverse", "text.primary"),
@@ -5149,7 +5589,7 @@ mod tests {
     #[test]
     fn the_scrim_darkens_without_hiding_and_deepens_in_the_dark_theme() {
         let mut alphas = Vec::new();
-        for (label, theme) in [("light", light()), ("dark", dark())] {
+        for (label, theme) in themes() {
             let scrim = theme_color(&theme, SCRIM_TOKEN);
             assert!(
                 scrim.r < 1e-6 && scrim.g < 1e-6 && scrim.b < 1e-6,
@@ -5165,12 +5605,15 @@ mod tests {
             );
             alphas.push(scrim.a);
         }
+        // `themes()` walks White, Gray 10, Gray 90, Gray 100: both dark
+        // scrims must take more than either light one.
+        let lightest_dark = alphas[2].min(alphas[3]);
+        let darkest_light = alphas[0].max(alphas[1]);
         assert!(
-            alphas[1] > alphas[0],
-            "the dark theme's scrim is {} against light's {}; a dark page has \
-             less room left to lose, so its scrim has to take more",
-            alphas[1],
-            alphas[0]
+            lightest_dark > darkest_light,
+            "a dark theme's scrim is {lightest_dark} against a light theme's \
+             {darkest_light}; a dark page has less room left to lose, so its \
+             scrim has to take more"
         );
     }
 
@@ -5190,7 +5633,7 @@ mod tests {
     #[test]
     fn neither_theme_assigns_a_name_the_vocabulary_does_not_declare() {
         let vocab = standard_vocabulary();
-        for (label, theme) in [("light", light()), ("dark", dark())] {
+        for (label, theme) in themes() {
             for name in theme.values().keys() {
                 assert!(
                     vocab.contains(name),
@@ -5259,7 +5702,7 @@ mod tests {
         const ACHROMATIC: f32 = 1e-4;
 
         let vocab = standard_vocabulary();
-        for (label, theme) in [("light", light()), ("dark", dark())] {
+        for (label, theme) in themes() {
             for token in vocab.names() {
                 if vocab.kind_of(token) != Some(crate::token::value::TokenKind::Color) {
                     continue;

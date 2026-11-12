@@ -30,21 +30,22 @@ use crate::component::{
     content_switcher_low_contrast_sm, content_switcher_sm, link, link_inline, link_with_icon, menu,
     menu_border, menu_button, menu_button_ghost, menu_button_lg, menu_button_sm,
     menu_button_tertiary, menu_button_xs, menu_flyout, menu_item, menu_item_group,
-    menu_item_radio_group, menu_item_selectable, menu_item_with, menu_lg, menu_sm, menu_with_icons,
-    menu_xs, menubar, menubar_top, overflow_menu, overflow_menu_lg, overflow_menu_sm,
-    overflow_menu_xs, pagination, pagination_items, pagination_items_lg, pagination_items_open,
-    pagination_items_sm, pagination_lg, pagination_nav, pagination_nav_lg, pagination_nav_open,
-    pagination_nav_sm, pagination_numbers, pagination_numbers_lg, pagination_numbers_sm,
-    pagination_page_size, pagination_prev_next, pagination_prev_next_lg, pagination_prev_next_sm,
-    pagination_range, pagination_sm, tab, tab_bar, tab_with_icon, ui_shell_header,
-    ui_shell_header_action, ui_shell_header_action_icon, ui_shell_header_menu_trigger,
-    ui_shell_header_nav_item, ui_shell_left_panel, ui_shell_left_panel_divider,
-    ui_shell_left_panel_icon_item, ui_shell_left_panel_icon_item_large,
-    ui_shell_left_panel_icon_subitem, ui_shell_left_panel_icon_subitem_large,
-    ui_shell_left_panel_in, ui_shell_left_panel_item, ui_shell_left_panel_item_large,
-    ui_shell_left_panel_rail, ui_shell_left_panel_subitem, ui_shell_left_panel_subitem_large,
-    ui_shell_left_panel_ux, ui_shell_right_panel, ui_shell_right_panel_divider, ui_shell_switcher,
-    ui_shell_switcher_item, vertical_tab, vertical_tab_bar,
+    menu_item_radio_group, menu_item_selectable, menu_item_with, menu_lg, menu_sm, menu_submenu,
+    menu_with_icons, menu_xs, menubar, menubar_top, overflow_menu, overflow_menu_lg,
+    overflow_menu_sm, overflow_menu_xs, pagination, pagination_items, pagination_items_lg,
+    pagination_items_open, pagination_items_sm, pagination_lg, pagination_nav, pagination_nav_lg,
+    pagination_nav_open, pagination_nav_sm, pagination_numbers, pagination_numbers_lg,
+    pagination_numbers_sm, pagination_page_size, pagination_prev_next, pagination_prev_next_lg,
+    pagination_prev_next_sm, pagination_range, pagination_sm, tab, tab_bar, tab_with_icon,
+    ui_shell_header, ui_shell_header_action, ui_shell_header_action_icon,
+    ui_shell_header_menu_trigger, ui_shell_header_nav_item, ui_shell_left_panel,
+    ui_shell_left_panel_divider, ui_shell_left_panel_icon_item,
+    ui_shell_left_panel_icon_item_large, ui_shell_left_panel_icon_subitem,
+    ui_shell_left_panel_icon_subitem_large, ui_shell_left_panel_in, ui_shell_left_panel_item,
+    ui_shell_left_panel_item_large, ui_shell_left_panel_rail, ui_shell_left_panel_subitem,
+    ui_shell_left_panel_subitem_large, ui_shell_left_panel_ux, ui_shell_right_panel,
+    ui_shell_right_panel_divider, ui_shell_switcher, ui_shell_switcher_item, vertical_tab,
+    vertical_tab_bar,
 };
 use crate::tree::{Edge, Key, ViewNode};
 
@@ -650,6 +651,9 @@ pub const ENTRIES: &[Entry] = &[
     row!("menu_flyout", KeyLabelChildren, |p| menu_flyout(
         p.key, p.label, p.children
     )),
+    row!("menu_submenu", KeyLabelOpenChildren, |p| menu_submenu(
+        p.key, p.label, p.children, p.open
+    )),
     row!("menu_item_selectable", MenuItemSelectableParams, |p| {
         menu_item_selectable(p.key, p.label, p.icon.map(Into::into), p.selected)
     }),
@@ -1121,6 +1125,9 @@ mod tests {
                 "shortcut": "⌘S", "submenu": true
             }),
             "menu_flyout" => json!({ "key": "k-flyout", "label": "l-flyout", "children": [] }),
+            "menu_submenu" => {
+                json!({ "key": "k-submenu", "label": "l", "open": true, "children": [] })
+            }
             "menu_item_selectable" => json!({
                 "key": "k-mi-sel", "label": "l", "icon": "copy", "selected": true
             }),

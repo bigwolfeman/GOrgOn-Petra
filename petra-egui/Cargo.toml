@@ -70,6 +70,11 @@ name = "gallery"
 path = "src/bin/gallery/main.rs"
 test = true
 
+[[bench]]
+name = "draw_list"
+path = "benches/draw_list.rs"
+harness = false
+
 # The web half of the parity example (T060). `eframe` re-exports `web_sys` and
 # `wasm_bindgen`, but only as types — the `#[wasm_bindgen]` attribute needs the
 # macro crate in scope by its own name, `spawn_local` lives in

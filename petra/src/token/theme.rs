@@ -14,11 +14,69 @@ use crate::token::name::TokenName;
 use crate::token::value::{TokenKind, TokenValue};
 use crate::token::vocabulary::Vocabulary;
 
+/// Which of Carbon's four themes a [`Theme`] is: White, Gray 10, Gray 90 or
+/// Gray 100.
+///
+/// Identity, not polarity. [`ThemeMode`] stays two-variant and means only
+/// light or dark (the glyph transfer function and the layer algorithm); this
+/// says *which* light or dark theme. It lives on [`Theme`] and never on the
+/// viewport, because the digest hashes the viewport stream and a fourth
+/// signal there would re-base every published digest
+/// (`specs/005-petra-carbon-authoring/contracts/token-vocabulary.md` §2). The
+/// digest already sees a theme change through the snapshot revision.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ThemeId {
+    /// Carbon White: light, the ground is the lightest layer.
+    White,
+    /// Carbon Gray 10: light, the ground is the grey and layer one is white.
+    Gray10,
+    /// Carbon Gray 90: dark, a lighter dark ground than Gray 100.
+    Gray90,
+    /// Carbon Gray 100: dark, the darkest ground.
+    Gray100,
+}
+
+impl ThemeId {
+    /// Every theme, light pair first, each pair lightest first.
+    pub const ALL: [Self; 4] = [Self::White, Self::Gray10, Self::Gray90, Self::Gray100];
+
+    /// The polarity this theme has. Fixed per theme: White and Gray 10 are
+    /// light, Gray 90 and Gray 100 are dark.
+    #[must_use]
+    pub fn mode(self) -> ThemeMode {
+        match self {
+            Self::White | Self::Gray10 => ThemeMode::Light,
+            Self::Gray90 | Self::Gray100 => ThemeMode::Dark,
+        }
+    }
+
+    /// The theme's stable short name, Carbon's own key (`white`, `g10`,
+    /// `g90`, `g100`), so a setting or a capture names a theme the same way
+    /// Carbon's Storybook does.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::White => "white",
+            Self::Gray10 => "g10",
+            Self::Gray90 => "g90",
+            Self::Gray100 => "g100",
+        }
+    }
+
+    /// Parse [`ThemeId::as_str`]'s name. `None` for anything else, so a
+    /// caller that reads a setting reports the typo instead of guessing.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|id| id.as_str() == name)
+    }
+}
+
 /// Token → value assignments for one mode, guaranteed complete against the
 /// [`Vocabulary`] it was built with.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Theme {
     mode: ThemeMode,
+    id: Option<ThemeId>,
     values: BTreeMap<TokenName, TokenValue>,
 }
 
@@ -95,7 +153,11 @@ impl Theme {
             }
         }
         if missing.is_empty() && mismatched.is_empty() && unusable.is_empty() {
-            Ok(Self { mode, values })
+            Ok(Self {
+                mode,
+                id: None,
+                values,
+            })
         } else {
             Err(ThemeError {
                 mode,
@@ -106,10 +168,34 @@ impl Theme {
         }
     }
 
+    /// [`Theme::build`] for one of the four named themes. The mode is the
+    /// id's own polarity, so a light id with dark values' polarity cannot be
+    /// asked for: the pairing the contract says to refuse
+    /// (`White|Gray10 ⇒ Light`, `Gray90|Gray100 ⇒ Dark`) has no spelling.
+    ///
+    /// # Errors
+    /// The same [`ThemeError`] as [`Theme::build`].
+    pub fn build_as(
+        id: ThemeId,
+        vocabulary: &Vocabulary,
+        values: BTreeMap<TokenName, TokenValue>,
+    ) -> Result<Self, ThemeError> {
+        let mut theme = Self::build(id.mode(), vocabulary, values)?;
+        theme.id = Some(id);
+        Ok(theme)
+    }
+
     /// This theme's mode.
     #[must_use]
     pub fn mode(&self) -> ThemeMode {
         self.mode
+    }
+
+    /// Which of the four named themes this is, or `None` for a theme built
+    /// with [`Theme::build`] (a test theme, or a host's own).
+    #[must_use]
+    pub fn id(&self) -> Option<ThemeId> {
+        self.id
     }
 
     /// The value assigned to `name`, if this theme defines it.
