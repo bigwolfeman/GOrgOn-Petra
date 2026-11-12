@@ -1024,6 +1024,12 @@ pub struct Props {
     /// Placeholder text for `input`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub placeholder: Option<String>,
+    /// The caret and selection inside an `input`'s [`Self::text`], or `None`
+    /// for a field that draws neither. The application owns it, as it owns
+    /// the text: see [`crate::tree::TextCursor`] for why this is not
+    /// interaction state. Ignored on every other kind.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<crate::tree::TextCursor>,
     /// Surface layer for `surface`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub layer: Option<Layer>,

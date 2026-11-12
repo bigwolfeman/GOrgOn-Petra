@@ -291,6 +291,17 @@ impl PetrifiedFrame {
         }
     }
 
+    /// The offset `scroll` was placed with along its axis, read off the
+    /// geometry: `layout::scroll::place` puts its content at the viewport's
+    /// origin less the offset. `None` when the frame places no such scroll
+    /// or it has no content.
+    #[must_use]
+    pub fn scroll_offset(&self, scroll: &str) -> Option<f32> {
+        let axis = self.scroll_axis(scroll);
+        let content = self.scroll_content(scroll)?;
+        Some(leading(content.clip, axis) - leading(content.rect, axis))
+    }
+
     /// How far `scroll`'s content can move along `axis` past its viewport;
     /// 0 when it names no placement, has no content, or fits.
     #[must_use]
@@ -305,9 +316,57 @@ impl PetrifiedFrame {
     /// placed with.
     #[must_use]
     pub fn reveal(&self, request: &ScrollRequest, offsets: &BTreeMap<String, f32>) -> Reveal {
-        let Some((scroll, lead, trail)) = self.target_span(&request.target) else {
+        self.answer(request, offsets, false)
+    }
+
+    /// The correction to an answer [`Self::reveal`] gave on an earlier
+    /// frame, read off this frame's measured placements.
+    ///
+    /// A row the frame did not materialize is found on the collection's
+    /// uniform grid, which is exact only while every row measures the
+    /// estimate. Once the scroll has brought the row on, this frame places it
+    /// where it really is, and this answers the offset that lands it as the
+    /// request asked. So a host that scrolled for a request asks this on the
+    /// frames that follow, writes any offset it answers, and stops at
+    /// [`Reveal::InView`].
+    ///
+    /// Two differences from [`Self::reveal`]. A target the frame does not
+    /// place answers [`Reveal::Unplaced`] rather than a second estimate. And
+    /// [`RevealAlign::Center`] lands even when the target is already in
+    /// view, because the first answer moved it there by an estimate and the
+    /// request asked for the middle. [`RevealAlign::Nearest`] still leaves a
+    /// target that is wholly in view where it is.
+    #[must_use]
+    pub fn correct_reveal(
+        &self,
+        request: &ScrollRequest,
+        offsets: &BTreeMap<String, f32>,
+    ) -> Reveal {
+        self.answer(request, offsets, true)
+    }
+
+    /// [`Self::reveal`] and [`Self::correct_reveal`]: `measured` asks for
+    /// the second.
+    fn answer(
+        &self,
+        request: &ScrollRequest,
+        offsets: &BTreeMap<String, f32>,
+        measured: bool,
+    ) -> Reveal {
+        let Some(Span {
+            scroll,
+            lead,
+            trail,
+            exact,
+            gain,
+            grid,
+        }) = self.target_span(&request.target)
+        else {
             return Reveal::Unplaced;
         };
+        if measured && !exact {
+            return Reveal::Unplaced;
+        }
         let Some(scroll) = scroll else {
             return Reveal::InView;
         };
@@ -317,18 +376,22 @@ impl PetrifiedFrame {
         };
         let view_lead = leading(viewport, axis);
         let view_trail = view_lead + viewport.size().along(axis);
-        let always_lands = matches!(request.align, RevealAlign::Start | RevealAlign::Upper);
+        let always_lands = matches!(request.align, RevealAlign::Start | RevealAlign::Upper)
+            || (measured && request.align == RevealAlign::Center);
         if !always_lands && lead >= view_lead && trail <= view_trail {
             return Reveal::InView;
         }
         let max_offset = self.scroll_overflow(&scroll, axis);
         // The offset the frame was placed with: `layout::scroll::place`
-        // re-clamps a stale entry and never writes it back.
-        let current = offsets
-            .get(&scroll)
-            .copied()
-            .unwrap_or(0.0)
-            .clamp(0.0, max_offset);
+        // re-clamps a stale entry and never writes it back. A correction
+        // reads it off the frame itself, because every edge it measures is
+        // relative to that placement, and a host may have written a newer
+        // entry since this frame was placed.
+        let current = match self.scroll_offset(&scroll) {
+            Some(placed) if measured => placed,
+            _ => offsets.get(&scroll).copied().unwrap_or(0.0),
+        }
+        .clamp(0.0, max_offset);
         let shift = match request.align {
             RevealAlign::Nearest if lead < view_lead || trail - lead > view_trail - view_lead => {
                 lead - view_lead
@@ -338,10 +401,24 @@ impl PetrifiedFrame {
             RevealAlign::Start => lead - view_lead,
             RevealAlign::Upper => lead - view_lead - (view_trail - view_lead) * UPPER_SHARE,
         };
-        let offset = (current + shift).clamp(0.0, max_offset);
+        // The Newton step only on a correction, and only for a shift long
+        // enough to move the window's first row (`grid`). A first answer for
+        // a placed row, and a short correction, move by the shift itself: a
+        // row in a list whose rows measure what they estimate, one near the
+        // list's top where the window cannot move, and the last few units of
+        // a landing all land exactly that way.
+        let step = if measured && shift.abs() >= grid {
+            gain
+        } else {
+            1.0
+        };
+        let offset = (current + shift * step).clamp(0.0, max_offset);
         // `Start` and `Upper` skip the in-view test above, so an aligned
-        // target is in view here, not a write of the offset it already has.
-        if always_lands && (offset - current).abs() < 0.5 {
+        // target is in view here, not a write of the offset it already has:
+        // either it sits within half a unit of where it was asked to, or the
+        // scroll is at an end and cannot move it closer.
+        let pinned = offset <= 0.0 || offset >= max_offset;
+        if always_lands && (shift.abs() < 0.5 || (pinned && (offset - current).abs() < 0.5)) {
             return Reveal::InView;
         }
         Reveal::Scroll {
@@ -351,10 +428,9 @@ impl PetrifiedFrame {
         }
     }
 
-    /// The scroll enclosing `target` (`None` when no scroll does) and the
-    /// target's leading and trailing edge along that scroll's axis. `None`
-    /// when the frame cannot place the target.
-    fn target_span(&self, target: &RevealTarget) -> Option<(Option<String>, f32, f32)> {
+    /// Where `target` is along its scroll's axis ([`Span`]). `None` when the
+    /// frame cannot place the target.
+    fn target_span(&self, target: &RevealTarget) -> Option<Span> {
         match target {
             RevealTarget::Node(_) | RevealTarget::Key(_) => {
                 let placement = match target {
@@ -370,20 +446,86 @@ impl PetrifiedFrame {
                     .as_deref()
                     .map_or(Axis::Vertical, |s| self.scroll_axis(s));
                 let lead = leading(placement.rect, axis);
-                Some((scroll, lead, lead + placement.rect.size().along(axis)))
+                Some(Span {
+                    scroll,
+                    lead,
+                    trail: lead + placement.rect.size().along(axis),
+                    exact: true,
+                    gain: 1.0,
+                    grid: f32::INFINITY,
+                })
             }
             RevealTarget::Row { source, index } => {
-                let collection = self.collection_of(source)?;
+                let at = self
+                    .placements
+                    .iter()
+                    .position(|p| p.semantics.row_source.as_deref() == Some(source.as_str()))?;
+                let collection = &self.placements[at];
                 let count = collection.semantics.total_count.filter(|n| *n > 0)?;
                 let scroll = self.scroll_ancestor(&collection.id).map(|p| p.id.clone());
                 let axis = scroll
                     .as_deref()
                     .map_or(Axis::Vertical, |s| self.scroll_axis(s));
                 let pitch = collection.rect.size().along(axis) / count as f32;
-                let lead = leading(collection.rect, axis) + (*index).min(count - 1) as f32 * pitch;
-                Some((scroll, lead, lead + pitch))
+                let index = (*index).min(count - 1);
+                if let Some((row, measured)) = self.placed_row(at, axis, pitch, index) {
+                    let lead = leading(row.rect, axis);
+                    return Some(Span {
+                        scroll,
+                        lead,
+                        trail: lead + row.rect.size().along(axis),
+                        exact: true,
+                        gain: if measured > 0.0 {
+                            pitch / measured
+                        } else {
+                            1.0
+                        },
+                        grid: pitch,
+                    });
+                }
+                let lead = leading(collection.rect, axis) + index as f32 * pitch;
+                Some(Span {
+                    scroll,
+                    lead,
+                    trail: lead + pitch,
+                    exact: false,
+                    gain: 1.0,
+                    grid: pitch,
+                })
             }
         }
+    }
+
+    /// Row `index` of the collection placed at `at`, when this frame
+    /// materialized it, and the mean extent of the rows the frame placed.
+    ///
+    /// A collection places a window of consecutive rows as its direct
+    /// children, and the window's first row sits on the uniform grid
+    /// (`layout::scroll::place_collection`): at its index times `pitch` past
+    /// the collection's leading edge. That is what names the first child's
+    /// index; the rows after it follow in order, each at its own measured
+    /// extent, so the k-th child is row `first + k`.
+    fn placed_row(
+        &self,
+        at: usize,
+        axis: Axis,
+        pitch: f32,
+        index: usize,
+    ) -> Option<(&Placement, f32)> {
+        if pitch <= 0.0 {
+            return None;
+        }
+        let rows: Vec<&Placement> = self
+            .placements
+            .iter()
+            .filter(|p| p.parent == Some(at))
+            .collect();
+        let first = rows.first()?;
+        let past = leading(first.rect, axis) - leading(self.placements[at].rect, axis);
+        let first_index = (past / pitch).round().max(0.0) as usize;
+        let row = rows.get(index.checked_sub(first_index)?)?;
+        let total: f32 = rows.iter().map(|p| p.rect.size().along(axis)).sum();
+        Some((row, total / rows.len() as f32))
     }
 }
 
@@ -414,6 +556,36 @@ impl PetrifiedFrame {
                     .unwrap_or(false)
         })
     }
+}
+
+/// Where a reveal target is along its scroll's axis.
+struct Span {
+    /// The scroll enclosing the target, or `None` when no scroll does.
+    scroll: Option<String>,
+    /// The target's leading edge.
+    lead: f32,
+    /// The target's trailing edge.
+    trail: f32,
+    /// Whether the edges are a placement's own rather than an estimate.
+    exact: bool,
+    /// How much of an offset change the target moves by, inverted: the
+    /// factor a shift is multiplied by so the target, not the offset, moves
+    /// that far.
+    ///
+    /// 1 for every target but a placed row of a collection. A collection's
+    /// window starts on the uniform grid, so scrolling by one `pitch` moves
+    /// the first row out of the window and every row after it back by that
+    /// row's measured extent less the pitch. A row therefore moves, on
+    /// average, `mean / pitch` of the offset change, where `mean` is the
+    /// rows' mean measured extent. Multiplying by `pitch / mean` is the
+    /// Newton step on that slope: rows that measure what they estimate get
+    /// 1, and a list of taller rows takes a smaller step, which is what
+    /// stops a correction from overshooting and swinging back.
+    gain: f32,
+    /// The collection's estimated row extent: how far the offset moves
+    /// before the window's first row changes. Infinite for a target outside
+    /// a collection, whose window never moves.
+    grid: f32,
 }
 
 /// A rect's origin along `axis`.
@@ -555,6 +727,159 @@ mod tests {
             Reveal::Scroll { offset, .. } if offset == 8.0 * PITCH - quarter
         ));
         assert_eq!(upper(1), Reveal::InView);
+    }
+
+    /// Rows that alternate 8 and 56 tall under a 20-unit estimate: every
+    /// row measures something the estimate does not say.
+    struct Mixed;
+
+    fn mixed_height(index: usize) -> f32 {
+        if index.is_multiple_of(2) { 8.0 } else { 56.0 }
+    }
+
+    impl crate::layout::RowSource for Mixed {
+        fn rows(
+            &mut self,
+            _source: &str,
+            range: std::ops::Range<usize>,
+        ) -> Vec<std::sync::Arc<ViewNode>> {
+            range
+                .filter(|i| *i < 1000)
+                .map(|i| std::sync::Arc::new(GeneratedRows::row_of_height(i, mixed_height(i))))
+                .collect()
+        }
+    }
+
+    fn mixed_frame(offset: f32) -> PetrifiedFrame {
+        let mut harness = Harness::with(MonoContent::default(), Mixed);
+        harness.set_scroll("/list", offset);
+        petrify(
+            1,
+            validated(&list()),
+            &mut harness.ctx(),
+            Viewport::new(Size::new(300.0, VIEW), ThemeMode::Dark),
+            TransitionActivity::default(),
+        )
+    }
+
+    /// What a host does with a request: answer it, then correct it on each
+    /// frame the scroll places until it is in view, at most four times
+    /// (`REVEAL_CORRECTIONS` in the host). The frame the last offset placed,
+    /// and the last answer.
+    fn land(request: &ScrollRequest) -> (PetrifiedFrame, Reveal) {
+        let mut offset = 0.0;
+        let mut frame = mixed_frame(offset);
+        let mut answer = frame.reveal(request, &offsets(offset));
+        for _ in 0..=4 {
+            let Reveal::Scroll { offset: next, .. } = answer else {
+                break;
+            };
+            offset = next;
+            frame = mixed_frame(offset);
+            answer = frame.correct_reveal(request, &offsets(offset));
+        }
+        (frame, answer)
+    }
+
+    /// A row of a list whose rows differ in height lands where the request
+    /// asked, not where the uniform estimate put it. The first answer finds
+    /// row 501 on the estimate's grid, 501 * 20 down; the frame that scroll
+    /// places measures it elsewhere, and the corrections land it. Without
+    /// `correct_reveal` the row sits tens of units from where it was asked
+    /// to, or off screen.
+    ///
+    /// Then every alignment over sixty rows: each lands wholly in view.
+    /// Exact landing is not always possible. The window's first row sits on
+    /// the estimate's grid, so scrolling past a grid line moves every row by
+    /// that row's measured extent less the estimate, and some positions are
+    /// skipped: no offset centres row 300 of this list (the closest is 4
+    /// units off). Those requests stop at the correction cap, in view.
+    #[test]
+    fn a_row_of_mixed_heights_lands_on_its_measured_place() {
+        let id = "/list/rows/row-501";
+        for align in [RevealAlign::Center, RevealAlign::Upper, RevealAlign::Start] {
+            let (frame, answer) = land(&ScrollRequest::row(SOURCE, 501, align));
+            assert_eq!(
+                answer,
+                Reveal::InView,
+                "{align:?}: the corrections did not settle"
+            );
+            let row = frame
+                .placement(id)
+                .expect("the landed frame places the row")
+                .rect;
+            // A scroll places its content at `-offset`, so a row's rect is
+            // already in the viewport's frame, whose top is 0.
+            let want = match align {
+                RevealAlign::Center => VIEW / 2.0 - row.h / 2.0,
+                RevealAlign::Upper => VIEW * 0.25,
+                _ => 0.0,
+            };
+            assert!(
+                (row.y - want).abs() < 0.5,
+                "{align:?}: row 501 at {} in the viewport, asked for {want}",
+                row.y
+            );
+            assert_eq!(row.h, mixed_height(501));
+            // The first answer alone, by the estimate, leaves it well off.
+            let Reveal::Scroll { offset, .. } =
+                mixed_frame(0.0).reveal(&ScrollRequest::row(SOURCE, 501, align), &offsets(0.0))
+            else {
+                panic!("{align:?}: row 501 is below the fold and must scroll");
+            };
+            let first = mixed_frame(offset).placement(id).map(|p| p.rect.y);
+            assert!(
+                first.is_none_or(|y| (y - want).abs() > 10.0),
+                "{align:?}: the estimate alone landed row 501 at {first:?}, so this proves nothing"
+            );
+        }
+        for index in 300..360 {
+            for align in [
+                RevealAlign::Center,
+                RevealAlign::Upper,
+                RevealAlign::Start,
+                RevealAlign::Nearest,
+            ] {
+                let (frame, _) = land(&ScrollRequest::row(SOURCE, index, align));
+                let row = frame
+                    .placement(&format!("/list/rows/row-{index}"))
+                    .unwrap_or_else(|| panic!("{align:?}: row {index} is not placed"))
+                    .rect;
+                assert!(
+                    row.y >= 0.0 && row.y + row.h <= VIEW,
+                    "{align:?}: row {index} at {}..{} is not wholly in view",
+                    row.y,
+                    row.y + row.h
+                );
+            }
+        }
+    }
+
+    /// A materialized row answers from its own placement, so an estimate
+    /// that is wrong for the rows in view does not move a row that is
+    /// already wholly visible, and the correction of an unplaced row is no
+    /// second estimate.
+    #[test]
+    fn a_placed_row_answers_from_its_measured_rect() {
+        let frame = mixed_frame(0.0);
+        // Rows 0..=6 measure 8 + 56 + 8 + 56 + 8 + 56 + 8 = 200, so row 7
+        // is placed at 200..256, below the 200-tall view. Its estimate,
+        // 140..160, would call it in view.
+        let nearest = frame.reveal(
+            &ScrollRequest::row(SOURCE, 7, RevealAlign::Nearest),
+            &offsets(0.0),
+        );
+        assert!(
+            matches!(nearest, Reveal::Scroll { offset, .. } if offset == 256.0 - VIEW),
+            "{nearest:?}"
+        );
+        assert_eq!(
+            frame.correct_reveal(
+                &ScrollRequest::row(SOURCE, 900, RevealAlign::Center),
+                &offsets(0.0)
+            ),
+            Reveal::Unplaced
+        );
     }
 
     /// A row above the window aligns its top edge with the viewport's top.

@@ -1034,6 +1034,7 @@ pub fn paint_content_of(node: &ViewNode) -> PaintContent {
         },
         _ => (None, false),
     };
+    let (selection, insertion) = field_cursor(node, text.as_deref(), own);
     PaintContent {
         text: text.map(|text| TextPaint {
             text,
@@ -1076,12 +1077,14 @@ pub fn paint_content_of(node: &ViewNode) -> PaintContent {
         // hole. `selected_text` is what refuses to read it off a node that
         // paints its own string.
         markdown: props.markdown.clone(),
-        // Never from the tree. A selection is made with a pointer over shaped
-        // glyphs and is therefore host-derived interaction state, so it is
-        // attached by `place` from `LayoutState`, the same way `caret` is
-        // attached from the anchored-placement ladder. See
-        // `PaintContent::selection`.
-        selection: None,
+        // From the tree for one case only: an `input`'s own declared
+        // cursor (`field_cursor`). A document selection is made with a
+        // pointer over shaped glyphs and is therefore host-derived
+        // interaction state, so it is attached by `place` from
+        // `LayoutState`, the same way `caret` is attached from the
+        // anchored-placement ladder. See `PaintContent::selection`.
+        selection,
+        insertion,
         // Verbatim, state-decorated keys and all. `crate::token::resolve_slot`
         // picks the winning key at paint time from the placement's own flags;
         // collapsing here would put an interaction state into the placement
@@ -1094,6 +1097,48 @@ pub fn paint_content_of(node: &ViewNode) -> PaintContent {
         // Written by the placement pass through the dispatcher, never
         // authored: see `crate::layout::place`.
         caret: None,
+    }
+}
+
+/// An `input`'s declared [`crate::tree::Props::cursor`] as the two paint
+/// facts it becomes: the highlighted range when something is selected, the
+/// caret bar's offset when nothing is. Both are offsets into `painted`.
+///
+/// `own` is `paint_content_of`'s flag: whether `painted` is the field's own
+/// `text`. A password field paints one bullet per character, so the offsets
+/// are carried over by character count. A field showing its placeholder has
+/// no value to select inside, so it draws only the bar, at the start.
+fn field_cursor(
+    node: &ViewNode,
+    painted: Option<&str>,
+    own: bool,
+) -> (Option<std::ops::Range<usize>>, Option<usize>) {
+    let (NodeKind::Input, Some(cursor), Some(painted)) = (node.kind, node.props.cursor, painted)
+    else {
+        return (None, None);
+    };
+    let value = node.props.text.as_deref().unwrap_or("");
+    let cursor = cursor.clamped(value);
+    if value.is_empty() {
+        return (None, Some(0));
+    }
+    let to_painted = |offset: usize| {
+        if own {
+            offset
+        } else {
+            // Bullets: the n-th character of the value is the n-th bullet.
+            let chars = value[..offset].chars().count();
+            painted
+                .char_indices()
+                .nth(chars)
+                .map_or(painted.len(), |(at, _)| at)
+        }
+    };
+    let range = cursor.range();
+    if range.is_empty() {
+        (None, Some(to_painted(cursor.focus)))
+    } else {
+        (Some(to_painted(range.start)..to_painted(range.end)), None)
     }
 }
 

@@ -154,13 +154,20 @@ fn spacer_extent(proposal: Proposal) -> f32 {
 /// because a fill is not an edge slot, so the defect was invisible until the
 /// same token grooved in a table and did not groove in an accordion. A kind
 /// that measures its own material cannot drift that way.
+///
+/// **The run has no length of its own**, so an `Unbounded` probe along it
+/// answers `0`, [`canvas_extent`]'s answer and for its reason: the probe asks
+/// how long the rule would like to be, and a rule would like to be as long as
+/// whatever it divides, which is a length the parent decides and offers at
+/// placement. Until 2026-11-11 it answered [`SPACER_MAX_EXTENT`], the
+/// spacer's number. A rule runs across its parent far more often than along
+/// it, and a cross-axis probe is a content probe, not a flex probe: a scroll
+/// measuring a table with a vertical rule in every row read each row as
+/// 65 535 units tall. A rule that should fill along a stack's main axis says
+/// so with a `min` constraint or sits beside a spacer, as a canvas does.
 fn measure_separator(node: &ViewNode, ctx: &LayoutCtx<'_>, proposal: SizeProposal) -> Size {
     let axis = node.props.axis.unwrap_or(Axis::Horizontal);
-    let along = match proposal.axis(axis) {
-        Proposal::Exact(v) => v.max(0.0),
-        Proposal::Zero | Proposal::Unspecified => 0.0,
-        Proposal::Unbounded => SPACER_MAX_EXTENT,
-    };
+    let along = canvas_extent(proposal.axis(axis));
     let across = if is_material(node) {
         crate::token::rule::thickness(ctx.scale)
     } else {
