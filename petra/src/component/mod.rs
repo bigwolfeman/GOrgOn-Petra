@@ -194,7 +194,7 @@ pub use content_switcher::{
     content_switcher_low_contrast, content_switcher_low_contrast_lg,
     content_switcher_low_contrast_sm, content_switcher_sm,
 };
-pub use context_menu::context_menu;
+pub use context_menu::{context_menu, context_menu_xs};
 pub use controls::{
     CheckState, checkbox, checkbox_described, checkbox_group, checkbox_indeterminate,
     checkbox_invalid, checkbox_readonly, checkbox_required, checkbox_tristate, checkbox_warning,

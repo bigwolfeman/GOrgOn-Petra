@@ -22,14 +22,15 @@ use crate::component::{
     accordion_item_with_spaced, accordion_spaced, clickable_tile, code_snippet,
     code_snippet_inline, code_snippet_multi, code_snippet_multi_capped, code_well, contained_list,
     contained_list_disclosed, contained_list_lg, contained_list_sm, contained_list_xl,
-    context_menu, expandable_tile, expandable_tile_interactive, list_item, list_item_with, modal,
-    modal_acknowledgment, modal_danger, modal_lg, modal_loading, modal_passive, modal_sm, modal_xs,
-    ordered_list, ordered_list_native, popover, popover_border, popover_caret, popover_tab,
-    popover_with, popover_with_placement, selectable_tile, structured_list,
-    structured_list_condensed, structured_list_condensed_sized, structured_list_row,
-    structured_list_row_static, structured_list_sized, tile, toggletip, toggletip_with, tooltip,
-    tooltip_anchored, tooltip_definition, tooltip_icon, tree_item, tree_item_xs, tree_row,
-    tree_rows, tree_rows_xs, tree_view, unordered_list, unordered_list_with,
+    context_menu, context_menu_xs, expandable_tile, expandable_tile_interactive, list_item,
+    list_item_with, modal, modal_acknowledgment, modal_danger, modal_lg, modal_loading,
+    modal_passive, modal_sm, modal_xs, ordered_list, ordered_list_native, popover, popover_border,
+    popover_caret, popover_tab, popover_with, popover_with_placement, selectable_tile,
+    structured_list, structured_list_condensed, structured_list_condensed_sized,
+    structured_list_row, structured_list_row_static, structured_list_sized, tile, toggletip,
+    toggletip_with, tooltip, tooltip_anchored, tooltip_definition, tooltip_icon, tree_item,
+    tree_item_xs, tree_row, tree_rows, tree_rows_xs, tree_view, unordered_list,
+    unordered_list_with,
 };
 use crate::component::{TreeAdornments, TreeBranch, TreePlace};
 use crate::tree::{Align, Edge, Key, ViewNode};
@@ -554,6 +555,9 @@ pub const ENTRIES: &[Entry] = &[
     row!("context_menu", ContextMenuParams, |p| context_menu(
         p.key, p.label, p.x, p.y, p.children
     )),
+    row!("context_menu_xs", ContextMenuParams, |p| context_menu_xs(
+        p.key, p.label, p.x, p.y, p.children
+    )),
     row!("structured_list", StructuredListParams, |p| {
         structured_list(p.key, p.header, p.rows)
     }),
@@ -868,6 +872,11 @@ mod tests {
             }),
             "context_menu" => json!({
                 "key": "k", "label": "l", "x": 24.0, "y": 48.0, "children": []
+            }),
+            // A distinct key, as `menu_xs` has: with no rows the two sizes
+            // build the same node.
+            "context_menu_xs" => json!({
+                "key": "k-xs", "label": "l", "x": 24.0, "y": 48.0, "children": []
             }),
             // Two header cells: with only one column (the `header: []`
             // default), `lay_out_columns` has nothing to divide and

@@ -102,9 +102,14 @@ const _: () = assert!(LABEL_START == 40.0);
 /// to the nearest focused ancestor that declares [`Interaction::Key`]; without
 /// it a row's arrow keys arrive unrouted and Home jumps to the first control
 /// on the page. The application that owns the tree's model answers them.
+///
+/// It also takes the secondary press, so an application can open a context
+/// menu at a row (`super::context_menu`). A node that does not declare
+/// [`Interaction::SecondaryClick`] is unreachable by that press.
 const ITEM_INTENTS: &[Interaction] = &[
     Interaction::Focus,
     Interaction::Click,
+    Interaction::SecondaryClick,
     Interaction::Hover,
     Interaction::Key,
 ];
@@ -810,6 +815,17 @@ mod tests {
         for child in &node.children {
             no_drag(child);
         }
+    }
+
+    /// A row answers the secondary press, as a primary one, and still no
+    /// drag. Without the declaration a right click on a row is unrouted.
+    #[test]
+    fn a_tree_item_takes_the_secondary_press() {
+        let node = tree_item("root", "src", true, false, vec![]);
+        assert!(node.interactions.contains(&Interaction::Click));
+        assert!(node.interactions.contains(&Interaction::SecondaryClick));
+        let long = TreeItem::new("row", "src").build(Vec::new());
+        assert!(long.interactions.contains(&Interaction::SecondaryClick));
     }
 
     #[test]

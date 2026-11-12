@@ -22,7 +22,7 @@
 //! genuine secondary press rather than the primary-click stand-in it used
 //! before.
 
-use super::menu::menu;
+use super::menu::{menu, menu_xs};
 use crate::tree::{Anchor, Key, ViewNode};
 
 /// A menu of `items` at viewport point `(x, y)`.
@@ -45,10 +45,27 @@ pub fn context_menu(
     node
 }
 
+/// [`context_menu`] with rows at Carbon xs (24), for a menu opened over xs
+/// rows. Carbon's menu rows follow the trigger that opened them
+/// ([`super::menu::menu_xs`]); a secondary press on a 24 unit row is that
+/// trigger.
+#[must_use]
+pub fn context_menu_xs(
+    key: impl Into<Key>,
+    label: impl Into<String>,
+    x: f32,
+    y: f32,
+    items: Vec<ViewNode>,
+) -> ViewNode {
+    let mut node = menu_xs(key, label, items);
+    node.props.anchor = Some(Anchor::Point { x, y });
+    node
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::list_box::menu_item;
-    use super::context_menu;
+    use super::{context_menu, context_menu_xs};
     use crate::component::tokens::{SHADOW_OVERLAY, SURFACE_RAISED};
     use crate::tree::{Anchor, Fit, InputPolicy, Layer, NodeKind, Role, Tip, ViewNode};
 
@@ -133,5 +150,24 @@ mod tests {
         assert_eq!(a.props.anchor, Some(Anchor::Point { x: 12.0, y: 34.0 }));
         assert_eq!(b.props.anchor, Some(Anchor::Point { x: 80.0, y: 16.0 }));
         assert_ne!(a.props.anchor, b.props.anchor);
+    }
+
+    /// The xs form is the same overlay at a point, with 24 unit rows.
+    #[test]
+    fn the_xs_form_sits_at_the_point_with_short_rows() {
+        let node = context_menu_xs("m", "Menu", 12.0, 34.0, items());
+        assert_eq!(node.props.anchor, Some(Anchor::Point { x: 12.0, y: 34.0 }));
+        assert_eq!(node.props.input_policy, Some(InputPolicy::DismissOutside));
+        let content = child(&node, "content");
+        let md = context_menu("m", "Menu", 12.0, 34.0, items());
+        let row_h = |menu: &ViewNode| {
+            child(child(menu, "content"), "rename")
+                .constraints
+                .vertical
+                .min
+        };
+        assert_eq!(row_h(&node), Some(24.0));
+        assert_eq!(row_h(&md), Some(40.0));
+        assert_eq!(content.children.len(), 2);
     }
 }
