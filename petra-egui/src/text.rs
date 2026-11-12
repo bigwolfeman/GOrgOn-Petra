@@ -10,6 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use crate::image::ImageSources;
 use egui::text::{LayoutJob, TextFormat};
 use egui::{Color32, Context, FontFamily, FontId, Galley};
 use gorgon_petra::cache::LruCache;
@@ -915,14 +916,23 @@ impl CustomMeasurers {
 pub struct HostedContent<'a> {
     shaper: &'a mut GalleyShaper,
     measurers: &'a CustomMeasurers,
+    images: &'a ImageSources,
 }
 
 impl<'a> HostedContent<'a> {
     /// Measure through `shaper`, consulting `measurers` for `custom` names
-    /// first.
+    /// first and `images` for image sources.
     #[must_use]
-    pub fn new(shaper: &'a mut GalleyShaper, measurers: &'a CustomMeasurers) -> Self {
-        Self { shaper, measurers }
+    pub fn new(
+        shaper: &'a mut GalleyShaper,
+        measurers: &'a CustomMeasurers,
+        images: &'a ImageSources,
+    ) -> Self {
+        Self {
+            shaper,
+            measurers,
+            images,
+        }
     }
 }
 
@@ -932,7 +942,13 @@ impl ContentMeasure for HostedContent<'_> {
     }
 
     fn image(&mut self, source: &str, proposal: SizeProposal) -> Size {
-        self.shaper.image(source, proposal)
+        // A registered picture takes the room its pixels take, shrunk to
+        // the offer ([`crate::image::measure`]). An unregistered source
+        // keeps the shaper's answer: no room, and the name recorded.
+        match self.images.size(source) {
+            Some(natural) => crate::image::measure(natural, proposal),
+            None => self.shaper.image(source, proposal),
+        }
     }
 
     fn custom(&mut self, name: &str, proposal: SizeProposal) -> Size {
@@ -950,8 +966,8 @@ impl ContentMeasure for HostedContent<'_> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CustomMeasurers, ELLIPSIS, FontFaces, GalleyShaper, HostedContent, InkRun, TextStyle,
-        Typography,
+        CustomMeasurers, ELLIPSIS, FontFaces, GalleyShaper, HostedContent, ImageSources, InkRun,
+        TextStyle, Typography,
     };
     use egui::{Color32, Context, FontFamily, FontId, Galley, RawInput};
     use gorgon_petra::layout::{ContentMeasure, SizeProposal, TextRequest};
@@ -1909,8 +1925,9 @@ mod tests {
         let h = Headless::new();
         let mut s = h.shaper();
         let mut measurers = CustomMeasurers::new();
+        let images = ImageSources::new();
         measurers.register("gauge", |_| gorgon_petra::geom::Size::new(42.0, 24.0));
-        let mut content = HostedContent::new(&mut s, &measurers);
+        let mut content = HostedContent::new(&mut s, &measurers, &images);
         assert_eq!(
             content.custom("gauge", SizeProposal::unspecified()),
             gorgon_petra::geom::Size::new(42.0, 24.0)
@@ -1929,11 +1946,36 @@ mod tests {
         let h = Headless::new();
         let mut s = h.shaper();
         let measurers = CustomMeasurers::new();
-        let mut content = HostedContent::new(&mut s, &measurers);
+        let images = ImageSources::new();
+        let mut content = HostedContent::new(&mut s, &measurers, &images);
         assert_eq!(
             content.custom("gauge", SizeProposal::unspecified()),
             gorgon_petra::geom::Size::ZERO
         );
         assert_eq!(s.unsupported_customs(), ["gauge"]);
+    }
+
+    /// A registered picture takes its pixels' room; one nobody registered
+    /// takes none and is named.
+    #[test]
+    fn hosted_content_measures_a_registered_image_and_names_an_unregistered_one() {
+        use crate::image::ImagePixels;
+        let h = Headless::new();
+        let mut s = h.shaper();
+        let measurers = CustomMeasurers::new();
+        let mut images = ImageSources::new();
+        images
+            .register("logo", ImagePixels::try_new(4, 2, vec![0; 32]).unwrap())
+            .unwrap();
+        let mut content = HostedContent::new(&mut s, &measurers, &images);
+        assert_eq!(
+            content.image("logo", SizeProposal::unspecified()),
+            gorgon_petra::geom::Size::new(4.0, 2.0)
+        );
+        assert_eq!(
+            content.image("gone", SizeProposal::unspecified()),
+            gorgon_petra::geom::Size::ZERO
+        );
+        assert_eq!(s.unsupported_images(), ["gone"]);
     }
 }
