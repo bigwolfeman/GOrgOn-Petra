@@ -173,6 +173,24 @@ pub(super) fn paint_text(
         }
         report.texts += 1;
         shapes += 1;
+        // A field's caret bar, over the glyphs: one device-snapped unit wide
+        // and the full height of the row it stands in. Content ink, the
+        // `text.primary` a field's value takes (`component::valued`), even
+        // while the well shows its muted placeholder, because the bar marks
+        // where the value's next character goes. It does not blink: a frame
+        // is a pure function of the tree, and a blink would be a clock.
+        if let Some(at) = content.insertion
+            && let Some(ink) = resolve_or_record(env.colors, DEFAULT_TEXT_TOKEN, report)
+        {
+            let stand = crate::text::caret_rect(&galley, at).translate(text_pos.to_vec2());
+            let width = device_snapped_width(1.0, env.scale);
+            let bar = egui::Rect::from_min_size(
+                egui::pos2(stand.min.x.min(rect.max.x - width), stand.min.y),
+                egui::vec2(width, stand.height()),
+            );
+            painter.rect_filled(bar, 0.0, ink);
+            shapes += 1;
+        }
         // The underline is a strip one snapped unit deep under each row,
         // as wide as that row's glyphs, in the slot's own colour rather
         // than the text's: Carbon's link underline is `currentColor`, but a

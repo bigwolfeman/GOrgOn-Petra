@@ -813,6 +813,18 @@ impl Prepared {
 /// off screen) still ends in bounded time instead of a repaint loop.
 pub(crate) const PENDING_FOCUS_PASSES: u32 = 90;
 
+/// Most frames a scroll request is corrected on after its first answer
+/// scrolled ([`gorgon_petra::frame::PetrifiedFrame::correct_reveal`]).
+///
+/// A row off screen is first found by its collection's uniform estimate. The
+/// frame the scroll places measures it, and one correction lands it. A
+/// correction can move the window's first row, which moves the target again
+/// by the difference between that row's estimate and its measure, so a
+/// second is sometimes needed. Four bounds a list whose rows differ so much
+/// that the corrections chase each other: the target is placed and in view
+/// after the first, and the cap ends the chase in four frames.
+const REVEAL_CORRECTIONS: u32 = 4;
+
 /// Drives one Petra application inside an `eframe` window.
 pub struct Host<A: App> {
     app: A,
@@ -948,8 +960,13 @@ pub struct Host<A: App> {
     /// over state the application does not own. See [`App::copy_selection`].
     pending_copy: Option<String>,
     /// The application's last [`App::scroll_request`] that no frame has
-    /// answered yet. See [`Host::reveal_pending`].
+    /// answered yet, or one that scrolled and is being corrected. See
+    /// [`Host::reveal_pending`].
     pending_reveal: Option<gorgon_petra::frame::ScrollRequest>,
+    /// Correction passes left for [`Self::pending_reveal`]: 0 while it has
+    /// not scrolled yet, and counted down from [`REVEAL_CORRECTIONS`] once
+    /// it has.
+    reveal_corrections: u32,
     /// The application's last [`App::focus_request`] that no frame has
     /// placed yet. See [`Host::land_app_focus`].
     pending_app_focus: Option<gorgon_petra::frame::FocusTarget>,
@@ -1346,6 +1363,7 @@ impl<A: App> Host<A> {
             pressed_on_node: None,
             pending_copy: None,
             pending_reveal: None,
+            reveal_corrections: 0,
             pending_app_focus: None,
             selection_drag: false,
             caret: FocusCaret::new(),
@@ -1780,6 +1798,7 @@ impl<A: App> Host<A> {
         // is not placed yet is tried again once this pass has placed its own.
         if let Some(request) = self.app.scroll_request() {
             self.pending_reveal = Some(request);
+            self.reveal_corrections = 0;
         }
         let had_input = self.reveal_pending() || had_input;
         let had_input = self.scroll_by_pending() || had_input;
@@ -3250,26 +3269,75 @@ impl<A: App> Host<A> {
     /// Answer the pending [`App::scroll_request`] against the frame on
     /// screen, and report whether a scroll offset changed.
     ///
-    /// Cleared once answered, whether that wrote an offset or found the
-    /// target already in view. Kept when the frame does not place the target.
+    /// Kept while the frame does not place the target. Cleared when the
+    /// target is in view. A first answer that scrolls keeps the request for
+    /// up to [`REVEAL_CORRECTIONS`] frames, each answered by
+    /// [`gorgon_petra::frame::PetrifiedFrame::correct_reveal`] from the
+    /// placements the scroll produced: a row of a list whose rows differ in
+    /// height is found by an estimate first and lands on the frame that
+    /// measures it.
     fn reveal_pending(&mut self) -> bool {
+        use gorgon_petra::frame::Reveal;
         let (Some(request), Some(frame)) = (&self.pending_reveal, &self.last_frame) else {
             return false;
         };
-        match frame.reveal(request, &self.state.scroll_offsets) {
-            gorgon_petra::frame::Reveal::Unplaced => false,
-            gorgon_petra::frame::Reveal::InView => {
-                self.pending_reveal = None;
+        let correcting = self.reveal_corrections > 0;
+        // A correction waits for the frame placed at the offset it would
+        // correct. The pass's first call reads the frame on screen, which
+        // the last write has already moved past.
+        if correcting
+            && let Some(scroll) = frame.scroll_id(&request.target)
+            && let Some(placed) = frame.scroll_offset(&scroll)
+            && (placed
+                - self
+                    .state
+                    .scroll_offsets
+                    .get(&scroll)
+                    .copied()
+                    .unwrap_or(0.0))
+            .abs()
+                > 0.5
+        {
+            return false;
+        }
+        let answer = if correcting {
+            frame.correct_reveal(request, &self.state.scroll_offsets)
+        } else {
+            frame.reveal(request, &self.state.scroll_offsets)
+        };
+        match answer {
+            Reveal::Unplaced => {
+                if correcting {
+                    self.spend_reveal_correction();
+                }
                 false
             }
-            gorgon_petra::frame::Reveal::Scroll {
+            Reveal::InView => {
+                self.pending_reveal = None;
+                self.reveal_corrections = 0;
+                false
+            }
+            Reveal::Scroll {
                 scroll,
                 offset,
                 max_offset,
             } => {
-                self.pending_reveal = None;
+                if correcting {
+                    self.spend_reveal_correction();
+                } else {
+                    self.reveal_corrections = REVEAL_CORRECTIONS;
+                }
                 self.write_scroll_offset(&scroll, offset, max_offset)
             }
+        }
+    }
+
+    /// Count one correction pass off the pending reveal, and drop the
+    /// request when none is left.
+    fn spend_reveal_correction(&mut self) {
+        self.reveal_corrections -= 1;
+        if self.reveal_corrections == 0 {
+            self.pending_reveal = None;
         }
     }
 
@@ -4866,6 +4934,91 @@ mod tests {
         fn focus_request(&mut self) -> Option<gorgon_petra::frame::FocusTarget> {
             self.focus.take()
         }
+    }
+
+    /// A 1000-row scroll whose rows alternate 8 and 56 tall under a 20-unit
+    /// estimate, and a request the app asks for.
+    struct MixedRows {
+        request: Option<gorgon_petra::frame::ScrollRequest>,
+    }
+
+    impl RowSource for MixedRows {
+        fn rows(&mut self, _source: &str, range: Range<usize>) -> Vec<std::sync::Arc<ViewNode>> {
+            range
+                .map(|i| {
+                    std::sync::Arc::new(gorgon_petra::testing::GeneratedRows::row_of_height(
+                        i,
+                        if i.is_multiple_of(2) { 8.0 } else { 56.0 },
+                    ))
+                })
+                .collect()
+        }
+    }
+
+    impl App for MixedRows {
+        fn view(&mut self) -> ViewNode {
+            let rows = ViewNode::new(NodeKind::Collection, "rows").with_props(Props {
+                total_count: Some(1000),
+                source: Some("mixed".into()),
+                estimated_extent: Some(20.0),
+                ..Props::default()
+            });
+            ViewNode::new(NodeKind::Scroll, "code").child(rows)
+        }
+
+        fn handle(&mut self, _: &InputEvent, _: &Route, _: Option<&PetrifiedFrame>) {}
+
+        fn take_changes(&mut self) -> ChangeSet {
+            ChangeSet::All
+        }
+
+        fn scroll_request(&mut self) -> Option<gorgon_petra::frame::ScrollRequest> {
+            self.request.take()
+        }
+    }
+
+    /// A row of a list whose rows differ in height is brought to the middle
+    /// of the view: the first answer scrolls by the uniform estimate, and the
+    /// host corrects it on the frames that measure the row.
+    ///
+    /// Row 401 of a 10 000-tall window: placed by the first frame but below
+    /// the fold, and within reach. The collection's content extent is still
+    /// the estimate times the row count, 20 000 here, so a row far enough
+    /// down to need more range than that cannot be centred by any offset.
+    ///
+    /// Falsify by answering a scrolled request once (drop the correction in
+    /// `reveal_pending`): moving the window by the first answer leaves row
+    /// 401 thousands of units off the middle.
+    #[test]
+    fn a_scroll_request_lands_a_row_of_mixed_heights_on_its_measured_place() {
+        use gorgon_petra::frame::{RevealAlign, ScrollRequest};
+        let (ctx, mut host) = boot(MixedRows { request: None });
+        step(&ctx, &mut host, RawInput::default());
+        host.app_mut().request = Some(ScrollRequest::row("mixed", 401, RevealAlign::Center));
+        for _ in 0..6 {
+            step(&ctx, &mut host, RawInput::default());
+        }
+        assert!(host.pending_reveal.is_none(), "the corrections never ended");
+        let frame = host.frame().expect("a frame");
+        let row = frame
+            .placement("/code/rows/row-401")
+            .expect("the landed frame places row 401")
+            .rect;
+        let view = frame.scroll_content("/code").expect("placed").clip;
+        let off_middle = (row.y + row.h / 2.0) - (view.y + view.h / 2.0);
+        // Within one row's jump: crossing a grid line moves every row by
+        // that row's measure less the estimate, at most 56 - 20 = 36 here,
+        // and this middle sits in such a jump for this window. The frame
+        // tests pin the exact landings; this pins that the host runs the
+        // corrections against the frames they belong to.
+        assert!(
+            off_middle.abs() <= 36.0,
+            "row 401 is {off_middle} off the middle"
+        );
+        assert!(
+            row.y >= view.y && row.y + row.h <= view.y + view.h,
+            "{row:?} out of view"
+        );
     }
 
     /// A long scroll whose rows take no focus, so nothing pulls the offset

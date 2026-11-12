@@ -434,6 +434,14 @@ pub struct PaintContent {
     /// this one additionally needs placements the walk has not reached yet,
     /// which is why it is a pass and not a step.
     ///
+    /// **One exception is derivable, and is derived.** An `input` that
+    /// declares a [`crate::tree::Props::cursor`] with something selected
+    /// carries that range here straight out of `paint_content_of`. The
+    /// document pass never overwrites it, because a field is a run claimed
+    /// by a control and the pass skips those. So the painter draws a field's
+    /// own selection with the document's highlight, and the clipboard copies
+    /// it through the same [`crate::frame::PetrifiedFrame::selected_text`].
+    ///
     /// **A range, not rectangles.** The rectangles behind the glyphs need the
     /// shaped run, and shaping is the host's side of the U-09 boundary
     /// (`contracts/view-tree.md`) — the painter already holds the exact
@@ -453,6 +461,17 @@ pub struct PaintContent {
     /// An application reading its own node's range off the frame it is handed
     /// gets the same answer for the same reason.
     pub selection: Option<Range<usize>>,
+    /// Where an `input` draws its caret bar, as a byte offset into
+    /// [`TextPaint::text`]. `None` for every other node, for a field that
+    /// declares no [`crate::tree::Props::cursor`], and for one whose cursor
+    /// selects something (that field draws [`Self::selection`] instead).
+    ///
+    /// An offset rather than a rectangle, for [`Self::selection`]'s reason:
+    /// where the bar stands is a fact about the shaped run, and the painter
+    /// holds the galley. Clamped to the painted string and on a character
+    /// boundary. A field showing its placeholder carries `0` here, the start
+    /// of the empty value, whatever the placeholder says.
+    pub insertion: Option<usize>,
     /// The Markdown this node's picture stands for, carried verbatim from
     /// [`crate::tree::Props::markdown`], which holds the whole argument.
     ///
@@ -499,6 +518,8 @@ impl PaintContent {
             // carried only a selection would hash to zero without this line
             // and the highlight would be invisible to the digest.
             && self.selection.is_none()
+            // A caret bar is a shape too, for the same reason.
+            && self.insertion.is_none()
     }
 
     /// Whether this node draws nothing of its own **in `state`**.
@@ -1297,6 +1318,7 @@ mod tests {
                     caret: None,
                     canvas: None,
                     selection: None,
+                    insertion: None,
                     markdown: None,
                 },
                 true,

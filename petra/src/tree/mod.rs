@@ -10,6 +10,7 @@ pub(crate) mod graft;
 pub mod key;
 pub mod node;
 pub mod props;
+pub mod text_cursor;
 pub mod validate;
 
 // Property-value sources (`Lit`/`Bind`/`Derive`) and their fold — the
@@ -38,6 +39,7 @@ pub use props::{
     ScrollIndicators, ScrollProps, StackProps, SurfaceProps, TextProps, TextRun, TextWrap, Tip,
     TrackSize, resolve_insets, resolve_spacing,
 };
+pub use text_cursor::{CursorMotion, TextCursor};
 // `ANCHOR_PROP_KINDS` / `PADDING_PROP_KINDS` / `TOKEN_PROP_KINDS` and their
 // reader `token_prop_refs` are re-exported here because they are read from
 // outside this crate: the daemon's stage-1 `ui` acceptance

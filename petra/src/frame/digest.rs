@@ -18,6 +18,11 @@ use crate::geom::Scale;
 /// the version bump that a serialization change requires cannot be forgotten
 /// quietly.
 ///
+/// [`crate::frame::placement::PaintContent::insertion`], a field's caret
+/// bar, moves no prefix. It is written at the very end of the payload
+/// stream and only when there is one, the rule the underline flag follows,
+/// so every payload without a bar keeps the digest it had.
+///
 /// `v10` covers [`crate::frame::placement::PaintContent::selection`], the
 /// stretch of a text node's own string the operator has selected. It rides
 /// the *payload* stream after the draw list, so [`PAINT_DOMAIN`] moves to
@@ -261,6 +266,7 @@ pub fn hash_paint_content(content: &PaintContent) -> u64 {
         caret,
         canvas,
         selection,
+        insertion,
         // Dropped, and the only field here that is: the Markdown a picture
         // stands for reaches the clipboard, never a pixel. Two frames
         // differing in it are the same picture, which is exactly what a frame
@@ -371,6 +377,14 @@ pub fn hash_paint_content(content: &PaintContent) -> u64 {
             w.u64(range.end as u64);
         }
         None => w.bool(false),
+    }
+    // A field's caret bar, last of all and written only when there is one,
+    // so every frame drawn before the bar existed keeps its digest. Nothing
+    // follows it in the stream, so the marker cannot be confused with the
+    // start of another field.
+    if let Some(at) = insertion {
+        w.text("insertion");
+        w.u64(*at as u64);
     }
     truncate64(&blake3::hash(&w.finish()))
 }
@@ -1364,6 +1378,7 @@ mod tests {
             caret: None,
             canvas: None,
             selection: None,
+            insertion: None,
             markdown: None,
         }
     }
@@ -1920,6 +1935,7 @@ mod tests {
             caret: None,
             canvas: None,
             selection: None,
+            insertion: None,
             markdown: None,
         };
         assert_ne!(hash_paint_content(&content), hash_text("Fibers"));
@@ -1938,6 +1954,7 @@ mod tests {
             caret: None,
             canvas: None,
             selection: None,
+            insertion: None,
             markdown: None,
         };
         assert_ne!(
@@ -1953,6 +1970,7 @@ mod tests {
             caret: None,
             canvas: None,
             selection: None,
+            insertion: None,
             markdown: None,
         };
         let empty = PaintContent {
@@ -1973,6 +1991,7 @@ mod tests {
             caret: None,
             canvas: None,
             selection: None,
+            insertion: None,
             markdown: None,
         };
         assert_ne!(
@@ -2349,5 +2368,26 @@ mod tests {
         let via_result =
             try_subtree_hashes(vp.scale, &placements).expect("a well-formed chain must succeed");
         assert_eq!(via_panicking, via_result);
+    }
+
+    /// A field's caret bar is a picture: two offsets are two digests, and a
+    /// payload carrying only a bar is not the empty payload. A payload with
+    /// no bar hashes exactly as it did before the field existed, which the
+    /// pinned vectors above hold for every other payload.
+    #[test]
+    fn a_caret_bar_moves_the_paint_hash_and_only_when_present() {
+        let bare = rich_content();
+        let at = |offset| PaintContent {
+            insertion: Some(offset),
+            ..rich_content()
+        };
+        assert_ne!(hash_paint_content(&bare), hash_paint_content(&at(0)));
+        assert_ne!(hash_paint_content(&at(1)), hash_paint_content(&at(2)));
+        let only_a_bar = PaintContent {
+            insertion: Some(0),
+            ..PaintContent::default()
+        };
+        assert!(!only_a_bar.is_empty());
+        assert_ne!(hash_paint_content(&only_a_bar), 0);
     }
 }

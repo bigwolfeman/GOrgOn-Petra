@@ -699,6 +699,19 @@ pub fn selection_rects(galley: &Galley, range: &std::ops::Range<usize>) -> Vec<e
     out
 }
 
+/// The zero-width rectangle a caret bar stands on before byte offset `at` in
+/// `galley`, in coordinates local to the galley's origin: the bar's x, and
+/// the top and bottom of the row it sits in.
+///
+/// egui's own cursor geometry, so the bar lands exactly where
+/// [`byte_offset_at`] would read the same position back. An offset past the
+/// end answers the end of the last row.
+#[must_use]
+pub fn caret_rect(galley: &Galley, at: usize) -> egui::Rect {
+    let index = byte_to_char(galley.text(), at);
+    galley.pos_from_cursor(egui::text::CCursor::new(index))
+}
+
 /// `runs` with the stretch `range` forced to `ink`, tiling the same string.
 ///
 /// # Why the selected run takes its own ink at all
@@ -1097,6 +1110,30 @@ mod tests {
             super::selection_rects(&galley, &(4..4)).is_empty(),
             "an empty range is not a picture"
         );
+    }
+
+    /// The caret stands where the hit test reads the same offset back, in
+    /// bytes: after the two-byte `é` the bar is right of the `a` and left of
+    /// the emoji, and an offset past the end stands at the end.
+    #[test]
+    fn a_caret_stands_at_its_byte_offset_on_its_row() {
+        let h = Headless::new();
+        let mut shaper = h.shaper();
+        let text = "aé😀bc";
+        let galley = shaper.galley(&req(text, None, TextWrap::Clip));
+        let after_e = 'a'.len_utf8() + 'é'.len_utf8();
+        let bar = super::caret_rect(&galley, after_e);
+        assert_eq!(bar.width(), 0.0);
+        assert!(bar.height() > 0.0, "the bar spans its row: {bar:?}");
+        assert_eq!(
+            super::byte_offset_at(&galley, egui::vec2(bar.min.x + 0.1, bar.center().y)),
+            after_e,
+            "the bar is not where the hit test reads its offset back"
+        );
+        let start = super::caret_rect(&galley, 0);
+        let end = super::caret_rect(&galley, 99);
+        assert!(start.min.x < bar.min.x && bar.min.x < end.min.x);
+        assert!((end.min.x - galley.rect.max.x).abs() < 0.5, "{end:?}");
     }
 
     /// Splitting the run list forces the selected stretch's ink and tiles the

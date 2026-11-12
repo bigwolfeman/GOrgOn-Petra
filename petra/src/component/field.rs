@@ -24,7 +24,7 @@ use super::tokens::{
 use crate::geom::{Align, Axis};
 use crate::tree::{
     AxisConstraint, Behaviour, Constraints, FocusFigure, FocusShownOn, InsetRefs, Intent,
-    Interaction, Key, NodeKind, Phase, Props, Role, ViewNode,
+    Interaction, Key, NodeKind, Phase, Props, Role, TextCursor, ViewNode,
 };
 
 /// What an editable text input declares.
@@ -573,22 +573,10 @@ pub fn field_readonly(key: impl Into<Key>, label: impl Into<String>) -> ViewNode
 /// a no-op on a tree with no input, same as [`valued`].
 #[must_use]
 pub fn hinted(mut node: ViewNode, hint: impl Into<String>) -> ViewNode {
-    fn fill(node: &mut ViewNode, hint: &str) -> bool {
-        if node.kind == NodeKind::Input {
-            node.props.placeholder = Some(hint.to_owned());
-            return true;
-        }
-        for child in &mut node.children {
-            let mut owned = Arc::unwrap_or_clone(Arc::clone(child));
-            if fill(&mut owned, hint) {
-                *child = Arc::new(owned);
-                return true;
-            }
-        }
-        false
-    }
     let hint = hint.into();
-    fill(&mut node, &hint);
+    on_first_input(&mut node, &mut |input| {
+        input.props.placeholder = Some(hint.clone());
+    });
     node
 }
 
@@ -625,32 +613,68 @@ pub fn hinted(mut node: ViewNode, hint: impl Into<String>) -> ViewNode {
 /// subtrees.
 #[must_use]
 pub fn valued(mut node: ViewNode, value: impl Into<String>) -> ViewNode {
-    fn fill(node: &mut ViewNode, value: &str) -> bool {
-        if node.kind == NodeKind::Input {
-            node.props.text = Some(value.to_owned());
-            if !value.is_empty() {
-                node.props
-                    .tokens
-                    .insert("foreground".into(), t(TEXT_PRIMARY));
-                // A filled well's value is content ink and takes the label
-                // rule's disabled partner (spec 008 FR-023): a disabled
-                // field's value fades to `text.muted`, not out of the floor.
-                super::text::disabled_label_ink(&mut node.props);
-            }
+    let value = value.into();
+    on_first_input(&mut node, &mut |input| {
+        if !value.is_empty() {
+            input
+                .props
+                .tokens
+                .insert("foreground".into(), t(TEXT_PRIMARY));
+            // A filled well's value is content ink and takes the label
+            // rule's disabled partner (spec 008 FR-023): a disabled
+            // field's value fades to `text.muted`, not out of the floor.
+            super::text::disabled_label_ink(&mut input.props);
+        }
+        input.props.text = Some(value.clone());
+    });
+    node
+}
+
+/// Put a caret, or a selection, in a field: [`valued`]'s partner.
+///
+/// [`valued`] says what the field holds and this says where the caret is in
+/// it, so an application that owns a field's typing states both on every
+/// frame and the engine draws them. A collapsed cursor draws a caret bar; a
+/// cursor that selects something draws the selection highlight and puts the
+/// selected text on the clipboard on a copy, exactly as a document
+/// selection does. A field opened for a rename passes
+/// `TextCursor::spanning(0..stem)` and draws with its stem already selected.
+///
+/// The offsets are bytes into the value given to [`valued`], and the engine
+/// clamps them to it ([`TextCursor::clamped`]), so the two modifiers compose
+/// in either order. Like [`valued`] it reaches the first
+/// [`NodeKind::Input`] in the subtree, and a tree with no input comes back
+/// unchanged.
+///
+/// It draws whether or not the field has focus. Focus is the host's, but
+/// whether the caret is live is the application's: a card that takes the
+/// typing for a field it has made inert still wants the caret seen.
+#[must_use]
+pub fn with_cursor(mut node: ViewNode, cursor: TextCursor) -> ViewNode {
+    on_first_input(&mut node, &mut |input| input.props.cursor = Some(cursor));
+    node
+}
+
+/// Run `edit` on the first [`NodeKind::Input`] in `node`'s subtree, itself
+/// included, and report whether there was one.
+///
+/// The walk [`hinted`], [`valued`] and [`with_cursor`] share. Children are
+/// cloned out of their `Arc`s on the way down for [`super::disabled`]'s
+/// reason: a shared subtree changed in one place and not in another has to
+/// become two subtrees.
+fn on_first_input(node: &mut ViewNode, edit: &mut dyn FnMut(&mut ViewNode)) -> bool {
+    if node.kind == NodeKind::Input {
+        edit(node);
+        return true;
+    }
+    for child in &mut node.children {
+        let mut owned = Arc::unwrap_or_clone(Arc::clone(child));
+        if on_first_input(&mut owned, edit) {
+            *child = Arc::new(owned);
             return true;
         }
-        for child in &mut node.children {
-            let mut owned = Arc::unwrap_or_clone(Arc::clone(child));
-            if fill(&mut owned, value) {
-                *child = Arc::new(owned);
-                return true;
-            }
-        }
-        false
     }
-    let value = value.into();
-    fill(&mut node, &value);
-    node
+    false
 }
 
 /// The muted label rule every form control shares (`$text-secondary`).
@@ -750,8 +774,9 @@ fn input_field(
 
 #[cfg(test)]
 mod tests {
-    use super::valued;
+    use super::{valued, with_cursor};
     use crate::component::tests::{assert_fits_parent, petrify_lone};
+    use crate::tree::TextCursor;
 
     use super::{
         BORDER_STRONG, BORDER_SUBTLE, SUPPORT_ERROR, SUPPORT_WARNING, SURFACE_RAISED, TEXT_MUTED,
@@ -1481,6 +1506,70 @@ mod tests {
     /// Composing modifiers is the point of this shape, and a modifier that
     /// panics on a tree it does not recognise is harder to compose than
     /// writing the field out by hand.
+    /// The painted payload of the one input in `node`, petrified alone.
+    fn input_paint(node: ViewNode) -> (crate::frame::PaintContent, Option<String>) {
+        let frame = petrify_lone(node);
+        let content = frame
+            .drawn()
+            .find(|(placement, _)| placement.kind == NodeKind::Input)
+            .map(|(_, content)| content.clone())
+            .expect("the field places its input");
+        (content, frame.selected_text())
+    }
+
+    /// A rename field opens with the stem selected: the range reaches the
+    /// painted payload, draws no bar, and is what a copy takes. Without
+    /// `with_cursor` the same field paints neither.
+    #[test]
+    fn a_selection_in_a_field_paints_highlights_and_copies() {
+        let (bare, copied) = input_paint(valued(field("f", "Name"), "notes.md"));
+        assert_eq!((bare.selection, bare.insertion, copied), (None, None, None));
+
+        let node = with_cursor(
+            valued(field_labeled("f", "Name"), "notes.md"),
+            TextCursor::spanning(0..5),
+        );
+        let (content, copied) = input_paint(node);
+        assert_eq!(content.selection, Some(0..5));
+        assert_eq!(content.insertion, None, "a selection draws no bar");
+        assert_eq!(copied.as_deref(), Some("notes"));
+    }
+
+    /// A collapsed cursor is a bar at its offset; an empty field puts the bar
+    /// at the start of the value even while it paints the placeholder; a
+    /// cursor left past a shorter value lands on its end.
+    #[test]
+    fn a_caret_in_a_field_is_a_bar_at_its_offset() {
+        let at = |value: &str, cursor| {
+            input_paint(with_cursor(valued(field("f", "Name"), value), cursor)).0
+        };
+        let mid = at("notes.md", TextCursor::at(5));
+        assert_eq!((mid.selection, mid.insertion), (None, Some(5)));
+        let empty = at("", TextCursor::at(3));
+        assert_eq!(empty.text.expect("paints").text, "Name");
+        assert_eq!((empty.selection, empty.insertion), (None, Some(0)));
+        let stale = at("añ", TextCursor::at(9));
+        assert_eq!(stale.insertion, Some(3));
+        let inside = at("añ", TextCursor::at(2));
+        assert_eq!(inside.insertion, Some(1), "floored off the middle of `ñ`");
+    }
+
+    /// A password field paints one bullet per character, so its cursor is
+    /// carried over by character: selecting the secret's second character
+    /// highlights the second bullet, and a copy takes bullets, never the
+    /// secret.
+    #[test]
+    fn a_password_cursor_counts_characters_onto_the_bullets() {
+        let node = with_cursor(
+            super::field_password("pw", "Password", false, "añb"),
+            TextCursor::spanning(1..3),
+        );
+        let (content, copied) = input_paint(node);
+        let bullet = '•'.len_utf8();
+        assert_eq!(content.selection, Some(bullet..2 * bullet));
+        assert_eq!(copied.as_deref(), Some("•"));
+    }
+
     #[test]
     fn valued_on_a_tree_with_no_input_is_a_no_op() {
         let plain = super::text("t", "not a field");

@@ -3750,7 +3750,58 @@ mod tests {
         );
     }
 
-    /// C17's proof. A node binding `radius` must get the token's own corner,    /// C17's proof. A node binding `radius` must get the token's own corner,
+    /// A field's caret is one bar, a snapped unit wide, on the glyph row and
+    /// inside the field; a field with no cursor paints no bar; and a cursor
+    /// that selects paints the highlight band, not a bar. Proved by
+    /// difference over the filled rects egui received.
+    #[test]
+    fn a_field_cursor_paints_one_bar_or_one_band() {
+        use gorgon_petra::tree::TextCursor;
+        let scale = Scale::new(2.0).unwrap();
+        let paint = |cursor: Option<TextCursor>| -> (Vec<egui::Rect>, egui::Rect) {
+            let host = Headless::new();
+            let mut h = Harness::with(host.shaper(), gorgon_petra::testing::NoRows);
+            let node = ViewNode::new(NodeKind::Input, "root").with_props(Props {
+                text: Some("notes.md".to_owned()),
+                cursor,
+                ..Props::default()
+            });
+            let frame = petrify(
+                1,
+                validated(&node),
+                &mut h.ctx(),
+                Viewport::new(Size::new(240.0, 40.0), ThemeMode::Dark).with_scale(scale),
+                TransitionActivity::default(),
+            );
+            let mut shaper = host.shaper();
+            let report = paint_frame(&host.painter(), &frame, &mut shaper, &snapshot());
+            assert!(report.unresolved_tokens.is_empty(), "{report:?}");
+            let out = host.0.run_ui(RawInput::default(), |_| {});
+            let rects = filled_rects(&out);
+            out.drop_without_applying_deltas();
+            (rects, to_egui_snapped(frame.placements[0].rect, scale))
+        };
+        let (plain, _) = paint(None);
+        assert!(plain.is_empty(), "no cursor, no bar: {plain:?}");
+
+        let (bars, field) = paint(Some(TextCursor::at(5)));
+        assert_eq!(bars.len(), 1, "one caret, one bar: {bars:?}");
+        let bar = bars[0];
+        assert!(
+            (bar.width() - device_snapped_width(1.0, scale)).abs() < 1e-4,
+            "one snapped unit wide: {bar:?}"
+        );
+        assert!(bar.height() > 8.0, "a glyph row tall: {bar:?}");
+        assert!(field.contains_rect(bar), "{bar:?} outside {field:?}");
+        let (start, _) = paint(Some(TextCursor::at(0)));
+        assert!(start[0].min.x < bar.min.x, "the bar follows its offset");
+
+        let (bands, _) = paint(Some(TextCursor::spanning(0..5)));
+        assert_eq!(bands.len(), 1, "one row selected, one band: {bands:?}");
+        assert!(bands[0].width() > bar.width() * 4.0, "a band, not a bar");
+    }
+
+    /// C17's proof. A node binding `radius` must get the token's own corner,
     /// not a square one — read from the shape egui actually received, the
     /// same standard `a_border_stroke_is_a_whole_number_of_device_pixels`
     /// and the focus-ring tests hold themselves to, rather than trusted from

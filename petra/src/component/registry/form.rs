@@ -38,7 +38,7 @@ use crate::component::params::{
     KeyLabel, KeyLabelChildren, KeyLabelMessage, KeyLabelNumber, KeyLabelOptionalMessage,
     KeyLabelSelected, KeyLabelValue, ParamShape,
 };
-use crate::tree::{Key, ViewNode};
+use crate::tree::{Key, TextCursor, ViewNode};
 
 // ---------------------------------------------------------------------
 // One-off shapes. Never invented fields: each mirrors the Rust
@@ -276,6 +276,18 @@ struct NodeAndValue {
 }
 impl ParamShape for NodeAndValue {
     const LUAU: &'static str = "{ node: ViewNode, value: string }";
+}
+
+/// `field.rs`'s `with_cursor(node, cursor)`: [`NodeAndValue`]'s partner,
+/// the caret and selection in the value as two byte offsets.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NodeAndCursor {
+    node: ViewNode,
+    cursor: TextCursor,
+}
+impl ParamShape for NodeAndCursor {
+    const LUAU: &'static str = "{ node: ViewNode, cursor: { anchor: number, focus: number } }";
 }
 
 /// `dropdown_multiselect(key, label, count)`. `count` is not `value`: a
@@ -625,6 +637,9 @@ pub const ENTRIES: &[Entry] = &[
     )),
     row!("hinted", NodeAndHint, |p| lib::hinted(p.node, p.hint)),
     row!("valued", NodeAndValue, |p| lib::valued(p.node, p.value)),
+    row!("with_cursor", NodeAndCursor, |p| lib::with_cursor(
+        p.node, p.cursor
+    )),
     // file_uploader.rs — File uploader.
     row!("file_uploader", KeyLabel, |p| lib::file_uploader(
         p.key, p.label

@@ -228,7 +228,7 @@ pub use dropdown::{
 pub use field::{
     field, field_described, field_fluid, field_invalid, field_labeled, field_lg, field_password,
     field_readonly, field_required, field_sm, field_validated, field_warning, hinted, labeled,
-    valued,
+    valued, with_cursor,
 };
 pub use file_uploader::{
     file_uploader, file_uploader_drag_over, file_uploader_item, file_uploader_item_edit,
