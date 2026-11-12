@@ -245,6 +245,11 @@ pub fn content_switcher_icon_only_lg(key: impl Into<Key>, items: Vec<ViewNode>) 
     )
 }
 
+/// `spacing-01`'s shipped extent, the group's inset on each edge
+/// (`token::shipped`, Carbon `$spacing-01: 0.125rem`). Only the group's
+/// height floor reads it; the padding itself stays a token.
+const GROUP_INSET: f32 = 2.0;
+
 fn at(
     key: impl Into<Key>,
     items: Vec<ViewNode>,
@@ -284,7 +289,20 @@ fn at(
             padding: Some(pad(SPACING_01, SPACING_01)),
             ..Props::default()
         })
-        .with_children(children);
+        .with_children(children)
+        // The group owns its height as it owns each tab's. Without a floor
+        // a vertical stack short of room shrinks the group, its pinned tabs
+        // fall outside its clip, and the row draws as a bare outline the
+        // keyboard cannot reach. A floor and no ceiling: the padding is a
+        // theme token, so a theme with a wider `spacing-01` still fits.
+        .with_constraints(Constraints {
+            vertical: AxisConstraint {
+                min: Some(height + 2.0 * GROUP_INSET),
+                max: None,
+                priority: 0,
+            },
+            ..Constraints::default()
+        });
     // FR-022: the enum's own doc names "content switcher" under
     // `CornerRole::Grouping`. The group's real height is the tab step (32/
     // 40/48) plus two units of padding on each edge (36/44/52 total, per
@@ -968,6 +986,40 @@ mod tests {
                 group.h,
                 step + 4.0,
                 "/sw is not at the padded step height {step} + 4"
+            );
+        }
+    }
+
+    /// A vertical stack with less room than its children asks for cannot
+    /// shrink the group below the padded step, so its tabs stay inside it.
+    #[test]
+    fn a_squeezed_stack_keeps_the_group_at_its_padded_step() {
+        let filler = |key: &str| {
+            ViewNode::new(NodeKind::Spacer, key)
+                .with_constraints(crate::component::pin_block(200.0))
+        };
+        let group = content_switcher_sm(
+            "sw",
+            vec![
+                content_switcher_item("a", "List", true),
+                content_switcher_item("b", "Grid", false),
+            ],
+        );
+        let column = crate::component::stack(
+            "col",
+            crate::geom::Axis::Vertical,
+            None,
+            vec![filler("top"), group, filler("bottom")],
+        );
+        let frame =
+            crate::component::tests::petrify_lone_at(column, crate::geom::Size::new(600.0, 300.0));
+        let group = rect_of(&frame, "/col/sw");
+        assert_eq!(group.h, SIZE_SM + 4.0, "the group was squeezed: {group:?}");
+        for key in ["/col/sw/a", "/col/sw/b"] {
+            let tab = rect_of(&frame, key);
+            assert!(
+                tab.y >= group.y && tab.y + tab.h <= group.y + group.h,
+                "{key} falls outside the group: {tab:?} in {group:?}"
             );
         }
     }

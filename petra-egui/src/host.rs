@@ -293,6 +293,23 @@ pub trait App: RowSource {
         None
     }
 
+    /// The whole-window zoom factor the application wants: `1.0` is 100%.
+    ///
+    /// Asked once at the top of every [`Host::pass`]. When the answer differs
+    /// from the context's zoom factor the host calls
+    /// `egui::Context::set_zoom_factor`, which egui applies from the next
+    /// pass, so the tree that pass builds is measured at the new scale. The
+    /// host asks for the same reason it asks [`Self::theme_request`]: it owns
+    /// the `Context`, and an application that held one could change the scale
+    /// in the middle of a pass. An answer that is not finite and positive is
+    /// ignored.
+    ///
+    /// The default asks for nothing, which leaves the zoom where the window
+    /// and the platform put it.
+    fn zoom_request(&mut self) -> Option<f32> {
+        None
+    }
+
     /// Text the application wants put on the system clipboard, taken and
     /// cleared.
     ///
@@ -1765,6 +1782,13 @@ impl<A: App> Host<A> {
         if let Some(theme) = self.app.theme_request() {
             self.presenter.publish(theme);
         }
+        if let Some(zoom) = self.app.zoom_request()
+            && zoom.is_finite()
+            && zoom > 0.0
+            && zoom != ctx.zoom_factor()
+        {
+            ctx.set_zoom_factor(zoom);
+        }
         let snapshot = self.presenter.current();
         // Before anything reads the registry: a theme published since the
         // last pass may name a different set of tokens, and a tree accepted
@@ -3207,7 +3231,13 @@ impl<A: App> Host<A> {
             return;
         }
         self.pending_focus_passes += 1;
-        if moving
+        // The motion toward it is over and it is still hidden: a nested
+        // scroll may need its own turn now that an outer one brought it on
+        // screen (`Self::scroll_into_view` moves one scroll per call).
+        let next_leg = !moving
+            && self.pending_focus_passes < PENDING_FOCUS_PASSES
+            && self.scroll_into_view(frame, &target);
+        if (moving || next_leg)
             && self.pending_focus_passes < PENDING_FOCUS_PASSES
             && frame.placement(&target).is_some()
         {
@@ -3746,46 +3776,81 @@ impl<A: App> Host<A> {
         let Some(placement) = frame.placement(target) else {
             return false;
         };
-        let (rect, clip) = (placement.rect, placement.clip);
-        let Some(scroll) = frame.scroll_ancestor(target).map(|p| p.id.clone()) else {
-            return false;
-        };
-        let axis = frame.scroll_axis(&scroll);
-        let target_lead = Self::leading(rect, axis);
-        let target_trail = target_lead + rect.size().along(axis);
-        let view_lead = Self::leading(clip, axis);
-        let view_trail = view_lead + clip.size().along(axis);
-        let max_offset = frame.scroll_overflow(&scroll, axis);
-        // The offset the frame was placed with, not the one in state:
-        // `layout::scroll::place` re-clamps a stale entry against the real
-        // content extent and never writes it back, so after content shrank
-        // the state can hold 280 while the frame shows 40. Adding a delta to
-        // the stale value and clamping again lands back on 40, and the
-        // target never moves.
-        let current = self
-            .state
-            .scroll_offsets
-            .get(&scroll)
-            .copied()
-            .unwrap_or(0.0)
-            .clamp(0.0, max_offset);
-        let desired = if target_trail <= view_lead {
-            // Entirely above/left of the viewport: bring its leading edge
-            // to the viewport's leading edge, the least scroll that shows
-            // all of it.
-            current + (target_lead - view_lead)
-        } else if target_lead >= view_trail {
-            // Entirely below/right: align the trailing edges instead.
-            current + (target_trail - view_trail)
-        } else {
-            // Already within range on this axis: nothing to scroll for.
-            // `Host::pass`'s caller falls back to moving focus instead when
-            // this happens — a partial overlap along the *other* axis, or a
-            // clip that collapsed to zero height, is not something a scroll
-            // offset can fix.
-            return false;
-        };
-        self.write_scroll_offset(&scroll, desired, max_offset)
+        let rect = placement.rect;
+        // Every scroll above the target, nearest first. A vertical scroll
+        // that holds a horizontal one (a tab strip on a long page) must move
+        // the vertical scroll for a target above or below its viewport; the
+        // nearest scroll alone moves only along its own axis and cannot.
+        let mut chain: Vec<String> = Vec::new();
+        let mut from = Some(target.to_owned());
+        while let Some(id) = from.take() {
+            let Some(scroll) = frame.scroll_ancestor(&id) else {
+                break;
+            };
+            let scroll_id = scroll.id.clone();
+            from = scroll
+                .parent
+                .and_then(|i| frame.placements.get(i))
+                .map(|p| p.id.clone());
+            chain.push(scroll_id);
+        }
+        // Outermost first: an outer scroll brings an inner one on screen
+        // before the inner one can measure its own viewport. One scroll moves
+        // per call; the landing asks again once that motion is done.
+        for scroll in chain.iter().rev() {
+            let Some(own) = frame.placement(scroll) else {
+                continue;
+            };
+            let axis = frame.scroll_axis(scroll);
+            // The scroll's visible viewport: its rect cut by what clips it.
+            // The target's own clip is the wrong ruler here, because it is
+            // also cut by every scroll between the two.
+            let view = own.rect.intersect(own.clip);
+            if view.w <= 0.0 || view.h <= 0.0 {
+                // Hidden by something outside it: an outer scroll would have
+                // moved already, so no offset of this one can show the target.
+                continue;
+            }
+            let target_lead = Self::leading(rect, axis);
+            let target_trail = target_lead + rect.size().along(axis);
+            let view_lead = Self::leading(view, axis);
+            let view_trail = view_lead + view.size().along(axis);
+            let max_offset = frame.scroll_overflow(scroll, axis);
+            // The offset the frame was placed with, not the one in state:
+            // `layout::scroll::place` re-clamps a stale entry against the
+            // real content extent and never writes it back, so after content
+            // shrank the state can hold 280 while the frame shows 40. Adding
+            // a delta to the stale value and clamping again lands back on
+            // 40, and the target never moves.
+            let current = self
+                .state
+                .scroll_offsets
+                .get(scroll)
+                .copied()
+                .unwrap_or(0.0)
+                .clamp(0.0, max_offset);
+            let desired = if target_trail <= view_lead {
+                // Entirely above/left of the viewport: bring its leading
+                // edge to the viewport's leading edge, the least scroll that
+                // shows all of it.
+                current + (target_lead - view_lead)
+            } else if target_lead >= view_trail {
+                // Entirely below/right: align the trailing edges instead.
+                current + (target_trail - view_trail)
+            } else {
+                // Within range on this scroll's axis: an inner scroll, or
+                // the other axis, is what still hides it.
+                continue;
+            };
+            if self.write_scroll_offset(scroll, desired, max_offset) {
+                return true;
+            }
+        }
+        // Nothing to scroll: a partial overlap along an axis no scroll
+        // moves, or a clip that collapsed to zero height, is not something
+        // an offset can fix. `Host::pass`'s caller falls back to moving
+        // focus instead.
+        false
     }
 
     /// Whether the focused node in the last placed frame declares
@@ -5058,6 +5123,65 @@ mod tests {
         fn scroll_by_request(&mut self) -> Option<gorgon_petra::frame::ScrollBy> {
             self.by.take()
         }
+    }
+
+    /// An application that asks for a zoom factor.
+    struct Zoom {
+        want: Option<f32>,
+    }
+
+    impl RowSource for Zoom {
+        fn rows(&mut self, _source: &str, _range: Range<usize>) -> Vec<std::sync::Arc<ViewNode>> {
+            Vec::new()
+        }
+    }
+
+    impl App for Zoom {
+        fn view(&mut self) -> ViewNode {
+            ViewNode::new(NodeKind::Text, "label").with_props(Props {
+                text: Some("zoom".into()),
+                ..Props::default()
+            })
+        }
+
+        fn handle(&mut self, _: &InputEvent, _: &Route, _: Option<&PetrifiedFrame>) {}
+
+        fn take_changes(&mut self) -> ChangeSet {
+            ChangeSet::All
+        }
+
+        fn zoom_request(&mut self) -> Option<f32> {
+            self.want
+        }
+    }
+
+    /// A zoom request reaches the context, and the next pass petrifies at the
+    /// scale it makes. An answer that is not finite and positive is ignored.
+    ///
+    /// Falsify by dropping the `set_zoom_factor` call in `Host::pass`: the
+    /// frame stays at scale 1.
+    #[test]
+    fn a_zoom_request_sets_the_zoom_factor_and_the_next_frame_is_at_that_scale() {
+        let (ctx, mut host) = boot(Zoom { want: None });
+        step(&ctx, &mut host, RawInput::default());
+        let base = host.frame().expect("frame").viewport.scale.factor();
+        host.app_mut().want = Some(1.5);
+        step(&ctx, &mut host, RawInput::default());
+        step(&ctx, &mut host, RawInput::default());
+        assert_eq!(ctx.zoom_factor(), 1.5);
+        assert_eq!(
+            host.frame().expect("frame").viewport.scale.factor(),
+            base * 1.5,
+            "the frame is petrified at the zoomed scale"
+        );
+        for bad in [f32::NAN, 0.0, -2.0, f32::INFINITY] {
+            host.app_mut().want = Some(bad);
+            step(&ctx, &mut host, RawInput::default());
+            assert_eq!(ctx.zoom_factor(), 1.5, "{bad} is ignored");
+        }
+        host.app_mut().want = None;
+        step(&ctx, &mut host, RawInput::default());
+        assert_eq!(ctx.zoom_factor(), 1.5, "no answer leaves the zoom");
     }
 
     /// A step moves the scroll through the wheel's clamp: down moves the
