@@ -118,6 +118,70 @@ pub enum IconMarkParam {
     Unknown,
     /// `"document-invalid"` on the wire, [`IconMark::DocumentInvalid`] in the tree.
     DocumentInvalid,
+    /// `"circle"` on the wire, [`IconMark::Circle`] in the tree.
+    Circle,
+    /// `"circle-half"` on the wire, [`IconMark::CircleHalf`] in the tree.
+    CircleHalf,
+    /// `"circle-filled"` on the wire, [`IconMark::CircleFilled`] in the tree.
+    CircleFilled,
+    /// `"square-bar"` on the wire, [`IconMark::SquareBar`] in the tree.
+    SquareBar,
+    /// `"square-bar-half"` on the wire, [`IconMark::SquareBarHalf`] in the tree.
+    SquareBarHalf,
+    /// `"square-bar-filled"` on the wire, [`IconMark::SquareBarFilled`] in the tree.
+    SquareBarFilled,
+    /// `"triangle-alert"` on the wire, [`IconMark::TriangleAlert`] in the tree.
+    TriangleAlert,
+    /// `"triangle-alert-half"` on the wire, [`IconMark::TriangleAlertHalf`] in the tree.
+    TriangleAlertHalf,
+    /// `"triangle-alert-filled"` on the wire, [`IconMark::TriangleAlertFilled`] in the tree.
+    TriangleAlertFilled,
+    /// `"squares-arrow"` on the wire, [`IconMark::SquaresArrow`] in the tree.
+    SquaresArrow,
+    /// `"squares-arrow-half"` on the wire, [`IconMark::SquaresArrowHalf`] in the tree.
+    SquaresArrowHalf,
+    /// `"squares-arrow-filled"` on the wire, [`IconMark::SquaresArrowFilled`] in the tree.
+    SquaresArrowFilled,
+    /// `"square-plus"` on the wire, [`IconMark::SquarePlus`] in the tree.
+    SquarePlus,
+    /// `"square-plus-dashed"` on the wire, [`IconMark::SquarePlusDashed`] in the tree.
+    SquarePlusDashed,
+    /// `"square-in-square"` on the wire, [`IconMark::SquareInSquare`] in the tree.
+    SquareInSquare,
+    /// `"arrow-up"` on the wire, [`IconMark::ArrowUp`] in the tree.
+    ArrowUp,
+    /// `"arrow-down"` on the wire, [`IconMark::ArrowDown`] in the tree.
+    ArrowDown,
+    /// `"arrow-question"` on the wire, [`IconMark::ArrowQuestion`] in the tree.
+    ArrowQuestion,
+    /// `"arrow-cross"` on the wire, [`IconMark::ArrowCross`] in the tree.
+    ArrowCross,
+    /// `"arrow-dashed"` on the wire, [`IconMark::ArrowDashed`] in the tree.
+    ArrowDashed,
+    /// `"arrows-loop"` on the wire, [`IconMark::ArrowsLoop`] in the tree.
+    ArrowsLoop,
+    /// `"square-ellipsis"` on the wire, [`IconMark::SquareEllipsis`] in the tree.
+    SquareEllipsis,
+    /// `"sieve"` on the wire, [`IconMark::Sieve`] in the tree.
+    Sieve,
+    /// `"hourglass"` on the wire, [`IconMark::Hourglass`] in the tree.
+    Hourglass,
+    /// `"octagon-cross"` on the wire, [`IconMark::OctagonCross`] in the tree.
+    OctagonCross,
+    /// `"octagon-bar"` on the wire, [`IconMark::OctagonBar`] in the tree.
+    OctagonBar,
+    /// `"folder-cracked"` on the wire, [`IconMark::FolderCracked`] in the tree.
+    FolderCracked,
+    /// `"folder-person"` on the wire, [`IconMark::FolderPerson`] in the tree.
+    FolderPerson,
+    /// `"cloud"` on the wire, [`IconMark::Cloud`] in the tree.
+    Cloud,
+    /// `"circle-exclamation"` on the wire, [`IconMark::CircleExclamation`] in the tree.
+    CircleExclamation,
+    /// `"diamond-filled"` on the wire, [`IconMark::DiamondFilled`] in the tree.
+    DiamondFilled,
+    /// `"disc-on-bar"` on the wire, [`IconMark::DiscOnBar`] in the tree.
+    DiscOnBar,
 }
 
 impl From<IconMarkParam> for IconMark {
@@ -168,6 +232,38 @@ impl From<IconMarkParam> for IconMark {
             IconMarkParam::BranchBoxed => IconMark::BranchBoxed,
             IconMarkParam::Unknown => IconMark::Unknown,
             IconMarkParam::DocumentInvalid => IconMark::DocumentInvalid,
+            IconMarkParam::Circle => IconMark::Circle,
+            IconMarkParam::CircleHalf => IconMark::CircleHalf,
+            IconMarkParam::CircleFilled => IconMark::CircleFilled,
+            IconMarkParam::SquareBar => IconMark::SquareBar,
+            IconMarkParam::SquareBarHalf => IconMark::SquareBarHalf,
+            IconMarkParam::SquareBarFilled => IconMark::SquareBarFilled,
+            IconMarkParam::TriangleAlert => IconMark::TriangleAlert,
+            IconMarkParam::TriangleAlertHalf => IconMark::TriangleAlertHalf,
+            IconMarkParam::TriangleAlertFilled => IconMark::TriangleAlertFilled,
+            IconMarkParam::SquaresArrow => IconMark::SquaresArrow,
+            IconMarkParam::SquaresArrowHalf => IconMark::SquaresArrowHalf,
+            IconMarkParam::SquaresArrowFilled => IconMark::SquaresArrowFilled,
+            IconMarkParam::SquarePlus => IconMark::SquarePlus,
+            IconMarkParam::SquarePlusDashed => IconMark::SquarePlusDashed,
+            IconMarkParam::SquareInSquare => IconMark::SquareInSquare,
+            IconMarkParam::ArrowUp => IconMark::ArrowUp,
+            IconMarkParam::ArrowDown => IconMark::ArrowDown,
+            IconMarkParam::ArrowQuestion => IconMark::ArrowQuestion,
+            IconMarkParam::ArrowCross => IconMark::ArrowCross,
+            IconMarkParam::ArrowDashed => IconMark::ArrowDashed,
+            IconMarkParam::ArrowsLoop => IconMark::ArrowsLoop,
+            IconMarkParam::SquareEllipsis => IconMark::SquareEllipsis,
+            IconMarkParam::Sieve => IconMark::Sieve,
+            IconMarkParam::Hourglass => IconMark::Hourglass,
+            IconMarkParam::OctagonCross => IconMark::OctagonCross,
+            IconMarkParam::OctagonBar => IconMark::OctagonBar,
+            IconMarkParam::FolderCracked => IconMark::FolderCracked,
+            IconMarkParam::FolderPerson => IconMark::FolderPerson,
+            IconMarkParam::Cloud => IconMark::Cloud,
+            IconMarkParam::CircleExclamation => IconMark::CircleExclamation,
+            IconMarkParam::DiamondFilled => IconMark::DiamondFilled,
+            IconMarkParam::DiscOnBar => IconMark::DiscOnBar,
         }
     }
 }
@@ -190,6 +286,13 @@ macro_rules! icon_mark_luau {
          \"bullet-dash\" | \"folder\" | \"folder-open\" | \"document\" | \"launch\" | \
          \"launch-outside\" | \"unlink\" | \"locked\" | \"view-off\" | \"folder-dashed\" | \
          \"branch\" | \"branch-worktree\" | \"branch-boxed\" | \"unknown\" | \
-         \"document-invalid\""
+         \"document-invalid\" | \"circle\" | \"circle-half\" | \"circle-filled\" | \
+         \"square-bar\" | \"square-bar-half\" | \"square-bar-filled\" | \"triangle-alert\" | \
+         \"triangle-alert-half\" | \"triangle-alert-filled\" | \"squares-arrow\" | \
+         \"squares-arrow-half\" | \"squares-arrow-filled\" | \"square-plus\" | \
+         \"square-plus-dashed\" | \"square-in-square\" | \"arrow-up\" | \"arrow-down\" | \"arrow-question\" | \"arrow-cross\" | \"arrow-dashed\" | \
+         \"arrows-loop\" | \"square-ellipsis\" | \"sieve\" | \"hourglass\" | \
+         \"octagon-cross\" | \"octagon-bar\" | \"folder-cracked\" | \"folder-person\" | \
+         \"cloud\" | \"circle-exclamation\" | \"diamond-filled\" | \"disc-on-bar\""
     };
 }

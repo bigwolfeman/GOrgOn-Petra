@@ -45,7 +45,11 @@
 use std::sync::Arc;
 
 mod files;
+mod fills;
 mod letter;
+mod signs;
+
+use fills::Fill;
 
 pub use letter::{BADGE_BOX, letter_badge};
 
@@ -553,6 +557,95 @@ pub enum IconMark {
     /// [`IconMark::Document`]'s sheet with a cross where its text lines
     /// were: a definition file that does not parse. Petra's own.
     DocumentInvalid,
+    /// A circle outline, outer edge 4 to 28 of the 32 box. Petra's own.
+    /// The outline form of a three-fill shape: "none of it" (see
+    /// [`IconMark::CircleHalf`] and [`IconMark::CircleFilled`]).
+    Circle,
+    /// [`IconMark::Circle`] with its lower half filled: "part of it". The
+    /// lower half, not the left, so it never reads as [`IconMark::Incomplete`].
+    CircleHalf,
+    /// [`IconMark::Circle`] filled: "all of it".
+    CircleFilled,
+    /// A square outline with a horizontal bar across its middle, from x 10
+    /// to 22. Petra's own.
+    SquareBar,
+    /// [`IconMark::SquareBar`] with the band below the bar filled.
+    SquareBarHalf,
+    /// [`IconMark::SquareBar`] filled, the bar left open as a slot: four
+    /// snapped bars around it, because one ink cannot cut a hole.
+    SquareBarFilled,
+    /// A triangle outline holding an exclamation mark. Petra's own, drawn
+    /// at the 2-unit band rather than as Carbon's `warning--alt`, which
+    /// carries severity in the status vocabulary.
+    TriangleAlert,
+    /// [`IconMark::TriangleAlert`] with its lower half by area filled (from
+    /// y 20) and the exclamation's dot left open in it as a gap.
+    TriangleAlertHalf,
+    /// [`IconMark::TriangleAlert`] filled, the exclamation left open: the
+    /// convex pieces either side of and between its stem and dot.
+    TriangleAlertFilled,
+    /// Two small square outlines, top left and bottom right, and an arrow
+    /// from the first to the second: something moved. Petra's own.
+    SquaresArrow,
+    /// [`IconMark::SquaresArrow`] with the second square filled.
+    SquaresArrowHalf,
+    /// [`IconMark::SquaresArrow`] with both squares filled.
+    SquaresArrowFilled,
+    /// A square outline holding a plus. Petra's own.
+    SquarePlus,
+    /// [`IconMark::SquarePlus`] with the square cut into dashes, about 4 on
+    /// and 3 off, a dash at both ends of every side so the corners stay
+    /// closed: something new that is not yet kept.
+    SquarePlusDashed,
+    /// A square outline inside a square outline. Petra's own.
+    SquareInSquare,
+    /// An arrow pointing up: a stem and a head of two 45 degree bands.
+    /// Petra's own.
+    ArrowUp,
+    /// [`IconMark::ArrowUp`] mirrored top to bottom.
+    ArrowDown,
+    /// An up arrow with a question mark to its right: not known. Petra's own.
+    ArrowQuestion,
+    /// An up arrow with a cross to its right: gone. Petra's own.
+    ArrowCross,
+    /// [`IconMark::ArrowUp`] with its stem cut into dashes: not linked.
+    /// Petra's own.
+    ArrowDashed,
+    /// Two arrows chasing round a circle, each arc 125 degrees with a
+    /// triangular head: something part way through. Petra's own.
+    ArrowsLoop,
+    /// A square outline holding three dots in a row: more than is shown.
+    /// Petra's own.
+    SquareEllipsis,
+    /// A sieve: a rim bar, a half-circle bowl under it, and five holes.
+    /// Petra's own.
+    Sieve,
+    /// An hourglass: top and bottom bars, an empty upper bulb, a filled lower
+    /// bulb. Petra's own.
+    Hourglass,
+    /// An octagon outline holding a cross: stopped by a fault. Petra's own;
+    /// [`IconMark::ErrorFilled`] is Carbon's slashed disc and stays the
+    /// status silhouette.
+    OctagonCross,
+    /// An octagon outline holding a horizontal bar: stopped on purpose.
+    /// Petra's own.
+    OctagonBar,
+    /// Petra's [`IconMark::Folder`] with its bottom edge broken and a crack up
+    /// its face. Petra's own.
+    FolderCracked,
+    /// Petra's [`IconMark::Folder`] with a person badge (a head and a
+    /// shoulder arc) at its lower right: in use by someone. Petra's own.
+    FolderPerson,
+    /// A cloud outline: a flat base and three bumps, one closed stroked path.
+    /// Petra's own.
+    Cloud,
+    /// A circle outline holding an exclamation mark. Petra's own; the
+    /// outline keeps it apart from the filled status silhouettes.
+    CircleExclamation,
+    /// A filled diamond, its corners on the box's midlines. Petra's own.
+    DiamondFilled,
+    /// A filled disc with a bar under it. Petra's own.
+    DiscOnBar,
 }
 
 /// The box a mark is drawn in: which of Carbon's two glyph sizes.
@@ -792,6 +885,38 @@ fn draw_list(mark: IconMark, boxed: IconBox, tone: IconTone) -> DrawList {
         IconMark::BranchBoxed => files::branch_boxed(size / 32.0, color),
         IconMark::Unknown => files::unknown(size / 32.0, color),
         IconMark::DocumentInvalid => files::document_invalid(size / 32.0, color),
+        IconMark::Circle => fills::circle(Fill::Outline, size / 32.0, color),
+        IconMark::CircleHalf => fills::circle(Fill::Half, size / 32.0, color),
+        IconMark::CircleFilled => fills::circle(Fill::Full, size / 32.0, color),
+        IconMark::SquareBar => fills::square_bar(Fill::Outline, size / 32.0, color),
+        IconMark::SquareBarHalf => fills::square_bar(Fill::Half, size / 32.0, color),
+        IconMark::SquareBarFilled => fills::square_bar(Fill::Full, size / 32.0, color),
+        IconMark::TriangleAlert => fills::triangle_alert(Fill::Outline, size / 32.0, color),
+        IconMark::TriangleAlertHalf => fills::triangle_alert(Fill::Half, size / 32.0, color),
+        IconMark::TriangleAlertFilled => fills::triangle_alert(Fill::Full, size / 32.0, color),
+        IconMark::SquaresArrow => fills::squares_arrow(Fill::Outline, size / 32.0, color),
+        IconMark::SquaresArrowHalf => fills::squares_arrow(Fill::Half, size / 32.0, color),
+        IconMark::SquaresArrowFilled => fills::squares_arrow(Fill::Full, size / 32.0, color),
+        IconMark::SquarePlus => fills::square_plus(size / 32.0, color),
+        IconMark::SquarePlusDashed => fills::square_plus_dashed(size / 32.0, color),
+        IconMark::SquareInSquare => fills::square_in_square(size / 32.0, color),
+        IconMark::ArrowUp => fills::arrow_up(size / 32.0, color),
+        IconMark::ArrowDown => fills::arrow_down(size / 32.0, color),
+        IconMark::ArrowQuestion => signs::arrow_question(size / 32.0, color),
+        IconMark::ArrowCross => signs::arrow_cross(size / 32.0, color),
+        IconMark::ArrowDashed => signs::arrow_dashed(size / 32.0, color),
+        IconMark::ArrowsLoop => signs::arrows_loop(size / 32.0, color),
+        IconMark::SquareEllipsis => signs::square_ellipsis(size / 32.0, color),
+        IconMark::Sieve => signs::sieve(size / 32.0, color),
+        IconMark::Hourglass => signs::hourglass(size / 32.0, color),
+        IconMark::OctagonCross => signs::octagon_cross(size / 32.0, color),
+        IconMark::OctagonBar => signs::octagon_bar(size / 32.0, color),
+        IconMark::FolderCracked => signs::folder_cracked(size / 32.0, color),
+        IconMark::FolderPerson => signs::folder_person(size / 32.0, color),
+        IconMark::Cloud => signs::cloud(size / 32.0, color),
+        IconMark::CircleExclamation => signs::circle_exclamation(size / 32.0, color),
+        IconMark::DiamondFilled => signs::diamond_filled(size / 32.0, color),
+        IconMark::DiscOnBar => signs::disc_on_bar(size / 32.0, color),
     };
     DrawList::new(commands).unwrap_or_else(|err| panic!("{mark:?} draw list refused: {err}"))
 }
@@ -1765,7 +1890,7 @@ mod tests {
     use crate::draw::{ColorRef, Command, DrawList};
     use crate::tree::NodeKind;
 
-    const EVERY_MARK: [IconMark; 45] = [
+    const EVERY_MARK: [IconMark; 77] = [
         IconMark::CaretLeft,
         IconMark::CaretRight,
         IconMark::CaretDown,
@@ -1811,6 +1936,38 @@ mod tests {
         IconMark::BranchBoxed,
         IconMark::Unknown,
         IconMark::DocumentInvalid,
+        IconMark::Circle,
+        IconMark::CircleHalf,
+        IconMark::CircleFilled,
+        IconMark::SquareBar,
+        IconMark::SquareBarHalf,
+        IconMark::SquareBarFilled,
+        IconMark::TriangleAlert,
+        IconMark::TriangleAlertHalf,
+        IconMark::TriangleAlertFilled,
+        IconMark::SquaresArrow,
+        IconMark::SquaresArrowHalf,
+        IconMark::SquaresArrowFilled,
+        IconMark::SquarePlus,
+        IconMark::SquarePlusDashed,
+        IconMark::SquareInSquare,
+        IconMark::ArrowUp,
+        IconMark::ArrowDown,
+        IconMark::ArrowQuestion,
+        IconMark::ArrowCross,
+        IconMark::ArrowDashed,
+        IconMark::ArrowsLoop,
+        IconMark::SquareEllipsis,
+        IconMark::Sieve,
+        IconMark::Hourglass,
+        IconMark::OctagonCross,
+        IconMark::OctagonBar,
+        IconMark::FolderCracked,
+        IconMark::FolderPerson,
+        IconMark::Cloud,
+        IconMark::CircleExclamation,
+        IconMark::DiamondFilled,
+        IconMark::DiscOnBar,
     ];
 
     fn list(node: &crate::tree::ViewNode) -> &DrawList {
@@ -2343,5 +2500,124 @@ mod tests {
             dashed.last(),
             "the tab's slope is the folder's"
         );
+    }
+
+    /// The three-fill shapes, outline, half and filled in that order.
+    const FILL_SETS: [[IconMark; 3]; 4] = [
+        [
+            IconMark::Circle,
+            IconMark::CircleHalf,
+            IconMark::CircleFilled,
+        ],
+        [
+            IconMark::SquareBar,
+            IconMark::SquareBarHalf,
+            IconMark::SquareBarFilled,
+        ],
+        [
+            IconMark::TriangleAlert,
+            IconMark::TriangleAlertHalf,
+            IconMark::TriangleAlertFilled,
+        ],
+        [
+            IconMark::SquaresArrow,
+            IconMark::SquaresArrowHalf,
+            IconMark::SquaresArrowFilled,
+        ],
+    ];
+
+    /// Every shape mark a row may hang beside the file marks: no two may
+    /// draw the same picture, and none may draw a file mark's picture.
+    #[test]
+    fn every_fill_and_arrow_mark_draws_a_different_picture() {
+        let picture = |mark: IconMark| {
+            let node = icon_in("m", mark, IconBox::Glyph, IconTone::Primary);
+            format!("{:?}", list(&node).commands())
+        };
+        let mut marks: Vec<IconMark> = FILL_SETS.iter().flatten().copied().collect();
+        marks.extend([
+            IconMark::SquarePlus,
+            IconMark::SquarePlusDashed,
+            IconMark::SquareInSquare,
+            IconMark::ArrowUp,
+            IconMark::ArrowDown,
+            IconMark::BulletDisc,
+            IconMark::ArrowQuestion,
+            IconMark::ArrowCross,
+            IconMark::ArrowDashed,
+            IconMark::ArrowsLoop,
+            IconMark::SquareEllipsis,
+            IconMark::Sieve,
+            IconMark::Hourglass,
+            IconMark::OctagonCross,
+            IconMark::OctagonBar,
+            IconMark::FolderCracked,
+            IconMark::FolderPerson,
+            IconMark::Cloud,
+            IconMark::CircleExclamation,
+            IconMark::DiamondFilled,
+            IconMark::DiscOnBar,
+            IconMark::ErrorFilled,
+            IconMark::Folder,
+        ]);
+        marks.extend(FILE_MARKS);
+        // `PETRA_MARK_DUMP=1` prints each draw list as JSON, one line per
+        // mark, for a CPU rasteriser to draw without a GPU.
+        if std::env::var_os("PETRA_MARK_DUMP").is_some() {
+            for mark in &marks {
+                let node = icon_in("m", *mark, IconBox::Glyph, IconTone::Primary);
+                let json = serde_json::to_string(list(&node).commands()).expect("json");
+                println!("DUMP {mark:?} {json}");
+            }
+        }
+        for (i, a) in marks.iter().enumerate() {
+            for b in &marks[i + 1..] {
+                assert_ne!(picture(*a), picture(*b), "{a:?} and {b:?} draw the same");
+            }
+        }
+    }
+
+    /// Fill is the channel: the outline form strokes and fills least, the
+    /// filled form strokes nothing at the shape's edge, and the half form
+    /// sits between, so the three differ by how much ink is solid.
+    #[test]
+    fn the_three_fill_forms_grow_in_solid_ink() {
+        let solid = |mark: IconMark| {
+            let node = icon_in("m", mark, IconBox::Glyph, IconTone::Primary);
+            list(&node)
+                .commands()
+                .iter()
+                .filter(|c| match c {
+                    Command::Rect { paint, .. }
+                    | Command::Ellipse { paint, .. }
+                    | Command::Path { paint, .. } => paint.fill.is_some(),
+                    _ => false,
+                })
+                .count()
+        };
+        let stroked = |mark: IconMark| {
+            let node = icon_in("m", mark, IconBox::Glyph, IconTone::Primary);
+            list(&node)
+                .commands()
+                .iter()
+                .filter(|c| match c {
+                    Command::Rect { paint, .. }
+                    | Command::Ellipse { paint, .. }
+                    | Command::Path { paint, .. } => paint.stroke.is_some(),
+                    _ => false,
+                })
+                .count()
+        };
+        for [outline, half, full] in FILL_SETS {
+            assert!(
+                solid(half) > solid(outline),
+                "{half:?} adds solid ink to {outline:?}"
+            );
+            assert!(
+                stroked(outline) > 0 && stroked(half) > 0,
+                "{outline:?} and {half:?} keep the edge"
+            );
+            assert_eq!(stroked(full), 0, "{full:?} is solid, with no outline band");
+        }
     }
 }
