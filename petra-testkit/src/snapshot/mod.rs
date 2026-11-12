@@ -968,6 +968,67 @@ mod tests {
         );
     }
 
+    /// [`Panel`], asking the host for a zoom factor.
+    struct Zoomed(f32);
+
+    impl RowSource for Zoomed {
+        fn rows(&mut self, source: &str, range: Range<usize>) -> Vec<Arc<ViewNode>> {
+            Panel.rows(source, range)
+        }
+    }
+
+    impl App for Zoomed {
+        fn view(&mut self) -> ViewNode {
+            Panel.view()
+        }
+
+        fn handle(&mut self, event: &InputEvent, route: &Route, frame: Option<&PetrifiedFrame>) {
+            Panel.handle(event, route, frame);
+        }
+
+        fn take_changes(&mut self) -> ChangeSet {
+            ChangeSet::All
+        }
+
+        fn zoom_request(&mut self) -> Option<f32> {
+            Some(self.0)
+        }
+    }
+
+    /// The snapshotter honours `App::zoom_request`: once the host has applied
+    /// the zoom, the frame and the capture are at the zoomed scale. A headless
+    /// caller sizes its input in points, so the logical viewport keeps that
+    /// size and the capture grows by the factor in each axis. (A window sizes
+    /// its input in physical pixels, so there the logical viewport shrinks.)
+    ///
+    /// Falsify by dropping the `set_zoom_factor` call in `Host::pass`: the
+    /// frame stays at scale 1.
+    #[test]
+    fn a_zoom_request_is_captured_at_the_zoomed_scale() {
+        let ctx = headless();
+        let mut host = Host::new(&ctx, Zoomed(1.5), Presenter::new(dark()));
+        // The first pass asks; egui applies the zoom from the next one.
+        for _ in 0..2 {
+            let mut output = ctx.run_ui(sized(RawInput::default()), |_| host.pass(&ctx));
+            output.textures_delta.clear();
+        }
+        let output = ctx.run_ui(sized(RawInput::default()), |_| host.pass(&ctx));
+        let pass = Pass {
+            output,
+            frame: host.frame().expect("a pass leaves a frame").clone(),
+        };
+        assert_eq!(pass.frame.viewport.scale.factor(), 1.5);
+        assert_eq!(pass.frame.viewport.size, WINDOW);
+        let mut snapshotter = shared();
+        let shot = shoot(&mut snapshotter, &ctx, &pass.output, &pass.frame, None);
+        let image = decode(&shot.png);
+        assert_eq!(
+            image.dimensions(),
+            ((WINDOW.w * 1.5) as u32, (WINDOW.h * 1.5) as u32),
+            "at zoom 1.5 the capture is 1.5 times the logical size in each axis"
+        );
+    }
+
     /// The capture is sized in device pixels, so a scale change changes the
     /// image and not just the numbers on the wire.
     #[test]

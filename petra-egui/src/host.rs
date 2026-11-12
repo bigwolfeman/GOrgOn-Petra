@@ -281,6 +281,23 @@ pub trait App: RowSource {
         None
     }
 
+    /// The whole-window zoom factor the application wants: `1.0` is 100%.
+    ///
+    /// Asked once at the top of every [`Host::pass`]. When the answer differs
+    /// from the context's zoom factor the host calls
+    /// `egui::Context::set_zoom_factor`, which egui applies from the next
+    /// pass, so the tree that pass builds is measured at the new scale. The
+    /// host asks for the same reason it asks [`Self::theme_request`]: it owns
+    /// the `Context`, and an application that held one could change the scale
+    /// in the middle of a pass. An answer that is not finite and positive is
+    /// ignored.
+    ///
+    /// The default asks for nothing, which leaves the zoom where the window
+    /// and the platform put it.
+    fn zoom_request(&mut self) -> Option<f32> {
+        None
+    }
+
     /// Text the application wants put on the system clipboard, taken and
     /// cleared.
     ///
@@ -1734,6 +1751,13 @@ impl<A: App> Host<A> {
         // operator sees is one behind his own click.
         if let Some(theme) = self.app.theme_request() {
             self.presenter.publish(theme);
+        }
+        if let Some(zoom) = self.app.zoom_request()
+            && zoom.is_finite()
+            && zoom > 0.0
+            && zoom != ctx.zoom_factor()
+        {
+            ctx.set_zoom_factor(zoom);
         }
         let snapshot = self.presenter.current();
         // Before anything reads the registry: a theme published since the
@@ -4885,6 +4909,65 @@ mod tests {
         fn scroll_by_request(&mut self) -> Option<gorgon_petra::frame::ScrollBy> {
             self.by.take()
         }
+    }
+
+    /// An application that asks for a zoom factor.
+    struct Zoom {
+        want: Option<f32>,
+    }
+
+    impl RowSource for Zoom {
+        fn rows(&mut self, _source: &str, _range: Range<usize>) -> Vec<std::sync::Arc<ViewNode>> {
+            Vec::new()
+        }
+    }
+
+    impl App for Zoom {
+        fn view(&mut self) -> ViewNode {
+            ViewNode::new(NodeKind::Text, "label").with_props(Props {
+                text: Some("zoom".into()),
+                ..Props::default()
+            })
+        }
+
+        fn handle(&mut self, _: &InputEvent, _: &Route, _: Option<&PetrifiedFrame>) {}
+
+        fn take_changes(&mut self) -> ChangeSet {
+            ChangeSet::All
+        }
+
+        fn zoom_request(&mut self) -> Option<f32> {
+            self.want
+        }
+    }
+
+    /// A zoom request reaches the context, and the next pass petrifies at the
+    /// scale it makes. An answer that is not finite and positive is ignored.
+    ///
+    /// Falsify by dropping the `set_zoom_factor` call in `Host::pass`: the
+    /// frame stays at scale 1.
+    #[test]
+    fn a_zoom_request_sets_the_zoom_factor_and_the_next_frame_is_at_that_scale() {
+        let (ctx, mut host) = boot(Zoom { want: None });
+        step(&ctx, &mut host, RawInput::default());
+        let base = host.frame().expect("frame").viewport.scale.factor();
+        host.app_mut().want = Some(1.5);
+        step(&ctx, &mut host, RawInput::default());
+        step(&ctx, &mut host, RawInput::default());
+        assert_eq!(ctx.zoom_factor(), 1.5);
+        assert_eq!(
+            host.frame().expect("frame").viewport.scale.factor(),
+            base * 1.5,
+            "the frame is petrified at the zoomed scale"
+        );
+        for bad in [f32::NAN, 0.0, -2.0, f32::INFINITY] {
+            host.app_mut().want = Some(bad);
+            step(&ctx, &mut host, RawInput::default());
+            assert_eq!(ctx.zoom_factor(), 1.5, "{bad} is ignored");
+        }
+        host.app_mut().want = None;
+        step(&ctx, &mut host, RawInput::default());
+        assert_eq!(ctx.zoom_factor(), 1.5, "no answer leaves the zoom");
     }
 
     /// A step moves the scroll through the wheel's clamp: down moves the
