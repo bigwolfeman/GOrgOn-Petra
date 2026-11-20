@@ -118,8 +118,9 @@ const CODE_KEY: &str = "code";
 /// Key of the glyph inside the copy control, which is what the feedback
 /// bubble anchors to. See [`code_snippet_copied`].
 const COPY_ICON_KEY: &str = "copy-icon";
-/// Key of the expand control on [`code_snippet_multi_capped`].
-const EXPAND_KEY: &str = "expand";
+/// Key of the expand control on [`code_snippet_multi_capped`]. Public so a
+/// host that keeps the `expanded` fact can tell a press on it apart.
+pub const EXPAND_KEY: &str = "expand";
 
 /// Visible label of the expand control while the cap is on.
 ///

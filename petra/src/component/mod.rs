@@ -178,9 +178,9 @@ pub use button::{
 pub use button_group::{button_group, button_group_flush};
 pub use chrome_strip::{DIVIDER_EXTENT, chrome_strip, chrome_strip_xs};
 pub use code_snippet::{
-    COPY_FEEDBACK, COPY_FEEDBACK_KEY, COPY_FEEDBACK_SECONDS, CodeInk, MULTI_CAP, MULTI_CAP_LINES,
-    SHOW_LESS, SHOW_MORE, code_runs, code_snippet, code_snippet_copied, code_snippet_inline,
-    code_snippet_multi, code_snippet_multi_capped, code_well,
+    COPY_FEEDBACK, COPY_FEEDBACK_KEY, COPY_FEEDBACK_SECONDS, CodeInk, EXPAND_KEY, MULTI_CAP,
+    MULTI_CAP_LINES, SHOW_LESS, SHOW_MORE, code_runs, code_snippet, code_snippet_copied,
+    code_snippet_inline, code_snippet_multi, code_snippet_multi_capped, code_well,
 };
 pub use contained_list::{
     contained_list, contained_list_disclosed, contained_list_lg, contained_list_sm,
